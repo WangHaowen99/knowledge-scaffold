@@ -8,24 +8,23 @@ Service.  No solver engine or local worker is loaded by this process.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
 import logging
 import ntpath
 import os
-from pathlib import Path
 import re
 import secrets
 import stat
 import sys
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-
 
 ROOT_ENV = "SOLVER_CONTROLLED_VALIDATION_ROOT"
 TRUST_ROOT_ENV = "SOLVER_CONTROLLED_VALIDATION_TRUST_ROOT"
@@ -56,14 +55,13 @@ def _write_stdout_line(value: str) -> None:
     sys.stdout.write("\n")
     sys.stdout.flush()
 
+
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _OPERATION_KEY = "solve_controlled_ordered_route"
 _PACKAGE_ID = "controlled-validation-package"
 _PACKAGE_REVISION = "controlled-validation-revision.v1"
 _BINDING_REVISION = "controlled-validation-connector.v1"
-_TERMINAL_CONNECTOR_STATES = frozenset(
-    {"completed", "failed", "cancelled", "attempt_lost"}
-)
+_TERMINAL_CONNECTOR_STATES = frozenset({"completed", "failed", "cancelled", "attempt_lost"})
 
 
 class ControlledValidationError(RuntimeError):
@@ -116,10 +114,7 @@ def _connector_configuration_from_env(
             resolved_token_path = token_path.resolve(strict=True)
         except OSError as exc:
             raise ControlledValidationError("Connector credential file is invalid") from exc
-        if any(
-            _is_contained(resolved_token_path, protected)
-            for protected in protected_repository_roots
-        ) or (
+        if any(_is_contained(resolved_token_path, protected) for protected in protected_repository_roots) or (
             bundle_root is not None and _is_contained(resolved_token_path, bundle_root)
         ):
             raise ControlledValidationError("Connector credential file is invalid")
@@ -240,21 +235,15 @@ def _strict_json(value: bytes, field_name: str) -> dict[str, Any]:
             result: dict[str, Any] = {}
             for key, item in pairs:
                 if key in result:
-                    raise ControlledValidationError(
-                        "{} contains a duplicate key".format(field_name)
-                    )
+                    raise ControlledValidationError("{} contains a duplicate key".format(field_name))
                 result[key] = item
             return result
 
         def reject_constant(_value: str) -> None:
-            raise ControlledValidationError(
-                "{} contains a non-finite number".format(field_name)
-            )
+            raise ControlledValidationError("{} contains a non-finite number".format(field_name))
 
         def reject_float(_value: str) -> None:
-            raise ControlledValidationError(
-                "{} contains a floating-point number".format(field_name)
-            )
+            raise ControlledValidationError("{} contains a floating-point number".format(field_name))
 
         parsed = json.loads(
             text,
@@ -310,9 +299,7 @@ def _external_directory(root: Path, repository_roots: tuple[Path, ...]) -> Path:
     if not resolved.is_dir():
         raise ControlledValidationError("controlled root is not a directory")
     if any(
-        _is_contained(resolved, repository)
-        or _is_contained(repository, resolved)
-        for repository in repository_roots
+        _is_contained(resolved, repository) or _is_contained(repository, resolved) for repository in repository_roots
     ):
         raise ControlledValidationError("controlled root must be outside the repository")
     return resolved
@@ -393,8 +380,8 @@ def _open_windows_no_follow(path: Path) -> int:
         raise ControlledValidationError("Windows no-follow open is unavailable")
     try:
         import ctypes
-        from ctypes import wintypes
         import msvcrt
+        from ctypes import wintypes
 
         class ByHandleFileInformation(ctypes.Structure):
             _fields_ = [
@@ -452,44 +439,26 @@ def _open_windows_no_follow(path: Path) -> int:
         owns_handle = True
         try:
             information = ByHandleFileInformation()
-            if not kernel32.GetFileInformationByHandle(
-                handle, ctypes.byref(information)
-            ):
-                raise OSError(
-                    ctypes.get_last_error(), "GetFileInformationByHandle failed"
-                )
+            if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
+                raise OSError(ctypes.get_last_error(), "GetFileInformationByHandle failed")
             if information.file_attributes & 0x00000400:
-                raise ControlledValidationError(
-                    "controlled bundle contains a reparse point"
-                )
+                raise ControlledValidationError("controlled bundle contains a reparse point")
             if information.file_attributes & 0x00000010:
-                raise ControlledValidationError(
-                    "controlled bundle entry is not a file"
-                )
+                raise ControlledValidationError("controlled bundle entry is not a file")
             buffer = ctypes.create_unicode_buffer(32768)
-            length = kernel32.GetFinalPathNameByHandleW(
-                handle, buffer, len(buffer), 0
-            )
+            length = kernel32.GetFinalPathNameByHandleW(handle, buffer, len(buffer), 0)
             if length == 0 or length >= len(buffer):
-                raise OSError(
-                    ctypes.get_last_error(), "GetFinalPathNameByHandleW failed"
-                )
+                raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW failed")
             if _windows_path_key(buffer.value) != _windows_path_key(path):
-                raise ControlledValidationError(
-                    "controlled bundle file escaped its approved path"
-                )
-            descriptor = msvcrt.open_osfhandle(
-                raw_handle, os.O_RDONLY | getattr(os, "O_BINARY", 0)
-            )
+                raise ControlledValidationError("controlled bundle file escaped its approved path")
+            descriptor = msvcrt.open_osfhandle(raw_handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
             owns_handle = False
             return descriptor
         finally:
             if owns_handle:
                 kernel32.CloseHandle(handle)
     except (OSError, TypeError, ValueError) as exc:
-        raise ControlledValidationError(
-            "controlled bundle file cannot be opened safely"
-        ) from exc
+        raise ControlledValidationError("controlled bundle file cannot be opened safely") from exc
 
 
 def _read_bounded_file(path: Path) -> bytes:
@@ -530,9 +499,7 @@ def _read_bounded_file(path: Path) -> bytes:
     return payload
 
 
-def _validate_manifest(
-    manifest: Mapping[str, Any], *, approved_trust_root: str
-) -> tuple[str, dict[str, str], str]:
+def _validate_manifest(manifest: Mapping[str, Any], *, approved_trust_root: str) -> tuple[str, dict[str, str], str]:
     if set(manifest) != {
         "schema_version",
         "trust_root_digest",
@@ -549,12 +516,8 @@ def _validate_manifest(
         raise ControlledValidationError("controlled manifest file digests are invalid")
     normalized_digests: dict[str, str] = {}
     for name in sorted(ALLOWED_FILES):
-        normalized_digests[name] = _required_digest(
-            digests.get(name), "{} digest".format(name)
-        )
-    declared_trust = _required_digest(
-        manifest.get("trust_root_digest"), "trust_root_digest"
-    )
+        normalized_digests[name] = _required_digest(digests.get(name), "{} digest".format(name))
+    declared_trust = _required_digest(manifest.get("trust_root_digest"), "trust_root_digest")
     approved = _required_digest(approved_trust_root, "approved trust root")
     projection = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -571,9 +534,7 @@ def _validate_manifest(
         approved,
     ):
         if not hmac.compare_digest(projection_digest, trusted_digest):
-            raise ControlledValidationError(
-                "controlled manifest trust root is not approved"
-            )
+            raise ControlledValidationError("controlled manifest trust root is not approved")
     return PROFILE_ID, normalized_digests, projection_digest
 
 
@@ -642,15 +603,10 @@ def _validate_input(value: Mapping[str, Any], profile_id: str) -> None:
     mapping = model.get("display_mapping")
     if not isinstance(mapping, Mapping) or set(mapping) != {"OPTION_0", "OPTION_1"}:
         raise ControlledValidationError("controlled display mapping is invalid")
-    if any(
-        not isinstance(label, str) or not label or label != label.strip()
-        for label in mapping.values()
-    ):
+    if any(not isinstance(label, str) or not label or label != label.strip() for label in mapping.values()):
         raise ControlledValidationError("controlled display mapping is invalid")
     objectives = model.get("objectives")
-    if not isinstance(objectives, list) or objectives != [
-        dict(objective) for objective in LOCKED_OBJECTIVES
-    ]:
+    if not isinstance(objectives, list) or objectives != [dict(objective) for objective in LOCKED_OBJECTIVES]:
         raise ControlledValidationError("controlled objectives are invalid")
 
 
@@ -687,11 +643,7 @@ def _validate_expected(value: Mapping[str, Any]) -> None:
     if candidate_id != candidate_id.strip():
         raise ControlledValidationError("controlled expected candidate is invalid")
     combination_no = summary.get("combination_no")
-    if (
-        isinstance(combination_no, bool)
-        or not isinstance(combination_no, int)
-        or combination_no < 1
-    ):
+    if isinstance(combination_no, bool) or not isinstance(combination_no, int) or combination_no < 1:
         raise ControlledValidationError("controlled expected combination is invalid")
     assignment = summary.get("assignment")
     if not isinstance(assignment, Mapping) or not assignment:
@@ -784,9 +736,7 @@ def _protected_repository_roots(start: Path) -> tuple[Path, ...]:
     try:
         entries = tuple(os.scandir(worktrees_root))
     except OSError as exc:
-        raise ControlledValidationError(
-            "repository worktree registry is unavailable"
-        ) from exc
+        raise ControlledValidationError("repository worktree registry is unavailable") from exc
     for entry in entries:
         entry_path = worktrees_root / entry.name
         if _unsafe_link(entry_path) or not entry.is_dir(follow_symlinks=False):
@@ -800,9 +750,7 @@ def _protected_repository_roots(start: Path) -> tuple[Path, ...]:
         try:
             text = payload.decode("utf-8", errors="strict")
         except UnicodeError as exc:
-            raise ControlledValidationError(
-                "repository worktree registry is invalid"
-            ) from exc
+            raise ControlledValidationError("repository worktree registry is invalid") from exc
         lines = text.splitlines()
         if len(lines) != 1 or not lines[0] or "\x00" in lines[0]:
             raise ControlledValidationError("repository worktree registry is invalid")
@@ -816,9 +764,7 @@ def _protected_repository_roots(start: Path) -> tuple[Path, ...]:
         try:
             roots.add(worktree_root.resolve(strict=False))
         except OSError as exc:
-            raise ControlledValidationError(
-                "repository worktree registry is invalid"
-            ) from exc
+            raise ControlledValidationError("repository worktree registry is invalid") from exc
     if _directory_identity(worktrees_root) != registry_identity:
         raise ControlledValidationError("repository worktree registry changed while reading")
     return tuple(sorted(roots, key=lambda path: _windows_path_key(path)))
@@ -835,19 +781,11 @@ def load_bundle(
     approved_trust_root: str | None = None,
 ) -> ControlledValidationBundle:
     raw_root = root if root is not None else os.environ.get(ROOT_ENV)
-    trust_root = (
-        approved_trust_root
-        if approved_trust_root is not None
-        else os.environ.get(TRUST_ROOT_ENV)
-    )
+    trust_root = approved_trust_root if approved_trust_root is not None else os.environ.get(TRUST_ROOT_ENV)
     if raw_root is None or trust_root is None:
         raise ControlledValidationError("controlled validation is not opted in")
     selected_root = Path(raw_root)
-    selected_repository = (
-        Path(repository_root)
-        if repository_root is not None
-        else _default_repository_root()
-    )
+    selected_repository = Path(repository_root) if repository_root is not None else _default_repository_root()
     protected_roots = _protected_repository_roots(selected_repository)
     external_root = _external_directory(selected_root, protected_roots)
     files, root_identity = _bundle_files(external_root)
@@ -856,9 +794,7 @@ def load_bundle(
     if set(second_files) != ALLOWED_FILES or second_identity != root_identity:
         raise ControlledValidationError("controlled root changed while reading")
     manifest = _strict_json(payloads["manifest.json"], "manifest.json")
-    profile_id, digests, trust_digest = _validate_manifest(
-        manifest, approved_trust_root=trust_root
-    )
+    profile_id, digests, trust_digest = _validate_manifest(manifest, approved_trust_root=trust_root)
     for name in ("input.json", "expected.json"):
         if not hmac.compare_digest(_sha256_bytes(payloads[name]), digests[name]):
             raise ControlledValidationError("controlled bundle digest mismatch")
@@ -944,9 +880,7 @@ def _solve(bundle: ControlledValidationBundle) -> dict[str, Any]:
         source_evidence=fact_payload["source_evidence"],
         required_facts=required_facts,
     )
-    problem = ProblemIRCompiler(
-        registry=ProblemFamilyRegistry([CandidateSelectionAdapter(profiles)])
-    ).compile(
+    problem = ProblemIRCompiler(registry=ProblemFamilyRegistry([CandidateSelectionAdapter(profiles)])).compile(
         capability=capability,
         normalized_input=normalized_input,
         fact_snapshot=fact_snapshot,
@@ -959,14 +893,11 @@ def _solve(bundle: ControlledValidationBundle) -> dict[str, Any]:
     except Exception as exc:
         raise ControlledValidationError("solver Connector capability handshake failed") from exc
     try:
-        if (
-            capability_payload.get("protocol_versions") != [API_VERSION]
-            or not any(
-                isinstance(family, Mapping)
-                and family.get("name") == "binary_ordered_route"
-                and family.get("versions") == ["1.0"]
-                for family in capability_payload.get("problem_families", ())
-            )
+        if capability_payload.get("protocol_versions") != [API_VERSION] or not any(
+            isinstance(family, Mapping)
+            and family.get("name") == "binary_ordered_route"
+            and family.get("versions") == ["1.0"]
+            for family in capability_payload.get("problem_families", ())
         ):
             raise ControlledValidationError("solver Connector capability is unsupported")
         binding["capability_fingerprint"] = capability_fingerprint(capability_payload)
@@ -993,9 +924,7 @@ def _solve(bundle: ControlledValidationBundle) -> dict[str, Any]:
         )
     except Exception as exc:
         raise ControlledValidationError("controlled solver Connector submission failed") from exc
-    backend_job_id = str(
-        submitted.get("job_id", "") if isinstance(submitted, Mapping) else ""
-    )
+    backend_job_id = str(submitted.get("job_id", "") if isinstance(submitted, Mapping) else "")
     if not backend_job_id:
         raise ControlledValidationError("controlled solver Connector returned no job")
     terminal_status = ""
@@ -1010,9 +939,7 @@ def _solve(bundle: ControlledValidationBundle) -> dict[str, Any]:
                     "Controlled solver cancellation after polling failure failed",
                 )
             raise ControlledValidationError("controlled solver Connector polling failed") from exc
-        terminal_status = str(
-            state.get("status", "") if isinstance(state, Mapping) else ""
-        )
+        terminal_status = str(state.get("status", "") if isinstance(state, Mapping) else "")
         if terminal_status in _TERMINAL_CONNECTOR_STATES:
             break
         if datetime.now(timezone.utc) >= deadline:
@@ -1034,9 +961,7 @@ def _solve(bundle: ControlledValidationBundle) -> dict[str, Any]:
     except Exception as exc:
         raise ControlledValidationError("controlled solver Connector result is invalid") from exc
 
-    verification = IndependentVerificationService(
-        verifier=ProfileDispatchVerifier(profiles)
-    ).verify(
+    verification = IndependentVerificationService(verifier=ProfileDispatchVerifier(profiles)).verify(
         problem=problem,
         capability=capability,
         normalized_input=normalized_input,
@@ -1111,9 +1036,7 @@ def main() -> int:
             approved_trust_root=approved_trust_root,
         )
     except Exception:
-        _write_stdout_line(
-            '{"error_code":"controlled_validation_failed","status":"failed"}'
-        )
+        _write_stdout_line('{"error_code":"controlled_validation_failed","status":"failed"}')
         return 1
 
 

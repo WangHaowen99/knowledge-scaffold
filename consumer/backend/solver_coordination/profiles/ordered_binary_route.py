@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from decimal import Decimal, DecimalException, ROUND_HALF_EVEN, localcontext
-import re
+from decimal import ROUND_HALF_EVEN, Decimal, DecimalException, localcontext
 from types import MappingProxyType
 from typing import Any
 
 from solver_coordination.canonical import sha256_digest
 from solver_coordination.contracts import (
-    Candidate,
-    FactSnapshot,
     MAX_DECIMAL_DIGITS,
     MAX_DECIMAL_EXPONENT,
     MAX_PLAN_ITEMS,
     MAX_TEXT_LENGTH,
     MIN_DECIMAL_EXPONENT,
+    Candidate,
+    FactSnapshot,
     NormalizedInput,
     Option,
     OrderedPlan,
@@ -34,7 +34,6 @@ from solver_coordination.problem_families.candidate_selection import (
     validate_candidate_selection_components,
 )
 from solver_coordination.profiles.input_adapter import InputAliasConflict
-
 
 PROFILE_ID = "ordered_binary_route.v1"
 ROUTE_FACT_NAME = "route_metrics"
@@ -182,26 +181,16 @@ class OrderedBinaryRouteInputAdapter:
         if alias_value is None and canonical_value is None:
             return
         canonical_text = (
-            _canonical_positive_decimal(canonical_value, canonical)
-            if canonical_value is not None
-            else None
+            _canonical_positive_decimal(canonical_value, canonical) if canonical_value is not None else None
         )
         try:
-            alias_text = (
-                _canonical_decimal_alias(alias_value, alias)
-                if alias_value is not None
-                else None
-            )
+            alias_text = _canonical_decimal_alias(alias_value, alias) if alias_value is not None else None
         except SolverContractError:
             if canonical_text is None:
                 raise
             target[canonical] = canonical_text
             return
-        if (
-            alias_text is not None
-            and canonical_text is not None
-            and alias_text != canonical_text
-        ):
+        if alias_text is not None and canonical_text is not None and alias_text != canonical_text:
             conflicts.append(
                 {
                     "field": "items[{}].{}".format(index, canonical),
@@ -227,16 +216,8 @@ class OrderedBinaryRouteInputAdapter:
         if alias_value is None and canonical_value is None:
             return
         alias_text = _canonical_text(alias_value, alias) if alias_value is not None else None
-        canonical_text = (
-            _canonical_text(canonical_value, canonical)
-            if canonical_value is not None
-            else None
-        )
-        if (
-            alias_text is not None
-            and canonical_text is not None
-            and alias_text != canonical_text
-        ):
+        canonical_text = _canonical_text(canonical_value, canonical) if canonical_value is not None else None
+        if alias_text is not None and canonical_text is not None and alias_text != canonical_text:
             conflicts.append(
                 {
                     "field": "items[{}].{}".format(index, canonical),
@@ -267,9 +248,7 @@ def _canonical_decimal_alias(value: Any, field_name: str) -> str:
         if normalized.endswith(unit):
             value = normalized[: -len(unit)].strip()
             if not value:
-                raise SolverContractError(
-                    "{} must contain a value before its unit".format(field_name)
-                )
+                raise SolverContractError("{} must contain a value before its unit".format(field_name))
     return _canonical_positive_decimal(value, field_name)
 
 
@@ -283,11 +262,7 @@ def _canonical_text(value: Any, field_name: str) -> str:
 
 
 def _checked_scale(scale: Any) -> int:
-    if (
-        isinstance(scale, bool)
-        or not isinstance(scale, int)
-        or not 1 <= scale <= INT64_MAX
-    ):
+    if isinstance(scale, bool) or not isinstance(scale, int) or not 1 <= scale <= INT64_MAX:
         raise SolverContractError("metric_scale must be a positive int64 integer")
     return scale
 
@@ -301,9 +276,7 @@ def scaled_int(value: Any, *, scale: int, field_name: str) -> int:
         raise SolverContractError("{} must be finite".format(field_name))
 
     if decimal_value:
-        maximum_adjusted = decimal_value.copy_abs().adjusted() + len(
-            str(normalized_scale)
-        )
+        maximum_adjusted = decimal_value.copy_abs().adjusted() + len(str(normalized_scale))
         if maximum_adjusted > 20:
             raise SolverContractError("{} exceeds int64".format(field_name))
         if maximum_adjusted < -1:
@@ -314,9 +287,7 @@ def scaled_int(value: Any, *, scale: int, field_name: str) -> int:
     try:
         with localcontext() as context:
             context.prec = precision
-            scaled = (decimal_value * Decimal(normalized_scale)).quantize(
-                Decimal("1"), rounding=ROUND_HALF_EVEN
-            )
+            scaled = (decimal_value * Decimal(normalized_scale)).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN)
         integer = int(scaled)
     except (DecimalException, OverflowError, ValueError) as exc:
         raise SolverContractError("{} exceeds int64".format(field_name)) from exc
@@ -342,9 +313,7 @@ def _bounded_decimal(value: Any, *, field_name: str) -> Decimal:
 
     text = str(value)
     if len(text) > MAX_TEXT_LENGTH:
-        raise SolverContractError(
-            "{} exceeds supported decimal length".format(field_name)
-        )
+        raise SolverContractError("{} exceeds supported decimal length".format(field_name))
     match = _DECIMAL_INPUT_RE.fullmatch(text)
     if match is None:
         raise SolverContractError("{} must be a finite decimal".format(field_name))
@@ -363,38 +332,22 @@ def _bounded_decimal(value: Any, *, field_name: str) -> Decimal:
     try:
         return Decimal(text)
     except (DecimalException, ValueError) as exc:
-        raise SolverContractError(
-            "{} must be a finite decimal".format(field_name)
-        ) from exc
+        raise SolverContractError("{} must be a finite decimal".format(field_name)) from exc
 
 
 def _bounded_exponent(value: str, *, field_name: str) -> int:
     unsigned = value.lstrip("+-").lstrip("0") or "0"
-    largest_magnitude = max(
-        abs(MIN_DECIMAL_EXPONENT), abs(MAX_DECIMAL_EXPONENT)
-    )
+    largest_magnitude = max(abs(MIN_DECIMAL_EXPONENT), abs(MAX_DECIMAL_EXPONENT))
     if len(unsigned) > len(str(largest_magnitude)):
-        raise SolverContractError(
-            "{} exceeds supported decimal exponent".format(field_name)
-        )
+        raise SolverContractError("{} exceeds supported decimal exponent".format(field_name))
     return int(value)
 
 
-def _validate_decimal_shape(
-    *, digits: int, exponent: int | str, field_name: str
-) -> None:
+def _validate_decimal_shape(*, digits: int, exponent: int | str, field_name: str) -> None:
     if isinstance(exponent, str):
-        raise SolverContractError(
-            "{} exceeds supported decimal precision or exponent".format(field_name)
-        )
-    if (
-        digits > MAX_DECIMAL_DIGITS
-        or exponent < MIN_DECIMAL_EXPONENT
-        or exponent > MAX_DECIMAL_EXPONENT
-    ):
-        raise SolverContractError(
-            "{} exceeds supported decimal precision or exponent".format(field_name)
-        )
+        raise SolverContractError("{} exceeds supported decimal precision or exponent".format(field_name))
+    if digits > MAX_DECIMAL_DIGITS or exponent < MIN_DECIMAL_EXPONENT or exponent > MAX_DECIMAL_EXPONENT:
+        raise SolverContractError("{} exceeds supported decimal precision or exponent".format(field_name))
 
 
 def _checked_add(left: int, right: int, *, field_name: str) -> int:
@@ -548,9 +501,7 @@ class OrderedBinaryRouteEvaluator:
 @dataclass(frozen=True)
 class OrderedBinaryRouteCompiler:
     profile_id: str = PROFILE_ID
-    evaluator: OrderedBinaryRouteEvaluator = field(
-        default_factory=OrderedBinaryRouteEvaluator
-    )
+    evaluator: OrderedBinaryRouteEvaluator = field(default_factory=OrderedBinaryRouteEvaluator)
 
     def __post_init__(self) -> None:
         if (
@@ -589,10 +540,7 @@ class OrderedBinaryRouteCompiler:
                 {
                     "candidate_id": evaluation.candidate_id,
                     "eligible": evaluation.eligible,
-                    "assignment": {
-                        item.item_id: option
-                        for item, option in zip(plan.items, evaluation.assignment)
-                    },
+                    "assignment": {item.item_id: option for item, option in zip(plan.items, evaluation.assignment)},
                     "metrics": metrics,
                 }
             )
@@ -642,9 +590,7 @@ class LockedModelFactProvider:
             raise FactSnapshotInvalidError("normalized input is invalid")
         model = _decision_model(capability, error_type=FactSnapshotInvalidError)
         fact_source = model.get("fact_source")
-        if not isinstance(fact_source, Mapping) or dict(fact_source) != {
-            "kind": "locked_model"
-        }:
+        if not isinstance(fact_source, Mapping) or dict(fact_source) != {"kind": "locked_model"}:
             raise FactSnapshotInvalidError("ordered route facts are unavailable")
         facts = model.get("materialized_facts")
         trusted_frozen_facts = (
@@ -654,10 +600,7 @@ class LockedModelFactProvider:
         )
         if not isinstance(facts, list) and not trusted_frozen_facts:
             raise FactSnapshotInvalidError("ordered route facts are invalid")
-        if (
-            not isinstance(binding_revision_id, str)
-            or not binding_revision_id.strip()
-        ):
+        if not isinstance(binding_revision_id, str) or not binding_revision_id.strip():
             raise FactSnapshotInvalidError("solver binding revision is invalid")
         if any(not isinstance(fact, Mapping) for fact in facts):
             raise FactSnapshotInvalidError("ordered route facts are invalid")
@@ -667,9 +610,7 @@ class LockedModelFactProvider:
                 "solver_binding_revision": binding_revision_id.strip(),
             },
             "as_of": "locked-model",
-            "source_evidence": (
-                {"kind": "locked_model_materialized_facts"},
-            ),
+            "source_evidence": ({"kind": "locked_model_materialized_facts"},),
         }
 
 
@@ -715,14 +656,8 @@ def _ordered_plan(normalized_input: NormalizedInput) -> OrderedPlan:
         if not isinstance(raw_item, Mapping):
             raise SolverContractError("items must contain objects")
         item_order = raw_item.get("item_order")
-        if (
-            isinstance(item_order, bool)
-            or not isinstance(item_order, int)
-            or item_order != expected_order
-        ):
-            raise SolverContractError(
-                "item orders must be strictly increasing and contiguous from 1"
-            )
+        if isinstance(item_order, bool) or not isinstance(item_order, int) or item_order != expected_order:
+            raise SolverContractError("item orders must be strictly increasing and contiguous from 1")
         item_id = raw_item.get("item_id")
         if not isinstance(item_id, str) or not item_id.strip():
             raise SolverContractError("item_id is required")
@@ -791,24 +726,12 @@ def _route_facts(
         if not isinstance(raw_candidates, Mapping):
             raise SolverContractError("route_metrics candidates must be an object")
         expected_ids = tuple(candidate.candidate_id for candidate in candidates)
-        missing = tuple(
-            candidate_id for candidate_id in expected_ids
-            if candidate_id not in raw_candidates
-        )
-        unexpected = tuple(
-            str(candidate_id) for candidate_id in raw_candidates
-            if candidate_id not in expected_ids
-        )
+        missing = tuple(candidate_id for candidate_id in expected_ids if candidate_id not in raw_candidates)
+        unexpected = tuple(str(candidate_id) for candidate_id in raw_candidates if candidate_id not in expected_ids)
         if missing:
-            raise SolverContractError(
-                "route_metrics candidate is missing: {}".format(missing[0])
-            )
+            raise SolverContractError("route_metrics candidate is missing: {}".format(missing[0]))
         if unexpected:
-            raise SolverContractError(
-                "route_metrics contains unexpected candidate: {}".format(
-                    unexpected[0]
-                )
-            )
+            raise SolverContractError("route_metrics contains unexpected candidate: {}".format(unexpected[0]))
         candidate_metrics: dict[str, Mapping[str, Any]] = {}
         for candidate_id in expected_ids:
             raw_metrics = raw_candidates[candidate_id]
@@ -817,11 +740,7 @@ def _route_facts(
                 or set(raw_metrics) != _CANDIDATE_METRIC_FIELDS
                 or not isinstance(raw_metrics.get("eligible"), bool)
             ):
-                raise SolverContractError(
-                    "route_metrics candidate fields are invalid: {}".format(
-                        candidate_id
-                    )
-                )
+                raise SolverContractError("route_metrics candidate fields are invalid: {}".format(candidate_id))
             candidate_metrics[candidate_id] = MappingProxyType(
                 {
                     "eligible": raw_metrics["eligible"],
@@ -856,43 +775,30 @@ def _route_facts(
     missing = tuple(item_id for item_id in expected_ids if item_id not in raw_items)
     unexpected = tuple(item_id for item_id in actual_ids if item_id not in expected_ids)
     if missing:
-        raise SolverContractError(
-            "route_metrics item is missing: {}".format(missing[0])
-        )
+        raise SolverContractError("route_metrics item is missing: {}".format(missing[0]))
     if unexpected:
-        raise SolverContractError(
-            "route_metrics contains unexpected item: {}".format(unexpected[0])
-        )
+        raise SolverContractError("route_metrics contains unexpected item: {}".format(unexpected[0]))
 
     item_metrics: dict[str, Mapping[str, Mapping[str, int]]] = {}
     for item_id in expected_ids:
         raw_options = raw_items[item_id]
-        if not isinstance(raw_options, Mapping) or set(raw_options) != set(
-            _OPTION_NAMES
-        ):
-            raise SolverContractError(
-                "{} options must be OPTION_0 and OPTION_1".format(item_id)
-            )
+        if not isinstance(raw_options, Mapping) or set(raw_options) != set(_OPTION_NAMES):
+            raise SolverContractError("{} options must be OPTION_0 and OPTION_1".format(item_id))
         options: dict[str, Mapping[str, int]] = {}
         for option_name in _OPTION_NAMES:
             raw_metrics = raw_options[option_name]
-            if (
-                not isinstance(raw_metrics, Mapping)
-                or set(raw_metrics) != _OPTION_METRIC_FIELDS
-            ):
-                missing_metrics = sorted(_OPTION_METRIC_FIELDS - set(raw_metrics or ())) if isinstance(raw_metrics, Mapping) else []
-                detail = missing_metrics[0] if missing_metrics else "fields"
-                raise SolverContractError(
-                    "{}.{} {} is invalid".format(item_id, option_name, detail)
+            if not isinstance(raw_metrics, Mapping) or set(raw_metrics) != _OPTION_METRIC_FIELDS:
+                missing_metrics = (
+                    sorted(_OPTION_METRIC_FIELDS - set(raw_metrics or ())) if isinstance(raw_metrics, Mapping) else []
                 )
+                detail = missing_metrics[0] if missing_metrics else "fields"
+                raise SolverContractError("{}.{} {} is invalid".format(item_id, option_name, detail))
             options[option_name] = MappingProxyType(
                 {
                     metric_name: scaled_int(
                         raw_metrics[metric_name],
                         scale=scale,
-                        field_name="{}.{}.{}".format(
-                            item_id, option_name, metric_name
-                        ),
+                        field_name="{}.{}.{}".format(item_id, option_name, metric_name),
                     )
                     for metric_name in sorted(_OPTION_METRIC_FIELDS)
                 }
@@ -911,11 +817,7 @@ def _domain_evaluation_context(
     fact_snapshot: FactSnapshot,
     plan: OrderedPlan,
 ) -> Mapping[str, Any] | None:
-    matching = [
-        fact
-        for fact in fact_snapshot.facts
-        if fact["name"] == DOMAIN_CONTEXT_FACT_NAME
-    ]
+    matching = [fact for fact in fact_snapshot.facts if fact["name"] == DOMAIN_CONTEXT_FACT_NAME]
     if not matching:
         return None
     if len(matching) != 1:
@@ -957,9 +859,7 @@ def _domain_evaluation_context(
             raise SolverContractError("refinery route context item order is invalid")
         actual_ids.append(str(item["item_id"]))
         plan_item = plan.items[expected_order - 1]
-        context_quantity = _bounded_decimal(
-            item.get("input_tons"), field_name="domain_evaluation.items[].input_tons"
-        )
+        context_quantity = _bounded_decimal(item.get("input_tons"), field_name="domain_evaluation.items[].input_tons")
         if context_quantity != plan_item.quantity:
             raise SolverContractError("refinery route context quantity diverged")
         context_duration = _bounded_decimal(
@@ -973,9 +873,7 @@ def _domain_evaluation_context(
     input_month = normalized_input.values.get("plan_month")
     if input_month is not None and raw.get("plan_month") != input_month:
         raise SolverContractError("refinery route context month diverged")
-    if not isinstance(raw.get("model"), Mapping) or not isinstance(
-        raw.get("tables"), Mapping
-    ):
+    if not isinstance(raw.get("model"), Mapping) or not isinstance(raw.get("tables"), Mapping):
         raise SolverContractError("refinery route context model is invalid")
     return raw
 

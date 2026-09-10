@@ -4,36 +4,35 @@ from __future__ import annotations
 
 from typing import Optional
 
-from config import AgentConfig
 from agent.core.orchestrator import AgenticOrchestrator
-from workspace.user_store_manager import UserStoreManager
 from api.auth.auth import get_current_user
-from utils.logging import get_logger
-from workspace.workspaces import (
-    WorkspaceNotFoundError,
-    get_current_workspace_id,
-)
-
-from api.routes.workflows import workflows_router
-from api.routes.sessions import sessions_router
+from api.protocols.acp.server import acp_router
+from api.routes.a2a import a2a_router
+from api.routes.business_data import business_data_router
+from api.routes.errors import workspace_not_found_response
+from api.routes.evidence import evidence_router
+from api.routes.mcp import mcp_router
+from api.routes.memories import memories_router
 from api.routes.ontologies import ontologies_router
 from api.routes.operations import operations_router
-from api.routes.skills import skills_router
-from api.routes.system_config import system_config_router
-from api.routes.platform_config import platform_config_router
-from api.routes.workspaces import workspaces_router
-from api.routes.business_data import business_data_router
-from api.routes.a2a import a2a_router
 from api.routes.performance import performance_router
-from api.routes.memories import memories_router
-from api.routes.mcp import mcp_router
-from api.routes.errors import workspace_not_found_response
-from api.protocols.acp.server import acp_router
+from api.routes.platform_config import platform_config_router
+from api.routes.sessions import sessions_router
 from api.routes.skill_evolution import skill_evolution_router
-from api.routes.evidence import evidence_router
+from api.routes.skills import skills_router
 from api.routes.solver_coordination import (
     solver_coordination_public_router,
     solver_coordination_router,
+)
+from api.routes.system_config import system_config_router
+from api.routes.workflows import workflows_router
+from api.routes.workspaces import workspaces_router
+from config import AgentConfig
+from utils.logging import get_logger
+from workspace.user_store_manager import UserStoreManager
+from workspace.workspaces import (
+    WorkspaceNotFoundError,
+    get_current_workspace_id,
 )
 
 logger = get_logger("routes")
@@ -101,6 +100,7 @@ def register_routes(
         user_store_manager=user_store_manager,
         agent_config=agent_config,
     )
+
 
 def update_runtime_dependencies(
     user_store_manager: Optional[UserStoreManager] = None,

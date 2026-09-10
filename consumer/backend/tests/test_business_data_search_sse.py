@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from agent.tools.base import ToolContext
 from agent.tools.business_data.adapters.mindsdb_search import MindsDBSearchAdapter
+from agent.tools.business_data_search import (
+    BUSINESS_DATA_SEARCH_TOOL_SCHEMA,
+    _prepare_business_data_grounding,
+    handle_business_data_search,
+)
 from config import AgentConfig
 from config.evidence_config import EvidenceConfig
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 from shared_capabilities.business_data.providers.mindsdb import (
     _THOUGHT_MARKER,
     _parse_mindsdb_chunk_to_events,
-)
-from agent.tools.business_data_search import (
-    BUSINESS_DATA_SEARCH_TOOL_SCHEMA,
-    _prepare_business_data_grounding,
-    handle_business_data_search,
 )
 
 
@@ -25,7 +25,10 @@ def _fake_ontology(ontology_id):
 
 def test_business_data_search_rejects_empty_query(monkeypatch):
     monkeypatch.setattr("agent.tools.business_data_search.get_ontology_manifest", _fake_ontology)
-    assert handle_business_data_search(ontology_id="demo", query="   ", entity="TargetItem") == "Error: Search query cannot be empty"
+    assert (
+        handle_business_data_search(ontology_id="demo", query="   ", entity="TargetItem")
+        == "Error: Search query cannot be empty"
+    )
 
 
 def test_business_data_search_schema_requires_ontology_entity_and_query():
@@ -131,27 +134,23 @@ def test_parse_mindsdb_chunk_to_events_handles_actions_and_final_output():
             ]
         }
     )
-    final_events = _parse_mindsdb_chunk_to_events(
-        {"output": "中间内容\n## 最终回答:\n最终结果"}
-    )
+    final_events = _parse_mindsdb_chunk_to_events({"output": "中间内容\n## 最终回答:\n最终结果"})
 
     assert action_events == [{"type": "intermediate", "content": "先读取对象定义"}]
     assert final_events == [{"type": "final", "content": "最终结果"}]
 
 
 def test_parse_mindsdb_chunk_to_events_accepts_data_text_shape():
-    assert _parse_mindsdb_chunk_to_events(
-        {"type": "data", "text": "## 最终回答:\n新版 MindsDB 返回结果"}
-    ) == [{"type": "final", "content": "新版 MindsDB 返回结果"}]
+    assert _parse_mindsdb_chunk_to_events({"type": "data", "text": "## 最终回答:\n新版 MindsDB 返回结果"}) == [
+        {"type": "final", "content": "新版 MindsDB 返回结果"}
+    ]
 
 
 def test_parse_mindsdb_chunk_to_events_preserves_stream_errors():
-    assert _parse_mindsdb_chunk_to_events(
+    assert _parse_mindsdb_chunk_to_events({"type": "error", "content": "模型调用失败"}) == [
         {"type": "error", "content": "模型调用失败"}
-    ) == [{"type": "error", "content": "模型调用失败"}]
-    assert _parse_mindsdb_chunk_to_events(
-        {"error": "Error in completion event generator"}
-    ) == [
+    ]
+    assert _parse_mindsdb_chunk_to_events({"error": "Error in completion event generator"}) == [
         {
             "type": "error",
             "content": "Error in completion event generator",
@@ -164,7 +163,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
         EffectiveConnection(
             version=1,
             provider="mindsdb",
-            endpoint="http://unit.test",
+            endpoint="http://unit.example.net",
             auth=AuthSpec(type="none"),
             options={
                 "default_database": "",
@@ -200,7 +199,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
 
     def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         del headers, json, timeout, stream
-        assert url == "http://unit.test/api/projects/project_x/agents/agent_x/completions/stream"
+        assert url == "http://unit.example.net/api/projects/project_x/agents/agent_x/completions/stream"
         return _FakeResponse(
             [
                 'data: {"type":"start","prompt":"开始执行本体探索"}',

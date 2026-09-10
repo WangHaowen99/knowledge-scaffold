@@ -14,14 +14,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import integration.sandbox.executor as sandbox_executor_module
 import onto_sandbox_runtime.bounded_runner as bounded_runner_module
+import pytest
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
-from integration.sandbox.config import SandboxConfig, load_sandbox_config
+from backend_synthetic_credentials import synthetic_invalid_password, synthetic_secret
 from integration.sandbox.client import JiuwenboxClient
+from integration.sandbox.config import SandboxConfig, load_sandbox_config
 from integration.sandbox.data_proxy import (
     DataConnectionSecretManager,
     sandbox_reachable_url,
@@ -70,9 +70,7 @@ def test_sandbox_reachable_url_resolves_scheme_less_host_without_adding_protocol
 ):
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.socket.getaddrinfo",
-        lambda host, port, **_kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.44", port))
-        ],
+        lambda host, port, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.44", port))],
     )
 
     resolved = sandbox_reachable_url("service.example.net:7443/path")
@@ -83,9 +81,7 @@ def test_sandbox_reachable_url_resolves_scheme_less_host_without_adding_protocol
 def test_sandbox_reachable_url_preserves_explicit_secure_protocol(monkeypatch):
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.socket.getaddrinfo",
-        lambda host, port, **_kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.44", port))
-        ],
+        lambda host, port, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.44", port))],
     )
 
     resolved = sandbox_reachable_url("https://service.example.net:7443/path")
@@ -109,9 +105,7 @@ def test_sandbox_reachable_url_fails_closed_when_dns_resolution_fails(monkeypatc
 def test_sandbox_reachable_url_pins_ipv6_only_endpoint(monkeypatch):
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.socket.getaddrinfo",
-        lambda host, port, **_kwargs: [
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::44", port, 0, 0))
-        ],
+        lambda host, port, **_kwargs: [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::44", port, 0, 0))],
     )
 
     resolved = sandbox_reachable_url("https://service.example.net:7443/path")
@@ -354,8 +348,8 @@ def test_build_script_env_uses_runtime_sdk_and_ontology_only(tmp_path):
             "RUN_ARTIFACT_MAX_FILE_BYTES": "10485760",
             "RUN_ARTIFACT_MAX_TOTAL_BYTES": "20971520",
             "RUN_ARTIFACT_MAX_COUNT": "32",
-            "AUTH_SECRET": "must-not-appear",
-            "ONTO_X": "must-not-appear",
+            "AUTH_SECRET": synthetic_secret("sandbox-credential-01"),
+            "ONTO_X": synthetic_secret("sandbox-credential-01"),
         },
         ontology_dir=ontology_dir,
         runtime_python_path="/app/sandbox-runtime/python",
@@ -429,10 +423,7 @@ def test_policy_builder_mounts_only_explicit_artifact_directory_read_write(tmp_p
 
     policy = OntoSandboxPolicyBuilder.build(ctx)
     artifact_path = str(artifact_root.resolve()).replace("\\", "/")
-    mounts = {
-        item["sandbox_path"]: item
-        for item in policy["filesystem_policy"]["bind_mounts"]
-    }
+    mounts = {item["sandbox_path"]: item for item in policy["filesystem_policy"]["bind_mounts"]}
 
     assert mounts[artifact_path]["mode"] == "rw"
     assert artifact_path in policy["filesystem_policy"]["read_write"]
@@ -461,9 +452,7 @@ def test_executor_mounts_only_workspace_for_global_project_root(tmp_path, monkey
     monkeypatch.setattr(
         sandbox_executor_module,
         "get_data_connection_secret_manager",
-        lambda: SimpleNamespace(
-            prepare=lambda **kwargs: SimpleNamespace(env={}, data_proxy_url=None)
-        ),
+        lambda: SimpleNamespace(prepare=lambda **kwargs: SimpleNamespace(env={}, data_proxy_url=None)),
     )
 
     captured = {}
@@ -508,9 +497,7 @@ def test_executor_mounts_only_workspace_for_global_project_root(tmp_path, monkey
     assert captured["workdir"] == str(workspace_root.resolve()).replace("\\", "/")
     assert captured["command"][2] == str(script.resolve()).replace("\\", "/")
     policy = OntoSandboxPolicyBuilder.build(captured["ctx"])
-    mounted_paths = {
-        item["sandbox_path"] for item in policy["filesystem_policy"]["bind_mounts"]
-    }
+    mounted_paths = {item["sandbox_path"] for item in policy["filesystem_policy"]["bind_mounts"]}
     assert str(workspace_root.resolve()).replace("\\", "/") in mounted_paths
     assert str(provider_socket_dir.resolve()).replace("\\", "/") in mounted_paths
     assert str(runtime_root.resolve()).replace("\\", "/") not in mounted_paths
@@ -570,9 +557,7 @@ def test_executor_can_restrict_mount_and_workdir_to_ontology(tmp_path, monkeypat
     assert captured["workdir"] == ontology_path
     assert captured["ctx"].read_only_paths == (ontology_dir.resolve(),)
     policy = OntoSandboxPolicyBuilder.build(captured["ctx"])
-    mounted_paths = {
-        item["sandbox_path"] for item in policy["filesystem_policy"]["bind_mounts"]
-    }
+    mounted_paths = {item["sandbox_path"] for item in policy["filesystem_policy"]["bind_mounts"]}
     assert ontology_path in mounted_paths
     assert workspace_path not in mounted_paths
 
@@ -600,9 +585,7 @@ def test_sandbox_executor_wraps_commands_with_output_limits(tmp_path, monkeypatc
     monkeypatch.setattr(
         sandbox_executor_module,
         "_attest_sandbox_runtime",
-        lambda registry, sandbox_id, **kwargs: attestations.append(
-            (registry, sandbox_id, kwargs)
-        ),
+        lambda registry, sandbox_id, **kwargs: attestations.append((registry, sandbox_id, kwargs)),
     )
 
     class RecordingRegistry:
@@ -806,9 +789,7 @@ def test_deterministic_runtime_runner_allows_contract_capabilities(tmp_path):
 def test_deterministic_runtime_runner_blocks_dynamic_import_bypass(tmp_path):
     script = tmp_path / "handler.py"
     script.write_text(
-        "loader = __builtins__['__import__']\n"
-        "module = loader('os')\n"
-        "print(module.getpid())\n",
+        "loader = __builtins__['__import__']\n" "module = loader('os')\n" "print(module.getpid())\n",
         encoding="utf-8",
     )
     env = os.environ.copy()
@@ -917,9 +898,7 @@ def test_bounded_sandbox_runner_stops_oversized_artifact_file(tmp_path):
             "--",
             sys.executable,
             "-c",
-            "from pathlib import Path; Path({!r}).write_bytes(b'x' * 4096)".format(
-                str(artifact_path)
-            ),
+            "from pathlib import Path; Path({!r}).write_bytes(b'x' * 4096)".format(str(artifact_path)),
         ],
         capture_output=True,
         text=True,
@@ -937,8 +916,7 @@ def test_bounded_sandbox_runner_stops_oversized_artifact_file(tmp_path):
 def test_bounded_sandbox_runner_stops_descendants_after_leader_exits(tmp_path):
     marker = tmp_path / "late-child-output.txt"
     child_code = (
-        "import pathlib,time; time.sleep(0.8); "
-        "pathlib.Path({!r}).write_text('late', encoding='utf-8')"
+        "import pathlib,time; time.sleep(0.8); " "pathlib.Path({!r}).write_text('late', encoding='utf-8')"
     ).format(str(marker))
     leader_code = (
         "import subprocess,sys; "
@@ -993,9 +971,7 @@ def test_executor_cancellation_releases_running_sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sandbox_executor_module,
         "get_data_connection_secret_manager",
-        lambda: SimpleNamespace(
-            prepare=lambda **_kwargs: SimpleNamespace(env={}, data_proxy_url=None)
-        ),
+        lambda: SimpleNamespace(prepare=lambda **_kwargs: SimpleNamespace(env={}, data_proxy_url=None)),
     )
     started = threading.Event()
     released = threading.Event()
@@ -1139,7 +1115,7 @@ def test_data_proxy_manager_creates_safe_env_without_raw_secret(monkeypatch):
         provider="nl2sql_http",
         config={
             "url": "https://nl2sql.example.com",
-            "token": "synthetic-test-token",
+            "token": synthetic_secret("sandbox-credential-04"),
             "scene": "demo",
             "timeout_seconds": 20,
             "max_retries": 1,
@@ -1161,9 +1137,9 @@ def test_data_proxy_manager_creates_safe_env_without_raw_secret(monkeypatch):
     assert payload["version"] == 1
     assert payload["endpoint"] == prepared.data_proxy_url
     assert payload["auth"]["token"].startswith("onto-placeholder-")
-    assert "synthetic-test-token" not in prepared.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
+    assert synthetic_secret("sandbox-credential-04") not in prepared.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
     assert "https://nl2sql.example.com" not in prepared.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
-    assert fake_client.created[0]["api_key"] == "synthetic-test-token"
+    assert fake_client.created[0]["api_key"] == synthetic_secret("sandbox-credential-04")
     assert fake_client.started
 
 
@@ -1178,7 +1154,7 @@ def test_data_proxy_manager_rejects_script_disallowed_providers(monkeypatch, pro
         provider=provider,
         config={
             "url": "https://dataagent.example.com",
-            "token": "synthetic-test-token",
+            "token": synthetic_secret("sandbox-credential-04"),
             "timeout_seconds": 20,
         },
     )
@@ -1208,16 +1184,14 @@ def test_data_proxy_manager_fails_closed_when_route_create_returns_400(monkeypat
         provider="nl2sql_http",
         config={
             "url": "https://nl2sql.example.com",
-            "token": "synthetic-test-token",
+            "token": synthetic_secret("sandbox-credential-04"),
         },
     )
 
     class ConflictClient(_FakeJiuwenboxClient):
         def create_proxy(self, **payload):
             self.created.append(payload)
-            raise SandboxUnavailableError(
-                "create proxy failed (400): route already exists"
-            )
+            raise SandboxUnavailableError("create proxy failed (400): route already exists")
 
     fake_client = ConflictClient()
     manager = DataConnectionSecretManager(_sandbox_config())
@@ -1242,16 +1216,14 @@ def test_data_proxy_manager_rolls_back_when_route_start_fails(monkeypatch):
         provider="nl2sql_http",
         config={
             "url": "https://nl2sql.example.com",
-            "token": "synthetic-test-token",
+            "token": synthetic_secret("sandbox-credential-04"),
         },
     )
 
     class StartFailureClient(_FakeJiuwenboxClient):
         def start_proxy(self, proxy_name):
             self.started.append(proxy_name)
-            raise SandboxUnavailableError(
-                "start proxy failed (503): jiuwenbox unavailable"
-            )
+            raise SandboxUnavailableError("start proxy failed (503): jiuwenbox unavailable")
 
     fake_client = StartFailureClient()
     manager = DataConnectionSecretManager(_sandbox_config())
@@ -1277,7 +1249,7 @@ def test_data_proxy_manager_authenticates_mindsdb_once_per_run(monkeypatch):
         config={
             "url": "https://mindsdb.example.com",
             "login": "mindsdb-user",
-            "password": "secret-password",
+            "password": synthetic_invalid_password("sandbox-credential-03"),
             "requires_auth": True,
             "default_database": "analytics",
             "timeout_seconds": 600,
@@ -1295,7 +1267,7 @@ def test_data_proxy_manager_authenticates_mindsdb_once_per_run(monkeypatch):
 
     def fake_post(url, **kwargs):
         login_calls.append((url, kwargs))
-        return _FakeResponse({"token": "run-jwt-token"})
+        return _FakeResponse({"token": synthetic_secret("sandbox-credential-02")})
 
     monkeypatch.setattr("integration.sandbox.data_proxy.requests.post", fake_post)
 
@@ -1308,20 +1280,20 @@ def test_data_proxy_manager_authenticates_mindsdb_once_per_run(monkeypatch):
         (
             "https://mindsdb.example.com/api/login",
             {
-                "json": {"username": "mindsdb-user", "password": "secret-password"},
+                "json": {"username": "mindsdb-user", "password": synthetic_invalid_password("sandbox-credential-03")},
                 "timeout": 10,
                 "verify": True,
             },
         )
     ]
-    assert fake_client.created[0]["api_key"] == "run-jwt-token"
+    assert fake_client.created[0]["api_key"] == synthetic_secret("sandbox-credential-02")
     assert payload["version"] == 1
     assert payload["endpoint"] == first.data_proxy_url
     assert payload["auth"]["token"].startswith("onto-placeholder-")
     assert payload["options"]["default_database"] == "analytics"
-    assert "secret-password" not in first.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
+    assert synthetic_invalid_password("sandbox-credential-03") not in first.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
     assert "mindsdb-user" not in first.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
-    assert "run-jwt-token" not in first.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
+    assert synthetic_secret("sandbox-credential-02") not in first.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
     assert "https://mindsdb.example.com" not in first.env[SCRIPT_BUSINESS_DATA_CONNECTION_ENV]
 
 
@@ -1333,7 +1305,7 @@ def test_data_proxy_manager_rejects_failed_mindsdb_login(monkeypatch):
         config={
             "url": "https://mindsdb.example.com",
             "login": "mindsdb-user",
-            "password": "wrong-password",
+            "password": synthetic_invalid_password("sandbox-credential-05"),
             "requires_auth": True,
         },
     )
@@ -1363,7 +1335,7 @@ def test_data_proxy_manager_blocks_http_mindsdb_password_before_login(monkeypatc
         config={
             "url": "http://mindsdb.internal:47334",
             "login": "mindsdb-user",
-            "password": "secret-password",
+            "password": synthetic_invalid_password("sandbox-credential-03"),
             "requires_auth": True,
         },
     )
@@ -1407,7 +1379,7 @@ def test_data_proxy_manager_blocks_http_secret_when_disabled_globally(monkeypatc
         id="conn1",
         name="Conn 1",
         provider="nl2sql_http",
-        config={"url": "http://192.0.2.8:8080", "token": "synthetic-test-token"},
+        config={"url": "http://192.0.2.8:8080", "token": synthetic_secret("sandbox-credential-04")},
     )
     manager = DataConnectionSecretManager(_sandbox_config(secret_allow_plain_http=False))
     manager._client = _FakeJiuwenboxClient()
@@ -1425,7 +1397,7 @@ def test_data_proxy_manager_allows_http_secret_when_enabled_globally(monkeypatch
         id="conn1",
         name="Conn 1",
         provider="nl2sql_http",
-        config={"url": "http://192.0.2.8:8080", "token": "synthetic-test-token"},
+        config={"url": "http://192.0.2.8:8080", "token": synthetic_secret("sandbox-credential-04")},
     )
     manager = DataConnectionSecretManager(_sandbox_config(secret_allow_plain_http=True))
     manager._client = _FakeJiuwenboxClient()
@@ -1438,7 +1410,7 @@ def test_data_proxy_manager_allows_http_secret_when_enabled_globally(monkeypatch
 
     assert prepared.data_proxy_url.startswith("http://")
     assert ":8322/onto-" in prepared.data_proxy_url
-    assert manager._client.created[0]["api_key"] == "synthetic-test-token"
+    assert manager._client.created[0]["api_key"] == synthetic_secret("sandbox-credential-04")
 
 
 def test_sandbox_config_ignores_system_config_section(tmp_path, monkeypatch):

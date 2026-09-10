@@ -5,7 +5,6 @@ import os
 import tempfile
 
 import pytest
-
 from solver_coordination.verification.service import (
     ContentAddressedSolverArtifactStore,
     SolverArtifactStoreError,
@@ -24,9 +23,7 @@ def test_content_addressed_artifact_store_deduplicates_and_verifies_reads(tmp_pa
     second = store.put(artifact_type="verification_evidence", payload=payload)
 
     assert second == first
-    assert first["artifact_ref"].startswith(
-        "artifact://verification_evidence/"
-    )
+    assert first["artifact_ref"].startswith("artifact://verification_evidence/")
     assert store.get(first["artifact_ref"]) == payload
     assert len(tuple((tmp_path / "artifacts").rglob("*.json"))) == 1
 
@@ -38,9 +35,7 @@ def test_content_addressed_artifact_store_rejects_tampered_content(tmp_path):
         payload={"schema_version": "solver.result.v1", "status": "feasible"},
     )
     digest_hex = record["artifact_ref"].rsplit("/", 1)[-1]
-    target = tmp_path / "artifacts" / "solver_result" / "{}.json".format(
-        digest_hex
-    )
+    target = tmp_path / "artifacts" / "solver_result" / "{}.json".format(digest_hex)
     envelope = json.loads(target.read_text(encoding="utf-8"))
     envelope["payload"]["status"] = "optimal"
     target.write_text(json.dumps(envelope), encoding="utf-8")
@@ -64,9 +59,7 @@ def test_content_addressed_artifact_store_rejects_tampered_content(tmp_path):
         "artifact://solver_result/" + "a" * 64 + "/extra",
     ],
 )
-def test_content_addressed_artifact_store_rejects_unsafe_references(
-    tmp_path, reference
-):
+def test_content_addressed_artifact_store_rejects_unsafe_references(tmp_path, reference):
     store = ContentAddressedSolverArtifactStore(tmp_path / "artifacts")
 
     with pytest.raises(SolverArtifactStoreError, match="reference"):

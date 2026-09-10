@@ -2,11 +2,10 @@ import json
 from pathlib import Path
 
 import pytest
-
+from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 from workspace.workspaces import create_workspace
 
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+SECRET_TEST_KEY = ENCRYPTION_KEY
 
 
 def _create_workspace(tmp_path, monkeypatch, workspace_id="demo"):
@@ -52,8 +51,8 @@ def test_workspace_observability_update_encrypts_and_masks_langfuse_secret(tmp_p
             "speedscope": {"retention_days": 7},
             "langfuse": {
                 "public_key": "pk-test",
-                "secret_key": "sk-test",
-                "base_url": "https://langfuse.example",
+                "secret_key": synthetic_secret("workspace_observability_config-credential-05"),
+                "base_url": "https://langfuse.example.net",
                 "debug": True,
             },
         },
@@ -63,13 +62,15 @@ def test_workspace_observability_update_encrypts_and_masks_langfuse_secret(tmp_p
     raw_text = raw_path.read_text(encoding="utf-8")
     raw = json.loads(raw_text)
 
-    assert "sk-test" not in raw_text
+    assert synthetic_secret("workspace_observability_config-credential-05") not in raw_text
     assert raw["langfuse"]["secret_key"].startswith("enc:v1:")
-    assert get_workspace_observability_config("demo")["langfuse"]["secret_key"] == "sk-test"
+    assert get_workspace_observability_config("demo")["langfuse"]["secret_key"] == synthetic_secret(
+        "workspace_observability_config-credential-05"
+    )
     assert get_workspace_observability_config("demo")["speedscope"] == {"retention_days": 7}
     assert get_public_workspace_observability_config("demo")["langfuse"] == {
         "public_key": "pk-test",
-        "base_url": "https://langfuse.example",
+        "base_url": "https://langfuse.example.net",
         "debug": True,
         "has_secret_key": True,
     }
@@ -88,7 +89,7 @@ def test_workspace_observability_encrypted_secret_is_bound_to_workspace_context(
         "alpha",
         {
             "langfuse": {
-                "secret_key": "alpha-secret",
+                "secret_key": synthetic_secret("workspace_observability_config-credential-01"),
             },
         },
     )
@@ -98,7 +99,9 @@ def test_workspace_observability_encrypted_secret_is_bound_to_workspace_context(
     beta_path = tmp_path / ".onto-runtime" / "workspaces" / "beta" / "observability_config.json"
     beta_path.write_text(json.dumps(raw), encoding="utf-8")
 
-    assert get_workspace_observability_config("alpha")["langfuse"]["secret_key"] == "alpha-secret"
+    assert get_workspace_observability_config("alpha")["langfuse"]["secret_key"] == synthetic_secret(
+        "workspace_observability_config-credential-01"
+    )
     with pytest.raises(Exception, match="需要先完成迁移或人工修复"):
         get_workspace_observability_config("beta")
 
@@ -113,7 +116,12 @@ def test_workspace_observability_patch_preserves_existing_secret_when_omitted(tm
 
     update_workspace_observability_config(
         "demo",
-        {"langfuse": {"public_key": "pk-old", "secret_key": "sk-old"}},
+        {
+            "langfuse": {
+                "public_key": "pk-old",
+                "secret_key": synthetic_secret("workspace_observability_config-credential-04"),
+            }
+        },
     )
     update_workspace_observability_config(
         "demo",
@@ -122,7 +130,7 @@ def test_workspace_observability_patch_preserves_existing_secret_when_omitted(tm
 
     config = get_workspace_observability_config("demo")
     assert config["langfuse"]["public_key"] == "pk-new"
-    assert config["langfuse"]["secret_key"] == "sk-old"
+    assert config["langfuse"]["secret_key"] == synthetic_secret("workspace_observability_config-credential-04")
 
 
 def test_workspace_observability_rejects_unknown_and_invalid_values(tmp_path, monkeypatch):
@@ -209,8 +217,8 @@ def test_workspace_observability_read_rejects_plaintext_secret_without_rewriting
                 "local": {"retention_days": 30},
                 "langfuse": {
                     "public_key": "pk",
-                    "secret_key": "plaintext-secret",
-                    "base_url": "https://langfuse.example",
+                    "secret_key": synthetic_secret("workspace_observability_config-credential-03"),
+                    "base_url": "https://langfuse.example.net",
                     "debug": False,
                 },
             }
@@ -243,26 +251,18 @@ def test_workspace_observability_read_with_missing_key_does_not_generate_new_key
 
     update_workspace_observability_config(
         "demo",
-        {"langfuse": {"secret_key": "encrypted-with-env-key"}},
+        {"langfuse": {"secret_key": synthetic_secret("workspace_observability_config-credential-02")}},
     )
     runtime_root = tmp_path / ".onto-runtime"
     key_path = runtime_root / "config" / "secret.key"
     assert not key_path.exists()
     monkeypatch.delenv("SECRET_ENCRYPTION_KEY")
-    before = {
-        path.relative_to(runtime_root): path.read_bytes()
-        for path in runtime_root.rglob("*")
-        if path.is_file()
-    }
+    before = {path.relative_to(runtime_root): path.read_bytes() for path in runtime_root.rglob("*") if path.is_file()}
 
     with pytest.raises(WorkspaceObservabilityMigrationRequiredError):
         get_workspace_observability_config("demo")
 
-    after = {
-        path.relative_to(runtime_root): path.read_bytes()
-        for path in runtime_root.rglob("*")
-        if path.is_file()
-    }
+    after = {path.relative_to(runtime_root): path.read_bytes() for path in runtime_root.rglob("*") if path.is_file()}
     assert after == before
     assert not key_path.exists()
 

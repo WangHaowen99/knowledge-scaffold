@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from agent.core.shared import solver_route_guard
 
 
@@ -76,16 +75,12 @@ def test_route_guard_reuses_preflight_root_payload_without_package_read(monkeypa
     monkeypatch.setattr(
         solver_route_guard,
         "_load_solver_root_payload",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("solver routing must reuse the preflight payload")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("solver routing must reuse the preflight payload")),
     )
     monkeypatch.setattr(
         solver_route_guard,
         "build_solver_tool_specs",
-        lambda _records: (
-            SimpleNamespace(name="solve_optimize_minus_one_route_abcd1234"),
-        ),
+        lambda _records: (SimpleNamespace(name="solve_optimize_minus_one_route_abcd1234"),),
     )
     payload = {
         "operations_catalog": tuple(_payload()["operations_catalog"]),
@@ -116,7 +111,7 @@ def test_route_guard_matches_unique_solver_schema_from_structured_arguments(monk
         lambda _records: (_solver_spec(),),
     )
     arguments = {
-                "plan_month": "2099-03",
+        "plan_month": "2099-03",
         "items": [{"item_id": "batch-1"}],
     }
 
@@ -236,8 +231,7 @@ def test_route_guard_does_not_hijack_fixed_route_load_and_capacity_evaluation(
 
     requirement = solver_route_guard.resolve_solver_route_requirement(
         user_request=(
-            "【合成测试数据】月度生产规划已逐项指定处理路径。"
-            "请统计资源负荷是否过载，并校验容量是否超限。"
+            "【合成测试数据】月度生产规划已逐项指定处理路径。" "请统计资源负荷是否过载，并校验容量是否超限。"
         ),
         selected_ontology_id="package-a",
         selected_ontology_version="9.4.2",
@@ -278,15 +272,14 @@ def test_route_guard_keeps_implicit_solver_route_for_unassigned_production_plan(
 
 
 def test_evaluation_request_suppresses_solver_tools_for_current_turn():
-    assert solver_route_guard.should_suppress_solver_tools(
-        "【合成测试数据】请统计资源负荷是否过载，并校验容量是否超限。"
-    ) is True
+    assert (
+        solver_route_guard.should_suppress_solver_tools("【合成测试数据】请统计资源负荷是否过载，并校验容量是否超限。")
+        is True
+    )
 
 
 def test_explicit_solver_request_keeps_solver_tools_available():
-    assert solver_route_guard.should_suppress_solver_tools(
-        "【合成测试数据】请求解候选方案并统计结果。"
-    ) is False
+    assert solver_route_guard.should_suppress_solver_tools("【合成测试数据】请求解候选方案并统计结果。") is False
 
 
 def test_route_binding_suppresses_solver_tools_only_without_requirement():
@@ -296,9 +289,7 @@ def test_route_binding_suppresses_solver_tools_only_without_requirement():
         suppress_solver_tools=True,
     )
 
-    assert solver_route_guard.solver_tools_suppressed_from_state(
-        {"user_context": suppressed_context}
-    ) is True
+    assert solver_route_guard.solver_tools_suppressed_from_state({"user_context": suppressed_context}) is True
 
     required_context = solver_route_guard.bind_solver_route_requirement(
         suppressed_context,
@@ -309,9 +300,7 @@ def test_route_binding_suppresses_solver_tools_only_without_requirement():
         suppress_solver_tools=True,
     )
 
-    assert solver_route_guard.solver_tools_suppressed_from_state(
-        {"user_context": required_context}
-    ) is False
+    assert solver_route_guard.solver_tools_suppressed_from_state({"user_context": required_context}) is False
 
 
 def test_solver_history_filter_removes_the_entire_solver_turn():
@@ -450,10 +439,7 @@ def test_route_guard_preserves_matching_terminal_solver_error_code():
             "payload": {
                 "tool_name": requirement.tool_name,
                 "status": "error",
-                "error": (
-                    '{"code":"fact_snapshot_invalid","phase":"snapshot",'
-                    '"retryable":false,"status":"error"}'
-                ),
+                "error": ('{"code":"fact_snapshot_invalid","phase":"snapshot",' '"retryable":false,"status":"error"}'),
             },
         }
     )

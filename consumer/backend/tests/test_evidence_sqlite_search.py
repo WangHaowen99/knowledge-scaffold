@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-
 from ontology.evidence.chunker import EvidenceChunker
 from ontology.evidence.identity import (
     CHUNKER_VERSION,
@@ -20,7 +19,6 @@ from ontology.evidence.service import EvidenceSearchError, EvidenceSearchService
 from ontology.evidence.sqlite_index import SQLiteEvidenceIndex
 from ontology.resource_parser import PARSER_VERSION, ResourceParser
 from ontology.resource_types import ResourceSource
-
 
 EPOCH = "a" * 64
 

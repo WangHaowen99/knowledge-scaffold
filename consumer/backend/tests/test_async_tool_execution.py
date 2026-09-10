@@ -9,6 +9,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import agent.tools.executor as tool_executor_module
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
 from agent.exceptions import AgentLoopStalledError
 from agent.runtime.async_utils import (
@@ -25,7 +26,6 @@ from agent.tools.base import (
     ToolInvocation,
     ToolOutcome,
 )
-import agent.tools.executor as tool_executor_module
 from agent.tools.executor import aexecute_tool_batch
 from agent.tools.registry import TOOL_SPECS
 
@@ -296,9 +296,7 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(set(observed_ids)), 2)
         self.assertCountEqual(contents, observed_ids)
         tool_message_ids = {
-            message.get("tool_call_id")
-            for message in state["messages"]
-            if message.get("role") == "tool"
+            message.get("tool_call_id") for message in state["messages"] if message.get("role") == "tool"
         }
         self.assertEqual(tool_message_ids, set(observed_ids))
 
@@ -357,9 +355,11 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                     cancelled.set()
 
         context = _context(tool_timeout_seconds=0.01)
-        context.protocol_event_observer = lambda event_type, payload: events.append(
-            (event_type, payload)
-        )
+
+        def observe_protocol_event(event_type, payload):
+            events.append((event_type, payload))
+
+        context.protocol_event_observer = observe_protocol_event
         with patch.dict(TOOL_SPECS, {TimeoutTool.name: TimeoutTool()}):
             result = await aexecute_tool_batch(
                 [_invocation(TimeoutTool.name, "call-timeout")],
@@ -392,9 +392,11 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                 return ToolOutcome(content="late result")
 
         context = _context(tool_timeout_seconds=0.01)
-        context.protocol_event_observer = lambda event_type, payload: events.append(
-            (event_type, payload)
-        )
+
+        def observe_protocol_event(event_type, payload):
+            events.append((event_type, payload))
+
+        context.protocol_event_observer = observe_protocol_event
         with patch.dict(TOOL_SPECS, {SlowSyncTool.name: SlowSyncTool()}):
             try:
                 result = await asyncio.wait_for(
@@ -411,9 +413,7 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(run_sync_compat(finished.wait), timeout=2)
 
         self.assertIn("工具执行超时", result.messages[0]["content"])
-        finished_events = [
-            payload for event, payload in events if event == "tool.finished"
-        ]
+        finished_events = [payload for event, payload in events if event == "tool.finished"]
         self.assertEqual(finished_events[0]["error_code"], "TOOL_TIMEOUT")
         self.assertEqual(finished_events[0]["timeout_seconds"], 0.01)
 
@@ -470,9 +470,7 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                 messages=[
                     {
                         "role": "tool",
-                        "content": json.dumps(
-                            {"status": "error", "error": "same failure"}
-                        ),
+                        "content": json.dumps({"status": "error", "error": "same failure"}),
                         "tool_call_id": call.id,
                         "name": call.name,
                     }

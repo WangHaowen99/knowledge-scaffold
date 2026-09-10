@@ -1,22 +1,24 @@
 import { authFetch } from '../../shared/api/auth.js';
 
-const resourceKey = ({ principalId, workspaceId, revision }) => JSON.stringify([
-  String(principalId || ''),
-  String(workspaceId || ''),
-  'ontologies',
-  String(revision ?? 0),
-]);
+const resourceKey = ({ principalId, workspaceId, revision }) =>
+  JSON.stringify([
+    String(principalId || ''),
+    String(workspaceId || ''),
+    'ontologies',
+    String(revision ?? 0),
+  ]);
 
-const sameScope = (entry, { principalId, workspaceId }) => (
-  entry.principalId === String(principalId || '')
-  && entry.workspaceId === String(workspaceId || '')
-);
+const sameScope = (entry, { principalId, workspaceId }) =>
+  entry.principalId === String(principalId || '') &&
+  entry.workspaceId === String(workspaceId || '');
 
 export function createOntologyResource({ fetcher = authFetch } = {}) {
   const entries = new Map();
 
   const remove = (key, entry) => {
-    if (entries.get(key) === entry) entries.delete(key);
+    if (entries.get(key) === entry) {
+      entries.delete(key);
+    }
   };
 
   const normalizeScope = ({ principalId, workspaceId, revision = 0 } = {}) => {
@@ -35,7 +37,9 @@ export function createOntologyResource({ fetcher = authFetch } = {}) {
   const getOrCreateEntry = (scope) => {
     const key = resourceKey(scope);
     const existing = entries.get(key);
-    if (existing) return { entry: existing, key };
+    if (existing) {
+      return { entry: existing, key };
+    }
 
     const controller = new AbortController();
     const entry = {
@@ -53,25 +57,43 @@ export function createOntologyResource({ fetcher = authFetch } = {}) {
           payload = await response.json();
         } catch (error) {
           if (!response.ok) {
-            throw new Error(`Ontology list request failed (${response.status})`, { cause: error });
+            throw new Error(
+              `Ontology list request failed (${response.status})`,
+              { cause: error },
+            );
           }
-          throw new Error('Ontology list response is not valid JSON', { cause: error });
+          throw new Error('Ontology list response is not valid JSON', {
+            cause: error,
+          });
         }
         if (!response.ok) {
-          throw new Error(payload?.error || payload?.detail || `Ontology list request failed (${response.status})`);
+          throw new Error(
+            payload?.error ||
+              payload?.detail ||
+              `Ontology list request failed (${response.status})`,
+          );
         }
-        if (!payload || typeof payload !== 'object' || !Array.isArray(payload.ontologies)) {
-          throw new Error('Ontology list response must contain an ontologies array');
+        if (
+          !payload ||
+          typeof payload !== 'object' ||
+          !Array.isArray(payload.ontologies)
+        ) {
+          throw new Error(
+            'Ontology list response must contain an ontologies array',
+          );
         }
-        const hasInvalidOntology = payload.ontologies.some((ontology) => (
-          !ontology
-          || typeof ontology !== 'object'
-          || Array.isArray(ontology)
-          || typeof ontology.id !== 'string'
-          || !ontology.id.trim()
-        ));
+        const hasInvalidOntology = payload.ontologies.some(
+          (ontology) =>
+            !ontology ||
+            typeof ontology !== 'object' ||
+            Array.isArray(ontology) ||
+            typeof ontology.id !== 'string' ||
+            !ontology.id.trim(),
+        );
         if (hasInvalidOntology) {
-          throw new Error('Ontology list response must contain a valid ontology object with a non-empty id');
+          throw new Error(
+            'Ontology list response must contain a valid ontology object with a non-empty id',
+          );
         }
         return payload.ontologies;
       })
@@ -92,7 +114,9 @@ export function createOntologyResource({ fetcher = authFetch } = {}) {
     const scope = normalizeScope(scopeInput);
     if (!scope) {
       return {
-        promise: Promise.reject(new Error('Ontology resource requires principalId and workspaceId')),
+        promise: Promise.reject(
+          new Error('Ontology resource requires principalId and workspaceId'),
+        ),
         release() {},
       };
     }
@@ -101,7 +125,9 @@ export function createOntologyResource({ fetcher = authFetch } = {}) {
     entry.subscribers += 1;
     let released = false;
     const release = () => {
-      if (released) return;
+      if (released) {
+        return;
+      }
       released = true;
       entry.subscribers = Math.max(0, entry.subscribers - 1);
       if (entry.pending && entry.subscribers === 0) {
@@ -121,7 +147,9 @@ export function createOntologyResource({ fetcher = authFetch } = {}) {
   const invalidateScope = ({ principalId, workspaceId } = {}) => {
     const scope = { principalId, workspaceId };
     for (const [key, entry] of entries) {
-      if (!sameScope(entry, scope)) continue;
+      if (!sameScope(entry, scope)) {
+        continue;
+      }
       entry.controller.abort();
       entries.delete(key);
     }
@@ -130,18 +158,28 @@ export function createOntologyResource({ fetcher = authFetch } = {}) {
   const clearPrincipal = (principalId) => {
     const normalizedPrincipal = String(principalId || '');
     for (const [key, entry] of entries) {
-      if (entry.principalId !== normalizedPrincipal) continue;
+      if (entry.principalId !== normalizedPrincipal) {
+        continue;
+      }
       entry.controller.abort();
       entries.delete(key);
     }
   };
 
   const clear = () => {
-    for (const entry of entries.values()) entry.controller.abort();
+    for (const entry of entries.values()) {
+      entry.controller.abort();
+    }
     entries.clear();
   };
 
-  return { load, subscribe, invalidateScope, clearPrincipal, clear };
+  return {
+    load,
+    subscribe,
+    invalidateScope,
+    clearPrincipal,
+    clear,
+  };
 }
 
 export const ontologyResource = createOntologyResource();

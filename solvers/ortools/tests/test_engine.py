@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import time
+from copy import deepcopy
 
 import pytest
 
 import solvers.ortools.engine.candidate_selection as engine_module
-
 from solvers.ortools.engine.candidate_selection import (
     EngineDeadlineExceeded,
     ProblemValidationError,
@@ -17,7 +16,14 @@ from solvers.ortools.result_serializer import serialize_result
 
 def test_cp_sat_selects_candidates_by_all_lexicographic_objectives(submit_request):
     result = solve_candidate_selection(
-        {"schema_version": "solver.problem.v1", "problem_family": submit_request["problem"]["type"], "family_version": submit_request["problem"]["version"], "payload": submit_request["problem"]["data"]}, solve_time_ms=5000, workers=1
+        {
+            "schema_version": "solver.problem.v1",
+            "problem_family": submit_request["problem"]["type"],
+            "family_version": submit_request["problem"]["version"],
+            "payload": submit_request["problem"]["data"],
+        },
+        solve_time_ms=5000,
+        workers=1,
     )
 
     assert result.solve_outcome == "optimal"
@@ -35,13 +41,18 @@ def test_cp_sat_selects_candidates_by_all_lexicographic_objectives(submit_reques
 
 
 def test_cp_sat_reports_infeasible_when_no_candidate_is_eligible(submit_request):
-    for candidate in submit_request["problem"]["data"]["parameters"][
-        "candidate_selection"
-    ]["candidates"]:
+    for candidate in submit_request["problem"]["data"]["parameters"]["candidate_selection"]["candidates"]:
         candidate["eligible"] = False
 
     result = solve_candidate_selection(
-        {"schema_version": "solver.problem.v1", "problem_family": submit_request["problem"]["type"], "family_version": submit_request["problem"]["version"], "payload": submit_request["problem"]["data"]}, solve_time_ms=5000, workers=1
+        {
+            "schema_version": "solver.problem.v1",
+            "problem_family": submit_request["problem"]["type"],
+            "family_version": submit_request["problem"]["version"],
+            "payload": submit_request["problem"]["data"],
+        },
+        solve_time_ms=5000,
+        workers=1,
     )
 
     assert result.solve_outcome == "infeasible"
@@ -52,17 +63,29 @@ def test_cp_sat_reports_infeasible_when_no_candidate_is_eligible(submit_request)
 
 
 def test_engine_rejects_semantically_inconsistent_candidate_count(submit_request):
-    problem = {"schema_version": "solver.problem.v1", "problem_family": submit_request["problem"]["type"], "family_version": submit_request["problem"]["version"], "payload": deepcopy(submit_request["problem"]["data"])}
-    problem["payload"]["parameters"]["candidate_selection"][
-        "candidate_count"
-    ] = 99
+    problem = {
+        "schema_version": "solver.problem.v1",
+        "problem_family": submit_request["problem"]["type"],
+        "family_version": submit_request["problem"]["version"],
+        "payload": deepcopy(submit_request["problem"]["data"]),
+    }
+    problem["payload"]["parameters"]["candidate_selection"]["candidate_count"] = 99
 
     with pytest.raises(ProblemValidationError, match="candidate_count"):
         solve_candidate_selection(problem, solve_time_ms=5000, workers=1)
 
 
 def test_result_normalizer_emits_only_the_public_result_contract(submit_request):
-    engine_result = solve_candidate_selection({"schema_version": "solver.problem.v1", "problem_family": submit_request["problem"]["type"], "family_version": submit_request["problem"]["version"], "payload": submit_request["problem"]["data"]}, solve_time_ms=5000, workers=1)
+    engine_result = solve_candidate_selection(
+        {
+            "schema_version": "solver.problem.v1",
+            "problem_family": submit_request["problem"]["type"],
+            "family_version": submit_request["problem"]["version"],
+            "payload": submit_request["problem"]["data"],
+        },
+        solve_time_ms=5000,
+        workers=1,
+    )
 
     result = serialize_result(
         job_id="job_SYNTHETIC0001",
@@ -111,7 +134,14 @@ def test_lexicographic_phases_share_one_total_deadline(submit_request, monkeypat
 
     with pytest.raises(EngineDeadlineExceeded):
         solve_candidate_selection(
-            {"schema_version": "solver.problem.v1", "problem_family": submit_request["problem"]["type"], "family_version": submit_request["problem"]["version"], "payload": submit_request["problem"]["data"]}, solve_time_ms=1000, workers=1
+            {
+                "schema_version": "solver.problem.v1",
+                "problem_family": submit_request["problem"]["type"],
+                "family_version": submit_request["problem"]["version"],
+                "payload": submit_request["problem"]["data"],
+            },
+            solve_time_ms=1000,
+            workers=1,
         )
 
     assert observed_limits == pytest.approx((0.8, 0.2))
@@ -130,4 +160,13 @@ def test_total_deadline_also_includes_problem_translation(submit_request, monkey
     monkeypatch.setattr(engine_module, "_parse_problem", delayed_parse)
 
     with pytest.raises(EngineDeadlineExceeded):
-        solve_candidate_selection({"schema_version": "solver.problem.v1", "problem_family": submit_request["problem"]["type"], "family_version": submit_request["problem"]["version"], "payload": submit_request["problem"]["data"]}, solve_time_ms=1000, workers=1)
+        solve_candidate_selection(
+            {
+                "schema_version": "solver.problem.v1",
+                "problem_family": submit_request["problem"]["type"],
+                "family_version": submit_request["problem"]["version"],
+                "payload": submit_request["problem"]["data"],
+            },
+            solve_time_ms=1000,
+            workers=1,
+        )

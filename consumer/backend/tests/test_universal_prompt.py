@@ -4,7 +4,6 @@ import inspect
 from pathlib import Path
 
 import pytest
-
 from agent.prompts.universal import build_universal_system_prompt
 
 
@@ -33,13 +32,13 @@ def test_universal_prompt_has_no_router_artifacts():
 
     assert "<routing_reason>" not in prompt
     assert "direct or simple or complex" not in prompt.lower()
-    assert "route\": \"direct" not in prompt.lower()
+    assert 'route": "direct' not in prompt.lower()
 
 
 def test_universal_prompt_omits_planning_tool_usage_guidance():
     prompt = build_universal_system_prompt()
     assert "### planning_tool" not in prompt
-    assert "planning_tool(action=\"create\")" not in prompt
+    assert 'planning_tool(action="create")' not in prompt
     assert "active plan task ID" not in prompt
 
     prompt_repeat = build_universal_system_prompt()
@@ -47,23 +46,17 @@ def test_universal_prompt_omits_planning_tool_usage_guidance():
 
 
 def test_subagent_prompt_omits_planning_tool_guidance():
-    subagent_source = (
-        Path(__file__).resolve().parents[1]
-        / "agent"
-        / "sub_agents"
-        / "base.py"
-    ).read_text(encoding="utf-8")
+    subagent_source = (Path(__file__).resolve().parents[1] / "agent" / "sub_agents" / "base.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "You CANNOT call" not in subagent_source
 
 
 def test_subagent_prompt_inherits_main_parallel_batching_rules_without_tool_rule_duplication():
-    subagent_source = (
-        Path(__file__).resolve().parents[1]
-        / "agent"
-        / "sub_agents"
-        / "base.py"
-    ).read_text(encoding="utf-8")
+    subagent_source = (Path(__file__).resolve().parents[1] / "agent" / "sub_agents" / "base.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "All tool calls in one response run in parallel" not in subagent_source
     assert "Batching rules:" in subagent_source
@@ -103,10 +96,7 @@ def test_universal_prompt_keeps_tool_usage_rules_general():
 def test_universal_prompt_scopes_tool_execution_claims_to_latest_user_turn():
     prompt = build_universal_system_prompt()
 
-    assert (
-        "Treat tool calls and tool results before the latest user message as historical context."
-        in prompt
-    )
+    assert "Treat tool calls and tool results before the latest user message as historical context." in prompt
     assert (
         "Never state that a tool ran for the current request unless it was called after the latest user message."
         in prompt
@@ -127,7 +117,7 @@ def test_universal_prompt_disables_user_interaction_rules_for_non_interactive_ru
     assert "Never call `request_user_interaction`." in prompt
     assert "For consultation or recommendation requests, answer directly in text" in prompt
     assert "do not guess missing identifiers, parameters, or user decisions" in prompt
-    assert "call `request_user_interaction` with `type=\"input\"`" not in prompt
+    assert 'call `request_user_interaction` with `type="input"`' not in prompt
 
 
 def test_universal_prompt_does_not_include_web_search_tool_specific_rules():
@@ -143,14 +133,14 @@ def test_universal_prompt_includes_skill_rules():
     prompt = build_universal_system_prompt(
         skills_section=(
             "## Skills\n"
-            "Available skills are listed in the \"Available-Skills\" section below.\n"
+            'Available skills are listed in the "Available-Skills" section below.\n'
             "Skills are reusable external helpers, not enterprise domain ontologies.\n"
             "Use skill(skill_name='<name>', resource='root') when needed."
         ),
     )
 
     assert "## Skills" in prompt
-    assert "Available skills are listed in the \"Available-Skills\" section below" in prompt
+    assert 'Available skills are listed in the "Available-Skills" section below' in prompt
     assert "reusable external helpers, not enterprise domain ontologies" in prompt
     assert "skill(skill_name='<name>', resource='root')" in prompt
 
@@ -168,12 +158,9 @@ def test_universal_prompt_prefers_script_backed_execution():
 
 def test_script_arguments_only_use_runtime_values_from_the_current_request():
     prompt = build_universal_system_prompt()
-    subagent_source = (
-        Path(__file__).resolve().parents[1]
-        / "agent"
-        / "sub_agents"
-        / "base.py"
-    ).read_text(encoding="utf-8")
+    subagent_source = (Path(__file__).resolve().parents[1] / "agent" / "sub_agents" / "base.py").read_text(
+        encoding="utf-8"
+    )
 
     for content in (prompt, subagent_source):
         assert "intent examples describe matching semantics only" in content
@@ -225,12 +212,9 @@ def test_main_and_subagent_prompts_follow_v01_ontology_loading_flow():
     assert "dependency/uses/entity association section" in prompt
     assert "load the referenced `rule` and `metric` specs" in prompt
 
-    subagent_source = (
-        Path(__file__).resolve().parents[1]
-        / "agent"
-        / "sub_agents"
-        / "base.py"
-    ).read_text(encoding="utf-8")
+    subagent_source = (Path(__file__).resolve().parents[1] / "agent" / "sub_agents" / "base.py").read_text(
+        encoding="utf-8"
+    )
     assert 'Call `ontology_context(resource="root")`' in subagent_source
     assert 'ontology_context(resource="operation", key=context.operation_key)' in subagent_source
     assert 'ontology_context(resource="object")' in subagent_source
@@ -305,7 +289,7 @@ def test_universal_prompt_uses_selected_ontology_override():
     assert "If the user has explicitly selected an ontology, use that ontology." in prompt
     assert "matching the user's intent against each ontology id and description" in prompt
     assert "Use the injected `<Selected-Ontology>` block" in prompt
-    assert "call `ontology_context(resource=\"root\")` once" in prompt
+    assert 'call `ontology_context(resource="root")` once' in prompt
     assert "Preloaded Selected Ontology Context" not in prompt
 
 

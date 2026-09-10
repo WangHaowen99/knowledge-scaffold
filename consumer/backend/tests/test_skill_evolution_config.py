@@ -8,7 +8,6 @@ for falsy values (0 / "" → default), which is intentional but worth pinning.
 from __future__ import annotations
 
 import pytest
-
 from config.system_config import (
     SystemConfigValidationError,
     _normalize_skill_evolution_effective,

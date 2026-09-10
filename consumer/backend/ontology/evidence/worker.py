@@ -29,7 +29,6 @@ from ontology.ontologies import get_ontology_registry, load_ontology_manifest_da
 from persistence.evidence_operations import EvidenceOperationsStore
 from workspace.workspaces import get_workspace_paths, list_workspaces, workspace_scope
 
-
 logger = logging.getLogger("ontology.evidence.worker")
 
 
@@ -97,11 +96,7 @@ class EvidenceIndexWorker:
         config = EvidenceConfig.load()
         self._recovery_done = True
         now = time.monotonic()
-        if (
-            config.enabled
-            and config.sweeper_enabled
-            and now - self._last_sweep_at >= config.sweeper_interval_seconds
-        ):
+        if config.enabled and config.sweeper_enabled and now - self._last_sweep_at >= config.sweeper_interval_seconds:
             totals["drift_detected"] = run_evidence_sweeper_once(config=config)
             self._last_sweep_at = now
         return totals
@@ -257,11 +252,9 @@ def process_manual_build_job(
             workspace_id=workspace_id,
             ontology_id=ontology_id,
         )
-        if (
-            latest is None
-            or int(latest.get("mutation_revision") if latest.get("mutation_revision") is not None else -1)
-            != int(job["mutation_revision"])
-        ):
+        if latest is None or int(
+            latest.get("mutation_revision") if latest.get("mutation_revision") is not None else -1
+        ) != int(job["mutation_revision"]):
             revoke_active_pointer_snapshot(
                 runtime_root,
                 workspace_id=workspace_id,
@@ -304,10 +297,7 @@ def run_evidence_sweeper_once(*, config: EvidenceConfig | None = None) -> int:
     detected = 0
     for workspace in list_workspaces():
         workspace_id = str(workspace.get("id") or "").strip()
-        if (
-            not workspace_id
-            or effective.workspace_mode(workspace_id) not in {"shadow", "allowlist", "all"}
-        ):
+        if not workspace_id or effective.workspace_mode(workspace_id) not in {"shadow", "allowlist", "all"}:
             continue
         paths = get_workspace_paths(workspace_id)
         with workspace_scope(workspace_id):
@@ -355,9 +345,7 @@ def run_evidence_sweeper_once(*, config: EvidenceConfig | None = None) -> int:
             needs_reconcile = pointer is None
             if active_pointer_is_serviceable(pointer):
                 pointer_revision = int(
-                    pointer.get("mutation_revision")
-                    if pointer.get("mutation_revision") is not None
-                    else -1
+                    pointer.get("mutation_revision") if pointer.get("mutation_revision") is not None else -1
                 )
                 if pointer_revision != int(state["mutation_revision"]):
                     needs_reconcile = True
@@ -365,9 +353,7 @@ def run_evidence_sweeper_once(*, config: EvidenceConfig | None = None) -> int:
                     try:
                         ontology_dir = Path(ontology.ontology_dir).resolve()
                         package_root = (
-                            ontology_dir.parent.parent
-                            if ontology_dir.parent.name == "versions"
-                            else ontology_dir
+                            ontology_dir.parent.parent if ontology_dir.parent.name == "versions" else ontology_dir
                         )
                         plan = EvidenceIndexManager(paths.runtime_dir).plan(
                             ontology_id=ontology_id,
@@ -405,9 +391,7 @@ def run_evidence_sweeper_once(*, config: EvidenceConfig | None = None) -> int:
                 # filesystem commit and the final state/outbox CAS; reconcile
                 # that gap instead of leaving the ontology permanently stale.
                 pointer_revision = int(
-                    pointer.get("mutation_revision")
-                    if pointer.get("mutation_revision") is not None
-                    else -1
+                    pointer.get("mutation_revision") if pointer.get("mutation_revision") is not None else -1
                 )
                 needs_reconcile = pointer_revision != int(state["mutation_revision"])
                 if (
@@ -442,9 +426,7 @@ def run_evidence_sweeper_once(*, config: EvidenceConfig | None = None) -> int:
                         after_enabled=True,
                         commit=lambda: None,
                         rollback=lambda: None,
-                        digest_hints=empty_digest_hints(
-                            scope_version=str(ontology.active_version)
-                        ),
+                        digest_hints=empty_digest_hints(scope_version=str(ontology.active_version)),
                         trigger="sweeper",
                         base_mutation_revision=int(state["mutation_revision"]),
                     )

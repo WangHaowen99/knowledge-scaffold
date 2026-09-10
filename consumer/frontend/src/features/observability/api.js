@@ -1,8 +1,17 @@
-export async function requestObservabilityJson(request, url, options = {}, fallbackMessage = '请求观测数据失败') {
+export async function requestObservabilityJson(
+  request,
+  url,
+  options = {},
+  fallbackMessage = '请求观测数据失败',
+) {
   const response = await request(url, options);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(payload.error || payload.detail || `${fallbackMessage}（HTTP ${response.status}）`);
+    const error = new Error(
+      payload.error ||
+        payload.detail ||
+        `${fallbackMessage}（HTTP ${response.status}）`,
+    );
     error.status = response.status;
     error.code = payload.code || '';
     throw error;
@@ -19,14 +28,20 @@ export async function requestObservabilityDownload(
   const response = await request(url, options);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    const error = new Error(payload.error || payload.detail || `${fallbackMessage} (HTTP ${response.status})`);
+    const error = new Error(
+      payload.error ||
+        payload.detail ||
+        `${fallbackMessage} (HTTP ${response.status})`,
+    );
     error.status = response.status;
     error.code = payload.code || '';
     throw error;
   }
-  const contentDisposition = response.headers?.get?.('content-disposition') || '';
-  const match = contentDisposition.match(/filename="?([^";]+)"?/i);
-  const [, fileName = ''] = match || [];
+  const contentDisposition =
+    response.headers?.get?.('content-disposition') || '';
+  const fileName =
+    contentDisposition.match(/filename="?(?<fileName>[^";]+)"?/i)?.groups
+      .fileName || '';
   return {
     blob: await response.blob(),
     fileName,

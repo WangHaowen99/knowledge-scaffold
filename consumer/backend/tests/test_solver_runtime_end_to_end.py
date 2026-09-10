@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from types import SimpleNamespace
 
 import yaml
-
 from agent.tools.solver import build_solver_tool_specs
 from integration import solver_coordination_runtime as runtime_module
 from integration.solver_coordination_runtime import build_solver_coordination_service
+from solver_coordination.canonical import canonical_json_bytes
 from solver_coordination.capability_catalog import (
     load_solver_capability_catalog,
     public_solver_catalog,
 )
-from solver_coordination.canonical import canonical_json_bytes
 from solver_coordination.contracts import SolverResult
-
 
 _CONNECTOR_CAPABILITIES = {
     "protocol_versions": ["ortools.solver.v1"],
@@ -59,9 +57,7 @@ class _FixtureOnlyBackend:
         return _CONNECTOR_CAPABILITIES
 
     def assert_binding_capabilities(self, binding):
-        assert binding["capability_fingerprint"] == _capability_fingerprint(
-            _CONNECTOR_CAPABILITIES
-        )
+        assert binding["capability_fingerprint"] == _capability_fingerprint(_CONNECTOR_CAPABILITIES)
 
     def submit(self, *, binding, problem, idempotency_key, deadline):
         del binding, idempotency_key, deadline
@@ -123,9 +119,7 @@ def _write_package(root):
             ]
         },
     }
-    (root / "manifest.yaml").write_text(
-        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
-    )
+    (root / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     (root / "decision-models" / "bounded-choice.yaml").write_text(
         yaml.safe_dump(
             {
@@ -135,9 +129,7 @@ def _write_package(root):
                 "decision_space": {
                     "choices": ["OPTION_0", "OPTION_1"],
                 },
-                "parameters": {
-                    "compatibility_mode": "test_only_first_domain.v1"
-                },
+                "parameters": {"compatibility_mode": "test_only_first_domain.v1"},
                 "constraints": [],
                 "objectives": [],
                 "limits": {"max_candidates": 2},
@@ -161,9 +153,7 @@ def _write_package(root):
         json.dumps(
             {
                 "type": "object",
-                "properties": {
-                    "choice": {"type": "string", "enum": ["OPTION_0", "OPTION_1"]}
-                },
+                "properties": {"choice": {"type": "string", "enum": ["OPTION_0", "OPTION_1"]}},
                 "required": ["choice"],
                 "additionalProperties": False,
             }
@@ -208,13 +198,11 @@ def test_runtime_solver_path_is_authoritative_and_exactly_once(tmp_path, monkeyp
     )
     service.job_orchestrator.backend = _FixtureOnlyBackend()
     binding_configuration = {
-        "endpoint": "https://solver.example.test",
+        "endpoint": "https://solver.example.net",
         "connector_type": "ortools",
         "service_api_version": "ortools.solver.v1",
         "service_credential_ref": "secret://solver/synthetic",
-        "capability_fingerprint": _capability_fingerprint(
-            _CONNECTOR_CAPABILITIES
-        ),
+        "capability_fingerprint": _capability_fingerprint(_CONNECTOR_CAPABILITIES),
         "allowed_families": {"binary_ordered_route": ["1.0"]},
         "neutral_limits": {
             "max_payload_bytes": 1048576,
@@ -255,9 +243,7 @@ def test_runtime_solver_path_is_authoritative_and_exactly_once(tmp_path, monkeyp
     assert first["optimality"] == "not_proven"
     assert first["summary"]["assignment"] == {"choice": "OPTION_0"}
     assert first["result_artifact_ref"].startswith("artifact://solver_result/")
-    assert first["verification_evidence_ref"].startswith(
-        "artifact://verification_evidence/"
-    )
+    assert first["verification_evidence_ref"].startswith("artifact://verification_evidence/")
     assert [kind for kind, _payload in events][-2:] == [
         "solver.verification.completed",
         "solver.result.authoritative",
@@ -274,10 +260,13 @@ def test_runtime_solver_path_is_authoritative_and_exactly_once(tmp_path, monkeyp
         "solver_result",
         "verification_evidence",
     }
-    assert len(
-        service.store.list_attempts(
-            first["job_id"],
-            workspace_id="workspace-synthetic",
-            owner_id="owner-synthetic",
+    assert (
+        len(
+            service.store.list_attempts(
+                first["job_id"],
+                workspace_id="workspace-synthetic",
+                owner_id="owner-synthetic",
+            )
         )
-    ) == 1
+        == 1
+    )

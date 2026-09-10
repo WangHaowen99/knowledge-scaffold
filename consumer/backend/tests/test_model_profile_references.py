@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from backend_synthetic_credentials import synthetic_secret
 
 
 class _CatalogSnapshot:
@@ -39,7 +40,7 @@ def test_inventory_reads_one_snapshot_and_one_runtime_config_per_workspace(monke
                 "default_main_profile_ref": {"scope": "workspace", "id": "private"},
                 "default_task_profile_ref": "shared",
             },
-            "api_key": "must-not-leak",
+            "api_key": synthetic_secret("model_profile_references-credential-01"),
         },
         "beta": {
             "llm": {
@@ -107,7 +108,7 @@ def test_inventory_reads_one_snapshot_and_one_runtime_config_per_workspace(monke
     }
     assert isinstance(result["generation"], str)
     assert result["generation"].startswith("sha256:")
-    assert "must-not-leak" not in repr(result)
+    assert synthetic_secret("model_profile_references-credential-01") not in repr(result)
 
 
 def test_inventory_fails_closed_and_preserves_discovered_entries(monkeypatch):
@@ -286,7 +287,7 @@ def test_runtime_config_reader_distinguishes_optional_config_from_missing_worksp
             "llm": {
                 "default_main_profile_ref": {
                     "scope": "global",
-                    "id": {"private": "must-not-leak"},
+                    "id": {"private": synthetic_secret("model_profile_references-credential-01")},
                 }
             }
         },
@@ -295,7 +296,7 @@ def test_runtime_config_reader_distinguishes_optional_config_from_missing_worksp
                 "default_main_profile_ref": {
                     "scope": "global",
                     "id": "target",
-                    "private": "must-not-leak",
+                    "private": synthetic_secret("model_profile_references-credential-01"),
                 }
             }
         },
@@ -571,9 +572,7 @@ def test_inventory_fails_closed_when_runtime_document_is_malformed(
     workspace_dir = tmp_path / "alpha"
     workspace_dir.mkdir()
     (workspace_dir / "runtime_config.json").write_text(
-        json.dumps(
-            {"llm": {"default_main_profile_ref": ["global:target"]}}
-        ),
+        json.dumps({"llm": {"default_main_profile_ref": ["global:target"]}}),
         encoding="utf-8",
     )
     snapshot = _CatalogSnapshot(
@@ -623,7 +622,7 @@ def test_inventory_does_not_echo_invalid_nested_reference_content(
                 "llm": {
                     "default_main_profile_ref": {
                         "scope": "global",
-                        "id": {"private": "must-not-leak"},
+                        "id": {"private": synthetic_secret("model_profile_references-credential-01")},
                     }
                 }
             }
@@ -650,7 +649,7 @@ def test_inventory_does_not_echo_invalid_nested_reference_content(
 
     assert result["complete"] is False
     assert result["entries"][0]["references"] == []
-    assert "must-not-leak" not in repr(result)
+    assert synthetic_secret("model_profile_references-credential-01") not in repr(result)
 
 
 @pytest.mark.parametrize(

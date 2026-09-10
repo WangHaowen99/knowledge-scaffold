@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 from pathlib import Path
 
+from deploy_synthetic_credentials import AUTH_ADMIN_TOKEN, BOOTSTRAP_ADMIN_PASSWORD
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
@@ -137,32 +138,21 @@ def test_workbench_agent_is_built_and_described_in_release_manifests() -> None:
     full_build = (DEPLOY_ROOT / "build.sh").read_text(encoding="utf-8")
 
     assert '"${SCRIPT_DIR}/modeling-agent"' in modeling_build
-    assert 'mw-modeling-agent:${VERSION}' in modeling_build
-    assert 'mw-modeling-agent-${VERSION}.tar' in modeling_build
+    assert "mw-modeling-agent:${VERSION}" in modeling_build
+    assert "mw-modeling-agent-${VERSION}.tar" in modeling_build
     for script in (modeling_build, full_build):
         assert '"modeling_agent_image": "mw-modeling-agent:${VERSION}"' in script
-        assert (
-            '"modeling_agent_image_tar": '
-            '"images/mw-modeling-agent-${VERSION}.tar"'
-        ) in script
+        assert ('"modeling_agent_image_tar": ' '"images/mw-modeling-agent-${VERSION}.tar"') in script
 
 
 def test_modeling_agent_pip_download_is_resilient_and_configurable() -> None:
-    dockerfile = (MODELING_ROOT / "modeling-agent" / "Dockerfile").read_text(
-        encoding="utf-8"
-    )
-    compose = (DEPLOY_ROOT / "docker-compose.modeling.yml").read_text(
-        encoding="utf-8"
-    )
+    dockerfile = (MODELING_ROOT / "modeling-agent" / "Dockerfile").read_text(encoding="utf-8")
+    compose = (DEPLOY_ROOT / "docker-compose.modeling.yml").read_text(encoding="utf-8")
     build = (MODELING_ROOT / "build.sh").read_text(encoding="utf-8")
     root_deploy = (DEPLOY_ROOT / "deploy-stack.sh").read_text(encoding="utf-8")
-    modeling_deploy = (MODELING_ROOT / "deploy" / "deploy.sh").read_text(
-        encoding="utf-8"
-    )
+    modeling_deploy = (MODELING_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
 
-    assert dockerfile.count(
-        "ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple"
-    ) == 2
+    assert dockerfile.count("ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple") == 2
     assert dockerfile.count("ARG PIP_DEFAULT_TIMEOUT=120") == 2
     assert dockerfile.count("ARG PIP_RETRIES=10") == 2
     assert dockerfile.count('--index-url "${PIP_INDEX_URL}"') == 2
@@ -234,9 +224,7 @@ exit 0
         manifest = json.load(manifest_file)
     assert manifest["modeling_image"] == "mw-modeling:v-test"
     assert manifest["modeling_agent_image"] == "mw-modeling-agent:v-test"
-    assert manifest["modeling_agent_image_tar"] == (
-        "images/mw-modeling-agent-v-test.tar"
-    )
+    assert manifest["modeling_agent_image_tar"] == ("images/mw-modeling-agent-v-test.tar")
 
 
 def test_source_deploy_checks_agent_and_workbench_entrypoint() -> None:
@@ -272,8 +260,7 @@ def test_source_deploy_generates_missing_mcp_secret_without_printing_it(
         [
             "bash",
             "-c",
-            'source "$DEPLOY_STACK" >/dev/null; '
-            'CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_mcp_token_secret',
+            'source "$DEPLOY_STACK" >/dev/null; ' 'CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_mcp_token_secret',
         ],
         env={
             **os.environ,
@@ -306,8 +293,7 @@ def test_source_deploy_generates_modeling_service_token_without_printing_it(
         [
             "bash",
             "-c",
-            'source "$DEPLOY_STACK" >/dev/null; '
-            'CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_modeling_service_token',
+            'source "$DEPLOY_STACK" >/dev/null; ' 'CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_modeling_service_token',
         ],
         env={
             **inherited,
@@ -349,8 +335,7 @@ def test_source_deploy_only_blocks_missing_auth_config_before_docker(
         [
             "bash",
             "-c",
-            'source "$DEPLOY_STACK" >/dev/null; '
-            'CONSUMER_DIR="$TEST_CONSUMER_DIR"; cmd_up',
+            'source "$DEPLOY_STACK" >/dev/null; ' 'CONSUMER_DIR="$TEST_CONSUMER_DIR"; cmd_up',
         ],
         env={
             **os.environ,
@@ -376,8 +361,8 @@ def test_source_deploy_allows_admin_to_configure_llm_after_startup(
     backend_root.mkdir(parents=True)
     (backend_root / ".env").write_text(
         "AUTH_SERVER_URL=http://auth-server:5056\n"
-        "AUTH_SERVER_ADMIN_TOKEN=synthetic-admin-token-1234\n"
-        "AUTH_BOOTSTRAP_ADMIN_PASSWORD=synthetic-bootstrap-password\n"
+        f"AUTH_SERVER_ADMIN_TOKEN={AUTH_ADMIN_TOKEN}\n"
+        f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n"
         "MODELING_LLM_BASE_URL=\n"
         "MODELING_LLM_MODEL=\n",
         encoding="utf-8",
@@ -394,12 +379,12 @@ def test_source_deploy_allows_admin_to_configure_llm_after_startup(
             "-c",
             'source "$DEPLOY_STACK" >/dev/null; '
             'CONSUMER_DIR="$TEST_CONSUMER_DIR"; '
-            'consumer_compose() { :; }; modeling_compose() { :; }; '
-            'ensure_jiuwenbox_image() { :; }; '
-            'wait_for_container() { :; }; wait_http() { :; }; '
+            "consumer_compose() { :; }; modeling_compose() { :; }; "
+            "ensure_jiuwenbox_image() { :; }; "
+            "wait_for_container() { :; }; wait_http() { :; }; "
             'detect_consumer_network() { printf "test-network\\n"; }; '
             'detect_jiuwenbox_socket_volume() { printf "test-socket-volume\\n"; }; '
-            'cmd_up',
+            "cmd_up",
         ],
         env={
             **inherited,

@@ -6,13 +6,9 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from scripts.audit_workspace_acl import audit_workspace_acl, load_auth_usernames, main
 
-
-_MIGRATION_MODULE_PATH = (
-    Path(__file__).resolve().parents[2] / "deploy" / "migrate_auth_workspace.py"
-)
+_MIGRATION_MODULE_PATH = Path(__file__).resolve().parents[2] / "deploy" / "migrate_auth_workspace.py"
 _MIGRATION_SPEC = importlib.util.spec_from_file_location(
     "_workspace_acl_migration_contract",
     _MIGRATION_MODULE_PATH,
@@ -199,13 +195,17 @@ def test_standalone_and_migration_audits_share_acl_and_reconciliation_rules(tmp_
     assert migration["clean"] is False
     assert standalone["pending_reconciliation_count"] == 1
     assert standalone["finding_count"] == migration["finding_count"] == 5
-    assert finding_keys(standalone) == finding_keys(migration) == [
-        ("<system>", "pending_user_deletion_reconciliation", "alice"),
-        ("<system>", "same_name_account_inheritance_risk", "alice"),
-        ("empty-owner", "invalid_owner", None),
-        ("private", "invalid_member", None),
-        ("private", "invalid_owner", None),
-    ]
+    assert (
+        finding_keys(standalone)
+        == finding_keys(migration)
+        == [
+            ("<system>", "pending_user_deletion_reconciliation", "alice"),
+            ("<system>", "same_name_account_inheritance_risk", "alice"),
+            ("empty-owner", "invalid_owner", None),
+            ("private", "invalid_member", None),
+            ("private", "invalid_owner", None),
+        ]
+    )
 
 
 @pytest.mark.parametrize(
@@ -214,11 +214,7 @@ def test_standalone_and_migration_audits_share_acl_and_reconciliation_rules(tmp_
         {"version": 2, "records": []},
         {
             "version": 1,
-            "records": [{
-                key: value
-                for key, value in _reconciliation_record().items()
-                if key != "status"
-            }],
+            "records": [{key: value for key, value in _reconciliation_record().items() if key != "status"}],
         },
         {"version": 1, "records": [_reconciliation_record(record_id="bad-id")]},
         {"version": 1, "records": [_reconciliation_record(username=" alice ")]},

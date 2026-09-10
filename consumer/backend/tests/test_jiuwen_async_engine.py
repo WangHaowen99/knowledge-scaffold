@@ -10,11 +10,11 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 import agent.core.jiuwen_engine as jiuwen_engine
-from agent.runtime.async_utils import run_sync_compat
 from agent.core.jiuwen_engine import (
     JiuwenEngineEventBufferFull,
     JiuwenReactLoopEngine,
 )
+from agent.runtime.async_utils import run_sync_compat
 
 
 def _agent_config():
@@ -63,15 +63,9 @@ def _patched_engine(
     unregister_tools=None,
 ):
     with ExitStack() as stack:
-        stack.enter_context(
-            patch.object(jiuwen_engine, "is_openjiuwen_available", return_value=True)
-        )
-        stack.enter_context(
-            patch.object(jiuwen_engine, "_resolve_jiuwen_llm_config", return_value=_llm_config())
-        )
-        stack.enter_context(
-            patch.object(jiuwen_engine, "create_default_jiuwen_agent", side_effect=create_agent)
-        )
+        stack.enter_context(patch.object(jiuwen_engine, "is_openjiuwen_available", return_value=True))
+        stack.enter_context(patch.object(jiuwen_engine, "_resolve_jiuwen_llm_config", return_value=_llm_config()))
+        stack.enter_context(patch.object(jiuwen_engine, "create_default_jiuwen_agent", side_effect=create_agent))
         stack.enter_context(
             patch.object(
                 jiuwen_engine,
@@ -87,12 +81,8 @@ def _patched_engine(
             )
         )
         stack.enter_context(patch.object(jiuwen_engine, "_dispose_owned_jiuwen_runtime", dispose))
-        stack.enter_context(
-            patch.object(JiuwenReactLoopEngine, "_tools_schema_for_state", return_value=[])
-        )
-        stack.enter_context(
-            patch.object(JiuwenReactLoopEngine, "_jiuwen_tool_infos_for_state", return_value=[])
-        )
+        stack.enter_context(patch.object(JiuwenReactLoopEngine, "_tools_schema_for_state", return_value=[]))
+        stack.enter_context(patch.object(JiuwenReactLoopEngine, "_jiuwen_tool_infos_for_state", return_value=[]))
         stack.enter_context(
             patch.object(
                 JiuwenReactLoopEngine,
@@ -199,6 +189,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
         with _patched_engine(create_agent, dispose):
             engine = JiuwenReactLoopEngine(agent_config=_agent_config())
             for mode in ("quick", "thinking", "multi_agent"):
+
                 async def exercise(selected_mode=mode):
                     first = await engine.arun(
                         _state("run-first-{}".format(selected_mode), agent_mode=selected_mode),
@@ -429,11 +420,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
                 self.callbacks.append((event, callback, priority))
 
             def unregister(self, event, callback):
-                self.callbacks = [
-                    item
-                    for item in self.callbacks
-                    if item[:2] != (event, callback)
-                ]
+                self.callbacks = [item for item in self.callbacks if item[:2] != (event, callback)]
 
         class OfflineAgent:
             def __init__(self, index):

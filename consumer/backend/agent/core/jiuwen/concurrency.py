@@ -82,25 +82,17 @@ class JiuwenConcurrencyAbilityManager:
         delegate: Any,
         *,
         max_parallel_workers: int = 10,
-        policy_resolver: Optional[
-            Callable[[str], JiuwenToolConcurrencyPolicy]
-        ] = None,
+        policy_resolver: Optional[Callable[[str], JiuwenToolConcurrencyPolicy]] = None,
     ) -> None:
         self._delegate = delegate
-        self._max_parallel_workers = normalize_parallelism_limit(
-            max_parallel_workers
-        )
-        self._policy_resolver = (
-            policy_resolver or resolve_jiuwen_tool_concurrency_policy
-        )
+        self._max_parallel_workers = normalize_parallelism_limit(max_parallel_workers)
+        self._policy_resolver = policy_resolver or resolve_jiuwen_tool_concurrency_policy
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._delegate, name)
 
     def configure_parallelism(self, max_parallel_workers: int) -> None:
-        self._max_parallel_workers = normalize_parallelism_limit(
-            max_parallel_workers
-        )
+        self._max_parallel_workers = normalize_parallelism_limit(max_parallel_workers)
 
     async def execute(
         self,
@@ -194,9 +186,7 @@ class JiuwenConcurrencyAbilityManager:
         async def execute_safely(
             scheduled_call: _ScheduledJiuwenToolCall,
         ) -> List[Any]:
-            tool_semaphore = tool_semaphores[
-                _tool_call_name(scheduled_call.tool_call)
-            ]
+            tool_semaphore = tool_semaphores[_tool_call_name(scheduled_call.tool_call)]
             # Do not let calls waiting on one tool occupy every global slot.
             async with tool_semaphore:
                 async with global_semaphore:
@@ -207,14 +197,8 @@ class JiuwenConcurrencyAbilityManager:
                         tag=tag,
                     )
 
-        nested_results = await asyncio.gather(
-            *(execute_safely(item) for item in scheduled_calls)
-        )
-        return [
-            result
-            for call_results in nested_results
-            for result in call_results
-        ]
+        nested_results = await asyncio.gather(*(execute_safely(item) for item in scheduled_calls))
+        return [result for call_results in nested_results for result in call_results]
 
     async def _execute_one(
         self,
@@ -303,9 +287,7 @@ def _build_skipped_results(
     *,
     reason: str,
 ) -> List[Any]:
-    message_module = importlib.import_module(
-        "openjiuwen.core.foundation.llm.schema.message"
-    )
+    message_module = importlib.import_module("openjiuwen.core.foundation.llm.schema.message")
     content = json.dumps(
         {
             "status": "skipped",

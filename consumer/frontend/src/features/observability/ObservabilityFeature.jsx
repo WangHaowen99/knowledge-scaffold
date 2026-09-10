@@ -1,6 +1,10 @@
 import { authFetch } from '../../shared/api/auth.js';
 
-import { ObservabilityPageHeader, ObservabilityPanel, ObservabilityState } from './components.jsx';
+import {
+  ObservabilityPageHeader,
+  ObservabilityPanel,
+  ObservabilityState,
+} from './components.jsx';
 import GlobalObservabilityView from './GlobalObservabilityView.jsx';
 import { OBSERVABILITY_VIEWS, resolveObservabilityAccess } from './model.js';
 import './observability.css';
@@ -17,9 +21,12 @@ export default function ObservabilityFeature({
   onBack,
   request = authFetch,
 }) {
-  const resolvedGlobalPermission = typeof canViewGlobal === 'boolean'
-    ? canViewGlobal
-    : (typeof can === 'function' ? can('observability.global') : undefined);
+  const resolvedGlobalPermission =
+    typeof canViewGlobal === 'boolean' ?
+      canViewGlobal :
+      typeof can === 'function' ?
+        can('observability.global') :
+        undefined;
   const access = resolveObservabilityAccess({
     view,
     sessionId,
@@ -28,7 +35,12 @@ export default function ObservabilityFeature({
   });
 
   if (!access.allowed) {
-    const kind = access.reason === 'forbidden' ? 'forbidden' : access.reason === 'unauthenticated' ? 'error' : 'empty';
+    const kind =
+      access.reason === 'forbidden' ?
+        'forbidden' :
+        access.reason === 'unauthenticated' ?
+          'error' :
+          'empty';
     return (
       <div className="obs-feature">
         <ObservabilityPageHeader
@@ -38,7 +50,11 @@ export default function ObservabilityFeature({
           onBack={onBack}
         />
         <ObservabilityPanel>
-          <ObservabilityState kind={kind} title={access.title} detail={access.detail} />
+          <ObservabilityState
+            kind={kind}
+            title={access.title}
+            detail={access.detail}
+          />
         </ObservabilityPanel>
       </div>
     );
@@ -54,7 +70,12 @@ export default function ObservabilityFeature({
           request={request}
         />
       ) : (
-        <SessionPerformanceView key={sessionId} sessionId={sessionId} onBack={onBack} request={request} />
+        <SessionPerformanceView
+          key={sessionId}
+          sessionId={sessionId}
+          onBack={onBack}
+          request={request}
+        />
       )}
     </div>
   );

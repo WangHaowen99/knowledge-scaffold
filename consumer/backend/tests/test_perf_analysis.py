@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
+from datetime import datetime
 
 from utils.perf_analysis.aggregate import (
     build_global_overview,
@@ -657,10 +657,7 @@ def test_local_otel_store_repairs_unindexed_data_before_append(tmp_path):
     store.append(records[2])
 
     sidecar_path = data_path.with_name(data_path.name + ".idx")
-    raw_entries = [
-        json.loads(line)
-        for line in sidecar_path.read_text(encoding="utf-8").splitlines()
-    ]
+    raw_entries = [json.loads(line) for line in sidecar_path.read_text(encoding="utf-8").splitlines()]
     assert [entry["run_id"] for entry in raw_entries] == [
         "run-index-a",
         "run-index-b",
@@ -674,10 +671,7 @@ def test_local_otel_store_repairs_unindexed_data_before_append(tmp_path):
         "run-index-c",
     ]
     assert entries[0]["offset"] == 0
-    assert all(
-        current["data_size"] == following["offset"]
-        for current, following in zip(entries, entries[1:])
-    )
+    assert all(current["data_size"] == following["offset"] for current, following in zip(entries, entries[1:]))
 
     index_lines = sidecar_path.read_text(encoding="utf-8").splitlines()
     sidecar_path.write_text("\n".join((index_lines[0], index_lines[2])) + "\n", encoding="utf-8")

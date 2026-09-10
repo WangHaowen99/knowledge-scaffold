@@ -1,23 +1,22 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 import json
 import os
-from pathlib import Path
 import stat
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from starlette.requests import Request
-
 from ontology.view_cache import (
     OntologyViewCache,
     get_ontology_mutation_revision,
     get_package_tree_cached,
     invalidate_ontology_views,
 )
+from starlette.requests import Request
 
 
 def test_package_tree_cache_reuses_build_and_returns_defensive_copies(monkeypatch):
@@ -234,8 +233,7 @@ def test_revision_source_observer_bumps_once_after_throttled_external_change():
         return cache.observe_revision_source(
             workspace_id="workspace-revision",
             ontology_id="ontology-revision",
-            signature_loader=lambda: signature_reads.append(signature[0])
-            or signature[0],
+            signature_loader=lambda: signature_reads.append(signature[0]) or signature[0],
         )
 
     assert observe() == 0
@@ -311,8 +309,8 @@ def test_ontology_list_route_does_not_unconditionally_refresh_registry(monkeypat
 
 
 def test_ontology_tree_route_reuses_cached_validated_tree(monkeypatch, tmp_path):
-    from api.routes import ontologies as routes
     import ontology.view_cache as view_cache_module
+    from api.routes import ontologies as routes
 
     ontology_dir = tmp_path / "ontology-a"
     version_dir = ontology_dir / "versions" / "1.0.0"
@@ -364,8 +362,8 @@ def test_ontology_tree_route_rebuilds_after_external_package_change(
     monkeypatch,
     tmp_path,
 ):
-    from api.routes import ontologies as routes
     import ontology.view_cache as view_cache_module
+    from api.routes import ontologies as routes
 
     ontology_dir = tmp_path / "ontology-external"
     version_dir = ontology_dir / "versions" / "1.0.0"
@@ -436,9 +434,7 @@ def test_ontology_tree_route_reports_unstable_package_as_retryable(monkeypatch, 
     monkeypatch.setattr(
         routes,
         "get_package_tree_cached",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            OntologyPackageRevisionError("synthetic continuous drift")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(OntologyPackageRevisionError("synthetic continuous drift")),
     )
     request = Request(
         {
@@ -492,26 +488,13 @@ def test_ontology_registry_summary_is_scoped_by_workspace_generation(
         raising=False,
     )
 
-    registry_a_generation_10 = ontologies_module.get_ontology_registry(
-        workspace_id="workspace-registry-a"
-    )
-    registry_b_generation_10 = ontologies_module.get_ontology_registry(
-        workspace_id="workspace-registry-b"
-    )
-    assert (
-        ontologies_module.get_ontology_registry(
-            workspace_id="workspace-registry-a"
-        )
-        is registry_a_generation_10
-    )
+    registry_a_generation_10 = ontologies_module.get_ontology_registry(workspace_id="workspace-registry-a")
+    registry_b_generation_10 = ontologies_module.get_ontology_registry(workspace_id="workspace-registry-b")
+    assert ontologies_module.get_ontology_registry(workspace_id="workspace-registry-a") is registry_a_generation_10
 
     generation[0] = 11
-    registry_a_generation_11 = ontologies_module.get_ontology_registry(
-        workspace_id="workspace-registry-a"
-    )
-    registry_b_generation_11 = ontologies_module.get_ontology_registry(
-        workspace_id="workspace-registry-b"
-    )
+    registry_a_generation_11 = ontologies_module.get_ontology_registry(workspace_id="workspace-registry-a")
+    registry_b_generation_11 = ontologies_module.get_ontology_registry(workspace_id="workspace-registry-b")
 
     assert registry_a_generation_11 is not registry_a_generation_10
     assert registry_b_generation_11 is not registry_b_generation_10
@@ -690,9 +673,10 @@ def test_tree_route_uses_one_manifest_snapshot_for_cache_version_and_directory(
     monkeypatch,
     tmp_path,
 ):
-    from api.routes import ontologies as routes
     import json
+
     import ontology.view_cache as view_cache_module
+    from api.routes import ontologies as routes
 
     ontology_dir = tmp_path / "ontology-race"
     version_one = ontology_dir / "versions" / "1.0.0"
@@ -702,12 +686,7 @@ def test_tree_route_uses_one_manifest_snapshot_for_cache_version_and_directory(
     (version_one / "old.md").write_text("old", encoding="utf-8")
     (version_two / "new.md").write_text("new", encoding="utf-8")
     (ontology_dir / "manifest.yaml").write_text(
-        "schema_version: 0.1\n"
-        "version: 1.0.0\n"
-        "active_version: 1.0.0\n"
-        "versions:\n"
-        "  - 1.0.0\n"
-        "  - 2.0.0\n",
+        "schema_version: 0.1\n" "version: 1.0.0\n" "active_version: 1.0.0\n" "versions:\n" "  - 1.0.0\n" "  - 2.0.0\n",
         encoding="utf-8",
     )
     manifests = (
@@ -911,10 +890,7 @@ def test_package_content_revision_detects_same_size_restored_mtime_edit(tmp_path
     )
 
     assert operation.stat().st_size == original_stat.st_size
-    assert (
-        view_cache_module.build_package_revision_source_signature(root)
-        == source_signature
-    )
+    assert view_cache_module.build_package_revision_source_signature(root) == source_signature
     assert build_content_revision(root) != before
 
 
@@ -943,9 +919,7 @@ def test_verified_package_staging_is_scoped_filtered_and_cleaned(tmp_path):
         "hidden",
         encoding="utf-8",
     )
-    admitted_revision = view_cache_module.build_package_content_revision(
-        package_root
-    )
+    admitted_revision = view_cache_module.build_package_content_revision(package_root)
 
     with stage_package(
         source_root=package_root,
@@ -958,24 +932,16 @@ def test_verified_package_staging_is_scoped_filtered_and_cleaned(tmp_path):
         assert staged_root != package_root
         assert staged_root.resolve().is_relative_to(project_root.resolve())
         assert staged_root.name == "ontology"
-        assert staged_root.parent.parent == (
-            project_root / ".ontology-run-staging"
-        )
-        assert (staged_root / "scripts" / "run.py").read_text(
-            encoding="utf-8"
-        ) == "print('admitted')\n"
+        assert staged_root.parent.parent == (project_root / ".ontology-run-staging")
+        assert (staged_root / "scripts" / "run.py").read_text(encoding="utf-8") == "print('admitted')\n"
         assert not (staged_root / "datasets").exists()
         assert not (staged_root / ".private").exists()
-        assert view_cache_module.build_package_content_revision(staged_root) == (
-            admitted_revision
-        )
+        assert view_cache_module.build_package_content_revision(staged_root) == (admitted_revision)
         replaced_source = package_root.with_name("synthetic-replaced")
         package_root.rename(replaced_source)
         package_root.mkdir()
         (package_root / "replacement.txt").write_text("new", encoding="utf-8")
-        assert (staged_root / "scripts" / "run.py").read_text(
-            encoding="utf-8"
-        ) == "print('admitted')\n"
+        assert (staged_root / "scripts" / "run.py").read_text(encoding="utf-8") == "print('admitted')\n"
 
     assert not observed_staged_root.exists()
 
@@ -1083,9 +1049,9 @@ def test_deleted_and_recreated_workspace_does_not_reuse_cached_package_tree(
     monkeypatch,
     tmp_path,
 ):
-    from api.routes import ontologies as routes
     import ontology.view_cache as view_cache_module
     import workspace.workspaces as workspaces_module
+    from api.routes import ontologies as routes
     from workspace.workspaces import create_workspace, delete_workspace, get_workspace_paths
 
     workspace_id = "workspace-tree-recreated"
@@ -1182,9 +1148,7 @@ def test_deleted_and_recreated_workspace_does_not_reuse_cached_package_tree(
     recreate_thread = threading.Thread(target=recreate_workspace)
     delete_thread.start()
     assert invalidation_entered.wait(timeout=5)
-    metadata_lock_available = workspaces_module._workspace_metadata_lock.acquire(
-        blocking=False
-    )
+    metadata_lock_available = workspaces_module._workspace_metadata_lock.acquire(blocking=False)
     if metadata_lock_available:
         workspaces_module._workspace_metadata_lock.release()
     recreate_thread.start()

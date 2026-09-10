@@ -35,10 +35,17 @@ test('save adapter sends PATCH section and the unsaved module draft', async () =
   let call;
   const request = async (path, options) => {
     call = { path, options };
-    return jsonResponse({ section: 'agent', config: { main_agent_max_iterations: 32 } });
+    return jsonResponse({
+      section: 'agent',
+      config: { main_agent_max_iterations: 32 },
+    });
   };
 
-  await saveSystemConfigSection('agent', { main_agent_max_iterations: 32 }, request);
+  await saveSystemConfigSection(
+    'agent',
+    { main_agent_max_iterations: 32 },
+    request,
+  );
 
   assert.equal(call.path, '/api/system-config');
   assert.equal(call.options.method, 'PATCH');
@@ -61,10 +68,14 @@ test('test adapter sends POST section and the unsaved draft and returns tested_a
     });
   };
 
-  const payload = await testSystemConfigSection('web_search', {
-    enabled: true,
-    api_key: 'draft-key',
-  }, request);
+  const payload = await testSystemConfigSection(
+    'web_search',
+    {
+      enabled: true,
+      api_key: 'draft-key',
+    },
+    request,
+  );
 
   assert.equal(call.path, '/api/system-config/test');
   assert.equal(call.options.method, 'POST');
@@ -79,10 +90,17 @@ test('import adapter sends only the prepared config envelope', async () => {
   let call;
   const request = async (path, options) => {
     call = { path, options };
-    return jsonResponse({ success: true, imported_sections: ['agent'], config: { agent: {} } });
+    return jsonResponse({
+      success: true,
+      imported_sections: ['agent'],
+      config: { agent: {} },
+    });
   };
 
-  await importSystemConfig({ agent: { main_agent_max_iterations: 24 } }, request);
+  await importSystemConfig(
+    { agent: { main_agent_max_iterations: 24 } },
+    request,
+  );
 
   assert.equal(call.path, '/api/system-config/import');
   assert.equal(call.options.method, 'POST');
@@ -92,13 +110,16 @@ test('import adapter sends only the prepared config envelope', async () => {
 });
 
 test('request adapter preserves backend detail, status and error code', async () => {
-  const request = async () => jsonResponse({ detail: 'section 非法', code: 'INVALID_SECTION' }, 400);
+  const request = async () =>
+    jsonResponse({ detail: 'section 非法', code: 'INVALID_SECTION' }, 400);
 
   await assert.rejects(
-    () => requestSystemConfigJson(request, '/api/system-config', {}, '请求失败'),
-    (error) => error.message === 'section 非法'
-      && error.status === 400
-      && error.code === 'INVALID_SECTION',
+    () =>
+      requestSystemConfigJson(request, '/api/system-config', {}, '请求失败'),
+    (error) =>
+      error.message === 'section 非法' &&
+      error.status === 400 &&
+      error.code === 'INVALID_SECTION',
   );
 });
 
@@ -110,7 +131,8 @@ test('template adapter keeps the backend filename and blob payload', async () =>
       status: 200,
       headers: {
         'Content-Type': 'application/json',
-        'Content-Disposition': 'attachment; filename="system_config.template.json"',
+        'Content-Disposition':
+          'attachment; filename="system_config.template.json"',
       },
     });
   };
@@ -123,7 +145,9 @@ test('template adapter keeps the backend filename and blob payload', async () =>
 
 test('content disposition parser supports RFC 5987 and safe fallback names', () => {
   assert.equal(
-    systemConfigTemplateFileName("attachment; filename*=UTF-8''system%20config.json"),
+    systemConfigTemplateFileName(
+      "attachment; filename*=UTF-8''system%20config.json",
+    ),
     'system config.json',
   );
   assert.equal(systemConfigTemplateFileName(''), 'system_config.template.json');

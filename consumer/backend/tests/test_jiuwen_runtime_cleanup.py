@@ -7,12 +7,10 @@ import importlib
 import threading
 from types import SimpleNamespace
 
-import pytest
-
 import agent.core.jiuwen_engine as jiuwen_engine
+import pytest
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 from agent.exceptions import WorkflowCancelledError
-
 
 _REAL_IMPORT_MODULE = importlib.import_module
 
@@ -140,9 +138,7 @@ def test_owned_runtime_cleanup_releases_session_when_callback_clear_fails(monkey
             )
         )
 
-    assert list(framework._metrics) == [
-        "agent-unrelated_after_model_call:_on_after_model_call"
-    ]
+    assert list(framework._metrics) == ["agent-unrelated_after_model_call:_on_after_model_call"]
     assert released_sessions == ["agent-failing-clear.session.1"]
 
 

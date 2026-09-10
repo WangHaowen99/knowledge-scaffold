@@ -3,21 +3,21 @@ import time
 from pathlib import Path
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret, synthetic_weak_secret
 from integration.mcp.config import (
     MCPConfigurationError,
     MCPRuntimeConfig,
     load_mcp_runtime_config,
 )
-from integration.mcp.token_store import MCPTokenStore
 from integration.mcp.token_service import (
     MCPTokenAuthError,
     create_mcp_token,
     list_mcp_tokens,
-    revoke_mcp_token,
     revoke_all_mcp_tokens_for_user,
+    revoke_mcp_token,
     verify_mcp_token,
 )
+from integration.mcp.token_store import MCPTokenStore
 
 
 def _config(path: Path) -> MCPRuntimeConfig:
@@ -26,7 +26,7 @@ def _config(path: Path) -> MCPRuntimeConfig:
         server_port=7488,
         public_base_url="",
         agentic_base_url="",
-        token_secret="test-secret-at-least-32-characters-long",
+        token_secret=synthetic_secret("mcp_token_service-credential-01"),
         token_algorithm="HS256",
         token_issuer="meta-wise",
         token_audience="meta-wise-mcp",
@@ -89,7 +89,12 @@ def test_revoked_mcp_token_is_rejected(tmp_path):
 
 
 def test_mcp_token_rejects_missing_or_weak_signing_secret(tmp_path):
-    cfg = MCPRuntimeConfig(**{**_config(tmp_path / "tokens.json").__dict__, "token_secret": "weak"})
+    cfg = MCPRuntimeConfig(
+        **{
+            **_config(tmp_path / "tokens.json").__dict__,
+            "token_secret": synthetic_weak_secret("mcp_token_service-credential-02"),
+        }
+    )
 
     with pytest.raises(ValueError, match="MCP_TOKEN_SECRET"):
         create_mcp_token(
@@ -158,18 +163,22 @@ def test_legacy_plaintext_token_is_backed_up_and_removed(tmp_path):
     path = tmp_path / "tokens.json"
     plaintext = "mcp_legacy-secret-token"
     path.write_text(
-        json.dumps({
-            "version": 1,
-            "tokens": [{
-                "token_id": "legacy-1",
-                "jti": "legacy-jti",
-                "token_value": plaintext,
-                "username": "admin",
-                "workspace_id": "test_project",
-                "scopes": ["mcp:search"],
-                "status": "active",
-            }],
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "tokens": [
+                    {
+                        "token_id": "legacy-1",
+                        "jti": "legacy-jti",
+                        "token_value": plaintext,
+                        "username": "admin",
+                        "workspace_id": "test_project",
+                        "scopes": ["mcp:search"],
+                        "status": "active",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
 

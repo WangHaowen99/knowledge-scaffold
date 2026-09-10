@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 import ctypes
-from copy import deepcopy
 import hashlib
 import json
-from pathlib import Path
 import sys
+from copy import deepcopy
+from pathlib import Path
 
 import pytest
-
 from scripts import run_controlled_solver_validation as runner
 from scripts.run_controlled_solver_validation import (
-    ControlledValidationError,
     EXPECTED_SCHEMA_VERSION,
     INPUT_SCHEMA_VERSION,
     MANIFEST_SCHEMA_VERSION,
     MAX_FILE_BYTES,
+    ControlledValidationError,
     load_bundle,
     main,
     run_bundle,
@@ -96,9 +95,7 @@ def _input_payload() -> dict:
             "profile_id": "ordered_binary_route.v1",
             "required_facts": ["route_metrics"],
             "fact_source": {"kind": "locked_model"},
-            "materialized_facts": [
-                {"name": "route_metrics", "value": deepcopy(ROUTE_FACT)}
-            ],
+            "materialized_facts": [{"name": "route_metrics", "value": deepcopy(ROUTE_FACT)}],
             "display_mapping": {
                 "OPTION_0": "SYNTHETIC_ROUTE_A",
                 "OPTION_1": "SYNTHETIC_ROUTE_B",
@@ -109,10 +106,7 @@ def _input_payload() -> dict:
 
 
 def _expected_payload() -> dict:
-    assignment = {
-        item_id: "OPTION_0" if index < 2 else "OPTION_1"
-        for index, item_id in enumerate(ITEM_IDS)
-    }
+    assignment = {item_id: "OPTION_0" if index < 2 else "OPTION_1" for index, item_id in enumerate(ITEM_IDS)}
     return {
         "schema_version": EXPECTED_SCHEMA_VERSION,
         "status": "completed",
@@ -126,9 +120,7 @@ def _expected_payload() -> dict:
             "items": [
                 {
                     "item_id": item_id,
-                    "route": (
-                        "SYNTHETIC_ROUTE_A" if index < 2 else "SYNTHETIC_ROUTE_B"
-                    ),
+                    "route": ("SYNTHETIC_ROUTE_A" if index < 2 else "SYNTHETIC_ROUTE_B"),
                 }
                 for index, item_id in enumerate(ITEM_IDS)
             ],
@@ -192,19 +184,13 @@ def _repository_root(tmp_path: Path) -> Path:
     return value
 
 
-def test_main_returns_two_without_opt_in_and_does_not_resolve_paths(
-    monkeypatch, capsys
-):
+def test_main_returns_two_without_opt_in_and_does_not_resolve_paths(monkeypatch, capsys):
     monkeypatch.delenv("SOLVER_CONTROLLED_VALIDATION_ROOT", raising=False)
     monkeypatch.delenv("SOLVER_CONTROLLED_VALIDATION_TRUST_ROOT", raising=False)
     monkeypatch.delenv("SOLVER_CONTROLLED_VALIDATION_SERVICE_ENDPOINT", raising=False)
-    monkeypatch.delenv(
-        "SOLVER_CONTROLLED_VALIDATION_SERVICE_CREDENTIAL_REF", raising=False
-    )
+    monkeypatch.delenv("SOLVER_CONTROLLED_VALIDATION_SERVICE_CREDENTIAL_REF", raising=False)
     monkeypatch.delenv("SOLVER_CONTROLLED_VALIDATION_SERVICE_TOKEN", raising=False)
-    monkeypatch.delenv(
-        "SOLVER_CONTROLLED_VALIDATION_SERVICE_TOKEN_FILE", raising=False
-    )
+    monkeypatch.delenv("SOLVER_CONTROLLED_VALIDATION_SERVICE_TOKEN_FILE", raising=False)
     monkeypatch.setattr(
         runner,
         "_default_repository_root",
@@ -228,9 +214,7 @@ def test_loader_rejects_a_root_inside_the_repository(tmp_path):
         )
 
 
-def test_loader_rejects_a_bundle_under_the_main_repo_from_a_linked_worktree(
-    tmp_path, monkeypatch
-):
+def test_loader_rejects_a_bundle_under_the_main_repo_from_a_linked_worktree(tmp_path, monkeypatch):
     main_repository = tmp_path / "main-repository"
     linked_worktree = main_repository / ".worktrees" / "synthetic-worktree"
     linked_worktree.mkdir(parents=True)
@@ -246,12 +230,8 @@ def _register_external_worktree(main_repository: Path, worktree: Path) -> None:
     metadata = main_repository / ".git" / "worktrees" / "external-synthetic"
     metadata.mkdir(parents=True)
     worktree_git_file = worktree / ".git"
-    worktree_git_file.write_text(
-        "gitdir: {}\n".format(metadata), encoding="utf-8"
-    )
-    (metadata / "gitdir").write_text(
-        str(worktree_git_file.resolve()), encoding="utf-8"
-    )
+    worktree_git_file.write_text("gitdir: {}\n".format(metadata), encoding="utf-8")
+    (metadata / "gitdir").write_text(str(worktree_git_file.resolve()), encoding="utf-8")
 
 
 def test_loader_rejects_a_bundle_in_an_external_registered_worktree(tmp_path):
@@ -259,9 +239,7 @@ def test_loader_rejects_a_bundle_in_an_external_registered_worktree(tmp_path):
     (main_repository / ".git").mkdir(parents=True)
     external_worktree = tmp_path / "external-worktree"
     _register_external_worktree(main_repository, external_worktree)
-    bundle, trust_root = write_synthetic_bundle(
-        external_worktree / "controlled-bundle"
-    )
+    bundle, trust_root = write_synthetic_bundle(external_worktree / "controlled-bundle")
 
     with pytest.raises(ControlledValidationError, match="outside"):
         load_bundle(
@@ -302,9 +280,7 @@ def test_loader_rejects_an_unapproved_trust_root(tmp_path):
         load_bundle(
             root=root,
             repository_root=_repository_root(tmp_path),
-            approved_trust_root=(
-                "sha256:" + ("0" if trust_root[-1] != "0" else "1") * 64
-            ),
+            approved_trust_root=("sha256:" + ("0" if trust_root[-1] != "0" else "1") * 64),
         )
 
 
@@ -342,14 +318,16 @@ def test_loader_rejects_duplicate_json_keys_after_digest_validation(tmp_path):
 
 
 @pytest.mark.parametrize("rendered_float", ("1400.0", "1.4e3", "-0.0"))
-def test_loader_rejects_floating_point_json_after_digest_validation(
-    tmp_path, rendered_float
-):
+def test_loader_rejects_floating_point_json_after_digest_validation(tmp_path, rendered_float):
     root, _trust_root = write_synthetic_bundle(tmp_path / "bundle")
     input_bytes = (root / "input.json").read_bytes()
-    expected_bytes = (root / "expected.json").read_bytes().replace(
-        b'"primary_score":1400',
-        '"primary_score":{}'.format(rendered_float).encode("ascii"),
+    expected_bytes = (
+        (root / "expected.json")
+        .read_bytes()
+        .replace(
+            b'"primary_score":1400',
+            '"primary_score":{}'.format(rendered_float).encode("ascii"),
+        )
     )
     (root / "expected.json").write_bytes(expected_bytes)
     trust_root = _write_manifest(
@@ -432,7 +410,7 @@ def test_windows_bundle_reader_uses_a_no_follow_handle(tmp_path, monkeypatch):
 def _connector_environment(monkeypatch) -> None:
     monkeypatch.setenv(
         "SOLVER_CONTROLLED_VALIDATION_SERVICE_ENDPOINT",
-        "https://solver-connector.invalid",
+        "https://solver-connector.example.net",
     )
     monkeypatch.setenv(
         "SOLVER_CONTROLLED_VALIDATION_SERVICE_CREDENTIAL_REF",
@@ -442,12 +420,8 @@ def _connector_environment(monkeypatch) -> None:
         "SOLVER_CONTROLLED_VALIDATION_SERVICE_TOKEN",
         "synthetic-controlled-validation-token",
     )
-    monkeypatch.delenv(
-        "SOLVER_CONTROLLED_VALIDATION_SERVICE_TOKEN_FILE", raising=False
-    )
-    monkeypatch.delenv(
-        "SOLVER_CONTROLLED_VALIDATION_ALLOW_HTTP", raising=False
-    )
+    monkeypatch.delenv("SOLVER_CONTROLLED_VALIDATION_SERVICE_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("SOLVER_CONTROLLED_VALIDATION_ALLOW_HTTP", raising=False)
 
 
 def test_controlled_connector_configuration_rejects_http_without_explicit_opt_in(
@@ -478,9 +452,7 @@ def test_controlled_connector_configuration_accepts_private_http_with_opt_in(
     assert configuration.endpoint == "http://ortools-solver:8080"
 
 
-def test_run_bundle_uses_ortools_connector_and_emits_only_status_and_digests(
-    tmp_path, capsys, monkeypatch
-):
+def test_run_bundle_uses_ortools_connector_and_emits_only_status_and_digests(tmp_path, capsys, monkeypatch):
     root, trust_root = write_synthetic_bundle(tmp_path / "bundle")
     expected = _expected_payload()
     _connector_environment(monkeypatch)
@@ -494,34 +466,34 @@ def test_run_bundle_uses_ortools_connector_and_emits_only_status_and_digests(
         def capabilities(self, *, binding):
             seen["capabilities_binding"] = dict(binding)
             return {
-                        "protocol_versions": ["ortools.solver.v1"],
-                        "connector": {
-                            "name": "synthetic-connector",
-                            "version": "1.0.0",
-                            "build": "sha256:" + "1" * 64,
-                        },
-                        "execution": {
-                            "async_jobs": True,
-                            "cancellation": True,
-                            "prefer_wait": False,
-                        },
-                        "problem_families": [
-                            {
-                                "name": "binary_ordered_route",
-                                "versions": ["1.0"],
-                                "features": ["lexicographic_objective"],
-                                "result_assurances": [
-                                    "feasible_solution",
-                                    "best_bound",
-                                ],
-                                "limits": {
-                                    "max_payload_bytes": 1048576,
-                                    "max_solve_time_ms": 60000,
-                                    "max_workers": 1,
-                                },
-                            }
+                "protocol_versions": ["ortools.solver.v1"],
+                "connector": {
+                    "name": "synthetic-connector",
+                    "version": "1.0.0",
+                    "build": "sha256:" + "1" * 64,
+                },
+                "execution": {
+                    "async_jobs": True,
+                    "cancellation": True,
+                    "prefer_wait": False,
+                },
+                "problem_families": [
+                    {
+                        "name": "binary_ordered_route",
+                        "versions": ["1.0"],
+                        "features": ["lexicographic_objective"],
+                        "result_assurances": [
+                            "feasible_solution",
+                            "best_bound",
                         ],
+                        "limits": {
+                            "max_payload_bytes": 1048576,
+                            "max_solve_time_ms": 60000,
+                            "max_workers": 1,
+                        },
                     }
+                ],
+            }
 
         def submit(self, **kwargs):
             seen["submit"] = kwargs
@@ -567,18 +539,19 @@ def test_run_bundle_uses_ortools_connector_and_emits_only_status_and_digests(
         "_connector",
         lambda configuration: SyntheticOrToolsConnector(
             credential_resolver=lambda reference: (
-                configuration.token
-                if reference == configuration.credential_ref
-                else None
+                configuration.token if reference == configuration.credential_ref else None
             )
         ),
     )
 
-    assert run_bundle(
-        root=root,
-        repository_root=_repository_root(tmp_path),
-        approved_trust_root=trust_root,
-    ) == 0
+    assert (
+        run_bundle(
+            root=root,
+            repository_root=_repository_root(tmp_path),
+            approved_trust_root=trust_root,
+        )
+        == 0
+    )
 
     output = json.loads(capsys.readouterr().out)
     assert set(output) == {"status", "input_digest", "result_digest"}
@@ -595,12 +568,13 @@ def test_run_bundle_uses_ortools_connector_and_emits_only_status_and_digests(
     assert "limits" not in submit
     assert submit["idempotency_key"].startswith("hmac-sha256:")
     binding = submit["binding"]
-    assert binding["endpoint"] == "https://solver-connector.invalid"
+    assert binding["endpoint"] == "https://solver-connector.example.net"
     assert binding["service_credential_ref"] == "controlled-validation-credential"
     assert "token" not in json.dumps(binding).lower()
-    assert seen["client_kwargs"]["credential_resolver"](
-        "controlled-validation-credential"
-    ) == "synthetic-controlled-validation-token"
+    assert (
+        seen["client_kwargs"]["credential_resolver"]("controlled-validation-credential")
+        == "synthetic-controlled-validation-token"
+    )
     assert sys.modules.get("solver_coordination.backends.local_process") is local_backend_module
 
 
@@ -629,7 +603,7 @@ def test_connector_token_file_cannot_live_in_repository_or_bundle(tmp_path, monk
     token_file.write_text("synthetic-controlled-validation-token", encoding="utf-8")
     monkeypatch.setenv(
         "SOLVER_CONTROLLED_VALIDATION_SERVICE_ENDPOINT",
-        "https://solver-connector.invalid",
+        "https://solver-connector.example.net",
     )
     monkeypatch.setenv(
         "SOLVER_CONTROLLED_VALIDATION_SERVICE_CREDENTIAL_REF",
@@ -639,9 +613,7 @@ def test_connector_token_file_cannot_live_in_repository_or_bundle(tmp_path, monk
     monkeypatch.setenv("SOLVER_CONTROLLED_VALIDATION_SERVICE_TOKEN_FILE", str(token_file))
 
     with pytest.raises(ControlledValidationError, match="credential file"):
-        runner._connector_configuration_from_env(
-            protected_repository_roots=(repository,), bundle_root=root
-        )
+        runner._connector_configuration_from_env(protected_repository_roots=(repository,), bundle_root=root)
 
 
 def test_connector_job_is_cancelled_when_polling_fails(tmp_path, monkeypatch):
@@ -702,9 +674,7 @@ def test_connector_job_is_cancelled_when_polling_fails(tmp_path, monkeypatch):
 
 def test_main_requires_connector_opt_in_before_resolving_paths(monkeypatch, capsys):
     monkeypatch.setenv("SOLVER_CONTROLLED_VALIDATION_ROOT", "synthetic-root")
-    monkeypatch.setenv(
-        "SOLVER_CONTROLLED_VALIDATION_TRUST_ROOT", "sha256:" + "1" * 64
-    )
+    monkeypatch.setenv("SOLVER_CONTROLLED_VALIDATION_TRUST_ROOT", "sha256:" + "1" * 64)
     _connector_environment(monkeypatch)
     for name in (
         "SOLVER_CONTROLLED_VALIDATION_SERVICE_ENDPOINT",
@@ -723,14 +693,10 @@ def test_main_requires_connector_opt_in_before_resolving_paths(monkeypatch, caps
     assert capsys.readouterr().out == ""
 
 
-def test_main_failure_output_is_generic_and_contains_no_exception_detail(
-    monkeypatch, capsys
-):
+def test_main_failure_output_is_generic_and_contains_no_exception_detail(monkeypatch, capsys):
     sentinel = "SYNTHETIC_PRIVATE_SENTINEL"
     monkeypatch.setenv("SOLVER_CONTROLLED_VALIDATION_ROOT", "synthetic-invalid-root")
-    monkeypatch.setenv(
-        "SOLVER_CONTROLLED_VALIDATION_TRUST_ROOT", "sha256:" + "1" * 64
-    )
+    monkeypatch.setenv("SOLVER_CONTROLLED_VALIDATION_TRUST_ROOT", "sha256:" + "1" * 64)
     _connector_environment(monkeypatch)
     monkeypatch.setattr(
         runner,

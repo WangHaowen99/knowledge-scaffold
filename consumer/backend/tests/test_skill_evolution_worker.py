@@ -5,11 +5,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from agent.skill_evolution.models import TaskRecord
 from agent.skill_evolution.service import SkillEvolutionService
 from agent.skill_evolution.store import SkillEvolutionStore
 from agent.skill_evolution.worker import SkillEvolutionWorker
+
+
+def _enabled_config():
+    return {"enabled": True, "base_url": "https://service.example.net", "timeout_seconds": 30}
 
 
 def _make_record(store, task_id="t1", status="running", age_minutes=0):
@@ -34,7 +37,7 @@ def _make_record(store, task_id="t1", status="running", age_minutes=0):
 def test_worker_times_out_long_running_task(tmp_path):
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store)
-    service._config = lambda: {"enabled": True, "base_url": "http://x", "timeout_seconds": 30}  # noqa: SLF001
+    service._config = _enabled_config  # noqa: SLF001
     worker = SkillEvolutionWorker(store, service, poll_interval_seconds=10, task_timeout_seconds=60)
     # Task created 2 hours ago → exceeds 60s timeout
     rec = _make_record(store, age_minutes=120, status="running")
@@ -51,13 +54,14 @@ def test_worker_does_not_time_out_fresh_task(tmp_path):
     flips submitted→running and the fake client returns 'running', so the task
     stays in-flight. The running path only calls get_run_status (never
     _resolve_ontology), so no ontology fixture is needed."""
+
     class _NoopClient:
         def get_run_status(self, run_id):
             return {"status": "running"}
 
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store, client=_NoopClient())
-    service._config = lambda: {"enabled": True, "base_url": "http://x", "timeout_seconds": 30}  # noqa: SLF001
+    service._config = _enabled_config  # noqa: SLF001
     worker = SkillEvolutionWorker(store, service, poll_interval_seconds=10, task_timeout_seconds=1800)
     _make_record(store, age_minutes=0, status="submitted")
 
@@ -68,7 +72,7 @@ def test_worker_does_not_time_out_fresh_task(tmp_path):
 def test_mark_inflight_interrupted_on_restart(tmp_path):
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store)
-    service._config = lambda: {"enabled": True, "base_url": "http://x", "timeout_seconds": 30}  # noqa: SLF001
+    service._config = _enabled_config  # noqa: SLF001
     # In-flight tasks
     _make_record(store, task_id="t1", status="submitted")
     _make_record(store, task_id="t2", status="running")
@@ -146,7 +150,8 @@ def test_run_iteration_skips_tick_when_disabled(monkeypatch, tmp_path):
     ticks = []
     monkeypatch.setattr(worker, "_tick", lambda: ticks.append(1))
     monkeypatch.setattr(
-        worker_mod, "load_system_config",
+        worker_mod,
+        "load_system_config",
         lambda: {"skill_evolution": {"enabled": False, "poll_interval_seconds": 7, "task_timeout_seconds": 120}},
     )
     worker._run_iteration()
@@ -166,7 +171,8 @@ def test_run_iteration_ticks_and_adopts_new_intervals(monkeypatch, tmp_path):
     ticks = []
     monkeypatch.setattr(worker, "_tick", lambda: ticks.append(worker._task_timeout))
     monkeypatch.setattr(
-        worker_mod, "load_system_config",
+        worker_mod,
+        "load_system_config",
         lambda: {"skill_evolution": {"enabled": True, "poll_interval_seconds": 3, "task_timeout_seconds": 90}},
     )
     worker._run_iteration()
@@ -183,7 +189,7 @@ def test_fail_does_not_clobber_terminal(tmp_path):
     back to failed."""
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store)
-    service._config = lambda: {"enabled": True, "base_url": "http://x", "timeout_seconds": 30}  # noqa: SLF001
+    service._config = _enabled_config  # noqa: SLF001
     rec = _make_record(store, age_minutes=120, status="running")
 
     # Simulate a route approving the task after the worker snapshotted `rec`.

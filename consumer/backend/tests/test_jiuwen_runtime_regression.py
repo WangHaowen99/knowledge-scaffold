@@ -172,9 +172,7 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(events[-1].event_type, "turn.finished")
                 self.assertEqual(events[-1].status, "completed")
                 tool_ids = {
-                    event.payload.get("tool_call_id")
-                    for event in events
-                    if event.event_type.startswith("tool.")
+                    event.payload.get("tool_call_id") for event in events if event.event_type.startswith("tool.")
                 }
                 self.assertEqual(tool_ids, {"{}:tool".format(run_id)})
 
@@ -196,9 +194,7 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
             engine_factory=BlockingEngine,
         )
         owner_sink = _PublicEventBusSink()
-        owner = asyncio.create_task(
-            runtime.arun(_context("duplicate-run"), owner_sink)
-        )
+        owner = asyncio.create_task(runtime.arun(_context("duplicate-run"), owner_sink))
         await asyncio.wait_for(started.wait(), timeout=2)
 
         with self.assertRaisesRegex(RuntimeError, "already has an active run"):

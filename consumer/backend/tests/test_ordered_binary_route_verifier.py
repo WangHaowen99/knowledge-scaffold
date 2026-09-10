@@ -5,7 +5,6 @@ from dataclasses import replace
 from typing import Any, Mapping
 
 import pytest
-
 from solver_coordination.canonical import sha256_digest
 from solver_coordination.contracts import (
     FactSnapshot,
@@ -26,7 +25,6 @@ from solver_coordination.verification.ordered_binary_route import (
     OrderedBinaryRouteIndependentVerifier,
 )
 from solver_coordination.verification.profile_dispatch import ProfileDispatchVerifier
-
 
 OBJECTIVES = [
     {"metric": "primary_score", "sense": "maximize"},
@@ -94,14 +92,8 @@ ROUTE_FACT = {
 
 def _candidate_route_fact() -> dict[str, Any]:
     candidate_ids = ["ALL_0", "ALL_1"]
-    candidate_ids.extend(
-        "OPTION_0_TO_OPTION_1_K{:04d}".format(index)
-        for index in range(1, 4)
-    )
-    candidate_ids.extend(
-        "OPTION_1_TO_OPTION_0_K{:04d}".format(index)
-        for index in range(1, 4)
-    )
+    candidate_ids.extend("OPTION_0_TO_OPTION_1_K{:04d}".format(index) for index in range(1, 4))
+    candidate_ids.extend("OPTION_1_TO_OPTION_0_K{:04d}".format(index) for index in range(1, 4))
     candidates = {
         candidate_id: {
             "eligible": True,
@@ -248,8 +240,7 @@ def _service_candidate_digest(problem: ProblemIR) -> str:
                 "eligible": candidate["eligible"],
                 "assignment": dict(candidate["assignment"]),
                 "metrics": {
-                    objective["metric"]: candidate["metrics"][objective["metric"]]
-                    for objective in problem.objectives
+                    objective["metric"]: candidate["metrics"][objective["metric"]] for objective in problem.objectives
                 },
             }
             for candidate in _candidate_payloads(problem)
@@ -281,8 +272,7 @@ def _result_for_candidate(
             **dict(candidate["assignment"]),
         },
         objective_values={
-            objective["metric"]: candidate["metrics"][objective["metric"]]
-            for objective in problem.objectives
+            objective["metric"]: candidate["metrics"][objective["metric"]] for objective in problem.objectives
         },
         diagnostics=(),
         engine={"name": "ortools-cp-sat", "version": "synthetic"},
@@ -307,9 +297,7 @@ def _fixture() -> tuple[NormalizedInput, FactSnapshot, ProblemIR, SolverResult]:
 def _domain_certificate_fixture():
     normalized_input, fact_snapshot, base_problem, _solver_result = _fixture()
     compiled = base_problem.to_dict()
-    compiled["parameters"]["domain_evaluation"] = {
-        "schema_version": "refinery_route_context.v1"
-    }
+    compiled["parameters"]["domain_evaluation"] = {"schema_version": "refinery_route_context.v1"}
     problem = _problem_from_compiled(
         compiled,
         normalized_input=normalized_input,
@@ -368,9 +356,7 @@ def test_independent_verifier_proves_a_genuine_result_optimal():
 
 
 def test_independent_verifier_records_matching_domain_candidate_certificate():
-    normalized_input, fact_snapshot, problem, solver_result = (
-        _domain_certificate_fixture()
-    )
+    normalized_input, fact_snapshot, problem, solver_result = _domain_certificate_fixture()
 
     verification = _verify(
         normalized_input=normalized_input,
@@ -384,9 +370,7 @@ def test_independent_verifier_records_matching_domain_candidate_certificate():
 
 
 def test_independent_verifier_rejects_divergent_domain_candidate_certificate():
-    normalized_input, fact_snapshot, problem, solver_result = (
-        _domain_certificate_fixture()
-    )
+    normalized_input, fact_snapshot, problem, solver_result = _domain_certificate_fixture()
     assurance = solver_result.diagnostics[0]
     bad_assurance = {
         **dict(assurance),
@@ -480,9 +464,7 @@ def test_independent_verifier_rejects_an_unknown_item_assignment_key():
 
 def test_independent_verifier_rejects_assignment_with_noncanonical_item_key_order():
     normalized_input, fact_snapshot, problem, solver_result = _fixture()
-    canonical_items = tuple(
-        key for key in solver_result.assignment if key != "candidate_id"
-    )
+    canonical_items = tuple(key for key in solver_result.assignment if key != "candidate_id")
     canonical_values = tuple(solver_result.assignment[key] for key in canonical_items)
     assignment = {"candidate_id": solver_result.assignment["candidate_id"]}
     assignment.update(zip(reversed(canonical_items), canonical_values))
@@ -552,11 +534,7 @@ def test_independent_verifier_rejects_a_changed_fact_snapshot_digest():
 
 def test_independent_verifier_rejects_a_nonoptimal_optimal_claim():
     normalized_input, fact_snapshot, problem, _solver_result = _fixture()
-    nonoptimal = next(
-        candidate
-        for candidate in _candidate_payloads(problem)
-        if candidate["candidate_id"] == "ALL_0"
-    )
+    nonoptimal = next(candidate for candidate in _candidate_payloads(problem) if candidate["candidate_id"] == "ALL_0")
 
     with pytest.raises(VerificationDivergenceError):
         _verify(
@@ -752,9 +730,7 @@ def test_profile_dispatch_preserves_verifier_runtime_failures():
     normalized_input, fact_snapshot, problem, solver_result = _fixture()
 
     with pytest.raises(VerificationRuntimeFailure, match="runtime failure"):
-        ProfileDispatchVerifier(
-            _DispatchRegistry(_Registration(_RuntimeFailureVerifier()))
-        ).verify(
+        ProfileDispatchVerifier(_DispatchRegistry(_Registration(_RuntimeFailureVerifier()))).verify(
             problem=problem,
             capability=_capability(),
             normalized_input=normalized_input,

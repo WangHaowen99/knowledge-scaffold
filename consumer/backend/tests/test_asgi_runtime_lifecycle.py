@@ -4,9 +4,8 @@ import asyncio
 import threading
 from types import SimpleNamespace
 
-import pytest
-
 import app as app_module
+import pytest
 from agent.runtime.config import NativeAsyncRuntimeConfig
 from agent.runtime.event_bus import AsyncEventBus, EventBusClosedError
 from agent.runtime.runtime import RuntimeContainer, RuntimeState
@@ -138,9 +137,7 @@ def test_session_recovery_batches_yield_until_bounded_queue_is_complete():
             }
 
     manager = Manager()
-    outcome = asyncio.run(
-        _run_session_recovery_batches(manager, threading.Event())
-    )
+    outcome = asyncio.run(_run_session_recovery_batches(manager, threading.Event()))
 
     assert manager.calls == 2
     assert outcome["complete"] is True
@@ -440,9 +437,7 @@ def test_runtime_container_partial_start_failure_cleans_up_in_reverse_order():
             raise RuntimeError("synthetic client startup failure")
 
         container = RuntimeContainer(
-            config=NativeAsyncRuntimeConfig(
-                shutdown_total_deadline_seconds=1.0
-            ),
+            config=NativeAsyncRuntimeConfig(shutdown_total_deadline_seconds=1.0),
             runner_lifecycle=runner,
             manager=manager,
             event_hub=event_hub,
@@ -492,9 +487,7 @@ def test_runtime_container_closes_the_process_level_event_bus():
         assert reservation_id
         assert container.metrics()["event_hub"]["reservations"] == 1
 
-        assert await container.close(
-            deadline=asyncio.get_running_loop().time() + 1.0
-        )
+        assert await container.close(deadline=asyncio.get_running_loop().time() + 1.0)
         assert container.metrics()["event_hub"]["reservations"] == 0
         with pytest.raises(EventBusClosedError):
             await event_bus.reserve_subscriber("run_after_shutdown")

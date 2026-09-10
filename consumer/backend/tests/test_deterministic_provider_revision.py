@@ -2,13 +2,12 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
-
 from agent.tools.business_data.deterministic import (
     DeterministicProviderError,
     resolve_deterministic_provider_binding,
 )
+from backend_synthetic_credentials import synthetic_password
 from integration.sandbox.errors import SandboxUnavailableError
-
 
 LEGACY_FIELDS = {
     "data_revision",
@@ -34,10 +33,10 @@ def _pin_synthetic_provider_endpoint(monkeypatch):
 
 def _source(provider="neo4j", **overrides):
     config = {
-        "uri": "bolt://neo4j.example.invalid:7687",
+        "uri": "bolt://neo4j.example.net:7687",
         "database": "neo4j",
         "username": "reader",
-        "password": "synthetic-password",
+        "password": synthetic_password("deterministic-provider-password"),
         "workspace_property": "d2o_workspace_id",
         "workspace_value": "workspace-a",
         "ontology_property": "d2o_ontology_id",
@@ -74,7 +73,7 @@ def test_neo4j_binding_derives_revision_and_scope_without_manual_fields(monkeypa
     assert binding.effective_connection.options["workspace_value"] == "workspace-a"
     assert binding.effective_connection.options["ontology_value"] == "ontology-a"
     assert not LEGACY_FIELDS.intersection(binding.effective_connection.options)
-    assert "synthetic-password" not in binding.scope_digest
+    assert synthetic_password("deterministic-provider-password") not in binding.scope_digest
 
 
 def test_binding_revision_tracks_physical_database_and_scope(monkeypatch):
@@ -169,9 +168,7 @@ def test_provider_endpoint_resolution_failure_is_closed_before_execution(monkeyp
     monkeypatch.setattr(
         module,
         "sandbox_reachable_url",
-        lambda _endpoint: (_ for _ in ()).throw(
-            SandboxUnavailableError("synthetic resolution failure")
-        ),
+        lambda _endpoint: (_ for _ in ()).throw(SandboxUnavailableError("synthetic resolution failure")),
     )
 
     with pytest.raises(DeterministicProviderError) as exc:
@@ -198,9 +195,9 @@ def test_deterministic_provider_rejects_short_credentials(monkeypatch, field):
 @pytest.mark.parametrize(
     "uri",
     [
-        "bolt://embedded:uri-secret@neo4j.example.invalid:7687",
-        "bolt://neo4j.example.invalid:7687?access_token=query-secret",
-        "bolt://neo4j.example.invalid:7687#fragment-secret",
+        "bolt://embedded:uri-secret@neo4j.example.net:7687",
+        "bolt://neo4j.example.net:7687?access_token=query-secret",
+        "bolt://neo4j.example.net:7687#fragment-secret",
     ],
 )
 def test_deterministic_provider_rejects_credentials_embedded_in_uri(monkeypatch, uri):

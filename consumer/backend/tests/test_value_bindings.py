@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from ontology.ontology_catalog import (
     ValueBindingValidationResult,
     get_object_field_bindings,
@@ -79,6 +78,7 @@ def _full_mapping_payload() -> dict:
 
 
 # -- validate_value_bindings -------------------------------------------------
+
 
 def test_validate_value_bindings_passes_for_valid_refs(tmp_path):
     _write_mapping(tmp_path, _full_mapping_payload())
@@ -180,6 +180,7 @@ def test_validate_value_bindings_blocks_invalid_json(tmp_path):
 
 # -- import integration -------------------------------------------------------
 
+
 def test_import_validation_blocks_unknown_binding_ref(tmp_path):
     payload = _full_mapping_payload()
     payload["objects"]["flight"]["fields"]["LATEST_DEP_ARP_CD"]["value_binding_ref"] = "bad-ref"
@@ -217,6 +218,7 @@ def test_import_validation_passes_for_valid_bindings(tmp_path):
 
 # -- runtime helpers ----------------------------------------------------------
 
+
 def test_load_value_bindings(tmp_path):
     _write_mapping(tmp_path, _full_mapping_payload())
     bindings = load_value_bindings(tmp_path)
@@ -247,8 +249,11 @@ def test_get_object_mapping_field_keys(tmp_path):
     _write_mapping(tmp_path, _full_mapping_payload())
     keys = get_object_mapping_field_keys(tmp_path, "flight")
     assert set(keys) == {
-        "FLT_ID", "LATEST_DEP_ARP_CD", "LATEST_ARV_ARP_CD",
-        "AIRCRAFT_TYPE_CD", "INT_MK",
+        "FLT_ID",
+        "LATEST_DEP_ARP_CD",
+        "LATEST_ARV_ARP_CD",
+        "AIRCRAFT_TYPE_CD",
+        "INT_MK",
     }
 
 

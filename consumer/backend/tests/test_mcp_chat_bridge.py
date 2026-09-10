@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
-import threading
 from types import SimpleNamespace
 
 import pytest
-
 from agent.runtime.contracts import (
     PublicEvent,
     RunSnapshot,
@@ -18,14 +17,15 @@ from agent.runtime.contracts import (
     RuntimeErrorInfo,
     RuntimeResult,
 )
-from agent.runtime.offload import BoundedOffloadPool
 from agent.runtime.event_bus import (
     EventSubscriberLimitExceeded,
     EventSubscriberReservationError,
 )
+from agent.runtime.offload import BoundedOffloadPool
 from api.protocols.mcp import server as mcp_server
 from api.protocols.mcp.chat_adapter import execute_chat_tool, execute_chat_tool_async
 from api.protocols.mcp.workflow_bridge import execute_mcp_chat_workflow_async
+from backend_synthetic_credentials import synthetic_secret
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import MCPRequestScope
 from persistence.execution_store import ExecutionStore
@@ -104,11 +104,7 @@ class _Manager:
             status=self.final_status,
             result=result,
             error=self.error if self.final_status is RunStatus.FAILED else None,
-            pending_interaction=(
-                self.pending_interaction
-                if self.final_status is RunStatus.AWAITING_INPUT
-                else None
-            ),
+            pending_interaction=(self.pending_interaction if self.final_status is RunStatus.AWAITING_INPUT else None),
             last_seq=last_seq,
             updated_at="2026-01-01T00:00:01Z",
         )
@@ -155,15 +151,9 @@ class _EventHub:
     def stream(self, run_id, *, after_seq=0, reservation_id=None):
         async def generate():
             self.stream_calls.append((run_id, after_seq, reservation_id))
-            if (
-                self.invalidate_reservation_once
-                and len(self.stream_calls) == 1
-                and reservation_id is not None
-            ):
+            if self.invalidate_reservation_once and len(self.stream_calls) == 1 and reservation_id is not None:
                 self.reservations.discard(reservation_id)
-                raise EventSubscriberReservationError(
-                    "synthetic terminal-before-activation race"
-                )
+                raise EventSubscriberReservationError("synthetic terminal-before-activation race")
             if reservation_id is not None:
                 self.reservations.discard(reservation_id)
             if self.detach_once and len(self.stream_calls) == 1:
@@ -186,7 +176,16 @@ class _EventHub:
                 events.extend(
                     [
                         ("tool.started", "running", {"name": "synthetic_tool", "tool_call_id": "tool_demo"}),
-                        ("tool.finished", "running", {"name": "synthetic_tool", "tool_call_id": "tool_demo", "status": "completed", "elapsed_ms": 5}),
+                        (
+                            "tool.finished",
+                            "running",
+                            {
+                                "name": "synthetic_tool",
+                                "tool_call_id": "tool_demo",
+                                "status": "completed",
+                                "elapsed_ms": 5,
+                            },
+                        ),
                     ]
                 )
             if self.authoritative_solver_result:
@@ -275,11 +274,7 @@ class _OntologyOrchestrator:
         return False
 
     def _get_stores(self, _username, _workspace_id):
-        session = (
-            SimpleNamespace(metadata=dict(self.session_metadata))
-            if self.session_metadata is not None
-            else None
-        )
+        session = SimpleNamespace(metadata=dict(self.session_metadata)) if self.session_metadata is not None else None
         return SimpleNamespace(get_session=lambda _session_id: session), None
 
 
@@ -288,7 +283,7 @@ def _scope(*, ontology_id=""):
         "operator_a",
         "workspace_demo",
         ["mcp:chat"],
-        token="token-placeholder",
+        token=synthetic_secret("mcp_chat_bridge-credential-02"),
         traceparent="00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
         ontology_id=ontology_id,
     )
@@ -300,7 +295,7 @@ def _config(path: Path) -> MCPRuntimeConfig:
         server_port=7488,
         public_base_url="",
         agentic_base_url="http://service.example.net",
-        token_secret="test-placeholder-not-a-secret",
+        token_secret=synthetic_secret("mcp_chat_bridge-credential-01"),
         token_algorithm="HS256",
         token_issuer="synthetic-issuer",
         token_audience="synthetic-audience",
@@ -332,7 +327,11 @@ def _execute(
     import api.protocols.mcp.workflow_bridge as module
 
     original = module.resolve_effective_llm_profile_config
-    module.resolve_effective_llm_profile_config = lambda *_args, **_kwargs: {}
+
+    def resolve_llm_profile_config(*_args, **_kwargs):
+        return {}
+
+    module.resolve_effective_llm_profile_config = resolve_llm_profile_config
     try:
         runtime = _Runtime(
             manager,
@@ -356,17 +355,12 @@ def _execute(
                 runtime=runtime,
                 execution_store=ExecutionStore(str(tmp_path / "executions")),
                 scope=scope or _scope(),
-                payload=payload
-                or {"request": "synthetic question", "session_id": "session_demo"},
+                payload=payload or {"request": "synthetic question", "session_id": "session_demo"},
                 concurrency_limit=1,
                 queue_wait_seconds=0.01,
                 execution_timeout_seconds=0.01,
                 trace_config=_config(tmp_path / "tokens.json"),
-                progress_sink=(
-                    capture_progress
-                    if progress_capture is not None
-                    else None
-                ),
+                progress_sink=(capture_progress if progress_capture is not None else None),
             )
         )
     finally:
@@ -593,9 +587,7 @@ def test_chat_tool_reports_progress_when_context_has_progress_token(
     progress_calls = []
 
     class _Context:
-        request_context = SimpleNamespace(
-            meta=SimpleNamespace(progressToken="progress_demo")
-        )
+        request_context = SimpleNamespace(meta=SimpleNamespace(progressToken="progress_demo"))
 
         @staticmethod
         async def report_progress(progress, total=None, message=None):
@@ -646,9 +638,7 @@ def test_chat_adapter_http_budget_exceeds_backend_execution_budget(
     )
 
     assert result["ok"] is True
-    assert captured["json"]["context"]["selected_ontology_id"] == (
-        "knowledge_package_demo"
-    )
+    assert captured["json"]["context"]["selected_ontology_id"] == ("knowledge_package_demo")
     assert captured["timeout"] > 30
 
 
@@ -717,9 +707,7 @@ def test_async_chat_adapter_consumes_internal_progress_stream(
 
     assert result["ok"] is True
     assert result["result"]["content"] == "synthetic answer"
-    assert progress == [
-        {"schema_version": "1.0", "seq": 1, "event": "run.started"}
-    ]
+    assert progress == [{"schema_version": "1.0", "seq": 1, "event": "run.started"}]
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/agentic/mcp/internal/chat/stream")
 
@@ -791,10 +779,7 @@ def test_chat_adapter_injects_bound_ontology(monkeypatch, tmp_path):
     )
 
     assert result["ok"] is True
-    assert (
-        captured["json"]["arguments"]["selected_ontology_id"]
-        == "knowledge_package_demo"
-    )
+    assert captured["json"]["arguments"]["selected_ontology_id"] == "knowledge_package_demo"
 
 
 def test_chat_adapter_rejects_conflicting_bound_ontology(monkeypatch, tmp_path):
@@ -839,10 +824,7 @@ def test_workflow_bridge_rebinds_and_revalidates_token_ontology(
     assert status_code == 200
     assert body["ok"] is True
     assert captured["ontology_id"] == "knowledge_package_demo"
-    assert (
-        manager.context.arguments["selected_ontology_id"]
-        == "knowledge_package_demo"
-    )
+    assert manager.context.arguments["selected_ontology_id"] == "knowledge_package_demo"
     assert manager.context.arguments["selected_ontology_version"] == "1.0.0"
     assert manager.context.arguments["selected_version"] == "1.0.0"
 
@@ -880,10 +862,7 @@ def test_workflow_bridge_preserves_unbound_argument_ontology(tmp_path):
 
     assert status_code == 200
     assert body["ok"] is True
-    assert (
-        manager.context.arguments["selected_ontology_id"]
-        == "knowledge_package_demo"
-    )
+    assert manager.context.arguments["selected_ontology_id"] == "knowledge_package_demo"
 
 
 def test_workflow_bridge_auto_selects_only_enabled_ontology(
@@ -906,9 +885,7 @@ def test_workflow_bridge_auto_selects_only_enabled_ontology(
 
     assert status_code == 200
     assert body["ok"] is True
-    assert manager.context.arguments["selected_ontology_id"] == (
-        "knowledge_package_demo"
-    )
+    assert manager.context.arguments["selected_ontology_id"] == ("knowledge_package_demo")
 
 
 def test_workflow_bridge_requires_selection_for_new_multi_ontology_session(
@@ -1052,12 +1029,8 @@ def test_mcp_timeout_cancels_the_same_canonical_run(tmp_path):
 
     assert status_code == 504
     assert body["error"]["error_code"] == "MCP_CHAT_EXECUTION_TIMEOUT"
-    assert manager.cancelled == [
-        (manager.context.run_id, "mcp_chat_execution_timeout")
-    ]
-    assert captured["runtime"].event_hub.released_reservations == [
-        "reservation_1"
-    ]
+    assert manager.cancelled == [(manager.context.run_id, "mcp_chat_execution_timeout")]
+    assert captured["runtime"].event_hub.released_reservations == ["reservation_1"]
 
 
 def test_mcp_rejects_run_before_start_when_subscriber_capacity_is_exhausted(
@@ -1182,9 +1155,7 @@ def test_mcp_request_cancellation_cancels_started_canonical_run(
 
     asyncio.run(scenario())
 
-    assert manager.cancelled == [
-        (manager.context.run_id, "mcp_chat_request_cancelled")
-    ]
+    assert manager.cancelled == [(manager.context.run_id, "mcp_chat_request_cancelled")]
     assert runtime.event_hub.released_reservations == ["reservation_1"]
 
 
@@ -1246,11 +1217,7 @@ def test_mcp_cancellation_marks_turn_failed_after_offload_finishes(
                 )
             )
             start_deadline = asyncio.get_running_loop().time() + 2
-            while (
-                not started.is_set()
-                and not task.done()
-                and asyncio.get_running_loop().time() < start_deadline
-            ):
+            while not started.is_set() and not task.done() and asyncio.get_running_loop().time() < start_deadline:
                 await asyncio.sleep(0)
             assert started.is_set(), "turn allocation did not reach the worker"
             task.cancel()
@@ -1287,12 +1254,8 @@ def test_mcp_stream_failure_cancels_started_canonical_run(tmp_path):
 
     assert status_code == 500
     assert body["error"]["error_code"] == "MCP_CHAT_WORKFLOW_FAILED"
-    assert manager.cancelled == [
-        (manager.context.run_id, "mcp_chat_workflow_failed")
-    ]
-    assert captured["runtime"].event_hub.released_reservations == [
-        "reservation_1"
-    ]
+    assert manager.cancelled == [(manager.context.run_id, "mcp_chat_workflow_failed")]
+    assert captured["runtime"].event_hub.released_reservations == ["reservation_1"]
 
 
 def test_mcp_maps_runtime_admission_timeout(tmp_path):

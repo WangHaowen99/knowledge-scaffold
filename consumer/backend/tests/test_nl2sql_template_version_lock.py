@@ -6,6 +6,7 @@ from agent.tools.business_data.adapters.nl2sql_template_search import (
     NL2SQLTemplateSearchAdapter,
     _DefaultMatcher,
 )
+from backend_synthetic_credentials import synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 
 
@@ -13,8 +14,8 @@ def _provider(*, workspace_root: str, ontology_id: str, ontology_version: str = 
     connection = EffectiveConnection(
         version=1,
         provider="nl2sql_http",
-        endpoint="http://nl2sql.test",
-        auth=AuthSpec(type="bearer", token="token-x"),
+        endpoint="http://nl2sql.example.net",
+        auth=AuthSpec(type="bearer", token=synthetic_secret("nl2sql_template_version_lock-credential-01")),
         options={"scene": "scene-x", "timeout_seconds": 88, "max_retries": 2},
     )
     return NL2SQLTemplateSearchAdapter(
@@ -120,5 +121,5 @@ def test_adapter_default_matcher_uses_locked_version_templates(tmp_path):
     provider._session.post = _fake_post
 
     list(provider.search_stream(query="query", entity="TargetItem"))
-    assert captured["url"] == "http://nl2sql.test/api/v1/sql"
+    assert captured["url"] == "http://nl2sql.example.net/api/v1/sql"
     assert captured["json"]["sql"] == "SELECT version_one"

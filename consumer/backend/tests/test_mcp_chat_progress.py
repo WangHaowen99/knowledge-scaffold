@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+from agent.tools.executor import _build_business_data_search_event_emitter
 from api.protocols.mcp.progress import (
     MCPChatProgressProjector,
     build_public_summary,
 )
-from agent.tools.executor import _build_business_data_search_event_emitter
 
 
 def test_public_summary_appends_only_allowed_safe_preview():
-    assert build_public_summary(
-        template="正在查询业务数据",
-        candidate="模板未命中，改用自然语言查询",
-        candidate_allowed=True,
-    ) == "正在查询业务数据：模板未命中，改用自然语言查询"
+    assert (
+        build_public_summary(
+            template="正在查询业务数据",
+            candidate="模板未命中，改用自然语言查询",
+            candidate_allowed=True,
+        )
+        == "正在查询业务数据：模板未命中，改用自然语言查询"
+    )
 
     for unsafe in (
         "SELECT demo_field FROM demo_table",
@@ -22,17 +25,23 @@ def test_public_summary_appends_only_allowed_safe_preview():
         "password=<redacted>",
         "/srv/private/config/runtime.json",
     ):
-        assert build_public_summary(
-            template="正在查询业务数据",
-            candidate=unsafe,
-            candidate_allowed=True,
-        ) == "正在查询业务数据"
+        assert (
+            build_public_summary(
+                template="正在查询业务数据",
+                candidate=unsafe,
+                candidate_allowed=True,
+            )
+            == "正在查询业务数据"
+        )
 
-    assert build_public_summary(
-        template="正在查询业务数据",
-        candidate="允许的候选",
-        candidate_allowed=False,
-    ) == "正在查询业务数据"
+    assert (
+        build_public_summary(
+            template="正在查询业务数据",
+            candidate="允许的候选",
+            candidate_allowed=False,
+        )
+        == "正在查询业务数据"
+    )
 
 
 def test_public_summary_redacts_before_bounded_preview():
@@ -116,7 +125,7 @@ def test_projector_returns_coarse_trace_without_raw_inputs_or_results():
                 "progress": {
                     "business_data_search_event": {
                         "type": "final",
-                        "content": '{"success":true,"data":[{"id":"DEMO-001"},{"id":"DEMO-002"}]}'
+                        "content": '{"success":true,"data":[{"id":"DEMO-001"},{"id":"DEMO-002"}]}',
                     }
                 },
             },
@@ -172,10 +181,7 @@ def test_projector_returns_coarse_trace_without_raw_inputs_or_results():
     completed = next(item for item in projected if item["event"] == "tool.completed")
     querying = next(item for item in projected if item["event"] == "tool.progress")
     assert querying["provider"] == "nl2sql_template"
-    assert querying["summary"] == (
-        "已选择 NL2SQL Template 数据源，正在查询业务数据："
-        "模板未命中，改用自然语言查询"
-    )
+    assert querying["summary"] == ("已选择 NL2SQL Template 数据源，正在查询业务数据：" "模板未命中，改用自然语言查询")
     assert completed["provider"] == "nl2sql_template"
     assert completed["record_count"] == 2
     assert completed["elapsed_ms"] == 25
@@ -232,12 +238,9 @@ def test_projector_returns_ontology_resource_name_and_resolved_key():
         run_id="run_demo",
     )[0]
 
-    assert started["summary"] == (
-        "正在读取知识包内容：业务对象，对象名=Demo Material，key=Demo Material"
-    )
+    assert started["summary"] == ("正在读取知识包内容：业务对象，对象名=Demo Material，key=Demo Material")
     assert completed["summary"] == (
-        "知识包内容读取完成，用时 8 ms："
-        "业务对象，对象名=Demo Material，key=demo_material"
+        "知识包内容读取完成，用时 8 ms：" "业务对象，对象名=Demo Material，key=demo_material"
     )
 
 
@@ -382,9 +385,7 @@ def test_projector_deduplicates_identical_provider_progress():
 
     assert selected[0]["summary"] == "已选择 Neo4j 数据源，正在查询业务数据"
     assert duplicate_selected == []
-    assert planning[0]["summary"] == (
-        "已选择 Neo4j 数据源，正在查询业务数据：准备查询实体关联关系"
-    )
+    assert planning[0]["summary"] == ("已选择 Neo4j 数据源，正在查询业务数据：准备查询实体关联关系")
     assert duplicate_planning == []
     assert "MATCH" not in str(selected + planning)
     assert completed["summary"] == "业务数据查询完成，命中 1 条记录，用时 12 ms"
@@ -394,9 +395,7 @@ def test_projector_deduplicates_identical_provider_progress():
 def test_business_data_event_projects_only_explicit_public_summary():
     emitted = []
     emitter = _build_business_data_search_event_emitter(
-        stream_event_emitter=lambda event_type, payload: emitted.append(
-            (event_type, payload)
-        ),
+        stream_event_emitter=lambda event_type, payload: emitted.append((event_type, payload)),
         tool_call_id="call_demo",
         entity="DemoEntity",
         query="synthetic query",

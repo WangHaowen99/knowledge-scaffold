@@ -52,21 +52,22 @@ const abortError = () => {
   return error;
 };
 
-const waitForDelay = (delayMs, signal) => new Promise((resolve, reject) => {
-  if (signal?.aborted) {
-    reject(abortError());
-    return;
-  }
-  const onAbort = () => {
-    clearTimeout(timer);
-    reject(abortError());
-  };
-  const timer = setTimeout(() => {
-    signal?.removeEventListener('abort', onAbort);
-    resolve();
-  }, delayMs);
-  signal?.addEventListener('abort', onAbort, { once: true });
-});
+const waitForDelay = (delayMs, signal) =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 
 const buildInitialProgressState = (now = Date.now(), phase = 'starting') => ({
   startedAt: now,
@@ -89,57 +90,75 @@ const useStreamManager = () => {
   /**
    * Call backend cancel API for a session if possible.
    */
-  const cancelBackendRun = useCallback(async (sessionId, reason = 'disconnect') => {
-    if (!sessionId) return { ok: true, cancelled: false };
+  const cancelBackendRun = useCallback(
+    async (sessionId, reason = 'disconnect') => {
+      if (!sessionId) {
+        return { ok: true, cancelled: false };
+      }
 
-    const meta = streamMetaRef.current.get(sessionId);
-    if (!meta?.runId) return { ok: true, cancelled: false };
+      const meta = streamMetaRef.current.get(sessionId);
+      if (!meta?.runId) {
+        return { ok: true, cancelled: false };
+      }
 
-    try {
-      const res = await authFetch(buildRunCancelUrl(meta.runId), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
-      });
-      logger.debug('Cancel API response', { sessionId, reason, status: res.status });
-      if (!res.ok) {
-        const payload = await res.json().catch(() => ({}));
-        if (res.status === 404) {
-          const statusResponse = await authFetch(buildRunUrl(meta.runId));
-          const statusPayload = await statusResponse.json().catch(() => ({}));
-          const terminalStatus = String(statusPayload.status || '').trim();
-          if (statusResponse.ok && isTerminalRunStatus(terminalStatus)) {
-            return { ok: true, cancelled: false, terminalStatus };
-          }
-        }
-        logger.warn('Backend rejected run cancellation', {
+      try {
+        const res = await authFetch(buildRunCancelUrl(meta.runId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        });
+        logger.debug('Cancel API response', {
           sessionId,
           reason,
           status: res.status,
-          error: publicErrorMessage(payload.error ?? payload.detail),
+        });
+        if (!res.ok) {
+          const payload = await res.json().catch(() => ({}));
+          if (res.status === 404) {
+            const statusResponse = await authFetch(buildRunUrl(meta.runId));
+            const statusPayload = await statusResponse.json().catch(() => ({}));
+            const terminalStatus = String(statusPayload.status || '').trim();
+            if (statusResponse.ok && isTerminalRunStatus(terminalStatus)) {
+              return { ok: true, cancelled: false, terminalStatus };
+            }
+          }
+          logger.warn('Backend rejected run cancellation', {
+            sessionId,
+            reason,
+            status: res.status,
+            error: publicErrorMessage(payload.error ?? payload.detail),
+          });
+          return { ok: false };
+        }
+        return { ok: true, cancelled: true };
+      } catch (error) {
+        logger.warn('Failed to cancel backend run', {
+          sessionId,
+          reason,
+          error: error.message,
         });
         return { ok: false };
       }
-      return { ok: true, cancelled: true };
-    } catch (error) {
-      logger.warn('Failed to cancel backend run', { sessionId, reason, error: error.message });
-      return { ok: false };
-    }
-  }, []);
+    },
+    [],
+  );
 
   /**
    * Get stream state for a session.
    */
-  const getStreamState = useCallback((sessionId) => {
-    if (!sessionId) {
-      return { isLoading: false, status: 'idle', runId: null };
-    }
-    const stream = streams.get(sessionId);
-    if (!stream) {
-      return { isLoading: false, status: 'idle', runId: null };
-    }
-    return stream;
-  }, [streams]);
+  const getStreamState = useCallback(
+    (sessionId) => {
+      if (!sessionId) {
+        return { isLoading: false, status: 'idle', runId: null };
+      }
+      const stream = streams.get(sessionId);
+      if (!stream) {
+        return { isLoading: false, status: 'idle', runId: null };
+      }
+      return stream;
+    },
+    [streams],
+  );
 
   /**
    * Get list of session IDs with active streams.
@@ -174,21 +193,29 @@ const useStreamManager = () => {
   /**
    * Get messages for a session.
    */
-  const getMessagesForSession = useCallback((sessionId) => {
-    if (!sessionId) return [];
-    return messagesCache.get(sessionId) || [];
-  }, [messagesCache]);
+  const getMessagesForSession = useCallback(
+    (sessionId) => {
+      if (!sessionId) {
+        return [];
+      }
+      return messagesCache.get(sessionId) || [];
+    },
+    [messagesCache],
+  );
 
   /**
    * Set messages for a session.
    */
   const setMessagesForSession = useCallback((sessionId, updater) => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      return;
+    }
 
     setMessagesCache((prev) => {
       const next = new Map(prev);
       const currentMessages = prev.get(sessionId) || [];
-      const newMessages = typeof updater === 'function' ? updater(currentMessages) : updater;
+      const newMessages =
+        typeof updater === 'function' ? updater(currentMessages) : updater;
       next.set(sessionId, newMessages);
       return next;
     });
@@ -198,7 +225,9 @@ const useStreamManager = () => {
    * Clear messages cache for a session.
    */
   const clearCacheForSession = useCallback((sessionId) => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      return;
+    }
 
     setMessagesCache((prev) => {
       const next = new Map(prev);
@@ -225,433 +254,577 @@ const useStreamManager = () => {
    * Consume one SSE response. A clean EOF without turn.finished is resumable,
    * so lifecycle/error handling stays with the reconnect loop below.
    */
-  const processStream = useCallback(async (sessionId, reader, streamToken, onEvent) => {
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let terminalStatus = '';
-    let receivedEvent = false;
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (value) buffer += decoder.decode(value, { stream: !done });
-        if (done) buffer += decoder.decode();
-        const { frames: parts, remainder } = takeSSEFrames(buffer, { done });
-        buffer = remainder;
-
-        let shouldStop = false;
-        for (const part of parts) {
-          const parsed = parseSSEMessage(part);
-          if (!parsed) continue;
-          const activeMeta = streamMetaRef.current.get(sessionId);
-          if (!activeMeta || activeMeta.streamToken !== streamToken) {
-            await reader.cancel();
-            return { terminalStatus: '', superseded: true };
-          }
-
-          const publicEvent = decodePublicEventFrame(parsed, {
-            expectedRunId: activeMeta.runId,
-            expectedSessionId: sessionId,
-          });
-          const classification = classifyPublicEvent(
-            publicEvent,
-            activeMeta.lastSeq,
-            activeMeta.seenEventIds,
-          );
-          if (classification.duplicate) {
-            logger.debug('Ignoring replayed PublicEvent', {
-              sessionId,
-              eventId: classification.identity,
-              sequence: classification.sequence,
-            });
-            continue;
-          }
-
-          logger.debug('PublicEvent received', {
-            sessionId,
-            eventType: publicEvent.event_type,
-            sequence: publicEvent.seq,
-          });
-          if (onEvent?.(publicEvent)) {
-            logger.debug('Stream handler requested break', { sessionId });
-            shouldStop = true;
-          }
-
-          activeMeta.runStatus = publicEvent.status;
-          activeMeta.lastSeq = classification.nextCursor;
-          if (classification.identity) activeMeta.seenEventIds.add(classification.identity);
-          const progress = classifyRunProgressFromPublicEvent(publicEvent);
-          if (progress?.phase) activeMeta.progressPhase = progress.phase;
-          streamMetaRef.current.set(sessionId, activeMeta);
-          receivedEvent = true;
-
-          updateStreamState(sessionId, {
-            runId: activeMeta.runId,
-            cursor: activeMeta.lastSeq,
-            status: publicEvent.event_type === 'turn.finished' ? 'finalizing' : 'streaming',
-            startedAt: activeMeta.startedAt,
-            progressPhase: activeMeta.progressPhase,
-          });
-
-          if (publicEvent.event_type === 'turn.finished') {
-            terminalStatus = publicEvent.status;
-          }
-          if (shouldStop) break;
-        }
-
-        if (shouldStop || terminalStatus) {
-          if (!terminalStatus) terminalStatus = 'completed';
-          await reader.cancel();
-          break;
-        }
-        if (done) {
-          logger.debug('Stream response ended', { sessionId, terminal: Boolean(terminalStatus) });
-          break;
-        }
-      }
-    } catch (error) {
-      await reader.cancel(error).catch(() => {});
-      throw error;
-    }
-
-    return { terminalStatus, superseded: false, receivedEvent };
-  }, [updateStreamState]);
-
-  const cleanupStream = useCallback((sessionId, streamToken, status) => {
-    const activeMeta = streamMetaRef.current.get(sessionId);
-    if (activeMeta?.streamToken !== streamToken) return;
-    abortControllersRef.current.delete(sessionId);
-    streamMetaRef.current.delete(sessionId);
-    updateStreamState(sessionId, {
-      runId: activeMeta.runId,
-      cursor: activeMeta.lastSeq,
-      isLoading: false,
-      status,
-      queue: null,
-    });
-  }, [updateStreamState]);
-
-  const followRun = useCallback(async (sessionId, streamToken, onEvent) => {
-    let reconnectAttempts = 0;
-
-    while (true) {
-      const meta = streamMetaRef.current.get(sessionId);
-      const controller = abortControllersRef.current.get(sessionId);
-      if (!meta || meta.streamToken !== streamToken) return { superseded: true, terminalStatus: '' };
-      if (!controller || controller.signal.aborted) throw abortError();
-
-      const isQueued = meta.runStatus === 'queued';
-      meta.progressPhase = reconnectAttempts > 0
-        ? 'reconnecting'
-        : (isQueued ? 'queued' : (meta.progressPhase || 'running'));
-      streamMetaRef.current.set(sessionId, meta);
-      updateStreamState(sessionId, {
-        isLoading: true,
-        status: isQueued && reconnectAttempts === 0
-          ? 'queued'
-          : streamStatusForConnection(reconnectAttempts),
-        runId: meta.runId,
-        cursor: meta.lastSeq,
-        queue: null,
-        startedAt: meta.startedAt,
-        progressPhase: meta.progressPhase,
-      });
+  const processStream = useCallback(
+    async (sessionId, reader, streamToken, onEvent) => {
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let terminalStatus = '';
+      let receivedEvent = false;
 
       try {
-        const headers = meta.lastSeq ? { 'Last-Event-ID': String(meta.lastSeq) } : undefined;
-        const response = await authFetch(buildRunEventsUrl(meta.runId, meta.lastSeq), {
-          headers,
-          signal: controller.signal,
-        });
-        if (response.status === 410) {
-          const payload = await response.json().catch(() => ({}));
-          const goneStatus = String(payload.status || meta.runStatus || '').trim();
-          if (isTerminalRunStatus(goneStatus)) {
-            return { terminalStatus: goneStatus, superseded: false, receivedEvent: false };
+        while (true) {
+          const { done, value } = await reader.read();
+          if (value) {
+            buffer += decoder.decode(value, { stream: !done });
           }
-          throw new Error(publicErrorMessage(
-            payload.error ?? payload.detail,
-            'Run event stream is no longer available',
-          ));
+          if (done) {
+            buffer += decoder.decode();
+          }
+          const { frames: parts, remainder } = takeSSEFrames(buffer, { done });
+          buffer = remainder;
+
+          let shouldStop = false;
+          for (const part of parts) {
+            const parsed = parseSSEMessage(part);
+            if (!parsed) {
+              continue;
+            }
+            const activeMeta = streamMetaRef.current.get(sessionId);
+            if (!activeMeta || activeMeta.streamToken !== streamToken) {
+              await reader.cancel();
+              return { terminalStatus: '', superseded: true };
+            }
+
+            const publicEvent = decodePublicEventFrame(parsed, {
+              expectedRunId: activeMeta.runId,
+              expectedSessionId: sessionId,
+            });
+            const classification = classifyPublicEvent(
+              publicEvent,
+              activeMeta.lastSeq,
+              activeMeta.seenEventIds,
+            );
+            if (classification.duplicate) {
+              logger.debug('Ignoring replayed PublicEvent', {
+                sessionId,
+                eventId: classification.identity,
+                sequence: classification.sequence,
+              });
+              continue;
+            }
+
+            logger.debug('PublicEvent received', {
+              sessionId,
+              eventType: publicEvent.event_type,
+              sequence: publicEvent.seq,
+            });
+            if (onEvent?.(publicEvent)) {
+              logger.debug('Stream handler requested break', { sessionId });
+              shouldStop = true;
+            }
+
+            activeMeta.runStatus = publicEvent.status;
+            activeMeta.lastSeq = classification.nextCursor;
+            if (classification.identity) {
+              activeMeta.seenEventIds.add(classification.identity);
+            }
+            const progress = classifyRunProgressFromPublicEvent(publicEvent);
+            if (progress?.phase) {
+              activeMeta.progressPhase = progress.phase;
+            }
+            streamMetaRef.current.set(sessionId, activeMeta);
+            receivedEvent = true;
+
+            updateStreamState(sessionId, {
+              runId: activeMeta.runId,
+              cursor: activeMeta.lastSeq,
+              status:
+                publicEvent.event_type === 'turn.finished' ?
+                  'finalizing' :
+                  'streaming',
+              startedAt: activeMeta.startedAt,
+              progressPhase: activeMeta.progressPhase,
+            });
+
+            if (publicEvent.event_type === 'turn.finished') {
+              terminalStatus = publicEvent.status;
+            }
+            if (shouldStop) {
+              break;
+            }
+          }
+
+          if (shouldStop || terminalStatus) {
+            if (!terminalStatus) {
+              terminalStatus = 'completed';
+            }
+            await reader.cancel();
+            break;
+          }
+          if (done) {
+            logger.debug('Stream response ended', {
+              sessionId,
+              terminal: Boolean(terminalStatus),
+            });
+            break;
+          }
         }
-        if (!response.ok || !response.body) {
-          const payload = await response.json().catch(() => ({}));
-          throw new Error(publicErrorMessage(
-            payload.error ?? payload.detail,
-            `Run event stream failed with ${response.status}`,
-          ));
+      } catch (error) {
+        await reader.cancel(error).catch(() => {});
+        throw error;
+      }
+
+      return { terminalStatus, superseded: false, receivedEvent };
+    },
+    [updateStreamState],
+  );
+
+  const cleanupStream = useCallback(
+    (sessionId, streamToken, status) => {
+      const activeMeta = streamMetaRef.current.get(sessionId);
+      if (activeMeta?.streamToken !== streamToken) {
+        return;
+      }
+      abortControllersRef.current.delete(sessionId);
+      streamMetaRef.current.delete(sessionId);
+      updateStreamState(sessionId, {
+        runId: activeMeta.runId,
+        cursor: activeMeta.lastSeq,
+        isLoading: false,
+        status,
+        queue: null,
+      });
+    },
+    [updateStreamState],
+  );
+
+  const followRun = useCallback(
+    async (sessionId, streamToken, onEvent) => {
+      let reconnectAttempts = 0;
+
+      while (true) {
+        const meta = streamMetaRef.current.get(sessionId);
+        const controller = abortControllersRef.current.get(sessionId);
+        if (!meta || meta.streamToken !== streamToken) {
+          return { superseded: true, terminalStatus: '' };
+        }
+        if (!controller || controller.signal.aborted) {
+          throw abortError();
         }
 
-        const result = await processStream(
-          sessionId,
-          response.body.getReader(),
-          streamToken,
-          onEvent,
-        );
-        if (result.superseded || result.terminalStatus) return result;
-        reconnectAttempts = result.receivedEvent ? 0 : reconnectAttempts + 1;
-      } catch (error) {
-        if (error.name === 'AbortError') throw error;
-        if (error instanceof PublicEventProtocolError) throw error;
-        reconnectAttempts += 1;
-        logger.warn('Run event stream disconnected; retrying from cursor', {
-          sessionId,
+        const isQueued = meta.runStatus === 'queued';
+        meta.progressPhase =
+          reconnectAttempts > 0 ?
+            'reconnecting' :
+            isQueued ?
+              'queued' :
+              meta.progressPhase || 'running';
+        streamMetaRef.current.set(sessionId, meta);
+        updateStreamState(sessionId, {
+          isLoading: true,
+          status:
+            isQueued && reconnectAttempts === 0 ?
+              'queued' :
+              streamStatusForConnection(reconnectAttempts),
           runId: meta.runId,
           cursor: meta.lastSeq,
-          attempt: reconnectAttempts,
-          error: error.message,
+          queue: null,
+          startedAt: meta.startedAt,
+          progressPhase: meta.progressPhase,
         });
-      }
 
-      if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-        throw new Error('Run event stream reconnect limit exceeded');
+        try {
+          const headers = meta.lastSeq ?
+            { 'Last-Event-ID': String(meta.lastSeq) } :
+            undefined;
+          const response = await authFetch(
+            buildRunEventsUrl(meta.runId, meta.lastSeq),
+            {
+              headers,
+              signal: controller.signal,
+            },
+          );
+          if (response.status === 410) {
+            const payload = await response.json().catch(() => ({}));
+            const goneStatus = String(
+              payload.status || meta.runStatus || '',
+            ).trim();
+            if (isTerminalRunStatus(goneStatus)) {
+              return {
+                terminalStatus: goneStatus,
+                superseded: false,
+                receivedEvent: false,
+              };
+            }
+            throw new Error(
+              publicErrorMessage(
+                payload.error ?? payload.detail,
+                'Run event stream is no longer available',
+              ),
+            );
+          }
+          if (!response.ok || !response.body) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(
+              publicErrorMessage(
+                payload.error ?? payload.detail,
+                `Run event stream failed with ${response.status}`,
+              ),
+            );
+          }
+
+          const result = await processStream(
+            sessionId,
+            response.body.getReader(),
+            streamToken,
+            onEvent,
+          );
+          if (result.superseded || result.terminalStatus) {
+            return result;
+          }
+          reconnectAttempts = result.receivedEvent ? 0 : reconnectAttempts + 1;
+        } catch (error) {
+          if (error.name === 'AbortError') {
+            throw error;
+          }
+          if (error instanceof PublicEventProtocolError) {
+            throw error;
+          }
+          reconnectAttempts += 1;
+          logger.warn('Run event stream disconnected; retrying from cursor', {
+            sessionId,
+            runId: meta.runId,
+            cursor: meta.lastSeq,
+            attempt: reconnectAttempts,
+            error: error.message,
+          });
+        }
+
+        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+          throw new Error('Run event stream reconnect limit exceeded');
+        }
+        await waitForDelay(
+          RECONNECT_DELAY_MS * reconnectAttempts,
+          controller.signal,
+        );
       }
-      await waitForDelay(RECONNECT_DELAY_MS * reconnectAttempts, controller.signal);
-    }
-  }, [processStream, updateStreamState]);
+    },
+    [processStream, updateStreamState],
+  );
 
   /**
    * Create one canonical run, then follow its detached event stream.
    */
-  const startRunForSession = useCallback(async (
-    sessionId,
-    body,
-    { idempotencyKey, onAdmission, onEvent, onComplete, onError },
-  ) => {
-    if (!sessionId) {
-      logger.warn('Cannot create run without sessionId');
-      return;
-    }
-
-    logger.info('Creating run for session', { sessionId });
-
-    const startedAt = Date.now();
-    const streamToken = `${startedAt}-${Math.random().toString(16).slice(2)}`;
-    const initialProgress = buildInitialProgressState(startedAt);
-
-    const controller = new AbortController();
-    abortStreamController(abortControllersRef.current.get(sessionId), { silent: true });
-    abortControllersRef.current.set(sessionId, controller);
-    streamMetaRef.current.set(sessionId, {
-      runId: null,
-      runStatus: 'admitting',
-      streamToken,
-      lastSeq: 0,
-      seenEventIds: new Set(),
-      queue: null,
-      onComplete,
-      ...initialProgress,
-    });
-
-    updateStreamState(sessionId, {
+  const startRunForSession = useCallback(
+    async (
       sessionId,
-      isLoading: true,
-      status: 'admitting',
-      runId: null,
-      ...initialProgress,
-    });
-
-    try {
-      const res = await authFetch(AGENTIC_RUNS_ENDPOINT, {
-        method: 'POST',
-        headers: buildRunRequestHeaders(idempotencyKey),
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      logger.debug('Run admission response', { sessionId, status: res.status });
-
-      const payload = await res.json().catch(() => ({}));
-      if (res.status !== 200 && res.status !== 202) {
-        throw new Error(publicErrorMessage(
-          payload?.error ?? payload?.detail ?? payload,
-          `Run creation failed with status ${res.status}`,
-        ));
+      body,
+      { idempotencyKey, onAdmission, onEvent, onComplete, onError },
+    ) => {
+      if (!sessionId) {
+        logger.warn('Cannot create run without sessionId');
+        return;
       }
 
-      const admission = normalizeRunAdmission(payload, sessionId);
-      const meta = streamMetaRef.current.get(sessionId);
-      if (!meta || meta.streamToken !== streamToken) return;
-      meta.runId = admission.runId;
-      meta.runStatus = admission.status;
-      meta.lastSeq = 0;
-      meta.queue = null;
-      meta.progressPhase = admission.status === 'queued' ? 'queued' : 'running';
-      streamMetaRef.current.set(sessionId, meta);
-      updateStreamState(sessionId, {
-        isLoading: true,
-        status: streamStatusForAdmission(admission.status),
-        runId: admission.runId,
-        turnId: admission.turnId,
-        cursor: 0,
+      logger.info('Creating run for session', { sessionId });
+
+      const startedAt = Date.now();
+      const streamToken = `${startedAt}-${Math.random().toString(16).slice(2)}`;
+      const initialProgress = buildInitialProgressState(startedAt);
+
+      const controller = new AbortController();
+      abortStreamController(abortControllersRef.current.get(sessionId), {
+        silent: true,
+      });
+      abortControllersRef.current.set(sessionId, controller);
+      streamMetaRef.current.set(sessionId, {
+        runId: null,
+        runStatus: 'admitting',
+        streamToken,
+        lastSeq: 0,
+        seenEventIds: new Set(),
         queue: null,
-        startedAt: meta.startedAt,
-        progressPhase: meta.progressPhase,
+        onComplete,
+        ...initialProgress,
       });
-      onAdmission?.(admission);
 
-      const result = await followRun(sessionId, streamToken, onEvent);
+      updateStreamState(sessionId, {
+        sessionId,
+        isLoading: true,
+        status: 'admitting',
+        runId: null,
+        ...initialProgress,
+      });
 
-      if (result.superseded) return;
-      if (onComplete) onComplete(result.terminalStatus);
-      cleanupStream(sessionId, streamToken, streamStatusForTerminal(result.terminalStatus));
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        logger.info('Stream aborted by user', { sessionId });
-        if (!isSilentStreamAbort(controller) && onError) onError(error, true);
-      } else {
-        logger.error('Stream error', { sessionId, error: error.message });
-        updateStreamState(sessionId, { error: error.message });
-        if (onError) onError(error, false);
+      try {
+        const res = await authFetch(AGENTIC_RUNS_ENDPOINT, {
+          method: 'POST',
+          headers: buildRunRequestHeaders(idempotencyKey),
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        logger.debug('Run admission response', {
+          sessionId,
+          status: res.status,
+        });
+
+        const payload = await res.json().catch(() => ({}));
+        if (res.status !== 200 && res.status !== 202) {
+          throw new Error(
+            publicErrorMessage(
+              payload?.error ?? payload?.detail ?? payload,
+              `Run creation failed with status ${res.status}`,
+            ),
+          );
+        }
+
+        const admission = normalizeRunAdmission(payload, sessionId);
+        const meta = streamMetaRef.current.get(sessionId);
+        if (!meta || meta.streamToken !== streamToken) {
+          return;
+        }
+        meta.runId = admission.runId;
+        meta.runStatus = admission.status;
+        meta.lastSeq = 0;
+        meta.queue = null;
+        meta.progressPhase =
+          admission.status === 'queued' ? 'queued' : 'running';
+        streamMetaRef.current.set(sessionId, meta);
+        updateStreamState(sessionId, {
+          isLoading: true,
+          status: streamStatusForAdmission(admission.status),
+          runId: admission.runId,
+          turnId: admission.turnId,
+          cursor: 0,
+          queue: null,
+          startedAt: meta.startedAt,
+          progressPhase: meta.progressPhase,
+        });
+        onAdmission?.(admission);
+
+        const result = await followRun(sessionId, streamToken, onEvent);
+
+        if (result.superseded) {
+          return;
+        }
+        if (onComplete) {
+          onComplete(result.terminalStatus);
+        }
+        cleanupStream(
+          sessionId,
+          streamToken,
+          streamStatusForTerminal(result.terminalStatus),
+        );
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          logger.info('Stream aborted by user', { sessionId });
+          if (!isSilentStreamAbort(controller) && onError) {
+            onError(error, true);
+          }
+        } else {
+          logger.error('Stream error', { sessionId, error: error.message });
+          updateStreamState(sessionId, { error: error.message });
+          if (onError) {
+            onError(error, false);
+          }
+        }
+        cleanupStream(sessionId, streamToken, streamStatusForError(error));
       }
-      cleanupStream(sessionId, streamToken, streamStatusForError(error));
-    }
-  }, [cleanupStream, followRun, updateStreamState]);
+    },
+    [cleanupStream, followRun, updateStreamState],
+  );
 
   /**
    * Reattach after a page reload or session switch. The durable session read
    * supplies run id and cursor; followRun handles queued admission and replay.
    */
-  const resumeRunForSession = useCallback(async (
-    sessionId,
-    runId,
-    afterSequence,
-    { onEvent, onComplete, onError, status = 'running' },
-  ) => {
-    if (!sessionId || !runId) return false;
-    const existing = streamMetaRef.current.get(sessionId);
-    if (existing?.runId === runId && abortControllersRef.current.has(sessionId)) return true;
-
-    const resumedAt = Date.now();
-    const startedAt = resolveRunStartedAt({ runId }, resumedAt);
-    const streamToken = `${resumedAt}-${Math.random().toString(16).slice(2)}`;
-    const controller = new AbortController();
-    const cursor = normalizeSequence(afterSequence);
-    const initialProgress = buildInitialProgressState(
-      startedAt,
-      status === 'queued' ? 'queued' : 'reconnecting',
-    );
-    abortStreamController(abortControllersRef.current.get(sessionId), { silent: true });
-    abortControllersRef.current.set(sessionId, controller);
-    streamMetaRef.current.set(sessionId, {
-      runId,
-      runStatus: status === 'queued' ? 'queued' : 'running',
-      streamToken,
-      lastSeq: cursor,
-      seenEventIds: new Set(),
-      queue: null,
-      onComplete,
-      ...initialProgress,
-    });
-    updateStreamState(sessionId, {
+  const resumeRunForSession = useCallback(
+    async (
       sessionId,
       runId,
-      cursor,
-      isLoading: true,
-      status: streamStatusForAdmission(status),
-      ...initialProgress,
-    });
-
-    try {
-      const result = await followRun(sessionId, streamToken, onEvent);
-      if (result.superseded) return true;
-      if (onComplete) onComplete(result.terminalStatus);
-      cleanupStream(sessionId, streamToken, streamStatusForTerminal(result.terminalStatus));
-      return true;
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        if (!isSilentStreamAbort(controller) && onError) onError(error, true);
-      } else {
-        logger.error('Failed to resume run event stream', { sessionId, runId, error: error.message });
-        if (onError) onError(error, false);
+      afterSequence,
+      { onEvent, onComplete, onError, status = 'running' },
+    ) => {
+      if (!sessionId || !runId) {
+        return false;
       }
-      cleanupStream(sessionId, streamToken, streamStatusForError(error));
-      return false;
-    }
-  }, [cleanupStream, followRun, updateStreamState]);
+      const existing = streamMetaRef.current.get(sessionId);
+      if (
+        existing?.runId === runId &&
+        abortControllersRef.current.has(sessionId)
+      ) {
+        return true;
+      }
+
+      const resumedAt = Date.now();
+      const startedAt = resolveRunStartedAt({ runId }, resumedAt);
+      const streamToken = `${resumedAt}-${Math.random().toString(16).slice(2)}`;
+      const controller = new AbortController();
+      const cursor = normalizeSequence(afterSequence);
+      const initialProgress = buildInitialProgressState(
+        startedAt,
+        status === 'queued' ? 'queued' : 'reconnecting',
+      );
+      abortStreamController(abortControllersRef.current.get(sessionId), {
+        silent: true,
+      });
+      abortControllersRef.current.set(sessionId, controller);
+      streamMetaRef.current.set(sessionId, {
+        runId,
+        runStatus: status === 'queued' ? 'queued' : 'running',
+        streamToken,
+        lastSeq: cursor,
+        seenEventIds: new Set(),
+        queue: null,
+        onComplete,
+        ...initialProgress,
+      });
+      updateStreamState(sessionId, {
+        sessionId,
+        runId,
+        cursor,
+        isLoading: true,
+        status: streamStatusForAdmission(status),
+        ...initialProgress,
+      });
+
+      try {
+        const result = await followRun(sessionId, streamToken, onEvent);
+        if (result.superseded) {
+          return true;
+        }
+        if (onComplete) {
+          onComplete(result.terminalStatus);
+        }
+        cleanupStream(
+          sessionId,
+          streamToken,
+          streamStatusForTerminal(result.terminalStatus),
+        );
+        return true;
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          if (!isSilentStreamAbort(controller) && onError) {
+            onError(error, true);
+          }
+        } else {
+          logger.error('Failed to resume run event stream', {
+            sessionId,
+            runId,
+            error: error.message,
+          });
+          if (onError) {
+            onError(error, false);
+          }
+        }
+        cleanupStream(sessionId, streamToken, streamStatusForError(error));
+        return false;
+      }
+    },
+    [cleanupStream, followRun, updateStreamState],
+  );
 
   /**
    * Stop stream for a specific session.
    */
-  const stopStreamForSession = useCallback(async (sessionId, { silent = false } = {}) => {
-    if (!sessionId) return true;
-
-    const controller = abortControllersRef.current.get(sessionId);
-    const meta = streamMetaRef.current.get(sessionId);
-
-    if (controller) {
-      logger.info('Stopping stream for session', { sessionId });
-
-      // Call backend cancel API if we have runId
-      const streamToken = meta?.streamToken;
-      const result = await cancelBackendRun(sessionId, 'user_stop');
-      const activeMeta = streamMetaRef.current.get(sessionId);
-      const activeController = abortControllersRef.current.get(sessionId);
-      if (activeController !== controller || activeMeta?.streamToken !== streamToken) return true;
-      if (!result.ok) {
-        updateStreamState(sessionId, {
-          isLoading: true,
-          status: 'cancel_error',
-          error: '后端未确认取消，运行仍在继续',
-        });
-        return false;
-      }
-
-      if (result.terminalStatus) {
-        activeMeta.onComplete?.(result.terminalStatus);
-        abortStreamController(controller, { silent: true });
-        cleanupStream(sessionId, streamToken, streamStatusForTerminal(result.terminalStatus));
+  const stopStreamForSession = useCallback(
+    async (sessionId, { silent = false } = {}) => {
+      if (!sessionId) {
         return true;
       }
 
-      // Abort the fetch
-      abortStreamController(controller, { silent });
-      if (silent) cleanupStream(sessionId, streamToken, 'cancelled');
-      return true;
-    }
+      const controller = abortControllersRef.current.get(sessionId);
+      const meta = streamMetaRef.current.get(sessionId);
 
-    if (meta?.runId) {
-      logger.info('Stopping pending run for session', { sessionId, runId: meta.runId });
-      const result = await cancelBackendRun(sessionId, 'user_stop');
-      if (!result.ok) {
-        updateStreamState(sessionId, {
-          isLoading: true,
-          status: 'cancel_error',
-          error: '后端未确认取消，运行仍在继续',
-        });
-        return false;
+      if (controller) {
+        logger.info('Stopping stream for session', { sessionId });
+
+        // Call backend cancel API if we have runId
+        const streamToken = meta?.streamToken;
+        const result = await cancelBackendRun(sessionId, 'user_stop');
+        const activeMeta = streamMetaRef.current.get(sessionId);
+        const activeController = abortControllersRef.current.get(sessionId);
+        if (
+          activeController !== controller ||
+          activeMeta?.streamToken !== streamToken
+        ) {
+          return true;
+        }
+        if (!result.ok) {
+          updateStreamState(sessionId, {
+            isLoading: true,
+            status: 'cancel_error',
+            error: '后端未确认取消，运行仍在继续',
+          });
+          return false;
+        }
+
+        if (result.terminalStatus) {
+          activeMeta.onComplete?.(result.terminalStatus);
+          abortStreamController(controller, { silent: true });
+          cleanupStream(
+            sessionId,
+            streamToken,
+            streamStatusForTerminal(result.terminalStatus),
+          );
+          return true;
+        }
+
+        // Abort the fetch
+        abortStreamController(controller, { silent });
+        if (silent) {
+          cleanupStream(sessionId, streamToken, 'cancelled');
+        }
+        return true;
       }
-      if (result.terminalStatus) meta.onComplete?.(result.terminalStatus);
-      streamMetaRef.current.delete(sessionId);
-      updateStreamState(sessionId, {
-        isLoading: false,
-        status: result.terminalStatus
-          ? streamStatusForTerminal(result.terminalStatus)
-          : 'cancelled',
-        runId: null,
-        queue: null,
-      });
+
+      if (meta?.runId) {
+        logger.info('Stopping pending run for session', {
+          sessionId,
+          runId: meta.runId,
+        });
+        const result = await cancelBackendRun(sessionId, 'user_stop');
+        if (!result.ok) {
+          updateStreamState(sessionId, {
+            isLoading: true,
+            status: 'cancel_error',
+            error: '后端未确认取消，运行仍在继续',
+          });
+          return false;
+        }
+        if (result.terminalStatus) {
+          meta.onComplete?.(result.terminalStatus);
+        }
+        streamMetaRef.current.delete(sessionId);
+        updateStreamState(sessionId, {
+          isLoading: false,
+          status: result.terminalStatus ?
+            streamStatusForTerminal(result.terminalStatus) :
+            'cancelled',
+          runId: null,
+          queue: null,
+        });
+        return true;
+      }
       return true;
-    }
-    return true;
-  }, [cancelBackendRun, cleanupStream, updateStreamState]);
+    },
+    [cancelBackendRun, cleanupStream, updateStreamState],
+  );
 
   /**
    * Stop all active streams (e.g., on page refresh/unload).
    */
   const stopAllStreams = useCallback(async () => {
     const sessionIds = Array.from(abortControllersRef.current.keys());
-    return Promise.all(sessionIds.map((sessionId) => stopStreamForSession(sessionId)));
+    return Promise.all(
+      sessionIds.map((sessionId) => stopStreamForSession(sessionId)),
+    );
   }, [stopStreamForSession]);
 
   /**
    * Check if a session has an active stream.
    */
-  const isSessionLoading = useCallback((sessionId) => {
-    if (!sessionId) return false;
-    const stream = streams.get(sessionId);
-    return stream?.isLoading || false;
-  }, [streams]);
+  const isSessionLoading = useCallback(
+    (sessionId) => {
+      if (!sessionId) {
+        return false;
+      }
+      const stream = streams.get(sessionId);
+      return stream?.isLoading || false;
+    },
+    [streams],
+  );
 
   // Memoized active session IDs for sidebar indicators
   const activeSessionIds = useMemo(() => {

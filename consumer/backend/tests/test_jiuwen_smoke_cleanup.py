@@ -5,9 +5,8 @@ from __future__ import annotations
 import uuid
 from types import SimpleNamespace
 
-import pytest
-
 import agent.core.jiuwen.smoke as smoke
+import pytest
 
 
 class _FakeAbilityManager:
@@ -44,9 +43,7 @@ def test_jiuwen_smoke_runs_injected_cleanup_for_injected_registration():
         agent_config=_agent_config(),
         create_agent=lambda **_kwargs: agent,
         register_tools=lambda *_args, **_kwargs: cards,
-        unregister_tools=lambda cleanup_agent, cleanup_cards: cleanup_calls.append(
-            (cleanup_agent, cleanup_cards)
-        ),
+        unregister_tools=lambda cleanup_agent, cleanup_cards: cleanup_calls.append((cleanup_agent, cleanup_cards)),
         tool_infos=[_tool_info("smoke_tool")],
     )
 

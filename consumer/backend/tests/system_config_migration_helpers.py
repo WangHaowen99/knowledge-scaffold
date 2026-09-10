@@ -13,16 +13,10 @@ def apply_test_system_config_migrations(
     runtime_root: Path | None = None,
 ) -> None:
     """Apply the two registered Issue #14 steps before runtime reads."""
-    from migrations.system_config_model_profiles_v1 import (
-        execute_migration as execute_model_migration,
-    )
-    from migrations.system_config_secret_encryption_v1 import (
-        execute_migration as execute_secret_migration,
-    )
+    from migrations.system_config_model_profiles_v1 import execute_migration as execute_model_migration
+    from migrations.system_config_secret_encryption_v1 import execute_migration as execute_secret_migration
 
-    resolved_root = runtime_root or Path(
-        os.environ.get("PROJECT_ROOT") or config_path.parents[1]
-    )
+    resolved_root = runtime_root or Path(os.environ.get("PROJECT_ROOT") or config_path.parents[1])
     monkeypatch.setenv("PROJECT_ROOT", str(resolved_root))
     monkeypatch.setenv("SYSTEM_CONFIG_PATH", str(config_path))
     for execute in (execute_model_migration, execute_secret_migration):

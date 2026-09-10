@@ -11,7 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from agent.core.shared.runtime_fact_projector import (
     RuntimeFactPersistencePending,
     _RuntimeFactBatcher,

@@ -5,26 +5,24 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-
 from solver_coordination.canonical import sha256_digest
 from solver_coordination.contracts import (
-    FactSnapshot,
     MAX_DECIMAL_DIGITS,
     MAX_DECIMAL_EXPONENT,
     MAX_TEXT_LENGTH,
+    FactSnapshot,
     NormalizedInput,
     SolverContractError,
     _freeze_object,
 )
 from solver_coordination.fact_snapshot import FactSnapshotInvalidError
+from solver_coordination.problem_families.candidate_selection import INT64_MAX, INT64_MIN
 from solver_coordination.profiles import (
     LockedModelFactProvider,
     OrderedBinaryRouteCompiler,
     OrderedBinaryRouteEvaluator,
     scaled_int,
 )
-from solver_coordination.problem_families.candidate_selection import INT64_MAX, INT64_MIN
-
 
 ROUTE_FACT = {
     "metric_scale": 100,
@@ -53,14 +51,8 @@ ROUTE_FACT = {
 
 def _candidate_route_fact(item_count: int = 4) -> dict[str, Any]:
     candidate_ids = ["ALL_0", "ALL_1"]
-    candidate_ids.extend(
-        "OPTION_0_TO_OPTION_1_K{:04d}".format(index)
-        for index in range(1, item_count)
-    )
-    candidate_ids.extend(
-        "OPTION_1_TO_OPTION_0_K{:04d}".format(index)
-        for index in range(1, item_count)
-    )
+    candidate_ids.extend("OPTION_0_TO_OPTION_1_K{:04d}".format(index) for index in range(1, item_count))
+    candidate_ids.extend("OPTION_1_TO_OPTION_0_K{:04d}".format(index) for index in range(1, item_count))
     candidates = {
         candidate_id: {
             "eligible": True,
@@ -94,10 +86,14 @@ def _normalized_input(
     return NormalizedInput(
         operation_key="solve_synthetic_route",
         values={
-            "items": items if items is not None else [
-                {"item_order": index, "item_id": f"ITEM_SYNTHETIC_{index:04d}"}
-                for index in range(1, item_count + 1)
-            ]
+            "items": (
+                items
+                if items is not None
+                else [
+                    {"item_order": index, "item_id": f"ITEM_SYNTHETIC_{index:04d}"}
+                    for index in range(1, item_count + 1)
+                ]
+            )
         },
     )
 
@@ -132,9 +128,7 @@ def _snapshot(
     )
 
 
-def _snapshot_with_domain_context(
-    normalized_input: NormalizedInput, *, input_tons: str = "1"
-) -> FactSnapshot:
+def _snapshot_with_domain_context(normalized_input: NormalizedInput, *, input_tons: str = "1") -> FactSnapshot:
     context = {
         "schema_version": "refinery_route_context.v1",
         "profile_id": "refinery_route.v1",
@@ -218,9 +212,7 @@ def test_four_item_profile_compiles_canonical_candidate_selection():
     assert selection["candidate_count"] == 8
     assert _best_candidate_id(compiled) == "OPTION_0_TO_OPTION_1_K0002"
     assert selection["profile_id"] == "ordered_binary_route.v1"
-    assert selection["candidate_evaluation_digest"] == sha256_digest(
-        selection["candidates"]
-    )
+    assert selection["candidate_evaluation_digest"] == sha256_digest(selection["candidates"])
     assert [candidate["metrics"]["candidate_rank"] for candidate in selection["candidates"]] == list(range(8))
     assert compiled["objectives"] == OBJECTIVES
     assert compiled["limits"] == {
@@ -239,11 +231,7 @@ def test_profile_passes_frozen_domain_context_to_the_standalone_service():
         fact_snapshot=snapshot,
     )
 
-    expected = next(
-        fact["value"]
-        for fact in snapshot.facts
-        if fact["name"] == "refinery_route_context"
-    )
+    expected = next(fact["value"] for fact in snapshot.facts if fact["name"] == "refinery_route_context")
     assert compiled["parameters"]["domain_evaluation"] == expected
 
 
@@ -254,9 +242,7 @@ def test_profile_rejects_domain_context_quantity_that_diverges_from_input():
         OrderedBinaryRouteCompiler().compile_problem(
             capability=_capability(),
             normalized_input=normalized_input,
-            fact_snapshot=_snapshot_with_domain_context(
-                normalized_input, input_tons="2"
-            ),
+            fact_snapshot=_snapshot_with_domain_context(normalized_input, input_tons="2"),
         )
 
 
@@ -365,9 +351,7 @@ def test_option_metric_mapping_order_does_not_change_compilation():
         fact_snapshot=reordered_snapshot,
     )
 
-    assert reordered["parameters"]["candidate_selection"] == baseline[
-        "parameters"
-    ]["candidate_selection"]
+    assert reordered["parameters"]["candidate_selection"] == baseline["parameters"]["candidate_selection"]
 
 
 def test_every_candidate_metric_is_an_int64_and_rank_is_canonical():
@@ -406,18 +390,12 @@ def test_profile_compiler_marks_capacity_rejections_without_hiding_candidates():
     candidates = compiled["parameters"]["candidate_selection"]["candidates"]
     assert len(candidates) == 8
     assert any(candidate["eligible"] is False for candidate in candidates)
-    assert {
-        evaluation.rejection_codes
-        for evaluation in evaluations
-    } <= {(), ("capacity_exceeded",)}
+    assert {evaluation.rejection_codes for evaluation in evaluations} <= {(), ("capacity_exceeded",)}
     assert {evaluation.rejection_codes for evaluation in evaluations} == {
         (),
         ("capacity_exceeded",),
     }
-    assert all(
-        set(candidate) == {"candidate_id", "eligible", "assignment", "metrics"}
-        for candidate in candidates
-    )
+    assert all(set(candidate) == {"candidate_id", "eligible", "assignment", "metrics"} for candidate in candidates)
 
 
 def test_profile_compiler_uses_round_half_even():
@@ -473,9 +451,15 @@ def test_default_compilers_do_not_share_an_evaluator_instance():
         (lambda fact: fact["items"]["ITEM_SYNTHETIC_0001"]["OPTION_0"].pop("load"), "load"),
         (lambda fact: fact.__setitem__("rounding", "ROUND_UP"), "rounding"),
         (lambda fact: fact["items"]["ITEM_SYNTHETIC_0001"]["OPTION_0"].__setitem__("primary_score", "NaN"), "finite"),
-        (lambda fact: fact["items"]["ITEM_SYNTHETIC_0001"]["OPTION_0"].__setitem__("primary_score", "Infinity"), "finite"),
+        (
+            lambda fact: fact["items"]["ITEM_SYNTHETIC_0001"]["OPTION_0"].__setitem__("primary_score", "Infinity"),
+            "finite",
+        ),
         (lambda fact: fact.__setitem__("metric_scale", INT64_MAX + 1), "metric_scale"),
-        (lambda fact: fact["items"]["ITEM_SYNTHETIC_0001"]["OPTION_0"].__setitem__("primary_score", str(INT64_MAX)), "int64"),
+        (
+            lambda fact: fact["items"]["ITEM_SYNTHETIC_0001"]["OPTION_0"].__setitem__("primary_score", str(INT64_MAX)),
+            "int64",
+        ),
     ],
 )
 def test_profile_compiler_rejects_malformed_or_overflowing_facts(mutation, message: str):
@@ -530,8 +514,14 @@ def test_profile_compiler_rejects_capacity_subtraction_overflow():
     [
         ([], "at least one"),
         ([{"item_order": index, "item_id": f"ITEM_SYNTHETIC_{index:04d}"} for index in range(1, 66)], "at most 64"),
-        ([{"item_order": 1, "item_id": "ITEM_SYNTHETIC_0001"}, {"item_order": 1, "item_id": "ITEM_SYNTHETIC_0002"}], "contiguous"),
-        ([{"item_order": 1, "item_id": "ITEM_SYNTHETIC_0001"}, {"item_order": 2, "item_id": "ITEM_SYNTHETIC_0001"}], "unique"),
+        (
+            [{"item_order": 1, "item_id": "ITEM_SYNTHETIC_0001"}, {"item_order": 1, "item_id": "ITEM_SYNTHETIC_0002"}],
+            "contiguous",
+        ),
+        (
+            [{"item_order": 1, "item_id": "ITEM_SYNTHETIC_0001"}, {"item_order": 2, "item_id": "ITEM_SYNTHETIC_0001"}],
+            "unique",
+        ),
     ],
 )
 def test_profile_compiler_rejects_invalid_ordered_items(items, message: str):
@@ -589,9 +579,7 @@ def test_locked_model_fact_provider_returns_materialized_facts_and_binding():
 
     assert resolved["facts"] == capability["decision_model"]["materialized_facts"]
     assert resolved["bindings"] == {"solver_binding_revision": "binding-synthetic"}
-    assert resolved["source_evidence"] == (
-        {"kind": "locked_model_materialized_facts"},
-    )
+    assert resolved["source_evidence"] == ({"kind": "locked_model_materialized_facts"},)
 
 
 def test_locked_model_fact_provider_accepts_only_trusted_frozen_tuple_facts():

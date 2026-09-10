@@ -103,9 +103,7 @@ class RunPreflightSnapshot:
                 or not revision.startswith("sha256:")
                 or any(character not in "0123456789abcdef" for character in revision[7:])
             ):
-                raise ValueError(
-                    "ontology_content_revision must be a sha256 digest"
-                )
+                raise ValueError("ontology_content_revision must be a sha256 digest")
             object.__setattr__(self, "ontology_content_revision", revision)
         object.__setattr__(
             self,
@@ -115,18 +113,12 @@ class RunPreflightSnapshot:
         object.__setattr__(
             self,
             "solver_capabilities",
-            tuple(
-                freeze_preflight_product(capability)
-                for capability in self.solver_capabilities
-            ),
+            tuple(freeze_preflight_product(capability) for capability in self.solver_capabilities),
         )
         object.__setattr__(
             self,
             "preload_records",
-            tuple(
-                freeze_preflight_product(record)
-                for record in self.preload_records
-            ),
+            tuple(freeze_preflight_product(record) for record in self.preload_records),
         )
 
 
@@ -305,9 +297,7 @@ class RuntimeResult(BaseModel):
             raise ValueError("failed result requires error")
         if self.recovery is not None and self.status != "failed":
             raise ValueError("recovery action is only valid for failed results")
-        if self.recovery is not None and (
-            self.error is None or not self.error.retriable
-        ):
+        if self.recovery is not None and (self.error is None or not self.error.retriable):
             raise ValueError("recovery action requires a retriable error")
         return self
 
@@ -338,11 +328,9 @@ class AsyncAgentRuntime(Protocol):
         context: RuntimeInvocationContext,
     ) -> AsyncIterator["RuntimeEvent"]: ...
 
-    async def cancel(self, run_id: str, reason: str) -> bool:
-        ...
+    async def cancel(self, run_id: str, reason: str) -> bool: ...
 
-    async def release(self, jiuwen_session_id: str) -> None:
-        ...
+    async def release(self, jiuwen_session_id: str) -> None: ...
 
 
 class RunStatus(str, Enum):
@@ -407,11 +395,7 @@ class RunSnapshot:
             updated_at=self.updated_at,
             result=self.result.to_dict() if self.result is not None else None,
             error=self.error.to_dict() if self.error is not None else None,
-            pending_interaction=(
-                dict(self.pending_interaction)
-                if self.pending_interaction is not None
-                else None
-            ),
+            pending_interaction=(dict(self.pending_interaction) if self.pending_interaction is not None else None),
         )
 
 

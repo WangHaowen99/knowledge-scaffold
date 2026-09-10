@@ -28,18 +28,17 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
-
-from llm import LLMPurpose, get_llm_router
-from utils.logging import get_logger
-from ontology.mutation_lock import ontology_mutation_lock
-from ontology.ontologies import get_ontology_version_dir
-from ontology.operation_execution import is_deterministic_package_locked
-from workspace.workspaces import get_workspace_paths, get_workspaces_root
 from agent.evolution.buffer import ProposalBuffer
 from agent.evolution.models import Aggregate
 from agent.runtime.async_utils import run_sync_compat
 from agent.runtime.supervisor import RunTaskSupervisor
+from llm import LLMPurpose, get_llm_router
+from ontology.mutation_lock import ontology_mutation_lock
+from ontology.ontologies import get_ontology_version_dir
+from ontology.operation_execution import is_deterministic_package_locked
+from pydantic import BaseModel, Field
+from utils.logging import get_logger
+from workspace.workspaces import get_workspace_paths, get_workspaces_root
 
 logger = get_logger("evolution.patcher")
 
@@ -133,14 +132,11 @@ def _format_proposals_block(actionable: List[Aggregate]) -> str:
         return "(none)"
     lines: List[str] = []
     for idx, a in enumerate(actionable, 1):
-        sources = ", ".join(
-            "{}:{}".format(k, v) for k, v in sorted((a.sources or {}).items())
-        )
+        sources = ", ".join("{}:{}".format(k, v) for k, v in sorted((a.sources or {}).items()))
         lines.append(
             "{idx}. fingerprint={fp} kind={kind} entity={entity}\n"
             "   occurrences={occ} applied={app} 👍={end} sources=[{src}]\n"
-            "   content: {content}"
-            .format(
+            "   content: {content}".format(
                 idx=idx,
                 fp=a.fingerprint,
                 kind=a.kind,
@@ -163,6 +159,7 @@ def _format_proposals_block(actionable: List[Aggregate]) -> str:
 @dataclass
 class PatcherConfig:
     """Thresholds and scheduling options for the proposal patcher worker."""
+
     min_occurrences: int = 3
     min_applied: int = 2
     max_rejection: int = 0
@@ -189,9 +186,7 @@ class OperationPatcher:
         self._cfg_lock = threading.Lock()
         self._queue: asyncio.Queue[Tuple[Optional[str], str, str]] | None = None
         self._enqueued: set[Tuple[Optional[str], str, str]] = set()
-        self._pending_before_start: set[
-            Tuple[Optional[str], str, str]
-        ] = set()
+        self._pending_before_start: set[Tuple[Optional[str], str, str]] = set()
         self._enqueued_lock = threading.Lock()
         self._sweep_wakeup: asyncio.Event | None = None
         self._supervisor: RunTaskSupervisor | None = None
@@ -248,11 +243,7 @@ class OperationPatcher:
         if not self._started:
             return True
         current = asyncio.current_task()
-        tasks = [
-            task
-            for task in self._tasks
-            if not task.done() and task is not current
-        ]
+        tasks = [task for task in self._tasks if not task.done() and task is not current]
         for task in tasks:
             task.cancel()
         # Cancelling before waking is intentional.  Waking the Event first can
@@ -602,10 +593,7 @@ class OperationPatcher:
                 # Active chat fast-track: any non-rejected proposal qualifies.
                 out.append(agg)
                 continue
-            if (
-                agg.occurrences >= cfg.min_occurrences
-                and agg.applied_count >= cfg.min_applied
-            ):
+            if agg.occurrences >= cfg.min_occurrences and agg.applied_count >= cfg.min_applied:
                 out.append(agg)
         return out
 
@@ -625,11 +613,7 @@ class OperationPatcher:
             if declared_fp in actionable_set:
                 resolved.append(declared_fp)
                 continue
-            matches = [
-                full_fp
-                for full_fp in actionable_set
-                if full_fp.startswith(declared_fp)
-            ]
+            matches = [full_fp for full_fp in actionable_set if full_fp.startswith(declared_fp)]
             if len(matches) == 1:
                 resolved.append(matches[0])
         return resolved

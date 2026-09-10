@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-
 import workspace.workspaces as workspaces
 
 
@@ -215,13 +214,7 @@ def test_metadata_reader_rejects_paths_outside_direct_trusted_child(
         "evil",
         name="External Evil",
     )
-    nested_metadata = (
-        runtime_root
-        / "workspaces"
-        / "alpha"
-        / "nested"
-        / "workspace.json"
-    )
+    nested_metadata = runtime_root / "workspaces" / "alpha" / "nested" / "workspace.json"
     nested_metadata.parent.mkdir(parents=True)
     nested_metadata.write_text(external_metadata.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -250,12 +243,8 @@ def test_warm_catalog_reads_do_no_authoritative_io_and_resolve_in_constant_time(
 
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
-    workspaces.create_workspace(
-        "Beta", workspace_id="beta", auto_set_default=False
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    workspaces.create_workspace("Beta", workspace_id="beta", auto_set_default=False)
     snapshot = workspaces.get_workspace_catalog_snapshot()
 
     def unexpected_io(*_args, **_kwargs):
@@ -278,17 +267,13 @@ def test_warm_catalog_reads_do_no_authoritative_io_and_resolve_in_constant_time(
     assert snapshot.copy_item("beta")["name"] == "Beta"
     assert snapshot.default_workspace_id == "alpha"
     assert snapshot.contains("beta") is True
-    assert workspaces.resolve_workspace_id(
-        SimpleNamespace(headers={workspaces.WORKSPACE_HEADER: "beta"})
-    ) == "beta"
+    assert workspaces.resolve_workspace_id(SimpleNamespace(headers={workspaces.WORKSPACE_HEADER: "beta"})) == "beta"
 
 
 def test_catalog_and_public_reads_are_defensive_copies(tmp_path, monkeypatch):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", owner="alice", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", owner="alice", set_as_default=True)
     workspaces.update_workspace("alpha", members=["bob"])
 
     snapshot = workspaces.get_workspace_catalog_snapshot()
@@ -313,9 +298,7 @@ def test_external_drift_is_checked_only_after_throttle_window(tmp_path, monkeypa
     monkeypatch.setattr(catalog.time, "monotonic", lambda: now[0])
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     assert [item["id"] for item in workspaces.list_workspaces()] == ["alpha"]
 
     _write_workspace(
@@ -343,9 +326,7 @@ def test_catalog_generation_refreshes_external_drift_after_throttle(
     monkeypatch.setattr(catalog.time, "monotonic", lambda: now[0])
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before = workspaces.get_workspace_catalog_snapshot()
 
     _write_workspace(
@@ -376,9 +357,7 @@ def test_transient_drift_failure_serves_last_good_snapshot(
     monkeypatch.setattr(catalog.time, "monotonic", lambda: now[0])
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before = workspaces.get_workspace_catalog_snapshot()
 
     monkeypatch.setattr(
@@ -415,9 +394,7 @@ def test_structural_drift_os_errors_fail_closed(
     monkeypatch.setattr(catalog.time, "monotonic", lambda: now[0])
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before = workspaces.get_workspace_catalog_snapshot()
 
     monkeypatch.setattr(
@@ -449,9 +426,7 @@ def test_security_drift_failure_is_fail_closed(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog.time, "monotonic", lambda: now[0])
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before = workspaces.get_workspace_catalog_snapshot()
     original_signature = workspaces._workspace_source_signature
     original_loader = workspaces._load_workspace_catalog_data
@@ -498,9 +473,7 @@ def test_feature_flag_false_uses_original_authoritative_scan(tmp_path, monkeypat
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
     monkeypatch.setenv("PERF_WORKSPACE_SNAPSHOT_ENABLED", "false")
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
 
     calls = {"dirs": 0, "json": 0}
     original_dirs = workspaces._list_workspace_dirs
@@ -526,9 +499,7 @@ def test_feature_flag_false_uses_original_authoritative_scan(tmp_path, monkeypat
 def test_metadata_mutations_invalidate_catalog_before_return(tmp_path, monkeypatch):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     generation = workspaces.get_workspace_catalog_snapshot().generation
 
     updated = workspaces.update_workspace("alpha", name="Alpha 2")
@@ -541,9 +512,7 @@ def test_metadata_mutations_invalidate_catalog_before_return(tmp_path, monkeypat
     assert workspaces.get_workspace_catalog_generation() > generation
     generation = workspaces.get_workspace_catalog_generation()
 
-    created = workspaces.create_workspace(
-        "Beta", workspace_id="beta", auto_set_default=False
-    )
+    created = workspaces.create_workspace("Beta", workspace_id="beta", auto_set_default=False)
     assert created["id"] == "beta"
     assert workspaces.get_workspace_catalog_generation() > generation
     generation = workspaces.get_workspace_catalog_generation()
@@ -564,9 +533,7 @@ def test_failed_workspace_delete_preserves_default_and_catalog_generation(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before = workspaces.get_workspace_catalog_snapshot()
 
     monkeypatch.setattr(
@@ -589,9 +556,7 @@ def test_failed_metadata_write_does_not_advance_catalog_generation(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before = workspaces.get_workspace_catalog_snapshot().generation
 
     def fail_write(_paths, _payload):
@@ -611,9 +576,7 @@ def test_workspace_metadata_write_is_durable_before_catalog_publication(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before_generation = workspaces.get_workspace_catalog_snapshot().generation
     metadata_path = runtime_root / "workspaces" / "alpha" / "workspace.json"
     calls = []
@@ -700,9 +663,7 @@ def test_pre_replace_failure_and_cleanup_failure_preserve_primary_error(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before_generation = workspaces.get_workspace_catalog_snapshot().generation
     replace_error = OSError("synthetic replace failure")
     original_unlink = workspaces.Path.unlink
@@ -732,9 +693,7 @@ def test_committed_metadata_durability_error_invalidates_before_rethrow(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before_generation = workspaces.get_workspace_catalog_snapshot().generation
     fsync_error = OSError("synthetic directory fsync failure")
 
@@ -758,12 +717,8 @@ def test_committed_settings_durability_error_invalidates_default_before_rethrow(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
-    workspaces.create_workspace(
-        "Beta", workspace_id="beta", auto_set_default=False
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    workspaces.create_workspace("Beta", workspace_id="beta", auto_set_default=False)
     before_generation = workspaces.get_workspace_catalog_snapshot().generation
 
     def fail_directory_fsync(_path):
@@ -784,12 +739,8 @@ def test_runtime_config_advances_only_corresponding_config_generation(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
-    workspaces.create_workspace(
-        "Beta", workspace_id="beta", auto_set_default=False
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    workspaces.create_workspace("Beta", workspace_id="beta", auto_set_default=False)
     snapshot = workspaces.get_workspace_catalog_snapshot()
     catalog_generation = snapshot.generation
     alpha_generation = workspaces.get_workspace_config_generation("alpha")
@@ -803,9 +754,7 @@ def test_runtime_config_advances_only_corresponding_config_generation(
         "_load_workspace_catalog_data",
         unexpected_reload,
     )
-    updated = workspaces.update_workspace_runtime_config(
-        "alpha", {"lang": {"enabled": True}}
-    )
+    updated = workspaces.update_workspace_runtime_config("alpha", {"lang": {"enabled": True}})
 
     assert updated["lang"]["enabled"] is True
     assert workspaces.get_workspace_config_generation("alpha") > alpha_generation
@@ -820,9 +769,7 @@ def test_failed_runtime_config_write_does_not_advance_config_generation(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before = workspaces.get_workspace_config_generation("alpha")
 
     def fail_write(_path, _payload):
@@ -830,9 +777,7 @@ def test_failed_runtime_config_write_does_not_advance_config_generation(
 
     monkeypatch.setattr(workspaces, "_write_json_atomic", fail_write)
     with pytest.raises(OSError, match="simulated runtime write failure"):
-        workspaces.update_workspace_runtime_config(
-            "alpha", {"lang": {"enabled": True}}
-        )
+        workspaces.update_workspace_runtime_config("alpha", {"lang": {"enabled": True}})
 
     assert workspaces.get_workspace_config_generation("alpha") == before
 
@@ -843,12 +788,8 @@ def test_committed_runtime_config_durability_error_advances_only_workspace_gener
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
-    workspaces.create_workspace(
-        "Beta", workspace_id="beta", auto_set_default=False
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    workspaces.create_workspace("Beta", workspace_id="beta", auto_set_default=False)
     alpha_before = workspaces.get_workspace_config_generation("alpha")
     beta_before = workspaces.get_workspace_config_generation("beta")
 
@@ -858,9 +799,7 @@ def test_committed_runtime_config_durability_error_advances_only_workspace_gener
     monkeypatch.setattr(workspaces, "_fsync_directory", fail_directory_fsync)
 
     with pytest.raises(workspaces.WorkspaceDurabilityError):
-        workspaces.update_workspace_runtime_config(
-            "alpha", {"lang": {"enabled": True}}
-        )
+        workspaces.update_workspace_runtime_config("alpha", {"lang": {"enabled": True}})
 
     assert workspaces.get_workspace_config_generation("alpha") > alpha_before
     assert workspaces.get_workspace_config_generation("beta") == beta_before
@@ -873,9 +812,7 @@ def test_legacy_runtime_config_migration_advances_workspace_config_generation(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     runtime_config = runtime_root / "workspaces" / "alpha" / "runtime_config.json"
     runtime_config.write_text(
         json.dumps({"llm": {"default_profile_ref": {"scope": "global", "id": "main"}}}),
@@ -924,9 +861,7 @@ def test_legacy_workspace_and_mcp_migrations_invalidate_catalog(
 def test_committed_mcp_migration_error_invalidates_catalog(tmp_path, monkeypatch):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     metadata_path = runtime_root / "workspaces" / "alpha" / "workspace.json"
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     payload.pop("mcp_endpoint_id")
@@ -953,9 +888,7 @@ def test_user_cleanup_member_write_invalidates_catalog(tmp_path, monkeypatch):
 
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Private", workspace_id="private", owner="admin", set_as_default=True
-    )
+    workspaces.create_workspace("Private", workspace_id="private", owner="admin", set_as_default=True)
     workspaces.update_workspace("private", members=["alice"])
     before = workspaces.get_workspace_catalog_snapshot().generation
     monkeypatch.setattr(user_deletion, "_archive_workspace_runtime", lambda *_args: [])
@@ -982,9 +915,7 @@ def test_user_cleanup_boundary_backstops_member_catalog_invalidation(
 
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Private", workspace_id="private", owner="admin", set_as_default=True
-    )
+    workspaces.create_workspace("Private", workspace_id="private", owner="admin", set_as_default=True)
     before = workspaces.get_workspace_catalog_snapshot().generation
     monkeypatch.setattr(
         user_deletion,
@@ -992,9 +923,7 @@ def test_user_cleanup_boundary_backstops_member_catalog_invalidation(
         lambda _username: ["private"],
     )
 
-    updated = user_deletion._remove_user_from_workspace_members_and_invalidate(
-        "alice"
-    )
+    updated = user_deletion._remove_user_from_workspace_members_and_invalidate("alice")
 
     assert updated == ["private"]
     assert workspaces.get_workspace_catalog_generation() > before
@@ -1013,15 +942,11 @@ def test_catalog_generation_never_regresses_when_runtime_root_changes(
         "get_runtime_root",
         lambda: current_root[0].resolve(),
     )
-    workspaces.create_workspace(
-        "First", workspace_id="first", set_as_default=True
-    )
+    workspaces.create_workspace("First", workspace_id="first", set_as_default=True)
     first_generation = workspaces.get_workspace_catalog_snapshot().generation
 
     current_root[0] = second_root
-    workspaces.create_workspace(
-        "Second", workspace_id="second", set_as_default=True
-    )
+    workspaces.create_workspace("Second", workspace_id="second", set_as_default=True)
     second_generation = workspaces.get_workspace_catalog_snapshot().generation
 
     current_root[0] = first_root
@@ -1037,9 +962,7 @@ def test_catalog_publication_has_no_stale_window_during_metadata_write(
 ):
     runtime_root = tmp_path / "runtime"
     _enable_snapshot(monkeypatch, runtime_root)
-    workspaces.create_workspace(
-        "Alpha", workspace_id="alpha", set_as_default=True
-    )
+    workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     workspaces.get_workspace_catalog_snapshot()
     persisted = threading.Event()
     allow_return = threading.Event()
@@ -1091,9 +1014,7 @@ def test_acl_is_re_evaluated_per_request_instead_of_cached_in_catalog(
         lambda: current_user[0],
     )
 
-    request = SimpleNamespace(
-        headers={workspaces.WORKSPACE_HEADER: "private"}
-    )
+    request = SimpleNamespace(headers={workspaces.WORKSPACE_HEADER: "private"})
     with pytest.raises(APIError):
         workspaces.resolve_workspace_id(request)
 

@@ -1,7 +1,27 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ChevronDown, Compass, FolderKanban, LogOut, Menu, MessageSquarePlus,
-  Gauge, PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Settings2, SlidersHorizontal, Upload, X,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import {
+  ChevronDown,
+  Compass,
+  FolderKanban,
+  LogOut,
+  Menu,
+  MessageSquarePlus,
+  Gauge,
+  PackageOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  Settings2,
+  SlidersHorizontal,
+  Upload,
+  X,
 } from 'lucide-react';
 import useStreamManager from '../features/chat/hooks/useStreamManager';
 import useChatSessions from '../features/chat/hooks/useChatSessions';
@@ -18,15 +38,24 @@ import { EmptyState } from '../shared/ui/primitives';
 import { APP_VERSION } from './appMeta';
 import OnboardingWizard from './onboarding/OnboardingWizard';
 import { wizardSeen } from './onboarding/wizardState';
-import { clearOntologyResourcePrincipal, ontologyResource } from './providers/ontologyResource';
+import {
+  clearOntologyResourcePrincipal,
+  ontologyResource,
+} from './providers/ontologyResource';
 import { ontologyRequestPolicy } from './providers/ontologyRequestPolicy';
 import { clearWorkspaceRuntime } from './providers/workspaceRuntime';
 import './appShell.css';
 
-const KnowledgeWorkbench = lazy(() => import('../features/knowledge/KnowledgeWorkbench'));
+const KnowledgeWorkbench = lazy(
+  () => import('../features/knowledge/KnowledgeWorkbench'),
+);
 const ConfigCenter = lazy(() => import('../features/settings/ConfigCenter'));
-const ObservabilityFeature = lazy(() => import('../features/observability/index.jsx'));
-const SolverCoordinationWorkbench = lazy(() => import('../features/solver/SolverCoordinationWorkbench'));
+const ObservabilityFeature = lazy(
+  () => import('../features/observability/index.jsx'),
+);
+const SolverCoordinationWorkbench = lazy(
+  () => import('../features/solver/SolverCoordinationWorkbench'),
+);
 
 const SURFACES = {
   chat: '新建对话',
@@ -40,9 +69,20 @@ const EMPTY_TRACE_METADATA = Object.freeze({});
 export default function AppShell() {
   const auth = useAuthContext();
   const {
-    status, user, workspacesLoaded, workspacesLoading, workspaceDataReady,
-    logout, isAdmin, workspaces, workspaceId, defaultWorkspaceId,
-    workspacesError, reloadWorkspaces, switchWorkspace, can,
+    status,
+    user,
+    workspacesLoaded,
+    workspacesLoading,
+    workspaceDataReady,
+    logout,
+    isAdmin,
+    workspaces,
+    workspaceId,
+    defaultWorkspaceId,
+    workspacesError,
+    reloadWorkspaces,
+    switchWorkspace,
+    can,
   } = auth;
   const [surface, setSurface] = useState('chat');
   const [cfgScope, setCfgScope] = useState('global');
@@ -52,11 +92,17 @@ export default function AppShell() {
   const [userMenu, setUserMenu] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [isNarrowViewport, setIsNarrowViewport] = useState(() => (
-    typeof window !== 'undefined' && window.matchMedia?.('(max-width: 900px)').matches
-  ));
+  const [isNarrowViewport, setIsNarrowViewport] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(max-width: 900px)').matches,
+  );
   const [sideCollapsed, setSideCollapsed] = useState(() => {
-    try { return localStorage.getItem('mw_sidebar_collapsed') === '1'; } catch { return false; }
+    try {
+      return localStorage.getItem('mw_sidebar_collapsed') === '1';
+    } catch {
+      return false;
+    }
   });
   const [kbFocus, setKbFocus] = useState(null);
   const [solverResetToken, setSolverResetToken] = useState(0);
@@ -83,8 +129,9 @@ export default function AppShell() {
     onSelect: kb.importZip,
     onCancel: kb.cancelImportSelection,
   });
-  const currentTraceMetadata = chat.sessions.find((session) => session.id === chat.currentChatId)?.metadata
-    || EMPTY_TRACE_METADATA;
+  const currentTraceMetadata =
+    chat.sessions.find((session) => session.id === chat.currentChatId)
+      ?.metadata || EMPTY_TRACE_METADATA;
   const wsMenuRef = useRef(null);
   const userMenuRef = useRef(null);
   const mobileNavRef = useRef(null);
@@ -92,12 +139,20 @@ export default function AppShell() {
   const wizardOpenRef = useRef(wizardOpen);
   wizardOpenRef.current = wizardOpen;
   const openMobileNavigation = useCallback(() => setMobileNavOpen(true), []);
-  const toggleDesktopSidebar = () => setSideCollapsed((current) => {
-    const next = !current;
-    try { localStorage.setItem('mw_sidebar_collapsed', next ? '1' : '0'); } catch { /* ignore */ }
-    return next;
-  });
-  const resetSolver = useCallback(() => setSolverResetToken((value) => value + 1), []);
+  const toggleDesktopSidebar = () =>
+    setSideCollapsed((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem('mw_sidebar_collapsed', next ? '1' : '0');
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  const resetSolver = useCallback(
+    () => setSolverResetToken((value) => value + 1),
+    [],
+  );
   const handleLogout = useCallback(() => {
     clearOntologyResourcePrincipal(principalId);
     return logout();
@@ -106,22 +161,28 @@ export default function AppShell() {
   // 每次新登录弹出操作向导（会话级标记，跳过/完成后本次不再弹）
   useEffect(() => {
     if (
-      status !== 'authenticated'
-      || !workspacesLoaded
-      || workspacesLoading
-      || workspacesError
-      || wizardSeen()
-    ) return undefined;
+      status !== 'authenticated' ||
+      !workspacesLoaded ||
+      workspacesLoading ||
+      workspacesError ||
+      wizardSeen()
+    ) {
+      return undefined;
+    }
     const timer = setTimeout(() => setWizardOpen(true), 0);
     return () => clearTimeout(timer);
   }, [status, workspacesLoaded, workspacesLoading, workspacesError]);
 
   useEffect(() => {
     const media = window.matchMedia?.('(max-width: 900px)');
-    if (!media) return undefined;
+    if (!media) {
+      return undefined;
+    }
     const syncViewport = () => {
       setIsNarrowViewport(media.matches);
-      if (!media.matches) setMobileNavOpen(false);
+      if (!media.matches) {
+        setMobileNavOpen(false);
+      }
     };
     syncViewport();
     media.addEventListener?.('change', syncViewport);
@@ -130,7 +191,9 @@ export default function AppShell() {
 
   useEffect(() => {
     clearWorkspaceRuntime({ streamManager, chat, resetSolver });
-    if (!workspaceDataReady) return undefined;
+    if (!workspaceDataReady) {
+      return undefined;
+    }
     const t = setTimeout(() => chat.loadSessions(false), 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -138,28 +201,40 @@ export default function AppShell() {
 
   useEffect(() => {
     const onDocClick = (e) => {
-      if (wsMenuRef.current && !wsMenuRef.current.contains(e.target)) setWsMenu(false);
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) setUserMenu(false);
+      if (wsMenuRef.current && !wsMenuRef.current.contains(e.target)) {
+        setWsMenu(false);
+      }
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setUserMenu(false);
+      }
     };
     document.addEventListener('click', onDocClick);
     return () => document.removeEventListener('click', onDocClick);
   }, []);
 
   useEffect(() => {
-    if (!mobileNavOpen || !isNarrowViewport || wizardOpen) return undefined;
+    if (!mobileNavOpen || !isNarrowViewport || wizardOpen) {
+      return undefined;
+    }
     const navigation = mobileNavRef.current;
     const previouslyFocused = document.activeElement;
     const fallbackTrigger = mobileMenuButtonRef.current;
-    const focusable = () => Array.from(navigation?.querySelectorAll(
-      [
-        'button:not([disabled])', 'input:not([disabled])',
-        'select:not([disabled])', 'textarea:not([disabled])',
-        'a[href]', '[tabindex]:not([tabindex="-1"])',
-      ].join(', '),
-    ) || []).filter((element) => {
-      const style = window.getComputedStyle(element);
-      return style.display !== 'none' && style.visibility !== 'hidden';
-    });
+    const focusable = () =>
+      Array.from(
+        navigation?.querySelectorAll(
+          [
+            'button:not([disabled])',
+            'input:not([disabled])',
+            'select:not([disabled])',
+            'textarea:not([disabled])',
+            'a[href]',
+            '[tabindex]:not([tabindex="-1"])',
+          ].join(', '),
+        ) || [],
+      ).filter((element) => {
+        const style = window.getComputedStyle(element);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+      });
     focusable()[0]?.focus();
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
@@ -167,9 +242,13 @@ export default function AppShell() {
         setMobileNavOpen(false);
         return;
       }
-      if (event.key !== 'Tab') return;
+      if (event.key !== 'Tab') {
+        return;
+      }
       const items = focusable();
-      if (!items.length) return;
+      if (!items.length) {
+        return;
+      }
       const [first, last] = [items[0], items.at(-1)];
       if (!navigation?.contains(document.activeElement)) {
         event.preventDefault();
@@ -185,54 +264,96 @@ export default function AppShell() {
     document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      if (wizardOpenRef.current) return;
+      if (wizardOpenRef.current) {
+        return;
+      }
       if (
-        previouslyFocused instanceof HTMLElement
-        && previouslyFocused !== document.body
-        && previouslyFocused.isConnected
-      ) previouslyFocused.focus();
-      else fallbackTrigger?.focus();
+        previouslyFocused instanceof HTMLElement &&
+        previouslyFocused !== document.body &&
+        previouslyFocused.isConnected
+      ) {
+        previouslyFocused.focus();
+      } else {
+        fallbackTrigger?.focus();
+      }
     };
   }, [mobileNavOpen, isNarrowViewport, wizardOpen]);
 
   useEffect(() => {
     const openKnowledgeSource = (event) => {
       const detail = event.detail || {};
-      if (!detail.path) return;
-      if (detail.ontologyId) kb.selectPkg(detail.ontologyId);
-      setKbFocus({ ontologyId: detail.ontologyId || '', path: detail.path, token: Date.now() });
+      if (!detail.path) {
+        return;
+      }
+      if (detail.ontologyId) {
+        kb.selectPkg(detail.ontologyId);
+      }
+      setKbFocus({
+        ontologyId: detail.ontologyId || '',
+        path: detail.path,
+        token: Date.now(),
+      });
       setSurface('kb');
     };
     window.addEventListener('mwr-open-kb-source', openKnowledgeSource);
-    return () => window.removeEventListener('mwr-open-kb-source', openKnowledgeSource);
+    return () =>
+      window.removeEventListener('mwr-open-kb-source', openKnowledgeSource);
   }, [kb]);
 
   if (status === 'checking') {
     return (
-      <div className="mwr" style={{
-        display: 'flex', height: '100vh', alignItems: 'center',
-        justifyContent: 'center', color: '#898781',
-      }}>
+      <div
+        className="mwr"
+        style={{
+          display: 'flex',
+          height: '100vh',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#898781',
+        }}
+      >
         加载中…
       </div>
     );
   }
-  if (status !== 'authenticated') return <LoginPage />;
+  if (status !== 'authenticated') {
+    return <LoginPage />;
+  }
   const navigate = ({ surface: sf, scope, sec, tab, ontologyId }) => {
-    if (sf) setSurface(sf);
-    if (scope) setCfgScope(scope);
-    if (sec) setCfgSec(sec);
-    if (sf === 'kb' && ontologyId) kb.selectPkg(ontologyId);
+    if (sf) {
+      setSurface(sf);
+    }
+    if (scope) {
+      setCfgScope(scope);
+    }
+    if (sec) {
+      setCfgSec(sec);
+    }
+    if (sf === 'kb' && ontologyId) {
+      kb.selectPkg(ontologyId);
+    }
     if (sf === 'kb' && tab) {
-      setKbFocus({ ontologyId: ontologyId || kb.pkgId || '', tab, token: Date.now() });
+      setKbFocus({
+        ontologyId: ontologyId || kb.pkgId || '',
+        tab,
+        token: Date.now(),
+      });
     }
     setMobileNavOpen(false);
   };
 
   const navBtn = (id, Icon, label, wiz) => (
-    <button className={surface === id ? 'on' : ''} data-wiz={wiz} title={label}
-      onClick={() => { setSurface(id); setMobileNavOpen(false); }}>
-      <Icon className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">{label}</span>
+    <button
+      className={surface === id ? 'on' : ''}
+      data-wiz={wiz}
+      title={label}
+      onClick={() => {
+        setSurface(id);
+        setMobileNavOpen(false);
+      }}
+    >
+      <Icon className="nav-icon" size={17} strokeWidth={1.9} />
+      <span className="nav-label">{label}</span>
     </button>
   );
   const openObservability = (view = 'session') => {
@@ -240,45 +361,81 @@ export default function AppShell() {
     setSurface('observability');
     setMobileNavOpen(false);
   };
-  const isFullSurface = surface === 'chat' || surface === 'kb' || surface === 'solver';
-  const workspaceSurfaceBlocked = requiresWorkspaceData(surface, observabilityView)
-    && !workspaceDataReady;
+  const isFullSurface =
+    surface === 'chat' || surface === 'kb' || surface === 'solver';
+  const workspaceSurfaceBlocked =
+    requiresWorkspaceData(surface, observabilityView) && !workspaceDataReady;
   const canCreateWorkspace = can('workspace.create');
-  const mobileNavigationInert = isNarrowViewport && (!mobileNavOpen || wizardOpen);
+  const mobileNavigationInert =
+    isNarrowViewport && (!mobileNavOpen || wizardOpen);
   const mainContentInert = isNarrowViewport && mobileNavOpen;
 
   return (
     <div className={`mwr shell ${sideCollapsed ? 'side-collapsed' : ''}`}>
-      <aside ref={mobileNavRef} className={`side ${mobileNavOpen ? 'side-open' : ''}`} aria-label="主导航"
+      <aside
+        ref={mobileNavRef}
+        className={`side ${mobileNavOpen ? 'side-open' : ''}`}
+        aria-label="主导航"
         aria-hidden={mobileNavigationInert ? 'true' : undefined}
-        inert={mobileNavigationInert}>
+        inert={mobileNavigationInert}
+      >
         <div className="logo">
           <img className="mk" src="/brand-mark.png" alt="" aria-hidden="true" />
           <span className="logo-title">知识工程工具</span>
-          <button className="mobile-side-close" type="button" aria-label="关闭导航"
-            onClick={() => setMobileNavOpen(false)}>
+          <button
+            className="mobile-side-close"
+            type="button"
+            aria-label="关闭导航"
+            onClick={() => setMobileNavOpen(false)}
+          >
             <X size={18} />
           </button>
         </div>
         <div className="nav">
           <div className="grp">工作</div>
-          <button className={surface === 'chat' && !chat.currentChatId ? 'on' : ''} data-wiz="nav-chat" title="新建对话"
-            onClick={() => { setSurface('chat'); setMobileNavOpen(false); chat.startNewChat(); }}>
-            <MessageSquarePlus className="nav-icon" size={17} strokeWidth={1.9} />
+          <button
+            className={surface === 'chat' && !chat.currentChatId ? 'on' : ''}
+            data-wiz="nav-chat"
+            title="新建对话"
+            onClick={() => {
+              setSurface('chat');
+              setMobileNavOpen(false);
+              chat.startNewChat();
+            }}
+          >
+            <MessageSquarePlus
+              className="nav-icon"
+              size={17}
+              strokeWidth={1.9}
+            />
             <span className="nav-label">新建对话</span>
           </button>
           {navBtn('kb', PackageOpen, '知识包工作台', 'nav-kb')}
           <div className="grp">管理</div>
           {navBtn('config', Settings2, '配置中心', 'nav-config')}
           {can('observability.global') && (
-            <button className={surface === 'observability' && observabilityView === 'global' ? 'on' : ''}
-              title="全局可观测性" onClick={() => openObservability('global')}>
-              <Gauge className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">运行观测</span>
+            <button
+              className={
+                surface === 'observability' && observabilityView === 'global' ?
+                  'on' :
+                  ''
+              }
+              title="全局可观测性"
+              onClick={() => openObservability('global')}
+            >
+              <Gauge className="nav-icon" size={17} strokeWidth={1.9} />
+              <span className="nav-label">运行观测</span>
             </button>
           )}
         </div>
         {workspaceDataReady && (
-          <ChatHistorySidebar chat={chat} onOpen={(id) => { setSurface('chat'); chat.selectChat(id); }} />
+          <ChatHistorySidebar
+            chat={chat}
+            onOpen={(id) => {
+              setSurface('chat');
+              chat.selectChat(id);
+            }}
+          />
         )}
         <div className="vercard">
           <div className="vn">知识工程 控制台</div>
@@ -286,29 +443,57 @@ export default function AppShell() {
         </div>
       </aside>
       {mobileNavOpen && (
-        <button className="side-backdrop" type="button" aria-label="关闭导航"
-          aria-hidden={wizardOpen ? 'true' : undefined} inert={wizardOpen}
-          onClick={() => setMobileNavOpen(false)} />
+        <button
+          className="side-backdrop"
+          type="button"
+          aria-label="关闭导航"
+          aria-hidden={wizardOpen ? 'true' : undefined}
+          inert={wizardOpen}
+          onClick={() => setMobileNavOpen(false)}
+        />
       )}
-      <div className="main" aria-hidden={mainContentInert ? 'true' : undefined}
-        inert={mainContentInert}>
+      <div
+        className="main"
+        aria-hidden={mainContentInert ? 'true' : undefined}
+        inert={mainContentInert}
+      >
         <div className="topbar">
-          <button ref={mobileMenuButtonRef} className="iconbtn mobile-menu-btn" type="button" aria-label="打开导航"
-            onClick={openMobileNavigation}>
+          <button
+            ref={mobileMenuButtonRef}
+            className="iconbtn mobile-menu-btn"
+            type="button"
+            aria-label="打开导航"
+            onClick={openMobileNavigation}
+          >
             <Menu size={18} />
           </button>
-          <button className="iconbtn desktop-sidebar-toggle" type="button"
-            aria-label={sideCollapsed ? '展开侧栏' : '折叠侧栏'} title={sideCollapsed ? '展开侧栏' : '折叠侧栏'}
-            onClick={toggleDesktopSidebar}>
-            {sideCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+          <button
+            className="iconbtn desktop-sidebar-toggle"
+            type="button"
+            aria-label={sideCollapsed ? '展开侧栏' : '折叠侧栏'}
+            title={sideCollapsed ? '展开侧栏' : '折叠侧栏'}
+            onClick={toggleDesktopSidebar}
+          >
+            {sideCollapsed ? (
+              <PanelLeftOpen size={17} />
+            ) : (
+              <PanelLeftClose size={17} />
+            )}
           </button>
           <span className="crumb">{SURFACES[surface]}</span>
           <div className="wswrap" ref={wsMenuRef}>
-            <button className="wschip" type="button" aria-haspopup="menu" aria-expanded={wsMenu}
-              onClick={() => setWsMenu((v) => !v)}>
+            <button
+              className="wschip"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={wsMenu}
+              onClick={() => setWsMenu((v) => !v)}
+            >
               <FolderKanban size={15} strokeWidth={1.9} />
               <span className="wschip-label">
-                {workspaces.find((w) => w.id === workspaceId)?.name || workspaceId || '选择工作空间'}
+                {workspaces.find((w) => w.id === workspaceId)?.name ||
+                  workspaceId ||
+                  '选择工作空间'}
               </span>
               <ChevronDown size={14} strokeWidth={1.9} />
             </button>
@@ -316,28 +501,53 @@ export default function AppShell() {
               <div className="wsmenu">
                 <div className="wm-h">切换工作空间</div>
                 {workspaces.map((w) => (
-                  <button key={w.id} onClick={() => { switchWorkspace(w.id); setWsMenu(false); }}>
+                  <button
+                    key={w.id}
+                    onClick={() => {
+                      switchWorkspace(w.id);
+                      setWsMenu(false);
+                    }}
+                  >
                     <span className={w.id === workspaceId ? 'cur' : ''}>
-                      {w.name}{w.id === workspaceId ? ' ✓' : ''}
+                      {w.name}
+                      {w.id === workspaceId ? ' ✓' : ''}
                     </span>
-                    {(w.is_default || w.id === defaultWorkspaceId) && <span className="default-flag">默认</span>}
+                    {(w.is_default || w.id === defaultWorkspaceId) && (
+                      <span className="default-flag">默认</span>
+                    )}
                   </button>
                 ))}
                 {(canCreateWorkspace || can('workspace.manage')) && (
                   <>
                     <div className="div" />
                     {canCreateWorkspace && (
-                      <button className="new" onClick={() => {
-                        setWsMenu(false);
-                        navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' });
-                      }}>
-                        <span><Plus size={14} /> 新建工作空间</span>
+                      <button
+                        className="new"
+                        onClick={() => {
+                          setWsMenu(false);
+                          navigate({
+                            surface: 'config',
+                            scope: 'global',
+                            sec: 'wsmgmt',
+                          });
+                        }}
+                      >
+                        <span>
+                          <Plus size={14} /> 新建工作空间
+                        </span>
                       </button>
                     )}
-                    <button style={{ color: 'var(--ink2)' }} onClick={() => {
-                      setWsMenu(false);
-                      navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' });
-                    }}>
+                    <button
+                      style={{ color: 'var(--ink2)' }}
+                      onClick={() => {
+                        setWsMenu(false);
+                        navigate({
+                          surface: 'config',
+                          scope: 'global',
+                          sec: 'wsmgmt',
+                        });
+                      }}
+                    >
                       管理工作空间…
                     </button>
                   </>
@@ -347,28 +557,56 @@ export default function AppShell() {
           </div>
           {surface === 'kb' && workspaceDataReady && kb.canImport && (
             <>
-              <button className="btn btn-p" data-wiz="kb-import" disabled={kb.importLocked}
-                onClick={() => kbImportPicker.open()}>
-                <Upload size={14} />{kb.importing ? '导入中…' : kb.importReconciling ? '核对结果中…' : '导入知识包'}
+              <button
+                className="btn btn-p"
+                data-wiz="kb-import"
+                disabled={kb.importLocked}
+                onClick={() => kbImportPicker.open()}
+              >
+                <Upload size={14} />
+                {kb.importing ?
+                  '导入中…' :
+                  kb.importReconciling ?
+                    '核对结果中…' :
+                    '导入知识包'}
               </button>
-              <input ref={kbImportPicker.inputRef} type="file" accept=".zip" style={{ display: 'none' }}
-                onChange={kbImportPicker.handleChange} />
+              <input
+                ref={kbImportPicker.inputRef}
+                type="file"
+                accept=".zip"
+                style={{ display: 'none' }}
+                onChange={kbImportPicker.handleChange}
+              />
             </>
           )}
-          <button className="iconbtn" title="操作向导" aria-label="打开操作向导"
-            onClick={() => setWizardOpen(true)}>
+          <button
+            className="iconbtn"
+            title="操作向导"
+            aria-label="打开操作向导"
+            onClick={() => setWizardOpen(true)}
+          >
             <Compass size={16} strokeWidth={2} />
           </button>
           <div className="uwrap" ref={userMenuRef}>
             <button className="uchip" onClick={() => setUserMenu((v) => !v)}>
-              <span className="uav">{(user.username || '?')[0].toUpperCase()}</span>
+              <span className="uav">
+                {(user.username || '?')[0].toUpperCase()}
+              </span>
               <span className="uname">{user.username}</span>
               <ChevronDown className="user-chevron" size={13} />
             </button>
             {userMenu && (
               <div className="wsmenu" style={{ width: 220 }}>
-                <div style={{ padding: '10px 12px 8px', borderBottom: '1px solid #efeee9', marginBottom: 4 }}>
-                  <div style={{ fontWeight: 650, fontSize: 13 }}>{user.username}</div>
+                <div
+                  style={{
+                    padding: '10px 12px 8px',
+                    borderBottom: '1px solid #efeee9',
+                    marginBottom: 4,
+                  }}
+                >
+                  <div style={{ fontWeight: 650, fontSize: 13 }}>
+                    {user.username}
+                  </div>
                   <span
                     className={`tag ${isAdmin ? 'tag-ok' : 'tag-lang'}`}
                     style={{ marginTop: 5, display: 'inline-block' }}
@@ -376,59 +614,112 @@ export default function AppShell() {
                     {isAdmin ? '平台管理员' : '普通用户'}
                   </span>
                 </div>
-                <button onClick={() => {
-                  setUserMenu(false);
-                  navigate({ surface: 'config', scope: 'personal', sec: 'prefs' });
-                }}>
-                  <SlidersHorizontal size={14} />个人设置
+                <button
+                  onClick={() => {
+                    setUserMenu(false);
+                    navigate({
+                      surface: 'config',
+                      scope: 'personal',
+                      sec: 'prefs',
+                    });
+                  }}
+                >
+                  <SlidersHorizontal size={14} />
+                  个人设置
                 </button>
-                <button onClick={() => { setUserMenu(false); setWizardOpen(true); }}><Compass size={14} />操作向导</button>
+                <button
+                  onClick={() => {
+                    setUserMenu(false);
+                    setWizardOpen(true);
+                  }}
+                >
+                  <Compass size={14} />
+                  操作向导
+                </button>
                 <div className="div" />
-                <button className="menu-danger" onClick={handleLogout}><LogOut size={14} />退出登录</button>
+                <button className="menu-danger" onClick={handleLogout}>
+                  <LogOut size={14} />
+                  退出登录
+                </button>
               </div>
             )}
           </div>
         </div>
-        <div className={isFullSurface ? 'content content-full' : 'content'}
-          style={isFullSurface ? { display: 'flex', flexDirection: 'column' } : undefined}>
+        <div
+          className={isFullSurface ? 'content content-full' : 'content'}
+          style={
+            isFullSurface ?
+              { display: 'flex', flexDirection: 'column' } :
+              undefined
+          }
+        >
           <div key={surface} className={`surface-stage surface-${surface}`}>
             {workspaceSurfaceBlocked && (
               <div className="workspace-empty-state">
-                {(!workspacesLoaded || workspacesLoading)
-                  ? <SkeletonState rows={4} label="正在加载工作空间" />
-                  : workspacesError
-                    ? <EmptyState
-                        title="工作空间加载失败"
-                        description={workspacesError}
-                        action={(
-                          <button className="btn" type="button" onClick={reloadWorkspaces}>
-                            重新加载
-                          </button>
-                        )}
-                      />
-                  : <EmptyState
-                      title="尚无可用工作空间"
-                      description="创建第一个工作空间后，即可配置模型、导入知识包并开始对话。"
-                      action={canCreateWorkspace ? (
-                        <button className="btn btn-p" type="button"
-                          onClick={() => navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' })}>
+                {!workspacesLoaded || workspacesLoading ? (
+                  <SkeletonState rows={4} label="正在加载工作空间" />
+                ) : workspacesError ? (
+                  <EmptyState
+                    title="工作空间加载失败"
+                    description={workspacesError}
+                    action={
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={reloadWorkspaces}
+                      >
+                        重新加载
+                      </button>
+                    }
+                  />
+                ) : (
+                  <EmptyState
+                    title="尚无可用工作空间"
+                    description="创建第一个工作空间后，即可配置模型、导入知识包并开始对话。"
+                    action={
+                      canCreateWorkspace ? (
+                        <button
+                          className="btn btn-p"
+                          type="button"
+                          onClick={() =>
+                            navigate({
+                              surface: 'config',
+                              scope: 'global',
+                              sec: 'wsmgmt',
+                            })
+                          }
+                        >
                           新建工作空间
                         </button>
-                      ) : undefined}
-                    />}
+                      ) : undefined
+                    }
+                  />
+                )}
               </div>
             )}
             {surface === 'chat' && workspaceDataReady && (
-              <ChatWorkspace chat={chat} streamManager={streamManager} agenticStream={agenticStream}
+              <ChatWorkspace
+                chat={chat}
+                streamManager={streamManager}
+                agenticStream={agenticStream}
                 ontologies={kb.packages}
                 ontologiesLoading={kb.pkgsLoading}
                 ontologiesError={kb.packagesError}
                 onRetryOntologies={kb.retryPackages}
                 onOpenObservability={openObservability}
-                onConfigureDataSource={(ontologyId) => navigate({ surface: 'kb', tab: 'data', ontologyId })} />
+                onConfigureDataSource={(ontologyId) =>
+                  navigate({ surface: 'kb', tab: 'data', ontologyId })
+                }
+              />
             )}
             {surface === 'kb' && workspaceDataReady && (
-              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}>
+              <Suspense
+                fallback={
+                  <div className="surface-loading">
+                    <SkeletonState rows={7} label="正在加载知识包工作台" />
+                  </div>
+                }
+              >
                 <KnowledgeWorkbench
                   kb={kb}
                   focusRequest={kbFocus}
@@ -438,7 +729,13 @@ export default function AppShell() {
               </Suspense>
             )}
             {surface === 'solver' && workspaceDataReady && (
-              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载求解器协同" /></div>}>
+              <Suspense
+                fallback={
+                  <div className="surface-loading">
+                    <SkeletonState rows={7} label="正在加载求解器协同" />
+                  </div>
+                }
+              >
                 <SolverCoordinationWorkbench
                   key={workspaceId}
                   workspaceId={workspaceId}
@@ -447,7 +744,13 @@ export default function AppShell() {
               </Suspense>
             )}
             {surface === 'config' && (
-              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}>
+              <Suspense
+                fallback={
+                  <div className="surface-loading">
+                    <SkeletonState rows={7} label="正在加载配置中心" />
+                  </div>
+                }
+              >
                 <ConfigCenter
                   scope={cfgScope}
                   section={cfgSec}
@@ -460,20 +763,52 @@ export default function AppShell() {
               </Suspense>
             )}
             {surface === 'observability' && !workspaceSurfaceBlocked && (
-              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载可观测性" /></div>}>
-                <ObservabilityFeature view={observabilityView} sessionId={chat.currentChatId} user={user}
-                  can={can} workspaceId={workspaceId} workspaces={workspaces} onBack={() => setSurface('chat')} />
+              <Suspense
+                fallback={
+                  <div className="surface-loading">
+                    <SkeletonState rows={7} label="正在加载可观测性" />
+                  </div>
+                }
+              >
+                <ObservabilityFeature
+                  view={observabilityView}
+                  sessionId={chat.currentChatId}
+                  user={user}
+                  can={can}
+                  workspaceId={workspaceId}
+                  workspaces={workspaces}
+                  onBack={() => setSurface('chat')}
+                />
               </Suspense>
             )}
           </div>
         </div>
       </div>
-      {wizardOpen && <OnboardingWizard onNavigate={navigate} onOpenNavigation={openMobileNavigation}
-        hasNoWorkspace={workspacesLoaded && !workspacesLoading && !workspacesError && workspaces.length === 0}
-        onClose={() => setWizardOpen(false)} />}
-      <ToastNotice message={kb.notice} tone={kb.noticeTone}
-        duration={kb.importing ? 0 : 5200} />
-      <ToastNotice message={workspacesError} tone="error" duration={0} actionLabel="重新加载" onAction={reloadWorkspaces} />
+      {wizardOpen && (
+        <OnboardingWizard
+          onNavigate={navigate}
+          onOpenNavigation={openMobileNavigation}
+          hasNoWorkspace={
+            workspacesLoaded &&
+            !workspacesLoading &&
+            !workspacesError &&
+            workspaces.length === 0
+          }
+          onClose={() => setWizardOpen(false)}
+        />
+      )}
+      <ToastNotice
+        message={kb.notice}
+        tone={kb.noticeTone}
+        duration={kb.importing ? 0 : 5200}
+      />
+      <ToastNotice
+        message={workspacesError}
+        tone="error"
+        duration={0}
+        actionLabel="重新加载"
+        onAction={reloadWorkspaces}
+      />
     </div>
   );
 }

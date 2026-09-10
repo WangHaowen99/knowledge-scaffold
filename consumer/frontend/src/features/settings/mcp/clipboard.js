@@ -1,6 +1,14 @@
-export async function copyMcpText(value, { navigatorRef = globalThis.navigator, documentRef = globalThis.document } = {}) {
+export async function copyMcpText(
+  value,
+  {
+    navigatorRef = globalThis.navigator,
+    documentRef = globalThis.document,
+  } = {},
+) {
   const text = String(value || '');
-  if (!text) return { ok: false, error: '没有可复制的内容' };
+  if (!text) {
+    return { ok: false, error: '没有可复制的内容' };
+  }
   if (navigatorRef?.clipboard?.writeText) {
     try {
       await navigatorRef.clipboard.writeText(text);
@@ -22,12 +30,14 @@ export async function copyMcpText(value, { navigatorRef = globalThis.navigator, 
     documentRef.body.appendChild(textarea);
     textarea.focus();
     textarea.select();
-    return documentRef.execCommand?.('copy') === true
-      ? { ok: true, error: '' }
-      : { ok: false, error: '复制失败，请手动选择内容' };
+    return documentRef.execCommand?.('copy') === true ?
+      { ok: true, error: '' } :
+      { ok: false, error: '复制失败，请手动选择内容' };
   } catch {
     return { ok: false, error: '复制失败，请手动选择内容' };
   } finally {
-    if (textarea?.parentNode) textarea.parentNode.removeChild(textarea);
+    if (textarea?.parentNode) {
+      textarea.parentNode.removeChild(textarea);
+    }
   }
 }

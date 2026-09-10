@@ -23,7 +23,9 @@ def main() -> None:
     parser.add_argument("--label", default="D2O_NODE", help="Node label to migrate.")
     parser.add_argument("--relationship-type", default="D2O_RELATION", help="Relationship type to migrate.")
     parser.add_argument("--apply", action="store_true", help="Apply updates. Omit for dry-run.")
-    parser.add_argument("--limit", type=int, default=0, help="Optional max records to update per node/relationship query.")
+    parser.add_argument(
+        "--limit", type=int, default=0, help="Optional max records to update per node/relationship query."
+    )
     args = parser.parse_args()
 
     driver = _connect(args.uri, args.username, args.password)

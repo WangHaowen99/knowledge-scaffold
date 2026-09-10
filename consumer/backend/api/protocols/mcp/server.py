@@ -26,7 +26,6 @@ try:
 except ImportError:  # pragma: no cover - handled by _load_fastmcp
     Context = Any  # type: ignore[misc,assignment]
 
-from .chat_adapter import execute_chat_tool_async
 from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config, validate_mcp_runtime_config
 from integration.mcp.scope import (
     MCPRequestScope,
@@ -36,11 +35,13 @@ from integration.mcp.scope import (
     get_bound_mcp_endpoint_id,
     resolve_mcp_scope_from_token,
 )
-from .search_adapter import execute_search_tool
 from integration.mcp.service_catalog import load_mcp_service_catalog
 from integration.observability.trace_context import bind_otel_traceparent
 from utils.security.redaction import redact_sensitive_text
 from workspace.workspaces import validate_mcp_endpoint_id
+
+from .chat_adapter import execute_chat_tool_async
+from .search_adapter import execute_search_tool
 
 StringListInput = list[str] | str | None
 DictInput = dict[str, Any] | str | None
@@ -48,7 +49,9 @@ DictListInput = list[dict[str, Any]] | str
 PathPatternInput = list[Any] | str
 OntologyIdInput = Annotated[
     str,
-    Field(description="可选本体 ID。Token 已绑定知识包时可省略；显式值必须与 Token 绑定一致。旧未绑定 Token 仍必须传入。"),
+    Field(
+        description="可选本体 ID。Token 已绑定知识包时可省略；显式值必须与 Token 绑定一致。旧未绑定 Token 仍必须传入。"
+    ),
 ]
 _MCP_ENDPOINT_STATE_KEY = "meta_wise_mcp_endpoint_id"
 _MCP_SESSION_ID_HEADER = b"mcp-session-id"
@@ -79,10 +82,7 @@ class _WorkspaceEndpointSessionBindings:
     def __init__(
         self,
         *,
-        idle_timeout_seconds: float | None = (
-            _MCP_SESSION_IDLE_TIMEOUT_SECONDS
-            + _MCP_BINDING_CLEANUP_GRACE_SECONDS
-        ),
+        idle_timeout_seconds: float | None = (_MCP_SESSION_IDLE_TIMEOUT_SECONDS + _MCP_BINDING_CLEANUP_GRACE_SECONDS),
         max_active_sessions: int = _MCP_MAX_ACTIVE_SESSIONS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -142,10 +142,7 @@ class _WorkspaceEndpointSessionBindings:
                     endpoint_id,
                 ):
                     return False
-                if (
-                    reserved_endpoint_id is None
-                    and self._active_count_locked() >= self._max_active_sessions
-                ):
+                if reserved_endpoint_id is None and self._active_count_locked() >= self._max_active_sessions:
                     raise _MCPActiveSessionLimitError(
                         "MCP active session limit reached",
                     )
@@ -276,9 +273,7 @@ class _WorkspaceEndpointBindingApp:
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         from starlette.responses import JSONResponse
 
-        raw_endpoint_id = str(
-            (scope.get("path_params") or {}).get("mcp_endpoint_id") or ""
-        ).strip()
+        raw_endpoint_id = str((scope.get("path_params") or {}).get("mcp_endpoint_id") or "").strip()
         try:
             endpoint_id = validate_mcp_endpoint_id(raw_endpoint_id)
         except ValueError:
@@ -347,10 +342,7 @@ class _WorkspaceEndpointBindingApp:
         response_session_id = ""
         connection_session_id = ""
         sse_response_buffer = bytearray()
-        release_session_on_disconnect = (
-            self.release_session_on_disconnect
-            and child_scope.get("method") == "GET"
-        )
+        release_session_on_disconnect = self.release_session_on_disconnect and child_scope.get("method") == "GET"
 
         async def send_with_session_binding(message: dict[str, Any]) -> None:
             nonlocal connection_session_id, reservation_id
@@ -397,8 +389,7 @@ class _WorkspaceEndpointBindingApp:
                 )
 
         should_release = response_status == 404 or (
-            child_scope.get("method") == "DELETE"
-            and 200 <= response_status < 300
+            child_scope.get("method") == "DELETE" and 200 <= response_status < 300
         )
         if request_session_id and should_release:
             self.session_bindings.release(request_session_id, endpoint_id)
@@ -502,11 +493,11 @@ def _mcp_request_observation(
     span = None
     token = None
     try:
+        from integration.observability.provider import get_observer
+        from integration.observability.workspace_router import get_default_workspace_router
         from opentelemetry import context as otel_context
         from opentelemetry import trace
         from opentelemetry.trace import SpanKind, set_span_in_context
-        from integration.observability.provider import get_observer
-        from integration.observability.workspace_router import get_default_workspace_router
 
         get_observer()
         router = get_default_workspace_router()
@@ -593,36 +584,58 @@ def _mark_mcp_span_error(
         logger.warning("Failed to mark MCP OpenTelemetry span as error", exc_info=True)
 
 
-def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable[[MCPRequestScope], dict[str, Any]]], dict[str, Any]]) -> None:
+def _register_search_tools(
+    mcp: Any, *, call_with_scope: Callable[[str, Callable[[MCPRequestScope], dict[str, Any]]], dict[str, Any]]
+) -> None:
     @mcp.tool()
     def get_object_types(
         ontology_id: OntologyIdInput = "",
     ) -> dict[str, Any]:
         """获取当前本体绑定图数据中的全部实体/节点类型列表。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_object_types", {"ontology_id": ontology_id}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool("get_object_types", {"ontology_id": ontology_id}, scope=scope),
+        )
 
     @mcp.tool()
     def get_relation_types(
         ontology_id: OntologyIdInput = "",
     ) -> dict[str, Any]:
         """获取当前本体绑定图数据中的全部语义关系类型列表。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_relation_types", {"ontology_id": ontology_id}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool("get_relation_types", {"ontology_id": ontology_id}, scope=scope),
+        )
 
     @mcp.tool()
     def get_nodes_schema(
         ontology_id: OntologyIdInput = "",
-        element_types: Annotated[StringListInput, Field(description='可选节点类型数组，示例 ["Company", "Person"]；也兼容合法 JSON 字符串。')] = None,
+        element_types: Annotated[
+            StringListInput, Field(description='可选节点类型数组，示例 ["Company", "Person"]；也兼容合法 JSON 字符串。')
+        ] = None,
     ) -> dict[str, Any]:
         """获取节点类型及其属性字段 schema；只返回结构，不返回实例数据。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_nodes_schema", {"ontology_id": ontology_id, "element_types": element_types}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "get_nodes_schema", {"ontology_id": ontology_id, "element_types": element_types}, scope=scope
+            ),
+        )
 
     @mcp.tool()
     def get_edges_schema(
         ontology_id: OntologyIdInput = "",
-        relation_types: Annotated[StringListInput, Field(description='可选关系类型数组，示例 ["包含", "影响"]；也兼容合法 JSON 字符串。')] = None,
+        relation_types: Annotated[
+            StringListInput, Field(description='可选关系类型数组，示例 ["包含", "影响"]；也兼容合法 JSON 字符串。')
+        ] = None,
     ) -> dict[str, Any]:
         """获取关系 schema 和 relation_triples；路径查询前应优先查看关系三元组。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_edges_schema", {"ontology_id": ontology_id, "relation_types": relation_types}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "get_edges_schema", {"ontology_id": ontology_id, "relation_types": relation_types}, scope=scope
+            ),
+        )
 
     @mcp.tool()
     def property_filter(
@@ -632,13 +645,25 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         entity: Annotated[str, Field(description="可选本体对象名，用于解析映射。")] = "",
     ) -> dict[str, Any]:
         """按属性过滤节点/关系。单个 filter_dict 内多个字段表示 AND；queries 表示多个独立子查询。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("property_filter", {"ontology_id": ontology_id, "entity": entity, "queries": queries, "max_total_rows": max_total_rows}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "property_filter",
+                {"ontology_id": ontology_id, "entity": entity, "queries": queries, "max_total_rows": max_total_rows},
+                scope=scope,
+            ),
+        )
 
     @mcp.tool()
     def pattern_search(
-        path_pattern: Annotated[PathPatternInput, Field(description="节点-关系-节点路径模板；必须是一条路径的数组，也兼容合法 JSON 字符串。")],
+        path_pattern: Annotated[
+            PathPatternInput,
+            Field(description="节点-关系-节点路径模板；必须是一条路径的数组，也兼容合法 JSON 字符串。"),
+        ],
         ontology_id: OntologyIdInput = "",
-        return_vars: Annotated[StringListInput, Field(description='返回变量列表，例如 ["a", "r1", "b"]；也兼容合法 JSON 字符串。')] = None,
+        return_vars: Annotated[
+            StringListInput, Field(description='返回变量列表，例如 ["a", "r1", "b"]；也兼容合法 JSON 字符串。')
+        ] = None,
         return_properties: Annotated[Any | None, Field(description="返回属性投影。")] = None,
         limit: Annotated[int, Field(ge=1, le=2000, description="返回条数上限。")] = 100,
         entity: Annotated[str, Field(description="可选本体对象名，用于解析映射。")] = "",
@@ -660,7 +685,21 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
           从 S 查 T 用 [R, "->"]；从 T 查回 S 用 [R, "<-"]。
         - return_vars 按当前路径自动编号，一跳路径只有 a、r1、b。
         """
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("pattern_search", {"ontology_id": ontology_id, "entity": entity, "path_pattern": path_pattern, "return_vars": return_vars, "return_properties": return_properties, "limit": limit}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "pattern_search",
+                {
+                    "ontology_id": ontology_id,
+                    "entity": entity,
+                    "path_pattern": path_pattern,
+                    "return_vars": return_vars,
+                    "return_properties": return_properties,
+                    "limit": limit,
+                },
+                scope=scope,
+            ),
+        )
 
     @mcp.tool()
     def count_search(
@@ -668,7 +707,12 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         ontology_id: OntologyIdInput = "",
     ) -> dict[str, Any]:
         """统计满足条件的节点或关系数量，支持批量子查询。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("count_search", {"ontology_id": ontology_id, "queries": queries}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "count_search", {"ontology_id": ontology_id, "queries": queries}, scope=scope
+            ),
+        )
 
     @mcp.tool()
     def aggregate_search(
@@ -680,7 +724,21 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         filter_dict: DictInput = None,
     ) -> dict[str, Any]:
         """对节点或关系字段做 SUM/AVG/MIN/MAX/COUNT 聚合，字段名应来自 schema。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("aggregate_search", {"ontology_id": ontology_id, "element_class": element_class, "element_type": element_type, "target_property": target_property, "agg": agg, "filter_dict": filter_dict or {}}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "aggregate_search",
+                {
+                    "ontology_id": ontology_id,
+                    "element_class": element_class,
+                    "element_type": element_type,
+                    "target_property": target_property,
+                    "agg": agg,
+                    "filter_dict": filter_dict or {},
+                },
+                scope=scope,
+            ),
+        )
 
     @mcp.tool()
     def sorted_search(
@@ -695,7 +753,24 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         offset: int = 0,
     ) -> dict[str, Any]:
         """查询节点或关系并按字段排序，适合最大/最小/最新/排名类问题。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("sorted_search", {"ontology_id": ontology_id, "element_class": element_class, "element_type": element_type, "filter_dict": filter_dict or {}, "return_properties": return_properties, "sort_by": sort_by, "ascending": ascending, "limit": limit, "offset": offset}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "sorted_search",
+                {
+                    "ontology_id": ontology_id,
+                    "element_class": element_class,
+                    "element_type": element_type,
+                    "filter_dict": filter_dict or {},
+                    "return_properties": return_properties,
+                    "sort_by": sort_by,
+                    "ascending": ascending,
+                    "limit": limit,
+                    "offset": offset,
+                },
+                scope=scope,
+            ),
+        )
 
     @mcp.tool()
     def get_element_info(
@@ -705,7 +780,19 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         element_type: str = "",
     ) -> dict[str, Any]:
         """按节点或关系实例 ID 查询单个元素的完整详情。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_element_info", {"ontology_id": ontology_id, "element_instance_id": element_instance_id, "element_class": element_class, "element_type": element_type}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "get_element_info",
+                {
+                    "ontology_id": ontology_id,
+                    "element_instance_id": element_instance_id,
+                    "element_class": element_class,
+                    "element_type": element_type,
+                },
+                scope=scope,
+            ),
+        )
 
     @mcp.tool()
     def hop_search(
@@ -715,7 +802,19 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         accurate_flag: bool = False,
     ) -> dict[str, Any]:
         """从指定节点实例出发查询 N 度邻域；entity_instance_id 应来自其他检索工具返回。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("hop_search", {"ontology_id": ontology_id, "entity_instance_id": entity_instance_id, "hop_num": hop_num, "accurate_flag": accurate_flag}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "hop_search",
+                {
+                    "ontology_id": ontology_id,
+                    "entity_instance_id": entity_instance_id,
+                    "hop_num": hop_num,
+                    "accurate_flag": accurate_flag,
+                },
+                scope=scope,
+            ),
+        )
 
     @mcp.tool()
     def shortest_path(
@@ -728,7 +827,22 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         directed: bool = False,
     ) -> dict[str, Any]:
         """查找两个节点之间的最短关联路径，start_props/end_props 用于定位起止节点。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("shortest_path", {"ontology_id": ontology_id, "start_label": start_label, "start_props": start_props, "end_label": end_label, "end_props": end_props or {}, "max_depth": max_depth, "directed": directed}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "shortest_path",
+                {
+                    "ontology_id": ontology_id,
+                    "start_label": start_label,
+                    "start_props": start_props,
+                    "end_label": end_label,
+                    "end_props": end_props or {},
+                    "max_depth": max_depth,
+                    "directed": directed,
+                },
+                scope=scope,
+            ),
+        )
 
     @mcp.tool()
     def list_logic_titles(
@@ -736,16 +850,36 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         entity_type: Annotated[str, Field(description="可选业务实体类型过滤。")] = "",
     ) -> dict[str, Any]:
         """列出当前本体绑定图数据中的业务逻辑标题目录。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("list_logic_titles", {"ontology_id": ontology_id, "entity_type": entity_type}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "list_logic_titles", {"ontology_id": ontology_id, "entity_type": entity_type}, scope=scope
+            ),
+        )
 
     @mcp.tool()
     def get_logic_content(
-        entity_instance_ids: Annotated[list[str] | str, Field(description="业务实体实例 ID 数组；也兼容合法 JSON 字符串。")],
+        entity_instance_ids: Annotated[
+            list[str] | str, Field(description="业务实体实例 ID 数组；也兼容合法 JSON 字符串。")
+        ],
         ontology_id: OntologyIdInput = "",
-        logic_titles: Annotated[StringListInput, Field(description="可选业务逻辑标题数组；也兼容合法 JSON 字符串。")] = None,
+        logic_titles: Annotated[
+            StringListInput, Field(description="可选业务逻辑标题数组；也兼容合法 JSON 字符串。")
+        ] = None,
     ) -> dict[str, Any]:
         """按实体实例 ID 和可选标题读取业务逻辑内容。"""
-        return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_logic_content", {"ontology_id": ontology_id, "entity_instance_ids": entity_instance_ids, "logic_titles": logic_titles or []}, scope=scope))
+        return call_with_scope(
+            "mcp:search",
+            lambda scope: execute_search_tool(
+                "get_logic_content",
+                {
+                    "ontology_id": ontology_id,
+                    "entity_instance_ids": entity_instance_ids,
+                    "logic_titles": logic_titles or [],
+                },
+                scope=scope,
+            ),
+        )
 
 
 def _register_chat_tool(
@@ -776,14 +910,11 @@ def _register_chat_tool(
             "requested_operation_key": requested_operation_key,
             "include_trace": include_trace,
             "stream": stream,
-            "context": (
-                {"selected_ontology_id": selected_ontology_id.strip()}
-                if selected_ontology_id.strip()
-                else {}
-            ),
+            "context": ({"selected_ontology_id": selected_ontology_id.strip()} if selected_ontology_id.strip() else {}),
         }
         progress_callback = None
         if stream and _context_progress_token(ctx) is not None:
+
             async def report_progress(event: dict[str, Any]) -> None:
                 await ctx.report_progress(
                     progress=float(event.get("seq") or 0),
@@ -823,11 +954,7 @@ def _resolve_scope(cfg: MCPRuntimeConfig, *, required_scope: str) -> MCPRequestS
     headers = _get_headers_best_effort()
     token = extract_bearer_token(headers) or os.getenv("MCP_BEARER_TOKEN", "").strip()
     request_endpoint_id = _get_request_mcp_endpoint_id_best_effort()
-    endpoint_id = (
-        get_bound_mcp_endpoint_id()
-        if request_endpoint_id is None
-        else request_endpoint_id
-    )
+    endpoint_id = get_bound_mcp_endpoint_id() if request_endpoint_id is None else request_endpoint_id
     return resolve_mcp_scope_from_token(
         token,
         required_scope=required_scope,
@@ -896,10 +1023,7 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
                 idle_timeout_seconds=(
                     None
                     if normalized_transport == "sse"
-                    else (
-                        _MCP_SESSION_IDLE_TIMEOUT_SECONDS
-                        + _MCP_BINDING_CLEANUP_GRACE_SECONDS
-                    )
+                    else (_MCP_SESSION_IDLE_TIMEOUT_SECONDS + _MCP_BINDING_CLEANUP_GRACE_SECONDS)
                 ),
             )
             session_binding_registries.append(session_bindings)
@@ -907,32 +1031,32 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
                 item.endpoint_prefix,
                 endpoint_path,
             )
-            routes.append(Route(
-                public_path,
-                endpoint=_WorkspaceEndpointBindingApp(
-                    subapp,
-                    session_bindings=session_bindings,
-                    release_session_on_disconnect=(
-                        normalized_transport == "sse"
+            routes.append(
+                Route(
+                    public_path,
+                    endpoint=_WorkspaceEndpointBindingApp(
+                        subapp,
+                        session_bindings=session_bindings,
+                        release_session_on_disconnect=(normalized_transport == "sse"),
+                        rewrite_to_mount_root=True,
                     ),
-                    rewrite_to_mount_root=True,
-                ),
-                name="{}-{}-exact".format(
-                    item.service_id,
-                    normalized_transport,
-                ),
-            ))
-            routes.append(Mount(
-                public_path,
-                app=_WorkspaceEndpointBindingApp(
-                    subapp,
-                    session_bindings=session_bindings,
-                    release_session_on_disconnect=(
-                        normalized_transport == "sse"
+                    name="{}-{}-exact".format(
+                        item.service_id,
+                        normalized_transport,
                     ),
-                ),
-                name="{}-{}".format(item.service_id, normalized_transport),
-            ))
+                )
+            )
+            routes.append(
+                Mount(
+                    public_path,
+                    app=_WorkspaceEndpointBindingApp(
+                        subapp,
+                        session_bindings=session_bindings,
+                        release_session_on_disconnect=(normalized_transport == "sse"),
+                    ),
+                    name="{}-{}".format(item.service_id, normalized_transport),
+                )
+            )
 
     async def health(_request):
         return JSONResponse({"status": "ok"})
@@ -1005,8 +1129,8 @@ def _normalize_http_transports(value: str | None) -> tuple[str, ...]:
 
 def run_server(config: MCPRuntimeConfig | None = None) -> None:
     import uvicorn
-    from migrations.runner import run_startup_migrations
     from integration.observability.otel import initialize_open_telemetry
+    from migrations.runner import run_startup_migrations
 
     cfg = config or load_mcp_runtime_config()
     run_startup_migrations()

@@ -8,7 +8,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from agent.exceptions import WorkflowCancelledError
 from agent.tools.base import ToolContext
 from agent.tools.spawn_sub_agent import SpawnSubAgentTool
@@ -585,9 +584,7 @@ def test_spawn_sub_agent_batch_respects_global_concurrency_cap(monkeypatch):
                     {"id": "t4", "task": "four"},
                 ]
             },
-            context=_make_context(
-                agent_config=_agent_config(sub_agent_max_concurrency=2)
-            ),
+            context=_make_context(agent_config=_agent_config(sub_agent_max_concurrency=2)),
             tool_call_id="call_spawn_2",
         )
     )
@@ -652,6 +649,7 @@ def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkey
     _patch_subagent(monkeypatch, handler)
 
     tool = SpawnSubAgentTool()
+
     async def exercise():
         semaphore = manager._get_async_semaphore()
         await semaphore.acquire()
@@ -707,11 +705,7 @@ def test_spawn_sub_agent_propagates_workflow_cancellation(monkeypatch):
         asyncio.run(
             tool.aexecute(
                 args={"tasks": [{"id": "cancelled-task", "task": "stop now"}]},
-                context=_make_context(
-                    event_emitter=lambda event_type, payload: events.append(
-                        (event_type, payload)
-                    )
-                ),
+                context=_make_context(event_emitter=lambda event_type, payload: events.append((event_type, payload))),
                 tool_call_id="call_spawn_cancelled",
             )
         )

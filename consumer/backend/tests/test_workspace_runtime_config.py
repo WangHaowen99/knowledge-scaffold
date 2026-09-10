@@ -4,9 +4,8 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
-import pytest
-
 import config.settings as settings_module
+import pytest
 import workspace.workspaces as workspaces_module
 from workspace.workspaces import (
     create_workspace,
@@ -27,16 +26,10 @@ def _boolean_term_count(node):
 
 
 def test_owner_update_quota_guard_stays_within_boolean_term_budget():
-    source = textwrap.dedent(
-        inspect.getsource(workspaces_module._enforce_workspace_owner_limit_for_update)
-    )
+    source = textwrap.dedent(inspect.getsource(workspaces_module._enforce_workspace_owner_limit_for_update))
     tree = ast.parse(source)
 
-    assert all(
-        _boolean_term_count(node.test) < 4
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-    )
+    assert all(_boolean_term_count(node.test) < 4 for node in ast.walk(tree) if isinstance(node, ast.If))
 
 
 def test_runtime_root_uses_explicit_project_root(tmp_path, monkeypatch):
@@ -270,7 +263,4 @@ def test_concurrent_workspace_creation_never_exceeds_owner_quota(tmp_path, monke
 
     assert results.count("created") == 2
     assert sum("工作空间数量已达上限" in result for result in results) == attempts - 2
-    assert (
-        sum(item.get("owner") == "alice" for item in workspaces_module.list_workspaces())
-        == 2
-    )
+    assert sum(item.get("owner") == "alice" for item in workspaces_module.list_workspaces()) == 2

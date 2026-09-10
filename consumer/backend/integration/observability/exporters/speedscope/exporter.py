@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import threading
 import time
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-from utils.logging import get_logger
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability.speedscope_io import (
     resolve_speedscope_output_dir,
-    speedscope_session_path,
     speedscope_file_lock,
     speedscope_session_lock_path,
+    speedscope_session_path,
 )
+from utils.logging import get_logger
 
 logger = get_logger("observability.exporters.speedscope")
 
@@ -225,9 +225,7 @@ class SpeedscopeExporter:
                 if run.terminal:
                     self._write_run(run)
             pending_terminal_runs = [
-                self._run_from_pending_drop(pending)
-                for pending in self._pending_drops.values()
-                if pending.terminal
+                self._run_from_pending_drop(pending) for pending in self._pending_drops.values() if pending.terminal
             ]
             for run in pending_terminal_runs:
                 self._write_run(run)
@@ -282,9 +280,7 @@ class SpeedscopeExporter:
             session_id=str(event.session_id or (pending.session_id if pending else "") or ""),
             user_id=_event_user_id(event) or (pending.user_id if pending else ""),
             turn_id=(
-                _optional_int(event.turn_id)
-                if event.turn_id is not None
-                else (pending.turn_id if pending else None)
+                _optional_int(event.turn_id) if event.turn_id is not None else (pending.turn_id if pending else None)
             ),
             first_ts_ms=min(event_ts_ms, pending.first_ts_ms) if pending else event_ts_ms,
             last_ts_ms=max(event_ts_ms, pending.last_ts_ms) if pending else event_ts_ms,
@@ -362,9 +358,7 @@ class SpeedscopeExporter:
             active_profile_name = _active_profile_name(document)
             run_prefix = _run_profile_prefix(run)
             document["profiles"] = [
-                profile
-                for profile in document["profiles"]
-                if not str(profile.get("name") or "").startswith(run_prefix)
+                profile for profile in document["profiles"] if not str(profile.get("name") or "").startswith(run_prefix)
             ]
             document = _compact_document_frames(document)
             frames = document["shared"]["frames"]
@@ -620,7 +614,12 @@ def _normalized_status(event: RuntimeEvent) -> str:
     status = str(payload.get("status") or "").strip().lower()
     if status:
         return status
-    if event.type in {RuntimeEventType.RUN_FAILED, RuntimeEventType.LLM_FAILED, RuntimeEventType.TOOL_BATCH_FAILED, RuntimeEventType.RUNTIME_PHASE_FAILED}:
+    if event.type in {
+        RuntimeEventType.RUN_FAILED,
+        RuntimeEventType.LLM_FAILED,
+        RuntimeEventType.TOOL_BATCH_FAILED,
+        RuntimeEventType.RUNTIME_PHASE_FAILED,
+    }:
         return RuntimeStatus.ERROR
     if event.type == RuntimeEventType.RUN_CANCELLED:
         return RuntimeStatus.CANCELLED
@@ -731,7 +730,7 @@ def _caller_suffix_from_raw_key(raw_key: str, fallback: str) -> str:
     for prefix in ("iteration:", "llm:", "tools:"):
         if not raw_key.startswith(prefix):
             continue
-        remainder = raw_key[len(prefix):]
+        remainder = raw_key[len(prefix) :]
         parts = remainder.split(":")
         if len(parts) >= 3 and parts[0] == "subagent":
             return "subagent:{}".format(parts[1])
@@ -865,7 +864,7 @@ def _branch_to_root(leaf: _Span, spans: Mapping[str, _Span], root: _Span) -> lis
 def _is_compatible_lane(span_ids: set[str], spans: Mapping[str, _Span]) -> bool:
     rows = [spans[span_id] for span_id in span_ids]
     for index, left in enumerate(rows):
-        for right in rows[index + 1:]:
+        for right in rows[index + 1 :]:
             if not _overlaps(left, right):
                 continue
             if _is_ancestor(left, right, spans) or _is_ancestor(right, left, spans):

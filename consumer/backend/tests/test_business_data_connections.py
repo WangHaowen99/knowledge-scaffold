@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
 import json
 import sys
 from types import SimpleNamespace
 
 import pytest
 import requests
-
+from api.testing import TestApplication
 from auth_test_backend import AuthManager
+from backend_synthetic_credentials import (
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    ENCRYPTION_KEY,
+    synthetic_invalid_password,
+    synthetic_secret,
+)
+from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace, get_workspace_paths
 
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+SECRET_TEST_KEY = ENCRYPTION_KEY
 
 
 def _create_workspace_with_ontology(tmp_path, monkeypatch):
@@ -68,10 +71,10 @@ def _build_test_client(tmp_path, monkeypatch):
         short_io=_DirectIO(),
         http_client=_RequestsAsyncClient(),
     )
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
-    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(business_data_router)
     app.include_router(ontologies_router)
@@ -145,7 +148,7 @@ def test_resolver_requires_explicit_ontology_data_source(tmp_path, monkeypatch):
             "provider": "nl2sql_http",
             "config": {
                 "url": "https://nl2sql.equipment.local/",
-                "token": "secret-token",
+                "token": synthetic_secret("business_data_connections-credential-06"),
                 "scene": "example",
                 "timeout_seconds": 120,
             },
@@ -156,7 +159,7 @@ def test_resolver_requires_explicit_ontology_data_source(tmp_path, monkeypatch):
     assert resolved.name == "demo-ontology"
     assert resolved.provider == "nl2sql_http"
     assert resolved.config["url"] == "https://nl2sql.equipment.local"
-    assert resolved.config["token"] == "secret-token"
+    assert resolved.config["token"] == synthetic_secret("business_data_connections-credential-06")
 
 
 def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkeypatch):
@@ -169,7 +172,7 @@ def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkey
 
     app = TestApplication()
     app.state.services["TESTING"] = True
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
     auth_manager.create_user("alice", "UserStrong123!", role="user")
     alice = auth_manager.change_password("alice", "UserStrong123!", "ChangedStrong123!")
     app.state.services["AUTH_MANAGER"] = auth_manager
@@ -184,10 +187,7 @@ def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkey
     )
     assert provisioned.status_code == 201
 
-    ontology_dir = (
-        get_workspace_paths("mw-shadow-pj-demo-123").ontologies_dir
-        / "evaluation-demo"
-    )
+    ontology_dir = get_workspace_paths("mw-shadow-pj-demo-123").ontologies_dir / "evaluation-demo"
     ontology_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
@@ -213,7 +213,7 @@ def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkey
             "provider": "nl2sql_http",
             "config": {
                 "url": "http://nl2sql:5600",
-                "token": "secret-token",
+                "token": synthetic_secret("business_data_connections-credential-06"),
                 "scene": "mw_proj_demo",
             },
         },
@@ -263,7 +263,7 @@ def test_graph_provider_defaults_and_explicitly_disables_ontology_scope():
     base_config = {
         "uri": "bolt://neo4j.example.com:7687",
         "username": "neo4j",
-        "password": "secret-password",
+        "password": synthetic_invalid_password("business_data_connections-credential-05"),
     }
 
     defaulted = normalize_provider_config("neo4j", base_config)
@@ -284,7 +284,7 @@ def test_graph_provider_defaults_and_explicitly_disables_ontology_scope():
             {
                 "uri": "bolt://embedded:uri-secret@neo4j.example.com:7687",
                 "username": "neo4j",
-                "password": "dedicated-secret",
+                "password": synthetic_invalid_password("business_data_connections-credential-03"),
             },
         ),
         (
@@ -292,7 +292,7 @@ def test_graph_provider_defaults_and_explicitly_disables_ontology_scope():
             {
                 "uri": "neo4j:uri-secret@neo4j.example.com:7687",
                 "username": "neo4j",
-                "password": "dedicated-secret",
+                "password": synthetic_invalid_password("business_data_connections-credential-03"),
             },
         ),
         (
@@ -350,12 +350,7 @@ def test_legacy_endpoint_query_credentials_and_fragment_are_removed_from_public_
 
     public = publicize_provider_config(
         "hugegraph",
-        {
-            "url": (
-                "https://hugegraph.example.com?region=east&access_token=query-secret"
-                "#fragment-secret"
-            )
-        },
+        {"url": ("https://hugegraph.example.com?region=east&access_token=query-secret" "#fragment-secret")},
     )
 
     assert public["url"] == "https://hugegraph.example.com?region=east"
@@ -381,7 +376,7 @@ def test_legacy_graph_timeout_is_publicized_without_widening_stricter_limits():
             {
                 "uri": "bolt://neo4j.example.com:7687",
                 "username": "neo4j",
-                "password": "secret-password",
+                "password": synthetic_invalid_password("business_data_connections-credential-05"),
                 "timeout_seconds": 5,
             },
         ),
@@ -405,7 +400,10 @@ def test_legacy_graph_timeout_is_normalized_without_widening_stricter_limits(pro
 
 
 def test_neo4j_source_secret_is_encrypted_at_rest(tmp_path, monkeypatch):
-    from agent.tools.business_data.ontology_sources_store import publicize_ontology_data_source, set_ontology_data_source
+    from agent.tools.business_data.ontology_sources_store import (
+        publicize_ontology_data_source,
+        set_ontology_data_source,
+    )
 
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
@@ -419,14 +417,14 @@ def test_neo4j_source_secret_is_encrypted_at_rest(tmp_path, monkeypatch):
                 "uri": "bolt://neo4j.example.com:7687",
                 "database": "neo4j",
                 "username": "neo4j",
-                "password": "secret-password",
+                "password": synthetic_invalid_password("business_data_connections-credential-05"),
                 "workspace_property": "d2o_workspace_id",
             },
         },
     )
     raw_text = (paths.workspace_dir / "ontology-data-sources.json").read_text(encoding="utf-8")
     raw = json.loads(raw_text)
-    assert "secret-password" not in raw_text
+    assert synthetic_invalid_password("business_data_connections-credential-05") not in raw_text
     assert raw["sources"]["demo-ontology"]["config"]["password"].startswith("enc:v1:")
     public = publicize_ontology_data_source(source)
     assert public["config"]["has_password"] is True
@@ -448,12 +446,14 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
             return {"success": True}
 
     def fake_post(_session, url, headers=None, timeout=None, **request_kwargs):
-        calls.append({
-            "url": url,
-            "headers": headers or {},
-            "json": request_kwargs.get("json"),
-            "timeout": timeout,
-        })
+        calls.append(
+            {
+                "url": url,
+                "headers": headers or {},
+                "json": request_kwargs.get("json"),
+                "timeout": timeout,
+            }
+        )
         return FakeResponse()
 
     monkeypatch.setattr(requests.Session, "post", fake_post)
@@ -463,19 +463,24 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
         "nl2sql_http",
         {
             "url": "https://nl2sql.example.com/",
-            "token": "secret-token",
+            "token": synthetic_secret("business_data_connections-credential-06"),
             "scene": "example",
             "timeout_seconds": 120,
         },
     )
     assert response.status_code == 200
     assert response.json()["success"] is True
-    assert calls == [{
-        "url": "https://nl2sql.example.com/api/v1/sql",
-        "headers": {"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
-        "json": {"sql": "SELECT 1", "scene": "example"},
-        "timeout": 10,
-    }]
+    assert calls == [
+        {
+            "url": "https://nl2sql.example.com/api/v1/sql",
+            "headers": {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {synthetic_secret('business_data_connections-credential-06')}",
+            },
+            "json": {"sql": "SELECT 1", "scene": "example"},
+            "timeout": 10,
+        }
+    ]
 
 
 def test_nl2sql_schemas_require_token_and_scene(tmp_path, monkeypatch):
@@ -487,10 +492,7 @@ def test_nl2sql_schemas_require_token_and_scene(tmp_path, monkeypatch):
     schemas = {item["name"]: item for item in provider_schemas["providers"]}
 
     for provider_name in ("nl2sql_http", "nl2sql_template"):
-        fields = {
-            field["name"]: field
-            for field in schemas[provider_name]["fields"]
-        }
+        fields = {field["name"]: field for field in schemas[provider_name]["fields"]}
         assert fields["token"]["required"] is True
         assert fields["token"]["secret"] is True
         assert fields["scene"]["required"] is True
@@ -514,7 +516,7 @@ def test_nl2sql_new_config_rejects_missing_required_fields_for_save_and_probe(
     client, headers = _build_test_client(tmp_path, monkeypatch)
     config = {
         "url": "https://nl2sql.example.com/",
-        "token": "secret-token",
+        "token": synthetic_secret("business_data_connections-credential-06"),
         "scene": "example",
         "timeout_seconds": 120,
     }
@@ -559,18 +561,20 @@ def test_nl2sql_edit_preserves_existing_token_and_probes_sql(
             return {"success": True}
 
     def fake_post(_session, url, headers=None, timeout=None, **request_kwargs):
-        calls.append({
-            "url": url,
-            "headers": headers or {},
-            "json": request_kwargs.get("json"),
-            "timeout": timeout,
-        })
+        calls.append(
+            {
+                "url": url,
+                "headers": headers or {},
+                "json": request_kwargs.get("json"),
+                "timeout": timeout,
+            }
+        )
         return FakeResponse()
 
     monkeypatch.setattr(requests.Session, "post", fake_post)
     initial = {
         "url": "https://nl2sql.example.com/",
-        "token": "secret-token",
+        "token": synthetic_secret("business_data_connections-credential-06"),
         "scene": "example",
         "timeout_seconds": 120,
     }
@@ -601,15 +605,17 @@ def test_nl2sql_edit_preserves_existing_token_and_probes_sql(
     assert updated.json()["source"]["config"]["has_token"] is True
     assert tested.status_code == 200
     assert tested.json()["success"] is True
-    assert calls == [{
-        "url": "https://nl2sql.example.com/api/v1/sql",
-        "headers": {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer secret-token",
-        },
-        "json": {"sql": "SELECT 1", "scene": "example"},
-        "timeout": 10,
-    }]
+    assert calls == [
+        {
+            "url": "https://nl2sql.example.com/api/v1/sql",
+            "headers": {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {synthetic_secret('business_data_connections-credential-06')}",
+            },
+            "json": {"sql": "SELECT 1", "scene": "example"},
+            "timeout": 10,
+        }
+    ]
 
 
 @pytest.mark.parametrize("provider", ["nl2sql_http", "nl2sql_template"])
@@ -636,7 +642,7 @@ def test_legacy_nl2sql_config_is_rejected_before_saved_probe_and_runtime(
     client, headers = _build_test_client(tmp_path, monkeypatch)
     valid_config = {
         "url": "https://nl2sql.example.com/",
-        "token": "secret-token",
+        "token": synthetic_secret("business_data_connections-credential-06"),
         "scene": "example",
         "timeout_seconds": 120,
     }
@@ -737,13 +743,15 @@ def test_data_source_test_route_probes_mindsdb_auth_and_query(tmp_path, monkeypa
             return self._payload
 
     def fake_post(_session, url, headers=None, timeout=None, **request_kwargs):
-        post_calls.append({
-            "url": url,
-            "headers": headers or {},
-            "json": request_kwargs.get("json"),
-            "timeout": timeout,
-        })
-        return FakeResponse({"token": "jwt-token"})
+        post_calls.append(
+            {
+                "url": url,
+                "headers": headers or {},
+                "json": request_kwargs.get("json"),
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse({"token": synthetic_secret("business_data_connections-credential-04")})
 
     def fake_get(_session, url, headers=None, timeout=None):
         get_calls.append({"url": url, "headers": headers or {}, "timeout": timeout})
@@ -758,7 +766,7 @@ def test_data_source_test_route_probes_mindsdb_auth_and_query(tmp_path, monkeypa
         {
             "url": "https://mindsdb.example.com/",
             "login": "mindsdb",
-            "password": "secret-password",
+            "password": synthetic_invalid_password("business_data_connections-credential-05"),
             "default_database": "mindsdb",
             "requires_auth": True,
             "timeout_seconds": 120,
@@ -770,7 +778,10 @@ def test_data_source_test_route_probes_mindsdb_auth_and_query(tmp_path, monkeypa
     assert [call["url"] for call in get_calls] == [
         "https://mindsdb.example.com/api/projects/mindsdb/agents",
     ]
-    assert get_calls[0]["headers"]["Authorization"] == "Bearer jwt-token"
+    assert (
+        get_calls[0]["headers"]["Authorization"]
+        == f"Bearer {synthetic_secret('business_data_connections-credential-04')}"
+    )
 
 
 def test_data_source_test_route_rejects_missing_mindsdb_agent(tmp_path, monkeypatch):
@@ -867,7 +878,11 @@ def test_data_source_test_route_probes_dataagent_and_legacy_agent_card(tmp_path,
         client,
         headers,
         "dataagent",
-        {"url": "https://dataagent.example.com/", "token": "secret-token", "timeout_seconds": 120},
+        {
+            "url": "https://dataagent.example.com/",
+            "token": synthetic_secret("business_data_connections-credential-06"),
+            "timeout_seconds": 120,
+        },
     )
     assert response.status_code == 200
     assert response.json()["success"] is True
@@ -875,7 +890,9 @@ def test_data_source_test_route_probes_dataagent_and_legacy_agent_card(tmp_path,
         "https://dataagent.example.com/.well-known/agent-card.json",
         "https://dataagent.example.com/.well-known/agent.json",
     ]
-    assert calls[0]["headers"] == {"Authorization": "Bearer secret-token"}
+    assert calls[0]["headers"] == {
+        "Authorization": f"Bearer {synthetic_secret('business_data_connections-credential-06')}"
+    }
 
 
 def test_data_source_test_route_probes_neo4j_service(tmp_path, monkeypatch):
@@ -927,7 +944,7 @@ def test_data_source_test_route_probes_neo4j_service(tmp_path, monkeypatch):
             "uri": "bolt://neo4j.example.com:7687",
             "database": "domain",
             "username": "neo4j",
-            "password": "secret-password",
+            "password": synthetic_invalid_password("business_data_connections-credential-05"),
             "graph_connect_timeout_seconds": 10,
             "workspace_property": "d2o_workspace_id",
         },
@@ -935,7 +952,12 @@ def test_data_source_test_route_probes_neo4j_service(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json()["success"] is True
     assert calls == [
-        ("driver", "bolt://neo4j.example.com:7687", ("neo4j", "secret-password"), 10),
+        (
+            "driver",
+            "bolt://neo4j.example.com:7687",
+            ("neo4j", synthetic_invalid_password("business_data_connections-credential-05")),
+            10,
+        ),
         ("verify", None),
         ("session", "domain"),
         ("run", "RETURN 1 AS ok"),
@@ -970,17 +992,19 @@ def test_data_source_test_route_probes_hugegraph_service(tmp_path, monkeypatch):
             "url": "https://hugegraph.example.com",
             "graph": "demo",
             "username": "graph-user",
-            "password": "secret-password",
-            "token": "secret-token",
+            "password": synthetic_invalid_password("business_data_connections-credential-05"),
+            "token": synthetic_secret("business_data_connections-credential-06"),
             "graph_connect_timeout_seconds": 10,
             "workspace_property": "d2o_workspace_id",
         },
     )
     assert response.status_code == 200
     assert response.json()["success"] is True
-    assert calls == [{
-        "url": "https://hugegraph.example.com/graphs/demo/schema",
-        "headers": {"Authorization": "Bearer secret-token"},
-        "auth": ("graph-user", "secret-password"),
-        "timeout": 10,
-    }]
+    assert calls == [
+        {
+            "url": "https://hugegraph.example.com/graphs/demo/schema",
+            "headers": {"Authorization": f"Bearer {synthetic_secret('business_data_connections-credential-06')}"},
+            "auth": ("graph-user", synthetic_invalid_password("business_data_connections-credential-05")),
+            "timeout": 10,
+        }
+    ]

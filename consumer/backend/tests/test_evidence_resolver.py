@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from ontology.evidence.manager import EvidenceIndexManager
 from ontology.evidence.resolver import EvidenceResolver, EvidenceResolverError
 from ontology.evidence.service import EvidenceSearchService

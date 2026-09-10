@@ -3,12 +3,12 @@
 import threading
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
-
 import api.routes as routes_module
 from api.testing import TestApplication
 from auth_test_backend import AuthManager
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD
 from config.settings import AppConfig, LLMConfig
+from fastapi.testclient import TestClient
 from llm import LLMPurpose, LLMService, configure_llm_router, reset_llm_router_for_tests
 from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
@@ -38,10 +38,12 @@ class _RecordingLLM:
         self.response_text = response_text
 
     def call(self, messages, **kwargs):
-        self.calls.append({
-            "messages": messages,
-            "kwargs": kwargs,
-        })
+        self.calls.append(
+            {
+                "messages": messages,
+                "kwargs": kwargs,
+            }
+        )
         return SimpleNamespace(content=self.response_text)
 
 
@@ -82,7 +84,7 @@ def test_task_llm_falls_back_to_main_when_unset(tmp_path, monkeypatch):
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", isolated_config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", isolated_config_path)
 
-    monkeypatch.setenv("LLM_BASE_URL", "https://main.example/v1")
+    monkeypatch.setenv("LLM_BASE_URL", "https://main.example.net/v1")
     monkeypatch.setenv("LLM_MODEL", "main-model")
     monkeypatch.setenv("LLM_API_KEY", "main-key")
     monkeypatch.setenv("LLM_TIMEOUT", "123")
@@ -92,7 +94,7 @@ def test_task_llm_falls_back_to_main_when_unset(tmp_path, monkeypatch):
     config = AppConfig.from_env()
 
     assert config.llm.model == "main-model"
-    assert config.task_llm.base_url == "https://main.example/v1"
+    assert config.task_llm.base_url == "https://main.example.net/v1"
     assert config.task_llm.model == "main-model"
     assert config.task_llm.api_key == "main-key"
     assert config.task_llm.timeout == 123
@@ -108,10 +110,10 @@ def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
     app = TestApplication()
     app.state.services["TESTING"] = True
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
-    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     app.state.services["AUTH_MANAGER"] = auth_manager
     runtime = SimpleNamespace(short_io=_InlinePool(), external_io=_InlinePool())
     app.state.runtime_container = runtime
@@ -153,7 +155,7 @@ def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
 def test_reasoning_summary_uses_task_llm_when_configured(monkeypatch):
     main_llm = LLMService(
         LLMConfig(
-            base_url="https://main.example/v1",
+            base_url="https://main.example.net/v1",
             model="main-model",
             api_key=None,
             timeout=30,
@@ -163,7 +165,7 @@ def test_reasoning_summary_uses_task_llm_when_configured(monkeypatch):
     )
     task_llm = main_llm.with_config(
         LLMConfig(
-            base_url="https://task.example/v1",
+            base_url="https://task.example.net/v1",
             model="task-model",
             api_key=None,
             timeout=30,
@@ -182,10 +184,12 @@ def test_reasoning_summary_uses_task_llm_when_configured(monkeypatch):
     task_calls = []
 
     def fake_task_call(messages, **kwargs):
-        task_calls.append({
-            "messages": messages,
-            "kwargs": kwargs,
-        })
+        task_calls.append(
+            {
+                "messages": messages,
+                "kwargs": kwargs,
+            }
+        )
         return SimpleNamespace(content="准备检索资料")
 
     monkeypatch.setattr(task_llm, "call", fake_task_call)
@@ -219,7 +223,7 @@ def test_reasoning_summary_uses_task_llm_when_configured(monkeypatch):
 def test_reasoning_summary_falls_back_to_primary_llm(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="https://main.example/v1",
+            base_url="https://main.example.net/v1",
             model="main-model",
             api_key=None,
             timeout=30,
@@ -231,10 +235,12 @@ def test_reasoning_summary_falls_back_to_primary_llm(monkeypatch):
     calls = []
 
     def fake_call(messages, **kwargs):
-        calls.append({
-            "messages": messages,
-            "kwargs": kwargs,
-        })
+        calls.append(
+            {
+                "messages": messages,
+                "kwargs": kwargs,
+            }
+        )
         return SimpleNamespace(content="继续读取文件")
 
     monkeypatch.setattr(llm, "call", fake_call)

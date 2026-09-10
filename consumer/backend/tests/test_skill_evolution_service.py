@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
-
 from agent.skill_evolution.models import TaskRecord
 from agent.skill_evolution.service import (
     SkillEvolutionService,
@@ -29,8 +28,9 @@ from agent.skill_evolution.store import SkillEvolutionStore
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
-def _write_ontology(onto_dir: Path, ops: Dict[str, str], active_version: str = "1.0.0",
-                    versions: Optional[List[str]] = None) -> Path:
+def _write_ontology(
+    onto_dir: Path, ops: Dict[str, str], active_version: str = "1.0.0", versions: Optional[List[str]] = None
+) -> Path:
     """Create a minimal ontology with a version dir + operations files."""
     versions = versions or [active_version]
     onto_dir.mkdir(parents=True, exist_ok=True)
@@ -45,7 +45,7 @@ def _write_ontology(onto_dir: Path, ops: Dict[str, str], active_version: str = "
         )
     manifest = (
         "kind: ontology-package\n"
-            "schema_version: 0.1\n"
+        "schema_version: 0.1\n"
         "id: onto1\n"
         "name: 测试本体\n"
         "description: test\n"
@@ -104,18 +104,22 @@ class FakeExecutionStore:
         return self._history
 
 
+def _service_config(max_iterations=15):
+    return {
+        "enabled": True,
+        "base_url": "https://service.example.net",
+        "timeout_seconds": 30,
+        "poll_interval_seconds": 10,
+        "task_timeout_seconds": 1800,
+        "max_iterations": max_iterations,
+    }
+
+
 def _make_service(tmp_path, client=None):
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store, client=client)
     # Enable the feature for tests and provide a base_url.
-    service._config = lambda: {  # noqa: SLF001
-        "enabled": True,
-        "base_url": "http://skill-evolver.test",
-        "timeout_seconds": 30,
-        "poll_interval_seconds": 10,
-        "task_timeout_seconds": 1800,
-        "max_iterations": 15,
-    }
+    service._config = _service_config  # noqa: SLF001
     return store, service
 
 
@@ -187,8 +191,9 @@ def test_compute_diff_modified_added_deleted(tmp_path):
     store.save_baseline("ws1", "t1", _build_ontology_zip("onto1", {"foo.md": "# foo\nstep1\n"}, "- foo\n"))
     # Evolved: foo modified, bar added, (baz deleted — only in baseline)
     # Add baz to baseline to test deletion:
-    store.save_baseline("ws1", "t1", _build_ontology_zip(
-        "onto1", {"foo.md": "# foo\nstep1\n", "baz.md": "# baz"}, "- foo\n- baz\n"))
+    store.save_baseline(
+        "ws1", "t1", _build_ontology_zip("onto1", {"foo.md": "# foo\nstep1\n", "baz.md": "# baz"}, "- foo\n- baz\n")
+    )
     evolved_dir = store.ensure_temp_dir("ws1", "t1") / "onto1"
     (evolved_dir / "operations").mkdir(parents=True)
     (evolved_dir / "operations" / "foo.md").write_text("# foo\nstep1\nstep2\n")
@@ -226,7 +231,8 @@ def test_compute_diff_normalizes_crlf_vs_lf(tmp_path):
     rec = _make_record(store)
     # Baseline stored with CRLF (as _build_ontology_zip_buffer would from disk).
     store.save_baseline(
-        "ws1", "t1",
+        "ws1",
+        "t1",
         _build_ontology_zip("onto1", {"foo.md": "# foo\r\nstep1\r\nstep2\r\n"}, "- foo\r\n"),
     )
     # Evolved with LF, plus one real added line.
@@ -251,14 +257,11 @@ def test_compute_diff_normalizes_crlf_vs_lf(tmp_path):
 # --------------------------------------------------------------------------- #
 def _patch_ontology(service, onto_dir, monkeypatch):
     from ontology.ontologies import OntologyLoader
+
     # Re-load fresh on each call so manifest changes (e.g. active_version switch)
     # are reflected.
-    monkeypatch.setattr(
-        service, "_resolve_ontology", lambda ws, oid: OntologyLoader.load_ontology(onto_dir)
-    )
-    monkeypatch.setattr(
-        service, "_ontology_dir", lambda ws, oid: onto_dir
-    )
+    monkeypatch.setattr(service, "_resolve_ontology", lambda ws, oid: OntologyLoader.load_ontology(onto_dir))
+    monkeypatch.setattr(service, "_ontology_dir", lambda ws, oid: onto_dir)
 
 
 def _stamp_real_sha(service, store, rec, onto_dir, version="1.0.0"):
@@ -272,12 +275,19 @@ def test_gate_too_few_turns(tmp_path, monkeypatch):
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     store, service = _make_service(tmp_path)
     _patch_ontology(service, onto_dir, monkeypatch)
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "hi", "ontology_version": "1.0.0"},
-    ])
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "hi", "ontology_version": "1.0.0"},
+        ]
+    )
     with pytest.raises(Exception) as exc:
-        service.start(workspace_id="ws1", ontology_id="onto1", session_id="sess1",
-                      triggered_by="alice", execution_store=exec_store)
+        service.start(
+            workspace_id="ws1",
+            ontology_id="onto1",
+            session_id="sess1",
+            triggered_by="alice",
+            execution_store=exec_store,
+        )
     assert "至少需要 2 轮" in str(exc.value)
 
 
@@ -286,13 +296,20 @@ def test_gate_cross_version_blocked(tmp_path, monkeypatch):
     _write_ontology(onto_dir, {"foo.md": "# foo"}, versions=["1.0.0", "1.1.0"])
     store, service = _make_service(tmp_path)
     _patch_ontology(service, onto_dir, monkeypatch)
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "q1", "ontology_version": "1.0.0"},
-        {"turn_id": 2, "user_request": "q2", "ontology_version": "1.1.0"},  # mismatch
-    ])
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "q1", "ontology_version": "1.0.0"},
+            {"turn_id": 2, "user_request": "q2", "ontology_version": "1.1.0"},  # mismatch
+        ]
+    )
     with pytest.raises(Exception) as exc:
-        service.start(workspace_id="ws1", ontology_id="onto1", session_id="sess1",
-                      triggered_by="alice", execution_store=exec_store)
+        service.start(
+            workspace_id="ws1",
+            ontology_id="onto1",
+            session_id="sess1",
+            triggered_by="alice",
+            execution_store=exec_store,
+        )
     assert "跨多个本体版本" in str(exc.value)
 
 
@@ -303,13 +320,20 @@ def test_gate_stale_version_distinct_message(tmp_path, monkeypatch):
     _write_ontology(onto_dir, {"foo.md": "# foo"}, active_version="1.0.1", versions=["1.0.0", "1.0.1"])
     store, service = _make_service(tmp_path)
     _patch_ontology(service, onto_dir, monkeypatch)
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "q1", "ontology_version": "1.0.0"},
-        {"turn_id": 2, "user_request": "q2", "ontology_version": "1.0.0"},  # same, but ≠ active 1.0.1
-    ])
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "q1", "ontology_version": "1.0.0"},
+            {"turn_id": 2, "user_request": "q2", "ontology_version": "1.0.0"},  # same, but ≠ active 1.0.1
+        ]
+    )
     with pytest.raises(Exception) as exc:
-        service.start(workspace_id="ws1", ontology_id="onto1", session_id="sess1",
-                      triggered_by="alice", execution_store=exec_store)
+        service.start(
+            workspace_id="ws1",
+            ontology_id="onto1",
+            session_id="sess1",
+            triggered_by="alice",
+            execution_store=exec_store,
+        )
     msg = str(exc.value)
     assert "基于版本 1.0.0" in msg
     assert "当前激活版本为 1.0.1" in msg
@@ -326,12 +350,15 @@ def test_gate_single_version_allows_missing_stamp(tmp_path, monkeypatch):
     store, service = _make_service(tmp_path, client=client)
     _patch_ontology(service, onto_dir, monkeypatch)
     # No ontology_version stamps (old session) but single version → allowed
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "q1"},
-        {"turn_id": 2, "user_request": "q2"},
-    ])
-    record = service.start(workspace_id="ws1", ontology_id="onto1", session_id="sess1",
-                           triggered_by="alice", execution_store=exec_store)
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "q1"},
+            {"turn_id": 2, "user_request": "q2"},
+        ]
+    )
+    record = service.start(
+        workspace_id="ws1", ontology_id="onto1", session_id="sess1", triggered_by="alice", execution_store=exec_store
+    )
     assert record.status == "submitted"
     assert record.run_id == "run-fake-1"
     # max_iterations must be forwarded to skill-evolver (default 15, range 1-30).
@@ -346,12 +373,15 @@ def test_gate_multi_version_allows_no_stamps(tmp_path, monkeypatch):
     _write_ontology(onto_dir, {"foo.md": "# foo"}, versions=["1.0.0", "1.1.0"])
     store, service = _make_service(tmp_path, client=FakeClient({"status": "running"}, b""))
     _patch_ontology(service, onto_dir, monkeypatch)
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "q1"},  # no stamp
-        {"turn_id": 2, "user_request": "q2"},
-    ])
-    record = service.start(workspace_id="ws1", ontology_id="onto1", session_id="sess1",
-                           triggered_by="alice", execution_store=exec_store)
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "q1"},  # no stamp
+            {"turn_id": 2, "user_request": "q2"},
+        ]
+    )
+    record = service.start(
+        workspace_id="ws1", ontology_id="onto1", session_id="sess1", triggered_by="alice", execution_store=exec_store
+    )
     assert record.status == "submitted"
 
 
@@ -362,17 +392,20 @@ def test_start_infers_ontology_from_trace(tmp_path, monkeypatch):
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     store, service = _make_service(tmp_path, client=FakeClient({"status": "running"}, b""))
     _patch_ontology(service, onto_dir, monkeypatch)
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "q1"},
-        {"turn_id": 2, "user_request": "q2"},
-    ])
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "q1"},
+            {"turn_id": 2, "user_request": "q2"},
+        ]
+    )
     exec_store._history["read_documents"] = {
         "by_path": {"x": {"ontology_id": "onto1"}, "y": {"ontology_id": "onto1"}},
         "recent_paths": [],
         "active_object_docs": [],
     }
-    record = service.start(workspace_id="ws1", ontology_id=None, session_id="sess1",
-                           triggered_by="alice", execution_store=exec_store)
+    record = service.start(
+        workspace_id="ws1", ontology_id=None, session_id="sess1", triggered_by="alice", execution_store=exec_store
+    )
     assert record.ontology_id == "onto1"
 
 
@@ -384,13 +417,20 @@ def test_gate_excludes_running_turn(tmp_path, monkeypatch):
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     store, service = _make_service(tmp_path, client=FakeClient({"status": "running"}, b""))
     _patch_ontology(service, onto_dir, monkeypatch)
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "q1", "status": "success"},
-        {"turn_id": 2, "user_request": "q2", "status": "running"},  # mid-stream
-    ])
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "q1", "status": "success"},
+            {"turn_id": 2, "user_request": "q2", "status": "running"},  # mid-stream
+        ]
+    )
     with pytest.raises(Exception) as exc:
-        service.start(workspace_id="ws1", ontology_id="onto1", session_id="sess1",
-                      triggered_by="alice", execution_store=exec_store)
+        service.start(
+            workspace_id="ws1",
+            ontology_id="onto1",
+            session_id="sess1",
+            triggered_by="alice",
+            execution_store=exec_store,
+        )
     assert "至少需要 2 轮" in str(exc.value)
 
 
@@ -404,25 +444,31 @@ def test_infer_toolbased_ontology_version(tmp_path, monkeypatch):
 
     infer = AgenticOrchestrator._infer_toolbased_ontology_version
     # single ontology, all reads agree on version → that version
-    rd = {"by_path": {
-        "a": {"ontology_id": "onto1", "ontology_version": "1.0.0"},
-        "b": {"ontology_id": "onto1", "ontology_version": "1.0.0"},
-    }}
+    rd = {
+        "by_path": {
+            "a": {"ontology_id": "onto1", "ontology_version": "1.0.0"},
+            "b": {"ontology_id": "onto1", "ontology_version": "1.0.0"},
+        }
+    }
     assert infer("ws", rd) == "1.0.0"
     # records without a version field (old reads) are ignored → no version → None
     rd_old = {"by_path": {"a": {"ontology_id": "onto1"}, "b": {"ontology_id": "onto1"}}}
     assert infer("ws", rd_old) is None
     # ambiguous (two ontologies) → None
-    rd2 = {"by_path": {
-        "a": {"ontology_id": "onto1", "ontology_version": "1.0.0"},
-        "b": {"ontology_id": "onto2", "ontology_version": "1.0.0"},
-    }}
+    rd2 = {
+        "by_path": {
+            "a": {"ontology_id": "onto1", "ontology_version": "1.0.0"},
+            "b": {"ontology_id": "onto2", "ontology_version": "1.0.0"},
+        }
+    }
     assert infer("ws", rd2) is None
     # cross-version within the turn (records disagree) → None (ambiguous)
-    rd3 = {"by_path": {
-        "a": {"ontology_id": "onto1", "ontology_version": "1.0.0"},
-        "b": {"ontology_id": "onto1", "ontology_version": "1.0.1"},
-    }}
+    rd3 = {
+        "by_path": {
+            "a": {"ontology_id": "onto1", "ontology_version": "1.0.0"},
+            "b": {"ontology_id": "onto1", "ontology_version": "1.0.1"},
+        }
+    }
     assert infer("ws", rd3) is None
     # no reads → None
     assert infer("ws", {"by_path": {}}) is None
@@ -450,17 +496,21 @@ def test_read_document_record_carries_ontology_version():
     )
     assert record["ontology_version"] == "1.0.0"
     # omitted → None (old callers / non-ontology reads)
-    assert build_read_document_record(
-        file_path="ontologies/onto1/manifest.yaml",
-        content="",
-        source="ontology_context",
-        turn_id=1,
-    )["ontology_version"] is None
+    assert (
+        build_read_document_record(
+            file_path="ontologies/onto1/manifest.yaml",
+            content="",
+            source="ontology_context",
+            turn_id=1,
+        )["ontology_version"]
+        is None
+    )
     # merge preserves the field and feeds the infer helper
     merged = merge_read_documents_registry(None, [record])
     by_path = merged["by_path"]
     assert by_path[record["normalized_path"]]["ontology_version"] == "1.0.0"
     from agent.core.orchestrator import AgenticOrchestrator
+
     assert AgenticOrchestrator._infer_toolbased_ontology_version("ws", merged) == "1.0.0"
 
 
@@ -470,14 +520,17 @@ def test_start_blocks_when_ontology_not_inferrable(tmp_path, monkeypatch):
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     store, service = _make_service(tmp_path, client=FakeClient({"status": "running"}, b""))
     _patch_ontology(service, onto_dir, monkeypatch)
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "q1"},
-        {"turn_id": 2, "user_request": "q2"},
-    ])
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "q1"},
+            {"turn_id": 2, "user_request": "q2"},
+        ]
+    )
     # no read_documents, no ontology_context calls
     with pytest.raises(Exception) as exc:
-        service.start(workspace_id="ws1", ontology_id=None, session_id="sess1",
-                      triggered_by="alice", execution_store=exec_store)
+        service.start(
+            workspace_id="ws1", ontology_id=None, session_id="sess1", triggered_by="alice", execution_store=exec_store
+        )
     assert "无法确定进化目标本体" in str(exc.value)
 
 
@@ -703,6 +756,7 @@ def test_drift_active_version_switched(tmp_path, monkeypatch):
     service.poll_once(rec)
     # Switch active version
     from ontology.ontologies import set_ontology_active_version
+
     set_ontology_active_version(onto_dir, "1.1.0")
     drift = service.detect_drift(rec)
     assert drift.drifted
@@ -901,19 +955,19 @@ def test_max_iterations_forwarded_from_config(tmp_path, monkeypatch):
     client = FakeClient({"status": "running"}, b"")
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store, client=client)
-    service._config = lambda: {  # noqa: SLF001
-        "enabled": True,
-        "base_url": "http://skill-evolver.test",
-        "timeout_seconds": 30,
-        "poll_interval_seconds": 10,
-        "task_timeout_seconds": 1800,
-        "max_iterations": 25,
-    }
+
+    def service_config():
+        return _service_config(max_iterations=25)
+
+    service._config = service_config  # noqa: SLF001
     _patch_ontology(service, onto_dir, monkeypatch)
-    exec_store = FakeExecutionStore([
-        {"turn_id": 1, "user_request": "q1"},
-        {"turn_id": 2, "user_request": "q2"},
-    ])
-    service.start(workspace_id="ws1", ontology_id="onto1", session_id="sess1",
-                  triggered_by="alice", execution_store=exec_store)
+    exec_store = FakeExecutionStore(
+        [
+            {"turn_id": 1, "user_request": "q1"},
+            {"turn_id": 2, "user_request": "q2"},
+        ]
+    )
+    service.start(
+        workspace_id="ws1", ontology_id="onto1", session_id="sess1", triggered_by="alice", execution_store=exec_store
+    )
     assert client.last_request["evolution"]["max_iterations"] == 25

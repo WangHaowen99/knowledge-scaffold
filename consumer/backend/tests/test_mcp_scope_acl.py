@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import resolve_mcp_scope_from_token
 from integration.mcp.token_service import MCPTokenAuthError, create_mcp_token
@@ -14,7 +14,7 @@ def _config(path: Path) -> MCPRuntimeConfig:
         server_port=7488,
         public_base_url="",
         agentic_base_url="",
-        token_secret="test-secret-at-least-32-characters-long",
+        token_secret=synthetic_secret("mcp_scope_acl-credential-01"),
         token_algorithm="HS256",
         token_issuer="meta-wise",
         token_audience="meta-wise-mcp",
@@ -56,11 +56,7 @@ def _write_workspace(
                 "updated_at": "2026-07-13T00:00:00+00:00",
                 "owner": owner,
                 "members": members,
-                **(
-                    {"mcp_endpoint_id": mcp_endpoint_id}
-                    if mcp_endpoint_id is not None
-                    else {}
-                ),
+                **({"mcp_endpoint_id": mcp_endpoint_id} if mcp_endpoint_id is not None else {}),
             }
         ),
         encoding="utf-8",

@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-
 from agent.runtime import RunTaskSupervisor
 
 
@@ -34,9 +33,7 @@ def test_supervisor_tracks_one_live_task_per_run_and_cancels_it():
         assert supervisor.get_run_task("run-alpha") is None
         assert supervisor.active_run_ids == ()
         assert await supervisor.cancel_run("run-alpha") is False
-        assert await supervisor.close(
-            deadline=asyncio.get_running_loop().time() + 0.1
-        )
+        assert await supervisor.close(deadline=asyncio.get_running_loop().time() + 0.1)
 
     asyncio.run(scenario())
 
@@ -61,9 +58,7 @@ def test_supervisor_close_cancels_run_and_derived_tasks_and_rejects_new_work():
         assert supervisor.active_run_ids == ("run-beta",)
         assert supervisor.active_derived_count == 1
 
-        assert await supervisor.close(
-            deadline=asyncio.get_running_loop().time() + 0.5
-        )
+        assert await supervisor.close(deadline=asyncio.get_running_loop().time() + 0.5)
         assert supervisor.active_run_ids == ()
         assert supervisor.active_derived_count == 0
 
@@ -120,9 +115,7 @@ def test_supervisor_close_from_owned_task_does_not_cancel_or_wait_for_itself():
         close_result = asyncio.get_running_loop().create_future()
 
         async def close_from_derived_task():
-            result = await supervisor.close(
-                deadline=asyncio.get_running_loop().time() + 0.05
-            )
+            result = await supervisor.close(deadline=asyncio.get_running_loop().time() + 0.05)
             close_result.set_result(result)
 
         task = supervisor.start_derived(

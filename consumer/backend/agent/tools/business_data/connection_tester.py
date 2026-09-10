@@ -7,11 +7,11 @@ from typing import Any, Dict
 from urllib.parse import quote
 
 import requests
-from shared_capabilities.business_data import create_provider_client
-
 from agent.tools.business_data.effective_connection import build_effective_connection
 from agent.tools.business_data.providers.graph.timeouts import resolve_graph_connect_timeout_seconds
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
+from shared_capabilities.business_data import create_provider_client
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -62,22 +62,14 @@ async def test_business_data_connection_async(
 
 def _test_shared_provider(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
     tested_at = _utc_now()
-    provider_name = (
-        "nl2sql_http" if connection.provider == "nl2sql_template" else connection.provider
-    )
+    provider_name = "nl2sql_http" if connection.provider == "nl2sql_template" else connection.provider
     label = {
         "mindsdb": "MindsDB",
-        "nl2sql_http": (
-            "NL2SQL Template"
-            if connection.provider == "nl2sql_template"
-            else "NL2SQL HTTP"
-        ),
+        "nl2sql_http": ("NL2SQL Template" if connection.provider == "nl2sql_template" else "NL2SQL HTTP"),
         "dataagent": "DataAgent REST",
     }.get(provider_name, provider_name)
     try:
-        client = create_provider_client(
-            build_effective_connection(connection, provider_override=provider_name)
-        )
+        client = create_provider_client(build_effective_connection(connection, provider_override=provider_name))
     except Exception:
         return {
             "success": False,
@@ -91,8 +83,7 @@ def _test_shared_provider(connection: ResolvedBusinessDataSource) -> Dict[str, A
         client.close()
     return {
         "success": result.success,
-        "message": result.message
-        or ("{} 服务连接失败：{}".format(label, result.error or "未知错误")),
+        "message": result.message or ("{} 服务连接失败：{}".format(label, result.error or "未知错误")),
         "tested_at": tested_at,
     }
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from solver_coordination import (
     FactSnapshotBuilder,
     NormalizedInput,
@@ -209,9 +208,7 @@ def test_legacy_candidate_service_dispatches_through_injected_registry():
 
     candidate_set = create_candidate_set(
         plan_payload={
-            "items": [
-                {"item_order": 1, "item_id": "item-synthetic-1", "quantity": "1", "duration": "1"}
-            ],
+            "items": [{"item_order": 1, "item_id": "item-synthetic-1", "quantity": "1", "duration": "1"}],
             "option_domain": ["OPTION_0", "OPTION_1"],
             "max_transitions": 1,
         },
@@ -226,9 +223,7 @@ def test_legacy_candidate_service_dispatches_through_injected_registry():
 def test_legacy_candidate_service_does_not_import_a_concrete_problem_family():
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "solver_coordination"
-        / "candidate_service.py"
-    ).read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "solver_coordination" / "candidate_service.py").read_text(
+        encoding="utf-8"
+    )
     assert "problem_families.binary_ordered_route import" not in source

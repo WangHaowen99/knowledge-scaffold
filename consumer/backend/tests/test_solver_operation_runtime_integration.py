@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ontology.ontologies import invalidate_ontology_registry
 from integration.solver_operation_runtime import ControlledScriptOperationRuntime
+from ontology.ontologies import invalidate_ontology_registry
 from solver_coordination.candidate_service import create_candidate_set
 from solver_coordination.candidate_store import CandidateSetStore
 from solver_coordination.canonical import sha256_digest
@@ -112,9 +112,7 @@ print(json.dumps({
     return version_root
 
 
-def test_production_service_executes_real_frozen_operation_and_persists_evidence(
-    tmp_path, monkeypatch
-):
+def test_production_service_executes_real_frozen_operation_and_persists_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     workspace_id = "solver_runtime_integration"
     owner_id = "synthetic_operator"
@@ -168,17 +166,13 @@ def test_production_service_executes_real_frozen_operation_and_persists_evidence
     ledger.register_artifact(
         artifact_digest=snapshot["fact_snapshot_digest"],
         artifact_type="fact_snapshot",
-        artifact_ref="fact_snapshot_{}".format(
-            snapshot["fact_snapshot_digest"].rsplit(":", 1)[-1]
-        ),
+        artifact_ref="fact_snapshot_{}".format(snapshot["fact_snapshot_digest"].rsplit(":", 1)[-1]),
         artifact_path=snapshot_path.relative_to(get_workspace_paths(workspace_id).runtime_dir).as_posix(),
         owner_id=owner_id,
         source_run_id=candidate_set.source_run_id,
     )
 
-    result = build_operation_validation_service(
-        operation_runtime=ControlledScriptOperationRuntime()
-    ).run(
+    result = build_operation_validation_service(operation_runtime=ControlledScriptOperationRuntime()).run(
         workspace_id=workspace_id,
         owner_id=owner_id,
         candidate_set_ref=candidate_ref,

@@ -45,9 +45,19 @@ export function createImportFlowState() {
 }
 
 export function validateImportFile(file) {
-  if (!file) return '未选择知识包文件';
-  if (!String(file.name || '').toLowerCase().endsWith('.zip')) return '仅支持 .zip 知识包';
-  if (!Number(file.size || 0)) return '所选 ZIP 文件为空';
+  if (!file) {
+    return '未选择知识包文件';
+  }
+  if (
+    !String(file.name || '')
+      .toLowerCase()
+      .endsWith('.zip')
+  ) {
+    return '仅支持 .zip 知识包';
+  }
+  if (!Number(file.size || 0)) {
+    return '所选 ZIP 文件为空';
+  }
   return '';
 }
 
@@ -59,32 +69,45 @@ export function normalizeImportConflict(payload = {}) {
     ontologyName: String(payload.ontology_name || payload.ontology_id || ''),
     version: String(payload.version || ''),
     activeVersion: String(payload.active_version || ''),
-    versions: Array.isArray(payload.versions) ? payload.versions.map(String) : [],
+    versions: Array.isArray(payload.versions) ?
+      payload.versions.map(String) :
+      [],
     message: String(payload.error || payload.detail || ''),
-    overwriteAction: conflictType === 'version_exists'
-      ? IMPORT_ACTION.OVERWRITE_MATCHING
-      : IMPORT_ACTION.OVERWRITE_ACTIVE,
+    overwriteAction:
+      conflictType === 'version_exists' ?
+        IMPORT_ACTION.OVERWRITE_MATCHING :
+        IMPORT_ACTION.OVERWRITE_ACTIVE,
   };
 }
 
 export function validateImportDecision(state, action) {
-  if (!state?.conflict) return '当前没有待处理的版本冲突';
+  if (!state?.conflict) {
+    return '当前没有待处理的版本冲突';
+  }
   if (action === IMPORT_ACTION.CREATE_VERSION) {
     const version = String(state.newVersion || '').trim();
-    if (!version) return '请输入新增版本号';
+    if (!version) {
+      return '请输入新增版本号';
+    }
     if (!ONTOLOGY_VERSION_PATTERN.test(version)) {
       return '版本号仅支持字母、数字、点、下划线和短横线，且需以字母或数字开头';
     }
-    if (state.conflict.versions.includes(version)) return `版本 ${version} 已存在，请换一个版本号`;
+    if (state.conflict.versions.includes(version)) {
+      return `版本 ${version} 已存在，请换一个版本号`;
+    }
     return '';
   }
-  if (action !== state.conflict.overwriteAction) return '该冲突不支持所选覆盖方式';
+  if (action !== state.conflict.overwriteAction) {
+    return '该冲突不支持所选覆盖方式';
+  }
   return '';
 }
 
 export function importRequestFields(request = {}) {
   const action = String(request.action || '');
-  if (!action) return {};
+  if (!action) {
+    return {};
+  }
   if (action === IMPORT_ACTION.CREATE_VERSION) {
     return { action, new_version: String(request.newVersion || '').trim() };
   }
@@ -97,7 +120,12 @@ export function reduceImportFlow(state, event) {
     case 'SELECT_FILE': {
       const error = validateImportFile(event.file);
       if (error) {
-        return { ...createImportFlowState(), phase: IMPORT_PHASE.ERROR, file: event.file || null, error };
+        return {
+          ...createImportFlowState(),
+          phase: IMPORT_PHASE.ERROR,
+          file: event.file || null,
+          error,
+        };
       }
       return {
         ...createImportFlowState(),
@@ -106,9 +134,9 @@ export function reduceImportFlow(state, event) {
       };
     }
     case 'SET_ACKNOWLEDGED':
-      return current.phase === IMPORT_PHASE.CONFIRMING
-        ? { ...current, acknowledged: Boolean(event.value), error: '' }
-        : current;
+      return current.phase === IMPORT_PHASE.CONFIRMING ?
+        { ...current, acknowledged: Boolean(event.value), error: '' } :
+        current;
     case 'START_UPLOAD':
       if (current.phase !== IMPORT_PHASE.CONFIRMING || !current.acknowledged) {
         return { ...current, error: '请先确认导入安全边界' };
@@ -129,17 +157,20 @@ export function reduceImportFlow(state, event) {
         error: '',
       };
     case 'SET_NEW_VERSION':
-      return current.phase === IMPORT_PHASE.CONFLICT
-        ? { ...current, newVersion: String(event.value || ''), error: '' }
-        : current;
+      return current.phase === IMPORT_PHASE.CONFLICT ?
+        { ...current, newVersion: String(event.value || ''), error: '' } :
+        current;
     case 'RESOLVE_CONFLICT': {
       const error = validateImportDecision(current, event.action);
-      if (error) return { ...current, error };
+      if (error) {
+        return { ...current, error };
+      }
       const request = {
         action: event.action,
-        newVersion: event.action === IMPORT_ACTION.CREATE_VERSION
-          ? String(current.newVersion || '').trim()
-          : '',
+        newVersion:
+          event.action === IMPORT_ACTION.CREATE_VERSION ?
+            String(current.newVersion || '').trim() :
+            '',
       };
       return { ...current, phase: IMPORT_PHASE.UPLOADING, request, error: '' };
     }
@@ -150,18 +181,20 @@ export function reduceImportFlow(state, event) {
         phase: IMPORT_PHASE.ERROR,
         error: String(event.error || '知识包导入失败'),
         errorCode,
-        request: errorCode === 'ontology_name_conflict' ? null : current.request,
-        conflict: errorCode === 'ontology_name_conflict' ? null : current.conflict,
+        request:
+          errorCode === 'ontology_name_conflict' ? null : current.request,
+        conflict:
+          errorCode === 'ontology_name_conflict' ? null : current.conflict,
       };
     }
     case 'RETRY':
-      return current.file && current.request
-        ? { ...current, phase: IMPORT_PHASE.UPLOADING, error: '' }
-        : current;
+      return current.file && current.request ?
+        { ...current, phase: IMPORT_PHASE.UPLOADING, error: '' } :
+        current;
     case 'REOPEN_CONFLICT':
-      return current.conflict
-        ? { ...current, phase: IMPORT_PHASE.CONFLICT, error: '' }
-        : current;
+      return current.conflict ?
+        { ...current, phase: IMPORT_PHASE.CONFLICT, error: '' } :
+        current;
     case 'SUCCESS': {
       const result = event.payload || {};
       return {
@@ -177,9 +210,9 @@ export function reduceImportFlow(state, event) {
       };
     }
     case 'CLEAR_PREVIEW':
-      return current.result
-        ? { ...current, result: { ...current.result, preview: null } }
-        : current;
+      return current.result ?
+        { ...current, result: { ...current.result, preview: null } } :
+        current;
     case 'CANCEL': {
       const stoppedWaiting = current.phase === IMPORT_PHASE.UPLOADING;
       return {
@@ -190,9 +223,10 @@ export function reduceImportFlow(state, event) {
       };
     }
     case 'RECONCILED':
-      return current.phase === IMPORT_PHASE.CANCELLED && current.reconciliationPending
-        ? { ...current, reconciliationPending: false }
-        : current;
+      return current.phase === IMPORT_PHASE.CANCELLED &&
+        current.reconciliationPending ?
+        { ...current, reconciliationPending: false } :
+        current;
     case 'RESET':
       return createImportFlowState();
     default:
@@ -211,21 +245,28 @@ export function importFlowNotice(state) {
     case IMPORT_PHASE.SUCCESS: {
       const result = state.result || {};
       const activeVersion = result.active_version || result.version || '';
-      const warningMessages = importWarningMessages(importResultWarningDetails(result));
-      const warningPreview = warningMessages.slice(0, IMPORT_WARNING_PREVIEW_LIMIT);
+      const warningMessages = importWarningMessages(
+        importResultWarningDetails(result),
+      );
+      const warningPreview = warningMessages.slice(
+        0,
+        IMPORT_WARNING_PREVIEW_LIMIT,
+      );
       const hiddenWarningCount = warningMessages.length - warningPreview.length;
-      const warningNotice = warningMessages.length
-        ? `；警告 ${warningMessages.length} 条：${warningPreview.join('；')}${hiddenWarningCount ? `；其余 ${hiddenWarningCount} 条未展示` : ''}`
-        : '';
+      const warningNotice = warningMessages.length ?
+        `；警告 ${warningMessages.length} 条：${warningPreview.join('；')}${hiddenWarningCount ? `；其余 ${hiddenWarningCount} 条未展示` : ''}` :
+        '';
       return `导入成功：${result.ontology_name || result.ontology_id || '知识包'}（对象 ${result.objects_count ?? '-'} · 操作 ${result.operations_count ?? '-'}${activeVersion ? ` · 激活版本 ${activeVersion}` : ''}）${warningNotice}`;
     }
     case IMPORT_PHASE.ERROR:
       return `导入失败：${state.error || '请求异常，请稍后重试'}`;
     case IMPORT_PHASE.CANCELLED:
-      if (!state.stoppedWaiting) return '已关闭知识包导入';
-      return state.reconciliationPending
-        ? '已停止等待导入结果；服务端处理可能仍在执行或已经生效，正在延迟刷新核对。'
-        : '已执行一次延迟刷新核对；服务端仍可能继续处理，请稍后再次刷新并核对知识包列表和激活版本。';
+      if (!state.stoppedWaiting) {
+        return '已关闭知识包导入';
+      }
+      return state.reconciliationPending ?
+        '已停止等待导入结果；服务端处理可能仍在执行或已经生效，正在延迟刷新核对。' :
+        '已执行一次延迟刷新核对；服务端仍可能继续处理，请稍后再次刷新并核对知识包列表和激活版本。';
     default:
       return '';
   }
@@ -248,12 +289,14 @@ export function importFlowNoticeTone(state) {
 }
 
 function buildImportPreview(result) {
-  const preview = result.preview;
+  const { preview } = result;
   const warnings = importResultWarningDetails(result);
-  const hasWarnings = Array.isArray(warnings)
-    ? warnings.length > 0
-    : Object.keys(warnings).length > 0;
-  if (!hasWarnings) return preview || null;
+  const hasWarnings = Array.isArray(warnings) ?
+    warnings.length > 0 :
+    Object.keys(warnings).length > 0;
+  if (!hasWarnings) {
+    return preview || null;
+  }
   if (preview && typeof preview === 'object' && !Array.isArray(preview)) {
     return { ...preview, warnings };
   }
@@ -265,8 +308,12 @@ function buildImportPreview(result) {
 
 function importResultWarningDetails(result = {}) {
   const warnings = importWarningDetails(result.warnings);
-  const normalizationWarnings = importWarningMessages(result.normalization_warnings);
-  if (!normalizationWarnings.length) return warnings;
+  const normalizationWarnings = importWarningMessages(
+    result.normalization_warnings,
+  );
+  if (!normalizationWarnings.length) {
+    return warnings;
+  }
 
   if (Array.isArray(warnings)) {
     return {
@@ -285,18 +332,22 @@ function importResultWarningDetails(result = {}) {
 }
 
 function importWarningMessages(warnings) {
-  const values = Array.isArray(warnings)
-    ? warnings
-    : warnings && typeof warnings === 'object'
-      ? Object.values(warnings).flatMap((value) => (Array.isArray(value) ? value : [value]))
-      : warnings
-        ? [warnings]
-        : [];
+  const values = Array.isArray(warnings) ?
+    warnings :
+    warnings && typeof warnings === 'object' ?
+      Object.values(warnings).flatMap((value) =>
+        Array.isArray(value) ? value : [value],
+      ) :
+      warnings ?
+        [warnings] :
+        [];
   return values.map((value) => String(value || '').trim()).filter(Boolean);
 }
 
 function importWarningDetails(warnings) {
-  if (Array.isArray(warnings)) return importWarningMessages(warnings);
+  if (Array.isArray(warnings)) {
+    return importWarningMessages(warnings);
+  }
   if (!warnings || typeof warnings !== 'object') {
     return importWarningMessages(warnings);
   }

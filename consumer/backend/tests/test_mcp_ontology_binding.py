@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from integration.mcp.ontology_binding import (
     MCPOntologyBindingError,
     bind_chat_arguments,
@@ -114,9 +113,7 @@ def test_runtime_validates_requested_version_instead_of_current_active(monkeypat
     )
     monkeypatch.setattr(
         "ontology.ontologies.get_runtime_ontology_manifest",
-        lambda _ontology_id, *, version, **_kwargs: (
-            loaded_versions.append(version) or ontology
-        ),
+        lambda _ontology_id, *, version, **_kwargs: (loaded_versions.append(version) or ontology),
     )
 
     selected = validate_runtime_ontology_availability(
@@ -130,14 +127,20 @@ def test_runtime_validates_requested_version_instead_of_current_active(monkeypat
 
 
 def test_effective_ontology_resolution_preserves_legacy_and_rejects_conflicts():
-    assert resolve_effective_ontology_id(
-        token_ontology_id="knowledge_package_demo",
-        requested_ontology_id=None,
-    ) == "knowledge_package_demo"
-    assert resolve_effective_ontology_id(
-        token_ontology_id="",
-        requested_ontology_id="knowledge_package_demo",
-    ) == "knowledge_package_demo"
+    assert (
+        resolve_effective_ontology_id(
+            token_ontology_id="knowledge_package_demo",
+            requested_ontology_id=None,
+        )
+        == "knowledge_package_demo"
+    )
+    assert (
+        resolve_effective_ontology_id(
+            token_ontology_id="",
+            requested_ontology_id="knowledge_package_demo",
+        )
+        == "knowledge_package_demo"
+    )
 
     with pytest.raises(MCPOntologyBindingError) as conflict:
         resolve_effective_ontology_id(

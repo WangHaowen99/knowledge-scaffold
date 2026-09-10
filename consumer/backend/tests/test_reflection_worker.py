@@ -63,20 +63,20 @@ def test_reflection_worker_persists_ontology_lessons_to_evolution_buffer(monkeyp
     result = asyncio.run(
         worker.run(
             ReflectionSnapshot(
-            run_id="run-1",
-            session_id="session-1",
-            turn_id=1,
-            user_id="alice",
-            workspace_id="workspace-1",
-            ontology_id="example",
-            operation_hint=None,
-            status="success",
-            user_request="run OP_A",
-            final_output="done",
-            execution_summary=None,
-            tool_events=[],
-            iteration_count=1,
-            duration_ms=100,
+                run_id="run-1",
+                session_id="session-1",
+                turn_id=1,
+                user_id="alice",
+                workspace_id="workspace-1",
+                ontology_id="example",
+                operation_hint=None,
+                status="success",
+                user_request="run OP_A",
+                final_output="done",
+                execution_summary=None,
+                tool_events=[],
+                iteration_count=1,
+                duration_ms=100,
             )
         )
     )

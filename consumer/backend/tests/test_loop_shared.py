@@ -176,11 +176,14 @@ def test_build_public_iteration_timing_separates_model_tools_and_setup():
         "model_elapsed_ms": 3000,
         "setup_elapsed_ms": 84774,
     }
-    assert build_public_iteration_timing(
-        total_elapsed_ms=10,
-        model_elapsed_ms=None,
-        tools_elapsed_ms=2,
-    ) == {}
+    assert (
+        build_public_iteration_timing(
+            total_elapsed_ms=10,
+            model_elapsed_ms=None,
+            tools_elapsed_ms=2,
+        )
+        == {}
+    )
 
 
 def test_iteration_event_can_override_main_source_node():

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-import threading
 
 import pytest
-
-from solver_coordination.compiler import ProblemIRCompiler
+from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.canonical import json_schema_digest, sha256_digest
+from solver_coordination.compiler import ProblemIRCompiler
 from solver_coordination.contracts import SolverResult, VerificationResult
 from solver_coordination.errors import (
     KnowledgePackageSolverContractIncompatibleError,
@@ -24,12 +24,15 @@ from solver_coordination.verification.service import (
     IndependentVerificationService,
 )
 
-
 WORKSPACE = "workspace-synthetic"
 OWNER = "owner-synthetic"
 RUN_ID = "run-synthetic"
 TOOL_CALL_ID = "tool-call-synthetic"
 CONTRACT_DIGEST = "sha256:" + "a" * 64
+
+
+def _fixed_clock():
+    return datetime(2026, 8, 17, tzinfo=timezone.utc)
 
 
 def _capability():
@@ -127,7 +130,7 @@ class _BindingResolver:
         return {
             "binding_revision_id": "binding-synthetic-1",
             "configuration": {
-                "endpoint": "https://solver.example.test",
+                "endpoint": "https://solver.example.net",
                 "connector_type": "ortools",
                 "service_api_version": "ortools.solver.v1",
                 "service_credential_ref": "secret://solver/synthetic",
@@ -191,7 +194,14 @@ class _Backend:
 
 
 class _Verifier:
-    def __init__(self, *, status="verified", feasibility="feasible", optimality="proven_optimal", proof_kind="verifier_exhaustive_check"):
+    def __init__(
+        self,
+        *,
+        status="verified",
+        feasibility="feasible",
+        optimality="proven_optimal",
+        proof_kind="verifier_exhaustive_check",
+    ):
         self.calls = 0
         self.problems = []
         self.status = status
@@ -237,13 +247,11 @@ def _service(
     selected_store = store or SolverJobStore(tmp_path / "jobs.sqlite3")
     selected_backend = backend or _Backend()
     selected_verifier = verifier or _Verifier()
-    selected_compiler = compiler or ProblemIRCompiler(
-        registry=ProblemFamilyRegistry([_FamilyAdapter()])
-    )
+    selected_compiler = compiler or ProblemIRCompiler(registry=ProblemFamilyRegistry([_FamilyAdapter()]))
     orchestrator = DurableJobOrchestrator(
         store=selected_store,
         backend=selected_backend,
-        idempotency_secret=b"synthetic-platform-secret",
+        idempotency_secret=synthetic_secret("solver_coordination_service-credential-01").encode("utf-8"),
         lease_owner="worker-synthetic",
     )
     service = SolverCoordinationService(
@@ -254,8 +262,7 @@ def _service(
         snapshot_builder=FactSnapshotBuilder(),
         compiler=selected_compiler,
         job_orchestrator=orchestrator,
-        verifier=verification_service
-        or IndependentVerificationService(verifier=selected_verifier),
+        verifier=verification_service or IndependentVerificationService(verifier=selected_verifier),
         artifact_store=artifact_store or ContentAddressedSolverArtifactStore(tmp_path / "artifacts"),
         result_projector=AuthoritativeResultProjector(),
         clock=lambda: datetime(2026, 8, 17, tzinfo=timezone.utc),
@@ -271,9 +278,7 @@ def _service(
 def test_service_rejects_an_invalid_compiler_return_contract(tmp_path):
     class _InvalidCompiler:
         def __init__(self):
-            self.delegate = ProblemIRCompiler(
-                registry=ProblemFamilyRegistry([_FamilyAdapter()])
-            )
+            self.delegate = ProblemIRCompiler(registry=ProblemFamilyRegistry([_FamilyAdapter()]))
 
         def __getattr__(self, name):
             return getattr(self.delegate, name)
@@ -296,9 +301,7 @@ def test_service_rejects_an_invalid_compiler_return_contract(tmp_path):
 def test_service_preserves_an_incompatible_knowledge_package_contract(tmp_path):
     class _IncompatiblePackageFactResolver:
         def resolve(self, **_kwargs):
-            raise KnowledgePackageSolverContractIncompatibleError(
-                "internal package contract detail"
-            )
+            raise KnowledgePackageSolverContractIncompatibleError("internal package contract detail")
 
     service, _store, _backend, _verifier = _service(tmp_path)
     service.fact_resolver = _IncompatiblePackageFactResolver()
@@ -380,11 +383,14 @@ def test_service_returns_awaiting_input_without_creating_a_job(tmp_path):
     assert outcome["phase"] == "bind"
     assert outcome["missing"] == ["item_count"]
     assert backend.submit_calls == 0
-    assert store.list_recoverable_jobs(
-        workspace_id=WORKSPACE,
-        owner_id=OWNER,
-        binding_revision_id="binding-synthetic-1",
-    ) == ()
+    assert (
+        store.list_recoverable_jobs(
+            workspace_id=WORKSPACE,
+            owner_id=OWNER,
+            binding_revision_id="binding-synthetic-1",
+        )
+        == ()
+    )
 
 
 def test_service_publishes_only_persisted_independently_verified_result(tmp_path):
@@ -420,13 +426,8 @@ def test_service_publishes_only_persisted_independently_verified_result(tmp_path
         "solver.verification.completed",
         "solver.result.authoritative",
     ]
-    assert all(
-        {"run_id", "job_id", "attempt_id", "event_seq"}.issubset(payload)
-        for _kind, payload in events
-    )
-    persisted_job = store.get_job(
-        outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
+    assert all({"run_id", "job_id", "attempt_id", "event_seq"}.issubset(payload) for _kind, payload in events)
+    persisted_job = store.get_job(outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert persisted_job["run_policy"]["max_attempts"] == 2
     link = store.get_run_link(
         workspace_id=WORKSPACE,
@@ -436,9 +437,7 @@ def test_service_publishes_only_persisted_independently_verified_result(tmp_path
         tool_call_id=TOOL_CALL_ID,
     )
     assert link["tool_result"]["authoritative"] is True
-    job = store.get_job(
-        link["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
+    job = store.get_job(link["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert job["run_policy"]["result_quality"] == "optimal"
 
 
@@ -461,21 +460,11 @@ def test_service_persists_candidate_results_before_publishing_authority(tmp_path
     outcome = _start(service)
 
     assert len(calls) == 1
-    assert outcome["candidate_results_artifact_ref"].startswith(
-        "artifact://candidate_results/"
-    )
+    assert outcome["candidate_results_artifact_ref"].startswith("artifact://candidate_results/")
     assert outcome["candidate_results_artifact_digest"].startswith("sha256:")
-    artifacts = store.list_artifacts(
-        outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
-    candidate_record = next(
-        artifact
-        for artifact in artifacts
-        if artifact["artifact_type"] == "candidate_results"
-    )
-    assert candidate_record["artifact_ref"] == outcome[
-        "candidate_results_artifact_ref"
-    ]
+    artifacts = store.list_artifacts(outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
+    candidate_record = next(artifact for artifact in artifacts if artifact["artifact_type"] == "candidate_results")
+    assert candidate_record["artifact_ref"] == outcome["candidate_results_artifact_ref"]
     assert service.artifact_store.get(candidate_record["artifact_ref"]) == {
         "schema_version": "solver.candidate-results.v1",
         "candidate_count": 2,
@@ -510,9 +499,7 @@ def test_service_rejects_feasible_connector_result_when_run_requires_optimal(tmp
                 engine={"name": "synthetic-backend", "version": "1"},
             )
 
-    service, _store, _backend, verifier = _service(
-        tmp_path, backend=_FeasibleBackend(status="completed_feasible")
-    )
+    service, _store, _backend, verifier = _service(tmp_path, backend=_FeasibleBackend(status="completed_feasible"))
 
     outcome = _start(service)
 
@@ -564,14 +551,10 @@ def test_service_accepts_dynamic_assignment_keys_from_locked_result_schema(tmp_p
                 engine={"name": "synthetic-backend", "version": "1"},
             )
 
-    service, _store, _backend, verifier = _service(
-        tmp_path, backend=_DynamicAssignmentBackend()
-    )
+    service, _store, _backend, verifier = _service(tmp_path, backend=_DynamicAssignmentBackend())
     dynamic_schema = _dynamic_assignment_schema()
     service.capability_resolver.capability["result_schema"] = dynamic_schema
-    service.capability_resolver.capability["result_schema_digest"] = (
-        json_schema_digest(dynamic_schema)
-    )
+    service.capability_resolver.capability["result_schema_digest"] = json_schema_digest(dynamic_schema)
 
     outcome = _start(service)
 
@@ -596,14 +579,10 @@ def test_service_rejects_invalid_dynamic_assignment_option(tmp_path):
                 engine={"name": "synthetic-backend", "version": "1"},
             )
 
-    service, _store, _backend, verifier = _service(
-        tmp_path, backend=_InvalidDynamicAssignmentBackend()
-    )
+    service, _store, _backend, verifier = _service(tmp_path, backend=_InvalidDynamicAssignmentBackend())
     dynamic_schema = _dynamic_assignment_schema()
     service.capability_resolver.capability["result_schema"] = dynamic_schema
-    service.capability_resolver.capability["result_schema_digest"] = (
-        json_schema_digest(dynamic_schema)
-    )
+    service.capability_resolver.capability["result_schema_digest"] = json_schema_digest(dynamic_schema)
 
     outcome = _start(service)
 
@@ -694,9 +673,7 @@ def test_service_rejects_inconsistent_or_unsupported_solver_status_payloads(
 
 def test_service_stops_when_result_schema_digest_does_not_match_loaded_schema(tmp_path):
     service, _store, backend, _verifier = _service(tmp_path)
-    service.capability_resolver.capability["result_schema_digest"] = sha256_digest(
-        {"different": "synthetic-schema"}
-    )
+    service.capability_resolver.capability["result_schema_digest"] = sha256_digest({"different": "synthetic-schema"})
 
     with pytest.raises(SolverServiceError) as exc_info:
         _start(service)
@@ -764,9 +741,7 @@ def test_service_cancels_current_subscription_from_agent_cancel_probe(tmp_path):
     assert backend.submit_calls == 1
     assert backend.cancel_calls == 1
     assert verifier.calls == 0
-    job = store.get_job(
-        outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
+    job = store.get_job(outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert job["status"] == "cancelled"
     link = store.get_run_link(
         workspace_id=WORKSPACE,
@@ -797,9 +772,7 @@ def test_service_persists_frozen_inputs_before_backend_submission(tmp_path):
         turn_id="1",
         tool_call_id=TOOL_CALL_ID,
     )
-    attempt = store.get_attempt(
-        link["attempt_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
+    attempt = store.get_attempt(link["attempt_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert attempt["backend_job_id"] is None
 
 
@@ -972,9 +945,7 @@ def test_service_cancels_shared_job_only_after_last_subscription_leaves(tmp_path
     backend = _Backend(status="running")
     service, store, _backend, verifier = _service(tmp_path, backend=backend)
     service.max_polls = 1
-    service.job_orchestrator._clock = lambda: datetime(
-        2026, 8, 17, tzinfo=timezone.utc
-    )
+    service.job_orchestrator._clock = _fixed_clock
 
     first = _start(service, tool_call_id="tool-call-synthetic-first")
     assert first["status"] == "running"
@@ -989,9 +960,7 @@ def test_service_cancels_shared_job_only_after_last_subscription_leaves(tmp_path
     assert second["job_id"] == first["job_id"]
     assert backend.cancel_calls == 0
     assert verifier.calls == 0
-    shared_job = store.get_job(
-        first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
+    shared_job = store.get_job(first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert shared_job["status"] == "waiting_solver"
     second_link = store.get_run_link(
         workspace_id=WORKSPACE,
@@ -1011,9 +980,7 @@ def test_service_cancels_shared_job_only_after_last_subscription_leaves(tmp_path
     assert last["status"] == "cancelled"
     assert last["job_id"] == first["job_id"]
     assert backend.cancel_calls == 1
-    terminal_job = store.get_job(
-        first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
+    terminal_job = store.get_job(first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert terminal_job["status"] == "cancelled"
 
 
@@ -1021,9 +988,7 @@ def test_service_recovers_subscriber_cancel_after_tool_result_write_interruption
     backend = _Backend(status="running")
     service, store, _backend, verifier = _service(tmp_path, backend=backend)
     service.max_polls = 1
-    service.job_orchestrator._clock = lambda: datetime(
-        2026, 8, 17, tzinfo=timezone.utc
-    )
+    service.job_orchestrator._clock = _fixed_clock
     first = _start(service, tool_call_id="tool-call-synthetic-active")
     assert first["status"] == "running"
 
@@ -1041,9 +1006,7 @@ def test_service_recovers_subscriber_cancel_after_tool_result_write_interruption
         )
 
     assert backend.cancel_calls == 0
-    shared_job = store.get_job(
-        first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
+    shared_job = store.get_job(first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert shared_job["status"] == "waiting_solver"
 
     service._write_tool_result = write_tool_result
@@ -1064,9 +1027,7 @@ def test_service_job_recovery_preserves_cancelled_subscriber_after_crash(tmp_pat
     backend = _Backend(status="running")
     service, store, _backend, verifier = _service(tmp_path, backend=backend)
     service.max_polls = 1
-    service.job_orchestrator._clock = lambda: datetime(
-        2026, 8, 17, tzinfo=timezone.utc
-    )
+    service.job_orchestrator._clock = _fixed_clock
     active = _start(service, tool_call_id="tool-call-synthetic-active-recovery")
     assert active["status"] == "running"
 
@@ -1137,11 +1098,8 @@ def test_service_isolates_jobs_across_runs_and_projects_run_local_results(tmp_pa
     assert backend.submit_calls == 2
     frozen = [
         artifact
-        for artifact in store.list_artifacts(
-            first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-        )
-        if artifact["artifact_type"]
-        in {"normalized_input", "fact_snapshot", "problem_ir"}
+        for artifact in store.list_artifacts(first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
+        if artifact["artifact_type"] in {"normalized_input", "fact_snapshot", "problem_ir"}
     ]
     assert [artifact["artifact_type"] for artifact in frozen] == [
         "normalized_input",
@@ -1214,9 +1172,7 @@ def test_service_never_publishes_authoritative_result_when_cancel_wins_terminal_
     assert backend.cancel_calls == 0
     assert verifier.calls == 1
     assert all(kind != "solver.result.authoritative" for kind, _payload in events)
-    job = store.get_job(
-        outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
+    job = store.get_job(outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert job["status"] == "cancelled"
 
 
@@ -1235,9 +1191,7 @@ def test_service_returns_cancelled_when_cancel_wins_artifact_persist_race(tmp_pa
         def get(self, artifact_ref):
             return delegate.get(artifact_ref)
 
-    service, store, backend, verifier = _service(
-        tmp_path, artifact_store=_BlockingArtifactStore()
-    )
+    service, store, backend, verifier = _service(tmp_path, artifact_store=_BlockingArtifactStore())
     events = []
     with ThreadPoolExecutor(max_workers=1) as executor:
         foreground = executor.submit(
@@ -1266,10 +1220,7 @@ def test_service_returns_cancelled_when_cancel_wins_artifact_persist_race(tmp_pa
     assert verifier.calls == 0
     assert all(kind != "solver.verification.rejected" for kind, _payload in events)
     event_types = [
-        event["event_type"]
-        for event in store.read_events(
-            outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-        )
+        event["event_type"] for event in store.read_events(outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     ]
     assert "solver.job.cancelled" in event_types
     assert "solver.verification.rejected" not in event_types
@@ -1347,9 +1298,7 @@ def test_service_verifies_distinct_run_jobs_independently(tmp_path):
 
     backend = _Backend(status="running")
     verifier = _BlockingVerifier()
-    seed, store, _backend, _verifier = _service(
-        tmp_path, backend=backend, verifier=verifier
-    )
+    seed, store, _backend, _verifier = _service(tmp_path, backend=backend, verifier=verifier)
     seed.max_polls = 1
     first = _start(
         seed,
@@ -1400,15 +1349,9 @@ def test_service_verifies_distinct_run_jobs_independently(tmp_path):
     assert first_result["authoritative"] is True
     assert second_result["authoritative"] is True
     for job_id in (first["job_id"], second["job_id"]):
-        events = store.read_events(
-            job_id, workspace_id=WORKSPACE, owner_id=OWNER
-        )
-        assert [event["event_type"] for event in events].count(
-            "solver.verification.completed"
-        ) == 1
-        assert [event["event_type"] for event in events].count(
-            "solver.result.authoritative"
-        ) == 1
+        events = store.read_events(job_id, workspace_id=WORKSPACE, owner_id=OWNER)
+        assert [event["event_type"] for event in events].count("solver.verification.completed") == 1
+        assert [event["event_type"] for event in events].count("solver.result.authoritative") == 1
 
 
 def test_service_recovers_completed_job_when_tool_result_write_was_interrupted(tmp_path):
@@ -1436,9 +1379,7 @@ def test_service_recovers_completed_job_when_tool_result_write_was_interrupted(t
 
     service._write_tool_result = write_tool_result
     service.fact_resolver = _FailIfCalledFactResolver()
-    recovered = _start(
-        service, progress_callback=lambda kind, payload: events.append((kind, payload))
-    )
+    recovered = _start(service, progress_callback=lambda kind, payload: events.append((kind, payload)))
 
     assert recovered["status"] == "completed"
     assert recovered["authoritative"] is True
@@ -1454,12 +1395,8 @@ def test_service_fails_closed_when_replay_frozen_artifact_is_missing(tmp_path):
     backend.status = "running"
     first = _start(service)
     assert first["status"] == "running"
-    artifacts = store.list_artifacts(
-        first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )
-    normalized_record = next(
-        item for item in artifacts if item["artifact_type"] == "normalized_input"
-    )
+    artifacts = store.list_artifacts(first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
+    normalized_record = next(item for item in artifacts if item["artifact_type"] == "normalized_input")
     artifact_path = (
         service.artifact_store.root
         / "normalized_input"
@@ -1507,9 +1444,7 @@ def test_service_never_publishes_when_evidence_persistence_fails(tmp_path):
         def put(self, *args, **kwargs):
             raise OSError("synthetic disk failure")
 
-    service, store, _backend, _verifier = _service(
-        tmp_path, artifact_store=_FailingArtifactStore()
-    )
+    service, store, _backend, _verifier = _service(tmp_path, artifact_store=_FailingArtifactStore())
 
     outcome = _start(service)
 
@@ -1544,9 +1479,7 @@ def test_service_maps_verifier_divergence_to_non_retryable_result_rejection(tmp_
                 proof_kind="synthetic_divergence",
             )
 
-    service, store, _backend, _verifier = _service(
-        tmp_path, verifier=_DivergingVerifier()
-    )
+    service, store, _backend, _verifier = _service(tmp_path, verifier=_DivergingVerifier())
 
     outcome = _start(service)
 
@@ -1555,9 +1488,10 @@ def test_service_maps_verifier_divergence_to_non_retryable_result_rejection(tmp_
     assert outcome["phase"] == "verify"
     assert outcome["retryable"] is False
     assert outcome["authoritative"] is False
-    assert {artifact["artifact_type"] for artifact in store.list_artifacts(
-        outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )} >= {"solver_result"}
+    assert {
+        artifact["artifact_type"]
+        for artifact in store.list_artifacts(outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
+    } >= {"solver_result"}
 
 
 def test_service_marks_verifier_runtime_failure_retryable_without_authority(tmp_path):
@@ -1565,9 +1499,7 @@ def test_service_marks_verifier_runtime_failure_retryable_without_authority(tmp_
         def verify(self, **kwargs):
             raise RuntimeError("synthetic verifier outage")
 
-    service, store, _backend, _verifier = _service(
-        tmp_path, verifier=_FailingVerifier()
-    )
+    service, store, _backend, _verifier = _service(tmp_path, verifier=_FailingVerifier())
 
     outcome = _start(service)
 
@@ -1575,16 +1507,17 @@ def test_service_marks_verifier_runtime_failure_retryable_without_authority(tmp_
     assert outcome["code"] == "verification_runtime_failed"
     assert outcome["retryable"] is True
     assert outcome["authoritative"] is False
-    assert store.get_run_link(
-        workspace_id=WORKSPACE,
-        owner_id=OWNER,
-        run_id=RUN_ID,
-        turn_id="1",
-        tool_call_id=TOOL_CALL_ID,
-    )["tool_result"] == outcome
-    assert store.get_job(
-        outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )["status"] == "solver_completed"
+    assert (
+        store.get_run_link(
+            workspace_id=WORKSPACE,
+            owner_id=OWNER,
+            run_id=RUN_ID,
+            turn_id="1",
+            tool_call_id=TOOL_CALL_ID,
+        )["tool_result"]
+        == outcome
+    )
+    assert store.get_job(outcome["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)["status"] == "solver_completed"
 
 
 def test_service_retries_verification_on_new_tool_call_without_resolving_facts(tmp_path):
@@ -1604,16 +1537,12 @@ def test_service_retries_verification_on_new_tool_call_without_resolving_facts(t
             )
 
     verifier = _FlakyVerifier()
-    service, store, backend, _selected_verifier = _service(
-        tmp_path, verifier=verifier
-    )
+    service, store, backend, _selected_verifier = _service(tmp_path, verifier=verifier)
 
     first = _start(service, tool_call_id="tool-call-synthetic-verify-first")
     assert first["code"] == "verification_runtime_failed"
     assert first["retryable"] is True
-    assert store.get_job(
-        first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )["status"] == "solver_completed"
+    assert store.get_job(first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)["status"] == "solver_completed"
 
     service.fact_resolver = _FailIfCalledFactResolver()
     retried = _start(
@@ -1661,9 +1590,7 @@ def test_service_retries_evidence_persistence_on_new_tool_call(tmp_path):
     assert first["code"] == "artifact_persist_failed"
     assert first["phase"] == "publish"
     assert first["retryable"] is True
-    assert store.get_job(
-        first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER
-    )["status"] == "solver_completed"
+    assert store.get_job(first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)["status"] == "solver_completed"
 
     service.fact_resolver = _FailIfCalledFactResolver()
     retried = _start(
@@ -1791,9 +1718,7 @@ def test_service_recovery_persists_toolcard_contract_drift_tool_result(tmp_path)
     started = _start(service, tool_call_id="tool-call-synthetic-card-drift")
     assert started["status"] == "running"
 
-    service.capability_resolver.capability["contract_digest"] = (
-        "sha256:" + "b" * 64
-    )
+    service.capability_resolver.capability["contract_digest"] = "sha256:" + "b" * 64
     service.fact_resolver = _FailIfCalledFactResolver()
     backend.status = "completed_optimal"
     recovered = service.recover_job(

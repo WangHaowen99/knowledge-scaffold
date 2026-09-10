@@ -4,27 +4,25 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
-
 import solver_coordination
 from solver_coordination.candidate_service import create_candidate_set
 from solver_coordination.candidate_store import CandidateSetStore
+from solver_coordination.errors import (
+    CandidateDigestMismatchError,
+    VerificationDivergenceError,
+    VerificationRuntimeFailure,
+)
 from solver_coordination.operation_validation import (
     CandidateSetBatchValidator,
     OperationValidationRunService,
     ResolvedValidationContext,
     ValidationContextResolver,
 )
-from solver_coordination.errors import (
-    CandidateDigestMismatchError,
-    VerificationDivergenceError,
-    VerificationRuntimeFailure,
-)
 from solver_coordination.validation import (
     CandidateValidationResult,
     CandidateValidationStatus,
 )
 from workspace.workspaces import create_workspace
-
 
 VALIDATOR_REVISION = "ontology_operation_batch.v1"
 FACT_SNAPSHOT_DIGEST = "sha256:solver-coordination.v1:" + "f" * 64
@@ -171,9 +169,7 @@ def test_run_resolves_once_validates_the_complete_batch_once_and_aggregates(
     assert validator.calls == [(candidate_set, context)]
     assert result.result_count == candidate_set.candidate_count
     assert result.completed_count == candidate_set.candidate_count
-    assert result.feasible_candidate_ids == tuple(
-        candidate.candidate_id for candidate in candidate_set.candidates
-    )
+    assert result.feasible_candidate_ids == tuple(candidate.candidate_id for candidate in candidate_set.candidates)
 
 
 @pytest.mark.parametrize(
@@ -181,16 +177,8 @@ def test_run_resolves_once_validates_the_complete_batch_once_and_aggregates(
     [
         {"source_run_id": "solve_run_other"},
         {"parent_solve_run_id": "solve_run_other"},
-        {
-            "candidate_set_digest": (
-                "sha256:solver-coordination.v1:" + "8" * 64
-            )
-        },
-        {
-            "candidate_digest": (
-                "sha256:solver-coordination.v1:" + "9" * 64
-            )
-        },
+        {"candidate_set_digest": ("sha256:solver-coordination.v1:" + "8" * 64)},
+        {"candidate_digest": ("sha256:solver-coordination.v1:" + "9" * 64)},
     ],
     ids=[
         "source-run",
@@ -468,10 +456,7 @@ def test_run_rejects_result_identity_that_differs_from_resolved_context(
                 candidate_set=candidate_set,
                 context=context,
             )
-            return tuple(
-                replace(result, **{field_name: field_value})
-                for result in results
-            )
+            return tuple(replace(result, **{field_name: field_value}) for result in results)
 
     validator = _MismatchedResultValidator()
     service = OperationValidationRunService(

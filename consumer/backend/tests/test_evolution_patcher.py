@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from agent.evolution.models import Aggregate
 from agent.evolution import registry
-from agent.evolution.patcher import OperationPatcher
-from agent.evolution.patcher import PatcherConfig
-from agent.evolution.patcher import StagedMergeOutput
+from agent.evolution.models import Aggregate
+from agent.evolution.patcher import OperationPatcher, PatcherConfig, StagedMergeOutput
 from agent.runtime.async_utils import (
     clear_bounded_offload_pools,
     configure_bounded_offload_pools,

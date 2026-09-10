@@ -21,13 +21,30 @@
         --shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
       }
 
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
         background:
-          radial-gradient(circle at top right, rgba(110, 168, 254, 0.18), transparent 24%),
-          radial-gradient(circle at left bottom, rgba(126, 240, 196, 0.14), transparent 18%),
+          radial-gradient(
+            circle at top right,
+            rgba(110, 168, 254, 0.18),
+            transparent 24%
+          ),
+          radial-gradient(
+            circle at left bottom,
+            rgba(126, 240, 196, 0.14),
+            transparent 18%
+          ),
           var(--bg);
         color: var(--text);
       }
@@ -100,7 +117,7 @@
       button,
       .button-like,
       select,
-      input[type="search"] {
+      input[type='search'] {
         border: 1px solid var(--border);
         background: var(--panel-soft);
         color: var(--text);
@@ -119,7 +136,9 @@
         background: var(--panel-hover);
       }
 
-      input[type="file"] { display: none; }
+      input[type='file'] {
+        display: none;
+      }
 
       .meta-list {
         display: grid;
@@ -161,7 +180,9 @@
         top: 16px;
       }
 
-      .panel { padding: 18px; }
+      .panel {
+        padding: 18px;
+      }
 
       .section-title {
         margin: 0 0 14px;
@@ -183,7 +204,9 @@
       }
 
       .runs-header input,
-      .runs-header select { width: 100%; }
+      .runs-header select {
+        width: 100%;
+      }
 
       .run-list {
         display: flex;
@@ -195,8 +218,8 @@
       }
 
       .run-item {
-        border: 1px solid rgba(255,255,255,0.07);
-        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        background: rgba(255, 255, 255, 0.03);
         border-radius: 16px;
         padding: 14px;
         cursor: pointer;
@@ -229,13 +252,19 @@
         gap: 16px;
       }
 
-      .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .grid.two {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .grid.three {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .grid.four {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
 
       .stat-card {
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.06);
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 16px;
         padding: 16px;
       }
@@ -257,15 +286,25 @@
         height: 18px;
         overflow: hidden;
         border-radius: 999px;
-        background: rgba(255,255,255,0.06);
+        background: rgba(255, 255, 255, 0.06);
         margin-top: 14px;
       }
 
-      .stack-bars > div { height: 100%; }
-      .llm { background: linear-gradient(90deg, #6ea8fe, #8ab6ff); }
-      .tools { background: linear-gradient(90deg, #7ef0c4, #98f7df); }
-      .prompt { background: linear-gradient(90deg, #f8cc6b, #ffe08d); }
-      .other { background: linear-gradient(90deg, #ff7b91, #ff98ab); }
+      .stack-bars > div {
+        height: 100%;
+      }
+      .llm {
+        background: linear-gradient(90deg, #6ea8fe, #8ab6ff);
+      }
+      .tools {
+        background: linear-gradient(90deg, #7ef0c4, #98f7df);
+      }
+      .prompt {
+        background: linear-gradient(90deg, #f8cc6b, #ffe08d);
+      }
+      .other {
+        background: linear-gradient(90deg, #ff7b91, #ff98ab);
+      }
 
       .legend {
         display: flex;
@@ -304,20 +343,24 @@
       .bar-track {
         height: 12px;
         border-radius: 999px;
-        background: rgba(255,255,255,0.06);
+        background: rgba(255, 255, 255, 0.06);
         overflow: hidden;
       }
 
       .bar-fill {
         height: 100%;
         border-radius: inherit;
-        background: linear-gradient(90deg, rgba(110,168,254,0.85), rgba(126,240,196,0.9));
+        background: linear-gradient(
+          90deg,
+          rgba(110, 168, 254, 0.85),
+          rgba(126, 240, 196, 0.9)
+        );
       }
 
       .table-wrap {
         overflow: auto;
         border-radius: 16px;
-        border: 1px solid rgba(255,255,255,0.06);
+        border: 1px solid rgba(255, 255, 255, 0.06);
       }
 
       table {
@@ -327,9 +370,10 @@
         font-size: 13px;
       }
 
-      th, td {
+      th,
+      td {
         padding: 12px 14px;
-        border-bottom: 1px solid rgba(255,255,255,0.06);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         text-align: left;
         vertical-align: top;
       }
@@ -347,39 +391,39 @@
         padding: 4px 8px;
         border-radius: 999px;
         font-size: 11px;
-        background: rgba(110,168,254,0.15);
+        background: rgba(110, 168, 254, 0.15);
         color: #bed6ff;
-        border: 1px solid rgba(110,168,254,0.22);
+        border: 1px solid rgba(110, 168, 254, 0.22);
         white-space: nowrap;
       }
       .tag--neutral,
       .tag--progress {
-        background: rgba(110,168,254,0.15);
+        background: rgba(110, 168, 254, 0.15);
         color: #bed6ff;
-        border-color: rgba(110,168,254,0.22);
+        border-color: rgba(110, 168, 254, 0.22);
       }
       .tag--success {
-        background: rgba(126,240,196,0.14);
+        background: rgba(126, 240, 196, 0.14);
         color: #c4ffea;
-        border-color: rgba(126,240,196,0.24);
+        border-color: rgba(126, 240, 196, 0.24);
       }
       .tag--warn {
-        background: rgba(248,204,107,0.14);
+        background: rgba(248, 204, 107, 0.14);
         color: #ffe3a0;
-        border-color: rgba(248,204,107,0.24);
+        border-color: rgba(248, 204, 107, 0.24);
       }
       .tag--danger {
-        background: rgba(255,123,145,0.14);
+        background: rgba(255, 123, 145, 0.14);
         color: #ffc1cc;
-        border-color: rgba(255,123,145,0.24);
+        border-color: rgba(255, 123, 145, 0.24);
       }
 
       .status-note {
         margin-top: 16px;
         padding: 16px;
         border-radius: 16px;
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.06);
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.06);
       }
 
       .status-grid {
@@ -392,18 +436,26 @@
       .status-card {
         padding: 14px;
         border-radius: 14px;
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.06);
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.06);
       }
 
       .status-card .helper + .helper {
         margin-top: 6px;
       }
 
-      .muted { color: var(--muted); }
-      .danger { color: var(--danger); }
-      .warn { color: var(--warn); }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .muted {
+        color: var(--muted);
+      }
+      .danger {
+        color: var(--danger);
+      }
+      .warn {
+        color: var(--warn);
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
       .empty {
         padding: 40px 28px;
         text-align: center;
@@ -411,43 +463,86 @@
         font-size: 14px;
         line-height: 1.8;
       }
-      .empty svg { margin-bottom: 12px; opacity: 0.5; }
+      .empty svg {
+        margin-bottom: 12px;
+        opacity: 0.5;
+      }
 
-      .top-gap { margin-top: 18px; }
+      .top-gap {
+        margin-top: 18px;
+      }
 
       /* === Count-up animation === */
       @keyframes fadeInUp {
-        from { opacity: 0; transform: translateY(12px); }
-        to   { opacity: 1; transform: translateY(0); }
+        from {
+          opacity: 0;
+          transform: translateY(12px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
       }
-      .stat-card, .meta-card {
+      .stat-card,
+      .meta-card {
         animation: fadeInUp 0.4s ease both;
       }
-      .stat-card:nth-child(2), .meta-card:nth-child(2) { animation-delay: 0.06s; }
-      .stat-card:nth-child(3), .meta-card:nth-child(3) { animation-delay: 0.12s; }
-      .stat-card:nth-child(4), .meta-card:nth-child(4) { animation-delay: 0.18s; }
+      .stat-card:nth-child(2),
+      .meta-card:nth-child(2) {
+        animation-delay: 0.06s;
+      }
+      .stat-card:nth-child(3),
+      .meta-card:nth-child(3) {
+        animation-delay: 0.12s;
+      }
+      .stat-card:nth-child(4),
+      .meta-card:nth-child(4) {
+        animation-delay: 0.18s;
+      }
 
       /* === Drop zone breathing === */
       @keyframes breathe {
-        0%, 100% { border-color: rgba(126, 240, 196, 0.3); }
-        50%      { border-color: rgba(126, 240, 196, 0.6); }
+        0%,
+        100% {
+          border-color: rgba(126, 240, 196, 0.3);
+        }
+        50% {
+          border-color: rgba(126, 240, 196, 0.6);
+        }
       }
-      .drop-zone:not(.dragover) { animation: breathe 3s ease-in-out infinite; }
+      .drop-zone:not(.dragover) {
+        animation: breathe 3s ease-in-out infinite;
+      }
 
       /* === Table zebra + hover === */
-      tbody tr { transition: background 0.15s ease; }
-      tbody tr:nth-child(even) { background: rgba(255,255,255,0.02); }
-      tbody tr:hover { background: rgba(110, 168, 254, 0.08) !important; }
+      tbody tr {
+        transition: background 0.15s ease;
+      }
+      tbody tr:nth-child(even) {
+        background: rgba(255, 255, 255, 0.02);
+      }
+      tbody tr:hover {
+        background: rgba(110, 168, 254, 0.08) !important;
+      }
 
       /* === Heat-map cell === */
-      .heat-warm { color: var(--warn); }
-      .heat-hot  { color: var(--danger); font-weight: 700; }
+      .heat-warm {
+        color: var(--warn);
+      }
+      .heat-hot {
+        color: var(--danger);
+        font-weight: 700;
+      }
 
       /* === Tooltip === */
-      .has-tip { position: relative; cursor: default; }
+      .has-tip {
+        position: relative;
+        cursor: default;
+      }
       .has-tip .tip {
         position: absolute;
-        left: 50%; bottom: calc(100% + 8px);
+        left: 50%;
+        bottom: calc(100% + 8px);
         transform: translateX(-50%) scale(0.92);
         background: #1e2846;
         border: 1px solid var(--border);
@@ -457,9 +552,11 @@
         white-space: nowrap;
         pointer-events: none;
         opacity: 0;
-        transition: opacity 0.18s, transform 0.18s;
+        transition:
+          opacity 0.18s,
+          transform 0.18s;
         z-index: 10;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
       }
       .has-tip:hover .tip {
         opacity: 1;
@@ -481,9 +578,21 @@
         font-size: 12px;
         color: var(--muted);
       }
-      .collapse-header.collapsed::before { transform: rotate(-90deg); }
-      .collapse-body { overflow: hidden; transition: max-height 0.3s ease, opacity 0.3s ease; }
-      .collapse-body.hidden { max-height: 0 !important; opacity: 0; padding-top: 0; padding-bottom: 0; }
+      .collapse-header.collapsed::before {
+        transform: rotate(-90deg);
+      }
+      .collapse-body {
+        overflow: hidden;
+        transition:
+          max-height 0.3s ease,
+          opacity 0.3s ease;
+      }
+      .collapse-body.hidden {
+        max-height: 0 !important;
+        opacity: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+      }
 
       /* === Mini stack bar in run list === */
       .mini-stack {
@@ -491,10 +600,12 @@
         height: 4px;
         border-radius: 4px;
         overflow: hidden;
-        background: rgba(255,255,255,0.06);
+        background: rgba(255, 255, 255, 0.06);
         margin-top: 8px;
       }
-      .mini-stack > div { height: 100%; }
+      .mini-stack > div {
+        height: 100%;
+      }
 
       /* === Run item enter animation === */
       .run-item {
@@ -507,8 +618,12 @@
         transform-origin: left;
       }
       @keyframes barGrow {
-        from { transform: scaleX(0); }
-        to   { transform: scaleX(1); }
+        from {
+          transform: scaleX(0);
+        }
+        to {
+          transform: scaleX(1);
+        }
       }
       .stack-bars > div {
         animation: barGrow 0.6s ease both;
@@ -532,21 +647,38 @@
         cursor: pointer;
         transition: 0.15s ease;
       }
-      .filter-pill:hover, .filter-pill.active {
-        background: rgba(110,168,254,0.15);
+      .filter-pill:hover,
+      .filter-pill.active {
+        background: rgba(110, 168, 254, 0.15);
         color: var(--accent);
-        border-color: rgba(110,168,254,0.35);
+        border-color: rgba(110, 168, 254, 0.35);
       }
 
       /* === Scrollbar === */
-      ::-webkit-scrollbar { width: 6px; height: 6px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
-      ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.22);
+      }
 
       /* === Panel header icon === */
-      .icon-title { display: inline-flex; align-items: center; gap: 8px; }
-      .icon-title svg { flex-shrink: 0; }
+      .icon-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .icon-title svg {
+        flex-shrink: 0;
+      }
 
       @media (max-width: 1100px) {
         .hero,
@@ -561,8 +693,13 @@
           grid-template-columns: 1fr;
         }
 
-        .run-list { max-height: none; }
-        .layout > aside { position: static; max-height: none; }
+        .run-list {
+          max-height: none;
+        }
+        .layout > aside {
+          position: static;
+          max-height: none;
+        }
       }
     </style>
   </head>
@@ -572,8 +709,11 @@
         <div>
           <h1 class="title">性能日志解析页</h1>
           <p class="subtitle">
-            上传 `agent_perf*.log` 这类 JSON Lines 日志后，页面会自动按 `run_id` 聚合，帮助你快速看出
-            每次运行的时间主要花在 <strong>LLM</strong>、<strong>工具批执行</strong>、<strong>prompt 构建</strong>
+            上传 `agent_perf*.log` 这类 JSON Lines 日志后，页面会自动按 `run_id`
+            聚合，帮助你快速看出 每次运行的时间主要花在
+            <strong>LLM</strong>、<strong>工具批执行</strong>、<strong
+              >prompt 构建</strong
+            >
             还是其它阶段。
           </p>
           <div class="meta-list">
@@ -596,24 +736,41 @@
           </div>
         </div>
         <div class="drop-zone" id="dropZone">
-          <div style="text-align:center;">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="rgba(126,240,196,0.6)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:8px;">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
+          <div style="text-align: center">
+            <svg
+              width="48"
+              height="48"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="rgba(126,240,196,0.6)"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              style="margin-bottom: 8px"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
             <div class="drop-title">拖拽日志文件到这里</div>
           </div>
-          <div class="helper" style="text-align:center;">
-            支持一次上传多个 <code>.log</code> 文件；会自动忽略无法解析的行，并按 <code>run_id</code> 合并。
+          <div class="helper" style="text-align: center">
+            支持一次上传多个
+            <code>.log</code> 文件；会自动忽略无法解析的行，并按
+            <code>run_id</code> 合并。
           </div>
-          <div class="actions" style="justify-content:center;">
+          <div class="actions" style="justify-content: center">
             <label class="button-like" for="fileInput">📂 选择日志文件</label>
             <button id="loadSampleBtn" type="button">💡 路径提示</button>
             <button id="clearBtn" type="button">🗑 清空</button>
           </div>
-          <input id="fileInput" type="file" accept=".log,.jsonl,.txt" multiple />
-          <div class="helper" id="dropHint" style="text-align:center;">
+          <input
+            id="fileInput"
+            type="file"
+            accept=".log,.jsonl,.txt"
+            multiple
+          />
+          <div class="helper" id="dropHint" style="text-align: center">
             常见路径：<span class="mono">logs/agent_perf-YYYY-MM-DD.log</span>
           </div>
         </div>
@@ -623,7 +780,11 @@
         <aside class="panel">
           <h2 class="section-title">运行列表</h2>
           <div class="runs-header">
-            <input id="runSearch" type="search" placeholder="搜索 run_id / ontology / session_id" />
+            <input
+              id="runSearch"
+              type="search"
+              placeholder="搜索 run_id / ontology / session_id"
+            />
           </div>
           <div class="runs-header">
             <select id="sortSelect">
@@ -635,7 +796,22 @@
           </div>
           <div class="run-list" id="runList">
             <div class="empty">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.4;margin-bottom:8px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                style="opacity: 0.4; margin-bottom: 8px"
+              >
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
               <div>先上传性能日志文件</div>
             </div>
           </div>
@@ -644,11 +820,40 @@
         <main class="grid" id="detailRoot">
           <section class="panel">
             <h2 class="section-title icon-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--accent)"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
               运行概览
             </h2>
             <div class="empty">
-              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.35;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              <svg
+                width="64"
+                height="64"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                style="opacity: 0.35"
+              >
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
               <div>上传日志文件后，在左侧选择运行记录查看详细分析。</div>
             </div>
           </section>
@@ -708,7 +913,8 @@
       const STATUS_META = {
         continue: {
           label: '继续下一轮',
-          detail: '这一轮已经拿到了中间结果，但还没有产出最终答案；系统会把本轮结果带入下一轮继续推理。',
+          detail:
+            '这一轮已经拿到了中间结果，但还没有产出最终答案；系统会把本轮结果带入下一轮继续推理。',
           tone: 'progress',
         },
         final_output: {
@@ -778,11 +984,13 @@
       }
 
       function renderStatusLegend(statuses) {
-        const uniqueStatuses = [...new Set(
-          statuses
-            .map((status) => String(status ?? '').trim())
-            .filter(Boolean)
-        )];
+        const uniqueStatuses = [
+          ...new Set(
+            statuses
+              .map((status) => String(status ?? '').trim())
+              .filter(Boolean),
+          ),
+        ];
         if (!uniqueStatuses.length) return '';
         return `
           <div class="status-note">
@@ -791,16 +999,18 @@
               页面默认展示的是用户可读文案，不再直接暴露内部枚举值；需要排障时可以看每个状态卡片里的原始值。
             </div>
             <div class="status-grid">
-              ${uniqueStatuses.map((status) => {
-                const meta = getStatusMeta(status);
-                return `
+              ${uniqueStatuses
+                .map((status) => {
+                  const meta = getStatusMeta(status);
+                  return `
                   <div class="status-card">
                     <div>${renderStatusTag(status)}</div>
                     <div class="helper">${escapeHtml(meta.detail)}</div>
                     <div class="helper">原始值：<span class="mono">${escapeHtml(meta.code)}</span></div>
                   </div>
                 `;
-              }).join('')}
+                })
+                .join('')}
             </div>
           </div>
         `;
@@ -872,21 +1082,32 @@
         const fileNames = [];
         let globalIndex = 0;
 
-        return Promise.all(Array.from(files).map(async (file) => {
-          fileNames.push(file.name);
-          const text = await file.text();
-          const lines = text.split(/\r?\n/);
-          lines.forEach((line, lineIndex) => {
-            if (!line.trim()) return;
-            const parsed = safeJsonParse(line);
-            if (!parsed || typeof parsed !== 'object') {
-              parseErrors.push({ file: file.name, line: lineIndex + 1, text: line.slice(0, 200) });
-              return;
-            }
-            globalIndex += 1;
-            allEvents.push({ ...parsed, __file: file.name, __line: lineIndex + 1, __index: globalIndex });
-          });
-        })).then(() => ({ allEvents, parseErrors, fileNames }));
+        return Promise.all(
+          Array.from(files).map(async (file) => {
+            fileNames.push(file.name);
+            const text = await file.text();
+            const lines = text.split(/\r?\n/);
+            lines.forEach((line, lineIndex) => {
+              if (!line.trim()) return;
+              const parsed = safeJsonParse(line);
+              if (!parsed || typeof parsed !== 'object') {
+                parseErrors.push({
+                  file: file.name,
+                  line: lineIndex + 1,
+                  text: line.slice(0, 200),
+                });
+                return;
+              }
+              globalIndex += 1;
+              allEvents.push({
+                ...parsed,
+                __file: file.name,
+                __line: lineIndex + 1,
+                __index: globalIndex,
+              });
+            });
+          }),
+        ).then(() => ({ allEvents, parseErrors, fileNames }));
       }
 
       function buildRuns(events) {
@@ -909,28 +1130,41 @@
 
           const firstEvent = runEvents[0] || {};
           const lastEvent = runEvents[runEvents.length - 1] || {};
-          const firstTs = normalizeTimestamp(firstEvent.timestamp, firstEvent.__index || 0).ms;
-          const lastTs = normalizeTimestamp(lastEvent.timestamp, lastEvent.__index || 0).ms;
+          const firstTs = normalizeTimestamp(
+            firstEvent.timestamp,
+            firstEvent.__index || 0,
+          ).ms;
+          const lastTs = normalizeTimestamp(
+            lastEvent.timestamp,
+            lastEvent.__index || 0,
+          ).ms;
 
-          const getEvent = (name) => runEvents.find((item) => item.event === name);
-          const getLastEvent = (name) => [...runEvents].reverse().find((item) => item.event === name);
-          const sumEventDuration = (name) => runEvents
-            .filter((item) => item.event === name)
-            .reduce((sum, item) => sum + Number(item.duration_ms || 0), 0);
+          const getEvent = (name) =>
+            runEvents.find((item) => item.event === name);
+          const getLastEvent = (name) =>
+            [...runEvents].reverse().find((item) => item.event === name);
+          const sumEventDuration = (name) =>
+            runEvents
+              .filter((item) => item.event === name)
+              .reduce((sum, item) => sum + Number(item.duration_ms || 0), 0);
 
-          const orchestratorCompleted = getLastEvent('main_agent.orchestrator.completed');
+          const orchestratorCompleted = getLastEvent(
+            'main_agent.orchestrator.completed',
+          );
           const runCompleted = getLastEvent('main_agent.run.completed');
           const workerCompleted = getLastEvent('main_agent.worker.completed');
           const totalMs = Number(
-            orchestratorCompleted?.total_duration_ms
-            ?? orchestratorCompleted?.duration_ms
-            ?? runCompleted?.total_duration_ms
-            ?? workerCompleted?.duration_ms
-            ?? Math.max(0, lastTs - firstTs)
+            orchestratorCompleted?.total_duration_ms ??
+              orchestratorCompleted?.duration_ms ??
+              runCompleted?.total_duration_ms ??
+              workerCompleted?.duration_ms ??
+              Math.max(0, lastTs - firstTs),
           );
 
           const rawLlmMs = sumEventDuration('main_agent.llm.completed');
-          const toolsBatchMs = sumEventDuration('main_agent.tools.batch.completed');
+          const toolsBatchMs = sumEventDuration(
+            'main_agent.tools.batch.completed',
+          );
           const promptBuildMs = runEvents
             .filter((item) => item.event === 'main_agent.iteration.prepared')
             .reduce((sum, item) => sum + Number(item.prompt_build_ms || 0), 0);
@@ -968,16 +1202,27 @@
               row.llmRawMs = Number(item.duration_ms || 0);
               row.llmMs = row.llmRawMs;
               row.toolCallsCount = Number(item.tool_calls_count || 0);
-              row.assistantContentChars = Number(item.assistant_content_chars || 0);
-              row.toolNames = Array.isArray(item.tool_names) ? item.tool_names : [];
+              row.assistantContentChars = Number(
+                item.assistant_content_chars || 0,
+              );
+              row.toolNames = Array.isArray(item.tool_names)
+                ? item.tool_names
+                : [];
             } else if (item.event === 'main_agent.tools.batch.completed') {
               row.toolsBatchMs = Number(item.duration_ms || 0);
             } else if (item.event === 'main_agent.iteration.completed') {
               row.iterTotalMs = Number(item.duration_ms || 0);
               row.status = item.status || '-';
-            } else if (item.event === 'llm.request.completed' && item.request_label === 'main_agent_iteration' && item.status === 'success') {
+            } else if (
+              item.event === 'llm.request.completed' &&
+              item.request_label === 'main_agent_iteration' &&
+              item.status === 'success'
+            ) {
               row.responseHeadersMs = Number(item.response_headers_ms || 0);
-            } else if (item.event === 'llm.collect.completed' && item.request_label === 'main_agent_iteration') {
+            } else if (
+              item.event === 'llm.collect.completed' &&
+              item.request_label === 'main_agent_iteration'
+            ) {
               row.collectMs = Number(item.duration_ms || 0);
               row.firstContentMs = item.first_content_ms ?? null;
               row.firstToolCallMs = item.first_tool_call_ms ?? null;
@@ -985,51 +1230,73 @@
             }
           });
 
-          const normalizedIterations = Array.from(iterationMap.values()).map((row) => {
-            if (row.iterTotalMs > 0) {
-              const overlapMs = Math.max(
-                0,
-                row.promptBuildMs + row.llmRawMs + row.toolsBatchMs - row.iterTotalMs
-              );
+          const normalizedIterations = Array.from(iterationMap.values()).map(
+            (row) => {
+              if (row.iterTotalMs > 0) {
+                const overlapMs = Math.max(
+                  0,
+                  row.promptBuildMs +
+                    row.llmRawMs +
+                    row.toolsBatchMs -
+                    row.iterTotalMs,
+                );
+                return {
+                  ...row,
+                  overlapMs,
+                  llmMs: Math.max(0, row.llmRawMs - overlapMs),
+                };
+              }
               return {
                 ...row,
-                overlapMs,
-                llmMs: Math.max(0, row.llmRawMs - overlapMs),
+                overlapMs: 0,
+                llmMs: row.llmRawMs,
               };
-            }
-            return {
-              ...row,
-              overlapMs: 0,
-              llmMs: row.llmRawMs,
-            };
-          });
+            },
+          );
 
-          const llmMs = normalizedIterations.length > 0
-            ? normalizedIterations.reduce((sum, row) => sum + Number(row.llmMs || 0), 0)
-            : rawLlmMs;
-          const otherMs = Math.max(0, totalMs - llmMs - toolsBatchMs - promptBuildMs);
+          const llmMs =
+            normalizedIterations.length > 0
+              ? normalizedIterations.reduce(
+                  (sum, row) => sum + Number(row.llmMs || 0),
+                  0,
+                )
+              : rawLlmMs;
+          const otherMs = Math.max(
+            0,
+            totalMs - llmMs - toolsBatchMs - promptBuildMs,
+          );
 
           const toolSummaryMap = new Map();
-          runEvents.filter((item) => item.event === 'main_agent.tool.completed').forEach((item) => {
-            const toolName = String(item.tool_name || 'unknown');
-            if (!toolSummaryMap.has(toolName)) {
-              toolSummaryMap.set(toolName, { name: toolName, count: 0, totalMs: 0, maxMs: 0, statuses: new Set() });
-            }
-            const row = toolSummaryMap.get(toolName);
-            const duration = Number(item.duration_ms || 0);
-            row.count += 1;
-            row.totalMs += duration;
-            row.maxMs = Math.max(row.maxMs, duration);
-            if (item.status) row.statuses.add(String(item.status));
-          });
+          runEvents
+            .filter((item) => item.event === 'main_agent.tool.completed')
+            .forEach((item) => {
+              const toolName = String(item.tool_name || 'unknown');
+              if (!toolSummaryMap.has(toolName)) {
+                toolSummaryMap.set(toolName, {
+                  name: toolName,
+                  count: 0,
+                  totalMs: 0,
+                  maxMs: 0,
+                  statuses: new Set(),
+                });
+              }
+              const row = toolSummaryMap.get(toolName);
+              const duration = Number(item.duration_ms || 0);
+              row.count += 1;
+              row.totalMs += duration;
+              row.maxMs = Math.max(row.maxMs, duration);
+              if (item.status) row.statuses.add(String(item.status));
+            });
 
-          const selectedOntologyId = getEvent('main_agent.orchestrator.enter')?.selected_ontology_id
-            || getEvent('main_agent.run.start')?.selected_ontology_id
-            || '-';
-          const status = orchestratorCompleted?.status
-            || runCompleted?.status
-            || workerCompleted?.status
-            || 'unknown';
+          const selectedOntologyId =
+            getEvent('main_agent.orchestrator.enter')?.selected_ontology_id ||
+            getEvent('main_agent.run.start')?.selected_ontology_id ||
+            '-';
+          const status =
+            orchestratorCompleted?.status ||
+            runCompleted?.status ||
+            workerCompleted?.status ||
+            'unknown';
 
           runs.push({
             runId,
@@ -1047,7 +1314,9 @@
             promptBuildMs,
             otherMs,
             events: runEvents,
-            iterations: normalizedIterations.sort((a, b) => a.iteration - b.iteration),
+            iterations: normalizedIterations.sort(
+              (a, b) => a.iteration - b.iteration,
+            ),
             tools: Array.from(toolSummaryMap.values())
               .map((item) => ({ ...item, statuses: Array.from(item.statuses) }))
               .sort((a, b) => b.totalMs - a.totalMs),
@@ -1078,24 +1347,33 @@
               run.status,
               runStatusMeta.label,
               runStatusMeta.detail,
-            ].join(' ').toLowerCase();
+            ]
+              .join(' ')
+              .toLowerCase();
             return haystack.includes(keyword);
           })
-          .sort((a, b) => getRunSortValue(b, sortMode) - getRunSortValue(a, sortMode));
+          .sort(
+            (a, b) =>
+              getRunSortValue(b, sortMode) - getRunSortValue(a, sortMode),
+          );
 
         if (!runs.length) {
           els.runList.innerHTML = emptyState('没有匹配的运行记录。');
           return;
         }
 
-        if (!state.selectedRunId || !runs.some((run) => run.runId === state.selectedRunId)) {
+        if (
+          !state.selectedRunId ||
+          !runs.some((run) => run.runId === state.selectedRunId)
+        ) {
           state.selectedRunId = runs[0].runId;
         }
 
-        els.runList.innerHTML = runs.map((run, i) => {
-          const active = run.runId === state.selectedRunId ? ' active' : '';
-          const total = Math.max(run.totalMs, 1);
-          return `
+        els.runList.innerHTML = runs
+          .map((run, i) => {
+            const active = run.runId === state.selectedRunId ? ' active' : '';
+            const total = Math.max(run.totalMs, 1);
+            return `
             <div class="run-item${active}" data-run-id="${escapeHtml(run.runId)}" style="animation-delay:${i * 0.04}s">
               <div class="id mono">${escapeHtml(run.runId)}</div>
               <div class="summary">
@@ -1112,7 +1390,8 @@
               </div>
             </div>
           `;
-        }).join('');
+          })
+          .join('');
 
         els.runList.querySelectorAll('.run-item').forEach((node) => {
           node.addEventListener('click', () => {
@@ -1149,30 +1428,47 @@
         `;
       }
 
-      function renderBars(items, valueKey, labelRenderer, valueRenderer = formatMs) {
+      function renderBars(
+        items,
+        valueKey,
+        labelRenderer,
+        valueRenderer = formatMs,
+      ) {
         if (!items.length) return '<div class="empty">暂无数据</div>';
-        const max = Math.max(...items.map((item) => Number(item[valueKey] || 0)), 1);
-        return `<div class="bar-list">${items.map((item) => {
-          const value = Number(item[valueKey] || 0);
-          return `
+        const max = Math.max(
+          ...items.map((item) => Number(item[valueKey] || 0)),
+          1,
+        );
+        return `<div class="bar-list">${items
+          .map((item) => {
+            const value = Number(item[valueKey] || 0);
+            return `
             <div class="bar-row">
               <div>${labelRenderer(item)}</div>
               <div class="bar-track"><div class="bar-fill" style="width:${(value / max) * 100}%"></div></div>
               <div>${valueRenderer(value, item)}</div>
             </div>
           `;
-        }).join('')}</div>`;
+          })
+          .join('')}</div>`;
       }
 
       function renderRunDetail() {
-        const run = state.runs.find((item) => item.runId === state.selectedRunId);
+        const run = state.runs.find(
+          (item) => item.runId === state.selectedRunId,
+        );
         if (!run) {
           els.detailRoot.innerHTML = `<section class="panel">${emptyState('请选择一条运行记录。')}</section>`;
           return;
         }
 
-        const statusLegend = renderStatusLegend([run.status, ...run.iterations.map((row) => row.status)]);
-        const iterationRows = run.iterations.map((row) => `
+        const statusLegend = renderStatusLegend([
+          run.status,
+          ...run.iterations.map((row) => row.status),
+        ]);
+        const iterationRows = run.iterations
+          .map(
+            (row) => `
           <tr>
             <td>${row.iteration}</td>
             <td>${renderStatusTag(row.status)}</td>
@@ -1190,29 +1486,44 @@
             <td>${row.firstContentMs == null ? '-' : formatMs(row.firstContentMs)}</td>
             <td>${row.firstToolCallMs == null ? '-' : formatMs(row.firstToolCallMs)}</td>
           </tr>
-        `).join('');
+        `,
+          )
+          .join('');
 
         /* Collect unique event types for filter pills */
-        const eventTypes = [...new Set(run.events.map((e) => e.event || '-'))].sort();
-        const filterPillsHtml = eventTypes.map((t) =>
-          `<button class="filter-pill" data-etype="${escapeHtml(t)}">${escapeHtml(t.replace('main_agent.', ''))}</button>`
-        ).join('');
+        const eventTypes = [
+          ...new Set(run.events.map((e) => e.event || '-')),
+        ].sort();
+        const filterPillsHtml = eventTypes
+          .map(
+            (t) =>
+              `<button class="filter-pill" data-etype="${escapeHtml(t)}">${escapeHtml(t.replace('main_agent.', ''))}</button>`,
+          )
+          .join('');
 
-        const eventRows = run.events.map((event) => `
+        const eventRows = run.events
+          .map(
+            (event) => `
           <tr data-etype="${escapeHtml(event.event || '-')}">
             <td class="mono">${escapeHtml(event.timestamp || '-')}</td>
             <td class="mono">${escapeHtml(event.event || '-')}</td>
             <td>${event.iteration ?? '-'}</td>
             <td>${event.status ? renderStatusTag(event.status) : '-'}</td>
-            <td class="${heatClass(Number(event.duration_ms || event.total_duration_ms || 0))}">${event.duration_ms != null ? formatMs(event.duration_ms) : (event.total_duration_ms != null ? formatMs(event.total_duration_ms) : '-')}</td>
+            <td class="${heatClass(Number(event.duration_ms || event.total_duration_ms || 0))}">${event.duration_ms != null ? formatMs(event.duration_ms) : event.total_duration_ms != null ? formatMs(event.total_duration_ms) : '-'}</td>
             <td class="mono">${escapeHtml(event.tool_name || (Array.isArray(event.tool_names) ? event.tool_names.join(', ') : '-'))}</td>
             <td class="mono">${escapeHtml(event.request_label || '-')}</td>
             <td class="mono">${escapeHtml(event.__file)}:${event.__line}</td>
           </tr>
-        `).join('');
+        `,
+          )
+          .join('');
 
-        const slowIterations = [...run.iterations].sort((a, b) => b.iterTotalMs - a.iterTotalMs).slice(0, 8);
-        const llmIterations = [...run.iterations].sort((a, b) => b.llmMs - a.llmMs).slice(0, 8);
+        const slowIterations = [...run.iterations]
+          .sort((a, b) => b.iterTotalMs - a.iterTotalMs)
+          .slice(0, 8);
+        const llmIterations = [...run.iterations]
+          .sort((a, b) => b.llmMs - a.llmMs)
+          .slice(0, 8);
 
         els.detailRoot.innerHTML = `
           <section class="panel">
@@ -1270,8 +1581,10 @@
               ${renderBars(
                 slowIterations,
                 'iterTotalMs',
-                (row) => `第 <strong>${row.iteration}</strong> 轮 · ${renderStatusTag(row.status)}`,
-                (value, row) => `${formatMs(value)} · LLM ${formatMs(row.llmMs)} / 工具 ${formatMs(row.toolsBatchMs)}`
+                (row) =>
+                  `第 <strong>${row.iteration}</strong> 轮 · ${renderStatusTag(row.status)}`,
+                (value, row) =>
+                  `${formatMs(value)} · LLM ${formatMs(row.llmMs)} / 工具 ${formatMs(row.toolsBatchMs)}`,
               )}
               </div>
             </div>
@@ -1284,8 +1597,10 @@
               ${renderBars(
                 llmIterations,
                 'llmMs',
-                (row) => `第 <strong>${row.iteration}</strong> 轮 · ${row.toolCallsCount || 0} 次工具调用`,
-                (value, row) => `${formatMs(value)} · headers ${formatMs(row.responseHeadersMs)} / collect ${formatMs(row.collectMs)}`
+                (row) =>
+                  `第 <strong>${row.iteration}</strong> 轮 · ${row.toolCallsCount || 0} 次工具调用`,
+                (value, row) =>
+                  `${formatMs(value)} · headers ${formatMs(row.responseHeadersMs)} / collect ${formatMs(row.collectMs)}`,
               )}
               </div>
             </div>
@@ -1301,8 +1616,10 @@
               ${renderBars(
                 run.tools.slice(0, 12),
                 'totalMs',
-                (tool) => `<span class="mono">${escapeHtml(tool.name)}</span> · ${tool.count} 次`,
-                (value, tool) => `${formatMs(value)} · max ${formatMs(tool.maxMs)}`
+                (tool) =>
+                  `<span class="mono">${escapeHtml(tool.name)}</span> · ${tool.count} 次`,
+                (value, tool) =>
+                  `${formatMs(value)} · max ${formatMs(tool.maxMs)}`,
               )}
               </div>
             </div>
@@ -1376,15 +1693,17 @@
         `;
 
         /* Wire collapse headers */
-        els.detailRoot.querySelectorAll('.collapse-header').forEach((header) => {
-          header.addEventListener('click', () => {
-            const targetId = header.dataset.target;
-            const body = document.getElementById(targetId);
-            if (!body) return;
-            header.classList.toggle('collapsed');
-            body.classList.toggle('hidden');
+        els.detailRoot
+          .querySelectorAll('.collapse-header')
+          .forEach((header) => {
+            header.addEventListener('click', () => {
+              const targetId = header.dataset.target;
+              const body = document.getElementById(targetId);
+              if (!body) return;
+              header.classList.toggle('collapsed');
+              body.classList.toggle('hidden');
+            });
           });
-        });
 
         /* Wire event filter pills */
         const filterBar = document.getElementById('eventFilterBar');
@@ -1393,11 +1712,16 @@
           filterBar.addEventListener('click', (e) => {
             const pill = e.target.closest('.filter-pill');
             if (!pill) return;
-            const etype = pill.dataset.etype;
-            filterBar.querySelectorAll('.filter-pill').forEach((p) => p.classList.remove('active'));
+            const { etype } = pill.dataset;
+            filterBar
+              .querySelectorAll('.filter-pill')
+              .forEach((p) => p.classList.remove('active'));
             pill.classList.add('active');
             eventBody.querySelectorAll('tr').forEach((row) => {
-              row.style.display = (etype === '__all__' || row.dataset.etype === etype) ? '' : 'none';
+              row.style.display =
+                etype === '__all__' || row.dataset.etype === etype
+                  ? ''
+                  : 'none';
             });
           });
         }
@@ -1455,7 +1779,8 @@
       els.runSearch.addEventListener('input', renderRunList);
       els.sortSelect.addEventListener('change', renderRunList);
       els.loadSampleBtn.addEventListener('click', () => {
-        els.dropHint.innerHTML = '本页不会主动读取本地路径。请把 <span class="mono">logs/agent_perf-YYYY-MM-DD.log</span> 拖进来，或用“选择日志文件”上传。';
+        els.dropHint.innerHTML =
+          '本页不会主动读取本地路径。请把 <span class="mono">logs/agent_perf-YYYY-MM-DD.log</span> 拖进来，或用“选择日志文件”上传。';
       });
 
       rerender();

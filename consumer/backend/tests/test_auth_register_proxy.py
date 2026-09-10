@@ -7,12 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 import requests
-
-from auth_test_backend import AuthManager
 from api.routes.auth import auth_router
-from fastapi.testclient import TestClient
-
 from api.testing import TestApplication
+from auth_test_backend import AuthManager
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, synthetic_invalid_password, synthetic_password
+from fastapi.testclient import TestClient
 
 
 def _build_app(auth_manager, auth_server_url=""):
@@ -29,7 +28,7 @@ def _build_app(auth_manager, auth_server_url=""):
 
 @pytest.fixture()
 def auth_manager(tmp_path):
-    return AuthManager(str(tmp_path / "users.json"), "test-secret")
+    return AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
 
 
 class _StubResponse:
@@ -82,22 +81,30 @@ def test_register_proxy_passthrough_success(auth_manager, monkeypatch):
         calls["url"] = url
         calls["json"] = json
         calls["headers"] = headers
-        return _StubResponse(200, {
-            "success": True,
-            "user": {
-                "username": "eve",
-                "role": "user",
-                "password_change_required": False,
+        return _StubResponse(
+            200,
+            {
+                "success": True,
+                "user": {
+                    "username": "eve",
+                    "role": "user",
+                    "password_change_required": False,
+                },
             },
-        })
+        )
 
     import api.routes.auth as auth_routes
+
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = TestClient(_build_app(auth_manager, "http://auth-server:5056/"))
     response = client.post(
         "/auth/register",
-        json={"username": "eve", "email": "eve@example.com", "password": "Rt5&Yhn8Uj2!"},
+        json={
+            "username": "eve",
+            "email": "eve@example.com",
+            "password": synthetic_password("auth_register_proxy-credential-02"),
+        },
     )
     assert response.status_code == 200
     # 一步建号：透传 auth-server 的 {success, user} 响应
@@ -118,17 +125,28 @@ def test_register_proxy_passthrough_success(auth_manager, monkeypatch):
 
 def test_register_proxy_passthrough_password_policy_error(auth_manager, monkeypatch):
     def fake_post(url, json=None, headers=None, timeout=None):
-        return _StubResponse(400, {
-            "error": "密码复杂度不满足要求",
-            "code": "PASSWORD_POLICY_FAILED",
-            "violations": ["min_length"],
-        })
+        return _StubResponse(
+            400,
+            {
+                "error": "密码复杂度不满足要求",
+                "code": "PASSWORD_POLICY_FAILED",
+                "violations": ["min_length"],
+            },
+        )
 
     import api.routes.auth as auth_routes
+
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
-    response = client.post("/auth/register", json={"username": "eve", "email": "e@x.com", "password": "1"})
+    response = client.post(
+        "/auth/register",
+        json={
+            "username": "eve",
+            "email": "user@example.com",
+            "password": synthetic_invalid_password("auth_register_proxy-credential-01"),
+        },
+    )
     assert response.status_code == 400
     data = response.json()
     assert data["code"] == "PASSWORD_POLICY_FAILED"
@@ -140,12 +158,17 @@ def test_register_proxy_passthrough_rate_limited(auth_manager, monkeypatch):
         return _StubResponse(429, {"error": "请求过于频繁，请稍后再试"})
 
     import api.routes.auth as auth_routes
+
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
     response = client.post(
         "/auth/register",
-        json={"username": "eve", "email": "e@x.com", "password": "Rt5&Yhn8Uj2!"},
+        json={
+            "username": "eve",
+            "email": "user@example.com",
+            "password": synthetic_password("auth_register_proxy-credential-02"),
+        },
     )
     assert response.status_code == 429
     assert response.json() == {"error": "请求过于频繁，请稍后再试"}
@@ -156,12 +179,17 @@ def test_register_proxy_upstream_down(auth_manager, monkeypatch):
         raise requests.ConnectionError("boom")
 
     import api.routes.auth as auth_routes
+
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
     response = client.post(
         "/auth/register",
-        json={"username": "eve", "email": "e@x.com", "password": "Rt5&Yhn8Uj2!"},
+        json={
+            "username": "eve",
+            "email": "user@example.com",
+            "password": synthetic_password("auth_register_proxy-credential-02"),
+        },
     )
     assert response.status_code == 502
     assert response.json() == {"error": "注册服务暂不可用，请稍后再试"}
@@ -172,12 +200,17 @@ def test_register_proxy_non_json_upstream(auth_manager, monkeypatch):
         return _StubResponse(500, ValueError("not json"))
 
     import api.routes.auth as auth_routes
+
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
     response = client.post(
         "/auth/register",
-        json={"username": "eve", "email": "e@x.com", "password": "Rt5&Yhn8Uj2!"},
+        json={
+            "username": "eve",
+            "email": "user@example.com",
+            "password": synthetic_password("auth_register_proxy-credential-02"),
+        },
     )
     assert response.status_code == 500
     assert response.json() == {"error": "注册服务响应异常"}

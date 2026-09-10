@@ -10,8 +10,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import agent.tools.execute_script as execute_script_module
 import pytest
-
 from agent.core.shared.tool_context import (
     build_tool_context,
     current_ontology_preflight_tool_fields,
@@ -20,12 +20,11 @@ from agent.core.shared.tool_context import (
 from agent.runtime.contracts import RunPreflightSnapshot, RuntimeInvocationContext
 from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.tools.base import ToolContext
-import agent.tools.execute_script as execute_script_module
+from backend_synthetic_credentials import synthetic_secret
 from ontology.view_cache import (
     build_package_content_revision,
     build_package_revision_source_signature,
 )
-
 
 _ONTOLOGY_ID = "synthetic-ontology"
 _ONTOLOGY_VERSION = "1.0.0"
@@ -77,8 +76,7 @@ def _binding(script_path: Path, *, secret: str | None = None):
         "_expected_script_path": str(script_path.resolve()),
         "_is_bound_operation": True,
         "data_access": "none",
-        "_expected_script_digest": "sha256:"
-        + hashlib.sha256(script_path.read_bytes()).hexdigest(),
+        "_expected_script_digest": "sha256:" + hashlib.sha256(script_path.read_bytes()).hexdigest(),
     }
     if secret is not None:
         entry["_private_test_marker"] = secret
@@ -238,12 +236,8 @@ def test_workspace_pinned_execution_uses_runtime_staging_boundary(
         base_path=workspace_root,
         workspace_id="synthetic-workspace",
         preflight_ontology_manifest=_manifest(version_dir),
-        preflight_ontology_source_signature=(
-            build_package_revision_source_signature(version_dir)
-        ),
-        preflight_ontology_content_revision=build_package_content_revision(
-            version_dir
-        ),
+        preflight_ontology_source_signature=(build_package_revision_source_signature(version_dir)),
+        preflight_ontology_content_revision=build_package_content_revision(version_dir),
         preflight_ontology_script_entry=_binding(script_path),
         preflight_ontology_mutation_revision=7,
     )
@@ -485,9 +479,7 @@ def test_pinned_execution_uses_staged_package_at_each_process_boundary(
 
         class FakeSandboxExecutor:
             def run_script(self, **kwargs):
-                staged_script = (
-                    Path(kwargs["project_root"]) / kwargs["script_path"]
-                ).resolve()
+                staged_script = (Path(kwargs["project_root"]) / kwargs["script_path"]).resolve()
                 observed["script"] = staged_script
                 observed["ontology_dir"] = Path(kwargs["ontology_dir"])
                 observed["content"] = staged_script.read_text(encoding="utf-8")
@@ -528,7 +520,7 @@ def test_pinned_execution_uses_staged_package_at_each_process_boundary(
 
 def test_tool_context_receives_private_snapshot_without_state_or_repr_leak(tmp_path):
     version_dir, script_path, _descriptor_path = _write_package(tmp_path)
-    secret = "synthetic-private-binding-marker"
+    secret = synthetic_secret("execute_script_preflight_pin-credential-02")
     snapshot = _snapshot(version_dir, script_path, secret=secret)
     runtime_context = RuntimeInvocationContext(
         run_id="run-private-pin",
@@ -560,12 +552,8 @@ def test_tool_context_receives_private_snapshot_without_state_or_repr_leak(tmp_p
         )
 
     assert context.preflight_ontology_manifest["id"] == _ONTOLOGY_ID
-    assert context.preflight_ontology_content_revision == (
-        snapshot.ontology_content_revision
-    )
-    assert context.preflight_ontology_script_bindings[_OPERATION_KEY][
-        "_private_test_marker"
-    ] == secret
+    assert context.preflight_ontology_content_revision == (snapshot.ontology_content_revision)
+    assert context.preflight_ontology_script_bindings[_OPERATION_KEY]["_private_test_marker"] == secret
     assert secret not in repr(context)
 
 
@@ -579,9 +567,7 @@ def test_preflight_tool_context_is_pickle_safe_for_runtime_tool_scheduling(tmp_p
         fields["preflight_ontology_manifest"]["id"] = "run-local-change"
 
     assert restored["preflight_ontology_manifest"]["id"] == _ONTOLOGY_ID
-    assert restored["preflight_ontology_script_bindings"][_OPERATION_KEY][
-        "operation_key"
-    ] == _OPERATION_KEY
+    assert restored["preflight_ontology_script_bindings"][_OPERATION_KEY]["operation_key"] == _OPERATION_KEY
     assert snapshot.ontology_manifest["id"] == _ONTOLOGY_ID
 
 
@@ -615,19 +601,15 @@ def test_preflight_engine_state_is_pickle_safe_for_openjiuwen_checkpoint(tmp_pat
 
     state = JiuwenAsyncAgentRuntime._build_engine_state(runtime_context)
     restored = pickle.loads(pickle.dumps(state))
-    state["_preflight_selected_ontology_preload_records"][0]["metadata"][
-        "section"
-    ] = "run-local-change"
+    state["_preflight_selected_ontology_preload_records"][0]["metadata"]["section"] = "run-local-change"
 
-    assert restored["_preflight_selected_ontology_preload_records"][0][
-        "metadata"
-    ]["section"] == "root"
+    assert restored["_preflight_selected_ontology_preload_records"][0]["metadata"]["section"] == "root"
     assert snapshot.preload_records[0]["metadata"]["section"] == "root"
 
 
 def test_ontology_tool_context_never_carries_preflight_model_secret(tmp_path):
     version_dir, script_path, _descriptor_path = _write_package(tmp_path)
-    model_secret = "synthetic-model-secret-must-stay-outside-tools"
+    model_secret = synthetic_secret("execute_script_preflight_pin-credential-01")
     snapshot = replace(
         _snapshot(version_dir, script_path),
         model_profile={
@@ -640,10 +622,7 @@ def test_ontology_tool_context_never_carries_preflight_model_secret(tmp_path):
         fields = current_ontology_preflight_tool_fields()
 
     assert model_secret not in repr(fields)
-    assert all(
-        value is None
-        for value in current_ontology_preflight_tool_fields().values()
-    )
+    assert all(value is None for value in current_ontology_preflight_tool_fields().values())
 
 
 @pytest.mark.parametrize(
@@ -669,9 +648,7 @@ def test_execute_script_does_not_reuse_snapshot_for_identity_mismatch(
             ontology_id=manifest_id,
             version=manifest_version,
         ),
-        preflight_ontology_source_signature=build_package_revision_source_signature(
-            version_dir
-        ),
+        preflight_ontology_source_signature=build_package_revision_source_signature(version_dir),
         preflight_ontology_script_bindings={_OPERATION_KEY: _binding(script_path)},
         preflight_ontology_mutation_revision=7,
     )
@@ -719,15 +696,9 @@ def test_execute_script_passes_matching_private_binding_to_handler(
 
     assert outcome.content == "pinned"
     assert captured["preflight_ontology_manifest"]["id"] == _ONTOLOGY_ID
-    assert captured["preflight_ontology_script_entry"]["operation_key"] == (
-        _OPERATION_KEY
-    )
-    assert captured["preflight_ontology_source_signature"] == (
-        snapshot.ontology_source_signature
-    )
-    assert captured["preflight_ontology_content_revision"] == (
-        snapshot.ontology_content_revision
-    )
+    assert captured["preflight_ontology_script_entry"]["operation_key"] == (_OPERATION_KEY)
+    assert captured["preflight_ontology_source_signature"] == (snapshot.ontology_source_signature)
+    assert captured["preflight_ontology_content_revision"] == (snapshot.ontology_content_revision)
     assert captured["preflight_ontology_mutation_revision"] == 7
 
 
@@ -776,14 +747,12 @@ def test_execute_script_revision_drift_is_terminal_and_never_runs_live_metadata(
 
     assert outcome.content == execute_script_module.ONTOLOGY_PREFLIGHT_CHANGED_ERROR
     assert outcome.terminal is True
-    assert outcome.state_updates["terminal_error"]["error_code"] == (
-        "EXECUTE_SCRIPT_FAILED"
-    )
+    assert outcome.state_updates["terminal_error"]["error_code"] == ("EXECUTE_SCRIPT_FAILED")
 
 
 def test_jiuwen_runtime_binds_and_resets_snapshot_context(tmp_path):
     version_dir, script_path, _descriptor_path = _write_package(tmp_path)
-    secret = "synthetic-runtime-private-marker"
+    secret = synthetic_secret("execute_script_preflight_pin-credential-03")
     snapshot = _snapshot(version_dir, script_path, secret=secret)
     observed = []
 

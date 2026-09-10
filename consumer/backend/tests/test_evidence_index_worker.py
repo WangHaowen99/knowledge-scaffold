@@ -2,8 +2,7 @@ import json
 from pathlib import Path
 
 from config.evidence_config import EvidenceConfig
-from ontology.evidence.manager import read_active_pointer_snapshot
-from ontology.evidence.manager import EvidenceIndexManager
+from ontology.evidence.manager import EvidenceIndexManager, read_active_pointer_snapshot
 from ontology.evidence.worker import (
     EvidenceIndexWorker,
     process_ontology_changed_event,
@@ -308,13 +307,7 @@ def test_sweeper_recovers_pointer_revision_ahead_of_store_without_auto_build(tmp
         active_version="1.0.0",
         enabled=True,
     )
-    pointer_path = (
-        paths.runtime_dir
-        / "ontology-evidence"
-        / "ontologies"
-        / "onto-a"
-        / "active.json"
-    )
+    pointer_path = paths.runtime_dir / "ontology-evidence" / "ontologies" / "onto-a" / "active.json"
     pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
     pointer.update({"mutation_revision": 1, "status": "epoch_pending", "active_generation": None})
     pointer_path.write_text(json.dumps(pointer), encoding="utf-8")

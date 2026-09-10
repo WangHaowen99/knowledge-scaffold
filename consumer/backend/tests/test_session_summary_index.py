@@ -5,7 +5,6 @@ import json
 import threading
 
 import pytest
-
 from persistence import session_summary_index as session_summary_index_module
 from persistence.session_summary_index import (
     SCHEMA_VERSION,
@@ -143,9 +142,8 @@ def test_schema_mismatch_rebuilds_and_corrupt_json_is_quarantined(tmp_path):
     rebuild_calls = []
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: rebuild_calls.append("schema") or [
-            _summary("rebuilt", updated_at="2026-08-31T01:00:00+00:00")
-        ],
+        rebuild_loader=lambda: rebuild_calls.append("schema")
+        or [_summary("rebuilt", updated_at="2026-08-31T01:00:00+00:00")],
     )
 
     assert [item.session_id for item in index.list_page(limit=10).items] == ["rebuilt"]
@@ -181,9 +179,7 @@ def test_one_concurrent_projection_cannot_clear_another_dirty_marker(tmp_path):
     path = tmp_path / "summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: [
-            _summary("stable", updated_at="2026-08-31T01:00:00+00:00")
-        ],
+        rebuild_loader=lambda: [_summary("stable", updated_at="2026-08-31T01:00:00+00:00")],
     )
     index.list_all()
 
@@ -194,9 +190,8 @@ def test_one_concurrent_projection_cannot_clear_another_dirty_marker(tmp_path):
     rebuild_calls = []
     restarted = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: rebuild_calls.append(True) or [
-            _summary("stable", updated_at="2026-08-31T01:00:00+00:00")
-        ],
+        rebuild_loader=lambda: rebuild_calls.append(True)
+        or [_summary("stable", updated_at="2026-08-31T01:00:00+00:00")],
     )
     restarted.list_all()
     assert rebuild_calls == [True]
@@ -379,9 +374,7 @@ def test_rebuild_loader_does_not_hold_index_lock_and_retries_after_concurrent_wr
     assert loader_entered.wait(timeout=1.0)
     writer_thread.start()
     try:
-        assert writer_committed.wait(timeout=0.25), (
-            "rebuild loader held the index lock while waiting on source state"
-        )
+        assert writer_committed.wait(timeout=0.25), "rebuild loader held the index lock while waiting on source state"
     finally:
         writer_committed.set()
         rebuild_thread.join(timeout=1.0)
@@ -480,10 +473,7 @@ def test_index_selects_oldest_unpinned_inactive_prune_candidates(tmp_path):
         index.upsert(summary)
 
     candidates = index.prune_candidates(max_sessions=3, limit=10)
-    assert [
-        (candidate.session_id, candidate.expected_updated_at)
-        for candidate in candidates
-    ] == [
+    assert [(candidate.session_id, candidate.expected_updated_at) for candidate in candidates] == [
         ("eligible-old", "2026-08-31T03:00:00+00:00"),
         ("eligible-middle", "2026-08-31T04:00:00+00:00"),
     ]

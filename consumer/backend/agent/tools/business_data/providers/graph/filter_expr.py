@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any
-
 
 _OR_SPLIT_RE = re.compile(r"\s+OR\s+", re.IGNORECASE)
 _COMPARE_RE = re.compile(r"^(>=|<=|>|<|=)\s*(.+)$")
@@ -114,7 +113,9 @@ def build_filter_where(
                 raise ValueError("{} 包含空条件".format(field_name))
             part_key = _part_param_key(param_prefix, prop, prop_index, part_index)
             part_conditions.append(_build_part_condition(ref, part, params, part_key))
-        conditions.append(part_conditions[0] if len(part_conditions) == 1 else "({})".format(" OR ".join(part_conditions)))
+        conditions.append(
+            part_conditions[0] if len(part_conditions) == 1 else "({})".format(" OR ".join(part_conditions))
+        )
     return conditions
 
 

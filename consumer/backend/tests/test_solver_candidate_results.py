@@ -3,7 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-
 from solver_coordination.candidate_results import (
     CandidateResultsArtifact,
     build_candidate_results,
@@ -16,10 +15,7 @@ from solver_coordination.contracts import (
     VerificationResult,
 )
 
-
-ITEM_IDS = tuple(
-    "ITEM_SYNTHETIC_{:04d}".format(index) for index in range(1, 10)
-)
+ITEM_IDS = tuple("ITEM_SYNTHETIC_{:04d}".format(index) for index in range(1, 10))
 
 
 def _candidate(candidate_id, assignment, rank):
@@ -99,10 +95,7 @@ def _capability():
 def _solver_result():
     assignment = {
         "candidate_id": "OPTION_0_TO_OPTION_1_K0004",
-        **{
-            item_id: ("OPTION_0" if index <= 4 else "OPTION_1")
-            for index, item_id in enumerate(ITEM_IDS, start=1)
-        },
+        **{item_id: ("OPTION_0" if index <= 4 else "OPTION_1") for index, item_id in enumerate(ITEM_IDS, start=1)},
     }
     return SolverResult(
         problem_id=_problem().problem_id,
@@ -132,9 +125,7 @@ def _verification(*, status="verified", candidate_digest=None):
                 "candidate_count": 18,
                 "eligible_count": 18,
                 "candidate_digest": candidate_digest
-                or _problem().parameters["candidate_selection"][
-                    "candidate_evaluation_digest"
-                ],
+                or _problem().parameters["candidate_selection"]["candidate_evaluation_digest"],
                 "selected_candidate_id": "OPTION_0_TO_OPTION_1_K0004",
             },
         ),
@@ -157,16 +148,15 @@ def test_candidate_results_are_complete_business_ordered_and_select_combination_
     assert payload["schema_version"] == "solver.candidate-results.v1"
     assert payload["candidate_count"] == 18
     assert payload["candidate_source_kind"] == "problem_ir.candidate_selection"
-    assert payload["candidate_source_digest"] == _problem().parameters[
-        "candidate_selection"
-    ]["candidate_evaluation_digest"]
+    assert (
+        payload["candidate_source_digest"]
+        == _problem().parameters["candidate_selection"]["candidate_evaluation_digest"]
+    )
     assert payload["option_labels"] == {
         "OPTION_0": "ROUTE_SYNTHETIC_A",
         "OPTION_1": "ROUTE_SYNTHETIC_B",
     }
-    assert [row["combination_no"] for row in payload["candidates"]] == list(
-        range(1, 19)
-    )
+    assert [row["combination_no"] for row in payload["candidates"]] == list(range(1, 19))
     winner = next(row for row in payload["candidates"] if row["selected"])
     assert winner["combination_no"] == 10
     assert winner["candidate_id"] == "OPTION_0_TO_OPTION_1_K0004"

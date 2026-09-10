@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from decimal import Decimal
 import json
 import math
-from pathlib import Path
 import re
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
-
 from solver_coordination import (
     Candidate,
     CandidateSet,
@@ -78,9 +77,7 @@ def test_canonicalization_contract_vectors_match_runtime_bytes():
     vectors = json.loads(vectors_path.read_text(encoding="utf-8"))["vectors"]
 
     for vector in vectors:
-        assert canonical_json_bytes(vector["input"]).decode("utf-8") == vector[
-            "canonical_utf8"
-        ]
+        assert canonical_json_bytes(vector["input"]).decode("utf-8") == vector["canonical_utf8"]
 
 
 def test_plan_item_normalizes_decimal_strings_without_float_conversion():

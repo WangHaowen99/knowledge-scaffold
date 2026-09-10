@@ -4,7 +4,11 @@ async function requestWorkspaceMemberJson(request, path, options, fallback) {
   const response = await request(path, options);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(payload.detail || payload.error || `${fallback}（HTTP ${response.status}）`);
+    const error = new Error(
+      payload.detail ||
+        payload.error ||
+        `${fallback}（HTTP ${response.status}）`,
+    );
     error.status = response.status;
     error.code = payload.code || '';
     error.username = payload.username || '';
@@ -15,16 +19,17 @@ async function requestWorkspaceMemberJson(request, path, options, fallback) {
   return payload;
 }
 
-const workspaceMembersPath = (workspaceId, suffix = '') => (
-  `/agentic/workspaces/${encodeURIComponent(String(workspaceId || ''))}/members${suffix}`
-);
+const workspaceMembersPath = (workspaceId, suffix = '') =>
+  `/agentic/workspaces/${encodeURIComponent(String(workspaceId || ''))}/members${suffix}`;
 
 export function validateWorkspaceMember(
   workspaceId,
   username,
   { request = authFetch, signal } = {},
 ) {
-  if (!workspaceId) return Promise.reject(new Error('缺少工作空间标识'));
+  if (!workspaceId) {
+    return Promise.reject(new Error('缺少工作空间标识'));
+  }
   return requestWorkspaceMemberJson(
     request,
     workspaceMembersPath(workspaceId, '/validate'),
@@ -43,8 +48,12 @@ export function saveWorkspaceMembers(
   members,
   { request = authFetch, signal } = {},
 ) {
-  if (!workspaceId) return Promise.reject(new Error('缺少工作空间标识'));
-  if (!Array.isArray(members)) return Promise.reject(new TypeError('members 必须是数组'));
+  if (!workspaceId) {
+    return Promise.reject(new Error('缺少工作空间标识'));
+  }
+  if (!Array.isArray(members)) {
+    return Promise.reject(new TypeError('members 必须是数组'));
+  }
   return requestWorkspaceMemberJson(
     request,
     workspaceMembersPath(workspaceId),

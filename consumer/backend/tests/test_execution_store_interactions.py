@@ -1,11 +1,10 @@
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-import threading
-
-import pytest
 
 import persistence.execution_store as execution_store_module
 import persistence.session_summary_index as summary_index_module
+import pytest
 from persistence.chat_store import ChatStore
 from persistence.deterministic_terminal import (
     persist_deterministic_terminal,
@@ -82,11 +81,7 @@ def _seed_session_summary(index: SessionSummaryIndex, session_id: str) -> None:
 
 
 def _summary(index: SessionSummaryIndex, session_id: str):
-    return next(
-        item
-        for item in index.list_page(limit=100).items
-        if item.session_id == session_id
-    )
+    return next(item for item in index.list_page(limit=100).items if item.session_id == session_id)
 
 
 def test_execution_store_projects_active_interaction_and_terminal_runtime(tmp_path):
@@ -190,9 +185,7 @@ def test_get_turn_count_treats_missing_session_in_ready_index_as_new(
     monkeypatch.setattr(
         store,
         "_load_session",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("new session count must avoid history loading")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("new session count must avoid history loading")),
     )
 
     assert store.get_turn_count("new-session") == 0
@@ -218,9 +211,7 @@ def test_get_turn_count_falls_back_to_execution_fact_when_summary_is_cold(
     monkeypatch.setattr(
         index,
         "get_summary",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("cold index must not be read as ready")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("cold index must not be read as ready")),
         raising=False,
     )
 
@@ -295,18 +286,20 @@ def test_execution_projection_failure_rebuilds_runtime_in_same_process(
     _seed_session_summary(index, "runtime-same-process")
     base_summary = _summary(index, "runtime-same-process")
     store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
-    index._rebuild_loader = lambda: [
-        replace(
-            base_summary,
-            **store.try_get_session_summary_runtime("runtime-same-process"),
-        )
-    ]
+
+    def rebuild_summaries():
+        return [
+            replace(
+                base_summary,
+                **store.try_get_session_summary_runtime("runtime-same-process"),
+            )
+        ]
+
+    index._rebuild_loader = rebuild_summaries
     monkeypatch.setattr(
         index,
         "update_runtime",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("synthetic runtime projection failure")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic runtime projection failure")),
     )
 
     store.create_turn_for_run(
@@ -329,7 +322,11 @@ def test_execution_source_failure_abandons_projection_for_rebuild(
     index = SessionSummaryIndex(path)
     _seed_session_summary(index, "runtime-write-failure")
     base_summary = _summary(index, "runtime-write-failure")
-    index._rebuild_loader = lambda: [base_summary]
+
+    def rebuild_summaries():
+        return [base_summary]
+
+    index._rebuild_loader = rebuild_summaries
     store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
     original_replace = execution_store_module.os.replace
 
@@ -377,12 +374,7 @@ def test_execution_marker_failure_does_not_abort_durable_turn(tmp_path, monkeypa
 
     assert created is True
     assert store.get_turn("execution-marker-failure", turn["turn_id"]) is not None
-    execution_path = (
-        tmp_path
-        / "executions"
-        / "execution-marker-failure"
-        / "execution.json"
-    )
+    execution_path = tmp_path / "executions" / "execution-marker-failure" / "execution.json"
     assert execution_path.exists() is True
 
     restarted = SessionSummaryIndex(
@@ -454,9 +446,7 @@ def test_deterministic_terminal_journal_recovers_failed_event_projection(
     monkeypatch.setattr(
         chat_store,
         "append_events_once",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("synthetic projection failure")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic projection failure")),
     )
 
     with pytest.raises(RuntimeError, match="synthetic projection failure"):
@@ -475,19 +465,18 @@ def test_deterministic_terminal_journal_recovers_failed_event_projection(
             events=[event],
         )
 
-    assert execution_store.get_pending_deterministic_terminal(
-        "session_terminal_recovery"
-    ) is not None
+    assert execution_store.get_pending_deterministic_terminal("session_terminal_recovery") is not None
     monkeypatch.setattr(chat_store, "append_events_once", original_append)
 
-    assert recover_pending_deterministic_terminal(
-        execution_store,
-        chat_store,
-        "session_terminal_recovery",
-    ) is True
-    assert execution_store.get_pending_deterministic_terminal(
-        "session_terminal_recovery"
-    ) is None
+    assert (
+        recover_pending_deterministic_terminal(
+            execution_store,
+            chat_store,
+            "session_terminal_recovery",
+        )
+        is True
+    )
+    assert execution_store.get_pending_deterministic_terminal("session_terminal_recovery") is None
     assert execution_store.get_turn("session_terminal_recovery", 1)["status"] == "success"
     assert any(
         (item.get("data") or {}).get("event_id") == "run_terminal_recovery:1"
@@ -527,20 +516,24 @@ def test_deterministic_artifact_journal_removes_failed_run_output(tmp_path):
         run_id="run_artifact_recovery",
     )
 
-    assert recover_pending_deterministic_artifacts(
-        execution_store,
-        chat_store,
-        "session_artifact_recovery",
-        run_is_active=lambda _run_id: False,
-    ) is True
-    assert execution_store.get_pending_deterministic_artifacts(
-        "session_artifact_recovery"
-    ) == []
-    assert chat_store.get_tool_output(
-        "session_artifact_recovery",
-        "run_artifact_recovery",
-        output_ref,
-    ) is None
+    assert (
+        recover_pending_deterministic_artifacts(
+            execution_store,
+            chat_store,
+            "session_artifact_recovery",
+            run_is_active=lambda _run_id: False,
+        )
+        is True
+    )
+    assert execution_store.get_pending_deterministic_artifacts("session_artifact_recovery") == []
+    assert (
+        chat_store.get_tool_output(
+            "session_artifact_recovery",
+            "run_artifact_recovery",
+            output_ref,
+        )
+        is None
+    )
 
 
 def test_deterministic_artifact_recovery_preserves_running_turn(tmp_path):
@@ -568,26 +561,30 @@ def test_deterministic_artifact_recovery_preserves_running_turn(tmp_path):
         output_ref=output_ref,
     )
 
-    assert recover_pending_deterministic_artifacts(
-        execution_store,
-        chat_store,
-        "session_running_artifact",
-        run_is_active=lambda _run_id: False,
-    ) is False
-    assert execution_store.get_pending_deterministic_artifacts(
-        "session_running_artifact"
-    ) == [
+    assert (
+        recover_pending_deterministic_artifacts(
+            execution_store,
+            chat_store,
+            "session_running_artifact",
+            run_is_active=lambda _run_id: False,
+        )
+        is False
+    )
+    assert execution_store.get_pending_deterministic_artifacts("session_running_artifact") == [
         {
             "turn_id": 1,
             "run_id": "run_running_artifact",
             "output_refs": [output_ref],
         }
     ]
-    assert chat_store.get_tool_output(
-        "session_running_artifact",
-        "run_running_artifact",
-        output_ref,
-    ) is not None
+    assert (
+        chat_store.get_tool_output(
+            "session_running_artifact",
+            "run_running_artifact",
+            output_ref,
+        )
+        is not None
+    )
 
 
 def _seed_one_run_checkpoint(
@@ -655,10 +652,7 @@ def test_hitl_answer_creates_new_run_and_turn_without_reopening_original(tmp_pat
     assert persisted_original["pending_interaction"] == interaction
     assert persisted_original["interaction_response"] == response
     assert persisted_original["interaction_consumed_at"]
-    assert (
-        persisted_original["interaction_consumed_by_turn_id"]
-        == persisted_answer["turn_id"]
-    )
+    assert persisted_original["interaction_consumed_by_turn_id"] == persisted_answer["turn_id"]
     assert persisted_answer["run_id"] == answer_turn["run_id"]
     assert persisted_answer["turn_id"] == answer_turn["turn_id"]
     answer_message = history["session_history"][-1]
@@ -666,10 +660,7 @@ def test_hitl_answer_creates_new_run_and_turn_without_reopening_original(tmp_pat
     assert answer_message["run_id"] == answer_turn["run_id"]
     assert answer_message["turn_id"] == answer_turn["turn_id"]
     assert answer_message["interaction_response"] == response
-    assert not any(
-        message.get("role") == "tool"
-        for message in history["session_history"]
-    )
+    assert not any(message.get("role") == "tool" for message in history["session_history"])
 
 
 def test_same_interaction_retry_returns_existing_admission_without_second_execution(
@@ -736,10 +727,7 @@ def test_concurrent_interaction_retries_create_one_run_and_turn(tmp_path):
     history = store.get_session_history("session_hitl_contract")
     assert len(history["turns"]) == 2
     assert history["turns"][0]["status"] == "awaiting_input"
-    assert (
-        history["turns"][0]["interaction_consumed_by_turn_id"]
-        == history["turns"][1]["turn_id"]
-    )
+    assert history["turns"][0]["interaction_consumed_by_turn_id"] == history["turns"][1]["turn_id"]
 
 
 def test_different_answer_for_consumed_interaction_reports_existing_run(tmp_path):
@@ -801,10 +789,7 @@ def test_interaction_response_survives_backend_process_reload_and_is_consumed(tm
     history = reloaded_store.get_session_history("sess-choice")
     assert history["turns"][0]["interaction_response"] == response
     assert history["turns"][0]["interaction_consumed_at"]
-    assert (
-        history["turns"][0]["interaction_consumed_by_turn_id"]
-        == answer_turn["turn_id"]
-    )
+    assert history["turns"][0]["interaction_consumed_by_turn_id"] == answer_turn["turn_id"]
     assert history["turns"][1]["status"] == "running"
 
     retry_turn, retry_created = reloaded_store.consume_interaction_and_create_turn(
@@ -1002,7 +987,7 @@ def test_waiting_solver_checkpoint_and_tool_inbox_survive_process_reload(tmp_pat
                             "type": "function",
                             "function": {
                                 "name": "solve_synthetic_aaaaaaaa",
-                                "arguments": "{\"item_count\":2}",
+                                "arguments": '{"item_count":2}',
                             },
                         }
                     ],
@@ -1087,7 +1072,7 @@ def test_waiting_solver_checkpoint_and_tool_inbox_survive_process_reload(tmp_pat
                         "id": "tool-call-solver-next",
                         "function": {
                             "name": "solve_synthetic_bbbbbbbb",
-                            "arguments": "{\"item_count\":3}",
+                            "arguments": '{"item_count":3}',
                         },
                     }
                 ],
@@ -1155,9 +1140,7 @@ def test_protocol_run_id_is_atomic_across_concurrent_sessions(
     assert sum(int(created) for _turn, created in admissions) == 1
     turns = store.list_turns_by_protocol("a2a")
     assert len(turns) == 1
-    assert turns[0]["protocol_metadata"]["external_run_id"] == (
-        "external-task-shared"
-    )
+    assert turns[0]["protocol_metadata"]["external_run_id"] == ("external-task-shared")
 
 
 def test_protocol_run_id_reservation_recognizes_durable_turn_after_reload(tmp_path):
@@ -1228,10 +1211,7 @@ def test_protocol_run_id_durable_scan_ignores_stale_store_cache(tmp_path):
     )
     assert created is True
 
-    assert (
-        stale_reader.reserve_protocol_run_id("a2a", "external-task-stale-cache")
-        is None
-    )
+    assert stale_reader.reserve_protocol_run_id("a2a", "external-task-stale-cache") is None
 
 
 def test_protocol_run_id_reservation_is_released_when_durable_write_fails(

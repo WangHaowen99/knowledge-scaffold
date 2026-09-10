@@ -7,9 +7,8 @@ import logging
 import subprocess
 from types import SimpleNamespace
 
-import pytest
-
 import agent.tools.execute_script as execute_script_module
+import pytest
 from integration.sandbox.alerts import log_sandbox_security_fallback
 from integration.sandbox.errors import (
     SandboxCreateError,
@@ -54,9 +53,7 @@ def _completed(
 
 def test_bounded_runner_rejects_non_python_executable():
     with pytest.raises(ValueError, match="trusted Python interpreter"):
-        execute_script_module._validated_python_argv(
-            [execute_script_module.sys.executable + ".untrusted", "--version"]
-        )
+        execute_script_module._validated_python_argv([execute_script_module.sys.executable + ".untrusted", "--version"])
 
 
 def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):
@@ -77,9 +74,7 @@ def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(
         execute_script_module,
         "_run_with_live_logging",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("live logging must not force local execution")
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("live logging must not force local execution")),
     )
 
     result = execute_script_module.handle_execute_script_path(
@@ -92,9 +87,7 @@ def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):
 
     assert result == "sandbox-output"
     assert len(sandbox_calls) == 1
-    assert sandbox_calls[0]["env_overrides"] == {
-        "ONTO_X": "executor-allowlist-must-drop-this"
-    }
+    assert sandbox_calls[0]["env_overrides"] == {"ONTO_X": "executor-allowlist-must-drop-this"}
     assert sandbox_calls[0]["ontology_dir"] is None
 
 
@@ -151,9 +144,7 @@ def test_disabled_sandbox_uses_normal_local_execution(tmp_path, monkeypatch):
     monkeypatch.setattr(
         execute_script_module,
         "log_sandbox_security_fallback",
-        lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("explicit local mode is not a sandbox fallback")
-        ),
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("explicit local mode is not a sandbox fallback")),
     )
     monkeypatch.setattr(
         execute_script_module.subprocess,
@@ -176,9 +167,7 @@ def test_required_sandbox_never_runs_locally_when_disabled(tmp_path, monkeypatch
     monkeypatch.setattr(
         execute_script_module.subprocess,
         "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("required sandbox must not fall back locally")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("required sandbox must not fall back locally")),
     )
 
     result = execute_script_module.handle_execute_script_path(
@@ -208,9 +197,7 @@ def test_required_sandbox_blocks_configured_fallback_after_failure(tmp_path, mon
     monkeypatch.setattr(
         execute_script_module.subprocess,
         "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("required sandbox must not fall back locally")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("required sandbox must not fall back locally")),
     )
 
     result = execute_script_module.handle_execute_script_path(
@@ -297,9 +284,7 @@ def test_legacy_mode_routes_directly_to_original_local_path(tmp_path, monkeypatc
     monkeypatch.setattr(
         execute_script_module,
         "SandboxScriptExecutor",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("legacy mode must not initialize the sandbox executor")
-        ),
+        lambda: (_ for _ in ()).throw(AssertionError("legacy mode must not initialize the sandbox executor")),
     )
     monkeypatch.setattr(
         execute_script_module.subprocess,
@@ -336,9 +321,7 @@ def test_oversize_args_fail_closed_when_fallback_disabled(tmp_path, monkeypatch)
     monkeypatch.setattr(
         execute_script_module,
         "_spawn_with_args_file",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("local args-file execution must remain blocked")
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local args-file execution must remain blocked")),
     )
 
     result = execute_script_module.handle_execute_script_path(
@@ -349,8 +332,7 @@ def test_oversize_args_fail_closed_when_fallback_disabled(tmp_path, monkeypatch)
     )
 
     assert result == (
-        "Error: Sandbox unavailable: oversized script arguments are not "
-        "supported by sandbox execution"
+        "Error: Sandbox unavailable: oversized script arguments are not " "supported by sandbox execution"
     )
 
 
@@ -393,9 +375,7 @@ def test_missing_run_id_uses_fallback_gate(tmp_path, monkeypatch):
         run_id=None,
     )
 
-    assert result == (
-        "Error: Sandbox unavailable: run_id is required for sandbox execution"
-    )
+    assert result == ("Error: Sandbox unavailable: run_id is required for sandbox execution")
 
 
 def test_unsupported_platform_uses_fallback_gate(tmp_path, monkeypatch):
@@ -409,10 +389,7 @@ def test_unsupported_platform_uses_fallback_gate(tmp_path, monkeypatch):
         run_id="run-windows",
     )
 
-    assert result == (
-        "Error: Sandbox unavailable: sandbox execution requires Linux "
-        "(current platform: win32)"
-    )
+    assert result == ("Error: Sandbox unavailable: sandbox execution requires Linux " "(current platform: win32)")
 
 
 def test_sandbox_exception_uses_same_fallback_gate(tmp_path, monkeypatch):
@@ -502,8 +479,7 @@ def test_unsupported_provider_uses_local_execution_with_audit(tmp_path, monkeypa
     [
         (
             1,
-            "python3: can't open file '/workspace/scripts/tool.py': "
-            "[Errno 2] No such file or directory",
+            "python3: can't open file '/workspace/scripts/tool.py': " "[Errno 2] No such file or directory",
             "sandbox_tool_missing",
         ),
         (
@@ -664,9 +640,7 @@ def test_sandbox_timeout_is_not_replayed_locally(tmp_path, monkeypatch):
     monkeypatch.setattr(
         execute_script_module.subprocess,
         "run",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("a sandbox timeout must not replay locally")
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("a sandbox timeout must not replay locally")),
     )
 
     result = execute_script_module.handle_execute_script_path(
@@ -766,9 +740,7 @@ def test_sandbox_exception_fails_closed_when_fallback_disabled(tmp_path, monkeyp
     monkeypatch.setattr(
         execute_script_module.subprocess,
         "run",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("sandbox failure must not execute locally")
-        ),
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sandbox failure must not execute locally")),
     )
 
     result = execute_script_module.handle_execute_script_path(
@@ -859,9 +831,7 @@ def test_unexpected_execution_error_is_redacted_from_result_and_logs(
     monkeypatch.setattr(
         execute_script_module,
         "load_sandbox_config",
-        lambda: (_ for _ in ()).throw(
-            RuntimeError("ACCESS_TOKEN=unexpected-secret-value")
-        ),
+        lambda: (_ for _ in ()).throw(RuntimeError("ACCESS_TOKEN=unexpected-secret-value")),
     )
 
     with caplog.at_level(logging.ERROR):
@@ -933,10 +903,7 @@ def test_nonzero_exit_returns_explicit_public_business_error(
             base_path=tmp_path,
         )
 
-    assert result == (
-        "Error: Script exited with code 7. "
-        "[MATERIAL_NOT_FOUND] Material A001 was not found."
-    )
+    assert result == ("Error: Script exited with code 7. " "[MATERIAL_NOT_FOUND] Material A001 was not found.")
     assert "stdout-secret" not in result
     assert "stderr-secret" not in result
     assert "stdout-secret" not in caplog.text
@@ -973,10 +940,7 @@ def test_nonzero_exit_returns_strict_deterministic_stdout_error(
             base_path=tmp_path,
         )
 
-    assert result == (
-        "Error: Script exited with code 4. "
-        "[RUNTIME_ERROR] Synthetic operation failed."
-    )
+    assert result == ("Error: Script exited with code 4. " "[RUNTIME_ERROR] Synthetic operation failed.")
     assert "synthetic internal diagnostic" not in result
     assert "synthetic internal diagnostic" not in caplog.text
 
@@ -1007,10 +971,7 @@ def test_nonzero_exit_returns_only_safe_python_exception_type(
         base_path=tmp_path,
     )
 
-    assert result == (
-        "Error: Script exited with code 1. "
-        "[SCRIPT_RUNTIME_ERROR] Python KeyError."
-    )
+    assert result == ("Error: Script exited with code 1. " "[SCRIPT_RUNTIME_ERROR] Python KeyError.")
     assert "synthetic-private-value" not in result
 
 
@@ -1052,10 +1013,7 @@ def test_nonzero_exit_ignores_structured_deterministic_error_details(
             base_path=tmp_path,
         )
 
-    assert result == (
-        "Error: Script exited with code 4. "
-        "[RUNTIME_ERROR] Synthetic operation failed."
-    )
+    assert result == ("Error: Script exited with code 4. " "[RUNTIME_ERROR] Synthetic operation failed.")
     assert "synthetic internal diagnostic" not in result
     assert "synthetic internal diagnostic" not in caplog.text
 
@@ -1063,20 +1021,13 @@ def test_nonzero_exit_ignores_structured_deterministic_error_details(
 @pytest.mark.parametrize(
     "stdout",
     [
-        (
-            '{"error_code":"runtime_error",'
-            '"message":"Synthetic operation failed."}\n'
-            "additional diagnostic"
-        ),
+        ('{"error_code":"runtime_error",' '"message":"Synthetic operation failed."}\n' "additional diagnostic"),
         (
             '{"error_code":"runtime_error",'
             '"message":"Synthetic operation failed.",'
             '"unexpected":"synthetic extra field"}'
         ),
-        (
-            '{"error_code":"runtime-error",'
-            '"message":"Synthetic operation failed."}'
-        ),
+        ('{"error_code":"runtime-error",' '"message":"Synthetic operation failed."}'),
     ],
 )
 def test_nonzero_exit_rejects_ambiguous_deterministic_stdout_error(
@@ -1157,10 +1108,7 @@ def test_nonzero_exit_rejects_malformed_public_error_marker(tmp_path, monkeypatc
             args=["python"],
             returncode=9,
             stdout="",
-            stderr=(
-                'ONTO_PUBLIC_ERROR: {"code":"bad-code",'
-                '"message":"DATABASE_URL=must-stay-redacted"}'
-            ),
+            stderr=('ONTO_PUBLIC_ERROR: {"code":"bad-code",' '"message":"DATABASE_URL=must-stay-redacted"}'),
         ),
     )
 

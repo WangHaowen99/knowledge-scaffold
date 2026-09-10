@@ -1,14 +1,16 @@
-
-
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-from api.routes.workspaces import workspaces_router
 from api.auth.auth import AuthManager
+from api.routes.workspaces import workspaces_router
+from api.testing import TestApplication
+from backend_synthetic_credentials import (
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    ENCRYPTION_KEY,
+    synthetic_secret,
+)
+from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace
 
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+SECRET_TEST_KEY = ENCRYPTION_KEY
 
 
 def _build_client(tmp_path, monkeypatch, *, role="admin"):
@@ -19,11 +21,11 @@ def _build_client(tmp_path, monkeypatch, *, role="admin"):
 
     app = TestApplication()
     app.state.services["TESTING"] = True
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
     if role == "admin":
-        user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+        user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
         assert user is not None
-        user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+        user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     else:
         user = auth_manager.create_user("viewer", "AccountStrong123!", role=role)
         user = auth_manager.change_password("viewer", "AccountStrong123!", "ChangedStrong123!")
@@ -85,8 +87,8 @@ def test_patch_workspace_observability_config_updates_and_resets_observer(tmp_pa
             "speedscope": {"retention_days": 7},
             "langfuse": {
                 "public_key": "pk-test",
-                "secret_key": "sk-test",
-                "base_url": "https://langfuse.example",
+                "secret_key": synthetic_secret("workspace_observability_routes-credential-02"),
+                "base_url": "https://langfuse.example.net",
                 "debug": True,
             },
         },
@@ -126,7 +128,7 @@ def test_workspace_observability_connection_test_reuses_saved_secret(tmp_path, m
             "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-old",
-                "secret_key": "sk-saved",
+                "secret_key": synthetic_secret("workspace_observability_routes-credential-01"),
                 "base_url": "https://langfuse.old",
             },
         },
@@ -164,6 +166,6 @@ def test_workspace_observability_connection_test_reuses_saved_secret(tmp_path, m
     assert calls == [
         (
             "https://langfuse.new/api/public/projects",
-            {"auth": ("pk-new", "sk-saved"), "timeout": 10},
+            {"auth": ("pk-new", synthetic_secret("workspace_observability_routes-credential-01")), "timeout": 10},
         )
     ]

@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import secrets
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
 import pytest
-
 from api.auth.auth import AuthManager
 from api.routes.solver_coordination import solver_coordination_public_router
 from api.testing import TestApplication
-from solver_coordination.canonical import sha256_digest
+from fastapi.testclient import TestClient
 from solver_coordination.candidate_results import CandidateResultsArtifact
+from solver_coordination.canonical import sha256_digest
 from solver_coordination.job_orchestrator import JobOrchestrationError
 from solver_coordination.job_store import SolverJobStore
 from workspace.workspaces import WorkspaceNotFoundError, create_workspace
-
 
 WORKSPACE = "solver-history-synthetic"
 OWNER = "synthetic_history_operator"
@@ -187,9 +185,7 @@ def _add_completed_job(
     candidate_ref = None
     if candidate_payload is not None:
         candidate_digest = candidate_ledger_digest or sha256_digest(candidate_payload)
-        candidate_ref = "artifact://candidate_results/{}".format(
-            sha256_digest(candidate_payload).rsplit(":", 1)[-1]
-        )
+        candidate_ref = "artifact://candidate_results/{}".format(sha256_digest(candidate_payload).rsplit(":", 1)[-1])
         store.add_artifact(
             workspace_id=WORKSPACE,
             owner_id=owner_id,
@@ -243,9 +239,7 @@ def _add_completed_job(
                 {
                     "candidate_results_artifact_ref": candidate_ref,
                     "candidate_results_artifact_digest": (
-                        candidate_authoritative_digest
-                        or candidate_ledger_digest
-                        or sha256_digest(candidate_payload)
+                        candidate_authoritative_digest or candidate_ledger_digest or sha256_digest(candidate_payload)
                     ),
                 }
             )
@@ -269,9 +263,7 @@ def _add_completed_job(
     return job["job_id"]
 
 
-def test_candidate_results_are_owner_scoped_integrity_checked_and_complete(
-    tmp_path, monkeypatch
-):
+def test_candidate_results_are_owner_scoped_integrity_checked_and_complete(tmp_path, monkeypatch):
     client, headers, store, reader = _client(tmp_path, monkeypatch)
     problem_digest = "sha256:" + "c" * 64
     payload = _candidate_results_payload(problem_digest)
@@ -297,9 +289,7 @@ def test_candidate_results_are_owner_scoped_integrity_checked_and_complete(
     assert response.status_code == 200
     body = response.json()
     assert body["candidate_count"] == 18
-    assert [row["combination_no"] for row in body["candidates"]] == list(
-        range(1, 19)
-    )
+    assert [row["combination_no"] for row in body["candidates"]] == list(range(1, 19))
     winner = next(row for row in body["candidates"] if row["selected"])
     assert winner["combination_no"] == 10
     assert winner["metrics"]["candidate_rank"] == 5
@@ -307,9 +297,7 @@ def test_candidate_results_are_owner_scoped_integrity_checked_and_complete(
 
     history = client.get("/api/solver/history", headers=headers).json()
     history_item = next(item for item in history["items"] if item["job_id"] == job_id)
-    assert history_item["candidate_results_artifact_ref"].startswith(
-        "artifact://candidate_results/"
-    )
+    assert history_item["candidate_results_artifact_ref"].startswith("artifact://candidate_results/")
     assert history_item["candidate_results_artifact_digest"] == sha256_digest(payload)
 
     hidden = client.get(
@@ -347,9 +335,7 @@ def test_candidate_results_reject_digest_and_payload_corruption(tmp_path, monkey
         assert response.json()["code"] == "candidate_digest_mismatch"
 
 
-def test_candidate_results_reject_non_authoritative_or_incomplete_job(
-    tmp_path, monkeypatch
-):
+def test_candidate_results_reject_non_authoritative_or_incomplete_job(tmp_path, monkeypatch):
     client, headers, store, reader = _client(tmp_path, monkeypatch)
     payload = _candidate_results_payload("sha256:" + "f" * 64)
     non_authoritative = _add_completed_job(
@@ -413,13 +399,9 @@ def test_history_is_keyset_paginated_and_public_safe(tmp_path, monkeypatch):
 def test_evidence_detail_checks_scope_and_artifact_integrity(tmp_path, monkeypatch):
     client, headers, store, reader = _client(tmp_path, monkeypatch)
     job_id = _add_completed_job(store, suffix="evidence")
-    hidden_job = _add_completed_job(
-        store, owner_id="another-synthetic-owner", suffix="hidden-evidence"
-    )
+    hidden_job = _add_completed_job(store, owner_id="another-synthetic-owner", suffix="hidden-evidence")
 
-    response = client.get(
-        "/api/solver/history/{}/evidence".format(job_id), headers=headers
-    )
+    response = client.get("/api/solver/history/{}/evidence".format(job_id), headers=headers)
 
     assert response.status_code == 200
     body = response.json()
@@ -427,33 +409,25 @@ def test_evidence_detail_checks_scope_and_artifact_integrity(tmp_path, monkeypat
     assert len(body["artifacts"]) == 2
     assert all(item["integrity_verified"] for item in body["artifacts"])
     assert len(reader.references) == 2
-    assert body["verification_results"][0]["result"]["evidence"] == [
-        {"kind": "synthetic_proof"}
-    ]
+    assert body["verification_results"][0]["result"]["evidence"] == [{"kind": "synthetic_proof"}]
     serialized = response.text
     assert "problem_ir" not in serialized
     assert "owner_id" not in serialized
 
-    hidden = client.get(
-        "/api/solver/history/{}/evidence".format(hidden_job), headers=headers
-    )
+    hidden = client.get("/api/solver/history/{}/evidence".format(hidden_job), headers=headers)
     assert hidden.status_code == 404
 
 
 def test_history_rejects_invalid_cursor(tmp_path, monkeypatch):
     client, headers, _store, _reader = _client(tmp_path, monkeypatch)
 
-    response = client.get(
-        "/api/solver/history?cursor=not-a-valid-cursor", headers=headers
-    )
+    response = client.get("/api/solver/history?cursor=not-a-valid-cursor", headers=headers)
 
     assert response.status_code == 400
     assert response.json()["code"] == "invalid_solver_input"
 
 
-def test_history_retry_is_explicit_and_does_not_accept_new_solver_input(
-    tmp_path, monkeypatch
-):
+def test_history_retry_is_explicit_and_does_not_accept_new_solver_input(tmp_path, monkeypatch):
     client, headers, _store, _reader = _client(tmp_path, monkeypatch)
     service = client.app.state.services["SOLVER_COORDINATION_SERVICE"]
     calls = []
@@ -498,9 +472,7 @@ def test_history_retry_is_explicit_and_does_not_accept_new_solver_input(
     ]
 
 
-def test_history_retry_maps_missing_job_without_exposing_orchestrator_error(
-    tmp_path, monkeypatch
-):
+def test_history_retry_maps_missing_job_without_exposing_orchestrator_error(tmp_path, monkeypatch):
     client, headers, _store, _reader = _client(tmp_path, monkeypatch)
     service = client.app.state.services["SOLVER_COORDINATION_SERVICE"]
 
@@ -519,9 +491,7 @@ def test_history_retry_maps_missing_job_without_exposing_orchestrator_error(
     assert response.json() == {"code": "run_not_found"}
 
 
-def test_history_retry_maps_orchestration_failure_to_safe_unavailable_response(
-    tmp_path, monkeypatch
-):
+def test_history_retry_maps_orchestration_failure_to_safe_unavailable_response(tmp_path, monkeypatch):
     client, headers, _store, _reader = _client(tmp_path, monkeypatch)
     service = client.app.state.services["SOLVER_COORDINATION_SERVICE"]
 
@@ -540,9 +510,7 @@ def test_history_retry_maps_orchestration_failure_to_safe_unavailable_response(
     assert response.json() == {"code": "solver_unavailable", "retryable": True}
 
 
-def test_history_retry_preserves_shared_workspace_not_found_response(
-    tmp_path, monkeypatch
-):
+def test_history_retry_preserves_shared_workspace_not_found_response(tmp_path, monkeypatch):
     client, headers, _store, _reader = _client(tmp_path, monkeypatch)
     service = client.app.state.services["SOLVER_COORDINATION_SERVICE"]
 
@@ -568,9 +536,7 @@ def test_history_retry_preserves_shared_workspace_not_found_response(
         ("not-json", "text/plain"),
     ],
 )
-def test_history_retry_rejects_nonempty_malformed_or_non_json_body(
-    tmp_path, monkeypatch, data, content_type
-):
+def test_history_retry_rejects_nonempty_malformed_or_non_json_body(tmp_path, monkeypatch, data, content_type):
     client, headers, _store, _reader = _client(tmp_path, monkeypatch)
     service = client.app.state.services["SOLVER_COORDINATION_SERVICE"]
     calls = []

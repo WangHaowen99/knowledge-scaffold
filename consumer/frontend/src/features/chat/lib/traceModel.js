@@ -1,8 +1,7 @@
 import { buildConversationViewModel } from './conversationModel.js';
 
-const timestampValue = (value) => (
-  typeof value === 'number' && Number.isFinite(value) ? value : null
-);
+const timestampValue = (value) =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
 
 const attachNodesBySpanId = (nodes, parentCandidates, fallbackParentKey) => {
   const nodeBySpanId = new Map();
@@ -13,7 +12,9 @@ const attachNodesBySpanId = (nodes, parentCandidates, fallbackParentKey) => {
   });
   const roots = [];
   nodes.forEach((node) => {
-    const parent = node?.parentSpanId ? nodeBySpanId.get(node.parentSpanId) : null;
+    const parent = node?.parentSpanId ?
+      nodeBySpanId.get(node.parentSpanId) :
+      null;
     if (parent && parent !== node) {
       node.parentKey = parent.key;
       parent.children.push(node);
@@ -84,16 +85,18 @@ const traceSubagentGroup = (group, parentKey) => ({
       endedAt: event.endedAt,
       durationMs: event.durationMs,
       order: eventIndex,
-      children: event.progress.map((progress, progressIndex) => (
-        traceProgressNode(progress, `trace:${event.key}`, progressIndex)
-      )),
+      children: event.progress.map((progress, progressIndex) =>
+        traceProgressNode(progress, `trace:${event.key}`, progressIndex),
+      ),
     });
-    const orderedItems = child.items?.length ? child.items : [...child.events, ...child.groups];
-    const childNodes = orderedItems.map((item, itemIndex) => (
-      item.subtype === 'group'
-        ? traceSubagentGroup(item, childKey)
-        : eventNode(item, itemIndex)
-    ));
+    const orderedItems = child.items?.length ?
+      child.items :
+      [...child.events, ...child.groups];
+    const childNodes = orderedItems.map((item, itemIndex) =>
+      item.subtype === 'group' ?
+        traceSubagentGroup(item, childKey) :
+        eventNode(item, itemIndex),
+    );
     return {
       key: childKey,
       sourceKey: child.key,
@@ -122,10 +125,9 @@ const traceSubagentGroup = (group, parentKey) => ({
 const traceNodeForBlock = (block, turnKey) => {
   const key = `trace:${block.key}`;
   const isNarrative = block.kind === 'content' || block.kind === 'reasoning';
-  const narrativeLabel = block.kind === 'content'
-    ? 'Agent 输出'
-    : (block.summary || '模型思考');
-  const label = isNarrative ? narrativeLabel : (block.summary || block.text);
+  const narrativeLabel =
+    block.kind === 'content' ? 'Agent 输出' : block.summary || '模型思考';
+  const label = isNarrative ? narrativeLabel : block.summary || block.text;
   const node = {
     key,
     sourceKey: block.key,
@@ -145,7 +147,9 @@ const traceNodeForBlock = (block, turnKey) => {
     endedAt: block.endedAt,
     durationMs: block.durationMs,
     order: block.order,
-    children: block.progress.map((progress, index) => traceProgressNode(progress, key, index)),
+    children: block.progress.map((progress, index) =>
+      traceProgressNode(progress, key, index),
+    ),
   };
   if (['tool', 'business_data', 'web_search'].includes(block.kind)) {
     node.toolName = block.toolName;
@@ -165,75 +169,92 @@ const traceNodeForBlock = (block, turnKey) => {
     node.provider = block.provider;
     node.responseTime = block.responseTime;
   }
-  if (block.group) node.children.push(traceSubagentGroup(block.group, key));
-  if (block.kind === 'awaiting') node.interaction = block.interaction;
+  if (block.group) {
+    node.children.push(traceSubagentGroup(block.group, key));
+  }
+  if (block.kind === 'awaiting') {
+    node.interaction = block.interaction;
+  }
   return node;
 };
 
-const iterationNodes = (turn, turnKey) => (turn.iterationMetrics || []).map((metric, index) => {
-  const iteration = Number.isFinite(Number(metric?.iteration)) ? Number(metric.iteration) : index + 1;
-  return {
-    key: `${turnKey}:iteration:${iteration}`,
-    sourceKey: `${turn.key}:iteration:${iteration}`,
-    parentKey: turnKey,
-    type: 'iteration',
-    subtype: 'metric',
-    status: metric?.status || 'finished',
-    terminal: true,
-    text: `iteration ${iteration}`,
-    traceId: metric?.traceId || '',
-    spanId: metric?.spanId || '',
-    parentSpanId: metric?.parentSpanId || '',
-    startedAt: null,
-    endedAt: timestampValue(metric?.ts),
-    durationMs: Number.isFinite(Number(metric?.totalElapsedMs)) ? Number(metric.totalElapsedMs) : null,
-    order: index,
-    metrics: { ...metric },
-    children: [],
-  };
-});
+const iterationNodes = (turn, turnKey) =>
+  (turn.iterationMetrics || []).map((metric, index) => {
+    const iteration = Number.isFinite(Number(metric?.iteration)) ?
+      Number(metric.iteration) :
+      index + 1;
+    return {
+      key: `${turnKey}:iteration:${iteration}`,
+      sourceKey: `${turn.key}:iteration:${iteration}`,
+      parentKey: turnKey,
+      type: 'iteration',
+      subtype: 'metric',
+      status: metric?.status || 'finished',
+      terminal: true,
+      text: `iteration ${iteration}`,
+      traceId: metric?.traceId || '',
+      spanId: metric?.spanId || '',
+      parentSpanId: metric?.parentSpanId || '',
+      startedAt: null,
+      endedAt: timestampValue(metric?.ts),
+      durationMs: Number.isFinite(Number(metric?.totalElapsedMs)) ?
+        Number(metric.totalElapsedMs) :
+        null,
+      order: index,
+      metrics: { ...metric },
+      children: [],
+    };
+  });
 
 const iterationFromParentKey = (parentKey) => {
-  const [, iterationText] = String(parentKey || '').match(/^iteration:[^:]+:(\d+)$/) || [];
+  const iterationText = String(parentKey || '').match(
+    /^iteration:[^:]+:(?<iteration>\d+)$/,
+  )?.groups.iteration;
   return iterationText ? Number(iterationText) : null;
 };
 
-const iterationForBlock = (block) => (
-  iterationFromParentKey(block?.parentKey)
-  ?? (Number.isFinite(Number(block?.iteration)) && Number(block.iteration) > 0
-    ? Math.floor(Number(block.iteration))
-    : null)
-);
+const iterationForBlock = (block) =>
+  iterationFromParentKey(block?.parentKey) ??
+  (Number.isFinite(Number(block?.iteration)) && Number(block.iteration) > 0 ?
+    Math.floor(Number(block.iteration)) :
+    null);
 
 /**
  * Trace consumes the canonical conversation model. `nodes` preserves source block
  * order; nested progress/subagent details live in `children` without reordering roots.
  */
 export const buildTraceViewModel = (input = []) => {
-  const conversation = input?.kind === 'conversation'
-    ? input
-    : buildConversationViewModel(input);
+  const conversation =
+    input?.kind === 'conversation' ? input : buildConversationViewModel(input);
   const turns = conversation.turns.map((turn, turnIndex) => {
     const key = `trace-turn:${turn.key}`;
     const iterations = iterationNodes(turn, key);
     const iterationByNumber = new Map(
-      iterations.map((iteration) => [Number(iteration.metrics?.iteration), iteration]),
+      iterations.map((iteration) => [
+        Number(iteration.metrics?.iteration),
+        iteration,
+      ]),
     );
     const blockEntries = turn.blocks.map((block) => ({
       block,
       node: traceNodeForBlock(block, key),
     }));
     const nodeBySpanId = new Map();
-    [...iterations, ...blockEntries.map((entry) => entry.node)].forEach((node) => {
-      if (node?.spanId && !nodeBySpanId.has(node.spanId)) {
-        nodeBySpanId.set(node.spanId, node);
-      }
-    });
+    [...iterations, ...blockEntries.map((entry) => entry.node)].forEach(
+      (node) => {
+        if (node?.spanId && !nodeBySpanId.has(node.spanId)) {
+          nodeBySpanId.set(node.spanId, node);
+        }
+      },
+    );
     const nodes = [];
     blockEntries.forEach(({ block, node }) => {
-      const otelParent = node.parentSpanId ? nodeBySpanId.get(node.parentSpanId) : null;
+      const otelParent = node.parentSpanId ?
+        nodeBySpanId.get(node.parentSpanId) :
+        null;
       const legacyIteration = iterationByNumber.get(iterationForBlock(block));
-      const parent = otelParent && otelParent !== node ? otelParent : legacyIteration;
+      const parent =
+        otelParent && otelParent !== node ? otelParent : legacyIteration;
       if (parent) {
         node.parentKey = parent.key;
         parent.children.push(node);

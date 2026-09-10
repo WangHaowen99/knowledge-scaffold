@@ -50,8 +50,8 @@ def _apply_dotenv_to_environment() -> None:
 _apply_dotenv_to_environment()
 
 from utils.lang import (  # noqa: E402
-    SUPPORTED_LANGUAGES,
     _LANG_DISPLAY_NAMES,
+    SUPPORTED_LANGUAGES,
     detect_language,
     get_lang_display_name,
     get_thinking_phrase,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 
@@ -13,6 +13,7 @@ from contracts.solver.tck.admission import (
     assert_admission_report,
 )
 from contracts.solver.tck.runner import FaultScenario, TckReport
+from contracts.solver.tck.tests.tck_synthetic_credentials import CONTROL_TOKEN
 from contracts.solver.tck.verifier import verify_binary_ordered_route_result
 
 
@@ -52,13 +53,9 @@ def test_public_verifier_recomputes_the_family_golden_result():
 
 def test_strict_admission_rejects_skipped_or_capability_gaps():
     with pytest.raises(StrictAdmissionError):
-        assert_admission_report(
-            TckReport(passed=True, checks=("health",), skipped=("fault_429",))
-        )
+        assert_admission_report(TckReport(passed=True, checks=("health",), skipped=("fault_429",)))
     with pytest.raises(StrictAdmissionError):
-        assert_admission_report(
-            TckReport(passed=True, checks=("health",), capability_gaps=("missing",))
-        )
+        assert_admission_report(TckReport(passed=True, checks=("health",), capability_gaps=("missing",)))
 
     assert assert_admission_report(TckReport(passed=True, checks=("health",))) is None
 
@@ -89,7 +86,7 @@ def test_http_fault_driver_controls_scenarios_out_of_band():
     try:
         driver = HttpFaultScenarioDriver(
             control_url=f"http://127.0.0.1:{server.server_port}/control",
-            control_token="synthetic-control-token",
+            control_token=CONTROL_TOKEN,
         )
         scenario = driver.scenario("fault_attempt_lost", _request())
         assert isinstance(scenario, FaultScenario)

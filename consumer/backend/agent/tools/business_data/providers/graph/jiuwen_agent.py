@@ -3,36 +3,37 @@
 from __future__ import annotations
 
 import asyncio
-from copy import copy
-from dataclasses import is_dataclass, replace
 import hashlib
 import json
 import threading
 import uuid
 from collections.abc import Mapping
+from copy import copy
+from dataclasses import is_dataclass, replace
 from inspect import isawaitable
 from types import SimpleNamespace
 from typing import Any
 
 from agent.core.jiuwen.common import JiuwenBackendUnavailable
 from agent.core.jiuwen.concurrency import install_jiuwen_concurrency_ability_manager
+from agent.core.jiuwen.tools import safe_jiuwen_resource_part
+from agent.core.jiuwen.trace import JiuwenModelTraceBridge
 from agent.core.jiuwen_engine import (
-    _JiuwenTerminalForceFinishBridge,
     _dispose_owned_jiuwen_runtime,
     _jiuwen_agent_callback_event_class,
-    _resolve_jiuwen_llm_config,
+    _JiuwenTerminalForceFinishBridge,
     _remember_jiuwen_terminal_tool_batch,
+    _resolve_jiuwen_llm_config,
     create_default_jiuwen_agent,
     register_current_runtime_tools,
     require_openjiuwen,
     unregister_current_runtime_tools,
 )
-from agent.core.jiuwen.tools import safe_jiuwen_resource_part
-from agent.core.jiuwen.trace import JiuwenModelTraceBridge
 from agent.exceptions import WorkflowCancelledError
 from agent.runtime.async_utils import call_async_or_thread, run_sync_compat
 from agent.tools.base import ToolBatchResult
 from utils.logging import get_logger
+
 from .agent import (
     GraphAgentError,
     GraphAgentTimeoutError,
@@ -53,9 +54,8 @@ from .agent import (
 )
 from .backends.base import GraphBackendError
 from .models import GraphAgentResult, GraphEntityMapping, GraphSearchRuntimeContext
-from .trace import build_graph_agent_runtime_trace
 from .tools.executor import DATA_TOOLS, GraphToolExecution, GraphToolExecutor, GraphToolInputError
-
+from .trace import build_graph_agent_runtime_trace
 
 _JIUWEN_GRAPH_TOOL_REGISTRATION_LOCK = threading.RLock()
 logger = get_logger("ontology_search.graph.jiuwen")
@@ -100,9 +100,7 @@ class JiuwenGraphQueryAgent:
         except TimeoutError as exc:
             cancel_event.set()
             raise GraphAgentTimeoutError(
-                "GraphQueryAgent 调用超时（{}s）".format(
-                    _format_timeout(timeout_seconds)
-                )
+                "GraphQueryAgent 调用超时（{}s）".format(_format_timeout(timeout_seconds))
             ) from exc
         finally:
             if context.provider_config.get("_graph_cancel_event") is cancel_event:
@@ -144,11 +142,7 @@ class JiuwenGraphQueryAgent:
             attempt=attempt,
         )
 
-        if (
-            not executions
-            and adapter.last_tool_input_error is None
-            and final_message.strip()
-        ):
+        if not executions and adapter.last_tool_input_error is None and final_message.strip():
             attempt += 1
             executed_steps.append(
                 {
@@ -200,9 +194,7 @@ class JiuwenGraphQueryAgent:
             raise GraphAgentToolInputError(str(adapter.last_tool_input_error))
         last_error = adapter.last_error
         if final_message.strip():
-            last_error = "GraphQueryAgent 未调用内部图检索工具: {}".format(
-                final_message.strip()[:200]
-            )
+            last_error = "GraphQueryAgent 未调用内部图检索工具: {}".format(final_message.strip()[:200])
         raise GraphAgentError(last_error or "GraphQueryAgent 未调用可用图检索工具")
 
     async def _ainvoke_once(
@@ -257,12 +249,8 @@ class JiuwenGraphQueryAgent:
                 )
                 agent = create_default_jiuwen_agent(
                     llm_config=llm_config,
-                    max_iterations=_graph_agent_max_iterations(
-                        context.provider_config
-                    ),
-                    system_prompt=_build_graph_agent_system_prompt(
-                        context.schema_context
-                    ),
+                    max_iterations=_graph_agent_max_iterations(context.provider_config),
+                    system_prompt=_build_graph_agent_system_prompt(context.schema_context),
                     agent_id=_graph_agent_resource_id(
                         context,
                         attempt=attempt,
@@ -316,20 +304,13 @@ class JiuwenGraphQueryAgent:
 
             invoke = getattr(agent, "invoke", None)
             if not callable(invoke):
-                raise GraphAgentUnavailableError(
-                    "Configured Jiuwen graph agent does not expose invoke()."
-                )
-            raw_result = invoke(
-                {"query": query, "conversation_id": conversation_id}
-            )
+                raise GraphAgentUnavailableError("Configured Jiuwen graph agent does not expose invoke().")
+            raw_result = invoke({"query": query, "conversation_id": conversation_id})
             if isawaitable(raw_result):
                 raw_result = await raw_result
             adapter.raise_last_backend_error()
             if _is_error_result(raw_result):
-                raise GraphAgentError(
-                    _extract_output(raw_result)
-                    or "Jiuwen graph agent returned an error."
-                )
+                raise GraphAgentError(_extract_output(raw_result) or "Jiuwen graph agent returned an error.")
             return _extract_output(raw_result)
         except (GraphAgentError, GraphBackendError, WorkflowCancelledError):
             raise
@@ -337,16 +318,10 @@ class JiuwenGraphQueryAgent:
             raise GraphAgentUnavailableError(str(exc)) from exc
         except RuntimeError as exc:
             raise GraphAgentUnavailableError(
-                "GraphQueryAgent LLM 不可用: {}".format(
-                    _safe_exception_detail(exc)
-                )
+                "GraphQueryAgent LLM 不可用: {}".format(_safe_exception_detail(exc))
             ) from exc
         except Exception as exc:
-            raise GraphAgentError(
-                "GraphQueryAgent 调用失败: {}".format(
-                    _safe_exception_detail(exc)
-                )
-            ) from exc
+            raise GraphAgentError("GraphQueryAgent 调用失败: {}".format(_safe_exception_detail(exc))) from exc
         finally:
             await _run_graph_cleanup(
                 "terminal force-finish callback unregister",
@@ -422,10 +397,12 @@ class GraphJiuwenToolAdapter:
             if name == "property_filter":
                 args, skipped = self._filter_redundant_property_queries(args)
                 if skipped:
-                    self.executed_steps.append({
-                        "tool": name,
-                        "summary": "跳过重复 property_filter 子查询 {} 个".format(len(skipped)),
-                    })
+                    self.executed_steps.append(
+                        {
+                            "tool": name,
+                            "summary": "跳过重复 property_filter 子查询 {} 个".format(len(skipped)),
+                        }
+                    )
                 if skipped and not _property_queries_from_args(args):
                     self.last_tool_input_error = None
                     self.last_backend_error = None
@@ -440,10 +417,12 @@ class GraphJiuwenToolAdapter:
                 self.last_backend_error = None
                 self.last_tool_input_error = exc
                 self.last_error = str(exc)
-                self.executed_steps.append({
-                    "tool": name or "<empty>",
-                    "summary": "内部图工具参数错误: {}".format(str(exc)),
-                })
+                self.executed_steps.append(
+                    {
+                        "tool": name or "<empty>",
+                        "summary": "内部图工具参数错误: {}".format(str(exc)),
+                    }
+                )
                 return json.dumps(
                     {
                         "success": False,
@@ -458,10 +437,12 @@ class GraphJiuwenToolAdapter:
                 self.last_tool_input_error = None
                 self.last_backend_error = exc
                 self.last_error = str(exc)
-                self.executed_steps.append({
-                    "tool": name or "<empty>",
-                    "summary": "Internal graph tool failed: {}".format(exc.error_code),
-                })
+                self.executed_steps.append(
+                    {
+                        "tool": name or "<empty>",
+                        "summary": "Internal graph tool failed: {}".format(exc.error_code),
+                    }
+                )
                 return self._backend_error_content(exc)
             self.last_tool_input_error = None
             self.last_backend_error = None
@@ -469,10 +450,12 @@ class GraphJiuwenToolAdapter:
                 self.executions.append(execution)
             if execution.tool_name == "property_filter":
                 self._remember_property_queries(args, execution)
-            self.executed_steps.append({
-                "tool": execution.tool_name,
-                "summary": _summarize_tool_execution(execution),
-            })
+            self.executed_steps.append(
+                {
+                    "tool": execution.tool_name,
+                    "summary": _summarize_tool_execution(execution),
+                }
+            )
             return json.dumps(execution.payload, ensure_ascii=False, default=str)
 
     def has_terminal_backend_error(self) -> bool:
@@ -499,7 +482,9 @@ class GraphJiuwenToolAdapter:
 
     def _should_skip_pattern_search_after_record_hit(self) -> bool:
         context = self.tool_executor.context
-        mapping_intent = context.schema_context.get("mapping_intent") if isinstance(context.schema_context, Mapping) else None
+        mapping_intent = (
+            context.schema_context.get("mapping_intent") if isinstance(context.schema_context, Mapping) else None
+        )
         if not isinstance(mapping_intent, Mapping):
             return False
         if not bool(mapping_intent.get("property_filter_sufficient_after_hit")):
@@ -522,13 +507,15 @@ class GraphJiuwenToolAdapter:
             else:
                 reason = self._skip_reason_for_property_query(query)
             if reason:
-                skipped.append({
-                    "query_id": query.get("query_id") or "",
-                    "element_class": query.get("element_class") or "",
-                    "element_type": query.get("element_type") or "",
-                    "filter_dict": query.get("filter_dict") or {},
-                    "reason": reason,
-                })
+                skipped.append(
+                    {
+                        "query_id": query.get("query_id") or "",
+                        "element_class": query.get("element_class") or "",
+                        "element_type": query.get("element_type") or "",
+                        "filter_dict": query.get("filter_dict") or {},
+                        "reason": reason,
+                    }
+                )
             else:
                 kept_queries.append(query)
                 current_signatures.add(signature)
@@ -536,10 +523,7 @@ class GraphJiuwenToolAdapter:
             return args, []
         next_args = dict(args)
         if "queries" in args:
-            next_args["queries"] = [
-                _property_query_to_tool_args(query)
-                for query in kept_queries
-            ]
+            next_args["queries"] = [_property_query_to_tool_args(query) for query in kept_queries]
         elif kept_queries:
             next_args.update(_property_query_to_tool_args(kept_queries[0]))
         else:
@@ -566,15 +550,17 @@ class GraphJiuwenToolAdapter:
             row = rows[index] if index < len(rows) else {}
             count = _safe_int(row.get("count"), default=0)
             truncated = bool(row.get("truncated"))
-            self._property_query_history.append({
-                "signature": _property_query_signature(query),
-                "element_class": str(query.get("element_class") or ""),
-                "element_type": str(query.get("element_type") or ""),
-                "filter_dict": dict(query.get("filter_dict") or {}),
-                "return_properties": _normalize_return_properties(query.get("return_properties")),
-                "had_data": count > 0,
-                "truncated": truncated,
-            })
+            self._property_query_history.append(
+                {
+                    "signature": _property_query_signature(query),
+                    "element_class": str(query.get("element_class") or ""),
+                    "element_type": str(query.get("element_type") or ""),
+                    "filter_dict": dict(query.get("filter_dict") or {}),
+                    "return_properties": _normalize_return_properties(query.get("return_properties")),
+                    "had_data": count > 0,
+                    "truncated": truncated,
+                }
+            )
 
 
 def register_graph_runtime_tools(
@@ -596,12 +582,14 @@ def register_graph_runtime_tools(
         name = str(function.get("name") or "").strip()
         if not name:
             continue
-        tool_infos.append({
-            "type": "function",
-            "name": name,
-            "description": str(function.get("description") or ""),
-            "parameters": function.get("parameters") or {},
-        })
+        tool_infos.append(
+            {
+                "type": "function",
+                "name": name,
+                "description": str(function.get("description") or ""),
+                "parameters": function.get("parameters") or {},
+            }
+        )
 
     state: dict[str, Any] = {
         "run_id": context.provider_config.get("run_id"),
@@ -618,12 +606,14 @@ def register_graph_runtime_tools(
         messages: list[dict[str, Any]] = []
         for tool_call in list(tool_calls or []):
             content = await adapter.invoke(tool_call.name, tool_call.arguments)
-            messages.append({
-                "role": "tool",
-                "content": content,
-                "tool_call_id": tool_call.id,
-                "name": tool_call.name,
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": content,
+                    "tool_call_id": tool_call.id,
+                    "name": tool_call.name,
+                }
+            )
             if adapter.has_terminal_backend_error():
                 return ToolBatchResult(
                     messages=messages,
@@ -912,15 +902,17 @@ def _retry_query_with_context(
 ) -> str:
     previews = []
     for execution in executions[-3:]:
-        previews.append({
-            "tool": execution.tool_name,
-            "tool_args": execution.tool_args,
-            "record_count": (
-                execution.backend_result.total
-                if execution.backend_result and execution.backend_result.total is not None
-                else len(execution.backend_result.records or []) if execution.backend_result else 0
-            ),
-        })
+        previews.append(
+            {
+                "tool": execution.tool_name,
+                "tool_args": execution.tool_args,
+                "record_count": (
+                    execution.backend_result.total
+                    if execution.backend_result and execution.backend_result.total is not None
+                    else len(execution.backend_result.records or []) if execution.backend_result else 0
+                ),
+            }
+        )
     return "{}\n\n已有内部图工具结果摘要：\n{}".format(
         _path_pattern_retry_message(context),
         json.dumps(previews, ensure_ascii=False, default=str),

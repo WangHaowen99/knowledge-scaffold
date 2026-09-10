@@ -18,9 +18,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
-
 from api.auth.auth import get_current_user
 from api.dependencies import (
     require_admin_workspace_id,
@@ -29,6 +26,8 @@ from api.dependencies import (
 )
 from api.request_parsing import read_optional_json_object
 from config.evidence_config import EvidenceConfig
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 from ontology.evidence.manager import (
     EvidenceIndexManager,
     EvidenceIndexManagerError,
@@ -46,7 +45,6 @@ from persistence.evidence_operations import (
 )
 from persistence.runtime_facts import RuntimeFactsStore
 from workspace.workspaces import get_workspace_paths, resolve_workspace_id, workspace_scope
-
 
 logger = logging.getLogger("routes.evidence")
 evidence_router = APIRouter(prefix="/agentic")
@@ -333,9 +331,7 @@ def _rebuild_evidence_index_core(request, ontology_id: str, payload):
                 "semantic": semantic,
             }
         )
-        operations = EvidenceOperationsStore(
-            paths.runtime_dir / "ontology-evidence" / "operations.sqlite3"
-        )
+        operations = EvidenceOperationsStore(paths.runtime_dir / "ontology-evidence" / "operations.sqlite3")
         job = operations.create_or_get_build_job(
             job_id="idxjob_" + uuid.uuid4().hex,
             workspace_id=workspace_id,
@@ -388,9 +384,7 @@ def _cleanup_core(request, *, kind: str, payload):
     request_hash = _request_hash({"kind": kind, **normalized})
     operations: Optional[EvidenceOperationsStore] = None
     if not dry_run:
-        operations = EvidenceOperationsStore(
-            paths.runtime_dir / "ontology-evidence" / "operations.sqlite3"
-        )
+        operations = EvidenceOperationsStore(paths.runtime_dir / "ontology-evidence" / "operations.sqlite3")
         try:
             created, previous = operations.reserve_result(
                 workspace_id=workspace_id,
@@ -498,10 +492,7 @@ def _generation_snapshot(
         metadata = SQLiteEvidenceIndex(generation_dir / "index.sqlite3").metadata()
     except (EvidenceIndexError, OSError, sqlite3.Error):
         return None, None
-    if (
-        str(metadata.get("workspace_id") or "") != workspace_id
-        or str(metadata.get("ontology_id") or "") != ontology_id
-    ):
+    if str(metadata.get("workspace_id") or "") != workspace_id or str(metadata.get("ontology_id") or "") != ontology_id:
         return None, None
     manifest: Optional[dict[str, Any]] = None
     manifest_path = generation_dir / "manifest.json"
@@ -525,21 +516,21 @@ def _effective_status(
     if config.workspace_mode(workspace_id) == "off" or not bool(getattr(ontology, "enabled", False)):
         return "disabled"
     current_revision = int((state or {}).get("mutation_revision") or 0)
-    if latest_job and int(
-        latest_job.get("mutation_revision")
-        if latest_job.get("mutation_revision") is not None
-        else -1
-    ) == current_revision:
+    if (
+        latest_job
+        and int(latest_job.get("mutation_revision") if latest_job.get("mutation_revision") is not None else -1)
+        == current_revision
+    ):
         if latest_job.get("status") in {"queued", "building"}:
             return "building_base" if latest_job.get("status") == "building" else "queued"
         if latest_job.get("status") == "failed" and not pointer:
             return "base_failed"
     if pointer:
-        if state is not None and int(
-            pointer.get("mutation_revision")
-            if pointer.get("mutation_revision") is not None
-            else -1
-        ) != current_revision:
+        if (
+            state is not None
+            and int(pointer.get("mutation_revision") if pointer.get("mutation_revision") is not None else -1)
+            != current_revision
+        ):
             return "stale"
         status = str(pointer.get("status") or "stale")
         if status in {
@@ -574,7 +565,9 @@ def _build_status(
             duration_ms = max(
                 0,
                 int(
-                    (datetime.fromisoformat(str(completed_at)) - datetime.fromisoformat(str(started_at))).total_seconds()
+                    (
+                        datetime.fromisoformat(str(completed_at)) - datetime.fromisoformat(str(started_at))
+                    ).total_seconds()
                     * 1000
                 ),
             )

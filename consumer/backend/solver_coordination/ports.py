@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Iterable, Protocol
 
+from .connectors.base import SolverConnector
 from .contracts import (
     FactSnapshot,
     NormalizedInput,
@@ -12,8 +13,6 @@ from .contracts import (
     SolverResult,
     VerificationResult,
 )
-
-from .connectors.base import SolverConnector
 
 
 class FactSnapshotProducer(Protocol):
@@ -31,8 +30,7 @@ class FactSnapshotProducer(Protocol):
 
 
 class DecisionModelLoader(Protocol):
-    def load(self, *, capability: Any) -> Mapping[str, Any]:
-        ...
+    def load(self, *, capability: Any) -> Mapping[str, Any]: ...
 
 
 class ProblemCompiler(Protocol):
@@ -70,11 +68,9 @@ class ProblemFamilyAdapter(Protocol):
 
 
 class ProblemFamilyRegistryPort(Protocol):
-    def get(self, family_key: str) -> ProblemFamilyAdapter:
-        ...
+    def get(self, family_key: str) -> ProblemFamilyAdapter: ...
 
-    def compile_problem(self, family_key: str, **kwargs: Any) -> Any:
-        ...
+    def compile_problem(self, family_key: str, **kwargs: Any) -> Any: ...
 
 
 __all__ = [

@@ -1,29 +1,26 @@
 from __future__ import annotations
 
+import json
+import time
 from contextlib import contextmanager
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 from pathlib import Path
 from threading import Thread
-import time
 
+from contracts.solver.tck import runner as runner_module
 from contracts.solver.tck.runner import (
     ConnectorTckRunner,
     FaultScenario,
     TckReport,
 )
-from contracts.solver.tck import runner as runner_module
-
+from contracts.solver.tck.tests.tck_synthetic_credentials import SERVICE_TOKEN
 
 CONTRACT_ROOT = Path(__file__).resolve().parents[2]
-SERVICE_TOKEN = "synthetic-tck-service-token"
 
 
 def _document(name: str) -> dict:
-    return json.loads(
-        (CONTRACT_ROOT / "examples" / name).read_text(encoding="utf-8")
-    )
+    return json.loads((CONTRACT_ROOT / "examples" / name).read_text(encoding="utf-8"))
 
 
 def _error(code: str, category: str = "contract", retryable: bool = False) -> dict:
@@ -157,8 +154,7 @@ class _SyntheticConnector(BaseHTTPRequestHandler):
                 "request_ref": payload["request_ref"],
                 "status": (
                     "running"
-                    if self.fault
-                    in {"attempt_lost", "restart", "late_result", "execution_failed"}
+                    if self.fault in {"attempt_lost", "restart", "late_result", "execution_failed"}
                     else "completed"
                 ),
             }
@@ -293,8 +289,7 @@ def test_tck_runner_executes_optional_fault_driver_and_public_verifier():
             bearer_token=SERVICE_TOKEN,
             fault_driver=_FaultDriver(),
             result_verifier=lambda *, request, result: (
-                result["request_ref"] == request["request_ref"]
-                and result["solve_outcome"] == "optimal"
+                result["request_ref"] == request["request_ref"] and result["solve_outcome"] == "optimal"
             ),
         ).run()
 

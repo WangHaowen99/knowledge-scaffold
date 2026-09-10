@@ -17,15 +17,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, quote_plus
 
-from jsonschema import Draft202012Validator, FormatChecker
-from referencing import Registry
-from referencing.exceptions import NoSuchResource
-
+from agent.core.shared.interaction_policy import user_interaction_supported_from_context
 from agent.direct_execution.arguments import (
     build_direct_cli_args,
     extract_runtime_argument_keys,
-    protect_deterministic_script_args,
     protect_deterministic_runtime_parameters,
+    protect_deterministic_script_args,
 )
 from agent.direct_execution.audit import build_result_envelope, runtime_revision
 from agent.direct_execution.contracts import (
@@ -42,18 +39,18 @@ from agent.direct_execution.provider_broker import (
     DeterministicProviderBrokerError,
 )
 from agent.tools.business_data.deterministic import (
+    MIN_DETERMINISTIC_PROVIDER_SECRET_LENGTH,
     DeterministicProviderBinding,
     DeterministicProviderError,
-    MIN_DETERMINISTIC_PROVIDER_SECRET_LENGTH,
     resolve_deterministic_provider_binding,
 )
 from agent.tools.business_data.endpoint_security import endpoint_secret_values
 from agent.tools.execute_script import handle_execute_script_path
-from agent.core.shared.interaction_policy import user_interaction_supported_from_context
 from integration.sandbox.registry import (
     register_run_sandbox_companion,
     release_run_sandbox,
 )
+from jsonschema import Draft202012Validator, FormatChecker
 from ontology.ontology_catalog import (
     find_markdown_file,
     get_ontology_manifest,
@@ -67,10 +64,11 @@ from ontology.operation_execution import (
     normalize_operation_token,
     verify_deterministic_package_lock,
 )
+from referencing import Registry
+from referencing.exceptions import NoSuchResource
 from shared_capabilities.ontology_script_sdk.deterministic_provider import (
     DETERMINISTIC_PROVIDER_SOCKET_ENV,
 )
-
 
 PARSER_STDOUT_LIMIT = 64 * 1024
 HANDLER_STDOUT_LIMIT = 5 * 1024 * 1024
@@ -106,8 +104,7 @@ _IMPLICIT_COMMAND_PREFIX = re.compile(
     r"^(?:(?:请|麻烦)?(?:帮我)?(?:执行|运行|调用)|(?:please\s+)?(?:execute|run|invoke))\s*$"
 )
 _INLINE_ARGUMENT_PREFIX = re.compile(
-    r"^(?:(?:参数|args?|arguments?|with)\b|[\w.-]+\s*=|"
-    r"\{\s*(?:[\"'][^\"']+[\"']|[\w.-]+)\s*:)",
+    r"^(?:(?:参数|args?|arguments?|with)\b|[\w.-]+\s*=|" r"\{\s*(?:[\"'][^\"']+[\"']|[\w.-]+)\s*:)",
     re.IGNORECASE,
 )
 _INLINE_POSITIONAL_ARGUMENT_PREFIX = re.compile(
@@ -133,11 +130,7 @@ def _runtime_owned_argument_names(
     runtime_argument_keys: frozenset[str],
 ) -> list[str]:
     return sorted(
-        {
-            str(key)
-            for key in arguments
-            if str(key) in runtime_argument_keys
-        },
+        {str(key) for key in arguments if str(key) in runtime_argument_keys},
         key=lambda item: item.encode("utf-8"),
     )
 
@@ -174,10 +167,7 @@ class _AnyCancelEvent:
         self._events = tuple(event for event in events if event is not None)
 
     def is_set(self) -> bool:
-        return any(
-            callable(getattr(event, "is_set", None)) and event.is_set()
-            for event in self._events
-        )
+        return any(callable(getattr(event, "is_set", None)) and event.is_set() for event in self._events)
 
 
 def _deny_schema_retrieval(uri: str) -> Any:
@@ -193,32 +183,18 @@ class DeterministicExecutionService:
     @staticmethod
     def _artifact_staging_parent() -> Optional[Path]:
         """Resolve the optional host/JiuwenBox shared staging directory."""
-        configured = str(
-            os.environ.get(DETERMINISTIC_ARTIFACT_STAGING_ROOT_ENV) or ""
-        ).strip()
+        configured = str(os.environ.get(DETERMINISTIC_ARTIFACT_STAGING_ROOT_ENV) or "").strip()
         if not configured:
             return None
         path = Path(configured)
         if not path.is_absolute():
-            raise ValueError(
-                "{} must be an absolute path".format(
-                    DETERMINISTIC_ARTIFACT_STAGING_ROOT_ENV
-                )
-            )
+            raise ValueError("{} must be an absolute path".format(DETERMINISTIC_ARTIFACT_STAGING_ROOT_ENV))
         path.mkdir(parents=True, exist_ok=True)
         if path.is_symlink():
-            raise ValueError(
-                "{} must not be a symbolic link".format(
-                    DETERMINISTIC_ARTIFACT_STAGING_ROOT_ENV
-                )
-            )
+            raise ValueError("{} must not be a symbolic link".format(DETERMINISTIC_ARTIFACT_STAGING_ROOT_ENV))
         resolved = path.resolve(strict=True)
         if not resolved.is_dir():
-            raise ValueError(
-                "{} must be a directory".format(
-                    DETERMINISTIC_ARTIFACT_STAGING_ROOT_ENV
-                )
-            )
+            raise ValueError("{} must be a directory".format(DETERMINISTIC_ARTIFACT_STAGING_ROOT_ENV))
         return resolved
 
     @staticmethod
@@ -273,9 +249,7 @@ class DeterministicExecutionService:
         ontology_manifest: Any = None,
     ) -> DeterministicOutcome:
         ontology_id = str(
-            request.runtime_context.selected_ontology_id
-            or request.context.get("selected_ontology_id")
-            or ""
+            request.runtime_context.selected_ontology_id or request.context.get("selected_ontology_id") or ""
         ).strip()
         if not ontology_id:
             return NotApplicable("no_selected_ontology")
@@ -299,12 +273,8 @@ class DeterministicExecutionService:
             )
         else:
             manifest_id = str(getattr(ontology, "id", "") or "").strip()
-            manifest_version = str(
-                getattr(ontology, "version", "") or ""
-            ).strip()
-            if manifest_id != ontology_id or (
-                ontology_version and manifest_version != ontology_version
-            ):
+            manifest_version = str(getattr(ontology, "version", "") or "").strip()
+            if manifest_id != ontology_id or (ontology_version and manifest_version != ontology_version):
                 return Failed(
                     "ontology_revision_changed",
                     "The admitted ontology package does not match the request.",
@@ -395,12 +365,8 @@ class DeterministicExecutionService:
                 "The deterministic handler descriptor is unavailable.",
                 operation_key=spec.operation_key,
             )
-        script_parameters = protect_deterministic_runtime_parameters(
-            list(script_entry.get("parameters") or [])
-        )
-        script_args = protect_deterministic_script_args(
-            list(script_entry.get("arguments") or [])
-        )
+        script_parameters = protect_deterministic_runtime_parameters(list(script_entry.get("parameters") or []))
+        script_args = protect_deterministic_script_args(list(script_entry.get("arguments") or []))
         runtime_argument_keys = frozenset(
             extract_runtime_argument_keys(
                 script_args=script_args,
@@ -549,9 +515,7 @@ class DeterministicExecutionService:
             **dict(request.arguments or {}),
         }
         pending_parser_issues = (
-            list(request.checkpoint.get("pending_parser_issues") or [])
-            if request.checkpoint
-            else []
+            list(request.checkpoint.get("pending_parser_issues") or []) if request.checkpoint else []
         )
         unresolved_parser_issues = []
         for issue in pending_parser_issues:
@@ -658,10 +622,7 @@ class DeterministicExecutionService:
 
         dependencies = [provider_dependency] if provider_dependency is not None else []
         provider_secrets = self._provider_secret_values(provider_binding)
-        if any(
-            len(secret) < MIN_DETERMINISTIC_PROVIDER_SECRET_LENGTH
-            for secret in provider_secrets
-        ):
+        if any(len(secret) < MIN_DETERMINISTIC_PROVIDER_SECRET_LENGTH for secret in provider_secrets):
             return Failed(
                 "provider_credentials_unsafe",
                 "Deterministic provider credentials do not meet the minimum length.",
@@ -688,11 +649,7 @@ class DeterministicExecutionService:
         try:
             artifact_staging = tempfile.TemporaryDirectory(
                 prefix="deterministic-artifact-staging-",
-                dir=(
-                    str(artifact_staging_parent)
-                    if artifact_staging_parent is not None
-                    else None
-                ),
+                dir=(str(artifact_staging_parent) if artifact_staging_parent is not None else None),
             )
         except OSError as exc:
             return Failed(
@@ -707,16 +664,12 @@ class DeterministicExecutionService:
             # cryptographically unguessable child with write/traverse access,
             # then freeze that child before inspecting any output.
             os.chmod(artifact_staging_dir, 0o711)
-            artifact_root = Path(artifact_staging_dir) / (
-                "run-{}".format(secrets.token_hex(32))
-            )
+            artifact_root = Path(artifact_staging_dir) / ("run-{}".format(secrets.token_hex(32)))
             artifact_root.mkdir(mode=0o733)
             os.chmod(artifact_root, 0o733)
             env_overrides["RUN_ARTIFACT_DIR"] = str(artifact_root)
             env_overrides["RUN_ARTIFACT_MAX_FILE_BYTES"] = str(MAX_ARTIFACT_BYTES)
-            env_overrides["RUN_ARTIFACT_MAX_TOTAL_BYTES"] = str(
-                MAX_ARTIFACT_TOTAL_BYTES
-            )
+            env_overrides["RUN_ARTIFACT_MAX_TOTAL_BYTES"] = str(MAX_ARTIFACT_TOTAL_BYTES)
             env_overrides["RUN_ARTIFACT_MAX_COUNT"] = str(MAX_ARTIFACT_COUNT)
             provider_broker: Optional[DeterministicProviderBroker] = None
             if provider_binding is not None:
@@ -734,9 +687,7 @@ class DeterministicExecutionService:
                         operation_key=spec.operation_key,
                         internal_detail=type(exc).__name__,
                     )
-                env_overrides[DETERMINISTIC_PROVIDER_SOCKET_ENV] = str(
-                    provider_broker.socket_path
-                )
+                env_overrides[DETERMINISTIC_PROVIDER_SOCKET_ENV] = str(provider_broker.socket_path)
             sandbox_release_error: Optional[Exception] = None
             artifact_freeze_error: Optional[Exception] = None
             provider_broker_error: Optional[Exception] = None
@@ -750,9 +701,7 @@ class DeterministicExecutionService:
                     now = time.monotonic()
                     if now >= next_lease_refresh:
                         try:
-                            self._refresh_artifact_staging_lease(
-                                Path(artifact_staging_dir)
-                            )
+                            self._refresh_artifact_staging_lease(Path(artifact_staging_dir))
                         except (OSError, NotImplementedError) as exc:
                             artifact_monitor_failures.append(
                                 Failed(
@@ -764,9 +713,7 @@ class DeterministicExecutionService:
                             )
                             artifact_limit_cancel.set()
                             return
-                        next_lease_refresh = (
-                            now + ARTIFACT_STAGING_HEARTBEAT_SECONDS
-                        )
+                        next_lease_refresh = now + ARTIFACT_STAGING_HEARTBEAT_SECONDS
                     _paths, failure = self._inspect_artifact_tree(artifact_root)
                     if failure is not None:
                         artifact_monitor_failures.append(failure)
@@ -797,11 +744,7 @@ class DeterministicExecutionService:
                     ),
                     sandbox_prepare_data_connection=False,
                     sandbox_include_data_connection_env=False,
-                    sandbox_read_only_paths=(
-                        [Path(artifact_staging_dir)]
-                        if provider_broker is not None
-                        else []
-                    ),
+                    sandbox_read_only_paths=([Path(artifact_staging_dir)] if provider_broker is not None else []),
                     sandbox_writable_paths=[artifact_root],
                     file_size_limit_bytes=MAX_ARTIFACT_BYTES,
                 )
@@ -832,11 +775,7 @@ class DeterministicExecutionService:
                 or artifact_freeze_error is not None
                 or provider_broker_error is not None
             ):
-                isolation_error = (
-                    sandbox_release_error
-                    or artifact_freeze_error
-                    or provider_broker_error
-                )
+                isolation_error = sandbox_release_error or artifact_freeze_error or provider_broker_error
                 return Failed(
                     "deterministic_isolation_unavailable",
                     "Deterministic sandbox output could not be isolated safely.",
@@ -1045,9 +984,7 @@ class DeterministicExecutionService:
         not mean execution will succeed.
         """
         ontology_id = str(
-            request.runtime_context.selected_ontology_id
-            or request.context.get("selected_ontology_id")
-            or ""
+            request.runtime_context.selected_ontology_id or request.context.get("selected_ontology_id") or ""
         ).strip()
         if not ontology_id:
             return False
@@ -1067,12 +1004,8 @@ class DeterministicExecutionService:
             ontology, _error = get_ontology_manifest(ontology_id, **manifest_kwargs)
         else:
             manifest_id = str(getattr(ontology, "id", "") or "").strip()
-            manifest_version = str(
-                getattr(ontology, "version", "") or ""
-            ).strip()
-            if manifest_id != ontology_id or (
-                ontology_version and manifest_version != ontology_version
-            ):
+            manifest_version = str(getattr(ontology, "version", "") or "").strip()
+            if manifest_id != ontology_id or (ontology_version and manifest_version != ontology_version):
                 raise ValueError("ontology_manifest does not match the request")
         if ontology is None:
             return False
@@ -1113,9 +1046,7 @@ class DeterministicExecutionService:
         ontology_dir: Path,
     ) -> DeterministicOperationSpec | DeterministicOutcome:
         by_token = {
-            normalize_operation_token(token): spec
-            for spec in specs
-            for token in (spec.operation_key, *spec.aliases)
+            normalize_operation_token(token): spec for spec in specs for token in (spec.operation_key, *spec.aliases)
         }
         checkpoint_key = str((request.checkpoint or {}).get("operation_key") or "").strip()
         requested_key = str(request.context.get("requested_operation_key") or "").strip()
@@ -1132,11 +1063,7 @@ class DeterministicExecutionService:
                     "Deterministic checkpoint operation is no longer available.",
                     operation_key=checkpoint_key,
                 )
-            requested_spec = (
-                by_token.get(normalize_operation_token(requested_key))
-                if requested_key
-                else None
-            )
+            requested_spec = by_token.get(normalize_operation_token(requested_key)) if requested_key else None
             if requested_key and requested_spec is not checkpoint_spec:
                 return Failed("stale_checkpoint", "The requested operation changed.")
             return checkpoint_spec
@@ -1184,18 +1111,13 @@ class DeterministicExecutionService:
         if not normalized_request or _NON_EXECUTION_MARKER.search(normalized_request):
             return False
         all_terms = tuple(
-            normalize_operation_token(term)
-            for term in spec.routing_all_terms
-            if normalize_operation_token(term)
+            normalize_operation_token(term) for term in spec.routing_all_terms if normalize_operation_token(term)
         )
         any_terms = tuple(
-            normalize_operation_token(term)
-            for term in spec.routing_any_terms
-            if normalize_operation_token(term)
+            normalize_operation_token(term) for term in spec.routing_any_terms if normalize_operation_token(term)
         )
-        return (
-            all(term in normalized_request for term in all_terms)
-            and (not any_terms or any(term in normalized_request for term in any_terms))
+        return all(term in normalized_request for term in all_terms) and (
+            not any_terms or any(term in normalized_request for term in any_terms)
         )
 
     @staticmethod
@@ -1229,20 +1151,12 @@ class DeterministicExecutionService:
                 prefix = normalized_request[: match.start()].strip()
                 suffix = normalized_request[match.end() :].strip()
                 previous = normalized_request[match.start() - 1] if match.start() else ""
-                following = (
-                    normalized_request[match.end()]
-                    if match.end() < len(normalized_request)
-                    else ""
-                )
+                following = normalized_request[match.end()] if match.end() < len(normalized_request) else ""
                 if previous in _OPEN_QUOTES or following in _CLOSE_QUOTES:
                     continue
                 if prefix and _IMPLICIT_COMMAND_PREFIX.fullmatch(prefix):
                     return True
-                if (
-                    not prefix
-                    and suffix
-                    and DeterministicExecutionService._has_inline_arguments(suffix)
-                ):
+                if not prefix and suffix and DeterministicExecutionService._has_inline_arguments(suffix):
                     return True
         return False
 
@@ -1372,9 +1286,9 @@ class DeterministicExecutionService:
         unknown = set(parsed) - {"matched", "arguments", "issues"}
         invalid_contract = bool(unknown or not required_fields.issubset(parsed))
         if not invalid_contract:
-            invalid_contract = not isinstance(
-                parsed.get("matched"), bool
-            ) or not isinstance(parsed.get("arguments"), dict)
+            invalid_contract = not isinstance(parsed.get("matched"), bool) or not isinstance(
+                parsed.get("arguments"), dict
+            )
         if not invalid_contract:
             invalid_contract = not isinstance(parsed.get("issues"), list)
         if invalid_contract:
@@ -1488,9 +1402,7 @@ class DeterministicExecutionService:
 
     @staticmethod
     def _load_json(path: Path) -> dict[str, Any]:
-        value = DeterministicExecutionService._strict_json_loads(
-            path.read_text(encoding="utf-8")
-        )
+        value = DeterministicExecutionService._strict_json_loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise ValueError("JSON document root must be an object")
         return value
@@ -1678,25 +1590,17 @@ class DeterministicExecutionService:
         if not user_interaction_supported_from_context(request.context):
             return Failed(
                 "missing_arguments",
-                "Required deterministic arguments are missing: {}.".format(
-                    ", ".join(missing)
-                ),
+                "Required deterministic arguments are missing: {}.".format(", ".join(missing)),
                 operation_key=spec.operation_key,
                 internal_detail=",".join(missing),
             )
         field = missing[0]
         property_schema = self._root_property_schema(schema, field)
         prompt = str(
-            property_schema.get("description")
-            or property_schema.get("title")
-            or "Please provide '{}'.".format(field)
+            property_schema.get("description") or property_schema.get("title") or "Please provide '{}'.".format(field)
         )
         enum_values = property_schema.get("enum")
-        selectable_values = (
-            list(enum_values)
-            if isinstance(enum_values, list) and enum_values
-            else []
-        )
+        selectable_values = list(enum_values) if isinstance(enum_values, list) and enum_values else []
         interaction = {
             "id": "det-{}-{}-{}".format(
                 request.runtime_context.run_id,
@@ -1782,8 +1686,7 @@ class DeterministicExecutionService:
         }
         if options:
             interaction["options"] = [
-                {"id": str(index), "label": value, "value": value}
-                for index, value in enumerate(options, start=1)
+                {"id": str(index), "label": value, "value": value} for index, value in enumerate(options, start=1)
             ]
         return AwaitingInput(
             interaction=interaction,
@@ -1846,24 +1749,17 @@ class DeterministicExecutionService:
             "package_revision": spec.package_revision,
             "runtime_revision": current_runtime_revision,
         }
-        expected_provider = (
-            provider_dependency.to_dict() if provider_dependency is not None else None
-        )
+        expected_provider = provider_dependency.to_dict() if provider_dependency is not None else None
         checkpoint_provider = checkpoint.get("provider_dependency")
         checkpoint_arguments = checkpoint.get("arguments")
         missing_fields = checkpoint.get("missing_fields")
         pending_parser_issues = checkpoint.get("pending_parser_issues")
         invalid_shape = checkpoint.get("source") != "deterministic_execution"
         if not invalid_shape:
-            invalid_shape = not isinstance(
-                checkpoint_arguments, Mapping
-            ) or not isinstance(missing_fields, list)
+            invalid_shape = not isinstance(checkpoint_arguments, Mapping) or not isinstance(missing_fields, list)
         if not invalid_shape and pending_parser_issues is not None:
             invalid_shape = not isinstance(pending_parser_issues, list)
-        revision_mismatch = any(
-            str(checkpoint.get(key) or "") != str(value)
-            for key, value in expected.items()
-        )
+        revision_mismatch = any(str(checkpoint.get(key) or "") != str(value) for key, value in expected.items())
         invalid_dependency = checkpoint_provider != expected_provider
         runtime_fields_present = bool(
             _runtime_owned_checkpoint_names(
@@ -1943,9 +1839,7 @@ class DeterministicExecutionService:
         writer: Optional[ArtifactWriter],
         forbidden_values: tuple[str, ...] = (),
     ) -> list[dict[str, Any]] | Failed:
-        paths, inspection_failure = DeterministicExecutionService._inspect_artifact_tree(
-            artifact_root
-        )
+        paths, inspection_failure = DeterministicExecutionService._inspect_artifact_tree(artifact_root)
         if inspection_failure is not None:
             return inspection_failure
         pending_artifacts: list[tuple[dict[str, Any], str]] = []
@@ -1960,10 +1854,7 @@ class DeterministicExecutionService:
                     "Artifact metadata could not be read.",
                     internal_detail=type(exc).__name__,
                 )
-            if (
-                declared_size > MAX_ARTIFACT_BYTES
-                or total_size + declared_size > MAX_ARTIFACT_TOTAL_BYTES
-            ):
+            if declared_size > MAX_ARTIFACT_BYTES or total_size + declared_size > MAX_ARTIFACT_TOTAL_BYTES:
                 return Failed("artifact_policy_violation", "Artifact size exceeds the limit.")
             try:
                 with path.open("rb") as stream:
@@ -1993,9 +1884,7 @@ class DeterministicExecutionService:
                 )
             normalized_key = name.casefold()
             invalid_root = not name or name.startswith("/")
-            invalid_parts = any(
-                part in {"", ".", ".."} for part in name.split("/")
-            )
+            invalid_parts = any(part in {"", ".", ".."} for part in name.split("/"))
             duplicate_name = normalized_key in normalized_names
             if invalid_root or invalid_parts or duplicate_name:
                 return Failed(
@@ -2019,9 +1908,7 @@ class DeterministicExecutionService:
         prepare_artifacts = getattr(writer, "prepare_artifacts", None)
         if pending_artifacts and callable(prepare_artifacts):
             try:
-                prepare_artifacts(
-                    [str(record["name"]) for record, _text in pending_artifacts]
-                )
+                prepare_artifacts([str(record["name"]) for record, _text in pending_artifacts])
             except Exception as exc:
                 DeterministicExecutionService._rollback_persisted_artifacts(
                     writer,
@@ -2048,16 +1935,11 @@ class DeterministicExecutionService:
                         "Artifact could not be persisted.",
                         internal_detail=type(exc).__name__,
                     )
-                stored_ref = (
-                    str(stored.get("output_ref") or "").strip()
-                    if isinstance(stored, Mapping)
-                    else ""
-                )
+                stored_ref = str(stored.get("output_ref") or "").strip() if isinstance(stored, Mapping) else ""
                 if (
                     not isinstance(stored, Mapping)
                     or not stored_ref
-                    or str(stored.get("sha256") or "").strip()
-                    != str(record["sha256"])
+                    or str(stored.get("sha256") or "").strip() != str(record["sha256"])
                 ):
                     rollback_artifacts = list(artifacts)
                     if stored_ref:
@@ -2135,17 +2017,12 @@ class DeterministicExecutionService:
                             "Artifact count exceeds the limit.",
                         )
                     total_size += declared_size
-                    if (
-                        declared_size > MAX_ARTIFACT_BYTES
-                        or total_size > MAX_ARTIFACT_TOTAL_BYTES
-                    ):
+                    if declared_size > MAX_ARTIFACT_BYTES or total_size > MAX_ARTIFACT_TOTAL_BYTES:
                         return [], Failed(
                             "artifact_policy_violation",
                             "Artifact size exceeds the limit.",
                         )
-        files.sort(
-            key=lambda item: item.relative_to(artifact_root).as_posix().encode("utf-8")
-        )
+        files.sort(key=lambda item: item.relative_to(artifact_root).as_posix().encode("utf-8"))
         return files, None
 
     @staticmethod
@@ -2170,9 +2047,7 @@ class DeterministicExecutionService:
             if isinstance(value, Mapping):
                 for raw_key, child in value.items():
                     key = str(raw_key or "").strip().casefold()
-                    child_sensitive = sensitive or any(
-                        part in key for part in _SENSITIVE_CONNECTION_KEY_PARTS
-                    )
+                    child_sensitive = sensitive or any(part in key for part in _SENSITIVE_CONNECTION_KEY_PARTS)
                     collect_sensitive_options(child, sensitive=child_sensitive)
                 return
             if isinstance(value, (list, tuple)):
@@ -2236,9 +2111,7 @@ class DeterministicExecutionService:
         protected_values: set[str] = set()
         for raw_value in raw_values:
             protected_values.update(cls._protected_value_encodings(raw_value))
-        return tuple(
-            sorted(protected_values, key=lambda item: (-len(item), item))
-        )
+        return tuple(sorted(protected_values, key=lambda item: (-len(item), item)))
 
     @staticmethod
     def _value_contains_secret(value: Any, secret_values: tuple[str, ...]) -> bool:
@@ -2281,9 +2154,7 @@ class DeterministicExecutionService:
         if not callable(rollback):
             return
         output_refs = [
-            str(item.get("output_ref") or "").strip()
-            for item in artifacts
-            if str(item.get("output_ref") or "").strip()
+            str(item.get("output_ref") or "").strip() for item in artifacts if str(item.get("output_ref") or "").strip()
         ]
         try:
             rollback(output_refs)

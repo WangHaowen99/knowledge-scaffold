@@ -64,46 +64,44 @@ def _write_logic(
     trigger_condition: str = "用户需要查询物料供应商时触发",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = (
-        [
-                "# 业务描述",
-                desc,
-                "",
-                "# 与logic的关联",
-                "- 被logic调用 > {}".format(parent_relation),
-                "- 调用logic > [[子流程A]]",
-                "",
-                "# 与object的关联",
-                "- 输入数据的对象：[[物料]]",
-                "- 输出数据的对象：[[供应商]]",
-                "- 支撑数据的对象：无",
-                "",
-                "# 与object的语义关联",
-                "| 业务对象 | 语义关联关系 |",
-                "| --- | --- |",
-                "| 物料 | 使用物料编号定位供应商 |",
-                "| 供应商 | 输出命中的供应商信息 |",
-                "",
-                "# 触发条件",
-                trigger_condition,
-                "",
-                "# 输入",
-                "| 参数名称 | 描述 |",
-                "| --- | --- |",
-                "| 物料编号 | 需要查询的物料编号 |",
-                "",
-                "# 输出",
-                "| 参数名称 | 描述 |",
-                "| --- | --- |",
-                "| 供应商编号 | 命中的供应商编号 |",
-                "",
-                "# 逻辑描述",
-                "```",
-                "执行 supplier_lookup 脚本",
-                "python cleanup.py",
-                "```",
-        ]
-    )
+    lines = [
+        "# 业务描述",
+        desc,
+        "",
+        "# 与logic的关联",
+        "- 被logic调用 > {}".format(parent_relation),
+        "- 调用logic > [[子流程A]]",
+        "",
+        "# 与object的关联",
+        "- 输入数据的对象：[[物料]]",
+        "- 输出数据的对象：[[供应商]]",
+        "- 支撑数据的对象：无",
+        "",
+        "# 与object的语义关联",
+        "| 业务对象 | 语义关联关系 |",
+        "| --- | --- |",
+        "| 物料 | 使用物料编号定位供应商 |",
+        "| 供应商 | 输出命中的供应商信息 |",
+        "",
+        "# 触发条件",
+        trigger_condition,
+        "",
+        "# 输入",
+        "| 参数名称 | 描述 |",
+        "| --- | --- |",
+        "| 物料编号 | 需要查询的物料编号 |",
+        "",
+        "# 输出",
+        "| 参数名称 | 描述 |",
+        "| --- | --- |",
+        "| 供应商编号 | 命中的供应商编号 |",
+        "",
+        "# 逻辑描述",
+        "```",
+        "执行 supplier_lookup 脚本",
+        "python cleanup.py",
+        "```",
+    ]
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -240,9 +238,9 @@ def test_run_generates_agent_ontology_from_new_modeling_template(tmp_path):
     assert "| supplier_lookup | supplier_lookup | 供应商查询 | tools/supplier_lookup.py |" in scripts_index
     assert "bound_operation: 供应商查询" in script_descriptor
     assert "cleanup" not in scripts_index
-    assert "关联logic：供应商查询" in (
-        target_root / "scripts" / "tools" / "supplier_lookup.py"
-    ).read_text(encoding="utf-8")
+    assert "关联logic：供应商查询" in (target_root / "scripts" / "tools" / "supplier_lookup.py").read_text(
+        encoding="utf-8"
+    )
     assert "print('cleanup')" in (target_root / "scripts" / "nested" / "cleanup.py").read_text(encoding="utf-8")
     assert (target_root / "scripts" / "nested" / "config.json").read_text(encoding="utf-8") == '{"mode":"cleanup"}\n'
     assert not (target_root / "scripts" / "cleanup.py").exists()
@@ -265,7 +263,12 @@ def test_run_generates_agent_ontology_from_new_modeling_template(tmp_path):
     graph_nodes = json.loads((target_root / "graph" / "nodes.json").read_text(encoding="utf-8"))
     graph_edges = json.loads((target_root / "graph" / "edges.json").read_text(encoding="utf-8"))
     assert {"id": "物料", "type": "entity", "description": "物料对象描述", "source": "objects/物料.md"} in graph_nodes
-    assert {"id": "供应商查询", "type": "tool", "description": "根据物料查询供应商", "source": "operations/供应商查询.md"} in graph_nodes
+    assert {
+        "id": "供应商查询",
+        "type": "tool",
+        "description": "根据物料查询供应商",
+        "source": "operations/供应商查询.md",
+    } in graph_nodes
     assert {
         "source": "供应商查询",
         "relation": "使用物料编号定位供应商",
@@ -350,13 +353,15 @@ def test_run_preserves_nested_headings_inside_logic_description(tmp_path):
     logic_path.write_text(
         content.replace(
             "# 逻辑描述\n```\n执行 supplier_lookup 脚本\npython cleanup.py\n```",
-            "\n".join([
-                "# 逻辑描述",
-                "## 执行步骤",
-                "- 步骤1：结构化解析",
-                "## 规则说明",
-                "- 规则1：保留二级标题内容",
-            ]),
+            "\n".join(
+                [
+                    "# 逻辑描述",
+                    "## 执行步骤",
+                    "- 步骤1：结构化解析",
+                    "## 规则说明",
+                    "- 规则1：保留二级标题内容",
+                ]
+            ),
         ),
         encoding="utf-8",
     )
@@ -482,30 +487,32 @@ def test_run_merges_docstring_business_names_with_cli_flags(tmp_path):
     scripts_dir = source_root / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     (scripts_dir / "fault_repair_closed_loop.py").write_text(
-        "\n".join([
-            '"""',
-            "关联logic：故障报修闭环",
-            "功能描述：处理故障报修闭环。",
-            "",
-            "用法：",
-            "    CLI    ：python3 fault_repair_closed_loop.py --report_source 400电话 --ticket-id R001",
-            "",
-            "输入参数：",
-            "    report_source    字符串    必填，报修渠道(400电话 / 微信 / APP)",
-            "    ticket_id    字符串    报修单号",
-            "    equipment_data    dict    设备对象数据，默认从数据层读取",
-            "",
-            "输出：",
-            "    return {status: str}",
-            '"""',
-            "import argparse",
-            "",
-            "def parse_args():",
-            "    parser = argparse.ArgumentParser()",
-            "    parser.add_argument('--report_source', required=True, help='报修渠道(400电话 / 微信 / APP)')",
-            "    parser.add_argument('--ticket-id', required=True, help='报修单号')",
-            "    return parser.parse_args()",
-        ]),
+        "\n".join(
+            [
+                '"""',
+                "关联logic：故障报修闭环",
+                "功能描述：处理故障报修闭环。",
+                "",
+                "用法：",
+                "    CLI    ：python3 fault_repair_closed_loop.py --report_source 400电话 --ticket-id R001",
+                "",
+                "输入参数：",
+                "    report_source    字符串    必填，报修渠道(400电话 / 微信 / APP)",
+                "    ticket_id    字符串    报修单号",
+                "    equipment_data    dict    设备对象数据，默认从数据层读取",
+                "",
+                "输出：",
+                "    return {status: str}",
+                '"""',
+                "import argparse",
+                "",
+                "def parse_args():",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--report_source', required=True, help='报修渠道(400电话 / 微信 / APP)')",
+                "    parser.add_argument('--ticket-id', required=True, help='报修单号')",
+                "    return parser.parse_args()",
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -542,25 +549,27 @@ def test_run_reads_docstring_usage_parameter_flags_without_argparse(tmp_path):
     scripts_dir = source_root / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     (scripts_dir / "dispatch_ticket.py").write_text(
-        "\n".join([
-            '"""',
-            "关联logic：故障派单",
-            "功能描述：根据报修单号派单。",
-            "",
-            "用法参数：",
-            "    python3 dispatch_ticket.py --ticket-id R001 --dispatch_group A组",
-            "",
-            "输入参数：",
-            "    ticket_id    字符串    报修单号",
-            "    dispatch_group    字符串    派单班组",
-            "",
-            "输出：",
-            "    return {status: str}",
-            '"""',
-            "",
-            "def run(ticket_id: str, dispatch_group: str) -> dict:",
-            "    return {'status': 'ok'}",
-        ]),
+        "\n".join(
+            [
+                '"""',
+                "关联logic：故障派单",
+                "功能描述：根据报修单号派单。",
+                "",
+                "用法参数：",
+                "    python3 dispatch_ticket.py --ticket-id R001 --dispatch_group A组",
+                "",
+                "输入参数：",
+                "    ticket_id    字符串    报修单号",
+                "    dispatch_group    字符串    派单班组",
+                "",
+                "输出：",
+                "    return {status: str}",
+                '"""',
+                "",
+                "def run(ticket_id: str, dispatch_group: str) -> dict:",
+                "    return {'status': 'ok'}",
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -614,23 +623,25 @@ def test_run_falls_back_to_argparse_parameters(tmp_path):
     scripts_dir = source_root / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     (scripts_dir / "check_install.py").write_text(
-        "\n".join([
-            '"""',
-            "关联logic：安装判断",
-            "功能描述：判断物料是否安装。",
-            '"""',
-            "import argparse",
-            "",
-            "def parse_args():",
-            "    parser = argparse.ArgumentParser()",
-            "    parser.add_argument('--target_item-code', required=True, help='TargetItem编码')",
-            "    parser.add_argument('--batch-code', action='append', required=True, help='在制生产批次，可重复传入多个')",
-            "    parser.add_argument('--quantity', type=float, help='需求数量')",
-            "    parser.add_argument('--equipment-model', help='Optional 设备型号 for STRUCTURE_LIST existence check')",
-            "    parser.add_argument('--verbose', action='store_true', help='Verbose output')",
-            "    parser.add_argument('--cache', action='store_false', help='Enable cache')",
-            "    return parser.parse_args()",
-        ]),
+        "\n".join(
+            [
+                '"""',
+                "关联logic：安装判断",
+                "功能描述：判断物料是否安装。",
+                '"""',
+                "import argparse",
+                "",
+                "def parse_args():",
+                "    parser = argparse.ArgumentParser()",
+                "    parser.add_argument('--target_item-code', required=True, help='TargetItem编码')",
+                "    parser.add_argument('--batch-code', action='append', required=True, help='在制生产批次，可重复传入多个')",
+                "    parser.add_argument('--quantity', type=float, help='需求数量')",
+                "    parser.add_argument('--equipment-model', help='Optional 设备型号 for STRUCTURE_LIST existence check')",
+                "    parser.add_argument('--verbose', action='store_true', help='Verbose output')",
+                "    parser.add_argument('--cache', action='store_false', help='Enable cache')",
+                "    return parser.parse_args()",
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -723,9 +734,11 @@ def test_run_uses_script_mapping_comment_and_skips_private_helpers(tmp_path):
     scripts_index = (target_root / "scripts" / "index.md").read_text(encoding="utf-8")
     assert "| supplier_lookup | supplier_lookup | 供应商查询 | supplier_lookup.py |" in scripts_index
     assert "_script_common" not in scripts_index
-    assert (target_root / "scripts" / "supplier_lookup.py").read_text(
-        encoding="utf-8"
-    ).startswith("# 工具流程: 供应商查询")
+    assert (
+        (target_root / "scripts" / "supplier_lookup.py")
+        .read_text(encoding="utf-8")
+        .startswith("# 工具流程: 供应商查询")
+    )
     assert (target_root / "scripts" / "_script_common.py").exists()
 
 

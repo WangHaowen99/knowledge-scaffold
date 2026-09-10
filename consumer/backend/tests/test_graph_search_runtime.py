@@ -6,12 +6,12 @@ import asyncio
 import json
 
 from agent.tools.business_data.providers.graph.agent import GraphAgentError, GraphAgentTimeoutError
+from agent.tools.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
 from agent.tools.business_data.providers.graph.models import (
     GraphAgentResult,
     GraphBackendResult,
     GraphEntityMapping,
 )
-from agent.tools.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
 from agent.tools.business_data.providers.graph.runtime import GraphSearchRuntime, _make_graph_query_agent
 
 
@@ -116,19 +116,21 @@ def _write_runtime_ontology(tmp_path):
     (version_dir / "scripts").mkdir()
     ontology_root.mkdir(parents=True, exist_ok=True)
     (ontology_root / "manifest.yaml").write_text(
-        "\n".join([
-            "kind: ontology-package",
-            "schema_version: 0.1",
-            "id: demo-ontology",
-            "name: Demo",
-            "description: Demo",
-            "version: 1.0.0",
-            "active_version: 1.0.0",
-            "versions:",
-            "  - 1.0.0",
-            "language: zh-CN",
-            "",
-        ]),
+        "\n".join(
+            [
+                "kind: ontology-package",
+                "schema_version: 0.1",
+                "id: demo-ontology",
+                "name: Demo",
+                "description: Demo",
+                "version: 1.0.0",
+                "active_version: 1.0.0",
+                "versions:",
+                "  - 1.0.0",
+                "language: zh-CN",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
     (version_dir / "operations" / "index.md").write_text(
@@ -188,7 +190,11 @@ def test_runtime_uses_graph_agent_internal_tool_result_with_forced_scope():
         graph_agent=agent,
     )
 
-    events = _collect(runtime.asearch_stream(query="查询 CHANGE_ORDER_ID 为 CHANGE_ORDER-001 的对象", entity="change_order_affected_object"))
+    events = _collect(
+        runtime.asearch_stream(
+            query="查询 CHANGE_ORDER_ID 为 CHANGE_ORDER-001 的对象", entity="change_order_affected_object"
+        )
+    )
     final = json.loads(events[-1]["content"])
 
     assert final["success"] is True
@@ -361,7 +367,11 @@ def test_runtime_marks_path_intent_and_preloads_relation_triples():
         graph_agent=agent,
     )
 
-    events = _collect(runtime.asearch_stream(query="查询 SourceItem 编码 101000-001 对应的 TargetItem 信息", entity="SourceItem与TargetItem工艺关系"))
+    events = _collect(
+        runtime.asearch_stream(
+            query="查询 SourceItem 编码 101000-001 对应的 TargetItem 信息", entity="SourceItem与TargetItem工艺关系"
+        )
+    )
     final = json.loads(events[-1]["content"])
     schema_context = agent.calls[0]["context"].schema_context
 
@@ -380,7 +390,11 @@ def test_runtime_marks_relationship_record_query_as_property_filter_sufficient()
         kind="node",
         source="mappings/object-data-mappings.json",
         label="SourceItem_TargetItem",
-        property_map={"SourceItem编码": "SourceItemCode", "TargetItem编码": "TargetItemCode", "SourceItem版本": "SourceItemVersion"},
+        property_map={
+            "SourceItem编码": "SourceItemCode",
+            "TargetItem编码": "TargetItemCode",
+            "SourceItem版本": "SourceItemVersion",
+        },
     )
     agent = _StaticGraphAgent(_agent_result())
     runtime = GraphSearchRuntime(
@@ -391,7 +405,8 @@ def test_runtime_marks_relationship_record_query_as_property_filter_sufficient()
         graph_agent=agent,
     )
 
-    events = _collect(runtime.asearch_stream(
+    events = _collect(
+        runtime.asearch_stream(
             query='查询SourceItem编码为"101001-001"且SourceItem版本为"A"的工艺关系记录',
             entity="SourceItem与TargetItem工艺关系",
         )

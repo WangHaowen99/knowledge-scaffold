@@ -7,7 +7,9 @@ export const WORKSPACE_ACCESS_STATE = Object.freeze({
 });
 
 export function configSectionRequiresWorkspace(scope, section) {
-  return scope === 'workspace' || (scope === 'personal' && section === 'memory');
+  return (
+    scope === 'workspace' || (scope === 'personal' && section === 'memory')
+  );
 }
 
 export function resolveWorkspaceAccess({
@@ -18,16 +20,27 @@ export function resolveWorkspaceAccess({
   workspaceId = '',
   workspaces = [],
 } = {}) {
-  if (!workspacesLoaded || workspacesLoading) return WORKSPACE_ACCESS_STATE.LOADING;
-  if (workspacesError) return WORKSPACE_ACCESS_STATE.ERROR;
-  if (!workspaceId || !workspaces.length) return WORKSPACE_ACCESS_STATE.EMPTY;
-  if (!workspaceDataReady || !workspaces.some((workspace) => workspace.id === workspaceId)) {
+  if (!workspacesLoaded || workspacesLoading) {
+    return WORKSPACE_ACCESS_STATE.LOADING;
+  }
+  if (workspacesError) {
+    return WORKSPACE_ACCESS_STATE.ERROR;
+  }
+  if (!workspaceId || !workspaces.length) {
+    return WORKSPACE_ACCESS_STATE.EMPTY;
+  }
+  if (
+    !workspaceDataReady ||
+    !workspaces.some((workspace) => workspace.id === workspaceId)
+  ) {
     return WORKSPACE_ACCESS_STATE.UNAVAILABLE;
   }
   return WORKSPACE_ACCESS_STATE.READY;
 }
 
 export function configSectionDisabled(scope, section, workspaceAccess) {
-  return configSectionRequiresWorkspace(scope, section)
-    && workspaceAccess !== WORKSPACE_ACCESS_STATE.READY;
+  return (
+    configSectionRequiresWorkspace(scope, section) &&
+    workspaceAccess !== WORKSPACE_ACCESS_STATE.READY
+  );
 }

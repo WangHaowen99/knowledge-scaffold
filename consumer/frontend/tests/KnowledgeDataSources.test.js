@@ -15,7 +15,9 @@ const vite = await createServer({
 const { default: KnowledgeDataSources } = await vite.ssrLoadModule(
   '/src/features/knowledge/KnowledgeDataSources.jsx',
 );
-const { AuthCtx } = await vite.ssrLoadModule('/src/features/auth/useAuthContext.js');
+const { AuthCtx } = await vite.ssrLoadModule(
+  '/src/features/auth/useAuthContext.js',
+);
 
 after(async () => {
   await vite.close();
@@ -39,9 +41,12 @@ function deferred() {
 }
 
 async function withRenderedDataSource(fetchImpl, run) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="root"></div></body></html>',
+    {
+      url: 'http://localhost/',
+    },
+  );
   const testGlobals = {
     window: dom.window,
     document: dom.window.document,
@@ -56,7 +61,10 @@ async function withRenderedDataSource(fetchImpl, run) {
     IS_REACT_ACT_ENVIRONMENT: true,
   };
   const originalGlobals = new Map(
-    Object.keys(testGlobals).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
+    Object.keys(testGlobals).map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
   );
   const originalFetch = globalThis.fetch;
   for (const [name, value] of Object.entries(testGlobals)) {
@@ -75,7 +83,8 @@ async function withRenderedDataSource(fetchImpl, run) {
     ontologyId = 'onto-1',
     onDataSourceChanged = () => {},
     authValue = {
-      can: (permission) => ['ws.data_source.write', 'ws.data_source.test'].includes(permission),
+      can: (permission) =>
+        ['ws.data_source.write', 'ws.data_source.test'].includes(permission),
       workspaceId: 'ws-1',
     },
   } = {}) => {
@@ -121,24 +130,35 @@ async function withRenderedDataSource(fetchImpl, run) {
   };
 
   try {
-    await run({ dom, renderPanel, removePanel, flush, waitFor });
+    await run({
+      dom,
+      renderPanel,
+      removePanel,
+      flush,
+      waitFor,
+    });
   } finally {
     await act(async () => root.unmount());
     dom.window.close();
     globalThis.fetch = originalFetch;
     for (const [name, descriptor] of originalGlobals) {
-      if (descriptor === undefined) delete globalThis[name];
-      else Object.defineProperty(globalThis, name, descriptor);
+      if (descriptor === undefined) {
+        delete globalThis[name];
+      } else {
+        Object.defineProperty(globalThis, name, descriptor);
+      }
     }
   }
 }
 
 async function click(dom, element) {
   await act(async () => {
-    element.dispatchEvent(new dom.window.MouseEvent('click', {
-      bubbles: true,
-      cancelable: true,
-    }));
+    element.dispatchEvent(
+      new dom.window.MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
   });
 }
 
@@ -150,25 +170,37 @@ test('cancel keeps the current data source and confirm sends the delete request'
     const method = options.method || 'GET';
     if (url === '/agentic/business-data/provider-schemas') {
       return jsonResponse({
-        providers: [{
-          name: 'postgres',
-          label: 'Postgres',
-          fields: [{ name: 'dsn', label: 'DSN', type: 'text', required: true }],
-        }],
+        providers: [
+          {
+            name: 'postgres',
+            label: 'Postgres',
+            fields: [
+              { name: 'dsn', label: 'DSN', type: 'text', required: true },
+            ],
+          },
+        ],
       });
     }
     if (url === '/agentic/ontologies/onto-1/data-source' && method === 'GET') {
-      return jsonResponse(configured
-        ? {
-          configured: true,
-          source: { provider: 'postgres', config: { dsn: 'postgres://demo' } },
-        }
-        : {
-          configured: false,
-          source: null,
-        });
+      return jsonResponse(
+        configured ?
+          {
+            configured: true,
+            source: {
+              provider: 'postgres',
+              config: { dsn: 'postgres://demo' },
+            },
+          } :
+          {
+            configured: false,
+            source: null,
+          },
+      );
     }
-    if (url === '/agentic/ontologies/onto-1/data-source' && method === 'DELETE') {
+    if (
+      url === '/agentic/ontologies/onto-1/data-source' &&
+      method === 'DELETE'
+    ) {
       deleteCalls += 1;
       configured = false;
       return jsonResponse({ configured: false, source: null });
@@ -176,44 +208,50 @@ test('cancel keeps the current data source and confirm sends the delete request'
     throw new Error(`Unexpected request: ${method} ${url}`);
   };
 
-  await withRenderedDataSource(fetchImpl, async ({ dom, renderPanel, flush, waitFor }) => {
-    await renderPanel({
-      onDataSourceChanged: () => {
-        refreshCalls += 1;
-      },
-    });
+  await withRenderedDataSource(
+    fetchImpl,
+    async ({ dom, renderPanel, flush, waitFor }) => {
+      await renderPanel({
+        onDataSourceChanged: () => {
+          refreshCalls += 1;
+        },
+      });
 
-    await waitFor(() => {
-      const clearButton = document.querySelector('.btn.btn-danger');
-      assert.ok(clearButton);
-    });
+      await waitFor(() => {
+        const clearButton = document.querySelector('.btn.btn-danger');
+        assert.ok(clearButton);
+      });
 
-    await click(dom, document.querySelector('.btn.btn-danger'));
-    const firstDialog = document.querySelector('.ui-dialog');
-    assert.ok(firstDialog);
-    assert.match(firstDialog.textContent, /当前知识包将变为“未配置”/);
-    assert.match(firstDialog.textContent, /相关查询将不可用/);
-    assert.equal(deleteCalls, 0);
+      await click(dom, document.querySelector('.btn.btn-danger'));
+      const firstDialog = document.querySelector('.ui-dialog');
+      assert.ok(firstDialog);
+      assert.match(firstDialog.textContent, /当前知识包将变为“未配置”/);
+      assert.match(firstDialog.textContent, /相关查询将不可用/);
+      assert.equal(deleteCalls, 0);
 
-    await click(dom, document.querySelector('.ui-dialog-actions .btn'));
-    await flush();
-    assert.equal(deleteCalls, 0);
-    assert.equal(document.querySelector('.ui-dialog'), null);
-    assert.ok(document.querySelector('.btn.btn-danger'));
-    assert.match(document.querySelector('.tag').textContent, /已配置/);
-
-    await click(dom, document.querySelector('.btn.btn-danger'));
-    assert.ok(document.querySelector('.ui-dialog'));
-
-    await click(dom, document.querySelector('.ui-dialog-actions .btn-danger-solid'));
-    await waitFor(() => {
-      assert.equal(deleteCalls, 1);
+      await click(dom, document.querySelector('.ui-dialog-actions .btn'));
+      await flush();
+      assert.equal(deleteCalls, 0);
       assert.equal(document.querySelector('.ui-dialog'), null);
-      assert.equal(document.querySelector('.btn.btn-danger'), null);
-      assert.match(document.querySelector('.tag').textContent, /未配置/);
-      assert.equal(refreshCalls, 1);
-    });
-  });
+      assert.ok(document.querySelector('.btn.btn-danger'));
+      assert.match(document.querySelector('.tag').textContent, /已配置/);
+
+      await click(dom, document.querySelector('.btn.btn-danger'));
+      assert.ok(document.querySelector('.ui-dialog'));
+
+      await click(
+        dom,
+        document.querySelector('.ui-dialog-actions .btn-danger-solid'),
+      );
+      await waitFor(() => {
+        assert.equal(deleteCalls, 1);
+        assert.equal(document.querySelector('.ui-dialog'), null);
+        assert.equal(document.querySelector('.btn.btn-danger'), null);
+        assert.match(document.querySelector('.tag').textContent, /未配置/);
+        assert.equal(refreshCalls, 1);
+      });
+    },
+  );
 });
 
 test('a successful save notifies its original scope after the user switches packages', async () => {
@@ -224,20 +262,29 @@ test('a successful save notifies its original scope after the user switches pack
     const method = options.method || 'GET';
     if (url === '/agentic/business-data/provider-schemas') {
       return jsonResponse({
-        providers: [{
-          name: 'postgres',
-          label: 'Postgres',
-          fields: [{ name: 'dsn', label: 'DSN', type: 'text', required: true }],
-        }],
+        providers: [
+          {
+            name: 'postgres',
+            label: 'Postgres',
+            fields: [
+              { name: 'dsn', label: 'DSN', type: 'text', required: true },
+            ],
+          },
+        ],
       });
     }
-    const match = /^\/agentic\/ontologies\/(onto-[12])\/data-source$/.exec(url);
-    const [, ontologyKey] = match || [];
+    const ontologyKey =
+      /^\/agentic\/ontologies\/(?<ontologyKey>onto-[12])\/data-source$/.exec(
+        url,
+      )?.groups.ontologyKey;
     if (ontologyKey && method === 'GET') {
       getCalls.set(ontologyKey, (getCalls.get(ontologyKey) || 0) + 1);
       return jsonResponse({
         configured: true,
-        source: { provider: 'postgres', config: { dsn: `postgres://${ontologyKey}` } },
+        source: {
+          provider: 'postgres',
+          config: { dsn: `postgres://${ontologyKey}` },
+        },
       });
     }
     if (url === '/agentic/ontologies/onto-1/data-source' && method === 'PUT') {
@@ -247,36 +294,41 @@ test('a successful save notifies its original scope after the user switches pack
     throw new Error(`Unexpected request: ${method} ${url}`);
   };
 
-  await withRenderedDataSource(fetchImpl, async ({ dom, renderPanel, flush, waitFor }) => {
-    const originalNotifications = [];
-    const nextNotifications = [];
-    await renderPanel({
-      ontologyId: 'onto-1',
-      onDataSourceChanged: (scope) => originalNotifications.push(scope),
-    });
-    await waitFor(() => {
-      const saveButton = document.querySelector('.foot .btn.btn-p');
-      assert.ok(saveButton);
-      assert.equal(saveButton.disabled, false);
-    });
+  await withRenderedDataSource(
+    fetchImpl,
+    async ({ dom, renderPanel, flush, waitFor }) => {
+      const originalNotifications = [];
+      const nextNotifications = [];
+      await renderPanel({
+        ontologyId: 'onto-1',
+        onDataSourceChanged: (scope) => originalNotifications.push(scope),
+      });
+      await waitFor(() => {
+        const saveButton = document.querySelector('.foot .btn.btn-p');
+        assert.ok(saveButton);
+        assert.equal(saveButton.disabled, false);
+      });
 
-    await click(dom, document.querySelector('.foot .btn.btn-p'));
-    await waitFor(() => assert.equal(saveCalls, 1));
+      await click(dom, document.querySelector('.foot .btn.btn-p'));
+      await waitFor(() => assert.equal(saveCalls, 1));
 
-    await renderPanel({
-      ontologyId: 'onto-2',
-      onDataSourceChanged: (scope) => nextNotifications.push(scope),
-    });
-    await waitFor(() => assert.equal(getCalls.get('onto-2'), 1));
+      await renderPanel({
+        ontologyId: 'onto-2',
+        onDataSourceChanged: (scope) => nextNotifications.push(scope),
+      });
+      await waitFor(() => assert.equal(getCalls.get('onto-2'), 1));
 
-    saveResponse.resolve(jsonResponse({ configured: true }));
-    await waitFor(() => assert.equal(originalNotifications.length, 1));
+      saveResponse.resolve(jsonResponse({ configured: true }));
+      await waitFor(() => assert.equal(originalNotifications.length, 1));
 
-    assert.deepEqual(originalNotifications, [{ ontologyId: 'onto-1', workspaceId: 'ws-1' }]);
-    assert.deepEqual(nextNotifications, []);
-    assert.equal(getCalls.get('onto-1'), 1);
-    await flush();
-  });
+      assert.deepEqual(originalNotifications, [
+        { ontologyId: 'onto-1', workspaceId: 'ws-1' },
+      ]);
+      assert.deepEqual(nextNotifications, []);
+      assert.equal(getCalls.get('onto-1'), 1);
+      await flush();
+    },
+  );
 });
 
 test('a successful save invalidates its scope before the response body finishes parsing', async () => {
@@ -287,11 +339,15 @@ test('a successful save invalidates its scope before the response body finishes 
     const method = options.method || 'GET';
     if (url === '/agentic/business-data/provider-schemas') {
       return jsonResponse({
-        providers: [{
-          name: 'postgres',
-          label: 'Postgres',
-          fields: [{ name: 'dsn', label: 'DSN', type: 'text', required: true }],
-        }],
+        providers: [
+          {
+            name: 'postgres',
+            label: 'Postgres',
+            fields: [
+              { name: 'dsn', label: 'DSN', type: 'text', required: true },
+            ],
+          },
+        ],
       });
     }
     if (url === '/agentic/ontologies/onto-1/data-source' && method === 'GET') {
@@ -307,22 +363,33 @@ test('a successful save invalidates its scope before the response body finishes 
     throw new Error(`Unexpected request: ${method} ${url}`);
   };
 
-  await withRenderedDataSource(fetchImpl, async ({ dom, renderPanel, flush, waitFor }) => {
-    await renderPanel({
-      onDataSourceChanged: (scope) => notifications.push(scope),
-    });
-    await waitFor(() => assert.equal(document.querySelector('.foot .btn.btn-p')?.disabled, false));
+  await withRenderedDataSource(
+    fetchImpl,
+    async ({ dom, renderPanel, flush, waitFor }) => {
+      await renderPanel({
+        onDataSourceChanged: (scope) => notifications.push(scope),
+      });
+      await waitFor(() =>
+        assert.equal(
+          document.querySelector('.foot .btn.btn-p')?.disabled,
+          false,
+        ),
+      );
 
-    await click(dom, document.querySelector('.foot .btn.btn-p'));
-    await waitFor(() => assert.equal(saveCalls, 1));
-    await flush();
-    const notificationsBeforeBody = notifications.length;
+      await click(dom, document.querySelector('.foot .btn.btn-p'));
+      await waitFor(() => assert.equal(saveCalls, 1));
+      await flush();
+      const notificationsBeforeBody = notifications.length;
 
-    responseBody.resolve({ configured: true });
-    await flush();
-    assert.equal(notificationsBeforeBody, 1);
-    assert.deepEqual(notifications[0], { ontologyId: 'onto-1', workspaceId: 'ws-1' });
-  });
+      responseBody.resolve({ configured: true });
+      await flush();
+      assert.equal(notificationsBeforeBody, 1);
+      assert.deepEqual(notifications[0], {
+        ontologyId: 'onto-1',
+        workspaceId: 'ws-1',
+      });
+    },
+  );
 });
 
 test('a successful delete notifies its original scope after the editor unmounts', async () => {
@@ -334,11 +401,15 @@ test('a successful delete notifies its original scope after the editor unmounts'
     const method = options.method || 'GET';
     if (url === '/agentic/business-data/provider-schemas') {
       return jsonResponse({
-        providers: [{
-          name: 'postgres',
-          label: 'Postgres',
-          fields: [{ name: 'dsn', label: 'DSN', type: 'text', required: true }],
-        }],
+        providers: [
+          {
+            name: 'postgres',
+            label: 'Postgres',
+            fields: [
+              { name: 'dsn', label: 'DSN', type: 'text', required: true },
+            ],
+          },
+        ],
       });
     }
     if (url === '/agentic/ontologies/onto-1/data-source' && method === 'GET') {
@@ -348,29 +419,40 @@ test('a successful delete notifies its original scope after the editor unmounts'
         source: { provider: 'postgres', config: { dsn: 'postgres://onto-1' } },
       });
     }
-    if (url === '/agentic/ontologies/onto-1/data-source' && method === 'DELETE') {
+    if (
+      url === '/agentic/ontologies/onto-1/data-source' &&
+      method === 'DELETE'
+    ) {
       deleteCalls += 1;
       return deleteResponse.promise;
     }
     throw new Error(`Unexpected request: ${method} ${url}`);
   };
 
-  await withRenderedDataSource(fetchImpl, async ({ dom, renderPanel, removePanel, flush, waitFor }) => {
-    await renderPanel({
-      onDataSourceChanged: (scope) => notifications.push(scope),
-    });
-    await waitFor(() => assert.ok(document.querySelector('.btn.btn-danger')));
+  await withRenderedDataSource(
+    fetchImpl,
+    async ({ dom, renderPanel, removePanel, flush, waitFor }) => {
+      await renderPanel({
+        onDataSourceChanged: (scope) => notifications.push(scope),
+      });
+      await waitFor(() => assert.ok(document.querySelector('.btn.btn-danger')));
 
-    await click(dom, document.querySelector('.btn.btn-danger'));
-    await click(dom, document.querySelector('.ui-dialog-actions .btn-danger-solid'));
-    await waitFor(() => assert.equal(deleteCalls, 1));
+      await click(dom, document.querySelector('.btn.btn-danger'));
+      await click(
+        dom,
+        document.querySelector('.ui-dialog-actions .btn-danger-solid'),
+      );
+      await waitFor(() => assert.equal(deleteCalls, 1));
 
-    await removePanel();
-    deleteResponse.resolve(jsonResponse({ configured: false, source: null }));
-    await waitFor(() => assert.equal(notifications.length, 1));
+      await removePanel();
+      deleteResponse.resolve(jsonResponse({ configured: false, source: null }));
+      await waitFor(() => assert.equal(notifications.length, 1));
 
-    assert.deepEqual(notifications, [{ ontologyId: 'onto-1', workspaceId: 'ws-1' }]);
-    assert.equal(getCalls, 1);
-    await flush();
-  });
+      assert.deepEqual(notifications, [
+        { ontologyId: 'onto-1', workspaceId: 'ws-1' },
+      ]);
+      assert.equal(getCalls, 1);
+      await flush();
+    },
+  );
 });

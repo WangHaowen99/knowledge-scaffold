@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 
 import yaml
-
 from api.routes import ontologies as ontologies_routes
 from ontology.view_cache import OntologyViewCache
 from test_ontology_routes import _build_test_client, _create_demo_workspace, _post
@@ -155,9 +154,7 @@ def test_ontology_manifest_apis_publish_immediately_after_warm_views(
         json={"enabled": False},
     )
     assert disabled.status_code == 200, disabled.json()
-    assert _ontology_by_id(client.get(list_path, headers=headers).json(), "cache-demo")[
-        "enabled"
-    ] is False
+    assert _ontology_by_id(client.get(list_path, headers=headers).json(), "cache-demo")["enabled"] is False
 
     enabled = client.put(
         "/agentic/ontologies/cache-demo/status",
@@ -165,9 +162,7 @@ def test_ontology_manifest_apis_publish_immediately_after_warm_views(
         json={"enabled": True},
     )
     assert enabled.status_code == 200, enabled.json()
-    assert _ontology_by_id(client.get(list_path, headers=headers).json(), "cache-demo")[
-        "enabled"
-    ] is True
+    assert _ontology_by_id(client.get(list_path, headers=headers).json(), "cache-demo")["enabled"] is True
 
     activated = client.put(
         "/agentic/ontologies/cache-demo/active-version",
@@ -248,9 +243,7 @@ def test_workspace_apis_publish_immediately_after_each_warm_catalog_read(
     )
     assert members.status_code == 200, members.json()
     member_list = client.get("/agentic/workspaces", headers=headers["bob"]).json()
-    member_item = next(
-        item for item in member_list["workspaces"] if item["id"] == "cache-target"
-    )
+    member_item = next(item for item in member_list["workspaces"] if item["id"] == "cache-target")
     assert member_item["members"] == ["bob"]
     assert member_item["role"] == "member"
 
@@ -261,18 +254,14 @@ def test_workspace_apis_publish_immediately_after_each_warm_catalog_read(
     assert made_default.status_code == 200, made_default.json()
     default_list = client.get("/agentic/workspaces", headers=headers["admin"]).json()
     assert default_list["default_workspace_id"] == "cache-target"
-    assert next(
-        item for item in default_list["workspaces"] if item["id"] == "cache-target"
-    )["is_default"] is True
+    assert next(item for item in default_list["workspaces"] if item["id"] == "cache-target")["is_default"] is True
 
     restored_default = client.post(
         "/agentic/workspaces/shared/default",
         headers=headers["admin"],
     )
     assert restored_default.status_code == 200, restored_default.json()
-    assert client.get("/agentic/workspaces", headers=headers["admin"]).json()[
-        "default_workspace_id"
-    ] == "shared"
+    assert client.get("/agentic/workspaces", headers=headers["admin"]).json()["default_workspace_id"] == "shared"
 
     deleted = client.delete(
         "/agentic/workspaces/cache-target",
@@ -280,7 +269,11 @@ def test_workspace_apis_publish_immediately_after_each_warm_catalog_read(
     )
     assert deleted.status_code == 200, deleted.json()
     after_delete = client.get("/agentic/workspaces", headers=headers["admin"]).json()
-    assert [item["id"] for item in after_delete["workspaces"]] == ["shared"]
+    remaining_ids = [item["id"] for item in after_delete["workspaces"]]
+    assert remaining_ids[0] == "shared"
+    assert len(remaining_ids) == 2
+    assert remaining_ids[1].startswith("home-")
+    assert "cache-target" not in remaining_ids
     assert (
         client.get(
             "/agentic/workspaces/cache-target",

@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
 from integration.solver_route_fact_worker import (
     PackageSolverContractError,
     _candidate_assignments,
     _safety_margin,
     evaluate_payload,
 )
+
 from solvers.ortools.engine.refinery_route import evaluate_refinery_candidates
 
 
@@ -125,9 +125,7 @@ class _EvaluatorModule:
             )
         return {
             "crude_oil_yard": sources,
-            "refinery_unit": [
-                {"RefineryUnitID": "DIESEL_2", "price_per_unit": 0}
-            ],
+            "refinery_unit": [{"RefineryUnitID": "DIESEL_2", "price_per_unit": 0}],
             "vgo_ht_unit": [{"VGOUnitID": "VGO", "price_per_unit": 0}],
             "hydrogenation_product_yield": atmospheric + diesel_products,
             "vgo_product_yield": vgo_products,
@@ -157,10 +155,7 @@ class _EvaluatorModule:
         *,
         plan_month: str,
     ) -> dict[str, Any]:
-        route_bonus = sum(
-            1000 if plan.vgo_route == "SYNTHETIC_ROUTE_B" else 100
-            for plan in plans
-        )
+        route_bonus = sum(1000 if plan.vgo_route == "SYNTHETIC_ROUTE_B" else 100 for plan in plans)
         month_capacity = 280000 if plan_month.endswith("-02") else 310000
         total_input = sum(plan.input_weight_tons for plan in plans)
         batches = [
@@ -219,11 +214,7 @@ class _MissingOrdinaryTankModule(_EvaluatorModule):
     @staticmethod
     def load_tables() -> dict[str, list[dict[str, Any]]]:
         tables = _EvaluatorModule.load_tables()
-        tables["logic_tank"] = [
-            row
-            for row in tables["logic_tank"]
-            if row["LogicTankID"] in {"TANK_D", "TANK_V"}
-        ]
+        tables["logic_tank"] = [row for row in tables["logic_tank"] if row["LogicTankID"] in {"TANK_D", "TANK_V"}]
         return tables
 
 
@@ -231,9 +222,7 @@ class _MissingSpecialTankModule(_EvaluatorModule):
     @staticmethod
     def load_tables() -> dict[str, list[dict[str, Any]]]:
         tables = _EvaluatorModule.load_tables()
-        tables["logic_tank"] = [
-            row for row in tables["logic_tank"] if row["LogicTankID"] != "TANK_V"
-        ]
+        tables["logic_tank"] = [row for row in tables["logic_tank"] if row["LogicTankID"] != "TANK_V"]
         return tables
 
 
@@ -335,9 +324,7 @@ def test_february_seven_batch_context_runs_as_fourteen_solver_candidates() -> No
                 "candidate_selection": {
                     "profile_id": "ordered_binary_route.v1",
                     "candidate_count": len(candidates),
-                    "candidate_evaluation_digest": (
-                        "sha256:solver-coordination.v1:" + "0" * 64
-                    ),
+                    "candidate_evaluation_digest": ("sha256:solver-coordination.v1:" + "0" * 64),
                     "candidates": candidates,
                 },
                 "domain_evaluation": context,
@@ -367,9 +354,7 @@ def test_worker_preserves_legacy_untracked_ordinary_tank_semantics() -> None:
     )
 
     context = result["refinery_route_context"]
-    assert {row["tank_id"] for row in context["tables"]["unit_product_yields"]} == {
-        None
-    }
+    assert {row["tank_id"] for row in context["tables"]["unit_product_yields"]} == {None}
     assert {row["tank_id"] for row in context["tables"]["tanks"]} == {
         "TANK_D",
         "TANK_V",
@@ -419,9 +404,7 @@ def test_worker_excludes_advisory_batch_load_from_safety_margin() -> None:
             },
             "batches": [
                 {
-                    "unit_loads": {
-                        "unit": {"input_tons": 20, "capacity_tons": 10}
-                    },
+                    "unit_loads": {"unit": {"input_tons": 20, "capacity_tons": 10}},
                     "tank_status": {
                         "1": {
                             "daily_input_tons": 1,

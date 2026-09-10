@@ -1,24 +1,23 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
+from copy import deepcopy
 
 import pytest
-
 from solver_coordination.bindings import (
     BindingContractError,
     DurableSolverBindingResolver,
     SolverBindingRevision,
 )
+from solver_coordination.canonical import canonical_json_bytes
 from solver_coordination.connectors.endpoint_policy import EndpointPolicy
 from solver_coordination.job_store import JobStoreConflict, SolverJobStore
 from solver_coordination.service import SolverCoordinationService, SolverServiceError
-from solver_coordination.canonical import canonical_json_bytes
 
 
 def _endpoint_policy() -> EndpointPolicy:
     return EndpointPolicy(
-        allowed_hosts=("ortools-solver",),
+        allowed_hosts=("service.example.net",),
         allowed_ports=(8080,),
         allow_http=True,
         allow_localhost=False,
@@ -27,7 +26,7 @@ def _endpoint_policy() -> EndpointPolicy:
 
 def _configuration() -> dict:
     return {
-        "endpoint": "http://ortools-solver:8080",
+        "endpoint": "http://service.example.net:8080",
         "connector_type": "ortools",
         "service_api_version": "ortools.solver.v1",
         "service_credential_ref": "secret-ref://solver/connector-a",
@@ -57,7 +56,7 @@ def test_binding_revision_round_trips_as_an_immutable_direct_ortools_contract():
 
     assert binding.revision_id == "binding-revision-a"
     assert binding.workspace_id == "workspace-a"
-    assert binding.endpoint == "http://ortools-solver:8080"
+    assert binding.endpoint == "http://service.example.net:8080"
     assert binding.connector_type == "ortools"
     assert binding.service_api_version == "ortools.solver.v1"
     assert binding.allowed_families == {"binary_ordered_route": ("1.0",)}
@@ -76,9 +75,7 @@ def test_binding_revision_round_trips_as_an_immutable_direct_ortools_contract():
         (lambda value: value.__setitem__("token", "plaintext"), "fields"),
     ],
 )
-def test_binding_revision_rejects_unsafe_or_vendor_specific_configuration(
-    mutation, message
-):
+def test_binding_revision_rejects_unsafe_or_vendor_specific_configuration(mutation, message):
     configuration = _configuration()
     mutation(configuration)
 
@@ -207,9 +204,7 @@ def test_store_lists_all_binding_revisions_within_owner_scope(tmp_path):
         endpoint_policy=_endpoint_policy(),
     )
 
-    revisions = store.list_binding_revisions(
-        workspace_id="workspace-a", owner_id="owner-a"
-    )
+    revisions = store.list_binding_revisions(workspace_id="workspace-a", owner_id="owner-a")
 
     assert [item["binding_revision_id"] for item in revisions] == [
         "binding-revision-a",
@@ -445,7 +440,7 @@ def test_binding_capability_fingerprint_rejects_live_drift_before_submission():
 
 def test_binding_rejects_non_allowlisted_endpoint_host():
     configuration = _configuration()
-    configuration["endpoint"] = "https://other-solver:8080"
+    configuration["endpoint"] = "https://other.example.net:8080"
 
     with pytest.raises(BindingContractError, match="allowlist"):
         SolverBindingRevision.from_configuration(
@@ -483,31 +478,29 @@ def test_endpoint_policy_from_environment_requires_explicit_private_host_allowli
     assert policy.allowed_hosts == ("solver.private.example.com",)
     assert policy.allowed_ports == (443, 8443)
     assert policy.allow_localhost is False
-    assert policy.validate("https://solver.private.example.com:8443") == (
-        "https://solver.private.example.com:8443"
-    )
+    assert policy.validate("https://solver.private.example.com:8443") == ("https://solver.private.example.com:8443")
     with pytest.raises(ValueError, match="allowlist"):
         policy.validate("https://solver.example.com")
     with pytest.raises(ValueError, match="allowlist"):
-        policy.validate("https://localhost")
+        policy.validate("https://solver.example.org")
 
 
 def test_endpoint_policy_rejects_plain_http_by_default():
     policy = EndpointPolicy.from_env(
         {
-            "SOLVER_SERVICE_ALLOWED_HOSTS": "ortools-solver",
+            "SOLVER_SERVICE_ALLOWED_HOSTS": "service.example.net",
             "SOLVER_SERVICE_ALLOWED_PORTS": "8080",
         }
     )
 
     with pytest.raises(ValueError, match="HTTP"):
-        policy.validate("http://ortools-solver:8080")
+        policy.validate("http://service.example.net:8080")
 
 
 def test_endpoint_policy_accepts_plain_http_only_when_explicitly_enabled():
     policy = EndpointPolicy.from_env(
         {
-            "SOLVER_SERVICE_ALLOWED_HOSTS": "ortools-solver",
+            "SOLVER_SERVICE_ALLOWED_HOSTS": "service.example.net",
             "SOLVER_SERVICE_ALLOWED_PORTS": "8080",
             "SOLVER_SERVICE_ALLOW_HTTP": "true",
             "SOLVER_SERVICE_ALLOW_LOCALHOST": "false",
@@ -515,20 +508,18 @@ def test_endpoint_policy_accepts_plain_http_only_when_explicitly_enabled():
     )
 
     assert policy.allow_http is True
-    assert policy.validate("http://ortools-solver:8080") == (
-        "http://ortools-solver:8080"
-    )
+    assert policy.validate("http://service.example.net:8080") == ("http://service.example.net:8080")
     with pytest.raises(ValueError, match="allowlist"):
-        policy.validate("http://other-solver:8080")
+        policy.validate("http://other.example.net:8080")
     with pytest.raises(ValueError):
-        policy.validate("http://ortools-solver:8080/v1")
+        policy.validate("http://service.example.net:8080/v1")
 
 
 def test_http_binding_requires_the_explicit_administrator_policy():
     configuration = _configuration()
-    configuration["endpoint"] = "http://ortools-solver:8080"
+    configuration["endpoint"] = "http://service.example.net:8080"
     policy = EndpointPolicy(
-        allowed_hosts=("ortools-solver",),
+        allowed_hosts=("service.example.net",),
         allowed_ports=(8080,),
         allow_http=True,
         allow_localhost=False,
@@ -541,13 +532,11 @@ def test_http_binding_requires_the_explicit_administrator_policy():
         endpoint_policy=policy,
     )
 
-    assert binding.endpoint == "http://ortools-solver:8080"
+    assert binding.endpoint == "http://service.example.net:8080"
 
 
 def test_endpoint_policy_private_allowlist_disables_localhost_by_default():
-    policy = EndpointPolicy.from_env(
-        {"SOLVER_SERVICE_ALLOWED_HOSTS": "solver.private.example.com"}
-    )
+    policy = EndpointPolicy.from_env({"SOLVER_SERVICE_ALLOWED_HOSTS": "solver.private.example.com"})
 
     with pytest.raises(ValueError, match="allowlist"):
         policy.validate("https://localhost")
@@ -578,8 +567,8 @@ def test_endpoint_policy_default_keeps_reserved_synthetic_hosts_without_private_
     policy = EndpointPolicy.from_env({})
 
     assert policy.validate("https://solver.example.com") == "https://solver.example.com"
-    with pytest.raises(ValueError, match="allowlist"):
-        policy.validate("https://other-solver")
+    with pytest.raises(ValueError, match="port is invalid"):
+        policy.validate("https://192.0.2.1")
 
 
 @pytest.mark.parametrize(
@@ -604,9 +593,7 @@ def test_endpoint_policy_rejects_path_whitespace_and_malformed_url_forms(endpoin
 def test_endpoint_policy_canonicalizes_a_root_path_before_connector_calls():
     policy = EndpointPolicy.from_env({})
 
-    assert policy.validate("https://solver.example.com/") == (
-        "https://solver.example.com"
-    )
+    assert policy.validate("https://solver.example.com/") == ("https://solver.example.com")
 
 
 def test_durable_binding_resolver_uses_administrator_endpoint_policy(tmp_path):

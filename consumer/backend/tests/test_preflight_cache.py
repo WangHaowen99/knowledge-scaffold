@@ -1,8 +1,7 @@
-from concurrent.futures import ThreadPoolExecutor
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-
 from agent.runtime.preflight_cache import (
     ImmutablePreflightCache,
     PreflightCacheKey,

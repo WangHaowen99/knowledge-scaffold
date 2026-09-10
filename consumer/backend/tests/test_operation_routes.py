@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
 import hashlib
 import json
 from pathlib import Path
 from urllib.parse import quote
 
-
 from agent.evolution import get_proposal_buffer, reset_operation_patcher, reset_proposal_buffer
 from api.routes.operations import operations_router
+from api.testing import TestApplication
 from auth_test_backend import AuthManager
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD
+from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
@@ -22,10 +20,10 @@ def _build_test_client(tmp_path):
     app = TestApplication()
     app.state.services["TESTING"] = True
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
-    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
 
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(operations_router)
@@ -49,11 +47,7 @@ def _create_workspace_with_operation(
     create_workspace("Workspace {}".format(workspace_id), workspace_id=workspace_id)
     paths = get_workspace_paths(workspace_id)
     ontology_dir = paths.ontologies_dir / ontology_id
-    op_dir = (
-        ontology_dir / "versions" / "1.0.0" / "operations"
-        if versioned
-        else ontology_dir / "operations"
-    )
+    op_dir = ontology_dir / "versions" / "1.0.0" / "operations" if versioned else ontology_dir / "operations"
     op_dir.mkdir(parents=True, exist_ok=True)
     if versioned:
         (ontology_dir / "manifest.yaml").write_text(

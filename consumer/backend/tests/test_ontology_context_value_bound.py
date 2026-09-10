@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from agent.tools.ontology_context import OntologyContextTool
 
 
@@ -197,9 +196,7 @@ def test_root_context_appends_value_domain_hint_with_bindings(tmp_path, monkeypa
     assert "看似常识" in outcome.content
     # The hint must render near the top, before any catalog block, so it is
     # not diluted by the (long) catalog listings.
-    assert outcome.content.index("value_domain_hint:") < outcome.content.index(
-        "operations_catalog:"
-    )
+    assert outcome.content.index("value_domain_hint:") < outcome.content.index("operations_catalog:")
 
 
 def test_root_context_no_value_domain_hint_without_bindings(tmp_path, monkeypatch):

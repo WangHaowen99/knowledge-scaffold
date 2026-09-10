@@ -3,15 +3,14 @@ from __future__ import annotations
 from copy import deepcopy
 
 from solver_coordination.input_binding import SolverInputBinder
-from solver_coordination.profiles.input_adapter import ProfileInputAdapterService
-from solver_coordination.profiles.ordered_binary_route import (
-    OrderedBinaryRouteInputAdapter,
-)
 from solver_coordination.profiles import (
     SolverProfileRegistration,
     SolverProfileRegistry,
 )
-
+from solver_coordination.profiles.input_adapter import ProfileInputAdapterService
+from solver_coordination.profiles.ordered_binary_route import (
+    OrderedBinaryRouteInputAdapter,
+)
 
 SCHEMA = {
     "type": "object",
@@ -133,9 +132,7 @@ def test_ordered_route_adapter_canonicalizes_generic_item_aliases():
         "process_days": "1.5",
         "crude_origin": "SOURCE SYNTHETIC A",
     }
-    assert result.normalized_input.normalization["input_adapter_id"] == (
-        "ordered_binary_route.input.v1"
-    )
+    assert result.normalized_input.normalization["input_adapter_id"] == ("ordered_binary_route.input.v1")
     assert result.normalized_input.normalization["input_adapter_revision"] == "2"
     assert result.normalized_input.normalization["alias_mapping"] == {
         "items[].duration": "items[].process_days",

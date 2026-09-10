@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowDown, ArrowUpRight, BrainCircuit, Check, ChevronDown, Gauge, GitBranch,
-  PanelRightClose, PanelRightOpen, ShieldCheck, Sparkles,
+  ArrowDown,
+  ArrowUpRight,
+  BrainCircuit,
+  Check,
+  ChevronDown,
+  Gauge,
+  GitBranch,
+  PanelRightClose,
+  PanelRightOpen,
+  ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { useAuthContext } from '../auth';
 import { packageDisplayLabel } from '../knowledge';
@@ -15,28 +24,42 @@ import useSmartScroll from './hooks/useSmartScroll';
 import { buildConversationViewModel } from './lib/conversationModel';
 import { formatTime } from './lib/chatPresentation';
 import { getChatDataSourceStatus } from './lib/chatDataSourceStatus';
-import { isBlankChatSubmitting, scheduleBlankChatFocus } from './lib/firstSendCoordinator';
-import { applyInteractionCancellation, findPendingInteraction } from './lib/pendingInteraction';
+import {
+  isBlankChatSubmitting,
+  scheduleBlankChatFocus,
+} from './lib/firstSendCoordinator';
+import {
+  applyInteractionCancellation,
+  findPendingInteraction,
+} from './lib/pendingInteraction';
 import { collectTurnEvidence } from './lib/ontologyEvidenceDisplay';
 import { createIdempotencyKey } from './lib/runAdmission';
-import {
-  resolveSessionPreferences,
-} from './lib/sessionModel';
+import { resolveSessionPreferences } from './lib/sessionModel';
 import { listResumableSessions } from './lib/sessionScope';
 import { publicErrorMessage } from './lib/streamHelpers';
 import { resolveRunProgressView } from './lib/streamLifecycle';
 import { buildTraceViewModel } from './lib/traceModel';
-import { getWorkspaceAgentMode, normalizeAgentMode } from './lib/workspacePreferences';
+import {
+  getWorkspaceAgentMode,
+  normalizeAgentMode,
+} from './lib/workspacePreferences';
 import './chat.css';
 
 const safeLocalGet = (key) => {
-  try { return localStorage.getItem(key) || ''; } catch { return ''; }
+  try {
+    return localStorage.getItem(key) || '';
+  } catch {
+    return '';
+  }
 };
 
 const safeLocalSet = (key, value) => {
   try {
-    if (value) localStorage.setItem(key, value);
-    else localStorage.removeItem(key);
+    if (value) {
+      localStorage.setItem(key, value);
+    } else {
+      localStorage.removeItem(key);
+    }
   } catch {
     // Storage is an optional convenience; runtime state remains authoritative.
   }
@@ -49,9 +72,21 @@ const STARTER_PROMPTS = [
 ];
 
 const AGENT_MODE_META = {
-  quick: { label: '快速思考', description: '响应更快，适合直接问答', Icon: Sparkles },
-  thinking: { label: '深度思考', description: '加强推理，适合复杂分析', Icon: BrainCircuit },
-  multi_agent: { label: '多智能体', description: '拆分任务并协同处理', Icon: GitBranch },
+  quick: {
+    label: '快速思考',
+    description: '响应更快，适合直接问答',
+    Icon: Sparkles,
+  },
+  thinking: {
+    label: '深度思考',
+    description: '加强推理，适合复杂分析',
+    Icon: BrainCircuit,
+  },
+  multi_agent: {
+    label: '多智能体',
+    description: '拆分任务并协同处理',
+    Icon: GitBranch,
+  },
 };
 
 function AgentModePicker({ value, onChange, disabled }) {
@@ -62,12 +97,18 @@ function AgentModePicker({ value, onChange, disabled }) {
   const CurrentIcon = current.Icon;
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open) {
+      return undefined;
+    }
     const closeOnOutsideClick = (event) => {
-      if (!rootRef.current?.contains(event.target)) setOpen(false);
+      if (!rootRef.current?.contains(event.target)) {
+        setOpen(false);
+      }
     };
     const closeOnEscape = (event) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape') {
+        return;
+      }
       setOpen(false);
       triggerRef.current?.focus();
     };
@@ -80,43 +121,75 @@ function AgentModePicker({ value, onChange, disabled }) {
   }, [open]);
 
   const toggle = () => {
-    if (disabled) return;
+    if (disabled) {
+      return;
+    }
     setOpen((wasOpen) => {
       const nextOpen = !wasOpen;
       if (nextOpen) {
-        requestAnimationFrame(() => rootRef.current?.querySelector('[aria-checked="true"]')?.focus());
+        requestAnimationFrame(() =>
+          rootRef.current?.querySelector('[aria-checked="true"]')?.focus(),
+        );
       }
       return nextOpen;
     });
   };
 
   const handleOptionKeyDown = (event) => {
-    const options = [...(rootRef.current?.querySelectorAll('.mode-option') || [])];
+    const options = [
+      ...(rootRef.current?.querySelectorAll('.mode-option') || []),
+    ];
     const index = options.indexOf(event.currentTarget);
     let nextIndex = index;
-    if (event.key === 'ArrowDown') nextIndex = (index + 1) % options.length;
-    else if (event.key === 'ArrowUp') nextIndex = (index - 1 + options.length) % options.length;
-    else if (event.key === 'Home') nextIndex = 0;
-    else if (event.key === 'End') nextIndex = options.length - 1;
-    else return;
+    if (event.key === 'ArrowDown') {
+      nextIndex = (index + 1) % options.length;
+    } else if (event.key === 'ArrowUp') {
+      nextIndex = (index - 1 + options.length) % options.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = options.length - 1;
+    } else {
+      return;
+    }
     event.preventDefault();
     options[nextIndex]?.focus();
   };
 
   return (
     <div className="mode-dropdown" ref={rootRef}>
-      <button ref={triggerRef} type="button" className="mode-picker"
-        aria-label={`对话模式：${current.label}`} aria-haspopup="menu" aria-expanded={open}
-        title="选择对话模式" disabled={disabled} onClick={toggle}
+      <button
+        ref={triggerRef}
+        type="button"
+        className="mode-picker"
+        aria-label={`对话模式：${current.label}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="选择对话模式"
+        disabled={disabled}
+        onClick={toggle}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault();
-            if (!open) toggle();
+            if (!open) {
+              toggle();
+            }
           }
-        }}>
-        <CurrentIcon className="mode-icon" size={14} strokeWidth={2} aria-hidden="true" />
+        }}
+      >
+        <CurrentIcon
+          className="mode-icon"
+          size={14}
+          strokeWidth={2}
+          aria-hidden="true"
+        />
         <span className="mode-label">{current.label}</span>
-        <ChevronDown className={`mode-chevron ${open ? 'open' : ''}`} size={13} strokeWidth={2} aria-hidden="true" />
+        <ChevronDown
+          className={`mode-chevron ${open ? 'open' : ''}`}
+          size={13}
+          strokeWidth={2}
+          aria-hidden="true"
+        />
       </button>
       {open && (
         <div className="mode-menu" role="menu" aria-label="选择对话模式">
@@ -125,15 +198,34 @@ function AgentModePicker({ value, onChange, disabled }) {
             const OptionIcon = meta.Icon;
             const selected = mode === value;
             return (
-              <button key={mode} type="button" className={`mode-option ${selected ? 'selected' : ''}`}
-                role="menuitemradio" aria-checked={selected} onKeyDown={handleOptionKeyDown}
-                onClick={() => { onChange(mode); setOpen(false); triggerRef.current?.focus(); }}>
-                <span className="mode-option-icon"><OptionIcon size={15} strokeWidth={1.9} /></span>
+              <button
+                key={mode}
+                type="button"
+                className={`mode-option ${selected ? 'selected' : ''}`}
+                role="menuitemradio"
+                aria-checked={selected}
+                onKeyDown={handleOptionKeyDown}
+                onClick={() => {
+                  onChange(mode);
+                  setOpen(false);
+                  triggerRef.current?.focus();
+                }}
+              >
+                <span className="mode-option-icon">
+                  <OptionIcon size={15} strokeWidth={1.9} />
+                </span>
                 <span className="mode-option-copy">
                   <span className="mode-option-label">{meta.label}</span>
                   <span className="mode-option-desc">{meta.description}</span>
                 </span>
-                {selected && <Check className="mode-option-check" size={15} strokeWidth={2.2} aria-hidden="true" />}
+                {selected && (
+                  <Check
+                    className="mode-option-check"
+                    size={15}
+                    strokeWidth={2.2}
+                    aria-hidden="true"
+                  />
+                )}
               </button>
             );
           })}
@@ -176,7 +268,11 @@ export default function ChatWorkspace({
   const inputRef = useRef(null);
   const currentChatIdRef = useRef(currentChatId);
   const [traceOpen, setTraceOpen] = useState(() => {
-    try { return !window.matchMedia('(max-width: 900px)').matches; } catch { return true; }
+    try {
+      return !window.matchMedia('(max-width: 900px)').matches;
+    } catch {
+      return true;
+    }
   });
   const [inspectorMode, setInspectorMode] = useState('trace');
   const [selectedEvidenceTurnKey, setSelectedEvidenceTurnKey] = useState('');
@@ -185,8 +281,8 @@ export default function ChatWorkspace({
   // Agent 模式：quick(快速) / thinking(深度思考) / multi_agent(多智能体)。
   // 按 workspace 持久化到 localStorage，默认 quick。
   const agentModeKey = `mw_ws_agentmode_${workspaceId}`;
-  const [agentMode, setAgentMode] = useState(
-    () => getWorkspaceAgentMode(localStorage, workspaceId)
+  const [agentMode, setAgentMode] = useState(() =>
+    getWorkspaceAgentMode(localStorage, workspaceId),
   );
   const changeAgentMode = (mode) => {
     const nextMode = normalizeAgentMode(mode);
@@ -197,17 +293,21 @@ export default function ChatWorkspace({
   const [defaultModelProfileId, setDefaultModelProfileId] = useState('');
   const [modelProfileId, setModelProfileId] = useState('');
   const ontologies = useMemo(
-    () => (Array.isArray(sharedOntologies)
-      ? sharedOntologies.filter((ontology) => ontology.enabled !== false)
-      : []),
+    () =>
+      Array.isArray(sharedOntologies) ?
+        sharedOntologies.filter((ontology) => ontology.enabled !== false) :
+        [],
     [sharedOntologies],
   );
   const [selectedOntologyId, setSelectedOntologyId] = useState('');
   const [selectedOntologyVersion, setSelectedOntologyVersion] = useState('');
   // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
   const TRACE_MIN_W = 300;
-  const [traceWidth, setTraceWidth] = useState(
-    () => Math.max(TRACE_MIN_W, Number(localStorage.getItem('mw_trace_w')) || TRACE_MIN_W)
+  const [traceWidth, setTraceWidth] = useState(() =>
+    Math.max(
+      TRACE_MIN_W,
+      Number(localStorage.getItem('mw_trace_w')) || TRACE_MIN_W,
+    ),
   );
   const [traceMaxWidth, setTraceMaxWidth] = useState(TRACE_MIN_W);
   const wrapRef = useRef(null);
@@ -215,19 +315,28 @@ export default function ChatWorkspace({
     e.preventDefault();
     const onMove = (ev) => {
       const wrap = wrapRef.current;
-      if (!wrap) return;
-      const right = wrap.getBoundingClientRect().right;
+      if (!wrap) {
+        return;
+      }
+      const { right } = wrap.getBoundingClientRect();
       // 分隔条向左拖 → Trace 变大；右边界减去光标 X 即 Trace 宽度
       const next = Math.round(right - ev.clientX);
       const maxW = wrap.getBoundingClientRect().width - 360; // 给对话区留最小空间
-      const clamped = Math.max(TRACE_MIN_W, Math.min(next, Math.max(TRACE_MIN_W, maxW)));
+      const clamped = Math.max(
+        TRACE_MIN_W,
+        Math.min(next, Math.max(TRACE_MIN_W, maxW)),
+      );
       setTraceWidth(clamped);
     };
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       document.body.style.userSelect = '';
-      try { localStorage.setItem('mw_trace_w', String(traceWidthRef.current)); } catch { /* ignore */ }
+      try {
+        localStorage.setItem('mw_trace_w', String(traceWidthRef.current));
+      } catch {
+        /* ignore */
+      }
     };
     document.body.style.userSelect = 'none';
     window.addEventListener('mousemove', onMove);
@@ -242,11 +351,15 @@ export default function ChatWorkspace({
 
   useEffect(() => {
     const wrap = wrapRef.current;
-    if (!wrap || typeof ResizeObserver === 'undefined') return undefined;
+    if (!wrap || typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
     const observer = new ResizeObserver(([entry]) => {
       const maxWidth = Math.max(TRACE_MIN_W, entry.contentRect.width - 360);
       setTraceMaxWidth(maxWidth);
-      setTraceWidth((currentWidth) => Math.min(Math.max(TRACE_MIN_W, currentWidth), maxWidth));
+      setTraceWidth((currentWidth) =>
+        Math.min(Math.max(TRACE_MIN_W, currentWidth), maxWidth),
+      );
     });
     observer.observe(wrap);
     return () => observer.disconnect();
@@ -254,39 +367,62 @@ export default function ChatWorkspace({
 
   const current = sessions.find((session) => session.id === currentChatId);
   const selectedOntology = useMemo(
-    () => ontologies.find((ontology) => ontology.id === selectedOntologyId) || null,
+    () =>
+      ontologies.find((ontology) => ontology.id === selectedOntologyId) || null,
     [ontologies, selectedOntologyId],
   );
-  const displayedOntologyVersion = useMemo(() => (
-    String(
-      current?.metadata?.selected_ontology_version
-      || current?.metadata?.selected_version
-      || selectedOntologyVersion
-      || selectedOntology?.active_version
-      || selectedOntology?.version
-      || ''
-    ).trim()
-  ), [current?.metadata, selectedOntology, selectedOntologyVersion]);
+  const displayedOntologyVersion = useMemo(
+    () =>
+      String(
+        current?.metadata?.selected_ontology_version ||
+          current?.metadata?.selected_version ||
+          selectedOntologyVersion ||
+          selectedOntology?.active_version ||
+          selectedOntology?.version ||
+          '',
+      ).trim(),
+    [current?.metadata, selectedOntology, selectedOntologyVersion],
+  );
   const emptyState = useMemo(
     () => getChatDataSourceStatus(selectedOntology),
     [selectedOntology],
   );
-  const conversationModel = useMemo(() => buildConversationViewModel(messages), [messages]);
-  const traceModel = useMemo(() => buildTraceViewModel(conversationModel), [conversationModel]);
-  const evidenceTurns = useMemo(() => conversationModel.turns
-    .map((turn) => ({ ...turn, evidence: collectTurnEvidence(turn.blocks) }))
-    .filter((turn) => turn.evidence), [conversationModel]);
-  const evidenceByTurnKey = useMemo(() => Object.fromEntries(
-    evidenceTurns.map((turn) => [turn.key, turn.evidence]),
-  ), [evidenceTurns]);
-  const activeEvidenceTurn = evidenceTurns.find((turn) => turn.key === selectedEvidenceTurnKey)
-    || evidenceTurns.at(-1)
-    || null;
-  const selectedEvidence = activeEvidenceTurn?.evidence?.all.find(
-    (hit) => hit.evidence_id === selectedEvidenceId,
-  ) || activeEvidenceTurn?.evidence?.ontology?.[0]
-    || activeEvidenceTurn?.evidence?.runtime?.[0]
-    || null;
+  const conversationModel = useMemo(
+    () => buildConversationViewModel(messages),
+    [messages],
+  );
+  const traceModel = useMemo(
+    () => buildTraceViewModel(conversationModel),
+    [conversationModel],
+  );
+  const evidenceTurns = useMemo(
+    () =>
+      conversationModel.turns
+        .map((turn) => ({
+          ...turn,
+          evidence: collectTurnEvidence(turn.blocks),
+        }))
+        .filter((turn) => turn.evidence),
+    [conversationModel],
+  );
+  const evidenceByTurnKey = useMemo(
+    () =>
+      Object.fromEntries(
+        evidenceTurns.map((turn) => [turn.key, turn.evidence]),
+      ),
+    [evidenceTurns],
+  );
+  const activeEvidenceTurn =
+    evidenceTurns.find((turn) => turn.key === selectedEvidenceTurnKey) ||
+    evidenceTurns.at(-1) ||
+    null;
+  const selectedEvidence =
+    activeEvidenceTurn?.evidence?.all.find(
+      (hit) => hit.evidence_id === selectedEvidenceId,
+    ) ||
+    activeEvidenceTurn?.evidence?.ontology?.[0] ||
+    activeEvidenceTurn?.evidence?.runtime?.[0] ||
+    null;
   const openEvidence = useCallback((hit, turnKey) => {
     setSelectedEvidenceTurnKey(turnKey || '');
     setSelectedEvidenceId(hit?.evidence_id || '');
@@ -300,7 +436,10 @@ export default function ChatWorkspace({
     scrollToBottom,
   } = useSmartScroll(messages, `${workspaceId}:${currentChatId || 'new'}`);
   const sessionLocked = Boolean(currentChatId);
-  const pendingInteraction = useMemo(() => findPendingInteraction(messages), [messages]);
+  const pendingInteraction = useMemo(
+    () => findPendingInteraction(messages),
+    [messages],
+  );
 
   useEffect(() => {
     currentChatIdRef.current = currentChatId;
@@ -321,10 +460,17 @@ export default function ChatWorkspace({
       try {
         const modelsResponse = await authFetch('/agentic/model-profiles');
         const modelsPayload = await modelsResponse.json().catch(() => ({}));
-        if (cancelled) return;
-        const profiles = modelsResponse.ok && Array.isArray(modelsPayload.profiles) ? modelsPayload.profiles : [];
+        if (cancelled) {
+          return;
+        }
+        const profiles =
+          modelsResponse.ok && Array.isArray(modelsPayload.profiles) ?
+            modelsPayload.profiles :
+            [];
         setModelProfiles(profiles);
-        setDefaultModelProfileId(modelsPayload.default_profile_id || profiles[0]?.id || '');
+        setDefaultModelProfileId(
+          modelsPayload.default_profile_id || profiles[0]?.id || '',
+        );
       } catch {
         if (!cancelled) {
           setModelProfiles([]);
@@ -333,7 +479,10 @@ export default function ChatWorkspace({
       }
     };
     const timer = setTimeout(loadOptions, 0);
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [workspaceDataReady, workspaceId]);
 
   useEffect(() => {
@@ -343,9 +492,9 @@ export default function ChatWorkspace({
         metadata,
         storedAgentMode: safeLocalGet(agentModeKey),
         storedModelProfileId: safeLocalGet(`mw_ws_model_${workspaceId}`),
-        storedOntologyId: currentChatId
-          ? safeLocalGet(`mw_session_ontology_${workspaceId}_${currentChatId}`)
-          : '',
+        storedOntologyId: currentChatId ?
+          safeLocalGet(`mw_session_ontology_${workspaceId}_${currentChatId}`) :
+          '',
         storedOntologyVersion: '',
         defaultModelProfileId,
       });
@@ -355,40 +504,63 @@ export default function ChatWorkspace({
       setSelectedOntologyVersion(preferences.selectedOntologyVersion);
     }, 0);
     return () => clearTimeout(timer);
-  }, [agentModeKey, current?.metadata, currentChatId, defaultModelProfileId, workspaceId]);
+  }, [
+    agentModeKey,
+    current?.metadata,
+    currentChatId,
+    defaultModelProfileId,
+    workspaceId,
+  ]);
 
   useEffect(() => {
-    if (currentChatId) return;
-    const nextVersion = selectedOntologyId
-      ? String(selectedOntology?.active_version || selectedOntology?.version || '').trim()
-      : '';
+    if (currentChatId) {
+      return;
+    }
+    const nextVersion = selectedOntologyId ?
+      String(
+        selectedOntology?.active_version || selectedOntology?.version || '',
+      ).trim() :
+      '';
     if (nextVersion !== selectedOntologyVersion) {
       setSelectedOntologyVersion(nextVersion);
     }
-  }, [currentChatId, selectedOntology, selectedOntologyId, selectedOntologyVersion]);
+  }, [
+    currentChatId,
+    selectedOntology,
+    selectedOntologyId,
+    selectedOntologyVersion,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
     for (const resumable of listResumableSessions(sessions)) {
       const resumeKey = `${resumable.sessionId}:${resumable.runId}`;
-      if (resumedRunsRef.current.has(resumeKey)) continue;
+      if (resumedRunsRef.current.has(resumeKey)) {
+        continue;
+      }
       resumedRunsRef.current.add(resumeKey);
-      void hydrateChat(resumable.sessionId).then((data) => {
-        if (cancelled || !data) {
-          resumedRunsRef.current.delete(resumeKey);
-          return false;
-        }
-        return resumeAgentic({
-          runId: String(data.active_run_id || resumable.runId),
-          targetSessionId: resumable.sessionId,
-          afterSequence: data.last_seq ?? resumable.afterSequence,
-          status: String(data.active_run_status || resumable.status),
+      void hydrateChat(resumable.sessionId)
+        .then((data) => {
+          if (cancelled || !data) {
+            resumedRunsRef.current.delete(resumeKey);
+            return false;
+          }
+          return resumeAgentic({
+            runId: String(data.active_run_id || resumable.runId),
+            targetSessionId: resumable.sessionId,
+            afterSequence: data.last_seq ?? resumable.afterSequence,
+            status: String(data.active_run_status || resumable.status),
+          });
+        })
+        .then((resumed) => {
+          if (!resumed) {
+            resumedRunsRef.current.delete(resumeKey);
+          }
         });
-      }).then((resumed) => {
-        if (!resumed) resumedRunsRef.current.delete(resumeKey);
-      });
     }
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [hydrateChat, resumeAgentic, sessions]);
 
   useEffect(() => {
@@ -397,7 +569,14 @@ export default function ChatWorkspace({
 
   const send = async () => {
     const text = input.trim();
-    if (!workspaceDataReady || !text || streamState.isLoading || pendingInteraction) return;
+    if (
+      !workspaceDataReady ||
+      !text ||
+      streamState.isLoading ||
+      pendingInteraction
+    ) {
+      return;
+    }
 
     const startRun = (sessionId, isNew = false) => {
       const refreshSessionTime = () => touchSession?.(sessionId);
@@ -408,7 +587,9 @@ export default function ChatWorkspace({
         selectedOntologyId,
         onSessionUpdated: refreshSessionTime,
       });
-      if (isNew) void generateSessionTitle(sessionId, text);
+      if (isNew) {
+        void generateSessionTitle(sessionId, text);
+      }
       return sessionId;
     };
 
@@ -427,7 +608,9 @@ export default function ChatWorkspace({
       });
       return session ? startRun(session.id, true) : null;
     });
-    if (!flight.started) return;
+    if (!flight.started) {
+      return;
+    }
 
     try {
       const sessionId = await flight.promise;
@@ -449,16 +632,20 @@ export default function ChatWorkspace({
       });
     }
   };
-  const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
+  const streamState = currentChatId ?
+    streamManager.getStreamState(currentChatId) :
+    { isLoading: false };
   const handleRecoveryAction = async (recoveryMessage) => {
     const message = String(recoveryMessage || '').trim();
     if (
-      !workspaceDataReady
-      || !currentChatId
-      || !message
-      || streamState.isLoading
-      || pendingInteraction
-    ) return false;
+      !workspaceDataReady ||
+      !currentChatId ||
+      !message ||
+      streamState.isLoading ||
+      pendingInteraction
+    ) {
+      return false;
+    }
 
     const refreshSessionTime = () => touchSession?.(currentChatId);
     refreshSessionTime();
@@ -474,39 +661,61 @@ export default function ChatWorkspace({
   const isSubmitting = isBlankChatSubmitting(currentChatId, firstSendPending);
   const latestTurnStatus = conversationModel.turns.at(-1)?.status || '';
   const latestTurnErrorCode = conversationModel.turns.at(-1)?.errorCode || '';
-  const displayedStreamStatus = streamState.status === 'awaiting' && latestTurnStatus === 'cancelled'
-    ? 'cancelled'
-    : streamState.status;
-  const streamStatusLabel = runProgress?.label || ({
-    queued: `排队中${streamState.queue?.position ? ` · 第 ${streamState.queue.position} 位` : ''}`,
-    reconnecting: '连接恢复中',
-    streaming: '执行问答任务中',
-    finalizing: '整理最终答案中',
-    awaiting: '等待输入',
-    cancelled: '已停止',
-    cancel_error: streamState.error || '停止失败，运行仍在继续',
-    error: streamState.error || '连接异常',
-  }[displayedStreamStatus] || '');
-  const liveStatusLabel = streamStatusLabel || ({
-    finished: '本轮回答已完成',
-    cancelled: '本轮运行已停止',
-    error: latestTurnErrorCode === 'MODEL_OUTPUT_TRUNCATED' ? '本轮回答未完成' : '本轮运行失败',
-    awaiting: '本轮正在等待输入',
-  }[latestTurnStatus] || '');
+  const displayedStreamStatus =
+    streamState.status === 'awaiting' && latestTurnStatus === 'cancelled' ?
+      'cancelled' :
+      streamState.status;
+  const streamStatusLabel =
+    runProgress?.label ||
+    {
+      queued: `排队中${streamState.queue?.position ? ` · 第 ${streamState.queue.position} 位` : ''}`,
+      reconnecting: '连接恢复中',
+      streaming: '执行问答任务中',
+      finalizing: '整理最终答案中',
+      awaiting: '等待输入',
+      cancelled: '已停止',
+      cancel_error: streamState.error || '停止失败，运行仍在继续',
+      error: streamState.error || '连接异常',
+    }[displayedStreamStatus] ||
+    '';
+  const liveStatusLabel =
+    streamStatusLabel ||
+    {
+      finished: '本轮回答已完成',
+      cancelled: '本轮运行已停止',
+      error:
+        latestTurnErrorCode === 'MODEL_OUTPUT_TRUNCATED' ?
+          '本轮回答未完成' :
+          '本轮运行失败',
+      awaiting: '本轮正在等待输入',
+    }[latestTurnStatus] ||
+    '';
   const resizeTraceByKeyboard = (event) => {
     let nextWidth = traceWidth;
-    if (event.key === 'ArrowLeft') nextWidth += 16;
-    else if (event.key === 'ArrowRight') nextWidth -= 16;
-    else if (event.key === 'Home') nextWidth = TRACE_MIN_W;
-    else if (event.key === 'End') nextWidth = traceMaxWidth;
-    else return;
+    if (event.key === 'ArrowLeft') {
+      nextWidth += 16;
+    } else if (event.key === 'ArrowRight') {
+      nextWidth -= 16;
+    } else if (event.key === 'Home') {
+      nextWidth = TRACE_MIN_W;
+    } else if (event.key === 'End') {
+      nextWidth = traceMaxWidth;
+    } else {
+      return;
+    }
     event.preventDefault();
     const clamped = Math.max(TRACE_MIN_W, Math.min(nextWidth, traceMaxWidth));
     setTraceWidth(clamped);
-    try { localStorage.setItem('mw_trace_w', String(clamped)); } catch { /* ignore */ }
+    try {
+      localStorage.setItem('mw_trace_w', String(clamped));
+    } catch {
+      /* ignore */
+    }
   };
   const submitInteraction = (displayText, response) => {
-    if (!workspaceDataReady || !pendingInteraction?.id || !currentChatId) return;
+    if (!workspaceDataReady || !pendingInteraction?.id || !currentChatId) {
+      return;
+    }
     const refreshSessionTime = () => touchSession?.(currentChatId);
     refreshSessionTime();
     sendAgentic(String(displayText || response?.value || ''), currentChatId, {
@@ -523,7 +732,9 @@ export default function ChatWorkspace({
     });
   };
   const cancelInteraction = async () => {
-    if (!workspaceDataReady || !pendingInteraction?.id || !currentChatId) return false;
+    if (!workspaceDataReady || !pendingInteraction?.id || !currentChatId) {
+      return false;
+    }
     const interactionId = String(pendingInteraction.id);
     const targetSessionId = currentChatId;
     setInteractionCancelError('');
@@ -537,16 +748,19 @@ export default function ChatWorkspace({
       );
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(publicErrorMessage(
-          payload.error ?? payload.detail ?? payload,
-          `取消失败（${response.status}）`,
-        ));
+        throw new Error(
+          publicErrorMessage(
+            payload.error ?? payload.detail ?? payload,
+            `取消失败（${response.status}）`,
+          ),
+        );
       }
       setMessages(
-        (previous) => applyInteractionCancellation(previous, {
-          ...payload,
-          interaction_id: interactionId,
-        }),
+        (previous) =>
+          applyInteractionCancellation(previous, {
+            ...payload,
+            interaction_id: interactionId,
+          }),
         targetSessionId,
       );
       touchSession?.(targetSessionId);
@@ -564,60 +778,118 @@ export default function ChatWorkspace({
 
   return (
     <div className="chatwrap" ref={wrapRef}>
-      <span className="sr-only" aria-live="polite" aria-atomic="true">{liveStatusLabel}</span>
+      <span className="sr-only" aria-live="polite" aria-atomic="true">
+        {liveStatusLabel}
+      </span>
       <div className="thread">
         <div className="th-head">
           <span className="tt">{current?.title || '新对话'}</span>
-          {current && <span className="tm">{formatTime(current.updated_at || current.created_at)}</span>}
-          {streamStatusLabel && <StatusTag status={displayedStreamStatus}>{streamStatusLabel}</StatusTag>}
-          <button className="iconbtn" style={{ marginLeft: 'auto' }} type="button" title="会话性能分析"
-            aria-label="打开会话性能分析" disabled={!currentChatId}
-            onClick={() => onOpenObservability?.('session')}>
+          {current && (
+            <span className="tm">
+              {formatTime(current.updated_at || current.created_at)}
+            </span>
+          )}
+          {streamStatusLabel && (
+            <StatusTag status={displayedStreamStatus}>
+              {streamStatusLabel}
+            </StatusTag>
+          )}
+          <button
+            className="iconbtn"
+            style={{ marginLeft: 'auto' }}
+            type="button"
+            title="会话性能分析"
+            aria-label="打开会话性能分析"
+            disabled={!currentChatId}
+            onClick={() => onOpenObservability?.('session')}
+          >
             <Gauge size={15} />
           </button>
-          <button className={`evidence-toggle ${inspectorMode === 'evidence' && traceOpen ? 'on' : ''}`}
-            type="button" title="查看回答证据" aria-label={`查看回答证据，共 ${activeEvidenceTurn?.evidence?.all.length || 0} 条`}
+          <button
+            className={`evidence-toggle ${inspectorMode === 'evidence' && traceOpen ? 'on' : ''}`}
+            type="button"
+            title="查看回答证据"
+            aria-label={`查看回答证据，共 ${activeEvidenceTurn?.evidence?.all.length || 0} 条`}
             onClick={() => {
-              if (traceOpen && inspectorMode === 'evidence') setTraceOpen(false);
-              else { setInspectorMode('evidence'); setTraceOpen(true); }
-            }}>
-            <ShieldCheck size={14} /><span>证据 {activeEvidenceTurn?.evidence?.all.length || 0}</span>
+              if (traceOpen && inspectorMode === 'evidence') {
+                setTraceOpen(false);
+              } else {
+                setInspectorMode('evidence');
+                setTraceOpen(true);
+              }
+            }}
+          >
+            <ShieldCheck size={14} />
+            <span>证据 {activeEvidenceTurn?.evidence?.all.length || 0}</span>
           </button>
-          <button className="iconbtn" type="button" title={traceToggleLabel} aria-label={traceToggleLabel}
+          <button
+            className="iconbtn"
+            type="button"
+            title={traceToggleLabel}
+            aria-label={traceToggleLabel}
             onClick={() => {
-              if (traceOpen && inspectorMode === 'trace') setTraceOpen(false);
-              else { setInspectorMode('trace'); setTraceOpen(true); }
-            }}>
-            {traceOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
+              if (traceOpen && inspectorMode === 'trace') {
+                setTraceOpen(false);
+              } else {
+                setInspectorMode('trace');
+                setTraceOpen(true);
+              }
+            }}
+          >
+            {traceOpen ? (
+              <PanelRightClose size={15} />
+            ) : (
+              <PanelRightOpen size={15} />
+            )}
           </button>
         </div>
         <div className="th-body" ref={bodyRef} onScroll={handleMessageScroll}>
-          <ConversationView model={conversationModel} sessionId={currentChatId}
-            runState={streamState} evidenceByTurnKey={evidenceByTurnKey}
+          <ConversationView
+            model={conversationModel}
+            sessionId={currentChatId}
+            runState={streamState}
+            evidenceByTurnKey={evidenceByTurnKey}
             onEvidenceSelect={openEvidence}
             onRecoveryAction={handleRecoveryAction}
-            recoveryActionDisabled={streamState.isLoading || Boolean(pendingInteraction)} />
+            recoveryActionDisabled={
+              streamState.isLoading || Boolean(pendingInteraction)
+            }
+          />
           {!messages.length && !streamState.isLoading && (
             <div className="chat-empty">
               <div className="chat-empty-visual" aria-hidden="true">
-                <span className="orbit orbit-a" /><span className="orbit orbit-b" />
+                <span className="orbit orbit-a" />
+                <span className="orbit orbit-b" />
                 <img src="/brand-mark.png" alt="" />
               </div>
               <div className={`chat-empty-kicker ${emptyState.kind}`}>
-                <Sparkles size={13} />{emptyState.kicker}
+                <Sparkles size={13} />
+                {emptyState.kicker}
               </div>
               <h2>{emptyState.title}</h2>
               <p>{emptyState.description}</p>
               {emptyState.actionLabel && selectedOntology && (
-                <button className="btn chat-empty-data-action" type="button"
-                  onClick={() => onConfigureDataSource?.(selectedOntology.id)}>
-                  {emptyState.actionLabel}<ArrowUpRight size={14} />
+                <button
+                  className="btn chat-empty-data-action"
+                  type="button"
+                  onClick={() => onConfigureDataSource?.(selectedOntology.id)}
+                >
+                  {emptyState.actionLabel}
+                  <ArrowUpRight size={14} />
                 </button>
               )}
               <div className="chat-starters">
                 {STARTER_PROMPTS.map((prompt) => (
-                  <button key={prompt} type="button" onClick={() => { setInput(prompt); inputRef.current?.focus(); }}>
-                    <span>{prompt}</span><ArrowUpRight size={14} />
+                  <button
+                    key={prompt}
+                    type="button"
+                    onClick={() => {
+                      setInput(prompt);
+                      inputRef.current?.focus();
+                    }}
+                  >
+                    <span>{prompt}</span>
+                    <ArrowUpRight size={14} />
                   </button>
                 ))}
               </div>
@@ -625,42 +897,83 @@ export default function ChatWorkspace({
           )}
         </div>
         {!isFollowingMessages && messages.length > 0 && (
-          <button type="button" className="chat-return-bottom" onClick={() => scrollToBottom('smooth')}>
-            <ArrowDown size={13} />返回最新消息
+          <button
+            type="button"
+            className="chat-return-bottom"
+            onClick={() => scrollToBottom('smooth')}
+          >
+            <ArrowDown size={13} />
+            返回最新消息
           </button>
         )}
         <div className="th-input">
           <div className="chat-config-locks">
-            <select value={modelProfileId} title="模型在会话创建后锁定"
-              disabled={sessionLocked || isSubmitting || streamState.isLoading || !modelProfiles.length}
+            <select
+              value={modelProfileId}
+              title="模型在会话创建后锁定"
+              disabled={
+                sessionLocked ||
+                isSubmitting ||
+                streamState.isLoading ||
+                !modelProfiles.length
+              }
               onChange={(event) => {
                 setModelProfileId(event.target.value);
                 safeLocalSet(`mw_ws_model_${workspaceId}`, event.target.value);
-              }}>
+              }}
+            >
               {!modelProfiles.length && <option value="">暂无可用模型</option>}
-              {modelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
+              {modelProfiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name || profile.id}
+                </option>
+              ))}
             </select>
-            <select value={selectedOntologyId} title="知识包在会话创建后锁定"
-              disabled={sessionLocked || isSubmitting || streamState.isLoading || ontologiesLoading || Boolean(ontologiesError)}
-              onChange={(event) => setSelectedOntologyId(event.target.value)}>
+            <select
+              value={selectedOntologyId}
+              title="知识包在会话创建后锁定"
+              disabled={
+                sessionLocked ||
+                isSubmitting ||
+                streamState.isLoading ||
+                ontologiesLoading ||
+                Boolean(ontologiesError)
+              }
+              onChange={(event) => setSelectedOntologyId(event.target.value)}
+            >
               <option value="">
-                {ontologiesLoading ? '正在加载知识包…'
-                  : ontologiesError ? '知识包加载失败'
-                    : '自动选择知识包'}
+                {ontologiesLoading ?
+                  '正在加载知识包…' :
+                  ontologiesError ?
+                    '知识包加载失败' :
+                    '自动选择知识包'}
               </option>
-              {ontologies.map((ontology) => <option key={ontology.id} value={ontology.id}>{packageDisplayLabel(ontology)}</option>)}
+              {ontologies.map((ontology) => (
+                <option key={ontology.id} value={ontology.id}>
+                  {packageDisplayLabel(ontology)}
+                </option>
+              ))}
             </select>
             {ontologiesError && (
-              <button className="btn" type="button" onClick={onRetryOntologies} disabled={!onRetryOntologies}>
+              <button
+                className="btn"
+                type="button"
+                onClick={onRetryOntologies}
+                disabled={!onRetryOntologies}
+              >
                 重新加载知识包
               </button>
             )}
             {displayedOntologyVersion && (
               <span className="session-version-note">
-                {sessionLocked ? `Locked version ${displayedOntologyVersion}` : `Current active ${displayedOntologyVersion}`}
+                {sessionLocked ?
+                  `Locked version ${displayedOntologyVersion}` :
+                  `Current active ${displayedOntologyVersion}`}
               </span>
             )}
-            {sessionLocked && <span className="session-lock-note">🔒 会话配置已锁定</span>}
+            {sessionLocked && (
+              <span className="session-lock-note">🔒 会话配置已锁定</span>
+            )}
           </div>
           {pendingInteraction ? (
             <InteractionComposer
@@ -672,14 +985,49 @@ export default function ChatWorkspace({
             />
           ) : (
             <div className="ti-box">
-              <ChatPromptInput inputRef={inputRef} value={input} isSubmitting={isSubmitting}
+              <ChatPromptInput
+                inputRef={inputRef}
+                value={input}
+                isSubmitting={isSubmitting}
                 onChange={(e) => setInput(e.target.value)}
-                onSend={send} />
+                onSend={send}
+              />
               <div className="ti-actions">
-                <AgentModePicker value={agentMode} onChange={changeAgentMode} disabled={!workspaceDataReady || sessionLocked || isSubmitting || streamState.isLoading} />
-                {streamState.isLoading
-                  ? <button type="button" className="btn" onClick={() => streamManager.stopStreamForSession(currentChatId)}>停止</button>
-                  : <button type="button" className="btn btn-p" disabled={isSubmitting || !workspaceDataReady || !modelProfileId || !input.trim()} onClick={send}>{isSubmitting ? '发送中' : '发送'}</button>}
+                <AgentModePicker
+                  value={agentMode}
+                  onChange={changeAgentMode}
+                  disabled={
+                    !workspaceDataReady ||
+                    sessionLocked ||
+                    isSubmitting ||
+                    streamState.isLoading
+                  }
+                />
+                {streamState.isLoading ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() =>
+                      streamManager.stopStreamForSession(currentChatId)
+                    }
+                  >
+                    停止
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-p"
+                    disabled={
+                      isSubmitting ||
+                      !workspaceDataReady ||
+                      !modelProfileId ||
+                      !input.trim()
+                    }
+                    onClick={send}
+                  >
+                    {isSubmitting ? '发送中' : '发送'}
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -687,12 +1035,25 @@ export default function ChatWorkspace({
       </div>
       {traceOpen && (
         <>
-          <button className="trace-backdrop" type="button" aria-label="关闭运行轨迹"
-            onClick={() => setTraceOpen(false)} />
-          <div className="trace-resizer" onMouseDown={startResize} onKeyDown={resizeTraceByKeyboard}
-            role="separator" tabIndex={0} aria-label="调整运行轨迹宽度" aria-orientation="vertical"
-            aria-valuemin={TRACE_MIN_W} aria-valuemax={Math.round(traceMaxWidth)} aria-valuenow={Math.round(traceWidth)}
-            title="拖拽或使用方向键调整 Trace 宽度" />
+          <button
+            className="trace-backdrop"
+            type="button"
+            aria-label="关闭运行轨迹"
+            onClick={() => setTraceOpen(false)}
+          />
+          <div
+            className="trace-resizer"
+            onMouseDown={startResize}
+            onKeyDown={resizeTraceByKeyboard}
+            role="separator"
+            tabIndex={0}
+            aria-label="调整运行轨迹宽度"
+            aria-orientation="vertical"
+            aria-valuemin={TRACE_MIN_W}
+            aria-valuemax={Math.round(traceMaxWidth)}
+            aria-valuenow={Math.round(traceWidth)}
+            title="拖拽或使用方向键调整 Trace 宽度"
+          />
           {inspectorMode === 'evidence' ? (
             <EvidenceInspector
               evidenceTurns={evidenceTurns}
@@ -703,11 +1064,17 @@ export default function ChatWorkspace({
                 setSelectedEvidenceTurnKey(turnKey);
                 setSelectedEvidenceId('');
               }}
-              onEvidenceSelect={(hit) => setSelectedEvidenceId(hit?.evidence_id || '')}
+              onEvidenceSelect={(hit) =>
+                setSelectedEvidenceId(hit?.evidence_id || '')
+              }
               onClose={() => setTraceOpen(false)}
             />
           ) : (
-            <TracePanel model={traceModel} sessionId={currentChatId} width={traceWidth} />
+            <TracePanel
+              model={traceModel}
+              sessionId={currentChatId}
+              width={traceWidth}
+            />
           )}
         </>
       )}
@@ -715,12 +1082,20 @@ export default function ChatWorkspace({
   );
 }
 
-function InteractionComposer({ interaction, disabled, cancelError, onSubmit, onCancel }) {
+function InteractionComposer({
+  interaction,
+  disabled,
+  cancelError,
+  onSubmit,
+  onCancel,
+}) {
   const [draft, setDraft] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const submittedRef = useRef(false);
   const type = String(interaction?.type || 'input');
-  const prompt = String(interaction?.prompt || interaction?.text || '请补充信息后继续。');
+  const prompt = String(
+    interaction?.prompt || interaction?.text || '请补充信息后继续。',
+  );
   let options = Array.isArray(interaction?.options) ? interaction.options : [];
   if (type === 'approval' && options.length === 0) {
     options = [
@@ -728,28 +1103,38 @@ function InteractionComposer({ interaction, disabled, cancelError, onSubmit, onC
       { id: 'reject', label: '拒绝', value: 'reject' },
     ];
   }
-  const normalizedOptions = options.map((option, index) => (
-    typeof option === 'object'
-      ? {
-          id: option.id || option.option_id || `option-${index}`,
-          label: option.label || option.text || option.value || `选项 ${index + 1}`,
-          description: option.description || '',
-          value: option.value ?? option.id ?? option.label,
-        }
-      : { id: `option-${index}`, label: String(option), description: '', value: option }
-  ));
+  const normalizedOptions = options.map((option, index) =>
+    typeof option === 'object' ?
+      {
+        id: option.id || option.option_id || `option-${index}`,
+        label:
+            option.label || option.text || option.value || `选项 ${index + 1}`,
+        description: option.description || '',
+        value: option.value ?? option.id ?? option.label,
+      } :
+      {
+        id: `option-${index}`,
+        label: String(option),
+        description: '',
+        value: option,
+      },
+  );
   const isInput = type === 'input' || normalizedOptions.length === 0;
   const interactionDisabled = disabled || submitted;
 
   const beginSubmission = () => {
-    if (disabled || submittedRef.current) return false;
+    if (disabled || submittedRef.current) {
+      return false;
+    }
     submittedRef.current = true;
     setSubmitted(true);
     return true;
   };
 
   const requestCancel = useCallback(async () => {
-    if (disabled || submittedRef.current) return;
+    if (disabled || submittedRef.current) {
+      return;
+    }
     submittedRef.current = true;
     setSubmitted(true);
     const cancelled = await onCancel?.();
@@ -761,15 +1146,21 @@ function InteractionComposer({ interaction, disabled, cancelError, onSubmit, onC
 
   useEffect(() => {
     submittedRef.current = false;
-    if (disabled) return undefined;
+    if (disabled) {
+      return undefined;
+    }
     const resetTimer = window.setTimeout(() => setSubmitted(false), 0);
     return () => window.clearTimeout(resetTimer);
   }, [disabled, interaction?.id]);
 
   useEffect(() => {
-    if (disabled) return undefined;
+    if (disabled) {
+      return undefined;
+    }
     const cancelOnEscape = (event) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.key !== 'Escape' || event.defaultPrevented) {
+        return;
+      }
       event.preventDefault();
       void requestCancel();
     };
@@ -780,35 +1171,74 @@ function InteractionComposer({ interaction, disabled, cancelError, onSubmit, onC
   return (
     <div className="mwr-interaction" role="region" aria-label="等待用户交互">
       <div className="mwr-interaction-head">
-        <StatusTag status="awaiting">等待{type === 'approval' ? '确认' : type === 'single_choice' ? '选择' : '输入'}</StatusTag>
+        <StatusTag status="awaiting">
+          等待
+          {type === 'approval' ?
+            '确认' :
+            type === 'single_choice' ?
+              '选择' :
+              '输入'}
+        </StatusTag>
         <strong>{prompt}</strong>
       </div>
-      {interaction?.executed_summary && <p><b>已执行：</b>{interaction.executed_summary}</p>}
-      {interaction?.next_plan && <p><b>下一步：</b>{interaction.next_plan}</p>}
+      {interaction?.executed_summary && (
+        <p>
+          <b>已执行：</b>
+          {interaction.executed_summary}
+        </p>
+      )}
+      {interaction?.next_plan && (
+        <p>
+          <b>下一步：</b>
+          {interaction.next_plan}
+        </p>
+      )}
       {isInput ? (
-        <form onSubmit={(event) => {
-          event.preventDefault();
-          const value = draft.trim();
-          if (!value || !beginSubmission()) return;
-          onSubmit(value, { type, value });
-          setDraft('');
-        }}>
-          <input value={draft} disabled={interactionDisabled} autoFocus placeholder="补充信息…"
-            onChange={(event) => setDraft(event.target.value)} />
-          <button type="submit" className="btn btn-p" disabled={interactionDisabled || !draft.trim()}>继续</button>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const value = draft.trim();
+            if (!value || !beginSubmission()) {
+              return;
+            }
+            onSubmit(value, { type, value });
+            setDraft('');
+          }}
+        >
+          <input
+            value={draft}
+            disabled={interactionDisabled}
+            autoFocus
+            placeholder="补充信息…"
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <button
+            type="submit"
+            className="btn btn-p"
+            disabled={interactionDisabled || !draft.trim()}
+          >
+            继续
+          </button>
         </form>
       ) : (
         <div className="mwr-interaction-options">
           {normalizedOptions.map((option) => (
-            <button key={option.id} type="button" className="btn" disabled={interactionDisabled}
+            <button
+              key={option.id}
+              type="button"
+              className="btn"
+              disabled={interactionDisabled}
               onClick={() => {
-                if (!beginSubmission()) return;
+                if (!beginSubmission()) {
+                  return;
+                }
                 onSubmit(option.label, {
                   type,
                   value: option.value,
                   option_id: option.id,
                 });
-              }}>
+              }}
+            >
               <strong>{option.label}</strong>
               {option.description && <span>{option.description}</span>}
             </button>
@@ -816,12 +1246,21 @@ function InteractionComposer({ interaction, disabled, cancelError, onSubmit, onC
         </div>
       )}
       <div className="mwr-interaction-actions">
-        <button type="button" className="btn" disabled={interactionDisabled}
-          aria-label="取消本次交互（Esc）" onClick={() => void requestCancel()}>
+        <button
+          type="button"
+          className="btn"
+          disabled={interactionDisabled}
+          aria-label="取消本次交互（Esc）"
+          onClick={() => void requestCancel()}
+        >
           取消（Esc）
         </button>
       </div>
-      {cancelError && <p className="mwr-interaction-error" role="alert">{cancelError}</p>}
+      {cancelError && (
+        <p className="mwr-interaction-error" role="alert">
+          {cancelError}
+        </p>
+      )}
     </div>
   );
 }

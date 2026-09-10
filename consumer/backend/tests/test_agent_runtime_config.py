@@ -16,10 +16,7 @@ def _base_agent_config() -> AgentConfig:
 
 
 def _effective_agent_config(**overrides):
-    effective = {
-        name: spec["default"]
-        for name, spec in system_config._SECTION_FIELDS["agent"].items()
-    }
+    effective = {name: spec["default"] for name, spec in system_config._SECTION_FIELDS["agent"].items()}
     effective.update(overrides)
     return effective
 

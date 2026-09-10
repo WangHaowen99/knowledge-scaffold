@@ -30,15 +30,21 @@ export function createNativeFilePickerController({ onSelect, onCancel } = {}) {
       return 'cancelled';
     },
     handleNativeCancel() {
-      if (!pending) return false;
+      if (!pending) {
+        return false;
+      }
       clearPending();
       cancelHandler?.('native');
       return true;
     },
     handleWindowFocus(readFiles) {
-      if (!pending) return false;
+      if (!pending) {
+        return false;
+      }
       const files = readFiles?.() || [];
-      if (files.length > 0) return false;
+      if (files.length > 0) {
+        return false;
+      }
       clearPending();
       cancelHandler?.('fallback');
       return true;
@@ -52,51 +58,71 @@ export function createNativeFilePickerController({ onSelect, onCancel } = {}) {
 export function useNativeFilePicker({ onSelect, onCancel } = {}) {
   const inputRef = useRef(null);
   const settleTimerRef = useRef(null);
-  const [controller] = useState(() => createNativeFilePickerController({ onSelect, onCancel }));
+  const [controller] = useState(() =>
+    createNativeFilePickerController({ onSelect, onCancel }),
+  );
 
   useEffect(() => {
     controller.setHandlers({ onSelect, onCancel });
   }, [controller, onCancel, onSelect]);
 
   const open = useCallback(() => {
-    if (!inputRef.current) return;
+    if (!inputRef.current) {
+      return;
+    }
     controller.begin();
     inputRef.current.click();
   }, [controller]);
 
-  const handleChange = useCallback((event) => {
-    const [file = null] = event.target.files || [];
-    controller.handleChange(file);
-    event.target.value = '';
-  }, [controller]);
+  const handleChange = useCallback(
+    (event) => {
+      const [file = null] = event.target.files || [];
+      controller.handleChange(file);
+      event.target.value = '';
+    },
+    [controller],
+  );
 
   const handleCancel = useCallback(() => {
-    if (inputRef.current) inputRef.current.value = '';
+    if (inputRef.current) {
+      inputRef.current.value = '';
+    }
     controller.handleNativeCancel();
   }, [controller]);
 
-  const setInputRef = useCallback((node) => {
-    if (inputRef.current === node) return;
-    inputRef.current?.removeEventListener('cancel', handleCancel);
-    inputRef.current = node;
-    inputRef.current?.addEventListener('cancel', handleCancel);
-  }, [handleCancel]);
+  const setInputRef = useCallback(
+    (node) => {
+      if (inputRef.current === node) {
+        return;
+      }
+      inputRef.current?.removeEventListener('cancel', handleCancel);
+      inputRef.current = node;
+      inputRef.current?.addEventListener('cancel', handleCancel);
+    },
+    [handleCancel],
+  );
 
   useEffect(() => {
     const settle = () => {
-      if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
+      if (settleTimerRef.current) {
+        window.clearTimeout(settleTimerRef.current);
+      }
       settleTimerRef.current = window.setTimeout(() => {
         settleTimerRef.current = null;
-        const cancelled = controller.handleWindowFocus(() => (
-          Array.from(inputRef.current?.files || [])
-        ));
-        if (cancelled && inputRef.current) inputRef.current.value = '';
+        const cancelled = controller.handleWindowFocus(() =>
+          Array.from(inputRef.current?.files || []),
+        );
+        if (cancelled && inputRef.current) {
+          inputRef.current.value = '';
+        }
       }, 50);
     };
     window.addEventListener('focus', settle);
     return () => {
       window.removeEventListener('focus', settle);
-      if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
+      if (settleTimerRef.current) {
+        window.clearTimeout(settleTimerRef.current);
+      }
       settleTimerRef.current = null;
     };
   }, [controller]);
@@ -104,7 +130,11 @@ export function useNativeFilePicker({ onSelect, onCancel } = {}) {
   return { inputRef: setInputRef, open, handleChange };
 }
 
-export function resolveZipDownloadFileName(pkgId, viewVersion, disposition = '') {
+export function resolveZipDownloadFileName(
+  pkgId,
+  viewVersion,
+  disposition = '',
+) {
   const encodedName = contentDispositionParam(disposition, 'filename*');
   if (encodedName) {
     return decodeHeaderFileName(encodedName.replace(/^UTF-8'[^']*'/i, ''));
@@ -120,12 +150,19 @@ export function describeZipDownload(fileName) {
   return `${ZIP_DOWNLOAD_NOTICE_PREFIX}${fileName}`;
 }
 
-export function resolveKnowledgeWorkbenchNotices(fileNotice = '', operationNotice = '') {
+export function resolveKnowledgeWorkbenchNotices(
+  fileNotice = '',
+  operationNotice = '',
+) {
   if (fileNotice === MARKDOWN_UPLOAD_CANCEL_NOTICE) {
     return { inlineMessage: '', toastMessage: fileNotice, toastTone: 'info' };
   }
   if (operationNotice.startsWith(ZIP_DOWNLOAD_NOTICE_PREFIX)) {
-    return { inlineMessage: '', toastMessage: operationNotice, toastTone: 'success' };
+    return {
+      inlineMessage: '',
+      toastMessage: operationNotice,
+      toastTone: 'success',
+    };
   }
   return {
     inlineMessage: fileNotice || operationNotice,
@@ -138,7 +175,11 @@ export function startBlobDownload(blob, fileName, options = {}) {
   const doc = options.doc || globalThis.document;
   const urlApi = options.urlApi || globalThis.URL;
   const schedule = options.schedule || globalThis.setTimeout.bind(globalThis);
-  if (!doc?.body || typeof doc.createElement !== 'function' || typeof urlApi?.createObjectURL !== 'function') {
+  if (
+    !doc?.body ||
+    typeof doc.createElement !== 'function' ||
+    typeof urlApi?.createObjectURL !== 'function'
+  ) {
     return { fileName, objectUrl: '' };
   }
 
@@ -152,7 +193,9 @@ export function startBlobDownload(blob, fileName, options = {}) {
     doc.body.appendChild(link);
     link.click();
   } finally {
-    if (link.parentNode === doc.body) doc.body.removeChild(link);
+    if (link.parentNode === doc.body) {
+      doc.body.removeChild(link);
+    }
     schedule(() => {
       try {
         urlApi.revokeObjectURL(objectUrl);
@@ -166,7 +209,10 @@ export function startBlobDownload(blob, fileName, options = {}) {
 }
 
 function contentDispositionParam(disposition, key) {
-  const pattern = new RegExp(`(?:^|;)\\s*${key.replace('*', '\\*')}=(?:"([^"]*)"|([^;]*))`, 'i');
+  const pattern = new RegExp(
+    `(?:^|;)\\s*${key.replace('*', '\\*')}=(?:"([^"]*)"|([^;]*))`,
+    'i',
+  );
   const match = pattern.exec(disposition || '');
   return (match?.[1] ?? match?.[2] ?? '').trim();
 }

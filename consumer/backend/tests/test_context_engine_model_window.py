@@ -21,14 +21,14 @@ from typing import List
 from uuid import uuid4
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from openjiuwen.core.context_engine import ContextEngine, ContextEngineConfig
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
     AssistantMessageChunk,
+    SystemMessage,
     ToolMessage,
     UserMessage,
-    SystemMessage,
 )
 from openjiuwen.core.session.agent import create_agent_session
 from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig
@@ -48,7 +48,7 @@ def test_default_factory_configures_openjiuwen_0_1_17_runtime_features():
     agent = create_default_jiuwen_agent(
         llm_config=SimpleNamespace(
             provider="openai_compatible",
-            api_key="synthetic-key",
+            api_key=synthetic_secret("context_engine_model_window-credential-01"),
             base_url="https://llm.example.com/v1",
             model="model-a",
             timeout=30,
@@ -92,28 +92,31 @@ def _make_tool_rounds(n: int) -> List:
     messages = []
     for i in range(n):
         messages.append(UserMessage(content=f"user turn {i}"))
-        messages.append(AssistantMessage(
-            content="",
-            tool_calls=[{
-                "id": f"call-{i}",
-                "type": "function",
-                "name": "search",
-                "arguments": '{"query": "test"}',
-            }],
-        ))
-        messages.append(ToolMessage(
-            content=f"tool result {i}",
-            tool_call_id=f"call-{i}",
-        ))
+        messages.append(
+            AssistantMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"call-{i}",
+                        "type": "function",
+                        "name": "search",
+                        "arguments": '{"query": "test"}',
+                    }
+                ],
+            )
+        )
+        messages.append(
+            ToolMessage(
+                content=f"tool result {i}",
+                tool_call_id=f"call-{i}",
+            )
+        )
         messages.append(AssistantMessage(content=f"final answer {i}"))
     return messages
 
 
 def _message_payloads(messages: List) -> list[dict]:
-    return [
-        message.model_dump() if hasattr(message, "model_dump") else dict(message)
-        for message in messages
-    ]
+    return [message.model_dump() if hasattr(message, "model_dump") else dict(message) for message in messages]
 
 
 class _CapturingFakeModel:
@@ -232,6 +235,7 @@ def test_real_react_fake_model_keeps_long_interleaved_tool_round_intact():
 # ContextEngine window behaviour
 # ---------------------------------------------------------------------------
 
+
 class TestContextEngineWindowByRounds:
     """Verify ContextEngine truncates history by ``default_window_round_num``."""
 
@@ -243,10 +247,12 @@ class TestContextEngineWindowByRounds:
         )
         engine = ContextEngine(config)
         history = _make_rounds(3)  # 6 messages, 3 rounds
-        context = _run(engine.create_context(
-            context_id="test-full",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-full",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         # system_messages is empty (none passed), so get_messages() == context_messages
         msgs = window.get_messages()
@@ -262,10 +268,12 @@ class TestContextEngineWindowByRounds:
         )
         engine = ContextEngine(config)
         history = _make_rounds(5)  # 10 messages, 5 rounds
-        context = _run(engine.create_context(
-            context_id="test-trunc",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-trunc",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
         # 2 rounds = 4 messages (user + assistant per round)
@@ -282,10 +290,12 @@ class TestContextEngineWindowByRounds:
         )
         engine = ContextEngine(config)
         history = _make_rounds(5)
-        context = _run(engine.create_context(
-            context_id="test-one-round",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-one-round",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
         assert len(msgs) == 2
@@ -299,14 +309,18 @@ class TestContextEngineWindowByRounds:
         )
         engine = ContextEngine(config)
         history = _make_rounds(5)
-        context = _run(engine.create_context(
-            context_id="test-sys",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-sys",
+                history_messages=history,
+            )
+        )
         system_msg = SystemMessage(content="you are a helpful assistant")
-        window = _run(context.get_context_window(
-            system_messages=[system_msg],
-        ))
+        window = _run(
+            context.get_context_window(
+                system_messages=[system_msg],
+            )
+        )
         msgs = window.get_messages()
         assert msgs[0].role == "system"
         assert msgs[0].content == "you are a helpful assistant"
@@ -317,6 +331,7 @@ class TestContextEngineWindowByRounds:
 # ---------------------------------------------------------------------------
 # Tool-call pairing preservation
 # ---------------------------------------------------------------------------
+
 
 class TestToolCallPairingPreserved:
     """Verify tool-call sequences are never split across the window boundary."""
@@ -329,10 +344,12 @@ class TestToolCallPairingPreserved:
         )
         engine = ContextEngine(config)
         history = _make_tool_rounds(3)  # 12 messages, 3 tool rounds
-        context = _run(engine.create_context(
-            context_id="test-tool-pairing",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-tool-pairing",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
 
@@ -356,10 +373,12 @@ class TestToolCallPairingPreserved:
         )
         engine = ContextEngine(config)
         history = _make_tool_rounds(4)  # 16 messages, 4 tool rounds
-        context = _run(engine.create_context(
-            context_id="test-two-tool-rounds",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-two-tool-rounds",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
 
@@ -380,10 +399,12 @@ class TestToolCallPairingPreserved:
         )
         engine = ContextEngine(config)
         history = _make_tool_rounds(5)
-        context = _run(engine.create_context(
-            context_id="test-tool-id-matching",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-tool-id-matching",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
 
@@ -398,14 +419,14 @@ class TestToolCallPairingPreserved:
         for msg in msgs:
             if msg.role == "tool":
                 assert msg.tool_call_id in assistant_tool_call_ids, (
-                    f"Tool message with tool_call_id={msg.tool_call_id} "
-                    f"has no matching assistant tool_call"
+                    f"Tool message with tool_call_id={msg.tool_call_id} " f"has no matching assistant tool_call"
                 )
 
 
 # ---------------------------------------------------------------------------
 # Ask-user recovery: effective_rounds = max(configured, 2)
 # ---------------------------------------------------------------------------
+
 
 class TestAskUserRecoveryEffectiveRounds:
     """Verify the ask-user recovery scenario uses max(configured, 2) rounds."""
@@ -427,10 +448,12 @@ class TestAskUserRecoveryEffectiveRounds:
         engine = ContextEngine(config)
         # 3 rounds; with effective=2, only last 2 should survive
         history = _make_rounds(3)
-        context = _run(engine.create_context(
-            context_id="test-resume",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-resume",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
         assert len(msgs) == 4  # 2 rounds
@@ -450,10 +473,12 @@ class TestAskUserRecoveryEffectiveRounds:
         )
         engine = ContextEngine(config)
         history = _make_rounds(5)
-        context = _run(engine.create_context(
-            context_id="test-resume-two",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-resume-two",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
         assert len(msgs) == 4  # 2 rounds
@@ -471,10 +496,12 @@ class TestAskUserRecoveryEffectiveRounds:
         )
         engine = ContextEngine(config)
         history = _make_rounds(7)
-        context = _run(engine.create_context(
-            context_id="test-resume-five",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-resume-five",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
         assert len(msgs) == 10  # 5 rounds
@@ -483,6 +510,7 @@ class TestAskUserRecoveryEffectiveRounds:
 # ---------------------------------------------------------------------------
 # max_context_message_num=None does not truncate large single rounds
 # ---------------------------------------------------------------------------
+
 
 class TestNoHardMessageLimit:
     """Verify max_context_message_num=None (factory setting) does not truncate."""
@@ -499,26 +527,34 @@ class TestNoHardMessageLimit:
         # Build a single round with many tool calls (>200 messages total)
         history: List = [UserMessage(content="start")]
         for i in range(250):
-            history.append(AssistantMessage(
-                content="",
-                tool_calls=[{
-                    "id": f"call-{i}",
-                    "type": "function",
-                    "name": "noop",
-                    "arguments": "{}",
-                }],
-            ))
-            history.append(ToolMessage(
-                content=f"result {i}",
-                tool_call_id=f"call-{i}",
-            ))
+            history.append(
+                AssistantMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": f"call-{i}",
+                            "type": "function",
+                            "name": "noop",
+                            "arguments": "{}",
+                        }
+                    ],
+                )
+            )
+            history.append(
+                ToolMessage(
+                    content=f"result {i}",
+                    tool_call_id=f"call-{i}",
+                )
+            )
         # Close the round with a final assistant message (no tool calls)
         history.append(AssistantMessage(content="done"))
 
-        context = _run(engine.create_context(
-            context_id="test-large",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-large",
+                history_messages=history,
+            )
+        )
         window = _run(context.get_context_window())
         msgs = window.get_messages()
 
@@ -533,10 +569,12 @@ class TestNoHardMessageLimit:
         )
         engine = ContextEngine(config)
         history = _make_rounds(10)  # 20 messages
-        context = _run(engine.create_context(
-            context_id="test-hard-limit",
-            history_messages=history,
-        ))
+        context = _run(
+            engine.create_context(
+                context_id="test-hard-limit",
+                history_messages=history,
+            )
+        )
         # The message buffer should cap at 10 messages
         assert len(context) <= 10
 
@@ -552,12 +590,14 @@ def test_real_react_resume_uses_effective_two_round_window():
         UserMessage(content="need a deployment choice"),
         AssistantMessage(
             content="",
-            tool_calls=[{
-                "id": "ask-1",
-                "type": "function",
-                "name": "request_user_interaction",
-                "arguments": '{"prompt":"choose"}',
-            }],
+            tool_calls=[
+                {
+                    "id": "ask-1",
+                    "type": "function",
+                    "name": "request_user_interaction",
+                    "arguments": '{"prompt":"choose"}',
+                }
+            ],
         ),
         ToolMessage(content='{"status":"awaiting_input"}', tool_call_id="ask-1"),
     ]

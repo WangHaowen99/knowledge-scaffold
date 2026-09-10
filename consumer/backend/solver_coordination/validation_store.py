@@ -19,7 +19,6 @@ from workspace.workspaces import get_workspace_paths
 
 from .canonical import sha256_digest
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -198,17 +197,13 @@ class ValidationRunStore:
     @classmethod
     def _require_digest(cls, value: object, field_name: str) -> str:
         if not isinstance(value, str) or not cls._DIGEST_RE.fullmatch(value):
-            raise ValidationRunStoreError(
-                "validation artifact {} is not a versioned digest".format(field_name)
-            )
+            raise ValidationRunStoreError("validation artifact {} is not a versioned digest".format(field_name))
         return value
 
     @staticmethod
     def _require_non_negative_count(value: object, field_name: str) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValidationRunStoreError(
-                "validation result {} is invalid".format(field_name)
-            )
+            raise ValidationRunStoreError("validation result {} is invalid".format(field_name))
         return value
 
     @classmethod
@@ -253,25 +248,17 @@ class ValidationRunStore:
         ):
             value = payload[field_name]
             if not isinstance(value, str) or not value.strip():
-                raise ValidationRunStoreError(
-                    "validation result {} is invalid".format(field_name)
-                )
+                raise ValidationRunStoreError("validation result {} is invalid".format(field_name))
         cls._require_digest(payload["candidate_set_digest"], "candidate_set_digest")
         cls._require_digest(payload["problem_digest"], "problem_digest")
         if not str(payload["candidate_set_ref"]).startswith("candidate_set_"):
             raise ValidationRunStoreError("validation result candidate_set_ref is invalid")
-        result_count = cls._require_non_negative_count(
-            payload["result_count"], "result_count"
-        )
+        result_count = cls._require_non_negative_count(payload["result_count"], "result_count")
         checked_candidate_count = cls._require_non_negative_count(
             payload["checked_candidate_count"], "checked_candidate_count"
         )
-        completed_count = cls._require_non_negative_count(
-            payload["completed_count"], "completed_count"
-        )
-        expected_error_count = cls._require_non_negative_count(
-            payload["error_count"], "error_count"
-        )
+        completed_count = cls._require_non_negative_count(payload["completed_count"], "completed_count")
+        expected_error_count = cls._require_non_negative_count(payload["error_count"], "error_count")
         if result_count < 1:
             raise ValidationRunStoreError("validation result must contain at least one result")
         results = payload["all_candidate_results"]
@@ -318,10 +305,18 @@ class ValidationRunStore:
         if feasible != feasible_ids:
             raise ValidationRunStoreError("validation result feasible IDs are inconsistent")
         if actual_error_count:
-            if payload["batch_status"] != "validation_failed" or payload["selection_status"] != "not_publishable" or published:
+            if (
+                payload["batch_status"] != "validation_failed"
+                or payload["selection_status"] != "not_publishable"
+                or published
+            ):
                 raise ValidationRunStoreError("validation result publication state is inconsistent")
         else:
-            if payload["batch_status"] != "validation_completed" or payload["selection_status"] != "published" or published != feasible:
+            if (
+                payload["batch_status"] != "validation_completed"
+                or payload["selection_status"] != "published"
+                or published != feasible
+            ):
                 raise ValidationRunStoreError("validation result publication state is inconsistent")
         if len(set(result_ids)) != len(result_ids):
             raise ValidationRunStoreError("validation result candidate IDs are duplicated")
@@ -372,7 +367,10 @@ class ValidationRunStore:
         expected_fingerprint: str | None = None,
         expected_payload_digest: str | None = None,
     ) -> None:
-        if payload.get("schema_version") != "solver_coordination.v1" or payload.get("artifact_type") != "validation_run":
+        if (
+            payload.get("schema_version") != "solver_coordination.v1"
+            or payload.get("artifact_type") != "validation_run"
+        ):
             raise ValidationRunStoreError("validation result schema is invalid")
         if payload.get("workspace_id") != workspace_id or payload.get("owner_id") != owner_id:
             raise ValidationRunStoreError("validation result scope is invalid")
@@ -439,9 +437,7 @@ class ValidationRunStore:
             raise ValidationRunStoreError("validation request pointer is invalid")
         if not isinstance(record.get("payload_digest"), str):
             raise ValidationRunStoreError("validation request pointer is invalid")
-        run_payload = self._read(
-            self._run_path(record.get("validation_run_id", ""), owner_id=owner)
-        )
+        run_payload = self._read(self._run_path(record.get("validation_run_id", ""), owner_id=owner))
         if run_payload is None:
             raise ValidationRunStoreError("validation result is unavailable")
         if run_payload.get("workspace_id") != self.workspace_id or run_payload.get("owner_id") != owner:

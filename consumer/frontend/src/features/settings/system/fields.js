@@ -13,7 +13,8 @@ export const SYSTEM_SETTINGS_PANEL_SECTIONS = Object.freeze([
 export const SYSTEM_SETTINGS_SECTION_META = Object.freeze({
   auth: {
     title: '鉴权',
-    description: '配置本地签名、Token 有效期以及远端鉴权服务。密钥输入留空时保留现有值。',
+    description:
+      '配置本地签名、Token 有效期以及远端鉴权服务。密钥输入留空时保留现有值。',
   },
   agent: {
     title: 'Agent 参数',
@@ -42,7 +43,9 @@ export const SYSTEM_SETTINGS_SECTION_META = Object.freeze({
 });
 
 function normalizePanelSection(section) {
-  const normalized = String(section || '').trim().toLowerCase();
+  const normalized = String(section || '')
+    .trim()
+    .toLowerCase();
   if (!SYSTEM_SETTINGS_PANEL_SECTIONS.includes(normalized)) {
     throw new Error(`不支持的系统设置面板：${normalized || '空值'}`);
   }
@@ -58,7 +61,10 @@ export function systemSettingsPanelId(section) {
 }
 
 export function systemSettingsModuleKey(section, importRevision = 0) {
-  const revision = Number.isInteger(importRevision) && importRevision >= 0 ? importRevision : 0;
+  const revision =
+    Number.isInteger(importRevision) && importRevision >= 0 ?
+      importRevision :
+      0;
   return `${normalizePanelSection(section)}:import-${revision}`;
 }
 
@@ -66,29 +72,64 @@ export function nextSystemSettingsTab(section, key) {
   const normalized = normalizePanelSection(section);
   const index = SYSTEM_SETTINGS_PANEL_SECTIONS.indexOf(normalized);
   const [firstSection] = SYSTEM_SETTINGS_PANEL_SECTIONS;
-  if (key === 'Home') return firstSection;
-  if (key === 'End') return SYSTEM_SETTINGS_PANEL_SECTIONS.at(-1);
+  if (key === 'Home') {
+    return firstSection;
+  }
+  if (key === 'End') {
+    return SYSTEM_SETTINGS_PANEL_SECTIONS.at(-1);
+  }
   if (key === 'ArrowRight' || key === 'ArrowDown') {
-    return SYSTEM_SETTINGS_PANEL_SECTIONS[(index + 1) % SYSTEM_SETTINGS_PANEL_SECTIONS.length];
+    return SYSTEM_SETTINGS_PANEL_SECTIONS[
+      (index + 1) % SYSTEM_SETTINGS_PANEL_SECTIONS.length
+    ];
   }
   if (key === 'ArrowLeft' || key === 'ArrowUp') {
-    return SYSTEM_SETTINGS_PANEL_SECTIONS[(index - 1 + SYSTEM_SETTINGS_PANEL_SECTIONS.length)
-      % SYSTEM_SETTINGS_PANEL_SECTIONS.length];
+    return SYSTEM_SETTINGS_PANEL_SECTIONS[
+      (index - 1 + SYSTEM_SETTINGS_PANEL_SECTIONS.length) %
+        SYSTEM_SETTINGS_PANEL_SECTIONS.length
+    ];
   }
   return normalized;
 }
 
-const number = (name, label, options = {}) => ({ name, label, type: 'number', step: 1, ...options });
-const text = (name, label, options = {}) => ({ name, label, type: 'text', ...options });
-const toggle = (name, label, options = {}) => ({ name, label, type: 'checkbox', ...options });
-const secret = (name, label, options = {}) => ({ name, label, type: 'password', secret: true, ...options });
+const number = (name, label, options = {}) => ({
+  name,
+  label,
+  type: 'number',
+  step: 1,
+  ...options,
+});
+const text = (name, label, options = {}) => ({
+  name,
+  label,
+  type: 'text',
+  ...options,
+});
+const toggle = (name, label, options = {}) => ({
+  name,
+  label,
+  type: 'checkbox',
+  ...options,
+});
+const secret = (name, label, options = {}) => ({
+  name,
+  label,
+  type: 'password',
+  secret: true,
+  ...options,
+});
 
 export const SYSTEM_CONFIG_FIELDS = Object.freeze({
   auth: [
-    secret('auth_secret', '本地签名密钥', { hasField: 'has_auth_secret', clearField: 'clear_auth_secret' }),
+    secret('auth_secret', '本地签名密钥', {
+      hasField: 'has_auth_secret',
+      clearField: 'clear_auth_secret',
+    }),
     number('auth_token_ttl_seconds', 'Token 有效期（秒）', { min: 1 }),
     text('auth_server_url', '远端鉴权服务 URL'),
-    secret('auth_server_admin_token', '远端管理 Token', { hasField: 'has_auth_server_admin_token' }),
+    secret('auth_server_admin_token', '远端管理 Token', {
+      hasField: 'has_auth_server_admin_token',
+    }),
     text('auth_server_audience', 'Audience'),
     text('auth_server_issuer', 'Issuer'),
   ],
@@ -112,7 +153,9 @@ export const SYSTEM_CONFIG_FIELDS = Object.freeze({
   ],
   memory: [
     number('recall_topk', '召回条数', { min: 1 }),
-    text('recall_threshold', '召回阈值', { placeholder: '留空使用运行时默认值' }),
+    text('recall_threshold', '召回阈值', {
+      placeholder: '留空使用运行时默认值',
+    }),
     text('workspace_root', '记忆工作目录'),
   ],
   web_search: [
@@ -124,7 +167,10 @@ export const SYSTEM_CONFIG_FIELDS = Object.freeze({
       options: [{ value: 'tavily', label: 'Tavily' }],
     },
     text('base_url', '服务地址', { placeholder: 'https://api.tavily.com' }),
-    secret('api_key', 'API Key', { hasField: 'has_api_key', clearField: 'clear_api_key' }),
+    secret('api_key', 'API Key', {
+      hasField: 'has_api_key',
+      clearField: 'clear_api_key',
+    }),
     number('timeout_seconds', '请求超时（秒）', { min: 1 }),
     number('default_max_results', '默认结果数', { min: 1 }),
     number('max_results_limit', '结果数上限', { min: 1 }),
@@ -132,7 +178,10 @@ export const SYSTEM_CONFIG_FIELDS = Object.freeze({
       name: 'search_depth',
       label: '搜索深度',
       type: 'select',
-      options: ['basic', 'fast', 'ultra-fast', 'advanced'].map((value) => ({ value, label: value })),
+      options: ['basic', 'fast', 'ultra-fast', 'advanced'].map((value) => ({
+        value,
+        label: value,
+      })),
     },
     text('allowed_domains', '允许域名', { hint: '逗号分隔，留空表示不限制' }),
     text('blocked_domains', '屏蔽域名', { hint: '逗号分隔' }),
@@ -143,7 +192,9 @@ export const SYSTEM_CONFIG_FIELDS = Object.freeze({
   ],
   skill_evolution: [
     toggle('enabled', '启用技能进化'),
-    text('base_url', 'skill-evolver 服务地址', { placeholder: 'http://127.0.0.1:8765' }),
+    text('base_url', 'skill-evolver 服务地址', {
+      placeholder: 'http://127.0.0.1:8765',
+    }),
     number('timeout_seconds', '连接超时（秒）', { min: 1 }),
     number('poll_interval_seconds', '轮询间隔（秒）', { min: 1 }),
     number('task_timeout_seconds', '任务超时（秒）', { min: 60 }),
@@ -162,7 +213,9 @@ export const SYSTEM_CONFIG_FIELDS = Object.freeze({
         { value: 'all', label: '全部工作空间' },
       ],
     },
-    text('rollout_workspace_ids', '发布工作空间', { hint: 'allowlist 模式下使用，逗号分隔 workspace_id' }),
+    text('rollout_workspace_ids', '发布工作空间', {
+      hint: 'allowlist 模式下使用，逗号分隔 workspace_id',
+    }),
     toggle('search_enabled', '启用证据检索'),
     {
       name: 'tool_exposure_mode',
@@ -195,17 +248,25 @@ export const SYSTEM_CONFIG_FIELDS = Object.freeze({
 export function buildSystemConfigSectionPayload(section, draft = {}) {
   const normalizedSection = assertSystemConfigSection(section);
   const fields = SYSTEM_CONFIG_FIELDS[normalizedSection];
-  if (!fields) throw new Error(`${normalizedSection} 由独立设置功能管理`);
+  if (!fields) {
+    throw new Error(`${normalizedSection} 由独立设置功能管理`);
+  }
 
   const payload = {};
   fields.forEach((field) => {
     const value = draft[field.name];
     if (field.secret) {
-      if (typeof value === 'string' && value.trim()) payload[field.name] = value;
-      if (field.clearField && draft[field.clearField] === true) payload[field.clearField] = true;
+      if (typeof value === 'string' && value.trim()) {
+        payload[field.name] = value;
+      }
+      if (field.clearField && draft[field.clearField] === true) {
+        payload[field.clearField] = true;
+      }
       return;
     }
-    if (value !== undefined) payload[field.name] = value;
+    if (value !== undefined) {
+      payload[field.name] = value;
+    }
   });
   return payload;
 }

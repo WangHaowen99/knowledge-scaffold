@@ -1,5 +1,4 @@
 import json
-
 from types import SimpleNamespace
 
 from agent.tools.base import ToolContext
@@ -15,13 +14,15 @@ def _tool_call(call_id, arguments):
     return {
         "role": "assistant",
         "content": "",
-        "tool_calls": [{
-            "id": call_id,
-            "function": {
-                "name": "execute_script",
-                "arguments": json.dumps(arguments, ensure_ascii=False),
-            },
-        }],
+        "tool_calls": [
+            {
+                "id": call_id,
+                "function": {
+                    "name": "execute_script",
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }
+        ],
     }
 
 
@@ -43,10 +44,17 @@ def test_identical_successful_script_call_is_reused_instead_of_executed_again():
         "operation_key": "装置负荷校验",
         "arguments": {"monthlyFeedAndDays": [{"totalProcessingDays": 31}]},
     }
-    context = _context([
-        _tool_call("call-1", arguments),
-        {"role": "tool", "name": "execute_script", "tool_call_id": "call-1", "content": '{"monthlyLoadSummary":[]}'},
-    ])
+    context = _context(
+        [
+            _tool_call("call-1", arguments),
+            {
+                "role": "tool",
+                "name": "execute_script",
+                "tool_call_id": "call-1",
+                "content": '{"monthlyLoadSummary":[]}',
+            },
+        ]
+    )
 
     outcome = ExecuteScriptTool().execute(
         args=arguments,
@@ -66,10 +74,17 @@ def test_distinct_successful_retries_are_capped_before_agent_loops_forever():
             "arguments": {"monthlyFeedAndDays": [{"totalProcessingDays": 27 + index}]},
         }
         call_id = f"call-{index}"
-        messages.extend([
-            _tool_call(call_id, arguments),
-            {"role": "tool", "name": "execute_script", "tool_call_id": call_id, "content": '{"monthlyLoadSummary":[]}'},
-        ])
+        messages.extend(
+            [
+                _tool_call(call_id, arguments),
+                {
+                    "role": "tool",
+                    "name": "execute_script",
+                    "tool_call_id": call_id,
+                    "content": '{"monthlyLoadSummary":[]}',
+                },
+            ]
+        )
 
     outcome = ExecuteScriptTool().execute(
         args={
@@ -92,21 +107,21 @@ def test_failed_script_call_does_not_consume_retry_budget():
     }
     messages = [
         _tool_call("call-error", arguments),
-        {"role": "tool", "name": "execute_script", "tool_call_id": "call-error", "content": 'Error: invalid arguments'},
+        {"role": "tool", "name": "execute_script", "tool_call_id": "call-error", "content": "Error: invalid arguments"},
     ]
 
-    assert _prior_successful_operation_calls(
-        messages,
-        ontology_id="demo",
-        operation_key="装置负荷校验",
-        current_tool_call_id="call-retry",
-    ) == []
+    assert (
+        _prior_successful_operation_calls(
+            messages,
+            ontology_id="demo",
+            operation_key="装置负荷校验",
+            current_tool_call_id="call-retry",
+        )
+        == []
+    )
 
 
 def test_operation_selection_redirect_does_not_consume_retry_budget():
-    content = (
-        "Operation selection blocked: load the coordinating operation first. "
-        "The script did not run."
-    )
+    content = "Operation selection blocked: load the coordinating operation first. " "The script did not run."
 
     assert _is_successful_script_output(content) is False

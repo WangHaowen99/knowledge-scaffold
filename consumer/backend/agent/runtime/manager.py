@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Optional
 
 from agent.runtime.contracts import (
+    TERMINAL_RUN_STATUSES,
     PublicEventDraft,
     PublicEventSink,
     RunScope,
@@ -21,7 +22,6 @@ from agent.runtime.contracts import (
     RuntimeInvocationContext,
     RuntimeRecoveryAction,
     RuntimeResult,
-    TERMINAL_RUN_STATUSES,
 )
 from agent.runtime.errors import (
     RunConflictError,
@@ -35,7 +35,6 @@ from agent.runtime.service import AsyncExecutionService, pending_interaction_fro
 from agent.runtime.store import InMemoryRunRepository, utc_now_iso
 from agent.runtime.supervisor import RunTaskSupervisor
 from utils.security.redaction import redact_sensitive_value
-
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +70,7 @@ def _failed_terminal_payload(
     message: str,
 ) -> dict[str, Any]:
     normalized = {
-        key: value
-        for key, value in payload.items()
-        if key not in {"content", "result", "structured_content"}
+        key: value for key, value in payload.items() if key not in {"content", "result", "structured_content"}
     }
     normalized.update(
         {
@@ -120,9 +117,7 @@ class AsyncRunManager:
         repository: Optional[InMemoryRunRepository] = None,
         event_bus: Optional[AsyncEventBus] = None,
         supervisor: Optional[RunTaskSupervisor] = None,
-        workspace_available: Optional[
-            Callable[[str], Awaitable[bool]]
-        ] = None,
+        workspace_available: Optional[Callable[[str], Awaitable[bool]]] = None,
     ) -> None:
         self.execution_service = execution_service
         self.repository = repository or InMemoryRunRepository()
@@ -131,9 +126,7 @@ class AsyncRunManager:
             self.repository,
             event_persistor=persist_event if callable(persist_event) else None,
         )
-        if event_bus is not None and event_bus.event_persistor is None and callable(
-            persist_event
-        ):
+        if event_bus is not None and event_bus.event_persistor is None and callable(persist_event):
             event_bus.event_persistor = persist_event
         self.supervisor = supervisor or RunTaskSupervisor()
         self._admission_condition = asyncio.Condition()
@@ -170,10 +163,7 @@ class AsyncRunManager:
                 )
         if not scope.allows("agent:run"):
             raise PermissionError("缺少 agent:run 权限")
-        if (
-            context.username != scope.username
-            or context.workspace_id != scope.workspace_id
-        ):
+        if context.username != scope.username or context.workspace_id != scope.workspace_id:
             raise PermissionError("Runtime 上下文与鉴权范围不匹配")
         now = utc_now_iso()
         snapshot = RunSnapshot(
@@ -189,10 +179,7 @@ class AsyncRunManager:
         )
         fingerprint = request_fingerprint(context)
         async with self._workspace_guard(scope.workspace_id):
-            if (
-                self._workspace_available is not None
-                and not await self._workspace_available(scope.workspace_id)
-            ):
+            if self._workspace_available is not None and not await self._workspace_available(scope.workspace_id):
                 raise WorkspaceUnavailableError(scope.workspace_id)
             async with self._creation_lock:
                 if idempotency_key:
@@ -212,10 +199,7 @@ class AsyncRunManager:
                 active_run_id = self._active_by_session.get(session_key)
                 if active_run_id:
                     active = await self.repository.get(active_run_id)
-                    if (
-                        active is not None
-                        and active.status not in TERMINAL_RUN_STATUSES
-                    ):
+                    if active is not None and active.status not in TERMINAL_RUN_STATUSES:
                         raise SessionBusyError(active_run_id)
                     self._active_by_session.pop(session_key, None)
                 stored, created = await self.repository.create(
@@ -440,11 +424,7 @@ class AsyncRunManager:
                 return
             if draft.event_type == "turn.finished":
                 snapshot = snapshot_for_filter
-                if (
-                    snapshot is None
-                    or entry.terminal_committed
-                    or snapshot.status in TERMINAL_RUN_STATUSES
-                ):
+                if snapshot is None or entry.terminal_committed or snapshot.status in TERMINAL_RUN_STATUSES:
                     return
                 status = _normalize_runtime_status(draft.status)
                 normalized = draft.model_copy(
@@ -453,8 +433,8 @@ class AsyncRunManager:
                         "session_id": snapshot.session_id,
                         "status": status.value,
                         "payload": {
-                        **dict(draft.payload),
-                        "status": status.value,
+                            **dict(draft.payload),
+                            "status": status.value,
                         },
                     },
                 )
@@ -534,11 +514,7 @@ class AsyncRunManager:
             requests_interaction = normalized.event_type == "interaction.requested"
             has_existing_interaction = snapshot.pending_interaction is not None
             has_new_interaction = pending_interaction is not None
-            if (
-                requests_interaction
-                and has_existing_interaction
-                and has_new_interaction
-            ):
+            if requests_interaction and has_existing_interaction and has_new_interaction:
                 existing_id = str(snapshot.pending_interaction.get("id") or "")
                 new_id = str(pending_interaction.get("id") or "")
                 if existing_id != new_id:
@@ -567,11 +543,7 @@ class AsyncRunManager:
 
     async def shutdown(self, *, deadline: Optional[float] = None) -> bool:
         loop = asyncio.get_running_loop()
-        effective_deadline = (
-            float(deadline)
-            if deadline is not None
-            else loop.time() + 30.0
-        )
+        effective_deadline = float(deadline) if deadline is not None else loop.time() + 30.0
         snapshots = [
             snapshot
             for snapshot in await self.repository.list_snapshots()
@@ -609,9 +581,7 @@ class AsyncRunManager:
         except asyncio.CancelledError:
             entry = self._entries.get(run_id)
             cancel_reason = (
-                entry.cancel_reason
-                if entry is not None and entry.cancel_reason
-                else "task_cancelled_before_admission"
+                entry.cancel_reason if entry is not None and entry.cancel_reason else "task_cancelled_before_admission"
             )
             await self._finish_if_active(
                 run_id,
@@ -642,9 +612,7 @@ class AsyncRunManager:
             prepare_context = getattr(self.execution_service, "prepare_context", None)
             try:
                 prepared_context = (
-                    await prepare_context(snapshot.context)
-                    if callable(prepare_context)
-                    else snapshot.context
+                    await prepare_context(snapshot.context) if callable(prepare_context) else snapshot.context
                 )
             except Exception as exc:
                 logger.error(
@@ -682,17 +650,19 @@ class AsyncRunManager:
             if transitioned is None:
                 return
             snapshot = transitioned
-            await self.event_bus.publish(PublicEventDraft(
-                schema_version="1.0",
-                run_id=run_id,
-                session_id=snapshot.session_id,
-                turn_id=snapshot.turn_id,
-                event_type="run.started",
-                status="running",
-                source={"node": "consumer", "component": "run_manager"},
-                payload={"status": "running"},
-                created_at=utc_now_iso(),
-            ))
+            await self.event_bus.publish(
+                PublicEventDraft(
+                    schema_version="1.0",
+                    run_id=run_id,
+                    session_id=snapshot.session_id,
+                    turn_id=snapshot.turn_id,
+                    event_type="run.started",
+                    status="running",
+                    source={"node": "consumer", "component": "run_manager"},
+                    payload={"status": "running"},
+                    created_at=utc_now_iso(),
+                )
+            )
             sink = _ManagerEventSink(self, run_id)
             phase_start_seq = snapshot.last_seq
             try:
@@ -744,9 +714,7 @@ class AsyncRunManager:
                                 message="Runtime 返回失败但未提供错误信息",
                                 retriable=False,
                             )
-                            runtime_result = runtime_result.model_copy(
-                                update={"error": runtime_error}
-                            )
+                            runtime_result = runtime_result.model_copy(update={"error": runtime_error})
                         await self._finish_if_active(
                             run_id,
                             status=fallback_status,
@@ -772,15 +740,10 @@ class AsyncRunManager:
             except asyncio.CancelledError:
                 current = await self.repository.get(run_id)
                 entry = self._entries.get(run_id)
-                cancel_reason = (
-                    entry.cancel_reason
-                    if entry is not None and entry.cancel_reason
-                    else "task_cancelled"
-                )
+                cancel_reason = entry.cancel_reason if entry is not None and entry.cancel_reason else "task_cancelled"
                 if (
-                    (current is None or current.status not in TERMINAL_RUN_STATUSES)
-                    and run_id not in self._cancel_futures
-                ):
+                    current is None or current.status not in TERMINAL_RUN_STATUSES
+                ) and run_id not in self._cancel_futures:
                     await self._cancel_runtime_safely(run_id, cancel_reason)
                 result = RuntimeResult(status="cancelled")
                 await self._finalize_aborted_safely(snapshot.context, result)
@@ -913,10 +876,7 @@ class AsyncRunManager:
         if entry is None:
             return
         async with entry.lock:
-            if (
-                self.supervisor.get_run_task(run_id) is not None
-                or self._entries.get(run_id) is not entry
-            ):
+            if self.supervisor.get_run_task(run_id) is not None or self._entries.get(run_id) is not entry:
                 return
             snapshot = await self.repository.get(run_id)
             if snapshot is None or snapshot.status in TERMINAL_RUN_STATUSES:
@@ -965,11 +925,7 @@ class AsyncRunManager:
         entry = self._entries.setdefault(run_id, _RunEntry())
         async with entry.lock:
             snapshot = await self.repository.get(run_id)
-            if (
-                snapshot is None
-                or entry.terminal_committed
-                or snapshot.status in TERMINAL_RUN_STATUSES
-            ):
+            if snapshot is None or entry.terminal_committed or snapshot.status in TERMINAL_RUN_STATUSES:
                 return snapshot
             return await self._finish(
                 snapshot,
@@ -1067,18 +1023,10 @@ class AsyncRunManager:
         explicit_structured = draft.payload.get("structured_content")
         if isinstance(final_output, str):
             content = final_output
-            structured = (
-                explicit_structured
-                if isinstance(explicit_structured, (dict, list))
-                else None
-            )
+            structured = explicit_structured if isinstance(explicit_structured, (dict, list)) else None
         elif isinstance(final_output, dict):
             content = str(final_output.get("text") or final_output.get("content") or "") or None
-            structured = (
-                explicit_structured
-                if isinstance(explicit_structured, (dict, list))
-                else final_output
-            )
+            structured = explicit_structured if isinstance(explicit_structured, (dict, list)) else final_output
         elif isinstance(explicit_structured, (dict, list)):
             content = None
             structured = explicit_structured
@@ -1106,28 +1054,19 @@ class AsyncRunManager:
             dict,
         ):
             try:
-                recovery = RuntimeRecoveryAction.model_validate(
-                    draft.payload["recovery"]
-                )
+                recovery = RuntimeRecoveryAction.model_validate(draft.payload["recovery"])
             except ValueError:
                 recovery = None
         return RuntimeResult(
             status=status.value,
             content=content,
             structured_content=structured,
-            usage=(
-                dict(draft.payload.get("usage"))
-                if isinstance(draft.payload.get("usage"), dict)
-                else None
-            ),
-            trace=(
-                dict(draft.payload.get("trace"))
-                if isinstance(draft.payload.get("trace"), dict)
-                else None
-            ),
+            usage=(dict(draft.payload.get("usage")) if isinstance(draft.payload.get("usage"), dict) else None),
+            trace=(dict(draft.payload.get("trace")) if isinstance(draft.payload.get("trace"), dict) else None),
             error=error,
             recovery=recovery,
         )
+
 
 def _normalize_runtime_status(value: Any) -> RunStatus:
     normalized = str(getattr(value, "value", value) or "").strip().lower()

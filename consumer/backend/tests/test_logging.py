@@ -1,13 +1,13 @@
 """Tests for date-partitioned backend logging."""
 
-from datetime import date, datetime
 import gzip
 import json
 import logging
 import logging.handlers
 import os
-from pathlib import Path
 import sys
+from datetime import date, datetime
+from pathlib import Path
 
 import pytest
 
@@ -207,9 +207,7 @@ def test_configure_logging_defaults_to_180_day_compressed_agent_logs(tmp_path):
     )
 
     handler = next(
-        handler
-        for handler in logging.getLogger().handlers
-        if isinstance(handler, DatePartitionedRotatingFileHandler)
+        handler for handler in logging.getLogger().handlers if isinstance(handler, DatePartitionedRotatingFileHandler)
     )
 
     assert handler.retention_days == 180

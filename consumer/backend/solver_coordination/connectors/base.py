@@ -11,9 +11,7 @@ from solver_coordination.contracts import ProblemIR, SolverResult
 
 @runtime_checkable
 class SolverConnector(Protocol):
-    def capabilities(
-        self, *, binding: Mapping[str, Any] | None = None
-    ) -> Mapping[str, Any]: ...
+    def capabilities(self, *, binding: Mapping[str, Any] | None = None) -> Mapping[str, Any]: ...
 
     def assert_binding_capabilities(
         self,
@@ -33,17 +31,11 @@ class SolverConnector(Protocol):
         traceparent: str | None = None,
     ) -> Mapping[str, Any]: ...
 
-    def poll(
-        self, *, binding: Mapping[str, Any], job_id: str
-    ) -> Mapping[str, Any]: ...
+    def poll(self, *, binding: Mapping[str, Any], job_id: str) -> Mapping[str, Any]: ...
 
-    def cancel(
-        self, *, binding: Mapping[str, Any], job_id: str
-    ) -> Mapping[str, Any]: ...
+    def cancel(self, *, binding: Mapping[str, Any], job_id: str) -> Mapping[str, Any]: ...
 
-    def result(
-        self, *, binding: Mapping[str, Any], job_id: str
-    ) -> SolverResult: ...
+    def result(self, *, binding: Mapping[str, Any], job_id: str) -> SolverResult: ...
 
 
 __all__ = ["SolverConnector"]

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import time
 from copy import deepcopy
 from dataclasses import dataclass
-import json
 from pathlib import Path
-import time
 from typing import Any, Callable, Mapping, Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -18,7 +18,6 @@ from contracts.solver.validation import (
     parse_json_bytes,
     validate_document,
 )
-
 
 _CONTRACT_ROOT = Path(__file__).resolve().parents[1]
 _MAX_RESPONSE_BYTES = 1024 * 1024
@@ -74,9 +73,7 @@ class FaultScenario:
 class FaultScenarioDriver(Protocol):
     """Provide optional, out-of-band fault scenarios for Connector admission."""
 
-    def scenario(
-        self, name: str, request: Mapping[str, Any]
-    ) -> FaultScenario | None: ...
+    def scenario(self, name: str, request: Mapping[str, Any]) -> FaultScenario | None: ...
 
 
 ResultVerifier = Callable[..., bool | None]
@@ -124,9 +121,7 @@ class ConnectorTckRunner:
             raise ValueError("base_url must be an HTTP endpoint origin")
         if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        if bearer_token is not None and (
-            not isinstance(bearer_token, str) or len(bearer_token) < 16
-        ):
+        if bearer_token is not None and (not isinstance(bearer_token, str) or len(bearer_token) < 16):
             raise ValueError("bearer_token must contain at least 16 characters")
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = float(timeout_seconds)
@@ -203,17 +198,11 @@ class ConnectorTckRunner:
         terminal = self._poll_terminal(first_job)
         if terminal["status"] != "completed":
             raise TckFailure("golden solve did not complete")
-        result = self._check_result(
-            job_id=terminal["job_id"], request_ref=request_ref, request=request
-        )
+        result = self._check_result(job_id=terminal["job_id"], request_ref=request_ref, request=request)
         self._check_golden(request=request, result=result)
 
-        first_cancel = self._request(
-            "DELETE", "/v1/solve-jobs/{}".format(terminal["job_id"])
-        )
-        second_cancel = self._request(
-            "DELETE", "/v1/solve-jobs/{}".format(terminal["job_id"])
-        )
+        first_cancel = self._request("DELETE", "/v1/solve-jobs/{}".format(terminal["job_id"]))
+        second_cancel = self._request("DELETE", "/v1/solve-jobs/{}".format(terminal["job_id"]))
         cancelled_a = self._job_response(first_cancel, expected_status=200)
         cancelled_b = self._job_response(second_cancel, expected_status=200)
         if cancelled_a != cancelled_b:
@@ -266,18 +255,14 @@ class ConnectorTckRunner:
     @staticmethod
     def _example(name: str) -> dict[str, Any]:
         try:
-            value = parse_json_bytes(
-                (_CONTRACT_ROOT / "examples" / name).read_bytes()
-            )
+            value = parse_json_bytes((_CONTRACT_ROOT / "examples" / name).read_bytes())
         except (OSError, ContractValidationError) as exc:
             raise TckFailure("TCK example is unavailable") from exc
         if not isinstance(value, dict):
             raise TckFailure("TCK example is malformed")
         return value
 
-    def _scenario(
-        self, name: str, request: Mapping[str, Any]
-    ) -> FaultScenario | None:
+    def _scenario(self, name: str, request: Mapping[str, Any]) -> FaultScenario | None:
         if self._fault_driver is None:
             raise TckFailure("fault scenario driver is unavailable")
         try:
@@ -296,39 +281,25 @@ class ConnectorTckRunner:
         checks: list[str],
     ) -> None:
         probe = deepcopy(request)
-        probe["request_ref"] = "req_" + "A" * 20 + name.replace(
-            "fault_", ""
-        ).replace("_", "-")
+        probe["request_ref"] = "req_" + "A" * 20 + name.replace("fault_", "").replace("_", "-")
         key = "tck-{}-00000001".format(name.replace("fault_", ""))
         try:
             if scenario.before_submit is not None:
                 scenario.before_submit(deepcopy(probe))
             if name == "fault_429":
-                response = self._request(
-                    "POST", "/v1/solve-jobs", document=probe, idempotency_key=key
-                )
-                error = self._retryable_error(
-                    response, expected_status=429, expected_category="capacity"
-                )
+                response = self._request("POST", "/v1/solve-jobs", document=probe, idempotency_key=key)
+                error = self._retryable_error(response, expected_status=429, expected_category="capacity")
                 retry_after = response.headers.get("retry-after")
                 if retry_after is None or not retry_after.strip():
                     raise TckFailure("429 response omitted Retry-After")
                 if error["code"] == "IDEMPOTENCY_CONFLICT":
                     raise TckFailure("capacity failure used a contract error code")
             elif name == "fault_502":
-                response = self._request(
-                    "POST", "/v1/solve-jobs", document=probe, idempotency_key=key
-                )
-                self._retryable_error(
-                    response, expected_status=502, expected_category="transport"
-                )
+                response = self._request("POST", "/v1/solve-jobs", document=probe, idempotency_key=key)
+                self._retryable_error(response, expected_status=502, expected_category="transport")
             elif name == "fault_503":
-                response = self._request(
-                    "POST", "/v1/solve-jobs", document=probe, idempotency_key=key
-                )
-                self._retryable_error(
-                    response, expected_status=503, expected_category="transport"
-                )
+                response = self._request("POST", "/v1/solve-jobs", document=probe, idempotency_key=key)
+                self._retryable_error(response, expected_status=503, expected_category="transport")
             elif name == "fault_timeout":
                 try:
                     self._request(
@@ -343,25 +314,19 @@ class ConnectorTckRunner:
                 else:
                     raise TckFailure("timeout scenario did not interrupt transport")
             elif name == "fault_execution_failed":
-                response = self._request(
-                    "POST", "/v1/solve-jobs", document=probe, idempotency_key=key
-                )
+                response = self._request("POST", "/v1/solve-jobs", document=probe, idempotency_key=key)
                 job = self._job_response(response, expected_status=202)
                 if scenario.after_failure is not None:
                     scenario.after_failure()
                 observed = self._poll_terminal(job)
                 if observed["status"] != "failed":
                     raise TckFailure("execution fault was not reported as failed")
-                unavailable = self._request(
-                    "GET", "/v1/solve-jobs/{}/result".format(job["job_id"])
-                )
+                unavailable = self._request("GET", "/v1/solve-jobs/{}/result".format(job["job_id"]))
                 error = self._error_response(unavailable, expected_status=409)
                 if error["category"] != "result" or error["retryable"] is not False:
                     raise TckFailure("failed result error mapping is invalid")
             elif name in {"fault_attempt_lost", "fault_restart"}:
-                response = self._request(
-                    "POST", "/v1/solve-jobs", document=probe, idempotency_key=key
-                )
+                response = self._request("POST", "/v1/solve-jobs", document=probe, idempotency_key=key)
                 job = self._job_response(response, expected_status=202)
                 if scenario.after_submit is not None:
                     scenario.after_submit(job)
@@ -369,34 +334,24 @@ class ConnectorTckRunner:
                 if name == "fault_attempt_lost":
                     if observed["status"] != "attempt_lost":
                         raise TckFailure("lost attempt was not reported explicitly")
-                    missing = self._request(
-                        "GET", "/v1/solve-jobs/{}/result".format(job["job_id"])
-                    )
+                    missing = self._request("GET", "/v1/solve-jobs/{}/result".format(job["job_id"]))
                     error = self._error_response(missing, expected_status=409)
                     if error["category"] != "result" or error["retryable"] is not False:
                         raise TckFailure("attempt_lost result error mapping is invalid")
                 elif observed["status"] == "completed":
-                    recovered = self._request(
-                        "GET", "/v1/solve-jobs/{}/result".format(job["job_id"])
-                    )
+                    recovered = self._request("GET", "/v1/solve-jobs/{}/result".format(job["job_id"]))
                     self._validate("result", recovered.document)
                     if recovered.document.get("request_ref") != probe["request_ref"]:
                         raise TckFailure("restart recovery changed request identity")
                 elif observed["status"] != "attempt_lost":
-                    raise TckFailure(
-                        "restart must recover the attempt or report attempt_lost"
-                    )
+                    raise TckFailure("restart must recover the attempt or report attempt_lost")
             elif name == "fault_late_result":
-                response = self._request(
-                    "POST", "/v1/solve-jobs", document=probe, idempotency_key=key
-                )
+                response = self._request("POST", "/v1/solve-jobs", document=probe, idempotency_key=key)
                 job = self._job_response(response, expected_status=202)
                 if scenario.after_submit is not None:
                     scenario.after_submit(job)
                 cancelled = self._job_response(
-                    self._request(
-                        "DELETE", "/v1/solve-jobs/{}".format(job["job_id"])
-                    ),
+                    self._request("DELETE", "/v1/solve-jobs/{}".format(job["job_id"])),
                     expected_status=200,
                 )
                 if cancelled["status"] != "cancelled":
@@ -404,16 +359,12 @@ class ConnectorTckRunner:
                 if scenario.after_cancel is not None:
                     scenario.after_cancel(cancelled)
                 observed = self._job_response(
-                    self._request(
-                        "GET", "/v1/solve-jobs/{}".format(job["job_id"])
-                    ),
+                    self._request("GET", "/v1/solve-jobs/{}".format(job["job_id"])),
                     expected_status=200,
                 )
                 if observed["status"] != "cancelled":
                     raise TckFailure("late result overwrote the cancelled terminal state")
-                unavailable = self._request(
-                    "GET", "/v1/solve-jobs/{}/result".format(job["job_id"])
-                )
+                unavailable = self._request("GET", "/v1/solve-jobs/{}/result".format(job["job_id"]))
                 error = self._error_response(unavailable, expected_status=409)
                 if error["category"] != "result" or error["retryable"] is not False:
                     raise TckFailure("cancelled result error mapping is invalid")
@@ -470,9 +421,7 @@ class ConnectorTckRunner:
             raise TckFailure("family capability limits are invalid")
         if max_workers < 1:
             raise TckFailure("family capability limits are invalid")
-        if isinstance(max_solve_time_ms, bool) or not isinstance(
-            max_solve_time_ms, int
-        ):
+        if isinstance(max_solve_time_ms, bool) or not isinstance(max_solve_time_ms, int):
             raise TckFailure("family capability limits are invalid")
         if max_solve_time_ms < 1:
             raise TckFailure("family capability limits are invalid")
@@ -533,9 +482,7 @@ class ConnectorTckRunner:
         request_ref: str,
         request: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        response = self._request(
-            "GET", "/v1/solve-jobs/{}/result".format(job_id)
-        )
+        response = self._request("GET", "/v1/solve-jobs/{}/result".format(job_id))
         if response.status != 200:
             raise TckFailure("completed result endpoint failed")
         self._validate("result", response.document)
@@ -550,12 +497,8 @@ class ConnectorTckRunner:
         return result
 
     @staticmethod
-    def _check_golden(
-        *, request: Mapping[str, Any], result: Mapping[str, Any]
-    ) -> None:
-        selection = request["problem"]["payload"]["parameters"][
-            "candidate_selection"
-        ]
+    def _check_golden(*, request: Mapping[str, Any], result: Mapping[str, Any]) -> None:
+        selection = request["problem"]["payload"]["parameters"]["candidate_selection"]
         candidates = selection["candidates"]
         objectives = request["problem"]["payload"]["objectives"]
 
@@ -563,11 +506,7 @@ class ConnectorTckRunner:
             values = []
             for objective in objectives:
                 metric_value = candidate["metrics"][objective["metric"]]
-                values.append(
-                    -metric_value
-                    if objective["sense"] == "maximize"
-                    else metric_value
-                )
+                values.append(-metric_value if objective["sense"] == "maximize" else metric_value)
             return tuple(values)
 
         eligible = [candidate for candidate in candidates if candidate["eligible"]]
@@ -581,8 +520,7 @@ class ConnectorTckRunner:
             **expected["assignment"],
         }
         expected_objectives = {
-            objective["metric"]: expected["metrics"][objective["metric"]]
-            for objective in objectives
+            objective["metric"]: expected["metrics"][objective["metric"]] for objective in objectives
         }
         if (
             result.get("solve_outcome") != "optimal"
@@ -591,17 +529,13 @@ class ConnectorTckRunner:
         ):
             raise TckFailure("family golden result diverged")
 
-    def _job_response(
-        self, response: _Response, *, expected_status: int
-    ) -> Mapping[str, Any]:
+    def _job_response(self, response: _Response, *, expected_status: int) -> Mapping[str, Any]:
         if response.status != expected_status:
             raise TckFailure("Connector returned an unexpected job HTTP status")
         self._validate("job", response.document)
         return response.document
 
-    def _error_response(
-        self, response: _Response, *, expected_status: int
-    ) -> Mapping[str, Any]:
+    def _error_response(self, response: _Response, *, expected_status: int) -> Mapping[str, Any]:
         if response.status != expected_status:
             raise TckFailure("Connector returned an unexpected error HTTP status")
         self._validate("error", response.document)
@@ -646,10 +580,7 @@ class ConnectorTckRunner:
             raise TckFailure("Connector endpoint is unavailable") from exc
         try:
             content_type = response.headers.get_content_type()
-            response_headers = {
-                str(key).lower(): str(value)
-                for key, value in response.headers.items()
-            }
+            response_headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
             raw = response.read(_MAX_RESPONSE_BYTES + 1)
             status = int(response.status)
         except (OSError, ValueError) as exc:

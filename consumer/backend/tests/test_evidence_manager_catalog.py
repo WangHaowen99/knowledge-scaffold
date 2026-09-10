@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-import json
 import importlib
-from pathlib import Path
+import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
-
 from ontology.evidence.manager import (
     EvidenceIndexManager,
     EvidenceIndexManagerError,
@@ -81,12 +80,20 @@ def test_manager_reuses_identical_generation_and_revoke_fails_closed(tmp_path: P
     manager = EvidenceIndexManager(tmp_path / "runtime")
     package = _package(tmp_path)
     first = manager.build(
-        workspace_id="workspace-a", ontology_id="eco", ontology_version="1.0.0",
-        ontology_dir=package, manifest=_manifest(), mutation_revision=1,
+        workspace_id="workspace-a",
+        ontology_id="eco",
+        ontology_version="1.0.0",
+        ontology_dir=package,
+        manifest=_manifest(),
+        mutation_revision=1,
     )
     second = manager.build(
-        workspace_id="workspace-a", ontology_id="eco", ontology_version="1.0.0",
-        ontology_dir=package, manifest=_manifest(), mutation_revision=1,
+        workspace_id="workspace-a",
+        ontology_id="eco",
+        ontology_version="1.0.0",
+        ontology_dir=package,
+        manifest=_manifest(),
+        mutation_revision=1,
     )
     assert first["active_generation"] == second["active_generation"]
 
@@ -112,14 +119,7 @@ def test_manager_rebuilds_corrupt_generation_and_recovery_removes_old_staging(tm
         manifest=_manifest(),
         mutation_revision=1,
     )
-    generation_dir = (
-        runtime
-        / "ontology-evidence"
-        / "ontologies"
-        / "eco"
-        / "generations"
-        / pointer["active_generation"]
-    )
+    generation_dir = runtime / "ontology-evidence" / "ontologies" / "eco" / "generations" / pointer["active_generation"]
     index_path = generation_dir / "index.sqlite3"
     index_path.chmod(0o644)
     index_path.write_bytes(b"broken")
@@ -300,14 +300,7 @@ def test_cleanup_waits_for_build_and_preserves_newly_published_generation(
         mutation_revision=1,
     )
     generation = pointer["active_generation"]
-    generation_dir = (
-        runtime
-        / "ontology-evidence"
-        / "ontologies"
-        / "eco"
-        / "generations"
-        / generation
-    )
+    generation_dir = runtime / "ontology-evidence" / "ontologies" / "eco" / "generations" / generation
     setup_manager.revoke("eco", mutation_revision=1)
     old = time.time() - 10 * 86400
     os.utime(generation_dir, (old, old))
@@ -371,17 +364,8 @@ def test_runtime_fact_reference_holds_and_releases_immutable_generation(tmp_path
     )
     evidence_id = next(iter(manager.open_active("eco").iter_chunks()))["evidence_id"]
     generation = pointer["active_generation"]
-    generation_dir = (
-        runtime
-        / "ontology-evidence"
-        / "ontologies"
-        / "eco"
-        / "generations"
-        / generation
-    )
-    fact_store = RuntimeFactsStore(
-        runtime / "ontology-evidence" / "runtime-facts.sqlite3"
-    )
+    generation_dir = runtime / "ontology-evidence" / "ontologies" / "eco" / "generations" / generation
+    fact_store = RuntimeFactsStore(runtime / "ontology-evidence" / "runtime-facts.sqlite3")
     fact = fact_store.put(
         {
             "workspace_id": "workspace-a",
@@ -418,9 +402,7 @@ def test_runtime_fact_reference_holds_and_releases_immutable_generation(tmp_path
     assert protected["summary"]["deleted_generations"] == 0
     assert protected["summary"]["protected_by_reference"] == 1
     assert generation_dir.is_dir()
-    assert EvidenceResolver(runtime, workspace_id="workspace-a").lookup(evidence_id)[
-        "evidence_id"
-    ] == evidence_id
+    assert EvidenceResolver(runtime, workspace_id="workspace-a").lookup(evidence_id)["evidence_id"] == evidence_id
 
     released = fact_store.cleanup(
         workspace_id="workspace-a",
@@ -428,10 +410,13 @@ def test_runtime_fact_reference_holds_and_releases_immutable_generation(tmp_path
         older_than_days=1,
     )
     assert released["summary"]["deleted_items"] == 1
-    assert fact_store.lookup(
-        workspace_id="workspace-a",
-        evidence_id=fact["evidence_id"],
-    ) is None
+    assert (
+        fact_store.lookup(
+            workspace_id="workspace-a",
+            evidence_id=fact["evidence_id"],
+        )
+        is None
+    )
 
     removed = manager.cleanup(
         workspace_id="workspace-a",
@@ -463,14 +448,7 @@ def test_cleanup_failure_leaves_catalog_safe_and_directory_retriable(
     index = manager.open_active("eco")
     evidence_id = next(iter(index.iter_chunks()))["evidence_id"]
     generation = pointer["active_generation"]
-    generation_dir = (
-        runtime
-        / "ontology-evidence"
-        / "ontologies"
-        / "eco"
-        / "generations"
-        / generation
-    )
+    generation_dir = runtime / "ontology-evidence" / "ontologies" / "eco" / "generations" / generation
     manager.revoke("eco", mutation_revision=1)
     old = time.time() - 10 * 86400
     os.utime(generation_dir, (old, old))

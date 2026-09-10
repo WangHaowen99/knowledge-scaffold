@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any, Mapping
 
-from ontology.ontology_catalog import resolve_object_reference
 from ontology.ontologies import get_ontology_version_dir
+from ontology.ontology_catalog import resolve_object_reference
+
 from .models import GraphAgentResult, GraphBackendResult, GraphEntityMapping, GraphSearchRuntimeContext
 from .timeouts import resolve_graph_agent_timeout_seconds
 from .tools.executor import GraphToolExecution
-
 
 GRAPH_AGENT_SYSTEM_PROMPT = """你是 business_data_search Provider 内部的图查询 Agent。
 你的任务不是直接面向用户聊天，而是通过内部图工具检索实例数据，并返回可靠的结构化工具结果。
@@ -174,11 +174,14 @@ def _read_object_definition(context: GraphSearchRuntimeContext) -> str:
     if not ontology_root.is_dir():
         return ""
     try:
-        version_dir = get_ontology_version_dir(
-            ontology_root,
-            str(context.ontology_version or "").strip() or None,
-            create=False,
-        ) or ontology_root
+        version_dir = (
+            get_ontology_version_dir(
+                ontology_root,
+                str(context.ontology_version or "").strip() or None,
+                create=False,
+            )
+            or ontology_root
+        )
     except Exception:
         version_dir = ontology_root
     resolution, error = resolve_object_reference(version_dir, entity)
@@ -260,15 +263,17 @@ def _agent_result_from_executions(
         total += int(record_count or 0)
         truncated = truncated or bool(backend_result.truncated)
         combined_warnings.extend(backend_result.warnings or [])
-        combined_records.append({
-            "tool": execution.tool_name,
-            "tool_args": dict(execution.tool_args or {}),
-            "record_count": record_count,
-            "raw_record_count": raw_record_count,
-            "result": _compact_execution_result(execution),
-            "records": records,
-            "truncated": bool(backend_result.truncated),
-        })
+        combined_records.append(
+            {
+                "tool": execution.tool_name,
+                "tool_args": dict(execution.tool_args or {}),
+                "record_count": record_count,
+                "raw_record_count": raw_record_count,
+                "result": _compact_execution_result(execution),
+                "records": records,
+                "truncated": bool(backend_result.truncated),
+            }
+        )
 
     return GraphAgentResult(
         tool_name="multi_tool_search",
@@ -327,10 +332,7 @@ def _strip_duplicate_result_payload(value: dict[str, Any]) -> dict[str, Any]:
             continue
         if key == "results" and isinstance(item, list):
             compact[key] = [
-                _strip_duplicate_result_payload(dict(child))
-                if isinstance(child, Mapping)
-                else child
-                for child in item
+                _strip_duplicate_result_payload(dict(child)) if isinstance(child, Mapping) else child for child in item
             ]
             continue
         compact[key] = item
@@ -438,11 +440,7 @@ def _candidate_property_identity_fields(properties: Mapping[str, Any]) -> list[s
     preferred = ["ID"]
     keys = [str(key) for key in properties if str(key)]
     selected = [key for key in preferred if key in properties]
-    selected.extend(
-        key
-        for key in sorted(keys)
-        if key not in selected and (key.endswith("ID") or key.endswith("_ID"))
-    )
+    selected.extend(key for key in sorted(keys) if key not in selected and (key.endswith("ID") or key.endswith("_ID")))
     return selected
 
 
@@ -468,7 +466,9 @@ def _path_intent_missing_pattern(
     context: GraphSearchRuntimeContext,
     executions: list[GraphToolExecution],
 ) -> bool:
-    query_analysis = context.schema_context.get("query_analysis") if isinstance(context.schema_context, Mapping) else None
+    query_analysis = (
+        context.schema_context.get("query_analysis") if isinstance(context.schema_context, Mapping) else None
+    )
     if not isinstance(query_analysis, Mapping) or not bool(query_analysis.get("path_intent")):
         return False
     if any(execution.tool_name == "pattern_search" for execution in executions):
@@ -570,11 +570,7 @@ def _returned_properties_from_nested_record(value: Any) -> set[str]:
 
 def _graph_tool_schemas_for_context(context: GraphSearchRuntimeContext) -> list[dict[str, Any]]:
     if _schema_context_preloaded(context.schema_context):
-        return [
-            schema
-            for schema in _GRAPH_TOOL_SCHEMAS
-            if schema["function"]["name"] not in _GRAPH_SCHEMA_TOOL_NAMES
-        ]
+        return [schema for schema in _GRAPH_TOOL_SCHEMAS if schema["function"]["name"] not in _GRAPH_SCHEMA_TOOL_NAMES]
     return list(_GRAPH_TOOL_SCHEMAS)
 
 
@@ -746,7 +742,7 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "pattern_search",
             "description": (
                 "按图结构模式匹配路径。path_pattern 使用 Jiutian 数组协议：节点、关系、节点交替排列。"
-                "节点或关系属性过滤写在 props 中，例如 {\"label\":\"ObjectVersion\",\"props\":{\"ObjectCode\":\"OBJ-001\"}}。"
+                '节点或关系属性过滤写在 props 中，例如 {"label":"ObjectVersion","props":{"ObjectCode":"OBJ-001"}}。'
                 "兼容 filters 作为 props 别名。"
                 "用 return_vars 指定需要返回的变量；用 return_properties 指定返回字段，"
                 "可传字符串数组应用到全部变量，或传 {变量名: [字段名]} 精确控制；"
@@ -794,109 +790,111 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-_GRAPH_TOOL_SCHEMAS.extend([
-    {
-        "type": "function",
-        "function": {
-            "name": "get_object_types",
-            "description": "获取当前 scope 内全部实体/节点类型。",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_relation_types",
-            "description": "获取当前 scope 内全部语义关系类型。",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "hop_search",
-            "description": "从指定节点实例出发查询 N 度邻域。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "entity_instance_id": {"type": "string"},
-                    "hop_num": {"type": "integer", "minimum": 1, "maximum": 5},
-                    "accurate_flag": {"type": "boolean"},
-                },
-                "required": ["entity_instance_id"],
+_GRAPH_TOOL_SCHEMAS.extend(
+    [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_object_types",
+                "description": "获取当前 scope 内全部实体/节点类型。",
+                "parameters": {"type": "object", "properties": {}},
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "shortest_path",
-            "description": "查询两个节点之间的最短关联路径。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "start_label": {"type": "string"},
-                    "start_props": {"type": "object"},
-                    "end_label": {"type": "string"},
-                    "end_props": {"type": "object"},
-                    "max_depth": {"type": "integer", "minimum": 1, "maximum": 15},
-                    "directed": {"type": "boolean"},
-                },
-                "required": ["start_label", "start_props", "end_label"],
+        {
+            "type": "function",
+            "function": {
+                "name": "get_relation_types",
+                "description": "获取当前 scope 内全部语义关系类型。",
+                "parameters": {"type": "object", "properties": {}},
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_logic_titles",
-            "description": "列出当前 scope 内的业务逻辑标题目录。",
-            "parameters": {
-                "type": "object",
-                "properties": {"entity_type": {"type": "string"}},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_logic_content",
-            "description": "按实体实例 ID 和可选逻辑标题读取业务逻辑内容。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "entity_instance_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
+        {
+            "type": "function",
+            "function": {
+                "name": "hop_search",
+                "description": "从指定节点实例出发查询 N 度邻域。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_instance_id": {"type": "string"},
+                        "hop_num": {"type": "integer", "minimum": 1, "maximum": 5},
+                        "accurate_flag": {"type": "boolean"},
                     },
-                    "logic_titles": {"type": "array", "items": {"type": "string"}},
+                    "required": ["entity_instance_id"],
                 },
-                "required": ["entity_instance_ids"],
             },
         },
-    },
-])
+        {
+            "type": "function",
+            "function": {
+                "name": "shortest_path",
+                "description": "查询两个节点之间的最短关联路径。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "start_label": {"type": "string"},
+                        "start_props": {"type": "object"},
+                        "end_label": {"type": "string"},
+                        "end_props": {"type": "object"},
+                        "max_depth": {"type": "integer", "minimum": 1, "maximum": 15},
+                        "directed": {"type": "boolean"},
+                    },
+                    "required": ["start_label", "start_props", "end_label"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_logic_titles",
+                "description": "列出当前 scope 内的业务逻辑标题目录。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"entity_type": {"type": "string"}},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_logic_content",
+                "description": "按实体实例 ID 和可选逻辑标题读取业务逻辑内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_instance_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                        },
+                        "logic_titles": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["entity_instance_ids"],
+                },
+            },
+        },
+    ]
+)
 
 _GRAPH_TOOL_ORDER = {
     name: index
-    for index, name in enumerate([
-        "get_object_types",
-        "get_relation_types",
-        "get_nodes_schema",
-        "get_edges_schema",
-        "property_filter",
-        "pattern_search",
-        "count_search",
-        "aggregate_search",
-        "sorted_search",
-        "get_element_info",
-        "hop_search",
-        "shortest_path",
-        "list_logic_titles",
-        "get_logic_content",
-    ])
+    for index, name in enumerate(
+        [
+            "get_object_types",
+            "get_relation_types",
+            "get_nodes_schema",
+            "get_edges_schema",
+            "property_filter",
+            "pattern_search",
+            "count_search",
+            "aggregate_search",
+            "sorted_search",
+            "get_element_info",
+            "hop_search",
+            "shortest_path",
+            "list_logic_titles",
+            "get_logic_content",
+        ]
+    )
 }
-_GRAPH_TOOL_SCHEMAS.sort(
-    key=lambda schema: _GRAPH_TOOL_ORDER[schema["function"]["name"]]
-)
+_GRAPH_TOOL_SCHEMAS.sort(key=lambda schema: _GRAPH_TOOL_ORDER[schema["function"]["name"]])

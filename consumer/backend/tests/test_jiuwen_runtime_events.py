@@ -8,21 +8,22 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.exceptions import (
+    ModelInvocationError,
+    ModelOutputTruncatedError,
+    TerminalToolExecutionError,
+)
 from agent.runtime import (
     JiuwenAsyncAgentRuntime,
     PublicEventAdapter,
     RuntimeEvent,
     RuntimeInvocationContext,
 )
-from agent.runtime.mock import ListRuntimeEventSink
 from agent.runtime.async_utils import run_sync_compat
 from agent.runtime.jiuwen import _build_resumable_llm_context
-from agent.exceptions import (
-    ModelInvocationError,
-    ModelOutputTruncatedError,
-    TerminalToolExecutionError,
-)
 from agent.runtime.lifecycle import JiuwenRuntimeLifecycleError
+from agent.runtime.mock import ListRuntimeEventSink
+from backend_synthetic_credentials import synthetic_invalid_password, synthetic_secret
 
 
 def _context(
@@ -61,7 +62,12 @@ class _ScriptedEngine:
                 payload={
                     "iteration": 1,
                     "input": {
-                        "messages": [{"role": "user", "password": "secret"}]
+                        "messages": [
+                            {
+                                "role": "user",
+                                "password": synthetic_invalid_password("jiuwen_runtime_events-credential-03"),
+                            }
+                        ]
                     },
                 },
             )
@@ -87,7 +93,7 @@ class _ScriptedEngine:
                 "tool_call_id": "tool-01",
                 "iteration": 1,
                 "batch_index": 1,
-                "input": {"password": "tool-secret"},
+                "input": {"password": synthetic_invalid_password("jiuwen_runtime_events-credential-08")},
             },
         )
         protocol_event(
@@ -102,50 +108,56 @@ class _ScriptedEngine:
                 "output_truncated": False,
             },
         )
-        event_writer({
-            "event": "agent.v2",
-            "data": {
-                "type": "tool.finished",
-                "source": {"node": "agent_loop", "component": "tool"},
-                "payload": {
-                    "tool_name": "lookup",
-                    "tool_call_id": "tool-01",
-                    "status": "completed",
+        event_writer(
+            {
+                "event": "agent.v2",
+                "data": {
+                    "type": "tool.finished",
+                    "source": {"node": "agent_loop", "component": "tool"},
+                    "payload": {
+                        "tool_name": "lookup",
+                        "tool_call_id": "tool-01",
+                        "status": "completed",
+                    },
                 },
-            },
-        })
+            }
+        )
         token_callback("content", "answer ", {"iteration": 1})
         token_callback(
             "reasoning",
             "private reasoning",
             {"iteration": 1, "reasoning_block_id": "reasoning-01"},
         )
-        event_writer({
-            "event": "agent.v2",
-            "data": {
-                "type": "reasoning.summary",
-                "source": {"node": "agent_loop", "component": "llm"},
-                "payload": {
-                    "summary": "reasoning summary",
-                    "reasoning_block_id": "reasoning-01",
-                    "iteration": 1,
+        event_writer(
+            {
+                "event": "agent.v2",
+                "data": {
+                    "type": "reasoning.summary",
+                    "source": {"node": "agent_loop", "component": "llm"},
+                    "payload": {
+                        "summary": "reasoning summary",
+                        "reasoning_block_id": "reasoning-01",
+                        "iteration": 1,
+                    },
                 },
-            },
-        })
-        event_writer({
-            "event": "agent.v2",
-            "data": {
-                "type": "iteration.completed",
-                "source": {"node": "agent_loop", "component": "iteration"},
-                "payload": {
-                    "iteration": 1,
-                    "status": "final_output",
-                    "total_elapsed_ms": 18,
-                    "tool_calls_count": 1,
-                    "tool_names": ["lookup"],
+            }
+        )
+        event_writer(
+            {
+                "event": "agent.v2",
+                "data": {
+                    "type": "iteration.completed",
+                    "source": {"node": "agent_loop", "component": "iteration"},
+                    "payload": {
+                        "iteration": 1,
+                        "status": "final_output",
+                        "total_elapsed_ms": 18,
+                        "tool_calls_count": 1,
+                        "tool_names": ["lookup"],
+                    },
                 },
-            },
-        })
+            }
+        )
         return {
             **state,
             "final_output": "answer",
@@ -153,7 +165,7 @@ class _ScriptedEngine:
             "trace": {
                 "prompt": "secret prompt",
                 "step": "model",
-                "headers": {"Authorization": "Bearer trace-token"},
+                "headers": {"Authorization": f"Bearer {synthetic_secret('jiuwen_runtime_events-credential-01')}"},
             },
         }
 
@@ -365,9 +377,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             public_message = "Tool execution timed out."
             retriable = True
 
-        timeout_error = JiuwenAsyncAgentRuntime._runtime_error(
-            ExplicitToolTimeoutError("private tool timeout")
-        )
+        timeout_error = JiuwenAsyncAgentRuntime._runtime_error(ExplicitToolTimeoutError("private tool timeout"))
         self.assertEqual(timeout_error.error_code, "TOOL_TIMEOUT")
         self.assertEqual(timeout_error.source, "tool")
         self.assertTrue(timeout_error.retriable)
@@ -375,9 +385,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         class PrivateSdkError(RuntimeError):
             error_code = "SDK_RUNTIME_ERROR"
 
-        private_error = JiuwenAsyncAgentRuntime._runtime_error(
-            PrivateSdkError("token=private-provider-detail")
-        )
+        private_error = JiuwenAsyncAgentRuntime._runtime_error(PrivateSdkError("token=private-provider-detail"))
         self.assertEqual(private_error.error_code, "SDK_RUNTIME_ERROR")
         self.assertEqual(private_error.message, "Agent Runtime 执行失败")
         self.assertNotIn("private-provider-detail", private_error.message)
@@ -389,9 +397,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             tool_name="execute_script",
         )
 
-        error = JiuwenAsyncAgentRuntime._runtime_error(
-            ExceptionGroup("agent task failed", [terminal_error])
-        )
+        error = JiuwenAsyncAgentRuntime._runtime_error(ExceptionGroup("agent task failed", [terminal_error]))
 
         self.assertEqual(error.error_code, "EXECUTE_SCRIPT_FAILED")
         self.assertEqual(error.message, "The deterministic operation failed.")
@@ -460,10 +466,12 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"option_id": "option_a"', state["user_request"])
         self.assertNotIn("<user-interaction-response>", context.query)
 
-        history = JiuwenAsyncAgentRuntime._history_from_state({
-            **state,
-            "messages": [{"role": "user", "content": "继续"}],
-        })
+        history = JiuwenAsyncAgentRuntime._history_from_state(
+            {
+                **state,
+                "messages": [{"role": "user", "content": "继续"}],
+            }
+        )
         self.assertEqual(history[-1]["role"], "user")
         self.assertIn("<user-interaction-response>", history[-1]["content"])
 
@@ -472,12 +480,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             agent_config=SimpleNamespace(),
             engine_factory=_ScriptedEngine,
         )
-        events = [
-            event
-            async for event in runtime.astream(
-                _context("run-events", include_trace=True)
-            )
-        ]
+        events = [event async for event in runtime.astream(_context("run-events", include_trace=True))]
 
         self.assertEqual(
             [event.event_type for event in events],
@@ -494,9 +497,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(events[1].payload["model_profile_id"], "accurate")
-        reasoning_delta = next(
-            event for event in events if event.event_type == "reasoning.delta"
-        )
+        reasoning_delta = next(event for event in events if event.event_type == "reasoning.delta")
         self.assertEqual(reasoning_delta.payload["iteration"], 1)
         self.assertEqual(
             reasoning_delta.payload["reasoning_block_id"],
@@ -515,12 +516,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             agent_config=SimpleNamespace(),
             engine_factory=_ScriptedEngine,
         )
-        runtime_events = [
-            event
-            async for event in runtime.astream(
-                _context("run-public", include_trace=True)
-            )
-        ]
+        runtime_events = [event async for event in runtime.astream(_context("run-public", include_trace=True))]
         adapter = PublicEventAdapter(include_trace=False, max_text_length=64)
         drafts = []
         for event in runtime_events:
@@ -563,9 +559,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             sum(draft.event_type == "tool.finished" for draft in drafts),
             1,
         )
-        iteration = next(
-            draft for draft in drafts if draft.event_type == "iteration.completed"
-        )
+        iteration = next(draft for draft in drafts if draft.event_type == "iteration.completed")
         self.assertEqual(iteration.payload["iteration"], 1)
         token = next(draft for draft in drafts if draft.event_type == "token.delta")
         self.assertEqual(token.payload["iteration"], 1)
@@ -580,12 +574,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             agent_config=SimpleNamespace(),
             engine_factory=_ScriptedEngine,
         )
-        events = [
-            event
-            async for event in runtime.astream(
-                _context("run-trace", include_trace=True)
-            )
-        ]
+        events = [event async for event in runtime.astream(_context("run-trace", include_trace=True))]
         terminal = events[-1]
         draft = PublicEventAdapter(include_trace=True).adapt(terminal)
 
@@ -595,19 +584,13 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(draft.payload["trace"]["headers"], "[REDACTED]")
         self.assertNotIn("trace-token", str(draft.payload))
 
-        summary_event = next(
-            event for event in events if event.event_type == "reasoning.summary"
-        )
+        summary_event = next(event for event in events if event.event_type == "reasoning.summary")
         summary_draft = PublicEventAdapter(include_trace=True).adapt(summary_event)
         self.assertIsNotNone(summary_draft)
         assert summary_draft is not None
         self.assertEqual(summary_draft.payload["summary"], "reasoning summary")
-        reasoning_event = next(
-            event for event in events if event.event_type == "reasoning.delta"
-        )
-        reasoning_draft = PublicEventAdapter(include_trace=True).adapt(
-            reasoning_event
-        )
+        reasoning_event = next(event for event in events if event.event_type == "reasoning.delta")
+        reasoning_draft = PublicEventAdapter(include_trace=True).adapt(reasoning_event)
         self.assertIsNotNone(reasoning_draft)
         assert reasoning_draft is not None
         self.assertEqual(
@@ -680,12 +663,12 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                     "final_output": long_content,
                     "structured_content": {
                         "description": "y" * 5000,
-                        "github_token": "structured-secret",
+                        "github_token": synthetic_secret("jiuwen_runtime_events-credential-07"),
                     },
                     "usage": {
                         "input_tokens": 10,
                         "output_tokens": 20,
-                        "sessionToken": "usage-secret",
+                        "sessionToken": synthetic_secret("jiuwen_runtime_events-credential-09"),
                     },
                 }
 
@@ -757,9 +740,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             else:
                 self.fail("runtime producer was not registered")
 
-            self.assertTrue(
-                await runtime.cancel("run-cancel-before-start", "early cancel")
-            )
+            self.assertTrue(await runtime.cancel("run-cancel-before-start", "early cancel"))
             producer_gate.set()
             result = await asyncio.wait_for(task, timeout=2)
         finally:
@@ -792,9 +773,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             if event.event_type == "turn.finished":
                 break
 
-        self.assertFalse(
-            await runtime.cancel("run-terminal-cancel", "too late")
-        )
+        self.assertFalse(await runtime.cancel("run-terminal-cancel", "too late"))
         await stream.aclose()
 
     async def test_injected_engine_owns_dependencies_without_subagent_registry(self):
@@ -974,10 +953,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             agent_config=SimpleNamespace(),
             engine_factory=ParallelToolsEngine,
         )
-        events = [
-            event
-            async for event in runtime.astream(_context("run-parallel-tools"))
-        ]
+        events = [event async for event in runtime.astream(_context("run-parallel-tools"))]
         tools = [event for event in events if event.event_type.startswith("tool.")]
 
         self.assertEqual(
@@ -1012,10 +988,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             agent_config=SimpleNamespace(),
             engine_factory=CheckpointEngine,
         )
-        events = [
-            event
-            async for event in runtime.astream(_context("run-business-checkpoint"))
-        ]
+        events = [event async for event in runtime.astream(_context("run-business-checkpoint"))]
 
         self.assertEqual(
             [event.event_type for event in events],
@@ -1087,10 +1060,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             agent_config=SimpleNamespace(),
             engine_factory=ProgressEngine,
         )
-        events = [
-            event
-            async for event in runtime.astream(_context("run-progress-events"))
-        ]
+        events = [event async for event in runtime.astream(_context("run-progress-events"))]
 
         self.assertEqual(
             [event.event_type for event in events],
@@ -1121,9 +1091,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                 "turn.finished",
             ],
         )
-        public_subagent_delta = next(
-            draft for draft in drafts if draft.event_type == "subagent.delta"
-        )
+        public_subagent_delta = next(draft for draft in drafts if draft.event_type == "subagent.delta")
         self.assertEqual(public_subagent_delta.payload["channel"], "content")
 
     async def test_bounded_buffer_fails_cleanly_without_orphan_producer(self):
@@ -1167,9 +1135,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cleaned.is_set())
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error.error_code, "RUNTIME_EVENT_BUFFER_FULL")
-        terminals = [
-            event for event in sink.events if event.event_type == "turn.finished"
-        ]
+        terminals = [event for event in sink.events if event.event_type == "turn.finished"]
         self.assertEqual(len(terminals), 1)
 
     async def test_threaded_runtime_burst_schedules_only_bounded_loop_callbacks(self):
@@ -1263,8 +1229,8 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                 '{"password": "json-secret"}',
                 "Authorization: Bearer header-secret",
                 "client_secret=assignment-secret",
-                "https://example.test/path?access_token=url-secret&safe=1",
-                "postgresql://alice:db-secret@example.test/app",
+                "https://example.example.net/path?access_token=url-secret&safe=1",
+                "postgresql://alice:db-secret@example.example.net/app",
                 "-----BEGIN PRIVATE KEY-----private-secret-----END PRIVATE KEY-----",
             ]
         )
@@ -1330,9 +1296,9 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                 "status": "completed",
                 "content": "answer",
                 "structured_content": {
-                    "github_token": "secret-1",
-                    "id_token": "secret-2",
-                    "sessionToken": "secret-3",
+                    "github_token": synthetic_secret("jiuwen_runtime_events-credential-04"),
+                    "id_token": synthetic_secret("jiuwen_runtime_events-credential-05"),
+                    "sessionToken": synthetic_secret("jiuwen_runtime_events-credential-06"),
                     "tokens": ["secret-4"],
                     "input_tokens": "secret-5",
                 },

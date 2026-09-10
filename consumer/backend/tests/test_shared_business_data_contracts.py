@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from shared_capabilities.business_data import (
     ConnectionEnvelopeError,
     EffectiveConnection,
@@ -15,9 +15,7 @@ from shared_capabilities.business_data import (
 
 
 class _BlockingProvider:
-    capabilities = ProviderCapabilities(
-        query=True, query_sql=False, native_streaming=False, probe=False
-    )
+    capabilities = ProviderCapabilities(query=True, query_sql=False, native_streaming=False, probe=False)
 
     def __init__(self, result: ProviderResult):
         self.result = result
@@ -28,17 +26,13 @@ class _BlockingProvider:
 
 
 class _NativeProvider:
-    capabilities = ProviderCapabilities(
-        query=True, query_sql=False, native_streaming=True, probe=False
-    )
+    capabilities = ProviderCapabilities(query=True, query_sql=False, native_streaming=True, probe=False)
 
     def _iter_native_query_events(self, question: str):
         assert question == "find one"
         yield ProviderEvent(type="start")
         yield ProviderEvent(type="intermediate", content="working")
-        yield ProviderEvent(
-            type="final", result=ProviderResult(success=True, data=[{"id": 1}])
-        )
+        yield ProviderEvent(type="final", result=ProviderResult(success=True, data=[{"id": 1}]))
         yield ProviderEvent(type="done")
 
 
@@ -47,7 +41,7 @@ def test_effective_connection_round_trips_version_one():
         "version": 1,
         "provider": "mindsdb",
         "endpoint": "https://db.example.com/",
-        "auth": {"type": "bearer", "token": "secret"},
+        "auth": {"type": "bearer", "token": synthetic_secret("shared_business_data_contracts-credential-01")},
         "options": {"timeout_seconds": 120},
     }
 
@@ -85,9 +79,7 @@ def test_effective_connection_rejects_unknown_auth_type():
 
 
 def test_require_capability_rejects_unimplemented_operation():
-    capabilities = ProviderCapabilities(
-        query=True, query_sql=False, native_streaming=False, probe=True
-    )
+    capabilities = ProviderCapabilities(query=True, query_sql=False, native_streaming=False, probe=True)
 
     with pytest.raises(UnsupportedCapabilityError, match="query_sql"):
         require_capability(capabilities, "query_sql")

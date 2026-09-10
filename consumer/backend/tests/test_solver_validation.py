@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from solver_coordination import Option, OrderedPlan, PlanItem, SolverContractError
 from solver_coordination.problem_families.binary_ordered_route import (
     enumerate_ordered_routes,
@@ -67,8 +66,7 @@ def _result(candidate_id: str, status: CandidateValidationStatus, candidate_dige
 
 def _results(candidate_set, status: CandidateValidationStatus):
     return tuple(
-        _result(candidate.candidate_id, status, candidate.candidate_digest)
-        for candidate in candidate_set.candidates
+        _result(candidate.candidate_id, status, candidate.candidate_digest) for candidate in candidate_set.candidates
     )
 
 
@@ -86,9 +84,7 @@ def test_all_feasible_results_publish_the_complete_candidate_set():
     assert batch.error_count == 0
     assert batch.batch_status == "validation_completed"
     assert batch.selection_status == "published"
-    assert batch.feasible_candidate_ids == tuple(
-        candidate.candidate_id for candidate in candidate_set.candidates
-    )
+    assert batch.feasible_candidate_ids == tuple(candidate.candidate_id for candidate in candidate_set.candidates)
 
 
 def test_all_infeasible_results_are_successfully_published_with_empty_selection():
@@ -124,9 +120,7 @@ def test_mixed_feasible_and_infeasible_results_publish_only_feasible_candidates(
     assert batch.batch_status == "validation_completed"
     assert batch.selection_status == "published"
     assert batch.feasible_candidate_ids == tuple(
-        result.candidate_id
-        for result in results
-        if result.status is CandidateValidationStatus.FEASIBLE
+        result.candidate_id for result in results if result.status is CandidateValidationStatus.FEASIBLE
     )
 
 
@@ -207,10 +201,7 @@ def test_validator_digest_mismatch_is_isolated_as_candidate_validation_error():
 
     assert result.error_count == candidate_set.candidate_count
     assert result.batch_status == "validation_failed"
-    assert all(
-        item.error_code == "verification_runtime_failed"
-        for item in result.all_candidate_results
-    )
+    assert all(item.error_code == "verification_runtime_failed" for item in result.all_candidate_results)
 
 
 def test_validation_result_rejects_unversioned_identity_digests():

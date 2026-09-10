@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 EXCEPTION_TARGETS = (
@@ -35,9 +34,7 @@ NAMED_EXPRESSION_TARGETS = (
     "consumer/backend/solver_coordination/compiler.py",
     "consumer/backend/solver_coordination/job_store.py",
 )
-LAMBDA_ASSIGNMENT_TARGETS = (
-    "consumer/backend/solver_coordination/service.py",
-)
+LAMBDA_ASSIGNMENT_TARGETS = ("consumer/backend/solver_coordination/service.py",)
 COMPLEX_COMPREHENSION_OWNERS = (
     (
         "consumer/backend/agent/core/shared/solver_route_guard.py",
@@ -254,12 +251,8 @@ SYS_PATH_TARGETS = (
     "consumer/backend/integration/solver_route_fact_worker.py",
     "solvers/ortools/tests/conftest.py",
 )
-EXCEPTION_ORDER_TARGETS = (
-    "consumer/backend/api/routes/solver_coordination.py",
-)
-EXCEPTION_SUBCLASS_PAIRS = (
-    ("JobStoreError", "ValueError"),
-)
+EXCEPTION_ORDER_TARGETS = ("consumer/backend/api/routes/solver_coordination.py",)
+EXCEPTION_SUBCLASS_PAIRS = (("JobStoreError", "ValueError"),)
 
 EXCEPTION_TYPES = {
     "FileNotFoundError": FileNotFoundError,
@@ -302,8 +295,7 @@ def _function(tree: ast.AST, name: str) -> ast.FunctionDef | ast.AsyncFunctionDe
     matches = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == name
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
     ]
     assert len(matches) == 1
     return matches[0]
@@ -316,17 +308,12 @@ def _owned_function(
 ) -> ast.FunctionDef | ast.AsyncFunctionDef:
     if owner_name is None:
         return _function(tree, function_name)
-    owners = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef) and node.name == owner_name
-    ]
+    owners = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == owner_name]
     assert len(owners) == 1
     matches = [
         node
         for node in owners[0].body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function_name
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
     ]
     assert len(matches) == 1
     return matches[0]
@@ -336,9 +323,7 @@ def test_solver_exception_handlers_do_not_repeat_parent_and_child_types():
     duplicates: list[str] = []
     for relative_path in EXCEPTION_TARGETS:
         for node in ast.walk(_tree(relative_path)):
-            if not isinstance(node, ast.ExceptHandler) or not isinstance(
-                node.type, ast.Tuple
-            ):
+            if not isinstance(node, ast.ExceptHandler) or not isinstance(node.type, ast.Tuple):
                 continue
             resolved = []
             for item in node.type.elts:
@@ -347,9 +332,7 @@ def test_solver_exception_handlers_do_not_repeat_parent_and_child_types():
                     resolved.append((name, EXCEPTION_TYPES[name]))
             for index, (left_name, left_type) in enumerate(resolved):
                 for right_name, right_type in resolved[index + 1 :]:
-                    if issubclass(left_type, right_type) or issubclass(
-                        right_type, left_type
-                    ):
+                    if issubclass(left_type, right_type) or issubclass(right_type, left_type):
                         duplicates.append(
                             "{}:{} {} / {}".format(
                                 relative_path,
@@ -370,37 +353,21 @@ def test_solver_exception_handlers_catch_subclasses_before_parent_types():
             handler_names = [
                 {
                     _qualified_name(item)
-                    for item in (
-                        handler.type.elts
-                        if isinstance(handler.type, ast.Tuple)
-                        else (handler.type,)
-                    )
+                    for item in (handler.type.elts if isinstance(handler.type, ast.Tuple) else (handler.type,))
                     if item is not None
                 }
                 for handler in node.handlers
             ]
             for child_name, parent_name in EXCEPTION_SUBCLASS_PAIRS:
                 child_index = next(
-                    (
-                        index
-                        for index, names in enumerate(handler_names)
-                        if child_name in names
-                    ),
+                    (index for index, names in enumerate(handler_names) if child_name in names),
                     None,
                 )
                 parent_index = next(
-                    (
-                        index
-                        for index, names in enumerate(handler_names)
-                        if parent_name in names
-                    ),
+                    (index for index, names in enumerate(handler_names) if parent_name in names),
                     None,
                 )
-                if (
-                    child_index is not None
-                    and parent_index is not None
-                    and child_index > parent_index
-                ):
+                if child_index is not None and parent_index is not None and child_index > parent_index:
                     violations.append(
                         "{}:{} {} after {}".format(
                             relative_path,
@@ -437,8 +404,7 @@ def test_solver_production_paths_do_not_assign_lambdas():
         "{}:{}".format(relative_path, node.lineno)
         for relative_path in LAMBDA_ASSIGNMENT_TARGETS
         for node in ast.walk(_tree(relative_path))
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-        and isinstance(node.value, ast.Lambda)
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Lambda)
     ]
     assert violations == []
 
@@ -453,9 +419,7 @@ def test_scanned_functions_use_explicit_loops_instead_of_comprehensions():
     violations = [
         "{}:{}:{}".format(relative_path, function_name, node.lineno)
         for relative_path, owner_name, function_name in COMPLEX_COMPREHENSION_OWNERS
-        for node in ast.walk(
-            _owned_function(_tree(relative_path), owner_name, function_name)
-        )
+        for node in ast.walk(_owned_function(_tree(relative_path), owner_name, function_name))
         if isinstance(node, comprehension_types)
     ]
     assert violations == []
@@ -469,9 +433,7 @@ def test_validation_result_counts_use_typed_locals():
     violations = [
         node.lineno
         for node in ast.walk(function)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "counts"
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "counts"
     ]
     assert violations == []
 
@@ -484,9 +446,7 @@ def test_special_tank_rates_are_not_recovered_through_dict_subscripts():
     violations = [
         node.lineno
         for node in ast.walk(function)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "rates"
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "rates"
     ]
     assert violations == []
 
@@ -510,17 +470,13 @@ def test_recovery_uses_a_typed_fact_payload_local():
 def test_solver_service_compile_and_verify_ports_are_typed():
     service = next(
         node
-        for node in ast.walk(
-            _tree("consumer/backend/solver_coordination/service.py")
-        )
-        if isinstance(node, ast.ClassDef)
-        and node.name == "SolverCoordinationService"
+        for node in ast.walk(_tree("consumer/backend/solver_coordination/service.py"))
+        if isinstance(node, ast.ClassDef) and node.name == "SolverCoordinationService"
     )
     annotations = {
         node.target.id: _qualified_name(node.annotation)
         for node in service.body
-        if isinstance(node, ast.AnnAssign)
-        and isinstance(node.target, ast.Name)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
     }
     assert annotations["compiler"] == "ProblemCompiler"
     assert annotations["verifier"] == "IndependentVerifier"
@@ -548,8 +504,7 @@ def test_solver_control_predicates_stay_within_boolean_term_budget():
         )
         for relative_path in CONTROL_COMPLEXITY_TARGETS
         for node in ast.walk(_tree(relative_path))
-        if isinstance(node, (ast.If, ast.IfExp, ast.While))
-        and _boolean_term_count(node.test) >= 4
+        if isinstance(node, (ast.If, ast.IfExp, ast.While)) and _boolean_term_count(node.test) >= 4
     ]
     assert violations == []
 
@@ -569,8 +524,7 @@ def test_solver_code_does_not_mutate_sys_path():
         "{}:{}".format(relative_path, node.lineno)
         for relative_path in SYS_PATH_TARGETS
         for node in ast.walk(_tree(relative_path))
-        if isinstance(node, ast.Call)
-        and _qualified_name(node.func) in {"sys.path.append", "sys.path.insert"}
+        if isinstance(node, ast.Call) and _qualified_name(node.func) in {"sys.path.append", "sys.path.insert"}
     ]
     assert violations == []
 
@@ -593,9 +547,7 @@ def test_solver_exception_handlers_do_not_silently_pass():
         "{}:{}".format(relative_path, node.lineno)
         for relative_path in PASS_HANDLER_TARGETS
         for node in ast.walk(_tree(relative_path))
-        if isinstance(node, ast.ExceptHandler)
-        and len(node.body) == 1
-        and isinstance(node.body[0], ast.Pass)
+        if isinstance(node, ast.ExceptHandler) and len(node.body) == 1 and isinstance(node.body[0], ast.Pass)
     ]
     assert violations == []
 
@@ -616,9 +568,7 @@ def test_controlled_validation_read_only_open_declares_a_safe_mode():
     violations = [
         call.lineno
         for call in ast.walk(node)
-        if isinstance(call, ast.Call)
-        and _qualified_name(call.func) == "os.open"
-        and len(call.args) < 3
+        if isinstance(call, ast.Call) and _qualified_name(call.func) == "os.open" and len(call.args) < 3
     ]
     assert violations == []
 
@@ -635,19 +585,14 @@ def test_solver_service_uses_a_hardened_app_factory():
 def test_package_evaluator_subprocess_declares_isolation_controls():
     calls = [
         node
-        for node in ast.walk(
-            _tree("consumer/backend/integration/solver_fact_providers.py")
-        )
-        if isinstance(node, ast.Call)
-        and _qualified_name(node.func) == "subprocess.run"
+        for node in ast.walk(_tree("consumer/backend/integration/solver_fact_providers.py"))
+        if isinstance(node, ast.Call) and _qualified_name(node.func) == "subprocess.run"
     ]
     assert len(calls) == 1
     call = calls[0]
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
     assert isinstance(keywords.get("shell"), ast.Constant)
     assert keywords["shell"].value is False
-    assert {"input", "env", "timeout", "capture_output", "check"}.issubset(
-        keywords
-    )
+    assert {"input", "env", "timeout", "capture_output", "check"}.issubset(keywords)
     assert isinstance(call.args[0], ast.List)
     assert _qualified_name(call.args[0].elts[0]) == "sys.executable"

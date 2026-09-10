@@ -3,13 +3,13 @@
  */
 
 import createLogger from '../../../shared/lib/logger.js';
-import {
-  applyPublicEvent,
-  closeOpenSegment,
-} from './streamHelpers.js';
+import { applyPublicEvent, closeOpenSegment } from './streamHelpers.js';
 import { storedAgentEventToPublicEvent } from './legacyAgentEvent.js';
 import { publicEventTimestamp } from './publicEvent.js';
-import { applyInteractionCancellation, INTERACTION_CANCELLED_TYPE } from './pendingInteraction.js';
+import {
+  applyInteractionCancellation,
+  INTERACTION_CANCELLED_TYPE,
+} from './pendingInteraction.js';
 
 const logger = createLogger('MessageBuilder');
 
@@ -28,12 +28,11 @@ export const buildMessagesFromEvents = (events = []) => {
     }
 
     const existingIdx = messages.findIndex(
-      (msg) => (
-        msg.runId === runId
-        && msg.kind === 'agent_step'
-        && msg.stepLabel === TURN_STEP_LABEL
-        && String(msg.turnId ?? '').trim() === normalizedTurnId
-      )
+      (msg) =>
+        msg.runId === runId &&
+        msg.kind === 'agent_step' &&
+        msg.stepLabel === TURN_STEP_LABEL &&
+        String(msg.turnId ?? '').trim() === normalizedTurnId,
     );
     if (existingIdx !== -1) {
       turnMessageIndexByKey.set(turnKey, existingIdx);
@@ -42,7 +41,9 @@ export const buildMessagesFromEvents = (events = []) => {
 
     const idx = messages.length;
     messages.push({
-      id: normalizedTurnId ? `${runId}:turn:${normalizedTurnId}` : `${runId}:turn`,
+      id: normalizedTurnId ?
+        `${runId}:turn:${normalizedTurnId}` :
+        `${runId}:turn`,
       runId,
       ...(normalizedTurnId ? { turnId: normalizedTurnId } : {}),
       role: 'assistant',
@@ -75,8 +76,13 @@ export const buildMessagesFromEvents = (events = []) => {
     if (eventLabel === 'chat_message') {
       const role = data?.role;
       const content = data?.content || '';
-      const metadata = data?.metadata && typeof data.metadata === 'object' ? data.metadata : {};
-      if (!role) return;
+      const metadata =
+        data?.metadata && typeof data.metadata === 'object' ?
+          data.metadata :
+          {};
+      if (!role) {
+        return;
+      }
 
       if (metadata.type === INTERACTION_CANCELLED_TYPE) {
         const next = applyInteractionCancellation(messages, {
@@ -97,13 +103,19 @@ export const buildMessagesFromEvents = (events = []) => {
       return;
     }
 
-    const publicEvent = storedAgentEventToPublicEvent(event, { index: eventIndex });
-    if (!publicEvent) return;
+    const publicEvent = storedAgentEventToPublicEvent(event, {
+      index: eventIndex,
+    });
+    if (!publicEvent) {
+      return;
+    }
 
     // run.started is a run-level control event. It has no turn-scoped
     // rendering data and must not create a phantom assistant bubble during
     // durable session hydration.
-    if (publicEvent.event_type === 'run.started') return;
+    if (publicEvent.event_type === 'run.started') {
+      return;
+    }
 
     const runId = publicEvent.run_id || 'unknown-run';
     const idx = ensureTurnBubble(runId, publicEvent.turn_id);
@@ -117,7 +129,9 @@ export const buildMessagesFromEvents = (events = []) => {
   });
 
   return messages.map((msg) => {
-    if (msg?.kind !== 'agent_step') return msg;
+    if (msg?.kind !== 'agent_step') {
+      return msg;
+    }
     return {
       ...msg,
       streamSegments: closeOpenSegment(msg.streamSegments || []),
@@ -128,11 +142,17 @@ export const buildMessagesFromEvents = (events = []) => {
 };
 
 export const historyToMessages = (history = []) => {
-  if (!history || history.length === 0) return [];
+  if (!history || history.length === 0) {
+    return [];
+  }
   return history.map((item, idx) => {
     const metadata = item?.metadata || {};
-    const runId = metadata.run_id || metadata.runId || item?.run_id || item?.runId || null;
-    const status = item?.status || metadata.status || (item?.role === 'assistant' && runId ? 'completed' : undefined);
+    const runId =
+      metadata.run_id || metadata.runId || item?.run_id || item?.runId || null;
+    const status =
+      item?.status ||
+      metadata.status ||
+      (item?.role === 'assistant' && runId ? 'completed' : undefined);
 
     return {
       id: item?.id || `hist-${idx}`,

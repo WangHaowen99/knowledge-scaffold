@@ -10,9 +10,16 @@ from types import SimpleNamespace
 from typing import Union, get_origin
 from unittest.mock import patch
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from deploy_synthetic_credentials import (  # noqa: E402
+    AUTH_ADMIN_TOKEN,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    MCP_TOKEN_SECRET,
+    PLAINTEXT_GRAPH_SECRET,
+    SHARED_SECRET,
+    valid_environment,
+)
 from preflight_config import (  # noqa: E402
     ComposeConfigLoader,
     ComposeEnvFiles,
@@ -21,16 +28,7 @@ from preflight_config import (  # noqa: E402
     validate_config,
 )
 
-
-VALID_ENV = """\
-AUTH_SERVER_URL=http://auth-server:5056
-AUTH_SERVER_ADMIN_TOKEN=auth-admin-token-that-is-long
-AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026
-MCP_SERVER_PORT=7488
-MCP_TOKEN_SECRET=mcp-signing-secret-that-is-independent-and-long
-USER_MAX_COUNT=10
-AUTH_USER_MAX_COUNT=10
-"""
+VALID_ENV = valid_environment()
 
 
 class PreflightConfigTests(unittest.TestCase):
@@ -114,9 +112,7 @@ services:
         self.assertEqual(errors, [])
         self.assertEqual(config, self.compose_config)
         compose_command = calls[1]
-        env_indexes = [
-            index for index, value in enumerate(compose_command) if value == "--env-file"
-        ]
+        env_indexes = [index for index, value in enumerate(compose_command) if value == "--env-file"]
         self.assertEqual(len(env_indexes), 2)
         self.assertEqual(compose_command[env_indexes[0] + 1], str(self.env_file.resolve()))
         self.assertEqual(compose_command[env_indexes[1] + 1], str(legacy_env_file.resolve()))
@@ -141,7 +137,9 @@ services:
             if command[0] == "docker-compose" and "config" in command and "--format" in command:
                 return SimpleNamespace(returncode=1, stdout="", stderr="unknown flag: --format")
             if command[0] == "docker-compose" and "config" in command:
-                return SimpleNamespace(returncode=0, stdout="services:\n  backend:\n    ports:\n      - 5100:5055/tcp\n", stderr="")
+                return SimpleNamespace(
+                    returncode=0, stdout="services:\n  backend:\n    ports:\n      - 5100:5055/tcp\n", stderr=""
+                )
             raise AssertionError(f"unexpected command: {command}")
 
         with patch("preflight_config.subprocess.run", fake_run):
@@ -226,15 +224,17 @@ services:
         )
 
         self.assertTrue(report["ok"])
-        self.assertEqual(report["limits"], {
-            "user_max_count": 0,
-            "auth_user_max_count": 0,
-        })
+        self.assertEqual(
+            report["limits"],
+            {
+                "user_max_count": 0,
+                "auth_user_max_count": 0,
+            },
+        )
 
     def test_missing_user_limits_default_to_unlimited(self) -> None:
         self.env_file.write_text(
-            VALID_ENV.replace("USER_MAX_COUNT=10\n", "")
-            .replace("AUTH_USER_MAX_COUNT=10\n", ""),
+            VALID_ENV.replace("USER_MAX_COUNT=10\n", "").replace("AUTH_USER_MAX_COUNT=10\n", ""),
             encoding="utf-8",
         )
 
@@ -249,10 +249,9 @@ services:
         self.assertEqual(report["limits"]["auth_user_max_count"], 0)
 
     def test_rejects_reused_secret(self) -> None:
-        shared = "shared-secret-that-is-long-enough-for-both"
         self.env_file.write_text(
-            VALID_ENV.replace("auth-admin-token-that-is-long", shared)
-            .replace("mcp-signing-secret-that-is-independent-and-long", shared)
+            VALID_ENV.replace(AUTH_ADMIN_TOKEN, SHARED_SECRET)
+            .replace(MCP_TOKEN_SECRET, SHARED_SECRET)
             .replace("AUTH_USER_MAX_COUNT=10", "AUTH_USER_MAX_COUNT=11"),
             encoding="utf-8",
         )
@@ -270,7 +269,7 @@ services:
 
     def test_rejects_missing_or_reused_bootstrap_password(self) -> None:
         self.env_file.write_text(
-            VALID_ENV.replace("AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026\n", ""),
+            VALID_ENV.replace(f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n", ""),
             encoding="utf-8",
         )
         missing = validate_config(
@@ -284,9 +283,7 @@ services:
         )
 
         self.env_file.write_text(
-            VALID_ENV.replace(
-                "TestBootstrap#2026", "auth-admin-token-that-is-long"
-            ),
+            VALID_ENV.replace(BOOTSTRAP_ADMIN_PASSWORD, AUTH_ADMIN_TOKEN),
             encoding="utf-8",
         )
         reused = validate_config(
@@ -301,7 +298,7 @@ services:
 
     def test_existing_auth_user_store_does_not_require_bootstrap_password(self) -> None:
         self.env_file.write_text(
-            VALID_ENV.replace("AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026\n", ""),
+            VALID_ENV.replace(f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n", ""),
             encoding="utf-8",
         )
         user_store = self.root / ".onto-auth" / "users.json"
@@ -321,18 +318,22 @@ services:
         path = self.root / ".onto-runtime" / "workspaces" / "demo" / "ontology-data-sources.json"
         path.parent.mkdir(parents=True)
         path.write_text(
-            json.dumps({
-                "version": 2,
-                "sources": {"demo-ontology": {
-                    "mode": "direct_provider",
-                    "provider": "neo4j",
-                    "config": {
-                        "uri": "bolt://neo4j:7687",
-                        "username": "neo4j",
-                        "password": "plaintext",
+            json.dumps(
+                {
+                    "version": 2,
+                    "sources": {
+                        "demo-ontology": {
+                            "mode": "direct_provider",
+                            "provider": "neo4j",
+                            "config": {
+                                "uri": "bolt://neo4j:7687",
+                                "username": "neo4j",
+                                "password": PLAINTEXT_GRAPH_SECRET,
+                            },
+                        }
                     },
-                }},
-            }),
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -370,24 +371,26 @@ services:
         path = self.root / ".onto-runtime" / "workspaces" / "demo" / "ontology-data-sources.json"
         path.parent.mkdir(parents=True)
         path.write_text(
-            json.dumps({
-                "version": 1,
-                "sources": {
-                    "legacy": {
-                        "mode": "connection_ref",
-                        "connection_id": "shared-graph",
-                    },
-                    "direct": {
-                        "mode": "direct_provider",
-                        "provider": "neo4j",
-                        "config": {
-                            "uri": "bolt://neo4j:7687",
-                            "username": "neo4j",
-                            "password": "plaintext",
+            json.dumps(
+                {
+                    "version": 1,
+                    "sources": {
+                        "legacy": {
+                            "mode": "connection_ref",
+                            "connection_id": "shared-graph",
+                        },
+                        "direct": {
+                            "mode": "direct_provider",
+                            "provider": "neo4j",
+                            "config": {
+                                "uri": "bolt://neo4j:7687",
+                                "username": "neo4j",
+                                "password": PLAINTEXT_GRAPH_SECRET,
+                            },
                         },
                     },
-                },
-            }),
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -454,8 +457,7 @@ services:
 
     def test_preflight_rejects_storage_paths_outside_runtime_root(self) -> None:
         self.env_file.write_text(
-            VALID_ENV
-            + "CHAT_STORAGE_DIR=/app/external/chats\nEXECUTION_STORAGE_DIR=/app/external/executions\n",
+            VALID_ENV + "CHAT_STORAGE_DIR=/app/external/chats\nEXECUTION_STORAGE_DIR=/app/external/executions\n",
             encoding="utf-8",
         )
 

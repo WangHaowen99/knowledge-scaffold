@@ -23,15 +23,15 @@ class ProfileDispatchVerifier:
         fact_snapshot: Any,
         solver_result: Any,
     ) -> Any:
-        model = capability.get("decision_model") if isinstance(capability, Mapping) else getattr(capability, "decision_model", None)
+        model = (
+            capability.get("decision_model")
+            if isinstance(capability, Mapping)
+            else getattr(capability, "decision_model", None)
+        )
         if not isinstance(model, Mapping):
             raise VerificationDivergenceError("locked decision model is missing")
         profile_id = model.get("profile_id")
-        if (
-            not isinstance(profile_id, str)
-            or not profile_id
-            or profile_id != profile_id.strip()
-        ):
+        if not isinstance(profile_id, str) or not profile_id or profile_id != profile_id.strip():
             raise VerificationDivergenceError("profile_id is noncanonical")
         try:
             registration = self.profile_registry.get(profile_id)

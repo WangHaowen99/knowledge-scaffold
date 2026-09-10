@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-
 from solver_coordination.contracts import (
     FactSnapshot,
     NormalizedInput,
@@ -127,9 +126,7 @@ def test_independent_verification_rejects_solver_problem_identity_before_verifie
 
 
 def test_independent_verification_rejects_verifier_identity_divergence():
-    service = IndependentVerificationService(
-        verifier=_Verifier(_verification(problem_id="sha256:" + "3" * 64))
-    )
+    service = IndependentVerificationService(verifier=_Verifier(_verification(problem_id="sha256:" + "3" * 64)))
 
     with pytest.raises(VerificationDivergenceError):
         service.verify(
@@ -168,9 +165,7 @@ def test_independent_verification_maps_unknown_verifier_failures_to_runtime_erro
     [
         (
             _solver_result(status="optimal"),
-            _verification(
-                optimality="not_proven", proof_kind="constraint_recalculation"
-            ),
+            _verification(optimality="not_proven", proof_kind="constraint_recalculation"),
             "feasible",
             "not_proven",
         ),
@@ -248,9 +243,7 @@ def test_projection_uses_verifier_semantics_not_solver_claims(
         ),
     ],
 )
-def test_projection_rejects_solver_and_verifier_feasibility_divergence(
-    solver_result, verification
-):
+def test_projection_rejects_solver_and_verifier_feasibility_divergence(solver_result, verification):
     with pytest.raises(SolverResultRejectedError, match="feasibility"):
         AuthoritativeResultProjector().project(
             run_id="run-synthetic",
@@ -307,12 +300,8 @@ def test_projection_carries_a_verified_candidate_results_artifact_reference():
         evidence_persisted=True,
     )
 
-    assert result.to_dict()["candidate_results_artifact_ref"] == (
-        "artifact://candidate_results/" + "c" * 64
-    )
-    assert result.to_dict()["candidate_results_artifact_digest"] == (
-        "sha256:" + "c" * 64
-    )
+    assert result.to_dict()["candidate_results_artifact_ref"] == ("artifact://candidate_results/" + "c" * 64)
+    assert result.to_dict()["candidate_results_artifact_digest"] == ("sha256:" + "c" * 64)
 
 
 def test_projection_rejects_a_noncanonical_prevalidated_summary():
@@ -328,7 +317,7 @@ def test_projection_rejects_a_noncanonical_prevalidated_summary():
             result_artifact_ref="artifact://solver-result-synthetic",
             verification_evidence_ref="artifact://verification-synthetic",
             evidence_persisted=True,
-            summary={"solver_endpoint": "https://synthetic.invalid"},
+            summary={"solver_endpoint": "https://synthetic.example.net"},
         )
 
 

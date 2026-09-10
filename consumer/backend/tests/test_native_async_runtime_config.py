@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from agent.runtime.config import NativeAsyncRuntimeConfig
 
 
@@ -29,9 +28,7 @@ def test_native_async_runtime_config_has_bounded_pool_defaults(monkeypatch):
 def test_native_async_runtime_config_uses_agent_tool_timeout(monkeypatch):
     monkeypatch.delenv("AGENTIC_TOOL_IO_OPERATION_TIMEOUT_SECONDS", raising=False)
 
-    config = NativeAsyncRuntimeConfig.from_agent_config(
-        SimpleNamespace(tool_timeout_seconds=45)
-    )
+    config = NativeAsyncRuntimeConfig.from_agent_config(SimpleNamespace(tool_timeout_seconds=45))
 
     assert config.tool_io_operation_timeout_seconds == 45
 

@@ -105,7 +105,9 @@ class LLMRouter:
                     reasoning_summary_executor=self._reasoning_summary_executor,
                 )
                 self._services[fingerprint] = service
-            summary_service = service if _normalize_purpose(purpose) == LLMPurpose.SUMMARY else self.get_summary_service()
+            summary_service = (
+                service if _normalize_purpose(purpose) == LLMPurpose.SUMMARY else self.get_summary_service()
+            )
             service.summary_llm = summary_service
             service.agent_config = self.agent_config
             return service

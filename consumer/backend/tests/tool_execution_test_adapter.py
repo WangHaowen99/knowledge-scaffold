@@ -21,6 +21,4 @@ def execute_single_task(
     context: ToolContext,
     subagent_event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],
 ) -> Dict[str, Any]:
-    return asyncio.run(
-        _aexecute_single_task(task, context, subagent_event_emitter)
-    )
+    return asyncio.run(_aexecute_single_task(task, context, subagent_event_emitter))

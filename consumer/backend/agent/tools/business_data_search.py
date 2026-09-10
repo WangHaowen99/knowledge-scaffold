@@ -7,6 +7,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Set, Tuple
 
+from agent.core.shared.runtime_fact_projector import (
+    capture_business_data_snapshot,
+    grounding_snapshot_is_resolved,
+    project_business_data_result,
+)
+from agent.runtime.async_utils import run_sync_compat
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.business_data.resolver import (
     BusinessDataConnectionError,
@@ -18,10 +24,9 @@ from agent.tools.business_data.service import (
     query_business_data_async,
     query_business_data_stream,
 )
-from agent.runtime.async_utils import run_sync_compat
 from agent.tools.business_data.value_lookup import execute_value_lookups
 from agent.tools.events import _tool_span_key
-from utils.logging import get_logger
+from config.evidence_config import EvidenceConfig
 from ontology.ontology_catalog import (
     ObjectDataMappingStatus,
     ObjectReferenceStatus,
@@ -30,12 +35,7 @@ from ontology.ontology_catalog import (
     get_ontology_manifest,
     resolve_object_reference_result,
 )
-from agent.core.shared.runtime_fact_projector import (
-    capture_business_data_snapshot,
-    grounding_snapshot_is_resolved,
-    project_business_data_result,
-)
-from config.evidence_config import EvidenceConfig
+from utils.logging import get_logger
 from utils.read_docs import merge_read_documents_registry
 
 logger = get_logger("tools.business_data_search")
@@ -52,7 +52,7 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
             "definition with ontology_context(resource='object'). When ontology_context marks a "
             "field with value_bound: true, that field has a value-domain mapping table: if the "
             "user asks for the semantic name, business meaning, or aliases of such a field's "
-            "values, call action=\"lookup_values\" and answer strictly from the returned table — "
+            'values, call action="lookup_values" and answer strictly from the returned table — '
             "the table may hold values that contradict training knowledge, so do not infer from "
             "object field definitions or model memory. Use one entity per call unless querying a "
             "join table explicitly defined in object definitions. An empty result means no matching "
@@ -84,10 +84,10 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                     "enum": ["query", "lookup_values"],
                     "default": "query",
                     "description": (
-                        "Use \"query\" (default) to query records from the selected business "
-                        "object. Use \"lookup_values\" to resolve the semantic name, business "
+                        'Use "query" (default) to query records from the selected business '
+                        'object. Use "lookup_values" to resolve the semantic name, business '
                         "meaning, or aliases of values (see the top-level description for when "
-                        "to choose lookup_values). Omitting action means \"query\". Never "
+                        'to choose lookup_values). Omitting action means "query". Never '
                         "combine the two actions in one call."
                     ),
                 },
@@ -102,7 +102,7 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                         "'查询[实体名]中[条件]的[字段]信息',"
                         "'统计[实体名]中满足[条件]的记录数量'. These are style references only, not a strict format. "
                         "If multiple values for the same attribute are needed, prefer one query that includes "
-                        "all values so one search can return multiple matching records. For action=\"lookup_values\", "
+                        'all values so one search can return multiple matching records. For action="lookup_values", '
                         "express the concrete value-domain request for the submitted values. The Consumer preserves "
                         "this text and appends only the validated table, query fields, and values for each binding group."
                     ),
@@ -112,13 +112,13 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                     "minItems": 1,
                     "maxItems": 32,
                     "description": (
-                        "Required only for action=\"lookup_values\". Submit unresolved raw user "
+                        'Required only for action="lookup_values". Submit unresolved raw user '
                         "or result values under the value-bound logical fields of entity (the "
                         "fields marked value_bound: true in the object definition) so the "
                         "Consumer can resolve and group Data Mapping bindings. Batch values that "
                         "share one field or binding. Reuse successful lookup results already "
                         "present in the current run and submit only unresolved values. Do not "
-                        "include value_inputs for action=\"query\"."
+                        'include value_inputs for action="query".'
                     ),
                     "items": {
                         "type": "object",
@@ -395,11 +395,13 @@ def _emit_business_data_search_event(
         return
 
     try:
-        event_emitter({
-            **event,
-            "ontology_id": str(ontology_id or "").strip(),
-            "provider": str(provider or "").strip(),
-        })
+        event_emitter(
+            {
+                **event,
+                "ontology_id": str(ontology_id or "").strip(),
+                "provider": str(provider or "").strip(),
+            }
+        )
     except Exception:
         logger.warning(
             "Failed to emit business_data_search event (tool_call_id=%s)",
@@ -451,9 +453,7 @@ class BusinessDataSearchTool:
     ) -> ToolOutcome:
         normalized_args = dict(args)
         if any(str(key).startswith("_") for key in normalized_args):
-            return ToolOutcome(
-                content="Error: INVALID_ACTION_ARGUMENTS: internal arguments are not allowed"
-            )
+            return ToolOutcome(content="Error: INVALID_ACTION_ARGUMENTS: internal arguments are not allowed")
         public_arguments = {
             "ontology_id",
             "entity",
@@ -462,18 +462,14 @@ class BusinessDataSearchTool:
             "value_inputs",
         }
         if any(key not in public_arguments for key in normalized_args):
-            return ToolOutcome(
-                content="Error: INVALID_ACTION_ARGUMENTS: unexpected arguments are not allowed"
-            )
+            return ToolOutcome(content="Error: INVALID_ACTION_ARGUMENTS: unexpected arguments are not allowed")
         # action and value_inputs are consumed here; they must not leak into
         # handle_business_data_search which only accepts query-path parameters.
         action_present = "action" in normalized_args
         raw_action = normalized_args.pop("action", None)
         value_inputs = normalized_args.pop("value_inputs", None)
         if action_present and not isinstance(raw_action, str):
-            return ToolOutcome(
-                content="Error: INVALID_ACTION_ARGUMENTS: action must be 'query' or 'lookup_values'"
-            )
+            return ToolOutcome(content="Error: INVALID_ACTION_ARGUMENTS: action must be 'query' or 'lookup_values'")
         action = str(raw_action if action_present else "query").strip().lower()
         # Only a genuine non-empty list counts as "value_inputs provided".  Some
         # providers inject null / [] defaults for optional parameters; those are
@@ -485,17 +481,13 @@ class BusinessDataSearchTool:
         if not normalized_entity:
             return ToolOutcome(content="Error: entity cannot be empty")
         if not normalized_query:
-            return ToolOutcome(
-                content="Error: INVALID_ACTION_ARGUMENTS: query is required"
-            )
+            return ToolOutcome(content="Error: INVALID_ACTION_ARGUMENTS: query is required")
         normalized_args["entity"] = normalized_entity
         normalized_args["query"] = normalized_query
 
         # action / parameter-combination validation (before any Provider call)
         if action not in ("query", "lookup_values"):
-            return ToolOutcome(
-                content="Error: INVALID_ACTION_ARGUMENTS: action must be 'query' or 'lookup_values'"
-            )
+            return ToolOutcome(content="Error: INVALID_ACTION_ARGUMENTS: action must be 'query' or 'lookup_values'")
         if has_value_inputs and action != "lookup_values":
             return ToolOutcome(
                 content=(
@@ -555,17 +547,13 @@ class BusinessDataSearchTool:
                 return ToolOutcome(content=mapping_result.error)
             has_exact_mapping = mapping_result.status == ObjectDataMappingStatus.FOUND
             if not has_exact_mapping:
-                graph_fallback_connection = (
-                    _resolve_graph_schema_fallback_connection(
-                        workspace_id=context.workspace_id,
-                        ontology_id=str(normalized_args.get("ontology_id") or ""),
-                    )
+                graph_fallback_connection = _resolve_graph_schema_fallback_connection(
+                    workspace_id=context.workspace_id,
+                    ontology_id=str(normalized_args.get("ontology_id") or ""),
                 )
                 if graph_fallback_connection is None:
                     return ToolOutcome(content=resolution_error)
-        resolved_entity = (
-            resolution.object_key if resolution is not None else normalized_entity
-        )
+        resolved_entity = resolution.object_key if resolution is not None else normalized_entity
         normalized_args["entity"] = resolved_entity
 
         # -- lookup_values path ------------------------------------------------
@@ -672,6 +660,7 @@ class BusinessDataSearchTool:
             terminal=terminal_error is not None,
         )
 
+
 _SUCCESS_FLAG_KEYS = ("ok", "_success", "success")
 _ERROR_FLAG_KEYS = ("error", "_error")
 
@@ -704,6 +693,7 @@ def _business_query_succeeded(content: str) -> bool:
         "error",
         "failed",
     }
+
 
 def _resolve_graph_schema_fallback_connection(
     *,

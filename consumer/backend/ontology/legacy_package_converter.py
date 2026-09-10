@@ -13,13 +13,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from ontology.ontology_catalog import (
     parse_markdown_table,
     read_markdown_frontmatter,
     split_object_aliases,
 )
-
 
 V01_SCHEMA_VERSION = "0.1"
 LEGACY_ROOT_DOCUMENT = "ONTOLOGY.md"
@@ -71,9 +69,7 @@ def convert_legacy_package_in_place(root: Path) -> tuple[list[str], list[str]]:
         if not index_path.is_file() and legacy_path.is_file():
             legacy_markdown = legacy_path.read_text(encoding="utf-8")
             if legacy_name == "objects-list.md":
-                legacy_markdown, _ = _normalize_legacy_object_catalog(
-                    legacy_markdown
-                )
+                legacy_markdown, _ = _normalize_legacy_object_catalog(legacy_markdown)
             _write_markdown_resource(
                 index_path,
                 resource=resource,
@@ -83,9 +79,7 @@ def convert_legacy_package_in_place(root: Path) -> tuple[list[str], list[str]]:
             )
             converted.append(index_name)
             if legacy_name == "objects-list.md":
-                converted.extend(
-                    _convert_legacy_object_details(package_root, legacy_markdown)
-                )
+                converted.extend(_convert_legacy_object_details(package_root, legacy_markdown))
 
     legacy_scripts = package_root / LEGACY_SCRIPT_CATALOG
     if legacy_scripts.is_file():
@@ -167,11 +161,7 @@ def _write_v01_manifest(root: Path, manifest: dict[str, Any]) -> None:
     normalized = {
         "kind": "ontology-package",
         "schema_version": 0.1,
-        **{
-            key: value
-            for key, value in manifest.items()
-            if key not in {"kind", "schema_version"}
-        },
+        **{key: value for key, value in manifest.items() if key not in {"kind", "schema_version"}},
     }
     normalized.setdefault("language", "zh-CN")
     (root / "manifest.yaml").write_text(
@@ -242,9 +232,7 @@ def _convert_legacy_object_details(root: Path, catalog_markdown: str) -> list[st
             metadata.setdefault("description", description)
 
         if _row_has_header(row, _OBJECT_ALIAS_HEADERS):
-            aliases = split_object_aliases(
-                _first_row_value(row, _OBJECT_ALIAS_HEADERS)
-            )
+            aliases = split_object_aliases(_first_row_value(row, _OBJECT_ALIAS_HEADERS))
             if aliases:
                 metadata["aliases"] = aliases
             else:
@@ -276,9 +264,7 @@ def _read_object_frontmatter(
     )
     if closing is None:
         relative = path.relative_to(root).as_posix()
-        raise ValueError(
-            "Invalid frontmatter in {}: missing closing delimiter.".format(relative)
-        )
+        raise ValueError("Invalid frontmatter in {}: missing closing delimiter.".format(relative))
 
     frontmatter_start = opening.end()
     frontmatter_end = frontmatter_start + closing.start()
@@ -288,9 +274,7 @@ def _read_object_frontmatter(
         parsed = yaml.safe_load(raw_frontmatter)
     except yaml.YAMLError as exc:
         relative = path.relative_to(root).as_posix()
-        raise ValueError(
-            "Invalid frontmatter in {}: invalid YAML.".format(relative)
-        ) from exc
+        raise ValueError("Invalid frontmatter in {}: invalid YAML.".format(relative)) from exc
 
     if parsed is None:
         metadata: dict[str, Any] = {}
@@ -298,17 +282,12 @@ def _read_object_frontmatter(
         metadata = dict(parsed)
     else:
         relative = path.relative_to(root).as_posix()
-        raise ValueError(
-            "Invalid frontmatter in {}: expected a YAML mapping.".format(relative)
-        )
+        raise ValueError("Invalid frontmatter in {}: expected a YAML mapping.".format(relative))
     return metadata, text[:body_start], text[body_start:]
 
 
 def _first_row_value(row: dict[str, str], candidates: tuple[str, ...]) -> str:
-    normalized = {
-        str(header or "").strip().casefold(): str(value or "").strip()
-        for header, value in row.items()
-    }
+    normalized = {str(header or "").strip().casefold(): str(value or "").strip() for header, value in row.items()}
     for candidate in candidates:
         value = normalized.get(candidate.casefold())
         if value:
@@ -408,11 +387,7 @@ def _normalize_first_legacy_table(
     start, end, header_cells = table
     normalized_alias_headers = {header.casefold() for header in alias_headers}
     alias_column = next(
-        (
-            column
-            for column, header in enumerate(header_cells)
-            if header.strip().casefold() in normalized_alias_headers
-        ),
+        (column for column, header in enumerate(header_cells) if header.strip().casefold() in normalized_alias_headers),
         None,
     )
     changed = False
@@ -420,11 +395,7 @@ def _normalize_first_legacy_table(
         cells = _split_markdown_table_row(lines[index])
         if cells is None:
             continue
-        if (
-            index >= start + 2
-            and alias_column is not None
-            and cells[alias_column].strip() in empty_values
-        ):
+        if index >= start + 2 and alias_column is not None and cells[alias_column].strip() in empty_values:
             cells[alias_column] = replacement
         updated = (
             _canonicalize_markdown_table_row(lines[index], cells)
@@ -455,21 +426,14 @@ def _find_first_legacy_table(
             continue
         if not _is_markdown_separator_row(separator_cells):
             continue
-        has_required_header = any(
-            header.strip().casefold() in normalized_required
-            for header in header_cells
-        )
+        has_required_header = any(header.strip().casefold() in normalized_required for header in header_cells)
         if not has_required_header:
             continue
 
         end = index + 2
         while end < len(lines) and not ignored_lines[end]:
             cells = _split_markdown_table_row(lines[end])
-            if (
-                cells is None
-                or len(cells) != len(header_cells)
-                or _is_markdown_separator_row(cells)
-            ):
+            if cells is None or len(cells) != len(header_cells) or _is_markdown_separator_row(cells):
                 break
             end += 1
         return index, end, header_cells
@@ -570,9 +534,7 @@ def _ignored_markdown_lines(lines: list[str]) -> list[bool]:
 
 
 def _is_markdown_separator_row(cells: list[str]) -> bool:
-    return bool(cells) and all(
-        re.fullmatch(r"\s*:?-{3,}:?\s*", cell) is not None for cell in cells
-    )
+    return bool(cells) and all(re.fullmatch(r"\s*:?-{3,}:?\s*", cell) is not None for cell in cells)
 
 
 def _convert_script_catalog(root: Path, markdown: str) -> tuple[list[str], list[str]]:
@@ -601,9 +563,7 @@ def _convert_script_catalog(root: Path, markdown: str) -> tuple[list[str], list[
             descriptor,
             script_key=script_key,
             operation_key=operation_key,
-            entrypoint=script_path.relative_to(
-                (root / "scripts").resolve(strict=True)
-            ).as_posix(),
+            entrypoint=script_path.relative_to((root / "scripts").resolve(strict=True)).as_posix(),
             parameters=entry.get("parameters") or [],
         )
         generated.append(descriptor.relative_to(root).as_posix())
@@ -697,9 +657,7 @@ def _write_scripts_index(root: Path) -> None:
         frontmatter = read_markdown_frontmatter(descriptor)
         script_key = str(frontmatter.get("key") or descriptor.stem).strip()
         title = str(frontmatter.get("title") or script_key).strip()
-        operation = str(
-            frontmatter.get("bound_operation") or frontmatter.get("operation_key") or ""
-        ).strip()
+        operation = str(frontmatter.get("bound_operation") or frontmatter.get("operation_key") or "").strip()
         entrypoint = str(frontmatter.get("entrypoint") or frontmatter.get("path") or "").strip()
         rows.append(
             "| {} | {} | {} | {} |".format(

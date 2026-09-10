@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 
 import pytest
-
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter, _SharedInvocationIndex
 from integration.mcp.scope import resolve_mcp_scope_from_token
 from integration.mcp.token_service import MCPTokenAuthError
@@ -16,7 +15,6 @@ from integration.observability.trace_context import (
     normalize_traceparent,
     parse_traceparent,
 )
-
 
 VALID_TRACEPARENT = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
 

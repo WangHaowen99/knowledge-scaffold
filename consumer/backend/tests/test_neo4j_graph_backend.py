@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
-
 from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
 from agent.tools.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
 from agent.tools.business_data.providers.graph.models import GraphScope
+from backend_synthetic_credentials import synthetic_invalid_password
 
 
 class _FakeNode:
@@ -175,7 +175,7 @@ class _FakeSession:
                         "d2o_workspace_id": "workspace-a",
                         "d2o_ontology_id": "demo-ontology",
                         "tenant_ontology": "demo-ontology",
-                        "_d2o_record_key": "secret",
+                        "_d2o_record_key": synthetic_invalid_password("neo4j_graph_backend-credential-01"),
                     },
                 )
             }
@@ -204,12 +204,14 @@ class _TimeoutDriver(_FakeDriver):
 
 
 def _backend():
-    return Neo4jGraphBackend({
-        "uri": "bolt://neo4j.test:7687",
-        "database": "domain",
-        "username": "neo4j",
-        "password": "secret",
-    })
+    return Neo4jGraphBackend(
+        {
+            "uri": "bolt://neo4j.example.net:7687",
+            "database": "domain",
+            "username": "neo4j",
+            "password": synthetic_invalid_password("neo4j_graph_backend-credential-01"),
+        }
+    )
 
 
 def _scope():
@@ -340,7 +342,12 @@ def test_neo4j_pattern_search_supports_mapping_dict_segments(monkeypatch):
 
     result = backend.pattern_search(
         path_pattern=[
-            {"var": "change_order", "label": "CHANGE_ORDER", "filters": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}, "return_properties": ["CHANGE_ORDER_ID"]},
+            {
+                "var": "change_order",
+                "label": "CHANGE_ORDER",
+                "filters": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"},
+                "return_properties": ["CHANGE_ORDER_ID"],
+            },
             {"var": "rel", "type": "D2O_RELATION", "direction": "->", "return_properties": ["relation_type"]},
             {"var": "version", "label": "SourceItemVersion", "return_properties": ["SourceItemVersionID"]},
         ],
@@ -443,9 +450,7 @@ def test_neo4j_backend_runs_extra_mcp_graph_tools(monkeypatch):
     assert hop.records[0]["node_count"] == 2
     assert hop.records[0]["relationships"][0]["relation_physical_type"] == "D2O_RELATION"
     assert shortest.records[0]["relationships"][0]["relation_type"] == "PROCESS_TO"
-    assert titles.records == [
-        {"entity_instance_id": "node-logic", "entity_type": "Product", "logic_title": "推荐规则"}
-    ]
+    assert titles.records == [{"entity_instance_id": "node-logic", "entity_type": "Product", "logic_title": "推荐规则"}]
     assert content.records == [
         {
             "entity_instance_id": "node-logic",
@@ -458,14 +463,16 @@ def test_neo4j_backend_runs_extra_mcp_graph_tools(monkeypatch):
 
 def test_neo4j_timeout_maps_to_backend_timeout_error(monkeypatch):
     calls = []
-    backend = Neo4jGraphBackend({
-        "uri": "bolt://neo4j.test:7687",
-        "database": "domain",
-        "username": "neo4j",
-        "password": "secret",
-        "timeout_seconds": 120,
-        "graph_query_timeout_seconds": 30,
-    })
+    backend = Neo4jGraphBackend(
+        {
+            "uri": "bolt://neo4j.example.net:7687",
+            "database": "domain",
+            "username": "neo4j",
+            "password": synthetic_invalid_password("neo4j_graph_backend-credential-01"),
+            "timeout_seconds": 120,
+            "graph_query_timeout_seconds": 30,
+        }
+    )
     monkeypatch.setattr(backend, "_get_driver", lambda: _TimeoutDriver(calls))
 
     with pytest.raises(GraphBackendTimeoutError) as exc_info:
@@ -486,13 +493,15 @@ def test_neo4j_timeout_maps_to_backend_timeout_error(monkeypatch):
 
 def test_neo4j_legacy_timeout_does_not_override_default_query_timeout(monkeypatch):
     calls = []
-    backend = Neo4jGraphBackend({
-        "uri": "bolt://neo4j.test:7687",
-        "database": "domain",
-        "username": "neo4j",
-        "password": "secret",
-        "timeout_seconds": 60,
-    })
+    backend = Neo4jGraphBackend(
+        {
+            "uri": "bolt://neo4j.example.net:7687",
+            "database": "domain",
+            "username": "neo4j",
+            "password": synthetic_invalid_password("neo4j_graph_backend-credential-01"),
+            "timeout_seconds": 60,
+        }
+    )
     monkeypatch.setattr(backend, "_get_driver", lambda: _FakeDriver(calls))
 
     backend.property_filter(
@@ -516,15 +525,17 @@ def test_neo4j_uses_separate_connection_and_query_timeouts(monkeypatch):
         return _FakeDriver(calls)
 
     monkeypatch.setattr("neo4j.GraphDatabase.driver", fake_driver)
-    backend = Neo4jGraphBackend({
-        "uri": "bolt://neo4j.test:7687",
-        "database": "domain",
-        "username": "neo4j",
-        "password": "secret",
-        "timeout_seconds": 120,
-        "graph_query_timeout_seconds": 30,
-        "graph_connect_timeout_seconds": 10,
-    })
+    backend = Neo4jGraphBackend(
+        {
+            "uri": "bolt://neo4j.example.net:7687",
+            "database": "domain",
+            "username": "neo4j",
+            "password": synthetic_invalid_password("neo4j_graph_backend-credential-01"),
+            "timeout_seconds": 120,
+            "graph_query_timeout_seconds": 30,
+            "graph_connect_timeout_seconds": 10,
+        }
+    )
 
     backend.property_filter(
         element_class="ChangeOrderAffectedObject",
@@ -538,8 +549,8 @@ def test_neo4j_uses_separate_connection_and_query_timeouts(monkeypatch):
 
     assert calls[0] == (
         "driver",
-        "bolt://neo4j.test:7687",
-        ("neo4j", "secret"),
+        "bolt://neo4j.example.net:7687",
+        ("neo4j", synthetic_invalid_password("neo4j_graph_backend-credential-01")),
         10,
     )
     assert getattr(calls[2][0], "timeout", None) == 30
@@ -554,12 +565,14 @@ def test_neo4j_resolver_uses_pinned_ip_and_keeps_original_tls_uri(monkeypatch):
         return _FakeDriver([])
 
     monkeypatch.setattr("neo4j.GraphDatabase.driver", fake_driver)
-    backend = Neo4jGraphBackend({
-        "uri": "neo4j+s://snapshot.example.com:7687",
-        "resolved_uri": "neo4j+s://192.0.2.24:7687",
-        "username": "operator_a",
-        "password": "synthetic-provider-secret",
-    })
+    backend = Neo4jGraphBackend(
+        {
+            "uri": "neo4j+s://snapshot.example.com:7687",
+            "resolved_uri": "neo4j+s://192.0.2.24:7687",
+            "username": "operator_a",
+            "password": synthetic_invalid_password("neo4j_graph_backend-credential-02"),
+        }
+    )
 
     backend._get_driver()
 

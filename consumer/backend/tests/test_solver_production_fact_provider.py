@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-from decimal import Decimal
 import json
-from pathlib import Path
 import sys
+from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
+from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
 from integration import solver_fact_providers as fact_provider_module
 from integration.solver_fact_providers import (
-    PackageEvaluationFactProvider,
     PackageEvaluationError,
+    PackageEvaluationFactProvider,
     PackageRouteEvaluationRunner,
 )
-from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
 from solver_coordination.contracts import NormalizedInput
 from solver_coordination.errors import (
     KnowledgePackageSolverContractIncompatibleError,
@@ -111,9 +110,7 @@ class _EvaluationRunner:
             },
             "refinery_route_context": route_context,
             "as_of": "2099-04-05T00:00:00+00:00",
-            "source_evidence": (
-                {"kind": "package_business_evaluation", "ref": "fake-evaluator"},
-            ),
+            "source_evidence": ({"kind": "package_business_evaluation", "ref": "fake-evaluator"},),
             "provider_binding_revision": "package-evaluator:test",
         }
 
@@ -139,7 +136,7 @@ def _provider(tmp_path: Path, runner: _EvaluationRunner) -> PackageEvaluationFac
         return SimpleNamespace(
             provider="neo4j",
             config={
-                "uri": "bolt://graph.example.test:7687",
+                "uri": "bolt://graph.example.net:7687",
                 "workspace_property": "d2o_workspace_id",
                 "workspace_value": "workspace_demo",
                 "ontology_property": "d2o_ontology_id",
@@ -313,7 +310,7 @@ def test_package_evaluator_child_receives_only_scoped_environment(
         candidates=(),
         business_data_source=SimpleNamespace(
             provider="neo4j",
-            config={"uri": "bolt://graph.example.test:7687"},
+            config={"uri": "bolt://graph.example.net:7687"},
         ),
         graph_scope={"workspace_id": "workspace_demo", "ontology_id": "ontology_demo"},
     )
@@ -366,7 +363,7 @@ def test_package_evaluator_child_loads_a_sibling_helper_module(tmp_path: Path) -
             candidates=(),
             business_data_source=SimpleNamespace(
                 provider="neo4j",
-                config={"uri": "bolt://graph.example.test:7687"},
+                config={"uri": "bolt://graph.example.net:7687"},
             ),
             graph_scope={
                 "workspace_id": "workspace_demo",

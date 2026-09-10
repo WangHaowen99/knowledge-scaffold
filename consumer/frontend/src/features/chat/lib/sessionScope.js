@@ -9,25 +9,22 @@ export const createSessionScope = (workspaceId, epoch = 0) => ({
   epoch: Number(epoch) || 0,
 });
 
-export const isSameSessionScope = (left, right) => (
-  Boolean(left && right)
-  && left.workspaceId === right.workspaceId
-  && left.epoch === right.epoch
-);
+export const isSameSessionScope = (left, right) =>
+  Boolean(left && right) &&
+  left.workspaceId === right.workspaceId &&
+  left.epoch === right.epoch;
 
 export const shouldCommitSessionSelection = ({
   requestScope,
   currentScope,
   requestSelectionEpoch,
   currentSelectionEpoch,
-}) => (
-  isSameSessionScope(requestScope, currentScope)
-  && requestSelectionEpoch === currentSelectionEpoch
-);
+}) =>
+  isSameSessionScope(requestScope, currentScope) &&
+  requestSelectionEpoch === currentSelectionEpoch;
 
-export const selectedSessionStorageKey = (workspaceId) => (
-  `onto_agent_current_session_${String(workspaceId || 'default')}`
-);
+export const selectedSessionStorageKey = (workspaceId) =>
+  `onto_agent_current_session_${String(workspaceId || 'default')}`;
 
 export const resolveInitialSessionSelection = ({
   persistedId = '',
@@ -42,7 +39,9 @@ export const resolveInitialSessionSelection = ({
   if (persistedId) {
     return {
       sessionId: persistedId,
-      requiresDirectHydration: !available.some((session) => session.id === persistedId),
+      requiresDirectHydration: !available.some(
+        (session) => session.id === persistedId,
+      ),
     };
   }
   if (currentId && available.some((session) => session.id === currentId)) {
@@ -62,10 +61,14 @@ export const mergeSessionCollections = (
   const deleted = new Set(deletedSessionIds || []);
   const merged = new Map();
   for (const session of serverSessions || []) {
-    if (session?.id && !deleted.has(session.id)) merged.set(session.id, session);
+    if (session?.id && !deleted.has(session.id)) {
+      merged.set(session.id, session);
+    }
   }
   for (const session of localSessions || []) {
-    if (!session?.id || deleted.has(session.id)) continue;
+    if (!session?.id || deleted.has(session.id)) {
+      continue;
+    }
     const server = merged.get(session.id) || {};
     merged.set(session.id, {
       ...server,
@@ -81,16 +84,19 @@ export const normalizeSessionPage = (payload) => {
     throw new TypeError('session page sessions must be an array');
   }
   const hasMore = payload.has_more === true;
-  const nextCursor = typeof payload.next_cursor === 'string' && payload.next_cursor
-    ? payload.next_cursor
-    : null;
+  const nextCursor =
+    typeof payload.next_cursor === 'string' && payload.next_cursor ?
+      payload.next_cursor :
+      null;
   if (hasMore && !nextCursor) {
-    throw new TypeError('session page cursor is required when more sessions exist');
+    throw new TypeError(
+      'session page cursor is required when more sessions exist',
+    );
   }
-  const indexRevision = Number.isInteger(payload.index_revision)
-    && payload.index_revision >= 0
-    ? payload.index_revision
-    : null;
+  const indexRevision =
+    Number.isInteger(payload.index_revision) && payload.index_revision >= 0 ?
+      payload.index_revision :
+      null;
   return {
     sessions: payload.sessions,
     nextCursor,
@@ -120,9 +126,13 @@ export const mergeSessionPage = ({
 
   if (append) {
     const result = [...currentById.values()];
-    const positionById = new Map(result.map((session, index) => [session.id, index]));
+    const positionById = new Map(
+      result.map((session, index) => [session.id, index]),
+    );
     for (const session of incoming || []) {
-      if (!session?.id || deleted.has(session.id)) continue;
+      if (!session?.id || deleted.has(session.id)) {
+        continue;
+      }
       const position = positionById.get(session.id);
       if (position === undefined) {
         positionById.set(session.id, result.length);
@@ -134,11 +144,14 @@ export const mergeSessionPage = ({
     return result;
   }
 
-  const result = (incoming || [])
-    .filter((session) => session?.id && !deleted.has(session.id));
+  const result = (incoming || []).filter(
+    (session) => session?.id && !deleted.has(session.id),
+  );
   if (selectedId && !result.some((session) => session.id === selectedId)) {
     const selected = currentById.get(selectedId);
-    if (selected) result.push(selected);
+    if (selected) {
+      result.push(selected);
+    }
   }
   return result;
 };
@@ -151,36 +164,41 @@ export const isCurrentSessionRead = ({
   requestMutationEpoch,
   currentMutationEpoch,
   deleted = false,
-}) => (
-  !deleted
-  && isSameSessionScope(requestScope, currentScope)
-  && requestSequence === currentSequence
-  && requestMutationEpoch === currentMutationEpoch
-);
+}) =>
+  !deleted &&
+  isSameSessionScope(requestScope, currentScope) &&
+  requestSequence === currentSequence &&
+  requestMutationEpoch === currentMutationEpoch;
 
-export const listResumableSessions = (sessions = []) => (sessions || [])
-  .filter((session) => (
-    session?.id
-    && session?.active_run_id
-    && isSessionResumableStatus(session?.active_run_status)
-  ))
-  .map((session) => ({
-    sessionId: session.id,
-    runId: String(session.active_run_id),
-    status: String(session.active_run_status),
-    afterSequence: Number(session.last_seq) || 0,
-  }));
+export const listResumableSessions = (sessions = []) =>
+  (sessions || [])
+    .filter(
+      (session) =>
+        session?.id &&
+        session?.active_run_id &&
+        isSessionResumableStatus(session?.active_run_status),
+    )
+    .map((session) => ({
+      sessionId: session.id,
+      runId: String(session.active_run_id),
+      status: String(session.active_run_status),
+      afterSequence: Number(session.last_seq) || 0,
+    }));
 
 export const resolveSessionRunIndicator = (session, streamState) => {
   if (streamState) {
     const streamStatus = normalizeSessionRunStatus(streamState.status);
-    if (isSessionWaitingForUserStatus(streamStatus)) return 'awaiting_input';
-    if (!streamState.isLoading) return '';
-    return streamStatus === 'queued'
-      ? 'queued'
-      : 'running';
+    if (isSessionWaitingForUserStatus(streamStatus)) {
+      return 'awaiting_input';
+    }
+    if (!streamState.isLoading) {
+      return '';
+    }
+    return streamStatus === 'queued' ? 'queued' : 'running';
   }
   const status = normalizeSessionRunStatus(session?.active_run_status);
-  if (isSessionWaitingForUserStatus(status)) return 'awaiting_input';
+  if (isSessionWaitingForUserStatus(status)) {
+    return 'awaiting_input';
+  }
   return isSessionResumableStatus(status) ? status : '';
 };

@@ -12,7 +12,10 @@ test('history renders distinct accessible icons for queued, running and awaiting
   assert.equal(sidebarSource.includes('Clock3'), true);
   assert.equal(sidebarSource.includes('Loader2'), true);
   assert.equal(sidebarSource.includes('MessageCircleQuestion'), true);
-  assert.equal(sidebarSource.includes("className={runStatus === 'running' ? 'spin' : undefined}"), true);
+  assert.match(
+    sidebarSource,
+    /className=\{\s*runStatus === 'running'\s*\?\s*'spin'\s*:\s*undefined\s*\}/,
+  );
   assert.equal(sidebarSource.includes('aria-label={runStatusLabel}'), true);
   assert.equal(sidebarSource.includes("queued: { label: '排队中', Icon: Clock3 }"), true);
   assert.equal(sidebarSource.includes("running: { label: '运行中', Icon: Loader2 }"), true);

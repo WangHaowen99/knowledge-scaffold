@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
-
 import api.routes.evidence as evidence_routes
 from api.auth.auth import AuthManager
 from api.routes.evidence import evidence_router
 from api.testing import TestApplication
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD
 from config.evidence_config import EvidenceConfig
+from fastapi.testclient import TestClient
 from ontology.evidence.manager import EvidenceIndexManager
 from ontology.evidence.worker import EvidenceIndexWorker
 from persistence.runtime_facts import RuntimeFactsStore
@@ -31,13 +31,13 @@ class _RecordingPool:
 def _client(tmp_path: Path):
     app = TestApplication()
     app.state.services["TESTING"] = True
-    auth = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth.authenticate("admin", "TestBootstrap#2026")
+    auth = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
     if user.password_change_required:
         user = auth.change_password(
             "admin",
-            "TestBootstrap#2026",
+            BOOTSTRAP_ADMIN_PASSWORD,
             "RootStrong123!",
         )
     app.state.services["AUTH_MANAGER"] = auth
@@ -74,21 +74,30 @@ def test_management_routes_use_bounded_runtime_pools(tmp_path: Path, monkeypatch
         fake_cleanup_core,
     )
 
-    assert client.post(
-        "/agentic/ontologies/eco/evidence-index/rebuild",
-        headers=headers,
-        json={},
-    ).status_code == 202
-    assert client.post(
-        "/agentic/ontology-evidence/cleanup",
-        headers=headers,
-        json={},
-    ).status_code == 200
-    assert client.post(
-        "/agentic/runtime-facts/cleanup",
-        headers=headers,
-        json={},
-    ).status_code == 200
+    assert (
+        client.post(
+            "/agentic/ontologies/eco/evidence-index/rebuild",
+            headers=headers,
+            json={},
+        ).status_code
+        == 202
+    )
+    assert (
+        client.post(
+            "/agentic/ontology-evidence/cleanup",
+            headers=headers,
+            json={},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/agentic/runtime-facts/cleanup",
+            headers=headers,
+            json={},
+        ).status_code
+        == 200
+    )
     management_calls = [
         (pool_name, function)
         for pool_name, function in client.app.state.offload_calls

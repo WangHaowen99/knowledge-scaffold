@@ -20,13 +20,13 @@ import inspect
 from types import SimpleNamespace
 
 import pytest
-
+from agent.core.jiuwen.trace import JiuwenModelTraceBridge
 from agent.core.jiuwen_engine import (
     JiuwenReactLoopEngine,
     _reject_factory_agent_with_history,
     _resolve_effective_context_max_rounds,
 )
-from agent.core.jiuwen.trace import JiuwenModelTraceBridge
+from backend_synthetic_credentials import synthetic_secret
 from config.settings import AgentConfig
 
 
@@ -47,6 +47,7 @@ def _agent_config(**overrides):
 # ---------------------------------------------------------------------------
 # _resolve_effective_context_max_rounds
 # ---------------------------------------------------------------------------
+
 
 class TestResolveEffectiveContextMaxRounds:
     """Verify effective_rounds = max(configured_rounds, 2) for ask-user resume."""
@@ -93,6 +94,7 @@ class TestResolveEffectiveContextMaxRounds:
 # _reject_factory_agent_with_history
 # ---------------------------------------------------------------------------
 
+
 class TestRejectFactoryAgentWithHistory:
     """Verify the factory path is blocked when history is present."""
 
@@ -104,66 +106,81 @@ class TestRejectFactoryAgentWithHistory:
 
     def test_single_user_message_passes(self):
         """A single user turn (the current request) is allowed."""
-        _reject_factory_agent_with_history({
-            "messages": [{"role": "user", "content": "hello"}],
-        })
+        _reject_factory_agent_with_history(
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+            }
+        )
 
     def test_system_plus_user_passes(self):
-        _reject_factory_agent_with_history({
-            "messages": [
-                {"role": "system", "content": "sys"},
-                {"role": "user", "content": "hello"},
-            ],
-        })
+        _reject_factory_agent_with_history(
+            {
+                "messages": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "hello"},
+                ],
+            }
+        )
 
     def test_assistant_history_rejected(self):
         with pytest.raises(ValueError, match="conversation history"):
-            _reject_factory_agent_with_history({
-                "messages": [
-                    {"role": "user", "content": "q1"},
-                    {"role": "assistant", "content": "a1"},
-                    {"role": "user", "content": "q2"},
-                ],
-            })
+            _reject_factory_agent_with_history(
+                {
+                    "messages": [
+                        {"role": "user", "content": "q1"},
+                        {"role": "assistant", "content": "a1"},
+                        {"role": "user", "content": "q2"},
+                    ],
+                }
+            )
 
     def test_tool_history_rejected(self):
         with pytest.raises(ValueError, match="conversation history"):
-            _reject_factory_agent_with_history({
-                "messages": [
-                    {"role": "user", "content": "q1"},
-                    {"role": "assistant", "content": "a1", "tool_calls": []},
-                    {"role": "tool", "content": "result", "tool_call_id": "tc1"},
-                    {"role": "user", "content": "q2"},
-                ],
-            })
+            _reject_factory_agent_with_history(
+                {
+                    "messages": [
+                        {"role": "user", "content": "q1"},
+                        {"role": "assistant", "content": "a1", "tool_calls": []},
+                        {"role": "tool", "content": "result", "tool_call_id": "tc1"},
+                        {"role": "user", "content": "q2"},
+                    ],
+                }
+            )
 
     def test_consecutive_user_history_rejected(self):
         with pytest.raises(ValueError, match="conversation history"):
-            _reject_factory_agent_with_history({
-                "user_request": "q2",
-                "messages": [
-                    {"role": "user", "content": "q1"},
-                    {"role": "user", "content": "q2"},
-                ],
-            })
+            _reject_factory_agent_with_history(
+                {
+                    "user_request": "q2",
+                    "messages": [
+                        {"role": "user", "content": "q1"},
+                        {"role": "user", "content": "q2"},
+                    ],
+                }
+            )
 
     def test_interaction_response_rejected(self):
         with pytest.raises(ValueError, match="interaction_response"):
-            _reject_factory_agent_with_history({
-                "user_context": {"interaction_response": {"choice": "A"}},
-                "messages": [{"role": "user", "content": "resume"}],
-            })
+            _reject_factory_agent_with_history(
+                {
+                    "user_context": {"interaction_response": {"choice": "A"}},
+                    "messages": [{"role": "user", "content": "resume"}],
+                }
+            )
 
     def test_interaction_response_rejected_even_without_history(self):
         with pytest.raises(ValueError, match="interaction_response"):
-            _reject_factory_agent_with_history({
-                "user_context": {"interaction_response": {"choice": "A"}},
-            })
+            _reject_factory_agent_with_history(
+                {
+                    "user_context": {"interaction_response": {"choice": "A"}},
+                }
+            )
 
 
 # ---------------------------------------------------------------------------
 # JiuwenModelTraceBridge: sliding_window_applied is required
 # ---------------------------------------------------------------------------
+
 
 class TestTraceBridgeSlidingWindowAppliedRequired:
     """Verify ``sliding_window_applied`` is a required parameter."""
@@ -171,9 +188,9 @@ class TestTraceBridgeSlidingWindowAppliedRequired:
     def test_parameter_has_no_default(self):
         sig = inspect.signature(JiuwenModelTraceBridge.__init__)
         param = sig.parameters["sliding_window_applied"]
-        assert param.default is inspect.Parameter.empty, (
-            "sliding_window_applied must be a required parameter (no default)"
-        )
+        assert (
+            param.default is inspect.Parameter.empty
+        ), "sliding_window_applied must be a required parameter (no default)"
 
     def test_missing_parameter_raises_type_error(self):
         """Calling without sliding_window_applied must raise TypeError."""
@@ -193,14 +210,15 @@ class TestTraceBridgeSlidingWindowAppliedRequired:
 # Engine no longer imports apply_sliding_window
 # ---------------------------------------------------------------------------
 
+
 class TestEngineDoesNotImportSlidingWindow:
     """Verify the engine module no longer imports apply_sliding_window."""
 
     def test_apply_sliding_window_not_in_module_namespace(self):
         import agent.core.jiuwen_engine as engine_module
+
         assert not hasattr(engine_module, "apply_sliding_window"), (
-            "jiuwen_engine must not import apply_sliding_window; "
-            "ContextEngine is solely responsible for windowing."
+            "jiuwen_engine must not import apply_sliding_window; " "ContextEngine is solely responsible for windowing."
         )
 
     def test_build_history_messages_does_not_call_sliding_window(self, monkeypatch):
@@ -262,26 +280,31 @@ class TestEngineDoesNotImportSlidingWindow:
 # _create_agent passes effective_rounds and rejects factory with history
 # ---------------------------------------------------------------------------
 
+
 class TestCreateAgentEffectiveRounds:
     """Verify _create_agent passes effective_rounds to the factory."""
 
     def _setup_factory_spy(self, monkeypatch):
         captured = {}
 
-        def fake_factory(*, llm_config, max_iterations, system_prompt=None, agent_id=None,
-                         context_max_rounds=None, **_kwargs):
+        def fake_factory(
+            *, llm_config, max_iterations, system_prompt=None, agent_id=None, context_max_rounds=None, **_kwargs
+        ):
             captured["context_max_rounds"] = context_max_rounds
             del llm_config, max_iterations, system_prompt, agent_id
             return SimpleNamespace()
 
-        monkeypatch.setattr(
-            "agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_factory
-        )
+        monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_factory)
         monkeypatch.setattr(
             "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
             lambda state, *, caller, agent_config=None: SimpleNamespace(
-                provider="openai", api_key="k", base_url="u", model="m",
-                timeout=30, max_tokens=2048, temperature=0.2,
+                provider="openai",
+                api_key=synthetic_secret("context_engine_cutover_probe-credential-01"),
+                base_url="u",
+                model="m",
+                timeout=30,
+                max_tokens=2048,
+                temperature=0.2,
             ),
         )
         return captured
@@ -296,18 +319,14 @@ class TestCreateAgentEffectiveRounds:
         captured = self._setup_factory_spy(monkeypatch)
         engine = JiuwenReactLoopEngine(agent_config=_agent_config(context_max_rounds=1))
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
-        engine._create_agent(
-            max_iterations=10, system_prompt="p", caller="main", state=state
-        )
+        engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert captured["context_max_rounds"] == 2
 
     def test_resume_request_keeps_configured_when_above_two(self, monkeypatch):
         captured = self._setup_factory_spy(monkeypatch)
         engine = JiuwenReactLoopEngine(agent_config=_agent_config(context_max_rounds=7))
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
-        engine._create_agent(
-            max_iterations=10, system_prompt="p", caller="main", state=state
-        )
+        engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert captured["context_max_rounds"] == 7
 
 
@@ -321,15 +340,11 @@ class TestFactoryAgentCapabilityValidation:
             agent_factory=lambda: created,
         )
         state = {"messages": [{"role": "user", "content": "hello"}]}
-        result = engine._create_agent(
-            max_iterations=10, system_prompt="p", caller="main", state=state
-        )
+        result = engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert result is created
 
     def test_run_rejects_history_before_create_agent(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True
-        )
+        monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
         engine = JiuwenReactLoopEngine(
             agent_config=_agent_config(),
             agent_factory=lambda: SimpleNamespace(),
@@ -366,9 +381,7 @@ class TestFactoryAgentCapabilityValidation:
         assert create_calls == []
 
     def test_run_rejects_interaction_response_before_create_agent(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True
-        )
+        monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
         engine = JiuwenReactLoopEngine(
             agent_config=_agent_config(),
             agent_factory=lambda: SimpleNamespace(),
@@ -407,9 +420,7 @@ def test_history_conversion_uses_precomputed_source(monkeypatch):
 
     monkeypatch.setattr(
         "agent.core.jiuwen_engine._build_jiuwen_history_source_messages",
-        lambda _state: (_ for _ in ()).throw(
-            AssertionError("history source must not be recomputed")
-        ),
+        lambda _state: (_ for _ in ()).throw(AssertionError("history source must not be recomputed")),
     )
     converted = _build_jiuwen_history_messages(
         {"messages": [{"role": "user", "content": "different"}]},

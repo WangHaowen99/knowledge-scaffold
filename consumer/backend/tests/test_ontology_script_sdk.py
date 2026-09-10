@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_invalid_password
 from shared_capabilities.business_data import (
     ConnectionEnvelopeError,
     ProviderResult,
@@ -24,7 +24,7 @@ def _envelope(provider="nl2sql_http"):
         "version": 1,
         "provider": provider,
         "endpoint": "https://provider.example.com",
-        "auth": {"type": "bearer", "token": "placeholder"},
+        "auth": {"type": "bearer", "token": synthetic_invalid_password("ontology_script_sdk-credential-01")},
         "options": {"timeout_seconds": 30},
     }
 
@@ -77,7 +77,7 @@ def test_public_sdk_exposes_effective_connection_for_graph_snapshot_handlers(
         "auth": {
             "type": "mindsdb_password",
             "username": "reader",
-            "password": "placeholder",
+            "password": synthetic_invalid_password("ontology_script_sdk-credential-01"),
         },
         "options": {"database": "snapshot_20260808"},
     }
@@ -94,9 +94,7 @@ def test_public_sdk_exposes_effective_connection_for_graph_snapshot_handlers(
 
 
 def test_script_client_allows_dataagent_and_checks_provider_capabilities(monkeypatch):
-    monkeypatch.setenv(
-        SCRIPT_BUSINESS_DATA_CONNECTION_ENV, json.dumps(_envelope("dataagent"))
-    )
+    monkeypatch.setenv(SCRIPT_BUSINESS_DATA_CONNECTION_ENV, json.dumps(_envelope("dataagent")))
     with DataProviderClient() as client:
         assert client.provider == "dataagent"
         with pytest.raises(UnsupportedCapabilityError, match="query_sql"):
@@ -109,9 +107,7 @@ def test_script_client_delegates_query_sql_and_events(monkeypatch):
     class _Provider:
         from shared_capabilities.business_data import ProviderCapabilities
 
-        capabilities = ProviderCapabilities(
-            query=True, query_sql=True, native_streaming=False, probe=True
-        )
+        capabilities = ProviderCapabilities(query=True, query_sql=True, native_streaming=False, probe=True)
 
         def __init__(self):
             self.closed = False

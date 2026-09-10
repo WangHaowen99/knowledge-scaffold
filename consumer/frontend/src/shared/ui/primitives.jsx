@@ -1,4 +1,11 @@
-import { Children, cloneElement, isValidElement, useEffect, useId, useRef } from 'react';
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useId,
+  useRef,
+} from 'react';
 
 export function PageHeader({ title, description, actions, eyebrow }) {
   return (
@@ -13,7 +20,14 @@ export function PageHeader({ title, description, actions, eyebrow }) {
   );
 }
 
-export function SectionCard({ title, description, actions, children, className = '', ...props }) {
+export function SectionCard({
+  title,
+  description,
+  actions,
+  children,
+  className = '',
+  ...props
+}) {
   return (
     <section className={`card ui-section-card ${className}`.trim()} {...props}>
       {(title || description || actions) && (
@@ -34,11 +48,20 @@ export function FieldRow({ label, hint, children, className = '' }) {
   const labelId = useId();
   const hintId = useId();
   const labelledChildren = Children.map(children, (child) => {
-    if (!isValidElement(child) || child.props['aria-label'] || child.props['aria-labelledby']) return child;
-    const isNativeControl = typeof child.type === 'string'
-      && ['input', 'select', 'textarea', 'button'].includes(child.type);
+    if (
+      !isValidElement(child) ||
+      child.props['aria-label'] ||
+      child.props['aria-labelledby']
+    ) {
+      return child;
+    }
+    const isNativeControl =
+      typeof child.type === 'string' &&
+      ['input', 'select', 'textarea', 'button'].includes(child.type);
     const isCustomControl = typeof child.type === 'function';
-    if (!isNativeControl && !isCustomControl) return child;
+    if (!isNativeControl && !isCustomControl) {
+      return child;
+    }
     return cloneElement(child, {
       'aria-labelledby': labelId,
       ...(hint ? { 'aria-describedby': hintId } : {}),
@@ -47,8 +70,14 @@ export function FieldRow({ label, hint, children, className = '' }) {
   return (
     <div className={`fieldrow ${className}`.trim()}>
       <div className="fl">
-        <div className="n" id={labelId}>{label}</div>
-        {hint && <div className="h" id={hintId}>{hint}</div>}
+        <div className="n" id={labelId}>
+          {label}
+        </div>
+        {hint && (
+          <div className="h" id={hintId}>
+            {hint}
+          </div>
+        )}
       </div>
       {labelledChildren}
     </div>
@@ -56,7 +85,11 @@ export function FieldRow({ label, hint, children, className = '' }) {
 }
 
 export function Table({ children, className = '', ...props }) {
-  return <table className={`dt ${className}`.trim()} {...props}>{children}</table>;
+  return (
+    <table className={`dt ${className}`.trim()} {...props}>
+      {children}
+    </table>
+  );
 }
 
 export function Modal({
@@ -85,19 +118,26 @@ export function Modal({
   useEffect(() => {
     const previouslyFocused = document.activeElement;
     const dialog = dialogRef.current;
-    const focusable = () => Array.from(dialog?.querySelectorAll(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-    ) || []);
+    const focusable = () =>
+      Array.from(
+        dialog?.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        ) || [],
+      );
     const [initialTarget] = focusable();
     (initialTarget || dialog)?.focus();
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
-        if (!closeOnEscapeRef.current) return;
+        if (!closeOnEscapeRef.current) {
+          return;
+        }
         event.preventDefault();
         closeRef.current?.();
         return;
       }
-      if (event.key !== 'Tab') return;
+      if (event.key !== 'Tab') {
+        return;
+      }
       const items = focusable();
       if (!items.length) {
         event.preventDefault();
@@ -119,22 +159,50 @@ export function Modal({
     document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus();
+      if (
+        previouslyFocused instanceof HTMLElement &&
+        previouslyFocused.isConnected
+      ) {
+        previouslyFocused.focus();
+      }
     };
   }, []);
 
   return (
-    <div className="ui-modal-backdrop" role="presentation" onMouseDown={(event) => {
-      if (closeOnOverlayClickRef.current && event.target === event.currentTarget) onClose?.();
-    }}>
-      <section ref={dialogRef} className={`ui-modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true"
-        aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} tabIndex={-1}>
+    <div
+      className="ui-modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (
+          closeOnOverlayClickRef.current &&
+          event.target === event.currentTarget
+        ) {
+          onClose?.();
+        }
+      }}
+    >
+      <section
+        ref={dialogRef}
+        className={`ui-modal ${wide ? 'wide' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
+        tabIndex={-1}
+      >
         <header>
           <div>
             <h3 id={titleId}>{title}</h3>
             {description && <p id={descriptionId}>{description}</p>}
           </div>
-          <button type="button" className="iconbtn" aria-label="关闭" onClick={onClose}>✕</button>
+          <button
+            type="button"
+            className="iconbtn"
+            aria-label="关闭"
+            onClick={onClose}
+          >
+            ✕
+          </button>
         </header>
         <div className="ui-modal-body">{children}</div>
         {actions && <footer>{actions}</footer>}
@@ -143,7 +211,12 @@ export function Modal({
   );
 }
 
-export function EmptyState({ title = '暂无数据', description, action, compact = false }) {
+export function EmptyState({
+  title = '暂无数据',
+  description,
+  action,
+  compact = false,
+}) {
   return (
     <div className={`empty ui-empty ${compact ? 'compact' : ''}`}>
       <strong>{title}</strong>
@@ -174,7 +247,9 @@ const STATUS_CLASS = {
 export function StatusTag({ status, children, className = '' }) {
   const normalized = String(status || '').toLowerCase();
   return (
-    <span className={`tag ${STATUS_CLASS[normalized] || 'tag-lang'} ${className}`.trim()}>
+    <span
+      className={`tag ${STATUS_CLASS[normalized] || 'tag-lang'} ${className}`.trim()}
+    >
       {children || status || '未知'}
     </span>
   );
@@ -184,9 +259,19 @@ export function ScopeTabs({ items, value, onChange, ariaLabel = '切换范围' }
   return (
     <div className="scope-tabs" role="tablist" aria-label={ariaLabel}>
       {items.map((item) => (
-        <button key={item.id} type="button" role="tab" aria-selected={item.id === value}
-          className={item.id === value ? 'on' : ''} onClick={() => onChange(item.id)}>
-          {item.badge && <span className={`scope-badge ${item.badgeClass || ''}`}>{item.badge}</span>}
+        <button
+          key={item.id}
+          type="button"
+          role="tab"
+          aria-selected={item.id === value}
+          className={item.id === value ? 'on' : ''}
+          onClick={() => onChange(item.id)}
+        >
+          {item.badge && (
+            <span className={`scope-badge ${item.badgeClass || ''}`}>
+              {item.badge}
+            </span>
+          )}
           {item.label}
         </button>
       ))}

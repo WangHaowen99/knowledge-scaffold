@@ -1,7 +1,6 @@
 import json
 
 import pytest
-
 from config import system_config
 from config.evidence_config import EvidenceConfig
 

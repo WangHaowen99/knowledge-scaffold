@@ -92,14 +92,21 @@ const PERF_TOOL_LABELS = {
   spawn_sub_agent: '派生子智能体',
 };
 
-const asObject = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
+const asObject = (value) =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const asArray = (value) => (Array.isArray(value) ? value : []);
 const cleanText = (value) => String(value ?? '').trim();
 
-export function resolveObservabilityAccess({ view, sessionId, user, canViewGlobal } = {}) {
-  const normalizedView = view === OBSERVABILITY_VIEWS.GLOBAL
-    ? OBSERVABILITY_VIEWS.GLOBAL
-    : OBSERVABILITY_VIEWS.SESSION;
+export function resolveObservabilityAccess({
+  view,
+  sessionId,
+  user,
+  canViewGlobal,
+} = {}) {
+  const normalizedView =
+    view === OBSERVABILITY_VIEWS.GLOBAL ?
+      OBSERVABILITY_VIEWS.GLOBAL :
+      OBSERVABILITY_VIEWS.SESSION;
   if (!user) {
     return {
       allowed: false,
@@ -110,9 +117,10 @@ export function resolveObservabilityAccess({ view, sessionId, user, canViewGloba
     };
   }
   if (normalizedView === OBSERVABILITY_VIEWS.GLOBAL) {
-    const permitted = typeof canViewGlobal === 'boolean'
-      ? canViewGlobal
-      : user.role === 'admin';
+    const permitted =
+      typeof canViewGlobal === 'boolean' ?
+        canViewGlobal :
+        user.role === 'admin';
     if (!permitted) {
       return {
         allowed: false,
@@ -132,13 +140,22 @@ export function resolveObservabilityAccess({ view, sessionId, user, canViewGloba
       detail: '选择会话后可查看该会话的运行性能与调用链。',
     };
   }
-  return { allowed: true, view: normalizedView, reason: '', title: '', detail: '' };
+  return {
+    allowed: true,
+    view: normalizedView,
+    reason: '',
+    title: '',
+    detail: '',
+  };
 }
 
 export function createPerformanceWindowQuery(windowId, endMs = Date.now()) {
   const durationMs = WINDOW_PRESETS[windowId] || WINDOW_PRESETS['24h'];
   const parsedEnd = Number(endMs);
-  const safeEnd = Number.isFinite(parsedEnd) && parsedEnd > 0 ? Math.round(parsedEnd) : Date.now();
+  const safeEnd =
+    Number.isFinite(parsedEnd) && parsedEnd > 0 ?
+      Math.round(parsedEnd) :
+      Date.now();
   return new URLSearchParams({
     from: String(safeEnd - durationMs),
     to: String(safeEnd),
@@ -147,15 +164,22 @@ export function createPerformanceWindowQuery(windowId, endMs = Date.now()) {
 
 export function normalizeObservabilityFilters(filters = {}) {
   return Object.fromEntries(
-    Object.keys(EMPTY_OBSERVABILITY_FILTERS).map((key) => [key, cleanText(filters?.[key])]),
+    Object.keys(EMPTY_OBSERVABILITY_FILTERS).map((key) => [
+      key,
+      cleanText(filters?.[key]),
+    ]),
   );
 }
 
 export function appendObservabilityFilters(query, filters = {}) {
   const params = new URLSearchParams(query);
-  Object.entries(normalizeObservabilityFilters(filters)).forEach(([key, value]) => {
-    if (value) params.set(key, value);
-  });
+  Object.entries(normalizeObservabilityFilters(filters)).forEach(
+    ([key, value]) => {
+      if (value) {
+        params.set(key, value);
+      }
+    },
+  );
   return params.toString();
 }
 
@@ -173,13 +197,19 @@ export function buildGlobalObservabilityUrls({
   limit = 50,
   offset = 0,
 } = {}) {
-  const query = appendObservabilityFilters(createPerformanceWindowQuery(windowId, endMs), filters);
+  const query = appendObservabilityFilters(
+    createPerformanceWindowQuery(windowId, endMs),
+    filters,
+  );
   const runsParams = new URLSearchParams(query);
   const normalizedOffset = Math.max(Number(offset) || 0, 0);
   // The current route accepts a one-based offset and converts it back to the
   // zero-based offset returned by the service. Keep zero as zero for page one.
   const requestOffset = normalizedOffset > 0 ? normalizedOffset + 1 : 0;
-  runsParams.set('limit', String(Math.min(Math.max(Number(limit) || 50, 1), 200)));
+  runsParams.set(
+    'limit',
+    String(Math.min(Math.max(Number(limit) || 50, 1), 200)),
+  );
   runsParams.set('offset', String(requestOffset));
   return {
     query,
@@ -201,10 +231,15 @@ export function buildRunDetailUrl({
   } else {
     const windowParams = new URLSearchParams(query);
     for (const key of ['from', 'to']) {
-      if (windowParams.get(key)) params.set(key, windowParams.get(key));
+      if (windowParams.get(key)) {
+        params.set(key, windowParams.get(key));
+      }
     }
-    const scopedWorkspaceId = cleanText(workspaceId) || cleanText(windowParams.get('workspace_id'));
-    if (scopedWorkspaceId) params.set('workspace_id', scopedWorkspaceId);
+    const scopedWorkspaceId =
+      cleanText(workspaceId) || cleanText(windowParams.get('workspace_id'));
+    if (scopedWorkspaceId) {
+      params.set('workspace_id', scopedWorkspaceId);
+    }
   }
   return `/agentic/performance/runs/${encodeURIComponent(cleanText(runId))}?${params}`;
 }
@@ -214,7 +249,10 @@ export function normalizeSessionAnalysis(payload) {
   return {
     ...body,
     summary: asObject(body.summary),
-    trends: { ...asObject(body.trends), turns: asArray(asObject(body.trends).turns) },
+    trends: {
+      ...asObject(body.trends),
+      turns: asArray(asObject(body.trends).turns),
+    },
     runs: asArray(body.runs),
     diagnostics: asObject(body.diagnostics),
     window: asObject(body.window),
@@ -268,7 +306,10 @@ export function normalizeRunDetail(payload) {
 export function selectRunId(currentId, ...collections) {
   const rows = collections.flatMap((collection) => asArray(collection));
   const normalizedCurrent = cleanText(currentId);
-  if (normalizedCurrent && rows.some((row) => cleanText(row?.run_id) === normalizedCurrent)) {
+  if (
+    normalizedCurrent &&
+    rows.some((row) => cleanText(row?.run_id) === normalizedCurrent)
+  ) {
     return normalizedCurrent;
   }
   return cleanText(rows.find((row) => cleanText(row?.run_id))?.run_id);
@@ -276,9 +317,11 @@ export function selectRunId(currentId, ...collections) {
 
 export function findRunById(runId, ...collections) {
   const normalizedRunId = cleanText(runId);
-  return collections
-    .flatMap((collection) => asArray(collection))
-    .find((row) => cleanText(row?.run_id) === normalizedRunId) || null;
+  return (
+    collections
+      .flatMap((collection) => asArray(collection))
+      .find((row) => cleanText(row?.run_id) === normalizedRunId) || null
+  );
 }
 
 export function detailForSelectedRun(detail, runId) {
@@ -287,25 +330,40 @@ export function detailForSelectedRun(detail, runId) {
   return selectedRunId && detailRunId === selectedRunId ? detail : null;
 }
 
-export function resolveCollectionState({ loading = false, error = '', itemCount = 0 } = {}) {
+export function resolveCollectionState({
+  loading = false,
+  error = '',
+  itemCount = 0,
+} = {}) {
   const count = Math.max(Number(itemCount) || 0, 0);
-  if (loading && count === 0) return 'loading';
-  if (error && count === 0) return 'error';
-  if (count === 0) return 'empty';
-  if (error) return 'stale-error';
+  if (loading && count === 0) {
+    return 'loading';
+  }
+  if (error && count === 0) {
+    return 'error';
+  }
+  if (count === 0) {
+    return 'empty';
+  }
+  if (error) {
+    return 'stale-error';
+  }
   return 'ready';
 }
 
 export function getPageInfo({ count = 0, limit = 50, offset = 0 } = {}) {
   const safeCount = Math.max(Number(count) || 0, 0);
   const safeLimit = Math.max(Number(limit) || 50, 1);
-  const lastPageOffset = safeCount ? Math.floor((safeCount - 1) / safeLimit) * safeLimit : 0;
+  const lastPageOffset = safeCount ?
+    Math.floor((safeCount - 1) / safeLimit) * safeLimit :
+    0;
   const safeOffset = Math.min(Math.max(Number(offset) || 0, 0), lastPageOffset);
   return {
     page: safeCount ? Math.floor(safeOffset / safeLimit) + 1 : 1,
     pageCount: Math.max(Math.ceil(safeCount / safeLimit), 1),
     previousOffset: Math.max(safeOffset - safeLimit, 0),
-    nextOffset: safeOffset + safeLimit < safeCount ? safeOffset + safeLimit : safeOffset,
+    nextOffset:
+      safeOffset + safeLimit < safeCount ? safeOffset + safeLimit : safeOffset,
     hasPrevious: safeOffset > 0,
     hasNext: safeOffset + safeLimit < safeCount,
   };
@@ -314,7 +372,10 @@ export function getPageInfo({ count = 0, limit = 50, offset = 0 } = {}) {
 export function getLocalObservabilityRuntime(config) {
   const observability = asObject(asObject(config).observability);
   const enabled = observability.enabled === true;
-  const mode = cleanText(observability.mode).toLowerCase() === 'langfuse' ? 'langfuse' : 'local';
+  const mode =
+    cleanText(observability.mode).toLowerCase() === 'langfuse' ?
+      'langfuse' :
+      'local';
   if (enabled && mode === 'local') {
     return {
       loaded: true,
@@ -372,39 +433,58 @@ export function getFailedLocalObservabilityRuntime(error = '') {
   };
 }
 
-export function diagnosticsText(diagnostics, { includeScannedFiles = false } = {}) {
+export function diagnosticsText(
+  diagnostics,
+  { includeScannedFiles = false } = {},
+) {
   const value = asObject(diagnostics);
   const parseErrors = Number(value.parse_error_count) || 0;
   const unknownSchemas = Number(value.unknown_schema_count) || 0;
-  if (!parseErrors && !unknownSchemas && !value.truncated) return '';
+  if (!parseErrors && !unknownSchemas && !value.truncated) {
+    return '';
+  }
   const parts = [];
   if (includeScannedFiles && value.scanned_files != null) {
     parts.push(`扫描文件 ${formatMetric(value.scanned_files)}`);
   }
   parts.push(`跳过旧版或不兼容日志 ${formatMetric(unknownSchemas)} 条`);
   parts.push(`损坏日志 ${formatMetric(parseErrors)} 条`);
-  if (value.truncated) parts.push('结果已截断');
+  if (value.truncated) {
+    parts.push('结果已截断');
+  }
   return `${parts.join('，')}。`;
 }
 
 export function formatDuration(value) {
   const ms = Number(value || 0);
-  if (!Number.isFinite(ms) || ms <= 0) return '0 ms';
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return '0 ms';
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)} ms`;
+  }
+  if (ms < 60_000) {
+    return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
+  }
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
 
 export function formatMetric(value) {
   const number = Number(value || 0);
-  if (!Number.isFinite(number)) return '-';
+  if (!Number.isFinite(number)) {
+    return '-';
+  }
   return new Intl.NumberFormat('zh-CN').format(number);
 }
 
 export function formatTimestamp(value) {
-  if (value == null || value === '') return '-';
+  if (value == null || value === '') {
+    return '-';
+  }
   const date = new Date(Number(value));
-  if (Number.isNaN(date.getTime())) return '-';
+  if (Number.isNaN(date.getTime())) {
+    return '-';
+  }
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
     day: '2-digit',
@@ -417,64 +497,97 @@ export function formatTimestamp(value) {
 
 export function formatPercent(value) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return '-';
+  if (!Number.isFinite(number)) {
+    return '-';
+  }
   return `${Math.round(number * 1000) / 10}%`;
 }
 
 export function formatCacheHit(row = {}) {
   if (
-    row.llm_cache_hit_tokens == null
-    || row.llm_cache_total_input_tokens == null
-    || row.llm_cache_hit_rate == null
-  ) return '-';
+    row.llm_cache_hit_tokens == null ||
+    row.llm_cache_total_input_tokens == null ||
+    row.llm_cache_hit_rate == null
+  ) {
+    return '-';
+  }
   return `${formatMetric(row.llm_cache_hit_tokens)} / ${formatMetric(row.llm_cache_total_input_tokens)} · ${formatPercent(row.llm_cache_hit_rate)}`;
 }
 
 export function shortId(value, maximum = 18) {
   const text = cleanText(value) || '-';
-  if (text.length <= maximum) return text;
+  if (text.length <= maximum) {
+    return text;
+  }
   return `${text.slice(0, 8)}...${text.slice(-6)}`;
 }
 
 export function llmWallDuration(metrics = {}) {
-  return Number(metrics.wall_duration_ms || 0)
-    || Number(metrics.duration_ms || 0)
-    || Number(metrics.stream_duration_ms || 0);
+  return (
+    Number(metrics.wall_duration_ms || 0) ||
+    Number(metrics.duration_ms || 0) ||
+    Number(metrics.stream_duration_ms || 0)
+  );
 }
 
 export function formatPromptSize(metrics = {}) {
   const tokens = Number(metrics.prompt_tokens || 0);
   const chars = Number(metrics.prompt_chars || 0);
-  if (tokens) return `${formatMetric(tokens)} tokens`;
-  if (chars) return `${formatMetric(chars)} chars`;
+  if (tokens) {
+    return `${formatMetric(tokens)} tokens`;
+  }
+  if (chars) {
+    return `${formatMetric(chars)} chars`;
+  }
   return '-';
 }
 
 export function detailCount(detail, tabId) {
   const body = asObject(detail);
-  if (tabId === 'callchain') return asArray(body.iteration_calls).length;
-  if (tabId === 'iterations') return asArray(body.iterations).length;
-  if (tabId === 'llm') return asArray(body.llm_calls).length;
-  if (tabId === 'tools') return asArray(body.tools).length;
-  if (tabId === 'debug') return asArray(body.runtime_phases).length + asArray(body.timeline).length;
+  if (tabId === 'callchain') {
+    return asArray(body.iteration_calls).length;
+  }
+  if (tabId === 'iterations') {
+    return asArray(body.iterations).length;
+  }
+  if (tabId === 'llm') {
+    return asArray(body.llm_calls).length;
+  }
+  if (tabId === 'tools') {
+    return asArray(body.tools).length;
+  }
+  if (tabId === 'debug') {
+    return asArray(body.runtime_phases).length + asArray(body.timeline).length;
+  }
   return 0;
 }
 
-export const formatPerfEventLabel = (value) => formatMappedPerfValue(value, PERF_EVENT_LABELS);
-export const formatPerfKindLabel = (value) => formatMappedPerfValue(value, PERF_KIND_LABELS);
-export const formatPerfComponentLabel = (value) => formatMappedPerfValue(value, PERF_COMPONENT_LABELS);
-export const formatPerfPhaseLabel = (value) => formatMappedPerfValue(value, PERF_PHASE_LABELS);
-export const formatPerfCallerLabel = (value) => formatMappedPerfValue(value, PERF_CALLER_LABELS);
-export const formatPerfAgentModeLabel = (value) => formatMappedPerfValue(value, PERF_AGENT_MODE_LABELS);
-export const formatPerfToolLabel = (value) => formatMappedPerfValue(value, PERF_TOOL_LABELS);
+export const formatPerfEventLabel = (value) =>
+  formatMappedPerfValue(value, PERF_EVENT_LABELS);
+export const formatPerfKindLabel = (value) =>
+  formatMappedPerfValue(value, PERF_KIND_LABELS);
+export const formatPerfComponentLabel = (value) =>
+  formatMappedPerfValue(value, PERF_COMPONENT_LABELS);
+export const formatPerfPhaseLabel = (value) =>
+  formatMappedPerfValue(value, PERF_PHASE_LABELS);
+export const formatPerfCallerLabel = (value) =>
+  formatMappedPerfValue(value, PERF_CALLER_LABELS);
+export const formatPerfAgentModeLabel = (value) =>
+  formatMappedPerfValue(value, PERF_AGENT_MODE_LABELS);
+export const formatPerfToolLabel = (value) =>
+  formatMappedPerfValue(value, PERF_TOOL_LABELS);
 
 function formatMappedPerfValue(value, labels) {
   const raw = cleanText(value);
-  if (!raw) return '-';
+  if (!raw) {
+    return '-';
+  }
   const direct = labels[raw] || labels[raw.toLowerCase()];
-  if (direct) return direct;
+  if (direct) {
+    return direct;
+  }
   return raw
-    .replace(/^subagent:(.+)$/i, '子智能体 $1')
+    .replace(/^subagent:(?<name>.+)$/i, '子智能体 $<name>')
     .replace(/_/g, ' ')
     .replace(/\./g, ' / ');
 }

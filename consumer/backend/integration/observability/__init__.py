@@ -6,7 +6,11 @@ package for the responsibility map.
 """
 
 from integration.observability.bus import ObservabilityBus
-from integration.observability.context import ObservabilityContext, bind_observability_context, get_observability_context
+from integration.observability.context import (
+    ObservabilityContext,
+    bind_observability_context,
+    get_observability_context,
+)
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeRequestLabel, RuntimeStatus
 from integration.observability.observer import NOOP_OBSERVER, NoopObserver, RuntimeObserver
 from integration.observability.provider import (

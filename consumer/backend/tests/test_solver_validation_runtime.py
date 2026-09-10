@@ -4,10 +4,10 @@ import threading
 import time
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
-import pytest
-
 import app as app_module
+import pytest
+from backend_synthetic_credentials import ADMIN_API_TOKEN
+from fastapi.testclient import TestClient
 from solver_coordination import OperationValidationRunService, SyntheticValidationService
 from solver_coordination.runtime import build_operation_validation_service
 
@@ -86,7 +86,7 @@ def test_production_factory_builds_operation_backed_service():
 def test_build_runtime_services_includes_validation_service(monkeypatch, tmp_path):
     config = SimpleNamespace(
         auth_server_url="https://auth.example.net",
-        auth_server_admin_token="synthetic-admin-token",
+        auth_server_admin_token=ADMIN_API_TOKEN,
         auth_server_audience="synthetic-audience",
         auth_server_issuer="https://auth.example.net",
         chat_storage_dir=tmp_path / "chat",
@@ -144,7 +144,7 @@ def test_refresh_preserves_active_session_store_instances_and_terminal(
     )
     config = SimpleNamespace(
         auth_server_url="https://auth.example.net",
-        auth_server_admin_token="synthetic-admin-token",
+        auth_server_admin_token=ADMIN_API_TOKEN,
         auth_server_audience="synthetic-audience",
         auth_server_issuer="https://auth.example.net",
         chat_storage_dir=tmp_path / "new-chat",
@@ -208,9 +208,7 @@ def test_refresh_preserves_active_session_store_instances_and_terminal(
     monkeypatch.setattr(
         app_module,
         "update_runtime_dependencies",
-        lambda store_manager, **_kwargs: dependency_managers.append(
-            store_manager
-        ),
+        lambda store_manager, **_kwargs: dependency_managers.append(store_manager),
     )
     monkeypatch.setattr(app_module, "reset_observer", lambda **_kwargs: None)
 
@@ -242,9 +240,7 @@ def test_refresh_preserves_active_session_store_instances_and_terminal(
     assert current_execution_store is execution_store
     assert dependency_managers == [manager]
     assert completed_turn["status"] == "success"
-    assert completed_turn["final_output"] == {
-        "answer": "completed after refresh"
-    }
+    assert completed_turn["final_output"] == {"answer": "completed after refresh"}
 
 
 def test_shutdown_stops_worker_enabled_after_startup(monkeypatch):
@@ -327,19 +323,20 @@ def test_shutdown_accepts_worker_disabled_after_startup(monkeypatch):
     with TestClient(application):
         worker = application.state.solver_recovery_worker
         assert worker.running is True
-        assert app_module._install_solver_recovery_worker(
-            application,
-            None,
-        ) is None
+        assert (
+            app_module._install_solver_recovery_worker(
+                application,
+                None,
+            )
+            is None
+        )
         assert worker.running is False
 
     assert application.state.solver_recovery_worker is None
 
 
 def test_install_refuses_to_replace_unterminated_worker(monkeypatch):
-    application = SimpleNamespace(
-        state=SimpleNamespace(solver_recovery_worker=None)
-    )
+    application = SimpleNamespace(state=SimpleNamespace(solver_recovery_worker=None))
     constructed_services = []
 
     class BlockedRecoveryWorker:
@@ -372,9 +369,7 @@ def test_install_refuses_to_replace_unterminated_worker(monkeypatch):
 
 
 def test_shutdown_retains_ownership_of_unterminated_worker():
-    application = SimpleNamespace(
-        state=SimpleNamespace(solver_recovery_worker=None)
-    )
+    application = SimpleNamespace(state=SimpleNamespace(solver_recovery_worker=None))
 
     class BlockedRecoveryWorker:
         running = True
@@ -512,11 +507,7 @@ def test_refresh_rolls_back_services_when_worker_start_fails(monkeypatch):
     assert application.state.services is old_services
     assert current_worker.service is old_solver_service
     assert current_worker.running is True
-    assert all(
-        not worker.running
-        for worker in workers
-        if worker is not current_worker
-    )
+    assert all(not worker.running for worker in workers if worker is not current_worker)
 
 
 def test_refresh_rolls_back_worker_when_runtime_update_fails(monkeypatch):
@@ -606,11 +597,7 @@ def test_refresh_rolls_back_worker_when_runtime_update_fails(monkeypatch):
     assert current_worker.service is old_solver_service
     assert current_worker.running is True
     assert dependency_configs == [new_agent_config, old_agent_config]
-    assert all(
-        not worker.running
-        for worker in workers
-        if worker is not current_worker
-    )
+    assert all(not worker.running for worker in workers if worker is not current_worker)
 
 
 def test_create_app_injects_validation_service(monkeypatch):
@@ -621,12 +608,7 @@ def test_create_app_injects_validation_service(monkeypatch):
     application = app_module.create_app()
 
     with TestClient(application):
-        assert (
-            application.state.services[
-                "SOLVER_COORDINATION_VALIDATION_SERVICE"
-            ]
-            is expected_service
-        )
+        assert application.state.services["SOLVER_COORDINATION_VALIDATION_SERVICE"] is expected_service
 
     assert application.state.services == {}
 
@@ -655,10 +637,7 @@ def test_refresh_replaces_validation_service_only_after_success(monkeypatch):
     monkeypatch.setattr(app_module, "reset_observer", lambda **kwargs: None)
 
     app_module.refresh_runtime_services(application)
-    assert (
-        application.state.services["SOLVER_COORDINATION_VALIDATION_SERVICE"]
-        is new_service
-    )
+    assert application.state.services["SOLVER_COORDINATION_VALIDATION_SERVICE"] is new_service
 
     monkeypatch.setattr(
         app_module,
@@ -668,7 +647,4 @@ def test_refresh_replaces_validation_service_only_after_success(monkeypatch):
     with pytest.raises(RuntimeError, match="synthetic build failure"):
         app_module.refresh_runtime_services(application)
 
-    assert (
-        application.state.services["SOLVER_COORDINATION_VALIDATION_SERVICE"]
-        is new_service
-    )
+    assert application.state.services["SOLVER_COORDINATION_VALIDATION_SERVICE"] is new_service

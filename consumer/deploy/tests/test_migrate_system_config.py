@@ -5,7 +5,6 @@ import os
 import sys
 from pathlib import Path
 
-
 DEPLOY_DIR = Path(__file__).resolve().parents[1]
 if str(DEPLOY_DIR) not in sys.path:
     sys.path.insert(0, str(DEPLOY_DIR))
@@ -79,12 +78,10 @@ def test_cleaned_files_leave_legacy_backend_with_empty_prune_set(tmp_path, monke
     monkeypatch.delenv("AGENT_CONTEXT_PRUNE_TOOLS", raising=False)
 
     legacy_json_value = (cleaned_config.get("agent") or {}).get("context_prune_tools", "")
-    legacy_env_value = os.getenv("AGENT_CONTEXT_PRUNE_TOOLS", "") if LEGACY_ENV_LINE not in cleaned_env else "unexpected"
-    legacy_prune_tools = {
-        item.strip()
-        for item in (legacy_json_value or legacy_env_value).split(",")
-        if item.strip()
-    }
+    legacy_env_value = (
+        os.getenv("AGENT_CONTEXT_PRUNE_TOOLS", "") if LEGACY_ENV_LINE not in cleaned_env else "unexpected"
+    )
+    legacy_prune_tools = {item.strip() for item in (legacy_json_value or legacy_env_value).split(",") if item.strip()}
     assert legacy_prune_tools == set()
 
 
@@ -99,4 +96,4 @@ def test_release_migration_entrypoint_invokes_system_config_cleanup():
 def test_release_backend_migration_uses_writable_log_dir_in_read_only_sandbox():
     migrate_shell = (DEPLOY_DIR / "migrate.sh").read_text(encoding="utf-8")
 
-    assert 'LOG_DIR=/tmp/logs' in migrate_shell
+    assert "LOG_DIR=/tmp/logs" in migrate_shell

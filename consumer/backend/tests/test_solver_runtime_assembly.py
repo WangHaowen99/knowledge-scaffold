@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import importlib
 import json
-from pathlib import Path
 import sys
 import threading
 import types
+from datetime import datetime, timezone
+from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
-from fastapi.testclient import TestClient
 import pytest
-
+from fastapi.testclient import TestClient
 from integration import solver_coordination_runtime as runtime_module
 from integration.solver_coordination_runtime import (
     BoundedIndependentVerifier,
@@ -149,21 +148,13 @@ def _write_package_validation_fixture(root: Path) -> None:
         ],
         "bindings": {"solver_binding_revision": "fixture-placeholder"},
         "as_of": "2099-03-01T00:00:00Z",
-        "source_evidence": [
-            {"kind": "synthetic_test_fixture", "ref": "route-metrics.json"}
-        ],
+        "source_evidence": [{"kind": "synthetic_test_fixture", "ref": "route-metrics.json"}],
     }
-    (fixture_root / "golden-route-case.json").write_text(
-        json.dumps(golden, ensure_ascii=False), encoding="utf-8"
-    )
-    (fixture_root / "route-metrics.json").write_text(
-        json.dumps(metrics, ensure_ascii=False), encoding="utf-8"
-    )
+    (fixture_root / "golden-route-case.json").write_text(json.dumps(golden, ensure_ascii=False), encoding="utf-8")
+    (fixture_root / "route-metrics.json").write_text(json.dumps(metrics, ensure_ascii=False), encoding="utf-8")
 
 
-def test_explicit_package_validation_provider_remaps_fixture_to_current_item_ids(
-    tmp_path, monkeypatch
-):
+def test_explicit_package_validation_provider_remaps_fixture_to_current_item_ids(tmp_path, monkeypatch):
     factory = getattr(runtime_module, "build_ordered_route_fact_provider", None)
     assert callable(factory), "runtime must expose an explicit route fact provider factory"
 
@@ -269,10 +260,13 @@ def test_runtime_service_assembly_initializes_recovery_binding(tmp_path):
 
     assert service.job_orchestrator.binding_revision_id is None
     assert service.binding_resolver.revision_id == "connector-binding-unconfigured"
-    assert service.job_orchestrator.recover_once(
-        workspace_id="workspace-empty",
-        owner_id="owner-empty",
-    ) == ()
+    assert (
+        service.job_orchestrator.recover_once(
+            workspace_id="workspace-empty",
+            owner_id="owner-empty",
+        )
+        == ()
+    )
 
 
 def test_runtime_credential_resolver_uses_only_the_configured_opaque_reference(
@@ -290,9 +284,7 @@ def test_runtime_credential_resolver_uses_only_the_configured_opaque_reference(
     assert resolver("secret://solver/other") is None
 
 
-def test_runtime_credential_resolver_can_read_a_mounted_secret_file(
-    tmp_path, monkeypatch
-):
+def test_runtime_credential_resolver_can_read_a_mounted_secret_file(tmp_path, monkeypatch):
     secret_file = tmp_path / "connector-token"
     secret_file.write_text("synthetic-mounted-token\n", encoding="utf-8")
     monkeypatch.setenv(
@@ -307,9 +299,7 @@ def test_runtime_credential_resolver_can_read_a_mounted_secret_file(
     assert resolver("secret://solver/primary") == "synthetic-mounted-token"
 
 
-def test_runtime_credential_resolver_rejects_multiple_secret_sources(
-    tmp_path, monkeypatch
-):
+def test_runtime_credential_resolver_rejects_multiple_secret_sources(tmp_path, monkeypatch):
     secret_file = tmp_path / "connector-token"
     secret_file.write_text("synthetic-mounted-token\n", encoding="utf-8")
     monkeypatch.setenv("SOLVER_SERVICE_TOKEN", "synthetic-direct-token")
@@ -331,9 +321,7 @@ def test_runtime_credential_resolver_fails_closed_without_token(monkeypatch):
     assert resolver("secret://solver/primary") is None
 
 
-def test_runtime_assembly_injects_environment_credential_resolver(
-    tmp_path, monkeypatch
-):
+def test_runtime_assembly_injects_environment_credential_resolver(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "SOLVER_SERVICE_CREDENTIAL_REF",
         "secret://solver/primary",
@@ -346,12 +334,8 @@ def test_runtime_assembly_injects_environment_credential_resolver(
     assert resolver("secret://solver/primary") == "synthetic-token-value"
 
 
-def test_runtime_assembly_injects_administrator_endpoint_allowlist(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv(
-        "SOLVER_SERVICE_ALLOWED_HOSTS", "solver.example.com"
-    )
+def test_runtime_assembly_injects_administrator_endpoint_allowlist(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLVER_SERVICE_ALLOWED_HOSTS", "solver.example.com")
     monkeypatch.setenv("SOLVER_SERVICE_ALLOWED_PORTS", "443,8443")
     monkeypatch.setenv("SOLVER_SERVICE_ALLOW_LOCALHOST", "false")
 
@@ -365,9 +349,7 @@ def test_runtime_assembly_injects_administrator_endpoint_allowlist(
     assert service.job_orchestrator.backend.transport.endpoint_policy is policy
 
 
-def test_runtime_assembly_scopes_connector_ca_bundle_to_http_transport(
-    tmp_path, monkeypatch
-):
+def test_runtime_assembly_scopes_connector_ca_bundle_to_http_transport(tmp_path, monkeypatch):
     ca_file = tmp_path / "connector-ca.pem"
     ca_file.write_text(
         "-----BEGIN CERTIFICATE-----\nsynthetic\n-----END CERTIFICATE-----\n",
@@ -380,9 +362,7 @@ def test_runtime_assembly_scopes_connector_ca_bundle_to_http_transport(
     assert service.job_orchestrator.backend.transport.tls_ca_bundle == str(ca_file)
 
 
-def test_runtime_assembly_allows_base_consumer_without_connector_ca(
-    tmp_path, monkeypatch
-):
+def test_runtime_assembly_allows_base_consumer_without_connector_ca(tmp_path, monkeypatch):
     monkeypatch.delenv("SOLVER_SERVICE_TLS_CA_FILE", raising=False)
 
     service = build_solver_coordination_service(runtime_root=tmp_path)
@@ -390,9 +370,7 @@ def test_runtime_assembly_allows_base_consumer_without_connector_ca(
     assert service.job_orchestrator.backend.transport.tls_ca_bundle is None
 
 
-def test_runtime_assembly_rejects_malformed_endpoint_policy_environment(
-    tmp_path, monkeypatch
-):
+def test_runtime_assembly_rejects_malformed_endpoint_policy_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLVER_SERVICE_ALLOWED_PORTS", "443,not-a-port")
 
     with pytest.raises(ValueError, match="port"):
@@ -461,9 +439,7 @@ def test_runtime_recovery_keeps_workspace_owner_scopes_isolated(tmp_path):
     class RecordingService:
         def __init__(self):
             self.store = store
-            self.job_orchestrator = SimpleNamespace(
-                binding_revision_id=binding_revision_id
-            )
+            self.job_orchestrator = SimpleNamespace(binding_revision_id=binding_revision_id)
             self.scopes = []
 
         def recover_job(self, job_id, *, workspace_id, owner_id):
@@ -480,9 +456,7 @@ def test_runtime_recovery_keeps_workspace_owner_scopes_isolated(tmp_path):
     outcomes = runtime_module.recover_solver_coordination_jobs(service)
 
     assert tuple(service.scopes) == expected_scopes
-    assert tuple(
-        (outcome["workspace_id"], outcome["owner_id"]) for outcome in outcomes
-    ) == expected_scopes
+    assert tuple((outcome["workspace_id"], outcome["owner_id"]) for outcome in outcomes) == expected_scopes
 
 
 def test_recovery_worker_repeats_ticks_and_stops(monkeypatch):
@@ -548,10 +522,16 @@ def test_create_app_runs_solver_recovery_at_startup(monkeypatch):
     class LangDetectException(Exception):
         pass
 
+    def detect_language(_text):
+        return "en"
+
+    def detect_languages(_text):
+        return []
+
     langdetect.DetectorFactory = DetectorFactory
     langdetect.LangDetectException = LangDetectException
-    langdetect.detect = lambda _text: "en"
-    langdetect.detect_langs = lambda _text: []
+    langdetect.detect = detect_language
+    langdetect.detect_langs = detect_languages
     monkeypatch.setitem(sys.modules, "langdetect", langdetect)
     app_module = importlib.import_module("app")
 
@@ -626,23 +606,16 @@ def test_create_app_runs_solver_recovery_at_startup(monkeypatch):
     monkeypatch.setattr(app_module, "stop_runtime_warmup", stop_runtime_warmup)
     monkeypatch.setattr(app_module, "init_skill_evolution_worker", lambda: None)
     monkeypatch.setattr(app_module, "reset_skill_evolution_singletons", lambda: None)
-    monkeypatch.setattr(
-        app_module, "start_platform_observer_if_enabled", lambda: None
-    )
+    monkeypatch.setattr(app_module, "start_platform_observer_if_enabled", lambda: None)
     monkeypatch.setattr(app_module, "shutdown_platform_observer", lambda **kwargs: None)
     monkeypatch.setattr(app_module, "shutdown_observer", lambda **kwargs: None)
-    monkeypatch.setattr(
-        app_module, "configure_solver_tool_service", lambda _service: None
-    )
+    monkeypatch.setattr(app_module, "configure_solver_tool_service", lambda _service: None)
     monkeypatch.setattr(app_module, "SolverCoordinationRecoveryWorker", FakeRecoveryWorker)
 
     application = app_module.create_app()
 
     with TestClient(application):
-        assert (
-            application.state.services["SOLVER_COORDINATION_SERVICE"]
-            is solver_service
-        )
+        assert application.state.services["SOLVER_COORDINATION_SERVICE"] is solver_service
         assert workers[0].service is solver_service
         assert workers[0].started is True
         assert application.state.solver_recovery_worker is workers[0]
@@ -716,11 +689,7 @@ def test_concurrent_solver_worker_refresh_keeps_only_latest_worker_running(
     current_worker = application.state.solver_recovery_worker
     assert current_worker.service == "service-second"
     assert [worker for worker in workers if worker.running] == [current_worker]
-    assert all(
-        worker.stop_calls == 1
-        for worker in workers
-        if worker is not current_worker
-    )
+    assert all(worker.stop_calls == 1 for worker in workers if worker is not current_worker)
 
 
 def test_platform_fact_resolver_fails_closed_without_provider():
@@ -729,18 +698,14 @@ def test_platform_fact_resolver_fails_closed_without_provider():
     with pytest.raises(FactSnapshotInvalidError, match="snapshot provider"):
         resolver.resolve(
             required_facts=("capacity",),
-            normalized_input=NormalizedInput(
-                operation_key="solve_synthetic", values={"period": "P0"}
-            ),
+            normalized_input=NormalizedInput(operation_key="solve_synthetic", values={"period": "P0"}),
         )
 
 
 def test_bounded_verifier_publishes_only_independently_checked_feasibility():
     verification = BoundedIndependentVerifier().verify(
         capability=_capability(),
-        normalized_input=NormalizedInput(
-            operation_key="solve_synthetic", values={"period": "P0"}
-        ),
+        normalized_input=NormalizedInput(operation_key="solve_synthetic", values={"period": "P0"}),
         fact_snapshot=MappingProxyType({}),
         solver_result=_result(),
     )
@@ -754,12 +719,8 @@ def test_bounded_verifier_publishes_only_independently_checked_feasibility():
 def test_bounded_verifier_rejects_unrecalculated_objective_claims():
     with pytest.raises(VerificationDivergenceError, match="objective"):
         BoundedIndependentVerifier().verify(
-            capability=_capability(
-                objectives=({"name": "score", "direction": "min"},)
-            ),
-            normalized_input=NormalizedInput(
-                operation_key="solve_synthetic", values={"period": "P0"}
-            ),
+            capability=_capability(objectives=({"name": "score", "direction": "min"},)),
+            normalized_input=NormalizedInput(operation_key="solve_synthetic", values={"period": "P0"}),
             fact_snapshot=MappingProxyType({}),
             solver_result=_result(objective_values={"score": "1"}),
         )
@@ -782,9 +743,7 @@ def test_bounded_verifier_rejects_empty_decision_spaces_before_publishing_feasib
     with pytest.raises(VerificationDivergenceError, match="decision space|decision variables|domain"):
         BoundedIndependentVerifier().verify(
             capability=capability,
-            normalized_input=NormalizedInput(
-                operation_key="solve_synthetic", values={"period": "P0"}
-            ),
+            normalized_input=NormalizedInput(operation_key="solve_synthetic", values={"period": "P0"}),
             fact_snapshot=MappingProxyType({}),
             solver_result=_result(assignment={}),
         )
@@ -827,9 +786,7 @@ def test_bounded_verifier_rejects_ambiguous_or_non_binary_decision_space_shape(
     with pytest.raises(VerificationDivergenceError, match="decision space|decision variables|domain"):
         BoundedIndependentVerifier().verify(
             capability=capability,
-            normalized_input=NormalizedInput(
-                operation_key="solve_synthetic", values={"period": "P0"}
-            ),
+            normalized_input=NormalizedInput(operation_key="solve_synthetic", values={"period": "P0"}),
             fact_snapshot=MappingProxyType({}),
             solver_result=_result(assignment=assignment),
         )

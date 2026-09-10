@@ -222,24 +222,18 @@ def build_universal_system_prompt(
     system_content = system_content.replace(
         "{ONTOLOGIES_SECTION}", (ontologies_section.strip() if ontologies_section else "")
     )
-    system_content = system_content.replace(
-        "{SKILLS_SECTION}", (skills_section.strip() if skills_section else "")
-    )
+    system_content = system_content.replace("{SKILLS_SECTION}", (skills_section.strip() if skills_section else ""))
     system_content = system_content.replace(
         "{EXECUTION_MODE_SECTION}",
         _EXECUTION_MODE_WITH_SUB_AGENT if include_orchestration else _EXECUTION_MODE_WITHOUT_SUB_AGENT,
     )
     system_content = system_content.replace(
         "{STEP3_INTERACTION_POLICY}",
-        _STEP3_INTERACTION_POLICY_ALLOWED
-        if allow_user_interaction
-        else _STEP3_INTERACTION_POLICY_DISABLED,
+        _STEP3_INTERACTION_POLICY_ALLOWED if allow_user_interaction else _STEP3_INTERACTION_POLICY_DISABLED,
     )
     system_content = system_content.replace(
         "{INTERACTION_TOOL_RULES}",
-        _INTERACTION_TOOL_RULES_ALLOWED
-        if allow_user_interaction
-        else _INTERACTION_TOOL_RULES_DISABLED,
+        _INTERACTION_TOOL_RULES_ALLOWED if allow_user_interaction else _INTERACTION_TOOL_RULES_DISABLED,
     )
     system_content = system_content.replace(
         "{MEMORY_CONTEXT_SECTION}", (memory_context.strip() if memory_context else "")

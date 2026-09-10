@@ -7,6 +7,7 @@ import json
 from agent.tools.business_data.adapters.nl2sql_http_search import (
     NL2SQLHttpSearchAdapter,
 )
+from backend_synthetic_credentials import synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 
 
@@ -14,8 +15,8 @@ def _connection() -> EffectiveConnection:
     return EffectiveConnection(
         version=1,
         provider="nl2sql_http",
-        endpoint="http://nl2sql.test",
-        auth=AuthSpec(type="bearer", token="token-x"),
+        endpoint="http://nl2sql.example.net",
+        auth=AuthSpec(type="bearer", token=synthetic_secret("nl2sql_http_search_adapter-credential-01")),
         options={"scene": "scene-x", "timeout_seconds": 88},
     )
 
@@ -59,7 +60,11 @@ class _FailureResponse:
 
 def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
     adapter = NL2SQLHttpSearchAdapter(_connection())
-    adapter._session.post = lambda *args, **kwargs: _Response()
+
+    def post_response(*_args, **_kwargs):
+        return _Response()
+
+    adapter._session.post = post_response
 
     events = list(adapter.search_stream(query="查询零件", entity="TargetItem"))
 
@@ -80,7 +85,11 @@ def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
 
 def test_nl2sql_value_lookup_returns_structured_content():
     adapter = NL2SQLHttpSearchAdapter(_connection())
-    adapter._session.post = lambda *args, **kwargs: _Response()
+
+    def post_response(*_args, **_kwargs):
+        return _Response()
+
+    adapter._session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -95,7 +104,11 @@ def test_nl2sql_value_lookup_returns_structured_content():
 def test_nl2sql_value_lookup_preserves_text_answer_when_no_rows():
     """A text answer with row_count=0 must keep the provider message."""
     adapter = NL2SQLHttpSearchAdapter(_connection())
-    adapter._session.post = lambda *args, **kwargs: _TextAnswerResponse()
+
+    def post_response(*_args, **_kwargs):
+        return _TextAnswerResponse()
+
+    adapter._session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -107,7 +120,11 @@ def test_nl2sql_value_lookup_preserves_text_answer_when_no_rows():
 
 def test_nl2sql_value_lookup_emits_provider_failure_in_final():
     adapter = NL2SQLHttpSearchAdapter(_connection())
-    adapter._session.post = lambda *args, **kwargs: _FailureResponse()
+
+    def post_response(*_args, **_kwargs):
+        return _FailureResponse()
+
+    adapter._session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 

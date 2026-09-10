@@ -13,7 +13,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
 PROJECT_ROOT_ENV = "PROJECT_ROOT"
@@ -56,7 +55,11 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "ontology_object_max_count": {"env": "ONTOLOGY_OBJECT_MAX_COUNT", "type": "int", "default": 200},
         "ontology_operation_max_count": {"env": "ONTOLOGY_OPERATION_MAX_COUNT", "type": "int", "default": 100},
         "entity_attribute_max_count": {"env": "ENTITY_ATTRIBUTE_MAX_COUNT", "type": "int", "default": 100},
-        "data_connection_configs_max_per_workspace": {"env": "DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE", "type": "int", "default": 10},
+        "data_connection_configs_max_per_workspace": {
+            "env": "DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE",
+            "type": "int",
+            "default": 10,
+        },
         "model_profile_max_count": {"env": "MODEL_PROFILE_MAX_COUNT", "type": "int", "default": 10},
         "model_output_token_limit": {"env": "MODEL_OUTPUT_TOKEN_LIMIT", "type": "int", "default": 100000},
         "session_max_per_user_workspace": {"env": "SESSION_MAX_PER_USER_WORKSPACE", "type": "int", "default": 100},

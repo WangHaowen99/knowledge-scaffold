@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from agent.direct_execution.matcher import find_best_script_operation
 from agent.core.shared.ontology_context import get_selected_ontology_context
 from agent.core.shared.prompting import build_main_system_prompt
+from agent.direct_execution.matcher import find_best_script_operation
 from agent.sub_agents.base import SubAgent
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 from agent.tools.business_data_search import handle_business_data_search
 from agent.tools.ontology_context import handle_ontology_context
-from ontology.ontology_catalog import get_ontology_manifest
 from ontology.ontologies import (
     OntologyRegistry,
     build_ontologies_section,
@@ -20,6 +19,7 @@ from ontology.ontologies import (
     get_ontology_registry,
     invalidate_ontology_registry,
 )
+from ontology.ontology_catalog import get_ontology_manifest
 from workspace.workspaces import create_workspace, delete_workspace, get_workspace_paths
 
 
@@ -88,12 +88,8 @@ def test_same_ontology_id_resolves_from_explicit_workspace(monkeypatch, tmp_path
     _write_ontology("workspace-a", description="Ontology from A", parameter_name="alpha")
     _write_ontology("workspace-b", description="Ontology from B", parameter_name="beta")
 
-    ontology_a, error_a = get_ontology_manifest(
-        "shared-ontology", workspace_id="workspace-a"
-    )
-    ontology_b, error_b = get_ontology_manifest(
-        "shared-ontology", workspace_id="workspace-b"
-    )
+    ontology_a, error_a = get_ontology_manifest("shared-ontology", workspace_id="workspace-a")
+    ontology_b, error_b = get_ontology_manifest("shared-ontology", workspace_id="workspace-b")
 
     assert error_a is None
     assert error_b is None
@@ -111,9 +107,7 @@ def test_explicit_workspace_resolution_is_safe_under_concurrent_catalog_reads(
     _write_ontology("workspace-b", description="Ontology from B", parameter_name="beta")
 
     def resolve(workspace_id):
-        ontology, error = get_ontology_manifest(
-            "shared-ontology", workspace_id=workspace_id
-        )
+        ontology, error = get_ontology_manifest("shared-ontology", workspace_id=workspace_id)
         assert error is None
         assert ontology is not None
         entry, operation_key, confidence = find_best_script_operation(
@@ -206,11 +200,7 @@ def test_selected_disabled_ontology_does_not_expose_workspace_fallbacks(monkeypa
     _create_isolated_workspaces(monkeypatch, tmp_path)
     _write_ontology("workspace-a", ontology_id="selected-ontology", description="Selected ontology")
     _write_ontology("workspace-a", ontology_id="other-ontology", description="Other ontology")
-    manifest_path = (
-        get_workspace_paths("workspace-a").ontologies_dir
-        / "selected-ontology"
-        / "manifest.yaml"
-    )
+    manifest_path = get_workspace_paths("workspace-a").ontologies_dir / "selected-ontology" / "manifest.yaml"
     manifest_path.write_text(
         manifest_path.read_text(encoding="utf-8") + "\nenabled: false\n",
         encoding="utf-8",

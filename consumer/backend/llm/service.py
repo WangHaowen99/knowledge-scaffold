@@ -6,19 +6,17 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.exceptions import WorkflowCancelledError
 from config import AgentConfig, LLMConfig
 from integration.observability import get_observability_context
-from utils.logging import get_logger
-from llm.reasoning_summary import summarize_reasoning_intent
-from agent.exceptions import WorkflowCancelledError
 from llm.collectors import collect_non_stream_response, collect_stream_response
+from llm.reasoning_summary import summarize_reasoning_intent
 from llm.tool_calls import normalize_tool_calls
 from llm.transport import OpenAIChatTransport
 from llm.types import LLMResponse
-
+from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -252,6 +250,7 @@ class LLMService:
         request_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         dispatch = self._dispatch_reasoning_summary
+
         def _dispatch_wrapper(*, reasoning_text, reasoning_block_id, run_id, reasoning_summary_callback):
             return dispatch(
                 reasoning_text=reasoning_text,
@@ -259,6 +258,7 @@ class LLMService:
                 run_id=run_id,
                 reasoning_summary_callback=reasoning_summary_callback,
             )
+
         return collect_non_stream_response(
             response,
             emit_func=emit_func,
@@ -278,6 +278,7 @@ class LLMService:
         tool_calls_closed_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     ) -> Dict[str, Any]:
         dispatch = self._dispatch_reasoning_summary
+
         def _dispatch_wrapper(*, reasoning_text, reasoning_block_id, run_id, reasoning_summary_callback):
             return dispatch(
                 reasoning_text=reasoning_text,
@@ -285,6 +286,7 @@ class LLMService:
                 run_id=run_id,
                 reasoning_summary_callback=reasoning_summary_callback,
             )
+
         return collect_stream_response(
             response,
             emit_func=emit_func,

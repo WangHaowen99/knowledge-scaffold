@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from agent.tools.web_search_tool import handle_web_search
+from backend_synthetic_credentials import synthetic_secret
 from system_config_migration_helpers import apply_test_system_config_migrations
 
 
@@ -27,8 +28,8 @@ def test_web_search_returns_normalized_results(tmp_path, monkeypatch):
         {
             "enabled": True,
             "provider": "tavily",
-            "base_url": "https://tavily.test",
-            "api_key": "tvly-test",
+            "base_url": "https://tavily.example.net",
+            "api_key": synthetic_secret("web_search_tool-credential-01"),
             "timeout_seconds": 5,
             "default_max_results": 2,
             "max_results_limit": 5,
@@ -92,8 +93,8 @@ def test_web_search_returns_normalized_results(tmp_path, monkeypatch):
     assert payload["provider"] == "tavily"
     assert payload["results"][0]["domain"] == "docs.example.com"
     assert payload["results"][0]["published_at"] == "2026-06-01"
-    assert captured["url"] == "https://tavily.test/search"
-    assert captured["headers"]["Authorization"] == "Bearer tvly-test"
+    assert captured["url"] == "https://tavily.example.net/search"
+    assert captured["headers"]["Authorization"] == f"Bearer {synthetic_secret('web_search_tool-credential-01')}"
     assert captured["json"]["query"] == "latest ontology systems"
     assert captured["json"]["max_results"] == 2
     assert captured["json"]["time_range"] == "week"
@@ -126,7 +127,7 @@ def test_web_search_rejects_result_count_above_configured_limit(tmp_path, monkey
         {
             "enabled": True,
             "provider": "tavily",
-            "api_key": "tvly-test",
+            "api_key": synthetic_secret("web_search_tool-credential-01"),
             "default_max_results": 2,
             "max_results_limit": 3,
         },
@@ -145,7 +146,7 @@ def test_web_search_rejects_url_like_domain_filters(tmp_path, monkeypatch):
         {
             "enabled": True,
             "provider": "tavily",
-            "api_key": "tvly-test",
+            "api_key": synthetic_secret("web_search_tool-credential-01"),
         },
     )
 

@@ -60,9 +60,12 @@ function statusPayload(workspaceId, endpointId) {
 }
 
 async function withRenderedPanel(run) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="root"></div></body></html>',
+    {
+      url: 'http://localhost/',
+    },
+  );
   const testGlobals = {
     window: dom.window,
     document: dom.window.document,
@@ -76,10 +79,17 @@ async function withRenderedPanel(run) {
     IS_REACT_ACT_ENVIRONMENT: true,
   };
   const originalGlobals = new Map(
-    Object.keys(testGlobals).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
+    Object.keys(testGlobals).map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
   );
   for (const [name, value] of Object.entries(testGlobals)) {
-    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      writable: true,
+      value,
+    });
   }
 
   const { createRoot } = await import('react-dom/client');
@@ -110,10 +120,12 @@ async function withRenderedPanel(run) {
   };
   const click = async (element) => {
     await act(async () => {
-      element.dispatchEvent(new dom.window.MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-      }));
+      element.dispatchEvent(
+        new dom.window.MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
     });
   };
 
@@ -123,8 +135,11 @@ async function withRenderedPanel(run) {
     await act(async () => root.unmount());
     dom.window.close();
     for (const [name, descriptor] of originalGlobals) {
-      if (descriptor === undefined) delete globalThis[name];
-      else Object.defineProperty(globalThis, name, descriptor);
+      if (descriptor === undefined) {
+        delete globalThis[name];
+      } else {
+        Object.defineProperty(globalThis, name, descriptor);
+      }
     }
   }
 }
@@ -138,7 +153,9 @@ test('workspace switch never projects the previous ontology list into a loading 
     const workspaceId = requestWorkspace;
     calls.push({ workspaceId, url });
     if (workspaceId === 'ws-a' && url === '/agentic/mcp/runtime/status') {
-      return Promise.resolve(jsonResponse(statusPayload('ws-a', '000000000000000a')));
+      return Promise.resolve(
+        jsonResponse(statusPayload('ws-a', '000000000000000a')),
+      );
     }
     if (workspaceId === 'ws-a' && url === '/agentic/mcp/tokens') {
       return Promise.resolve(jsonResponse({ items: [] }));
@@ -168,7 +185,10 @@ test('workspace switch never projects the previous ontology list into a loading 
       ontologiesError: '',
     });
     await waitFor(() => {
-      assert.match(document.querySelector('.settings-mcp-create').textContent, /Ontology A/);
+      assert.match(
+        document.querySelector('.settings-mcp-create').textContent,
+        /Ontology A/,
+      );
     });
 
     requestWorkspace = 'ws-b';
@@ -181,10 +201,15 @@ test('workspace switch never projects the previous ontology list into a loading 
       ontologiesError: '',
     });
     await waitFor(() => {
-      assert.equal(calls.filter((call) => call.workspaceId === 'ws-b').length, 2);
+      assert.equal(
+        calls.filter((call) => call.workspaceId === 'ws-b').length,
+        2,
+      );
     });
 
-    workspaceBStatus.resolve(jsonResponse(statusPayload('ws-b', '000000000000000b')));
+    workspaceBStatus.resolve(
+      jsonResponse(statusPayload('ws-b', '000000000000000b')),
+    );
     workspaceBTokens.resolve(jsonResponse({ items: [] }));
     await flush();
 
@@ -203,8 +228,14 @@ test('workspace switch never projects the previous ontology list into a loading 
       ontologiesLoading: false,
       ontologiesError: 'list failed',
     });
-    assert.doesNotMatch(document.querySelector('.settings-mcp-create').textContent, /Ontology A/);
-    assert.equal(document.querySelector('.settings-mcp-create .btn.btn-p').disabled, true);
+    assert.doesNotMatch(
+      document.querySelector('.settings-mcp-create').textContent,
+      /Ontology A/,
+    );
+    assert.equal(
+      document.querySelector('.settings-mcp-create .btn.btn-p').disabled,
+      true,
+    );
 
     await renderPanel({
       ...common,
@@ -224,9 +255,14 @@ test('workspace switch never projects the previous ontology list into a loading 
     const readySection = document.querySelector('.settings-mcp-create');
     await click(readySection.querySelector('fieldset input[type="checkbox"]'));
     await waitFor(() => {
-      const selects = document.querySelector('.settings-mcp-create').querySelectorAll('select');
+      const selects = document
+        .querySelector('.settings-mcp-create')
+        .querySelectorAll('select');
       assert.equal(selects[1].value, 'onto-b');
-      assert.equal(document.querySelector('.settings-mcp-create .btn.btn-p').disabled, false);
+      assert.equal(
+        document.querySelector('.settings-mcp-create .btn.btn-p').disabled,
+        false,
+      );
     });
   });
 });

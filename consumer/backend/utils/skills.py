@@ -1,14 +1,14 @@
 """Skill loading and management utilities for reusable external skills."""
 
+import logging
 import os
 import re
-import logging
 import threading
-import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from pydantic import BaseModel, Field
 
+import yaml
+from pydantic import BaseModel, Field
 from workspace.workspaces import get_skill_roots, get_workspace_skills_root
 
 logger = logging.getLogger("utils.skills")
@@ -16,25 +16,23 @@ logger = logging.getLogger("utils.skills")
 
 # ==================== DATA MODELS ====================
 
+
 class Skill(BaseModel):
     """
     Represents a loaded skill from SKILL.md file.
     """
 
     name: str = Field(..., description="Skill identifier (from YAML metadata)")
-    description: str = Field(
-        ..., description="What this skill does and when to use it"
-    )
+    description: str = Field(..., description="What this skill does and when to use it")
     content: str = Field(..., description="Full markdown content of the skill")
     file_path: str = Field(..., description="Path to the SKILL.md file")
 
     # Optional metadata
-    allowed_tools: Optional[str] = Field(
-        None, description="Comma-separated list of allowed tools"
-    )
+    allowed_tools: Optional[str] = Field(None, description="Comma-separated list of allowed tools")
 
 
 # ==================== SKILL LOADER ====================
+
 
 class SkillLoader:
     """
@@ -135,6 +133,7 @@ class SkillLoader:
 
 # ==================== SKILL REGISTRY ====================
 
+
 class SkillRegistry:
     """
     Registry for discovering and managing skills.
@@ -180,9 +179,7 @@ class SkillRegistry:
                                 continue
                             skills[skill.name] = skill
                             loaded_count += 1
-                            logger.info(
-                                f"Registered skill '{skill.name}' from {item.name}"
-                            )
+                            logger.info(f"Registered skill '{skill.name}' from {item.name}")
 
         return skills, loaded_count
 
@@ -389,11 +386,7 @@ def build_skills_section(*, workspace_id: Optional[str] = None) -> str:
     Returns:
         Formatted markdown section describing available skills
     """
-    registry = (
-        get_skill_registry(workspace_id=workspace_id)
-        if workspace_id
-        else get_skill_registry()
-    )
+    registry = get_skill_registry(workspace_id=workspace_id) if workspace_id else get_skill_registry()
     skills = registry.snapshot()
 
     if not skills:

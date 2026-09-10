@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import List
 
 import pytest
-
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability.traces.direct_execution import DirectExecutionRuntimeTrace
 

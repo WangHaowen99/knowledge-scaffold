@@ -6,7 +6,13 @@ import { writeClipboardText } from './clipboard.js';
 test('clipboard API is preferred when available', async () => {
   let copied = '';
   const result = await writeClipboardText('answer', {
-    navigatorRef: { clipboard: { writeText: async (value) => { copied = value; } } },
+    navigatorRef: {
+      clipboard: {
+        writeText: async (value) => {
+          copied = value;
+        },
+      },
+    },
     documentRef: null,
   });
 
@@ -22,7 +28,9 @@ test('selection fallback cleans up its temporary textarea', async () => {
       node.parentNode = this;
     },
     removeChild(node) {
-      if (this.child === node) this.child = null;
+      if (this.child === node) {
+        this.child = null;
+      }
       node.parentNode = null;
     },
   };
@@ -34,7 +42,13 @@ test('selection fallback cleans up its temporary textarea', async () => {
     parentNode: null,
   };
   const result = await writeClipboardText('fallback', {
-    navigatorRef: { clipboard: { writeText: async () => { throw new Error('denied'); } } },
+    navigatorRef: {
+      clipboard: {
+        writeText: async () => {
+          throw new Error('denied');
+        },
+      },
+    },
     documentRef: {
       body,
       createElement: () => textarea,

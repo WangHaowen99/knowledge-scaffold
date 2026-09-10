@@ -6,7 +6,6 @@ import socket
 import threading
 
 import pytest
-
 from agent.direct_execution.provider_broker import (
     DeterministicProviderBroker,
     DeterministicProviderBrokerError,
@@ -14,6 +13,7 @@ from agent.direct_execution.provider_broker import (
 )
 from agent.tools.business_data.deterministic import DeterministicProviderBinding
 from agent.tools.business_data.providers.graph.models import GraphBackendResult
+from backend_synthetic_credentials import synthetic_invalid_password
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 from shared_capabilities.ontology_script_sdk.deterministic_provider import (
     DETERMINISTIC_PROVIDER_SOCKET_ENV,
@@ -30,7 +30,7 @@ def _binding(*, network_endpoint="neo4j+s://192.0.2.24:7687"):
         auth=AuthSpec(
             type="mindsdb_password",
             username="operator_a",
-            password="synthetic-provider-secret",
+            password=synthetic_invalid_password("deterministic_provider_broker-credential-01"),
         ),
         options={
             "database": "snapshot_demo",
@@ -122,7 +122,7 @@ def test_broker_config_keeps_tls_name_and_uses_only_pinned_connect_address():
 
     assert config["uri"] == "neo4j+s://snapshot.example.com:7687"
     assert config["resolved_uri"] == "neo4j+s://192.0.2.24:7687"
-    assert config["password"] == "synthetic-provider-secret"
+    assert config["password"] == synthetic_invalid_password("deterministic_provider_broker-credential-01")
     assert config["graph_query_timeout_seconds"] == 30.0
     assert config["graph_connect_timeout_seconds"] == 10.0
     assert config["max_retries"] == 0
@@ -130,9 +130,7 @@ def test_broker_config_keeps_tls_name_and_uses_only_pinned_connect_address():
 
 def test_broker_config_rejects_domain_as_connect_address():
     with pytest.raises(DeterministicProviderBrokerError, match="pinned to an IP"):
-        _provider_config(
-            _binding(network_endpoint="neo4j+s://other.example.net:7687")
-        )
+        _provider_config(_binding(network_endpoint="neo4j+s://other.example.net:7687"))
 
 
 @pytest.mark.parametrize(

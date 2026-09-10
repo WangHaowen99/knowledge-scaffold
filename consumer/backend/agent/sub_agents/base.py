@@ -8,8 +8,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.exceptions import WorkflowCancelledError
 from llm import get_llm_router
-from utils.logging import get_logger
 from ontology.ontologies import build_ontologies_section
+from utils.logging import get_logger
 from utils.skills import build_skills_section
 
 logger = get_logger("sub_agents.base")
@@ -110,11 +110,7 @@ class SubAgent:
         )
         if ontologies_section:
             prompt = "{}\n\n{}".format(prompt, ontologies_section)
-        skills_section = (
-            build_skills_section(workspace_id=workspace_id)
-            if workspace_id
-            else build_skills_section()
-        )
+        skills_section = build_skills_section(workspace_id=workspace_id) if workspace_id else build_skills_section()
         if skills_section:
             prompt = "{}\n\n{}".format(prompt, skills_section)
         return prompt
@@ -128,9 +124,9 @@ class SubAgent:
             parts.append("\n## Context")
             for key, value in context.items():
                 if isinstance(value, (dict, list)):
-                    parts.append("\n### {}\n```json\n{}\n```".format(
-                        key, _json.dumps(value, indent=2, ensure_ascii=False)
-                    ))
+                    parts.append(
+                        "\n### {}\n```json\n{}\n```".format(key, _json.dumps(value, indent=2, ensure_ascii=False))
+                    )
                 else:
                     parts.append("\n### {}\n{}".format(key, value))
         return "\n".join(parts)
@@ -243,9 +239,7 @@ class SubAgent:
 
             task_context = dict(context or {})
             effective_workspace_id = (
-                str(parent_workspace_id or "").strip()
-                or str(task_context.get("workspace_id") or "").strip()
-                or None
+                str(parent_workspace_id or "").strip() or str(task_context.get("workspace_id") or "").strip() or None
             )
             # Selection is a backend authority boundary. A model-provided task
             # context may carry an ontology_id as data, but cannot establish the
@@ -253,12 +247,8 @@ class SubAgent:
             task_context.pop("selected_ontology_id", None)
             task_context.pop("selected_ontology_version", None)
             task_context.pop("selected_version", None)
-            effective_selected_ontology_id = (
-                str(parent_selected_ontology_id or "").strip() or None
-            )
-            effective_selected_ontology_version = (
-                str(parent_selected_ontology_version or "").strip() or None
-            )
+            effective_selected_ontology_id = str(parent_selected_ontology_id or "").strip() or None
+            effective_selected_ontology_version = str(parent_selected_ontology_version or "").strip() or None
             if effective_selected_ontology_id:
                 # The parent's selected ontology is a backend scope, not task input.
                 task_context["selected_ontology_id"] = effective_selected_ontology_id
@@ -353,7 +343,10 @@ class SubAgent:
             if not output_text:
                 result["_error"] = "Sub-agent produced no output."
 
-            emit("subagent.finished", {**common, "status": ("completed" if result["_success"] else "error"), "result": result})
+            emit(
+                "subagent.finished",
+                {**common, "status": ("completed" if result["_success"] else "error"), "result": result},
+            )
             logger.info("Sub-agent completed (success=%s)", result["_success"])
             return result
 

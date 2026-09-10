@@ -1,16 +1,17 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 import logging
 import os
-from pathlib import Path
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
+from agent.runtime.adapter import PublicEventAdapter
 from agent.runtime.contracts import (
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
     PublicEvent,
     PublicEventDraft,
     RunPreflightSnapshot,
@@ -20,7 +21,6 @@ from agent.runtime.contracts import (
     RuntimeErrorInfo,
     RuntimeInvocationContext,
     RuntimeResult,
-    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import (
     RunConflictError,
@@ -29,24 +29,24 @@ from agent.runtime.errors import (
     WorkspaceBusyError,
     WorkspaceUnavailableError,
 )
-from agent.runtime.manager import AsyncRunManager
-from agent.runtime.manager import request_fingerprint
-from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
-from agent.runtime.service import AsyncExecutionService
-from agent.runtime.service import OrchestratorSessionAdapter
-from agent.runtime.service import _build_deterministic_artifact_writer
-from agent.runtime.adapter import PublicEventAdapter
-from agent.runtime.events import RuntimeEvent
 from agent.runtime.event_bus import AsyncEventBus
-from agent.runtime.store import InMemoryRunRepository
-from agent.runtime.store import utc_now_iso
-from persistence.chat_store import ChatStore
-from persistence.execution_store import ExecutionStore
+from agent.runtime.events import RuntimeEvent
+from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
+from agent.runtime.manager import AsyncRunManager, request_fingerprint
+from agent.runtime.service import (
+    AsyncExecutionService,
+    OrchestratorSessionAdapter,
+    _build_deterministic_artifact_writer,
+)
+from agent.runtime.store import InMemoryRunRepository, utc_now_iso
+from backend_synthetic_credentials import synthetic_invalid_password
 from ontology.view_cache import (
     build_package_content_revision,
     build_package_revision_source_signature,
     get_ontology_mutation_revision,
 )
+from persistence.chat_store import ChatStore
+from persistence.execution_store import ExecutionStore
 
 
 def _context(run_id="run_demo"):
@@ -70,12 +70,8 @@ def _scope():
 
 def test_request_fingerprint_covers_scope_but_ignores_allocated_run_id():
     base = _context("run_fingerprint_a")
-    assert request_fingerprint(base) == request_fingerprint(
-        base.model_copy(update={"run_id": "run_fingerprint_b"})
-    )
-    assert request_fingerprint(base) != request_fingerprint(
-        base.model_copy(update={"workspace_id": "workspace_other"})
-    )
+    assert request_fingerprint(base) == request_fingerprint(base.model_copy(update={"run_id": "run_fingerprint_b"}))
+    assert request_fingerprint(base) != request_fingerprint(base.model_copy(update={"workspace_id": "workspace_other"}))
     assert request_fingerprint(base) != request_fingerprint(
         base.model_copy(update={"supports_user_interaction": False})
     )
@@ -189,12 +185,14 @@ def _draft(context, event_type, *, status="running", payload=None):
 class _SuccessRuntime:
     async def execute(self, context, sink):
         await sink.emit(_draft(context, "turn.started"))
-        await sink.emit(_draft(
-            context,
-            "turn.finished",
-            status="completed",
-            payload={"status": "completed", "final_output": "synthetic answer"},
-        ))
+        await sink.emit(
+            _draft(
+                context,
+                "turn.finished",
+                status="completed",
+                payload={"status": "completed", "final_output": "synthetic answer"},
+            )
+        )
         return RuntimeResult(status="completed", content="synthetic answer")
 
     async def cancel(self, run_id, reason):
@@ -238,20 +236,22 @@ class _InteractionRuntime:
                 {"id": "option_a", "label": "Option A", "value": "value_a"},
             ],
         }
-        await sink.emit(_draft(
-            context,
-            "turn.finished",
-            status="awaiting_input",
-            payload={
-                "status": "awaiting_input",
-                "final_output": {
-                    "type": "user_interaction",
-                    "text": interaction["prompt"],
-                    "interaction": interaction,
-                    "options": interaction["options"],
+        await sink.emit(
+            _draft(
+                context,
+                "turn.finished",
+                status="awaiting_input",
+                payload={
+                    "status": "awaiting_input",
+                    "final_output": {
+                        "type": "user_interaction",
+                        "text": interaction["prompt"],
+                        "interaction": interaction,
+                        "options": interaction["options"],
+                    },
                 },
-            },
-        ))
+            )
+        )
         return RuntimeResult(status="awaiting_input")
 
     async def cancel(self, run_id, reason):
@@ -260,12 +260,14 @@ class _InteractionRuntime:
 
     async def interact(self, context, sink, interaction_response):
         assert interaction_response["option_id"] == "option_a"
-        await sink.emit(_draft(
-            context,
-            "turn.finished",
-            status="completed",
-            payload={"status": "completed", "final_output": "resumed answer"},
-        ))
+        await sink.emit(
+            _draft(
+                context,
+                "turn.finished",
+                status="completed",
+                payload={"status": "completed", "final_output": "resumed answer"},
+            )
+        )
         return RuntimeResult(status="completed", content="resumed answer")
 
 
@@ -288,10 +290,7 @@ def test_run_persists_events_before_replay_and_finishes_once():
         assert snapshot.status == RunStatus.QUEUED
 
         completed = await _wait_for_status(manager, "run_demo", RunStatus.COMPLETED)
-        replay = [
-            event
-            async for event in manager.event_bus.stream("run_demo", after_seq=0)
-        ]
+        replay = [event async for event in manager.event_bus.stream("run_demo", after_seq=0)]
         assert [event.event_type for event in replay] == [
             "run.started",
             "turn.started",
@@ -299,6 +298,7 @@ def test_run_persists_events_before_replay_and_finishes_once():
         ]
         assert [event.seq for event in replay] == [1, 2, 3]
         assert completed.last_seq == 3
+
     asyncio.run(run_test())
 
 
@@ -306,17 +306,19 @@ def test_concurrent_publish_persists_and_broadcasts_in_sequence_order():
     async def run_test():
         repository = InMemoryRunRepository()
         context = _context("run_ordered_publish")
-        await repository.create(RunSnapshot(
-            run_id=context.run_id,
-            session_id=context.session_id,
-            turn_id=context.turn_id,
-            status=RunStatus.RUNNING,
-            created_at=utc_now_iso(),
-            updated_at=utc_now_iso(),
-            last_seq=0,
-            scope=_scope(),
-            context=context,
-        ))
+        await repository.create(
+            RunSnapshot(
+                run_id=context.run_id,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                status=RunStatus.RUNNING,
+                created_at=utc_now_iso(),
+                updated_at=utc_now_iso(),
+                last_seq=0,
+                scope=_scope(),
+                context=context,
+            )
+        )
         persisted = []
 
         async def persist(event):
@@ -366,17 +368,21 @@ def test_terminal_close_preserves_already_queued_live_events():
                 self.started.set()
                 await self.release.wait()
                 await sink.emit(_draft(context, "turn.started"))
-                await sink.emit(_draft(
-                    context,
-                    "token.delta",
-                    payload={"channel": "content", "text": "synthetic answer"},
-                ))
-                await sink.emit(_draft(
-                    context,
-                    "turn.finished",
-                    status="completed",
-                    payload={"status": "completed", "content": "synthetic answer"},
-                ))
+                await sink.emit(
+                    _draft(
+                        context,
+                        "token.delta",
+                        payload={"channel": "content", "text": "synthetic answer"},
+                    )
+                )
+                await sink.emit(
+                    _draft(
+                        context,
+                        "turn.finished",
+                        status="completed",
+                        payload={"status": "completed", "content": "synthetic answer"},
+                    )
+                )
                 return RuntimeResult(status="completed", content="synthetic answer")
 
             async def cancel(self, run_id, reason):
@@ -407,10 +413,7 @@ def test_terminal_close_preserves_already_queued_live_events():
         runtime.release.set()
         await _wait_for_status(manager, "run_live_queue", RunStatus.COMPLETED)
 
-        event_types = [
-            event.event_type
-            for event in await asyncio.wait_for(collector, timeout=1)
-        ]
+        event_types = [event.event_type for event in await asyncio.wait_for(collector, timeout=1)]
         assert event_types == ["turn.started", "token.delta", "turn.finished"]
 
     asyncio.run(run_test())
@@ -420,17 +423,19 @@ def test_terminal_close_does_not_require_evicted_event_history():
     async def run_test():
         repository = InMemoryRunRepository(max_events_per_run=32)
         context = _context("run_retained_terminal")
-        await repository.create(RunSnapshot(
-            run_id=context.run_id,
-            session_id=context.session_id,
-            turn_id=context.turn_id,
-            status=RunStatus.RUNNING,
-            created_at=utc_now_iso(),
-            updated_at=utc_now_iso(),
-            last_seq=0,
-            scope=_scope(),
-            context=context,
-        ))
+        await repository.create(
+            RunSnapshot(
+                run_id=context.run_id,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                status=RunStatus.RUNNING,
+                created_at=utc_now_iso(),
+                updated_at=utc_now_iso(),
+                last_seq=0,
+                scope=_scope(),
+                context=context,
+            )
+        )
         event_bus = AsyncEventBus(repository, subscriber_queue_size=64)
         stream = event_bus.stream(context.run_id)
 
@@ -445,17 +450,21 @@ def test_terminal_close_does_not_require_evicted_event_history():
         assert event_bus.active_subscriber_count == 1
         try:
             for index in range(32):
-                await event_bus.publish(_draft(
+                await event_bus.publish(
+                    _draft(
+                        context,
+                        "token.delta",
+                        payload={"channel": "content", "text": str(index)},
+                    )
+                )
+            await event_bus.publish(
+                _draft(
                     context,
-                    "token.delta",
-                    payload={"channel": "content", "text": str(index)},
-                ))
-            await event_bus.publish(_draft(
-                context,
-                "turn.finished",
-                status="completed",
-                payload={"status": "completed", "content": "synthetic"},
-            ))
+                    "turn.finished",
+                    status="completed",
+                    payload={"status": "completed", "content": "synthetic"},
+                )
+            )
 
             live_events = await asyncio.wait_for(collector, timeout=1)
             assert [event.seq for event in live_events] == list(range(1, 34))
@@ -507,11 +516,10 @@ def test_cancel_is_idempotent_and_uses_runtime_boundary():
         assert first.cancel_reason == "user_requested"
         assert runtime.cancelled == [("run_demo", "user_requested")]
         events = await manager.repository.list_after("run_demo", 0)
-        terminal_events = [
-            event for event in events if event.event_type == "turn.finished"
-        ]
+        terminal_events = [event for event in events if event.event_type == "turn.finished"]
         assert len(terminal_events) == 1
         assert terminal_events[0].payload["cancel_reason"] == "user_requested"
+
     asyncio.run(run_test())
 
 
@@ -544,9 +552,7 @@ def test_hitl_answer_uses_new_run_and_turn_and_each_run_executes_once():
             self.executions = []
 
         async def execute(self, context, sink):
-            self.executions.append(
-                (context.run_id, context.turn_id, context.interaction_response)
-            )
+            self.executions.append((context.run_id, context.turn_id, context.interaction_response))
             if context.interaction_response is None:
                 return await super().execute(context, sink)
 
@@ -556,12 +562,14 @@ def test_hitl_answer_uses_new_run_and_turn_and_each_run_executes_once():
                 "option_id": "option_a",
                 "value": "value_a",
             }
-            await sink.emit(_draft(
-                context,
-                "turn.finished",
-                status="completed",
-                payload={"status": "completed", "final_output": "synthetic answer"},
-            ))
+            await sink.emit(
+                _draft(
+                    context,
+                    "turn.finished",
+                    status="completed",
+                    payload={"status": "completed", "final_output": "synthetic answer"},
+                )
+            )
             return RuntimeResult(status="completed", content="synthetic answer")
 
     async def run_test():
@@ -699,6 +707,7 @@ def test_idempotency_key_returns_existing_run_and_rejects_changed_request():
         assert second_created is False
         assert second.run_id == first.run_id
         await manager.cancel_run(first.run_id, _scope(), reason="test_cleanup")
+
     asyncio.run(run_test())
 
 
@@ -730,6 +739,7 @@ def test_same_session_second_run_is_rejected_without_queueing():
         assert runtime.cancelled == []
 
         await manager.cancel_run("run_admission_first", _scope(), reason="test_cleanup")
+
     asyncio.run(run_test())
 
 
@@ -776,9 +786,7 @@ def test_workspace_deletion_guard_rejects_waiting_creation_after_deletion():
         )
 
         async with manager.workspace_deletion_guard("workspace_demo"):
-            creation = asyncio.create_task(
-                manager.create_run(_context("run_after_workspace_guard"), _scope())
-            )
+            creation = asyncio.create_task(manager.create_run(_context("run_after_workspace_guard"), _scope()))
             other_context = _context("run_other_workspace").model_copy(
                 update={
                     "session_id": "session_other",
@@ -816,9 +824,7 @@ def test_queued_cancel_preserves_caller_reason_without_runtime_cancel():
         await manager.create_run(_context("run_cancel_active"), _scope())
         await asyncio.wait_for(runtime.started.wait(), timeout=1.0)
         await manager.create_run(
-            _context("run_cancel_queued").model_copy(
-                update={"session_id": "session_queue_demo"}
-            ),
+            _context("run_cancel_queued").model_copy(update={"session_id": "session_queue_demo"}),
             _scope(),
         )
 
@@ -844,15 +850,17 @@ def test_runtime_interaction_request_is_materialized_as_awaiting_terminal_event(
     async def run_test():
         class _RequestedRuntime:
             async def execute(self, context, sink):
-                await sink.emit(_draft(
-                    context,
-                    "interaction.requested",
-                    payload={
-                        "interaction_id": "interaction_requested",
-                        "type": "input",
-                        "prompt": "Provide synthetic input",
-                    },
-                ))
+                await sink.emit(
+                    _draft(
+                        context,
+                        "interaction.requested",
+                        payload={
+                            "interaction_id": "interaction_requested",
+                            "type": "input",
+                            "prompt": "Provide synthetic input",
+                        },
+                    )
+                )
                 return RuntimeResult(status="awaiting_input")
 
             async def cancel(self, run_id, reason):
@@ -861,12 +869,14 @@ def test_runtime_interaction_request_is_materialized_as_awaiting_terminal_event(
 
             async def interact(self, context, sink, interaction_response):
                 del interaction_response
-                await sink.emit(_draft(
-                    context,
-                    "turn.finished",
-                    status="completed",
-                    payload={"status": "completed", "final_output": "resumed"},
-                ))
+                await sink.emit(
+                    _draft(
+                        context,
+                        "turn.finished",
+                        status="completed",
+                        payload={"status": "completed", "final_output": "resumed"},
+                    )
+                )
                 return RuntimeResult(status="completed", content="resumed")
 
         manager = AsyncRunManager(_RequestedRuntime())
@@ -875,6 +885,7 @@ def test_runtime_interaction_request_is_materialized_as_awaiting_terminal_event(
         assert waiting.pending_interaction["id"] == "interaction_requested"
         events = await manager.repository.list_after("run_requested", 0)
         assert [event.event_type for event in events].count("turn.finished") == 1
+
     asyncio.run(run_test())
 
 
@@ -911,25 +922,27 @@ def test_run_id_collision_rejects_different_request_or_owner():
             await manager.create_run(other_context, other_scope)
 
         await manager.cancel_run("run_collision", _scope(), reason="test_cleanup")
+
     asyncio.run(run_test())
 
 
 def test_public_adapter_projects_tool_input_to_public_preview():
     context = _context("run_public_tool")
-    draft = PublicEventAdapter().adapt(RuntimeEvent(
-        event_type="tool.started",
-        status="running",
-        run_id=context.run_id,
-        session_id=context.session_id,
-        turn_id=1,
-        payload={
-            "tool_name": "synthetic_lookup",
-            "tool_call_id": "tool_demo",
-            "input": {"query": "private synthetic query"},
-            "status": "running",
-        },
-        source={"node": "synthetic", "component": "tool"},
-    )
+    draft = PublicEventAdapter().adapt(
+        RuntimeEvent(
+            event_type="tool.started",
+            status="running",
+            run_id=context.run_id,
+            session_id=context.session_id,
+            turn_id=1,
+            payload={
+                "tool_name": "synthetic_lookup",
+                "tool_call_id": "tool_demo",
+                "input": {"query": "private synthetic query"},
+                "status": "running",
+            },
+            source={"node": "synthetic", "component": "tool"},
+        )
     )
 
     assert draft is not None
@@ -945,12 +958,14 @@ def test_runtime_terminal_status_is_preserved():
     async def run_test():
         class _LegacyStatusRuntime:
             async def execute(self, context, sink):
-                await sink.emit(_draft(
-                    context,
-                    "turn.finished",
-                    status="completed",
-                    payload={"status": "completed", "final_output": "synthetic answer"},
-                ))
+                await sink.emit(
+                    _draft(
+                        context,
+                        "turn.finished",
+                        status="completed",
+                        payload={"status": "completed", "final_output": "synthetic answer"},
+                    )
+                )
                 return RuntimeResult(status="completed", content="synthetic answer")
 
             async def cancel(self, run_id, reason):
@@ -1157,22 +1172,24 @@ def test_duplicate_awaiting_terminal_is_ignored():
         class _DuplicateAwaitingRuntime(_InteractionRuntime):
             async def execute(self, context, sink):
                 result = await super().execute(context, sink)
-                await sink.emit(_draft(
-                    context,
-                    "turn.finished",
-                    status="awaiting_input",
-                    payload={
-                        "status": "awaiting_input",
-                        "final_output": {
-                            "type": "user_interaction",
-                            "interaction": {
-                                "id": "interaction_demo",
-                                "type": "single_choice",
-                                "options": [{"id": "option_a", "value": "value_a"}],
+                await sink.emit(
+                    _draft(
+                        context,
+                        "turn.finished",
+                        status="awaiting_input",
+                        payload={
+                            "status": "awaiting_input",
+                            "final_output": {
+                                "type": "user_interaction",
+                                "interaction": {
+                                    "id": "interaction_demo",
+                                    "type": "single_choice",
+                                    "options": [{"id": "option_a", "value": "value_a"}],
+                                },
                             },
                         },
-                    },
-                ))
+                    )
+                )
                 return result
 
         manager = AsyncRunManager(_DuplicateAwaitingRuntime())
@@ -1248,9 +1265,7 @@ def test_manager_snapshot_preserves_complete_long_terminal_output():
                 return True
 
         manager = AsyncRunManager(AsyncExecutionService(_LongTerminalRuntime()))
-        context = _context("run_long_terminal").model_copy(
-            update={"llm_request_mode": "stream"}
-        )
+        context = _context("run_long_terminal").model_copy(update={"llm_request_mode": "stream"})
         await manager.create_run(context, _scope())
 
         completed = await _wait_for_status(
@@ -1311,7 +1326,7 @@ def test_manager_public_event_filter_drops_reasoning_and_raw_tool_input():
                     payload={
                         "tool_name": "synthetic_lookup",
                         "tool_call_id": "call_public_filter",
-                        "input": {"password": "synthetic-secret"},
+                        "input": {"password": synthetic_invalid_password("async_run_manager-credential-02")},
                     },
                 )
                 yield RuntimeEvent(
@@ -1334,7 +1349,7 @@ def test_manager_public_event_filter_drops_reasoning_and_raw_tool_input():
         assert all(event.event_type != "reasoning.delta" for event in events)
         tool_event = next(event for event in events if event.event_type == "tool.started")
         assert "input" not in tool_event.payload
-        assert "synthetic-secret" not in str(tool_event.payload)
+        assert synthetic_invalid_password("async_run_manager-credential-02") not in str(tool_event.payload)
         assert tool_event.payload["input_preview"] == {
             "password": "[REDACTED]",
         }
@@ -1532,15 +1547,13 @@ def test_native_runtime_hitl_persists_checkpoint_before_new_run(tmp_path):
             "option_id": "option_a",
             "value": "value_a",
         }
-        second_turn, second_created = (
-            orchestrator.execution_store.consume_interaction_and_create_turn(
-                session_id="session_demo",
-                interaction_id="interaction_native_demo",
-                user_request="Choose option A",
-                interaction_response=first_response,
-                idempotency_key_hash="native-answer-one-key",
-                request_fingerprint="native-answer-one-fingerprint",
-            )
+        second_turn, second_created = orchestrator.execution_store.consume_interaction_and_create_turn(
+            session_id="session_demo",
+            interaction_id="interaction_native_demo",
+            user_request="Choose option A",
+            interaction_response=first_response,
+            idempotency_key_hash="native-answer-one-key",
+            request_fingerprint="native-answer-one-fingerprint",
         )
         assert second_created is True
         second_context = RuntimeInvocationContext(
@@ -1567,15 +1580,13 @@ def test_native_runtime_hitl_persists_checkpoint_before_new_run(tmp_path):
             "type": "input",
             "value": "synthetic follow-up",
         }
-        third_turn, third_created = (
-            orchestrator.execution_store.consume_interaction_and_create_turn(
-                session_id="session_demo",
-                interaction_id="interaction_native_followup",
-                user_request="synthetic follow-up",
-                interaction_response=second_response,
-                idempotency_key_hash="native-answer-two-key",
-                request_fingerprint="native-answer-two-fingerprint",
-            )
+        third_turn, third_created = orchestrator.execution_store.consume_interaction_and_create_turn(
+            session_id="session_demo",
+            interaction_id="interaction_native_followup",
+            user_request="synthetic follow-up",
+            interaction_response=second_response,
+            idempotency_key_hash="native-answer-two-key",
+            request_fingerprint="native-answer-two-fingerprint",
         )
         assert third_created is True
         third_context = RuntimeInvocationContext(
@@ -1609,10 +1620,7 @@ def test_native_runtime_hitl_persists_checkpoint_before_new_run(tmp_path):
             "success",
         ]
         assert history["turns"][0]["interaction_response"]["option_id"] == "option_a"
-        assert (
-            history["turns"][1]["interaction_response"]["value"]
-            == "synthetic follow-up"
-        )
+        assert history["turns"][1]["interaction_response"]["value"] == "synthetic follow-up"
 
         persisted_session = orchestrator.chat_store.get_session("session_demo")
         interaction_events = []
@@ -1625,21 +1633,12 @@ def test_native_runtime_hitl_persists_checkpoint_before_new_run(tmp_path):
             projected = [
                 event["data"]
                 for event in persisted_session.events
-                if event.get("event") == "agent.v2"
-                and (event.get("data") or {}).get("run_id") == current_run_id
+                if event.get("event") == "agent.v2" and (event.get("data") or {}).get("run_id") == current_run_id
             ]
-            assert [
-                (event["event_id"], event["seq"], event["type"])
-                for event in projected
-            ] == [
-                (event.event_id, event.seq, event.event_type)
-                for event in durable
+            assert [(event["event_id"], event["seq"], event["type"]) for event in projected] == [
+                (event.event_id, event.seq, event.event_type) for event in durable
             ]
-            interaction_events.extend(
-                event
-                for event in durable
-                if event.event_type == "interaction.requested"
-            )
+            interaction_events.extend(event for event in durable if event.event_type == "interaction.requested")
         assert [event.turn_id for event in interaction_events] == [1, 2]
         assert interaction_events[1].payload["prompt"] == "Provide a second synthetic value"
         for _ in range(20):
@@ -1701,8 +1700,7 @@ def test_prepare_failure_compensates_allocated_turn(tmp_path, caplog):
     records = [
         record
         for record in caplog.records
-        if record.name == "agent.runtime.manager"
-        and "run context preparation failed" in record.getMessage()
+        if record.name == "agent.runtime.manager" and "run context preparation failed" in record.getMessage()
     ]
     assert len(records) == 1
     assert private_marker not in caplog.text
@@ -1843,10 +1841,7 @@ def test_truncated_terminal_projection_persists_partial_output(tmp_path):
         assert turn["status"] == "failed"
         assert turn["error_code"] == "MODEL_OUTPUT_TRUNCATED"
         assert turn["final_output"]["text"] == "synthetic partial answer"
-        assert (
-            turn["final_output"]["error"]["error_code"]
-            == "MODEL_OUTPUT_TRUNCATED"
-        )
+        assert turn["final_output"]["error"]["error_code"] == "MODEL_OUTPUT_TRUNCATED"
 
     asyncio.run(run_test())
 
@@ -2003,15 +1998,10 @@ def test_deterministic_terminal_projection_uses_recovery_journal(tmp_path):
 
     adapter._persist_event_sync(event)
 
-    assert execution_store.get_pending_deterministic_terminal(
-        "session_demo"
-    ) is None
+    assert execution_store.get_pending_deterministic_terminal("session_demo") is None
     assert execution_store.get_turn("session_demo", 1)["status"] == "success"
     persisted = chat_store.get_session("session_demo")
-    assert [
-        (item.get("data") or {}).get("event_id")
-        for item in persisted.events
-    ] == ["run_deterministic_terminal:1"]
+    assert [(item.get("data") or {}).get("event_id") for item in persisted.events] == ["run_deterministic_terminal:1"]
 
 
 def test_deterministic_finalize_waits_for_canonical_terminal_event(tmp_path):
@@ -2270,9 +2260,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
                     {
                         "root": staged_root,
                         "exists_during_execute": staged_root.is_dir(),
-                        "content": (staged_root / "handler.py").read_text(
-                            encoding="utf-8"
-                        ),
+                        "content": (staged_root / "handler.py").read_text(encoding="utf-8"),
                     }
                 )
             return self.outcome
@@ -2285,9 +2273,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
                 {
                     "root": staged_root,
                     "exists": staged_root.is_dir(),
-                    "content": (staged_root / "handler.py").read_text(
-                        encoding="utf-8"
-                    ),
+                    "content": (staged_root / "handler.py").read_text(encoding="utf-8"),
                 }
             )
         calls.append(kwargs)
@@ -2318,19 +2304,19 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
         "RuntimeContext": _RuntimeContext,
         "run_direct_script": run_direct_script,
         "tool_output_artifact_writer_context": artifact_scope,
-        "load_system_config": lambda: {
-            "storage": {"project_root": str(tmp_path)}
-        },
+        "load_system_config": lambda: {"storage": {"project_root": str(tmp_path)}},
         "DeterministicExecutionService": _DeterministicService,
         "NotApplicable": NotApplicable,
     }
     context = _context("run_direct")
-    context = context.model_copy(update={
-        "arguments": {
-            "selected_ontology_id": "ontology_demo",
-            "selected_ontology_version": "v1",
+    context = context.model_copy(
+        update={
+            "arguments": {
+                "selected_ontology_id": "ontology_demo",
+                "selected_ontology_version": "v1",
+            }
         }
-    })
+    )
     adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
 
     _DeterministicService.outcome = Completed(
@@ -2355,13 +2341,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
         "authoritative": True,
     }
 
-    ontology_dir = (
-        tmp_path
-        / "workspaces"
-        / "workspace_demo"
-        / "ontologies"
-        / "ontology_demo"
-    )
+    ontology_dir = tmp_path / "workspaces" / "workspace_demo" / "ontologies" / "ontology_demo"
     ontology_dir.mkdir(parents=True)
     package_file = ontology_dir / "handler.py"
     package_file.write_text("old handler", encoding="utf-8")
@@ -2384,9 +2364,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
                     "ontology_dir": str(ontology_dir),
                 },
                 ontology_source_signature=source_signature,
-                ontology_content_revision=build_package_content_revision(
-                    ontology_dir
-                ),
+                ontology_content_revision=build_package_content_revision(ontology_dir),
                 deterministic_candidate=True,
             )
         }
@@ -2397,9 +2375,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     assert staged_manifest["exists_during_execute"] is True
     assert staged_manifest["content"] == "old handler"
     assert staged_manifest["root"].is_relative_to(tmp_path)
-    assert staged_manifest["root"].parent.parent == (
-        tmp_path / ".ontology-run-staging"
-    )
+    assert staged_manifest["root"].parent.parent == (tmp_path / ".ontology-run-staging")
     assert ".ontology-run-staging" in staged_manifest["root"].parts
     assert not staged_manifest["root"].exists()
 
@@ -2411,9 +2387,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     assert legacy_stage_observations[-1]["exists"] is True
     assert legacy_stage_observations[-1]["content"] == "old handler"
     assert not legacy_stage_observations[-1]["root"].exists()
-    assert calls[-1]["ontology_manifest"].ontology_dir == str(
-        legacy_stage_observations[-1]["root"]
-    )
+    assert calls[-1]["ontology_manifest"].ontology_dir == str(legacy_stage_observations[-1]["root"])
     calls.clear()
 
     original_stat = package_file.stat()
@@ -2429,9 +2403,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     drifted = adapter._try_direct_execute_sync(pinned_context, dependencies)
 
     assert drifted[-1].status == "failed"
-    assert drifted[-1].payload["error"]["error_code"] == (
-        "ontology_revision_changed"
-    )
+    assert drifted[-1].payload["error"]["error_code"] == ("ontology_revision_changed")
     assert _DeterministicService.calls == calls_before_drift
     _DeterministicService.outcome = NotApplicable("synthetic-fallback")
 
@@ -2462,10 +2434,10 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     assert calls[-1]["timeout_seconds"] == 12
     assert _RuntimeContext.latest.workspace_id == "workspace_demo"
 
-    dependencies["run_direct_script"] = lambda **_kwargs: (
-        [],
-        _DirectResult("error", "synthetic failure output", "synthetic_error"),
-    )
+    def failed_direct_script(**_kwargs):
+        return [], _DirectResult("error", "synthetic failure output", "synthetic_error")
+
+    dependencies["run_direct_script"] = failed_direct_script
     failed = adapter._try_direct_execute_sync(context, dependencies)
     assert failed[-1].status == "failed"
     assert failed[-1].payload["error"]["error_code"] == "SYNTHETIC_ERROR"
@@ -2475,9 +2447,9 @@ def test_cancelled_deterministic_worker_rolls_back_late_artifacts(
     tmp_path,
     monkeypatch,
 ):
-    from agent.direct_execution.contracts import Completed
-    import agent.runtime.service as service_module
     import agent.direct_execution.service as deterministic_module
+    import agent.runtime.service as service_module
+    from agent.direct_execution.contracts import Completed
 
     chat_store = ChatStore(str(tmp_path / "chat"))
     chat_store.create_session(session_id="session_demo")
@@ -2581,20 +2553,19 @@ def test_cancelled_deterministic_worker_rolls_back_late_artifacts(
         executor.shutdown(wait=True, cancel_futures=True)
 
     assert len(stored_refs) == 1
-    assert execution_store.get_pending_deterministic_artifacts(
-        "session_demo"
-    ) == []
-    assert chat_store.get_tool_output(
-        "session_demo",
-        "run_cancelled_deterministic",
-        stored_refs[0],
-    ) is None
+    assert execution_store.get_pending_deterministic_artifacts("session_demo") == []
+    assert (
+        chat_store.get_tool_output(
+            "session_demo",
+            "run_cancelled_deterministic",
+            stored_refs[0],
+        )
+        is None
+    )
 
 
 def test_noninteractive_direct_result_does_not_publish_interaction_request():
-    context = _context("run_noninteractive_direct").model_copy(
-        update={"supports_user_interaction": False}
-    )
+    context = _context("run_noninteractive_direct").model_copy(update={"supports_user_interaction": False})
     interaction = {
         "id": "interaction_demo",
         "type": "input",

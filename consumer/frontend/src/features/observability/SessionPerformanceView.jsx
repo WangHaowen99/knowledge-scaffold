@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 
-import { requestObservabilityDownload, requestObservabilityJson } from './api.js';
+import {
+  requestObservabilityDownload,
+  requestObservabilityJson,
+} from './api.js';
 import { ToastNotice } from '../../shared/ui/feedback.jsx';
 import {
   DataTable,
@@ -40,7 +43,10 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
   const [runError, setRunError] = useState('');
   const [runErrorStatus, setRunErrorStatus] = useState(null);
   const [speedscopeDownloading, setSpeedscopeDownloading] = useState(false);
-  const [speedscopeNotice, setSpeedscopeNotice] = useState({ message: '', tone: 'info' });
+  const [speedscopeNotice, setSpeedscopeNotice] = useState({
+    message: '',
+    tone: 'info',
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -54,7 +60,9 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
           { signal: controller.signal },
           '加载会话性能失败',
         );
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted) {
+          return;
+        }
         const next = normalizeSessionAnalysis(payload);
         setAnalysis(next);
         setSelectedRunId((current) => selectRunId(current, next.runs));
@@ -63,7 +71,9 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
           setError(nextError.message || '加载会话性能失败');
         }
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
     load();
@@ -94,14 +104,18 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
           { signal: controller.signal },
           '加载运行详情失败',
         );
-        if (!controller.signal.aborted) setRunDetail(normalizeRunDetail(payload));
+        if (!controller.signal.aborted) {
+          setRunDetail(normalizeRunDetail(payload));
+        }
       } catch (nextError) {
         if (nextError?.name !== 'AbortError' && !controller.signal.aborted) {
           setRunError(nextError.message || '加载运行详情失败');
           setRunErrorStatus(Number(nextError.status) || null);
         }
       } finally {
-        if (!controller.signal.aborted) setRunLoading(false);
+        if (!controller.signal.aborted) {
+          setRunLoading(false);
+        }
       }
     };
     load();
@@ -124,7 +138,10 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
       link.click();
       link.remove();
       window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
-      setSpeedscopeNotice({ message: 'Speedscope 文件已下载', tone: 'success' });
+      setSpeedscopeNotice({
+        message: 'Speedscope 文件已下载',
+        tone: 'success',
+      });
     } catch (nextError) {
       setSpeedscopeNotice({
         message: nextError.message || 'Speedscope 下载失败',
@@ -137,7 +154,11 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
 
   const runs = analysis?.runs || [];
   const summary = analysis?.summary || {};
-  const state = resolveCollectionState({ loading, error, itemCount: runs.length });
+  const state = resolveCollectionState({
+    loading,
+    error,
+    itemCount: runs.length,
+  });
   const selectedRunDetail = detailForSelectedRun(runDetail, selectedRunId);
 
   return (
@@ -147,7 +168,7 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
         title="会话性能分析"
         description="按会话对齐轮次、运行、LLM 和工具耗时。"
         onBack={onBack}
-        actions={(
+        actions={
           <>
             <button
               className="obs-button"
@@ -158,17 +179,21 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
               <Download size={15} aria-hidden="true" />
               {speedscopeDownloading ? '下载中…' : '下载 Speedscope'}
             </button>
-          <button
-            className="obs-button"
-            onClick={() => setRefreshVersion((value) => value + 1)}
-            type="button"
-            disabled={loading}
-          >
-            <RefreshCw className={loading ? 'obs-spin' : ''} size={15} aria-hidden="true" />
-            刷新
-          </button>
+            <button
+              className="obs-button"
+              onClick={() => setRefreshVersion((value) => value + 1)}
+              type="button"
+              disabled={loading}
+            >
+              <RefreshCw
+                className={loading ? 'obs-spin' : ''}
+                size={15}
+                aria-hidden="true"
+              />
+              刷新
+            </button>
           </>
-        )}
+        }
       />
 
       <ToastNotice
@@ -179,17 +204,33 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
         actionHref="https://www.speedscope.app/"
       />
 
-      {error && runs.length > 0 && <div className="obs-banner tone-error">刷新失败，当前保留上次数据：{error}</div>}
+      {error && runs.length > 0 && (
+        <div className="obs-banner tone-error">
+          刷新失败，当前保留上次数据：{error}
+        </div>
+      )}
       <DiagnosticsBanner diagnostics={analysis?.diagnostics} />
 
-      {state === 'loading' && <ObservabilityPanel><ObservabilityState kind="loading" title="正在读取会话运行摘要" /></ObservabilityPanel>}
+      {state === 'loading' && (
+        <ObservabilityPanel>
+          <ObservabilityState kind="loading" title="正在读取会话运行摘要" />
+        </ObservabilityPanel>
+      )}
       {state === 'error' && (
         <ObservabilityPanel>
           <ObservabilityState
             kind="error"
             title="会话性能加载失败"
             detail={error}
-            action={<button className="obs-button" type="button" onClick={() => setRefreshVersion((value) => value + 1)}>重试</button>}
+            action={
+              <button
+                className="obs-button"
+                type="button"
+                onClick={() => setRefreshVersion((value) => value + 1)}
+              >
+                重试
+              </button>
+            }
           />
         </ObservabilityPanel>
       )}
@@ -197,21 +238,45 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
       {state !== 'loading' && state !== 'error' && (
         <>
           <div className="obs-metric-grid session-metrics">
-            <MetricTile label="运行数" value={formatMetric(summary.run_count)} detail={`${formatMetric(summary.turn_count)} 个轮次`} />
-            <MetricTile label="成功 / 失败" value={`${formatMetric(summary.success_count)} / ${formatMetric(summary.error_count)}`} detail={`取消 ${formatMetric(summary.cancelled_count)}`} />
-            <MetricTile label="总耗时" value={formatDuration(summary.total_duration_ms)} detail="会话内所有运行" />
-            <MetricTile label="LLM 墙钟耗时" value={formatDuration(summary.llm_wall_total_ms)} detail="累计耗时" />
+            <MetricTile
+              label="运行数"
+              value={formatMetric(summary.run_count)}
+              detail={`${formatMetric(summary.turn_count)} 个轮次`}
+            />
+            <MetricTile
+              label="成功 / 失败"
+              value={`${formatMetric(summary.success_count)} / ${formatMetric(summary.error_count)}`}
+              detail={`取消 ${formatMetric(summary.cancelled_count)}`}
+            />
+            <MetricTile
+              label="总耗时"
+              value={formatDuration(summary.total_duration_ms)}
+              detail="会话内所有运行"
+            />
+            <MetricTile
+              label="LLM 墙钟耗时"
+              value={formatDuration(summary.llm_wall_total_ms)}
+              detail="累计耗时"
+            />
           </div>
 
           <div className="obs-session-grid">
-            <ObservabilityPanel title="运行定位" description="选择一轮后查看右侧调用链。" className="obs-run-list-panel">
+            <ObservabilityPanel
+              title="运行定位"
+              description="选择一轮后查看右侧调用链。"
+              className="obs-run-list-panel"
+            >
               {state === 'empty' ? (
                 <ObservabilityState
                   title="当前会话没有本地性能运行记录"
                   detail="完成一次运行后可刷新查看。"
                 />
               ) : (
-                <SessionRunsTable rows={runs} selectedRunId={selectedRunId} onSelect={setSelectedRunId} />
+                <SessionRunsTable
+                  rows={runs}
+                  selectedRunId={selectedRunId}
+                  onSelect={setSelectedRunId}
+                />
               )}
             </ObservabilityPanel>
             <RunDetail
@@ -236,7 +301,18 @@ function SessionRunsTable({ rows, selectedRunId, onSelect }) {
     }
   };
   return (
-    <DataTable columns={['轮次', '运行', '状态', '总耗时', 'LLM', '提示词', '缓存命中', '时间']}>
+    <DataTable
+      columns={[
+        '轮次',
+        '运行',
+        '状态',
+        '总耗时',
+        'LLM',
+        '提示词',
+        '缓存命中',
+        '时间',
+      ]}
+    >
       {rows.map((row) => (
         <tr
           key={row.run_id}
@@ -249,10 +325,16 @@ function SessionRunsTable({ rows, selectedRunId, onSelect }) {
         >
           <td>{row.turn_id ?? '-'}</td>
           <td title={row.run_id}>{shortId(row.run_id, 16)}</td>
-          <td><StatusPill status={row.status} /></td>
+          <td>
+            <StatusPill status={row.status} />
+          </td>
           <td>{formatDuration(row.total_duration_ms)}</td>
           <td>{formatDuration(row.llm_wall_total_ms)}</td>
-          <td>{row.prompt_tokens_max ? `${formatMetric(row.prompt_tokens_max)} tokens` : formatMetric(row.prompt_chars_max)}</td>
+          <td>
+            {row.prompt_tokens_max ?
+              `${formatMetric(row.prompt_tokens_max)} tokens` :
+              formatMetric(row.prompt_chars_max)}
+          </td>
           <td>{formatCacheHit(row)}</td>
           <td>{formatTimestamp(row.ts_ms)}</td>
         </tr>

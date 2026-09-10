@@ -18,15 +18,13 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 import yaml
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
-
 from integration.sandbox.runtime_contract import (
     allowed_external_import_roots,
     allowed_runtime_imports,
     allowed_standard_library_imports,
 )
-
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 DETERMINISTIC_LOCK_NAME = ".deterministic-lock.json"
 DETERMINISTIC_LOCK_VERSION = 2
@@ -36,9 +34,7 @@ _EXECUTION_FIELDS = frozenset({"type", "parser", "input_schema", "output_schema"
 _DETERMINISTIC_EXECUTION_OWNER = "deterministic"
 _SOLVER_EXECUTION_OWNER = "solver_workflow"
 _VALIDATION_EXECUTION_OWNER = "validation_workflow"
-_PROTECTED_EXECUTION_OWNERS = frozenset(
-    {_DETERMINISTIC_EXECUTION_OWNER, _VALIDATION_EXECUTION_OWNER}
-)
+_PROTECTED_EXECUTION_OWNERS = frozenset({_DETERMINISTIC_EXECUTION_OWNER, _VALIDATION_EXECUTION_OWNER})
 _DATA_ACCESS_VALUES = frozenset({"none", "workspace_provider"})
 _FRONTMATTER_END = re.compile(r"\r?\n---(?:\r?\n|$)")
 _NONDETERMINISTIC_CALL_PREFIXES = (
@@ -274,10 +270,7 @@ def protected_operation_keys(ontology_dir: Path) -> frozenset[str]:
 
 def is_deterministic_operation(ontology_dir: Path, operation_key: str) -> bool:
     normalized = normalize_operation_token(operation_key)
-    protected = {
-        normalize_operation_token(item)
-        for item in protected_operation_keys(ontology_dir)
-    }
+    protected = {normalize_operation_token(item) for item in protected_operation_keys(ontology_dir)}
     return bool(normalized and normalized in protected)
 
 
@@ -315,9 +308,7 @@ def is_protected_operation_descriptor(
         *_aliases(frontmatter.get("aliases"), strict=False),
     }
     protected = {
-        normalize_operation_token(item)
-        for item in protected_operation_keys(root)
-        if normalize_operation_token(item)
+        normalize_operation_token(item) for item in protected_operation_keys(root) if normalize_operation_token(item)
     }
     if any(normalize_operation_token(token) in protected for token in tokens if token):
         return True
@@ -355,17 +346,11 @@ def is_protected_handler_descriptor(
         return False
 
     frontmatter = _read_frontmatter_lenient(path)
-    operation_key = str(
-        frontmatter.get("bound_operation")
-        or frontmatter.get("operation_key")
-        or ""
-    ).strip()
+    operation_key = str(frontmatter.get("bound_operation") or frontmatter.get("operation_key") or "").strip()
     if operation_key and is_deterministic_operation(root, operation_key):
         return True
 
-    entrypoint = str(
-        frontmatter.get("entrypoint") or frontmatter.get("path") or ""
-    ).strip()
+    entrypoint = str(frontmatter.get("entrypoint") or frontmatter.get("path") or "").strip()
     if not entrypoint:
         return False
     try:
@@ -400,24 +385,16 @@ def protected_handler_paths(ontology_dir: Path) -> frozenset[Path]:
     # legacy caller. Recover the binding leniently even when strict package
     # validation (for example Schema validation) has failed.
     protected_keys = {
-        normalize_operation_token(item)
-        for item in protected_operation_keys(root)
-        if normalize_operation_token(item)
+        normalize_operation_token(item) for item in protected_operation_keys(root) if normalize_operation_token(item)
     }
     scripts_dir = root / "scripts"
     if protected_keys and scripts_dir.is_dir():
         for descriptor_path in _markdown_files(scripts_dir):
             frontmatter = _read_frontmatter_lenient(descriptor_path)
-            operation_key = str(
-                frontmatter.get("bound_operation")
-                or frontmatter.get("operation_key")
-                or ""
-            ).strip()
+            operation_key = str(frontmatter.get("bound_operation") or frontmatter.get("operation_key") or "").strip()
             if normalize_operation_token(operation_key) not in protected_keys:
                 continue
-            entrypoint = str(
-                frontmatter.get("entrypoint") or frontmatter.get("path") or ""
-            ).strip()
+            entrypoint = str(frontmatter.get("entrypoint") or frontmatter.get("path") or "").strip()
             try:
                 result.add(_resolve_handler_entrypoint(root, entrypoint).resolve())
             except DeterministicPackageError:
@@ -570,10 +547,7 @@ def read_deterministic_lock(ontology_dir: Path) -> dict[str, Any]:
             "deterministic_lock_invalid",
             "Deterministic package lock is invalid.",
         ) from exc
-    if (
-        not isinstance(payload, dict)
-        or payload.get("version") not in _SUPPORTED_DETERMINISTIC_LOCK_VERSIONS
-    ):
+    if not isinstance(payload, dict) or payload.get("version") not in _SUPPORTED_DETERMINISTIC_LOCK_VERSIONS:
         raise DeterministicPackageError(
             "deterministic_lock_invalid",
             "Deterministic package lock version is invalid.",
@@ -857,9 +831,7 @@ def _validate_deterministic_operations(
                 "Deterministic operation key is required.",
             )
         aliases = _aliases(frontmatter.get("aliases"), strict=True)
-        routing_all_terms, routing_any_terms = _deterministic_routing_terms(
-            frontmatter.get("execution_policy")
-        )
+        routing_all_terms, routing_any_terms = _deterministic_routing_terms(frontmatter.get("execution_policy"))
         for token in (operation_key, *aliases):
             collisions = {
                 candidate
@@ -915,15 +887,11 @@ def _validate_deterministic_operations(
         if len(matching_scripts) != 1:
             raise DeterministicPackageError(
                 "deterministic_handler_ambiguous",
-                "Deterministic operation '{}' must have exactly one bound handler.".format(
-                    operation_key
-                ),
+                "Deterministic operation '{}' must have exactly one bound handler.".format(operation_key),
             )
         descriptor_path, script_frontmatter = matching_scripts[0]
         script_key = str(script_frontmatter.get("key") or descriptor_path.stem).strip()
-        entrypoint_value = str(
-            script_frontmatter.get("entrypoint") or script_frontmatter.get("path") or ""
-        ).strip()
+        entrypoint_value = str(script_frontmatter.get("entrypoint") or script_frontmatter.get("path") or "").strip()
         entrypoint_path = _resolve_handler_entrypoint(root, entrypoint_value)
         if entrypoint_path.suffix.casefold() != ".py":
             raise DeterministicPackageError(
@@ -939,9 +907,7 @@ def _validate_deterministic_operations(
         if data_access not in _DATA_ACCESS_VALUES:
             raise DeterministicPackageError(
                 "execution_declaration_invalid",
-                "Deterministic handler '{}' data_access must be none or workspace_provider.".format(
-                    script_key
-                ),
+                "Deterministic handler '{}' data_access must be none or workspace_provider.".format(script_key),
             )
         deterministic_python_roots = [entrypoint_path]
         if parser_path is not None:
@@ -960,9 +926,7 @@ def _validate_deterministic_operations(
                 operation_key=operation_key,
                 aliases=aliases,
                 operation_path=_relative_path(root, operation_path),
-                parser_path=(
-                    _relative_path(root, parser_path) if parser_path is not None else None
-                ),
+                parser_path=(_relative_path(root, parser_path) if parser_path is not None else None),
                 input_schema_path=_relative_path(root, input_schema_path),
                 output_schema_path=_relative_path(root, output_schema_path),
                 handler=handler,
@@ -984,11 +948,7 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
     pending = [
         (
             Path(path).resolve(),
-            tuple(
-                dict.fromkeys(
-                    (Path(path).resolve().parent, root)
-                )
-            ),
+            tuple(dict.fromkeys((Path(path).resolve().parent, root))),
         )
         for path in entrypoints
     ]
@@ -1005,9 +965,7 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
         except (OSError, UnicodeDecodeError, SyntaxError) as exc:
             raise DeterministicPackageError(
                 "deterministic_python_invalid",
-                "Deterministic Python file '{}' is invalid.".format(
-                    _relative_path(root, path)
-                ),
+                "Deterministic Python file '{}' is invalid.".format(_relative_path(root, path)),
             ) from exc
 
         aliases = _python_import_aliases(tree)
@@ -1045,11 +1003,7 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
                             forbidden_export,
                         ),
                     )
-            if (
-                imported_module
-                and imported_module.split(".", 1)[0]
-                in _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS
-            ):
+            if imported_module and imported_module.split(".", 1)[0] in _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS:
                 raise DeterministicPackageError(
                     "determinism_contract_violation",
                     "Deterministic Python file '{}' imports unsupported module '{}'.".format(
@@ -1057,10 +1011,7 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
                         imported_module,
                     ),
                 )
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr in _FORBIDDEN_DETERMINISTIC_ATTRIBUTES
-            ):
+            if isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_DETERMINISTIC_ATTRIBUTES:
                 raise DeterministicPackageError(
                     "determinism_contract_violation",
                     "Deterministic Python file '{}' uses unsupported attribute '{}'.".format(
@@ -1078,10 +1029,7 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
             if not isinstance(node, ast.Call):
                 continue
             call_name = _python_call_name(node.func, aliases)
-            if (
-                call_name in _FORBIDDEN_DETERMINISTIC_BUILTIN_CALLS
-                or _is_nondeterministic_call_name(call_name)
-            ):
+            if call_name in _FORBIDDEN_DETERMINISTIC_BUILTIN_CALLS or _is_nondeterministic_call_name(call_name):
                 raise DeterministicPackageError(
                     "determinism_contract_violation",
                     "Deterministic Python file '{}' uses unsupported API '{}'.".format(
@@ -1111,16 +1059,10 @@ def _is_nondeterministic_call_name(call_name: str) -> bool:
     normalized = str(call_name or "").strip()
     if not normalized:
         return False
-    if any(
-        normalized == forbidden or normalized.endswith("." + forbidden)
-        for forbidden in _NONDETERMINISTIC_CALLS
-    ):
+    if any(normalized == forbidden or normalized.endswith("." + forbidden) for forbidden in _NONDETERMINISTIC_CALLS):
         return True
     qualified = "." + normalized
-    return any(
-        "." + prefix in qualified
-        for prefix in _NONDETERMINISTIC_CALL_PREFIXES
-    )
+    return any("." + prefix in qualified for prefix in _NONDETERMINISTIC_CALL_PREFIXES)
 
 
 def _validate_deterministic_import_contract(
@@ -1153,18 +1095,18 @@ def _validate_deterministic_import_contract(
                 import_root = module_name.split(".", 1)[0]
                 if import_root in _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS:
                     continue
-                if _resolve_local_python_module(
-                    root,
-                    source_path,
-                    module_name,
-                    0,
-                    absolute_search_roots=absolute_search_roots,
-                ) is not None:
-                    continue
                 if (
-                    standard_library_allowed(module_name)
-                    or import_root in allowed_external
+                    _resolve_local_python_module(
+                        root,
+                        source_path,
+                        module_name,
+                        0,
+                        absolute_search_roots=absolute_search_roots,
+                    )
+                    is not None
                 ):
+                    continue
+                if standard_library_allowed(module_name) or import_root in allowed_external:
                     continue
                 # Runtime capabilities are intentionally exposed only through
                 # named public exports. A module import would also expose
@@ -1214,10 +1156,7 @@ def _validate_deterministic_import_contract(
         import_root = base_module.split(".", 1)[0] if base_module else ""
         if import_root in _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS:
             continue
-        if level == 0 and (
-            standard_library_allowed(base_module)
-            or import_root in allowed_external
-        ):
+        if level == 0 and (standard_library_allowed(base_module) or import_root in allowed_external):
             continue
         if not base_module and imported_names:
             reject(imported_names[0], level)
@@ -1347,11 +1286,7 @@ def _resolve_local_python_import_paths(
                 module_root / "__init__.py",
             )
         leaf = next(
-            (
-                candidate.resolve()
-                for candidate in candidates
-                if candidate.is_file() and not candidate.is_symlink()
-            ),
+            (candidate.resolve() for candidate in candidates if candidate.is_file() and not candidate.is_symlink()),
             None,
         )
         if leaf is None:
@@ -1456,9 +1391,7 @@ def _execution_declaration_owner(
     if has_type and has_mode:
         raise DeterministicPackageError(
             "execution_declaration_invalid",
-            "Operation '{}' execution has conflicting type and mode discriminators.".format(
-                path.name
-            ),
+            "Operation '{}' execution has conflicting type and mode discriminators.".format(path.name),
         )
     if has_type and str(execution.get("type") or "").strip().casefold() == "deterministic":
         return _DETERMINISTIC_EXECUTION_OWNER
@@ -1467,9 +1400,7 @@ def _execution_declaration_owner(
         if package_schema_version != "0.2":
             raise DeterministicPackageError(
                 "execution_declaration_invalid",
-                "Operation '{}' solver_workflow requires package schema_version 0.2.".format(
-                    path.name
-                ),
+                "Operation '{}' solver_workflow requires package schema_version 0.2.".format(path.name),
             )
         return _SOLVER_EXECUTION_OWNER
     if execution_mode == "validation_workflow":
@@ -1526,11 +1457,7 @@ def _read_frontmatter_lenient(path: Path) -> dict[str, Any]:
 
 def _markdown_files(directory: Path) -> list[Path]:
     return sorted(
-        (
-            path
-            for path in directory.rglob("*.md")
-            if path.is_file() and path.name.casefold() != "index.md"
-        ),
+        (path for path in directory.rglob("*.md") if path.is_file() and path.name.casefold() != "index.md"),
         key=lambda item: item.relative_to(directory).as_posix().encode("utf-8"),
     )
 
@@ -1785,16 +1712,11 @@ def _package_file_entries(
     for path in root.rglob("*"):
         _raise_if_package_verification_cancelled(cancel_event)
         package_paths.append(path)
-    package_paths.sort(
-        key=lambda item: item.relative_to(root).as_posix().encode("utf-8")
-    )
+    package_paths.sort(key=lambda item: item.relative_to(root).as_posix().encode("utf-8"))
     for path in package_paths:
         _raise_if_package_verification_cancelled(cancel_event)
         relative = path.relative_to(root).as_posix()
-        if (
-            relative == DETERMINISTIC_LOCK_NAME
-            or relative == "manifest.yaml"
-        ):
+        if relative == DETERMINISTIC_LOCK_NAME or relative == "manifest.yaml":
             continue
         if path.is_symlink():
             raise DeterministicPackageError(
