@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -39,6 +40,16 @@ from typing import Any
 from dataclasses import dataclass, field
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging() -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def _load_dotenv() -> dict[str, str | None]:
@@ -1188,18 +1199,18 @@ _GROUP_LABELS = {
 def main():
     args = sys.argv[1:]
     if "--list" in args:
-        print("\n  ACP 协议全端点测试用例列表")
-        print("  " + "=" * 60)
+        logger.info("\n  ACP 协议全端点测试用例列表")
+        logger.info("  " + "=" * 60)
         tests = _get_all_tests()
         current_group = ""
         idx = 0
         for group, method in tests:
             if group != current_group:
                 current_group = group
-                print(f"\n  [{_GROUP_LABELS.get(group, group)}]")
+                logger.info(f"\n  [{_GROUP_LABELS.get(group, group)}]")
             idx += 1
-            print(f"    {idx:2d}. {method}")
-        print(f"\n  共 {len(tests)} 个用例\n")
+            logger.info(f"    {idx:2d}. {method}")
+        logger.info(f"\n  共 {len(tests)} 个用例\n")
         return
 
     group_filter = "all"
@@ -1211,28 +1222,28 @@ def main():
 
     valid_groups = {"all", "api", "error", "isolation", "lang", "suppress", "flow"}
     if group_filter not in valid_groups:
-        print(f"  ✗ 未知测试组: {group_filter}")
-        print(f"    可选: {', '.join(sorted(valid_groups))}")
+        logger.info(f"  ✗ 未知测试组: {group_filter}")
+        logger.info(f"    可选: {', '.join(sorted(valid_groups))}")
         sys.exit(1)
 
     runner = ACPTestRunner()
 
-    print()
-    print("  " + "=" * 64)
-    print("    ACP 协议全端点自动化测试")
-    print("    " + datetime.now(timezone.utc).isoformat())
-    print("  " + "=" * 64)
-    print(f"    后端地址: {BASE_URL}")
-    print(f"    工作空间: {WORKSPACE_ID}")
-    print(f"    测试超时: {TEST_TIMEOUT}s")
-    print(f"    测试组:   {group_filter}")
-    print()
+    logger.info("")
+    logger.info("  " + "=" * 64)
+    logger.info("    ACP 协议全端点自动化测试")
+    logger.info("    " + datetime.now(timezone.utc).isoformat())
+    logger.info("  " + "=" * 64)
+    logger.info(f"    后端地址: {BASE_URL}")
+    logger.info(f"    工作空间: {WORKSPACE_ID}")
+    logger.info(f"    测试超时: {TEST_TIMEOUT}s")
+    logger.info(f"    测试组:   {group_filter}")
+    logger.info("")
 
-    print("  [1/3] 登录认证...")
+    logger.info("  [1/3] 登录认证...")
     if not runner.login():
-        print("  ✗ 登录失败，请检查 AUTH_USERNAME / AUTH_PASSWORD")
+        logger.info("  ✗ 登录失败，请检查 AUTH_USERNAME / AUTH_PASSWORD")
         sys.exit(1)
-    print("  ✓ 登录成功\n")
+    logger.info("  ✓ 登录成功\n")
 
     original_config = runner._get_runtime_config()
     original_lang = original_config.get("lang", {})
@@ -1243,8 +1254,8 @@ def main():
         tests = [(g, m) for g, m in tests if g == group_filter]
 
     total = len(tests)
-    print(f"  [2/3] 开始测试 ({total} 个用例)")
-    print("  " + "-" * 64)
+    logger.info(f"  [2/3] 开始测试 ({total} 个用例)")
+    logger.info("  " + "-" * 64)
 
     group_order = ["api", "error", "isolation", "lang", "suppress", "flow"]
     tests.sort(key=lambda t: group_order.index(t[0]) if t[0] in group_order else 99)
@@ -1254,16 +1265,16 @@ def main():
     for group, method_name in tests:
         if group != current_group:
             current_group = group
-            print(f"\n  ▶ {_GROUP_LABELS.get(group, group)}")
-            print(f"    {'─' * 50}")
+            logger.info(f"\n  ▶ {_GROUP_LABELS.get(group, group)}")
+            logger.info(f"    {'─' * 50}")
 
         idx += 1
         test_method = getattr(runner, method_name, None)
         if test_method is None:
-            print(f"    {idx:2d}/{total}  ⊘ {method_name} — 方法不存在")
+            logger.info(f"    {idx:2d}/{total}  ⊘ {method_name} — 方法不存在")
             continue
 
-        print(f"    {idx:2d}/{total}  ⏳ {method_name}...", end="", flush=True)
+        logger.info(f"    {idx:2d}/{total}  ⏳ {method_name}...")
         try:
             result: TestResult = test_method()
         except Exception as exc:
@@ -1278,36 +1289,36 @@ def main():
 
         icon = {"PASS": "✓", "FAIL": "✗", "SKIP": "⊘"}.get(result.status, "?")
         time_str = f"{result.duration_ms}ms" if result.duration_ms < 1000 else f"{result.duration_ms / 1000:.1f}s"
-        print(f"\r    {idx:2d}/{total}  {icon} {method_name} [{time_str}]", end="")
+        result_line = f"    {idx:2d}/{total}  {icon} {method_name} [{time_str}]"
         if result.detail and result.status != PASS:
-            print(f" — {result.detail}", end="")
-        print()
+            result_line += f" — {result.detail}"
+        logger.info(result_line)
 
         for assertion in result.assertions:
             if not assertion["passed"]:
-                print(f"         ↳ ✗ {assertion['desc']}: {assertion['detail']}")
+                logger.info(f"         ↳ ✗ {assertion['desc']}: {assertion['detail']}")
 
-    print(f"\n    {'─' * 50}")
+    logger.info(f"\n    {'─' * 50}")
 
-    print(f"\n  [3/3] 恢复运行时配置...")
+    logger.info(f"\n  [3/3] 恢复运行时配置...")
     runner._set_runtime_config({
         "lang": original_lang,
         "acp_suppress_script_patterns": original_suppress,
     })
-    print("  ✓ 配置已恢复\n")
+    logger.info("  ✓ 配置已恢复\n")
 
     passed = sum(1 for r in runner.results if r.status == PASS)
     failed = sum(1 for r in runner.results if r.status == FAIL)
     skipped = sum(1 for r in runner.results if r.status == SKIP)
 
-    print("  " + "=" * 64)
-    print(f"    测试结果汇总")
-    print("  " + "=" * 64)
-    print(f"    总计: {len(runner.results)}    通过: {passed}    失败: {failed}    跳过: {skipped}")
+    logger.info("  " + "=" * 64)
+    logger.info(f"    测试结果汇总")
+    logger.info("  " + "=" * 64)
+    logger.info(f"    总计: {len(runner.results)}    通过: {passed}    失败: {failed}    跳过: {skipped}")
 
     if runner.results:
         total_ms = sum(r.duration_ms for r in runner.results)
-        print(f"    总耗时: {total_ms / 1000:.1f}s")
+        logger.info(f"    总耗时: {total_ms / 1000:.1f}s")
 
     by_group: dict[str, list[TestResult]] = {}
     for r in runner.results:
@@ -1320,16 +1331,16 @@ def main():
         g_pass = sum(1 for r in group_results if r.status == PASS)
         g_fail = sum(1 for r in group_results if r.status == FAIL)
         g_skip = sum(1 for r in group_results if r.status == SKIP)
-        print(f"\n    [{_GROUP_LABELS.get(group, group)}]  {g_pass}✓  {g_fail}✗  {g_skip}⊘")
+        logger.info(f"\n    [{_GROUP_LABELS.get(group, group)}]  {g_pass}✓  {g_fail}✗  {g_skip}⊘")
         for r in group_results:
             icon = {"PASS": "✓", "FAIL": "✗", "SKIP": "⊘"}.get(r.status, "?")
             time_str = f"{r.duration_ms}ms" if r.duration_ms < 1000 else f"{r.duration_ms / 1000:.1f}s"
             line = f"      {icon} {r.name} [{time_str}]"
             if r.status == FAIL and r.detail:
                 line += f" — {r.detail}"
-            print(line)
+            logger.info(line)
 
-    print()
+    logger.info("")
 
     result_dir = os.path.join(_SCRIPT_DIR, "result")
     os.makedirs(result_dir, exist_ok=True)
@@ -1363,14 +1374,15 @@ def main():
     }
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
-    print(f"  报告已保存: {report_path}\n")
+    logger.info(f"  报告已保存: {report_path}\n")
 
     if failed > 0:
-        print(f"  ⚠ 有 {failed} 个测试失败！\n")
+        logger.info(f"  ⚠ 有 {failed} 个测试失败！\n")
         sys.exit(1)
     else:
-        print("  ✓ 全部通过！\n")
+        logger.info("  ✓ 全部通过！\n")
 
 
 if __name__ == "__main__":
+    _configure_cli_logging()
     main()
