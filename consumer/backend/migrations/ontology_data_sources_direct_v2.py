@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TextIO
 
 from agent.tools.business_data.provider_config_codec import (
     decrypt_provider_config,
@@ -39,6 +41,16 @@ MODE_CONNECTION_REF = "connection_ref"
 MIGRATION_ID = "ontology-data-sources-direct-v2"
 MARKER_FILE = "ontology-data-sources.direct-v2.migration-complete.json"
 MANUAL_BACKUP_SUFFIX = ".pre-direct-v2.bak"
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 class OntologyDataSourceMigrationError(ValueError):
@@ -806,6 +818,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    _configure_cli_logging(sys.stdout)
     args = _build_parser().parse_args(argv)
     code, report = execute_migration(
         args.runtime_root,
@@ -817,7 +830,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.report:
         _write_bytes_atomic(args.report, rendered.encode("utf-8"), mode=0o600)
-    print(rendered, end="")
+    logger.info(rendered.rstrip("\n"))
     return code
 
 

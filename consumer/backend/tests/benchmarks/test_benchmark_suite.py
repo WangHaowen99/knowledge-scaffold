@@ -37,6 +37,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import re
 import random
@@ -55,6 +56,16 @@ from datetime import datetime, timezone
 from lang import translate_text, get_lang_display_name, SUPPORTED_LANGUAGES, get_env, _LANG_DISPLAY_NAMES
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging() -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 BASE_URL = get_env("BASE_URL", "http://localhost:5055")
 API_MODE = get_env("API_MODE", "agentic")  # agentic | acp
@@ -105,7 +116,7 @@ def _load_cases_from_json() -> dict | None:
         with open(_CASES_JSON_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"  ⚠ 读取 cases.json 失败: {e}，使用内嵌用例")
+        logger.info(f"  ⚠ 读取 cases.json 失败: {e}，使用内嵌用例")
         return None
 
 
@@ -349,12 +360,12 @@ def _translate_question(q: dict, cache: dict | None = None, target_lang_override
     original_sheet = q["sheet"]
 
     if target_lang in ("zh", "zh-cn"):
-        print(f"  🌐 {original_sheet}: 中文 (zh)")
+        logger.info(f"  🌐 {original_sheet}: 中文 (zh)")
         return {**q, "lang": "zh", "lang_display": "中文", "original_sheet": original_sheet, "original_message": original_message}
 
     if cache and original_sheet in cache:
         cached = cache[original_sheet]
-        print(f"  🌐 {original_sheet}: {lang_name} ({target_lang}) [cached]")
+        logger.info(f"  🌐 {original_sheet}: {lang_name} ({target_lang}) [cached]")
         return {
             "sheet": original_sheet,
             "message": cached["message"],
@@ -373,7 +384,7 @@ def _translate_question(q: dict, cache: dict | None = None, target_lang_override
         try:
             translated_text = translate_text(text_to_translate, target_lang, source_lang="zh")
         except Exception as e:
-            print(f"  ⚠ 翻译失败 [{original_sheet}]: {e}，使用原文")
+            logger.info(f"  ⚠ 翻译失败 [{original_sheet}]: {e}，使用原文")
             translated_text = text_to_translate
 
         if json_data is not None:
@@ -381,13 +392,13 @@ def _translate_question(q: dict, cache: dict | None = None, target_lang_override
                 translated_json = _translate_json_values(json_data, target_lang)
                 json_prefix = json.dumps(translated_json, ensure_ascii=False)
             except Exception as e:
-                print(f"  ⚠ JSON翻译失败 [{original_sheet}]: {e}，使用原JSON")
+                logger.info(f"  ⚠ JSON翻译失败 [{original_sheet}]: {e}，使用原JSON")
                 json_prefix = json.dumps(json_data, ensure_ascii=False)
             translated_message = f"{json_prefix}\n{translated_text}"
         else:
             translated_message = translated_text
 
-    print(f"  🌐 {original_sheet}: {lang_name} ({target_lang}) [online]")
+    logger.info(f"  🌐 {original_sheet}: {lang_name} ({target_lang}) [online]")
     return {
         "sheet": original_sheet,
         "message": translated_message,
@@ -429,7 +440,7 @@ def _resolve_questions() -> list[dict]:
         base_questions = eval_cases
 
     if TEST_LANGUAGE and TEST_LANGUAGE != "原语言":
-        print(f"\n🌐 测试语言模式: {TEST_LANGUAGE} — 每个用例独立翻译")
+        logger.info(f"\n🌐 测试语言模式: {TEST_LANGUAGE} — 每个用例独立翻译")
         if TEST_LANGUAGE == "随机":
             _cache_pool: dict[str, dict] = {}
             results = []
@@ -520,7 +531,7 @@ def _check_lang_follow_enabled() -> bool | None:
             _lang_follow_enabled = bool(config.get("lang", {}).get("enabled", False))
             return _lang_follow_enabled
     except Exception as e:
-        print(f"  ⚠ 无法获取 runtime_config ({e})，默认开启中文混入检测")
+        logger.info(f"  ⚠ 无法获取 runtime_config ({e})，默认开启中文混入检测")
     return None
 
 
@@ -539,7 +550,7 @@ def _set_acp_suppress_patterns(patterns: str) -> bool:
         )
         return resp.status_code == 200
     except Exception as e:
-        print(f"  ⚠ 设置 acp_suppress_script_patterns 失败: {e}")
+        logger.info(f"  ⚠ 设置 acp_suppress_script_patterns 失败: {e}")
         return False
 
 
@@ -1046,7 +1057,7 @@ def call_skill_execution_acp(message: str, session_id: str | None = None, lang: 
                 },
             }
             combined_response_text = ""
-            print(f"  [ACP] 自动回复 run.awaiting: {ACP_AUTO_REPLY}")
+            logger.info(f"  [ACP] 自动回复 run.awaiting: {ACP_AUTO_REPLY}")
             continue
         else:
             break
@@ -1121,7 +1132,7 @@ def call_skill_execution_acp_stream(message: str, session_id: str | None = None,
             stream=True,
         )
         interact_resp.raise_for_status()
-        print(f"  [ACP stream] 自动回复 run.awaiting: {ACP_AUTO_REPLY}")
+        logger.info(f"  [ACP stream] 自动回复 run.awaiting: {ACP_AUTO_REPLY}")
         interact_text = _consume_sse_stream(interact_resp)
         partial = parse_acp_sse_stream(interact_text)
         partial["run_id"] = run_id
@@ -2039,7 +2050,7 @@ def call_skill_execution(message: str, session_id: str) -> dict:
         option_id = first_option.get("id") or first_option.get("option_id")
         if option_id:
             interaction_response["option_id"] = option_id
-        print(f"  [Agentic] 自动回复 awaiting_input: {current_message}")
+        logger.info(f"  [Agentic] 自动回复 awaiting_input: {current_message}")
 
     result = _merge_agentic_turn_results(results, run_ids)
     run_id = result.get("run_id")
@@ -2624,7 +2635,7 @@ def _get_log_line_count() -> int:
 def _analyze_think_process(run_ids: list[str], log_baseline: int):
     log_path = _find_backend_log()
     if not log_path or not run_ids:
-        print(f"  ⚠ 无法分析: 日志文件不存在或无成功执行的 run_id")
+        logger.info(f"  ⚠ 无法分析: 日志文件不存在或无成功执行的 run_id")
         return {}
 
     with open(log_path, "r", encoding="utf-8", errors="replace") as f:
@@ -2675,34 +2686,34 @@ def _analyze_think_process(run_ids: list[str], log_baseline: int):
     clean_count = sum(1 for d in run_data.values() if d["clean"])
     total = len(run_ids)
 
-    print(f"\n{'='*70}")
-    print(f"📊 <think_process> 标签分析")
-    print(f"{'='*70}")
-    print(f"  成功执行: {total} 次")
-    print(f"  <think_process> 标签使用: {tag_count}/{total} ({tag_count/total*100:.0f}%)")
-    print(f"  最终结论干净度: {clean_count}/{total} ({clean_count/total*100:.0f}%)")
-    print()
+    logger.info(f"\n{'='*70}")
+    logger.info(f"📊 <think_process> 标签分析")
+    logger.info(f"{'='*70}")
+    logger.info(f"  成功执行: {total} 次")
+    logger.info(f"  <think_process> 标签使用: {tag_count}/{total} ({tag_count/total*100:.0f}%)")
+    logger.info(f"  最终结论干净度: {clean_count}/{total} ({clean_count/total*100:.0f}%)")
+    logger.info("")
 
     for rid in run_ids:
         d = run_data[rid]
         status_icon = "✅" if d["clean"] else "⚠️"
         tag_icon = "🏷️" if d["has_think_tag"] else "  "
         conclusion_preview = (d["final_conclusion"] or "无")[5:80]
-        print(f"  {status_icon} {tag_icon} {rid}")
-        print(f"       最终结论: {conclusion_preview}...")
+        logger.info(f"  {status_icon} {tag_icon} {rid}")
+        logger.info(f"       最终结论: {conclusion_preview}...")
         if d["has_think_tag"]:
             preview = d["think_content"][:150].replace("\n", " ")
-            print(f"       think内容: {preview}...")
-        print()
+            logger.info(f"       think内容: {preview}...")
+        logger.info("")
 
     tag_rate = tag_count / total * 100 if total > 0 else 0
     clean_rate = clean_count / total * 100 if total > 0 else 0
     both_rate = sum(1 for d in run_data.values() if d["has_think_tag"] and d["clean"]) / total * 100 if total > 0 else 0
-    print(f"  📋 汇总:")
-    print(f"    标签使用率: {tag_rate:.0f}% ({tag_count}/{total})")
-    print(f"    结论干净率: {clean_rate:.0f}% ({clean_count}/{total})")
-    print(f"    标签+干净双达标: {both_rate:.0f}%")
-    print(f"{'='*70}")
+    logger.info(f"  📋 汇总:")
+    logger.info(f"    标签使用率: {tag_rate:.0f}% ({tag_count}/{total})")
+    logger.info(f"    结论干净率: {clean_rate:.0f}% ({clean_count}/{total})")
+    logger.info(f"    标签+干净双达标: {both_rate:.0f}%")
+    logger.info(f"{'='*70}")
 
     return {
         "run_data": run_data,
@@ -2756,7 +2767,7 @@ def _generate_time_breakdown_chart(
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print(f"  ⚠ matplotlib 未安装，跳过图表生成")
+        logger.info(f"  ⚠ matplotlib 未安装，跳过图表生成")
         return
 
     plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
@@ -2796,7 +2807,7 @@ def _generate_time_breakdown_chart(
     p1 = os.path.join(run_dir, "time_breakdown.png")
     fig1.savefig(p1, dpi=150, bbox_inches="tight")
     plt.close(fig1)
-    print(f"  📊 时间分解图已保存: {p1}")
+    logger.info(f"  📊 时间分解图已保存: {p1}")
 
     json_path = os.path.join(run_dir, "script_call_details.json")
     if not os.path.exists(json_path):
@@ -2847,7 +2858,7 @@ def _generate_time_breakdown_chart(
     p2 = os.path.join(run_dir, "tool_latency_dist.png")
     fig2.savefig(p2, dpi=150, bbox_inches="tight")
     plt.close(fig2)
-    print(f"  📊 工具耗时分布图已保存: {p2}")
+    logger.info(f"  📊 工具耗时分布图已保存: {p2}")
 
 
 def _generate_md_report(
@@ -3267,7 +3278,7 @@ def _generate_md_report(
     content = "\n".join(lines)
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
-    print(f"\n📄 测试报告已保存: {filepath}")
+    logger.info(f"\n📄 测试报告已保存: {filepath}")
     return filepath
 
 
@@ -3280,17 +3291,17 @@ def _execute_single_run(
     total_runs: int,
     question_idx: int,
 ) -> dict:
-    print(f"\n--- 第 {run_index}/{total_runs} 次执行 ---")
+    logger.info(f"\n--- 第 {run_index}/{total_runs} 次执行 ---")
 
     if API_MODE == "acp":
         # ACP 模式不保存消息内容到 ChatStore，因此也不应创建会话/标题
         session_id = f"sess_{uuid.uuid4().hex[:8]}"
-        print(f"  [ACP] 跳过会话创建（不保存内容），使用临时 session_id: {session_id}")
+        logger.info(f"  [ACP] 跳过会话创建（不保存内容），使用临时 session_id: {session_id}")
     else:
         session_id = create_session()
         display_title = f"{sheet_name}: {message[:50]}"
         generate_session_title(session_id, display_title)
-        print(f"  Session ID: {session_id}")
+        logger.info(f"  Session ID: {session_id}")
 
     start_time = datetime.now(timezone.utc)
     start_ts = time.time()
@@ -3350,7 +3361,7 @@ def _execute_single_run(
         rd["result"] = result
 
         if result.get("error"):
-            print(f"  执行错误: {result.get('error')}")
+            logger.info(f"  执行错误: {result.get('error')}")
             rd["error"] = result.get("error")
         else:
             rd["success"] = True
@@ -3364,31 +3375,31 @@ def _execute_single_run(
             rd["llm_avg_time"] = llm_avg_time
             rd["run_script_stats"] = run_script_stats
 
-            print(f"  成功 | 耗时: {format_duration(elapsed)} | Turns: {result.get('turn_count', 0)}")
-            print(f"  Run ID: {run_id}")
-            print(f"  Tool Calls: {tool_count} | Tokens: {total_tokens}")
-            print(f"  LLM调用: {llm_count}次 | LLM总耗时: {llm_total_time:.1f}s | LLM平均耗时: {llm_avg_time:.1f}s")
-            print(f"  Worker: {worker_time:.1f}s")
+            logger.info(f"  成功 | 耗时: {format_duration(elapsed)} | Turns: {result.get('turn_count', 0)}")
+            logger.info(f"  Run ID: {run_id}")
+            logger.info(f"  Tool Calls: {tool_count} | Tokens: {total_tokens}")
+            logger.info(f"  LLM调用: {llm_count}次 | LLM总耗时: {llm_total_time:.1f}s | LLM平均耗时: {llm_avg_time:.1f}s")
+            logger.info(f"  Worker: {worker_time:.1f}s")
             run_ftl = result.get("first_token_latency", 0.0)
             run_aitl = result.get("avg_inter_token_latency", 0.0)
             rd["run_first_token_latency"] = run_ftl
             rd["run_avg_inter_token_latency"] = run_aitl
             if run_ftl > 0 or run_aitl > 0:
-                print(f"  首Token时延: {run_ftl:.3f}s | 增量Token平均时延: {run_aitl:.3f}s")
+                logger.info(f"  首Token时延: {run_ftl:.3f}s | 增量Token平均时延: {run_aitl:.3f}s")
             if run_script_stats:
                 for sn, ss in run_script_stats.items():
                     if ss['count'] > 0:
                         total_ms = ss.get('total_ms', 0)
                         if total_ms > 0:
-                            print(f"  脚本 {sn}: {ss['count']}次 | 总耗时: {total_ms/1000:.1f}s | 平均: {total_ms/ss['count']/1000:.1f}s")
+                            logger.info(f"  脚本 {sn}: {ss['count']}次 | 总耗时: {total_ms/1000:.1f}s | 平均: {total_ms/ss['count']/1000:.1f}s")
                         else:
                             total_len = ss.get('total_result_length', 0)
-                            print(f"  脚本 {sn}: {ss['count']}次 | 结果总长: {total_len}")
+                            logger.info(f"  脚本 {sn}: {ss['count']}次 | 结果总长: {total_len}")
                     else:
-                        print(f"  脚本 {sn}: 0次")
+                        logger.info(f"  脚本 {sn}: 0次")
             if result.get("final_output"):
                 output_preview = str(result["final_output"])[:100]
-                print(f"  输出预览: {output_preview}...")
+                logger.info(f"  输出预览: {output_preview}...")
 
             _lang_follow = _check_lang_follow_enabled()
             if lang_code not in ("zh", "zh-cn") and _lang_follow is not False:
@@ -3415,7 +3426,7 @@ def _execute_single_run(
                     t_warn = sum(1 for finding in thinking_findings if finding.get("severity") == "warn")
                     o_err = sum(1 for finding in output_findings if finding.get("severity") == "error")
                     o_warn = sum(1 for finding in output_findings if finding.get("severity") == "warn")
-                    print(f"  ⚠️ 检测到中文 (思考过程 {len(thinking_findings)} 处: 严重{t_err}/警告{t_warn}; 最终报告 {len(output_findings)} 处: 严重{o_err}/警告{o_warn}):")
+                    logger.info(f"  ⚠️ 检测到中文 (思考过程 {len(thinking_findings)} 处: 严重{t_err}/警告{t_warn}; 最终报告 {len(output_findings)} 处: 严重{o_err}/警告{o_warn}):")
                     for finding in thinking_findings:
                         sev_icon = {"error": "🔴", "warn": "🟡", "info": "ℹ️"}.get(finding.get("severity", ""), "❓")
                         cat_label = {
@@ -3429,9 +3440,9 @@ def _execute_single_run(
                         round_label = f"Round {round_match.group(1)}" if round_match else "?"
                         chinese_snippets = re.findall(r'[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]', finding['text'])
                         snippet_display = '; '.join(chinese_snippets[:3]) if chinese_snippets else ''
-                        print(f"    {sev_icon} [思考] {round_label} | {cat_label} | {finding.get('description', '')}")
+                        logger.info(f"    {sev_icon} [思考] {round_label} | {cat_label} | {finding.get('description', '')}")
                         if snippet_display:
-                            print(f"      中文片段: {snippet_display}")
+                            logger.info(f"      中文片段: {snippet_display}")
                     for finding in output_findings:
                         sev_icon = {"error": "🔴", "warn": "🟡", "info": "ℹ️"}.get(finding.get("severity", ""), "❓")
                         cat_label = {
@@ -3443,28 +3454,28 @@ def _execute_single_run(
                         }.get(finding.get("category", ""), finding.get("category", ""))
                         chinese_snippets = re.findall(r'[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]', finding['text'])
                         snippet_display = '; '.join(chinese_snippets[:3]) if chinese_snippets else ''
-                        print(f"    {sev_icon} [报告] | {cat_label} | {finding.get('description', '')}")
+                        logger.info(f"    {sev_icon} [报告] | {cat_label} | {finding.get('description', '')}")
                         if snippet_display:
-                            print(f"      中文片段: {snippet_display}")
+                            logger.info(f"      中文片段: {snippet_display}")
 
                 kg_outputs = result.get("kg_tool_outputs", [])
                 if kg_outputs and lang_code not in ("zh", "zh-cn"):
                     kg_findings = _detect_chinese_in_kg_outputs(kg_outputs, lang_code)
                     if kg_findings:
-                        print(f"  🔍 knowledge_graph_tool 返回含中文 ({len(kg_findings)} 次):")
+                        logger.info(f"  🔍 knowledge_graph_tool 返回含中文 ({len(kg_findings)} 次):")
                         for kf in kg_findings:
-                            print(f"    中文键: {kf['chinese_keys'][:5]}")
-                            print(f"    中文值示例: {kf['chinese_values'][:3]}")
-                            print(f"    中文占比: {kf['chinese_ratio']:.1%}")
+                            logger.info(f"    中文键: {kf['chinese_keys'][:5]}")
+                            logger.info(f"    中文值示例: {kf['chinese_values'][:3]}")
+                            logger.info(f"    中文占比: {kf['chinese_ratio']:.1%}")
                         rd["kg_findings"] = kg_findings
 
                 final_output_text = result.get("final_output") or ""
                 if lang_code not in ("zh", "zh-cn") and final_output_text:
                     finding = _classify_chinese_finding(final_output_text, "final_output", lang_code)
                     if finding["severity"] not in ("none",):
-                        print(f"  ❌ 最终输出含中文 (期望=%s, %s)" % (lang_code, finding.get("description", "")))
+                        logger.info(f"  ❌ 最终输出含中文 (期望=%s, %s)" % (lang_code, finding.get("description", "")))
             elif lang_code not in ("zh", "zh-cn") and _lang_follow is False:
-                print(f"  ⏭️ 语言跟随未开启，跳过中文混入检测")
+                logger.info(f"  ⏭️ 语言跟随未开启，跳过中文混入检测")
 
             # 直接用result的kg_tool_inputs，parse_acp_sse_stream里已经正确提取了！
             kg_inputs = result.get("kg_tool_inputs", [])
@@ -3472,9 +3483,9 @@ def _execute_single_run(
                 lang_param_check = _validate_kg_language_param(kg_inputs, lang_code)
                 rd["kg_lang_param_check"] = lang_param_check
                 status_icon = {"ok": "✅", "missing": "🔴", "mismatch": "🔴", "is_display_name": "🔴", "no_exec_cmd": "🟡", "no_input": "🟡"}.get(lang_param_check["status"], "❓")
-                print(f"  {status_icon} KG工具language参数检测: {lang_param_check['description']}")
+                logger.info(f"  {status_icon} KG工具language参数检测: {lang_param_check['description']}")
                 if lang_param_check.get("exec_cmd"):
-                    print(f"    执行命令: {lang_param_check['exec_cmd']}")
+                    logger.info(f"    执行命令: {lang_param_check['exec_cmd']}")
 
             kg_outputs_all = result.get("kg_tool_outputs", [])
             if kg_outputs_all:
@@ -3482,7 +3493,7 @@ def _execute_single_run(
                 rd["kg_output_lang_check"] = output_lang_check
                 if output_lang_check["status"] not in ("no_output", "skip_zh"):
                     ol_icon = {"ok": "✅", "mismatch": "🔴"}.get(output_lang_check["status"], "❓")
-                    print(f"  {ol_icon} KG工具输出语言匹配: {output_lang_check['description']}")
+                    logger.info(f"  {ol_icon} KG工具输出语言匹配: {output_lang_check['description']}")
 
             rd["wos_count"] = run_script_stats.get("work_order_sync.py", {}).get("count", 0)
             rd["script_call_details"] = result.get("script_call_details", [])
@@ -3549,21 +3560,21 @@ def _execute_single_run(
                     "status": "ok" if not unsuppressed_tools_found else "leak",
                 }
                 if suppressed_tools_found:
-                    print(f"  🔇 ACP输出过滤生效: {', '.join(suppressed_tools_found)} 的输出已被抑制")
+                    logger.info(f"  🔇 ACP输出过滤生效: {', '.join(suppressed_tools_found)} 的输出已被抑制")
                 if unsuppressed_tools_found:
-                    print(f"  ⚠️ ACP输出过滤泄漏: {', '.join(unsuppressed_tools_found)} 的输出未被过滤")
+                    logger.info(f"  ⚠️ ACP输出过滤泄漏: {', '.join(unsuppressed_tools_found)} 的输出未被过滤")
 
     except Exception as e:
         elapsed = time.time() - start_ts
-        print(f"  请求异常: {e}")
+        logger.info(f"  请求异常: {e}")
         rd["elapsed"] = elapsed
         rd["error"] = str(e)
 
     rd["failure_details"] = _read_snapshot_failures(session_id)
     if rd["failure_details"]:
-        print(f"  ❌ 捕获到 {len(rd['failure_details'])} 个失败事件:")
+        logger.info(f"  ❌ 捕获到 {len(rd['failure_details'])} 个失败事件:")
         for fd in rd["failure_details"]:
-            print(f"     [{fd['type']}] {fd.get('tool_name', '')}: {fd['error'][:120]}")
+            logger.info(f"     [{fd['type']}] {fd.get('tool_name', '')}: {fd['error'][:120]}")
 
     rd["duration_str"] = format_duration(rd["elapsed"])
 
@@ -3585,17 +3596,17 @@ def run_tests():
         mode_label = f"ACP/{ACP_SUBMODE}"
     else:
         mode_label = "Agentic"
-    print(f"开始测试... [{mode_label}] -> {BASE_URL}")
+    logger.info(f"开始测试... [{mode_label}] -> {BASE_URL}")
 
     lang_follow = _check_lang_follow_enabled()
     target_lang_code = ACP_LANG or _resolve_test_language() or "zh"
     target_lang_display = get_lang_display_name(target_lang_code)
     if lang_follow is True:
-        print(f"🌐 语言跟随: 已开启 — 输出目标语言为 {target_lang_display} ({target_lang_code})，将执行中文混入检测")
+        logger.info(f"🌐 语言跟随: 已开启 — 输出目标语言为 {target_lang_display} ({target_lang_code})，将执行中文混入检测")
     elif lang_follow is False:
-        print(f"🌐 语言跟随: 未开启 — 跳过中文混入检测 (Agent 输出可能包含中文)")
+        logger.info(f"🌐 语言跟随: 未开启 — 跳过中文混入检测 (Agent 输出可能包含中文)")
     else:
-        print(f"🌐 语言跟随: 无法检测 — 默认执行中文混入检测")
+        logger.info(f"🌐 语言跟随: 无法检测 — 默认执行中文混入检测")
 
     # ACP 输出过滤设置
     acp_suppress_original = ""
@@ -3604,12 +3615,12 @@ def run_tests():
         acp_suppress_original = _get_acp_suppress_patterns()
         acp_suppress_set = _set_acp_suppress_patterns(ACP_SUPPRESS_SCRIPT_PATTERNS)
         if acp_suppress_set:
-            print(f"🔧 ACP 输出过滤: 已设置 acp_suppress_script_patterns = '{ACP_SUPPRESS_SCRIPT_PATTERNS}' (原值: '{acp_suppress_original}')")
+            logger.info(f"🔧 ACP 输出过滤: 已设置 acp_suppress_script_patterns = '{ACP_SUPPRESS_SCRIPT_PATTERNS}' (原值: '{acp_suppress_original}')")
         else:
-            print(f"⚠️ ACP 输出过滤: 设置失败，将使用服务端默认值")
+            logger.info(f"⚠️ ACP 输出过滤: 设置失败，将使用服务端默认值")
     elif API_MODE == "acp":
         current_patterns = _get_acp_suppress_patterns()
-        print(f"🔧 ACP 输出过滤: 未配置 ACP_SUPPRESS_SCRIPT_PATTERNS，使用服务端当前值: '{current_patterns}'")
+        logger.info(f"🔧 ACP 输出过滤: 未配置 ACP_SUPPRESS_SCRIPT_PATTERNS，使用服务端当前值: '{current_patterns}'")
 
     log_baseline = _get_log_line_count()
     successful_run_ids: list[str] = []
@@ -3658,12 +3669,12 @@ def run_tests():
     _ensure_xlsx(wb)
     wb.save(xlsx_path)
     _current_xlsx_path = xlsx_path
-    print(f"📁 本次测试结果目录: {run_dir}")
-    print(f"📊 Excel: {xlsx_path}")
+    logger.info(f"📁 本次测试结果目录: {run_dir}")
+    logger.info(f"📊 Excel: {xlsx_path}")
 
     for question_idx, q in enumerate(QUESTIONS):
         if TEST_QUESTION_LIMIT > 0 and question_idx >= TEST_QUESTION_LIMIT:
-            print(f"\n  达到问题数量限制 ({TEST_QUESTION_LIMIT})，跳过剩余问题。")
+            logger.info(f"\n  达到问题数量限制 ({TEST_QUESTION_LIMIT})，跳过剩余问题。")
             break
         sheet_name = q["sheet"]
         lang_code = q.get("lang", "zh")
@@ -3672,10 +3683,10 @@ def run_tests():
         ws = wb[sheet_name]
         style_cell = _get_style_template(ws) or _get_default_style_cell()
 
-        print(f"\n{'='*70}")
-        print(f"开始测试: {sheet_name} [{lang_display} ({lang_code})]")
-        print(f"问题: {message}")
-        print(f"{'='*70}")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"开始测试: {sheet_name} [{lang_display} ({lang_code})]")
+        logger.info(f"问题: {message}")
+        logger.info(f"{'='*70}")
 
         total_seconds = 0.0
         success_count = 0
@@ -3694,7 +3705,7 @@ def run_tests():
         total_avg_inter_token_latency = 0.0
 
         if RUNS_EXECUTION_MODE == "parallel" and RUNS_PER_QUESTION > 1:
-            print(f"\n  ⚡ 并行执行模式: {RUNS_PER_QUESTION} 次, 最大并发 {RUNS_MAX_CONCURRENCY}")
+            logger.info(f"\n  ⚡ 并行执行模式: {RUNS_PER_QUESTION} 次, 最大并发 {RUNS_MAX_CONCURRENCY}")
             excel_lock = threading.Lock()
             run_results: list[dict] = []
 
@@ -3714,7 +3725,7 @@ def run_tests():
                         run_results.append(rd)
                     except Exception as e:
                         i = future_map[future]
-                        print(f"  ❌ 第 {i} 次执行线程异常: {e}")
+                        logger.info(f"  ❌ 第 {i} 次执行线程异常: {e}")
 
             run_results.sort(key=lambda x: x["run_index"])
 
@@ -3753,7 +3764,7 @@ def run_tests():
                     _write_cell(ws, row_idx, 12, f"{lang_display}({lang_code})", style_cell)
                     wb.save(_current_xlsx_path)
 
-                print(f"  数据已写入第 {row_idx} 行")
+                logger.info(f"  数据已写入第 {row_idx} 行")
 
                 if rd["success"]:
                     success_count += 1
@@ -3832,7 +3843,7 @@ def run_tests():
 
         else:
             if RUNS_PER_QUESTION > 1:
-                print(f"\n  🔗 串行执行模式: {RUNS_PER_QUESTION} 次")
+                logger.info(f"\n  🔗 串行执行模式: {RUNS_PER_QUESTION} 次")
 
             for i in range(1, RUNS_PER_QUESTION + 1):
                 row_idx = start_row + i - 1
@@ -3871,7 +3882,7 @@ def run_tests():
                 _write_cell(ws, row_idx, 11, run_avg_inter_token_latency, style_cell)
                 _write_cell(ws, row_idx, 12, f"{lang_display}({lang_code})", style_cell)
                 wb.save(_current_xlsx_path)
-                print(f"  数据已写入第 {row_idx} 行")
+                logger.info(f"  数据已写入第 {row_idx} 行")
 
                 if rd["success"]:
                     success_count += 1
@@ -3980,7 +3991,7 @@ def run_tests():
         _write_cell(ws, avg_row, 12, f"{lang_display}({lang_code})", style_cell)
 
         wb.save(_current_xlsx_path)
-        print(f"\n{sheet_name} 完成: 平均耗时 {avg_duration_str}, 成功 {success_count}/{RUNS_PER_QUESTION}")
+        logger.info(f"\n{sheet_name} 完成: 平均耗时 {avg_duration_str}, 成功 {success_count}/{RUNS_PER_QUESTION}")
 
         global_total_seconds += total_seconds
         global_total_tokens += total_tokens_sum
@@ -4008,53 +4019,53 @@ def run_tests():
     global_avg_duration_str = format_duration(global_avg_seconds)
     global_avg_tokens = global_total_tokens / global_total_runs if global_total_runs > 0 else 0
 
-    print(f"\n{'='*70}")
-    print("所有测试完成！结果已保存到 Excel 文件。")
-    print(f"{'='*70}")
-    print(f"\n{'='*70}")
-    print(f"📊 全局统计汇总")
-    print(f"  总问题数: {len(QUESTIONS)}")
-    print(f"  总执行次数: {global_total_runs}")
-    print(f"  全局平均耗时: {global_avg_duration_str} ({global_avg_seconds:.2f}s)")
-    print(f"  全局平均 Tokens: {round(global_avg_tokens, 0)}")
-    print(f"  全局成功率: {global_success_count}/{global_total_runs} ({global_success_count / global_total_runs * 100:.1f}%)" if global_total_runs > 0 else "")
-    print(f"{'='*70}")
+    logger.info(f"\n{'='*70}")
+    logger.info("所有测试完成！结果已保存到 Excel 文件。")
+    logger.info(f"{'='*70}")
+    logger.info(f"\n{'='*70}")
+    logger.info(f"📊 全局统计汇总")
+    logger.info(f"  总问题数: {len(QUESTIONS)}")
+    logger.info(f"  总执行次数: {global_total_runs}")
+    logger.info(f"  全局平均耗时: {global_avg_duration_str} ({global_avg_seconds:.2f}s)")
+    logger.info(f"  全局平均 Tokens: {round(global_avg_tokens, 0)}")
+    logger.info(f"  全局成功率: {global_success_count}/{global_total_runs} ({global_success_count / global_total_runs * 100:.1f}%)" if global_total_runs > 0 else "")
+    logger.info(f"{'='*70}")
 
-    print(f"\n{'='*70}")
-    print(f"📊 额外统计")
-    print(f"{'='*70}")
+    logger.info(f"\n{'='*70}")
+    logger.info(f"📊 额外统计")
+    logger.info(f"{'='*70}")
 
-    print(f"\n--- 1、前4个问题统计 ---")
+    logger.info(f"\n--- 1、前4个问题统计 ---")
     if first4_total_runs > 0:
         first4_avg = first4_total_seconds / first4_total_runs
-        print(f"  前4个问题执行总耗时: {format_duration(first4_total_seconds)} ({first4_total_seconds:.2f}s)")
-        print(f"  执行 {first4_total_runs} 次, 平均执行时间: {format_duration(first4_avg)} ({first4_avg:.2f}s)")
+        logger.info(f"  前4个问题执行总耗时: {format_duration(first4_total_seconds)} ({first4_total_seconds:.2f}s)")
+        logger.info(f"  执行 {first4_total_runs} 次, 平均执行时间: {format_duration(first4_avg)} ({first4_avg:.2f}s)")
     else:
-        print(f"  无前4个问题数据")
+        logger.info(f"  无前4个问题数据")
 
-    print(f"\n--- 2、后面所有问题统计 ---")
+    logger.info(f"\n--- 2、后面所有问题统计 ---")
     if rest_total_runs > 0:
         rest_avg = rest_total_seconds / rest_total_runs
-        print(f"  后面所有问题执行总耗时: {format_duration(rest_total_seconds)} ({rest_total_seconds:.2f}s)")
-        print(f"  执行 {rest_total_runs} 次, 平均执行时间: {format_duration(rest_avg)} ({rest_avg:.2f}s)")
+        logger.info(f"  后面所有问题执行总耗时: {format_duration(rest_total_seconds)} ({rest_total_seconds:.2f}s)")
+        logger.info(f"  执行 {rest_total_runs} 次, 平均执行时间: {format_duration(rest_avg)} ({rest_avg:.2f}s)")
     else:
-        print(f"  无后面问题数据")
+        logger.info(f"  无后面问题数据")
 
-    print(f"\n--- 3、首token时延 & 增量token时延 ---")
+    logger.info(f"\n--- 3、首token时延 & 增量token时延 ---")
     total_successful_runs = first4_success_count + rest_success_count
     total_ftl = first4_total_first_token_latency + rest_total_first_token_latency
     total_aitl = first4_total_avg_inter_token_latency + rest_total_avg_inter_token_latency
     if total_successful_runs > 0:
-        print(f"  平均首Token时延: {total_ftl / total_successful_runs:.3f}s")
-        print(f"  平均增量Token时延: {total_aitl / total_successful_runs:.3f}s")
+        logger.info(f"  平均首Token时延: {total_ftl / total_successful_runs:.3f}s")
+        logger.info(f"  平均增量Token时延: {total_aitl / total_successful_runs:.3f}s")
     else:
-        print(f"  无成功执行数据")
+        logger.info(f"  无成功执行数据")
 
     def _print_script_stats(script_name: str):
         details = global_script_run_details.get(script_name, [])
         total_calls = len(details)
         if total_calls == 0:
-            print(f"  {script_name}: 未执行")
+            logger.info(f"  {script_name}: 未执行")
             return
         all_ms = [d.get("elapsed_ms", 0) for d in details]
         fail_details = [d for d in details if d.get("status") == "error"]
@@ -4064,32 +4075,32 @@ def run_tests():
         if any(ms > 0 for ms in all_ms):
             avg_ms = sum(all_ms) / total_calls
             max_ms = max(all_ms)
-            print(f"  {script_name}:")
-            print(f"    总执行: {total_calls} 次, 平均: {avg_ms/1000:.2f}s, 最慢: {max_ms/1000:.2f}s, 失败: {fail_count} 次")
+            logger.info(f"  {script_name}:")
+            logger.info(f"    总执行: {total_calls} 次, 平均: {avg_ms/1000:.2f}s, 最慢: {max_ms/1000:.2f}s, 失败: {fail_count} 次")
             if success_count > 0:
                 success_ms = [d.get("elapsed_ms", 0) for d in success_details]
                 success_avg = sum(success_ms) / success_count
                 success_max = max(success_ms)
-                print(f"    排除失败: {success_count} 次, 平均: {success_avg/1000:.2f}s, 最慢: {success_max/1000:.2f}s")
+                logger.info(f"    排除失败: {success_count} 次, 平均: {success_avg/1000:.2f}s, 最慢: {success_max/1000:.2f}s")
             else:
-                print(f"    排除失败: 0 次")
+                logger.info(f"    排除失败: 0 次")
         else:
-            print(f"  {script_name}:")
-            print(f"    总执行: {total_calls} 次, 失败: {fail_count} 次")
+            logger.info(f"  {script_name}:")
+            logger.info(f"    总执行: {total_calls} 次, 失败: {fail_count} 次")
             if success_count > 0:
                 result_lengths = [d.get("result_length", 0) for d in success_details]
-                print(f"    排除失败: {success_count} 次, 平均结果长度: {sum(result_lengths)/success_count:.0f}")
+                logger.info(f"    排除失败: {success_count} 次, 平均结果长度: {sum(result_lengths)/success_count:.0f}")
 
-    print(f"\n--- 4、knowledge_graph_tool.py 执行统计 ---")
+    logger.info(f"\n--- 4、knowledge_graph_tool.py 执行统计 ---")
     _print_script_stats("knowledge_graph_tool.py")
 
-    print(f"\n--- 5、mindsdb_tool.py 执行统计 ---")
+    logger.info(f"\n--- 5、mindsdb_tool.py 执行统计 ---")
     _print_script_stats("business_data_search.py")
 
-    print(f"\n--- 5.5、work_order_sync.py 执行统计 ---")
+    logger.info(f"\n--- 5.5、work_order_sync.py 执行统计 ---")
     _print_script_stats("work_order_sync.py")
 
-    print(f"\n--- 5.6、飞轮问题 work_order_sync.py 覆盖检测 ---")
+    logger.info(f"\n--- 5.6、飞轮问题 work_order_sync.py 覆盖检测 ---")
     flywheel_sheets = [f"问题{i}" for i in range(1, 5)]
     has_flywheel_data = any(s in flywheel_wos_track for s in flywheel_sheets)
     if has_flywheel_data:
@@ -4097,31 +4108,31 @@ def run_tests():
         for sheet in flywheel_sheets:
             track = flywheel_wos_track.get(sheet)
             if not track:
-                print(f"  🔴 {sheet}: 未执行 (缺少飞轮数据)")
+                logger.info(f"  🔴 {sheet}: 未执行 (缺少飞轮数据)")
                 all_wos_ok = False
                 continue
             runs = track["runs"]
             wos_calls = track["wos_calls"]
             if wos_calls == 0:
-                print(f"  🔴 {sheet}: 执行 {runs} 次, work_order_sync.py 未被调用 (异常!)")
+                logger.info(f"  🔴 {sheet}: 执行 {runs} 次, work_order_sync.py 未被调用 (异常!)")
                 all_wos_ok = False
             else:
                 coverage = runs / runs * 100 if runs > 0 else 0
-                print(f"  ✅ {sheet}: 执行 {runs} 次, work_order_sync.py 调用 {wos_calls} 次 (覆盖率 {coverage:.0f}%)")
+                logger.info(f"  ✅ {sheet}: 执行 {runs} 次, work_order_sync.py 调用 {wos_calls} 次 (覆盖率 {coverage:.0f}%)")
         if all_wos_ok:
-            print(f"  ✅ 所有飞轮问题均正常调用 work_order_sync.py")
+            logger.info(f"  ✅ 所有飞轮问题均正常调用 work_order_sync.py")
         else:
-            print(f"  ⚠️ 存在飞轮问题未调用 work_order_sync.py，请检查!")
+            logger.info(f"  ⚠️ 存在飞轮问题未调用 work_order_sync.py，请检查!")
     else:
-        print(f"  (无飞轮问题执行数据，跳过检测)")
+        logger.info(f"  (无飞轮问题执行数据，跳过检测)")
 
     _lang_follow_final = _check_lang_follow_enabled()
     if _lang_follow_final is False:
-        print(f"\n--- 6、中文混入检测 (最低严重度: {CHINESE_DETECT_MIN_SEVERITY}) ---")
-        print(f"  ⏭️ 语言跟随未开启，跳过中文混入检测")
-        print(f"  💡 提示: 开启前端「语言跟随」后，Agent 输出将跟随用户语言，此时再进行中文混入检测")
+        logger.info(f"\n--- 6、中文混入检测 (最低严重度: {CHINESE_DETECT_MIN_SEVERITY}) ---")
+        logger.info(f"  ⏭️ 语言跟随未开启，跳过中文混入检测")
+        logger.info(f"  💡 提示: 开启前端「语言跟随」后，Agent 输出将跟随用户语言，此时再进行中文混入检测")
     else:
-        print(f"\n--- 6、中文混入检测 (最低严重度: {CHINESE_DETECT_MIN_SEVERITY}) ---")
+        logger.info(f"\n--- 6、中文混入检测 (最低严重度: {CHINESE_DETECT_MIN_SEVERITY}) ---")
         method_counts: dict[str, int] = defaultdict(int)
         for entry in chinese_intrusion_log:
             for finding in entry.get("thinking_findings", []):
@@ -4133,7 +4144,7 @@ def run_tests():
                 method = "LLM" if "LLM" in desc else ("启发式" if "假名" in desc or "谚文" in desc else "规则")
                 method_counts[method] += 1
         method_summary = " | ".join("%s %d次" % (m, c) for m, c in sorted(method_counts.items()))
-        print(f"    本次实际使用: {method_summary}")
+        logger.info(f"    本次实际使用: {method_summary}")
         if chinese_intrusion_log:
             all_thinking: list[dict] = []
             all_output: list[dict] = []
@@ -4150,9 +4161,9 @@ def run_tests():
             }
 
             def _print_section(title, findings_list):
-                print(f"\n  === {title} ({len(findings_list)} 处) ===")
+                logger.info(f"\n  === {title} ({len(findings_list)} 处) ===")
                 if not findings_list:
-                    print(f"    ✅ 无中文混入")
+                    logger.info(f"    ✅ 无中文混入")
                     return
                 sev_counts = {"error": 0, "warn": 0, "info": 0}
                 cat_counts: dict[str, int] = defaultdict(int)
@@ -4162,17 +4173,17 @@ def run_tests():
                     if sev in sev_counts:
                         sev_counts[sev] += 1
                     cat_counts[cat] += 1
-                print(f"    🔴 严重: {sev_counts['error']} 处 | 🟡 警告: {sev_counts['warn']} 处 | ℹ️ 信息: {sev_counts['info']} 处")
+                logger.info(f"    🔴 严重: {sev_counts['error']} 处 | 🟡 警告: {sev_counts['warn']} 处 | ℹ️ 信息: {sev_counts['info']} 处")
                 for cat, count in sorted(cat_counts.items(), key=lambda x: x[1], reverse=True):
                     label = category_labels.get(cat, cat)
-                    print(f"    {label}: {count} 处")
+                    logger.info(f"    {label}: {count} 处")
                 affected_runs = set()
                 for entry in chinese_intrusion_log:
                     src = entry.get("thinking_findings", []) if "思考" in title else entry.get("output_findings", [])
                     if src:
                         affected_runs.add((entry["sheet"], entry["run"], entry["lang"]))
                 if affected_runs:
-                    print(f"    涉及 {len(affected_runs)} 次执行")
+                    logger.info(f"    涉及 {len(affected_runs)} 次执行")
 
             _print_section("思考过程 (thinking/reasoning)", all_thinking)
             _print_section("最终报告 (token.delta/final_output)", all_output)
@@ -4180,42 +4191,42 @@ def run_tests():
             if all_output:
                 output_errors = [finding for finding in all_output if finding.get("severity") == "error"]
                 if output_errors:
-                    print(f"\n  🔴 最终报告严重问题详情:")
+                    logger.info(f"\n  🔴 最终报告严重问题详情:")
                     for entry in chinese_intrusion_log:
                         entry_output_errors = [finding for finding in entry.get("output_findings", []) if finding.get("severity") == "error"]
                         if entry_output_errors:
-                            print(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):")
+                            logger.info(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):")
                             for finding in entry_output_errors:
                                 cat_label = category_labels.get(finding.get("category", ""), finding.get("category", ""))
-                                print(f"    🔴 [报告] | [{cat_label}] {finding.get('description', '')}")
+                                logger.info(f"    🔴 [报告] | [{cat_label}] {finding.get('description', '')}")
                                 chinese_snippets = re.findall(r'[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]', finding['text'])
                                 if chinese_snippets:
-                                    print(f"       中文片段: {'; '.join(chinese_snippets[:3])}")
+                                    logger.info(f"       中文片段: {'; '.join(chinese_snippets[:3])}")
 
             if all_thinking:
                 thinking_errors = [finding for finding in all_thinking if finding.get("severity") == "error"]
                 if thinking_errors:
-                    print(f"\n  🔴 思考过程严重问题详情 (仅显示前5条):")
+                    logger.info(f"\n  🔴 思考过程严重问题详情 (仅显示前5条):")
                     shown = 0
                     for entry in chinese_intrusion_log:
                         entry_thinking_errors = [finding for finding in entry.get("thinking_findings", []) if finding.get("severity") == "error"]
                         if entry_thinking_errors:
-                            print(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {len(entry_thinking_errors)} 处")
+                            logger.info(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {len(entry_thinking_errors)} 处")
                             shown += 1
                             if shown >= 5:
                                 break
         else:
-            print(f"  ✅ 未检测到中文混入")
+            logger.info(f"  ✅ 未检测到中文混入")
 
         non_zh_total = sum(RUNS_PER_QUESTION for q in QUESTIONS if q.get("lang", "zh") not in ("zh", "zh-cn"))
         if non_zh_total > 0:
             non_zh_clean = non_zh_total - len(chinese_intrusion_log)
-            print(f"  📊 非中文场景共 {non_zh_total} 次执行, 无中文混入 {non_zh_clean}/{non_zh_total} ({non_zh_clean / non_zh_total * 100:.1f}%)")
+            logger.info(f"  📊 非中文场景共 {non_zh_total} 次执行, 无中文混入 {non_zh_clean}/{non_zh_total} ({non_zh_clean / non_zh_total * 100:.1f}%)")
         else:
-            print(f"  📊 无非中文场景执行, 跳过中文混入统计")
+            logger.info(f"  📊 无非中文场景执行, 跳过中文混入统计")
 
-    print(f"\n--- 7、knowledge_graph_tool 返回中文检测 ---")
-    print(f"    本次实际使用: Unicode CJK 字符范围扫描 (U+4E00-U+9FFF), 统计 JSON 键值中的中文字符占比")
+    logger.info(f"\n--- 7、knowledge_graph_tool 返回中文检测 ---")
+    logger.info(f"    本次实际使用: Unicode CJK 字符范围扫描 (U+4E00-U+9FFF), 统计 JSON 键值中的中文字符占比")
     if kg_chinese_log:
         total_kg_runs = len(kg_chinese_log)
         all_kg_keys: list[str] = []
@@ -4226,76 +4237,76 @@ def run_tests():
                 all_kg_values.extend(kf.get("chinese_values", []))
         unique_keys = sorted(set(all_kg_keys))
         unique_values_sample = sorted(set(all_kg_values))[:10]
-        print(f"  共 {total_kg_runs} 次执行检测到 KG 工具返回含中文")
-        print(f"  中文 JSON 键名 ({len(unique_keys)} 个):")
+        logger.info(f"  共 {total_kg_runs} 次执行检测到 KG 工具返回含中文")
+        logger.info(f"  中文 JSON 键名 ({len(unique_keys)} 个):")
         for k in unique_keys:
-            print(f"    - {k}")
+            logger.info(f"    - {k}")
         if unique_values_sample:
-            print(f"  中文值示例 ({len(set(all_kg_values))} 个, 展示前10):")
+            logger.info(f"  中文值示例 ({len(set(all_kg_values))} 个, 展示前10):")
             for v in unique_values_sample:
-                print(f"    - {v}")
-        print(f"  详细记录:")
+                logger.info(f"    - {v}")
+        logger.info(f"  详细记录:")
         for entry in kg_chinese_log:
-            print(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):")
+            logger.info(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):")
             for kf in entry.get("findings", []):
-                print(f"    中文字符: {kf['chinese_char_count']} | 占比: {kf['chinese_ratio']:.1%} | 键: {kf['chinese_keys'][:5]}")
+                logger.info(f"    中文字符: {kf['chinese_char_count']} | 占比: {kf['chinese_ratio']:.1%} | 键: {kf['chinese_keys'][:5]}")
     else:
-        print(f"  ✅ knowledge_graph_tool 返回数据中未检测到中文 (或未调用该工具)")
+        logger.info(f"  ✅ knowledge_graph_tool 返回数据中未检测到中文 (或未调用该工具)")
 
-    print(f"\n--- 8、knowledge_graph_tool language参数检测 ---")
-    print(f"    本次实际使用: 解析输入参数 JSON 中的 language 字段, 与期望语言对比")
+    logger.info(f"\n--- 8、knowledge_graph_tool language参数检测 ---")
+    logger.info(f"    本次实际使用: 解析输入参数 JSON 中的 language 字段, 与期望语言对比")
     if kg_lang_param_log:
         ok_count = sum(1 for e in kg_lang_param_log if e["check"]["status"] == "ok")
         issue_count = len(kg_lang_param_log) - ok_count
-        print(f"  共 {len(kg_lang_param_log)} 次调用检测到输入参数")
-        print(f"  ✅ 参数正确: {ok_count} 次 | 🔴 参数异常: {issue_count} 次")
+        logger.info(f"  共 {len(kg_lang_param_log)} 次调用检测到输入参数")
+        logger.info(f"  ✅ 参数正确: {ok_count} 次 | 🔴 参数异常: {issue_count} 次")
         for entry in kg_lang_param_log:
             check = entry["check"]
             status = check["status"]
             icon = {"ok": "✅", "missing": "🔴", "mismatch": "🔴", "is_display_name": "🔴", "no_exec_cmd": "🟡", "no_input": "🟡"}.get(status, "❓")
-            print(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {check['description']}")
+            logger.info(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {check['description']}")
             if check.get("exec_cmd"):
-                print(f"     执行命令: {check['exec_cmd']}")
+                logger.info(f"     执行命令: {check['exec_cmd']}")
     else:
-        print(f"  (未捕获到 KG 工具输入参数，跳过检测)")
+        logger.info(f"  (未捕获到 KG 工具输入参数，跳过检测)")
 
-    print(f"\n--- 9、knowledge_graph_tool 输出语言匹配检测 ---")
-    print(f"    本次实际使用: 检测 KG 工具输出文本的语言, 与目标语言对比 (拉丁语系统一视为 en)")
+    logger.info(f"\n--- 9、knowledge_graph_tool 输出语言匹配检测 ---")
+    logger.info(f"    本次实际使用: 检测 KG 工具输出文本的语言, 与目标语言对比 (拉丁语系统一视为 en)")
     if kg_output_lang_log:
         ok_count = sum(1 for e in kg_output_lang_log if e["check"]["status"] in ("ok", "skip_zh"))
         mismatch_count = sum(1 for e in kg_output_lang_log if e["check"]["status"] == "mismatch")
         no_output_count = sum(1 for e in kg_output_lang_log if e["check"]["status"] == "no_output")
-        print(f"  共 {len(kg_output_lang_log)} 次调用检测到输出")
-        print(f"  ✅ 语言匹配: {ok_count} 次 | 🔴 语言不匹配: {mismatch_count} 次 | 🟡 无输出: {no_output_count} 次")
+        logger.info(f"  共 {len(kg_output_lang_log)} 次调用检测到输出")
+        logger.info(f"  ✅ 语言匹配: {ok_count} 次 | 🔴 语言不匹配: {mismatch_count} 次 | 🟡 无输出: {no_output_count} 次")
         for entry in kg_output_lang_log:
             check = entry["check"]
             if check["status"] in ("no_output", "skip_zh", "ok"):
                 continue
             icon = "🔴"
-            print(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {check['description']}")
+            logger.info(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {check['description']}")
             for d in check.get("details", []):
-                print(f"     检测语言={d['detected_lang']} | 目标={d['target_lang']} | 匹配={'是' if d['is_match'] else '否'}")
+                logger.info(f"     检测语言={d['detected_lang']} | 目标={d['target_lang']} | 匹配={'是' if d['is_match'] else '否'}")
     else:
-        print(f"  (未捕获到 KG 工具输出，跳过检测)")
+        logger.info(f"  (未捕获到 KG 工具输出，跳过检测)")
 
     # ACP 输出过滤检测结果
-    print(f"\n--- 10、ACP 输出过滤检测 ---")
+    logger.info(f"\n--- 10、ACP 输出过滤检测 ---")
     if acp_suppress_log:
         ok_count = sum(1 for e in acp_suppress_log if e["result"]["status"] == "ok")
         leak_count = sum(1 for e in acp_suppress_log if e["result"]["status"] == "leak")
-        print(f"  过滤模式: {ACP_SUPPRESS_SCRIPT_PATTERNS}")
-        print(f"  ✅ 过滤生效: {ok_count} 次 | ⚠️ 过滤泄漏: {leak_count} 次")
+        logger.info(f"  过滤模式: {ACP_SUPPRESS_SCRIPT_PATTERNS}")
+        logger.info(f"  ✅ 过滤生效: {ok_count} 次 | ⚠️ 过滤泄漏: {leak_count} 次")
         for entry in acp_suppress_log:
             r = entry["result"]
             icon = "✅" if r["status"] == "ok" else "⚠️"
             suppressed_str = ", ".join(r["suppressed"]) if r["suppressed"] else "无"
             unsuppressed_str = ", ".join(r["unsuppressed"]) if r["unsuppressed"] else "无"
-            print(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): 已过滤={suppressed_str}, 未过滤={unsuppressed_str}")
+            logger.info(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): 已过滤={suppressed_str}, 未过滤={unsuppressed_str}")
     else:
         if API_MODE == "acp":
-            print(f"  (未配置 ACP_SUPPRESS_SCRIPT_PATTERNS 或未触发过滤检测)")
+            logger.info(f"  (未配置 ACP_SUPPRESS_SCRIPT_PATTERNS 或未触发过滤检测)")
         else:
-            print(f"  (非 ACP 模式，跳过)")
+            logger.info(f"  (非 ACP 模式，跳过)")
 
     think_analysis = _analyze_think_process(successful_run_ids, log_baseline)
 
@@ -4369,8 +4380,9 @@ def run_tests():
             lang_display=_LANG_DISPLAY_NAMES.get(TEST_LANGUAGE, TEST_LANGUAGE),
         )
 
-    print(f"{'='*70}")
+    logger.info(f"{'='*70}")
 
 
 if __name__ == "__main__":
+    _configure_cli_logging()
     run_tests()

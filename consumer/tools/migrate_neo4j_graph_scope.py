@@ -5,10 +5,25 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Any, Mapping
+import logging
+import sys
+from typing import Any, Mapping, TextIO
+
+
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def main() -> None:
+    _configure_cli_logging(sys.stdout)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uri", required=True, help="Neo4j Bolt URI, e.g. bolt://127.0.0.1:7687")
     parser.add_argument("--username", default="neo4j")
@@ -31,7 +46,7 @@ def main() -> None:
         result = migrate_scope(driver, args)
     finally:
         driver.close()
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    logger.info(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def migrate_scope(driver: Any, args: argparse.Namespace) -> dict[str, Any]:
