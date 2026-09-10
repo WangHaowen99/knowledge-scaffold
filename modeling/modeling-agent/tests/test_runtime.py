@@ -5574,3 +5574,18 @@ def test_awaiting_user_action_settles_the_turn() -> None:
     live.situation.awaiting_user_action = True
     _absorb_awaiting_user(live, {"gate": "releasable", "blockers": []})
     assert live.situation.awaiting_user_action is True
+
+
+def test_purpose_batch_confirmation_is_not_treated_as_interjection() -> None:
+    """#36：批量确认的续跑消息走的是插话分支，会把逐份卡标记为待恢复。
+
+    它不是插话，而是同一个问题的答案：必须给出真实答案让在途的 ask 返回，
+    同时不设置 restore_interaction，否则卡片会被自动恢复推回给用户。
+    """
+    import inspect
+    from modeling_agent.service import AgentService
+
+    source = inspect.getsource(AgentService.steer)
+    assert "resolved_elsewhere = purpose_review_completed" in source
+    assert '"action": "resolved_elsewhere" if resolved_elsewhere else "interject"' in source
+    assert "restore_interaction=None if resolved_elsewhere else interaction" in source

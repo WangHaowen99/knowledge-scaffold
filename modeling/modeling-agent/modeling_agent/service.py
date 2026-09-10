@@ -2315,7 +2315,14 @@ class AgentService:
 
         interaction = self.store.pending_interaction(project_id)
         if interaction and interaction.run_id == run.id:
-            answer = {"action": "interject", "text": message}
+            # 批量确认已经把这批资料的用途落库，挂起的逐份卡问的正是同一件事：
+            # 它是被解决了，不是被插话打断，所以不能再作为「未解决的原问题」恢复。
+            # 但仍要给出真实答案让助手那次在途的 ask 调用返回，否则运行会挂住（见 #36）。
+            resolved_elsewhere = purpose_review_completed
+            answer = {
+                "action": "resolved_elsewhere" if resolved_elsewhere else "interject",
+                "text": message,
+            }
             self.store.answer_interaction(interaction.id, answer)
             self.events.publish(
                 project_id,
@@ -2328,20 +2335,23 @@ class AgentService:
                 interaction=interaction,
                 answer=answer,
                 continuation="",
-                action_key="interject",
+                action_key=str(answer["action"]),
                 requires_artifact=_answer_requires_script_artifact(interaction, answer),
             )
             resumed = await self._resume(
                 run,
                 token,
                 {interaction.tool_call_id: answer},
-                restore_interaction=interaction,
+                restore_interaction=None if resolved_elsewhere else interaction,
                 required_tools=_required_tools_for_user_intent(
                     message, situation=_situation_of(self._live.get(run.id)),
                 ),
                 autonomous_seed=True,
             )
-            return {"mode": "interjection", "run": resumed}
+            return {
+                "mode": "resolved_elsewhere" if resolved_elsewhere else "interjection",
+                "run": resumed,
+            }
 
         if execution == RUN_SUSPENDED:
             steering_id = self.store.queue_steering(project_id, run.id, message)
