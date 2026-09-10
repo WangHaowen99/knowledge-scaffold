@@ -10,6 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any, Callable
 
 from .agent import AgentBundle, build_agent, build_model, list_skills, output_budget_for_phase
@@ -220,6 +221,48 @@ PURPOSE_REVIEW_ALLOWED_TOOLS = frozenset({
 PHASE_ORDER = tuple(PHASE_LABELS)
 
 
+class Verdict(Enum):
+    """状态核对的三态结论。
+
+    UNKNOWN 不是 DENY：还没观察到状态时不能当成「确认为否」，
+    否则会把用户真实的诉求吞掉。每条规则自己声明拿不准时偏哪边，
+    依据是「猜错了哪边代价大」。
+    """
+
+    ALLOW = "allow"
+    DENY = "deny"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class RunSituation:
+    """本轮运行的权威状态快照。
+
+    决策一律读这里：要不要继续、必须调用什么工具，都由状态回答，
+    不再靠正则猜用户措辞、也不靠工具名单猜有没有干活。
+    字段只由核心工具结果回填，Python 侧不做二次推导——真相在核心侧，
+    这里重新实现一遍就会产生第二个真相源。
+
+    每个字段都配一个 *_observed 标志：还没观察到时是「拿不准」，
+    不能和「确认为否」混为一谈，否则会吞掉用户的真实诉求。
+    """
+
+    materials_observed: bool = False
+    full_read_materials: tuple[str, ...] = ()
+
+    plan_observed: bool = False
+    plan_remaining: int = 0
+    plan_next_task: str = ""
+
+    # 本轮切换过阶段但新阶段尚无产出。用于区分「刚进新阶段」和「本阶段做完了」。
+    stage_started_without_delivery: bool = False
+
+    def has_full_read_materials(self) -> Verdict:
+        if not self.materials_observed:
+            return Verdict.UNKNOWN
+        return Verdict.ALLOW if self.full_read_materials else Verdict.DENY
+
+
 @dataclass
 class LiveRun:
     run_id: str
@@ -241,17 +284,16 @@ class LiveRun:
     release_declined: bool = False
     confirmation_required: bool = False
     autonomous_seed: bool = False
-    # 受控建模计划的待办快照，由核心工具结果回填。轮次是否收尾要看计划是否真的做完，
-    # 不能只看模型连着几轮没写东西——否则已批准的计划会在纯调研轮之后被静默判成“本轮完成”。
-    plan_remaining: int = 0
-    plan_next_task: str = ""
-    # 已保存为全文精读的资料文件名。为空时任何文本里的「全文精读」都不该
-    # 强推 read_documents_fully —— 该不该精读由资料设置决定，不由措辞决定（见 #1）。
-    full_read_documents: tuple[str, ...] = ()
-    full_read_observed: bool = False
-    # 本轮切换过阶段但新阶段还没有任何产出。默认 False：不改变既有的收尾节奏，
-    # 只有确实刚切进新阶段时才放宽停滞上限（见 #35）。
-    stage_started_without_delivery: bool = False
+    # 本轮的权威状态快照。所有「要不要继续」「必须调什么工具」的判断都读它。
+    situation: RunSituation = field(default_factory=RunSituation)
+    # 被状态否决掉的强制工具，对应的说明。必须送进提示词，否则模型只会看到
+    # 「消息里提了某件事却毫无动静」，然后自己反复推敲（见 #1 的原地打转）。
+    intent_notes: list[str] = field(default_factory=list)
+    # 打转检测的痕迹：最近若干次(工具,参数)指纹，以及每轮输出的指纹。
+    # 「没产出」和「卡住」是两件事——今天见过助手逐字重复同一段推理却因为
+    # 期间调过写工具而不被计为停滞，现有机制对真打转完全无感（见 #35 讨论）。
+    recent_tool_calls: list[str] = field(default_factory=list)
+    recent_outputs: list[str] = field(default_factory=list)
     tool_summaries: list[str] = field(default_factory=list)
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasoning_chars_published: int = 0
@@ -529,6 +571,74 @@ _LANGUAGE_REMINDER = (
     "\n\n【输出语言】本轮的内部推理和用户可见正文都必须使用简体中文。"
     "不要用英文推理，也不要中英混写整句；工具名、字段名、表名、代码标识符保留原文。"
 )
+
+
+LOOP_TOOL_REPEAT_THRESHOLD = 3
+LOOP_OUTPUT_REPEAT_THRESHOLD = 2
+LOOP_TRACE_WINDOW = 12
+
+
+def _fingerprint(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _situation_of(live: LiveRun | None) -> RunSituation | None:
+    """还没有活动运行时返回 None，让规则按「拿不准」处理。"""
+    return live.situation if live is not None else None
+
+
+def _record_tool_call(live: LiveRun, name: str, args: Any) -> None:
+    live.recent_tool_calls.append(f"{name}:{_fingerprint(args)}")
+    del live.recent_tool_calls[:-LOOP_TRACE_WINDOW]
+
+
+def _record_turn_output(live: LiveRun, output: str) -> None:
+    text = " ".join(str(output or "").split())
+    if not text:
+        return
+    live.recent_outputs.append(_fingerprint(text))
+    del live.recent_outputs[:-LOOP_TRACE_WINDOW]
+
+
+def _detect_loop(live: LiveRun) -> str:
+    """识别真正的原地打转，返回原因；不是打转则返回空串。
+
+    与「没产出」区分开：没产出可能只是在取证准备，而同一调用或同一段输出
+    反复出现才是卡住。后者原有机制完全检测不到——只要期间碰巧写过一次，
+    停滞计数就归零，可以一直转下去。
+    """
+    if live.recent_tool_calls:
+        latest = live.recent_tool_calls[-1]
+        repeats = 0
+        for item in reversed(live.recent_tool_calls):
+            if item != latest:
+                break
+            repeats += 1
+        if repeats >= LOOP_TOOL_REPEAT_THRESHOLD:
+            return f"连续 {repeats} 次以相同参数调用同一工具"
+    if len(live.recent_outputs) > LOOP_OUTPUT_REPEAT_THRESHOLD:
+        latest = live.recent_outputs[-1]
+        repeats = sum(1 for item in live.recent_outputs if item == latest)
+        if repeats > LOOP_OUTPUT_REPEAT_THRESHOLD:
+            return f"连续 {repeats} 轮产出完全相同的内容"
+    return ""
+
+
+def _with_intent_notes(live: LiveRun, query: Any) -> Any:
+    """把被状态否决的强制工具说明并进本轮 query，消费一次即清空。
+
+    否决如果静默发生，模型只会看到「消息里提了某件事却毫无动静」，
+    然后在矛盾里反复推敲——这正是 #1 现场那段逐字重复的推理。
+    """
+    if not live.intent_notes:
+        return query
+    notes = "\n".join(f"- {note}" for note in dict.fromkeys(live.intent_notes))
+    live.intent_notes.clear()
+    if not isinstance(query, str):
+        return query
+    return f"{query}\n\n【状态核对】\n{notes}"
 
 
 def _with_language_reminder(query: Any) -> Any:
@@ -2004,10 +2114,12 @@ class AgentService:
         self.events.publish(run.project_id, run.id, "interaction", {"id": interaction.id, "status": "answered", "answer": answer})
         self.events.publish(run.project_id, run.id, "message", {"role": "user", "blocks": [{"type": "answer", "interactionId": interaction.id, "answer": answer}]})
         answer_text = json.dumps(answer, ensure_ascii=False)
+        live_for_answer = self._live.get(interaction.run_id)
         required_tools = _required_tools_for_user_intent(
             f"{interaction.payload.get('question') or ''}\n{answer_text}",
             # 问题文案出自助手，只有专家的回答才代表用户要求全文精读。
             full_read_text=answer_text,
+            situation=live_for_answer.situation if live_for_answer else None,
         )
         constraint_prompt = (
             _required_text_prompt(required_text_constraint)
@@ -2190,7 +2302,9 @@ class AgentService:
                 token,
                 {interaction.tool_call_id: answer},
                 restore_interaction=interaction,
-                required_tools=_required_tools_for_user_intent(message),
+                required_tools=_required_tools_for_user_intent(
+                    message, situation=_situation_of(self._live.get(run.id)),
+                ),
                 autonomous_seed=True,
             )
             return {"mode": "interjection", "run": resumed}
@@ -2201,7 +2315,9 @@ class AgentService:
                 run,
                 token,
                 message,
-                required_tools=_required_tools_for_user_intent(message),
+                required_tools=_required_tools_for_user_intent(
+                    message, situation=_situation_of(self._live.get(run.id)),
+                ),
                 autonomous_seed=True,
             )
             self.store.mark_steering_delivered(steering_id)
@@ -2233,9 +2349,9 @@ class AgentService:
         steering_id = self.store.queue_steering(project_id, run.id, message)
         live.token = token
         live.stable_read_cache.clear()
-        live.required_tools.update(
-            _drop_unbacked_full_read(live, _required_tools_for_user_intent(message))
-        )
+        live.required_tools.update(_required_tools_for_user_intent(
+            message, situation=live.situation, notes=live.intent_notes,
+        ))
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
         )
@@ -2583,6 +2699,7 @@ class AgentService:
         _absorb_plan_progress(live, result)
         _absorb_reading_modes(live, result)
         _absorb_stage_delivery(live, name, result)
+        _record_tool_call(live, name, arguments)
         if name == "create_change_plan":
             consume = getattr(self._gateway, "acceptance_fault", None)
             fault: dict[str, Any] = {}
@@ -3553,11 +3670,19 @@ class AgentService:
                 # 确定性验证都没有计划，不能因此就用紧上限把它们判成没事可做。
                 stall_budget = (
                     MAX_STALLED_PLAN_CONTINUATIONS
-                    if (live.plan_remaining or live.stage_started_without_delivery)
+                    if (live.situation.plan_remaining or live.situation.stage_started_without_delivery)
                     else MAX_STALLED_CONTINUATIONS
                 )
+                # 打转和没产出是两回事：没产出可能只是在取证，打转才是真卡住。
+                # 检测到打转直接收尾，不受上面放宽的停滞预算保护。
+                loop_reason = _detect_loop(live)
+                if loop_reason:
+                    logger.warning(
+                        "autonomous loop detected run=%s reason=%s", run.id, loop_reason,
+                    )
                 if (
                     autonomous
+                    and not loop_reason
                     and continuations < MAX_AUTONOMOUS_CONTINUATIONS
                     and stalled < stall_budget
                 ):
@@ -3566,7 +3691,7 @@ class AgentService:
                         run.project_id, live, stalled=stalled,
                     )
                     continue
-                if live.plan_remaining:
+                if live.situation.plan_remaining:
                     self._publish_plan_incomplete_activity(live, run, stalled=stalled)
 
                 result = await self._ensure_visible_result(
@@ -3659,7 +3784,7 @@ class AgentService:
         *,
         operation_id: str,
     ) -> dict[str, Any]:
-        query = _with_language_reminder(query)
+        query = _with_intent_notes(live, _with_language_reminder(query))
         acceptance_fault = await self._consume_acceptance_model_fault(run, live.token)
         acceptance_attempt = 0
         while True:
@@ -3884,11 +4009,11 @@ class AgentService:
     ) -> str:
         state = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
         plan_hint = ""
-        if live is not None and live.plan_remaining:
-            next_task = f"，下一项是「{live.plan_next_task}」" if live.plan_next_task else ""
+        if live is not None and live.situation.plan_remaining:
+            next_task = f"，下一项是「{live.situation.plan_next_task}」" if live.situation.plan_next_task else ""
             plan_hint = (
                 f"\n# 受控建模计划待办\n"
-                f"计划还有 {live.plan_remaining} 项必选任务没有形成候选{next_task}。\n"
+                f"计划还有 {live.situation.plan_remaining} 项必选任务没有形成候选{next_task}。\n"
             )
             if stalled:
                 plan_hint += (
@@ -3917,16 +4042,16 @@ class AgentService:
 
         否则界面只显示“本轮完成”，用户无法区分“真做完了”和“连着几轮没写东西被判停”。
         """
-        next_task = f"，下一项是「{live.plan_next_task}」" if live.plan_next_task else ""
+        next_task = f"，下一项是「{live.situation.plan_next_task}」" if live.situation.plan_next_task else ""
         self.events.publish(run.project_id, run.id, "tool", {
             "name": "change_plan_incomplete",
             "phase": "waiting",
             "summary": (
-                f"本轮结束时建模计划还有 {live.plan_remaining} 项必选任务没有形成候选{next_task}；"
+                f"本轮结束时建模计划还有 {live.situation.plan_remaining} 项必选任务没有形成候选{next_task}；"
                 f"已连续 {stalled} 轮没有写入候选。可以直接发消息让助手继续，或说明需要调整的地方。"
             ),
-            "planRemaining": live.plan_remaining,
-            "planNextTask": live.plan_next_task,
+            "planRemaining": live.situation.plan_remaining,
+            "planNextTask": live.situation.plan_next_task,
             "stalledRounds": stalled,
         })
 
@@ -4253,6 +4378,7 @@ class AgentService:
 
         raw_output = "".join(output_parts) or "".join(answer_parts)
         output = "".join(visible_parts) or sanitize_visible_text(raw_output)
+        _record_turn_output(live, output)
         if output and not emitted and not _missing_required_tools(live):
             self.events.publish(run.project_id, run.id, "message_delta", {
                 "messageId": message_id,
@@ -4639,24 +4765,10 @@ _STAGE_DELIVERY_TOOLS = frozenset(
 
 def _absorb_stage_delivery(live: LiveRun, name: str, result: Any) -> None:
     if name == "transition_project_state":
-        live.stage_started_without_delivery = True
+        live.situation.stage_started_without_delivery = True
         return
     if name in _STAGE_DELIVERY_TOOLS:
-        live.stage_started_without_delivery = False
-
-
-def _drop_unbacked_full_read(live: LiveRun, required: set[str]) -> set[str]:
-    """已经观察到资料设置、且没有任何资料是 full 时，撤掉全文精读的强制要求。
-
-    该不该整篇读取由资料的 reading_mode 决定；文本里出现「全文精读」只是措辞，
-    不足以让服务端把一份大文档整篇灌进上下文（见 #1）。还没观察到设置时保持原状，
-    以免把用户真实的精读诉求吞掉。
-    """
-    if "read_documents_fully" not in required:
-        return required
-    if not live.full_read_observed or live.full_read_documents:
-        return required
-    return {tool for tool in required if tool != "read_documents_fully"}
+        live.situation.stage_started_without_delivery = False
 
 
 def _absorb_reading_modes(live: LiveRun, result: Any) -> None:
@@ -4680,8 +4792,8 @@ def _absorb_reading_modes(live: LiveRun, result: Any) -> None:
         filename = str(item.get("filename") or "").strip()
         if mode == "full" and filename:
             names.append(filename)
-    live.full_read_documents = tuple(dict.fromkeys(names))
-    live.full_read_observed = True
+    live.situation.full_read_materials = tuple(dict.fromkeys(names))
+    live.situation.materials_observed = True
 
 
 def _absorb_plan_progress(live: LiveRun, result: Any) -> None:
@@ -4696,9 +4808,9 @@ def _absorb_plan_progress(live: LiveRun, result: Any) -> None:
     remaining = plan.get("remaining_count")
     if not isinstance(remaining, int) or isinstance(remaining, bool):
         return
-    live.plan_remaining = max(0, remaining)
-    live.plan_next_task = ""
-    if not live.plan_remaining:
+    live.situation.plan_remaining = max(0, remaining)
+    live.situation.plan_next_task = ""
+    if not live.situation.plan_remaining:
         return
     tasks = plan.get("tasks")
     if not isinstance(tasks, list):
@@ -4709,11 +4821,59 @@ def _absorb_plan_progress(live: LiveRun, result: Any) -> None:
             continue
         if str(task.get("status") or "") in settled:
             continue
-        live.plan_next_task = str(task.get("title") or "")
+        live.situation.plan_next_task = str(task.get("title") or "")
         return
 
 
-def _required_tools_for_user_intent(text: str, *, full_read_text: str | None = None) -> set[str]:
+@dataclass(frozen=True)
+class IntentRule:
+    """一条「文本线索 → 强制工具」规则，外加一道状态否决权。
+
+    文本只提供线索，状态拥有否决权：命中关键词只说明「可能要做这件事」，
+    这件事在当前状态下成不成立由 precondition 判断。缺了这一层，
+    一句由前端代发、复述已保存设置的模板文案就能把大文档整篇灌进上下文（见 #1）。
+    """
+
+    name: str
+    requires: frozenset[str]
+    # 拿不准时偏哪边，依据是「猜错了哪边代价大」
+    unknown_default: Verdict = Verdict.ALLOW
+    precondition: Callable[[RunSituation], Verdict] | None = None
+    unmet_note: str = ""
+
+    def verdict(self, situation: RunSituation) -> Verdict:
+        if self.precondition is None:
+            return Verdict.ALLOW
+        result = self.precondition(situation)
+        return self.unknown_default if result is Verdict.UNKNOWN else result
+
+
+_FULL_READ_RULE = IntentRule(
+    name="full_read",
+    requires=frozenset({"set_material_directive", "read_documents_fully"}),
+    # 宁可多读一次，也不能吞掉用户真实的精读诉求
+    unknown_default=Verdict.ALLOW,
+    precondition=lambda situation: situation.has_full_read_materials(),
+    unmet_note=(
+        "你提到了全文精读，但当前没有任何资料被设为全文精读，所有资料都是按需读取。"
+        "如果确实需要整篇读取，请先用 set_material_directive 调整该资料的阅读方式，"
+        "不要直接调用全文精读。"
+    ),
+)
+
+
+def _required_tools_for_user_intent(
+    text: str,
+    *,
+    full_read_text: str | None = None,
+    situation: RunSituation | None = None,
+    notes: list[str] | None = None,
+) -> set[str]:
+    """返回本轮必须执行的工具；被状态否决的规则把说明追加到 notes。
+
+    否决必须留痕：静默撤销会让模型读到「消息里提了精读却没有任何动静」，
+    今天就见过它为此反复推敲、原地打转。把原因递出去它才能自己改对（见 #23 的经验）。
+    """
     value = str(text or "")
     # 全文精读的判定来源可以与其它意图分开：交互问题文案由助手撰写，
     # 里面复述已保存设置的「需要全文精读」不是用户诉求，不能据此强制拉起精读（见 #1）。
@@ -4730,7 +4890,11 @@ def _required_tools_for_user_intent(text: str, *, full_read_text: str | None = N
     if _EVALUATION_RESULT_INTENT.search(value):
         required.add("get_evaluation_results")
     if _FULL_READ_INTENT.search(full_read_value):
-        required.update({"set_material_directive", "read_documents_fully"})
+        if _FULL_READ_RULE.verdict(situation or RunSituation()) is Verdict.DENY:
+            if notes is not None:
+                notes.append(_FULL_READ_RULE.unmet_note)
+        else:
+            required.update(_FULL_READ_RULE.requires)
     elif _MATERIAL_DIRECTIVE_INTENT.search(value):
         required.add("set_material_directive")
     if _document_rule_change_requested(value):

@@ -9,6 +9,7 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
+import modeling_agent.service as service_module
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from modeling_agent.agent import _system_prompt, build_model, context_engine_config, output_budget_for_phase
 from modeling_agent.rails import (
@@ -53,6 +54,9 @@ async def test_schema_semantic_confirmation_does_not_require_relation_suggestion
         attempted_tools={"suggest_object_relations"},
         observed_tools={"suggest_object_relations"},
         stable_read_cache={"stale": {"ok": True}},
+        situation=service_module.RunSituation(),
+        recent_tool_calls=[],
+        recent_outputs=[],
     )
     result = {"ok": True}
 
@@ -76,6 +80,9 @@ async def test_explicit_relation_suggestion_does_not_become_required() -> None:
         attempted_tools={"suggest_object_relations"},
         observed_tools={"suggest_object_relations"},
         stable_read_cache={"stale": {"ok": True}},
+        situation=service_module.RunSituation(),
+        recent_tool_calls=[],
+        recent_outputs=[],
     )
 
     await AgentService._after_core_tool(  # noqa: SLF001
@@ -5206,18 +5213,18 @@ def test_plan_progress_absorbed_from_core_result() -> None:
             {"title": "公务卡免息还款期", "required": True, "status": "pending"},
         ],
     }})
-    assert live.plan_remaining == 3
-    assert live.plan_next_task == "政府采购订单融资规则"
+    assert live.situation.plan_remaining == 3
+    assert live.situation.plan_next_task == "政府采购订单融资规则"
 
     # 计划做完后必须清零，否则轮次永远收不了尾。
     _absorb_plan_progress(live, {"plan": {"remaining_count": 0, "tasks": []}})
-    assert live.plan_remaining == 0
-    assert live.plan_next_task == ""
+    assert live.situation.plan_remaining == 0
+    assert live.situation.plan_next_task == ""
 
     # 不带计划快照的结果不能改动已记录的进度。
-    live.plan_remaining = 2
+    live.situation.plan_remaining = 2
     _absorb_plan_progress(live, {"ok": True})
-    assert live.plan_remaining == 2
+    assert live.situation.plan_remaining == 2
 
 
 def test_autonomous_continuation_prompt_names_next_plan_task(settings) -> None:
@@ -5231,8 +5238,8 @@ def test_autonomous_continuation_prompt_names_next_plan_task(settings) -> None:
         token_fingerprint="fingerprint",
     ))
     live = LiveRun(run_id="run_plan_prompt", project_id="project_plan_prompt", token="token")
-    live.plan_remaining = 4
-    live.plan_next_task = "政府采购订单融资规则"
+    live.situation.plan_remaining = 4
+    live.situation.plan_next_task = "政府采购订单融资规则"
 
     prompt = runtime._autonomous_continuation_prompt(  # noqa: SLF001
         "project_plan_prompt", live, stalled=2,
@@ -5242,8 +5249,8 @@ def test_autonomous_continuation_prompt_names_next_plan_task(settings) -> None:
     assert "连续 2 轮" in prompt
 
     # 没有待办时不应凭空出现计划段落。
-    live.plan_remaining = 0
-    live.plan_next_task = ""
+    live.situation.plan_remaining = 0
+    live.situation.plan_next_task = ""
     clean = runtime._autonomous_continuation_prompt(  # noqa: SLF001
         "project_plan_prompt", live, stalled=0,
     )
@@ -5344,34 +5351,42 @@ def test_schema_semantic_batch_guidance_is_actionable() -> None:
 
 def test_full_read_requirement_follows_saved_reading_mode() -> None:
     """#1：没有任何资料设为全文精读时，文本里的「全文精读」不得强推该工具。"""
-    from modeling_agent.service import LiveRun, _absorb_reading_modes, _drop_unbacked_full_read
-
-    live = LiveRun(run_id="run_r", project_id="project_r", token="token")
-    assert live.full_read_observed is False
-
-    # 还没观察到资料设置时保持原状，避免吞掉用户真实诉求
-    assert "read_documents_fully" in _drop_unbacked_full_read(
-        live, {"read_documents_fully", "set_material_directive"}
+    from modeling_agent.service import (
+        LiveRun, _absorb_reading_modes, _required_tools_for_user_intent,
     )
 
-    # 观察到全部为 on_demand → 撤掉强制精读
+    live = LiveRun(run_id="run_r", project_id="project_r", token="token")
+    assert live.situation.materials_observed is False
+    text = "请全文精读这份文档"
+
+    # 还没观察到资料设置时保持原状，避免吞掉用户真实诉求
+    notes: list[str] = []
+    assert "read_documents_fully" in _required_tools_for_user_intent(
+        text, situation=live.situation, notes=notes,
+    )
+    assert notes == []
+
+    # 观察到全部为 on_demand → 撤掉强制精读，并留下可执行的说明
     _absorb_reading_modes(live, {"documents": [
         {"filename": "导则.md", "readingMode": "on_demand"},
         {"filename": "规则.md", "readingMode": "on_demand"},
     ]})
-    assert live.full_read_observed is True
-    assert live.full_read_documents == ()
-    assert _drop_unbacked_full_read(
-        live, {"read_documents_fully", "set_material_directive"}
-    ) == {"set_material_directive"}
+    assert live.situation.materials_observed is True
+    assert live.situation.full_read_materials == ()
+    notes = []
+    required = _required_tools_for_user_intent(text, situation=live.situation, notes=notes)
+    assert "read_documents_fully" not in required
+    assert notes and "set_material_directive" in notes[0]
 
     # 确有 full 资料时仍然强制
     _absorb_reading_modes(live, {"documents": [
         {"filename": "导则.md", "readingMode": "full"},
         {"filename": "规则.md", "readingMode": "on_demand"},
     ]})
-    assert live.full_read_documents == ("导则.md",)
-    assert "read_documents_fully" in _drop_unbacked_full_read(live, {"read_documents_fully"})
+    assert live.situation.full_read_materials == ("导则.md",)
+    assert "read_documents_fully" in _required_tools_for_user_intent(
+        text, situation=live.situation,
+    )
 
 
 def test_purpose_review_continuation_avoids_full_read_wording() -> None:
@@ -5397,16 +5412,81 @@ def test_stage_transition_counts_as_progress() -> None:
 
     live = LiveRun(run_id="run_s", project_id="project_s", token="token")
     # 默认不给特殊待遇，不改变既有收尾节奏
-    assert live.stage_started_without_delivery is False
+    assert live.situation.stage_started_without_delivery is False
 
     # 切到新阶段 → 新阶段尚无产出，放宽停滞上限
     _absorb_stage_delivery(live, "transition_project_state", {})
-    assert live.stage_started_without_delivery is True
+    assert live.situation.stage_started_without_delivery is True
 
     # 只读工具不算产出，仍然保持放宽
     _absorb_stage_delivery(live, "gate_status", {})
-    assert live.stage_started_without_delivery is True
+    assert live.situation.stage_started_without_delivery is True
 
     # 新阶段有写入 → 回到常规节奏
     _absorb_stage_delivery(live, "write_file", {})
-    assert live.stage_started_without_delivery is False
+    assert live.situation.stage_started_without_delivery is False
+
+
+def test_loop_detection_distinguishes_stuck_from_quiet() -> None:
+    """打转和没产出是两回事：反复同参调用、反复同样输出才是卡住。"""
+    from modeling_agent.service import (
+        LiveRun, _detect_loop, _record_tool_call, _record_turn_output,
+    )
+
+    live = LiveRun(run_id="run_l", project_id="project_l", token="token")
+    assert _detect_loop(live) == ""
+
+    # 不同参数的连续只读调用不算打转——那是正常取证
+    for key in ("a", "b", "c", "d"):
+        _record_tool_call(live, "search_documents", {"q": key})
+    assert _detect_loop(live) == ""
+
+    # 同工具同参数连续三次才算
+    for _ in range(3):
+        _record_tool_call(live, "gate_status", {})
+    assert "相同参数调用同一工具" in _detect_loop(live)
+
+    # 输出侧：同一段内容反复出现
+    other = LiveRun(run_id="run_o", project_id="project_o", token="token")
+    for _ in range(3):
+        _record_turn_output(other, "让我重新理解用户的意思。")
+    assert "完全相同的内容" in _detect_loop(other)
+
+    # 空输出不参与判定
+    blank = LiveRun(run_id="run_b", project_id="project_b", token="token")
+    for _ in range(5):
+        _record_turn_output(blank, "   ")
+    assert _detect_loop(blank) == ""
+
+
+def test_intent_rule_precondition_is_three_valued() -> None:
+    """#1 根治：文本只提供线索，状态拥有否决权，拿不准时按规则声明的默认走。"""
+    from modeling_agent.service import RunSituation, Verdict, _FULL_READ_RULE
+
+    unknown = RunSituation()
+    assert unknown.has_full_read_materials() is Verdict.UNKNOWN
+    # 精读规则拿不准时放行：宁可多读一次，不能吞掉用户诉求
+    assert _FULL_READ_RULE.unknown_default is Verdict.ALLOW
+    assert _FULL_READ_RULE.verdict(unknown) is Verdict.ALLOW
+
+    observed = RunSituation(materials_observed=True)
+    assert observed.has_full_read_materials() is Verdict.DENY
+    assert _FULL_READ_RULE.verdict(observed) is Verdict.DENY
+
+    has_full = RunSituation(materials_observed=True, full_read_materials=("a.md",))
+    assert _FULL_READ_RULE.verdict(has_full) is Verdict.ALLOW
+
+
+def test_denied_intent_note_reaches_the_prompt() -> None:
+    """否决必须留痕：说明要并进下一次 query，并且只消费一次。"""
+    from modeling_agent.service import LiveRun, _with_intent_notes
+
+    live = LiveRun(run_id="run_n", project_id="project_n", token="token")
+    assert _with_intent_notes(live, "继续") == "继续"
+
+    live.intent_notes.append("当前没有资料设为全文精读。")
+    merged = _with_intent_notes(live, "继续")
+    assert "【状态核对】" in merged and "全文精读" in merged
+    # 消费一次即清空，不会每轮重复叠加
+    assert live.intent_notes == []
+    assert _with_intent_notes(live, "继续") == "继续"
