@@ -843,7 +843,10 @@ SCHEMA_SEMANTIC_ACTIONS = {
                         "additionalProperties": False,
                     },
                 },
-                "required": ["op", "field_key", "expected_field_hash", "changes"],
+                # 补空白语义时逐字段带乐观锁会反复失效：一次成功写入就让手里剩下的
+                # 字段哈希整批作废，批量因此退化为逐个提交（见 #32）。对象级
+                # expected_resource_hash 已经足够防止丢失更新，字段级改为可选。
+                "required": ["op", "field_key", "changes"],
                 "additionalProperties": False,
             },
         ],
@@ -1305,7 +1308,9 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "stage_schema_semantic_changes",
-        "在同一 Schema 同步计划任务中批量形成对象业务语义候选。只允许修改对象标题、说明、别名，以及字段中文名、可选说明、别名和 required；禁止修改物理身份。单批最多 20 个对象、400 个字段。",
+        "在同一 Schema 同步计划任务中批量形成对象业务语义候选。只允许修改对象标题、说明、别名，以及字段中文名、可选说明、别名和 required；禁止修改物理身份。"
+        "建议单批不超过 3 个对象、60 个字段：再大会让本次调用的 JSON 超出单次输出上限被截断，整批白跑。硬上限为 20 个对象、400 个字段。"
+        "字段的 expected_field_hash 可以省略；对象级 expected_resource_hash 已提供并发保护。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
             "plan_task_id": PLAN_TASK_ID,

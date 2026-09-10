@@ -31,6 +31,8 @@ from .tools import ToolContext, build_core_tools, build_tools
 
 SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，你是主动推进工作的建模者。
 
+语言：全程使用简体中文思考和表达。内部思考过程会在工作台向中文业务用户展示，不得用英文推理，也不得中英混写整句；工具名、字段名、表名、代码标识符保留原文即可。
+
 运行约束：
 - 只通过已提供的工具读取资料、读取知识包和写候选修订。你没有文件系统和 shell 权限。
 - 写入 diagrams/*.mmd 时只提交裸 Mermaid 源码，首个非空、非 %% 注释行必须是 flowchart TD 或 flowchart LR；绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏。若校验返回 findings，逐项修正同一文件后再写入。

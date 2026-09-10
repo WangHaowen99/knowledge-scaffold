@@ -22,7 +22,13 @@ from modeling_agent.rails import (
 )
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
-from modeling_agent.service import AgentService, LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
+from modeling_agent.service import (
+    AgentService,
+    LiveRun,
+    PURPOSE_REVIEW_ALLOWED_TOOLS,
+    _absorb_plan_progress,
+    _required_tools_for_user_intent,
+)
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -169,9 +175,10 @@ async def test_schema_semantic_tool_uses_dedicated_field_update_contract() -> No
         variant for variant in variants
         if variant["properties"]["op"]["enum"] == ["update_field"]
     )
-    assert update["required"] == [
-        "op", "field_key", "expected_field_hash", "changes",
-    ]
+    # #32：字段级乐观锁改为可选——补空白语义时逐字段带锁会因为一次成功写入
+    # 让剩余字段哈希整批作废，批量被迫退化为逐个提交。对象级
+    # expected_resource_hash 仍然必填，丢失更新的防护没有削弱。
+    assert update["required"] == ["op", "field_key", "changes"]
     assert set(update["properties"]) == {
         "op", "field_key", "expected_field_hash", "changes",
     }
@@ -5187,3 +5194,194 @@ async def test_state_revision_conflict_is_returned_for_agent_retry() -> None:
     assert result["code"] == "STATE_REVISION_CONFLICT"
     assert result["currentRevision"] == 3
     assert "get_project_state" in result["instruction"]
+
+
+def test_plan_progress_absorbed_from_core_result() -> None:
+    live = LiveRun(run_id="run_plan", project_id="project_plan", token="token")
+    _absorb_plan_progress(live, {"plan": {
+        "remaining_count": 3,
+        "tasks": [
+            {"title": "同步 Schema 对象", "required": True, "status": "accepted"},
+            {"title": "政府采购订单融资规则", "required": True, "status": "pending"},
+            {"title": "公务卡免息还款期", "required": True, "status": "pending"},
+        ],
+    }})
+    assert live.plan_remaining == 3
+    assert live.plan_next_task == "政府采购订单融资规则"
+
+    # 计划做完后必须清零，否则轮次永远收不了尾。
+    _absorb_plan_progress(live, {"plan": {"remaining_count": 0, "tasks": []}})
+    assert live.plan_remaining == 0
+    assert live.plan_next_task == ""
+
+    # 不带计划快照的结果不能改动已记录的进度。
+    live.plan_remaining = 2
+    _absorb_plan_progress(live, {"ok": True})
+    assert live.plan_remaining == 2
+
+
+def test_autonomous_continuation_prompt_names_next_plan_task(settings) -> None:
+    runtime = AgentService(settings)
+    runtime.store.create_run(RunRecord(
+        id="run_plan_prompt",
+        project_id="project_plan_prompt",
+        session_id="session_plan_prompt",
+        status=RUN_RUNNING,
+        prompt="继续执行建模计划",
+        token_fingerprint="fingerprint",
+    ))
+    live = LiveRun(run_id="run_plan_prompt", project_id="project_plan_prompt", token="token")
+    live.plan_remaining = 4
+    live.plan_next_task = "政府采购订单融资规则"
+
+    prompt = runtime._autonomous_continuation_prompt(  # noqa: SLF001
+        "project_plan_prompt", live, stalled=2,
+    )
+    assert "4 项必选任务" in prompt
+    assert "政府采购订单融资规则" in prompt
+    assert "连续 2 轮" in prompt
+
+    # 没有待办时不应凭空出现计划段落。
+    live.plan_remaining = 0
+    live.plan_next_task = ""
+    clean = runtime._autonomous_continuation_prompt(  # noqa: SLF001
+        "project_plan_prompt", live, stalled=0,
+    )
+    assert "受控建模计划待办" not in clean
+
+
+def test_full_read_intent_ignores_assistant_question_text() -> None:
+    """#1：助手问题文案复述「需要全文精读」时，不得强制拉起全文精读。"""
+    from modeling_agent.service import _required_tools_for_user_intent
+
+    assistant_question = "已将《资料.docx》设为通用业务依据，需要全文精读的资料继续按已保存设置执行"
+    answer_text = '{"choice": "confirm_all"}'
+
+    required = _required_tools_for_user_intent(
+        f"{assistant_question}\n{answer_text}",
+        full_read_text=answer_text,
+    )
+    assert "read_documents_fully" not in required
+
+    # 专家自己要求精读时仍然必须拉起
+    user_answer = '{"note": "请对这份文档做全文精读"}'
+    required_by_user = _required_tools_for_user_intent(
+        f"{assistant_question}\n{user_answer}",
+        full_read_text=user_answer,
+    )
+    assert "read_documents_fully" in required_by_user
+    assert "set_material_directive" in required_by_user
+
+    # 不传 full_read_text 时保持原行为，其它调用点不受影响
+    assert "read_documents_fully" in _required_tools_for_user_intent("请全文精读这份文档")
+
+
+def test_ambiguous_tokens_survive_english_prose() -> None:
+    """#16：普通英文单词不得被术语替换改成病句，中文语境下仍要替换。"""
+    from modeling_agent.visible_text import VisibleTextSanitizer
+
+    def clean(text: str) -> str:
+        sanitizer = VisibleTextSanitizer()
+        return sanitizer.feed(text) + sanitizer.finish()
+
+    english = "I will ask the user to confirm; the revision is stable and the diff is small"
+    assert clean(english) == english
+
+    chinese = clean("调用 ask 生成问题卡，再看 revision 和 diff")
+    assert "业务问题" in chinese and "版本" in chinese and "查看变更对照" in chinese
+
+    # 明确的内部工具名无论中英文语境都必须脱敏
+    assert "全文精读资料" in clean("calling read_documents_fully now")
+
+
+def test_reasoning_segments_are_separated() -> None:
+    """#6：多轮推理拼进同一条消息时要补断句，不能粘成一句话。"""
+    from modeling_agent.service import _segment_separator
+
+    assert _segment_separator("执行全文精读。") == "\n\n"
+    assert _segment_separator("已经换行了\n") == ""
+    assert _segment_separator("") == ""
+
+
+def test_language_reminder_appended_once() -> None:
+    """#4：每轮 query 末尾就近提醒输出语言，且不重复追加。"""
+    from modeling_agent.service import _with_language_reminder
+
+    once = _with_language_reminder("请继续推进建模计划。")
+    assert "【输出语言】" in once
+    assert once.count("【输出语言】") == 1
+    # 已带提醒的 query 不再叠加
+    assert _with_language_reminder(once) == once
+    # 非字符串 query 原样返回
+    payload = {"query": "x"}
+    assert _with_language_reminder(payload) is payload
+    assert _with_language_reminder("") == ""
+
+
+def test_schema_semantic_field_hash_is_optional() -> None:
+    """#32：字段级乐观锁必须可选，否则一次成功写入会让剩余封条整批作废。"""
+    from modeling_agent.tools import SCHEMA_SEMANTIC_ACTIONS
+
+    update_field = next(
+        item for item in SCHEMA_SEMANTIC_ACTIONS["items"]["oneOf"]
+        if "update_field" in item["properties"].get("op", {}).get("enum", [])
+    )
+    assert "expected_field_hash" not in update_field["required"]
+    # 仍然允许传，只是不强制
+    assert "expected_field_hash" in update_field["properties"]
+    assert update_field["required"] == ["op", "field_key", "changes"]
+
+
+def test_schema_semantic_batch_guidance_is_actionable() -> None:
+    """#31：工具描述要给模型真能产出的批量规模，而不是只写硬上限。"""
+    from modeling_agent.tools import CORE_TOOL_SPECS
+
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "stage_schema_semantic_changes")
+    assert "建议单批不超过 3 个对象、60 个字段" in spec.description
+    assert "截断" in spec.description
+    assert "expected_field_hash 可以省略" in spec.description
+
+
+def test_full_read_requirement_follows_saved_reading_mode() -> None:
+    """#1：没有任何资料设为全文精读时，文本里的「全文精读」不得强推该工具。"""
+    from modeling_agent.service import LiveRun, _absorb_reading_modes, _drop_unbacked_full_read
+
+    live = LiveRun(run_id="run_r", project_id="project_r", token="token")
+    assert live.full_read_observed is False
+
+    # 还没观察到资料设置时保持原状，避免吞掉用户真实诉求
+    assert "read_documents_fully" in _drop_unbacked_full_read(
+        live, {"read_documents_fully", "set_material_directive"}
+    )
+
+    # 观察到全部为 on_demand → 撤掉强制精读
+    _absorb_reading_modes(live, {"documents": [
+        {"filename": "导则.md", "readingMode": "on_demand"},
+        {"filename": "规则.md", "readingMode": "on_demand"},
+    ]})
+    assert live.full_read_observed is True
+    assert live.full_read_documents == ()
+    assert _drop_unbacked_full_read(
+        live, {"read_documents_fully", "set_material_directive"}
+    ) == {"set_material_directive"}
+
+    # 确有 full 资料时仍然强制
+    _absorb_reading_modes(live, {"documents": [
+        {"filename": "导则.md", "readingMode": "full"},
+        {"filename": "规则.md", "readingMode": "on_demand"},
+    ]})
+    assert live.full_read_documents == ("导则.md",)
+    assert "read_documents_fully" in _drop_unbacked_full_read(live, {"read_documents_fully"})
+
+
+def test_purpose_review_continuation_avoids_full_read_wording() -> None:
+    """#1：前端代发的续跑文案不得命中全文精读意图。"""
+    import re
+    from pathlib import Path
+    from modeling_agent.service import _FULL_READ_INTENT
+
+    store = Path(__file__).resolve().parents[2] / "frontend/src/workbench/lib/appStore.js"
+    text = store.read_text(encoding="utf-8")
+    match = re.search(r"const PURPOSE_REVIEW_CONTINUATION = '([^']+)'", text)
+    assert match, "没有找到续跑文案常量"
+    assert not _FULL_READ_INTENT.search(match.group(1))

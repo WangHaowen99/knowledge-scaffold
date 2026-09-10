@@ -37,10 +37,18 @@ _PHASE_LABELS = {
     "release": "发布交付",
 }
 
-_TOKEN_LABELS = {
+# 这些 key 同时是普通英文单词。整段英文推理里的 "ask the user"、"the revision"
+# 不能替换，否则句子被改坏，而且脱敏结果会喂回给模型造成上下文污染（见 #16）。
+_AMBIGUOUS_TOKEN_LABELS = {
     "focus": "定位内容",
     "notify": "更新进度",
     "ask": "业务问题",
+    "diff": "查看变更对照",
+    "revision": "版本",
+    "consumer": "下游应用",
+}
+
+_TOKEN_LABELS = {
     "list_documents": "查看资料清单",
     "read_document": "读取资料",
     "set_material_directive": "保存资料设置",
@@ -121,7 +129,6 @@ _TOKEN_LABELS = {
     "analyze_package_merge": "核对融合范围",
     "read_package_source_file": "读取来源包内容",
     "stage_package_merge": "生成融合候选",
-    "diff": "查看变更对照",
     "request_confirmation": "内容确认",
     "claim_candidate_workspace": "准备本次修改",
     "evaluation_passed": "正式评测",
@@ -129,7 +136,6 @@ _TOKEN_LABELS = {
     "deterministic_confirmed": "确定性计算范围确认",
     "product_ledger_verified": "产品清单台账",
     "releasable": "发布条件",
-    "revision": "版本",
     "query_eval_db": "查询评测数据",
     "run_script_test": "测试确定性脚本",
     "agent_project_workflow_state": "项目进展",
@@ -138,7 +144,6 @@ _TOKEN_LABELS = {
     "material_analyst": "资料分析",
     "knowledge_extractor": "知识分析",
     "merge_analyst": "融合分析",
-    "consumer": "下游应用",
 }
 
 
@@ -146,7 +151,11 @@ def _is_token_character(character: str) -> bool:
     return character.isascii() and (character.isalnum() or character in _TOKEN_CHARACTERS)
 
 
-def _sanitize_token(token: str) -> str:
+def _has_cjk(text: str) -> bool:
+    return any("\u3400" <= character <= "\u9fff" for character in text)
+
+
+def _sanitize_token(token: str, *, prev: str = "", nxt: str = "") -> str:
     if _INTERNAL_RESOURCE.fullmatch(token):
         return "当前处理"
     internal_id = _INTERNAL_ID.fullmatch(token)
@@ -168,6 +177,11 @@ def _sanitize_token(token: str) -> str:
     lowered = token.lower()
     if lowered in _TOKEN_LABELS:
         return _TOKEN_LABELS[lowered]
+    if lowered in _AMBIGUOUS_TOKEN_LABELS:
+        quoted = prev.endswith("`") and nxt.startswith("`")
+        if quoted or _has_cjk(prev) or _has_cjk(nxt):
+            return _AMBIGUOUS_TOKEN_LABELS[lowered]
+        return token
     if lowered.startswith(("/api/", "api/")) or (
         lowered.startswith(("http://", "https://"))
         and ("/api/" in lowered or "//localhost" in lowered or "//127.0.0.1" in lowered)
@@ -183,23 +197,28 @@ class VisibleTextSanitizer:
 
     def __init__(self) -> None:
         self._pending = ""
+        # 判定歧义术语要看前后各 4 个字符，和前端 userFacingText 同口径。
+        self._tail = ""
 
     def feed(self, text: str) -> str:
         visible: list[str] = []
-        for character in text:
+        for index, character in enumerate(text):
             if _is_token_character(character):
                 self._pending += character
                 continue
             if self._pending:
-                visible.append(_sanitize_token(self._pending))
+                visible.append(_sanitize_token(
+                    self._pending, prev=self._tail, nxt=text[index:index + 4],
+                ))
                 self._pending = ""
             visible.append(character)
+            self._tail = (self._tail + character)[-4:]
         return "".join(visible)
 
     def finish(self) -> str:
         if not self._pending:
             return ""
-        visible = _sanitize_token(self._pending)
+        visible = _sanitize_token(self._pending, prev=self._tail)
         self._pending = ""
         return visible
 

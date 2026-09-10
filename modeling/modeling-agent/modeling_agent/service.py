@@ -120,6 +120,9 @@ def _phase_projection() -> list[dict[str, Any]]:
 
 MAX_AUTONOMOUS_CONTINUATIONS = 8
 MAX_STALLED_CONTINUATIONS = 2
+# 计划仍有必选任务未完成时的停滞上限。取证、核对台账、检索原文都不算“进展”，
+# 但它们是写入前的正常准备，用 2 轮上限会让计划刚起步就被判成本轮完成。
+MAX_STALLED_PLAN_CONTINUATIONS = 5
 MAX_DECISION_CARD_RETRIES = 2
 MAX_VISIBLE_REASONING_CHARS = 12_000
 REASONING_EVENT_BATCH_CHARS = 160
@@ -235,6 +238,14 @@ class LiveRun:
     release_declined: bool = False
     confirmation_required: bool = False
     autonomous_seed: bool = False
+    # 受控建模计划的待办快照，由核心工具结果回填。轮次是否收尾要看计划是否真的做完，
+    # 不能只看模型连着几轮没写东西——否则已批准的计划会在纯调研轮之后被静默判成“本轮完成”。
+    plan_remaining: int = 0
+    plan_next_task: str = ""
+    # 已保存为全文精读的资料文件名。为空时任何文本里的「全文精读」都不该
+    # 强推 read_documents_fully —— 该不该精读由资料设置决定，不由措辞决定（见 #1）。
+    full_read_documents: tuple[str, ...] = ()
+    full_read_observed: bool = False
     tool_summaries: list[str] = field(default_factory=list)
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasoning_chars_published: int = 0
@@ -508,6 +519,30 @@ def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
     )
 
 
+_LANGUAGE_REMINDER = (
+    "\n\n【输出语言】本轮的内部推理和用户可见正文都必须使用简体中文。"
+    "不要用英文推理，也不要中英混写整句；工具名、字段名、表名、代码标识符保留原文。"
+)
+
+
+def _with_language_reminder(query: Any) -> Any:
+    """系统提示词里的语言约束压不住模型的英文思维链先验，
+    在每轮 query 末尾就近提醒一次（见 #4）。非字符串 query 原样返回。"""
+    if not isinstance(query, str) or not query.strip():
+        return query
+    if "【输出语言】" in query:
+        return query
+    return query + _LANGUAGE_REMINDER
+
+
+def _segment_separator(previous_tail: str) -> str:
+    """多轮模型输出会拼进同一条消息；上一段没有自带断句时补一个空行，
+    否则「执行全文精读。」和「全文精读完成」会粘成同一句话（见 #6）。"""
+    if not previous_tail or previous_tail[-1] in "\n \t":
+        return ""
+    return "\n\n"
+
+
 class _ReasoningEmitter:
     def __init__(self, events: EventHub, live: LiveRun, run: RunRecord) -> None:
         self._events = events
@@ -517,6 +552,13 @@ class _ReasoningEmitter:
         self._pending = ""
         self._emitted = False
         self._observed = False
+        self._segment_break = False
+        self._tail = ""
+
+    def mark_segment_break(self) -> None:
+        """本轮推理已结束（中间夹了工具调用或正文输出），下一段另起。"""
+        if self._observed:
+            self._segment_break = True
 
     @property
     def seen(self) -> bool:
@@ -525,8 +567,14 @@ class _ReasoningEmitter:
     def feed(self, raw_text: str) -> None:
         if not raw_text or self._live.reasoning_truncated:
             return
+        chunk = self._sanitizer.feed(raw_text)
+        if chunk and self._segment_break:
+            self._pending += _segment_separator(self._pending or self._tail)
+            self._segment_break = False
         self._observed = True
-        self._pending += self._sanitizer.feed(raw_text)
+        self._pending += chunk
+        if chunk:
+            self._tail = chunk[-1:]
         if len(self._pending) >= REASONING_EVENT_BATCH_CHARS or "\n" in self._pending:
             self._flush()
 
@@ -1949,8 +1997,11 @@ class AgentService:
         run = self.store.require_run(interaction.run_id)
         self.events.publish(run.project_id, run.id, "interaction", {"id": interaction.id, "status": "answered", "answer": answer})
         self.events.publish(run.project_id, run.id, "message", {"role": "user", "blocks": [{"type": "answer", "interactionId": interaction.id, "answer": answer}]})
+        answer_text = json.dumps(answer, ensure_ascii=False)
         required_tools = _required_tools_for_user_intent(
-            f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}"
+            f"{interaction.payload.get('question') or ''}\n{answer_text}",
+            # 问题文案出自助手，只有专家的回答才代表用户要求全文精读。
+            full_read_text=answer_text,
         )
         constraint_prompt = (
             _required_text_prompt(required_text_constraint)
@@ -2176,7 +2227,9 @@ class AgentService:
         steering_id = self.store.queue_steering(project_id, run.id, message)
         live.token = token
         live.stable_read_cache.clear()
-        live.required_tools.update(_required_tools_for_user_intent(message))
+        live.required_tools.update(
+            _drop_unbacked_full_read(live, _required_tools_for_user_intent(message))
+        )
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
         )
@@ -2521,6 +2574,8 @@ class AgentService:
         arguments: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
+        _absorb_plan_progress(live, result)
+        _absorb_reading_modes(live, result)
         if name == "create_change_plan":
             consume = getattr(self._gateway, "acceptance_fault", None)
             fault: dict[str, Any] = {}
@@ -3485,14 +3540,24 @@ class AgentService:
                 elif autonomous:
                     stalled += 1
 
+                # 已批准的计划还有必选任务时放宽停滞上限：只做调研不写入同样是没干活，
+                # 但收尾的判据应该是计划做没做完，而不是模型连着几轮没调用写包工具。
+                stall_budget = (
+                    MAX_STALLED_PLAN_CONTINUATIONS
+                    if live.plan_remaining else MAX_STALLED_CONTINUATIONS
+                )
                 if (
                     autonomous
                     and continuations < MAX_AUTONOMOUS_CONTINUATIONS
-                    and stalled < MAX_STALLED_CONTINUATIONS
+                    and stalled < stall_budget
                 ):
                     continuations += 1
-                    current_query = self._autonomous_continuation_prompt(run.project_id)
+                    current_query = self._autonomous_continuation_prompt(
+                        run.project_id, live, stalled=stalled,
+                    )
                     continue
+                if live.plan_remaining:
+                    self._publish_plan_incomplete_activity(live, run, stalled=stalled)
 
                 result = await self._ensure_visible_result(
                     live,
@@ -3584,6 +3649,7 @@ class AgentService:
         *,
         operation_id: str,
     ) -> dict[str, Any]:
+        query = _with_language_reminder(query)
         acceptance_fault = await self._consume_acceptance_model_fault(run, live.token)
         acceptance_attempt = 0
         while True:
@@ -3799,16 +3865,60 @@ class AgentService:
             )
         return prompt
 
-    def _autonomous_continuation_prompt(self, project_id: str) -> str:
+    def _autonomous_continuation_prompt(
+        self,
+        project_id: str,
+        live: LiveRun | None = None,
+        *,
+        stalled: int = 0,
+    ) -> str:
         state = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
+        plan_hint = ""
+        if live is not None and live.plan_remaining:
+            next_task = f"，下一项是「{live.plan_next_task}」" if live.plan_next_task else ""
+            plan_hint = (
+                f"\n# 受控建模计划待办\n"
+                f"计划还有 {live.plan_remaining} 项必选任务没有形成候选{next_task}。\n"
+            )
+            if stalled:
+                plan_hint += (
+                    f"你已经连续 {stalled} 轮只做读取和核对、没有写入任何候选。"
+                    "本轮必须对下一项待办发起实际写入（create_*/patch_*/stage_change_set 等）；"
+                    "若确实无法写入，调用 ask 说明具体阻塞点，不要再重复核对现状。\n"
+                )
         return (
             "服务端检测到项目已经取得实质进展，但尚未到达需要专家决定、失败或发布交付的边界。"
             "不要请求用户指示，也不要只描述下一步；立即继续执行能自行完成的下一步，直到调用 ask、"
             "request_confirmation，或确实没有可执行动作。\n\n"
             "# 项目唯一 Agent 状态快照\n"
             f"{state}\n"
+            f"{plan_hint}"
             "先调用 get_project_state 获取最新版本，状态转换只能调用 transition_project_state。"
         )
+
+    def _publish_plan_incomplete_activity(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        *,
+        stalled: int,
+    ) -> None:
+        """计划没做完就收尾时，把待办和空转轮数摆到台面上。
+
+        否则界面只显示“本轮完成”，用户无法区分“真做完了”和“连着几轮没写东西被判停”。
+        """
+        next_task = f"，下一项是「{live.plan_next_task}」" if live.plan_next_task else ""
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": "change_plan_incomplete",
+            "phase": "waiting",
+            "summary": (
+                f"本轮结束时建模计划还有 {live.plan_remaining} 项必选任务没有形成候选{next_task}；"
+                f"已连续 {stalled} 轮没有写入候选。可以直接发消息让助手继续，或说明需要调整的地方。"
+            ),
+            "planRemaining": live.plan_remaining,
+            "planNextTask": live.plan_next_task,
+            "stalledRounds": stalled,
+        })
 
     async def _ensure_visible_result(
         self,
@@ -4048,12 +4158,20 @@ class AgentService:
         held_parts: list[str] = []
         model_events = 0
         stream_completed = False
+        # 一次 _run_streaming 里模型可能"输出 → 调工具 → 再输出"多轮，
+        # 这两个标志用来在轮次之间补断句，而不是把所有轮次拍平成一段。
+        output_segment_break = False
 
         def publish_visible(raw_text: str) -> None:
-            nonlocal emitted
+            nonlocal emitted, output_segment_break
             delta = sanitizer.feed(raw_text)
             if not delta:
                 return
+            if output_segment_break:
+                separator = _segment_separator(visible_parts[-1] if visible_parts else "")
+                if separator:
+                    delta = separator + delta
+                output_segment_break = False
             visible_parts.append(delta)
             emitted = True
             self.events.publish(run.project_id, run.id, "message_delta", {
@@ -4071,12 +4189,14 @@ class AgentService:
                 chunk_type = str(getattr(chunk, "type", "") or "")
                 if chunk_type == "llm_reasoning":
                     model_events += 1
+                    output_segment_break = emitted
                     reasoning.feed(_chunk_text(chunk))
                 elif chunk_type == "llm_output":
                     model_events += 1
                     delta = _chunk_text(chunk)
                     if not delta:
                         continue
+                    reasoning.mark_segment_break()
                     output_parts.append(delta)
                     if _missing_required_tools(live):
                         held_parts.append(delta)
@@ -4500,8 +4620,79 @@ def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
 
 
-def _required_tools_for_user_intent(text: str) -> set[str]:
+def _drop_unbacked_full_read(live: LiveRun, required: set[str]) -> set[str]:
+    """已经观察到资料设置、且没有任何资料是 full 时，撤掉全文精读的强制要求。
+
+    该不该整篇读取由资料的 reading_mode 决定；文本里出现「全文精读」只是措辞，
+    不足以让服务端把一份大文档整篇灌进上下文（见 #1）。还没观察到设置时保持原状，
+    以免把用户真实的精读诉求吞掉。
+    """
+    if "read_documents_fully" not in required:
+        return required
+    if not live.full_read_observed or live.full_read_documents:
+        return required
+    return {tool for tool in required if tool != "read_documents_fully"}
+
+
+def _absorb_reading_modes(live: LiveRun, result: Any) -> None:
+    """从任何返回资料清单的核心工具结果里回填「哪些资料真的要全文精读」。
+
+    以前是否强制精读只看用户消息里有没有「全文精读」四个字，
+    于是一句由前端代发的续跑文案就能让 9.9MB 文档被整篇灌进上下文（见 #1）。
+    """
+    if not isinstance(result, dict):
+        return
+    documents = result.get("documents")
+    if not isinstance(documents, list) or not documents:
+        return
+    names: list[str] = []
+    for item in documents:
+        if not isinstance(item, dict):
+            return
+        if "readingMode" not in item and "reading_mode" not in item:
+            return
+        mode = str(item.get("readingMode") or item.get("reading_mode") or "").strip()
+        filename = str(item.get("filename") or "").strip()
+        if mode == "full" and filename:
+            names.append(filename)
+    live.full_read_documents = tuple(dict.fromkeys(names))
+    live.full_read_observed = True
+
+
+def _absorb_plan_progress(live: LiveRun, result: Any) -> None:
+    """从任何带计划快照的核心工具结果里回填待办进度。
+
+    计划的权威状态在核心侧（TypeScript），Python 侧原本完全看不到它，
+    导致已批准但未做完的计划会在几轮纯调研之后被判定为“本轮完成”。
+    """
+    plan = result.get("plan") if isinstance(result, dict) else None
+    if not isinstance(plan, dict):
+        return
+    remaining = plan.get("remaining_count")
+    if not isinstance(remaining, int) or isinstance(remaining, bool):
+        return
+    live.plan_remaining = max(0, remaining)
+    live.plan_next_task = ""
+    if not live.plan_remaining:
+        return
+    tasks = plan.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    settled = {"accepted", "skipped"}
+    for task in tasks:
+        if not isinstance(task, dict) or not task.get("required"):
+            continue
+        if str(task.get("status") or "") in settled:
+            continue
+        live.plan_next_task = str(task.get("title") or "")
+        return
+
+
+def _required_tools_for_user_intent(text: str, *, full_read_text: str | None = None) -> set[str]:
     value = str(text or "")
+    # 全文精读的判定来源可以与其它意图分开：交互问题文案由助手撰写，
+    # 里面复述已保存设置的「需要全文精读」不是用户诉求，不能据此强制拉起精读（见 #1）。
+    full_read_value = value if full_read_text is None else str(full_read_text or "")
     required: set[str] = set()
     cancel_requested = bool(
         _EVALUATION_CANCEL_INTENT.search(value)
@@ -4513,7 +4704,7 @@ def _required_tools_for_user_intent(text: str) -> set[str]:
         required.add("run_evaluation")
     if _EVALUATION_RESULT_INTENT.search(value):
         required.add("get_evaluation_results")
-    if _FULL_READ_INTENT.search(value):
+    if _FULL_READ_INTENT.search(full_read_value):
         required.update({"set_material_directive", "read_documents_fully"})
     elif _MATERIAL_DIRECTIVE_INTENT.search(value):
         required.add("set_material_directive")
