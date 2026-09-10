@@ -631,8 +631,10 @@
 .wb-act-meter i { display: block; height: 100%; border-radius: inherit; background: var(--c-agent); transition: width 240ms linear; }
 .wb-act-meter.indeterminate i { width: 36%; animation: wb-progress 1.4s ease-in-out infinite; }
 @keyframes wb-progress { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
-.wb-act-meta { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); margin-top: 5px; color: var(--c-muted); font-size: var(--t-xs); line-height: 1.4; }
-.wb-act-meta span { min-width: 0; overflow-wrap: anywhere; }
+/* 详情文案较长时不要被计数和「停止任务」挤成窄条：空间不足就整行独占，
+   否则右侧固定块会横插进折行的文字中间。 */
+.wb-act-meta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px var(--s-3); margin-top: 5px; color: var(--c-muted); font-size: var(--t-xs); line-height: 1.4; }
+.wb-act-meta span { flex: 1 1 13rem; min-width: 0; overflow-wrap: anywhere; }
 .wb-act-meta b { flex: none; color: var(--c-ink-2); font-weight: 500; font-variant-numeric: tabular-nums; }
 .wb-act-stop { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--c-danger); font-size: var(--t-xs); font-weight: 600; }
 .wb-act-stop:hover { text-decoration: underline; }

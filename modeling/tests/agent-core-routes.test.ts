@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -4329,4 +4329,15 @@ test('计划 target_key 剥掉资源类型前缀，避免生成带冒号的文�
   assert.equal(normalizePlanTargetKey('rule', 'metric:customer-relationship-rating'), 'metric:customer-relationship-rating');
   // 只有前缀时保留原值，不产生空 key
   assert.equal(normalizePlanTargetKey('rule', 'rule:'), 'rule:');
+});
+
+test('长任务进度文案不把「单步耗时长」说成「没有进度」', () => {
+  // 一个分块或一次汇总本身就可能跑好几分钟，期间 run.updated_at 不动是正常的。
+  // 判据必须区分「还有在途工作」和「真的停了」，否则进度条在走、文案却报停滞。
+  const source = readFileSync('src/agent/core-service.ts', 'utf8');
+  assert.match(source, /const working = chunks\.some\(\(chunk\) => chunk\.status === 'running'\)/);
+  assert.match(source, /run\.stage === 'document_reduce'/);
+  assert.match(source, /idleMs > \(working \? 300_000 : 120_000\)/);
+  assert.match(source, /working \? '这一步耗时较长，仍在处理' : '较久没有新进度'/);
+  assert.doesNotMatch(source, /较久未收到新进度/);
 });

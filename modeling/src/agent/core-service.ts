@@ -1006,7 +1006,14 @@ export class AgentCoreService {
       : 0;
     const updatedAt = String(run.updated_at || '');
     const lastUpdateMs = Date.parse(updatedAt);
-    const delayed = Number.isFinite(lastUpdateMs) && Date.now() - lastUpdateMs > 120_000;
+    // 单个分块或一次汇总本身就可能跑好几分钟，期间 updated_at 不动是正常的，
+    // 不能据此说「没有进度」——进度条明明在走，文案却报停滞会吓到用户。
+    // 有在途工作时放宽到 5 分钟，且只说「这一步慢」而不是「没有进度」。
+    const working = chunks.some((chunk) => chunk.status === 'running')
+      || run.stage === 'document_reduce'
+      || run.stage === 'domain_reduce';
+    const idleMs = Number.isFinite(lastUpdateMs) ? Date.now() - lastUpdateMs : 0;
+    const delayed = Number.isFinite(lastUpdateMs) && idleMs > (working ? 300_000 : 120_000);
     const title = run.stage === 'document_reduce'
       ? '正在汇总全文阅读结果'
       : run.stage === 'domain_reduce'
@@ -1016,7 +1023,7 @@ export class AgentCoreService {
       ? `已完成 ${summarized.size}/${documents.length} 份文档汇总 · 全文覆盖 ${coveragePercent}%`
       : `${completed.length}/${chunks.length} 个分块完成 · 全文覆盖 ${coveragePercent}%`;
     const detail = delayed
-      ? `${factualDetail} · 较久未收到新进度，你可以继续输入或停止任务`
+      ? `${factualDetail} · ${working ? '这一步耗时较长，仍在处理' : '较久没有新进度'}，可以继续输入或停止任务`
       : factualDetail;
     return {
       status: run.status,
