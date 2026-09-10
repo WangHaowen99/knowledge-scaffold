@@ -2334,6 +2334,14 @@ class AgentService:
             raise AgentRuntimeError("RUN_NOT_STEERABLE", "当前运行暂时不能接收插话", status=409)
         if purpose_review_completed and live.allowed_tools == PURPOSE_REVIEW_ALLOWED_TOOLS:
             if live.deferred_purpose_continuation is None:
+                # 批量确认已经把这批资料的用途落库，助手挂起的逐份卡问的是同一件事，
+                # 必须一并结算。否则它会被当成「仍未解决的原问题」自动恢复，
+                # 用户刚一次性确认完又被推回同一张卡（见 #36）。
+                for settled in self.store.settle_interactions_resolved_elsewhere(
+                    run.id, reason="资料用途已通过批量确认完成",
+                ):
+                    live.restore_interaction = None
+                    self.events.publish(project_id, run.id, "interaction", settled.public())
                 steering_id = self.store.queue_steering(project_id, run.id, message)
                 live.deferred_purpose_continuation = (steering_id, token, message)
                 self.events.publish(project_id, run.id, "message", {

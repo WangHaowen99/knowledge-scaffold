@@ -5490,3 +5490,43 @@ def test_denied_intent_note_reaches_the_prompt() -> None:
     # 消费一次即清空，不会每轮重复叠加
     assert live.intent_notes == []
     assert _with_intent_notes(live, "继续") == "继续"
+
+
+def test_batch_purpose_confirmation_settles_pending_cards(tmp_path) -> None:
+    """#36：批量确认成交后，助手挂起的逐份用途卡必须一并结算。
+
+    只解开数据侧、留着交互侧，那张卡会被当成「仍未解决的原问题」自动恢复，
+    用户刚一次性确认完又被推回同一张卡。
+    """
+    from modeling_agent.schemas import RUN_QUEUED, InteractionRecord, RunRecord
+    from modeling_agent.store import RuntimeStore
+
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    run = store.create_run(RunRecord(
+        id="run_purpose",
+        project_id="project_p",
+        session_id="project:project_p:run:run_purpose",
+        status=RUN_QUEUED,
+        prompt="上传资料",
+        token_fingerprint="111111111111",
+    ))
+    interaction = store.create_interaction(InteractionRecord(
+        id="ix_purpose_1",
+        run_id=run.id,
+        project_id="project_p",
+        tool_call_id="call_1",
+        kind="ask",
+        payload={"question": "第一份资料的用途是？"},
+    ))
+    assert store.pending_interaction("project_p") is not None
+
+    settled = store.settle_interactions_resolved_elsewhere(
+        run.id, reason="资料用途已通过批量确认完成",
+    )
+    assert [item.id for item in settled] == [interaction.id]
+    # 结算后不再是待处理，不会被自动恢复
+    assert store.pending_interaction("project_p") is None
+    assert store.get_interaction(interaction.id).status == "cancelled"
+
+    # 幂等：没有挂起项时返回空，不报错
+    assert store.settle_interactions_resolved_elsewhere(run.id, reason="再来一次") == []
