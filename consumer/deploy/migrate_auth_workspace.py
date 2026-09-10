@@ -12,6 +12,7 @@ import argparse
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,7 +21,7 @@ import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 
 _WORKSPACE_ACL_RECONCILIATION_DETAIL = (
@@ -32,6 +33,16 @@ _WORKSPACE_ACL_RECONCILIATION_SUGGESTION = (
     "处理完成后重新执行 dry-run，确认 workspace_acl.clean=true 再升级。"
 )
 _RECONCILIATION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 @dataclass(frozen=True)
@@ -565,6 +576,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_cli_logging(sys.stdout)
     args = _build_parser().parse_args(argv)
     backup_root = args.backup_root or args.root / "deploy" / "backups"
     code, report = execute_migration(
@@ -576,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
         to_version=args.to_version,
     )
     write_report(args.report, report)
-    sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    logger.info(json.dumps(report, ensure_ascii=False, indent=2))
     return code
 
 

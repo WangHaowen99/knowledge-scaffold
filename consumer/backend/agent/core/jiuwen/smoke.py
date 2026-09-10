@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
-from typing import Any, Optional
+from typing import Any, Optional, TextIO
 
 from config import AppConfig, AgentConfig
 from workspace.workspaces import get_workspace_project_root
@@ -21,6 +22,16 @@ from ..jiuwen_engine import (
 
 
 _DEFAULT_REGISTER_TOOLS = register_current_runtime_tools
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def run_jiuwen_smoke(
@@ -97,6 +108,7 @@ def _build_smoke_tool_context(state: dict[str, Any], *, agent_config: AgentConfi
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    _configure_cli_logging(sys.stdout)
     parser = argparse.ArgumentParser(description="Smoke-check the Jiuwen ReAct runtime.")
     parser.add_argument(
         "--agent-mode",
@@ -111,7 +123,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except JiuwenBackendUnavailable as exc:
         payload = {"ok": False, "error": str(exc)}
         exit_code = 1
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    logger.info(json.dumps(payload, ensure_ascii=False, indent=2))
     return exit_code
 
 
