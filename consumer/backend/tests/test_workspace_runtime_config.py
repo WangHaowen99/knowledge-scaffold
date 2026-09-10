@@ -108,6 +108,34 @@ def test_runtime_config_merges_valid_partial_update(tmp_path, monkeypatch):
     assert get_workspace_runtime_config("demo") == updated
 
 
+def test_runtime_config_defaults_and_bounds_mcp_stream_user_concurrency(
+    tmp_path,
+    monkeypatch,
+):
+    _create_workspace(tmp_path, monkeypatch)
+
+    assert get_workspace_runtime_config("demo")["mcp"] == {
+        "stream_user_workspace_concurrency": 5,
+    }
+
+    updated = update_workspace_runtime_config(
+        "demo",
+        {"mcp": {"stream_user_workspace_concurrency": 32}},
+    )
+
+    assert updated["mcp"]["stream_user_workspace_concurrency"] == 32
+
+    for invalid in (0, 33, True, 1.5, "5"):
+        with pytest.raises(
+            ValueError,
+            match="mcp.stream_user_workspace_concurrency",
+        ):
+            update_workspace_runtime_config(
+                "demo",
+                {"mcp": {"stream_user_workspace_concurrency": invalid}},
+            )
+
+
 def test_runtime_config_read_ignores_unknown_saved_keys_without_rewriting(
     tmp_path,
     monkeypatch,

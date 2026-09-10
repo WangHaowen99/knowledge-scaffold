@@ -30,7 +30,13 @@
 .settings-mcp-secret strong { display: flex; align-items: center; gap: 7px; }
 .settings-mcp-secret code { overflow-wrap: anywhere; user-select: all; }
 .settings-mcp-tokens,
-.settings-mcp-config { display: grid; gap: 12px; }
+.settings-mcp-config,
+.settings-mcp-concurrency { display: grid; gap: 12px; }
+.settings-mcp-concurrency > div:first-child h3,
+.settings-mcp-concurrency > div:first-child p { margin: 0; }
+.settings-mcp-concurrency > div:first-child p { color: var(--ink2, #667085); }
+.settings-mcp-concurrency > label { display: grid; grid-template-columns: minmax(120px, .3fr) minmax(160px, 1fr); align-items: center; gap: 12px; }
+.settings-mcp-concurrency input { min-height: 38px; border: 1px solid var(--line, #d8dbe2); border-radius: 8px; padding: 7px 9px; background: var(--surface, #fff); color: var(--ink, #1f2937); }
 .settings-table-scroll { overflow-x: auto; }
 .settings-mcp-config > div { display: grid; gap: 8px; }
 .settings-mcp-config pre { max-height: 320px; overflow: auto; padding: 12px; border-radius: 9px; background: var(--code-bg, #111827); color: var(--code-ink, #e5e7eb); }
@@ -47,4 +53,5 @@
   .settings-mcp-metrics,
   .settings-mcp-services { grid-template-columns: 1fr; }
   .settings-mcp-create > label { grid-template-columns: 1fr; }
+  .settings-mcp-concurrency > label { grid-template-columns: 1fr; }
 }

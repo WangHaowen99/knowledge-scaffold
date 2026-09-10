@@ -177,6 +177,7 @@ function SectionBody({
           workspaceName={workspace?.name || workspaceId}
           authenticated={Boolean(user?.username)}
           canManageTokens={Boolean(user?.username && workspaceId)}
+          canManageConcurrency={user?.role === 'admin'}
           ontologies={ontologies}
           ontologiesLoading={ontologiesLoading}
           ontologiesError={ontologiesError}

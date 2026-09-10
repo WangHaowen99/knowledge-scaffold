@@ -2237,6 +2237,29 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 }
 ```
 
+#### `GET /agentic/mcp/runtime/concurrency`
+
+读取当前工作空间普通用户 MCP Progress 流式 Chat 的并发上限。已认证用户可读取；响应始终返回服务端生效值及可配置范围。
+
+```json
+{
+  "stream_user_workspace_concurrency": 5,
+  "default": 5,
+  "min": 1,
+  "max": 32
+}
+```
+
+#### `PATCH /agentic/mcp/runtime/concurrency` (`admin`)
+
+仅平台管理员可更新当前工作空间的普通用户 MCP Progress 流式 Chat 并发上限；值必须是 `1` 至 `32` 的整数，默认值为 `5`。配置保存后对后续流式 Chat 请求生效；管理员 MCP 流式 Chat 仍使用平台运行上限，普通 JSON Chat 不受此项影响。
+
+```json
+{
+  "stream_user_workspace_concurrency": 8
+}
+```
+
 #### `GET /agentic/mcp/tokens`
 
 列出当前用户、当前 workspace 的 token 元数据。响应不包含明文 token。
@@ -2272,7 +2295,7 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 `mcp_endpoint_id` 是稳定的公开路由标识，不是凭证。URL 中的 Endpoint ID 必须与 MCP Token 绑定的 workspace 一致；不一致时工具返回 `MCP_WORKSPACE_ENDPOINT_MISMATCH`。每个 MCP transport session 同时绑定到首次使用的 Endpoint，`Mcp-Session-Id` 或 SSE `session_id` 不能跨工作空间 URL 复用；跨 Endpoint 使用按未知会话返回 HTTP 404 `Session not found`。Streamable HTTP Session 默认空闲 30 分钟后失效，Endpoint 绑定在额外 60 秒安全宽限后清理；SSE 连接断开时立即清理。每个服务 transport 固定最多保留 10000 个活动 Session，达到上限返回 HTTP 503 `Server session capacity reached`，不会淘汰活动 Session。MCP 服务重启后原 transport session 失效，客户端需要重新 initialize。search 服务要求 ontology 已配置 `neo4j` 或 `hugegraph` 数据源。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。旧 `/search/mcp`、`/chat/mcp`、`/search/sse`、`/chat/sse` 路由均不可用。
 
-MCP `chat` 工具通过请求参数 `include_trace` 控制是否返回脱敏后的 `trace`，默认 `false`。当前公共 Trace schema 为 `5.0`：同一逻辑迭代只保留最后一份累计快照，工具调用嵌入对应 iteration，Agent 输出位于 `agent_output`，不返回模型原始思维链或 `reasoning_summaries`。
+MCP `chat` 工具通过请求参数 `include_trace` 控制是否返回脱敏后的 `trace`，默认 `false`。传入 `stream=true` 且客户端提供 MCP Progress Token 时，服务会返回脱敏后的粗粒度 Progress；不支持 Progress 的客户端自动退化为普通 Chat。普通用户的 Progress 流式 Chat 按 `用户 + workspace` 使用上述可配置并发上限。当前公共 Trace schema 为 `5.0`：同一逻辑迭代只保留最后一份累计快照，工具调用嵌入对应 iteration，Agent 输出位于 `agent_output`，不返回模型原始思维链或 `reasoning_summaries`。
 
 `selected_ontology_id` 为可选参数。已存在的 session 会复用其锁定 ontology；新 session 未显式指定时，工作空间只有一个已启用 ontology 则自动选中，存在多个时返回 `MCP_ONTOLOGY_SELECTION_REQUIRED`，不会猜测。求解类操作成功后，`result.authoritative_solver_result` 返回经过脱敏的权威结果摘要和工件引用；其中 `summary.candidate_id` 是稳定内部标识，`summary.combination_no` 是面向业务展示的组合号，完整候选列表由 `candidate_results_artifact_ref` 标识。
 
@@ -2281,11 +2304,12 @@ MCP `chat` 工具通过请求参数 `include_trace` 控制是否返回脱敏后�
   "query": "查询业务数据",
   "session_id": "optional-session-id",
   "selected_ontology_id": "optional-ontology-id",
-  "include_trace": true
+  "include_trace": true,
+  "stream": true
 }
 ```
 
-`MCP_CHAT_TRACE_MAX_EVENTS`、`MCP_CHAT_TRACE_MAX_BYTES` 和 `MCP_CHAT_TRACE_MAX_TEXT_CHARS` 仅限制开启 Trace 后的响应规模，不会自动开启 Trace。
+`MCP_CHAT_TRACE_MAX_EVENTS`、`MCP_CHAT_TRACE_MAX_BYTES` 和 `MCP_CHAT_TRACE_MAX_TEXT_CHARS` 仅限制开启 Trace 后的响应规模，不会自动开启 Trace。`MCP_CHAT_PROGRESS_MAX_EVENTS`、`MCP_CHAT_PROGRESS_MAX_MESSAGE_BYTES`、`MCP_CHAT_PROGRESS_QUEUE_SIZE` 和 `MCP_CHAT_PROGRESS_HEARTBEAT_SECONDS` 控制流式 Progress 的数量、大小、缓冲与心跳；拥塞时非终态进度可能被裁剪，最终结果仍会返回。
 
 ```json
 {

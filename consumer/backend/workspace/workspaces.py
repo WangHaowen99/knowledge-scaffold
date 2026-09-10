@@ -1948,6 +1948,9 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
         "default": "zh",
     },
     "acp_suppress_script_patterns": "",
+    "mcp": {
+        "stream_user_workspace_concurrency": 5,
+    },
     "llm": {
         "default_main_profile_ref": None,
         "default_task_profile_ref": None,
@@ -1956,6 +1959,7 @@ DEFAULT_RUNTIME_CONFIG: Dict[str, Any] = {
 
 _RUNTIME_CONFIG_KEYS = set(DEFAULT_RUNTIME_CONFIG.keys())
 _LANG_CONFIG_KEYS = set(DEFAULT_RUNTIME_CONFIG["lang"].keys())
+_MCP_CONFIG_KEYS = set(DEFAULT_RUNTIME_CONFIG["mcp"].keys())
 _LLM_CONFIG_KEYS = set(DEFAULT_RUNTIME_CONFIG["llm"].keys())
 
 
@@ -2124,6 +2128,27 @@ def _normalize_runtime_config_patch(data: dict, *, strict: bool) -> dict:
                 normalized[key] = value
             else:
                 raise ValueError("acp_suppress_script_patterns must be a string or list of strings")
+
+        if key == "mcp":
+            if not isinstance(value, dict):
+                raise ValueError("mcp must be an object")
+            normalized_mcp = {}
+            for mcp_key, mcp_value in value.items():
+                if mcp_key not in _MCP_CONFIG_KEYS:
+                    if strict:
+                        raise ValueError(f"Unknown runtime config key: mcp.{mcp_key}")
+                    continue
+                if mcp_key == "stream_user_workspace_concurrency":
+                    if (
+                        isinstance(mcp_value, bool)
+                        or not isinstance(mcp_value, int)
+                        or not 1 <= mcp_value <= 32
+                    ):
+                        raise ValueError(
+                            "mcp.stream_user_workspace_concurrency must be an integer between 1 and 32"
+                        )
+                    normalized_mcp[mcp_key] = mcp_value
+            normalized[key] = normalized_mcp
 
         if key == "llm":
             if not isinstance(value, dict):
