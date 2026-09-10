@@ -9,6 +9,7 @@ import {
   createMcpScopeState,
   mcpOntologyEligibility,
   normalizeMcpOntologies,
+  normalizeMcpStreamConcurrency,
   normalizeMcpStatus,
   normalizeMcpTokens,
   resolveMcpOntologySelection,
@@ -80,6 +81,22 @@ test('MCP is authenticated self service and client config contains only the supp
   assert.equal(request.ontology_id, 'knowledge_package_demo');
   assert.equal('active_version' in request, false);
   assert.match(buildMcpClientConfig({ id: 'chat', active_url: 'https://mcp/chat', client_config_type: 'http' }), /<MCP_TOKEN>/);
+});
+
+test('MCP stream concurrency defaults to five and only accepts the supported range', () => {
+  assert.deepEqual(normalizeMcpStreamConcurrency(), {
+    value: 5,
+    min: 1,
+    max: 32,
+  });
+  assert.equal(normalizeMcpStreamConcurrency({ value: 32 }).value, 32);
+  assert.equal(normalizeMcpStreamConcurrency({ value: 33 }).value, 5);
+  assert.equal(normalizeMcpStreamConcurrency({ value: 0 }).value, 5);
+  assert.deepEqual(normalizeMcpStreamConcurrency({ min: 33, max: 99 }), {
+    value: 5,
+    min: 1,
+    max: 32,
+  });
 });
 
 test('ontology selection follows scope capabilities and only auto-selects a unique eligible package', () => {

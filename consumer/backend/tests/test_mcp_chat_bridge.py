@@ -24,8 +24,15 @@ from agent.runtime.event_bus import (
     EventSubscriberReservationError,
 )
 from api.protocols.mcp import server as mcp_server
-from api.protocols.mcp.chat_adapter import execute_chat_tool, execute_chat_tool_async
-from api.protocols.mcp.workflow_bridge import execute_mcp_chat_workflow_async
+from api.protocols.mcp.chat_adapter import (
+    _decode_json_bytes,
+    execute_chat_tool,
+    execute_chat_tool_async,
+)
+from api.protocols.mcp.workflow_bridge import (
+    _emit_mcp_progress,
+    execute_mcp_chat_workflow_async,
+)
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import MCPRequestScope
 from persistence.execution_store import ExecutionStore
@@ -722,6 +729,72 @@ def test_async_chat_adapter_consumes_internal_progress_stream(
     ]
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/agentic/mcp/internal/chat/stream")
+
+
+def test_async_chat_adapter_propagates_progress_cancellation(
+    monkeypatch,
+    tmp_path,
+):
+    class _StreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def aiter_lines(self):
+            for line in (
+                "event: progress",
+                'data: {"schema_version":"1.0","seq":1,"event":"run.started"}',
+                "",
+            ):
+                yield line
+
+    class _AsyncClient:
+        def __init__(self, *, timeout):
+            del timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, method, url, *, headers, json):
+            del method, url, headers, json
+            return _StreamResponse()
+
+    monkeypatch.setattr(
+        "api.protocols.mcp.chat_adapter.httpx.AsyncClient",
+        _AsyncClient,
+    )
+
+    async def cancel_progress(_event):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            execute_chat_tool_async(
+                {"query": "synthetic question", "stream": True},
+                scope=_scope(),
+                progress_callback=cancel_progress,
+                config=_config(tmp_path / "tokens.json"),
+            )
+        )
+
+
+def test_chat_adapter_invalid_utf8_json_returns_none():
+    assert _decode_json_bytes(b"\xff") is None
+
+
+def test_mcp_progress_sink_cancellation_propagates():
+    async def cancel_progress(_event):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_emit_mcp_progress(cancel_progress, {"event": "run.started"}))
 
 
 def test_async_chat_adapter_falls_back_without_progress_callback(
