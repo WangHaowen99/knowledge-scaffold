@@ -20,19 +20,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_PATH = os.path.join(_SCRIPT_DIR, "test_benchmark_suite.py")
 ACP_FULL_SCRIPT_PATH = os.path.join(_SCRIPT_DIR, "test_acp_full.py")
 _RESULT_BASE_DIR = os.path.join(_SCRIPT_DIR, "result")
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging() -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def _load_dotenv() -> dict[str, str | None]:
@@ -181,9 +192,9 @@ def _setup_scenario_config(scenario: tuple) -> bool:
     ok = _set_runtime_config(config)
     if ok:
         lang_label = "ON" if lang_enabled else "OFF"
-        print(f"  ⚙  runtime_config: lang={lang_label}, suppress='{suppress}'")
+        logger.info(f"  ⚙  runtime_config: lang={lang_label}, suppress='{suppress}'")
     else:
-        print(f"  ⚠  runtime_config 设置失败!")
+        logger.info(f"  ⚠  runtime_config 设置失败!")
     time.sleep(0.3)
     return ok
 
@@ -214,14 +225,16 @@ def _run_single_scenario(scenario: tuple, result_dir: str) -> dict:
     sid, name, api_mode, submode, lang_enabled, acp_lang, suppress, test_lang = scenario
     label = f"[{sid}] {name}"
 
-    print(f"\n{'='*80}")
-    print(f"  >>> {label}")
+    logger.info(f"\n{'='*80}")
+    logger.info(f"  >>> {label}")
     if api_mode == "acp":
         le = "ON" if lang_enabled else "OFF"
-        print(f"      模式: ACP/{submode} | 语言跟随: {le} | " f"ACP_LANG={acp_lang or '-'} | 抑制: {suppress or '-'}")
+        logger.info(
+            f"      模式: ACP/{submode} | 语言跟随: {le} | ACP_LANG={acp_lang or '-'} | 抑制: {suppress or '-'}"
+        )
     else:
-        print(f"      模式: Agentic")
-    print(f"{'='*80}\n")
+        logger.info(f"      模式: Agentic")
+    logger.info(f"{'='*80}\n")
 
     # 设置服务端 runtime_config
     _setup_scenario_config(scenario)
@@ -254,13 +267,13 @@ def _run_single_scenario(scenario: tuple, result_dir: str) -> dict:
             return
         m = re.match(r"(问题\d+) 完成:", stripped)
         if m:
-            print(f"    ✅ {stripped}")
+            logger.info(f"    ✅ {stripped}")
             return
         if "开始测试" in stripped:
-            print(f"    ▶ {stripped}")
+            logger.info(f"    ▶ {stripped}")
             return
         if "全局成功率" in stripped or "总问题数" in stripped or "全局平均耗时" in stripped:
-            print(f"    📊 {stripped}")
+            logger.info(f"    📊 {stripped}")
             return
 
     for line in iter(proc.stdout.readline, ""):
@@ -277,7 +290,7 @@ def _run_single_scenario(scenario: tuple, result_dir: str) -> dict:
     log_path = os.path.join(scenario_dir, f"{sid}.log")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"{'='*80}\n{label}\n{'='*80}\n\n{combined}")
-    print(f"    📝 日志: {log_path}")
+    logger.info(f"    📝 日志: {log_path}")
 
     # 解析关键指标
     result = _parse_result(combined, sid, name, wall_seconds)
@@ -336,23 +349,25 @@ def _print_result_summary(r: dict):
     avg = f"{r['avg_seconds']:.2f}s" if r.get("avg_seconds") is not None else "N/A"
     qs = r.get("total_questions", "?")
     runs = r.get("total_runs", "?")
-    print(f"\n    📊 [{r['sid']}] {r['name']}: {qs}题×{runs}次 | 平均{avg} | 成功率{sr} | 耗时{r['wall_seconds']:.0f}s")
+    logger.info(
+        f"\n    📊 [{r['sid']}] {r['name']}: {qs}题×{runs}次 | 平均{avg} | 成功率{sr} | 耗时{r['wall_seconds']:.0f}s"
+    )
     if r.get("chinese_intrusion"):
         for line in r["chinese_intrusion"].split("\n")[:3]:
-            print(f"         {line.strip()}")
+            logger.info(f"         {line.strip()}")
     if r.get("acp_suppress_check"):
         for line in r["acp_suppress_check"].split("\n")[:3]:
-            print(f"         {line.strip()}")
+            logger.info(f"         {line.strip()}")
 
 
 def _run_acp_structural_check(group_flag: str, sid: str, name: str, result_dir: str) -> dict:
     """运行 test_acp_full.py 的指定测试组，返回结构化结果。"""
     label = f"[{sid}] {name}"
 
-    print(f"\n{'='*80}")
-    print(f"  >>> {label}")
-    print(f"      test_acp_full.py --group {group_flag}")
-    print(f"{'='*80}\n")
+    logger.info(f"\n{'='*80}")
+    logger.info(f"  >>> {label}")
+    logger.info(f"      test_acp_full.py --group {group_flag}")
+    logger.info(f"{'='*80}\n")
 
     start_ts = time.perf_counter()
     sub_env = os.environ.copy()
@@ -377,7 +392,7 @@ def _run_acp_structural_check(group_flag: str, sid: str, name: str, result_dir: 
         output_lines.append(stripped)
         # 精简控制台输出：只显示关键行
         if any(kw in stripped for kw in ["✓", "✗", "⊘", "测试结果汇总", "总计:", "全部通过", "有"]):
-            print(f"    {stripped}")
+            logger.info(f"    {stripped}")
 
     proc.stdout.close()
     proc.wait()
@@ -397,7 +412,7 @@ def _run_acp_structural_check(group_flag: str, sid: str, name: str, result_dir: 
     log_path = os.path.join(result_dir, f"{sid}.log")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"{'='*80}\n{label}\n{'='*80}\n\n{combined}")
-    print(f"    📝 日志: {log_path}")
+    logger.info(f"    📝 日志: {log_path}")
 
     # 解析关键指标
     result: dict[str, Any] = {
@@ -430,7 +445,7 @@ def _run_acp_structural_check(group_flag: str, sid: str, name: str, result_dir: 
         result["avg_seconds"] = round(wall_seconds / total, 2) if total > 0 else None
 
     status_icon = "✅" if (result.get("success_rate") or 0) >= 100 else "⚠️"
-    print(
+    logger.info(
         f"\n    {status_icon} [{sid}] {name}: "
         f"{result.get('total_questions', '?')}用例 | "
         f"成功率{result.get('success_rate', 'N/A')}% | "
@@ -447,7 +462,7 @@ def _generate_summary_report(all_results: list[dict], run_dir: str, total_wall: 
     a = lines.append
     a("# ACP 全场景测试矩阵 汇总报告")
     a(f"")
-    a(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    a(f"> 生成时间: {datetime.now(timezone.utc).isoformat()}")
     a(f"> 工作空间: {WORKSPACE_ID} | 后端: {BASE_URL}")
     a(f"> ACP_MATRIX_SAMPLE_SIZE={EVAL_SAMPLE_SIZE_INPUT} | ACP_MATRIX_RUNS={RUNS_PER_QUESTION_INPUT}")
     a(f"")
@@ -539,69 +554,69 @@ def _generate_summary_report(all_results: list[dict], run_dir: str, total_wall: 
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print(f"\n  📄 汇总报告: {report_path}")
+    logger.info(f"\n  📄 汇总报告: {report_path}")
 
     # 控制台输出
-    print(f"\n{'='*80}")
-    print(f"  全场景测试完成")
-    print(f"{'='*80}")
+    logger.info(f"\n{'='*80}")
+    logger.info(f"  全场景测试完成")
+    logger.info(f"{'='*80}")
 
     # 结构测试结果
     structural = [r for r in all_results if r["sid"].startswith("P")]
     for r in structural:
         sr = f"{r['success_rate']:.1f}%" if r.get("success_rate") is not None else "N/A"
         icon = "✅" if (r.get("success_rate") or 0) >= 100 else "⚠️"
-        print(f"  {icon} [{r['sid']}] {r['name']}: {r.get('total_questions','?')}用例 | 成功率{sr}")
+        logger.info(f"  {icon} [{r['sid']}] {r['name']}: {r.get('total_questions','?')}用例 | 成功率{sr}")
 
     # benchmark 结果
     benchmark_results = [r for r in all_results if not r["sid"].startswith("P")]
     b_success = sum(1 for r in benchmark_results if r.get("success_rate") is not None and r["success_rate"] >= 100)
     b_total = len(benchmark_results)
-    print(f"  📊 benchmark 场景: {b_success}/{b_total} 通过")
+    logger.info(f"  📊 benchmark 场景: {b_success}/{b_total} 通过")
 
     failed = [r for r in benchmark_results if r.get("success_rate") is not None and r["success_rate"] < 100]
     structural_failed = [r for r in structural if r.get("success_rate") is not None and r["success_rate"] < 100]
     all_failed = failed + structural_failed
 
-    print(f"  总耗时: {_fmt_duration(total_wall)}")
-    print(f"  报告: {report_path}")
-    print(f"  日志: {run_dir}")
+    logger.info(f"  总耗时: {_fmt_duration(total_wall)}")
+    logger.info(f"  报告: {report_path}")
+    logger.info(f"  日志: {run_dir}")
     if all_failed:
-        print(f"  ⚠️  {len(all_failed)} 项异常:")
+        logger.info(f"  ⚠️  {len(all_failed)} 项异常:")
         for r in all_failed:
-            print(f"     - [{r['sid']}] {r['name']}: 成功率 {r['success_rate']:.1f}%")
+            logger.info(f"     - [{r['sid']}] {r['name']}: 成功率 {r['success_rate']:.1f}%")
     else:
-        print(f"  ✅ 全部场景成功率 100%")
-    print(f"{'='*80}\n")
+        logger.info(f"  ✅ 全部场景成功率 100%")
+    logger.info(f"{'='*80}\n")
 
 
 def _list_scenarios(scenarios: list):
-    print(f"\nACP 全场景矩阵 (35 个测试项):\n")
+    logger.info(f"\nACP 全场景矩阵 (35 个测试项):\n")
 
-    print(f"  ┌── 前置检查: ACP 协议结构测试 ──")
-    print(f"  │ P1  ACP-API端点验证       test_acp_full.py --group api       11 用例")
-    print(f"  │ P2  ACP-错误场景验证      test_acp_full.py --group error     9 用例")
-    print(f"  │ P2b ACP-用户隔离验证      test_acp_full.py --group isolation 4 用例")
-    print(f"  └" + "─" * 50)
+    logger.info(f"  ┌── 前置检查: ACP 协议结构测试 ──")
+    logger.info(f"  │ P1  ACP-API端点验证       test_acp_full.py --group api       11 用例")
+    logger.info(f"  │ P2  ACP-错误场景验证      test_acp_full.py --group error     9 用例")
+    logger.info(f"  │ P2b ACP-用户隔离验证      test_acp_full.py --group isolation 4 用例")
+    logger.info(f"  └" + "─" * 50)
 
-    print(f"\n  ┌── 核心矩阵: benchmark 场景 ({len(scenarios)} 个) ──")
-    print(f"{'ID':<6} {'名称':<28} {'模式':<20} {'语言跟随':<10} {'语言':<6} {'抑制':<30}")
-    print(f"{'-'*100}")
+    logger.info(f"\n  ┌── 核心矩阵: benchmark 场景 ({len(scenarios)} 个) ──")
+    logger.info(f"{'ID':<6} {'名称':<28} {'模式':<20} {'语言跟随':<10} {'语言':<6} {'抑制':<30}")
+    logger.info(f"{'-'*100}")
     for s in scenarios:
         sid, name, api_mode, submode, lang_en, lang, suppress, test_lang = s
         mode = f"ACP/{submode}" if api_mode == "acp" else "Agentic"
         le = "ON" if lang_en else "OFF"
         lang_d = lang or "-"
         sup_d = suppress or "-"
-        print(f"{sid:<6} {name:<28} {mode:<20} {le:<10} {lang_d:<6} {sup_d:<30}")
-    print(f"  └" + "─" * 100)
+        logger.info(f"{sid:<6} {name:<28} {mode:<20} {le:<10} {lang_d:<6} {sup_d:<30}")
+    logger.info(f"  └" + "─" * 100)
 
-    print(f"\n  ┌── 后置检查: ACP 完整流程测试 ──")
-    print(f"  │ P3  ACP-完整流程验证      test_acp_full.py --group flow   6 用例")
-    print(f"  └" + "─" * 50)
+    logger.info(f"\n  ┌── 后置检查: ACP 完整流程测试 ──")
+    logger.info(f"  │ P3  ACP-完整流程验证      test_acp_full.py --group flow   6 用例")
+    logger.info(f"  └" + "─" * 50)
 
-    print(f"\n总计: 35 个测试项 (4 结构测试 + {len(scenarios)} benchmark 场景)")
-    print(f"预计时间: ~{len(scenarios) * 60 + 120}s ({_fmt_duration(len(scenarios) * 60 + 120)})\n")
+    logger.info(f"\n总计: 35 个测试项 (4 结构测试 + {len(scenarios)} benchmark 场景)")
+    logger.info(f"预计时间: ~{len(scenarios) * 60 + 120}s ({_fmt_duration(len(scenarios) * 60 + 120)})\n")
 
 
 def main():
@@ -626,7 +641,7 @@ def main():
         allowed = set(x.strip() for x in args.ids.split(",") if x.strip())
         scenarios = [s for s in scenarios if s[0] in allowed]
         if not scenarios:
-            print(f"没有匹配的场景 (ids={args.ids})")
+            logger.info(f"没有匹配的场景 (ids={args.ids})")
             sys.exit(1)
 
     if args.list:
@@ -634,14 +649,14 @@ def main():
         return
 
     # 创建运行目录
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(_RESULT_BASE_DIR, f"full_matrix_{ts}")
     os.makedirs(run_dir, exist_ok=True)
 
     # 保存原始 runtime_config
-    print(f"\n保存原始 runtime_config ...")
+    logger.info(f"\n保存原始 runtime_config ...")
     original_config = _get_runtime_config()
-    print(
+    logger.info(
         f"  原始配置: lang={original_config.get('lang', {})}, "
         f"suppress='{original_config.get('acp_suppress_script_patterns', '')}'"
     )
@@ -655,9 +670,9 @@ def main():
         # ── 前置检查: ACP 协议端点结构测试 (api + error) ──
         precheck_dir = os.path.join(run_dir, "_precheck")
         os.makedirs(precheck_dir, exist_ok=True)
-        print(f"\n{'#'*80}")
-        print(f"  # 前置检查: ACP 端点结构测试")
-        print(f"{'#'*80}\n")
+        logger.info(f"\n{'#'*80}")
+        logger.info(f"  # 前置检查: ACP 端点结构测试")
+        logger.info(f"{'#'*80}\n")
 
         p1 = _run_acp_structural_check("api", "P1", "ACP-API端点验证", precheck_dir)
         all_results.append(p1)
@@ -683,7 +698,7 @@ def main():
             if remaining > 0 and bench_done > 0:
                 avg_per = elapsed / bench_done
                 eta = remaining * avg_per
-                print(
+                logger.info(
                     f"\n  📊 进度: {bench_done}/{bench_total} | "
                     f"已用: {_fmt_duration(elapsed)} | "
                     f"预计剩余: {_fmt_duration(eta)}\n"
@@ -691,28 +706,29 @@ def main():
 
     except KeyboardInterrupt:
         total_expected = len(scenarios) + structural_offset + (1 if run_structural else 0)
-        print(f"\n\n用户中断，已执行 {len(all_results)}/{total_expected} 个场景")
+        logger.info(f"\n\n用户中断，已执行 {len(all_results)}/{total_expected} 个场景")
 
     if run_structural:
         # ── 后置检查: ACP 完整流程测试 (flow) ──
         postcheck_dir = os.path.join(run_dir, "_postcheck")
         os.makedirs(postcheck_dir, exist_ok=True)
-        print(f"\n{'#'*80}")
-        print(f"  # 后置检查: ACP 完整流程测试")
-        print(f"{'#'*80}\n")
+        logger.info(f"\n{'#'*80}")
+        logger.info(f"  # 后置检查: ACP 完整流程测试")
+        logger.info(f"{'#'*80}\n")
 
         p3 = _run_acp_structural_check("flow", "P3", "ACP-完整流程验证", postcheck_dir)
         all_results.append(p3)
 
     # 恢复原始 runtime_config
-    print(f"\n恢复原始 runtime_config ...")
+    logger.info(f"\n恢复原始 runtime_config ...")
     if original_config:
         _set_runtime_config(original_config)
-        print(f"  已恢复")
+        logger.info(f"  已恢复")
 
     total_wall = time.perf_counter() - total_start
     _generate_summary_report(all_results, run_dir, total_wall)
 
 
 if __name__ == "__main__":
+    _configure_cli_logging()
     main()

@@ -73,13 +73,21 @@ export function insertSuggestions(
      diagnosis_ids_json, evidence_json, generalization_plan, validation_plan, status, created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)`);
   const insertedIds: string[] = [];
-  for (const it of items) {
-    const id = `sg_${randomUUID().slice(0, 12)}`;
-    insertedIds.push(id);
-    stmt.run(id, projectId, roundId, basedVersion, basedRevisionOid,
-      it.title, it.detail, it.kind, it.target ?? null, it.relatedQuestion ?? null,
-      JSON.stringify(it.diagnosisIds ?? []), JSON.stringify(it.evidence ?? []),
-      it.generalizationPlan ?? '', it.validationPlan ?? '', nowIso());
+  const ownsTransaction = !db.isTransaction;
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const it of items) {
+      const id = `sg_${randomUUID().slice(0, 12)}`;
+      insertedIds.push(id);
+      stmt.run(id, projectId, roundId, basedVersion, basedRevisionOid,
+        it.title, it.detail, it.kind, it.target ?? null, it.relatedQuestion ?? null,
+        JSON.stringify(it.diagnosisIds ?? []), JSON.stringify(it.evidence ?? []),
+        it.generalizationPlan ?? '', it.validationPlan ?? '', nowIso());
+    }
+    if (ownsTransaction) db.exec('COMMIT');
+  } catch (error) {
+    if (ownsTransaction && db.isTransaction) db.exec('ROLLBACK');
+    throw error;
   }
   return getSuggestions(insertedIds);
 }

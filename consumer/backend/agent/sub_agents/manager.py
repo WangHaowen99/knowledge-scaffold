@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import uuid
+from builtins import BaseExceptionGroup
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -58,9 +59,7 @@ class SubAgentManager:
         parent_depth = int(lineage.get("depth") or 0)
         child_depth = parent_depth + 1
         root_tool_call_id = (
-            str(lineage.get("root_tool_call_id") or "").strip()
-            or str(parent_tool_call_id or "").strip()
-            or None
+            str(lineage.get("root_tool_call_id") or "").strip() or str(parent_tool_call_id or "").strip() or None
         )
         parent_subagent_id = str(lineage.get("subagent_id") or "").strip() or None
 
@@ -70,8 +69,10 @@ class SubAgentManager:
                 "status": "error",
                 "tasks": [],
                 "summary": (
-                    "spawn_sub_agent max depth exceeded: requested depth {}, limit {}."
-                ).format(child_depth, self.max_depth),
+                    ("spawn_sub_agent max depth exceeded: requested depth {}, limit {}.").format(
+                        child_depth, self.max_depth
+                    )
+                ),
             }
 
         task_index_by_id = {task.id: idx for idx, task in enumerate(tasks)}
@@ -166,20 +167,14 @@ class SubAgentManager:
                 semaphore.release()
 
         ordered_results = [results_by_id[task.id] for task in tasks]
-        group_status = (
-            "completed"
-            if all(item["status"] == "completed" for item in ordered_results)
-            else "error"
-        )
+        group_status = "completed" if all(item["status"] == "completed" for item in ordered_results) else "error"
         self._emit_group_finished(
             event_emitter,
             group_id=group_id,
             depth=child_depth,
             status=group_status,
             task_count=len(ordered_results),
-            completed_count=sum(
-                1 for item in ordered_results if item["status"] == "completed"
-            ),
+            completed_count=sum(1 for item in ordered_results if item["status"] == "completed"),
         )
         return {
             "group_id": group_id,
@@ -208,16 +203,14 @@ class SubAgentManager:
         parent_selected_ontology_id: Optional[str] = None,
         parent_selected_ontology_version: Optional[str] = None,
     ) -> Dict[str, Any]:
-        key_steps, record_step, protocol_event_observer, scoped_event_emitter = (
-            self._build_task_execution_context(
-                event_emitter=event_emitter,
-                task_spec=task_spec,
-                task_index=task_index,
-                group_id=group_id,
-                depth=depth,
-                parent_subagent_id=parent_subagent_id,
-                root_tool_call_id=root_tool_call_id,
-            )
+        key_steps, record_step, protocol_event_observer, scoped_event_emitter = self._build_task_execution_context(
+            event_emitter=event_emitter,
+            task_spec=task_spec,
+            task_index=task_index,
+            group_id=group_id,
+            depth=depth,
+            parent_subagent_id=parent_subagent_id,
+            root_tool_call_id=root_tool_call_id,
         )
         try:
             raw_result = await SubAgent().aexecute(
@@ -337,19 +330,13 @@ class SubAgentManager:
         record_step: Callable[[str], None],
     ) -> Dict[str, Any]:
         raw_key_steps = [
-            str(step).strip()
-            for step in list(dict(raw_result or {}).get("_key_steps") or [])
-            if str(step).strip()
+            str(step).strip() for step in list(dict(raw_result or {}).get("_key_steps") or []) if str(step).strip()
         ]
         if raw_key_steps:
             key_steps = raw_key_steps
         else:
             record_step("final result produced")
-        result_payload = {
-            key: value
-            for key, value in dict(raw_result or {}).items()
-            if not str(key).startswith("_")
-        }
+        result_payload = {key: value for key, value in dict(raw_result or {}).items() if not str(key).startswith("_")}
         return {
             "id": task_spec.id,
             "status": self._resolve_task_status(raw_result),
@@ -461,7 +448,6 @@ class SubAgentManager:
         if failures == 0:
             return "Completed {} sub-agent task(s).".format(total)
         return "Completed {} sub-agent task(s) with {} failure(s).".format(successes, failures)
-
 
 
 def get_subagent_manager(run_id: Optional[str], agent_config: Any) -> SubAgentManager:

@@ -8,13 +8,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Iterable
-
+from typing import Any, Iterable, TextIO
 
 _RECONCILIATION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+logger = logging.getLogger(__name__)
+result_logger = logging.getLogger(f"{__name__}.result")
+
+
+def _configure_stream_logger(
+    target: logging.Logger,
+    *,
+    stream: TextIO,
+    level: int,
+) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    target.handlers.clear()
+    target.addHandler(handler)
+    target.setLevel(level)
+    target.propagate = False
+
+
+def _configure_cli_logging() -> None:
+    _configure_stream_logger(logger, stream=sys.stderr, level=logging.ERROR)
+    _configure_stream_logger(result_logger, stream=sys.stdout, level=logging.INFO)
 
 
 def _load_json(path: Path) -> Any:
@@ -74,11 +95,7 @@ def _audit_workspace_metadata(
     findings: list[dict[str, str]] = []
     owner = metadata.get("owner")
     if owner is not None:
-        if (
-            not isinstance(owner, str)
-            or not owner
-            or owner != owner.strip()
-        ):
+        if not isinstance(owner, str) or not owner or owner != owner.strip():
             findings.append(
                 _finding(
                     workspace_id,
@@ -96,19 +113,12 @@ def _audit_workspace_metadata(
 
     seen: set[str] = set()
     for index, member in enumerate(members):
-        if (
-            not isinstance(member, str)
-            or not member
-            or member != member.strip()
-        ):
+        if not isinstance(member, str) or not member or member != member.strip():
             findings.append(
                 _finding(
                     workspace_id,
                     "invalid_member",
-                    detail=(
-                        f"members[{index}] must be a non-empty string "
-                        "without surrounding whitespace"
-                    ),
+                    detail=f"members[{index}] must be a non-empty string without surrounding whitespace",
                 )
             )
             continue
@@ -149,9 +159,7 @@ def audit_workspace_acl(users_file: Path, workspaces_root: Path) -> dict[str, An
         if isinstance(metadata, dict):
             metadata_id = str(metadata.get("id") or "").strip()
             if not metadata_id:
-                findings.append(
-                    _finding(directory_id, "invalid_workspace_id", detail="workspace.json has no id")
-                )
+                findings.append(_finding(directory_id, "invalid_workspace_id", detail="workspace.json has no id"))
             elif metadata_id != directory_id:
                 findings.append(
                     _finding(
@@ -181,8 +189,7 @@ def audit_workspace_acl(users_file: Path, workspaces_root: Path) -> dict[str, An
         "auth_user_count": len(auth_usernames),
         "workspace_count": workspace_count,
         "pending_reconciliation_count": sum(
-            item["type"] == "pending_user_deletion_reconciliation"
-            for item in reconciliation_findings
+            item["type"] == "pending_user_deletion_reconciliation" for item in reconciliation_findings
         ),
         "finding_count": len(findings),
         "findings": findings,
@@ -193,11 +200,7 @@ def _audit_pending_reconciliations(
     workspaces_root: Path,
     auth_usernames: set[str],
 ) -> list[dict[str, str]]:
-    path = (
-        workspaces_root.parent
-        / "system"
-        / "user-deletion-reconciliation.json"
-    )
+    path = workspaces_root.parent / "system" / "user-deletion-reconciliation.json"
     if not path.exists():
         return []
     try:
@@ -257,11 +260,7 @@ def _validate_reconciliation_document(payload: Any) -> list[dict[str, Any]]:
             raise ValueError(f"records[{index}].id must be 32 lowercase hex characters")
         if record_id in seen_ids:
             raise ValueError(f"records[{index}].id is duplicated")
-        if (
-            not isinstance(username, str)
-            or not username
-            or username != username.strip()
-        ):
+        if not isinstance(username, str) or not username or username != username.strip():
             raise ValueError(f"records[{index}].username must be a canonical non-empty string")
         if username in seen_usernames:
             raise ValueError(f"records[{index}].username is duplicated")
@@ -292,18 +291,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_cli_logging()
     args = _build_parser().parse_args(argv)
     try:
         report = audit_workspace_acl(args.auth_users_file, args.workspaces_root)
     except ValueError as exc:
-        print(json.dumps({"clean": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        rendered_error = json.dumps(
+            {"clean": False, "error": str(exc)},
+            ensure_ascii=False,
+        )
+        logger.error(rendered_error)
         return 1
 
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
-    print(rendered, end="")
+    result_logger.info(rendered.rstrip("\n"))
     return 0 if report["clean"] else 2
 
 

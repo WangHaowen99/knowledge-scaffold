@@ -1,4 +1,7 @@
 export const MCP_SCOPES = Object.freeze(['mcp:search', 'mcp:chat']);
+export const MCP_STREAM_USER_CONCURRENCY_DEFAULT = 5;
+export const MCP_STREAM_USER_CONCURRENCY_MIN = 1;
+export const MCP_STREAM_USER_CONCURRENCY_MAX = 32;
 export const MCP_DEFAULT_FORM = Object.freeze({
   name: '',
   expiresIn: '86400',
@@ -9,6 +12,27 @@ const MCP_GRAPH_PROVIDERS = Object.freeze(['neo4j', 'hugegraph']);
 
 function text(value) {
   return String(value ?? '').trim();
+}
+
+export function normalizeMcpStreamConcurrency({
+  value = MCP_STREAM_USER_CONCURRENCY_DEFAULT,
+  min = MCP_STREAM_USER_CONCURRENCY_MIN,
+  max = MCP_STREAM_USER_CONCURRENCY_MAX,
+} = {}) {
+  const normalizedMin = Number.isInteger(min) &&
+    min >= MCP_STREAM_USER_CONCURRENCY_MIN &&
+    min <= MCP_STREAM_USER_CONCURRENCY_MAX ?
+    min :
+    MCP_STREAM_USER_CONCURRENCY_MIN;
+  const normalizedMax = Number.isInteger(max) && max >= normalizedMin ?
+    Math.min(max, MCP_STREAM_USER_CONCURRENCY_MAX) :
+    MCP_STREAM_USER_CONCURRENCY_MAX;
+  const normalizedValue = Number.isInteger(value) &&
+    value >= normalizedMin &&
+    value <= normalizedMax ?
+    value :
+    MCP_STREAM_USER_CONCURRENCY_DEFAULT;
+  return { value: normalizedValue, min: normalizedMin, max: normalizedMax };
 }
 
 export function mcpScopeKey(workspaceId = '') {

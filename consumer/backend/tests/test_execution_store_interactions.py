@@ -1,6 +1,10 @@
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timezone
+import json
+import threading
+
+import pytest
 
 import persistence.execution_store as execution_store_module
 import persistence.session_summary_index as summary_index_module
@@ -874,6 +878,8 @@ def test_pending_interaction_can_be_cancelled_without_losing_context(tmp_path):
     assert history["turns"][0]["interaction_response"] == cancellation
     assert history["turns"][0]["interaction_consumed_at"]
     assert history["turns"][0]["interaction_cancelled_at"]
+    assert datetime.fromisoformat(cancellation["cancelled_at"]).tzinfo == timezone.utc
+    assert datetime.fromisoformat(history["turns"][0]["interaction_consumed_at"]).tzinfo == timezone.utc
     assert "interaction_consumed_by_turn_id" not in history["turns"][0]
     assert store.get_llm_context("sess-choice") == prior_context
 
@@ -1142,6 +1148,46 @@ def test_protocol_run_id_is_atomic_across_concurrent_sessions(
     turns = store.list_turns_by_protocol("a2a")
     assert len(turns) == 1
     assert turns[0]["protocol_metadata"]["external_run_id"] == "external-task-shared"
+
+
+def test_protocol_turns_sort_and_deduplicate_mixed_timezone_timestamps(tmp_path):
+    storage_dir = tmp_path / "executions"
+    records = (
+        ("session-later", "run-later", "external-shared", "2026-01-02T10:00:00+00:00"),
+        ("session-earlier", "run-earlier", "external-shared", "2026-01-02T11:00:00+02:00"),
+        ("session-legacy", "run-legacy", "external-legacy", "2026-01-02T08:30:00"),
+    )
+    for session_id, run_id, external_id, start_time in records:
+        session_dir = storage_dir / session_id
+        session_dir.mkdir(parents=True)
+        payload = {
+            "session_id": session_id,
+            "created_at": "2026-01-02T08:00:00",
+            "updated_at": "2026-01-02T08:00:00",
+            "turns": [
+                {
+                    "turn_id": 1,
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "start_time": start_time,
+                    "end_time": "2026-01-02T12:00:00+00:00",
+                    "status": "success",
+                    "protocol_metadata": {
+                        "protocol": "a2a",
+                        "external_run_id": external_id,
+                    },
+                }
+            ],
+        }
+        (session_dir / "execution.json").write_text(
+            json.dumps(payload),
+            encoding="utf-8",
+        )
+
+    turns = ExecutionStore(str(storage_dir)).list_turns_by_protocol("a2a")
+
+    assert [turn["run_id"] for turn in turns] == ["run-later", "run-legacy"]
+    assert turns[1]["start_time"] == "2026-01-02T08:30:00+00:00"
 
 
 def test_protocol_run_id_reservation_recognizes_durable_turn_after_reload(tmp_path):

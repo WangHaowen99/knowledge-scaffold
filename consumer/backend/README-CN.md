@@ -88,7 +88,7 @@ MCP 服务作为独立 FastMCP 进程运行。安装依赖后在 `consumer/backe
 PYTHONPATH=. python -m api.protocols.mcp.server --transport both --host 0.0.0.0 --port 7488
 ```
 
-Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。FastAPI 主服务提供 `/agentic/mcp/*` 管理 API。每个工作空间持久化一个随机 `mcp_endpoint_id`，独立进程暴露 `/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/chat/mcp`、`/{mcp_endpoint_id}/search/sse` 和 `/{mcp_endpoint_id}/chat/sse`。完整 URL 通过 `GET /agentic/mcp/runtime/status` 获取；旧固定路由不再提供。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具；Chat 会重新校验 MCP Token、工作空间 ACL 和当前请求 URL Endpoint 绑定，再进入统一 Jiuwen workflow 和 admission queue。MCP transport session 同时绑定到首次使用的 Endpoint，不能跨工作空间 URL 复用；Streamable HTTP Session 默认空闲 30 分钟后失效，SSE 断开时释放绑定，每个服务 transport 固定最多保留 10000 个活动 Session。服务重启后客户端需要重新 initialize。
+Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。FastAPI 主服务提供 `/agentic/mcp/*` 管理 API。每个工作空间持久化一个随机 `mcp_endpoint_id`，独立进程暴露 `/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/chat/mcp`、`/{mcp_endpoint_id}/search/sse` 和 `/{mcp_endpoint_id}/chat/sse`。完整 URL 通过 `GET /agentic/mcp/runtime/status` 获取；旧固定路由不再提供。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具；Chat 会重新校验 MCP Token、工作空间 ACL 和当前请求 URL Endpoint 绑定，再进入统一 Jiuwen workflow 和 admission queue。Chat 可通过 `stream=true` 和 MCP Progress Token 获取脱敏的粗粒度执行进度；普通用户的流式 Chat 并发默认是当前工作空间 5 个、可由平台管理员在 MCP 接入页调整为 1–32，管理员保持平台运行上限。MCP transport session 同时绑定到首次使用的 Endpoint，不能跨工作空间 URL 复用；Streamable HTTP Session 默认空闲 30 分钟后失效，SSE 断开时释放绑定，每个服务 transport 固定最多保留 10000 个活动 Session。服务重启后客户端需要重新 initialize。
 
 说明：
 

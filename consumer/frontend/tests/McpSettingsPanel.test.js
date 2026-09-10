@@ -59,6 +59,24 @@ function statusPayload(workspaceId, endpointId) {
   };
 }
 
+function concurrencyPayload(value = 5) {
+  return {
+    stream_user_workspace_concurrency: value,
+    default: 5,
+    min: 1,
+    max: 32,
+  };
+}
+
+function setInputValue(input, value) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value',
+  ).set;
+  setter.call(input, value);
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+}
+
 async function withRenderedPanel(run) {
   const dom = new JSDOM(
     '<!doctype html><html><body><div id="root"></div></body></html>',
@@ -148,6 +166,7 @@ async function withRenderedPanel(run) {
 test('workspace switch never projects the previous ontology list into a loading or failed scope', async () => {
   const workspaceBStatus = deferred();
   const workspaceBTokens = deferred();
+  const workspaceBConcurrency = deferred();
   const calls = [];
   let requestWorkspace = 'ws-a';
   const request = (url) => {
@@ -161,11 +180,17 @@ test('workspace switch never projects the previous ontology list into a loading 
     if (workspaceId === 'ws-a' && url === '/agentic/mcp/tokens') {
       return Promise.resolve(jsonResponse({ items: [] }));
     }
+    if (workspaceId === 'ws-a' && url === '/agentic/mcp/runtime/concurrency') {
+      return Promise.resolve(jsonResponse(concurrencyPayload()));
+    }
     if (workspaceId === 'ws-b' && url === '/agentic/mcp/runtime/status') {
       return workspaceBStatus.promise;
     }
     if (workspaceId === 'ws-b' && url === '/agentic/mcp/tokens') {
       return workspaceBTokens.promise;
+    }
+    if (workspaceId === 'ws-b' && url === '/agentic/mcp/runtime/concurrency') {
+      return workspaceBConcurrency.promise;
     }
     throw new Error(`Unexpected request for ${workspaceId}: ${url}`);
   };
@@ -204,7 +229,7 @@ test('workspace switch never projects the previous ontology list into a loading 
     await waitFor(() => {
       assert.equal(
         calls.filter((call) => call.workspaceId === 'ws-b').length,
-        2,
+        3,
       );
     });
 
@@ -212,6 +237,7 @@ test('workspace switch never projects the previous ontology list into a loading 
       jsonResponse(statusPayload('ws-b', '000000000000000b')),
     );
     workspaceBTokens.resolve(jsonResponse({ items: [] }));
+    workspaceBConcurrency.resolve(jsonResponse(concurrencyPayload()));
     await flush();
 
     const createSection = document.querySelector('.settings-mcp-create');
@@ -264,6 +290,194 @@ test('workspace switch never projects the previous ontology list into a loading 
         document.querySelector('.settings-mcp-create .btn.btn-p').disabled,
         false,
       );
+    });
+  });
+});
+
+test('platform admin can save the workspace MCP streaming concurrency', async () => {
+  const calls = [];
+  let concurrency = 5;
+  const request = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url === '/agentic/mcp/runtime/status') {
+      return jsonResponse(statusPayload('ws-a', '000000000000000a'));
+    }
+    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
+    if (url === '/agentic/mcp/runtime/concurrency' && !options.method) {
+      return jsonResponse(concurrencyPayload(concurrency));
+    }
+    if (url === '/agentic/mcp/runtime/concurrency' && options.method === 'PATCH') {
+      concurrency = JSON.parse(options.body).stream_user_workspace_concurrency;
+      return jsonResponse(concurrencyPayload(concurrency));
+    }
+    throw new Error(`Unexpected request: ${options.method || 'GET'} ${url}`);
+  };
+
+  await withRenderedPanel(async ({ renderPanel, waitFor, click }) => {
+    await renderPanel({
+      authenticated: true,
+      canManageTokens: false,
+      canManageConcurrency: true,
+      request,
+      workspaceId: 'ws-a',
+      workspaceName: 'Workspace A',
+      ontologies: [],
+      ontologiesLoading: false,
+      ontologiesError: '',
+      onRetryOntologies() {},
+    });
+    await waitFor(() => {
+      const input = document.querySelector('.settings-mcp-concurrency input');
+      assert.equal(input.value, '5');
+      assert.equal(input.disabled, false);
+    });
+
+    const input = document.querySelector('.settings-mcp-concurrency input');
+    await act(async () => setInputValue(input, '12'));
+    await click(document.querySelector('.settings-mcp-concurrency .btn'));
+    await waitFor(() => {
+      const patchCall = calls.find((call) => call.options.method === 'PATCH');
+      assert.deepEqual(JSON.parse(patchCall.options.body), {
+        stream_user_workspace_concurrency: 12,
+      });
+      assert.equal(document.querySelector('.settings-mcp-concurrency input').value, '12');
+    });
+  });
+});
+
+test('missing concurrency endpoint does not hide the rest of the MCP panel', async () => {
+  const request = async (url) => {
+    if (url === '/agentic/mcp/runtime/status') {
+      return jsonResponse(statusPayload('ws-a', '000000000000000a'));
+    }
+    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
+    if (url === '/agentic/mcp/runtime/concurrency') { return jsonResponse({ detail: 'Not Found' }, 404); }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  await withRenderedPanel(async ({ renderPanel, waitFor }) => {
+    await renderPanel({
+      authenticated: true,
+      canManageTokens: true,
+      canManageConcurrency: true,
+      request,
+      workspaceId: 'ws-a',
+      workspaceName: 'Workspace A',
+      ontologies: [],
+      ontologiesLoading: false,
+      ontologiesError: '',
+      onRetryOntologies() {},
+    });
+    await waitFor(() => {
+      assert.equal(document.querySelector('.settings-mcp-metrics strong').textContent, '在线');
+      const input = document.querySelector('.settings-mcp-concurrency input');
+      assert.equal(input.value, '5');
+      assert.equal(input.disabled, true);
+    });
+  });
+});
+
+test('workspace switch blocks a stale concurrency draft until the new scope loads', async () => {
+  const workspaceBStatus = deferred();
+  const workspaceBTokens = deferred();
+  const workspaceBConcurrency = deferred();
+  const calls = [];
+  let requestWorkspace = 'ws-a';
+  let patchCalls = 0;
+  const request = (url, options = {}) => {
+    calls.push({ workspaceId: requestWorkspace, url, options });
+    if (options.method === 'PATCH') {
+      patchCalls += 1;
+      return Promise.resolve(jsonResponse(concurrencyPayload(99)));
+    }
+    if (requestWorkspace === 'ws-a' && url === '/agentic/mcp/runtime/status') {
+      return Promise.resolve(jsonResponse(statusPayload('ws-a', '000000000000000a')));
+    }
+    if (requestWorkspace === 'ws-a' && url === '/agentic/mcp/tokens') {
+      return Promise.resolve(jsonResponse({ items: [] }));
+    }
+    if (requestWorkspace === 'ws-a' && url === '/agentic/mcp/runtime/concurrency') {
+      return Promise.resolve(jsonResponse(concurrencyPayload(11)));
+    }
+    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/runtime/status') { return workspaceBStatus.promise; }
+    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/tokens') { return workspaceBTokens.promise; }
+    if (
+      requestWorkspace === 'ws-b' &&
+      url === '/agentic/mcp/runtime/concurrency'
+    ) { return workspaceBConcurrency.promise; }
+    throw new Error(`Unexpected request for ${requestWorkspace}: ${url}`);
+  };
+
+  await withRenderedPanel(async ({ renderPanel, waitFor, click }) => {
+    const common = {
+      authenticated: true,
+      canManageTokens: false,
+      canManageConcurrency: true,
+      request,
+      ontologies: [],
+      ontologiesLoading: false,
+      ontologiesError: '',
+      onRetryOntologies() {},
+    };
+    await renderPanel({ ...common, workspaceId: 'ws-a', workspaceName: 'Workspace A' });
+    await waitFor(() => assert.equal(
+      document.querySelector('.settings-mcp-concurrency input').value,
+      '11',
+    ));
+
+    requestWorkspace = 'ws-b';
+    await renderPanel({ ...common, workspaceId: 'ws-b', workspaceName: 'Workspace B' });
+    await waitFor(() => assert.equal(
+      calls.filter((call) => call.workspaceId === 'ws-b').length,
+      3,
+    ));
+
+    const section = document.querySelector('.settings-mcp-concurrency');
+    const input = section.querySelector('input');
+    const saveButton = section.querySelector('.btn');
+    assert.equal(input.disabled, true);
+    assert.equal(saveButton.disabled, true);
+    await click(saveButton);
+    assert.equal(patchCalls, 0);
+
+    workspaceBStatus.resolve(jsonResponse(statusPayload('ws-b', '000000000000000b')));
+    workspaceBTokens.resolve(jsonResponse({ items: [] }));
+    workspaceBConcurrency.resolve(jsonResponse(concurrencyPayload(7)));
+    await waitFor(() => {
+      assert.equal(input.disabled, false);
+      assert.equal(input.value, '7');
+    });
+  });
+});
+
+test('non-admin can inspect but cannot change MCP streaming concurrency', async () => {
+  const request = async (url) => {
+    if (url === '/agentic/mcp/runtime/status') {
+      return jsonResponse(statusPayload('ws-a', '000000000000000a'));
+    }
+    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
+    if (url === '/agentic/mcp/runtime/concurrency') { return jsonResponse(concurrencyPayload(9)); }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+
+  await withRenderedPanel(async ({ renderPanel, waitFor }) => {
+    await renderPanel({
+      authenticated: true,
+      canManageTokens: true,
+      canManageConcurrency: false,
+      request,
+      workspaceId: 'ws-a',
+      workspaceName: 'Workspace A',
+      ontologies: [],
+      ontologiesLoading: false,
+      ontologiesError: '',
+      onRetryOntologies() {},
+    });
+    await waitFor(() => {
+      const section = document.querySelector('.settings-mcp-concurrency');
+      assert.equal(section.querySelector('input').value, '9');
+      assert.equal(section.querySelector('input').disabled, true);
+      assert.equal(section.querySelector('.btn'), null);
     });
   });
 });

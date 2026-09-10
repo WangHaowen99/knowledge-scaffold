@@ -12,25 +12,34 @@ import argparse
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
+import sys
 import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
-
-_WORKSPACE_ACL_RECONCILIATION_DETAIL = (
-    "工作空间 ACL 存在无效身份引用，已阻止启动；迁移不会自动修改或跳过这些数据"
-)
+_WORKSPACE_ACL_RECONCILIATION_DETAIL = "工作空间 ACL 存在无效身份引用，已阻止启动；迁移不会自动修改或跳过这些数据"
 _WORKSPACE_ACL_RECONCILIATION_SUGGESTION = (
     "请先运行 ACL dry-run 查看 findings：unknown_member 请创建对应账号或从 members 中移除；"
     "unknown_owner 请创建对应账号，或转移给已验证账号。"
     "处理完成后重新执行 dry-run，确认 workspace_acl.clean=true 再升级。"
 )
 _RECONCILIATION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 @dataclass(frozen=True)
@@ -144,13 +153,15 @@ def load_user_store(path: Path, *, label: str) -> UserStore:
         record = dict(raw)
         users[username] = record
         canonical = dict(record)
-        canonical.update({
-            "username": username,
-            "role": role,
-            "password_hash": password_hash,
-            "must_change_password": must_change,
-            "token_version": token_version,
-        })
+        canonical.update(
+            {
+                "username": username,
+                "role": role,
+                "password_hash": password_hash,
+                "must_change_password": must_change,
+                "token_version": token_version,
+            }
+        )
         canonical_users[username] = canonical
 
     return UserStore(
@@ -167,9 +178,7 @@ def _safe_diff_value(field: str, value: Any) -> Any:
     if "password_hash" in lowered:
         digest = hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:16]
         return f"sha256:{digest}"
-    if "password" in lowered or "secret" in lowered or (
-        "token" in lowered and field != "token_version"
-    ):
+    if "password" in lowered or "secret" in lowered or ("token" in lowered and field != "token_version"):
         return "<redacted>" if value is not None else None
     return value
 
@@ -180,34 +189,40 @@ def user_store_differences(local: UserStore, auth: UserStore) -> list[dict[str, 
         local_record = local.canonical_users.get(username)
         auth_record = auth.canonical_users.get(username)
         if local_record is None or auth_record is None:
-            differences.append({
-                "username": username,
-                "field": "<record>",
-                "local": "missing" if local_record is None else "present",
-                "auth": "missing" if auth_record is None else "present",
-            })
+            differences.append(
+                {
+                    "username": username,
+                    "field": "<record>",
+                    "local": "missing" if local_record is None else "present",
+                    "auth": "missing" if auth_record is None else "present",
+                }
+            )
             continue
         for field in sorted(set(local_record) | set(auth_record)):
             local_value = local_record.get(field)
             auth_value = auth_record.get(field)
             if local_value != auth_value:
-                differences.append({
-                    "username": username,
-                    "field": field,
-                    "local": _safe_diff_value(field, local_value),
-                    "auth": _safe_diff_value(field, auth_value),
-                })
+                differences.append(
+                    {
+                        "username": username,
+                        "field": field,
+                        "local": _safe_diff_value(field, local_value),
+                        "auth": _safe_diff_value(field, auth_value),
+                    }
+                )
 
     local_top = {key: value for key, value in local.payload.items() if key != "users"}
     auth_top = {key: value for key, value in auth.payload.items() if key != "users"}
     for field in sorted(set(local_top) | set(auth_top)):
         if local_top.get(field) != auth_top.get(field):
-            differences.append({
-                "username": "<document>",
-                "field": field,
-                "local": _safe_diff_value(field, local_top.get(field)),
-                "auth": _safe_diff_value(field, auth_top.get(field)),
-            })
+            differences.append(
+                {
+                    "username": "<document>",
+                    "field": field,
+                    "local": _safe_diff_value(field, local_top.get(field)),
+                    "auth": _safe_diff_value(field, auth_top.get(field)),
+                }
+            )
     return differences
 
 
@@ -228,62 +243,64 @@ def audit_workspace_acl(runtime_root: Path, usernames: set[str]) -> dict[str, An
                 try:
                     metadata = _read_json(metadata_path)
                 except MigrationIssue as exc:
-                    findings.append({
-                        "workspace_id": directory.name,
-                        "type": "invalid_metadata",
-                        "detail": exc.detail,
-                    })
+                    findings.append(
+                        {
+                            "workspace_id": directory.name,
+                            "type": "invalid_metadata",
+                            "detail": exc.detail,
+                        }
+                    )
                     continue
                 if not isinstance(metadata, dict):
                     findings.append({"workspace_id": directory.name, "type": "invalid_metadata"})
                     continue
                 metadata_id = str(metadata.get("id") or "").strip()
                 if metadata_id != directory.name:
-                    findings.append({
-                        "workspace_id": directory.name,
-                        "type": "workspace_id_mismatch",
-                        "detail": f"workspace.json id is {metadata_id!r}",
-                    })
+                    findings.append(
+                        {
+                            "workspace_id": directory.name,
+                            "type": "workspace_id_mismatch",
+                            "detail": f"workspace.json id is {metadata_id!r}",
+                        }
+                    )
                 owner = metadata.get("owner")
                 if owner is None:
                     public_workspaces.append(directory.name)
-                elif (
-                    not isinstance(owner, str)
-                    or not owner
-                    or owner != owner.strip()
-                ):
+                elif not isinstance(owner, str) or not owner or owner != owner.strip():
                     findings.append({"workspace_id": directory.name, "type": "invalid_owner"})
                 elif owner not in usernames:
-                    findings.append({
-                        "workspace_id": directory.name,
-                        "type": "unknown_owner",
-                        "username": owner,
-                    })
+                    findings.append(
+                        {
+                            "workspace_id": directory.name,
+                            "type": "unknown_owner",
+                            "username": owner,
+                        }
+                    )
                 members = metadata.get("members", [])
                 if not isinstance(members, list):
                     findings.append({"workspace_id": directory.name, "type": "invalid_members"})
                     continue
                 seen: set[str] = set()
                 for member in members:
-                    if (
-                        not isinstance(member, str)
-                        or not member
-                        or member != member.strip()
-                    ):
+                    if not isinstance(member, str) or not member or member != member.strip():
                         findings.append({"workspace_id": directory.name, "type": "invalid_member"})
                         continue
                     if member in seen:
-                        findings.append({
-                            "workspace_id": directory.name,
-                            "type": "duplicate_member",
-                            "username": member,
-                        })
+                        findings.append(
+                            {
+                                "workspace_id": directory.name,
+                                "type": "duplicate_member",
+                                "username": member,
+                            }
+                        )
                     elif member not in usernames:
-                        findings.append({
-                            "workspace_id": directory.name,
-                            "type": "unknown_member",
-                            "username": member,
-                        })
+                        findings.append(
+                            {
+                                "workspace_id": directory.name,
+                                "type": "unknown_member",
+                                "username": member,
+                            }
+                        )
                     seen.add(member)
 
     reconciliation_path = runtime_root / "system" / "user-deletion-reconciliation.json"
@@ -293,24 +310,30 @@ def audit_workspace_acl(runtime_root: Path, usernames: set[str]) -> dict[str, An
             records = _validate_reconciliation_document(payload)
             for record in records:
                 username = record["username"]
-                findings.append({
-                    "workspace_id": "<system>",
-                    "type": "pending_user_deletion_reconciliation",
-                    "username": username,
-                    "detail": f"reconciliation_id={record['id']}",
-                })
-                if username and username in usernames:
-                    findings.append({
+                findings.append(
+                    {
                         "workspace_id": "<system>",
-                        "type": "same_name_account_inheritance_risk",
+                        "type": "pending_user_deletion_reconciliation",
                         "username": username,
-                    })
+                        "detail": f"reconciliation_id={record['id']}",
+                    }
+                )
+                if username and username in usernames:
+                    findings.append(
+                        {
+                            "workspace_id": "<system>",
+                            "type": "same_name_account_inheritance_risk",
+                            "username": username,
+                        }
+                    )
         except MigrationIssue as exc:
-            findings.append({
-                "workspace_id": "<system>",
-                "type": "invalid_user_deletion_reconciliation",
-                "detail": exc.detail,
-            })
+            findings.append(
+                {
+                    "workspace_id": "<system>",
+                    "type": "invalid_user_deletion_reconciliation",
+                    "detail": exc.detail,
+                }
+            )
 
     findings.sort(key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
     return {
@@ -358,11 +381,7 @@ def _validate_reconciliation_document(payload: Any) -> list[dict[str, Any]]:
                 "INVALID_RECONCILIATION",
                 f"records[{index}].id is duplicated",
             )
-        if (
-            not isinstance(username, str)
-            or not username
-            or username != username.strip()
-        ):
+        if not isinstance(username, str) or not username or username != username.strip():
             raise MigrationIssue(
                 "INVALID_RECONCILIATION",
                 f"records[{index}].username must be a canonical non-empty string",
@@ -521,16 +540,14 @@ def execute_migration(
                 raise MigrationIssue("COPY_VERIFICATION_FAILED", "Copied auth users checksum does not match source")
             selected_store = auth_store
 
-        report["users"].update({
-            "user_count": len(selected_store.users) if selected_store else 0,
-            "token_version_defaulted_to_one": (
-                selected_store.token_version_defaults if selected_store else 0
-            ),
-            "password_hashes_preserved": bool(selected_store),
-            "destination_mode": (
-                oct(auth_users.stat().st_mode & 0o777) if auth_users.exists() else None
-            ),
-        })
+        report["users"].update(
+            {
+                "user_count": len(selected_store.users) if selected_store else 0,
+                "token_version_defaulted_to_one": selected_store.token_version_defaults if selected_store else 0,
+                "password_hashes_preserved": bool(selected_store),
+                "destination_mode": oct(auth_users.stat().st_mode & 0o777) if auth_users.exists() else None,
+            }
+        )
         report["status"] = "ok"
         return 0, report
     except MigrationIssue as exc:
@@ -564,6 +581,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_cli_logging(sys.stdout)
     args = _build_parser().parse_args(argv)
     backup_root = args.backup_root or args.root / "deploy" / "backups"
     code, report = execute_migration(
@@ -575,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         to_version=args.to_version,
     )
     write_report(args.report, report)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    logger.info(json.dumps(report, ensure_ascii=False, indent=2))
     return code
 
 

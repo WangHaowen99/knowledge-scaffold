@@ -237,23 +237,26 @@ export const createProjectEvaluationDatabase = (id, selection) => api(
     }),
   },
 );
-export const importEvaluationDatabase = (id, file, replaceConfirmed, selection) => {
+export const importEvaluationDatabase = (id, files, replaceConfirmed, selection) => {
   const form = new FormData();
   if (replaceConfirmed) form.append('replace_confirmation', 'replace_same_name_tables');
   form.append('database_url_mode', selection.mode);
   if (selection.mode === 'custom') form.append('database_url', selection.databaseUrl);
-  form.append('file', file);
+  const list = Array.isArray(files) ? files : [files];
+  list.forEach((file) => form.append('file', file));
   return api(`${P(id)}/evaluation-database/import`, { method: 'POST', body: form });
 };
-export const quickImportEvaluationDatabase = (id, file) => {
+export const quickImportEvaluationDatabase = (id, files) => {
   const form = new FormData();
-  form.append('file', file);
+  const list = Array.isArray(files) ? files : [files];
+  list.forEach((file) => form.append('file', file));
   return api(`${P(id)}/evaluation-database/quick-import`, { method: 'POST', body: form });
 };
 export const listEvaluationDatabaseImports = (id) => api(`${P(id)}/evaluation-database/imports`);
-export const uploadGraphImport = (id, file) => {
+export const uploadGraphImport = (id, files) => {
   const form = new FormData();
-  form.append('file', file);
+  const list = Array.isArray(files) ? files : [files];
+  for (const file of list) form.append('file', file);
   return api(`${P(id)}/graph-import/uploads`, { method: 'POST', body: form });
 };
 export const validateGraphImport = (id, uploadId, mapping) => api(

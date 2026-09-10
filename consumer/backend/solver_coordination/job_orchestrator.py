@@ -27,6 +27,7 @@ from .job_store import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_JOB_STATUSES,
     JobStoreConflict,
+    JobStoreError,
     LeaseConflict,
     OptimisticLockError,
     SolverJobStore,

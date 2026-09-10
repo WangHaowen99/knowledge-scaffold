@@ -193,6 +193,35 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_utc_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_utc_iso(value: Any) -> Any:
+    parsed = _parse_utc_datetime(value)
+    return parsed.isoformat() if parsed is not None else value
+
+
+def _datetime_sort_key(value: Any) -> datetime:
+    return _parse_utc_datetime(value) or datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _normalize_timestamp_fields(record: Any, fields: tuple[str, ...]) -> None:
+    if not isinstance(record, dict):
+        return
+    for field in fields:
+        if field in record:
+            record[field] = _normalize_utc_iso(record[field])
+
+
 def _latest_pending_interaction(
     history: SessionExecutionHistory,
 ) -> tuple[Optional[TurnExecutionRecord], Optional[Dict[str, Any]]]:
@@ -367,12 +396,35 @@ def _normalize_loaded_history(
     """Normalize additive Turn fields without weakening corrupt-file handling."""
 
     normalized = copy.deepcopy(history)
+    _normalize_timestamp_fields(normalized, ("created_at", "updated_at"))
+    pending_terminal = normalized.get("pending_deterministic_terminal")
+    _normalize_timestamp_fields(pending_terminal, ("completed_at",))
+
     turns = normalized.get("turns")
     if not isinstance(turns, list):
         raise ExecutionStoreCorruptionError("execution history turns must be a list")
     for turn in turns:
         if not isinstance(turn, dict):
             raise ExecutionStoreCorruptionError("execution history turn must be an object")
+        _normalize_timestamp_fields(
+            turn,
+            (
+                "start_time",
+                "end_time",
+                "interaction_consumed_at",
+                "interaction_cancelled_at",
+            ),
+        )
+        _normalize_timestamp_fields(turn.get("feedback"), ("ts",))
+        interaction_response = turn.get("interaction_response")
+        _normalize_timestamp_fields(interaction_response, ("cancelled_at",))
+        solver_checkpoint = turn.get("solver_checkpoint")
+        _normalize_timestamp_fields(solver_checkpoint, ("updated_at",))
+        if isinstance(solver_checkpoint, dict):
+            _normalize_timestamp_fields(
+                solver_checkpoint.get("tool_result_inbox"),
+                ("created_at",),
+            )
         if isinstance(turn.get("pending_interaction"), dict):
             continue
         final_output = turn.get("final_output")
@@ -409,7 +461,7 @@ def _next_turn_id(history: SessionExecutionHistory) -> int:
 
 def _mark_interrupted_turns(history: SessionExecutionHistory) -> int:
     interrupted = 0
-    ended_at = datetime.now().isoformat()
+    ended_at = _utc_now_iso()
     for turn in history.get("turns", []):
         if str(turn.get("status") or "") not in {"queued", "running"}:
             continue
@@ -800,7 +852,7 @@ class ExecutionStore:
                 self._cache[session_id] = normalized
                 return normalized
             except (json.JSONDecodeError, OSError, ExecutionStoreCorruptionError) as exc:
-                suffix = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
                 quarantine_path = session_path.with_name("execution.json.corrupt.{}.{}".format(suffix, uuid4().hex))
                 try:
                     os.replace(session_path, quarantine_path)
@@ -810,7 +862,7 @@ class ExecutionStore:
                 raise ExecutionStoreCorruptionError("execution history is corrupt and was isolated") from exc
 
         # Create new session history
-        now = datetime.now().isoformat()
+        now = _utc_now_iso()
         history: SessionExecutionHistory = {
             "session_id": session_id,
             "created_at": now,
@@ -857,7 +909,7 @@ class ExecutionStore:
         temp_path: Path | None = None
         try:
             committed = copy.deepcopy(source)
-            committed["updated_at"] = datetime.now().isoformat()
+            committed["updated_at"] = _utc_now_iso()
             session_path = self._get_session_path(session_id)
             temp_path = session_path.with_name(".execution.json.{}.tmp".format(uuid4().hex))
             with open(temp_path, "x", encoding="utf-8") as f:
@@ -1013,7 +1065,7 @@ class ExecutionStore:
             allocated_run_id = str(run_id or "").strip() or "agentic-{}".format(uuid4().hex)
             if any(str(item.get("run_id") or "") == allocated_run_id for item in history.get("turns", [])):
                 raise ValueError("run_id is already allocated")
-            started_at = datetime.now().isoformat()
+            started_at = _utc_now_iso()
             turn: TurnExecutionRecord = {
                 "turn_id": turn_id,
                 "session_id": session_id,
@@ -1216,7 +1268,7 @@ class ExecutionStore:
 
             turn_id = _next_turn_id(history)
             run_id = "agentic-{}".format(uuid4().hex)
-            started_at = datetime.now().isoformat()
+            started_at = _utc_now_iso()
             turn: TurnExecutionRecord = {
                 "turn_id": turn_id,
                 "session_id": session_id,
@@ -1332,7 +1384,7 @@ class ExecutionStore:
             history,
             interaction_response,
         )
-        started_at = datetime.now().isoformat()
+        started_at = _utc_now_iso()
         if canonical_response is not None:
             pending_turn, _pending = _latest_pending_interaction(history)
             if pending_turn is None:
@@ -1742,7 +1794,7 @@ class ExecutionStore:
                     code="INTERACTION_CONFLICT",
                 )
 
-            cancelled_at = datetime.now().isoformat()
+            cancelled_at = _utc_now_iso()
             cancellation = {
                 "interaction_id": requested_id,
                 "type": str(interaction.get("type") or "input").strip() or "input",
@@ -1791,7 +1843,7 @@ class ExecutionStore:
                 "cancelled",
                 "awaiting_input",
             }:
-                turn["end_time"] = datetime.now().isoformat()
+                turn["end_time"] = _utc_now_iso()
                 turn["status"] = "success"
                 turn["final_output"] = final_output
                 turn["summary"] = summary
@@ -1824,7 +1876,7 @@ class ExecutionStore:
                 "cancelled",
                 "awaiting_input",
             }:
-                turn["end_time"] = datetime.now().isoformat()
+                turn["end_time"] = _utc_now_iso()
                 turn["status"] = "failed"
                 output = copy.deepcopy(error) if isinstance(error, dict) else {"error": str(error)}
                 nested_error = output.get("error")
@@ -1868,7 +1920,7 @@ class ExecutionStore:
                 "cancelled",
                 "awaiting_input",
             }:
-                turn["end_time"] = datetime.now().isoformat()
+                turn["end_time"] = _utc_now_iso()
                 turn["status"] = "cancelled"
                 turn["final_output"] = final_output or {"cancel_reason": reason}
                 if summary is not None:
@@ -1913,7 +1965,7 @@ class ExecutionStore:
             ):
                 return False
 
-            turn["end_time"] = datetime.now().isoformat()
+            turn["end_time"] = _utc_now_iso()
             turn["status"] = status
             turn["final_output"] = copy.deepcopy(final_output)
             if status == "failed":
@@ -1965,7 +2017,7 @@ class ExecutionStore:
                 "cancelled",
                 "awaiting_input",
             }:
-                turn["end_time"] = datetime.now().isoformat()
+                turn["end_time"] = _utc_now_iso()
                 turn["status"] = "awaiting_input"
                 turn["final_output"] = final_output or {"status": "awaiting_input"}
                 output = turn["final_output"]
@@ -2025,7 +2077,7 @@ class ExecutionStore:
                 else:
                     turn["feedback"] = {
                         "vote": normalized,
-                        "ts": datetime.now().isoformat(),
+                        "ts": _utc_now_iso(),
                     }
                 self._save_session(session_id, history)
                 return True
@@ -2246,11 +2298,13 @@ class ExecutionStore:
                 if not external_id:
                     continue
                 current = latest.get(external_id)
-                if current is None or str(turn.get("start_time") or "") > str(current.get("start_time") or ""):
+                if current is None or _datetime_sort_key(turn.get("start_time")) > _datetime_sort_key(
+                    current.get("start_time")
+                ):
                     latest[external_id] = copy.deepcopy(turn)
         return sorted(
             latest.values(),
-            key=lambda turn: str(turn.get("start_time") or ""),
+            key=lambda turn: _datetime_sort_key(turn.get("start_time")),
             reverse=True,
         )
 
@@ -2276,7 +2330,7 @@ class ExecutionStore:
                 if turn.get("turn_id") != turn_id:
                     continue
                 turn["status"] = "failed"
-                turn["end_time"] = datetime.now().isoformat()
+                turn["end_time"] = _utc_now_iso()
                 turn["error_code"] = "TASK_START_FAILED"
                 turn["final_output"] = {
                     "error": "Execution task could not be started",
@@ -2427,7 +2481,7 @@ class ExecutionStore:
             turn["solver_checkpoint"] = {
                 "checkpoint": canonical,
                 "tool_result_inbox": inbox,
-                "updated_at": datetime.now().isoformat(),
+                "updated_at": _utc_now_iso(),
             }
             self._save_session(session_id)
             return _json_clone(canonical, "solver checkpoint")
@@ -2499,10 +2553,10 @@ class ExecutionStore:
                 "tool_call_id": normalized_tool_call_id,
                 "result_digest": normalized_digest,
                 "result": canonical_result,
-                "created_at": datetime.now().isoformat(),
+                "created_at": _utc_now_iso(),
             }
             record["tool_result_inbox"] = inbox
-            record["updated_at"] = datetime.now().isoformat()
+            record["updated_at"] = _utc_now_iso()
             self._save_session(session_id)
             return _json_clone(inbox, "solver tool result inbox")
 

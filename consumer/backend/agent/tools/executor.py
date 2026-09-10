@@ -7,6 +7,7 @@ import json
 import threading
 import time
 import weakref
+from builtins import BaseExceptionGroup
 from collections.abc import Sequence
 from contextvars import copy_context
 from dataclasses import dataclass, field
@@ -37,9 +38,9 @@ class _BackgroundSyncToolState:
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
 
 
-_BACKGROUND_SYNC_TOOL_STATES: weakref.WeakKeyDictionary[
-    asyncio.AbstractEventLoop, _BackgroundSyncToolState
-] = weakref.WeakKeyDictionary()
+_BACKGROUND_SYNC_TOOL_STATES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _BackgroundSyncToolState] = (
+    weakref.WeakKeyDictionary()
+)
 _BACKGROUND_SYNC_TOOL_STATES_LOCK = threading.Lock()
 
 
@@ -52,13 +53,16 @@ def _background_sync_tool_state() -> _BackgroundSyncToolState:
             _BACKGROUND_SYNC_TOOL_STATES[loop] = state
         return state
 
+
 _SAFE_SCRIPT_EXECUTION_ERROR = "Error: Script execution failed due to an internal error."
 
-_ONTOLOGY_SCOPED_TOOLS = frozenset({
-    "ontology_context",
-    "business_data_search",
-    "execute_script",
-})
+_ONTOLOGY_SCOPED_TOOLS = frozenset(
+    {
+        "ontology_context",
+        "business_data_search",
+        "execute_script",
+    }
+)
 
 
 async def aexecute_tool_batch(
@@ -192,9 +196,7 @@ def _build_tool_task(
     )
     safe_name = name or "unknown_tool"
 
-    progress_message = _build_tool_progress_message(name=name, args=args) or "调用工具: {}".format(
-        safe_name
-    )
+    progress_message = _build_tool_progress_message(name=name, args=args) or "调用工具: {}".format(safe_name)
 
     if not spec:
         raw_output = "Error: Tool '{}' not found.".format(safe_name)
@@ -289,10 +291,7 @@ async def _aexecute_parallel_batch(
     global_limit = max(1, int(context.agent_config.parallel_default_max_workers or 1))
     global_semaphore = asyncio.Semaphore(global_limit)
     tool_limits = {
-        task["name"]: asyncio.Semaphore(
-            max(1, int(task["spec"].max_parallelism or global_limit))
-        )
-        for task in batch
+        task["name"]: asyncio.Semaphore(max(1, int(task["spec"].max_parallelism or global_limit))) for task in batch
     }
     outputs_by_index: Dict[int, Dict[str, Any]] = {}
 
@@ -435,9 +434,7 @@ async def _aexecute_single_task(
         timeout_seconds=timeout_seconds if error_code == "TOOL_TIMEOUT" else None,
     )
     pending_interaction = (
-        outcome.state_updates.get("pending_user_interaction")
-        if isinstance(outcome.state_updates, dict)
-        else None
+        outcome.state_updates.get("pending_user_interaction") if isinstance(outcome.state_updates, dict) else None
     )
     if isinstance(pending_interaction, dict) and pending_interaction:
         emit_protocol_event(
@@ -522,9 +519,7 @@ async def _ainvoke_callable_with_timeout(
 
     state = _background_sync_tool_state()
     if len(state.tasks) >= _MAX_BACKGROUND_SYNC_TOOL_TASKS:
-        raise TimeoutError(
-            "sync tool background worker capacity is exhausted"
-        )
+        raise TimeoutError("sync tool background worker capacity is exhausted")
     invocation = asyncio.create_task(
         call_async_or_thread(
             func,
@@ -585,20 +580,22 @@ def _format_timeout_seconds(timeout_seconds: Optional[float]) -> str:
 def _build_skipped_outputs(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     outputs: List[Dict[str, Any]] = []
     for task in tasks:
-        outputs.append({
-            "index": task["index"],
-            "tool_call_id": task.get("tool_call_id"),
-            "name": task["name"],
-            "outcome": ToolOutcome(
-                content=json.dumps(
-                    {
-                        "status": "skipped",
-                        "reason": "a previous tool paused the workflow for user interaction",
-                    },
-                    ensure_ascii=False,
-                )
-            ),
-        })
+        outputs.append(
+            {
+                "index": task["index"],
+                "tool_call_id": task.get("tool_call_id"),
+                "name": task["name"],
+                "outcome": ToolOutcome(
+                    content=json.dumps(
+                        {
+                            "status": "skipped",
+                            "reason": "a previous tool paused the workflow for user interaction",
+                        },
+                        ensure_ascii=False,
+                    )
+                ),
+            }
+        )
     return outputs
 
 
@@ -607,11 +604,7 @@ def _resolve_outcome_status(outcome: ToolOutcome) -> str:
         return "completed"
     parsed = _try_parse_json(outcome.content)
     if isinstance(parsed, dict):
-        if (
-            parsed.get("ok") is False
-            or parsed.get("_success") is False
-            or parsed.get("success") is False
-        ):
+        if parsed.get("ok") is False or parsed.get("_success") is False or parsed.get("success") is False:
             return "error"
         if str(parsed.get("status") or "").strip().lower() in {"error", "failed"}:
             return "error"
@@ -693,9 +686,7 @@ def _build_business_data_search_event_emitter(
             "content": content,
         }
         public_summary = str(event.get("public_summary") or "").strip()
-        public_summary_allowed = (
-            event.get("public_summary_allowed") is True and bool(public_summary)
-        )
+        public_summary_allowed = event.get("public_summary_allowed") is True and bool(public_summary)
         if public_summary_allowed:
             provider_event["public_summary"] = public_summary
             provider_event["public_summary_allowed"] = True
@@ -767,11 +758,7 @@ def _build_web_search_event_emitter(
             {
                 "tool_call_id": tool_call_id,
                 "tool_name": "web_search",
-                "input": {
-                    key: value
-                    for key, value in {"query": query}.items()
-                    if value
-                },
+                "input": {key: value for key, value in {"query": query}.items() if value},
                 "query": query,
                 "status": "running",
                 "message": message,
@@ -828,11 +815,7 @@ def _build_tool_progress_message(name: Optional[str], args: Dict[str, Any]) -> O
         resource = str(args.get("resource") or "").strip()
         key = str(args.get("key") or "").strip()
         ontology_label = str(
-            args.get("ontology_name")
-            or args.get("ontology_label")
-            or args.get("name")
-            or args.get("ontology_id")
-            or ""
+            args.get("ontology_name") or args.get("ontology_label") or args.get("name") or args.get("ontology_id") or ""
         ).strip()
         if resource == "root":
             return "加载本体 {}".format(ontology_label or "本体")

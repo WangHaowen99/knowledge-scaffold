@@ -104,6 +104,30 @@ test('graph import mapping：导入 value_bindings 术语资源为图节点', ()
   assert.equal(plan.nodeCount, 4);
 });
 
+test('graph import mapping：缺少术语资源 Sheet 时错误指向 value_bindings resource', () => {
+  const schema = {
+    ...graphSchema,
+    valueBindings: [{
+      key: 'status-code',
+      label: 'status_terms',
+      defaultSheet: 'status_terms',
+      valueField: 'STATUS_CODE',
+      semanticField: 'STATUS_NAME',
+      aliasFields: [],
+      propertyMappings: [
+        { property: 'STATUS_CODE', sourceColumn: 'STATUS_CODE' },
+        { property: 'STATUS_NAME', sourceColumn: 'STATUS_NAME' },
+      ],
+    }],
+  };
+  const tables = parseExcel(workbookBuffer({
+    Part: [['part_id', 'relation_code', 'name'], ['P-001', 'R-1', '机翼']],
+    BOMItem: [['item_id', 'parent_code', 'name'], ['I-001', 'R-1', '机翼 BOM 行']],
+  }), { maxRows: 50_000, rejectOverflow: true });
+
+  assert.throws(() => validateGraphImportMapping(schema, tables, graphMapping), /术语绑定「status-code」引用的术语表 Sheet「status_terms」不存在于 Excel/);
+});
+
 test('graph import Excel：保留字段注释和完整行，并拒绝静默截断', () => {
   const tables = parseExcel(workbookBuffer({
     Part: [
@@ -911,6 +935,49 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
   assert.equal(history[0].status, 'done');
   assert.equal(history[0].skippedCount, 2);
   assert.doesNotMatch(JSON.stringify(history), /one-time-secret/);
+});
+
+test('graph import service：支持多个 Excel 合并 Sheet 后导入对象和术语资源', async () => {
+  const { uploadGraphImportExcel, validateGraphImportUpload } =
+    await import('../src/graph-import/service.js');
+  const project = await createGraphImportProject('多 Excel 图导入测试', {
+    ...graphPackageSpec,
+    valueBindings: [{
+      key: 'status-code',
+      providerAlias: 'graph',
+      resource: 'status_terms',
+      valueField: 'STATUS_CODE',
+      semanticField: 'STATUS_NAME',
+      aliasFields: ['STATUS_ALIAS'],
+    }],
+  });
+  const preview = await uploadGraphImportExcel({
+    projectId: project.id,
+    owner: 'alice',
+    files: [
+      { filename: 'objects.xlsx', buffer: importBuffer() },
+      {
+        filename: 'terms.xlsx',
+        buffer: workbookBuffer({
+          status_terms: [
+            ['STATUS_CODE', 'STATUS_NAME', 'STATUS_ALIAS'],
+            ['A', '启用', '有效'],
+            ['I', '停用', '无效'],
+          ],
+        }),
+      },
+    ],
+  });
+
+  assert.deepEqual(preview.sheets.map((sheet) => sheet.name).sort(), ['BOMItem', 'Part', 'status_terms']);
+  const validated = await validateGraphImportUpload({
+    projectId: project.id,
+    owner: 'alice',
+    uploadId: preview.id,
+    mapping: graphMapping,
+  });
+  assert.equal(validated.counts.nodeCount, 6);
+  assert.equal(validated.counts.relationshipCount, 1);
 });
 
 test('graph import service：无对象映射和零实例计划均在创建任务前阻断', async () => {

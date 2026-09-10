@@ -6,13 +6,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import posixpath
 import shutil
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Any
-
+from typing import Any, TextIO
 
 CANONICAL_PROJECT_ROOT = "/app/.onto-runtime"
 CANONICAL_CHAT_STORAGE_DIR = "/app/.onto-runtime/data/chats"
@@ -21,6 +22,16 @@ _LEGACY_CHAT_VALUES = {"", "./data/chats", "/app/data/chats"}
 _LEGACY_EXECUTION_VALUES = {"", "./data/executions", "/app/data/executions"}
 _LEGACY_ARCHIVE_NAME = "legacy-backend-data.tar.gz"
 _LEGACY_CONTAINER_WORKDIR = "/app"
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -189,7 +200,7 @@ def _container_path_to_host(root: Path, container_path: str) -> Path:
     prefix = CANONICAL_PROJECT_ROOT + "/"
     if not normalized.startswith(prefix):
         raise ValueError("container storage path is outside canonical runtime root")
-    return root / ".onto-runtime" / normalized[len(prefix):]
+    return root / ".onto-runtime" / normalized[len(prefix) :]
 
 
 def _extract_archive(archive_path: Path, destination: Path) -> None:
@@ -253,9 +264,7 @@ def _merge_legacy_tree(
     if conflicts:
         report["conflicts"] = conflicts
         raise ValueError(
-            "legacy storage import conflicts with existing runtime data: {}".format(
-                ", ".join(conflicts[:10])
-            )
+            "legacy storage import conflicts with existing runtime data: {}".format(", ".join(conflicts[:10]))
         )
 
     report["copied_files"] = copied_files
@@ -393,6 +402,7 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_cli_logging(sys.stdout)
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--report", type=Path)
@@ -403,8 +413,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.print_legacy_export_paths:
         resolved = resolve_legacy_container_storage_paths(args.root)
-        print("CHAT_STORAGE_DIR={}".format(resolved["chat_storage_dir"]))
-        print("EXECUTION_STORAGE_DIR={}".format(resolved["execution_storage_dir"]))
+        logger.info("CHAT_STORAGE_DIR={}".format(resolved["chat_storage_dir"]))
+        logger.info("EXECUTION_STORAGE_DIR={}".format(resolved["execution_storage_dir"]))
         return 0
     if args.report is None:
         raise SystemExit("--report is required unless --print-legacy-export-paths is used")

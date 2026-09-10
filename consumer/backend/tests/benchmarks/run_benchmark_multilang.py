@@ -1,17 +1,29 @@
 from __future__ import annotations
 
-import glob
-import os
-import re
+import logging
 import subprocess
 import sys
-import threading
+import os
+import re
 import time
-from datetime import datetime
+import glob
+import threading
+from datetime import datetime, timezone
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_PATH = os.path.join(_SCRIPT_DIR, "test_benchmark_suite.py")
 _RESULT_BASE_DIR = os.path.join(_SCRIPT_DIR, "result")
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging() -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
 
 _LANG_DISPLAY = {
     "zh": "中文",
@@ -94,7 +106,7 @@ _all_results: list[dict] = []
 
 def _init_run_dir() -> str:
     global _run_dir, _report_path
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     _run_dir = os.path.join(_RESULT_BASE_DIR, f"multilang_{ts}")
     os.makedirs(os.path.join(_run_dir, "logs"), exist_ok=True)
     _report_path = os.path.join(_run_dir, "report.md")
@@ -102,9 +114,9 @@ def _init_run_dir() -> str:
 
 
 def _run_benchmark(lang_code: str, lang_name: str) -> dict:
-    print(f"\n{'='*80}")
-    print(f"  >>> 开始执行: {lang_name} ({lang_code})")
-    print(f"{'='*80}\n")
+    logger.info(f"\n{'='*80}")
+    logger.info(f"  >>> 开始执行: {lang_name} ({lang_code})")
+    logger.info(f"{'='*80}\n")
 
     lang_result_dir = os.path.join(_run_dir or _RESULT_BASE_DIR, lang_code)
     os.makedirs(lang_result_dir, exist_ok=True)
@@ -128,7 +140,7 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
         bufsize=1,
     )
 
-    print(f"  🚀 子进程已启动 (PID: {proc.pid})，等待输出...\n")
+    logger.info(f"  🚀 子进程已启动 (PID: {proc.pid})，等待输出...\n")
     sys.stdout.flush()
 
     output_lines: list[str] = []
@@ -136,7 +148,7 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
     questions_completed: set[str] = set()
     question_start_times: dict[str, float] = {}
 
-    error_keywords = ("❌", "执行异常", "连接失败", "超时", "Traceback", "Error:", "ERROR")
+    _ERROR_KEYWORDS = ("❌", "执行异常", "连接失败", "超时", "Traceback", "Error:", "ERROR")
 
     def _on_line(line: str):
         stripped = line.rstrip("\n")
@@ -150,7 +162,7 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
             question_start_times[q] = time.time()
             done = len(questions_completed)
             total_seen = len(questions_seen)
-            print(f"  ▶ [{q}] 开始测试... ({done}/{total_seen} 完成)")
+            logger.info(f"  ▶ [{q}] 开始测试... ({done}/{total_seen} 完成)")
             sys.stdout.flush()
             return
 
@@ -165,7 +177,7 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
             remaining = max(0, total_seen - done)
             eta = avg_per_q * remaining if remaining > 0 else 0
             eta_str = _fmt_duration(eta) if remaining > 0 else "—"
-            print(
+            logger.info(
                 f"  ✅ [{q}] 完成 | 平均耗时: {m.group(2)} | 成功: {m.group(3)}/{m.group(4)} | "
                 f"耗时: {_fmt_duration(q_elapsed)} | "
                 f"进度: {done}/{total_seen} | 预计剩余: {eta_str}"
@@ -175,12 +187,12 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
 
         if "并行执行模式" in stripped:
             stripped_clean = stripped.lstrip(" ⚡")
-            print(f"  ⚡ {stripped_clean}")
+            logger.info(f"  ⚡ {stripped_clean}")
             sys.stdout.flush()
             return
 
-        if any(keyword in stripped for keyword in error_keywords):
-            print(f"  ⚠ {stripped}")
+        if any(kw in stripped for kw in _ERROR_KEYWORDS):
+            logger.info(f"  ⚠ {stripped}")
             sys.stdout.flush()
             return
 
@@ -377,7 +389,7 @@ def _parse_output(text: str, lang_code: str, lang_name: str, wall_seconds: float
 def _save_lang_log(lang_code: str, lang_name: str, output: str, result: dict):
     log_dir = os.path.join(_run_dir or _RESULT_BASE_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(log_dir, f"benchmark_{lang_code}_{ts}.log")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"{'='*80}\n")
@@ -386,57 +398,57 @@ def _save_lang_log(lang_code: str, lang_name: str, output: str, result: dict):
         f.write(f"返回码: {result.get('returncode', '?')}\n")
         f.write(f"{'='*80}\n\n")
         f.write(output)
-    print(f"  日志已保存: {log_path}")
+    logger.info(f"  日志已保存: {log_path}")
 
 
 def _print_lang_summary(r: dict):
-    print(f"\n{'='*80}")
-    print(f"  {r['lang_name']} ({r['lang_code']}) 统计摘要")
-    print(f"{'='*80}")
-    print(f"  总问题数:       {r.get('total_questions', 'N/A')}")
-    print(f"  总执行次数:     {r.get('total_runs', 'N/A')}")
-    print(f"  墙钟总耗时:     {r.get('wall_seconds', 'N/A')}s")
-    print(f"  全局平均耗时:   {r.get('avg_seconds', 'N/A')}s")
-    print(f"  全局平均Tokens: {r.get('avg_tokens', 'N/A')}")
+    logger.info(f"\n{'='*80}")
+    logger.info(f"  {r['lang_name']} ({r['lang_code']}) 统计摘要")
+    logger.info(f"{'='*80}")
+    logger.info(f"  总问题数:       {r.get('total_questions', 'N/A')}")
+    logger.info(f"  总执行次数:     {r.get('total_runs', 'N/A')}")
+    logger.info(f"  墙钟总耗时:     {r.get('wall_seconds', 'N/A')}s")
+    logger.info(f"  全局平均耗时:   {r.get('avg_seconds', 'N/A')}s")
+    logger.info(f"  全局平均Tokens: {r.get('avg_tokens', 'N/A')}")
     if r.get("success_rate") is not None:
-        print(f"  成功率:         {r['success_count']}/{r.get('success_runs', '?')} ({r['success_rate']}%)")
+        logger.info(f"  成功率:         {r['success_count']}/{r.get('success_runs', '?')} ({r['success_rate']}%)")
     if r.get("first4_avg_seconds") is not None:
-        print(f"  前4问题平均:    {r['first4_avg_seconds']}s")
+        logger.info(f"  前4问题平均:    {r['first4_avg_seconds']}s")
     if r.get("rest_avg_seconds") is not None:
-        print(f"  后续问题平均:   {r['rest_avg_seconds']}s")
+        logger.info(f"  后续问题平均:   {r['rest_avg_seconds']}s")
     if r.get("avg_first_token_latency") is not None:
-        print(f"  平均首Token:    {r['avg_first_token_latency']}s")
+        logger.info(f"  平均首Token:    {r['avg_first_token_latency']}s")
     if r.get("avg_inter_token_latency") is not None:
-        print(f"  平均增量Token:  {r['avg_inter_token_latency']}s")
+        logger.info(f"  平均增量Token:  {r['avg_inter_token_latency']}s")
 
     if r.get("per_question_summary"):
-        print(f"\n  {'问题':<8} {'语言':<16} {'平均耗时':<10} {'成功率':<10}")
-        print(f"  {'-'*44}")
+        logger.info(f"\n  {'问题':<8} {'语言':<16} {'平均耗时':<10} {'成功率':<10}")
+        logger.info(f"  {'-'*44}")
         for q in r["per_question_summary"]:
             rate = f"{q['success']}/{q['total']}"
-            print(f"  {q['sheet']:<8} {q['lang_info']:<16} {q['avg_duration']:<10} {rate:<10}")
+            logger.info(f"  {q['sheet']:<8} {q['lang_info']:<16} {q['avg_duration']:<10} {rate:<10}")
 
     if r.get("kg_tool_stats"):
-        print(f"\n  KG工具统计:")
+        logger.info(f"\n  KG工具统计:")
         for line in r["kg_tool_stats"].split("\n"):
-            print(f"    {line}")
+            logger.info(f"    {line}")
 
     if r.get("chinese_intrusion"):
-        print(f"\n  中文混入检测:")
+        logger.info(f"\n  中文混入检测:")
         for line in r["chinese_intrusion"].split("\n")[:15]:
-            print(f"    {line}")
+            logger.info(f"    {line}")
 
     if r.get("kg_lang_param_detection"):
-        print(f"\n  KG工具language参数检测:")
+        logger.info(f"\n  KG工具language参数检测:")
         for line in r["kg_lang_param_detection"].split("\n")[:10]:
-            print(f"    {line}")
+            logger.info(f"    {line}")
 
     if r.get("kg_output_lang_detection"):
-        print(f"\n  KG工具输出语言匹配检测:")
+        logger.info(f"\n  KG工具输出语言匹配检测:")
         for line in r["kg_output_lang_detection"].split("\n")[:10]:
-            print(f"    {line}")
+            logger.info(f"    {line}")
 
-    print(f"{'='*80}")
+    logger.info(f"{'='*80}")
 
 
 def _print_final_report(results: list[dict]):
@@ -481,7 +493,7 @@ def _print_final_report(results: list[dict]):
 
     a("# 多语言基准测试 汇总报告")
     a(f"")
-    a(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    a(f"> 生成时间: {datetime.now(timezone.utc).isoformat()}")
     a(f"")
     a(f"| 指标 | 值 |")
     a(f"|------|-----|")
@@ -691,15 +703,16 @@ def _print_final_report(results: list[dict]):
 
     report_text = "\n".join(report_lines)
 
-    print(f"\n\n{report_text}")
+    logger.info(f"\n\n{report_text}")
 
     save_path = _report_path or os.path.join(
-        _RESULT_BASE_DIR, f"multilang_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        _RESULT_BASE_DIR,
+        f"multilang_report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.md",
     )
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     with open(save_path, "w", encoding="utf-8") as f:
         f.write(report_text)
-    print(f"\n汇总报告已保存: {save_path}")
+    logger.info(f"\n汇总报告已保存: {save_path}")
 
     _generate_multilang_charts(results, os.path.dirname(save_path))
 
@@ -712,7 +725,7 @@ def _generate_multilang_charts(results: list[dict], output_dir: str):
         import matplotlib.pyplot as plt
         import numpy as np
     except ImportError:
-        print(f"  ⚠ matplotlib 未安装，跳过图表生成")
+        logger.info(f"  ⚠ matplotlib 未安装，跳过图表生成")
         return
 
     plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]
@@ -847,7 +860,7 @@ def _generate_multilang_charts(results: list[dict], output_dir: str):
     p1 = os.path.join(output_dir, "time_breakdown.png")
     fig.savefig(p1, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"  📊 多语言时间分解图已保存: {p1}")
+    logger.info(f"  📊 多语言时间分解图已保存: {p1}")
 
     tool_names = ["knowledge_graph_tool.py", "mindsdb_tool.py", "work_order_sync.py"]
     all_elapsed = {}
@@ -905,7 +918,7 @@ def _generate_multilang_charts(results: list[dict], output_dir: str):
     p2 = os.path.join(output_dir, "tool_latency_dist.png")
     fig2.savefig(p2, dpi=150, bbox_inches="tight")
     plt.close(fig2)
-    print(f"  📊 工具耗时分布图已保存: {p2}")
+    logger.info(f"  📊 工具耗时分布图已保存: {p2}")
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -933,21 +946,21 @@ def _find_latest_multilang_run() -> str | None:
 def _replay_from_logs() -> list[dict]:
     run_dir = _find_latest_multilang_run()
     if not run_dir:
-        print(f"  ⚠ 未找到任何多语言测试日志 (result/multilang_*)")
+        logger.info(f"  ⚠ 未找到任何多语言测试日志 (result/multilang_*)")
         return []
 
     log_dir = os.path.join(run_dir, "logs")
-    print(f"  从目录恢复: {run_dir}")
+    logger.info(f"  从目录恢复: {run_dir}")
 
     results = []
     for lang_code, lang_name in LANGUAGES:
         pattern = f"benchmark_{lang_code}_*.log"
         matches = sorted(glob.glob(os.path.join(log_dir, pattern)))
         if not matches:
-            print(f"  ⚠ 未找到 {lang_name} ({lang_code}) 的日志文件")
+            logger.info(f"  ⚠ 未找到 {lang_name} ({lang_code}) 的日志文件")
             continue
         latest_log = matches[-1]
-        print(f"  读取日志: {latest_log}")
+        logger.info(f"  读取日志: {latest_log}")
         with open(latest_log, "r", encoding="utf-8") as f:
             text = f.read()
         result = _parse_output(text, lang_code, lang_name, 0)
@@ -970,10 +983,10 @@ def _replay_from_logs() -> list[dict]:
 
 def main():
     if "--replay" in sys.argv:
-        print(f"\n{'#'*80}")
-        print(f"  多语言基准测试 — 从日志重新生成报告")
-        print(f"  时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"{'#'*80}")
+        logger.info(f"\n{'#'*80}")
+        logger.info(f"  多语言基准测试 — 从日志重新生成报告")
+        logger.info(f"  时间: {datetime.now(timezone.utc).isoformat()}")
+        logger.info(f"{'#'*80}")
         results = _replay_from_logs()
         if not results:
             return
@@ -984,21 +997,21 @@ def main():
 
     run_dir = _init_run_dir()
 
-    print(f"\n{'#'*80}")
-    print(f"  多语言基准测试 — 自动循环执行")
-    print(f"  语言序列: {' -> '.join(f'{n}({c})' for c, n in LANGUAGES)}")
-    print(f"  开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  结果目录: {run_dir}")
-    print(f"{'#'*80}")
+    logger.info(f"\n{'#'*80}")
+    logger.info(f"  多语言基准测试 — 自动循环执行")
+    logger.info(f"  语言序列: {' -> '.join(f'{n}({c})' for c, n in LANGUAGES)}")
+    logger.info(f"  开始时间: {datetime.now(timezone.utc).isoformat()}")
+    logger.info(f"  结果目录: {run_dir}")
+    logger.info(f"{'#'*80}")
 
     overall_start = time.time()
     lang_times: list[float] = []
 
     for idx, (lang_code, lang_name) in enumerate(LANGUAGES, 1):
         lang_start = time.time()
-        print(f"\n{'*'*80}")
-        print(f"  [{idx}/{len(LANGUAGES)}] 正在执行: {lang_name} ({lang_code})")
-        print(f"{'*'*80}")
+        logger.info(f"\n{'*'*80}")
+        logger.info(f"  [{idx}/{len(LANGUAGES)}] 正在执行: {lang_name} ({lang_code})")
+        logger.info(f"{'*'*80}")
 
         r = _run_benchmark(lang_code, lang_name)
         _all_results.append(r)
@@ -1009,26 +1022,27 @@ def main():
         _print_lang_summary(r)
 
         if r.get("returncode", 0) != 0:
-            print(f"  ⚠️ 警告: {lang_name} ({lang_code}) 执行返回码非0: {r['returncode']}")
+            logger.info(f"  ⚠️ 警告: {lang_name} ({lang_code}) 执行返回码非0: {r['returncode']}")
 
         remaining = len(LANGUAGES) - idx
         if remaining > 0 and lang_times:
             avg_lang = sum(lang_times) / len(lang_times)
             eta = avg_lang * remaining
-            print(
+            logger.info(
                 f"\n  📊 整体进度: {idx}/{len(LANGUAGES)} 语言完成 | "
                 f"已用: {_fmt_duration(time.time() - overall_start)} | "
                 f"预计剩余: {_fmt_duration(eta)}"
             )
 
     overall_elapsed = time.time() - overall_start
-    print(f"\n{'#'*80}")
-    print(f"  全部 {len(LANGUAGES)} 轮执行完毕，总耗时: {_fmt_duration(overall_elapsed)}")
-    print(f"  结果目录: {run_dir}")
-    print(f"{'#'*80}")
+    logger.info(f"\n{'#'*80}")
+    logger.info(f"  全部 {len(LANGUAGES)} 轮执行完毕，总耗时: {_fmt_duration(overall_elapsed)}")
+    logger.info(f"  结果目录: {run_dir}")
+    logger.info(f"{'#'*80}")
 
     _print_final_report(_all_results)
 
 
 if __name__ == "__main__":
+    _configure_cli_logging()
     main()

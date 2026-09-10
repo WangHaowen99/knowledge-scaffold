@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TextIO
 
 from agent.tools.business_data.provider_config_codec import (
     decrypt_provider_config,
@@ -32,13 +34,22 @@ from agent.tools.business_data.provider_registry import (
     normalize_provider_name,
 )
 
-
 DOCUMENT_VERSION = 2
 MODE_DIRECT_PROVIDER = "direct_provider"
 MODE_CONNECTION_REF = "connection_ref"
 MIGRATION_ID = "ontology-data-sources-direct-v2"
 MARKER_FILE = "ontology-data-sources.direct-v2.migration-complete.json"
 MANUAL_BACKUP_SUFFIX = ".pre-direct-v2.bak"
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 class OntologyDataSourceMigrationError(ValueError):
@@ -279,9 +290,10 @@ def _contains_encrypted_value(value: Any) -> bool:
 
 
 def _secret_key_available(runtime_root: Path) -> bool:
-    return bool(str(os.getenv("SECRET_ENCRYPTION_KEY") or "").strip()) or (
-        runtime_root / "config" / "secret.key"
-    ).is_file()
+    return (
+        bool(str(os.getenv("SECRET_ENCRYPTION_KEY") or "").strip())
+        or (runtime_root / "config" / "secret.key").is_file()
+    )
 
 
 def _without_legacy_provider_attestations(
@@ -296,11 +308,7 @@ def _without_legacy_provider_attestations(
     """
     if provider not in {"neo4j", "hugegraph"}:
         return dict(config)
-    return {
-        key: value
-        for key, value in config.items()
-        if key not in LEGACY_PROVIDER_ATTESTATION_FIELDS
-    }
+    return {key: value for key, value in config.items() if key not in LEGACY_PROVIDER_ATTESTATION_FIELDS}
 
 
 def _document_has_legacy_provider_attestations(document: Dict[str, Any]) -> bool:
@@ -501,10 +509,9 @@ def migrate_workspace(
     except OntologyDataSourceMigrationError as exc:
         return _error_result(dry_run=dry_run, errors=[str(exc)])
 
-    if (
-        _contains_encrypted_value(document)
-        or _contains_encrypted_value(connections)
-    ) and not _secret_key_available(resolved_runtime_root):
+    if (_contains_encrypted_value(document) or _contains_encrypted_value(connections)) and not _secret_key_available(
+        resolved_runtime_root
+    ):
         return _error_result(
             dry_run=dry_run,
             errors=["检测到已加密数据源密钥，但 SECRET_ENCRYPTION_KEY 和 config/secret.key 均不可用"],
@@ -617,9 +624,7 @@ def migrate_workspace(
             "skipped": not bool(needs_write),
             "dry_run": True,
             "errors": [],
-            "removed_legacy_files": sum(
-                int(path.exists()) for path in (paths.bindings, paths.connections)
-            ),
+            "removed_legacy_files": sum(int(path.exists()) for path in (paths.bindings, paths.connections)),
             "backup_paths": [str(path) for path in backup_paths],
         }
 
@@ -638,8 +643,7 @@ def migrate_workspace(
             )
         try:
             serialized_sources = {
-                ontology_id: _source_payload(source)
-                for ontology_id, source in sorted(next_sources.items())
+                ontology_id: _source_payload(source) for ontology_id, source in sorted(next_sources.items())
             }
         except (BusinessDataProviderError, TypeError, ValueError) as exc:
             return {
@@ -719,10 +723,7 @@ def migrate_all_workspaces(runtime_root: Path, *, dry_run: bool) -> Dict[str, An
                 "backup_paths": [],
             }
         results["workspaces"][workspace_dir.name] = result
-        results["errors"].extend(
-            "{}: {}".format(workspace_dir.name, message)
-            for message in result.get("errors", [])
-        )
+        results["errors"].extend("{}: {}".format(workspace_dir.name, message) for message in result.get("errors", []))
     return results
 
 
@@ -806,6 +807,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    _configure_cli_logging(sys.stdout)
     args = _build_parser().parse_args(argv)
     code, report = execute_migration(
         args.runtime_root,
@@ -817,7 +819,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.report:
         _write_bytes_atomic(args.report, rendered.encode("utf-8"), mode=0o600)
-    print(rendered, end="")
+    logger.info(rendered.rstrip("\n"))
     return code
 
 

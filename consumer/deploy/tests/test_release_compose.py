@@ -1143,6 +1143,29 @@ def test_deploy_allows_empty_persistent_directories_for_first_install(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_deploy_allows_backend_env_only_for_first_install(tmp_path):
+    deploy_root = tmp_path / "deploy"
+    deploy_root.mkdir()
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / ".env").write_text("LLM_MAX_TOKENS=4096\n", encoding="utf-8")
+    shutil.copyfile(DEPLOY_ROOT / "common.sh", deploy_root / "common.sh")
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; load_state; assert_no_existing_install_for_install',
+        ],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_release_dispatcher_routes_staged_package_to_existing_install_upgrade():
     deploy_script = (REPOSITORY_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
 
