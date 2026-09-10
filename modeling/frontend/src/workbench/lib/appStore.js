@@ -115,12 +115,36 @@ export const store = createStore(initial);
 
 const UPLOAD_POLL_INTERVAL_MS = 800;
 const UPLOAD_POLL_TIMEOUT_MS = 11 * 60_000;
-const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'stopping']);
+export const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'stopping']);
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 const TERMINAL_TOOL_PHASES = new Set(['completed', 'failed', 'blocked', 'rejected', 'waiting', 'cancelled']);
-const PURPOSE_REVIEW_CONTINUATION = '我已确认本批全部资料的明确用途和表格 Sheet 处理方式。现在开始按确认结果读取资料、形成建模目标；需要全文精读的资料继续按已保存设置执行。';
+// 这条续跑文案由前端代发，却会被服务端当成用户意图做正则分类。原文里的
+// 「需要全文精读的资料继续按已保存设置执行」既会命中全文精读意图、强行拉起
+// read_documents_fully，又因为措辞含糊让模型反复推敲用户到底要什么（见 #1）。
+// 改成不含「全文精读」且语义唯一的说法。
+const PURPOSE_REVIEW_CONTINUATION = '我已确认本批全部资料的明确用途和表格 Sheet 处理方式。现在开始按确认结果读取资料、形成建模目标；每份资料的阅读方式一律以已保存设置为准。';
+// 只读工具清单，用于决定工具完成后是否重新拉取快照。
+// 刻意采用「默认刷新、只列出只读工具」而不是「只列出写包工具」：服务端新增写包工具时，
+// 漏在这里最多多刷一次快照（无害）；反过来漏在白名单里会让文件树和产物计数长期停在旧值，
+// 用户只能靠手动刷新页面恢复。
+export const SNAPSHOT_NEUTRAL_TOOLS = new Set([
+  'focus', 'notify', 'ask',
+  'list_documents', 'read_document', 'read_documents_fully', 'search_documents',
+  'list_tables', 'describe_table', 'read_table_rows',
+  'list_dir', 'read_file', 'grep_package', 'diff',
+  'get_project_state', 'gate_status', 'who_references',
+  'list_domain_resources', 'get_domain_resource', 'preview_domain_delete',
+  'suggest_object_relations', 'get_schema_semantics', 'get_schema_mapping_plan',
+  'get_change_plan', 'get_change_set_receipt',
+  'analyze_deterministic_capabilities', 'analyze_material_impact', 'analyze_package_merge',
+  'list_package_sources', 'read_package_source_file',
+  'get_evaluation_results', 'query_eval_db', 'release_preflight',
+]);
+const SNAPSHOT_REFRESH_DEBOUNCE_MS = 300;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 let optimisticSequence = 0;
+let snapshotRefreshTimer = null;
+let snapshotRefreshOpenPurposeReview = false;
 const optimisticId = (kind) => `optimistic-${kind}-${Date.now()}-${optimisticSequence += 1}`;
 const uploadStatus = (document) => document?.parseStatus === 'pending'
   ? 'parsing'
@@ -197,6 +221,12 @@ function rejectedMessage(result, fallback) {
     : fallback;
 }
 
+function planContinuationPrompt(approved) {
+  return approved
+    ? '我已在页面批准当前建模计划。请从计划第一项继续，先核对当前状态和写入回执，不要重复已经完成的任务。'
+    : '我已在页面拒绝当前建模计划。请读取计划的最终状态并停止这份计划，不要产生任何候选修改。';
+}
+
 async function waitForPlanContinuationBoundary(projectId, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -208,7 +238,10 @@ async function waitForPlanContinuationBoundary(projectId, timeoutMs = 20_000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error('建模计划已经记录，但助手仍在收尾；请稍后在当前对话继续。');
+  const error = new Error('建模计划已经记录，但助手仍在收尾；开工指令还没有发出。');
+  // 调用方据此区分“决定没生效”和“决定已生效但没开工”，两者的出口完全不同。
+  error.planSettled = true;
+  throw error;
 }
 
 export function resolveWorkbenchBootstrapResults(results) {
@@ -358,6 +391,20 @@ export const actions = {
       }
     }
   },
+  // 工具完成事件可能成串到达，这里合并成一次快照拉取，并兜住失败——
+  // 直接 void refreshSnapshot() 会让拒绝变成无人处理的 promise rejection，界面停在旧值且毫无提示。
+  scheduleSnapshotRefresh(options = {}) {
+    if (options.openPurposeReview) snapshotRefreshOpenPurposeReview = true;
+    if (snapshotRefreshTimer) return;
+    snapshotRefreshTimer = setTimeout(() => {
+      snapshotRefreshTimer = null;
+      const openPurposeReview = snapshotRefreshOpenPurposeReview;
+      snapshotRefreshOpenPurposeReview = false;
+      actions.refreshSnapshot({ openPurposeReview }).catch((error) => {
+        store.set({ error: error instanceof Error ? error.message : '知识包内容暂时读不到，稍后会自动重试' });
+      });
+    }, SNAPSHOT_REFRESH_DEBOUNCE_MS);
+  },
   refreshCandidateRevisions() {
     store.set((state) => ({
       candidateRevisionRefreshKey: state.candidateRevisionRefreshKey + 1,
@@ -452,7 +499,7 @@ export const actions = {
     const replaying = Boolean(seq && seq <= store.get().replayUntilSeq);
     if (eventType === 'focus' && event.target && !replaying) {
       actions.agentFocus(event.target);
-      if (event.target.kind === 'diff') void actions.refreshSnapshot();
+      if (event.target.kind === 'diff') actions.scheduleSnapshotRefresh();
     }
 if (eventType === 'state' && !replaying) {
       store.set((state) => ({
@@ -483,7 +530,7 @@ if (eventType === 'state' && !replaying) {
     }
     if (eventType === 'change_set' && !replaying) {
       store.set({ progress: null });
-      void actions.refreshSnapshot();
+      actions.scheduleSnapshotRefresh();
     }
     if (eventType === 'progress' && !replaying) {
       store.set((state) => {
@@ -527,8 +574,8 @@ if (eventType === 'state' && !replaying) {
           ))),
         }));
       }
-      if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_work_notes', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation', 'discard_rejected_candidate_changes', 'set_material_directive'].includes(event.name)) {
-        void actions.refreshSnapshot({ openPurposeReview: event.name === 'set_material_directive' });
+      if (!replaying && event.phase === 'completed' && !SNAPSHOT_NEUTRAL_TOOLS.has(event.name)) {
+        actions.scheduleSnapshotRefresh({ openPurposeReview: event.name === 'set_material_directive' });
       }
       const automaticRecovery = event.phase === 'repairing' || event.problemVisibility === 'activity';
       if (!automaticRecovery && event.code && (!replaying || event.issueId)
@@ -779,21 +826,26 @@ if (eventType === 'state' && !replaying) {
         })),
       }));
       await waitForPlanContinuationBoundary(projectId);
-      await actions.send(approved
-        ? '我已在页面批准当前建模计划。请从计划第一项继续，先核对当前状态和写入回执，不要重复已经完成的任务。'
-        : '我已在页面拒绝当前建模计划。请读取计划的最终状态并停止这份计划，不要产生任何候选修改。');
+      await actions.send(planContinuationPrompt(approved));
       return result;
     } catch (error) {
       const data = error?.data && typeof error.data === 'object' ? error.data : {};
       const staleRun = data.code === 'CHANGE_PLAN_STALE_RUN';
+      // 计划决定本身是先落库再发开工指令的两步。等待助手空闲超时时，
+      // 决定已经生效，只是指令没发出去；此时说“计划仍保持原状态”是假的，
+      // 会把用户引去重新批准（见 #30）。
+      const settled = Boolean(error?.planSettled);
       store.set({
         error: {
           scope: 'change_plan',
           message: error instanceof Error ? error.message : '计划决定提交失败',
           recovery: staleRun
             ? '当前运行还没有接续服务重启前的建模计划，请先安全终止失效计划后重新规划。'
-            : '计划仍保持原状态，请在当前计划卡重试。',
+            : settled
+              ? '决定已经生效，只是助手当时仍在收尾、没有收到开工指令。等助手空闲后点「继续执行」即可。'
+              : '计划仍保持原状态，请在当前计划卡重试。',
           ...(staleRun ? { staleRun: true } : {}),
+          ...(settled ? { resumePlan: { planId, approved } } : {}),
         },
         ...(staleRun ? {
           recovery: {
@@ -802,6 +854,28 @@ if (eventType === 'state' && !replaying) {
             nextSteps: Array.isArray(data.next) ? data.next : ['安全终止失效计划后重新规划'],
           },
         } : {}),
+      });
+      return null;
+    }
+  },
+  /** 计划决定已落库、只差开工指令时的补发出口（见 #30）。 */
+  async resumeChangePlan() {
+    const { projectId, error } = store.get();
+    const resume = error?.resumePlan;
+    if (!projectId || !resume?.planId) return null;
+    try {
+      await waitForPlanContinuationBoundary(projectId);
+      await actions.send(planContinuationPrompt(resume.approved));
+      store.set({ error: '' });
+      return true;
+    } catch (cause) {
+      store.set({
+        error: {
+          scope: 'change_plan',
+          message: cause instanceof Error ? cause.message : '开工指令补发失败',
+          recovery: '助手仍在收尾，稍候再点「继续执行」。',
+          resumePlan: resume,
+        },
       });
       return null;
     }

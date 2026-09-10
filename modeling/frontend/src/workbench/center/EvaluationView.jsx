@@ -16,7 +16,12 @@ import {
 
 const TABS = [
   ['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果'],
+  ['diagnose', '失败诊断'], ['optimize', '优化建议'],
 ];
+/* 诊断与优化两个 tab 始终可点：它们的前置是「选中一个已结束的轮次」，
+   而这个前置由下方空态引导用户去运行结果页完成。若按 terminalRound 禁用，
+   未打开轮次时两个 tab 都会禁用，反而没有任何入口。 */
+const FOCUS_VIEWS = new Set(['runs', 'diagnose', 'optimize']);
 const STATUS = { running: ['运行中', 'wait'], done: ['已完成', 'ok'], failed: ['运行失败', 'stale'] };
 const KINDS = [
   ['modify_rule', '修改业务规则'], ['add_rule', '新增业务规则'], ['modify_operation', '修改操作'],
@@ -26,9 +31,9 @@ const KINDS = [
 ];
 
 export function evaluationFocusRequest(focus) {
-  if (focus?.kind !== 'evaluation' || focus.view !== 'runs') return null;
+  if (focus?.kind !== 'evaluation' || !FOCUS_VIEWS.has(focus.view)) return null;
   return {
-    view: 'runs',
+    view: focus.view,
     roundId: typeof focus.roundId === 'string' ? focus.roundId.trim() : '',
   };
 }
@@ -67,7 +72,7 @@ export default function EvaluationView({ focus }) {
     const focusKey = `${projectId || ''}:${requestedFocus.view}:${requestedFocus.roundId}`;
     if (handledFocus.current === focusKey) return;
     handledFocus.current = focusKey;
-    setTab('runs');
+    setTab(requestedFocus.view);
     void loadFacts();
     if (requestedFocus.roundId) void openRound(requestedFocus.roundId);
   }, [loadFacts, openRound, projectId, requestedFocus?.roundId, requestedFocus?.view]);

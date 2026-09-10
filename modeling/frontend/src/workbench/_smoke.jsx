@@ -33,6 +33,7 @@ import {
   actions,
   resolveBootstrapFocus,
   SCENES,
+  SNAPSHOT_NEUTRAL_TOOLS,
   studioFocusFromLocation,
   shouldUseStaleRunTermination,
 } from './lib/appStore.js';
@@ -675,6 +676,17 @@ try {
 } catch (e) { console.log('✗ 评测运行焦点:', e.message); bad++; }
 
 try {
+  // #25：诊断与优化面板曾经互为唯一入口，形成导航死锁；焦点必须能直接落到这两个视图
+  const diagnose = evaluationFocusRequest({ kind: 'evaluation', view: 'diagnose', roundId: 'round-demo' });
+  const optimize = evaluationFocusRequest({ kind: 'evaluation', view: 'optimize', roundId: '' });
+  if (diagnose?.view !== 'diagnose' || optimize?.view !== 'optimize'
+    || evaluationFocusRequest({ kind: 'evaluation', view: 'setup' }) !== null) {
+    throw new Error('评测焦点没有放行失败诊断和优化建议视图');
+  }
+  console.log('✓ 评测焦点可直达失败诊断与优化建议');
+} catch (e) { console.log('✗ 评测诊断优化焦点:', e.message); bad++; }
+
+try {
   const html = renderToString(<DiagnosisProgress task={{
     operation: 'diagnose', startedAt: new Date(Date.now() - 65_000).toISOString(),
   }} />);
@@ -1176,6 +1188,28 @@ try {
   }
   console.log('✓ 历史轨迹回放不覆盖当前运行活动');
 } catch (e) { console.log('✗ 历史轨迹活动隔离:', e.message); bad++; }
+
+// 写包工具完成后必须重新拉取快照，否则文件树和产物计数会长期停在旧值。
+// 服务端 core-service.ts 的 DOMAIN_TOOL_NAMES 会演进，这里断言判定按「只读工具黑名单」实现，
+// 而不是把写包工具逐个列进白名单——后者漏一个就退化成静默陈旧。
+try {
+  const storeSource = readFileSync('src/workbench/lib/appStore.js', 'utf8');
+  if (!storeSource.includes('!SNAPSHOT_NEUTRAL_TOOLS.has(event.name)')) {
+    throw new Error('快照刷新仍按写包工具白名单判定，服务端新增 domain 工具时会漏刷');
+  }
+  for (const tool of [
+    'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
+    'create_object', 'patch_object', 'create_rule', 'patch_rule',
+    'create_metric', 'patch_metric', 'create_operation', 'patch_operation',
+    'patch_object_source_binding', 'delete_domain_resource',
+  ]) {
+    if (SNAPSHOT_NEUTRAL_TOOLS.has(tool)) throw new Error(`写包工具 ${tool} 被当成只读工具，不会触发快照刷新`);
+  }
+  for (const tool of ['read_file', 'list_dir', 'get_project_state', 'grep_package']) {
+    if (!SNAPSHOT_NEUTRAL_TOOLS.has(tool)) throw new Error(`只读工具 ${tool} 会触发无谓的快照刷新`);
+  }
+  console.log('✓ 写包工具完成后触发快照刷新，只读工具不触发');
+} catch (e) { console.log('✗ 快照刷新触发范围:', e.message); bad++; }
 
 store.set({
   demo: false,
@@ -2284,5 +2318,28 @@ try {
   }
   console.log('✓ stale-run 终止门控仅覆盖 stale_run/plan_unreadable');
 } catch (e) { console.log('✗ 恢复终止门控:', e.message); bad++; }
+
+try {
+  // #30：计划卡的批准状态必须取自 store.changePlan，而不是消息里的历史快照
+  const planSource = readFileSync('src/workbench/right/blocks/Blocks.jsx', 'utf8');
+  if (!/const livePlan = useStore\(store, \(s\) => s\.changePlan\)/.test(planSource)
+    || !/livePlan && livePlan\.id === b\.plan\?\.id \? livePlan : b\.plan/.test(planSource)) {
+    throw new Error('计划卡仍在读消息里的历史快照');
+  }
+  if (!/disabled=\{Boolean\(busy\) \|\| agentBusy\}/.test(planSource)) {
+    throw new Error('助手运行中时批准按钮没有禁用');
+  }
+  if (!/继续执行/.test(planSource)) throw new Error('缺少开工指令补发出口');
+  const storeSource = readFileSync('src/workbench/lib/appStore.js', 'utf8');
+  if (!/error\.planSettled = true/.test(storeSource)) {
+    throw new Error('等待超时没有标记“决定已生效”');
+  }
+  if (!/决定已经生效，只是助手当时仍在收尾/.test(storeSource)) {
+    throw new Error('超时后仍在谎报“计划仍保持原状态”');
+  }
+  if (!/async resumeChangePlan\(\)/.test(storeSource)) throw new Error('缺少 resumeChangePlan 补发动作');
+  console.log('✓ 计划批准竞态：状态取权威值、忙时禁用、超时可补发');
+} catch (e) { console.log('✗ 计划批准竞态:', e.message); bad++; }
+
 console.log(bad ? `\n${bad} 处失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);

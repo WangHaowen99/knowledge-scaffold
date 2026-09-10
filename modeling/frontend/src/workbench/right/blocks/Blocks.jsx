@@ -1,4 +1,4 @@
-import { store, actions, materialPurposeLabel } from '../../lib/appStore.js';
+import { store, actions, materialPurposeLabel, ACTIVE_RUN_STATUSES } from '../../lib/appStore.js';
 import { useStore } from '../../lib/store.js';
 import * as F from '../../lib/mock/fixtures.js';
 import Icon from '../../ui/Icon.jsx';
@@ -114,13 +114,26 @@ function AnsweredInteraction({ interaction }) {
 function PlanBlock({ b }) {
   const [busy, setBusy] = useState('');
   const recovery = useStore(store, (s) => s.recovery);
-  const plan = b.plan || {};
+  // 消息里的 plan 是发布那一刻的快照，刷新时按事件日志重放会退回旧值；
+  // 批准状态只认 store 里的当前计划，否则界面会在两份副本之间横跳（见 #30）。
+  const livePlan = useStore(store, (s) => s.changePlan);
+  const planError = useStore(store, (s) => (s.error?.scope === 'change_plan' ? s.error : null));
+  const runStatus = useStore(store, (s) => String(s.run?.status || ''));
+  const plan = (livePlan && livePlan.id === b.plan?.id ? livePlan : b.plan) || {};
   const items = b.items || [];
   const staleBlocked = Boolean(recovery && ['stale_run', 'plan_unreadable'].includes(recovery.status));
+  // 助手没空闲时批准会落库成功、但开工指令发不出去，直接禁用避免踩进这个竞态。
+  const agentBusy = ACTIVE_RUN_STATUSES.has(runStatus);
+  const resumable = Boolean(planError?.resumePlan && planError.resumePlan.planId === plan.id);
   const decide = async (approved) => {
     if (!plan.id || busy || staleBlocked) return;
     setBusy(approved ? 'approve' : 'reject');
     try { await actions.respondChangePlan(plan.id, approved); } finally { setBusy(''); }
+  };
+  const resume = async () => {
+    if (busy) return;
+    setBusy('resume');
+    try { await actions.resumeChangePlan(); } finally { setBusy(''); }
   };
   const safeTerminate = async () => {
     if (!plan.id || busy) return;
@@ -142,6 +155,13 @@ function PlanBlock({ b }) {
             </li>
           ))}
         </ul>
+        {resumable && plan.approval_status !== 'pending' && <div className="wb-plan-approval" role="alert">
+          <span>{planError.recovery}</span>
+          <div className="btn-row">
+            <button type="button" className="btn btn-p btn-sm" disabled={Boolean(busy) || agentBusy}
+              onClick={() => void resume()}>{busy === 'resume' ? '继续中…' : '继续执行'}</button>
+          </div>
+        </div>}
         {plan.approval_status === 'pending' && <div className="wb-plan-approval">
           {staleBlocked && (
             <div className="wb-plan-stale-block" role="alert">
@@ -153,11 +173,13 @@ function PlanBlock({ b }) {
             </div>
           )}
           {!staleBlocked && <>
-            <span>批准前不会生成对象、规则、操作、指标或脚本候选。</span>
+            <span>{agentBusy
+              ? '助手正在收尾，稍候即可批准；现在批准会因为收不到开工指令而停在原地。'
+              : '批准前不会生成对象、规则、操作、指标或脚本候选。'}</span>
             <div className="btn-row">
-              <button type="button" className="btn btn-p btn-sm" disabled={Boolean(busy)}
+              <button type="button" className="btn btn-p btn-sm" disabled={Boolean(busy) || agentBusy}
                 onClick={() => void decide(true)}>{busy === 'approve' ? '批准中…' : '批准并开始'}</button>
-              <button type="button" className="btn btn-sm" disabled={Boolean(busy)}
+              <button type="button" className="btn btn-sm" disabled={Boolean(busy) || agentBusy}
                 onClick={() => void decide(false)}>{busy === 'reject' ? '拒绝中…' : '拒绝计划'}</button>
             </div>
           </>}
