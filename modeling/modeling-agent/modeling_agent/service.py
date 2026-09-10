@@ -134,6 +134,9 @@ MODEL_RECOVERY_DELAY_SECONDS = 0.5
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
 EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS = 3.5
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
+    # 切换阶段是明确的前进。不计入的话，「刚进入新阶段、还没来得及产出」
+    # 会和「无事可做」判成同一件事，两轮后直接收工（见 #35）。
+    "transition_project_state",
     "create_change_plan",
     "revise_change_plan",
     "stage_change_set",
@@ -246,6 +249,9 @@ class LiveRun:
     # 强推 read_documents_fully —— 该不该精读由资料设置决定，不由措辞决定（见 #1）。
     full_read_documents: tuple[str, ...] = ()
     full_read_observed: bool = False
+    # 本轮切换过阶段但新阶段还没有任何产出。默认 False：不改变既有的收尾节奏，
+    # 只有确实刚切进新阶段时才放宽停滞上限（见 #35）。
+    stage_started_without_delivery: bool = False
     tool_summaries: list[str] = field(default_factory=list)
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasoning_chars_published: int = 0
@@ -2576,6 +2582,7 @@ class AgentService:
     ) -> None:
         _absorb_plan_progress(live, result)
         _absorb_reading_modes(live, result)
+        _absorb_stage_delivery(live, name, result)
         if name == "create_change_plan":
             consume = getattr(self._gateway, "acceptance_fault", None)
             fault: dict[str, Any] = {}
@@ -3542,9 +3549,12 @@ class AgentService:
 
                 # 已批准的计划还有必选任务时放宽停滞上限：只做调研不写入同样是没干活，
                 # 但收尾的判据应该是计划做没做完，而不是模型连着几轮没调用写包工具。
+                # 受控计划只存在于知识建模阶段；资料准备、目标确认、流程建模、
+                # 确定性验证都没有计划，不能因此就用紧上限把它们判成没事可做。
                 stall_budget = (
                     MAX_STALLED_PLAN_CONTINUATIONS
-                    if live.plan_remaining else MAX_STALLED_CONTINUATIONS
+                    if (live.plan_remaining or live.stage_started_without_delivery)
+                    else MAX_STALLED_CONTINUATIONS
                 )
                 if (
                     autonomous
@@ -4618,6 +4628,21 @@ def _document_rule_change_requested(text: str) -> bool:
 
 def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
+
+
+# 会形成本阶段交付物的工具。阶段切换后重新计数，用来区分
+# 「刚进新阶段还没产出」和「本阶段做完了、确实没事可做」（见 #35）。
+_STAGE_DELIVERY_TOOLS = frozenset(
+    AUTONOMOUS_PROGRESS_TOOLS - {"transition_project_state"}
+)
+
+
+def _absorb_stage_delivery(live: LiveRun, name: str, result: Any) -> None:
+    if name == "transition_project_state":
+        live.stage_started_without_delivery = True
+        return
+    if name in _STAGE_DELIVERY_TOOLS:
+        live.stage_started_without_delivery = False
 
 
 def _drop_unbacked_full_read(live: LiveRun, required: set[str]) -> set[str]:

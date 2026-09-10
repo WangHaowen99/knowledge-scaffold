@@ -5385,3 +5385,28 @@ def test_purpose_review_continuation_avoids_full_read_wording() -> None:
     match = re.search(r"const PURPOSE_REVIEW_CONTINUATION = '([^']+)'", text)
     assert match, "没有找到续跑文案常量"
     assert not _FULL_READ_INTENT.search(match.group(1))
+
+
+def test_stage_transition_counts_as_progress() -> None:
+    """#35：切换阶段是前进；刚进新阶段不能被当成无事可做。"""
+    from modeling_agent.service import (
+        AUTONOMOUS_PROGRESS_TOOLS, LiveRun, _absorb_stage_delivery,
+    )
+
+    assert "transition_project_state" in AUTONOMOUS_PROGRESS_TOOLS
+
+    live = LiveRun(run_id="run_s", project_id="project_s", token="token")
+    # 默认不给特殊待遇，不改变既有收尾节奏
+    assert live.stage_started_without_delivery is False
+
+    # 切到新阶段 → 新阶段尚无产出，放宽停滞上限
+    _absorb_stage_delivery(live, "transition_project_state", {})
+    assert live.stage_started_without_delivery is True
+
+    # 只读工具不算产出，仍然保持放宽
+    _absorb_stage_delivery(live, "gate_status", {})
+    assert live.stage_started_without_delivery is True
+
+    # 新阶段有写入 → 回到常规节奏
+    _absorb_stage_delivery(live, "write_file", {})
+    assert live.stage_started_without_delivery is False
