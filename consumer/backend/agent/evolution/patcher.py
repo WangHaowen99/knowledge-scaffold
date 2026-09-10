@@ -558,7 +558,7 @@ class OperationPatcher:
         if cooldown <= 0:
             return False
         del op_path
-        applied_dir = self._buffer._applied_dir(  # noqa: SLF001
+        applied_dir = self._buffer.applied_dir(
             ontology_id,
             operation_key,
             workspace_id=workspace_id,

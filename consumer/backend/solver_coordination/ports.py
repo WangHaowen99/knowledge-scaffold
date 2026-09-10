@@ -35,6 +35,10 @@ class DecisionModelLoader(Protocol):
 
 
 class ProblemCompiler(Protocol):
+    def resolve_capability_model(
+        self, capability: Any
+    ) -> tuple[Mapping[str, Any], tuple[str, ...]]: ...
+
     def compile(
         self,
         *,

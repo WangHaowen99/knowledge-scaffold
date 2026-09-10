@@ -84,6 +84,13 @@ _CONFIG_SNAPSHOT_MANAGER_LOCK = RLock()
 _CONFIG_SNAPSHOT_MANAGER: ConfigSnapshotManager | None = None
 _SYSTEM_CONFIG_PROCESS_GENERATION = 0
 
+
+@contextmanager
+def system_config_lock() -> Iterator[None]:
+    """Serialize direct system-config reads and writes across components."""
+    with _CONFIG_LOCK:
+        yield
+
 PERF_CONFIG_SNAPSHOT_ENABLED_ENV = "PERF_CONFIG_SNAPSHOT_ENABLED"
 CONFIG_SNAPSHOT_CHECK_INTERVAL_SECONDS = 1.5
 _TRANSIENT_CONFIG_ERRNOS = {errno.EAGAIN, errno.EBUSY, errno.EINTR}

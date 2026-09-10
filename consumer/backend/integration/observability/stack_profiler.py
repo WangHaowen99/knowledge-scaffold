@@ -299,7 +299,8 @@ def _sample_loop(profile: _RunStackProfile) -> None:
 
 def _sample_profile(profile: _RunStackProfile) -> None:
     now_ns = time.perf_counter_ns()
-    frames_by_thread = sys._current_frames()
+    current_frames = getattr(sys, "_current_frames", None)
+    frames_by_thread = current_frames() if callable(current_frames) else {}
     with profile.lock:
         thread_profiles = [
             thread_profile

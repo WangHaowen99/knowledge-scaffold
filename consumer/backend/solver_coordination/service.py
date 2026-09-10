@@ -1697,7 +1697,7 @@ class SolverCoordinationService:
             )
         if current["status"] == "cancelling":
             try:
-                self.job_orchestrator._finish_cancellation(  # type: ignore[attr-defined]
+                self.job_orchestrator.finish_cancellation(
                     current,
                     workspace_id=workspace_id,
                     owner_id=owner_id,
@@ -3778,11 +3778,7 @@ class SolverCoordinationService:
 
     def _resolve_model(self, capability: Any) -> tuple[Any, tuple[str, ...]]:
         try:
-            model, model_digest = self.compiler._resolve_model(capability)
-            resolved = self.compiler._capability_with_model(
-                capability, model, model_digest
-            )
-            required = self.compiler._required_facts(model)
+            resolved, required = self.compiler.resolve_capability_model(capability)
         except Exception as exc:
             raise SolverServiceError(
                 "model_compile_failed", "compile", "locked decision model is invalid"
