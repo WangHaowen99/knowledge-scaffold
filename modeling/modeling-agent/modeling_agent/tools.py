@@ -2409,7 +2409,9 @@ class CoreTool(Tool):
                 }
         if result.get("problemVisibility") == "recovery":
             self.context.recovery_waiting = True
-        if not result.get("error") and self.context.after_core_tool is not None:
+        # 失败也要上报：连续撞同一个错误同样是打转，原来只在成功时回调，
+        # 于是一个反复失败的工具在停滞判据里完全不可见（见 #40）。
+        if self.context.after_core_tool is not None:
             await self.context.after_core_tool(self.spec.name, arguments, result)
         return json.dumps(_compact_source_result(self.spec.name, result), ensure_ascii=False)
 

@@ -299,6 +299,9 @@ class LiveRun:
     # 期间调过写工具而不被计为停滞，现有机制对真打转完全无感（见 #35 讨论）。
     recent_tool_calls: list[str] = field(default_factory=list)
     recent_outputs: list[frozenset[str]] = field(default_factory=list)
+    # 同一工具连续失败：参数每次都变，靠「同参数重复」抓不到，
+    # 但反复撞同一个错误同样是打转（见 #40）。
+    consecutive_tool_failures: tuple[str, int] = ("", 0)
     tool_summaries: list[str] = field(default_factory=list)
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasoning_chars_published: int = 0
@@ -579,6 +582,8 @@ _LANGUAGE_REMINDER = (
 
 
 LOOP_TOOL_REPEAT_THRESHOLD = 3
+# 同一工具连续失败多少次算卡住。取 5：正常的自我纠错一两次就该成功。
+LOOP_TOOL_FAILURE_THRESHOLD = 5
 LOOP_OUTPUT_REPEAT_THRESHOLD = 2
 # 归一化后 4-gram 的 Jaccard 相似度阈值：换个说法重复也算打转。
 # 实测同领域但内容不同的相邻输出 ≤0.12，换说法重复 ≥0.25，取中间偏保守值。
@@ -600,6 +605,16 @@ def _situation_of(live: LiveRun | None) -> RunSituation | None:
 def _record_tool_call(live: LiveRun, name: str, args: Any) -> None:
     live.recent_tool_calls.append(f"{name}:{_fingerprint(args)}")
     del live.recent_tool_calls[:-LOOP_TRACE_WINDOW]
+
+
+def _record_tool_outcome(live: LiveRun, name: str, failed: bool) -> None:
+    """同一工具连续失败计数。参数每次都变时「同参数重复」判据完全失效，
+    但连着二十几次撞同一个错误显然是卡住了。"""
+    if not failed:
+        live.consecutive_tool_failures = ("", 0)
+        return
+    previous, count = live.consecutive_tool_failures
+    live.consecutive_tool_failures = (name, count + 1 if previous == name else 1)
 
 
 _LOOP_NOISE = re.compile(r"[\s，。、；：！？…—·「」『』（）()\[\]{}<>\"'`*#\-]+")
@@ -640,6 +655,9 @@ def _detect_loop(live: LiveRun) -> str:
     反复出现才是卡住。后者原有机制完全检测不到——只要期间碰巧写过一次，
     停滞计数就归零，可以一直转下去。
     """
+    failing_tool, failures = live.consecutive_tool_failures
+    if failures >= LOOP_TOOL_FAILURE_THRESHOLD:
+        return f"{failing_tool} 连续失败 {failures} 次"
     if live.recent_tool_calls:
         latest = live.recent_tool_calls[-1]
         repeats = 0
@@ -2748,11 +2766,16 @@ class AgentService:
         arguments: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
+        failed = bool(isinstance(result, dict) and result.get("error"))
+        _record_tool_outcome(live, name, failed)
+        _record_tool_call(live, name, arguments)
+        if failed:
+            # 失败结果不代表状态，不能拿去回填快照
+            return
         _absorb_plan_progress(live, result)
         _absorb_reading_modes(live, result)
         _absorb_stage_delivery(live, name, result)
         _absorb_awaiting_user(live, result)
-        _record_tool_call(live, name, arguments)
         if name == "create_change_plan":
             consume = getattr(self._gateway, "acceptance_fault", None)
             fault: dict[str, Any] = {}

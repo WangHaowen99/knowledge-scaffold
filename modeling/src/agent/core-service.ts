@@ -557,7 +557,7 @@ export class AgentCoreService {
   async workbenchFile(project: Project, username: string, rawPath: string) {
     const path = packagePath(rawPath);
     const current = await this.artifacts.current(project.id);
-    if (!current) throw new AgentCoreError('PACKAGE_NOT_FOUND', '当前没有知识包', [], 404);
+    if (!current) throw new AgentCoreError('PACKAGE_NOT_FOUND', '当前没有知识包', ['先完成资料与目标准备；知识包在建模目标确认后才会建立'], 404);
     const workspace = this.readableWorkspace(project.id, username, current.revision.oid);
     if (workspace) return this.readFile(workspace, { path });
     const file = await this.artifacts.readFile(project.id, `package/${path}`, current.revision.oid);
@@ -600,7 +600,7 @@ export class AgentCoreService {
 
   workbenchMaterial(project: Project, documentId: string) {
     const document = listDocuments(project.id).find((item) => item.id === documentId);
-    if (!document) throw new AgentCoreError('DOCUMENT_NOT_FOUND', '资料不存在', [], 404);
+    if (!document) throw new AgentCoreError('DOCUMENT_NOT_FOUND', '资料不存在', ['先调用 list_documents 获取当前资料清单，用清单里的标识重试'], 404);
     return {
       id: document.id,
       filename: document.filename,
@@ -626,7 +626,7 @@ export class AgentCoreService {
     const document = listDocuments(project.id).find((item) => (
       item.id === source || item.sourceKey === source || item.filename === source
     ));
-    if (!document) throw new AgentCoreError('EVIDENCE_NOT_FOUND', '证据引用对应的资料不存在', [], 404);
+    if (!document) throw new AgentCoreError('EVIDENCE_NOT_FOUND', '证据引用对应的资料不存在', ['证据里的资料标识必须来自 list_documents 或检索结果，不能自行拼写'], 404);
     const content = document.textContent ?? '';
     const offset = locateAnchor(content, anchor);
     return {
@@ -646,7 +646,7 @@ export class AgentCoreService {
     anchor = '',
   ) {
     const document = listDocuments(project.id).find((item) => item.id === documentId);
-    if (!document) throw new AgentCoreError('DOCUMENT_NOT_FOUND', '资料不存在', [], 404);
+    if (!document) throw new AgentCoreError('DOCUMENT_NOT_FOUND', '资料不存在', ['先调用 list_documents 获取当前资料清单，用清单里的标识重试'], 404);
     const current = await this.artifacts.current(project.id);
     const workspace = current
       ? this.readableWorkspace(project.id, username, current.revision.oid)
@@ -862,7 +862,7 @@ export class AgentCoreService {
       case 'get_evaluation_results': return this.evaluationResults(workspace.project_id, args);
       case 'query_eval_db': return this.queryEvaluationDatabase(context.project.id, args);
       default:
-        throw new AgentCoreError('TOOL_NOT_FOUND', `未知 Agent 工具：${tool}`, [], 404);
+        throw new AgentCoreError('TOOL_NOT_FOUND', `未知 Agent 工具：${tool}`, ['只调用当前工具面里列出的工具；工具面随阶段变化，先用 get_project_state 确认所处阶段'], 404);
     }
   }
 
@@ -1092,7 +1092,7 @@ export class AgentCoreService {
     const code = String(args.code ?? '').trim();
     const objectKey = String(args.object_key ?? '').trim();
     if (level && !['error', 'warning'].includes(level)) {
-      throw new AgentCoreError('INVALID_INPUT', `不支持的语义问题级别：${level}`, [], 400);
+      throw new AgentCoreError('INVALID_INPUT', `不支持的语义问题级别：${level}`, ['level 只支持 error 或 warning；不传表示不按级别过滤'], 400);
     }
     const offset = boundedInteger(args.offset, 0, 100_000, 0);
     const limit = boundedInteger(args.limit, 1, 100, 50);
@@ -1481,7 +1481,7 @@ export class AgentCoreService {
           const working = await this.workbenchStudioFiles(context.project, context.username);
           if (attemptRevision !== working.workingRevision) {
             throw new AgentCoreError(
-              'REVISION_CONFLICT', '知识包内容已经变化，请同步最新内容', [], 409,
+              'REVISION_CONFLICT', '知识包内容已经变化，请同步最新内容', ['重新读取当前知识包内容，基于最新 revision 重新提交，不要沿用旧快照'], 409,
               { expected_revision: attemptRevision, current_revision: working.workingRevision },
             );
           }
@@ -1726,7 +1726,7 @@ export class AgentCoreService {
       const resourceId = domainResourceIdArg(input.resource_id);
       const element = studio.detail(resourceId).element;
       if (element.kind !== kind) {
-        throw new AgentCoreError('DOMAIN_KIND_MISMATCH', 'Change Set 中的工具与资源类型不一致', [], 400, {
+        throw new AgentCoreError('DOMAIN_KIND_MISMATCH', 'Change Set 中的工具与资源类型不一致', ['同一个动作的 tool 和目标资源类型必须一致：create_rule 配 rule，create_object 配 object，其余同理'], 400, {
           resource_id: resourceId, expected_kind: kind, actual_kind: element.kind, retryable: false,
         });
       }
@@ -1744,7 +1744,7 @@ export class AgentCoreService {
           { tables: this.projectTables(context.project.id) },
         );
         if (!preview.ok) {
-          throw new AgentCoreError('DOMAIN_PATCH_INVALID', '对象增量修改未通过确定性校验', [], 422, {
+          throw new AgentCoreError('DOMAIN_PATCH_INVALID', '对象增量修改未通过确定性校验', ['只修正返回的字段问题后重新提交，不要改动对象 key、字段 key、来源列、类型或主键'], 422, {
             fieldErrors: preview.fieldErrors,
             errors: preview.issues,
             warnings: preview.warnings,
@@ -1858,7 +1858,7 @@ export class AgentCoreService {
     try {
       const planId = text(args.plan_id, 'plan_id');
       if (workspace.candidate_id) {
-        throw new AgentCoreError('CHANGE_SET_FROZEN', '这批修改已经进入确认，请先在页面退回', [], 409);
+        throw new AgentCoreError('CHANGE_SET_FROZEN', '这批修改已经进入确认，请先在页面退回', ['等用户在页面接受或退回这批修改后再继续；不要重复提交同一批'], 409);
       }
       const result = this.discardRejectedCandidateChanges(workspace);
       this.changeControl.discardPlan(context.project.id, context.runId, planId);
@@ -1957,7 +1957,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'MUTATION_ID_REUSED',
         '这个操作标识已经用于另一项修改，请生成新的操作标识后重试',
-        [],
+        ['为这次修改生成新的 mutation_id 再提交；不要复用上一次的标识'],
         409,
         { mutation_id: mutationId, error_class: 'conflict', retryable: false, repairable: true },
       );
@@ -2195,7 +2195,7 @@ export class AgentCoreService {
     if (replay) return replay;
     const { workingPackage, element } = await this.loadDomainResourceContext(context, args, true);
     if (element.kind !== 'object') {
-      throw new AgentCoreError('DOMAIN_KIND_MISMATCH', '数据源只能绑定对象资源', [], 400);
+      throw new AgentCoreError('DOMAIN_KIND_MISMATCH', '数据源只能绑定对象资源', ['数据源只能绑定到 object 资源；先用 list_domain_resources(kind=object) 找到目标对象'], 400);
     }
     assertDomainResourceHash(element, args.expected_resource_hash, workingPackage.workingRevision);
     const result = await this.bindObjectSource(workspace, context, {
@@ -2264,7 +2264,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'SCHEMA_MAPPING_MISSING',
         '确定性编译没有生成 Schema 对象 mapping',
-        [],
+        ['重新调用 sync_schema_objects 完成 Schema 同步，再绑定数据源'],
         500,
       );
     }
@@ -2369,7 +2369,7 @@ export class AgentCoreService {
         throw new AgentCoreError(
           'INVALID_DOMAIN_PAYLOAD',
           '单批 Schema 语义修改必须包含 1 到 20 个对象',
-          [],
+          ['按建议规模拆批：单批不超过 3 个对象；硬上限是 20 个'],
           400,
         );
       }
@@ -2382,7 +2382,7 @@ export class AgentCoreService {
         throw new AgentCoreError(
           'INVALID_DOMAIN_PAYLOAD',
           '单批 Schema 语义修改最多处理 400 个字段',
-          [],
+          ['按建议规模拆批：单批不超过 60 个字段；硬上限是 400 个'],
           400,
         );
       }
@@ -2392,7 +2392,7 @@ export class AgentCoreService {
       studio.assertRevision(text(args.expected_revision, 'expected_revision'));
       const resourceIds = requested.map((item) => domainResourceIdArg(item.resource_id));
       if (new Set(resourceIds).size !== resourceIds.length) {
-        throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '同一批不能重复修改同一个 Schema 对象', [], 400);
+        throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '同一批不能重复修改同一个 Schema 对象', ['同一个对象在一批里只出现一次；把该对象的多处修改合并成一个 actions 数组'], 400);
       }
       let previewSpec = parseWorkingPackageSpec(workingPackage.files);
       const beforeMapping = renderPackage(previewSpec)[OBJECT_DATA_MAPPING_PATH] ?? '';
@@ -2404,7 +2404,7 @@ export class AgentCoreService {
         const resourceId = resourceIds[index];
         const element = studio.detail(resourceId).element;
         if (element.kind !== 'object') {
-          throw new AgentCoreError('DOMAIN_KIND_MISMATCH', 'Schema 语义修改只接受对象资源', [], 400, {
+          throw new AgentCoreError('DOMAIN_KIND_MISMATCH', 'Schema 语义修改只接受对象资源', ['Schema 语义修改只接受 object:<key> 形式的资源；先用 list_domain_resources(kind=object) 确认'], 400, {
             resource_id: resourceId,
           });
         }
@@ -2486,7 +2486,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'PHYSICAL_SCHEMA_REQUIRED',
         '当前项目没有可确认的物理 Schema 对象',
-        [],
+        ['先用 sync_schema_objects 按数据表同步物理对象，再确认业务语义'],
         409,
         { retryable: false },
       );
@@ -2619,7 +2619,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'MUTATION_ID_REUSED',
         '这个操作标识已经用于另一项修改，请生成新的操作标识后重试',
-        [],
+        ['为这次修改生成新的 mutation_id 再提交；不要复用上一次的标识'],
         409,
         { mutation_id: mutationId, error_class: 'conflict', retryable: false, repairable: true },
       );
@@ -2802,7 +2802,7 @@ export class AgentCoreService {
       throw new AgentCoreError(
         'INVALID_INPUT',
         'selected_operation_keys 必须是数组；空数组表示明确不生成脚本',
-        [],
+        ['传数组；确实不生成脚本时传空数组，不要传 null 或省略'],
         400,
       );
     }
@@ -3096,7 +3096,7 @@ export class AgentCoreService {
     });
     const rawEdits = requiredObjectArray(args.edits, 'edits');
     if (!rawEdits.length || rawEdits.length > 20) {
-      throw new AgentCoreError('INVALID_SCRIPT_PATCH', 'edits 必须包含 1 到 20 个符号补丁', [], 400);
+      throw new AgentCoreError('INVALID_SCRIPT_PATCH', 'edits 必须包含 1 到 20 个符号补丁', ['把补丁拆成每批不超过 20 个符号；不要一次提交整份源码'], 400);
     }
     const edits: PythonSourceEdit[] = rawEdits.map((raw, index) => {
       const kind = text(raw.kind, `edits[${index}].kind`);
@@ -3104,13 +3104,13 @@ export class AgentCoreService {
         throw new AgentCoreError(
           'INVALID_SCRIPT_PATCH',
           `edits[${index}].kind 不属于允许的脚本补丁类型`,
-          [],
+          ['kind 只支持 replace_symbol、insert_symbol 和 delete_symbol'],
           400,
         );
       }
       const symbol = text(raw.symbol, `edits[${index}].symbol`);
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(symbol)) {
-        throw new AgentCoreError('INVALID_SCRIPT_PATCH', `非法 Python 顶层符号：${symbol}`, [], 400);
+        throw new AgentCoreError('INVALID_SCRIPT_PATCH', `非法 Python 顶层符号：${symbol}`, ['symbol 必须是 get_script_edit_context 返回的顶层符号名，不能自行拼写或指向嵌套定义'], 400);
       }
       if (state.scaffold && kind === 'replace_function' && symbol !== 'run_business_logic') {
         throw new AgentCoreError(
@@ -3970,7 +3970,7 @@ export class AgentCoreService {
 
     if (existing && existing.base_revision_oid !== current.revision.oid) {
       if (existing.owner !== context.username) {
-        throw new AgentCoreError('FORBIDDEN', '无法使用其他用户的建模工作区', [], 403);
+        throw new AgentCoreError('FORBIDDEN', '无法使用其他用户的建模工作区', ['只能在当前运行自己的建模工作区内操作；用本次运行的凭据重试'], 403);
       }
       return this.resetWorkspaceToCurrent(context, current.revision.oid, current.spec);
     }
@@ -4015,7 +4015,7 @@ export class AgentCoreService {
       }
     } else {
       if (existing.owner !== context.username) {
-        throw new AgentCoreError('FORBIDDEN', '无法使用其他用户的建模工作区', [], 403);
+        throw new AgentCoreError('FORBIDDEN', '无法使用其他用户的建模工作区', ['只能在当前运行自己的建模工作区内操作；用本次运行的凭据重试'], 403);
       }
       this.db.prepare(`UPDATE agent_candidate_workspaces
         SET lease_expires_at = ?, updated_at = ? WHERE project_id = ? AND run_id = ?`)
@@ -4628,7 +4628,7 @@ export class AgentCoreService {
     }
     const tables = document.tables ?? [];
     if (!tables.length) {
-      throw new AgentCoreError('TABLE_NOT_FOUND', `《${document.filename}》没有可同步的数据表`, [], 404);
+      throw new AgentCoreError('TABLE_NOT_FOUND', `《${document.filename}》没有可同步的数据表`, ['先用 list_tables 确认该资料解析出的数据表，再选择要同步的表'], 404);
     }
     const incomplete = tables.filter((table) => (table.rows?.length ?? 0) !== table.rowCount);
     if (incomplete.length) {
@@ -4768,7 +4768,7 @@ export class AgentCoreService {
     const aliases = stringArray(args.aliases);
     const fields: SpecField[] = requiredObjectArray(args.fields, 'fields').map((raw, index) => {
       if (typeof raw.required !== 'boolean') {
-        throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `fields[${index}].required 必须是布尔值`, [], 400);
+        throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `fields[${index}].required 必须是布尔值`, ['required 显式传 true 或 false，不要传字符串，也不要省略'], 400);
       }
       return {
         key: domainKey(raw.key, `对象字段 fields[${index}]`),
@@ -4779,7 +4779,7 @@ export class AgentCoreService {
         ...(optionalInputText(raw.alias) ? { alias: optionalInputText(raw.alias) } : {}),
       };
     });
-    if (!fields.length) throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '对象至少要包含一个字段', [], 400);
+    if (!fields.length) throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '对象至少要包含一个字段', ['对象至少声明一个字段；字段来自数据表列或业务定义'], 400);
     assertUniqueDomainKeys(fields.map((field) => field.key), '对象字段');
     const existing = current.spec.objects.find((item) => item.key === key);
     const relations = requiredObjectArray(args.relations ?? [], 'relations').map((raw, index) => {
@@ -4818,7 +4818,7 @@ export class AgentCoreService {
       ...relations.flatMap((relation) => relation.evidence ?? []),
     ])];
     if (args.remove_source !== undefined && typeof args.remove_source !== 'boolean') {
-      throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'remove_source 必须是布尔值', [], 400);
+      throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'remove_source 必须是布尔值', ['remove_source 显式传 true 或 false，不要传字符串'], 400);
     }
     const removeSource = args.remove_source === true;
     const source = args.source === undefined ? undefined : object(args.source);
@@ -4989,7 +4989,7 @@ export class AgentCoreService {
       conclusion: text(raw.conclusion, `conditions[${index}].conclusion`),
     }));
     if (!conditions.length) {
-      throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '规则至少要包含一个判断条件', [], 400);
+      throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '规则至少要包含一个判断条件', ['规则至少声明一个 condition；判断条件来自资料原文，不要留空'], 400);
     }
     const evidence = requiredStringArray(args.evidence, 'evidence');
     const existing = (current.spec.rules ?? []).find((item) => item.key === key);
@@ -5048,7 +5048,7 @@ export class AgentCoreService {
         throw new AgentCoreError(
           'INVALID_DOMAIN_PAYLOAD',
           `inputs[${index}].required 必须是布尔值`,
-          [],
+          ['required 显式传 true 或 false，不要传字符串，也不要省略'],
           400,
         );
       }
@@ -5320,13 +5320,13 @@ export class AgentCoreService {
         throw new AgentCoreError(
           'INVALID_OBJECT_SOURCE_BINDING',
           `${prefix}.role 必须是 primary 或 extension`,
-          [],
+          ['role 只支持 primary 或 extension：主表用 primary，扩展表用 extension'],
           400,
         );
       }
       const sourceIdentity = `${documentId}\u0000${tableName}`;
       if (seenSources.has(sourceIdentity)) {
-        throw new AgentCoreError('INVALID_OBJECT_SOURCE_BINDING', '跨 Sheet 来源计划包含重复表', [], 400);
+        throw new AgentCoreError('INVALID_OBJECT_SOURCE_BINDING', '跨 Sheet 来源计划包含重复表', ['同一张表在来源计划里只能出现一次；合并重复项后重试'], 400);
       }
       seenSources.add(sourceIdentity);
       const document = documents.find((item) => item.id === documentId);
@@ -5970,7 +5970,20 @@ export class AgentCoreService {
       open_questions: ['items', 'evidence'],
     };
     const unknown = Object.keys(raw).filter((item) => !allowedFields[section].includes(item));
-    if (unknown.length) throw new AgentCoreError('GOAL_SECTION_UNKNOWN_FIELD', `目标草稿包含未知字段：${unknown.join('、')}`, ['删除未定义字段后重试', goalSectionRetryHint(row.sections_json, section)], 400);
+    if (unknown.length) {
+      // 只说哪个字段不对、不说这一段允许什么，助手只能反复猜。
+      // 现场见过连续 22 次 400 的重试循环（见 #40）。
+      throw new AgentCoreError(
+        'GOAL_SECTION_UNKNOWN_FIELD',
+        `目标草稿包含未知字段：${unknown.join('、')}`,
+        [
+          `分段 ${section} 只接受这些字段：${allowedFields[section].join('、')}；把内容合并到其中之一，不要新增字段名`,
+          goalSectionRetryHint(row.sections_json, section),
+        ],
+        400,
+        { section, allowed_fields: allowedFields[section], unknown_fields: unknown },
+      );
+    }
     const summary = section === 'objective'
       ? [raw.problem, raw.target_users, raw.success_criteria].map((item, index) => (
         item === undefined ? '' : text(item, `data.${['problem', 'target_users', 'success_criteria'][index]}`, true)
@@ -8074,7 +8087,7 @@ export class AgentCoreService {
     }
     const rawCaseIds = args.case_ids;
     if (rawCaseIds !== undefined && !Array.isArray(rawCaseIds)) {
-      throw new AgentCoreError('INVALID_INPUT', 'case_ids 必须是用例编号数组', [], 400);
+      throw new AgentCoreError('INVALID_INPUT', 'case_ids 必须是用例编号数组', ['传用例编号数组；不选任何用例时传空数组'], 400);
     }
     const caseIds = (rawCaseIds as unknown[] | undefined)?.map((item) => String(item).trim()).filter(Boolean) ?? [];
     try {
@@ -8292,7 +8305,7 @@ export class AgentCoreService {
   private async runScriptTest(workspace: WorkspaceRow, args: Record<string, unknown>) {
     const script = packagePath(text(args.script, 'script'));
     if (!script.startsWith('scripts/') || !script.endsWith('.py')) {
-      throw new AgentCoreError('INVALID_INPUT', 'script 必须指向 scripts/ 下的 Python 文件', [], 400);
+      throw new AgentCoreError('INVALID_INPUT', 'script 必须指向 scripts/ 下的 Python 文件', ['script 必须是 scripts/ 下的 .py 路径；用 list_dir 确认实际路径'], 400);
     }
     if (!Array.isArray(args.cases) || !args.cases.length || args.cases.length > 50) {
       throw new AgentCoreError('CONTRACT_REQUIRED', '脚本测试必须提供 1 到 50 个契约用例', ['为每例补充 input 和 expected'], 409);
@@ -8536,7 +8549,7 @@ function candidateStatusArg(value: unknown): string {
   throw new AgentCoreError(
     'INVALID_INPUT',
     'status 只支持 pending、accepted、revision_requested、rejected、superseded',
-    [],
+    ['status 从 pending、accepted、revision_requested、rejected、superseded 中选一个'],
     400,
   );
 }
@@ -8836,7 +8849,7 @@ function scriptContractFromArgs(
     throw new AgentCoreError(
       'INVALID_SCRIPT_CONTRACT',
       'timeout_seconds 必须是 1 到 300 之间的整数',
-      [],
+      ['timeout_seconds 传 1 到 300 之间的整数；不确定就省略，使用默认值'],
       400,
     );
   }
@@ -8845,7 +8858,7 @@ function scriptContractFromArgs(
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
         `parameters[${index}].required 必须是布尔值`,
-        [],
+        ['required 显式传 true 或 false，不要传字符串，也不要省略'],
         400,
       );
     }
@@ -8854,7 +8867,7 @@ function scriptContractFromArgs(
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
         `parameters[${index}].flag 必须是 -- 开头的小写 CLI 参数`,
-        [],
+        ['flag 形如 --customer-id：两个连字符开头、全小写、词间用连字符'],
         400,
       );
     }
@@ -8864,7 +8877,7 @@ function scriptContractFromArgs(
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
         `parameters[${index}].default_value 只能是字符串、数字或布尔值`,
-        [],
+        ['default_value 只传字符串、数字或布尔值；复杂结构改由脚本内部处理'],
         400,
       );
     }
@@ -8874,7 +8887,7 @@ function scriptContractFromArgs(
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
         `parameters[${index}].action 只能是 store_true 或 store_false`,
-        [],
+        ['action 只支持 store_true 和 store_false'],
         400,
       );
     }
@@ -8884,7 +8897,7 @@ function scriptContractFromArgs(
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
         `parameters[${index}].action 只适用于 boolean 参数`,
-        [],
+        ['action 只能配 boolean 类型参数；其它类型删掉 action'],
         400,
       );
     }
@@ -8892,7 +8905,7 @@ function scriptContractFromArgs(
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
         `parameters[${index}] 使用 ${action} 时不能设为必填`,
-        [],
+        ['使用 store_true/store_false 的参数不能设为必填；删掉 required 或改用普通 boolean'],
         400,
       );
     }
@@ -8900,7 +8913,7 @@ function scriptContractFromArgs(
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
         `parameters[${index}] 使用 ${action} 时不能同时设为多值`,
-        [],
+        ['使用 store_true/store_false 的参数不能设为多值；删掉 multiple'],
         400,
       );
     }
@@ -8918,7 +8931,7 @@ function scriptContractFromArgs(
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
         `parameters[${index}].multiple 必须是布尔值`,
-        [],
+        ['multiple 显式传 true 或 false，不要传字符串'],
         400,
       );
     }
@@ -8946,7 +8959,7 @@ function scriptContractFromArgs(
   }));
   assertUniqueDomainKeys(outputs.map((output) => output.key), '脚本输出 key');
   if (!outputs.length) {
-    throw new AgentCoreError('INVALID_SCRIPT_CONTRACT', '脚本至少要声明一个结构化输出', [], 400);
+    throw new AgentCoreError('INVALID_SCRIPT_CONTRACT', '脚本至少要声明一个结构化输出', ['至少声明一个 outputs 项；脚本必须有结构化输出才能被评测校验'], 400);
   }
   return {
     key,
@@ -9003,7 +9016,7 @@ function operationResourceIdArg(value: unknown): string {
 
 function scriptOperationContractHash(element: StudioElement): string {
   if (element.kind !== 'operation') {
-    throw new AgentCoreError('DOMAIN_KIND_MISMATCH', '脚本只能绑定操作资源', [], 400);
+    throw new AgentCoreError('DOMAIN_KIND_MISMATCH', '脚本只能绑定操作资源', ['脚本只能绑定 operation 资源；先用 list_domain_resources(kind=operation) 找到目标操作'], 400);
   }
   const values = structuredClone(element.values);
   delete values.script;
@@ -9035,7 +9048,7 @@ function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Re
         throw new AgentCoreError(
           'INVALID_DOMAIN_PAYLOAD',
           `fields[${index}].required 必须是布尔值`,
-          [],
+          ['required 显式传 true 或 false，不要传字符串，也不要省略'],
           400,
         );
       }
@@ -9087,7 +9100,7 @@ function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Re
           throw new AgentCoreError(
             'INVALID_DOMAIN_PAYLOAD',
             `inputs[${index}].required 必须是布尔值`,
-            [],
+            ['required 显式传 true 或 false，不要传字符串，也不要省略'],
             400,
           );
         }
@@ -9279,7 +9292,7 @@ function domainKindArg(value: unknown): DomainKind {
   throw new AgentCoreError(
     'INVALID_INPUT',
     'kind 必须是 object、rule、operation 或 metric',
-    [],
+    ['kind 从 object、rule、operation、metric 中选一个'],
     400,
   );
 }
@@ -9388,7 +9401,13 @@ function normalizeDomainAgentError(error: unknown): AgentCoreError {
     return new AgentCoreError(
       error.code,
       error.message,
-      [],
+      // 冲突和前置条件是两种完全不同的出路：前者要重新读取后重试，
+      // 后者是当前还不具备条件，重试多少次都一样。
+      conflict
+        ? ['重新读取当前知识包内容，基于最新 revision 重新提交']
+        : precondition
+          ? ['先确认目标资源存在且未被占用；被他人锁定时等待释放，不要强行重试']
+          : ['按错误信息修正参数后重试；不确定原因时先用 get_project_state 核对当前状态'],
       error.statusCode,
       {
         error_class: conflict ? 'conflict' : precondition ? 'precondition' : 'deterministic',
@@ -9402,7 +9421,7 @@ function normalizeDomainAgentError(error: unknown): AgentCoreError {
   return new AgentCoreError(
     'INTERNAL_ERROR',
     error instanceof Error ? error.message : String(error),
-    [],
+    ['这是服务端内部错误，可以原样重试一次；仍然失败就把当前进展和错误告诉用户，不要绕过失败继续写入'],
     500,
     { error_class: 'transient', retryable: true, repairable: false },
   );
@@ -9458,12 +9477,18 @@ function objectIdArg(value: unknown): string {
 function normalizeStudioAgentError(error: unknown): AgentCoreError {
   if (error instanceof AgentCoreError) return error;
   if (error instanceof StudioReadError || error instanceof StudioWriteError) {
-    return new AgentCoreError(error.code, error.message, [], error.statusCode, error.details);
+    return new AgentCoreError(
+      error.code,
+      error.message,
+      ['按错误信息修正参数后重试；属于版本冲突时先重新读取当前内容再提交'],
+      error.statusCode,
+      error.details,
+    );
   }
   return new AgentCoreError(
     'INTERNAL_ERROR',
     error instanceof Error ? error.message : String(error),
-    [],
+    ['这是服务端内部错误，可以原样重试一次；仍然失败就把当前进展和错误告诉用户，不要绕过失败继续写入'],
     500,
   );
 }
@@ -9521,14 +9546,14 @@ function object(value: unknown): Record<string, any> {
 function optionalInputText(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== 'string') {
-    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '可选文本字段必须是字符串', [], 400);
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', '可选文本字段必须是字符串', ['该字段传字符串；不需要时省略，不要传 null 或数字'], 400);
   }
   return value.trim() || undefined;
 }
 
 function requiredObjectArray(value: unknown, field: string): Array<Record<string, any>> {
   if (!Array.isArray(value) || value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
-    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 必须是对象数组`, [], 400);
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 必须是对象数组`, ['传对象数组；每项都必须是对象，不能混入字符串或 null'], 400);
   }
   return value as Array<Record<string, any>>;
 }
@@ -9545,7 +9570,7 @@ function boundedInteger(
     throw new AgentCoreError(
       'INVALID_INPUT',
       `分页参数必须是 ${minimum} 到 ${maximum} 之间的整数`,
-      [],
+      ['offset 和 limit 传整数并落在提示的范围内；不确定就省略，使用默认分页'],
       400,
     );
   }
@@ -9570,7 +9595,7 @@ function assertSchemaSemanticPatchActions(value: unknown, objectIndex: number): 
     throw new AgentCoreError(
       'INVALID_DOMAIN_PAYLOAD',
       `objects[${objectIndex}].actions 必须包含 1 到 500 项语义修改`,
-      [],
+      ['把该对象的语义修改控制在 500 项以内；字段过多时按对象拆成多批'],
       400,
     );
   }
@@ -9615,7 +9640,7 @@ function assertSchemaSemanticPatchActions(value: unknown, objectIndex: number): 
       throw new AgentCoreError(
         'INVALID_DOMAIN_PAYLOAD',
         `${path}.changes.required 必须明确选择 true 或 false`,
-        [],
+        ['required 显式传 true 或 false；语义补全阶段不接受留空'],
         400,
       );
     }
@@ -9650,7 +9675,7 @@ function assertOnlyRequiredMappingChanged(before: string, after: string): void {
 function optionalStringArray(value: unknown): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'optional string array must contain strings only', [], 400);
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'optional string array must contain strings only', ['数组里每一项都必须是字符串'], 400);
   }
   const result = value.map((item) => item.trim()).filter(Boolean);
   return result.length ? [...new Set(result)] : undefined;
@@ -9659,7 +9684,7 @@ function optionalStringArray(value: unknown): string[] | undefined {
 function optionalPreviousObjectRelations(value: unknown): PreviousObjectRelation[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value) || value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
-    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'previousRelations must be an object array', [], 400);
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'previousRelations must be an object array', ['previousRelations 传对象数组，每项形如 {kind, targetId}'], 400);
   }
   const result = (value as Array<Record<string, unknown>>).flatMap((item) => {
     const sourceObject = String(item.sourceObject ?? item.source_object ?? '').trim();
@@ -9699,11 +9724,11 @@ function optionalSuggestionScope(value: unknown): { affectedObjects?: string[]; 
 function requiredStringArray(value: unknown, field: string, allowEmpty = false): string[] {
   if (value === undefined && allowEmpty) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) {
-    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 必须是非空字符串数组`, [], 400);
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 必须是非空字符串数组`, ['传非空字符串数组；不需要时整体省略该字段'], 400);
   }
   const result = value.map((item) => item.trim());
   if (!allowEmpty && !result.length) {
-    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 至少包含一项`, [], 400);
+    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', `${field} 至少包含一项`, ['该字段至少包含一项；不需要时整体省略，而不是传空数组'], 400);
   }
   assertUniqueDomainKeys(result, field);
   return result;

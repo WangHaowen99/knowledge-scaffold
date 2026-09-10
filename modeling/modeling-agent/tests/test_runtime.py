@@ -5589,3 +5589,32 @@ def test_purpose_batch_confirmation_is_not_treated_as_interjection() -> None:
     assert "resolved_elsewhere = purpose_review_completed" in source
     assert '"action": "resolved_elsewhere" if resolved_elsewhere else "interject"' in source
     assert "restore_interaction=None if resolved_elsewhere else interaction" in source
+
+
+def test_repeated_tool_failure_counts_as_loop() -> None:
+    """#40：同一工具反复失败，参数每次都变，「同参数重复」判据完全失效。
+
+    现场是 put_goal_section 连续 22 次 400——报错只说哪个字段不对、
+    不说这一段允许什么，助手只能一次次猜。
+    """
+    from modeling_agent.service import (
+        LOOP_TOOL_FAILURE_THRESHOLD, LiveRun, _detect_loop, _record_tool_outcome,
+    )
+
+    live = LiveRun(run_id="run_f", project_id="project_f", token="token")
+    for _ in range(LOOP_TOOL_FAILURE_THRESHOLD - 1):
+        _record_tool_outcome(live, "put_goal_section", True)
+    assert _detect_loop(live) == ""
+
+    _record_tool_outcome(live, "put_goal_section", True)
+    assert "put_goal_section 连续失败" in _detect_loop(live)
+
+    # 成功一次就清零，正常的自我纠错不受影响
+    _record_tool_outcome(live, "put_goal_section", False)
+    assert _detect_loop(live) == ""
+
+    # 换了工具重新计数，不会把不同工具的失败累加
+    for _ in range(LOOP_TOOL_FAILURE_THRESHOLD - 1):
+        _record_tool_outcome(live, "put_goal_section", True)
+    _record_tool_outcome(live, "create_rule", True)
+    assert _detect_loop(live) == ""
