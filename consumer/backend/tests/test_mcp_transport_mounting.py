@@ -75,6 +75,7 @@ def test_mcp_http_root_app_mounts_only_streamable_http_when_transport_is_http(mo
     captured_transports: list[str] = []
 
     class FakeMcpServer:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def http_app(self, *, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
@@ -105,6 +106,7 @@ def test_mcp_http_root_app_mounts_only_sse_when_transport_is_sse(monkeypatch, tm
     captured_transports: list[str] = []
 
     class FakeMcpServer:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def http_app(self, *, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
@@ -159,6 +161,7 @@ def test_mcp_http_root_app_mounts_all_four_endpoints_for_both_transport(monkeypa
     captured_transports: list[str] = []
 
     class FakeMcpServer:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def http_app(self, *, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
@@ -397,7 +400,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                 notification_payload = next(
                     item for item in progress_messages if item.get("method") == "notifications/progress"
                 )
-                assert notification_payload["params"]["progressToken"] == ("progress_demo")
+                assert notification_payload["params"]["progressToken"] == "progress_demo"
                 assert json.loads(notification_payload["params"]["message"])["event"] == "run.started"
                 terminal_payload = next(item for item in progress_messages if item.get("id") == 4)
                 assert terminal_payload["result"]["structuredContent"]["endpoint_id"] == ENDPOINT_ID
@@ -675,7 +678,7 @@ def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
         start = next(message for message in messages if message["type"] == "http.response.start")
         body = next(message["body"] for message in messages if message["type"] == "http.response.body")
         assert start["status"] == 503
-        assert json.loads(body)["error"]["message"] == ("Server session capacity reached")
+        assert json.loads(body)["error"]["message"] == "Server session capacity reached"
 
     asyncio.run(exercise_binding())
     assert child_calls == []

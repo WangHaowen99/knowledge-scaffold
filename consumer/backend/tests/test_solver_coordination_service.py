@@ -121,11 +121,13 @@ class _FactResolver:
 
 
 class _FailIfCalledFactResolver:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def resolve(self, **kwargs):
         raise AssertionError("replay must not resolve live facts")
 
 
 class _BindingResolver:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def resolve(self, **kwargs):
         return {
             "binding_revision_id": "binding-synthetic-1",
@@ -150,6 +152,7 @@ class _BindingResolver:
 class _FamilyAdapter:
     family_key = "synthetic_family.v1"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, *, capability, normalized_input, fact_snapshot):
         model = capability["decision_model"]
         return {
@@ -283,6 +286,7 @@ def test_service_rejects_an_invalid_compiler_return_contract(tmp_path):
         def __getattr__(self, name):
             return getattr(self.delegate, name)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def compile(self, **_kwargs):
             return {"invalid": "problem"}
 
@@ -300,6 +304,7 @@ def test_service_rejects_an_invalid_compiler_return_contract(tmp_path):
 
 def test_service_preserves_an_incompatible_knowledge_package_contract(tmp_path):
     class _IncompatiblePackageFactResolver:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def resolve(self, **_kwargs):
             raise KnowledgePackageSolverContractIncompatibleError("internal package contract detail")
 
@@ -316,6 +321,7 @@ def test_service_preserves_an_incompatible_knowledge_package_contract(tmp_path):
 
 def test_service_rejects_an_invalid_verifier_return_contract(tmp_path):
     class _InvalidVerificationService:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def verify(self, **_kwargs):
             return {"invalid": "verification"}
 
@@ -1182,12 +1188,14 @@ def test_service_returns_cancelled_when_cancel_wins_artifact_persist_race(tmp_pa
     delegate = ContentAddressedSolverArtifactStore(tmp_path / "artifacts")
 
     class _BlockingArtifactStore:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def put(self, *, artifact_type, payload):
             if artifact_type == "solver_result":
                 entered.set()
                 assert release.wait(5)
             return delegate.put(artifact_type=artifact_type, payload=payload)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get(self, artifact_ref):
             return delegate.get(artifact_ref)
 
@@ -1441,6 +1449,7 @@ def test_service_replays_same_tool_call_without_rebinding_changed_arguments(tmp_
 
 def test_service_never_publishes_when_evidence_persistence_fails(tmp_path):
     class _FailingArtifactStore:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def put(self, *args, **kwargs):
             raise OSError("synthetic disk failure")
 
@@ -1470,6 +1479,7 @@ def test_service_maps_backend_timeout_without_fabricating_no_solution(tmp_path):
 
 def test_service_maps_verifier_divergence_to_non_retryable_result_rejection(tmp_path):
     class _DivergingVerifier:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def verify(self, **kwargs):
             return VerificationResult(
                 problem_id="sha256:" + "f" * 64,
@@ -1496,6 +1506,7 @@ def test_service_maps_verifier_divergence_to_non_retryable_result_rejection(tmp_
 
 def test_service_marks_verifier_runtime_failure_retryable_without_authority(tmp_path):
     class _FailingVerifier:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def verify(self, **kwargs):
             raise RuntimeError("synthetic verifier outage")
 
@@ -1753,6 +1764,7 @@ def test_service_recovery_converts_missing_capability_to_contract_drift(tmp_path
     backend.status = "completed_optimal"
 
     class _MissingCapabilityResolver:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def resolve(self, **_kwargs):
             raise KeyError("synthetic capability removed")
 
@@ -1881,6 +1893,7 @@ def test_same_tool_replays_completed_event_before_live_capability_resolution(tmp
     store.write_tool_result = original_write
 
     class _MissingCapabilityResolver:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def resolve(self, **_kwargs):
             raise KeyError("synthetic capability removed")
 

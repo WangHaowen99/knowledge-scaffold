@@ -41,6 +41,7 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function McpSettingsPanel({
   workspaceId,
   workspaceName = '',
@@ -568,11 +569,9 @@ export default function McpSettingsPanel({
             onChange={(event) => updateForm({ ontologyId: event.target.value })}
           >
             <option value="">
-              {ontologiesLoading ?
-                '正在加载知识包…' :
-                ontologiesError ?
-                  '知识包加载失败' :
-                  '请选择知识包'}
+              {ontologiesLoading && '正在加载知识包…'}
+              {!ontologiesLoading && ontologiesError && '知识包加载失败'}
+              {!ontologiesLoading && !ontologiesError && '请选择知识包'}
             </option>
             {ontologyOptions.map((ontology) => (
               <option

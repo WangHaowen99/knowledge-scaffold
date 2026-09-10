@@ -64,4 +64,5 @@ class OperationInvocation:
 
 
 class OperationRuntime(Protocol):
-    def execute(self, invocation: OperationInvocation) -> str: ...
+    def execute(self, invocation: OperationInvocation) -> str:
+        return ...

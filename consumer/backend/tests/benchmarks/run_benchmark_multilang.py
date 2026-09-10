@@ -68,12 +68,13 @@ def _resolve_languages() -> list[tuple[str, str]]:
     codes = [c.strip() for c in raw.split(",") if c.strip()]
     if codes == ["all"]:
         cases_dir = os.path.join(_SCRIPT_DIR, "translated_cases")
-        codes = sorted(
-            d
-            for d in os.listdir(cases_dir)
-            if os.path.isdir(os.path.join(cases_dir, d))
-            and os.path.isfile(os.path.join(cases_dir, d, f"cases_{d}.json"))
-        )
+        available_codes = []
+        for directory_name in os.listdir(cases_dir):
+            language_dir = os.path.join(cases_dir, directory_name)
+            cases_path = os.path.join(language_dir, f"cases_{directory_name}.json")
+            if os.path.isdir(language_dir) and os.path.isfile(cases_path):
+                available_codes.append(directory_name)
+        codes = sorted(available_codes)
         if "zh" not in codes:
             codes.insert(0, "zh")
     result = []
@@ -135,7 +136,7 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
     questions_completed: set[str] = set()
     question_start_times: dict[str, float] = {}
 
-    _ERROR_KEYWORDS = ("❌", "执行异常", "连接失败", "超时", "Traceback", "Error:", "ERROR")
+    error_keywords = ("❌", "执行异常", "连接失败", "超时", "Traceback", "Error:", "ERROR")
 
     def _on_line(line: str):
         stripped = line.rstrip("\n")
@@ -178,7 +179,7 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
             sys.stdout.flush()
             return
 
-        if any(kw in stripped for kw in _ERROR_KEYWORDS):
+        if any(keyword in stripped for keyword in error_keywords):
             print(f"  ⚠ {stripped}")
             sys.stdout.flush()
             return

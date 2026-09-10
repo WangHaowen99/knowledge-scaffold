@@ -478,6 +478,7 @@ def test_pinned_execution_uses_staged_package_at_each_process_boundary(
         )
 
         class FakeSandboxExecutor:
+            # pylint: disable-next=add-staticmethod-or-classmethod-decorator
             def run_script(self, **kwargs):
                 staged_script = (Path(kwargs["project_root"]) / kwargs["script_path"]).resolve()
                 observed["script"] = staged_script
@@ -747,7 +748,7 @@ def test_execute_script_revision_drift_is_terminal_and_never_runs_live_metadata(
 
     assert outcome.content == execute_script_module.ONTOLOGY_PREFLIGHT_CHANGED_ERROR
     assert outcome.terminal is True
-    assert outcome.state_updates["terminal_error"]["error_code"] == ("EXECUTE_SCRIPT_FAILED")
+    assert outcome.state_updates["terminal_error"]["error_code"] == "EXECUTE_SCRIPT_FAILED"
 
 
 def test_jiuwen_runtime_binds_and_resets_snapshot_context(tmp_path):

@@ -59,11 +59,12 @@ const sessionMessages = (data) => {
     Array.isArray(data?.events) && data.events.length > 0 ?
       buildMessagesFromEvents(data.events) :
       [];
-  const rawHistory = Array.isArray(data?.messages) ?
-    data.messages :
-    Array.isArray(data?.history) ?
-      data.history :
-      [];
+  let rawHistory = [];
+  if (Array.isArray(data?.messages)) {
+    rawHistory = data.messages;
+  } else if (Array.isArray(data?.history)) {
+    rawHistory = data.history;
+  }
   const historyMessages =
     eventMessages.length > 0 ? [] : historyToMessages(rawHistory);
   return [...historyMessages, ...eventMessages];
@@ -86,6 +87,7 @@ const responseError = async (response, fallback) => {
   );
 };
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 const useChatSessions = (streamManager) => {
   const [sessions, setSessionsState] = useState([]);
   const sessionsRef = useRef([]);

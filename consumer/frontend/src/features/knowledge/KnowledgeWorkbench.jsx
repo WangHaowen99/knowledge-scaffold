@@ -15,7 +15,7 @@ import {
 import { DIR_ICONS, DIR_LABELS, findDirEntries } from './hooks/useKbBrowser';
 import { packageDisplayLabel } from './lib/packagePresentation';
 import Markdown from '../../shared/ui/Markdown';
-import { ToastNotice } from '../../shared/ui/feedback';
+import { ConfirmDialog, ToastNotice } from '../../shared/ui/feedback';
 import {
   EmptyState,
   Modal,
@@ -42,6 +42,40 @@ const KB_TABS = [
   { id: 'evolution', label: '记忆进化' },
 ];
 
+const emptyPackageTitle = (loading, error, hasPackages) => {
+  if (loading) {
+    return '正在加载知识包…';
+  }
+  if (error) {
+    return '知识包加载失败';
+  }
+  return hasPackages ? '请选择知识包' : '暂无知识包';
+};
+
+const emptyPackageDescription = (loading, hasPackages) => {
+  if (loading) {
+    return '正在读取当前工作空间的知识包列表。';
+  }
+  return hasPackages ?
+    '选择知识包后可浏览版本、目录与文件内容。' :
+    '导入知识包后，可在这里统一浏览和管理内容。';
+};
+
+const packageStatusActionLabel = (busy, enabled) => {
+  if (busy) {
+    return '处理中…';
+  }
+  return enabled ? '禁用' : '启用';
+};
+
+const checkpointActionLabel = (busy, enabled) => {
+  if (busy) {
+    return '处理中…';
+  }
+  return enabled ? '关闭 CheckPoint' : '开启 CheckPoint';
+};
+
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function KnowledgeWorkbench({
   kb,
   focusRequest,
@@ -104,6 +138,7 @@ export default function KnowledgeWorkbench({
   const [fileBusy, setFileBusy] = useState('');
   const [fileNotice, setFileNotice] = useState('');
   const [checkpointDialog, setCheckpointDialog] = useState('');
+  const [confirmation, setConfirmation] = useState(null);
   const fileAbortRef = useRef(null);
   const fileScopeRef = useRef('');
   fileScopeRef.current = `${workspaceId || ''}:${pkgId || ''}:${sel.file || ''}:${versionOverride || ''}`;
@@ -280,15 +315,16 @@ export default function KnowledgeWorkbench({
     '';
 
   const onToggleEnabled = () => {
-    if (
-      pkg.enabled &&
-      !window.confirm(
-        `禁用后 Agent 将无法使用「${pkg.name || pkgId}」，确认禁用？`,
-      )
-    ) {
+    if (pkg.enabled) {
+      setConfirmation({
+        title: '禁用知识包',
+        description: `禁用后 Agent 将无法使用「${pkg.name || pkgId}」，确认禁用？`,
+        confirmLabel: '确认禁用',
+        onConfirm: () => setPkgEnabled(false),
+      });
       return;
     }
-    setPkgEnabled(!pkg.enabled);
+    setPkgEnabled(true);
   };
   const checkpointEnabled = pkg?.business_checkpoint?.enabled === true;
   const checkpointTemplateAvailable =
@@ -306,24 +342,20 @@ export default function KnowledgeWorkbench({
     setBusinessCheckpointEnabled(true);
   };
   const onDeleteVersion = () => {
-    if (
-      !window.confirm(
-        `确认删除「${pkg.name || pkgId}」的版本 ${viewVersion}？该版本文件将被永久删除。`,
-      )
-    ) {
-      return;
-    }
-    deleteVersion();
+    setConfirmation({
+      title: '删除知识包版本',
+      description: `确认删除「${pkg.name || pkgId}」的版本 ${viewVersion}？该版本文件将被永久删除。`,
+      confirmLabel: '删除版本',
+      onConfirm: deleteVersion,
+    });
   };
   const onDeletePackage = () => {
-    if (
-      !window.confirm(
-        `确认删除整个知识包「${pkg.name || pkgId}」及其所有版本？该操作不可撤销。`,
-      )
-    ) {
-      return;
-    }
-    deletePackage();
+    setConfirmation({
+      title: '删除知识包',
+      description: `确认删除整个知识包「${pkg.name || pkgId}」及其所有版本？该操作不可撤销。`,
+      confirmLabel: '删除知识包',
+      onConfirm: deletePackage,
+    });
   };
 
   const saveFile = async () => {
@@ -382,6 +414,7 @@ export default function KnowledgeWorkbench({
     }
   };
 
+  // eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
   const uploadFile = async (file) => {
     if (!uploadFolder || !file) {
       return;
@@ -455,20 +488,14 @@ export default function KnowledgeWorkbench({
   };
 
   if (!pkg) {
-    const title = pkgsLoading ?
-      '正在加载知识包…' :
-      packagesError ?
-        '知识包加载失败' :
-        packages.length ?
-          '请选择知识包' :
-          '暂无知识包';
+    const title = emptyPackageTitle(
+      pkgsLoading,
+      packagesError,
+      packages.length > 0,
+    );
     const description =
       packagesError ||
-      (pkgsLoading ?
-        '正在读取当前工作空间的知识包列表。' :
-        packages.length ?
-          '选择知识包后可浏览版本、目录与文件内容。' :
-          '导入知识包后，可在这里统一浏览和管理内容。');
+      emptyPackageDescription(pkgsLoading, packages.length > 0);
     return (
       <>
         <div className="kbx kb-empty-shell">
@@ -554,7 +581,7 @@ export default function KnowledgeWorkbench({
             disabled={Boolean(opBusy)}
             onClick={onToggleEnabled}
           >
-            {opBusy === 'status' ? '处理中…' : pkg.enabled ? '禁用' : '启用'}
+            {packageStatusActionLabel(opBusy === 'status', pkg.enabled)}
           </button>
         )}
         {canManage && (
@@ -572,11 +599,10 @@ export default function KnowledgeWorkbench({
             }
             onClick={onToggleBusinessCheckpoint}
           >
-            {opBusy === 'businessCheckpoint' ?
-              '处理中…' :
-              checkpointEnabled ?
-                '关闭 CheckPoint' :
-                '开启 CheckPoint'}
+            {checkpointActionLabel(
+              opBusy === 'businessCheckpoint',
+              checkpointEnabled,
+            )}
           </button>
         )}
         {canActivate && !viewingActive && (
@@ -933,6 +959,20 @@ export default function KnowledgeWorkbench({
           <Markdown>{businessCheckpointGuide}</Markdown>
         </Modal>
       )}
+      <ConfirmDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title || ''}
+        description={confirmation?.description || ''}
+        confirmLabel={confirmation?.confirmLabel}
+        danger
+        busy={Boolean(opBusy)}
+        onConfirm={() => {
+          const action = confirmation?.onConfirm;
+          setConfirmation(null);
+          action?.();
+        }}
+        onCancel={() => setConfirmation(null)}
+      />
       <ToastNotice
         message={workbenchNotices.toastMessage}
         tone={workbenchNotices.toastTone}

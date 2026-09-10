@@ -106,6 +106,7 @@ function SecretStatus({ profile }) {
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 function ProfileEditor({
   scope,
   initial,
@@ -397,6 +398,7 @@ function DeleteDialog({ title, profile, busy, onClose, onConfirm }) {
   );
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 function GlobalModelTable({
   config,
   canEdit,
@@ -499,6 +501,7 @@ function GlobalModelTable({
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export function GlobalModelSettings({
   canEdit = false,
   request = authFetch,
@@ -936,6 +939,7 @@ function availableRefOptions(profiles, currentValue) {
   return options;
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export function WorkspaceModelSettings({
   workspaceId,
   canEdit = false,

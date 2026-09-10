@@ -88,15 +88,13 @@ def test_batch_span_processor_validates_operational_overrides(monkeypatch, caplo
         "schedule_delay_millis": 5000,
         "export_timeout_millis": 5000,
     }
-    assert all(
-        name in caplog.text
-        for name in (
-            "OTEL_BSP_MAX_QUEUE_SIZE",
-            "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
-            "OTEL_BSP_SCHEDULE_DELAY",
-            "OTEL_BSP_EXPORT_TIMEOUT",
-        )
+    option_names = (
+        "OTEL_BSP_MAX_QUEUE_SIZE",
+        "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
+        "OTEL_BSP_SCHEDULE_DELAY",
+        "OTEL_BSP_EXPORT_TIMEOUT",
     )
+    assert all(name in caplog.text for name in option_names)
 
 
 def test_batch_span_processor_factory_builds_a_real_bounded_processor(monkeypatch):
@@ -236,10 +234,12 @@ def test_workspace_fanout_prefers_batch_and_isolates_exporter_failures():
     events = [_event(1), _event(2)]
 
     class FailingBatchExporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export_batch(self, batch):
             list(batch)
             raise RuntimeError("synthetic batch failure")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             raise AssertionError(f"batch path was not used for {event.run_id}")
 
@@ -295,9 +295,11 @@ def test_bus_prefers_export_batch_and_reports_deterministic_queue_stats():
         def export(self, event):
             self.single_events.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -331,11 +333,13 @@ def test_bus_marks_partially_failed_fanout_batch_as_failed():
     completed = threading.Event()
 
     class FailingExporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export_batch(self, batch):
             list(batch)
             raise RuntimeError("synthetic exporter failure")
 
     class SuccessfulExporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export_batch(self, batch):
             list(batch)
 
@@ -368,9 +372,11 @@ def test_bus_batch_fallback_isolates_individual_export_failures():
                 raise RuntimeError("synthetic event failure")
             self.events.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -405,9 +411,11 @@ def test_bus_drop_and_shutdown_drain_timeout_stats_are_deterministic():
             assert release.wait(timeout=2.0)
             self.events.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -461,12 +469,15 @@ def test_gauge_single_flight_keeps_emit_bounded_and_converges_after_perturbation
         depth_values.append(int(value))
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -523,12 +534,15 @@ def test_batch_metric_labels_are_low_cardinality(monkeypatch):
             recorded.append((self.name, value, dict(attributes)))
 
     class Meter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_counter(self, name, **_kwargs):
             return Instrument(name, "counter")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_histogram(self, name, **_kwargs):
             return Instrument(name, "histogram")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_gauge(self, name, **_kwargs):
             return Instrument(name, "gauge")
 
@@ -683,6 +697,7 @@ def test_router_metric_recorders_propagate_provider_shutdown_failure():
     from integration.observability import otel
 
     class Provider:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def shutdown(self, *, timeout_millis):
             assert timeout_millis == 50
             return False
@@ -811,12 +826,15 @@ def test_workspace_router_close_drains_bus_before_metric_shutdown(monkeypatch):
     class Exporter:
         metric_name = "local"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -1050,12 +1068,15 @@ def test_workspace_router_close_preserves_buffered_span_flush(monkeypatch):
     exported: list[RuntimeEvent] = []
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -1211,12 +1232,15 @@ def test_workspace_router_close_preserves_span_arriving_during_force_flush(
     )
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -1268,12 +1292,15 @@ def test_workspace_router_close_budget_is_not_blocked_by_runtime_consumer(
     workspace_id = "workspace_synthetic_blocked_close_consumer"
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -1391,6 +1418,7 @@ def test_observability_bus_exporter_close_failure_is_retryable():
         def __init__(self):
             self.close_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
@@ -1415,9 +1443,11 @@ def test_observability_bus_close_retry_does_not_wait_on_blocked_exporter_close()
     release = threading.Event()
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             entered.set()
             assert release.wait(timeout=2.0)
@@ -1455,6 +1485,7 @@ def test_observability_bus_failed_close_retry_stays_within_budget():
         def __init__(self):
             self.close_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
@@ -1526,6 +1557,7 @@ def test_workspace_router_retains_bus_when_exporter_close_fails(monkeypatch):
         def __init__(self):
             self.close_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
@@ -1587,9 +1619,11 @@ def test_workspace_router_force_flush_failure_retains_late_span_for_retry(monkey
     )
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -1679,9 +1713,11 @@ def test_workspace_router_materializes_first_no_run_span_only_during_close_drain
     )
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 

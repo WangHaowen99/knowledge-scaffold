@@ -26,11 +26,13 @@ class FactSnapshotProducer(Protocol):
         normalized_input: NormalizedInput,
         required_facts: Iterable[str],
         **kwargs: Any,
-    ) -> FactSnapshot: ...
+    ) -> FactSnapshot:
+        return ...
 
 
 class DecisionModelLoader(Protocol):
-    def load(self, *, capability: Any) -> Mapping[str, Any]: ...
+    def load(self, *, capability: Any) -> Mapping[str, Any]:
+        return ...
 
 
 class ProblemCompiler(Protocol):
@@ -40,7 +42,8 @@ class ProblemCompiler(Protocol):
         capability: Any,
         normalized_input: NormalizedInput,
         fact_snapshot: FactSnapshot,
-    ) -> ProblemIR: ...
+    ) -> ProblemIR:
+        return ...
 
 
 class IndependentVerifier(Protocol):
@@ -52,7 +55,8 @@ class IndependentVerifier(Protocol):
         normalized_input: NormalizedInput,
         fact_snapshot: FactSnapshot,
         solver_result: SolverResult,
-    ) -> VerificationResult: ...
+    ) -> VerificationResult:
+        return ...
 
 
 class ProblemFamilyAdapter(Protocol):
@@ -64,13 +68,16 @@ class ProblemFamilyAdapter(Protocol):
         capability: Any,
         normalized_input: NormalizedInput,
         fact_snapshot: FactSnapshot,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        return ...
 
 
 class ProblemFamilyRegistryPort(Protocol):
-    def get(self, family_key: str) -> ProblemFamilyAdapter: ...
+    def get(self, family_key: str) -> ProblemFamilyAdapter:
+        return ...
 
-    def compile_problem(self, family_key: str, **kwargs: Any) -> Any: ...
+    def compile_problem(self, family_key: str, **kwargs: Any) -> Any:
+        return ...
 
 
 __all__ = [

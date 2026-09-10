@@ -7,6 +7,7 @@ import {
 } from './importFlow';
 import './importFlow.css';
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function ImportFlowDialog({
   state,
   onAcknowledge,
@@ -188,11 +189,11 @@ export default function ImportFlowDialog({
       >
         <div className="kb-import-dialog">
           <div className="kb-import-error" role="alert">
-            {nameConflict ?
-              '请修改知识包 manifest.yaml 中的 name 字段，重新打包后再导入。' :
-              state.request ?
-                '已保留文件与导入决策，可直接重试或重新选择处理方式。' :
-                '请关闭提示后重新选择符合要求的 ZIP 文件。'}
+            {nameConflict && '请修改知识包 manifest.yaml 中的 name 字段，重新打包后再导入。'}
+            {!nameConflict && state.request &&
+              '已保留文件与导入决策，可直接重试或重新选择处理方式。'}
+            {!nameConflict && !state.request &&
+              '请关闭提示后重新选择符合要求的 ZIP 文件。'}
           </div>
         </div>
       </Modal>

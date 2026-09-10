@@ -176,6 +176,7 @@ def test_validator_digest_mismatch_is_isolated_as_candidate_validation_error():
     candidate_set = _candidate_set()
 
     class WrongDigestValidator:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def validate(self, candidate_set, candidate, *, context):
             return CandidateValidationResult(
                 candidate_id=candidate.candidate_id,

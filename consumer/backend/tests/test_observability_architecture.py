@@ -108,6 +108,7 @@ def test_observability_bus_emit_does_not_wait_for_exporter():
     from integration.observability import ObservabilityBus, RuntimeEvent, RuntimeEventType
 
     class SlowExporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             time.sleep(0.2)
 
@@ -143,6 +144,7 @@ def test_observability_bus_close_exits_after_full_queue_drains():
         def __init__(self):
             self.export_count = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             del event
             self.export_count += 1
@@ -177,6 +179,7 @@ def test_observability_bus_closes_exporter_after_worker_stops():
         def __init__(self):
             self.closed = False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             del event
 
@@ -200,6 +203,7 @@ def test_runtime_metrics_use_only_bounded_aggregation_dimensions(monkeypatch):
     recorded_attributes = []
 
     class Instrument:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _record(self, value, attributes):
             del value
             recorded_attributes.append(dict(attributes))
@@ -207,24 +211,27 @@ def test_runtime_metrics_use_only_bounded_aggregation_dimensions(monkeypatch):
         add = _record
         record = _record
 
+    instrument_names = (
+        "run.count",
+        "run.failure",
+        "run.duration",
+        "llm.count",
+        "llm.failure",
+        "llm.duration",
+        "llm.tokens",
+        "tool.count",
+        "tool.failure",
+        "tool.duration",
+    )
+
+    def metric_instruments(router_id=""):
+        del router_id
+        return {name: Instrument() for name in instrument_names}
+
     monkeypatch.setattr(
         otel_mod,
         "_get_metric_instruments",
-        lambda router_id="": {
-            name: Instrument()
-            for name in (
-                "run.count",
-                "run.failure",
-                "run.duration",
-                "llm.count",
-                "llm.failure",
-                "llm.duration",
-                "llm.tokens",
-                "tool.count",
-                "tool.failure",
-                "tool.duration",
-            )
-        },
+        metric_instruments,
     )
 
     otel_mod.record_runtime_metrics(
@@ -583,6 +590,7 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
         def __init__(self, exporter):
             self.exporter = exporter
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             self.exporter.export(event)
 
@@ -706,6 +714,7 @@ def test_agent_runtime_trace_finishes_agent_loop_once():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -737,6 +746,7 @@ def test_agent_runtime_trace_scope_finishes_success_and_error():
         def __init__(self, target):
             self.target = target
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             self.target.append(event)
             return True
@@ -784,6 +794,7 @@ def test_agent_runtime_trace_scopes_mark_cancellation_explicitly():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -841,6 +852,7 @@ def test_agent_runtime_trace_evaluates_lazy_llm_payload_only_when_enabled():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -885,6 +897,7 @@ def test_agent_runtime_trace_lazy_payload_failure_does_not_escape():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -919,6 +932,7 @@ def test_agent_runtime_trace_llm_call_scope_records_success_and_error():
         def __init__(self, target):
             self.target = target
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             self.target.append(event)
             return True
@@ -1057,6 +1071,7 @@ def test_agent_runtime_trace_records_iteration_perf_events():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -1112,6 +1127,7 @@ def test_run_runtime_trace_phase_scope_records_success():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -1146,10 +1162,12 @@ def test_observer_provider_uses_workspace_router_as_observer(monkeypatch):
     class FakeRouter:
         available = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             del event
             return True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self, timeout=1.0):
             del timeout
             pass
@@ -1176,10 +1194,12 @@ def test_observer_provider_reuses_process_scoped_observer(monkeypatch):
         def __init__(self):
             created_routers.append(self)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             del event
             return True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self, timeout=1.0):
             del timeout
             pass
@@ -1209,6 +1229,7 @@ def test_observer_provider_reserves_run_before_reset_can_retire(monkeypatch):
         def __init__(self):
             self.retired = False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def reserve_run(self, run_id, workspace_id):
             assert (run_id, workspace_id) == ("run-race", "demo")
             reserve_started.set()
@@ -1218,6 +1239,7 @@ def test_observer_provider_reserves_run_before_reset_can_retire(monkeypatch):
             del timeout
             self.retired = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self, timeout=1):
             del timeout
 
@@ -1614,16 +1636,14 @@ def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_field
         "database_provider": "hugegraph",
     }
     assert record["events"][0]["metrics"] == {"iteration": 1}
-    assert all(
-        value not in serialized
-        for value in (
-            "private-message",
-            "private-error",
-            "private-preview",
-            "private-query",
-            "private-result",
-        )
+    private_values = (
+        "private-message",
+        "private-error",
+        "private-preview",
+        "private-query",
+        "private-result",
     )
+    assert all(value not in serialized for value in private_values)
 
 
 def test_mcp_false_result_marks_request_span_as_error(monkeypatch):
@@ -1687,9 +1707,10 @@ def test_runtime_refresh_resets_observability_provider(monkeypatch):
     }
 
     class FakeApp:
-        class state:
-            services = {"LLM_ROUTER": object()}
-            runtime_container = None
+        state = types.SimpleNamespace(
+            services={"LLM_ROUTER": object()},
+            runtime_container=None,
+        )
 
     def fake_build_runtime_services(
         previous_llm_router=None,
@@ -1729,9 +1750,10 @@ def test_runtime_refresh_does_not_restart_platform_manager(monkeypatch):
     }
 
     class FakeApp:
-        class state:
-            services = {"LLM_ROUTER": object()}
-            runtime_container = None
+        state = types.SimpleNamespace(
+            services={"LLM_ROUTER": object()},
+            runtime_container=None,
+        )
 
     monkeypatch.setattr(
         app_mod,
@@ -1865,6 +1887,7 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
         def export(self, event):
             self.events.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             pass
 
@@ -2061,6 +2084,7 @@ def test_bad_workspace_langfuse_config_does_not_block_platform_dispatch(tmp_path
         def __init__(self):
             self.events = []
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             self.events.append(event)
             return True
@@ -2127,6 +2151,7 @@ def test_langfuse_exporter_accepts_adapter_not_config():
     class FakeAdapter:
         available = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
@@ -2452,6 +2477,7 @@ def test_tool_protocol_events_emit_runtime_tool_events():
     class FakeObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             emitted.append(event)
 
@@ -2519,6 +2545,7 @@ def test_tool_finished_keeps_full_output_only_in_trace_observer(monkeypatch):
     class FakeObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             runtime_events.append(event)
             return True

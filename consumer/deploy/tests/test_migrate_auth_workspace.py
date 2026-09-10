@@ -3,16 +3,13 @@ from __future__ import annotations
 import base64
 import json
 import stat
-import sys
 import tarfile
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from migrate_auth_workspace import execute_migration  # noqa: E402
+from deploy.migrate_auth_workspace import execute_migration
 
 
 def _hash(seed: str) -> str:
@@ -158,9 +155,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_orphan_acl_and_same_name_reconciliation_block_startup(self) -> None:
         _write_json(self.root / ".onto-auth" / "users.json", {"users": [_user(), _user("alice")]})
-        workspace_path = (
-            self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json"
-        )
+        workspace_path = self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json"
         _write_json(workspace_path, {"id": "private", "owner": "missing", "members": ["ghost"]})
         _write_json(
             self.root / ".onto-runtime" / "system" / "user-deletion-reconciliation.json",
@@ -208,11 +203,13 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(report["error"]["code"], "WORKSPACE_ACL_RECONCILIATION_REQUIRED")
         self.assertEqual(
             report["workspace_acl"]["findings"],
-            [{
-                "workspace_id": "<system>",
-                "type": "invalid_user_deletion_reconciliation",
-                "detail": "records[0].status must be a non-empty string",
-            }],
+            [
+                {
+                    "workspace_id": "<system>",
+                    "type": "invalid_user_deletion_reconciliation",
+                    "detail": "records[0].status must be a non-empty string",
+                }
+            ],
         )
 
     def test_acl_references_with_surrounding_whitespace_are_invalid(self) -> None:
@@ -249,9 +246,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_apply_orphan_acl_stays_blocked_without_modifying_workspace(self) -> None:
         _write_json(self.root / ".onto-auth" / "users.json", {"users": [_user()]})
-        workspace_path = (
-            self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json"
-        )
+        workspace_path = self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json"
         _write_json(
             workspace_path,
             {"id": "private", "owner": "admin", "members": ["ghost"]},

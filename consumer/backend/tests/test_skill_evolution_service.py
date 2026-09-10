@@ -84,6 +84,7 @@ class FakeClient:
         self.last_request = request_json
         return "run-fake-1"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def get_run_status(self, run_id):
         return self._status
 
@@ -595,6 +596,7 @@ class _DownloadClient:
         self._artifact = artifact_bytes
         self._download_raises = download_raises
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def get_run_status(self, run_id):
         return {"status": "completed"}
 

@@ -9,8 +9,10 @@
 from __future__ import annotations
 
 import socket
-import sys
 import threading
+import importlib
+import importlib.util
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
@@ -42,10 +44,19 @@ from werkzeug.serving import make_server
 # （唯一接口是 HTTP）。集成测试为了进程内起真实 server 而 import auth_server，
 # 属于测试基础设施，不构成生产依赖；生产代码严禁效仿。
 AUTH_SERVER_DIR = Path(__file__).resolve().parents[3] / "auth-server"
-sys.path.insert(0, str(AUTH_SERVER_DIR))
-
-from auth_server import create_app as create_auth_server_app  # noqa: E402
-from auth_server.config import AuthServerConfig  # noqa: E402
+_AUTH_SERVER_PACKAGE = AUTH_SERVER_DIR / "auth_server"
+_AUTH_SERVER_SPEC = importlib.util.spec_from_file_location(
+    "auth_server",
+    _AUTH_SERVER_PACKAGE / "__init__.py",
+    submodule_search_locations=[str(_AUTH_SERVER_PACKAGE)],
+)
+if _AUTH_SERVER_SPEC is None or _AUTH_SERVER_SPEC.loader is None:
+    raise ImportError("auth_server package cannot be loaded")
+_AUTH_SERVER_MODULE = importlib.util.module_from_spec(_AUTH_SERVER_SPEC)
+sys.modules.setdefault("auth_server", _AUTH_SERVER_MODULE)
+_AUTH_SERVER_SPEC.loader.exec_module(_AUTH_SERVER_MODULE)
+create_auth_server_app = _AUTH_SERVER_MODULE.create_app
+AuthServerConfig = importlib.import_module("auth_server.config").AuthServerConfig
 
 
 @pytest.fixture(autouse=True)

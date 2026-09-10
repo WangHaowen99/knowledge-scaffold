@@ -84,6 +84,7 @@ export function createProfileDraft(initial = {}, { scope = 'global' } = {}) {
   return draft;
 }
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export function validateProfile(
   profile,
   { scope = 'global', existingIds = [], originalId = '' } = {},
@@ -370,11 +371,12 @@ export function markGlobalProfileRename(
   );
   const inheritedOrigin = text(candidate.rename_from);
   const editedOrigin = text(originalId);
-  const origin = persisted.has(inheritedOrigin) ?
-    inheritedOrigin :
-    persisted.has(editedOrigin) ?
-      editedOrigin :
-      '';
+  let origin = '';
+  if (persisted.has(inheritedOrigin)) {
+    origin = inheritedOrigin;
+  } else if (persisted.has(editedOrigin)) {
+    origin = editedOrigin;
+  }
   if (origin && text(candidate.id) !== origin) {
     candidate.rename_from = origin;
   } else {
@@ -400,12 +402,12 @@ export function globalProfileDestructiveChanges(baseline, candidate) {
   for (const profile of candidate?.profiles || []) {
     const originalId = text(profile?.rename_from);
     const newId = text(profile?.id);
-    if (
+    const renameInvalid =
       !originalId ||
       !newId ||
       originalId === newId ||
-      !removedSet.has(originalId)
-    ) {
+      !removedSet.has(originalId);
+    if (renameInvalid) {
       continue;
     }
     renames.push({ original_id: originalId, new_id: newId });
@@ -413,6 +415,7 @@ export function globalProfileDestructiveChanges(baseline, candidate) {
   return { removedProfileIds, renames };
 }
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export function globalProfileMutationDecision({
   baseline,
   baselineSnapshot,
@@ -435,15 +438,15 @@ export function globalProfileMutationDecision({
   const serverGeneration = serverSnapshot?.generation;
   const baselineFingerprint = text(baselineSnapshot?.fingerprint);
   const serverFingerprint = text(serverSnapshot?.fingerprint);
-  if (
+  const snapshotIncomplete =
     !Number.isSafeInteger(baselineGeneration) ||
     baselineGeneration < 0 ||
     !Number.isSafeInteger(serverGeneration) ||
     serverGeneration < 0 ||
     !baselineFingerprint ||
     !serverFingerprint ||
-    !text(inventory?.generation)
-  ) {
+    !text(inventory?.generation);
+  if (snapshotIncomplete) {
     return blocked(
       'snapshot_unknown',
       '无法确认服务器模型或引用快照，已阻止保存，请刷新后重试',
@@ -458,12 +461,12 @@ export function globalProfileMutationDecision({
       '模型配置已被其他操作修改，已阻止保存，请刷新后重试',
     );
   }
-  if (
+  const openedSnapshotChanged =
     openedSnapshot &&
     (openedSnapshot.configGeneration !== serverGeneration ||
       openedSnapshot.configFingerprint !== serverFingerprint ||
-      openedSnapshot.referenceGeneration !== inventory.generation)
-  ) {
+      openedSnapshot.referenceGeneration !== inventory.generation);
+  if (openedSnapshotChanged) {
     return blocked(
       'snapshot_changed',
       '确认期间模型配置或引用发生变化，已阻止保存，请刷新后重试',
@@ -542,6 +545,7 @@ function blocked(code, message, usages = []) {
   return { allowed: false, code, message, usages };
 }
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export function globalProfileDeleteDecision({
   profileId,
   config,

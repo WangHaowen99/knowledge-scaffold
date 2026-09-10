@@ -38,6 +38,7 @@ export function SystemConfigReadOnlyNotice() {
   );
 }
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export default function SystemConfigModule({
   section,
   initialData = {},

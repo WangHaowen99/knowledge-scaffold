@@ -122,7 +122,7 @@ def _count(session: Any, match_clause: str, params: Mapping[str, Any]) -> int:
     return int(record["total"] if record else 0)
 
 
-def _apply(
+def _apply(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     session: Any,
     match_clause: str,
     params: Mapping[str, Any],

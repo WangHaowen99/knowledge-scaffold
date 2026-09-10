@@ -195,6 +195,7 @@ class HugeGraphBackend:
                     _PinnedTLSAdapter(server_hostname),
                 )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self) -> None:
         if self._pinned_session is not None:
             self._pinned_session.close()
@@ -709,11 +710,12 @@ class HugeGraphBackend:
                 return payload
         return {"found": False, "element_id": normalized_id, "element_instance_id": normalized_id}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self) -> None:
         return None
 
+    @staticmethod
     def _shortest_distance_map(
-        self,
         snapshot: _GraphSnapshot,
         start_node_id: str,
         max_depth: int,
@@ -732,8 +734,8 @@ class HugeGraphBackend:
                 queue.append(neighbor_id)
         return distance
 
+    @staticmethod
     def _select_exact_hop_subgraph(
-        self,
         snapshot: _GraphSnapshot,
         distance: dict[str, int],
         hop_num: int,
@@ -775,8 +777,8 @@ class HugeGraphBackend:
             selected_edges.add(edge.relation_instance_id)
         return selected_nodes, selected_edges
 
+    @staticmethod
     def _find_shortest_path(
-        self,
         *,
         snapshot: _GraphSnapshot,
         start_id: str,
@@ -824,7 +826,8 @@ class HugeGraphBackend:
         edge_ids.reverse()
         return node_ids, edge_ids
 
-    def _find_edge(self, snapshot: _GraphSnapshot, edge_id: str) -> _EdgeRecord | None:
+    @staticmethod
+    def _find_edge(snapshot: _GraphSnapshot, edge_id: str) -> _EdgeRecord | None:
         for edge in snapshot.edges:
             if edge.relation_instance_id == edge_id:
                 return edge
@@ -1254,36 +1257,40 @@ def _pattern_record(
     scope: GraphScope,
 ) -> dict[str, Any]:
     selected_aliases = {query_var for _output_var, query_var in output_selection}
-    nodes = [
-        _node_payload(
-            value,
-            scope=scope,
-            return_properties=_pattern_return_properties(
-                alias=step.alias,
-                step_return_properties=step.return_properties,
-                top_level_return_properties=return_properties,
-                properties=value.properties,
-            ),
+    nodes = []
+    for step in node_steps:
+        value = assignment.get(step.alias)
+        if step.alias not in selected_aliases or not isinstance(value, _NodeRecord):
+            continue
+        nodes.append(
+            _node_payload(
+                value,
+                scope=scope,
+                return_properties=_pattern_return_properties(
+                    alias=step.alias,
+                    step_return_properties=step.return_properties,
+                    top_level_return_properties=return_properties,
+                    properties=value.properties,
+                ),
+            )
         )
-        for step in node_steps
-        for value in [assignment.get(step.alias)]
-        if step.alias in selected_aliases and isinstance(value, _NodeRecord)
-    ]
-    relationships = [
-        _edge_payload(
-            value,
-            scope=scope,
-            return_properties=_pattern_return_properties(
-                alias=step.alias,
-                step_return_properties=step.return_properties,
-                top_level_return_properties=return_properties,
-                properties=value.properties,
-            ),
+    relationships = []
+    for step in edge_steps:
+        value = assignment.get(step.alias)
+        if step.alias not in selected_aliases or not isinstance(value, _EdgeRecord):
+            continue
+        relationships.append(
+            _edge_payload(
+                value,
+                scope=scope,
+                return_properties=_pattern_return_properties(
+                    alias=step.alias,
+                    step_return_properties=step.return_properties,
+                    top_level_return_properties=return_properties,
+                    properties=value.properties,
+                ),
+            )
         )
-        for step in edge_steps
-        for value in [assignment.get(step.alias)]
-        if step.alias in selected_aliases and isinstance(value, _EdgeRecord)
-    ]
     node_steps_by_alias = {step.alias: step for step in node_steps}
     edge_steps_by_alias = {step.alias: step for step in edge_steps}
     selected: dict[str, Any] = {}

@@ -35,6 +35,7 @@ const DETAIL_TABS = [
   { id: 'debug', label: '调试信息', icon: Bug },
 ];
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function RunDetail({
   detail,
   loading = false,
@@ -428,5 +429,8 @@ function formatLlmCacheHit(metrics = {}) {
   ) {
     return '-';
   }
-  return `${formatMetric(metrics.cache_hit_tokens)} / ${formatMetric(metrics.cache_total_input_tokens)} · ${formatPercent(metrics.cache_hit_rate)}`;
+  const hitTokens = formatMetric(metrics.cache_hit_tokens);
+  const totalTokens = formatMetric(metrics.cache_total_input_tokens);
+  const hitRate = formatPercent(metrics.cache_hit_rate);
+  return `${hitTokens} / ${totalTokens} · ${hitRate}`;
 }

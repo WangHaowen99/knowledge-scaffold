@@ -420,6 +420,7 @@ def test_language_llm_detection_uses_task_llm_router(monkeypatch):
     calls = []
 
     class _Router:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def call(self, **kwargs):
             calls.append(kwargs)
             return SimpleNamespace(content="es")
@@ -437,6 +438,7 @@ def test_language_translation_uses_task_llm_router(monkeypatch):
     calls = []
 
     class _Router:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def call(self, **kwargs):
             calls.append(kwargs)
             return SimpleNamespace(content="translated")

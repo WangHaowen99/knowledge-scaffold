@@ -495,28 +495,25 @@ def _graph_schema_expand_for_path_planning(provider_config: Mapping[str, Any]) -
 
 def _analyze_path_intent(*, query: str, entity: str, mapping: GraphEntityMapping) -> dict[str, Any]:
     text = "{} {} {} {}".format(query or "", entity or "", mapping.entity or "", mapping.title or "")
-    cues = [
-        cue
-        for cue in (
-            "关系",
-            "关联",
-            "影响",
-            "受影响",
-            "对应",
-            "父项",
-            "子项",
-            "上游",
-            "下游",
-            "变更前",
-            "变更后",
-            "BOM",
-            "结构",
-            "清单",
-            "工艺关系",
-            "供应商",
-        )
-        if cue in text
-    ]
+    path_cues = (
+        "关系",
+        "关联",
+        "影响",
+        "受影响",
+        "对应",
+        "父项",
+        "子项",
+        "上游",
+        "下游",
+        "变更前",
+        "变更后",
+        "BOM",
+        "结构",
+        "清单",
+        "工艺关系",
+        "供应商",
+    )
+    cues = [cue for cue in path_cues if cue in text]
     associated_object_detail = _requires_associated_object_detail(query=query, entity=entity)
     record_query = _looks_like_record_query(query=query, entity=entity) and not associated_object_detail
     path_intent = bool(cues) and not record_query and associated_object_detail
@@ -594,38 +591,34 @@ def _looks_like_relationship_record(*, entity: str, mapping: GraphEntityMapping)
     text = "{} {} {} {}".format(entity or "", mapping.entity or "", mapping.title or "", mapping.label or "")
     if mapping.kind == "edge" or mapping.path_pattern:
         return True
-    return any(
-        cue in text
-        for cue in (
-            "关系",
-            "关联",
-            "影响对象",
-            "受影响",
-            "映射",
-            "BOM",
-            "结构",
-            "清单",
-            "_obj",
-        )
+    relationship_cues = (
+        "关系",
+        "关联",
+        "影响对象",
+        "受影响",
+        "映射",
+        "BOM",
+        "结构",
+        "清单",
+        "_obj",
     )
+    return any(cue in text for cue in relationship_cues)
 
 
 def _looks_like_record_query(*, query: str, entity: str) -> bool:
     text = "{} {}".format(query or "", entity or "")
-    return any(
-        cue in text
-        for cue in (
-            "记录",
-            "表",
-            "字段",
-            "编号",
-            "编码",
-            "信息",
-            "所有",
-            "列表",
-            "包含",
-        )
+    record_cues = (
+        "记录",
+        "表",
+        "字段",
+        "编号",
+        "编码",
+        "信息",
+        "所有",
+        "列表",
+        "包含",
     )
+    return any(cue in text for cue in record_cues)
 
 
 def _requires_associated_object_detail(*, query: str, entity: str) -> bool:

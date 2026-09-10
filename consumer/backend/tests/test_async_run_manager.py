@@ -533,13 +533,8 @@ def test_terminal_run_replays_from_native_async_cursor():
             RunStatus.COMPLETED,
         )
 
-        replay = [
-            event
-            async for event in manager.event_bus.stream(
-                "run_cursor_replay",
-                after_seq=1,
-            )
-        ]
+        event_stream = manager.event_bus.stream("run_cursor_replay", after_seq=1)
+        replay = [event async for event in event_stream]
         assert [event.seq for event in replay] == [2, 3]
         assert replay[-1].event_type == "turn.finished"
 
@@ -649,14 +644,8 @@ def test_shutdown_preserves_terminal_awaiting_input_without_an_active_task():
         assert after_shutdown is not None
         assert after_shutdown.status == RunStatus.AWAITING_INPUT
         assert after_shutdown.pending_interaction == waiting.pending_interaction
-        terminal_events = [
-            event
-            for event in await manager.repository.list_after(
-                "run_shutdown_hitl",
-                0,
-            )
-            if event.event_type == "turn.finished"
-        ]
+        events = await manager.repository.list_after("run_shutdown_hitl", 0)
+        terminal_events = [event for event in events if event.event_type == "turn.finished"]
         assert [event.status for event in terminal_events] == ["awaiting_input"]
 
     asyncio.run(run_test())
@@ -1762,14 +1751,8 @@ def test_terminal_projection_failure_preserves_completed_public_state(tmp_path):
             1,
             run_id="run_terminal_projection",
         )
-        terminal_events = [
-            event
-            for event in await manager.repository.list_after(
-                "run_terminal_projection",
-                0,
-            )
-            if event.event_type == "turn.finished"
-        ]
+        events = await manager.repository.list_after("run_terminal_projection", 0)
+        terminal_events = [event for event in events if event.event_type == "turn.finished"]
 
         assert completed.result.content == "synthetic answer"
         assert turn["status"] == "success"
@@ -1905,14 +1888,8 @@ def test_retriable_failure_persists_resume_history_and_public_action(tmp_path):
             RunStatus.FAILED,
         )
         history = orchestrator.execution_store.get_llm_context("session_demo")
-        terminal = [
-            event
-            for event in await manager.repository.list_after(
-                "run_recoverable_failure",
-                0,
-            )
-            if event.event_type == "turn.finished"
-        ][0]
+        events = await manager.repository.list_after("run_recoverable_failure", 0)
+        terminal = [event for event in events if event.event_type == "turn.finished"][0]
 
         assert failed.result.recovery.action == "continue"
         assert [message["role"] for message in history] == ["user", "assistant"]
@@ -2403,7 +2380,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     drifted = adapter._try_direct_execute_sync(pinned_context, dependencies)
 
     assert drifted[-1].status == "failed"
-    assert drifted[-1].payload["error"]["error_code"] == ("ontology_revision_changed")
+    assert drifted[-1].payload["error"]["error_code"] == "ontology_revision_changed"
     assert _DeterministicService.calls == calls_before_drift
     _DeterministicService.outcome = NotApplicable("synthetic-fallback")
 

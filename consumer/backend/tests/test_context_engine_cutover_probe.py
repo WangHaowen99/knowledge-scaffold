@@ -62,27 +62,33 @@ class TestResolveEffectiveContextMaxRounds:
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
         assert _resolve_effective_context_max_rounds(configured, state) == max(configured, 2)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_resume_with_configured_one_returns_two(self):
         """The critical ask-user recovery case: configured=1 must become 2."""
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
         assert _resolve_effective_context_max_rounds(1, state) == 2
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_resume_with_configured_two_returns_two(self):
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
         assert _resolve_effective_context_max_rounds(2, state) == 2
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_resume_with_configured_five_returns_five(self):
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
         assert _resolve_effective_context_max_rounds(5, state) == 5
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_none_state_treated_as_normal(self):
         assert _resolve_effective_context_max_rounds(5, None) == 5
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_empty_interaction_response_is_normal(self):
         """An empty/None interaction_response must not trigger the clamp."""
         state = {"user_context": {"interaction_response": None}}
         assert _resolve_effective_context_max_rounds(1, state) == 1
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_empty_dict_interaction_response_is_normal(self):
         """An empty dict interaction_response is falsy, so treated as normal.
         This matches the orchestrator's own truthiness check."""
@@ -98,12 +104,15 @@ class TestResolveEffectiveContextMaxRounds:
 class TestRejectFactoryAgentWithHistory:
     """Verify the factory path is blocked when history is present."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_none_state_passes(self):
         _reject_factory_agent_with_history(None)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_empty_state_passes(self):
         _reject_factory_agent_with_history({})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_single_user_message_passes(self):
         """A single user turn (the current request) is allowed."""
         _reject_factory_agent_with_history(
@@ -112,6 +121,7 @@ class TestRejectFactoryAgentWithHistory:
             }
         )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_system_plus_user_passes(self):
         _reject_factory_agent_with_history(
             {
@@ -122,6 +132,7 @@ class TestRejectFactoryAgentWithHistory:
             }
         )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_assistant_history_rejected(self):
         with pytest.raises(ValueError, match="conversation history"):
             _reject_factory_agent_with_history(
@@ -134,6 +145,7 @@ class TestRejectFactoryAgentWithHistory:
                 }
             )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_tool_history_rejected(self):
         with pytest.raises(ValueError, match="conversation history"):
             _reject_factory_agent_with_history(
@@ -147,6 +159,7 @@ class TestRejectFactoryAgentWithHistory:
                 }
             )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_consecutive_user_history_rejected(self):
         with pytest.raises(ValueError, match="conversation history"):
             _reject_factory_agent_with_history(
@@ -159,6 +172,7 @@ class TestRejectFactoryAgentWithHistory:
                 }
             )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_interaction_response_rejected(self):
         with pytest.raises(ValueError, match="interaction_response"):
             _reject_factory_agent_with_history(
@@ -168,6 +182,7 @@ class TestRejectFactoryAgentWithHistory:
                 }
             )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_interaction_response_rejected_even_without_history(self):
         with pytest.raises(ValueError, match="interaction_response"):
             _reject_factory_agent_with_history(
@@ -185,6 +200,7 @@ class TestRejectFactoryAgentWithHistory:
 class TestTraceBridgeSlidingWindowAppliedRequired:
     """Verify ``sliding_window_applied`` is a required parameter."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_parameter_has_no_default(self):
         sig = inspect.signature(JiuwenModelTraceBridge.__init__)
         param = sig.parameters["sliding_window_applied"]
@@ -192,6 +208,7 @@ class TestTraceBridgeSlidingWindowAppliedRequired:
             param.default is inspect.Parameter.empty
         ), "sliding_window_applied must be a required parameter (no default)"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_missing_parameter_raises_type_error(self):
         """Calling without sliding_window_applied must raise TypeError."""
         with pytest.raises(TypeError, match="sliding_window_applied"):
@@ -214,13 +231,15 @@ class TestTraceBridgeSlidingWindowAppliedRequired:
 class TestEngineDoesNotImportSlidingWindow:
     """Verify the engine module no longer imports apply_sliding_window."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_apply_sliding_window_not_in_module_namespace(self):
         import agent.core.jiuwen_engine as engine_module
 
-        assert not hasattr(engine_module, "apply_sliding_window"), (
-            "jiuwen_engine must not import apply_sliding_window; " "ContextEngine is solely responsible for windowing."
-        )
+        assert not hasattr(
+            engine_module, "apply_sliding_window"
+        ), "jiuwen_engine must not import apply_sliding_window; ContextEngine is solely responsible for windowing."
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_build_history_messages_does_not_call_sliding_window(self, monkeypatch):
         """_build_jiuwen_history_messages must forward full history without
         calling apply_sliding_window."""
@@ -242,6 +261,7 @@ class TestEngineDoesNotImportSlidingWindow:
         _build_jiuwen_history_messages({"messages": messages}, _agent_config())
         assert calls == []
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_build_context_messages_does_not_call_sliding_window(self, monkeypatch):
         """_build_jiuwen_context_messages must forward full history without
         calling apply_sliding_window."""
@@ -284,6 +304,7 @@ class TestEngineDoesNotImportSlidingWindow:
 class TestCreateAgentEffectiveRounds:
     """Verify _create_agent passes effective_rounds to the factory."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def _setup_factory_spy(self, monkeypatch):
         captured = {}
 
@@ -333,6 +354,7 @@ class TestCreateAgentEffectiveRounds:
 class TestFactoryAgentCapabilityValidation:
     """Verify run validates factory capability exactly once before creation."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_factory_without_history_passes(self, monkeypatch):
         created = SimpleNamespace()
         engine = JiuwenReactLoopEngine(
@@ -343,6 +365,7 @@ class TestFactoryAgentCapabilityValidation:
         result = engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert result is created
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_run_rejects_history_before_create_agent(self, monkeypatch):
         monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
         engine = JiuwenReactLoopEngine(
@@ -380,6 +403,7 @@ class TestFactoryAgentCapabilityValidation:
 
         assert create_calls == []
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_run_rejects_interaction_response_before_create_agent(self, monkeypatch):
         monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
         engine = JiuwenReactLoopEngine(

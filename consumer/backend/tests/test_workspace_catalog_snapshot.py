@@ -4,6 +4,7 @@ import errno
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -57,8 +58,11 @@ def _symlink_or_skip(link, target, *, target_is_directory: bool) -> None:
         link.symlink_to(target, target_is_directory=target_is_directory)
     except (NotImplementedError, OSError) as exc:
         if target_is_directory and os.name == "nt":
+            command_prompt = shutil.which("cmd")
+            if command_prompt is None:
+                pytest.skip("Windows command prompt is unavailable")
             result = subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                [str(Path(command_prompt).resolve()), "/c", "mklink", "/J", str(link), str(target)],
                 check=False,
                 capture_output=True,
                 text=True,

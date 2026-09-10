@@ -190,15 +190,13 @@ def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkey
     ontology_dir = get_workspace_paths("mw-shadow-pj-demo-123").ontologies_dir / "evaluation-demo"
     ontology_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
-        (
-            "kind: ontology-package\n"
-            "schema_version: 0.1\n"
-            "id: evaluation-demo\n"
-            "name: Evaluation Demo\n"
-            "description: Evaluation package\n"
-            "version: 1.0.0\n"
-            "language: zh-CN\n"
-        ),
+        "kind: ontology-package\n"
+        "schema_version: 0.1\n"
+        "id: evaluation-demo\n"
+        "name: Evaluation Demo\n"
+        "description: Evaluation package\n"
+        "version: 1.0.0\n"
+        "language: zh-CN\n",
         encoding="utf-8",
     )
 
@@ -350,7 +348,7 @@ def test_legacy_endpoint_query_credentials_and_fragment_are_removed_from_public_
 
     public = publicize_provider_config(
         "hugegraph",
-        {"url": ("https://hugegraph.example.com?region=east&access_token=query-secret" "#fragment-secret")},
+        {"url": "https://hugegraph.example.com?region=east&access_token=query-secret#fragment-secret"},
     )
 
     assert public["url"] == "https://hugegraph.example.com?region=east"
@@ -439,9 +437,11 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
         status_code = 200
         text = "{}"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True}
 
@@ -557,6 +557,7 @@ def test_nl2sql_edit_preserves_existing_token_and_probes_sql(
         status_code = 200
         text = "{}"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True}
 
@@ -695,9 +696,11 @@ def test_data_source_test_route_probes_mindsdb_anonymous_service(tmp_path, monke
         status_code = 200
         text = "{}"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return [{"name": "my_agent", "project_id": 1}]
 
@@ -736,6 +739,7 @@ def test_data_source_test_route_probes_mindsdb_auth_and_query(tmp_path, monkeypa
         def __init__(self, payload):
             self._payload = payload
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
@@ -791,9 +795,11 @@ def test_data_source_test_route_rejects_missing_mindsdb_agent(tmp_path, monkeypa
         status_code = 200
         text = "{}"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return [{"name": "available_agent", "project_id": 1}]
 
@@ -824,9 +830,11 @@ def test_data_source_test_route_rejects_missing_mindsdb_project(tmp_path, monkey
         status_code = 404
         text = "{}"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             raise AssertionError("404 should be handled before raise_for_status")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {}
 
@@ -900,6 +908,7 @@ def test_data_source_test_route_probes_neo4j_service(tmp_path, monkeypatch):
     calls = []
 
     class FakeResult:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def single(self):
             return {"ok": 1}
 
@@ -907,21 +916,26 @@ def test_data_source_test_route_probes_neo4j_service(tmp_path, monkeypatch):
         def __enter__(self):
             return self
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def __exit__(self, exc_type, exc, tb):
             return False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run(self, query):
             calls.append(("run", query))
             return FakeResult()
 
     class FakeDriver:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def verify_connectivity(self):
             calls.append(("verify", None))
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def session(self, database=None):
             calls.append(("session", database))
             return FakeSession()
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             calls.append(("close", None))
 
@@ -973,9 +987,11 @@ def test_data_source_test_route_probes_hugegraph_service(tmp_path, monkeypatch):
         status_code = 200
         text = "{}"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"name": "demo"}
 

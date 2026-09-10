@@ -77,6 +77,7 @@ def _install_common_fakes(monkeypatch):
 
 def _patch_value_lookup(monkeypatch, response_json=None):
     class FakeResponse:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def to_json(self):
             return response_json or json.dumps(
                 {

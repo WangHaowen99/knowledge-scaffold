@@ -118,11 +118,12 @@ def test_lexicographic_phases_share_one_total_deadline(submit_request, monkeypat
         def __init__(self):
             self.parameters = type("Parameters", (), {})()
 
-        def Solve(self, model):
+        def Solve(self, model):  # pylint: disable=invalid-name
             observed_limits.append(self.parameters.max_time_in_seconds)
             return 4  # cp_model.OPTIMAL
 
-        def Value(self, expression):
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
+        def Value(self, expression):  # pylint: disable=invalid-name
             return 0
 
     monotonic_values = iter((10.0, 10.2, 10.8, 11.0))

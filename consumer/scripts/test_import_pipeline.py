@@ -6,6 +6,7 @@ Run with:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import zipfile
@@ -16,13 +17,20 @@ import yaml
 
 # Ensure the module under test is importable.
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.append(str(SCRIPT_DIR))
-
-from legacy_package_converter import _decode_zip_member_name  # noqa: E402
-from legacy_package_converter import convert_package  # noqa: E402
-from legacy_package_converter import import_package  # noqa: E402
-from legacy_package_converter import import_package_from_zip  # noqa: E402
-from legacy_package_converter import validate_package  # noqa: E402
+_CONVERTER_SPEC = importlib.util.spec_from_file_location(
+    "legacy_package_converter",
+    SCRIPT_DIR / "legacy_package_converter.py",
+)
+if _CONVERTER_SPEC is None or _CONVERTER_SPEC.loader is None:
+    raise ImportError("legacy_package_converter cannot be loaded")
+_CONVERTER = importlib.util.module_from_spec(_CONVERTER_SPEC)
+sys.modules[_CONVERTER_SPEC.name] = _CONVERTER
+_CONVERTER_SPEC.loader.exec_module(_CONVERTER)
+_decode_zip_member_name = _CONVERTER._decode_zip_member_name
+convert_package = _CONVERTER.convert_package
+import_package = _CONVERTER.import_package
+import_package_from_zip = _CONVERTER.import_package_from_zip
+validate_package = _CONVERTER.validate_package
 
 # --------------------------------------------------------------------------- #
 # Tests: validate_package error handling
@@ -80,7 +88,7 @@ class TestSyntheticPackages:
         objects = root / "objects"
         objects.mkdir()
         (objects / "index.md").write_text(
-            "---\nresource: object_index\nkey: objects\ntitle: objects\n---\n" "# Objects\n",
+            "---\nresource: object_index\nkey: objects\ntitle: objects\n---\n# Objects\n",
             encoding="utf-8",
         )
         (objects / "Foo.md").write_text(
@@ -90,11 +98,11 @@ class TestSyntheticPackages:
         ops = root / "operations"
         ops.mkdir()
         (ops / "index.md").write_text(
-            "---\nresource: operation_index\nkey: operations\n" "title: operations\n---\n# Operations\n",
+            "---\nresource: operation_index\nkey: operations\ntitle: operations\n---\n# Operations\n",
             encoding="utf-8",
         )
         (ops / "Bar.md").write_text(
-            "---\nresource: operation\nkey: Bar\ntitle: Bar\n" "uses:\n  objects:\n    - Foo\n---\n# Bar\n",
+            "---\nresource: operation\nkey: Bar\ntitle: Bar\nuses:\n  objects:\n    - Foo\n---\n# Bar\n",
             encoding="utf-8",
         )
 
@@ -115,7 +123,7 @@ class TestSyntheticPackages:
         pkg = tmp_path / "old_pkg"
         pkg.mkdir()
         (pkg / "manifest.yaml").write_text(
-            "kind: ontology\n" "id: old-test\n" "name: old-test\n" "description: test\n" "version: 1.0.0\n",
+            "kind: ontology\nid: old-test\nname: old-test\ndescription: test\nversion: 1.0.0\n",
             encoding="utf-8",
         )
         (pkg / "ONTOLOGY.md").write_text(
@@ -133,8 +141,7 @@ class TestSyntheticPackages:
         ops = pkg / "operations"
         ops.mkdir()
         (ops / "DoStuff.md").write_text(
-            "---\nresource: operation\nkey: DoStuff\ntitle: DoStuff\n"
-            "uses:\n  objects:\n    - Widget\n---\n# DoStuff\n",
+            "---\nresource: operation\nkey: DoStuff\ntitle: DoStuff\nuses:\n  objects:\n    - Widget\n---\n# DoStuff\n",
             encoding="utf-8",
         )
 
@@ -695,7 +702,7 @@ class TestSkillSourcePackages:
         (source / "action" / "__pycache__" / "helper.pyc").write_bytes(b"x")
         (source / "action" / ".DS_Store").write_bytes(b"junk")
         (source / "action" / "查询物料.py").write_text(
-            "# 工具流程: 物料查询\n" "print(1)\n",
+            "# 工具流程: 物料查询\nprint(1)\n",
             encoding="utf-8",
         )
 
@@ -712,7 +719,7 @@ class TestSkillSourcePackages:
         output = tmp_path / "flow_use_output"
         TestSkillSourcePackages.make_source_package(source)
         (source / "logic" / "物料查询.md").write_text(
-            "# 与logic的关联\n" "- 被流程使用 > 查询流程\n\n" "# 逻辑描述\n" "查询物料。\n",
+            "# 与logic的关联\n- 被流程使用 > 查询流程\n\n# 逻辑描述\n查询物料。\n",
             encoding="utf-8",
         )
 
@@ -752,7 +759,7 @@ class TestSkillSourcePackages:
         TestSkillSourcePackages.make_source_package(source)
         (source / "action").mkdir(parents=True, exist_ok=True)
         (source / "action" / "查询物料.py").write_text(
-            "# 工具流程: 物料查询\n" "print(1)\n",
+            "# 工具流程: 物料查询\nprint(1)\n",
             encoding="utf-8",
         )
         (source / "asset").mkdir(parents=True, exist_ok=True)

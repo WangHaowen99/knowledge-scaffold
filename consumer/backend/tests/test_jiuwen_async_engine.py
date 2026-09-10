@@ -239,15 +239,13 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
             mirrored_events = []
 
             async def exercise():
-                return [
-                    event
-                    async for event in engine.astream(
-                        state,
-                        caller="main",
-                        system_prompt="offline",
-                        event_writer=mirrored_events.append,
-                    )
-                ]
+                event_stream = engine.astream(
+                    state,
+                    caller="main",
+                    system_prompt="offline",
+                    event_writer=mirrored_events.append,
+                )
+                return [event async for event in event_stream]
 
             events = asyncio.run(exercise())
 

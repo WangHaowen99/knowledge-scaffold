@@ -73,7 +73,8 @@ class FaultScenario:
 class FaultScenarioDriver(Protocol):
     """Provide optional, out-of-band fault scenarios for Connector admission."""
 
-    def scenario(self, name: str, request: Mapping[str, Any]) -> FaultScenario | None: ...
+    def scenario(self, name: str, request: Mapping[str, Any]) -> FaultScenario | None:
+        return ...
 
 
 ResultVerifier = Callable[..., bool | None]

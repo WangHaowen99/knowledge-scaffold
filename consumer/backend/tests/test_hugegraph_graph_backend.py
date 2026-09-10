@@ -74,6 +74,7 @@ class _FakeResponse:
     def __init__(self, payload):
         self._payload = payload
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def raise_for_status(self):
         return None
 
@@ -131,7 +132,7 @@ def _install_hugegraph_http(
         edges.append(_edge("e-rel-2", "v-e2", "v-m2", "PROCESS_TO", {"Qty": 1}))
     calls = []
 
-    def fake_request(
+    def fake_request(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         method,
         url,
         params=None,
@@ -324,9 +325,11 @@ def test_hugegraph_uses_pinned_ip_with_original_tls_identity(monkeypatch):
         text = "{}"
         status_code = 200
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {}
 

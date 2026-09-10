@@ -210,6 +210,7 @@ def test_tool_finished_redacts_protocol_and_observability_payloads():
     class Observer:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             runtime_events.append(event)
             return True
@@ -253,26 +254,28 @@ def test_web_search_finished_keeps_bounded_structured_projection_when_preview_is
             "query": "long result query",
             "provider": "tavily",
             "response_time": 0.42,
-            "results": [
-                {
-                    "title": "Unsafe data URL",
-                    "url": "data:text/html,<script>alert(1)</script>",
-                    "snippet": "must be omitted",
-                },
-                {
-                    "title": "Unsafe file URL",
-                    "url": "file:///etc/passwd",
-                    "snippet": "must be omitted",
-                },
-            ]
-            + [
-                {
-                    "title": "Result {}".format(index),
-                    "url": "https://example.com/{}/article".format(index),
-                    "snippet": "摘要" * 900,
-                }
-                for index in range(8)
-            ],
+            "results": (
+                [
+                    {
+                        "title": "Unsafe data URL",
+                        "url": "data:text/html,<script>alert(1)</script>",
+                        "snippet": "must be omitted",
+                    },
+                    {
+                        "title": "Unsafe file URL",
+                        "url": "file:///etc/passwd",
+                        "snippet": "must be omitted",
+                    },
+                ]
+                + [
+                    {
+                        "title": "Result {}".format(index),
+                        "url": "https://example.com/{}/article".format(index),
+                        "snippet": "摘要" * 900,
+                    }
+                    for index in range(8)
+                ]
+            ),
         },
         ensure_ascii=False,
     )

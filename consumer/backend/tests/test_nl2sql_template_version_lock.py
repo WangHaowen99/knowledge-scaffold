@@ -110,6 +110,7 @@ def test_adapter_default_matcher_uses_locked_version_templates(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [{"id": 1}], "row_count": 1}
 

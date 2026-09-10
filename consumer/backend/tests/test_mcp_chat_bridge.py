@@ -638,7 +638,7 @@ def test_chat_adapter_http_budget_exceeds_backend_execution_budget(
     )
 
     assert result["ok"] is True
-    assert captured["json"]["context"]["selected_ontology_id"] == ("knowledge_package_demo")
+    assert captured["json"]["context"]["selected_ontology_id"] == "knowledge_package_demo"
     assert captured["timeout"] > 30
 
 
@@ -678,6 +678,7 @@ def test_async_chat_adapter_consumes_internal_progress_stream(
         async def __aexit__(self, *_args):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def stream(self, method, url, *, headers, json):
             captured.update(
                 method=method,
@@ -885,7 +886,7 @@ def test_workflow_bridge_auto_selects_only_enabled_ontology(
 
     assert status_code == 200
     assert body["ok"] is True
-    assert manager.context.arguments["selected_ontology_id"] == ("knowledge_package_demo")
+    assert manager.context.arguments["selected_ontology_id"] == "knowledge_package_demo"
 
 
 def test_workflow_bridge_requires_selection_for_new_multi_ontology_session(
@@ -1190,6 +1191,7 @@ def test_mcp_cancellation_marks_turn_failed_after_offload_finishes(
             self.run_id = str(turn["run_id"])
             return turn, created
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def mark_turn_task_start_failed(self, session_id, turn_id):
             return store.mark_turn_task_start_failed(session_id, turn_id)
 

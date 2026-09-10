@@ -209,9 +209,7 @@ def _context():
 def test_agent_input_reads_object_definition_from_canonical_filename(tmp_path):
     object_dir = tmp_path / "ontologies" / "demo-ontology" / "objects"
     object_dir.mkdir(parents=True)
-    object_content = (
-        "---\n" "resource: object\n" "key: 正式对象\n" "canonical_key: formal-object\n" "---\n\n" "# 正式对象定义\n"
-    )
+    object_content = "---\nresource: object\nkey: 正式对象\ncanonical_key: formal-object\n---\n\n# 正式对象定义\n"
     (object_dir / "formal-object.md").write_text(object_content, encoding="utf-8")
     context = GraphSearchRuntimeContext(
         provider="neo4j",
@@ -1018,6 +1016,7 @@ def test_graph_agent_inherits_router_output_limit(monkeypatch):
             limits=SimpleNamespace(model_output_token_limit=900),
         )
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             calls.append((purpose, profile_id, workspace_id))
             return SimpleNamespace(
@@ -1049,6 +1048,7 @@ def test_graph_agent_inherits_router_output_limit(monkeypatch):
 
 def test_graph_agent_accepts_router_without_agent_config(monkeypatch):
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             del purpose, profile_id, workspace_id
             return SimpleNamespace(

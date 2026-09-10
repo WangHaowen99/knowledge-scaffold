@@ -44,6 +44,7 @@ _ONTOLOGY_LINK_RE = re.compile(r"\[[^\]]*\]\(ontology://(?P<resource>[a-z]+)/(?P
 class ResourceParser:
     """Parse one already-authorized UTF-8 ontology resource."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def parse(self, source: ResourceSource) -> ParsedResource:
         resource = str(source.resource or "").strip()
         if resource not in RESOURCE_TYPES:

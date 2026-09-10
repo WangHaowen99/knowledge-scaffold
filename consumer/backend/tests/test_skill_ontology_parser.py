@@ -636,7 +636,10 @@ def test_run_falls_back_to_argparse_parameters(tmp_path):
                 "    parser.add_argument('--target_item-code', required=True, help='TargetItem编码')",
                 "    parser.add_argument('--batch-code', action='append', required=True, help='在制生产批次，可重复传入多个')",
                 "    parser.add_argument('--quantity', type=float, help='需求数量')",
-                "    parser.add_argument('--equipment-model', help='Optional 设备型号 for STRUCTURE_LIST existence check')",
+                (
+                    "    parser.add_argument('--equipment-model', help='Optional 设备型号 for STRUCTURE_LIST existence"
+                    " check')"
+                ),
                 "    parser.add_argument('--verbose', action='store_true', help='Verbose output')",
                 "    parser.add_argument('--cache', action='store_false', help='Enable cache')",
                 "    return parser.parse_args()",
@@ -781,7 +784,11 @@ def test_run_uses_structured_script_parameter_comment(tmp_path):
         "\n".join(
             [
                 "# 工具流程: 供应商查询",
-                '# parameters: [{"name":"物料编号","flag":"--material-code","description":"物料编号","required":true,"type":"string","aliases":["material_code"]}]',
+                (
+                    "# parameters:"
+                    ' [{"name":"物料编号","flag":"--material-code","description":"物料编号","required":true,'
+                    '"type":"string","aliases":["material_code"]}]'
+                ),
                 "print('supplier')",
             ]
         ),

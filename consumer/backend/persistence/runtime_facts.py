@@ -178,9 +178,7 @@ class RuntimeFactsStore:
             if ontology_id:
                 filters.append("ontology_id=?")
                 parameters.append(ontology_id)
-            filters.append(
-                "((expires_at IS NOT NULL AND expires_at<=?) OR created_at<=?)"
-            )
+            filters.append("((expires_at IS NOT NULL AND expires_at<=?) OR created_at<=?)")
             parameters.extend([now.isoformat(), cutoff, limit])
             rows = connection.execute(
                 """
@@ -188,7 +186,9 @@ class RuntimeFactsStore:
                 FROM runtime_facts
                 WHERE {}
                 ORDER BY created_at, evidence_id LIMIT ?
-                """.format(" AND ".join(filters)),
+                """.format(
+                    " AND ".join(filters)
+                ),
                 parameters,
             ).fetchall()
             items = [dict(row) for row in rows]
@@ -211,8 +211,8 @@ class RuntimeFactsStore:
             "items": items,
         }
 
+    @staticmethod
     def _lookup_with_connection(
-        self,
         connection: sqlite3.Connection,
         workspace_id: str,
         evidence_id: str,

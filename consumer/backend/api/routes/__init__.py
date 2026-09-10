@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from agent.core.orchestrator import AgenticOrchestrator
 from api.auth.auth import get_current_user
@@ -60,7 +60,7 @@ ROUTERS = (
 
 _orchestrator: Optional[AgenticOrchestrator] = None
 _user_store_manager: Optional[UserStoreManager] = None
-_agent_execution_runtime = None
+_agent_execution_runtime: Any = None
 
 
 def register_routers(app) -> None:

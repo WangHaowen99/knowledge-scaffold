@@ -378,6 +378,7 @@ def test_workspace_llm_profiles_test_route_uses_workspace_private_payload(tmp_pa
     calls = []
 
     class _FakeResponse:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 

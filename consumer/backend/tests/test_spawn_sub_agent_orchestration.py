@@ -444,15 +444,13 @@ def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_pa
     (ontology_dir / "objects").mkdir(parents=True)
     (ontology_dir / "scripts").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
-        (
-            "kind: ontology-package\n"
-            "schema_version: 0.1\n"
-            "id: demo-ontology\n"
-            "name: Demo Ontology\n"
-            "description: Demo ontology for spawn-sub-agent tests\n"
-            "version: 1.0.0\n"
-            "language: zh-CN\n"
-        ),
+        "kind: ontology-package\n"
+        "schema_version: 0.1\n"
+        "id: demo-ontology\n"
+        "name: Demo Ontology\n"
+        "description: Demo ontology for spawn-sub-agent tests\n"
+        "version: 1.0.0\n"
+        "language: zh-CN\n",
         encoding="utf-8",
     )
     (ontology_dir / "operations" / "index.md").write_text("- demo-tool\n- child-tool\n", encoding="utf-8")

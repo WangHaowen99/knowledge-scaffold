@@ -119,8 +119,8 @@ class LLMService:
                 self._cancel_events[run_id] = event
             return event
 
+    @staticmethod
     def _raise_if_cancelled(
-        self,
         cancel_event: Optional[threading.Event],
         run_id: Optional[str],
     ) -> None:
@@ -191,7 +191,7 @@ class LLMService:
             return response_model.parse_obj(payload)
         return response_model(**payload)
 
-    def _make_request(
+    def _make_request(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         messages: List[Dict[str, Any]],
         stream: bool,
@@ -214,7 +214,7 @@ class LLMService:
             **kwargs,
         )
 
-    def _collect_response(
+    def _collect_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         response: Any,
         emit_func: Optional[Callable[..., None]] = None,
@@ -268,7 +268,7 @@ class LLMService:
             dispatch_reasoning_summary=_dispatch_wrapper,
         )
 
-    def _collect_stream_response(
+    def _collect_stream_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         response: Any,
         emit_func: Optional[Callable[..., None]] = None,
@@ -412,7 +412,8 @@ class LLMService:
         """
         if not self.is_configured:
             raise RuntimeError(
-                "LLM service not configured. Set LLM_BASE_URL and LLM_MODEL, or save an enabled model profile in system config."
+                "LLM service not configured. Set LLM_BASE_URL and LLM_MODEL, or save an enabled model profile in system"
+                " config."
             )
 
         cancel_event = self._get_cancel_event(run_id)

@@ -335,7 +335,8 @@ def run_evidence_sweeper_once(*, config: EvidenceConfig | None = None) -> int:
                 )
                 pointer = None
             logger.debug(
-                "Evidence sweeper snapshot workspace_id=%s ontology_id=%s pointer_status=%s pointer_revision=%s state_revision=%s",
+                "Evidence sweeper snapshot workspace_id=%s ontology_id=%s pointer_status=%s pointer_revision=%s"
+                " state_revision=%s",
                 workspace_id,
                 ontology_id,
                 (pointer or {}).get("status"),
@@ -367,7 +368,8 @@ def run_evidence_sweeper_once(*, config: EvidenceConfig | None = None) -> int:
                             or str(pointer.get("active_generation") or "") != plan["index_generation"]
                         )
                         logger.debug(
-                            "Evidence sweeper comparison workspace_id=%s ontology_id=%s revision=%s/%s epoch_match=%s generation_match=%s reconcile=%s",
+                            "Evidence sweeper comparison workspace_id=%s ontology_id=%s revision=%s/%s epoch_match=%s"
+                            " generation_match=%s reconcile=%s",
                             workspace_id,
                             ontology_id,
                             pointer_revision,

@@ -52,6 +52,7 @@ const WINDOW_PRESETS = [
 ];
 const PAGE_SIZE = 50;
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function GlobalObservabilityView({
   workspaceId = '',
   workspaces = [],

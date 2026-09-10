@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import unittest
 from collections.abc import Callable as CallableABC
 from pathlib import Path
@@ -9,8 +8,6 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Union, get_origin
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from deploy_synthetic_credentials import (  # noqa: E402
     AUTH_ADMIN_TOKEN,
@@ -20,7 +17,7 @@ from deploy_synthetic_credentials import (  # noqa: E402
     SHARED_SECRET,
     valid_environment,
 )
-from preflight_config import (  # noqa: E402
+from deploy.preflight_config import (
     ComposeConfigLoader,
     ComposeEnvFiles,
     _load_compose_config_json,
@@ -74,7 +71,7 @@ services:
             },
         }
         loader_patch = patch(
-            "preflight_config._load_compose_config_json",
+            "deploy.preflight_config._load_compose_config_json",
             return_value=(self.compose_config, []),
         )
         loader_patch.start()
@@ -103,7 +100,7 @@ services:
                 stderr="",
             )
 
-        with patch("preflight_config.subprocess.run", fake_run):
+        with patch("deploy.preflight_config.subprocess.run", fake_run):
             config, errors = _load_compose_config_json(
                 self.compose_file,
                 (self.env_file, legacy_env_file),
@@ -142,7 +139,7 @@ services:
                 )
             raise AssertionError(f"unexpected command: {command}")
 
-        with patch("preflight_config.subprocess.run", fake_run):
+        with patch("deploy.preflight_config.subprocess.run", fake_run):
             config, errors = _load_compose_config_json(
                 self.compose_file,
                 (self.env_file, legacy_env_file),
@@ -175,7 +172,7 @@ services:
                 return SimpleNamespace(returncode=1, stdout="", stderr="compose file invalid")
             raise AssertionError(f"unexpected command: {command}")
 
-        with patch("preflight_config.subprocess.run", fake_run):
+        with patch("deploy.preflight_config.subprocess.run", fake_run):
             config, errors = _load_compose_config_json(
                 self.compose_file,
                 self.env_file,

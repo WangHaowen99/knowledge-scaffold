@@ -88,7 +88,7 @@ def _write_object_alias_package(tmp_path, *, ambiguous=False):
     if ambiguous:
         rows.append("| 备选对象 | 备选物料 | 制造件 |")
     (objects_dir / "index.md").write_text(
-        "| object key | title | alias |\n" "| --- | --- | --- |\n{}\n".format("\n".join(rows)),
+        "| object key | title | alias |\n| --- | --- | --- |\n{}\n".format("\n".join(rows)),
         encoding="utf-8",
     )
     (objects_dir / "formal_object.md").write_text(
@@ -144,8 +144,7 @@ def test_non_retryable_graph_timeout_stops_the_main_agent_tool_loop(monkeypatch)
 
     async def fake_handle_business_data_search_async(**_kwargs):
         return (
-            '{"success":false,"engine":"graph_search_runtime",'
-            '"error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}'
+            '{"success":false,"engine":"graph_search_runtime","error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}'
         )
 
     monkeypatch.setattr(
@@ -640,7 +639,7 @@ def test_business_data_search_tool_stops_on_object_catalog_read_error(
     )
 
     assert source_called is False
-    assert outcome.content == ("Error: Failed to decode objects/index.md as UTF-8.")
+    assert outcome.content == "Error: Failed to decode objects/index.md as UTF-8."
     assert "object_context_usage" not in outcome.state_updates
 
 
@@ -685,7 +684,7 @@ def test_business_data_search_tool_rejects_invalid_utf8_mapping_before_provider(
     )
 
     assert source_called is False
-    assert outcome.content == ("Error: Failed to decode mappings/object-data-mappings.json as UTF-8.")
+    assert outcome.content == "Error: Failed to decode mappings/object-data-mappings.json as UTF-8."
     assert "object_context_usage" not in outcome.state_updates
 
 

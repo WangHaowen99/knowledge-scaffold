@@ -99,8 +99,8 @@ class GraphMappingResolver:
             allow_graph_extensions=False,
         )
 
+    @staticmethod
     def _resolve_from_object_frontmatter(
-        self,
         version_dir: Path,
         entity: str,
     ) -> Optional[GraphEntityMapping]:
@@ -211,16 +211,14 @@ def _select_provider_mapping(raw: Mapping[str, Any], provider: str) -> Mapping[s
 
 
 def _looks_like_object_data_mapping(raw: Mapping[str, Any]) -> bool:
-    return any(
-        key in raw
-        for key in (
-            "provider_alias",
-            "resource",
-            "fields",
-            "primary_key",
-            "policy",
-        )
+    mapping_keys = (
+        "provider_alias",
+        "resource",
+        "fields",
+        "primary_key",
+        "policy",
     )
+    return any(key in raw for key in mapping_keys)
 
 
 def _merge_graph_extension(raw: Mapping[str, Any]) -> dict[str, Any]:

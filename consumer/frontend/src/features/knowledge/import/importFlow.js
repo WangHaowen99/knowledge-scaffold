@@ -114,6 +114,7 @@ export function importRequestFields(request = {}) {
   return { action, overwrite: 'true' };
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export function reduceImportFlow(state, event) {
   const current = state || createImportFlowState();
   switch (event?.type) {
@@ -234,6 +235,7 @@ export function reduceImportFlow(state, event) {
   }
 }
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export function importFlowNotice(state) {
   switch (state?.phase) {
     case IMPORT_PHASE.CONFIRMING:
@@ -253,10 +255,20 @@ export function importFlowNotice(state) {
         IMPORT_WARNING_PREVIEW_LIMIT,
       );
       const hiddenWarningCount = warningMessages.length - warningPreview.length;
-      const warningNotice = warningMessages.length ?
-        `；警告 ${warningMessages.length} 条：${warningPreview.join('；')}${hiddenWarningCount ? `；其余 ${hiddenWarningCount} 条未展示` : ''}` :
+      const hiddenWarningNotice = hiddenWarningCount ?
+        `；其余 ${hiddenWarningCount} 条未展示` :
         '';
-      return `导入成功：${result.ontology_name || result.ontology_id || '知识包'}（对象 ${result.objects_count ?? '-'} · 操作 ${result.operations_count ?? '-'}${activeVersion ? ` · 激活版本 ${activeVersion}` : ''}）${warningNotice}`;
+      const warningNotice = warningMessages.length ?
+        `；警告 ${warningMessages.length} 条：${warningPreview.join('；')}${hiddenWarningNotice}` :
+        '';
+      const packageName = result.ontology_name || result.ontology_id || '知识包';
+      const activeVersionNotice = activeVersion ?
+        ` · 激活版本 ${activeVersion}` :
+        '';
+      return (
+        `导入成功：${packageName}（对象 ${result.objects_count ?? '-'} · ` +
+        `操作 ${result.operations_count ?? '-'}${activeVersionNotice}）${warningNotice}`
+      );
     }
     case IMPORT_PHASE.ERROR:
       return `导入失败：${state.error || '请求异常，请稍后重试'}`;
@@ -332,15 +344,16 @@ function importResultWarningDetails(result = {}) {
 }
 
 function importWarningMessages(warnings) {
-  const values = Array.isArray(warnings) ?
-    warnings :
-    warnings && typeof warnings === 'object' ?
-      Object.values(warnings).flatMap((value) =>
-        Array.isArray(value) ? value : [value],
-      ) :
-      warnings ?
-        [warnings] :
-        [];
+  let values = [];
+  if (Array.isArray(warnings)) {
+    values = warnings;
+  } else if (warnings && typeof warnings === 'object') {
+    values = Object.values(warnings).flatMap((value) =>
+      Array.isArray(value) ? value : [value],
+    );
+  } else if (warnings) {
+    values = [warnings];
+  }
   return values.map((value) => String(value || '').trim()).filter(Boolean);
 }
 

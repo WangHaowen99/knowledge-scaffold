@@ -83,12 +83,12 @@ def _write_package(root: Path, *, parser=False, data_access="none") -> Path:
         encoding="utf-8",
     )
     (ontology_dir / "scripts" / "query_helper.py").write_text(
-        "def normalize_code(value):\n" "    return str(value)\n",
+        "def normalize_code(value):\n    return str(value)\n",
         encoding="utf-8",
     )
     if parser:
         (ontology_dir / "scripts" / "query_parser.py").write_text(
-            "import json\n" "print(json.dumps({'matched': True, 'arguments': {}, 'issues': []}))\n",
+            "import json\nprint(json.dumps({'matched': True, 'arguments': {}, 'issues': []}))\n",
             encoding="utf-8",
         )
     (ontology_dir / "schemas" / "query.input.json").write_text(
@@ -131,7 +131,7 @@ def _write_solver_only_package(root: Path, *, schema_version="0.2") -> Path:
         encoding="utf-8",
     )
     (ontology_dir / "operations" / "query.md").write_text(
-        "---\n" "resource: operation\n" "key: query\n" "execution:\n" "  mode: solver_workflow\n" "---\n",
+        "---\nresource: operation\nkey: query\nexecution:\n  mode: solver_workflow\n---\n",
         encoding="utf-8",
     )
     return ontology_dir
@@ -165,7 +165,7 @@ def _add_runtime_session_parameter(
     descriptor_path = ontology_dir / "scripts" / "query.md"
     descriptor = descriptor_path.read_text(encoding="utf-8")
     descriptor = descriptor.replace(
-        "| 参数 key | CLI 参数 | 类型 | 必填 |\n" "| --- | --- | --- | --- |\n" "| code | --code | string | 是 |\n",
+        "| 参数 key | CLI 参数 | 类型 | 必填 |\n| --- | --- | --- | --- |\n| code | --code | string | 是 |\n",
         "| 参数 key | CLI 参数 | 类型 | 必填 | runtime |\n"
         "| --- | --- | --- | --- | --- |\n"
         "| code | --code | string | 是 | 否 |\n"
@@ -176,7 +176,7 @@ def _add_runtime_session_parameter(
     handler_path.write_text(
         handler_path.read_text(encoding="utf-8").replace(
             "parser.add_argument('--code', default='ok')\n",
-            "parser.add_argument('--code', default='ok')\n" "parser.add_argument('--session-id', required=True)\n",
+            "parser.add_argument('--code', default='ok')\nparser.add_argument('--session-id', required=True)\n",
         ),
         encoding="utf-8",
     )
@@ -193,7 +193,7 @@ def _add_aliased_runtime_session_parameter(ontology_dir: Path) -> None:
     descriptor_path = ontology_dir / "scripts" / "query.md"
     descriptor = descriptor_path.read_text(encoding="utf-8")
     descriptor = descriptor.replace(
-        "| 参数 key | CLI 参数 | 类型 | 必填 |\n" "| --- | --- | --- | --- |\n" "| code | --code | string | 是 |\n",
+        "| 参数 key | CLI 参数 | 类型 | 必填 |\n| --- | --- | --- | --- |\n| code | --code | string | 是 |\n",
         "| 参数 key | CLI 参数 | 类型 | 必填 | placeholder |\n"
         "| --- | --- | --- | --- | --- |\n"
         "| code | --code | string | 是 | |\n"
@@ -204,7 +204,7 @@ def _add_aliased_runtime_session_parameter(ontology_dir: Path) -> None:
     handler_path.write_text(
         handler_path.read_text(encoding="utf-8").replace(
             "parser.add_argument('--code', default='ok')\n",
-            "parser.add_argument('--code', default='ok')\n" "parser.add_argument('--sid', required=True)\n",
+            "parser.add_argument('--code', default='ok')\nparser.add_argument('--sid', required=True)\n",
         ),
         encoding="utf-8",
     )
@@ -1513,7 +1513,7 @@ def test_checkpoint_preserves_all_parser_issues_and_resumes_them_in_order(
     handler_path.write_text(
         handler_path.read_text(encoding="utf-8").replace(
             "parser.add_argument('--code', default='ok')\n",
-            "parser.add_argument('--code', default='ok')\n" "parser.add_argument('--region')\n",
+            "parser.add_argument('--code', default='ok')\nparser.add_argument('--region')\n",
         ),
         encoding="utf-8",
     )
@@ -1845,7 +1845,7 @@ def test_workspace_provider_does_not_grant_provider_network_egress_to_handler(
     assert "sandbox_network_domain_endpoint" not in handler_call
     assert SCRIPT_BUSINESS_DATA_CONNECTION_ENV not in handler_call["env_overrides"]
     assert DETERMINISTIC_PROVIDER_SOCKET_ENV in handler_call["env_overrides"]
-    assert outcome.envelope["execution"]["dependencies"][0]["scope_digest"] == ("sha256:scope")
+    assert outcome.envelope["execution"]["dependencies"][0]["scope_digest"] == "sha256:scope"
 
 
 def test_workspace_provider_broker_failure_stops_before_handler(tmp_path, monkeypatch):
@@ -2605,6 +2605,7 @@ def test_artifact_persistence_rejects_and_rolls_back_wrong_digest(tmp_path, monk
         def __init__(self):
             self.rolled_back = []
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def __call__(self, _name, _text, media_type):
             return {
                 "output_ref": "wrong-digest-ref",

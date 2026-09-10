@@ -144,6 +144,7 @@ async function withRenderedPanel(run) {
   }
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 test('workspace switch never projects the previous ontology list into a loading or failed scope', async () => {
   const workspaceBStatus = deferred();
   const workspaceBTokens = deferred();

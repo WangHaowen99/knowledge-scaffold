@@ -6,11 +6,20 @@ import subprocess
 import tarfile
 from pathlib import Path
 
+import pytest
+
 from deploy_synthetic_credentials import AUTH_ADMIN_TOKEN, BOOTSTRAP_ADMIN_PASSWORD
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
 MODELING_ROOT = REPO_ROOT / "modeling"
+
+
+def _bash_executable() -> str:
+    bash_path = shutil.which("bash")
+    if bash_path is None:
+        pytest.skip("Bash is required for deployment script tests")
+    return str(Path(bash_path).resolve())
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -113,13 +122,15 @@ def test_modeling_deploy_rejects_running_consumer_with_different_token() -> None
     script = MODELING_ROOT / "deploy" / "deploy.sh"
     result = subprocess.run(
         [
-            "bash",
+            _bash_executable(),
             "-c",
-            'source <(sed \'/^if \\[ "\\$#" -gt 0 \\]; then/,$d\' "$MODELING_DEPLOY"); '
-            'MODELING_SERVICE_TOKEN="modeling-token-with-at-least-32-characters"; '
-            'consumer_container() { printf "onto-agent-backend\\n"; }; '
-            'docker() { printf "MODELING_SERVICE_TOKEN=consumer-token-with-at-least-32-characters\\n"; }; '
-            "verify_consumer_service_token",
+            (
+                'source <(sed \'/^if \\[ "\\$#" -gt 0 \\]; then/,$d\' "$MODELING_DEPLOY"); '
+                'MODELING_SERVICE_TOKEN="modeling-token-with-at-least-32-characters"; '
+                'consumer_container() { printf "onto-agent-backend\\n"; }; '
+                'docker() { printf "MODELING_SERVICE_TOKEN=consumer-token-with-at-least-32-characters\\n"; }; '
+                "verify_consumer_service_token"
+            ),
         ],
         env={**os.environ, "MODELING_DEPLOY": str(script)},
         text=True,
@@ -142,7 +153,7 @@ def test_workbench_agent_is_built_and_described_in_release_manifests() -> None:
     assert "mw-modeling-agent-${VERSION}.tar" in modeling_build
     for script in (modeling_build, full_build):
         assert '"modeling_agent_image": "mw-modeling-agent:${VERSION}"' in script
-        assert ('"modeling_agent_image_tar": ' '"images/mw-modeling-agent-${VERSION}.tar"') in script
+        assert '"modeling_agent_image_tar": "images/mw-modeling-agent-${VERSION}.tar"' in script
 
 
 def test_modeling_agent_pip_download_is_resilient_and_configurable() -> None:
@@ -206,7 +217,7 @@ exit 0
     )
 
     result = subprocess.run(
-        ["bash", str(modeling_root / "build.sh"), "v-test", "amd"],
+        [_bash_executable(), str(modeling_root / "build.sh"), "v-test", "amd"],
         env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         text=True,
         capture_output=True,
@@ -224,7 +235,7 @@ exit 0
         manifest = json.load(manifest_file)
     assert manifest["modeling_image"] == "mw-modeling:v-test"
     assert manifest["modeling_agent_image"] == "mw-modeling-agent:v-test"
-    assert manifest["modeling_agent_image_tar"] == ("images/mw-modeling-agent-v-test.tar")
+    assert manifest["modeling_agent_image_tar"] == "images/mw-modeling-agent-v-test.tar"
 
 
 def test_source_deploy_checks_agent_and_workbench_entrypoint() -> None:
@@ -258,9 +269,9 @@ def test_source_deploy_generates_missing_mcp_secret_without_printing_it(
 
     result = subprocess.run(
         [
-            "bash",
+            _bash_executable(),
             "-c",
-            'source "$DEPLOY_STACK" >/dev/null; ' 'CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_mcp_token_secret',
+            'source "$DEPLOY_STACK" >/dev/null; CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_mcp_token_secret',
         ],
         env={
             **os.environ,
@@ -291,9 +302,9 @@ def test_source_deploy_generates_modeling_service_token_without_printing_it(
 
     result = subprocess.run(
         [
-            "bash",
+            _bash_executable(),
             "-c",
-            'source "$DEPLOY_STACK" >/dev/null; ' 'CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_modeling_service_token',
+            'source "$DEPLOY_STACK" >/dev/null; CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_modeling_service_token',
         ],
         env={
             **inherited,
@@ -333,9 +344,9 @@ def test_source_deploy_only_blocks_missing_auth_config_before_docker(
 
     result = subprocess.run(
         [
-            "bash",
+            _bash_executable(),
             "-c",
-            'source "$DEPLOY_STACK" >/dev/null; ' 'CONSUMER_DIR="$TEST_CONSUMER_DIR"; cmd_up',
+            'source "$DEPLOY_STACK" >/dev/null; CONSUMER_DIR="$TEST_CONSUMER_DIR"; cmd_up',
         ],
         env={
             **os.environ,
@@ -375,16 +386,18 @@ def test_source_deploy_allows_admin_to_configure_llm_after_startup(
 
     result = subprocess.run(
         [
-            "bash",
+            _bash_executable(),
             "-c",
-            'source "$DEPLOY_STACK" >/dev/null; '
-            'CONSUMER_DIR="$TEST_CONSUMER_DIR"; '
-            "consumer_compose() { :; }; modeling_compose() { :; }; "
-            "ensure_jiuwenbox_image() { :; }; "
-            "wait_for_container() { :; }; wait_http() { :; }; "
-            'detect_consumer_network() { printf "test-network\\n"; }; '
-            'detect_jiuwenbox_socket_volume() { printf "test-socket-volume\\n"; }; '
-            "cmd_up",
+            (
+                'source "$DEPLOY_STACK" >/dev/null; '
+                'CONSUMER_DIR="$TEST_CONSUMER_DIR"; '
+                "consumer_compose() { :; }; modeling_compose() { :; }; "
+                "ensure_jiuwenbox_image() { :; }; "
+                "wait_for_container() { :; }; wait_http() { :; }; "
+                'detect_consumer_network() { printf "test-network\\n"; }; '
+                'detect_jiuwenbox_socket_volume() { printf "test-socket-volume\\n"; }; '
+                "cmd_up"
+            ),
         ],
         env={
             **inherited,

@@ -59,14 +59,14 @@ class SkillLoader:
             skill_file = skill_path
 
         if not skill_file.exists():
-            logger.warning(f"Skill file not found: {skill_file}")
+            logger.warning("Skill file not found: %s", skill_file)
             return None
 
         try:
             content = skill_file.read_text(encoding="utf-8")
             return SkillLoader.parse_skill(content, str(skill_file))
         except Exception as e:
-            logger.error(f"Failed to load skill from {skill_file}: {e}")
+            logger.error("Failed to load skill from %s: %s", skill_file, e)
             return None
 
     @staticmethod
@@ -95,7 +95,7 @@ class SkillLoader:
         match = re.match(frontmatter_pattern, content, re.DOTALL)
 
         if not match:
-            logger.error(f"No valid YAML frontmatter found in {file_path}")
+            logger.error("No valid YAML frontmatter found in %s", file_path)
             return None
 
         yaml_content = match.group(1)
@@ -104,15 +104,15 @@ class SkillLoader:
         try:
             metadata = yaml.safe_load(yaml_content)
         except yaml.YAMLError as e:
-            logger.error(f"Failed to parse YAML in {file_path}: {e}")
+            logger.error("Failed to parse YAML in %s: %s", file_path, e)
             return None
 
         # Validate required fields
         if "name" not in metadata:
-            logger.error(f"Missing 'name' field in {file_path}")
+            logger.error("Missing 'name' field in %s", file_path)
             return None
         if "description" not in metadata:
-            logger.error(f"Missing 'description' field in {file_path}")
+            logger.error("Missing 'description' field in %s", file_path)
             return None
 
         # Create skill object
@@ -124,10 +124,10 @@ class SkillLoader:
                 file_path=file_path,
                 allowed_tools=metadata.get("allowed-tools"),
             )
-            logger.info(f"Successfully loaded skill: {skill.name}")
+            logger.info("Successfully loaded skill: %s", skill.name)
             return skill
         except Exception as e:
-            logger.error(f"Failed to create Skill object from {file_path}: {e}")
+            logger.error("Failed to create Skill object from %s: %s", file_path, e)
             return None
 
 
@@ -158,10 +158,10 @@ class SkillRegistry:
 
         for skill_dir in self.skill_dirs:
             if not skill_dir.exists():
-                logger.warning(f"Skill directory does not exist: {skill_dir}")
+                logger.warning("Skill directory does not exist: %s", skill_dir)
                 continue
 
-            logger.info(f"Scanning for skills in: {skill_dir}")
+            logger.info("Scanning for skills in: %s", skill_dir)
 
             # Look for subdirectories containing SKILL.md
             for item in sorted(skill_dir.iterdir(), key=lambda path: path.name.lower()):
@@ -179,7 +179,7 @@ class SkillRegistry:
                                 continue
                             skills[skill.name] = skill
                             loaded_count += 1
-                            logger.info(f"Registered skill '{skill.name}' from {item.name}")
+                            logger.info("Registered skill '%s' from %s", skill.name, item.name)
 
         return skills, loaded_count
 
@@ -202,7 +202,7 @@ class SkillRegistry:
             self.skills = skills
             self._source_signature = stable_signature
 
-        logger.info(f"Skill discovery complete: {loaded_count} skills loaded")
+        logger.info("Skill discovery complete: %s skills loaded", loaded_count)
         return loaded_count
 
     def discover_skills(self) -> int:
@@ -394,7 +394,10 @@ def build_skills_section(*, workspace_id: Optional[str] = None) -> str:
 
     lines = [
         "## Skills",
-        "Available skills are listed in the 'Available-Skills' section below. When a skill materially helps the task, load it with `skill(skill_name='<name>', resource='root')`.",
+        (
+            "Available skills are listed in the 'Available-Skills' section below. When a skill materially helps the"
+            " task, load it with `skill(skill_name='<name>', resource='root')`."
+        ),
         "<Available-Skills>",
     ]
 

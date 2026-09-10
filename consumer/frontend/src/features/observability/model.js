@@ -511,7 +511,10 @@ export function formatCacheHit(row = {}) {
   ) {
     return '-';
   }
-  return `${formatMetric(row.llm_cache_hit_tokens)} / ${formatMetric(row.llm_cache_total_input_tokens)} · ${formatPercent(row.llm_cache_hit_rate)}`;
+  const hitTokens = formatMetric(row.llm_cache_hit_tokens);
+  const totalTokens = formatMetric(row.llm_cache_total_input_tokens);
+  const hitRate = formatPercent(row.llm_cache_hit_rate);
+  return `${hitTokens} / ${totalTokens} · ${hitRate}`;
 }
 
 export function shortId(value, maximum = 18) {

@@ -140,6 +140,7 @@ def test_independent_verification_rejects_verifier_identity_divergence():
 
 def test_independent_verification_maps_unknown_verifier_failures_to_runtime_error():
     class _ExplodingVerifier:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def verify(self, **kwargs):
             raise RuntimeError("synthetic verifier failure")
 

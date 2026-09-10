@@ -445,12 +445,12 @@ function toLinePath(points, key) {
 }
 
 function pointLabel(point, index, total) {
-  if (
+  const hideIntermediateLabel =
     total > 10 &&
     index !== 0 &&
     index !== total - 1 &&
-    index % Math.ceil(total / 6) !== 0
-  ) {
+    index % Math.ceil(total / 6) !== 0;
+  if (hideIntermediateLabel) {
     return '';
   }
   if (point.turn_id != null) {

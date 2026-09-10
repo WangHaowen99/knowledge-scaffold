@@ -5,16 +5,12 @@ import json
 import logging
 import logging.handlers
 import os
-import sys
 from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
-
 import utils.logging as logging_utils
 
 DatePartitionedRotatingFileHandler = logging_utils.DatePartitionedRotatingFileHandler

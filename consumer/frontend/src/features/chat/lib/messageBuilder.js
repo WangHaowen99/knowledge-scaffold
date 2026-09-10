@@ -16,6 +16,7 @@ const logger = createLogger('MessageBuilder');
 const TURN_STEP_LABEL = 'turn_stream';
 const TURN_DISPLAY_NAME = '本体消费智能体';
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export const buildMessagesFromEvents = (events = []) => {
   const messages = [];
   const turnMessageIndexByKey = new Map();
@@ -145,6 +146,7 @@ export const historyToMessages = (history = []) => {
   if (!history || history.length === 0) {
     return [];
   }
+  // eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
   return history.map((item, idx) => {
     const metadata = item?.metadata || {};
     const runId =

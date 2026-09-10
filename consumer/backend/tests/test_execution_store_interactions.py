@@ -223,6 +223,7 @@ def test_execution_store_summary_failure_does_not_rollback_turn(tmp_path):
         def __init__(self):
             self.degraded_reason = None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def update_runtime(self, _session_id, **_fields):
             raise OSError("synthetic index failure")
 
@@ -1140,7 +1141,7 @@ def test_protocol_run_id_is_atomic_across_concurrent_sessions(
     assert sum(int(created) for _turn, created in admissions) == 1
     turns = store.list_turns_by_protocol("a2a")
     assert len(turns) == 1
-    assert turns[0]["protocol_metadata"]["external_run_id"] == ("external-task-shared")
+    assert turns[0]["protocol_metadata"]["external_run_id"] == "external-task-shared"
 
 
 def test_protocol_run_id_reservation_recognizes_durable_turn_after_reload(tmp_path):

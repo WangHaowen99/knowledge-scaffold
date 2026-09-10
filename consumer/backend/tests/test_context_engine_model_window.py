@@ -239,6 +239,7 @@ def test_real_react_fake_model_keeps_long_interleaved_tool_round_intact():
 class TestContextEngineWindowByRounds:
     """Verify ContextEngine truncates history by ``default_window_round_num``."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_full_history_returned_when_round_num_exceeds_history(self):
         """When default_window_round_num >= total rounds, all messages survive."""
         config = ContextEngineConfig(
@@ -260,6 +261,7 @@ class TestContextEngineWindowByRounds:
         assert msgs[0].content == "user turn 0"
         assert msgs[-1].content == "assistant turn 2"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_truncates_to_last_n_rounds(self):
         """Only the last N rounds are retained."""
         config = ContextEngineConfig(
@@ -283,6 +285,7 @@ class TestContextEngineWindowByRounds:
         assert msgs[2].content == "user turn 4"
         assert msgs[3].content == "assistant turn 4"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_truncates_to_one_round(self):
         config = ContextEngineConfig(
             max_context_message_num=None,
@@ -302,6 +305,7 @@ class TestContextEngineWindowByRounds:
         assert msgs[0].content == "user turn 4"
         assert msgs[1].content == "assistant turn 4"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_system_messages_prepended(self):
         config = ContextEngineConfig(
             max_context_message_num=None,
@@ -336,6 +340,7 @@ class TestContextEngineWindowByRounds:
 class TestToolCallPairingPreserved:
     """Verify tool-call sequences are never split across the window boundary."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_tool_round_not_split(self):
         """A round with tool calls must stay fully within the window."""
         config = ContextEngineConfig(
@@ -365,6 +370,7 @@ class TestToolCallPairingPreserved:
         assert msgs[3].role == "assistant"
         assert msgs[3].content == "final answer 2"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_two_tool_rounds_preserved(self):
         """Two tool rounds must both be fully present."""
         config = ContextEngineConfig(
@@ -391,6 +397,7 @@ class TestToolCallPairingPreserved:
         assert msgs[-2].role == "tool"
         assert msgs[-2].tool_call_id == "call-3"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_tool_call_id_matching(self):
         """Every tool message must have a matching preceding assistant tool_call."""
         config = ContextEngineConfig(
@@ -418,9 +425,9 @@ class TestToolCallPairingPreserved:
         # Every tool message must have a matching tool_call_id
         for msg in msgs:
             if msg.role == "tool":
-                assert msg.tool_call_id in assistant_tool_call_ids, (
-                    f"Tool message with tool_call_id={msg.tool_call_id} " f"has no matching assistant tool_call"
-                )
+                assert (
+                    msg.tool_call_id in assistant_tool_call_ids
+                ), f"Tool message with tool_call_id={msg.tool_call_id} has no matching assistant tool_call"
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +438,7 @@ class TestToolCallPairingPreserved:
 class TestAskUserRecoveryEffectiveRounds:
     """Verify the ask-user recovery scenario uses max(configured, 2) rounds."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_configured_one_becomes_two_for_resume(self):
         """When configured_rounds=1 and resume is active, the ContextEngine
         must receive default_window_round_num=2 (via _resolve_effective_context_max_rounds).
@@ -460,6 +468,7 @@ class TestAskUserRecoveryEffectiveRounds:
         assert msgs[0].content == "user turn 1"
         assert msgs[-1].content == "assistant turn 2"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_configured_two_stays_two_for_resume(self):
         from agent.core.jiuwen_engine import _resolve_effective_context_max_rounds
 
@@ -483,6 +492,7 @@ class TestAskUserRecoveryEffectiveRounds:
         msgs = window.get_messages()
         assert len(msgs) == 4  # 2 rounds
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_configured_five_stays_five_for_resume(self):
         from agent.core.jiuwen_engine import _resolve_effective_context_max_rounds
 
@@ -515,6 +525,7 @@ class TestAskUserRecoveryEffectiveRounds:
 class TestNoHardMessageLimit:
     """Verify max_context_message_num=None (factory setting) does not truncate."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_large_history_within_single_round_not_truncated(self):
         """A single round with >200 messages must not be truncated when
         max_context_message_num=None."""
@@ -561,6 +572,7 @@ class TestNoHardMessageLimit:
         # All 502 messages should survive: 1 user + 250*(assistant+tool) + 1 final
         assert len(msgs) == 502
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_hard_limit_truncates_when_set(self):
         """When max_context_message_num is set, it enforces a hard cap."""
         config = ContextEngineConfig(

@@ -46,6 +46,16 @@ import { ontologyRequestPolicy } from './providers/ontologyRequestPolicy';
 import { clearWorkspaceRuntime } from './providers/workspaceRuntime';
 import './appShell.css';
 
+function importActionLabel(importing, reconciling) {
+  if (importing) {
+    return '导入中…';
+  }
+  if (reconciling) {
+    return '核对结果中…';
+  }
+  return '导入知识包';
+}
+
 const KnowledgeWorkbench = lazy(
   () => import('../features/knowledge/KnowledgeWorkbench'),
 );
@@ -66,6 +76,7 @@ const SURFACES = {
 };
 const EMPTY_TRACE_METADATA = Object.freeze({});
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function AppShell() {
   const auth = useAuthContext();
   const {
@@ -160,13 +171,13 @@ export default function AppShell() {
 
   // 每次新登录弹出操作向导（会话级标记，跳过/完成后本次不再弹）
   useEffect(() => {
-    if (
+    const wizardUnavailable =
       status !== 'authenticated' ||
       !workspacesLoaded ||
       workspacesLoading ||
       workspacesError ||
-      wizardSeen()
-    ) {
+      wizardSeen();
+    if (wizardUnavailable) {
       return undefined;
     }
     const timer = setTimeout(() => setWizardOpen(true), 0);
@@ -259,6 +270,8 @@ export default function AppShell() {
       } else if (!event.shiftKey && document.activeElement === last) {
         event.preventDefault();
         first.focus();
+      } else {
+        return;
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -369,6 +382,38 @@ export default function AppShell() {
   const mobileNavigationInert =
     isNarrowViewport && (!mobileNavOpen || wizardOpen);
   const mainContentInert = isNarrowViewport && mobileNavOpen;
+  let workspaceBlockedView;
+  if (!workspacesLoaded || workspacesLoading) {
+    workspaceBlockedView = <SkeletonState rows={4} label="正在加载工作空间" />;
+  } else if (workspacesError) {
+    workspaceBlockedView = (
+      <EmptyState
+        title="工作空间加载失败"
+        description={workspacesError}
+        action={
+          <button className="btn" type="button" onClick={reloadWorkspaces}>
+            重新加载
+          </button>
+        }
+      />
+    );
+  } else {
+    workspaceBlockedView = (
+      <EmptyState
+        title="尚无可用工作空间"
+        description="创建第一个工作空间后，即可配置模型、导入知识包并开始对话。"
+        action={canCreateWorkspace ? (
+          <button
+            className="btn btn-p"
+            type="button"
+            onClick={() => navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' })}
+          >
+            新建工作空间
+          </button>
+        ) : undefined}
+      />
+    );
+  }
 
   return (
     <div className={`mwr shell ${sideCollapsed ? 'side-collapsed' : ''}`}>
@@ -564,11 +609,7 @@ export default function AppShell() {
                 onClick={() => kbImportPicker.open()}
               >
                 <Upload size={14} />
-                {kb.importing ?
-                  '导入中…' :
-                  kb.importReconciling ?
-                    '核对结果中…' :
-                    '导入知识包'}
+                {importActionLabel(kb.importing, kb.importReconciling)}
               </button>
               <input
                 ref={kbImportPicker.inputRef}
@@ -656,45 +697,7 @@ export default function AppShell() {
           <div key={surface} className={`surface-stage surface-${surface}`}>
             {workspaceSurfaceBlocked && (
               <div className="workspace-empty-state">
-                {!workspacesLoaded || workspacesLoading ? (
-                  <SkeletonState rows={4} label="正在加载工作空间" />
-                ) : workspacesError ? (
-                  <EmptyState
-                    title="工作空间加载失败"
-                    description={workspacesError}
-                    action={
-                      <button
-                        className="btn"
-                        type="button"
-                        onClick={reloadWorkspaces}
-                      >
-                        重新加载
-                      </button>
-                    }
-                  />
-                ) : (
-                  <EmptyState
-                    title="尚无可用工作空间"
-                    description="创建第一个工作空间后，即可配置模型、导入知识包并开始对话。"
-                    action={
-                      canCreateWorkspace ? (
-                        <button
-                          className="btn btn-p"
-                          type="button"
-                          onClick={() =>
-                            navigate({
-                              surface: 'config',
-                              scope: 'global',
-                              sec: 'wsmgmt',
-                            })
-                          }
-                        >
-                          新建工作空间
-                        </button>
-                      ) : undefined
-                    }
-                  />
-                )}
+                {workspaceBlockedView}
               </div>
             )}
             {surface === 'chat' && workspaceDataReady && (

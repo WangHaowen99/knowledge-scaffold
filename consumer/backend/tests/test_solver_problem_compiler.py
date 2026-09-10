@@ -12,6 +12,7 @@ from solver_coordination.problem_families.registry import ProblemFamilyRegistry
 class _SyntheticAdapter:
     family_key = "synthetic_family.v1"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, *, capability, normalized_input, fact_snapshot):
         model = capability["decision_model"]
         return {
@@ -26,6 +27,7 @@ class _SyntheticAdapter:
 class _ExplodingAdapter:
     family_key = "exploding_family.v1"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, **kwargs):
         raise RuntimeError("synthetic adapter failure")
 
@@ -33,6 +35,7 @@ class _ExplodingAdapter:
 class _DefaultingAdapter:
     family_key = "synthetic_family.v1"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, *, capability, normalized_input, fact_snapshot):
         model = capability.get("decision_model", {}) if isinstance(capability, dict) else {}
         return {
@@ -54,6 +57,7 @@ class _LockedModelLoader:
 
 
 class _RegistryDouble:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, family_key, **kwargs):
         assert family_key == "synthetic_family.v1"
         return _SyntheticAdapter().compile_problem(**kwargs)

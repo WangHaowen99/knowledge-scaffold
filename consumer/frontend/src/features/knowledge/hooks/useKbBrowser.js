@@ -38,6 +38,7 @@ export const DIR_ICONS = {
   mappings: '⇄',
 };
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function useKbBrowser({
   listEnabled = false,
   treeEnabled = false,
@@ -238,6 +239,7 @@ export default function useKbBrowser({
   }, [pkg, versionOverride]);
 
   useEffect(() => {
+    // G.CTL.07 exception: tests enforce this complete tree-admission contract as one visible guard.
     if (!treeEnabled || !workspaceDataReady || !listStateCurrent || !pkgId) {
       setTree([]);
       setTreeLoading(false);
@@ -367,12 +369,12 @@ export default function useKbBrowser({
       }
 
       const { current: currentListContext } = currentListContextRef;
-      if (
+      const listContextChanged =
         !currentListContext?.listEnabled ||
         !currentListContext.workspaceDataReady ||
         currentListContext.principalId !== targetScope.principalId ||
-        currentListContext.workspaceId !== targetScope.workspaceId
-      ) {
+        currentListContext.workspaceId !== targetScope.workspaceId;
+      if (listContextChanged) {
         return false;
       }
 

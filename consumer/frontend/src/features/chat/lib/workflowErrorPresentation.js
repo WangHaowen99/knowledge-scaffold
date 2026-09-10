@@ -3,6 +3,7 @@ const CANCELLED_STATUSES = new Set(['aborted', 'cancelled', 'canceled']);
 const includesAny = (value, fragments) =>
   fragments.some((fragment) => value.includes(fragment));
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export function getWorkflowErrorPresentation(rawError, options = {}) {
   const detail = String(rawError || '').trim();
   const normalized = detail.toLowerCase();

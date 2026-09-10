@@ -153,6 +153,7 @@ def test_offload_pool_propagates_context_and_run_observability(monkeypatch):
             def __enter__(self):
                 profiled_runs.append((self.run_id, threading.current_thread().name))
 
+            # pylint: disable-next=add-staticmethod-or-classmethod-decorator
             def __exit__(self, exc_type, exc, traceback):
                 return False
 

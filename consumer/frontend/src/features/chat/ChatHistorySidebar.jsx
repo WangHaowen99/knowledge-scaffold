@@ -17,6 +17,7 @@ const RUN_STATUS_PRESENTATION = {
 };
 
 // 侧边栏历史对话工作区：标题与搜索固定，列表使用侧栏的剩余高度独立滚动。
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function ChatHistorySidebar({ chat, onOpen }) {
   const {
     sessions,

@@ -79,6 +79,16 @@ RUNS_MAX_CONCURRENCY = max(1, int(get_env("RUNS_MAX_CONCURRENCY", "4")))
 WORKSPACE_ID = get_env("WORKSPACE_ID", "default")
 
 _TEST_CASE_DIR = _TEST_DIR
+_TOOL_THINKING_MARKERS = (
+    "加载本体",
+    "执行脚本",
+    "调用工具",
+    "调用故障",
+    "调用产品",
+    "ontology_context",
+    "execute_script",
+    "tool_call",
+)
 
 _CASES_JSON_PATH = os.path.join(_TEST_CASE_DIR, "original_cases", "cases.json")
 
@@ -152,12 +162,18 @@ def _llm_check_chinese_intrusion(text: str, target_lang: str) -> dict | None:
     prompt = (
         "You are a language detection expert. Determine whether the following text contains "
         "Chinese (Mandarin) content that is NOT part of the expected language.\n"
-        "Expected language: " + lang_name + " (" + target_lang + ").\n"
-        "Note: " + lang_name + " may use CJK characters that look similar to Chinese. "
+        "Expected language: "
+        + lang_name
+        + " ("
+        + target_lang
+        + ").\nNote: "
+        + lang_name
+        + " may use CJK characters that look similar to Chinese. "
         "Distinguish based on vocabulary, grammar, and context.\n\n"
         "Respond in JSON format:\n"
         '{"has_chinese": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}\n\n'
-        "Text:\n" + sample
+        "Text:\n"
+        + sample
     )
     try:
         response = client.chat.completions.create(
@@ -1346,7 +1362,7 @@ def parse_sse_stream(response_text: str) -> dict:
 
                 elif event_type == "interaction.requested":
                     pending_interaction = {
-                        "interaction_id": (payload.get("interaction_id") or payload.get("id")),
+                        "interaction_id": payload.get("interaction_id") or payload.get("id"),
                         "type": payload.get("type") or "input",
                         "prompt": payload.get("prompt") or payload.get("text") or "",
                         "options": list(payload.get("options") or []),
@@ -1601,11 +1617,11 @@ def _should_report_finding(severity: str) -> bool:
 
 
 def _detect_chinese_in_events(raw_events: list[dict], target_lang: str) -> dict:
-    _THINKING_TYPES_ACP = {"thinking"}
-    _OUTPUT_TYPES_ACP = {"answer", "result"}
-    _THINKING_TYPES_AGENTIC = {"reasoning.delta", "thinking"}
-    _OUTPUT_TYPES_AGENTIC = {"token.delta"}
-    _TEXT_FIELDS_AGENTIC = {
+    thinking_types_acp = {"thinking"}
+    output_types_acp = {"answer", "result"}
+    thinking_types_agentic = {"reasoning.delta", "thinking"}
+    output_types_agentic = {"token.delta"}
+    text_fields_agentic = {
         "reasoning.delta": ["payload.text"],
         "token.delta": ["payload.text"],
         "thinking": ["payload.text", "payload.message"],
@@ -1621,9 +1637,9 @@ def _detect_chinese_in_events(raw_events: list[dict], target_lang: str) -> dict:
             if not text:
                 continue
             event_type = event_name
-            if event_name in _THINKING_TYPES_ACP:
+            if event_name in thinking_types_acp:
                 pass
-            elif event_name in _OUTPUT_TYPES_ACP:
+            elif event_name in output_types_acp:
                 if event_name == "answer" and target_lang not in ("zh", "zh-cn"):
                     continue
                 pass
@@ -1645,13 +1661,15 @@ def _detect_chinese_in_events(raw_events: list[dict], target_lang: str) -> dict:
                 "severity": classification["severity"],
                 "description": classification["description"],
             }
-            if event_name in _THINKING_TYPES_ACP:
+            if event_name in thinking_types_acp:
                 thinking_findings.append(finding)
             else:
                 output_findings.append(finding)
         else:
             event_type = evt.get("type", "")
-            paths = _TEXT_FIELDS_AGENTIC.get(event_type)
+            if event_type not in thinking_types_agentic | output_types_agentic:
+                continue
+            paths = text_fields_agentic.get(event_type)
             if not paths:
                 continue
             for path in paths:
@@ -1681,7 +1699,7 @@ def _detect_chinese_in_events(raw_events: list[dict], target_lang: str) -> dict:
                     "severity": classification["severity"],
                     "description": classification["description"],
                 }
-                if event_type in _THINKING_TYPES_AGENTIC:
+                if event_type in thinking_types_agentic:
                     thinking_findings.append(finding)
                 else:
                     output_findings.append(finding)
@@ -1853,8 +1871,8 @@ def _validate_kg_language_param(kg_tool_inputs: list[dict], expected_lang: str) 
             "exec_cmd": search_text,
         }
 
-    _ZH_VARIANTS = {"zh", "zh-cn", "zh-tw"}
-    if parsed_lang == expected_lang or (parsed_lang in _ZH_VARIANTS and expected_lang in _ZH_VARIANTS):
+    zh_variants = {"zh", "zh-cn", "zh-tw"}
+    if parsed_lang == expected_lang or (parsed_lang in zh_variants and expected_lang in zh_variants):
         return {
             "status": "ok",
             "parsed_lang": parsed_lang,
@@ -1862,9 +1880,9 @@ def _validate_kg_language_param(kg_tool_inputs: list[dict], expected_lang: str) 
             "description": f"language参数正确: {parsed_lang}",
         }
 
-    _LANG_DISPLAY_VALUES = set(_LANG_DISPLAY_NAMES.values())
+    language_display_values = set(_LANG_DISPLAY_NAMES.values())
 
-    if parsed_lang in _LANG_DISPLAY_VALUES:
+    if parsed_lang in language_display_values:
         return {
             "status": "is_display_name",
             "parsed_lang": parsed_lang,
@@ -1904,7 +1922,8 @@ def _llm_detect_language(text: str, target_lang: str) -> dict | None:
         '{"detected_lang": "<language_code>", "confidence": 0.0-1.0, "reason": "brief explanation"}\n\n'
         "Use ISO 639-1 language codes (e.g., en, zh, ja, ko, fr, de, es, pt, ru, ar, etc.).\n"
         "If the text contains multiple languages, identify the dominant one.\n\n"
-        "Text to analyze:\n" + sample
+        "Text to analyze:\n"
+        + sample
     )
     try:
         response = client.chat.completions.create(
@@ -2218,19 +2237,7 @@ def _extract_intermediate_summary(result: dict) -> dict:
                 if t:
                     thinking_parts.append(t)
                     user_visible_parts.append(f"\n🧠 {t}\n")
-                    _is_tool_thinking = any(
-                        kw in t
-                        for kw in (
-                            "加载本体",
-                            "执行脚本",
-                            "调用工具",
-                            "调用故障",
-                            "调用产品",
-                            "ontology_context",
-                            "execute_script",
-                            "tool_call",
-                        )
-                    )
+                    _is_tool_thinking = any(marker in t for marker in _TOOL_THINKING_MARKERS)
                     if _is_tool_thinking:
                         current_thinking.append(t)
             elif en == "answer":
@@ -2315,7 +2322,7 @@ def format_duration(seconds: float) -> str:
     return f"{m}m{s}s"
 
 
-def _save_run_log(
+def _save_run_log(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     sheet_name: str,
     run_index: int,
     message: str,
@@ -2357,7 +2364,8 @@ def _save_run_log(
             lines.append(f"\n--- 工具调用详情 ({len(tool_calls)}) ---")
             for idx, tc in enumerate(tool_calls, 1):
                 lines.append(
-                    f"  [{idx}] {tc.get('name', '?')} | 状态: {tc.get('status', '?')} | 耗时: {tc.get('elapsed_ms', 0)}ms"
+                    f"  [{idx}] {tc.get('name', '?')} | 状态: {tc.get('status', '?')} | 耗时:"
+                    f" {tc.get('elapsed_ms', 0)}ms"
                 )
 
         # --- 中间过程 (可读重建) ---
@@ -2380,19 +2388,7 @@ def _save_run_log(
                         if t:
                             _thinking_parts.append(t)
                             # 判断是否为工具调用相关的思考（非 token 级推理）
-                            _is_tool_thinking = any(
-                                kw in t
-                                for kw in (
-                                    "加载本体",
-                                    "执行脚本",
-                                    "调用工具",
-                                    "调用故障",
-                                    "调用产品",
-                                    "ontology_context",
-                                    "execute_script",
-                                    "tool_call",
-                                )
-                            )
+                            _is_tool_thinking = any(marker in t for marker in _TOOL_THINKING_MARKERS)
                             if _is_tool_thinking:
                                 _current_thinking.append(t)
                     elif en == "answer":
@@ -2568,7 +2564,8 @@ def _save_run_log(
                     if tn:
                         tr_preview = (tr if isinstance(tr, str) else json.dumps(tr, ensure_ascii=False)) if tr else ""
                         lines.append(
-                            f"  [{idx}] {event_name} | done={done} | tool: {tn} | status: {ts} | elapsed: {te}ms | text: {text[:80]}"
+                            f"  [{idx}] {event_name} | done={done} | tool: {tn} | status: {ts} | elapsed: {te}ms |"
+                            f" text: {text[:80]}"
                         )
                         if tr_preview:
                             lines.append(f"         | result: {tr_preview}")
@@ -2595,7 +2592,8 @@ def _save_run_log(
                         lines.append(f"         | result: {result_str}")
                 elif event_name == "run.created":
                     lines.append(
-                        f"  [{idx}] {event_name} | run_id: {data.get('run_id', '')} | session_id: {data.get('session_id', '')}"
+                        f"  [{idx}] {event_name} | run_id: {data.get('run_id', '')} | session_id:"
+                        f" {data.get('session_id', '')}"
                     )
                 elif event_name == "run.awaiting":
                     question = data.get("question", "")
@@ -2621,11 +2619,14 @@ def _save_run_log(
                     lines.append(f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | text: {text[:80]}")
                 elif event_type == "tool.started":
                     lines.append(
-                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | tool: {payload.get('tool_name', '?')} | msg: {payload.get('message', '')[:80]}"
+                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | tool:"
+                        f" {payload.get('tool_name', '?')} | msg: {payload.get('message', '')[:80]}"
                     )
                 elif event_type == "tool.finished":
                     lines.append(
-                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | tool: {payload.get('tool_name', '?')} | status: {payload.get('status', '?')} | elapsed: {payload.get('elapsed_ms', 0)}ms"
+                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | tool:"
+                        f" {payload.get('tool_name', '?')} | status: {payload.get('status', '?')} | elapsed:"
+                        f" {payload.get('elapsed_ms', 0)}ms"
                     )
                 elif event_type == "tool.progress":
                     kind = payload.get("kind", "")
@@ -2635,24 +2636,29 @@ def _save_run_log(
                     )
                 elif event_type == "dag_performance":
                     lines.append(
-                        f"  [{idx}] seq={seq} type={event_type} | worker={payload.get('worker_time', 0):.2f}s tokens={payload.get('total_tokens', 0)}"
+                        f"  [{idx}] seq={seq} type={event_type} | worker={payload.get('worker_time', 0):.2f}s"
+                        f" tokens={payload.get('total_tokens', 0)}"
                     )
                 elif event_type == "special_tool.started":
                     lines.append(
-                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | msg: {payload.get('message', '')[:80]}"
+                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | msg:"
+                        f" {payload.get('message', '')[:80]}"
                     )
                 elif event_type == "special_tool.ui":
                     ui_payload = payload.get("ui_payload", {})
                     lines.append(
-                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | question: {ui_payload.get('question', '')[:80]}"
+                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | question:"
+                        f" {ui_payload.get('question', '')[:80]}"
                     )
                 elif event_type == "special_tool.finished":
                     lines.append(
-                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | status: {payload.get('status', '?')}"
+                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | status:"
+                        f" {payload.get('status', '?')}"
                     )
                 elif event_type in ("turn.started", "turn.finished"):
                     lines.append(
-                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | status: {payload.get('status', '')}"
+                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | status:"
+                        f" {payload.get('status', '')}"
                     )
                 else:
                     lines.append(f"  [{idx}] seq={seq} type={event_type} | {node}/{component}")
@@ -3548,7 +3554,7 @@ def _generate_md_report(
     return filepath
 
 
-def _execute_single_run(
+def _execute_single_run(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     message: str,
     sheet_name: str,
     lang_code: str,
@@ -3658,7 +3664,8 @@ def _execute_single_run(
                         total_ms = ss.get("total_ms", 0)
                         if total_ms > 0:
                             print(
-                                f"  脚本 {sn}: {ss['count']}次 | 总耗时: {total_ms/1000:.1f}s | 平均: {total_ms/ss['count']/1000:.1f}s"
+                                f"  脚本 {sn}: {ss['count']}次 | 总耗时: {total_ms/1000:.1f}s | 平均:"
+                                f" {total_ms/ss['count']/1000:.1f}s"
                             )
                         else:
                             total_len = ss.get("total_result_length", 0)
@@ -3699,7 +3706,8 @@ def _execute_single_run(
                     o_err = sum(1 for finding in output_findings if finding.get("severity") == "error")
                     o_warn = sum(1 for finding in output_findings if finding.get("severity") == "warn")
                     print(
-                        f"  ⚠️ 检测到中文 (思考过程 {len(thinking_findings)} 处: 严重{t_err}/警告{t_warn}; 最终报告 {len(output_findings)} 处: 严重{o_err}/警告{o_warn}):"
+                        f"  ⚠️ 检测到中文 (思考过程 {len(thinking_findings)} 处: 严重{t_err}/警告{t_warn}; 最终报告"
+                        f" {len(output_findings)} 处: 严重{o_err}/警告{o_warn}):"
                     )
                     for finding in thinking_findings:
                         sev_icon = {"error": "🔴", "warn": "🟡", "info": "ℹ️"}.get(finding.get("severity", ""), "❓")
@@ -3898,7 +3906,8 @@ def run_tests():
         acp_suppress_set = _set_acp_suppress_patterns(ACP_SUPPRESS_SCRIPT_PATTERNS)
         if acp_suppress_set:
             print(
-                f"🔧 ACP 输出过滤: 已设置 acp_suppress_script_patterns = '{ACP_SUPPRESS_SCRIPT_PATTERNS}' (原值: '{acp_suppress_original}')"
+                f"🔧 ACP 输出过滤: 已设置 acp_suppress_script_patterns = '{ACP_SUPPRESS_SCRIPT_PATTERNS}' (原值:"
+                f" '{acp_suppress_original}')"
             )
         else:
             print(f"⚠️ ACP 输出过滤: 设置失败，将使用服务端默认值")
@@ -4387,7 +4396,8 @@ def run_tests():
     print(f"  全局平均耗时: {global_avg_duration_str} ({global_avg_seconds:.2f}s)")
     print(f"  全局平均 Tokens: {round(global_avg_tokens, 0)}")
     print(
-        f"  全局成功率: {global_success_count}/{global_total_runs} ({global_success_count / global_total_runs * 100:.1f}%)"
+        "  全局成功率:"
+        f" {global_success_count}/{global_total_runs} ({global_success_count / global_total_runs * 100:.1f}%)"
         if global_total_runs > 0
         else ""
     )
@@ -4439,7 +4449,8 @@ def run_tests():
             max_ms = max(all_ms)
             print(f"  {script_name}:")
             print(
-                f"    总执行: {total_calls} 次, 平均: {avg_ms/1000:.2f}s, 最慢: {max_ms/1000:.2f}s, 失败: {fail_count} 次"
+                f"    总执行: {total_calls} 次, 平均: {avg_ms/1000:.2f}s, 最慢: {max_ms/1000:.2f}s, 失败:"
+                f" {fail_count} 次"
             )
             if success_count > 0:
                 success_ms = [d.get("elapsed_ms", 0) for d in success_details]
@@ -4538,7 +4549,8 @@ def run_tests():
                         sev_counts[sev] += 1
                     cat_counts[cat] += 1
                 print(
-                    f"    🔴 严重: {sev_counts['error']} 处 | 🟡 警告: {sev_counts['warn']} 处 | ℹ️ 信息: {sev_counts['info']} 处"
+                    f"    🔴 严重: {sev_counts['error']} 处 | 🟡 警告: {sev_counts['warn']} 处 | ℹ️ 信息:"
+                    f" {sev_counts['info']} 处"
                 )
                 for cat, count in sorted(cat_counts.items(), key=lambda x: x[1], reverse=True):
                     label = category_labels.get(cat, cat)
@@ -4590,7 +4602,8 @@ def run_tests():
                         ]
                         if entry_thinking_errors:
                             print(
-                                f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {len(entry_thinking_errors)} 处"
+                                f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):"
+                                f" {len(entry_thinking_errors)} 处"
                             )
                             shown += 1
                             if shown >= 5:
@@ -4602,7 +4615,8 @@ def run_tests():
         if non_zh_total > 0:
             non_zh_clean = non_zh_total - len(chinese_intrusion_log)
             print(
-                f"  📊 非中文场景共 {non_zh_total} 次执行, 无中文混入 {non_zh_clean}/{non_zh_total} ({non_zh_clean / non_zh_total * 100:.1f}%)"
+                f"  📊 非中文场景共 {non_zh_total} 次执行, 无中文混入"
+                f" {non_zh_clean}/{non_zh_total} ({non_zh_clean / non_zh_total * 100:.1f}%)"
             )
         else:
             print(f"  📊 无非中文场景执行, 跳过中文混入统计")
@@ -4632,7 +4646,8 @@ def run_tests():
             print(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):")
             for kf in entry.get("findings", []):
                 print(
-                    f"    中文字符: {kf['chinese_char_count']} | 占比: {kf['chinese_ratio']:.1%} | 键: {kf['chinese_keys'][:5]}"
+                    f"    中文字符: {kf['chinese_char_count']} | 占比: {kf['chinese_ratio']:.1%} | 键:"
+                    f" {kf['chinese_keys'][:5]}"
                 )
     else:
         print(f"  ✅ knowledge_graph_tool 返回数据中未检测到中文 (或未调用该工具)")
@@ -4677,7 +4692,8 @@ def run_tests():
             print(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {check['description']}")
             for d in check.get("details", []):
                 print(
-                    f"     检测语言={d['detected_lang']} | 目标={d['target_lang']} | 匹配={'是' if d['is_match'] else '否'}"
+                    f"     检测语言={d['detected_lang']} | 目标={d['target_lang']} |"
+                    f" 匹配={'是' if d['is_match'] else '否'}"
                 )
     else:
         print(f"  (未捕获到 KG 工具输出，跳过检测)")
@@ -4695,7 +4711,8 @@ def run_tests():
             suppressed_str = ", ".join(r["suppressed"]) if r["suppressed"] else "无"
             unsuppressed_str = ", ".join(r["unsuppressed"]) if r["unsuppressed"] else "无"
             print(
-                f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): 已过滤={suppressed_str}, 未过滤={unsuppressed_str}"
+                f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): 已过滤={suppressed_str},"
+                f" 未过滤={unsuppressed_str}"
             )
     else:
         if API_MODE == "acp":

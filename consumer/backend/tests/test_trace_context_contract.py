@@ -140,6 +140,7 @@ def test_observability_close_flushes_and_closes_after_timeout():
             self.flush_count = 0
             self.close_count = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             export_started.set()
             release_export.wait(timeout=1)

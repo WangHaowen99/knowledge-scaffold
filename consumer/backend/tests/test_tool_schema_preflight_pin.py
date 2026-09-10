@@ -338,6 +338,7 @@ def test_executor_lookup_validation_and_solver_dispatch_share_frozen_binding(
     calls = []
 
     class Service:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def start_or_resume(self, **kwargs):
             kwargs["worker_thread_id"] = threading.get_ident()
             calls.append(kwargs)

@@ -466,7 +466,8 @@ class ReflectionWorker:
             )
             return {"outcome": "skipped_task_llm_not_configured", "written": 0}
         logger.debug(
-            "reflection preparing prompt run=%s session=%s turn=%s ontology=%s operation_hint=%s tool_events=%s has_summary=%s final_output_chars=%s feedback=%s",
+            "reflection preparing prompt run=%s session=%s turn=%s ontology=%s operation_hint=%s tool_events=%s"
+            " has_summary=%s final_output_chars=%s feedback=%s",
             snapshot.run_id,
             snapshot.session_id,
             snapshot.turn_id,
@@ -532,7 +533,8 @@ class ReflectionWorker:
             return {"outcome": "skipped_no_structured_output", "written": 0}
 
         logger.debug(
-            "reflection output parsed run=%s operation=%s compliance=%.2f efficiency=%.2f procedure=%s pitfalls=%s schemas=%s",
+            "reflection output parsed run=%s operation=%s compliance=%.2f efficiency=%.2f procedure=%s pitfalls=%s"
+            " schemas=%s",
             snapshot.run_id,
             output.operation_executed,
             output.compliance_score,
@@ -613,8 +615,8 @@ class ReflectionWorker:
         )
         return written
 
+    @staticmethod
     def _safe_store(
-        self,
         snapshot: ReflectionSnapshot,
         *,
         content: str,

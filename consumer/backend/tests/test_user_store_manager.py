@@ -245,6 +245,7 @@ def test_store_initialization_does_not_load_or_rebuild_a_cold_summary_index(
             revision_reads.append(True)
             raise OSError("synthetic cold rebuild")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def mark_degraded(self, _reason):
             return None
 
@@ -551,9 +552,11 @@ def test_recovery_discovery_defers_unready_index_and_continues_other_users(
         def __init__(self, name):
             self.name = name
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def is_symlink(self):
             return False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def is_dir(self, *, follow_symlinks):
             assert follow_symlinks is False
             return True
@@ -565,6 +568,7 @@ def test_recovery_discovery_defers_unready_index_and_continues_other_users(
         def __enter__(self):
             return self
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def __exit__(self, *_args):
             return False
 
@@ -894,8 +898,8 @@ def test_recovery_discovery_worker_propagates_errors_and_shuts_down(tmp_path, mo
     manager = UserStoreManager("", "")
 
     def broken_catalog_scan():
+        yield from ()
         raise RuntimeError("synthetic discovery failure")
-        yield  # pragma: no cover
 
     monkeypatch.setattr(manager, "_iter_recovery_targets", broken_catalog_scan)
 

@@ -15,19 +15,15 @@ import os
 from pathlib import Path
 import platform
 import subprocess
-import sys
 import tempfile
 import time
 from typing import Any, Callable
 from unittest.mock import patch
 
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = BACKEND_ROOT.parents[1]
 FRONTEND_ROOT = REPOSITORY_ROOT / "consumer" / "frontend"
 FRONTEND_CONTRACT_SCRIPT = FRONTEND_ROOT / "scripts" / "benchmark-ontology-requests.mjs"
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
 
 
 @dataclass
@@ -258,44 +254,54 @@ def evaluate_thresholds(report: dict[str, Any]) -> list[dict[str, Any]]:
         actual = metrics[metric_name]["warm_p95_ms"]
         limit = thresholds[threshold_name]
         if actual >= limit:
-            violations.append({
-                "code": "warm_p95_exceeded",
-                "metric": metric_name,
-                "actual": actual,
-                "limit": limit,
-            })
+            violations.append(
+                {
+                    "code": "warm_p95_exceeded",
+                    "metric": metric_name,
+                    "actual": actual,
+                    "limit": limit,
+                }
+            )
         traversals = metrics[metric_name]["warm_authoritative_traversals"]
         if traversals > 0:
-            violations.append({
-                "code": "warm_authoritative_traversal",
-                "metric": metric_name,
-                "actual": traversals,
-                "limit": 0,
-            })
+            violations.append(
+                {
+                    "code": "warm_authoritative_traversal",
+                    "metric": metric_name,
+                    "actual": traversals,
+                    "limit": 0,
+                }
+            )
         warm_io = metrics[metric_name].get("warm_io") or {}
         filesystem_traversals = int(warm_io.get("traversal") or 0)
         if filesystem_traversals > 0:
-            violations.append({
-                "code": "warm_filesystem_traversal",
-                "metric": metric_name,
-                "actual": filesystem_traversals,
-                "limit": 0,
-            })
+            violations.append(
+                {
+                    "code": "warm_filesystem_traversal",
+                    "metric": metric_name,
+                    "actual": filesystem_traversals,
+                    "limit": 0,
+                }
+            )
     frontend = report["frontend_contract"]
     if frontend["ontology_list_requests"] > 1:
-        violations.append({
-            "code": "ontology_list_request_fanout",
-            "metric": "ontology_list_requests",
-            "actual": frontend["ontology_list_requests"],
-            "limit": 1,
-        })
+        violations.append(
+            {
+                "code": "ontology_list_request_fanout",
+                "metric": "ontology_list_requests",
+                "actual": frontend["ontology_list_requests"],
+                "limit": 1,
+            }
+        )
     if frontend["non_knowledge_tree_requests"] > 0:
-        violations.append({
-            "code": "eager_tree_request",
-            "metric": "non_knowledge_tree_requests",
-            "actual": frontend["non_knowledge_tree_requests"],
-            "limit": 0,
-        })
+        violations.append(
+            {
+                "code": "eager_tree_request",
+                "metric": "non_knowledge_tree_requests",
+                "actual": frontend["non_knowledge_tree_requests"],
+                "limit": 0,
+            }
+        )
     return violations
 
 
@@ -352,17 +358,17 @@ def run_benchmark(
                 ontology_id="synthetic-ontology",
                 version="1.0.0",
                 loader=load_tree,
-                signature_loader=lambda: ontology_views.build_package_tree_source_signature(
-                    version_dir
-                ),
+                signature_loader=lambda: ontology_views.build_package_tree_source_signature(version_dir),
             )
 
         with (
-            _environment_overrides({
-                "PROJECT_ROOT": str(runtime_root),
-                "PERF_WORKSPACE_SNAPSHOT_ENABLED": "true",
-                "PERF_ONTOLOGY_VIEW_CACHE_ENABLED": "true",
-            }),
+            _environment_overrides(
+                {
+                    "PROJECT_ROOT": str(runtime_root),
+                    "PERF_WORKSPACE_SNAPSHOT_ENABLED": "true",
+                    "PERF_ONTOLOGY_VIEW_CACHE_ENABLED": "true",
+                }
+            ),
             patch.object(workspaces, "_workspace_catalog_manager", None),
             patch.object(workspaces, "_workspace_catalog_manager_root", None),
             patch.object(workspaces, "_workspace_catalog_last_generation", 0),

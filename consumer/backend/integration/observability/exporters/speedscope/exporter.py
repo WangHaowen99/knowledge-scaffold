@@ -235,7 +235,8 @@ class SpeedscopeExporter:
     def close(self) -> None:
         self.flush()
 
-    def _run_from_pending_drop(self, pending: _PendingDrop) -> _RunTrace:
+    @staticmethod
+    def _run_from_pending_drop(pending: _PendingDrop) -> _RunTrace:
         return _RunTrace(
             run_id=pending.run_id,
             session_id=pending.session_id,
@@ -292,7 +293,8 @@ class SpeedscopeExporter:
         self._runs[event.run_id] = run
         return run
 
-    def _open_span(self, run: _RunTrace, event: RuntimeEvent, kind: str) -> None:
+    @staticmethod
+    def _open_span(run: _RunTrace, event: RuntimeEvent, kind: str) -> None:
         raw_key = _event_span_key(event, kind)
         previous_id = run.active_by_raw_key.get(raw_key)
         if previous_id:
@@ -317,7 +319,8 @@ class SpeedscopeExporter:
         )
         run.active_by_raw_key[raw_key] = span_id
 
-    def _close_span(self, run: _RunTrace, event: RuntimeEvent, kind: str) -> None:
+    @staticmethod
+    def _close_span(run: _RunTrace, event: RuntimeEvent, kind: str) -> None:
         raw_key = _event_span_key(event, kind)
         span_id = run.active_by_raw_key.pop(raw_key, None)
         span = run.spans.get(span_id or "")
@@ -596,17 +599,15 @@ def _event_duration_ms(event: RuntimeEvent) -> int:
 
 def _event_has_duration(event: RuntimeEvent) -> bool:
     payload = dict(event.payload or {})
-    return any(
-        key in payload
-        for key in (
-            "duration_ms",
-            "elapsed_ms",
-            "wall_duration_ms",
-            "total_elapsed_ms",
-            "total_ms",
-            "stream_duration_ms",
-        )
+    duration_keys = (
+        "duration_ms",
+        "elapsed_ms",
+        "wall_duration_ms",
+        "total_elapsed_ms",
+        "total_ms",
+        "stream_duration_ms",
     )
+    return any(key in payload for key in duration_keys)
 
 
 def _normalized_status(event: RuntimeEvent) -> str:
@@ -741,12 +742,12 @@ def _caller_suffix_from_raw_key(raw_key: str, fallback: str) -> str:
 
 def _best_parent(child: _Span, candidates: Iterable[_Span]) -> Optional[_Span]:
     options = [candidate for candidate in candidates if candidate.id != child.id]
-    containing = [
-        candidate
-        for candidate in options
-        if candidate.start_ms <= child.start_ms
-        and (candidate.end_ms or candidate.start_ms) >= (child.end_ms or child.start_ms)
-    ]
+    containing = []
+    for candidate in options:
+        contains_start = candidate.start_ms <= child.start_ms
+        contains_end = (candidate.end_ms or candidate.start_ms) >= (child.end_ms or child.start_ms)
+        if contains_start and contains_end:
+            containing.append(candidate)
     if containing:
         return min(containing, key=lambda item: (item.end_ms or item.start_ms) - item.start_ms)
     return min(options, key=lambda item: abs(item.start_ms - child.start_ms), default=None)

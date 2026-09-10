@@ -248,16 +248,18 @@ const collectHitsFromValue = (value, index, options = {}, seen = new Set()) => {
       const isCandidate =
         NODE_CANDIDATE_FIELDS.has(key) ||
         (context.structured && STRUCTURED_NODE_FIELDS.has(key));
+      let typeHint = '';
+      if (key.startsWith('operation')) {
+        typeHint = 'operation';
+      } else if (key.startsWith('object') || key.startsWith('entity')) {
+        typeHint = 'object';
+      }
       visit(item, {
         candidate: isCandidate,
         structured:
           context.structured || isStructuredCollection || isRelationCollection,
         relation: context.relation || isRelationCollection,
-        typeHint: key.startsWith('operation') ?
-          'operation' :
-          key.startsWith('object') || key.startsWith('entity') ?
-            'object' :
-            '',
+        typeHint,
       });
     });
   };
@@ -435,26 +437,28 @@ const collectMessage = (message, units, rootOntologyId = '') => {
     ontologyId: ontologyIdFrom(message) || rootOntologyId,
     timestamp: unitTimestamp(message),
   };
-  const blocks = Array.isArray(message.blocks) ?
-    message.blocks :
-    Array.isArray(message.streamSegments) ?
-      message.streamSegments :
-      [];
+  let blocks = [];
+  if (Array.isArray(message.blocks)) {
+    ({ blocks } = message);
+  } else if (Array.isArray(message.streamSegments)) {
+    blocks = message.streamSegments;
+  }
   blocks.forEach((block) => collectBlock(block, context, units));
 };
 
 const collectTraceUnits = (input) => {
   const units = [];
   const rootOntologyId = ontologyIdFrom(input);
-  const values = Array.isArray(input) ?
-    input :
-    Array.isArray(input?.messages) ?
-      input.messages :
-      Array.isArray(input?.envelopes) ?
-        input.envelopes :
-        plainObject(input) ?
-          [input] :
-          [];
+  let values = [];
+  if (Array.isArray(input)) {
+    values = input;
+  } else if (Array.isArray(input?.messages)) {
+    values = input.messages;
+  } else if (Array.isArray(input?.envelopes)) {
+    values = input.envelopes;
+  } else if (plainObject(input)) {
+    values = [input];
+  }
   values.forEach((value) => {
     const kind = stringValue(value?.kind ?? value?.type).toLocaleLowerCase();
     if (
@@ -542,15 +546,19 @@ export const deriveGraphRuntimeState = (graph, traceInput, options = {}) => {
   const targetOntologyId = stringValue(options.ontologyId);
   const rootOntologyId = ontologyIdFrom(traceInput);
   const allUnits = collectTraceUnits(traceInput);
-  const units = targetOntologyId ?
-    rootOntologyId && rootOntologyId !== targetOntologyId ?
-      [] :
-      allUnits.filter((unit) =>
-        unit.ontologyId ?
-          unit.ontologyId === targetOntologyId :
-          rootOntologyId === targetOntologyId,
-      ) :
-    allUnits;
+  let units = allUnits;
+  if (targetOntologyId) {
+    if (rootOntologyId && rootOntologyId !== targetOntologyId) {
+      units = [];
+    } else {
+      units = allUnits.filter((unit) => {
+        if (unit.ontologyId) {
+          return unit.ontologyId === targetOntologyId;
+        }
+        return rootOntologyId === targetOntologyId;
+      });
+    }
+  }
   const latestRunId =
     [...units].reverse().find((unit) => unit.runId)?.runId || '';
   const latestPosition = units.at(-1)?.position ?? -1;

@@ -67,6 +67,7 @@ class _FakeMemoryManager:
             }
         )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def recall_memory(self, **kwargs):
         del kwargs
         return []
@@ -126,6 +127,7 @@ class _FakeLLMRouter:
         del purpose, profile_id
         return self.llm.call(messages, **kwargs)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def get_config(self, purpose, profile_id=None):
         del purpose, profile_id
         return SimpleNamespace(
@@ -171,6 +173,7 @@ def _make_mock_tool(
         max_parallelism: Optional[int] = None
         category: str = field(default_factory=lambda: category)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def execute(self, *, args, context, tool_call_id=None, event_emitter=None) -> ToolOutcome:
             call_kwargs = dict(args)
             optional_kwargs = {
@@ -315,15 +318,9 @@ def _write_script_descriptor(
 ):
     descriptor = ontology_dir / "scripts" / "{}.md".format(Path(script_name).stem)
     descriptor.write_text(
-        (
-            "---\n"
-            "resource: script\n"
-            "key: {}\n"
-            "title: {}\n"
-            "bound_operation: {}\n"
-            "entrypoint: {}\n"
-            "---\n\n{}"
-        ).format(Path(script_name).stem, operation_key, operation_key, script_name, body),
+        ("---\nresource: script\nkey: {}\ntitle: {}\nbound_operation: {}\nentrypoint: {}\n---\n\n{}").format(
+            Path(script_name).stem, operation_key, operation_key, script_name, body
+        ),
         encoding="utf-8",
     )
     return descriptor
@@ -352,118 +349,102 @@ def _write_v01_ontology_package(tmp_path):
         encoding="utf-8",
     )
     (ontology_dir / "operations" / "index.md").write_text(
-        (
-            "---\nresource: operation_index\n---\n\n"
-            "| operation key | 标题 | 输入 |\n"
-            "| --- | --- | --- |\n"
-            "| 分析影响 | 影响分析 | change_order_id |\n"
-        ),
+        "---\nresource: operation_index\n---\n\n"
+        "| operation key | 标题 | 输入 |\n"
+        "| --- | --- | --- |\n"
+        "| 分析影响 | 影响分析 | change_order_id |\n",
         encoding="utf-8",
     )
     (ontology_dir / "operations" / "impact.md").write_text(
-        (
-            "---\n"
-            "resource: operation\n"
-            "key: 分析影响\n"
-            "canonical_key: impact_analysis\n"
-            "title: 影响分析\n"
-            "aliases:\n"
-            "  - 影响评估\n"
-            "uses:\n"
-            "  objects:\n"
-            "    - 物料\n"
-            "  rules:\n"
-            "    - 生效规则\n"
-            "  metrics:\n"
-            "    - 处理成本\n"
-            "---\n\n"
-            "# 影响分析\n"
-        ),
+        "---\n"
+        "resource: operation\n"
+        "key: 分析影响\n"
+        "canonical_key: impact_analysis\n"
+        "title: 影响分析\n"
+        "aliases:\n"
+        "  - 影响评估\n"
+        "uses:\n"
+        "  objects:\n"
+        "    - 物料\n"
+        "  rules:\n"
+        "    - 生效规则\n"
+        "  metrics:\n"
+        "    - 处理成本\n"
+        "---\n\n"
+        "# 影响分析\n",
         encoding="utf-8",
     )
     (ontology_dir / "objects" / "index.md").write_text(
-        (
-            "| object key | 标题 | 别名 | 说明 |\n"
-            "| --- | --- | --- | --- |\n"
-            "| 物料 | TargetItem | 制造件 | 制造物料 |\n"
-        ),
+        "| object key | 标题 | 别名 | 说明 |\n| --- | --- | --- | --- |\n| 物料 | TargetItem | 制造件 | 制造物料 |\n",
         encoding="utf-8",
     )
     (ontology_dir / "objects" / "material_doc.md").write_text(
-        (
-            "---\n"
-            "resource: object\n"
-            "key: 物料\n"
-            "canonical_key: target_item\n"
-            "title: 制造物料\n"
-            "aliases:\n"
-            "  - TargetItem\n"
-            "  - 制造件\n"
-            "---\n\n"
-            "# 物料\n字段定义\n"
-        ),
+        "---\n"
+        "resource: object\n"
+        "key: 物料\n"
+        "canonical_key: target_item\n"
+        "title: 制造物料\n"
+        "aliases:\n"
+        "  - TargetItem\n"
+        "  - 制造件\n"
+        "---\n\n"
+        "# 物料\n字段定义\n",
         encoding="utf-8",
     )
     (ontology_dir / "rules" / "index.md").write_text(
-        ("| rule key | 标题 | 说明 |\n" "| --- | --- | --- |\n" "| 生效规则 | 变更生效 | 判断生效批次 |\n"),
+        "| rule key | 标题 | 说明 |\n| --- | --- | --- |\n| 生效规则 | 变更生效 | 判断生效批次 |\n",
         encoding="utf-8",
     )
     (ontology_dir / "rules" / "effectivity.md").write_text(
-        (
-            "---\n"
-            "resource: rule\n"
-            "key: 生效规则\n"
-            "canonical_key: effectivity_rule\n"
-            "title: 变更生效规则\n"
-            "aliases:\n"
-            "  - 生效判定\n"
-            "---\n\n"
-            "# 生效规则\n"
-        ),
+        "---\n"
+        "resource: rule\n"
+        "key: 生效规则\n"
+        "canonical_key: effectivity_rule\n"
+        "title: 变更生效规则\n"
+        "aliases:\n"
+        "  - 生效判定\n"
+        "---\n\n"
+        "# 生效规则\n",
         encoding="utf-8",
     )
     (ontology_dir / "metrics" / "index.md").write_text(
-        ("| metric key | 标题 | 说明 |\n" "| --- | --- | --- |\n" "| 处理成本 | 库存处理成本 | 数量乘单价 |\n"),
+        "| metric key | 标题 | 说明 |\n| --- | --- | --- |\n| 处理成本 | 库存处理成本 | 数量乘单价 |\n",
         encoding="utf-8",
     )
     (ontology_dir / "metrics" / "handling_cost.md").write_text(
-        (
-            "---\n"
-            "resource: metric\n"
-            "key: 处理成本\n"
-            "canonical_key: handling_cost_metric\n"
-            "title: 库存处理成本\n"
-            "aliases:\n"
-            "  - 库存处理成本\n"
-            "---\n\n"
-            "# 处理成本\n"
-        ),
+        "---\n"
+        "resource: metric\n"
+        "key: 处理成本\n"
+        "canonical_key: handling_cost_metric\n"
+        "title: 库存处理成本\n"
+        "aliases:\n"
+        "  - 库存处理成本\n"
+        "---\n\n"
+        "# 处理成本\n",
         encoding="utf-8",
     )
     (ontology_dir / "scripts" / "index.md").write_text(
-        ("| script key | 绑定 operation | 入口 |\n" "| --- | --- | --- |\n" "| 影响脚本 | 分析影响 | impact.py |\n"),
+        "| script key | 绑定 operation | 入口 |\n| --- | --- | --- |\n| 影响脚本 | 分析影响 | impact.py |\n",
         encoding="utf-8",
     )
     (ontology_dir / "scripts" / "script_doc.md").write_text(
-        (
-            "---\n"
-            "resource: script\n"
-            "key: 影响脚本\n"
-            "canonical_key: impact_script\n"
-            "title: 影响分析脚本\n"
-            "aliases:\n"
-            "  - 影响执行脚本\n"
-            "bound_operation: 分析影响\n"
-            "entrypoint: impact.py\n"
-            "---\n\n"
-            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
-            "| --- | --- | --- | --- | --- |\n"
-            "| change_order_id | --change-order-id | string | 是 | CHANGE_ORDER编号 |\n"
-        ),
+        "---\n"
+        "resource: script\n"
+        "key: 影响脚本\n"
+        "canonical_key: impact_script\n"
+        "title: 影响分析脚本\n"
+        "aliases:\n"
+        "  - 影响执行脚本\n"
+        "bound_operation: 分析影响\n"
+        "entrypoint: impact.py\n"
+        "---\n\n"
+        "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| change_order_id | --change-order-id | string | 是 | CHANGE_ORDER编号 |\n",
         encoding="utf-8",
     )
     (ontology_dir / "scripts" / "impact.py").write_text(
-        ("import json\n" "import sys\n" "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n"),
+        "import json\nimport sys\nprint(json.dumps(sys.argv[1:], ensure_ascii=False))\n",
         encoding="utf-8",
     )
     (ontology_dir / "scripts" / "legacy.py").write_text("print('legacy')\n", encoding="utf-8")
@@ -489,15 +470,13 @@ def _write_demo_skill(tmp_path):
     (skill_dir / "references" / "scripts").mkdir(parents=True)
     (skill_dir / "agents").mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        (
-            "---\n"
-            "name: demo-skill\n"
-            "description: Demo skill guidance\n"
-            "allowed-tools: ontology_context, skill\n"
-            "---\n\n"
-            "# Demo Skill\n"
-            "Use this skill carefully.\n"
-        ),
+        "---\n"
+        "name: demo-skill\n"
+        "description: Demo skill guidance\n"
+        "allowed-tools: ontology_context, skill\n"
+        "---\n\n"
+        "# Demo Skill\n"
+        "Use this skill carefully.\n",
         encoding="utf-8",
     )
     (skill_dir / "references" / "patterns.md").write_text("# Patterns\nReference details.\n", encoding="utf-8")
@@ -556,15 +535,14 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
     root_content = root_result.messages[0]["content"]
     assert "id: demo" in root_content
     assert "ontology: Demo - Demo ontology" in root_content
-    assert ("operations_catalog:\n" "columns: 名称 | 标签 | 业务描述\n" "- 流程A | 工具流程 | demo") in root_content
-    assert (
-        "objects_catalog:\n" "columns: 中文名称 | 别名 | 业务定义\n" "- TargetItem | 物料 | demo object"
-    ) in root_content
+    assert "operations_catalog:\ncolumns: 名称 | 标签 | 业务描述\n- 流程A | 工具流程 | demo" in root_content
+    assert "objects_catalog:\ncolumns: 中文名称 | 别名 | 业务定义\n- TargetItem | 物料 | demo object" in root_content
     assert (
         "script_catalog:\n"
         "parameter format: name=description required|optional type; type[] means pass an array value.\n"
         "- 流程A (parameters: none)"
-    ) in root_content
+        in root_content
+    )
     assert "assets_catalog:" not in root_content
     assert "common.conf" not in root_content
     assert "rules/limits.ini" not in root_content
@@ -580,8 +558,9 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "asset", "key": "rules/limits.ini"})],
         _make_context(project_root=str(tmp_path)),
     )
-    assert asset_result.messages[0]["content"] == (
-        "Error: ontology_context resource 'asset' only supports " "'business-checkpoint-template.md'."
+    assert (
+        asset_result.messages[0]["content"]
+        == "Error: ontology_context resource 'asset' only supports 'business-checkpoint-template.md'."
     )
 
 
@@ -629,17 +608,15 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
     assert "id: demo-v01" in root_content
     assert "root_index:\n# Demo Root" in root_content
     assert (
-        "operations_catalog:\n" "columns: operation key | 标题 | 输入\n" "- 分析影响 | 影响分析 | change_order_id"
-    ) in root_content
+        "operations_catalog:\ncolumns: operation key | 标题 | 输入\n- 分析影响 | 影响分析 | change_order_id"
+        in root_content
+    )
     assert (
-        "objects_catalog:\n" "columns: object key | 标题 | 别名 | 说明\n" "- 物料 | TargetItem | 制造件 | 制造物料"
-    ) in root_content
-    assert (
-        "rules_catalog:\n" "columns: rule key | 标题 | 说明\n" "- 生效规则 | 变更生效 | 判断生效批次"
-    ) in root_content
-    assert (
-        "metrics_catalog:\n" "columns: metric key | 标题 | 说明\n" "- 处理成本 | 库存处理成本 | 数量乘单价"
-    ) in root_content
+        "objects_catalog:\ncolumns: object key | 标题 | 别名 | 说明\n- 物料 | TargetItem | 制造件 | 制造物料"
+        in root_content
+    )
+    assert "rules_catalog:\ncolumns: rule key | 标题 | 说明\n- 生效规则 | 变更生效 | 判断生效批次" in root_content
+    assert "metrics_catalog:\ncolumns: metric key | 标题 | 说明\n- 处理成本 | 库存处理成本 | 数量乘单价" in root_content
     assert "- 分析影响 - 影响分析脚本 (parameters: change_order_id=CHANGE_ORDER编号 required string)" in root_content
     assert "assets_catalog:" not in root_content
     assert "legacy-operation" not in root_content
@@ -1144,18 +1121,16 @@ def test_ontology_context_resolves_bound_operation_key_to_script_spec(tmp_path, 
 def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
     _write_scripted_ontology(
         tmp_path,
-        script_body=("import json\n" "import sys\n" "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n"),
+        script_body="import json\nimport sys\nprint(json.dumps(sys.argv[1:], ensure_ascii=False))\n",
     )
     script_descriptor = tmp_path / "ontologies" / "demo" / "scripts" / "hello.md"
     script_descriptor.write_text(
-        (
-            "---\nresource: script\nkey: hello\ntitle: 流程A\nbound_operation: 流程A\nentrypoint: hello.py\n---\n\n"
-            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
-            "| --- | --- | --- | --- | --- | --- |\n"
-            "| target_item_code | --target_item-code | string | 是 | TargetItem编码 | 否 |\n"
-            "| equipment_model | --equipment-model | string | 否 | 设备型号 | 否 |\n"
-            "| batch_codes | --batch-code | string | 是 | 生产批次 | 是 |\n"
-        ),
+        "---\nresource: script\nkey: hello\ntitle: 流程A\nbound_operation: 流程A\nentrypoint: hello.py\n---\n\n"
+        "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| target_item_code | --target_item-code | string | 是 | TargetItem编码 | 否 |\n"
+        "| equipment_model | --equipment-model | string | 否 | 设备型号 | 否 |\n"
+        "| batch_codes | --batch-code | string | 是 | 生产批次 | 是 |\n",
         encoding="utf-8",
     )
     _patch_test_ontology_registry(monkeypatch, tmp_path)
@@ -1173,7 +1148,8 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
         "target_item_code=TargetItem编码 required string; "
         "equipment_model=设备型号 optional string; "
         "batch_codes=生产批次 required string[])"
-    ) in root_content
+        in root_content
+    )
 
     result = execute_tool_batch(
         [
@@ -1233,13 +1209,11 @@ def test_execute_script_validates_structured_parameters(tmp_path, monkeypatch):
     _write_scripted_ontology(tmp_path)
     script_descriptor = tmp_path / "ontologies" / "demo" / "scripts" / "hello.md"
     script_descriptor.write_text(
-        (
-            "---\nresource: script\nkey: hello\ntitle: 流程A\nbound_operation: 流程A\nentrypoint: hello.py\n---\n\n"
-            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
-            "| --- | --- | --- | --- | --- | --- |\n"
-            "| quantity | --quantity | integer | 是 | 数量 | 否 |\n"
-            "| batch_codes | --batch-code | string | 否 | 生产批次 | 是 |\n"
-        ),
+        "---\nresource: script\nkey: hello\ntitle: 流程A\nbound_operation: 流程A\nentrypoint: hello.py\n---\n\n"
+        "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| quantity | --quantity | integer | 是 | 数量 | 否 |\n"
+        "| batch_codes | --batch-code | string | 否 | 生产批次 | 是 |\n",
         encoding="utf-8",
     )
     _patch_test_ontology_registry(monkeypatch, tmp_path)
@@ -1625,7 +1599,7 @@ def test_execute_script_rejects_reordered_items_across_request_segments(monkeypa
             {
                 "role": "user",
                 "content": (
-                    "Record 1: item_a, quantity 12, category red;\n" "Record 2: item_b, quantity 34, category blue."
+                    "Record 1: item_a, quantity 12, category red;\nRecord 2: item_b, quantity 34, category blue."
                 ),
             }
         ]
@@ -1707,7 +1681,7 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
         "Error: Script exited with code 1. [SCRIPT_RUNTIME_ERROR] Python KeyError.",
         "Error: Script execution cancelled.",
         "Error: Sandbox unavailable.",
-        ("Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] " "Required business data connection is unavailable."),
+        "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] Required business data connection is unavailable.",
         "Error: deterministic_operation_protected",
     ),
 )
@@ -1733,7 +1707,7 @@ def test_execute_script_runtime_and_nonrecoverable_failures_are_terminal(
     assert outcome.terminal is True
     assert outcome.state_updates["terminal_error"] == {
         "error_code": "EXECUTE_SCRIPT_FAILED",
-        "message": ("The deterministic operation failed, so no calculated conclusion was produced."),
+        "message": "The deterministic operation failed, so no calculated conclusion was produced.",
         "tool_name": "execute_script",
     }
 
@@ -1876,6 +1850,7 @@ def test_execute_tool_batch_stops_after_terminal_outcome(monkeypatch):
         max_parallelism = 1
         category = "regular"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def execute(self, *, args, context, tool_call_id=None, event_emitter=None):
             del args, context, event_emitter
             calls.append(("terminal", tool_call_id))
@@ -1900,6 +1875,7 @@ def test_execute_tool_batch_stops_after_terminal_outcome(monkeypatch):
         max_parallelism = 1
         category = "regular"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def execute(self, *, args, context, tool_call_id=None, event_emitter=None):
             del args, context, tool_call_id, event_emitter
             calls.append(("later", None))
@@ -3600,7 +3576,7 @@ def test_request_user_interaction_keeps_required_solver_field_interactive(monkey
     )
 
     assert result.terminal is True
-    assert result.state_updates["pending_user_interaction"]["prompt"] == ("Provide item_count.")
+    assert result.state_updates["pending_user_interaction"]["prompt"] == "Provide item_count."
 
 
 def test_registry_exposes_single_subagent_tool_for_main_agent():

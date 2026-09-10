@@ -38,16 +38,13 @@ from utils.security.secrets import (
 )
 from workspace.workspaces import validate_workspace_id
 
-
 MIGRATION_ID = "observability-workspace-config-v1"
 MIGRATION_VERSION = 1
 GLOBAL_LANGFUSE_SECRET_CONTEXT = "observability.langfuse.secret_key"
 MARKER_RELATIVE_PATH = Path("config") / "migrations" / f"{MIGRATION_ID}.json"
 SYSTEM_CONFIG_RELATIVE_PATH = Path("config") / "system_config.json"
 SYSTEM_CONFIG_BACKUP_SUFFIX = f".pre-{MIGRATION_ID}.bak"
-LOG_BACKUP_RELATIVE_DIR = (
-    Path("config") / "migration-backups" / MIGRATION_ID / "legacy-perf-logs"
-)
+LOG_BACKUP_RELATIVE_DIR = Path("config") / "migration-backups" / MIGRATION_ID / "legacy-perf-logs"
 LOG_BACKUP_SUFFIX = f".pre-{MIGRATION_ID}.bak"
 LEGACY_DEFAULT_WORKSPACE_ID = "default"
 MARKER_PREPARED = "prepared"
@@ -212,9 +209,7 @@ def _read_json_object(
         raw_bytes = path.read_bytes()
         payload = json.loads(raw_bytes.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise _ProblemError(
-            _operation_problem(invalid_code, object_id, f"读取或解析{label}", exc)
-        ) from exc
+        raise _ProblemError(_operation_problem(invalid_code, object_id, f"读取或解析{label}", exc)) from exc
     if not isinstance(payload, dict):
         raise _ProblemError(_problem(invalid_code, object_id, f"{label}必须是 JSON object"))
     return raw_bytes, payload
@@ -276,9 +271,7 @@ def _normalize_global_observability(
         if set(local) - {"retention_days"}:
             raise ValueError("local 包含未知字段")
         if "retention_days" in local:
-            normalized["local"]["retention_days"] = _coerce_retention_days(
-                local.get("retention_days")
-            )
+            normalized["local"]["retention_days"] = _coerce_retention_days(local.get("retention_days"))
 
     if "langfuse" in raw:
         langfuse = raw.get("langfuse")
@@ -289,9 +282,7 @@ def _normalize_global_observability(
             raise ValueError("langfuse 包含未知字段")
         for field_name in ("public_key", "base_url"):
             if field_name in langfuse:
-                normalized["langfuse"][field_name] = str(
-                    langfuse.get(field_name) or ""
-                ).strip()
+                normalized["langfuse"][field_name] = str(langfuse.get(field_name) or "").strip()
         if "debug" in langfuse:
             normalized["langfuse"]["debug"] = _coerce_bool(
                 langfuse.get("debug"),
@@ -596,9 +587,7 @@ def _marker_payload(
         # without mistaking pre-existing workspace overrides for conflicts.
         # Existing targets are never overwritten during a retry.
         "owned_workspace_ids": sorted(owned_workspace_ids),
-        "manual_recovery_backups": [
-            _object_id(path, runtime_root) for path in backup_paths
-        ],
+        "manual_recovery_backups": [_object_id(path, runtime_root) for path in backup_paths],
         "errors": [],
     }
     if status == MARKER_COMPLETED:
@@ -676,9 +665,7 @@ def _plan_config(runtime_root: Path) -> ConfigPlan:
     plan.workspace_ids, workspace_problems = _list_canonical_workspaces(runtime_root)
     plan.problems.extend(workspace_problems)
     plan.owned_workspace_ids = [
-        workspace_id
-        for workspace_id in plan.owned_workspace_ids
-        if workspace_id in plan.workspace_ids
+        workspace_id for workspace_id in plan.owned_workspace_ids if workspace_id in plan.workspace_ids
     ]
     if not plan.workspace_ids and not workspace_problems:
         plan.problems.append(
@@ -805,9 +792,7 @@ def _config_counts(plan: ConfigPlan) -> dict[str, int]:
 
 def _dry_run_config(plan: ConfigPlan) -> StepResult:
     counts = _config_counts(plan)
-    planned_backups = (
-        [_system_backup_base(plan.source_path)] if plan.legacy_source_present else []
-    )
+    planned_backups = [_system_backup_base(plan.source_path)] if plan.legacy_source_present else []
     if plan.problems:
         status = "dry-run-blocked"
     elif plan.legacy_source_present:
@@ -919,9 +904,7 @@ def _apply_config(plan: ConfigPlan) -> StepResult:
         )
 
     problems: list[MigrationProblem] = []
-    backup_paths = (
-        _marker_backup_paths(plan.runtime_root, plan.marker) if plan.marker else []
-    )
+    backup_paths = _marker_backup_paths(plan.runtime_root, plan.marker) if plan.marker else []
     try:
         progress_marker = _write_marker(
             plan,
@@ -1110,14 +1093,10 @@ def _inspect_legacy_logs(
         try:
             metadata = path.stat(follow_symlinks=False)
         except OSError as exc:
-            problems.append(
-                _operation_problem("LEGACY_LOG_INSPECTION_FAILED", source_id, "检查旧性能日志", exc)
-            )
+            problems.append(_operation_problem("LEGACY_LOG_INSPECTION_FAILED", source_id, "检查旧性能日志", exc))
             continue
         if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
-            problems.append(
-                _problem("UNSAFE_LEGACY_LOG", source_id, "旧性能日志不是普通文件")
-            )
+            problems.append(_problem("UNSAFE_LEGACY_LOG", source_id, "旧性能日志不是普通文件"))
             continue
         candidates.append(LegacyLog(path=path, size=metadata.st_size))
     return candidates, problems
@@ -1211,9 +1190,7 @@ def _dry_run_logs(
         status="dry-run-ready" if candidates else "noop",
         counts=counts,
         problems=list(inspection_problems),
-        planned_backup_paths=[
-            _log_backup_base(runtime_root, item.path) for item in candidates
-        ],
+        planned_backup_paths=[_log_backup_base(runtime_root, item.path) for item in candidates],
     )
 
 
@@ -1358,9 +1335,10 @@ def execute_migration(
     log_report = _render_step(log_result)
     config_errors = [problem.render() for problem in config_result.problems]
     log_warnings = [problem.render() for problem in log_result.problems]
-    backup_paths = [
-        str(path)
-        for path in [*config_result.backup_paths, *log_result.backup_paths]
+    backup_paths = [str(path) for path in [*config_result.backup_paths, *log_result.backup_paths]]
+    planned_backup_paths = [
+        *config_result.planned_backup_paths,
+        *log_result.planned_backup_paths,
     ]
     report = {
         "schema_version": 1,
@@ -1376,30 +1354,15 @@ def execute_migration(
         "to_version": to_version,
         "counts": {
             "workspaces_scanned": config_result.counts.get("workspaces_scanned", 0),
-            "workspace_configs_written": config_result.counts.get(
-                "workspace_configs_written", 0
-            ),
-            "workspace_configs_preserved": config_result.counts.get(
-                "workspace_configs_preserved", 0
-            ),
+            "workspace_configs_written": config_result.counts.get("workspace_configs_written", 0),
+            "workspace_configs_preserved": config_result.counts.get("workspace_configs_preserved", 0),
             "legacy_logs_found": log_result.counts.get("legacy_logs_found", 0),
             "legacy_logs_deleted": log_result.counts.get("legacy_logs_deleted", 0),
         },
         "backup_paths": backup_paths,
-        "planned_backup_paths": [
-            str(path)
-            for path in [
-                *config_result.planned_backup_paths,
-                *log_result.planned_backup_paths,
-            ]
-        ],
+        "planned_backup_paths": [str(path) for path in planned_backup_paths],
         "error_codes": sorted({problem.code for problem in config_result.problems}),
-        "failed_object_ids": sorted(
-            {
-                problem.object_id
-                for problem in [*config_result.problems, *log_result.problems]
-            }
-        ),
+        "failed_object_ids": sorted({problem.object_id for problem in [*config_result.problems, *log_result.problems]}),
         "errors": config_errors,
         "warnings": log_warnings,
         "config_migration": config_report,

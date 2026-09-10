@@ -181,7 +181,7 @@ def test_projector_returns_coarse_trace_without_raw_inputs_or_results():
     completed = next(item for item in projected if item["event"] == "tool.completed")
     querying = next(item for item in projected if item["event"] == "tool.progress")
     assert querying["provider"] == "nl2sql_template"
-    assert querying["summary"] == ("已选择 NL2SQL Template 数据源，正在查询业务数据：" "模板未命中，改用自然语言查询")
+    assert querying["summary"] == "已选择 NL2SQL Template 数据源，正在查询业务数据：模板未命中，改用自然语言查询"
     assert completed["provider"] == "nl2sql_template"
     assert completed["record_count"] == 2
     assert completed["elapsed_ms"] == 25
@@ -238,10 +238,8 @@ def test_projector_returns_ontology_resource_name_and_resolved_key():
         run_id="run_demo",
     )[0]
 
-    assert started["summary"] == ("正在读取知识包内容：业务对象，对象名=Demo Material，key=Demo Material")
-    assert completed["summary"] == (
-        "知识包内容读取完成，用时 8 ms：" "业务对象，对象名=Demo Material，key=demo_material"
-    )
+    assert started["summary"] == "正在读取知识包内容：业务对象，对象名=Demo Material，key=Demo Material"
+    assert completed["summary"] == "知识包内容读取完成，用时 8 ms：业务对象，对象名=Demo Material，key=demo_material"
 
 
 def test_projector_keeps_parallel_ontology_context_calls_separate():
@@ -298,15 +296,13 @@ def test_projector_keeps_parallel_ontology_context_calls_separate():
         run_id="run_demo",
     )[0]
 
-    assert [
-        event["tool_call_id"]
-        for event in (
-            first_started,
-            second_started,
-            second_completed,
-            first_completed,
-        )
-    ] == [
+    lifecycle_events = (
+        first_started,
+        second_started,
+        second_completed,
+        first_completed,
+    )
+    assert [event["tool_call_id"] for event in lifecycle_events] == [
         "call_context_a",
         "call_context_b",
         "call_context_b",
@@ -385,7 +381,7 @@ def test_projector_deduplicates_identical_provider_progress():
 
     assert selected[0]["summary"] == "已选择 Neo4j 数据源，正在查询业务数据"
     assert duplicate_selected == []
-    assert planning[0]["summary"] == ("已选择 Neo4j 数据源，正在查询业务数据：准备查询实体关联关系")
+    assert planning[0]["summary"] == "已选择 Neo4j 数据源，正在查询业务数据：准备查询实体关联关系"
     assert duplicate_planning == []
     assert "MATCH" not in str(selected + planning)
     assert completed["summary"] == "业务数据查询完成，命中 1 条记录，用时 12 ms"

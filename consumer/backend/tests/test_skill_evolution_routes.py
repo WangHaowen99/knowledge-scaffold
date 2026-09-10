@@ -34,6 +34,7 @@ class _FakeService:
     def __init__(self, tasks):
         self._store = _FakeStore(tasks)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def start(self, **kwargs):
         return TaskRecord(
             task_id="new1",
@@ -49,6 +50,7 @@ class _FakeService:
             updated_at="2026-01-01T00:00:00+00:00",
         )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compute_diff(self, record):
         return DiffResult(
             task_id=record.task_id,
@@ -58,17 +60,21 @@ class _FakeService:
             is_empty=False,
         )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def detect_drift(self, record):
         return DriftStatus(drifted=False, reason="clean")
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def approve(self, record, **kwargs):
         record.status = "approved"
         return record
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def reject(self, record, **kwargs):
         record.status = "rejected"
         return record
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def cancel(self, record, **kwargs):
         record.status = "cancelled"
         return record

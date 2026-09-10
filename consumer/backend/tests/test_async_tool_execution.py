@@ -503,6 +503,7 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
 
+            # pylint: disable-next=add-staticmethod-or-classmethod-decorator
             def run(self, state, **kwargs):
                 calls.append(("sync", threading.current_thread(), kwargs))
                 return {**state, "final_output": "sync-result", "messages": []}

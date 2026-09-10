@@ -66,7 +66,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         return
 
-    def do_POST(self):
+    def do_POST(self):  # pylint: disable=invalid-name
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length))
         self.__class__.commands.append(payload)

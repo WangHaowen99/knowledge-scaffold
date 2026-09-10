@@ -73,10 +73,10 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                     "type": "string",
                     "minLength": 1,
                     "description": (
-                        "The target entity/object key, title, canonical key, or declared alias from the selected ontology. "
-                        "The tool resolves it to the exact object key before querying. "
-                        "Prefer reading the object via ontology_context(resource='object') before querying so "
-                        "the query can use the correct entity and field names."
+                        "The target entity/object key, title, canonical key, or declared alias from the selected"
+                        " ontology. The tool resolves it to the exact object key before querying. Prefer reading the"
+                        " object via ontology_context(resource='object') before querying so the query can use the"
+                        " correct entity and field names."
                     ),
                 },
                 "action": {
@@ -95,16 +95,16 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                     "type": "string",
                     "minLength": 1,
                     "description": (
-                        "A precise search query using ontology entity names and "
-                        "attribute names from the matched ontology's object definitions. Never guess fields. "
-                        "Prefer a clear, near-natural-language sentence that explicitly states the target entity, "
-                        "filter conditions, and requested fields. Generic template examples: "
-                        "'查询[实体名]中[条件]的[字段]信息',"
-                        "'统计[实体名]中满足[条件]的记录数量'. These are style references only, not a strict format. "
-                        "If multiple values for the same attribute are needed, prefer one query that includes "
-                        'all values so one search can return multiple matching records. For action="lookup_values", '
-                        "express the concrete value-domain request for the submitted values. The Consumer preserves "
-                        "this text and appends only the validated table, query fields, and values for each binding group."
+                        "A precise search query using ontology entity names and attribute names from the matched"
+                        " ontology's object definitions. Never guess fields. Prefer a clear, near-natural-language"
+                        " sentence that explicitly states the target entity, filter conditions, and requested fields."
+                        " Generic template examples:"
+                        " '查询[实体名]中[条件]的[字段]信息','统计[实体名]中满足[条件]的记录数量'. These are style"
+                        " references only, not a strict format. If multiple values for the same attribute are needed,"
+                        " prefer one query that includes all values so one search can return multiple matching records."
+                        ' For action="lookup_values", express the concrete value-domain request for the submitted'
+                        " values. The Consumer preserves this text and appends only the validated table, query fields,"
+                        " and values for each binding group."
                     ),
                 },
                 "value_inputs": {
@@ -151,7 +151,7 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
 }
 
 
-def handle_business_data_search(
+def handle_business_data_search(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     ontology_id: str,
     query: str,
     entity: Optional[str] = None,
@@ -209,7 +209,8 @@ def handle_business_data_search(
         )
 
     logger.info(
-        "Sending business_data_search query: workspace_id=%s ontology_id=%s mode=%s provider=%s entity=%s query=%s (tool_call_id=%s)",
+        "Sending business_data_search query: workspace_id=%s ontology_id=%s mode=%s provider=%s entity=%s query=%s"
+        " (tool_call_id=%s)",
         workspace_id or "n/a",
         normalized_ontology_id,
         connection.mode,
@@ -286,7 +287,7 @@ def handle_business_data_search(
     return final_content
 
 
-async def handle_business_data_search_async(
+async def handle_business_data_search_async(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     ontology_id: str,
     query: str,
     entity: Optional[str] = None,

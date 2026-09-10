@@ -76,6 +76,7 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "sql": "SELECT * FROM Part", "data": [{"id": 1}], "row_count": 1}
 
@@ -125,6 +126,7 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [], "row_count": 0}
 
@@ -173,6 +175,7 @@ def test_default_matcher_with_rich_template_dedupes(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {
                 "success": True,
@@ -232,6 +235,7 @@ def test_external_matcher_discovered_and_called(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [{"id": 1}], "row_count": 1}
 
@@ -335,6 +339,7 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [], "row_count": 0}
 
@@ -372,6 +377,7 @@ def test_template_matcher_returns_error_for_http_failure(tmp_path):
         status_code = 500
         text = "server failed"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             raise ValueError("not json")
 
@@ -575,6 +581,7 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [{"id": 1}], "row_count": 1}
 

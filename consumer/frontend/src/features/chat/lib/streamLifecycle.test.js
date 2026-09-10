@@ -99,8 +99,12 @@ test('run progress classifies PublicEvents into user-visible phases', () => {
     classifyRunProgressFromPublicEvent({ event_type: 'token.delta', payload: { channel: 'content' } }).phase,
     'generating',
   );
+  const businessDataEvent = {
+    event_type: 'tool.started',
+    payload: { tool_name: 'business_data_query' },
+  };
   assert.equal(
-    classifyRunProgressFromPublicEvent({ event_type: 'tool.started', payload: { tool_name: 'business_data_query' } }).phase,
+    classifyRunProgressFromPublicEvent(businessDataEvent).phase,
     'business_data',
   );
   assert.equal(

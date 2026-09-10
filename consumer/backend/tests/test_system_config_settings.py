@@ -1096,6 +1096,7 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
     captured = {}
 
     class FakeResponse:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 

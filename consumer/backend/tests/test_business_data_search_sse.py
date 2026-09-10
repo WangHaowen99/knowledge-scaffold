@@ -187,12 +187,14 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
             for line in self._lines:
                 yield line
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
         def __enter__(self):
             return self
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def __exit__(self, exc_type, exc, tb):
             del exc_type, exc, tb
             return None

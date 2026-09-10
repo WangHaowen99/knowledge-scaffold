@@ -306,7 +306,8 @@ test('business data progress rows display and wrap their provider event text bef
   );
   assert.equal(
     chatCssSource.includes(
-      '.mwr .trace .trace-progress-label { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;',
+      '.mwr .trace .trace-progress-label { overflow: visible; text-overflow: clip; ' +
+        'white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;',
     ),
     true,
   );

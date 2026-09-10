@@ -91,6 +91,7 @@ def _create_token(cfg: MCPRuntimeConfig, *, username: str, workspace_id: str) ->
         ("public-visitor", None, [], False),
     ],
 )
+# pylint: disable-next=too-many-arguments,huawei-too-many-arguments
 def test_mcp_scope_allows_current_owner_member_default_and_ownerless_access(
     tmp_path,
     monkeypatch,

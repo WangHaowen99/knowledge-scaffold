@@ -10,6 +10,7 @@ import pytest
 
 
 class _FakeAbilityManager:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def add(self, _cards):
         return None
 

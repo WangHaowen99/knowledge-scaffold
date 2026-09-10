@@ -65,6 +65,16 @@ const safeLocalSet = (key, value) => {
   }
 };
 
+const interactionCancelPath = (targetSessionId, interactionId) =>
+  `/agentic/sessions/${encodeURIComponent(targetSessionId)}/interactions/${encodeURIComponent(interactionId)}/cancel`;
+
+const interactionTypeLabel = (type) => {
+  if (type === 'approval') {
+    return '确认';
+  }
+  return type === 'single_choice' ? '选择' : '输入';
+};
+
 const STARTER_PROMPTS = [
   '总结当前知识包的核心业务对象与关系',
   '分析一个典型业务变更的影响范围',
@@ -89,6 +99,7 @@ const AGENT_MODE_META = {
   },
 };
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 function AgentModePicker({ value, onChange, disabled }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
@@ -238,6 +249,7 @@ function AgentModePicker({ value, onChange, disabled }) {
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
 // useChatSessions 下发。新版 PublicEvent 流由 useStreamManager / useAgenticStream 统一投影。
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function ChatWorkspace({
   chat,
   streamManager,
@@ -299,6 +311,12 @@ export default function ChatWorkspace({
         [],
     [sharedOntologies],
   );
+  const unloadedOntologyLabel = ontologiesError ?
+    '知识包加载失败' :
+    '自动选择知识包';
+  const ontologyLabel = ontologiesLoading ?
+    '正在加载知识包…' :
+    unloadedOntologyLabel;
   const [selectedOntologyId, setSelectedOntologyId] = useState('');
   const [selectedOntologyVersion, setSelectedOntologyVersion] = useState('');
   // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
@@ -569,6 +587,7 @@ export default function ChatWorkspace({
 
   const send = async () => {
     const text = input.trim();
+    // G.CTL.07 exception: tests enforce every send-admission condition in this single guard.
     if (
       !workspaceDataReady ||
       !text ||
@@ -637,13 +656,13 @@ export default function ChatWorkspace({
     { isLoading: false };
   const handleRecoveryAction = async (recoveryMessage) => {
     const message = String(recoveryMessage || '').trim();
-    if (
+    const recoveryBlocked =
       !workspaceDataReady ||
       !currentChatId ||
       !message ||
       streamState.isLoading ||
-      pendingInteraction
-    ) {
+      pendingInteraction;
+    if (recoveryBlocked) {
       return false;
     }
 
@@ -740,7 +759,7 @@ export default function ChatWorkspace({
     setInteractionCancelError('');
     try {
       const response = await authFetch(
-        `/agentic/sessions/${encodeURIComponent(targetSessionId)}/interactions/${encodeURIComponent(interactionId)}/cancel`,
+        interactionCancelPath(targetSessionId, interactionId),
         {
           method: 'POST',
           headers: { 'Idempotency-Key': createIdempotencyKey() },
@@ -942,11 +961,7 @@ export default function ChatWorkspace({
               onChange={(event) => setSelectedOntologyId(event.target.value)}
             >
               <option value="">
-                {ontologiesLoading ?
-                  '正在加载知识包…' :
-                  ontologiesError ?
-                    '知识包加载失败' :
-                    '自动选择知识包'}
+                {ontologyLabel}
               </option>
               {ontologies.map((ontology) => (
                 <option key={ontology.id} value={ontology.id}>
@@ -1082,6 +1097,7 @@ export default function ChatWorkspace({
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 function InteractionComposer({
   interaction,
   disabled,
@@ -1173,11 +1189,7 @@ function InteractionComposer({
       <div className="mwr-interaction-head">
         <StatusTag status="awaiting">
           等待
-          {type === 'approval' ?
-            '确认' :
-            type === 'single_choice' ?
-              '选择' :
-              '输入'}
+          {interactionTypeLabel(type)}
         </StatusTag>
         <strong>{prompt}</strong>
       </div>

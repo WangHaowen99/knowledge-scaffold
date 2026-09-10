@@ -154,15 +154,14 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual(runtime._runs, {})
-        self.assertFalse(
-            [
-                task
-                for task in asyncio.all_tasks()
-                if task is not asyncio.current_task()
-                and not task.done()
-                and task.get_name().startswith("jiuwen-runtime-")
-            ]
-        )
+        pending_runtime_tasks = []
+        for task in asyncio.all_tasks():
+            is_pending_runtime_task = (
+                task is not asyncio.current_task() and not task.done() and task.get_name().startswith("jiuwen-runtime-")
+            )
+            if is_pending_runtime_task:
+                pending_runtime_tasks.append(task)
+        self.assertFalse(pending_runtime_tasks)
         for run_id, result, events in outputs:
             with self.subTest(run_id=run_id):
                 self.assertEqual(result.status, "completed")

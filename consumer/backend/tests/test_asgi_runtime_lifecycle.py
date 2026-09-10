@@ -333,6 +333,7 @@ class _EventHub:
         self.deadlines.append(deadline)
         return True
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def metrics(self):
         return {"subscribers": 0, "reservations": 0}
 

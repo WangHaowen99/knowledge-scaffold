@@ -12,6 +12,7 @@ const sameScope = (entry, { principalId, workspaceId }) =>
   entry.principalId === String(principalId || '') &&
   entry.workspaceId === String(workspaceId || '');
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export function createOntologyResource({ fetcher = authFetch } = {}) {
   const entries = new Map();
 

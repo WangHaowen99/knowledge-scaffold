@@ -578,6 +578,7 @@ class OrderedBinaryRouteCompiler:
 class LockedModelFactProvider:
     """Expose only facts already embedded in the locked decision model."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def resolve_facts(
         self,
         *,

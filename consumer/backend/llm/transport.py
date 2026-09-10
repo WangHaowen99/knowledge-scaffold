@@ -136,7 +136,8 @@ class OpenAIChatTransport:
             **kwargs,
         )
         logger.info(
-            "Making LLM request via OpenAI client to %s/chat/completions, messages=%d tools=%d stream=%s temperature=%s reasoning=%s",
+            "Making LLM request via OpenAI client to %s/chat/completions, messages=%d tools=%d stream=%s temperature=%s"
+            " reasoning=%s",
             str(self.config.base_url or "").rstrip("/"),
             len(messages),
             len(tools or []),

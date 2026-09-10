@@ -36,6 +36,7 @@ def _build_test_client(tmp_path, monkeypatch):
     )
 
     class _FakeOrchestrator:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _get_memory_manager(self, user_id):
             assert user_id == "admin"
             return manager

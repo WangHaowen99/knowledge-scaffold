@@ -68,6 +68,7 @@ class _FakeBackend:
         self.calls.append(("pattern_search", kwargs))
         return GraphBackendResult(records=[])
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self):
         return None
 

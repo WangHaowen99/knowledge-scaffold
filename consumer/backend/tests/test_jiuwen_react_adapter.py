@@ -87,14 +87,15 @@ class _FakeContextEngineConfig:
 
 
 class _RemovableFakeResourceManager:
+    def __init__(self):
+        self.removed_tool_ids = []
+
     def remove_tool(self, tool_id, tag=None, skip_if_tag_not_exists=True):
         del tag, skip_if_tag_not_exists
         tool_ids = tool_id if isinstance(tool_id, list) else [tool_id]
-        removed_tool_ids = getattr(self, "removed_tool_ids", None)
-        if removed_tool_ids is None:
-            removed_tool_ids = []
-            self.removed_tool_ids = removed_tool_ids
-        removed_tool_ids.extend(tool_ids)
+        if not hasattr(self, "removed_tool_ids"):
+            self.removed_tool_ids = []
+        self.removed_tool_ids.extend(tool_ids)
         registered_tools = getattr(self, "registered_tools", None)
         if isinstance(registered_tools, dict):
             for registered_tool_id in tool_ids:
@@ -453,6 +454,7 @@ def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
             self.unregistered.append((event, callback))
 
     class FakeUsage:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def model_dump(self):
             return {
                 "prompt_tokens": 11,
@@ -469,6 +471,7 @@ def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
             return {"role": self.role, "content": self.content}
 
     class FakeToolInfo:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def model_dump(self):
             return {"name": "business_data_search"}
 
@@ -945,6 +948,7 @@ def test_jiuwen_model_trace_normalizes_openai_compatible_cache_usage():
             return True
 
     class FakeUsage:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def model_dump(self):
             return {
                 "prompt_tokens": 6250,
@@ -1019,6 +1023,7 @@ def test_jiuwen_model_trace_normalizes_usage_metadata_cache_tokens():
             return True
 
     class FakeUsage:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def model_dump(self):
             return {
                 "input_tokens": 6250,
@@ -1269,6 +1274,7 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
             del event, callback
 
     class FakeUsage:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def model_dump(self):
             return {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
 
@@ -1289,6 +1295,7 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
     captured = {}
 
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             del purpose, profile_id, workspace_id
             return SimpleNamespace(provider="openai_compatible", model="model-a")
@@ -1985,7 +1992,7 @@ def test_jiuwen_loop_engine_injects_selected_ontology_context_into_inputs(monkey
     monkeypatch.setattr(
         "agent.core.shared.ontology_context.build_selected_ontology_preload_context",
         lambda selected_ontology_id=None, **_kwargs: (
-            "<Selected-Ontology>\n" "id: {}\n" "operations_catalog:\n" "- 变更影响分析\n" "</Selected-Ontology>"
+            "<Selected-Ontology>\nid: {}\noperations_catalog:\n- 变更影响分析\n</Selected-Ontology>"
         ).format(selected_ontology_id),
         raising=False,
     )
@@ -2029,7 +2036,7 @@ def test_jiuwen_loop_engine_falls_back_to_sole_enabled_ontology(monkeypatch):
     monkeypatch.setattr(
         "agent.core.shared.ontology_context.build_selected_ontology_preload_context",
         lambda selected_ontology_id=None, **_kwargs: (
-            "<Selected-Ontology>\n" "id: {}\n" "value_domain_hint: demo\n" "</Selected-Ontology>"
+            "<Selected-Ontology>\nid: {}\nvalue_domain_hint: demo\n</Selected-Ontology>"
         ).format(selected_ontology_id),
         raising=False,
     )
@@ -2214,6 +2221,7 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
             observed["tool_by_name"] = {item.card.name: item for item in tools}
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             observed["ability_cards"] = cards
 
@@ -2280,8 +2288,8 @@ def test_jiuwen_loop_engine_registers_current_tools_for_default_agent(monkeypatc
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
         "agent.core.shared.prompting.build_ontologies_section",
-        lambda selected_ontology_id=None, **_kwargs: "<Available-Ontologies>\n- {}: selected\n</Available-Ontologies>".format(
-            selected_ontology_id or "all"
+        lambda selected_ontology_id=None, **_kwargs: (
+            "<Available-Ontologies>\n- {}: selected\n</Available-Ontologies>".format(selected_ontology_id or "all")
         ),
         raising=False,
     )
@@ -2420,6 +2428,7 @@ def test_jiuwen_loop_engine_uses_selected_model_profile_for_default_agent(monkey
         return []
 
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             calls["purpose"] = purpose
             calls["profile_id"] = profile_id
@@ -2476,6 +2485,7 @@ def test_jiuwen_loop_engine_clamps_profile_max_tokens_to_platform_output_limit(m
         return fake_agent
 
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             del purpose, profile_id, workspace_id
             return SimpleNamespace(
@@ -2593,6 +2603,7 @@ def test_jiuwen_loop_engine_uses_subagent_purpose_for_subagent_caller(monkeypatc
         return []
 
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             calls["purpose"] = purpose
             calls["profile_id"] = profile_id
@@ -2732,6 +2743,7 @@ def test_jiuwen_loop_engine_emits_reasoning_summary_for_streamed_reasoning(monke
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeSummaryService:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _dispatch_reasoning_summary(
             self,
             *,
@@ -2747,6 +2759,7 @@ def test_jiuwen_loop_engine_emits_reasoning_summary_for_streamed_reasoning(monke
             return True
 
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_summary_service(self):
             return FakeSummaryService()
 
@@ -2799,6 +2812,7 @@ def test_jiuwen_loop_engine_emits_acp_reasoning_summary(monkeypatch):
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeSummaryService:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _dispatch_reasoning_summary(
             self,
             *,
@@ -2814,6 +2828,7 @@ def test_jiuwen_loop_engine_emits_acp_reasoning_summary(monkeypatch):
             return True
 
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_summary_service(self):
             return FakeSummaryService()
 
@@ -2919,7 +2934,7 @@ def test_jiuwen_loop_engine_passes_full_history_to_context_engine(monkeypatch):
     def fail_if_called_apply_sliding_window(messages, max_rounds):
         sliding_window_calls.append((messages, max_rounds))
         raise AssertionError(
-            "apply_sliding_window must not be invoked by the engine; " "ContextEngine is responsible for windowing."
+            "apply_sliding_window must not be invoked by the engine; ContextEngine is responsible for windowing."
         )
 
     # Patch the source module so that, if the engine ever re-imports
@@ -3047,15 +3062,13 @@ def test_jiuwen_loop_engine_uses_main_tool_schema_for_acp_caller(monkeypatch):
     state = {"user_context": {"agent_mode": "quick"}}
 
     jiuwen_names = [schema["function"]["name"] for schema in engine._tools_schema_for_state(state, caller="acp")]
-    expected_names = [
-        schema["function"]["name"]
-        for schema in get_tools_schema(
-            "main",
-            include_memory=False,
-            include_orchestration=False,
-            include_web_search=False,
-        )
-    ]
+    expected_schemas = get_tools_schema(
+        "main",
+        include_memory=False,
+        include_orchestration=False,
+        include_web_search=False,
+    )
+    expected_names = [schema["function"]["name"] for schema in expected_schemas]
 
     assert jiuwen_names == expected_names
 
@@ -3064,20 +3077,16 @@ def test_jiuwen_loop_engine_exposes_memory_only_for_explicit_memory_request(monk
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
 
-    ordinary_names = {
-        schema["function"]["name"]
-        for schema in engine._tools_schema_for_state(
-            {"user_request": "summarize this plan", "messages": []},
-            caller="main",
-        )
-    }
-    memory_names = {
-        schema["function"]["name"]
-        for schema in engine._tools_schema_for_state(
-            {"user_request": "remember that I prefer tables", "messages": []},
-            caller="main",
-        )
-    }
+    ordinary_schemas = engine._tools_schema_for_state(
+        {"user_request": "summarize this plan", "messages": []},
+        caller="main",
+    )
+    memory_schemas = engine._tools_schema_for_state(
+        {"user_request": "remember that I prefer tables", "messages": []},
+        caller="main",
+    )
+    ordinary_names = {schema["function"]["name"] for schema in ordinary_schemas}
+    memory_names = {schema["function"]["name"] for schema in memory_schemas}
 
     assert "memory" not in ordinary_names
     assert "memory" in memory_names
@@ -3102,10 +3111,12 @@ def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):
     cancel_event = threading.Event()
 
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             del purpose, profile_id, workspace_id
             return SimpleNamespace(model="model-cancel")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_cancel_event(self, run_id):
             assert run_id == "run-jiuwen-cancel"
             return cancel_event
@@ -3797,6 +3808,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
             created["refresh"] = refresh
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["ability_cards"] = cards
 
@@ -3944,6 +3956,7 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
             self.registered_tools.update({item.card.id: item for item in tools})
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["ability_cards"] = cards
 
@@ -4136,6 +4149,7 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
             self.registered_tools.update({item.card.id: item for item in tools})
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["ability_cards"] = cards
 
@@ -4307,6 +4321,7 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
             created["tool_by_name"] = {item.card.name: item for item in tools}
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["ability_cards"] = cards
 
@@ -4425,6 +4440,7 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
             created["tool_by_name"] = {item.card.name: item for item in tools}
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["ability_cards"] = cards
 
@@ -4522,6 +4538,7 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
             created["tool_by_name"] = {item.card.name: item for item in tools}
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["ability_cards"] = cards
 
@@ -4607,6 +4624,7 @@ def test_jiuwen_loop_reports_parallel_tool_window_in_iteration_metrics(monkeypat
             created["tool_by_name"] = {item.card.name: item for item in tools}
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["ability_cards"] = cards
 
@@ -5162,6 +5180,7 @@ def test_patch_jiuwen_openai_reasoning_alias_accepts_delta_reasoning_field():
             self.reasoning_content = reasoning_content
 
     class FakeOpenAIModelClient:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _parse_stream_chunk(self, chunk):
             del chunk
             return FakeParsedChunk()
@@ -5192,6 +5211,7 @@ def test_patch_jiuwen_openai_reasoning_alias_preserves_stream_cache_tokens():
             self.usage_metadata = FakeUsageMetadata()
 
     class FakeOpenAIModelClient:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _parse_stream_chunk(self, chunk):
             del chunk
             return FakeParsedChunk()
@@ -5656,7 +5676,7 @@ def test_create_agent_solver_route_requires_tool_choice(monkeypatch):
         state={
             "user_context": {
                 "_required_solver_operation_key": "optimize_minus_one_route",
-                "_required_solver_tool_name": ("solve_optimize_minus_one_route_abcd1234"),
+                "_required_solver_tool_name": "solve_optimize_minus_one_route_abcd1234",
             }
         },
         caller="main",

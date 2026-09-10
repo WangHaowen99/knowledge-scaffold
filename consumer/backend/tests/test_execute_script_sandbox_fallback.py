@@ -66,6 +66,7 @@ def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):
     sandbox_calls = []
 
     class FakeSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             sandbox_calls.append(kwargs)
             return _completed("sandbox-output")
@@ -101,6 +102,7 @@ def test_explicit_ontology_dir_is_forwarded_to_sandbox(tmp_path, monkeypatch):
     sandbox_calls = []
 
     class FakeSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             sandbox_calls.append(kwargs)
             return _completed("sandbox-output")
@@ -124,6 +126,7 @@ def test_sandbox_none_result_returns_public_internal_error(tmp_path, monkeypatch
     monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
 
     class EmptySandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             return None
 
@@ -186,6 +189,7 @@ def test_required_sandbox_blocks_configured_fallback_after_failure(tmp_path, mon
     monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
 
     class FailingSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **_kwargs):
             raise SandboxUnavailableError("offline")
 
@@ -331,9 +335,7 @@ def test_oversize_args_fail_closed_when_fallback_disabled(tmp_path, monkeypatch)
         run_id="run-oversize",
     )
 
-    assert result == (
-        "Error: Sandbox unavailable: oversized script arguments are not " "supported by sandbox execution"
-    )
+    assert result == "Error: Sandbox unavailable: oversized script arguments are not supported by sandbox execution"
 
 
 def test_oversize_args_use_explicit_fallback_when_enabled(tmp_path, monkeypatch):
@@ -375,7 +377,7 @@ def test_missing_run_id_uses_fallback_gate(tmp_path, monkeypatch):
         run_id=None,
     )
 
-    assert result == ("Error: Sandbox unavailable: run_id is required for sandbox execution")
+    assert result == "Error: Sandbox unavailable: run_id is required for sandbox execution"
 
 
 def test_unsupported_platform_uses_fallback_gate(tmp_path, monkeypatch):
@@ -389,7 +391,7 @@ def test_unsupported_platform_uses_fallback_gate(tmp_path, monkeypatch):
         run_id="run-windows",
     )
 
-    assert result == ("Error: Sandbox unavailable: sandbox execution requires Linux " "(current platform: win32)")
+    assert result == "Error: Sandbox unavailable: sandbox execution requires Linux (current platform: win32)"
 
 
 def test_sandbox_exception_uses_same_fallback_gate(tmp_path, monkeypatch):
@@ -399,6 +401,7 @@ def test_sandbox_exception_uses_same_fallback_gate(tmp_path, monkeypatch):
     fallback_events = []
 
     class FailingSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             raise SandboxUnavailableError("jiuwenbox is down")
 
@@ -433,6 +436,7 @@ def test_unsupported_provider_uses_local_execution_with_audit(tmp_path, monkeypa
     fallback_events = []
 
     class UnsupportedProviderSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             raise SandboxUnsupportedProviderError("neo4j")
 
@@ -479,7 +483,7 @@ def test_unsupported_provider_uses_local_execution_with_audit(tmp_path, monkeypa
     [
         (
             1,
-            "python3: can't open file '/workspace/scripts/tool.py': " "[Errno 2] No such file or directory",
+            "python3: can't open file '/workspace/scripts/tool.py': [Errno 2] No such file or directory",
             "sandbox_tool_missing",
         ),
         (
@@ -509,6 +513,7 @@ def test_sandbox_tool_or_policy_failure_reuses_local_execution(
     fallback_events = []
 
     class MissingToolSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             return _completed("", returncode=returncode, stderr=stderr)
 
@@ -557,6 +562,7 @@ def test_sandbox_tool_or_policy_exception_reuses_local_execution(
     fallback_events = []
 
     class FailingSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             raise sandbox_error
 
@@ -589,6 +595,7 @@ def test_sandbox_recovery_reuses_original_local_command_and_context(tmp_path, mo
     local_calls = []
 
     class MissingToolSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             return _completed(
                 "",
@@ -633,6 +640,7 @@ def test_sandbox_timeout_is_not_replayed_locally(tmp_path, monkeypatch):
     monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
 
     class TimedOutSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             raise SandboxExecError("exec timed out in sandbox")
 
@@ -673,6 +681,7 @@ def test_normal_sandbox_script_failure_is_not_replayed_locally(
     monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
 
     class FailedSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             return _completed(
                 "",
@@ -733,6 +742,7 @@ def test_sandbox_exception_fails_closed_when_fallback_disabled(tmp_path, monkeyp
     monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
 
     class FailingSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             raise SandboxUnavailableError("jiuwenbox is down")
 
@@ -769,6 +779,7 @@ def test_sandbox_execution_errors_are_redacted_when_fallback_disabled(
     monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
 
     class FailingSandboxExecutor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def run_script(self, **kwargs):
             raise sandbox_error
 
@@ -903,7 +914,7 @@ def test_nonzero_exit_returns_explicit_public_business_error(
             base_path=tmp_path,
         )
 
-    assert result == ("Error: Script exited with code 7. " "[MATERIAL_NOT_FOUND] Material A001 was not found.")
+    assert result == "Error: Script exited with code 7. [MATERIAL_NOT_FOUND] Material A001 was not found."
     assert "stdout-secret" not in result
     assert "stderr-secret" not in result
     assert "stdout-secret" not in caplog.text
@@ -940,7 +951,7 @@ def test_nonzero_exit_returns_strict_deterministic_stdout_error(
             base_path=tmp_path,
         )
 
-    assert result == ("Error: Script exited with code 4. " "[RUNTIME_ERROR] Synthetic operation failed.")
+    assert result == "Error: Script exited with code 4. [RUNTIME_ERROR] Synthetic operation failed."
     assert "synthetic internal diagnostic" not in result
     assert "synthetic internal diagnostic" not in caplog.text
 
@@ -971,7 +982,7 @@ def test_nonzero_exit_returns_only_safe_python_exception_type(
         base_path=tmp_path,
     )
 
-    assert result == ("Error: Script exited with code 1. " "[SCRIPT_RUNTIME_ERROR] Python KeyError.")
+    assert result == "Error: Script exited with code 1. [SCRIPT_RUNTIME_ERROR] Python KeyError."
     assert "synthetic-private-value" not in result
 
 
@@ -1013,7 +1024,7 @@ def test_nonzero_exit_ignores_structured_deterministic_error_details(
             base_path=tmp_path,
         )
 
-    assert result == ("Error: Script exited with code 4. " "[RUNTIME_ERROR] Synthetic operation failed.")
+    assert result == "Error: Script exited with code 4. [RUNTIME_ERROR] Synthetic operation failed."
     assert "synthetic internal diagnostic" not in result
     assert "synthetic internal diagnostic" not in caplog.text
 
@@ -1021,13 +1032,9 @@ def test_nonzero_exit_ignores_structured_deterministic_error_details(
 @pytest.mark.parametrize(
     "stdout",
     [
-        ('{"error_code":"runtime_error",' '"message":"Synthetic operation failed."}\n' "additional diagnostic"),
-        (
-            '{"error_code":"runtime_error",'
-            '"message":"Synthetic operation failed.",'
-            '"unexpected":"synthetic extra field"}'
-        ),
-        ('{"error_code":"runtime-error",' '"message":"Synthetic operation failed."}'),
+        '{"error_code":"runtime_error","message":"Synthetic operation failed."}\nadditional diagnostic',
+        '{"error_code":"runtime_error","message":"Synthetic operation failed.","unexpected":"synthetic extra field"}',
+        '{"error_code":"runtime-error","message":"Synthetic operation failed."}',
     ],
 )
 def test_nonzero_exit_rejects_ambiguous_deterministic_stdout_error(
@@ -1078,11 +1085,9 @@ def test_nonzero_exit_preserves_bounded_runner_public_error(
             args=["python"],
             returncode=125,
             stdout="",
-            stderr=(
-                'ONTO_PUBLIC_ERROR: {{"code":"{}","message":"{}"}}'.format(
-                    code,
-                    message,
-                )
+            stderr='ONTO_PUBLIC_ERROR: {{"code":"{}","message":"{}"}}'.format(
+                code,
+                message,
             ),
         ),
     )
@@ -1108,7 +1113,7 @@ def test_nonzero_exit_rejects_malformed_public_error_marker(tmp_path, monkeypatc
             args=["python"],
             returncode=9,
             stdout="",
-            stderr=('ONTO_PUBLIC_ERROR: {"code":"bad-code",' '"message":"DATABASE_URL=must-stay-redacted"}'),
+            stderr='ONTO_PUBLIC_ERROR: {"code":"bad-code","message":"DATABASE_URL=must-stay-redacted"}',
         ),
     )
 

@@ -134,6 +134,7 @@ def test_native_runtime_uses_private_frozen_preflight_model_config(monkeypatch):
     class CurrentRouter:
         agent_config = SimpleNamespace()
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             current_resolutions.append((purpose, profile_id, workspace_id))
             return SimpleNamespace(
@@ -316,7 +317,7 @@ def test_native_runtime_fails_closed_without_authoritative_solver_result(monkeyp
     terminal = events[-1]
     assert terminal.event_type == "turn.finished"
     assert terminal.status == "failed"
-    assert terminal.payload["error"]["error_code"] == ("solver_authoritative_result_missing")
+    assert terminal.payload["error"]["error_code"] == "solver_authoritative_result_missing"
 
 
 def test_native_runtime_forwards_and_accepts_authoritative_solver_result(monkeypatch):
@@ -568,6 +569,7 @@ def test_direct_solver_persists_checkpoint_before_tool_submission(
     monkeypatch.setattr("agent.tools.executor.aexecute_tool_batch", execute)
 
     class Orchestrator:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _get_stores(self, username, workspace_id):
             assert (username, workspace_id) == (
                 context.username,
@@ -667,6 +669,7 @@ def test_execution_service_resumes_durable_solver_result_without_model(
     )
 
     class Orchestrator:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _get_stores(self, username, workspace_id):
             assert (username, workspace_id) == (
                 context.username,
@@ -676,8 +679,9 @@ def test_execution_service_resumes_durable_solver_result_without_model(
 
     class NoModelRuntime:
         async def astream(self, _context):
+            for event in ():
+                yield event
             raise AssertionError("durable solver resume must not invoke the model")
-            yield
 
     class Sink:
         def __init__(self):

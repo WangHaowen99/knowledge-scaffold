@@ -62,6 +62,7 @@ def test_llm_merge_requests_json_object_response(monkeypatch):
     class _TaskLLM:
         is_configured = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def call(self, **kwargs):
             captured.update(kwargs)
 
@@ -75,6 +76,7 @@ def test_llm_merge_requests_json_object_response(monkeypatch):
             return _Response()
 
     class _Router:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_service(self, purpose):
             assert purpose == LLMPurpose.TASK
             return _TaskLLM()
@@ -107,6 +109,7 @@ def test_update_config_changes_threshold_decisions():
     agg.active_endorsements = 0
 
     class _Buffer:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def list_aggregates(self, *args, **kwargs):
             del args, kwargs
             return [agg]
@@ -148,6 +151,7 @@ def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):
             self.updated = []
             self.cancelled = False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def on_buffer_change(self, *args, **kwargs):
             del args, kwargs
 

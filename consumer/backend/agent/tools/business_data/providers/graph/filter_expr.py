@@ -175,7 +175,7 @@ def _validate_sequence(value: Any, field_name: str) -> list[Any]:
     return [_ensure_scalar(item, field_name) for item in seq]
 
 
-def _build_scalar_condition(
+def _build_scalar_condition(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     prop_ref: str,
     op: str,
     value: Any,

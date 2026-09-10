@@ -55,17 +55,17 @@ const statusLabel = (status) =>
 
 function BlockMeta({ status, durationMs }) {
   const duration = formatDurationMs(durationMs);
+  let icon = <Check size={11} />;
+  if (status === 'running') {
+    icon = <Loader2 className="spin" size={11} />;
+  } else if (status === 'error') {
+    icon = <AlertCircle size={11} />;
+  } else if (status === 'cancelled') {
+    icon = <Circle size={11} />;
+  }
   return (
     <span className={`conversation-block-meta status-${status || 'idle'}`}>
-      {status === 'running' ? (
-        <Loader2 className="spin" size={11} />
-      ) : status === 'error' ? (
-        <AlertCircle size={11} />
-      ) : status === 'cancelled' ? (
-        <Circle size={11} />
-      ) : (
-        <Check size={11} />
-      )}
+      {icon}
       {statusLabel(status)}
       {duration ? ` · ${duration}` : ''}
     </span>
@@ -90,12 +90,14 @@ export default function ConversationView({
       aria-live="off"
       aria-relevant="additions"
     >
-      {messages.map((message, index) =>
-        message.role === 'user' ? (
-          <UserMessage key={message.key} message={message} />
-        ) : message.role === 'system' ? (
-          <SystemMessage key={message.key} message={message} />
-        ) : (
+      {messages.map((message, index) => {
+        if (message.role === 'user') {
+          return <UserMessage key={message.key} message={message} />;
+        }
+        if (message.role === 'system') {
+          return <SystemMessage key={message.key} message={message} />;
+        }
+        return (
           <AssistantTurn
             key={message.key}
             turn={message}
@@ -107,8 +109,8 @@ export default function ConversationView({
             recoveryActionDisabled={recoveryActionDisabled}
             showRecoveryAction={index === visibleRecoveryIndex}
           />
-        ),
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -141,6 +143,7 @@ export function SystemMessage({ message }) {
   );
 }
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export function AssistantTurn({
   turn,
   sessionId = '',
@@ -604,11 +607,10 @@ export function BusinessDataResult({ block, sessionId = '', runId = '' }) {
       block.input.action.trim().toLowerCase() :
       '';
   const isLookup = action === 'lookup_values';
-  const label = query ?
-    `${isLookup ? '字段值域' : '业务数据'}：${query}` :
-    isLookup ?
-      '查询字段值域' :
-      '查询业务数据';
+  let label = isLookup ? '查询字段值域' : '查询业务数据';
+  if (query) {
+    label = `${isLookup ? '字段值域' : '业务数据'}：${query}`;
+  }
   return (
     <details
       className={`conversation-process business-data-process status-${block.status}`}
@@ -777,23 +779,27 @@ function SubagentTask({ task, sessionId, runId }) {
         <BlockMeta status={task.status} durationMs={task.durationMs} />
       </summary>
       <div className="subagent-events">
-        {items.map((item) =>
-          item.subtype === 'group' ? (
-            <SubagentGroup
-              key={item.key}
-              block={{ key: item.key, group: item }}
-              sessionId={sessionId}
-              runId={runId}
-            />
-          ) : (
+        {items.map((item) => {
+          if (item.subtype === 'group') {
+            return (
+              <SubagentGroup
+                key={item.key}
+                block={{ key: item.key, group: item }}
+                sessionId={sessionId}
+                runId={runId}
+              />
+            );
+          }
+          let itemLabel = '步骤';
+          if (item.kind === 'reasoning') {
+            itemLabel = '思考';
+          } else if (item.kind === 'content') {
+            itemLabel = '输出';
+          }
+          return (
             <div className={`subagent-event kind-${item.kind}`} key={item.key}>
               <strong>
-                {item.toolName ||
-                  (item.kind === 'reasoning' ?
-                    '思考' :
-                    item.kind === 'content' ?
-                      '输出' :
-                      '步骤')}
+                {item.toolName || itemLabel}
               </strong>
               {item.progress?.length > 0 && (
                 <ol className="tool-progress-list">
@@ -821,13 +827,14 @@ function SubagentTask({ task, sessionId, runId }) {
                 <span className="conversation-error">{item.error}</span>
               )}
             </div>
-          ),
-        )}
+          );
+        })}
       </div>
     </details>
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export function RunStatusBlock({
   block,
   turn,
@@ -886,29 +893,31 @@ export function RunStatusBlock({
       setRecoveryRequested(false);
     }
   };
+  let statusIcon = <Check size={12} />;
+  if (activeProgress) {
+    statusIcon = (
+      <span className="tdots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    );
+  } else if (turn.status === 'running') {
+    statusIcon = <Loader2 className="spin" size={12} />;
+  } else if (isFailure) {
+    statusIcon = <AlertCircle size={12} />;
+  } else if (isCancelled) {
+    statusIcon = <Circle size={12} />;
+  } else if (isAwaiting) {
+    statusIcon = <Clock3 size={12} />;
+  }
   return (
     <div
       className={`statusline run-status status-${turn.status}`}
       data-block-key={block.key}
     >
       <span className="run-status-summary">
-        {activeProgress ? (
-          <span className="tdots" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </span>
-        ) : turn.status === 'running' ? (
-          <Loader2 className="spin" size={12} />
-        ) : isFailure ? (
-          <AlertCircle size={12} />
-        ) : isCancelled ? (
-          <Circle size={12} />
-        ) : isAwaiting ? (
-          <Clock3 size={12} />
-        ) : (
-          <Check size={12} />
-        )}
+        {statusIcon}
         {activeProgress?.summary ||
           `${isIncomplete ? '回答未完成' : statusLabel(turn.status)}${duration ? ` · 总耗时 ${duration}` : ''}`}
       </span>

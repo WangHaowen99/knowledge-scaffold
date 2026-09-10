@@ -59,16 +59,14 @@ def test_server_timing_middleware_merges_existing_header_without_identity_values
 
     header = response.headers["server-timing"]
     assert header == "upstream;dur=2, system_config;dur=4"
-    assert all(
-        value not in header
-        for value in (
-            "route-secret-value",
-            "request-secret-value",
-            "workspace-secret-value",
-            "user-secret-value",
-            "run-secret-value",
-        )
+    private_values = (
+        "route-secret-value",
+        "request-secret-value",
+        "workspace-secret-value",
+        "user-secret-value",
+        "run-secret-value",
     )
+    assert all(value not in header for value in private_values)
 
 
 def test_server_timing_context_is_cleared_when_request_is_cancelled():
@@ -159,12 +157,10 @@ def test_cache_metric_uses_real_otel_counter_with_only_bounded_labels(monkeypatc
         assert performance.record_cache_event("workspace_catalog", "user_secret_value") is False
 
         metrics_data = reader.get_metrics_data()
-        exported_metrics = [
-            metric
-            for resource_metrics in metrics_data.resource_metrics
-            for scope_metrics in resource_metrics.scope_metrics
-            for metric in scope_metrics.metrics
-        ]
+        exported_metrics = []
+        for resource_metrics in metrics_data.resource_metrics:
+            for scope_metrics in resource_metrics.scope_metrics:
+                exported_metrics.extend(scope_metrics.metrics)
         cache_metric = next(metric for metric in exported_metrics if metric.name == "agent.cache.event.count")
         points = list(cache_metric.data.data_points)
     finally:

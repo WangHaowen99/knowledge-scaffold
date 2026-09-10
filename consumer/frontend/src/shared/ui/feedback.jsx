@@ -51,12 +51,12 @@ export function ToastNotice({
   }
   const resolvedTone =
     tone || (/失败|错误|异常|无法/.test(message) ? 'error' : 'success');
-  const Icon =
-    resolvedTone === 'error' ?
-      AlertTriangle :
-      resolvedTone === 'info' ?
-        Info :
-        CheckCircle2;
+  let Icon = CheckCircle2;
+  if (resolvedTone === 'error') {
+    Icon = AlertTriangle;
+  } else if (resolvedTone === 'info') {
+    Icon = Info;
+  }
   return (
     <div
       className={`ui-toast ${resolvedTone}`}
@@ -110,7 +110,8 @@ function useDialogA11y(open, onCancel, busy) {
     const dialog = dialogRef.current;
     const focusable = () => [
       ...(dialog?.querySelectorAll(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+          'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
       ) || []),
     ];
     const focusTimer = setTimeout(() => {

@@ -27,18 +27,21 @@ class _Response:
         self.payload = payload
         self.status_code = status_code
         self.text = text
+        self.iter_lines = None
 
     def json(self):
         if isinstance(self.payload, Exception):
             raise self.payload
         return self.payload
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self):
         return None
 
     def __enter__(self):
         return self
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def __exit__(self, *args):
         return None
 
@@ -359,7 +362,9 @@ def test_mindsdb_sql_error_payload_redacts_connection_secrets():
             _Response(
                 {
                     "type": "error",
-                    "error_message": f"{provider_token} and {provider_password} rejected by https://provider.example.com",
+                    "error_message": (
+                        f"{provider_token} and {provider_password} rejected by https://provider.example.com"
+                    ),
                 }
             )
         ),
@@ -563,8 +568,10 @@ def test_mindsdb_native_error_chunk_is_failure_and_redacts_secrets():
         del decode_unicode
         return iter(
             [
-                f'data: {{"error":"{provider_token} and {provider_password} rejected by '
-                'https://provider.example.com"}',
+                (
+                    f'data: {{"error":"{provider_token} and {provider_password} rejected by '
+                    'https://provider.example.com"}'
+                ),
                 "",
                 'data: {"type":"end"}',
                 "",
@@ -606,7 +613,7 @@ def test_mindsdb_stream_error_recovers_once_and_returns_final():
             _stream_response(
                 {
                     "type": "error",
-                    "error": ("token-x rejected by https://provider.example.com"),
+                    "error": "token-x rejected by https://provider.example.com",
                 },
                 {"type": "end"},
             ),

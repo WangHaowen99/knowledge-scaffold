@@ -53,9 +53,11 @@ class _FixtureOnlyBackend:
     def __init__(self):
         self.problem = None
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def capabilities(self, *, binding=None):
         return _CONNECTOR_CAPABILITIES
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def assert_binding_capabilities(self, binding):
         assert binding["capability_fingerprint"] == _capability_fingerprint(_CONNECTOR_CAPABILITIES)
 
@@ -64,10 +66,12 @@ class _FixtureOnlyBackend:
         self.problem = problem
         return {"job_id": "job_SYNTHETIC0001", "status": "accepted"}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def poll(self, *, binding, job_id):
         del binding
         return {"job_id": job_id, "status": "completed"}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def cancel(self, *, binding, job_id):
         del binding
         return {"job_id": job_id, "status": "cancelled"}
@@ -88,6 +92,7 @@ class _FixtureOnlyBackend:
 
 
 class _FailIfCalledFactResolver:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def resolve(self, **kwargs):
         raise AssertionError("runtime replay must use the frozen fact snapshot")
 

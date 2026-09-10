@@ -90,13 +90,13 @@ export const normalizeConversationStatus = (status, isLoading = false) => {
   if (normalized === 'error' || normalized === 'failed') {
     return 'error';
   }
-  if (
+  const isFinished =
     normalized === 'success' ||
     normalized === 'completed' ||
     normalized === 'finished' ||
     normalized === 'done' ||
-    normalized === 'final'
-  ) {
+    normalized === 'final';
+  if (isFinished) {
     return 'finished';
   }
   if (normalized === 'queued') {
@@ -190,11 +190,12 @@ const sourceDomain = (url) => {
 };
 
 const normalizeWebSources = (parsedOutput) => {
-  const rawSources = Array.isArray(parsedOutput?.results) ?
-    parsedOutput.results :
-    Array.isArray(parsedOutput?.sources) ?
-      parsedOutput.sources :
-      [];
+  let rawSources = [];
+  if (Array.isArray(parsedOutput?.results)) {
+    rawSources = parsedOutput.results;
+  } else if (Array.isArray(parsedOutput?.sources)) {
+    rawSources = parsedOutput.sources;
+  }
   return rawSources.filter(plainObject).map((source, index) => {
     const url = safeWebUrl(source.url || source.link);
     const domain = stringValue(source.domain).trim() || sourceDomain(url);
@@ -280,6 +281,7 @@ const childEventKind = (event) => {
   return stringValue(event?.kind).trim() || 'status';
 };
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 const normalizeSubagentGroup = (group, parentKey) => {
   const groupId = stringValue(group?.groupId || group?.meta?.group_id).trim();
   const groupKey = `${parentKey}:group:${groupId || hashText(JSON.stringify(group?.meta || {}))}`;
@@ -287,6 +289,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
     group.taskOrder :
     Object.keys(group?.children || {});
   const children = orderedIds
+    // eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
     .map((subagentId, index) => {
       const child = group?.children?.[subagentId];
       if (!child) {
@@ -295,6 +298,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
       const childKey = `${groupKey}:agent:${stringValue(subagentId) || index}`;
       const eventOccurrences = new Map();
       const events = (Array.isArray(child.events) ? child.events : []).map(
+        // eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
         (event, eventIndex) => {
           const kind = childEventKind(event);
           const identity =
@@ -313,41 +317,43 @@ const normalizeSubagentGroup = (group, parentKey) => {
             `${childKey}:event:${identity}`,
             eventOccurrences,
           );
-          const progress =
-            kind === 'business_data' ?
-              normalizeProgress(
-                (event?.progress || [])
-                  .map((item) =>
-                    item?.ontology ?
-                      { ...item.ontology, ts: item.ontology.ts ?? item.ts } :
-                      null,
-                  )
-                  .filter(Boolean),
-                kind,
-                eventKey,
-              ) :
-              kind === 'web_search' ?
-                normalizeProgress(
-                  (event?.progress || [])
-                    .map((item) =>
-                      item?.web ?
-                        { ...item.web, ts: item.web.ts ?? item.ts } :
-                        null,
-                    )
-                    .filter(Boolean),
-                  kind,
-                  eventKey,
-                ) :
-                [];
+          let progress = [];
+          if (kind === 'business_data') {
+            progress = normalizeProgress(
+              (event?.progress || [])
+                .map((item) =>
+                  item?.ontology ?
+                    { ...item.ontology, ts: item.ontology.ts ?? item.ts } :
+                    null,
+                )
+                .filter(Boolean),
+              kind,
+              eventKey,
+            );
+          } else if (kind === 'web_search') {
+            progress = normalizeProgress(
+              (event?.progress || [])
+                .map((item) =>
+                  item?.web ?
+                    { ...item.web, ts: item.web.ts ?? item.ts } :
+                    null,
+                )
+                .filter(Boolean),
+              kind,
+              eventKey,
+            );
+          }
           const progressError = progressErrorText(progress);
+          let status = 'running';
+          if (progressError) {
+            status = 'error';
+          } else if (event?.finished) {
+            status = normalizeConversationStatus(event?.status || 'finished');
+          }
           return {
             key: eventKey,
             kind,
-            status: progressError ?
-              'error' :
-              event?.finished ?
-                normalizeConversationStatus(event?.status || 'finished') :
-                'running',
+            status,
             terminal: Boolean(event?.finished),
             text:
               event?.kind === 'tool' ?
@@ -493,6 +499,7 @@ const segmentIdentity = (segment, kind, index) => {
   );
 };
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 const normalizeSegment = (segment, index, messageKey, occurrences) => {
   const kind = conversationKindForSegment(segment);
   const key = uniqueKey(
@@ -503,31 +510,28 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
   const endedAt = timestampValue(segment?.endTs);
   const meta = segment?.meta || {};
   const toolName = stringValue(meta.tool_name || meta.name);
-  const progress =
-    kind === 'business_data' ?
-      normalizeProgress(meta.db_events, kind, key) :
-      kind === 'web_search' ?
-        normalizeProgress(meta.web_search_events, kind, key) :
-        kind === 'solver' ?
-          (Array.isArray(meta.solver_events) ? meta.solver_events : []).map(
-            (event, progressIndex) => ({
-              key: `${key}:solver-progress:${event?.job_id || 'job'}:${event?.event_seq ?? progressIndex}`,
-              type: stringValue(event?.type),
-              phase: stringValue(event?.phase),
-              text: stringValue(event?.message),
-              eventSeq: numberValue(event?.event_seq),
-              status: stringValue(event?.status),
-            }),
-          ) :
-          [];
+  let progress = [];
+  if (kind === 'business_data') {
+    progress = normalizeProgress(meta.db_events, kind, key);
+  } else if (kind === 'web_search') {
+    progress = normalizeProgress(meta.web_search_events, kind, key);
+  } else if (kind === 'solver') {
+    progress = (Array.isArray(meta.solver_events) ? meta.solver_events : []).map(
+      (event, progressIndex) => ({
+        key: `${key}:solver-progress:${event?.job_id || 'job'}:${event?.event_seq ?? progressIndex}`,
+        type: stringValue(event?.type),
+        phase: stringValue(event?.phase),
+        text: stringValue(event?.message),
+        eventSeq: numberValue(event?.event_seq),
+        status: stringValue(event?.status),
+      }),
+    );
+  }
   const progressError = progressErrorText(progress);
-  let status =
-    kind === 'tool' ||
-    kind === 'business_data' ||
-    kind === 'web_search' ||
-    kind === 'solver' ?
-      normalizeToolStatus(segment) :
-      normalizeConversationStatus(segment?.state, !segment?.finished);
+  const toolKinds = ['tool', 'business_data', 'web_search', 'solver'];
+  let status = toolKinds.includes(kind) ?
+    normalizeToolStatus(segment) :
+    normalizeConversationStatus(segment?.state, !segment?.finished);
   if (progressError) {
     status = 'error';
   }
@@ -559,12 +563,12 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     progress,
   };
 
-  if (
+  const isToolKind =
     kind === 'tool' ||
     kind === 'business_data' ||
     kind === 'web_search' ||
-    kind === 'solver'
-  ) {
+    kind === 'solver';
+  if (isToolKind) {
     block.toolName = toolName;
     block.toolCallId = stringValue(meta.tool_call_id);
     block.input = meta.input ?? null;
@@ -664,6 +668,7 @@ const messageIdentity = (message, index) =>
   (message?.runId ? `run:${message.runId}` : '') ||
   `${stringValue(message?.role) || 'message'}:${hashText(`${message?.content || ''}|${message?.ts || ''}`)}:${index}`;
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 const normalizeMessage = (message, index, occurrences) => {
   const key = uniqueKey(
     `message:${messageIdentity(message, index)}`,

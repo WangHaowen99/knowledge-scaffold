@@ -92,6 +92,7 @@ export function Table({ children, className = '', ...props }) {
   );
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export function Modal({
   title,
   description,
@@ -121,7 +122,8 @@ export function Modal({
     const focusable = () =>
       Array.from(
         dialog?.querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+            'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
         ) || [],
       );
     const [initialTarget] = focusable();
@@ -154,6 +156,8 @@ export function Modal({
       } else if (!event.shiftKey && document.activeElement === last) {
         event.preventDefault();
         first.focus();
+      } else {
+        return;
       }
     };
     document.addEventListener('keydown', onKeyDown);

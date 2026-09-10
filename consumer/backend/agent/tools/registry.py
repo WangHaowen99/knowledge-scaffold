@@ -6,11 +6,10 @@ from collections.abc import Mapping
 import json
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from utils.json_utils import _loads_json_object_loose
-from utils.logging import get_logger
 from agent.tools.base import BaseTool, ToolBatchResult, ToolCaller, ToolContext, ToolOutcome
 from agent.tools.business_data_search import BusinessDataSearchTool
 from agent.tools.execute_script import ExecuteScriptTool, build_execute_script_tool_schema
+from agent.tools.executor import aexecute_tool_batch  # noqa: F401
 from agent.tools.memory import MemoryTool
 from agent.tools.ontology_context import OntologyContextTool, get_ontology_context_schema
 from agent.tools.ontology_evidence_search import (
@@ -22,10 +21,9 @@ from agent.tools.report_business_checkpoint import ReportBusinessCheckpointTool
 from agent.tools.skill import SkillTool
 from agent.tools.spawn_sub_agent import SpawnSubAgentTool
 from agent.tools.web_search_tool import WebSearchTool
+from utils.json_utils import _loads_json_object_loose
+from utils.logging import get_logger
 from utils.skills import get_skill_registry
-
-# Re-export the native-async entry point from the registry boundary.
-from agent.tools.executor import aexecute_tool_batch  # noqa: F401
 
 logger = get_logger("tools.registry")
 
@@ -44,18 +42,20 @@ def _build_tool_registry(tools: Iterable[BaseTool]) -> Dict[str, BaseTool]:
     return registry
 
 
-TOOL_SPECS: Dict[str, BaseTool] = _build_tool_registry([
-    OntologyContextTool(),
-    OntologyEvidenceSearchTool(),
-    SkillTool(),
-    BusinessDataSearchTool(),
-    WebSearchTool(),
-    ExecuteScriptTool(),
-    RequestUserInteractionTool(),
-    ReportBusinessCheckpointTool(),
-    MemoryTool(),
-    SpawnSubAgentTool(),
-])
+TOOL_SPECS: Dict[str, BaseTool] = _build_tool_registry(
+    [
+        OntologyContextTool(),
+        OntologyEvidenceSearchTool(),
+        SkillTool(),
+        BusinessDataSearchTool(),
+        WebSearchTool(),
+        ExecuteScriptTool(),
+        RequestUserInteractionTool(),
+        ReportBusinessCheckpointTool(),
+        MemoryTool(),
+        SpawnSubAgentTool(),
+    ]
+)
 
 
 # ============================================================================
@@ -150,6 +150,18 @@ def get_tools_schema(
     selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    tool_specs = get_tool_specs_for_caller(
+        caller,
+        include_memory=include_memory,
+        include_orchestration=include_orchestration,
+        include_web_search=include_web_search,
+        include_interaction=include_interaction,
+        include_business_checkpoint=include_business_checkpoint,
+        include_solver=include_solver,
+        workspace_id=workspace_id,
+        selected_ontology_id=selected_ontology_id,
+        selected_ontology_version=selected_ontology_version,
+    )
     return [
         get_tool_schema_for_context(
             spec,
@@ -157,18 +169,7 @@ def get_tools_schema(
             selected_ontology_version=selected_ontology_version,
             workspace_id=workspace_id,
         )
-        for spec in get_tool_specs_for_caller(
-            caller,
-            include_memory=include_memory,
-            include_orchestration=include_orchestration,
-            include_web_search=include_web_search,
-            include_interaction=include_interaction,
-            include_business_checkpoint=include_business_checkpoint,
-            include_solver=include_solver,
-            workspace_id=workspace_id,
-            selected_ontology_id=selected_ontology_id,
-            selected_ontology_version=selected_ontology_version,
-        )
+        for spec in tool_specs
     ]
 
 
@@ -199,9 +200,7 @@ def get_tool_schema_for_context(
             workspace_id=workspace_id,
         )
     if spec.name == "ontology_context":
-        return get_ontology_context_schema(
-            structured_enabled=_evidence_visible(workspace_id, selected_ontology_id)
-        )
+        return get_ontology_context_schema(structured_enabled=_evidence_visible(workspace_id, selected_ontology_id))
     if getattr(spec, "category", "") == "solver":
         return _mutable_schema_copy(spec.schema)
     return spec.schema
@@ -209,10 +208,7 @@ def get_tool_schema_for_context(
 
 def _mutable_schema_copy(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(key): _mutable_schema_copy(item)
-            for key, item in value.items()
-        }
+        return {str(key): _mutable_schema_copy(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_mutable_schema_copy(item) for item in value]
     return value
@@ -276,11 +272,7 @@ def _evidence_visible(workspace_id: Optional[str], selected_ontology_id: Optiona
 
 def _has_registered_skills(*, workspace_id: Optional[str] = None) -> bool:
     try:
-        registry = (
-            get_skill_registry(workspace_id=workspace_id)
-            if workspace_id
-            else get_skill_registry()
-        )
+        registry = get_skill_registry(workspace_id=workspace_id) if workspace_id else get_skill_registry()
         return bool(registry.list_skills())
     except Exception:
         logger.warning("Failed to inspect skill registry while building tool schemas", exc_info=True)
@@ -396,10 +388,7 @@ def validate_tool_arguments(
     # constraint); the request-visible text schema deliberately strips it from
     # the resource enum in evidence-off mode, so exempt it from enum
     # enforcement here to keep the legacy asset resource callable.
-    if (
-        tool_name == "ontology_context"
-        and str(payload.get("resource") or "").strip() == "asset"
-    ):
+    if tool_name == "ontology_context" and str(payload.get("resource") or "").strip() == "asset":
         resource_schema = properties.get("resource")
         if isinstance(resource_schema, dict):
             resource_schema.pop("enum", None)
@@ -414,9 +403,7 @@ def validate_tool_arguments(
             "Call the tool again with arguments matching the schema. Received: {}"
         ).format(tool_name, preview)
 
-    missing_fields = [
-        field for field in required_fields if _is_missing_required_tool_argument(payload.get(field))
-    ]
+    missing_fields = [field for field in required_fields if _is_missing_required_tool_argument(payload.get(field))]
     if missing_fields:
         example_payload = {
             field: (
@@ -480,9 +467,7 @@ def _validate_schema_value(value: Any, schema: Dict[str, Any], *, path: str) -> 
     one_of = schema.get("oneOf")
     if isinstance(one_of, list):
         branch_errors = [
-            _validate_schema_value(value, branch, path=path)
-            for branch in one_of
-            if isinstance(branch, dict)
+            _validate_schema_value(value, branch, path=path) for branch in one_of if isinstance(branch, dict)
         ]
         matching = sum(not branch for branch in branch_errors)
         if matching != 1:
@@ -495,9 +480,7 @@ def _validate_schema_value(value: Any, schema: Dict[str, Any], *, path: str) -> 
 
     enum_values = schema.get("enum")
     if isinstance(enum_values, list) and value not in enum_values:
-        errors.append(
-            "{} must be one of {}".format(path, json.dumps(enum_values, ensure_ascii=False))
-        )
+        errors.append("{} must be one of {}".format(path, json.dumps(enum_values, ensure_ascii=False)))
         return errors
 
     if "const" in schema and value != schema.get("const"):
@@ -524,9 +507,7 @@ def _validate_schema_value(value: Any, schema: Dict[str, Any], *, path: str) -> 
         for key, item in value.items():
             child_schema = properties.get(key)
             if isinstance(child_schema, dict):
-                errors.extend(
-                    _validate_schema_value(item, child_schema, path="{}.{}".format(path, key))
-                )
+                errors.extend(_validate_schema_value(item, child_schema, path="{}.{}".format(path, key)))
 
     if isinstance(value, list):
         min_items = schema.get("minItems")
@@ -535,9 +516,7 @@ def _validate_schema_value(value: Any, schema: Dict[str, Any], *, path: str) -> 
         item_schema = schema.get("items")
         if isinstance(item_schema, dict):
             for index, item in enumerate(value):
-                errors.extend(
-                    _validate_schema_value(item, item_schema, path="{}[{}]".format(path, index))
-                )
+                errors.extend(_validate_schema_value(item, item_schema, path="{}[{}]".format(path, index)))
     return errors
 
 

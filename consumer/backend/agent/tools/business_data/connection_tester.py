@@ -65,7 +65,7 @@ def _test_shared_provider(connection: ResolvedBusinessDataSource) -> Dict[str, A
     provider_name = "nl2sql_http" if connection.provider == "nl2sql_template" else connection.provider
     label = {
         "mindsdb": "MindsDB",
-        "nl2sql_http": ("NL2SQL Template" if connection.provider == "nl2sql_template" else "NL2SQL HTTP"),
+        "nl2sql_http": "NL2SQL Template" if connection.provider == "nl2sql_template" else "NL2SQL HTTP",
         "dataagent": "DataAgent REST",
     }.get(provider_name, provider_name)
     try:

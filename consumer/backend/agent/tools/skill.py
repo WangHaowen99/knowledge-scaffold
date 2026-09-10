@@ -125,6 +125,7 @@ class SkillTool:
         object.__setattr__(self, "schema", SKILL_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent", "acp"})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
@@ -149,11 +150,7 @@ def _get_skill(skill_name: str, *, workspace_id: Optional[str] = None):
     normalized_name = str(skill_name or "").strip()
     if not normalized_name:
         return None, "Error: `skill_name` is required."
-    registry = (
-        get_skill_registry(workspace_id=workspace_id)
-        if workspace_id
-        else get_skill_registry()
-    )
+    registry = get_skill_registry(workspace_id=workspace_id) if workspace_id else get_skill_registry()
     skill = registry.get_skill(normalized_name)
     if skill is None:
         available = sorted(registry.list_skills())
@@ -177,14 +174,16 @@ def _build_supporting_file_catalog(skill_dir: Path) -> List[Dict[str, Any]]:
     for path in files:
         kind = _classify_supporting_file(path, skill_dir)
         key = _build_catalog_key(path, skill_dir, filename_counts, used_keys)
-        catalog.append({
-            "key": key,
-            "kind": kind,
-            "filename": path.name,
-            "extension": path.suffix.lower(),
-            "size_bytes": path.stat().st_size,
-            "path": str(path.resolve()),
-        })
+        catalog.append(
+            {
+                "key": key,
+                "kind": kind,
+                "filename": path.name,
+                "extension": path.suffix.lower(),
+                "size_bytes": path.stat().st_size,
+                "path": str(path.resolve()),
+            }
+        )
     return catalog
 
 
@@ -250,11 +249,9 @@ def _read_supporting_file(path: Path) -> tuple[Optional[str], Optional[str]]:
     except OSError:
         return None, "Error: Skill supporting file is not accessible."
     if file_size > _MAX_RESOURCE_BYTES:
-        return None, (
-            "Error: Skill supporting file too large ({:,} bytes). Maximum allowed: {:,} bytes.".format(
-                file_size,
-                _MAX_RESOURCE_BYTES,
-            )
+        return None, "Error: Skill supporting file too large ({:,} bytes). Maximum allowed: {:,} bytes.".format(
+            file_size,
+            _MAX_RESOURCE_BYTES,
         )
     try:
         return path.read_text(encoding="utf-8"), None

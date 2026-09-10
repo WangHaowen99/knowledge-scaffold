@@ -11,6 +11,7 @@ from solver_coordination.contracts import ProblemIR
 
 
 class _LocalHttpEndpointPolicy:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def validate(self, endpoint: str) -> str:
         if not endpoint.startswith("http://127.0.0.1:"):
             raise ValueError("test endpoint must be loopback HTTP")
@@ -91,7 +92,7 @@ def test_ortools_connector_reaches_service_api_over_real_http():
             self.end_headers()
             self.wfile.write(body)
 
-        def do_POST(self):
+        def do_POST(self):  # pylint: disable=invalid-name
             if self.path != "/api/v1/jobs" or not self._authorized():
                 self._write_json(401 if not self._authorized() else 404)
                 return
@@ -107,7 +108,7 @@ def test_ortools_connector_reaches_service_api_over_real_http():
             }
             self._write_json(202, state["job"])
 
-        def do_GET(self):
+        def do_GET(self):  # pylint: disable=invalid-name
             if not self._authorized():
                 self._write_json(401)
                 return

@@ -168,7 +168,8 @@ test(
     const focusable = () =>
       Array.from(
         backdrop().querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+            'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
         ),
       );
     const items = focusable();

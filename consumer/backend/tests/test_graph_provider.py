@@ -23,9 +23,11 @@ class _ProviderBackend:
     def __init__(self):
         self.closed = False
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def get_nodes_schema(self, *, scope, element_types=None):
         return {"labels": ["TargetItem"]}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def get_edges_schema(self, *, scope, relation_types=None):
         return {"relationship_types": []}
 

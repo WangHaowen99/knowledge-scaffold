@@ -112,12 +112,15 @@ def test_script_client_delegates_query_sql_and_events(monkeypatch):
         def __init__(self):
             self.closed = False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def query(self, question):
             return ProviderResult(success=True, data={"question": question})
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def query_sql(self, sql):
             return ProviderResult(success=True, data={"sql": sql})
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def probe(self, timeout_seconds=None):
             return ProviderResult(success=True, data={"timeout": timeout_seconds})
 

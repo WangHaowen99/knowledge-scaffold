@@ -120,7 +120,7 @@ def _expected_payload() -> dict:
             "items": [
                 {
                     "item_id": item_id,
-                    "route": ("SYNTHETIC_ROUTE_A" if index < 2 else "SYNTHETIC_ROUTE_B"),
+                    "route": "SYNTHETIC_ROUTE_A" if index < 2 else "SYNTHETIC_ROUTE_B",
                 }
                 for index, item_id in enumerate(ITEM_IDS)
             ],
@@ -463,6 +463,7 @@ def test_run_bundle_uses_ortools_connector_and_emits_only_status_and_digests(tmp
         def __init__(self, **kwargs):
             seen["client_kwargs"] = kwargs
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def capabilities(self, *, binding):
             seen["capabilities_binding"] = dict(binding)
             return {
@@ -495,14 +496,17 @@ def test_run_bundle_uses_ortools_connector_and_emits_only_status_and_digests(tmp
                 ],
             }
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def submit(self, **kwargs):
             seen["submit"] = kwargs
             return {"job_id": "job_synthetic001", "status": "accepted"}
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def poll(self, **kwargs):
             seen["poll"] = kwargs
             return {"job_id": "job_synthetic001", "status": "completed"}
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def result(self, **kwargs):
             seen["result"] = kwargs
             from solver_coordination.contracts import SolverResult
@@ -530,6 +534,7 @@ def test_run_bundle_uses_ortools_connector_and_emits_only_status_and_digests(tmp
                 },
             )
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def cancel(self, **kwargs):
             seen["cancel"] = kwargs
             raise AssertionError("completed connector job must not be cancelled")
@@ -622,6 +627,7 @@ def test_connector_job_is_cancelled_when_polling_fails(tmp_path, monkeypatch):
     cancelled: list[dict[str, object]] = []
 
     class FailingConnector:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def capabilities(self, **_kwargs):
             return {
                 "protocol_versions": ["ortools.solver.v1"],
@@ -650,12 +656,15 @@ def test_connector_job_is_cancelled_when_polling_fails(tmp_path, monkeypatch):
                 ],
             }
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def submit(self, **_kwargs):
             return {"job_id": "job_synthetic001", "status": "accepted"}
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def poll(self, **_kwargs):
             raise RuntimeError("synthetic transport failure")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def cancel(self, **kwargs):
             cancelled.append(dict(kwargs))
             return {"job_id": "job_synthetic001", "status": "cancelled"}

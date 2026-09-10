@@ -165,6 +165,7 @@ const initialState = Object.freeze({
   message: '',
 });
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function CandidateResultsPanel({ result }) {
   const jobId = cleanText(result?.job_id);
   const artifactRef = cleanText(result?.candidate_results_artifact_ref);
@@ -175,16 +176,20 @@ export default function CandidateResultsPanel({ result }) {
     jobId && artifactRef && artifactDigest ?
       `${jobId}:${artifactRef}:${artifactDigest}:${reloadToken}` :
       '';
-  const staticState =
-    !artifactRef && !artifactDigest ?
-      { kind: 'unavailable', data: null, message: '历史结果未保存候选明细。' } :
-      !requestKey ?
-        {
-          kind: 'integrity',
-          data: null,
-          message: '候选明细未通过完整性校验，已停止展示。',
-        } :
-        null;
+  let staticState = null;
+  if (!artifactRef && !artifactDigest) {
+    staticState = {
+      kind: 'unavailable',
+      data: null,
+      message: '历史结果未保存候选明细。',
+    };
+  } else if (!requestKey) {
+    staticState = {
+      kind: 'integrity',
+      data: null,
+      message: '候选明细未通过完整性校验，已停止展示。',
+    };
+  }
   const state =
     staticState ||
     (asyncState.requestKey === requestKey ? asyncState : initialState);

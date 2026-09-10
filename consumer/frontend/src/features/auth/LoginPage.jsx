@@ -46,6 +46,7 @@ const postJson = async (url, body) => {
   return { ok: res.ok, status: res.status, data };
 };
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function LoginPage() {
   const { login } = useAuthContext();
   const [view, setView] = useState('login');

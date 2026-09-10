@@ -25,6 +25,8 @@ export const parseSSEMessage = (chunk) => {
       id = line.replace(/^id:\s*/, '');
     } else if (line.startsWith('data:')) {
       dataLines.push(line.replace(/^data:\s*/, ''));
+    } else {
+      continue;
     }
   }
 

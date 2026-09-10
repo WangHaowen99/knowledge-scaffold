@@ -60,15 +60,21 @@ def build_run_detail(records: Iterable[dict[str, Any]], *, run_id: str) -> dict[
         "selected_ontology_id": labels.get("selected_ontology_id"),
         "selected_ontology_version": labels.get("selected_ontology_version"),
         "total_duration_ms": total_duration_ms,
-        "llm_cache_hit_tokens": llm_cache_metrics.get("llm_cache_hit_tokens")
-        if llm_cache_metrics
-        else _metric_optional_int(summary, "llm_cache_hit_tokens"),
-        "llm_cache_total_input_tokens": llm_cache_metrics.get("llm_cache_total_input_tokens")
-        if llm_cache_metrics
-        else _metric_optional_int(summary, "llm_cache_total_input_tokens"),
-        "llm_cache_hit_rate": llm_cache_metrics.get("llm_cache_hit_rate")
-        if llm_cache_metrics
-        else _metric_float(summary, "llm_cache_hit_rate"),
+        "llm_cache_hit_tokens": (
+            llm_cache_metrics.get("llm_cache_hit_tokens")
+            if llm_cache_metrics
+            else _metric_optional_int(summary, "llm_cache_hit_tokens")
+        ),
+        "llm_cache_total_input_tokens": (
+            llm_cache_metrics.get("llm_cache_total_input_tokens")
+            if llm_cache_metrics
+            else _metric_optional_int(summary, "llm_cache_total_input_tokens")
+        ),
+        "llm_cache_hit_rate": (
+            llm_cache_metrics.get("llm_cache_hit_rate")
+            if llm_cache_metrics
+            else _metric_float(summary, "llm_cache_hit_rate")
+        ),
         "prompt_tokens": _metric(summary, "prompt_tokens"),
         "completion_tokens": _metric(summary, "completion_tokens"),
         "total_tokens": _metric(summary, "total_tokens"),
@@ -95,9 +101,7 @@ def build_run_detail(records: Iterable[dict[str, Any]], *, run_id: str) -> dict[
 
 
 def build_session_analysis(records: Iterable[dict[str, Any]], *, session_id: str) -> dict[str, Any]:
-    session_records = [
-        record for record in records if str(record.get("session_id") or "") == str(session_id)
-    ]
+    session_records = [record for record in records if str(record.get("session_id") or "") == str(session_id)]
     summaries = _summary_rows(session_records)
     summaries_by_run = {row["run_id"]: row for row in summaries}
     prompt_metrics = _prompt_metrics_by_run(session_records)
@@ -164,10 +168,7 @@ def build_global_overview(
         model_provider=model_provider,
         agent_mode=agent_mode,
     )
-    use_aggregate_metrics = any(
-        str(record.get("name") or "") == "agent.run.count"
-        for record in aggregate_metrics
-    )
+    use_aggregate_metrics = any(str(record.get("name") or "") == "agent.run.count" for record in aggregate_metrics)
     if use_aggregate_metrics:
         run_count = _sum_metric_points(aggregate_metrics, "agent.run.count")
         success_count = _sum_metric_points(
@@ -247,9 +248,9 @@ def build_global_overview(
             "llm_wall_ms": llm_wall_percentiles,
             "llm_cache_hit_tokens": cache_hit_tokens,
             "llm_cache_total_input_tokens": cache_total_input_tokens,
-            "llm_cache_hit_rate": _ratio(cache_hit_tokens, cache_total_input_tokens)
-            if cache_total_input_tokens
-            else None,
+            "llm_cache_hit_rate": (
+                _ratio(cache_hit_tokens, cache_total_input_tokens) if cache_total_input_tokens else None
+            ),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
@@ -280,9 +281,7 @@ def _aggregate_metric_records(
     for record in records:
         if record.get("kind") != "metric" or str(record.get("run_id") or "").strip():
             continue
-        record_workspace_id = str(
-            record.get("workspace_id") or _otel_label(record, "agent.workspace_id") or ""
-        )
+        record_workspace_id = str(record.get("workspace_id") or _otel_label(record, "agent.workspace_id") or "")
         if workspace_id and record_workspace_id != workspace_id:
             continue
         record_status = str(_otel_label(record, "agent.status") or "").lower()
@@ -447,14 +446,15 @@ def filter_summary_rows(
     agent_mode: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     normalized_status = str(status or "").strip().lower()
-    return [
-        row
-        for row in summaries
-        if (not workspace_id or row.get("workspace_id") == workspace_id)
-        and (not normalized_status or str(row.get("status") or "").lower() == normalized_status)
-        and (not model_provider or row.get("model_provider") == model_provider)
-        and (not agent_mode or row.get("agent_mode") == agent_mode)
-    ]
+    resolved = []
+    for row in summaries:
+        workspace_matches = not workspace_id or row.get("workspace_id") == workspace_id
+        status_matches = not normalized_status or str(row.get("status") or "").lower() == normalized_status
+        provider_matches = not model_provider or row.get("model_provider") == model_provider
+        mode_matches = not agent_mode or row.get("agent_mode") == agent_mode
+        if workspace_matches and status_matches and provider_matches and mode_matches:
+            resolved.append(row)
+    return resolved
 
 
 def summary_rows(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -670,9 +670,7 @@ def _reasoning_rollup_from_llm_calls(records: Iterable[dict[str, Any]]) -> dict[
         calls_with_reasoning += 1
         total_reasoning_chars += chars
         call_first = _as_optional_int(metrics.get("first_reasoning_ms"))
-        if call_first is not None and (
-            first_reasoning_ms is None or call_first < first_reasoning_ms
-        ):
+        if call_first is not None and (first_reasoning_ms is None or call_first < first_reasoning_ms):
             first_reasoning_ms = call_first
     return {
         "had_reasoning": calls_with_reasoning > 0,
@@ -857,9 +855,7 @@ def _build_hourly_trends(summaries: list[dict[str, Any]]) -> list[dict[str, Any]
                 "bucket_start_ms": bucket_ms,
                 "run_count": len(rows),
                 "success_count": sum(status in _SUCCESS_STATUSES for status in statuses),
-                "p90_total_duration_ms": _percentiles(
-                    [row["total_duration_ms"] for row in rows]
-                )["p90"],
+                "p90_total_duration_ms": _percentiles([row["total_duration_ms"] for row in rows])["p90"],
             }
         )
     return trends
@@ -981,9 +977,7 @@ def _summary_llm_wall_ms(record: dict[str, Any]) -> int:
 
 def _llm_call_wall_ms(record: dict[str, Any]) -> int:
     return (
-        _metric(record, "wall_duration_ms")
-        or _metric(record, "duration_ms")
-        or _metric(record, "stream_duration_ms")
+        _metric(record, "wall_duration_ms") or _metric(record, "duration_ms") or _metric(record, "stream_duration_ms")
     )
 
 

@@ -115,16 +115,12 @@ def test_script_scope_propagates_error_to_parent_spans(trace: DirectExecutionRun
                 elapsed_ms=5000,
             )
 
-    terminal_events = [
-        event
-        for event in observer.events
-        if event.type
-        in {
-            RuntimeEventType.TOOL_FINISHED,
-            RuntimeEventType.TOOL_BATCH_FINISHED,
-            RuntimeEventType.AGENT_LOOP_FINISHED,
-        }
-    ]
+    terminal_event_types = {
+        RuntimeEventType.TOOL_FINISHED,
+        RuntimeEventType.TOOL_BATCH_FINISHED,
+        RuntimeEventType.AGENT_LOOP_FINISHED,
+    }
+    terminal_events = [event for event in observer.events if event.type in terminal_event_types]
     assert [event.payload["status"] for event in terminal_events] == [
         RuntimeStatus.ERROR,
         RuntimeStatus.ERROR,

@@ -51,6 +51,7 @@ const legacyStatus = (envelope, eventType) => {
 export const legacyAgentEventToPublicEvent = (
   value,
   { index = 0, now = Date.now() } = {},
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 ) => {
   const envelope = isLegacyStoredAgentEvent(value) ? value.data : value;
   if (!isLegacyAgentEventEnvelope(envelope)) {

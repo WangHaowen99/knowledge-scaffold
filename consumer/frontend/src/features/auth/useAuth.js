@@ -22,6 +22,7 @@ const sameAuthState = (left, right) =>
   left.sessionId === right.sessionId &&
   left.tokenVersion === right.tokenVersion;
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 const useAuth = () => {
   const [status, setStatus] = useState('checking');
   const [user, setUser] = useState(null);

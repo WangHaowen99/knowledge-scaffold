@@ -329,7 +329,7 @@ def _load_object_data_mappings(
     except UnicodeDecodeError:
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.INVALID,
-            error=("Error: Failed to decode mappings/object-data-mappings.json " "as UTF-8."),
+            error="Error: Failed to decode mappings/object-data-mappings.json as UTF-8.",
         )
     except OSError:
         return _ObjectDataMappingsLoadResult(
@@ -339,12 +339,12 @@ def _load_object_data_mappings(
     except json.JSONDecodeError:
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.INVALID,
-            error=("Error: mappings/object-data-mappings.json contains invalid JSON."),
+            error="Error: mappings/object-data-mappings.json contains invalid JSON.",
         )
     if not isinstance(payload, dict):
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.INVALID,
-            error=("Error: mappings/object-data-mappings.json must contain a JSON object."),
+            error="Error: mappings/object-data-mappings.json must contain a JSON object.",
         )
 
     objects = payload.get("objects")
@@ -361,12 +361,12 @@ def _load_object_data_mappings(
         if any(not isinstance(mapping, dict) for mapping in objects):
             return _ObjectDataMappingsLoadResult(
                 status=ObjectDataMappingStatus.INVALID,
-                error=("Error: 'objects' entries in mappings/object-data-mappings.json " "must be JSON objects."),
+                error="Error: 'objects' entries in mappings/object-data-mappings.json must be JSON objects.",
             )
     elif "objects" in payload:
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.INVALID,
-            error=("Error: 'objects' in mappings/object-data-mappings.json " "must be a JSON object or array."),
+            error="Error: 'objects' in mappings/object-data-mappings.json must be a JSON object or array.",
         )
     return _ObjectDataMappingsLoadResult(
         status=ObjectDataMappingStatus.FOUND,
@@ -449,8 +449,9 @@ def validate_value_bindings(ontology_dir: Path) -> ValueBindingValidationResult:
                 continue
             if ref not in binding_keys:
                 errors.append(
-                    "objects.{}.fields.{}.value_binding_ref references an "
-                    "unknown binding '{}'".format(object_key, field_key, ref)
+                    "objects.{}.fields.{}.value_binding_ref references an unknown binding '{}'".format(
+                        object_key, field_key, ref
+                    )
                 )
             else:
                 referenced.add(ref)
@@ -745,7 +746,7 @@ def resolve_field_reference(
             key=lambda item: (normalize_object_identifier(item), item),
         )
         if len(field_keys) > 1:
-            return None, ("Error: field reference '{}' is ambiguous. " "Candidate field keys: {}.").format(
+            return None, ("Error: field reference '{}' is ambiguous. Candidate field keys: {}.").format(
                 requested, ", ".join(field_keys)
             )
         return (
@@ -875,7 +876,7 @@ def resolve_object_reference_result(
             candidates = sorted({item.key for item in matches}, key=normalize_object_identifier)
             return ObjectReferenceLookupResult(
                 status=ObjectReferenceStatus.AMBIGUOUS,
-                error=("Error: object reference '{}' is ambiguous. " "Candidate object keys: {}.").format(
+                error=("Error: object reference '{}' is ambiguous. Candidate object keys: {}.").format(
                     requested, ", ".join(candidates)
                 ),
             )
@@ -1021,12 +1022,12 @@ def _field_identifier_keys(
     index: _FieldReferenceIndex,
     compare: str,
 ) -> Set[str]:
-    return {
-        definition.key
-        for matched_by in ("key", "title", "alias")
-        for definition in index.matches_by_kind[matched_by].get(compare, ())
-        if definition.key
-    }
+    keys: Set[str] = set()
+    for matched_by in ("key", "title", "alias"):
+        for definition in index.matches_by_kind[matched_by].get(compare, ()):
+            if definition.key:
+                keys.add(definition.key)
+    return keys
 
 
 def _query_field_name_spans(
@@ -1037,14 +1038,12 @@ def _query_field_name_spans(
     if not normalized_name:
         return ()
     if normalized_name.isascii():
-        return tuple(
-            (match.start(), match.end())
-            for match in re.finditer(
-                r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])".format(re.escape(normalized_name)),
-                query,
-                flags=re.IGNORECASE,
-            )
+        matches = re.finditer(
+            r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])".format(re.escape(normalized_name)),
+            query,
+            flags=re.IGNORECASE,
         )
+        return tuple((match.start(), match.end()) for match in matches)
 
     spans: List[Tuple[int, int]] = []
     start = 0
@@ -1124,7 +1123,7 @@ def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
                     ", ".join(sorted(definition.aliases, key=normalize_object_identifier)) or "（无）"
                 )
                 errors.append(
-                    ("对象 key='{}'、title='{}' 别名不一致：" "objects/index.md = [{}]；{} = [{}]").format(
+                    ("对象 key='{}'、title='{}' 别名不一致：objects/index.md = [{}]；{} = [{}]").format(
                         definition.key,
                         definition.title,
                         catalog_alias_display,
@@ -1143,8 +1142,7 @@ def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
         if definition.canonical_key and not _OBJECT_CANONICAL_KEY_RE.fullmatch(definition.canonical_key):
             errors.append(
                 (
-                    "Object '{}' canonical_key '{}' must contain only ASCII letters, "
-                    "digits, underscores, or hyphens."
+                    "Object '{}' canonical_key '{}' must contain only ASCII letters, digits, underscores, or hyphens."
                 ).format(definition.key, definition.canonical_key)
             )
 
@@ -1856,20 +1854,22 @@ def load_script_entry_from_descriptor(
 
 
 def public_script_catalog(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [
-        _drop_empty_values(
-            {
-                "operation_key": str(entry.get("operation_key") or ""),
-                "script_key": str(entry.get("script_key") or ""),
-                "title": str(entry.get("title") or ""),
-                "parameters": _public_script_parameters(entry.get("parameters") or []),
-            }
+    public_entries = []
+    for entry in catalog:
+        operation_key = str(entry.get("operation_key") or entry.get("script_key") or "").strip()
+        if not entry.get("_is_bound_operation") or entry.get("_is_deterministic_handler") or not operation_key:
+            continue
+        public_entries.append(
+            _drop_empty_values(
+                {
+                    "operation_key": str(entry.get("operation_key") or ""),
+                    "script_key": str(entry.get("script_key") or ""),
+                    "title": str(entry.get("title") or ""),
+                    "parameters": _public_script_parameters(entry.get("parameters") or []),
+                }
+            )
         )
-        for entry in catalog
-        if entry.get("_is_bound_operation")
-        and not entry.get("_is_deterministic_handler")
-        and str(entry.get("operation_key") or entry.get("script_key") or "").strip()
-    ]
+    return public_entries
 
 
 def _drop_empty_values(value: Dict[str, Any]) -> Dict[str, Any]:

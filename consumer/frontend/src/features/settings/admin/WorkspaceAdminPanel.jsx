@@ -35,6 +35,7 @@ function responseMessage(response, payload, fallback) {
   );
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 function WorkspaceDialog({
   dialog,
   draft,
@@ -141,6 +142,7 @@ function WorkspaceDialog({
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function WorkspaceAdminPanel({
   currentUser,
   currentWorkspaceId = '',

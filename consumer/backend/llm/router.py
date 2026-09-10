@@ -27,7 +27,7 @@ def _normalize_purpose(purpose: str | LLMPurpose) -> LLMPurpose:
     return LLMPurpose(str(purpose or "").strip().lower())
 
 
-def _config_fingerprint(config: LLMConfig) -> Tuple[Any, ...]:
+def _config_fingerprint(config: LLMConfig) -> Tuple[Any, ...]:  # pylint: disable=too-many-return-values
     return (
         config.base_url,
         config.model,

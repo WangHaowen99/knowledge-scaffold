@@ -265,7 +265,7 @@ class _JiuwenEngineEventBuffer:
                 overflow_error = self._overflow_error
                 if overflow_error is None:
                     overflow_error = JiuwenEngineEventBufferFull(
-                        "Jiuwen Engine event buffer is full " "(max_buffer_size={})".format(self.max_buffer_size)
+                        "Jiuwen Engine event buffer is full (max_buffer_size={})".format(self.max_buffer_size)
                     )
                     self._overflow_error = overflow_error
                 self._accepting = False
@@ -323,7 +323,7 @@ class _JiuwenEngineEventBuffer:
             with self._lock:
                 if self._overflow_error is None:
                     self._overflow_error = JiuwenEngineEventBufferFull(
-                        "Jiuwen Engine event buffer is full " "(max_buffer_size={})".format(self.max_buffer_size)
+                        "Jiuwen Engine event buffer is full (max_buffer_size={})".format(self.max_buffer_size)
                     )
                 self._accepting = False
                 self._close_pending = True
@@ -1226,7 +1226,8 @@ class JiuwenReactLoopEngine:
             tool_choice=tool_choice,
         )
 
-    def _seed_initial_messages(self, state: Dict[str, Any], *, system_prompt: Optional[str]) -> None:
+    @staticmethod
+    def _seed_initial_messages(state: Dict[str, Any], *, system_prompt: Optional[str]) -> None:
         if state.get("messages"):
             return
         user_content = str(state.get("user_request") or "").strip()
@@ -1237,7 +1238,8 @@ class JiuwenReactLoopEngine:
             {"role": "user", "content": user_content},
         ]
 
-    def _build_main_system_prompt(self, state: Mapping[str, Any], *, include_orchestration: bool = True) -> str:
+    @staticmethod
+    def _build_main_system_prompt(state: Mapping[str, Any], *, include_orchestration: bool = True) -> str:
         return build_main_system_prompt(state, include_orchestration=include_orchestration)
 
     async def _invoke_agent(
@@ -1556,8 +1558,8 @@ class JiuwenReactLoopEngine:
             }
         return None
 
+    @staticmethod
     def _emit_token_delta(
-        self,
         state: Mapping[str, Any],
         *,
         caller: str,
@@ -1581,8 +1583,8 @@ class JiuwenReactLoopEngine:
             source_node=event_source_node,
         )
 
+    @staticmethod
     def _dispatch_reasoning_summary(
-        self,
         state: Mapping[str, Any],
         *,
         caller: str,
@@ -1656,7 +1658,7 @@ class JiuwenReactLoopEngine:
                 "",
                 "<Current-Turn-Tool-Provenance>",
                 "Only the latest user message defines the active request.",
-                ("Earlier completed tool-using turns may have been omitted from " "the active context."),
+                "Earlier completed tool-using turns may have been omitted from the active context.",
                 (
                     "Do not infer, continue, or report an omitted task unless the "
                     "latest user message explicitly requests it."
@@ -1683,9 +1685,8 @@ class JiuwenReactLoopEngine:
                 if selected_ontology_version
                 else ""
             ),
-            'Always use ontology_id "{}" when calling ontology_context, business_data_search, or execute_script.'.format(
-                selected_ontology_id
-            ),
+            'Always use ontology_id "{}" when calling ontology_context, business_data_search, or execute_script.'
+            .format(selected_ontology_id),
             (
                 'Always use ontology version "{}" for this session; do not follow active_version changes.'.format(
                     selected_ontology_version
@@ -1701,10 +1702,12 @@ class JiuwenReactLoopEngine:
             lines.extend(["", selected_ontology_context])
         return "\n".join(line for line in lines if line != "").strip()
 
-    def _get_selected_ontology_context(self, state: Mapping[str, Any]) -> Optional[str]:
+    @staticmethod
+    def _get_selected_ontology_context(state: Mapping[str, Any]) -> Optional[str]:
         return get_selected_ontology_context(state)
 
-    def _hydrate_selected_ontology_read_documents(self, state: Dict[str, Any]) -> None:
+    @staticmethod
+    def _hydrate_selected_ontology_read_documents(state: Dict[str, Any]) -> None:
         hydrate_selected_ontology_read_documents(state)
 
     def _build_tool_context(
@@ -1803,8 +1806,8 @@ class JiuwenReactLoopEngine:
         include_interaction = _user_interaction_supported_from_state(state)
         return schema_caller, agent_mode == "multi_agent", include_web_search, include_interaction
 
+    @staticmethod
     def _emit_iteration_completed(
-        self,
         state: Mapping[str, Any],
         *,
         caller: str,
@@ -2188,9 +2191,7 @@ def _reject_factory_agent_with_history(
         history_source_messages if history_source_messages is not None else _build_jiuwen_history_source_messages(state)
     )
     if history_source:
-        raise ValueError(
-            "_agent_factory cannot be used with conversation history; " "use the default agent path instead."
-        )
+        raise ValueError("_agent_factory cannot be used with conversation history; use the default agent path instead.")
 
 
 _PREFLIGHT_MAIN_LLM_CONFIG: ContextVar[Any] = ContextVar(

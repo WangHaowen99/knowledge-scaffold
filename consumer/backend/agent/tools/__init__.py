@@ -1,5 +1,8 @@
 """Tools for LLM-based planning and execution."""
 
+import importlib as _importlib
+import sys as _sys
+
 from agent.tools.business_data_search import (
     BUSINESS_DATA_SEARCH_TOOL_SCHEMA,
     handle_business_data_search,
@@ -43,9 +46,6 @@ __all__ = [
 # binding the package attribute (e.g. agent.tools.execute_script). Rebind the
 # affected submodules explicitly so dotted monkeypatch targets and attribute
 # access stay resolvable regardless of import order.
-import importlib as _importlib  # noqa: E402
-import sys as _sys  # noqa: E402
-
 for _submodule_name in ("business_data_search", "execute_script"):
     _submodule = _importlib.import_module("{}.{}".format(__name__, _submodule_name))
     _sys.modules[__name__].__dict__[_submodule_name] = _submodule

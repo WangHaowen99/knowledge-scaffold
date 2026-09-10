@@ -238,7 +238,8 @@ def test_object_context_no_value_bound_without_mapping(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (objects_dir / "flight.md").write_text(
-        "---\nresource: object\nkey: flight\ntitle: 航班\n---\n\n# 字段\n\n| 字段 key | 中文名 |\n| --- | --- |\n| FLT_NR | 航班号 |\n",
+        "---\nresource: object\nkey: flight\ntitle: 航班\n---\n\n# 字段\n\n| 字段 key | 中文名 |\n| --- | --- |\n|"
+        " FLT_NR | 航班号 |\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(

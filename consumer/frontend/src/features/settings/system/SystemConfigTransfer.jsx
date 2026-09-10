@@ -25,6 +25,7 @@ function sectionNames(sections) {
     .join('、');
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function SystemConfigTransfer({
   canEdit = false,
   request,
@@ -100,7 +101,9 @@ export default function SystemConfigTransfer({
   };
 
   const confirmImport = async () => {
-    if (!canEdit || !pendingImport || !overwriteConfirmed || busyAction) {
+    const importBlocked =
+      !canEdit || !pendingImport || !overwriteConfirmed || busyAction;
+    if (importBlocked) {
       return;
     }
     setBusyAction('import');

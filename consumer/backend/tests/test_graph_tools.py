@@ -149,6 +149,7 @@ class _ToolBackend:
         self.calls.append(("get_element_info", element_instance_id, element_class, element_type, scope.workspace_value))
         return {"found": True, "element_id": element_instance_id}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self):
         return None
 

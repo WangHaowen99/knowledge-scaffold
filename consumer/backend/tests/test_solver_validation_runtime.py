@@ -259,6 +259,7 @@ def test_shutdown_stops_worker_enabled_after_startup(monkeypatch):
             self.running = True
             return self
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def stop(self, *, timeout_seconds=5.0):
             del timeout_seconds
             self.running = False
@@ -342,6 +343,7 @@ def test_install_refuses_to_replace_unterminated_worker(monkeypatch):
     class BlockedRecoveryWorker:
         running = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def stop(self, *, timeout_seconds=5.0):
             del timeout_seconds
             return False
@@ -374,6 +376,7 @@ def test_shutdown_retains_ownership_of_unterminated_worker():
     class BlockedRecoveryWorker:
         running = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def stop(self, *, timeout_seconds):
             assert timeout_seconds == 0.01
             return False

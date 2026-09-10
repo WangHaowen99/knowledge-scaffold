@@ -16,6 +16,7 @@ import { AuthCtx } from './useAuthContext';
 
 // 统一的认证 + 工作空间上下文：替代 props 层层下传。
 // can(perm) 只做 UI 门控；服务端是唯一强制点。
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function AuthProvider({ children }) {
   const auth = useAuth();
   const [workspaces, setWorkspaces] = useState([]);
@@ -35,13 +36,13 @@ export default function AuthProvider({ children }) {
   const protectedDataReady = canLoadProtectedData(auth.status, auth.user);
   const workspaceDataReady = canLoadWorkspaceData(
     protectedDataReady,
+    workspaceId,
+    workspaces,
     {
       loaded: workspacesLoaded,
       loading: workspacesLoading,
       error: workspacesError,
     },
-    workspaceId,
-    workspaces,
   );
   const [rolesOwner, setRolesOwner] = useState(currentUsername);
   if (rolesOwner !== currentUsername) {

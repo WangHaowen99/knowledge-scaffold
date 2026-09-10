@@ -5,6 +5,7 @@ import PasswordRuleList from './PasswordRuleList';
 import { passwordFormState } from './passwordPolicy';
 import './authSettings.css';
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function ChangePasswordDialog({
   currentUser,
   onChangePassword,

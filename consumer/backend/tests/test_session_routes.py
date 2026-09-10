@@ -55,6 +55,7 @@ class _FakeChatStore:
         self.created_sessions.append({"title": title, "metadata": dict(metadata or {})})
         return self.session
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def prune_old_sessions(self, max_sessions):
         del max_sessions
         return []
@@ -458,12 +459,11 @@ def test_cancel_pending_interaction_is_durable_and_idempotent(tmp_path, monkeypa
         1,
     )
     loaded = chat_store.get_session("sess-cancel")
-    cancellation_events = [
-        event
-        for event in loaded.events
-        if event.get("event") == "chat_message"
-        and (event.get("data") or {}).get("metadata", {}).get("type") == "interaction_cancelled"
-    ]
+    cancellation_events = []
+    for event in loaded.events:
+        event_type = (event.get("data") or {}).get("metadata", {}).get("type")
+        if event.get("event") == "chat_message" and event_type == "interaction_cancelled":
+            cancellation_events.append(event)
     assert len(cancellation_events) == 1
     assert cancellation_events[0]["data"]["role"] == "system"
     assert cancellation_events[0]["data"]["content"] == INTERACTION_CANCELLED_NOTICE
@@ -638,9 +638,11 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
             scope_events.append(("exit", workspace_id))
 
     class FakeRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def refresh(self):
             raise AssertionError("session creation must use the maintained registry cache")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_ontology(self, ontology_id):
             assert active_workspaces == ["session-test"]
             if ontology_id == "demo-ontology":
@@ -703,9 +705,11 @@ def test_create_session_rejects_selected_ontology_missing_from_workspace(tmp_pat
     _stub_session_create_dependencies(monkeypatch, chat_store)
 
     class EmptyRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def refresh(self):
             return 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_ontology(self, ontology_id):
             del ontology_id
             return None
@@ -729,9 +733,11 @@ def test_create_session_rejects_disabled_selected_ontology(tmp_path, monkeypatch
     _stub_session_create_dependencies(monkeypatch, chat_store)
 
     class DisabledRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def refresh(self):
             return 1
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_ontology(self, ontology_id):
             return SimpleNamespace(id=ontology_id, enabled=False)
 
@@ -1077,12 +1083,15 @@ class _FaultingSummaryIndex:
     def state(self):
         return "degraded" if self.stage == "rebuild" else "ready"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def rebuild(self):
         raise OSError("synthetic index rebuild failure")
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def list_all(self):
         raise AssertionError("legacy fallback must not read the failed index")
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def list_page(self, **_options):
         raise OSError("synthetic index page failure")
 
@@ -1121,6 +1130,7 @@ def test_create_session_schedules_prune_until_retention_converges(tmp_path, monk
         )
 
     class Supervisor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def start_derived(self, operation, *, name):
             scheduled.append((operation, name))
 

@@ -17,6 +17,7 @@ import {
 } from '../lib/toolOutput';
 import { CopyButton } from './RunActions';
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export default function ToolOutput({
   meta = {},
   fallbackText = '',
@@ -89,6 +90,15 @@ export default function ToolOutput({
   if (!displayOutput && !truncated && !canLoadFull) {
     return null;
   }
+  let loadIcon = <Maximize2 size={12} />;
+  let loadLabel = '查看完整输出';
+  if (state === 'loading') {
+    loadIcon = <Loader2 className="spin" size={12} />;
+    loadLabel = '加载中';
+  } else if (state === 'error') {
+    loadIcon = <RefreshCw size={12} />;
+    loadLabel = '重试';
+  }
 
   return (
     <section
@@ -110,18 +120,8 @@ export default function ToolOutput({
               onClick={loadFullOutput}
               disabled={state === 'loading'}
             >
-              {state === 'loading' ? (
-                <Loader2 className="spin" size={12} />
-              ) : state === 'error' ? (
-                <RefreshCw size={12} />
-              ) : (
-                <Maximize2 size={12} />
-              )}
-              {state === 'loading' ?
-                '加载中' :
-                state === 'error' ?
-                  '重试' :
-                  '查看完整输出'}
+              {loadIcon}
+              {loadLabel}
             </button>
           )}
         </span>

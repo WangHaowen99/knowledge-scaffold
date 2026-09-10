@@ -46,6 +46,7 @@ class _DurableFakeBackend:
         self.raise_after_accept_once = False
         self.cancel_observer = None
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def capabilities(self):
         return {"problem_families": ["synthetic_choice.v1"]}
 
@@ -473,13 +474,11 @@ def test_concurrent_subscribers_converge_across_repeated_start_races(tmp_path):
             )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(launch, orchestrator, suffix)
-                for orchestrator, suffix in (
-                    (first_orchestrator, "a"),
-                    (second_orchestrator, "b"),
-                )
-            ]
+            launch_inputs = (
+                (first_orchestrator, "a"),
+                (second_orchestrator, "b"),
+            )
+            futures = [executor.submit(launch, orchestrator, suffix) for orchestrator, suffix in launch_inputs]
             outcomes = [future.result() for future in futures]
         assert outcomes[0]["job_id"] != outcomes[1]["job_id"]
         assert outcomes[0]["attempt_id"] != outcomes[1]["attempt_id"]

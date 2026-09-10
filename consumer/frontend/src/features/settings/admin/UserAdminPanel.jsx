@@ -13,6 +13,13 @@ import {
 } from './userModel';
 import './adminSettings.css';
 
+const deletePolicyTitle = (policy) => {
+  if (policy.canDelete) {
+    return undefined;
+  }
+  return policy.isSelf ? '不能删除当前账号' : '不能删除 admin 管理员';
+};
+
 async function responsePayload(response) {
   return response.json().catch(() => ({}));
 }
@@ -37,6 +44,7 @@ function mutationMessage(result, username) {
   return result.message;
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 function PasswordAdminDialog({ type, targetUser, busy, onClose, onSubmit }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -63,11 +71,11 @@ function PasswordAdminDialog({ type, targetUser, busy, onClose, onSubmit }) {
 
   const submit = async (event) => {
     event.preventDefault();
-    if (
+    const submitBlocked =
       busy ||
       !formState.canSubmit ||
-      (type === 'create' && !username.trim())
-    ) {
+      (type === 'create' && !username.trim());
+    if (submitBlocked) {
       return;
     }
     clearServerFeedback();
@@ -81,6 +89,12 @@ function PasswordAdminDialog({ type, targetUser, busy, onClose, onSubmit }) {
     setError(result?.message || '操作失败');
     setViolations(result?.violations || []);
   };
+  let submitLabel = '重置密码';
+  if (busy) {
+    submitLabel = '提交中…';
+  } else if (type === 'create') {
+    submitLabel = '创建用户';
+  }
 
   return (
     <Modal
@@ -113,7 +127,7 @@ function PasswordAdminDialog({ type, targetUser, busy, onClose, onSubmit }) {
               (type === 'create' && !username.trim())
             }
           >
-            {busy ? '提交中…' : type === 'create' ? '创建用户' : '重置密码'}
+            {submitLabel}
           </button>
         </>
       }
@@ -183,6 +197,7 @@ function PasswordAdminDialog({ type, targetUser, busy, onClose, onSubmit }) {
   );
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function UserAdminPanel({
   currentUser,
   canManage = true,
@@ -498,13 +513,7 @@ export default function UserAdminPanel({
                           className="btn btn-sm btn-danger"
                           type="button"
                           disabled={busy || !policy.canDelete}
-                          title={
-                            !policy.canDelete ?
-                              policy.isSelf ?
-                                '不能删除当前账号' :
-                                '不能删除 admin 管理员' :
-                              undefined
-                          }
+                          title={deletePolicyTitle(policy)}
                           onClick={() => {
                             setDialog({ type: 'delete', user });
                             setError('');

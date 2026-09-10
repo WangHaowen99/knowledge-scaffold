@@ -28,6 +28,7 @@ class _BlockingProvider:
 class _NativeProvider:
     capabilities = ProviderCapabilities(query=True, query_sql=False, native_streaming=True, probe=False)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def _iter_native_query_events(self, question: str):
         assert question == "find one"
         yield ProviderEvent(type="start")

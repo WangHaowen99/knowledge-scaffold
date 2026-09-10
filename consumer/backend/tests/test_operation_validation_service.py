@@ -177,8 +177,8 @@ def test_run_resolves_once_validates_the_complete_batch_once_and_aggregates(
     [
         {"source_run_id": "solve_run_other"},
         {"parent_solve_run_id": "solve_run_other"},
-        {"candidate_set_digest": ("sha256:solver-coordination.v1:" + "8" * 64)},
-        {"candidate_digest": ("sha256:solver-coordination.v1:" + "9" * 64)},
+        {"candidate_set_digest": "sha256:solver-coordination.v1:" + "8" * 64},
+        {"candidate_digest": "sha256:solver-coordination.v1:" + "9" * 64},
     ],
     ids=[
         "source-run",
@@ -279,6 +279,7 @@ def test_resolver_call_failures_are_normalized_as_retryable_runtime_failures(
     )
 
     class _FailingResolver:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def resolve(self, **kwargs):
             raise failure
 
@@ -315,6 +316,7 @@ def test_validator_api_error_is_normalized_as_retryable_runtime_failure(
     failure = CandidateDigestMismatchError("synthetic adapter failure")
 
     class _FailingValidator:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def validate(self, **kwargs):
             raise failure
 

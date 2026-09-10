@@ -25,6 +25,7 @@ class _FakeStreamingResponse:
     def iter_lines(self, decode_unicode=True):
         return iter(self._lines)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self) -> None:
         return
 
@@ -459,7 +460,7 @@ def test_llm_call_preserves_input_history_and_appends_single_assistant(monkeypat
         request_kwargs.append(kwargs)
         return object()
 
-    def fake_collect_response(
+    def fake_collect_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         response,
         emit_func=None,
         run_id=None,
@@ -923,7 +924,7 @@ def test_llm_call_passes_stream_override_to_transport(monkeypatch):
         request_kwargs.append(kwargs)
         return object()
 
-    def fake_collect_response(
+    def fake_collect_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         response,
         emit_func=None,
         run_id=None,
@@ -1013,7 +1014,7 @@ def test_llm_call_exposes_collected_reasoning_content(monkeypatch):
         del args, kwargs
         return object()
 
-    def fake_collect_response(
+    def fake_collect_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         response,
         emit_func=None,
         run_id=None,
@@ -1076,7 +1077,10 @@ def test_collect_stream_response_collects_empty_choices_usage_chunks():
     response = _FakeStreamingResponse(
         [
             'data: {"id":"chunk-usage","model":"unit-model","choices":[],"usage":{"total_tokens":10}}',
-            'data: {"id":"chunk-content","model":"unit-model","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+            (
+                'data: {"id":"chunk-content","model":"unit-model","choices":[{"delta":{"content":"Hello"},'
+                '"finish_reason":null}]}'
+            ),
             'data: {"id":"chunk-stop","model":"unit-model","choices":[{"delta":{},"finish_reason":"stop"}]}',
             "data: [DONE]",
         ]
@@ -1151,14 +1155,15 @@ def test_collect_stream_response_repairs_cumulative_tool_argument_chunks():
     response = _FakeStreamingResponse(
         [
             (
-                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/manifest.yaml\\""}}]},'
-                '"finish_reason":null}]}'
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call_1","type":"function","function":{"name":"read_file",'
+                '"arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/'
+                'manifest.yaml\\""}}]},"finish_reason":null}]}'
             ),
             (
-                'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"function":{"arguments":"{\\"file_path\\": \\"ontologies/example-domain-operations-manual/manifest.yaml\\"}"}}]},'
-                '"finish_reason":"tool_calls"}]}'
+                'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"function":{"arguments":"{\\"file_path\\": \\"ontologies/example-domain-operations-manual/'
+                'manifest.yaml\\"}"}}]},"finish_reason":"tool_calls"}]}'
             ),
             "data: [DONE]",
         ]
@@ -1189,9 +1194,10 @@ def test_collect_stream_response_keeps_final_tool_call_fragment_when_finish_reas
     response = _FakeStreamingResponse(
         [
             (
-                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/objects/CHANGE_"}}]},'
-                '"finish_reason":null}]}'
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call_1","type":"function","function":{"name":"read_file",'
+                '"arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/objects/'
+                'CHANGE_"}}]},"finish_reason":null}]}'
             ),
             (
                 'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"tool_calls":'
@@ -1227,9 +1233,10 @@ def test_collect_stream_response_emits_closed_tool_calls_as_one_batch_on_finish_
     response = _FakeStreamingResponse(
         [
             (
-                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"a.md\\"}"}},'
-                '{"index":1,"id":"call_search","type":"function","function":{"name":"business_data_search","arguments":"{\\"query\\":\\"TargetItem\\"}"}}]},'
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call_read","type":"function","function":{"name":"read_file",'
+                '"arguments":"{\\"file_path\\":\\"a.md\\"}"}},{"index":1,"id":"call_search","type":"function",'
+                '"function":{"name":"business_data_search","arguments":"{\\"query\\":\\"TargetItem\\"}"}}]},'
                 '"finish_reason":null}]}'
             ),
             'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
@@ -1267,9 +1274,9 @@ def test_collect_stream_response_emits_remaining_closed_tool_calls_on_finish_rea
     response = _FakeStreamingResponse(
         [
             (
-                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"a.md\\"}"}}]},'
-                '"finish_reason":"tool_calls"}]}'
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call_read","type":"function","function":{"name":"read_file",'
+                '"arguments":"{\\"file_path\\":\\"a.md\\"}"}}]},"finish_reason":"tool_calls"}]}'
             ),
             "data: [DONE]",
         ]
@@ -1398,7 +1405,10 @@ def test_collect_non_stream_response_preserves_tool_calls():
                                 "type": "function",
                                 "function": {
                                     "name": "read_file",
-                                    "arguments": '{"file_path":"ontologies/example-domain-operations-manual/objects/CHANGE_ORDER受影响对象在制品处理结论.md"}',
+                                    "arguments": (
+                                        '{"file_path":"ontologies/example-domain-operations-manual/objects/'
+                                        'CHANGE_ORDER受影响对象在制品处理结论.md"}'
+                                    ),
                                 },
                             }
                         ],
@@ -1484,8 +1494,14 @@ def test_collect_stream_response_keeps_reasoning_when_summary_dispatch_fails(mon
 
     response = _FakeStreamingResponse(
         [
-            'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}',
-            'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}',
+            (
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"reasoning_content":"think"},'
+                '"finish_reason":null}]}'
+            ),
+            (
+                "data:"
+                ' {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}'
+            ),
             "data: [DONE]",
         ]
     )
@@ -1514,8 +1530,14 @@ def test_collect_stream_response_returns_stream_milestones():
     )
     response = _FakeStreamingResponse(
         [
-            'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}',
-            'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}',
+            (
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"reasoning_content":"think"},'
+                '"finish_reason":null}]}'
+            ),
+            (
+                "data:"
+                ' {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}'
+            ),
             "data: [DONE]",
         ]
     )

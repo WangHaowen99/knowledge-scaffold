@@ -65,6 +65,7 @@ const freezeRow = (row) =>
     sequenceLabels: Object.freeze([...row.sequenceLabels]),
   });
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export function normalizeCandidateResults(payload) {
   exactFields(payload, TOP_LEVEL_FIELDS, 'artifact');
   if (payload.schema_version !== SCHEMA_VERSION) {
@@ -198,12 +199,12 @@ export function normalizeCandidateResults(payload) {
       null :
       requiredText(payload.selected_candidate_id, 'selected candidate ID');
   const selectedRows = rows.filter((row) => row.selected);
-  if (
+  const selectedCandidateMismatch =
     (selectedCandidateId == null && selectedRows.length !== 0) ||
     (selectedCandidateId != null &&
       (selectedRows.length !== 1 ||
-        selectedRows[0].candidateId !== selectedCandidateId))
-  ) {
+        selectedRows[0].candidateId !== selectedCandidateId));
+  if (selectedCandidateMismatch) {
     invalid('selected candidate does not match content');
   }
 

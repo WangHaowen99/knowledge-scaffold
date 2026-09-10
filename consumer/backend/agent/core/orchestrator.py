@@ -28,7 +28,6 @@ from persistence.run_queue import TokenBucketRateLimiter
 from utils.logging import get_logger
 from workspace.user_store_manager import UserStoreManager
 
-
 logger = get_logger("orchestrator")
 
 
@@ -44,20 +43,12 @@ class AgenticOrchestrator:
         memory_factory: Optional[MemoryFactory] = None,
     ) -> None:
         self.agent_config = agent_config or AgentConfig.from_env()
-        app_config = (
-            AppConfig.from_env()
-            if chat_store is None or execution_store is None
-            else None
-        )
+        app_config = AppConfig.from_env() if chat_store is None or execution_store is None else None
         self.chat_store = chat_store or ChatStore(
             app_config.chat_storage_dir,
-            tool_output_limits=ToolOutputLimits.from_config(
-                self.agent_config.limits
-            ),
+            tool_output_limits=ToolOutputLimits.from_config(self.agent_config.limits),
         )
-        self.execution_store = execution_store or ExecutionStore(
-            app_config.execution_storage_dir
-        )
+        self.execution_store = execution_store or ExecutionStore(app_config.execution_storage_dir)
         self.user_store_manager = user_store_manager
         self.memory_factory = memory_factory or MemoryFactory()
         self._preflight_cache = ImmutablePreflightCache()
@@ -66,9 +57,7 @@ class AgenticOrchestrator:
             burst=self.agent_config.limits.run_tps,
         )
 
-        self.passive_reflection_enabled = bool(
-            self.agent_config.evolution_passive_reflection_enabled
-        )
+        self.passive_reflection_enabled = bool(self.agent_config.evolution_passive_reflection_enabled)
         self.reflection_worker = (
             ReflectionWorker(
                 max_workers=max(
@@ -92,9 +81,7 @@ class AgenticOrchestrator:
                 min_applied=self.agent_config.evolution_min_applied,
                 max_rejection=self.agent_config.evolution_max_rejection,
                 cooldown_sec=self.agent_config.evolution_patch_cooldown_sec,
-                sweep_interval_sec=(
-                    self.agent_config.evolution_sweep_interval_sec
-                ),
+                sweep_interval_sec=(self.agent_config.evolution_sweep_interval_sec),
                 auto_apply=self.agent_config.evolution_patch_auto_apply,
             ),
         )
@@ -125,9 +112,7 @@ class AgenticOrchestrator:
                 ontology_id = str(record.get("ontology_id") or "").strip()
                 version = str(record.get("ontology_version") or "").strip()
                 if ontology_id and version:
-                    ontology_versions.setdefault(ontology_id, set()).add(
-                        version
-                    )
+                    ontology_versions.setdefault(ontology_id, set()).add(version)
         if len(ontology_versions) != 1:
             return None
         versions = next(iter(ontology_versions.values()))
@@ -203,11 +188,7 @@ class AgenticOrchestrator:
         chat_store, execution_store = self._get_stores(user_id, workspace_id)
         normalized_session_id = validate_session_id(session_id)
         context = dict(user_context or {})
-        request_arguments = (
-            dict(arguments)
-            if isinstance(arguments, dict)
-            else dict(context.get("arguments") or {})
-        )
+        request_arguments = dict(arguments) if isinstance(arguments, dict) else dict(context.get("arguments") or {})
         metadata_reader = getattr(chat_store, "get_session_metadata", None)
         if callable(metadata_reader):
             metadata = dict(metadata_reader(normalized_session_id) or {})
@@ -244,18 +225,10 @@ class AgenticOrchestrator:
         else:
             # Compatibility for protocol adapters that predate the summary index.
             turn_count = len(
-                list(
-                    (
-                        execution_store.get_session_history(normalized_session_id)
-                        or {}
-                    ).get("turns")
-                    or []
-                )
+                list((execution_store.get_session_history(normalized_session_id) or {}).get("turns") or [])
             )
         checkpoint = (
-            execution_store.get_pending_deterministic_checkpoint(
-                normalized_session_id
-            )
+            execution_store.get_pending_deterministic_checkpoint(normalized_session_id)
             if interaction_response
             else None
         )
@@ -273,11 +246,7 @@ class AgenticOrchestrator:
                 selected_ontology_version=selected_version or None,
             ),
             checkpoint=checkpoint,
-            interaction_response=(
-                dict(interaction_response)
-                if isinstance(interaction_response, dict)
-                else None
-            ),
+            interaction_response=(dict(interaction_response) if isinstance(interaction_response, dict) else None),
         )
         return (
             request,
@@ -301,15 +270,13 @@ class AgenticOrchestrator:
         from agent.direct_execution.service import DeterministicExecutionService
         from ontology.ontologies import get_runtime_ontology_manifest
 
-        request, ontology_id, ontology_version, stored_profile = (
-            self._build_protocol_preflight_request(
-                user_request=user_request,
-                user_context=user_context,
-                arguments=arguments,
-                session_id=session_id,
-                user_id=user_id,
-                workspace_id=workspace_id,
-            )
+        request, ontology_id, ontology_version, stored_profile = self._build_protocol_preflight_request(
+            user_request=user_request,
+            user_context=user_context,
+            arguments=arguments,
+            session_id=session_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         if request is None or not ontology_id:
             return False, None, stored_profile
@@ -370,15 +337,13 @@ class AgenticOrchestrator:
         from ontology.ontologies import get_runtime_ontology_manifest
 
         normalized_workspace = str(workspace_id or "").strip() or "default"
-        request, ontology_id, ontology_version, stored_profile = (
-            self._build_protocol_preflight_request(
-                user_request=user_request,
-                user_context=user_context,
-                arguments=arguments,
-                session_id=session_id,
-                user_id=user_id,
-                workspace_id=normalized_workspace,
-            )
+        request, ontology_id, ontology_version, stored_profile = self._build_protocol_preflight_request(
+            user_request=user_request,
+            user_context=user_context,
+            arguments=arguments,
+            session_id=session_id,
+            user_id=user_id,
+            workspace_id=normalized_workspace,
         )
         requested_profile = str(model_profile_id or "").strip() or None
         profile_ref = requested_profile or stored_profile
@@ -419,8 +384,8 @@ class AgenticOrchestrator:
             cache=self._preflight_cache,
         )
 
+    @staticmethod
     def _record_evolution_recall_outcomes(
-        self,
         state: Mapping[str, Any],
     ) -> None:
         records = state.get("evolution_recall_records") or []
@@ -438,9 +403,7 @@ class AgenticOrchestrator:
             if not isinstance(record, dict):
                 continue
             fingerprints = [
-                str(fingerprint).strip()
-                for fingerprint in record.get("fingerprints") or []
-                if str(fingerprint).strip()
+                str(fingerprint).strip() for fingerprint in record.get("fingerprints") or [] if str(fingerprint).strip()
             ]
             if not fingerprints:
                 continue
@@ -448,15 +411,9 @@ class AgenticOrchestrator:
                 buffer.record_outcome(
                     fingerprints,
                     success=True,
-                    workspace_id=(
-                        str(record.get("workspace_id") or "").strip() or None
-                    ),
-                    ontology_id=(
-                        str(record.get("ontology_id") or "").strip() or None
-                    ),
-                    operation_key=(
-                        str(record.get("operation_key") or "").strip() or None
-                    ),
+                    workspace_id=(str(record.get("workspace_id") or "").strip() or None),
+                    ontology_id=(str(record.get("ontology_id") or "").strip() or None),
+                    operation_key=(str(record.get("operation_key") or "").strip() or None),
                 )
             except Exception:
                 logger.warning(
@@ -464,8 +421,8 @@ class AgenticOrchestrator:
                     exc_info=True,
                 )
 
+    @staticmethod
     def _build_memory_context(
-        self,
         memory_manager: Any,
         *,
         query: str,
@@ -494,25 +451,24 @@ class AgenticOrchestrator:
         messages: List[Dict[str, Any]],
         duration_ms: int,
     ) -> None:
-        if (
-            not self.passive_reflection_enabled
-            or self.reflection_worker is None
-            or not ontology_id
-        ):
+        if not self.passive_reflection_enabled or self.reflection_worker is None or not ontology_id:
             return
         try:
+
             def build_snapshot():
                 snapshot_messages = copy.deepcopy(list(messages or []))
                 final_text = (
                     final_output
                     if isinstance(final_output, str)
-                    else json.dumps(
-                        final_output,
-                        ensure_ascii=False,
-                        default=str,
+                    else (
+                        json.dumps(
+                            final_output,
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                        if final_output
+                        else ""
                     )
-                    if final_output
-                    else ""
                 )
                 return build_reflection_snapshot(
                     run_id=run_id,
@@ -543,6 +499,7 @@ class AgenticOrchestrator:
                 exc_info=True,
             )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def vote_on_memory_records(
         self,
         records: list[dict[str, Any]],
@@ -569,9 +526,7 @@ class AgenticOrchestrator:
             ontology_id = str(record.get("ontology_id") or "").strip()
             operation_key = str(record.get("operation_key") or "").strip()
             fingerprints = {
-                str(fingerprint).strip()
-                for fingerprint in record.get("fingerprints") or []
-                if str(fingerprint).strip()
+                str(fingerprint).strip() for fingerprint in record.get("fingerprints") or [] if str(fingerprint).strip()
             }
             if ontology_id and operation_key and fingerprints:
                 grouped.setdefault(
@@ -605,8 +560,4 @@ class AgenticOrchestrator:
 
     @staticmethod
     def _count_iterations(messages: List[Dict[str, Any]]) -> int:
-        return sum(
-            1
-            for message in messages or []
-            if isinstance(message, dict) and message.get("role") == "assistant"
-        )
+        return sum(1 for message in messages or [] if isinstance(message, dict) and message.get("role") == "assistant")

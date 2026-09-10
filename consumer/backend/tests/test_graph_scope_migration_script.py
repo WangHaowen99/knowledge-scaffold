@@ -35,6 +35,7 @@ class _FakeSession:
     def __enter__(self):
         return self
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def __exit__(self, exc_type, exc, tb):
         return False
 

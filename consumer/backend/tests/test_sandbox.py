@@ -45,10 +45,10 @@ from integration.sandbox.policy_builder import (
 from integration.sandbox.registry import RunSandboxRegistry, sandbox_id_for_run
 
 
-def _resolved_source(*, id: str, name: str, provider: str, config: dict):
+def _resolved_source(*, ontology_id: str, name: str, provider: str, config: dict):
     del name
     return ResolvedBusinessDataSource(
-        ontology_id=id,
+        ontology_id=ontology_id,
         mode="direct_provider",
         provider=provider,
         config=config,
@@ -115,6 +115,7 @@ def test_sandbox_reachable_url_pins_ipv6_only_endpoint(monkeypatch):
 
 def test_create_sandbox_treats_409_as_conflict():
     class ConflictHttpClient:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def post(self, path, **kwargs):
             return _FakeResponse({"detail": "sandbox already exists"}, status_code=409)
 
@@ -169,6 +170,7 @@ def test_registry_rejects_scope_change_for_existing_run(tmp_path):
     registry = RunSandboxRegistry(_sandbox_config())
 
     class ReadySandboxClient:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_sandbox(self, sandbox_id, policy, policy_mode):
             return {"id": sandbox_id, "phase": "ready"}
 
@@ -190,6 +192,7 @@ def test_registry_strict_release_failure_keeps_mapping_for_retry(tmp_path):
             self.create_calls = 0
             self.delete_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_sandbox(self, sandbox_id, policy, policy_mode):
             self.create_calls += 1
             return {"id": sandbox_id, "phase": "ready"}
@@ -220,6 +223,7 @@ def test_registry_releases_only_companions_registered_to_parent(tmp_path):
         def __init__(self):
             self.deleted = []
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_sandbox(self, sandbox_id, policy, policy_mode):
             del policy, policy_mode
             return {"id": sandbox_id, "phase": "ready"}
@@ -249,6 +253,7 @@ def test_registry_failed_companion_release_remains_registered_for_parent_retry(t
         def __init__(self):
             self.delete_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_sandbox(self, sandbox_id, policy, policy_mode):
             del policy, policy_mode
             return {"id": sandbox_id, "phase": "ready"}
@@ -284,6 +289,7 @@ def test_registry_concurrent_release_waits_and_retries_failed_companion_delete(t
         def __init__(self):
             self.delete_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_sandbox(self, sandbox_id, policy, policy_mode):
             del policy, policy_mode
             return {"id": sandbox_id, "phase": "ready"}
@@ -458,10 +464,12 @@ def test_executor_mounts_only_workspace_for_global_project_root(tmp_path, monkey
     captured = {}
 
     class RecordingRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def ensure(self, ctx):
             captured["ctx"] = ctx
             return "onto-test"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def exec_in_sandbox(self, sandbox_id, command, **kwargs):
             captured["sandbox_id"] = sandbox_id
             captured["command"] = command
@@ -524,10 +532,12 @@ def test_executor_can_restrict_mount_and_workdir_to_ontology(tmp_path, monkeypat
     captured = {}
 
     class RecordingRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def ensure(self, ctx):
             captured["ctx"] = ctx
             return "onto-restricted"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def exec_in_sandbox(self, _sandbox_id, _command, **kwargs):
             captured.update(kwargs)
             return SimpleNamespace(exit_code=0, stdout="ok", stderr="")
@@ -589,9 +599,11 @@ def test_sandbox_executor_wraps_commands_with_output_limits(tmp_path, monkeypatc
     )
 
     class RecordingRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def ensure(self, _ctx):
             return "onto-bounded"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def exec_in_sandbox(self, _sandbox_id, command, **kwargs):
             captured["command"] = command
             captured["env"] = kwargs["env"]
@@ -687,6 +699,7 @@ def test_deterministic_runtime_attestation_rejects_mismatched_image(monkeypatch)
 
 def test_deterministic_runtime_attestation_accepts_matching_image(monkeypatch):
     class MatchingRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def exec_in_sandbox(self, _sandbox_id, _command, **_kwargs):
             return SimpleNamespace(
                 exit_code=0,
@@ -789,7 +802,7 @@ def test_deterministic_runtime_runner_allows_contract_capabilities(tmp_path):
 def test_deterministic_runtime_runner_blocks_dynamic_import_bypass(tmp_path):
     script = tmp_path / "handler.py"
     script.write_text(
-        "loader = __builtins__['__import__']\n" "module = loader('os')\n" "print(module.getpid())\n",
+        "loader = __builtins__['__import__']\nmodule = loader('os')\nprint(module.getpid())\n",
         encoding="utf-8",
     )
     env = os.environ.copy()
@@ -916,7 +929,7 @@ def test_bounded_sandbox_runner_stops_oversized_artifact_file(tmp_path):
 def test_bounded_sandbox_runner_stops_descendants_after_leader_exits(tmp_path):
     marker = tmp_path / "late-child-output.txt"
     child_code = (
-        "import pathlib,time; time.sleep(0.8); " "pathlib.Path({!r}).write_text('late', encoding='utf-8')"
+        "import pathlib,time; time.sleep(0.8); pathlib.Path({!r}).write_text('late', encoding='utf-8')"
     ).format(str(marker))
     leader_code = (
         "import subprocess,sys; "
@@ -977,14 +990,17 @@ def test_executor_cancellation_releases_running_sandbox(tmp_path, monkeypatch):
     released = threading.Event()
 
     class BlockingRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def ensure(self, _ctx):
             return "onto-cancel"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def exec_in_sandbox(self, _sandbox_id, _command, **_kwargs):
             started.set()
             released.wait(timeout=2)
             return SimpleNamespace(exit_code=1, stdout="", stderr="cancelled")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def release(self, run_id):
             assert run_id == "run-cancel"
             released.set()
@@ -1110,7 +1126,7 @@ def test_build_egress_allowed_ports_denies_when_no_proxy():
 
 def test_data_proxy_manager_creates_safe_env_without_raw_secret(monkeypatch):
     connection = _resolved_source(
-        id="conn1",
+        ontology_id="conn1",
         name="Conn 1",
         provider="nl2sql_http",
         config={
@@ -1149,7 +1165,7 @@ def test_data_proxy_manager_creates_safe_env_without_raw_secret(monkeypatch):
 )
 def test_data_proxy_manager_rejects_script_disallowed_providers(monkeypatch, provider):
     connection = _resolved_source(
-        id="disallowed-ontology",
+        ontology_id="disallowed-ontology",
         name="Disallowed ontology",
         provider=provider,
         config={
@@ -1179,7 +1195,7 @@ def test_data_proxy_manager_rejects_script_disallowed_providers(monkeypatch, pro
 
 def test_data_proxy_manager_fails_closed_when_route_create_returns_400(monkeypatch):
     connection = _resolved_source(
-        id="conn-conflict",
+        ontology_id="conn-conflict",
         name="Conflicting route",
         provider="nl2sql_http",
         config={
@@ -1211,7 +1227,7 @@ def test_data_proxy_manager_fails_closed_when_route_create_returns_400(monkeypat
 
 def test_data_proxy_manager_rolls_back_when_route_start_fails(monkeypatch):
     connection = _resolved_source(
-        id="conn-start-fail",
+        ontology_id="conn-start-fail",
         name="Start failure route",
         provider="nl2sql_http",
         config={
@@ -1243,7 +1259,7 @@ def test_data_proxy_manager_rolls_back_when_route_start_fails(monkeypatch):
 
 def test_data_proxy_manager_authenticates_mindsdb_once_per_run(monkeypatch):
     connection = _resolved_source(
-        id="mindsdb-conn",
+        ontology_id="mindsdb-conn",
         name="Authenticated MindsDB",
         provider="mindsdb",
         config={
@@ -1299,7 +1315,7 @@ def test_data_proxy_manager_authenticates_mindsdb_once_per_run(monkeypatch):
 
 def test_data_proxy_manager_rejects_failed_mindsdb_login(monkeypatch):
     connection = _resolved_source(
-        id="mindsdb-conn",
+        ontology_id="mindsdb-conn",
         name="Authenticated MindsDB",
         provider="mindsdb",
         config={
@@ -1329,7 +1345,7 @@ def test_data_proxy_manager_rejects_failed_mindsdb_login(monkeypatch):
 
 def test_data_proxy_manager_blocks_http_mindsdb_password_before_login(monkeypatch):
     connection = _resolved_source(
-        id="mindsdb-conn",
+        ontology_id="mindsdb-conn",
         name="Authenticated MindsDB",
         provider="mindsdb",
         config={
@@ -1357,7 +1373,7 @@ def test_data_proxy_manager_blocks_http_mindsdb_password_before_login(monkeypatc
 
 def test_data_proxy_manager_rejects_cross_scope_run_reuse(monkeypatch):
     connection = _resolved_source(
-        id="conn1",
+        ontology_id="conn1",
         name="Conn 1",
         provider="mindsdb",
         config={"url": "http://198.51.100.27:47334", "requires_auth": False},
@@ -1376,7 +1392,7 @@ def test_data_proxy_manager_rejects_cross_scope_run_reuse(monkeypatch):
 
 def test_data_proxy_manager_blocks_http_secret_when_disabled_globally(monkeypatch):
     connection = _resolved_source(
-        id="conn1",
+        ontology_id="conn1",
         name="Conn 1",
         provider="nl2sql_http",
         config={"url": "http://192.0.2.8:8080", "token": synthetic_secret("sandbox-credential-04")},
@@ -1394,7 +1410,7 @@ def test_data_proxy_manager_blocks_http_secret_when_disabled_globally(monkeypatc
 
 def test_data_proxy_manager_allows_http_secret_when_enabled_globally(monkeypatch):
     connection = _resolved_source(
-        id="conn1",
+        ontology_id="conn1",
         name="Conn 1",
         provider="nl2sql_http",
         config={"url": "http://192.0.2.8:8080", "token": synthetic_secret("sandbox-credential-04")},

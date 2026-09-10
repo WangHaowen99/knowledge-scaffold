@@ -655,7 +655,7 @@ def _register_search_tools(
         )
 
     @mcp.tool()
-    def pattern_search(
+    def pattern_search(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         path_pattern: Annotated[
             PathPatternInput,
             Field(description="节点-关系-节点路径模板；必须是一条路径的数组，也兼容合法 JSON 字符串。"),
@@ -715,7 +715,7 @@ def _register_search_tools(
         )
 
     @mcp.tool()
-    def aggregate_search(
+    def aggregate_search(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         element_class: str,
         element_type: str,
         target_property: str,
@@ -741,7 +741,7 @@ def _register_search_tools(
         )
 
     @mcp.tool()
-    def sorted_search(
+    def sorted_search(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         element_class: str,
         element_type: str,
         ontology_id: OntologyIdInput = "",
@@ -817,7 +817,7 @@ def _register_search_tools(
         )
 
     @mcp.tool()
-    def shortest_path(
+    def shortest_path(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         start_label: str,
         start_props: DictInput,
         end_label: str,
@@ -910,7 +910,7 @@ def _register_chat_tool(
             "requested_operation_key": requested_operation_key,
             "include_trace": include_trace,
             "stream": stream,
-            "context": ({"selected_ontology_id": selected_ontology_id.strip()} if selected_ontology_id.strip() else {}),
+            "context": {"selected_ontology_id": selected_ontology_id.strip()} if selected_ontology_id.strip() else {},
         }
         progress_callback = None
         if stream and _context_progress_token(ctx) is not None:

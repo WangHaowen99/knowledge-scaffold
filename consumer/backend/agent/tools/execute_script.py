@@ -176,7 +176,7 @@ EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
                 },
                 "operation_key": {
                     "type": "string",
-                    "description": ("Operation key whose maintained script is registered in script_catalog."),
+                    "description": "Operation key whose maintained script is registered in script_catalog.",
                 },
                 "arguments": {
                     "type": "object",
@@ -230,13 +230,15 @@ def build_execute_script_tool_schema(
         catalog: List[Dict[str, Any]] = []
         scripted_ontologies: List[OntologyManifest] = []
         for ontology in ontologies:
-            ontology_catalog = [
-                entry
-                for entry in load_script_catalog(Path(ontology.ontology_dir).resolve())
-                if bool(entry.get("_is_bound_operation", True))
-                and not entry.get("_is_deterministic_handler")
-                and str(entry.get("operation_key") or "").strip()
-            ]
+            ontology_catalog = []
+            for entry in load_script_catalog(Path(ontology.ontology_dir).resolve()):
+                operation_key = str(entry.get("operation_key") or "").strip()
+                if (
+                    bool(entry.get("_is_bound_operation", True))
+                    and not entry.get("_is_deterministic_handler")
+                    and operation_key
+                ):
+                    ontology_catalog.append(entry)
             if not ontology_catalog:
                 continue
             scripted_ontologies.append(ontology)
@@ -404,17 +406,16 @@ def _merge_script_parameter_property_schema(
         merged: Dict[str, Any] = {}
     else:
         merged = {key: deepcopy(value) for key, value in existing.items() if key != "description"}
-    descriptions = list(
-        dict.fromkeys(
-            part.strip()
-            for text in (
-                str(existing.get("description") or "").strip(),
-                str(incoming.get("description") or "").strip(),
-            )
-            for part in text.split(" / ")
-            if part.strip()
-        )
+    descriptions: List[str] = []
+    description_texts = (
+        str(existing.get("description") or "").strip(),
+        str(incoming.get("description") or "").strip(),
     )
+    for text in description_texts:
+        for part in text.split(" / "):
+            normalized_part = part.strip()
+            if normalized_part and normalized_part not in descriptions:
+                descriptions.append(normalized_part)
     if descriptions:
         merged["description"] = " / ".join(descriptions)
     return merged
@@ -459,13 +460,11 @@ def _prior_successful_operation_calls(
     operation_key: str,
     current_tool_call_id: Optional[str],
 ) -> List[Dict[str, Any]]:
-    outputs = {
-        str(message.get("tool_call_id") or "").strip(): str(message.get("content") or "")
-        for message in messages
-        if message.get("role") == "tool"
-        and message.get("name") == "execute_script"
-        and str(message.get("tool_call_id") or "").strip()
-    }
+    outputs = {}
+    for message in messages:
+        tool_call_id = str(message.get("tool_call_id") or "").strip()
+        if message.get("role") == "tool" and message.get("name") == "execute_script" and tool_call_id:
+            outputs[tool_call_id] = str(message.get("content") or "")
     successful: List[Dict[str, Any]] = []
     current_id = str(current_tool_call_id or "").strip()
     for message in messages:
@@ -557,13 +556,8 @@ def _classify_sandbox_failure_text(value: Any) -> Optional[str]:
     text = str(value or "").strip().lower()
     if not text:
         return None
-    if any(
-        marker in text
-        for marker in (
-            *_SANDBOX_POLICY_FAILURE_MARKERS,
-            *_SANDBOX_PERMISSION_FAILURE_MARKERS,
-        )
-    ):
+    sandbox_failure_markers = (*_SANDBOX_POLICY_FAILURE_MARKERS, *_SANDBOX_PERMISSION_FAILURE_MARKERS)
+    if any(marker in text for marker in sandbox_failure_markers):
         return "sandbox_policy_unavailable"
     if any(marker in text for marker in _SANDBOX_TOOL_MISSING_MARKERS):
         return "sandbox_tool_missing"
@@ -613,7 +607,7 @@ def _strip_child_environ(src: Dict[str, str]) -> Dict[str, str]:
     is Windows Docker noise that serves no purpose inside the container
     but can push the total past ARG_MAX.
     """
-    _ALWAYS = frozenset(
+    always_allowed = frozenset(
         {
             "PATH",
             "PYTHONPATH",
@@ -627,7 +621,7 @@ def _strip_child_environ(src: Dict[str, str]) -> Dict[str, str]:
             "HOSTNAME",
         }
     )
-    _CONFIG_PREFIXES = (
+    config_prefixes = (
         "LLM_",
         "TASK_LLM_",
         "AUTH_",
@@ -643,7 +637,7 @@ def _strip_child_environ(src: Dict[str, str]) -> Dict[str, str]:
         "OPENAI_",
         "DOCKER_",
     )
-    return {k: v for k, v in src.items() if k in _ALWAYS or k.startswith(_CONFIG_PREFIXES)}
+    return {k: v for k, v in src.items() if k in always_allowed or k.startswith(config_prefixes)}
 
 
 def _run_with_live_logging(
@@ -1001,7 +995,7 @@ def _build_script_env_overrides(
         raise
 
 
-def handle_execute_script_path(
+def handle_execute_script_path(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     script_path: str,
     args: Optional[Sequence[Any]] = None,
     base_path: Optional[Path] = None,
@@ -1115,10 +1109,7 @@ def handle_execute_script_path(
                 resolved_path.relative_to(ontology_scripts_root)
             except ValueError:
                 logger.warning(
-                    (
-                        "Blocked script outside ontology scripts (%s): "
-                        "script_path=%s resolved_path=%s ontology_dir=%s"
-                    ),
+                    "Blocked script outside ontology scripts (%s): script_path=%s resolved_path=%s ontology_dir=%s",
                     call_context,
                     script_path,
                     resolved_path,
@@ -1249,8 +1240,9 @@ def handle_execute_script_path(
             if sys.platform != "linux":
                 fallback_reason = "unsupported_platform"
                 fallback_blocked_message = (
-                    "Error: Sandbox unavailable: sandbox execution requires Linux "
-                    "(current platform: {})".format(sys.platform)
+                    "Error: Sandbox unavailable: sandbox execution requires Linux (current platform: {})".format(
+                        sys.platform
+                    )
                 )
             elif not run_id:
                 fallback_reason = "missing_run_id"
@@ -1258,7 +1250,7 @@ def handle_execute_script_path(
             elif oversize_args:
                 fallback_reason = "oversize_args"
                 fallback_blocked_message = (
-                    "Error: Sandbox unavailable: oversized script arguments are not " "supported by sandbox execution"
+                    "Error: Sandbox unavailable: oversized script arguments are not supported by sandbox execution"
                 )
             else:
                 try:
@@ -1419,10 +1411,8 @@ def handle_execute_script_path(
             return "Error: Script stderr output exceeds the configured limit."
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.info(
-            (
-                "Python script completed (%s): resolved_path=%s return_code=%s "
-                "elapsed_ms=%s stdout_chars=%s stderr_chars=%s"
-            ),
+            "Python script completed (%s): resolved_path=%s return_code=%s "
+            "elapsed_ms=%s stdout_chars=%s stderr_chars=%s",
             call_context,
             resolved_path,
             completed.returncode,
@@ -1433,11 +1423,9 @@ def handle_execute_script_path(
 
         if completed.returncode != 0:
             logger.warning(
-                (
-                    "Python script exited with non-zero status (%s): "
-                    "resolved_path=%s return_code=%s elapsed_ms=%s "
-                    "stdout_chars=%s stderr_chars=%s"
-                ),
+                "Python script exited with non-zero status (%s): "
+                "resolved_path=%s return_code=%s elapsed_ms=%s "
+                "stdout_chars=%s stderr_chars=%s",
                 call_context,
                 resolved_path,
                 completed.returncode,
@@ -1479,10 +1467,8 @@ def handle_execute_script_path(
         timeout_stdout = exc.stdout or ""
         timeout_stderr = exc.stderr or ""
         logger.warning(
-            (
-                "Python script timed out (%s): script_path=%s resolved_path=%s "
-                "timeout_seconds=%s stdout_chars=%s stderr_chars=%s"
-            ),
+            "Python script timed out (%s): script_path=%s resolved_path=%s "
+            "timeout_seconds=%s stdout_chars=%s stderr_chars=%s",
             call_context,
             script_path,
             resolved_path or "n/a",
@@ -1714,15 +1700,14 @@ def _validate_structured_arguments_against_request(
                 for field in cross_supported_fields:
                     field_cross_segment_support[field] = field_cross_segment_support.get(field, 0) + 1
 
-            comparable_fields = {
-                field
-                for field, item_count in field_item_counts.items()
-                if item_count >= 2
-                and (
-                    field in field_segment_support
-                    or (field_cross_segment_support.get(field, 0) >= 2 and len(field_values.get(field, set())) >= 2)
+            comparable_fields = set()
+            for field, item_count in field_item_counts.items():
+                field_has_segment_support = field in field_segment_support
+                field_has_cross_segment_support = (
+                    field_cross_segment_support.get(field, 0) >= 2 and len(field_values.get(field, set())) >= 2
                 )
-            }
+                if item_count >= 2 and (field_has_segment_support or field_has_cross_segment_support):
+                    comparable_fields.add(field)
             conflicting_items: List[tuple[int, int]] = []
             conflicting_fields: Set[str] = set()
             for index, segment_position, fields in anchored:
@@ -1751,21 +1736,11 @@ def _validate_structured_arguments_against_request(
                 )
                 continue
 
-            anchored_positions = [
-                position
-                for _index, position, _fields in sorted(
-                    anchored,
-                    key=lambda entry: entry[0],
-                )
-            ]
+            sorted_anchors = sorted(anchored, key=lambda entry: entry[0])
+            anchored_positions = [position for _index, position, _fields in sorted_anchors]
             positions_are_distinct = len(set(anchored_positions)) == len(anchored_positions)
-            if positions_are_distinct and any(
-                current < previous
-                for previous, current in zip(
-                    anchored_positions,
-                    anchored_positions[1:],
-                )
-            ):
+            adjacent_positions = zip(anchored_positions, anchored_positions[1:])
+            if positions_are_distinct and any(current < previous for previous, current in adjacent_positions):
                 errors.append("{} item order conflicts with the current request".format(path))
                 continue
 
@@ -1849,9 +1824,9 @@ def _current_turn_business_data_evidence(
         if isinstance(content, str):
             evidence.append(content)
         elif isinstance(content, list):
-            evidence.extend(
-                str(item.get("text") or item.get("content") or "") for item in content if isinstance(item, Mapping)
-            )
+            for item in content:
+                if isinstance(item, Mapping):
+                    evidence.append(str(item.get("text") or item.get("content") or ""))
     return "\n".join(part for part in evidence if part)
 
 
@@ -2162,7 +2137,8 @@ def handle_execute_script(
         )
     if script_entry is None:
         return (
-            "Error: Operation '{}' in ontology '{}' has no registered script implementation or is not a bound operation."
+            "Error: Operation '{}' in ontology '{}' has no registered script implementation or is not a bound"
+            " operation."
         ).format(operation_key, resolved_ontology_id)
 
     raw_script_path = str(script_entry.get("_script_path") or "").strip()
@@ -2637,6 +2613,7 @@ class ExecuteScriptTool:
         object.__setattr__(self, "schema", EXECUTE_SCRIPT_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent", "acp"})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
@@ -2774,10 +2751,8 @@ class ExecuteScriptTool:
                     }
                 )
         logger.info(
-            (
-                "execute_script tool invoked: tool_call_id=%s caller=%s "
-                "run_id=%s session_id=%s turn_id=%s ontology_id=%s ontology_version=%s operation_key=%s"
-            ),
+            "execute_script tool invoked: tool_call_id=%s caller=%s "
+            "run_id=%s session_id=%s turn_id=%s ontology_id=%s ontology_version=%s operation_key=%s",
             tool_call_id or "n/a",
             context.caller,
             context.run_id or "n/a",
@@ -2815,6 +2790,6 @@ def _terminal_execute_script_error(content: str) -> Optional[Dict[str, str]]:
         return None
     return {
         "error_code": "EXECUTE_SCRIPT_FAILED",
-        "message": ("The deterministic operation failed, so no calculated conclusion was produced."),
+        "message": "The deterministic operation failed, so no calculated conclusion was produced.",
         "tool_name": "execute_script",
     }

@@ -1,10 +1,29 @@
 """Tests for consolidated universal prompt policy."""
 
+import ast
 import inspect
 from pathlib import Path
 
 import pytest
 from agent.prompts.universal import build_universal_system_prompt
+
+
+def _subagent_system_prompt() -> str:
+    source_path = Path(__file__).resolve().parents[1] / "agent" / "sub_agents" / "base.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    assignment = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(isinstance(target, ast.Name) and target.id == "SUBAGENT_SYSTEM_PROMPT" for target in node.targets):
+            assignment = node
+            break
+    if assignment is None:
+        raise AssertionError("SUBAGENT_SYSTEM_PROMPT assignment must exist")
+    value = ast.literal_eval(assignment.value)
+    if not isinstance(value, str):
+        raise TypeError("SUBAGENT_SYSTEM_PROMPT must be a string")
+    return value
 
 
 def test_universal_prompt_contains_top_level_sections_and_language_policy():
@@ -158,11 +177,9 @@ def test_universal_prompt_prefers_script_backed_execution():
 
 def test_script_arguments_only_use_runtime_values_from_the_current_request():
     prompt = build_universal_system_prompt()
-    subagent_source = (Path(__file__).resolve().parents[1] / "agent" / "sub_agents" / "base.py").read_text(
-        encoding="utf-8"
-    )
+    subagent_prompt = _subagent_system_prompt()
 
-    for content in (prompt, subagent_source):
+    for content in (prompt, subagent_prompt):
         assert "intent examples describe matching semantics only" in content
         assert "runtime values only from the current user request" in content
         assert "preserve the collection's item count and order" in content
@@ -212,15 +229,13 @@ def test_main_and_subagent_prompts_follow_v01_ontology_loading_flow():
     assert "dependency/uses/entity association section" in prompt
     assert "load the referenced `rule` and `metric` specs" in prompt
 
-    subagent_source = (Path(__file__).resolve().parents[1] / "agent" / "sub_agents" / "base.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'Call `ontology_context(resource="root")`' in subagent_source
-    assert 'ontology_context(resource="operation", key=context.operation_key)' in subagent_source
-    assert 'ontology_context(resource="object")' in subagent_source
-    assert 'ontology_context(resource="rule")' in subagent_source
-    assert 'ontology_context(resource="metric")' in subagent_source
-    assert "root `script_catalog`" in subagent_source
+    subagent_prompt = _subagent_system_prompt()
+    assert 'Call `ontology_context(resource="root")`' in subagent_prompt
+    assert 'ontology_context(resource="operation", key=context.operation_key)' in subagent_prompt
+    assert 'ontology_context(resource="object")' in subagent_prompt
+    assert 'ontology_context(resource="rule")' in subagent_prompt
+    assert 'ontology_context(resource="metric")' in subagent_prompt
+    assert "root `script_catalog`" in subagent_prompt
 
 
 def test_manual_operation_executes_all_referenced_script_backed_stages():

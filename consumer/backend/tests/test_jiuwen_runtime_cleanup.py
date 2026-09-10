@@ -465,13 +465,16 @@ def test_managed_stream_cancellation_waits_for_child_producer_cleanup(monkeypatc
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.sleep(0)
-        return [
-            task
-            for task in asyncio.all_tasks()
-            if task is not asyncio.current_task()
-            and not task.done()
-            and task.get_name() == "jiuwen-managed-stream-producer"
-        ]
+        pending_tasks = []
+        for active_task in asyncio.all_tasks():
+            is_pending_producer = (
+                active_task is not asyncio.current_task()
+                and not active_task.done()
+                and active_task.get_name() == "jiuwen-managed-stream-producer"
+            )
+            if is_pending_producer:
+                pending_tasks.append(active_task)
+        return pending_tasks
 
     pending_managed_producers = asyncio.run(exercise())
 

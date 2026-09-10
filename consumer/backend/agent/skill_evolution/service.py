@@ -76,7 +76,8 @@ class SkillEvolverClient:
         self._base_url = (base_url or "").rstrip("/")
         self._timeout = max(5, int(timeout_seconds))
 
-    def _headers(self) -> Dict[str, str]:
+    @staticmethod
+    def _headers() -> Dict[str, str]:
         return {"Accept": "application/json"}
 
     def submit_run(
@@ -333,7 +334,8 @@ class SkillEvolutionService:
         self._sha_cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
 
     # ----------------------------------------------------------- config/client
-    def _config(self) -> Dict[str, Any]:
+    @staticmethod
+    def _config() -> Dict[str, Any]:
         return load_system_config().get("skill_evolution") or {}
 
     def _client(self) -> SkillEvolverClient:
@@ -350,7 +352,8 @@ class SkillEvolutionService:
         return bool(self._config().get("enabled", False))
 
     # ------------------------------------------------------------- ontology
-    def _resolve_ontology(self, workspace_id: str, ontology_id: str) -> OntologyManifest:
+    @staticmethod
+    def _resolve_ontology(workspace_id: str, ontology_id: str) -> OntologyManifest:
         registry = get_ontology_registry(workspace_id=workspace_id)
         registry.refresh()
         ontology = registry.get_ontology(ontology_id)
@@ -360,7 +363,8 @@ class SkillEvolutionService:
             raise GateError("本体 {} 已禁用".format(ontology_id))
         return ontology
 
-    def _ontology_dir(self, workspace_id: str, ontology_id: str) -> Path:
+    @staticmethod
+    def _ontology_dir(workspace_id: str, ontology_id: str) -> Path:
         return get_workspace_ontologies_root(workspace_id) / ontology_id
 
     @staticmethod
@@ -400,7 +404,8 @@ class SkillEvolutionService:
         if missing:
             raise ValueError("进化产物不是完整快照，缺少 {}，拒绝落盘以防数据丢失".format(missing))
 
-    def _compute_version_sha(self, version_dir: Path) -> str:
+    @staticmethod
+    def _compute_version_sha(version_dir: Path) -> str:
         """Whole-version sha: hashes every file under the version dir (same
         scope as the baseline zip and approve's rmtree+copy install). Keeps
         sha-scope == baseline-scope == install-scope so drift catches any
@@ -957,7 +962,7 @@ class SkillEvolutionService:
                     existed=True,
                     workspace_id=record.workspace_id,
                     mutation_audit={
-                        "operator": ({"type": "user", "id": decided_by[:128]} if decided_by else None),
+                        "operator": {"type": "user", "id": decided_by[:128]} if decided_by else None,
                         "request_id": (record.run_id or record.task_id)[:128],
                     },
                     mutation_trigger="admin",
@@ -970,7 +975,7 @@ class SkillEvolutionService:
                     ontology_id=ontology.id,
                     workspace_id=record.workspace_id,
                     mutation_audit={
-                        "operator": ({"type": "user", "id": decided_by[:128]} if decided_by else None),
+                        "operator": {"type": "user", "id": decided_by[:128]} if decided_by else None,
                         "request_id": (record.run_id or record.task_id)[:128],
                     },
                     mutation_trigger="admin",

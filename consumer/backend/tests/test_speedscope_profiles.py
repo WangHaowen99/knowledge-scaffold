@@ -728,7 +728,9 @@ def _active_profile(document):
     return document["profiles"][document["activeProfileIndex"]]
 
 
-def _write_run_profiles_in_process(output_dir, session_id, run_id, turn_id, start_event, errors):
+def _write_run_profiles_in_process(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
+    output_dir, session_id, run_id, turn_id, start_event, errors
+):
     try:
         if not start_event.wait(timeout=5.0):
             raise TimeoutError("timed out waiting to start child writer")

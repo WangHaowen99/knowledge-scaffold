@@ -113,6 +113,7 @@ def test_bound_operation_rechecks_resolved_script_path_and_digest(tmp_path, monk
     captured = []
 
     class _Runtime:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def execute(self, invocation):
             captured.append(invocation)
             return json.dumps(

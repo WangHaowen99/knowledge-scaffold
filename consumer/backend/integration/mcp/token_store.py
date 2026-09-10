@@ -18,7 +18,6 @@ except ImportError:  # pragma: no cover - Windows fallback
 from .config import load_mcp_runtime_config
 from .token_crypto import hash_token, mask_token
 
-
 _LOCK = threading.Lock()
 _DOCUMENT_VERSION = 2
 
@@ -177,7 +176,8 @@ class MCPTokenStore:
             "tokens": [dict(item) for item in payload["tokens"]],
         }
 
-    def _remove_plaintext_fields(self, document: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _remove_plaintext_fields(document: dict[str, Any]) -> dict[str, Any]:
         removed = 0
         for item in document["tokens"]:
             plaintext = ""

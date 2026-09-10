@@ -32,6 +32,7 @@ import {
 } from './model.js';
 import RunDetail from './RunDetail.jsx';
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function SessionPerformanceView({ sessionId, onBack, request }) {
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [analysis, setAnalysis] = useState(null);

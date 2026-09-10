@@ -282,7 +282,8 @@ class OperationPatcher:
             self._cfg = replace(config)
         self._wake_sweeper()
         logger.info(
-            "OperationPatcher config updated min_occurrences=%s min_applied=%s max_rejection=%s cooldown=%ss sweep=%ss auto_apply=%s",
+            "OperationPatcher config updated min_occurrences=%s min_applied=%s max_rejection=%s cooldown=%ss sweep=%ss"
+            " auto_apply=%s",
             config.min_occurrences,
             config.min_applied,
             config.max_rejection,
@@ -619,8 +620,8 @@ class OperationPatcher:
         return resolved
 
     # ------------------------------------------------------------------ LLM
+    @staticmethod
     def _llm_merge(
-        self,
         *,
         ontology_id: str,
         operation_key: str,

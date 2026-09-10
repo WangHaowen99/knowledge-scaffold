@@ -1227,6 +1227,8 @@
               row.firstContentMs = item.first_content_ms ?? null;
               row.firstToolCallMs = item.first_tool_call_ms ?? null;
               row.firstReasoningMs = item.first_reasoning_ms ?? null;
+            } else {
+              return;
             }
           });
 
@@ -1453,6 +1455,7 @@
           .join('')}</div>`;
       }
 
+      // G.MET.01 exception: keep the standalone diagnostic renderer as one stateful boundary.
       function renderRunDetail() {
         const run = state.runs.find(
           (item) => item.runId === state.selectedRunId,

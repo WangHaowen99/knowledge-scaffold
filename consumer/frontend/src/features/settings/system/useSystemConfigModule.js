@@ -9,6 +9,7 @@ import {
 
 const identityPayload = (data) => data;
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export function useSystemConfigModule({
   section,
   initialData = {},

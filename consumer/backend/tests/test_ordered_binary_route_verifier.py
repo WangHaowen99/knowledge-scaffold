@@ -546,6 +546,7 @@ def test_independent_verifier_rejects_a_nonoptimal_optimal_claim():
 
 
 class _TamperedProductionEvaluator:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def evaluate_candidates(self, **kwargs: Any) -> tuple[CandidateEvaluation, ...]:
         evaluations = OrderedBinaryRouteEvaluator().evaluate_candidates(**kwargs)
         tampered = []
@@ -698,6 +699,7 @@ class _VerifierSpy:
 
 
 class _RuntimeFailureVerifier:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def verify(self, **_kwargs: Any):
         raise VerificationRuntimeFailure("synthetic verifier runtime failure")
 

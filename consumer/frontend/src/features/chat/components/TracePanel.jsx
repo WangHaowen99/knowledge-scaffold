@@ -176,6 +176,7 @@ function TraceTurn({ turn, index, sessionId, defaultOpen }) {
   );
 }
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 function TraceNode({ node, sessionId, runId }) {
   const Icon = TRACE_NODE_ICONS[node.type] || Circle;
   const duration = formatDurationMs(node.durationMs);
@@ -190,14 +191,12 @@ function TraceNode({ node, sessionId, runId }) {
       node.outputRef ||
       node.children?.length,
   );
-  const stateIcon =
-    node.status === 'error' ? (
-      <AlertCircle size={11} />
-    ) : node.terminal ? (
-      <Check size={11} />
-    ) : (
-      <Circle size={11} />
-    );
+  let stateIcon = <Circle size={11} />;
+  if (node.status === 'error') {
+    stateIcon = <AlertCircle size={11} />;
+  } else if (node.terminal) {
+    stateIcon = <Check size={11} />;
+  }
 
   if (!hasDetail) {
     return (

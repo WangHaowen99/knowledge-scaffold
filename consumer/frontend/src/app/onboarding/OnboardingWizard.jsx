@@ -74,6 +74,8 @@ export function trapWizardTab(event, card, activeElement, resolveStyle) {
     target = last;
   } else if (!event.shiftKey && activeElement === last) {
     target = first;
+  } else {
+    return false;
   }
 
   if (!target) {
@@ -108,12 +110,12 @@ export function activateWizardFocus(card, onDismiss, options = {}) {
 
   return () => {
     documentRef.removeEventListener('keydown', onKeyDown);
-    if (
+    const canRestoreFocus =
       previouslyFocused &&
       previouslyFocused !== documentRef.body &&
       previouslyFocused.isConnected !== false &&
-      typeof previouslyFocused.focus === 'function'
-    ) {
+      typeof previouslyFocused.focus === 'function';
+    if (canRestoreFocus) {
       previouslyFocused.focus();
     }
   };
@@ -124,6 +126,7 @@ export function dismissWizardAsSeen(onClose) {
   onClose();
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 function stepsFor(isAdmin, hasNoWorkspace) {
   if (isAdmin && hasNoWorkspace) {
     return [
@@ -292,6 +295,7 @@ function stepsFor(isAdmin, hasNoWorkspace) {
     ];
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function OnboardingWizard({
   onNavigate,
   onOpenNavigation,

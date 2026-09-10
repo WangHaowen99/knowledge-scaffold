@@ -568,15 +568,19 @@ def test_platform_observer_starts_when_connector_is_enabled(monkeypatch):
             self.config = config
             calls.append(("exporter", start_heartbeat))
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             calls.append(("event", event.run_id))
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             calls.append("flush")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             calls.append("close")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export_ontology_snapshots(self):
             calls.append("snapshots")
 

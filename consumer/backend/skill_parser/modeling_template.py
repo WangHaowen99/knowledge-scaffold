@@ -854,7 +854,7 @@ def validate_script_business_data_imports(source: str) -> None:
             module = str(node.module or "")
             if module == forbidden or module.startswith(forbidden + "."):
                 raise ValueError(
-                    "ontology scripts must import DataProviderClient from " "shared_capabilities.ontology_script_sdk"
+                    "ontology scripts must import DataProviderClient from shared_capabilities.ontology_script_sdk"
                 )
         elif isinstance(node, ast.Import):
             if any(alias.name == forbidden or alias.name.startswith(forbidden + ".") for alias in node.names):
@@ -1718,7 +1718,7 @@ def filter_table_columns(table_lines: Sequence[str], columns: Sequence[str]) -> 
 
 
 def row_values_by_header(headers: Sequence[str], row: Sequence[str]) -> Dict[str, str]:
-    return {header: (row[index] if index < len(row) else "") for index, header in enumerate(headers)}
+    return {header: row[index] if index < len(row) else "" for index, header in enumerate(headers)}
 
 
 def default_input_source(tag: str) -> str:

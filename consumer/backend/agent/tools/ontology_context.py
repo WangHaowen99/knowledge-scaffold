@@ -68,9 +68,9 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
     "function": {
         "name": "ontology_context",
         "description": (
-            "Load ontology root catalogs, operation, object/entity, rule, metric, script, and CheckPoint template specs. "
-            "This tool reads ontology specs only; it does not query business data or execute scripts. "
-            "Load each needed ontology resource once and reuse it."
+            "Load ontology root catalogs, operation, object/entity, rule, metric, script, and CheckPoint template"
+            " specs. This tool reads ontology specs only; it does not query business data or execute scripts. Load each"
+            " needed ontology resource once and reuse it."
         ),
         "parameters": {
             "type": "object",
@@ -302,7 +302,8 @@ def _handle_ontology_context_result(
         )
     return _OntologyContextResult(
         content=(
-            "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, script, or asset."
+            "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, script, or"
+            " asset."
         ).format(normalized_resource)
     )
 
@@ -386,6 +387,7 @@ class OntologyContextTool:
         object.__setattr__(self, "schema", ONTOLOGY_CONTEXT_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent", "acp"})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
@@ -408,7 +410,7 @@ class OntologyContextTool:
             allowed = json.dumps(list(_TEXT_RESOURCES), ensure_ascii=False)
             return ToolOutcome(
                 content=(
-                    "Error: Tool 'ontology_context' invalid argument(s): " "arguments.resource must be one of {}."
+                    "Error: Tool 'ontology_context' invalid argument(s): arguments.resource must be one of {}."
                 ).format(allowed)
             )
         result = _handle_ontology_context_result(

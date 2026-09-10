@@ -286,6 +286,7 @@ def test_ontology_list_route_does_not_unconditionally_refresh_registry(monkeypat
     class Registry:
         ontologies = {}
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def refresh(self):
             nonlocal refresh_calls
             refresh_calls += 1
@@ -686,7 +687,7 @@ def test_tree_route_uses_one_manifest_snapshot_for_cache_version_and_directory(
     (version_one / "old.md").write_text("old", encoding="utf-8")
     (version_two / "new.md").write_text("new", encoding="utf-8")
     (ontology_dir / "manifest.yaml").write_text(
-        "schema_version: 0.1\n" "version: 1.0.0\n" "active_version: 1.0.0\n" "versions:\n" "  - 1.0.0\n" "  - 2.0.0\n",
+        "schema_version: 0.1\nversion: 1.0.0\nactive_version: 1.0.0\nversions:\n  - 1.0.0\n  - 2.0.0\n",
         encoding="utf-8",
     )
     manifests = (
@@ -1068,17 +1069,15 @@ def test_deleted_and_recreated_workspace_does_not_reuse_cached_package_tree(
         version_dir = ontology_dir / "versions" / "1.0.0"
         version_dir.mkdir(parents=True)
         (ontology_dir / "manifest.yaml").write_text(
-            (
-                "kind: ontology-package\n"
-                "schema_version: 0.1\n"
-                "id: shared-ontology\n"
-                "name: Shared Ontology\n"
-                "description: Workspace reuse cache regression\n"
-                "version: 1.0.0\n"
-                "active_version: 1.0.0\n"
-                "versions: [1.0.0]\n"
-                "language: zh-CN\n"
-            ),
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: shared-ontology\n"
+            "name: Shared Ontology\n"
+            "description: Workspace reuse cache regression\n"
+            "version: 1.0.0\n"
+            "active_version: 1.0.0\n"
+            "versions: [1.0.0]\n"
+            "language: zh-CN\n",
             encoding="utf-8",
         )
         (version_dir / "{}.md".format(marker)).write_text(

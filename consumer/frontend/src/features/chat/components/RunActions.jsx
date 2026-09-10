@@ -31,6 +31,15 @@ export function CopyButton({ text, label = '复制', className = '' }) {
     setError('');
     resetTimerRef.current = setTimeout(() => setState('idle'), 1800);
   }, [text]);
+  let icon = <Clipboard size={13} />;
+  let stateLabel = label;
+  if (state === 'copied') {
+    icon = <Check size={13} />;
+    stateLabel = '已复制';
+  } else if (state === 'error') {
+    icon = <TriangleAlert size={13} />;
+    stateLabel = '复制失败';
+  }
 
   return (
     <span className={`chat-copy-action ${className}`.trim()}>
@@ -41,20 +50,8 @@ export function CopyButton({ text, label = '复制', className = '' }) {
         aria-label={state === 'copied' ? '已复制' : label}
         title={error || label}
       >
-        {state === 'copied' ? (
-          <Check size={13} />
-        ) : state === 'error' ? (
-          <TriangleAlert size={13} />
-        ) : (
-          <Clipboard size={13} />
-        )}
-        <span>
-          {state === 'copied' ?
-            '已复制' :
-            state === 'error' ?
-              '复制失败' :
-              label}
-        </span>
+        {icon}
+        <span>{stateLabel}</span>
       </button>
       {state === 'error' && (
         <span className="chat-action-error" role="status">

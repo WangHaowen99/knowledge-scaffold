@@ -4,11 +4,13 @@ export function canLoadProtectedData(status, user) {
 
 export function canLoadWorkspaceData(
   protectedDataReady,
-  { loaded = false, loading = false, error = '' } = {},
   workspaceId,
   workspaces,
+  { loaded = false, loading = false, error = '' } = {},
 ) {
-  if (!protectedDataReady || !loaded || loading || error || !workspaceId) {
+  const dataUnavailable =
+    !protectedDataReady || !loaded || loading || error || !workspaceId;
+  if (dataUnavailable) {
     return false;
   }
   return (

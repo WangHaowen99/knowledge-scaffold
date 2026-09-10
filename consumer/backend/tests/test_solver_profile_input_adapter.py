@@ -61,15 +61,19 @@ SCHEMA = {
 
 
 class _Port:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def resolve_facts(self, **_kwargs):
         return {}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, **_kwargs):
         return {}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def verify(self, **_kwargs):
         return {}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def present(self, **_kwargs):
         return {}
 
@@ -132,7 +136,7 @@ def test_ordered_route_adapter_canonicalizes_generic_item_aliases():
         "process_days": "1.5",
         "crude_origin": "SOURCE SYNTHETIC A",
     }
-    assert result.normalized_input.normalization["input_adapter_id"] == ("ordered_binary_route.input.v1")
+    assert result.normalized_input.normalization["input_adapter_id"] == "ordered_binary_route.input.v1"
     assert result.normalized_input.normalization["input_adapter_revision"] == "2"
     assert result.normalized_input.normalization["alias_mapping"] == {
         "items[].duration": "items[].process_days",

@@ -25,4 +25,5 @@ def apply_test_system_config_migrations(
             dry_run=False,
             writes_stopped=True,
         )
-        assert code == 0, report
+        if code != 0:
+            raise AssertionError("test system config migration failed: {!r}".format(report))

@@ -41,9 +41,11 @@ def test_web_search_returns_normalized_results(tmp_path, monkeypatch):
     captured = {}
 
     class _FakeResponse:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {
                 "query": "latest ontology systems",
@@ -61,6 +63,7 @@ def test_web_search_returns_normalized_results(tmp_path, monkeypatch):
             }
 
     class _FakeSession:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def post(self, url, headers=None, timeout=None, **kwargs):
             request_json = kwargs.get("json")
             captured.update(
@@ -73,6 +76,7 @@ def test_web_search_returns_normalized_results(tmp_path, monkeypatch):
             )
             return _FakeResponse()
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 

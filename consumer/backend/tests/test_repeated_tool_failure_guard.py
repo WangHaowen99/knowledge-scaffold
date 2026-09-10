@@ -436,6 +436,7 @@ def test_adapter_keeps_legacy_failure_guard_record_signature():
     recorded = []
 
     class LegacyFailureGuard:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def record(self, tool_call, batch_result):
             recorded.append((tool_call, batch_result))
 
@@ -524,12 +525,14 @@ def test_registered_adapters_share_success_resets_across_tools():
             self.card = card
 
     class FakeResourceManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
             created["tools"] = {item.card.name: item for item in tools}
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["cards"] = cards
 
@@ -582,7 +585,7 @@ def test_registered_adapters_share_success_resets_across_tools():
     args = {"operation_key": "split_material", "arguments": {}}
 
     assert asyncio.run(created["tools"]["execute_script"].invoke(args)).startswith("Error:")
-    assert asyncio.run(created["tools"]["business_data_search"].invoke({"query": "reset"})) == ('{"success": true}')
+    assert asyncio.run(created["tools"]["business_data_search"].invoke({"query": "reset"})) == '{"success": true}'
     assert asyncio.run(created["tools"]["execute_script"].invoke(args)).startswith("Error:")
 
 
@@ -642,15 +645,18 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
             self.card = card
 
     class FakeResourceManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
             created["tools"] = {item.card.name: item for item in tools}
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def remove_tool(self, tool_id, tag=None, skip_if_tag_not_exists=True):
             del tool_id, tag, skip_if_tag_not_exists
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["cards"] = cards
 

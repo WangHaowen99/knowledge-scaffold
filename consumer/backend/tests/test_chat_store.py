@@ -142,6 +142,7 @@ def test_chat_store_summary_failure_does_not_rollback_durable_write(tmp_path):
         def __init__(self):
             self.degraded_reason = None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def upsert_chat(self, _summary, **_options):
             raise OSError("synthetic index failure")
 

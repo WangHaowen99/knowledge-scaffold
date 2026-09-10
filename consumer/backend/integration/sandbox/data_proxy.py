@@ -192,7 +192,8 @@ class DataConnectionSecretManager:
                 )
             except Exception as cleanup_exc:
                 logger.warning(
-                    "Failed to roll back sandbox data proxy after start failure: run_id=%s route=%s connection_id=%s start_error=%s rollback_error=%s",
+                    "Failed to roll back sandbox data proxy after start failure: run_id=%s route=%s connection_id=%s"
+                    " start_error=%s rollback_error=%s",
                     run_id,
                     route_name,
                     connection.id,

@@ -308,7 +308,7 @@ class DatePartitionedRotatingFileHandler(logging.Handler):
     ) -> None:
         super().__init__()
         self.base_log_path = os.path.abspath(base_log_path)
-        self.baseFilename = self.base_log_path
+        self.baseFilename = self.base_log_path  # pylint: disable=invalid-name
         self.encoding = encoding
         self.max_bytes = max_bytes
         self.backup_count = backup_count
@@ -512,12 +512,12 @@ def configure_logging(
             handler.close()
 
     resolved_log_path = os.path.abspath(log_path)
-    matching_file_handlers = [
-        handler
-        for handler in root_logger.handlers
-        if getattr(handler, "base_log_path", None) == resolved_log_path
-        or getattr(handler, "baseFilename", None) == resolved_log_path
-    ]
+    matching_file_handlers = []
+    for handler in root_logger.handlers:
+        matches_base_path = getattr(handler, "base_log_path", None) == resolved_log_path
+        matches_filename = getattr(handler, "baseFilename", None) == resolved_log_path
+        if matches_base_path or matches_filename:
+            matching_file_handlers.append(handler)
 
     if not any(isinstance(handler, DatePartitionedRotatingFileHandler) for handler in matching_file_handlers):
         for handler in matching_file_handlers:

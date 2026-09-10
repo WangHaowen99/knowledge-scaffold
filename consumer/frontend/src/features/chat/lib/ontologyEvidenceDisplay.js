@@ -46,6 +46,8 @@ const extractCompleteHitObjects = (source) => {
         escaped = true;
       } else if (currentCharacter === '"') {
         inString = false;
+      } else {
+        continue;
       }
       continue;
     }
@@ -186,6 +188,8 @@ const collectToolEvents = (segments = []) => {
       appendToolEvent(segment, events);
     } else if (segment?.kind === 'subagent' && segment?.group) {
       collectSubagentToolEvents(segment.group, events);
+    } else {
+      return;
     }
   });
   return events;
@@ -384,6 +388,7 @@ const runtimeSummary = (payload) => {
  * projection keeps both paths visible and deduplicates them with explicit
  * search hits when the search tool was also used.
  */
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 export const collectTurnEvidence = (segments = []) => {
   const toolEvents = collectToolEvents(segments);
   const searchEvidence = collectOntologyEvidence(segments);

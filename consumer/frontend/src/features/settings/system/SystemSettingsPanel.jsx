@@ -31,11 +31,12 @@ function SystemConfigField({ field, controller }) {
   const clearRequested = field.clearField ?
     draft[field.clearField] === true :
     false;
-  const hint = field.secret ?
-    hasSavedSecret ?
+  let { hint } = field;
+  if (field.secret) {
+    hint = hasSavedSecret ?
       '已保存密钥；留空会保留现有值' :
-      '尚未保存密钥' :
-    field.hint;
+      '尚未保存密钥';
+  }
 
   const updateValue = (event) => {
     let { value } = event.target;
@@ -138,6 +139,7 @@ function SystemConfigForm({ section, controller }) {
   );
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export default function SystemSettingsPanel({
   canEdit = false,
   initialSection = 'agent',

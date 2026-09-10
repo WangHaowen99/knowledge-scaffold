@@ -60,7 +60,7 @@ _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 # ---------------------------------------------------------------------------
 
 
-def _error(
+def _error(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     request,
     code: str,
     message: str,

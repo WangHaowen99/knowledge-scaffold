@@ -21,12 +21,12 @@ export default function ObservabilityFeature({
   onBack,
   request = authFetch,
 }) {
-  const resolvedGlobalPermission =
-    typeof canViewGlobal === 'boolean' ?
-      canViewGlobal :
-      typeof can === 'function' ?
-        can('observability.global') :
-        undefined;
+  let resolvedGlobalPermission;
+  if (typeof canViewGlobal === 'boolean') {
+    resolvedGlobalPermission = canViewGlobal;
+  } else if (typeof can === 'function') {
+    resolvedGlobalPermission = can('observability.global');
+  }
   const access = resolveObservabilityAccess({
     view,
     sessionId,
@@ -35,12 +35,12 @@ export default function ObservabilityFeature({
   });
 
   if (!access.allowed) {
-    const kind =
-      access.reason === 'forbidden' ?
-        'forbidden' :
-        access.reason === 'unauthenticated' ?
-          'error' :
-          'empty';
+    let kind = 'empty';
+    if (access.reason === 'forbidden') {
+      kind = 'forbidden';
+    } else if (access.reason === 'unauthenticated') {
+      kind = 'error';
+    }
     return (
       <div className="obs-feature">
         <ObservabilityPageHeader

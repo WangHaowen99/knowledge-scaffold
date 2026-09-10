@@ -58,7 +58,7 @@ class _SyntheticConnector(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         return self.headers.get("Authorization") == "Bearer " + SERVICE_TOKEN
 
-    def do_GET(self) -> None:
+    def do_GET(self) -> None:  # pylint: disable=invalid-name
         if self.path == "/v1/health":
             self._send(200, {"status": "ok"})
             return
@@ -101,7 +101,7 @@ class _SyntheticConnector(BaseHTTPRequestHandler):
             return
         self._send(404, _error("RESOURCE_NOT_FOUND"))
 
-    def do_POST(self) -> None:
+    def do_POST(self) -> None:  # pylint: disable=invalid-name
         if not self._authorized():
             self._send(401, _error("AUTHENTICATION_FAILED", "authentication"))
             return
@@ -163,7 +163,7 @@ class _SyntheticConnector(BaseHTTPRequestHandler):
         self.jobs[job_id] = job
         self._send(202, job)
 
-    def do_DELETE(self) -> None:
+    def do_DELETE(self) -> None:  # pylint: disable=invalid-name
         if not self._authorized():
             self._send(401, _error("AUTHENTICATION_FAILED", "authentication"))
             return
@@ -241,6 +241,7 @@ def test_tck_runner_verifies_the_public_job_contract_black_box():
 class _FaultDriver:
     """Out-of-band test harness; runner traffic remains HTTP/JSON only."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def scenario(self, name, _request):
         def before_submit(_payload):
             _SyntheticConnector.fault = name.removeprefix("fault_")

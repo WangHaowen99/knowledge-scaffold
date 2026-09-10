@@ -297,6 +297,7 @@ test('tool finish without a start event derives its timing from elapsed_ms', () 
   assert.equal(state.streamSegments[0].parentKey, 'iteration:main:1');
 });
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 test('nested subagent groups attach under parent subagent child', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
 

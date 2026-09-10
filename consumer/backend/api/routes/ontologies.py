@@ -14,7 +14,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Optional
+from typing import Callable, Mapping, NamedTuple, Optional
 
 import yaml
 from agent.tools.business_data.ontology_sources_store import (
@@ -479,8 +479,7 @@ def _ontology_name_conflict_response(exc: OntologyNameConflictError) -> JSONResp
     return JSONResponse(
         content={
             "error": (
-                f"知识包名称「{exc.ontology_name}」已存在，不可重复导入。"
-                "请修改 manifest.yaml 中的 name 字段后重新导入。"
+                f"知识包名称「{exc.ontology_name}」已存在，不可重复导入。请修改 manifest.yaml 中的 name 字段后重新导入。"
             ),
             "error_code": "ontology_name_conflict",
             "conflict_type": "name_exists",
@@ -775,13 +774,12 @@ def _operation_max_chars() -> int:
 def _count_workspace_ontology_dirs(ontologies_dir: Path) -> int:
     if not ontologies_dir.is_dir():
         return 0
-    return sum(
-        1
-        for child in ontologies_dir.iterdir()
-        if child.is_dir()
-        and not child.name.startswith(".")
-        and ((child / "manifest.yaml").exists() or (child / "versions").is_dir())
-    )
+    count = 0
+    for child in ontologies_dir.iterdir():
+        has_ontology_content = (child / "manifest.yaml").exists() or (child / "versions").is_dir()
+        if child.is_dir() and not child.name.startswith(".") and has_ontology_content:
+            count += 1
+    return count
 
 
 def _validate_workspace_ontology_count_limit(
@@ -1367,7 +1365,7 @@ def delete_ontology_version(
             registry.refresh()
         except Exception:
             logger.warning(
-                "Ontology version delete registry refresh failed: " "workspace_id=%s ontology_id=%s version=%s",
+                "Ontology version delete registry refresh failed: workspace_id=%s ontology_id=%s version=%s",
                 workspace_id,
                 ontology_id,
                 version,
@@ -1386,7 +1384,7 @@ def delete_ontology_version(
             export_ontology_snapshot_safely(workspace_id=workspace_id)
         except Exception:
             logger.warning(
-                "Ontology version delete snapshot export failed: " "workspace_id=%s ontology_id=%s version=%s",
+                "Ontology version delete snapshot export failed: workspace_id=%s ontology_id=%s version=%s",
                 workspace_id,
                 ontology_id,
                 version,
@@ -1603,11 +1601,9 @@ def download_ontology(
             media_type="application/zip",
             headers={
                 "Cache-Control": "no-cache",
-                "Content-Disposition": (
-                    'attachment; filename="{}-{}.zip"'.format(
-                        ontology_dir.name,
-                        resolved_version,
-                    )
+                "Content-Disposition": 'attachment; filename="{}-{}.zip"'.format(
+                    ontology_dir.name,
+                    resolved_version,
                 ),
             },
         )
@@ -2293,9 +2289,18 @@ def _has_converted_ontology_structure(candidate_root: Path) -> bool:
     return has_importable_package_layout(candidate_root)
 
 
+class _ConvertedOntologyRoot(NamedTuple):
+    path: Path
+    ontology_id: str
+    name: str
+    description: str
+    version: str
+    source_format: str
+
+
 def _find_converted_ontology_root(
     extract_root: Path,
-) -> Optional[tuple[Path, str, str, str, str, str]]:
+) -> Optional[_ConvertedOntologyRoot]:
     """Find a current or v0.1 ontology package root from an extracted zip."""
     candidates: list[tuple[int, Path, str, str, str, str, str]] = []
     manifest_paths = []
@@ -2370,7 +2375,7 @@ def _find_converted_ontology_root(
         len(candidates),
         ontology_id,
     )
-    return (
+    return _ConvertedOntologyRoot(
         selected_root,
         ontology_id,
         ontology_name,
@@ -3301,7 +3306,7 @@ def import_ontology_zip_with_auto_create(
                 ) = converted_root_info
             else:
                 return JSONResponse(
-                    content={"error": ("Zip中未找到可导入的v0.1本体包。" "请将源格式包转换为v0.1后重新上传。")},
+                    content={"error": "Zip中未找到可导入的v0.1本体包。请将源格式包转换为v0.1后重新上传。"},
                     status_code=400,
                 )
             if not ontology_id:
@@ -3312,7 +3317,7 @@ def import_ontology_zip_with_auto_create(
             if not _is_valid_ontology_id(ontology_id):
                 return JSONResponse(
                     content={
-                        "error": ("ontology id不合法，仅支持字母、数字、点、下划线和短横线，" "且需字母或数字开头"),
+                        "error": "ontology id不合法，仅支持字母、数字、点、下划线和短横线，且需字母或数字开头",
                         "ontology_id": ontology_id,
                     },
                     status_code=400,
@@ -3393,7 +3398,9 @@ def import_ontology_zip_with_auto_create(
                     else:
                         return JSONResponse(
                             content={
-                                "error": f"本体 {ontology_id} 已存在，上传包未解析到版本号，请选择覆盖当前激活版本或新增版本号。",
+                                "error": (
+                                    f"本体 {ontology_id} 已存在，上传包未解析到版本号，请选择覆盖当前激活版本或新增版本号。"
+                                ),
                                 "requires_confirmation": True,
                                 "conflict_type": "missing_version_existing",
                                 "ontology_id": ontology_id,
@@ -3412,7 +3419,9 @@ def import_ontology_zip_with_auto_create(
                     else:
                         return JSONResponse(
                             content={
-                                "error": f"本体 {ontology_id} 的版本 {parsed_version} 已存在，请选择覆盖匹配版本或新增版本号。",
+                                "error": (
+                                    f"本体 {ontology_id} 的版本 {parsed_version} 已存在，请选择覆盖匹配版本或新增版本号。"
+                                ),
                                 "requires_confirmation": True,
                                 "conflict_type": "version_exists",
                                 "ontology_id": ontology_id,
@@ -3506,7 +3515,8 @@ def import_ontology_zip_with_auto_create(
                         checkpoint_reset_for_import = True
                     except OntologyCapabilityStoreError:
                         logger.exception(
-                            "Failed to reset business CheckPoint capability before import: workspace_id=%s ontology_id=%s",
+                            "Failed to reset business CheckPoint capability before import: workspace_id=%s"
+                            " ontology_id=%s",
                             workspace_id,
                             ontology_id,
                         )
@@ -3535,7 +3545,8 @@ def import_ontology_zip_with_auto_create(
                         delete_ontology_capabilities(ontology_id, workspace_id=workspace_id)
                     except OntologyCapabilityStoreError:
                         logger.warning(
-                            "Failed to clean up CheckPoint capability after ontology name conflict: workspace_id=%s ontology_id=%s",
+                            "Failed to clean up CheckPoint capability after ontology name conflict: workspace_id=%s"
+                            " ontology_id=%s",
                             workspace_id,
                             ontology_id,
                             exc_info=True,
@@ -3570,13 +3581,15 @@ def import_ontology_zip_with_auto_create(
                         delete_ontology_capabilities(ontology_id, workspace_id=workspace_id)
                     except OntologyCapabilityStoreError:
                         logger.warning(
-                            "Failed to clean up CheckPoint capability after new ontology import failure: workspace_id=%s ontology_id=%s",
+                            "Failed to clean up CheckPoint capability after new ontology import failure:"
+                            " workspace_id=%s ontology_id=%s",
                             workspace_id,
                             ontology_id,
                             exc_info=True,
                         )
                 logger.exception(
-                    "Failed to import ontology from uploaded zip: workspace_id=%s filename=%s ontology_id=%s source_root=%s import_mode=%s",
+                    "Failed to import ontology from uploaded zip: workspace_id=%s filename=%s ontology_id=%s"
+                    " source_root=%s import_mode=%s",
                     workspace_id,
                     filename,
                     ontology_id,
@@ -3592,7 +3605,8 @@ def import_ontology_zip_with_auto_create(
             workspace_id=workspace_id,
         )
         logger.info(
-            "Import zip auto-create success: workspace_id=%s ontology_id=%s created=%s overwritten=%s import_mode=%s objects_count=%s operations_count=%s warnings=%s",
+            "Import zip auto-create success: workspace_id=%s ontology_id=%s created=%s overwritten=%s import_mode=%s"
+            " objects_count=%s operations_count=%s warnings=%s",
             workspace_id,
             ontology_id,
             (not existed),

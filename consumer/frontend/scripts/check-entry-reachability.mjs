@@ -1,3 +1,5 @@
+/* eslint-disable no-console -- This CLI reports architecture diagnostics through stdout and stderr. */
+
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,9 +67,9 @@ const extractRelativeCssImports = (source) => {
 
 const resolveImport = (importer, specifier) => {
   const isStylesheet = extname(importer) === '.css';
-  const normalizedSpecifier = isStylesheet
-    ? specifier.split(/[?#]/, 1)[0]
-    : specifier;
+  const normalizedSpecifier = isStylesheet ?
+    specifier.split(/[?#]/, 1)[0] :
+    specifier;
   const extensions = isStylesheet ? ['.css'] : MODULE_EXTENSIONS;
   const basePath = resolve(dirname(importer), normalizedSpecifier);
   const candidates = [
@@ -92,10 +94,9 @@ const unresolvedImports = [];
 for (const file of productionFiles) {
   const dependencies = [];
   const source = readFileSync(file, 'utf8');
-  const imports =
-    extname(file) === '.css'
-      ? extractRelativeCssImports(source)
-      : extractRelativeImports(source);
+  const imports = extname(file) === '.css' ?
+    extractRelativeCssImports(source) :
+    extractRelativeImports(source);
   for (const specifier of imports) {
     const resolved = resolveImport(file, specifier);
     if (!resolved) {
@@ -171,11 +172,11 @@ if (process.argv.includes('--json')) {
   }
 }
 
-if (
+const entryCheckFailed =
   !existsSync(entryPath) ||
   unapproved.length ||
   staleApprovals.length ||
-  unresolvedImports.length
-) {
+  unresolvedImports.length;
+if (entryCheckFailed) {
   process.exitCode = 1;
 }

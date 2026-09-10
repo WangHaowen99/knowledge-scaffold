@@ -40,6 +40,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 async function withRenderedDataSource(fetchImpl, run) {
   const dom = new JSDOM(
     '<!doctype html><html><body><div id="root"></div></body></html>',

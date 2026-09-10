@@ -137,6 +137,7 @@ def test_workspace_observability_connection_test_reuses_saved_secret(tmp_path, m
     calls = []
 
     class FakeResponse:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 

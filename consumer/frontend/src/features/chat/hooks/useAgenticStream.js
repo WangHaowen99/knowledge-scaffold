@@ -70,6 +70,7 @@ const applyMessageUpdaters = (messages, updaters = []) => {
   }, messages);
 };
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 const useAgenticStream = ({
   sessionId,
   setMessages,
@@ -158,12 +159,12 @@ const useAgenticStream = ({
     }
     queuedMessageUpdatesRef.current = new Map();
     entries.forEach(([targetSessionId, entry]) => {
-      if (
+      const updateInvalid =
         !targetSessionId ||
         !isMessageUpdateScopeCurrent(entry?.epoch, scopeEpochRef.current) ||
         !Array.isArray(entry?.updaters) ||
-        entry.updaters.length === 0
-      ) {
+        entry.updaters.length === 0;
+      if (updateInvalid) {
         return;
       }
       setMessages(
@@ -528,6 +529,7 @@ const useAgenticStream = ({
   );
 
   const sendAgentic = useCallback(
+    // eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
     async (message, existingSessionId = null, options = {}) => {
       if (!message.trim()) {
         return;

@@ -57,6 +57,7 @@ def test_broker_executes_only_allowlisted_scoped_operations(tmp_path, monkeypatc
     class FakeBackend:
         closed = False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def property_filter(self, **kwargs):
             calls.append(kwargs)
             return GraphBackendResult(
@@ -153,6 +154,7 @@ def test_broker_start_closes_socket_when_setup_fails(tmp_path, monkeypatch):
     class FailingSocket:
         closed = False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def bind(self, _path):
             raise OSError("synthetic bind failure")
 
@@ -174,12 +176,15 @@ def test_provider_client_maps_timeout_to_transport_error(tmp_path, monkeypatch):
         def __enter__(self):
             return self
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def __exit__(self, _exc_type, _exc, _traceback):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def settimeout(self, _timeout):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def connect(self, _path):
             raise TimeoutError("synthetic timeout")
 
@@ -201,11 +206,13 @@ def test_broker_close_interrupts_active_backend_call(tmp_path, monkeypatch):
     released = threading.Event()
 
     class BlockingBackend:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def count_search(self, **_kwargs):
             entered.set()
             assert released.wait(timeout=5)
             return GraphBackendResult(total=0)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             released.set()
 

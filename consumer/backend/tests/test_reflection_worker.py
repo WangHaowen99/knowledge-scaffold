@@ -16,6 +16,7 @@ from llm import LLMPurpose
 class _TaskLLM:
     is_configured = True
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def call(self, **kwargs):
         del kwargs
         return SimpleNamespace(
@@ -33,6 +34,7 @@ class _ProposalBuffer:
     def __init__(self) -> None:
         self.records = []
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def recall(self, *args, **kwargs):
         del args, kwargs
         return []
@@ -46,6 +48,7 @@ def test_reflection_worker_persists_ontology_lessons_to_evolution_buffer(monkeyp
     task_llm = _TaskLLM()
 
     class _Router:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_service(self, purpose):
             assert purpose == LLMPurpose.TASK
             return task_llm

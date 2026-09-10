@@ -771,6 +771,18 @@ def get_jiuwen_tool_infos(
 ) -> list[Dict[str, Any]]:
     from ...tools.registry import get_tool_schema_for_context, get_tool_specs_for_caller
 
+    tool_specs = get_tool_specs_for_caller(
+        caller,
+        include_memory=include_memory,
+        include_orchestration=include_orchestration,
+        include_web_search=include_web_search,
+        include_interaction=include_interaction,
+        include_business_checkpoint=include_business_checkpoint,
+        include_solver=include_solver,
+        workspace_id=workspace_id,
+        selected_ontology_id=selected_ontology_id,
+        selected_ontology_version=selected_ontology_version,
+    )
     return [
         jiuwen_tool_info_from_schema(
             get_tool_schema_for_context(
@@ -780,18 +792,7 @@ def get_jiuwen_tool_infos(
                 workspace_id=workspace_id,
             )
         )
-        for spec in get_tool_specs_for_caller(
-            caller,
-            include_memory=include_memory,
-            include_orchestration=include_orchestration,
-            include_web_search=include_web_search,
-            include_interaction=include_interaction,
-            include_business_checkpoint=include_business_checkpoint,
-            include_solver=include_solver,
-            workspace_id=workspace_id,
-            selected_ontology_id=selected_ontology_id,
-            selected_ontology_version=selected_ontology_version,
-        )
+        for spec in tool_specs
     ]
 
 

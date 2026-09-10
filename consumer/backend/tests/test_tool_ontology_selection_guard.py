@@ -67,6 +67,7 @@ def _recording_tool(tool_name: str, calls: list[Dict[str, Any]]):
             self.max_parallelism = original.max_parallelism
             self.category = original.category
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def execute(
             self,
             *,

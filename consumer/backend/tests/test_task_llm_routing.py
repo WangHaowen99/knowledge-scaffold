@@ -22,6 +22,7 @@ class _FakeStreamingResponse:
     def iter_lines(self, decode_unicode=True):
         return iter(self._lines)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self) -> None:
         return
 
@@ -196,7 +197,10 @@ def test_reasoning_summary_uses_task_llm_when_configured(monkeypatch):
 
     response = _FakeStreamingResponse(
         [
-            'data: {"model":"main-model","choices":[{"delta":{"reasoning_content":"先确定范围"},"finish_reason":null}]}',
+            (
+                "data:"
+                ' {"model":"main-model","choices":[{"delta":{"reasoning_content":"先确定范围"},"finish_reason":null}]}'
+            ),
             'data: {"model":"main-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}',
             "data: [DONE]",
         ]

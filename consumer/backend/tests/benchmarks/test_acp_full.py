@@ -156,6 +156,7 @@ class ACPTestRunner:
             return resp.json()
         return None
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def _collect_sse_events(self, resp: requests.Response) -> list[dict]:
         events = []
         for line in resp.iter_lines(decode_unicode=True):
@@ -173,6 +174,7 @@ class ACPTestRunner:
                 pass
         return events
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def _collect_typed_sse_events(self, resp: requests.Response) -> list[dict]:
         events = []
         current_event = None

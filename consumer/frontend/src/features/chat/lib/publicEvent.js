@@ -41,6 +41,7 @@ export const normalizePublicEventStatus = (value, fallback = '') => {
   return PUBLIC_EVENT_STATUSES.has(fallback) ? fallback : '';
 };
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export const isPublicEvent = (value) => {
   if (!isPlainObject(value)) {
     return false;

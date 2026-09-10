@@ -56,6 +56,7 @@ def test_worker_does_not_time_out_fresh_task(tmp_path):
     _resolve_ontology), so no ontology fixture is needed."""
 
     class _NoopClient:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_run_status(self, run_id):
             return {"status": "running"}
 

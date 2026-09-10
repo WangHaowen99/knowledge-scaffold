@@ -210,8 +210,8 @@ class OperationDirectRouter:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
     def _fallback(
-        self,
         reason: str,
         *,
         ontology_id: Optional[str] = None,
@@ -225,8 +225,8 @@ class OperationDirectRouter:
             operation_key=operation_key,
         )
 
+    @staticmethod
     def _check_runtime_requirements(
-        self,
         requirements: list[str],
         runtime_context: RuntimeContext,
     ) -> list[str]:

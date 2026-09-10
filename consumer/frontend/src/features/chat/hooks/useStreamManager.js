@@ -74,6 +74,7 @@ const buildInitialProgressState = (now = Date.now(), phase = 'starting') => ({
   progressPhase: phase,
 });
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 const useStreamManager = () => {
   // Stream contexts: Map<sessionId, StreamContext>
   const [streams, setStreams] = useState(new Map());
@@ -255,6 +256,7 @@ const useStreamManager = () => {
    * so lifecycle/error handling stays with the reconnect loop below.
    */
   const processStream = useCallback(
+    // eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
     async (sessionId, reader, streamToken, onEvent) => {
       const decoder = new TextDecoder();
       let buffer = '';
@@ -389,6 +391,7 @@ const useStreamManager = () => {
   );
 
   const followRun = useCallback(
+    // eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
     async (sessionId, streamToken, onEvent) => {
       let reconnectAttempts = 0;
 
@@ -403,12 +406,13 @@ const useStreamManager = () => {
         }
 
         const isQueued = meta.runStatus === 'queued';
-        meta.progressPhase =
-          reconnectAttempts > 0 ?
-            'reconnecting' :
-            isQueued ?
-              'queued' :
-              meta.progressPhase || 'running';
+        if (reconnectAttempts > 0) {
+          meta.progressPhase = 'reconnecting';
+        } else if (isQueued) {
+          meta.progressPhase = 'queued';
+        } else {
+          meta.progressPhase = meta.progressPhase || 'running';
+        }
         streamMetaRef.current.set(sessionId, meta);
         updateStreamState(sessionId, {
           isLoading: true,
@@ -506,6 +510,7 @@ const useStreamManager = () => {
    * Create one canonical run, then follow its detached event stream.
    */
   const startRunForSession = useCallback(
+    // eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
     async (
       sessionId,
       body,

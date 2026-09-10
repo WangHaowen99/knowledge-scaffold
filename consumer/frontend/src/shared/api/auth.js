@@ -201,12 +201,12 @@ export const migrateLegacyAuthState = async () =>
     const legacyState = readLegacyCredentialState();
     let nextState = envelope;
 
-    if (
+    const legacyStateChanged =
       legacyState &&
       (!envelope ||
         envelope.accessToken !== legacyState.accessToken ||
-        envelope.refreshToken !== legacyState.refreshToken)
-    ) {
+        envelope.refreshToken !== legacyState.refreshToken);
+    if (legacyStateChanged) {
       nextState = {
         ...legacyState,
         sessionId: legacyState.sessionId || createAuthSessionId(),
@@ -377,13 +377,13 @@ export const logoutAuthSession = async () => {
 
     const storedAfterRevoke = readStoredCredentialState();
     const legacyAfterRevoke = readLegacyCredentialState();
-    if (
+    const differentLegacySession =
       legacyAfterRevoke &&
       (legacyAfterRevoke.accessToken !== currentState.accessToken ||
         legacyAfterRevoke.refreshToken !== currentState.refreshToken) &&
       legacyAfterRevoke.sessionId &&
-      legacyAfterRevoke.sessionId !== currentState.sessionId
-    ) {
+      legacyAfterRevoke.sessionId !== currentState.sessionId;
+    if (differentLegacySession) {
       // A transitional client that already has an explicit different session
       // marker represents a new login. Unmarked legacy writes are logout-wins
       // and force that old page to reload the current application build.
@@ -395,12 +395,12 @@ export const logoutAuthSession = async () => {
       return;
     }
     if (!sameCredentialState(storedAfterRevoke, currentState)) {
-      if (
+      const storedSessionChanged =
         storedAfterRevoke.accessToken &&
         storedAfterRevoke.sessionId &&
         storedAfterRevoke.sessionId !== 'legacy-session' &&
-        storedAfterRevoke.sessionId !== currentState.sessionId
-      ) {
+        storedAfterRevoke.sessionId !== currentState.sessionId;
+      if (storedSessionChanged) {
         resultingState = storedAfterRevoke;
         setCredentialSnapshot(resultingState);
         return;
@@ -555,12 +555,12 @@ const refreshAuthToken = (expectedState) => {
     return withCredentialLock(() => {
       const storedState = readStoredCredentialState();
       if (!sameCredentialState(storedState, expectedState)) {
-        if (
+        const newerStoredState =
           expectedState.sessionId &&
           storedState.sessionId === expectedState.sessionId &&
           storedState.tokenVersion > expectedState.tokenVersion &&
-          storedState.accessToken
-        ) {
+          storedState.accessToken;
+        if (newerStoredState) {
           setCredentialSnapshot(storedState);
           return storedState;
         }
@@ -638,12 +638,12 @@ const reconciledCredentialState = (requestState) => {
   if (sameCredentialState(currentState, requestState)) {
     return currentState;
   }
-  if (
+  const currentStateIsNewer =
     requestState.sessionId &&
     currentState.sessionId === requestState.sessionId &&
     currentState.tokenVersion > requestState.tokenVersion &&
-    currentState.accessToken
-  ) {
+    currentState.accessToken;
+  if (currentStateIsNewer) {
     return currentState;
   }
   if (

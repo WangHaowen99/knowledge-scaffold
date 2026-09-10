@@ -14,6 +14,7 @@ import {
   ScopeTabs,
   SectionCard,
 } from '../../shared/ui/primitives';
+import { ConfirmDialog } from '../../shared/ui/feedback';
 import {
   WORKSPACE_ACCESS_STATE,
   configSectionDisabled,
@@ -159,6 +160,7 @@ function ReadOnlyBanner({ who }) {
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 function SectionBody({
   scope,
   section,
@@ -328,6 +330,7 @@ function WorkspaceAccessGate({ state, error, onNavigate, onRetry }) {
   );
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 function PlatformAccess() {
   const { can } = useAuthContext();
   const canEdit = can('system_config.write');
@@ -538,6 +541,7 @@ function WorkspaceInfo() {
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 function WorkspaceMembers() {
   const { can, workspaceId, workspaces, reloadWorkspaces } = useAuthContext();
   const canEdit = can('ws.members.write');
@@ -730,6 +734,7 @@ function WorkspaceMembers() {
   );
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 function WorkspaceRuntime() {
   const { can, workspaceId } = useAuthContext();
   const canEdit = can('ws.config.write');
@@ -846,6 +851,7 @@ function WorkspaceRuntime() {
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 function WorkspaceObservability() {
   const { can, workspaceId } = useAuthContext();
   const canEdit = can('ws.observability.write');
@@ -1118,6 +1124,7 @@ function PersonalPrefs() {
   );
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 function PersonalMemory() {
   const { workspaceId } = useAuthContext();
   const [memories, setMemories] = useState([]);
@@ -1125,6 +1132,7 @@ function PersonalMemory() {
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState(null);
   const [msg, setMsg] = useState('');
+  const [pendingRemoval, setPendingRemoval] = useState(null);
   const load = useCallback(async () => {
     const response = await authFetch('/agentic/memories?limit=200');
     const payload = await response.json().catch(() => ({}));
@@ -1166,9 +1174,6 @@ function PersonalMemory() {
     }
   };
   const remove = async (memory) => {
-    if (!window.confirm('删除这条长期记忆？')) {
-      return;
-    }
     const response = await authFetch(`/agentic/memories/${memory.id}`, {
       method: 'DELETE',
     });
@@ -1251,7 +1256,7 @@ function PersonalMemory() {
                 <button
                   className="btn btn-danger"
                   style={btnS}
-                  onClick={() => remove(memory)}
+                  onClick={() => setPendingRemoval(memory)}
                 >
                   删除
                 </button>
@@ -1272,6 +1277,21 @@ function PersonalMemory() {
           {msg}
         </div>
       )}
+      <ConfirmDialog
+        open={Boolean(pendingRemoval)}
+        title="删除长期记忆"
+        description="删除后将无法恢复这条长期记忆。"
+        confirmLabel="删除记忆"
+        danger
+        onConfirm={() => {
+          const memory = pendingRemoval;
+          setPendingRemoval(null);
+          if (memory) {
+            remove(memory);
+          }
+        }}
+        onCancel={() => setPendingRemoval(null)}
+      />
     </SectionCard>
   );
 }

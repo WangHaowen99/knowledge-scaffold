@@ -11,11 +11,15 @@ class _FakeResponse:
     def __init__(self) -> None:
         self.closed = False
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def iter_lines(self, *, decode_unicode: bool):
         del decode_unicode
         yield "id: 8"
         yield "event: agent.v2"
-        yield 'data: {"protocol":"agent-stream.v2","seq":8,"event_id":"run-1:8","type":"turn.finished","payload":{"status":"awaiting_input"}}'
+        yield (
+            'data: {"protocol":"agent-stream.v2","seq":8,"event_id":"run-1:8","type":"turn.finished",'
+            '"payload":{"status":"awaiting_input"}}'
+        )
         yield ""
 
     def close(self) -> None:

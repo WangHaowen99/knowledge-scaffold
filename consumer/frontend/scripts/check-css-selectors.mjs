@@ -1,3 +1,5 @@
+/* eslint-disable no-console -- This CLI reports architecture diagnostics through stdout and stderr. */
+
 import { readFileSync, readdirSync } from 'node:fs';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -229,12 +231,12 @@ function forEachTopLevel(source, visit) {
     } else if (char === '}') {
       braces -= 1;
     }
-    if (
+    const shouldStop =
       parentheses === 0 &&
       brackets === 0 &&
       braces === 0 &&
-      visit(index) === false
-    ) {
+      visit(index) === false;
+    if (shouldStop) {
       return;
     }
     index += 1;
@@ -246,12 +248,12 @@ function findTernary(source) {
   let nested = 0;
   let colon = -1;
   forEachTopLevel(source, (index) => {
-    if (
+    const isConditionalQuestion =
       source[index] === '?' &&
       source[index + 1] !== '?' &&
       source[index + 1] !== '.' &&
-      source[index - 1] !== '?'
-    ) {
+      source[index - 1] !== '?';
+    if (isConditionalQuestion) {
       if (question === -1) {
         question = index;
       } else {
@@ -500,10 +502,9 @@ function collectClassNameProperties(source, origin) {
     if (!["'", '"', '`'].includes(source[start])) {
       continue;
     }
-    const end =
-      source[start] === '`'
-        ? skipTemplate(source, start)
-        : skipQuoted(source, start);
+    const end = source[start] === '`' ?
+      skipTemplate(source, start) :
+      skipQuoted(source, start);
     for (const value of evaluateClassValues(source.slice(start, end))) {
       addClassValue(value, origin);
     }
@@ -580,7 +581,10 @@ if (unusedByFile.size || unusedCompoundsByFile.size) {
   }
   process.exitCode = 1;
 } else {
+  const stylesheetCount = files.filter(
+    (file) => extname(file) === '.css',
+  ).length;
   console.log(
-    `CSS classes and compound selectors: ${files.filter((file) => extname(file) === '.css').length} stylesheets checked`,
+    `CSS classes and compound selectors: ${stylesheetCount} stylesheets checked`,
   );
 }

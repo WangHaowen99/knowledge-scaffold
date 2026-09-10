@@ -52,12 +52,12 @@ export function TurnEvidencePanel({ evidence, onSelect }) {
   const grounded = evidence.runtime.filter(
     (hit) => hit.grounding_status === 'grounded',
   ).length;
-  const status =
-    evidence.ontology.length && evidence.runtime.length ?
-      '本体依据与运行证据已分层' :
-      evidence.ontology.length ?
-        '本体依据已查回' :
-        '运行证据已固化';
+  let status = '运行证据已固化';
+  if (evidence.ontology.length && evidence.runtime.length) {
+    status = '本体依据与运行证据已分层';
+  } else if (evidence.ontology.length) {
+    status = '本体依据已查回';
+  }
 
   return (
     <section className="turn-evidence" aria-label="回答证据">
@@ -297,6 +297,7 @@ function InspectorEvidenceGroup({
   );
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
 function EvidenceRecordDetail({ hit, fallbackEpoch }) {
   const [record, setRecord] = useState(null);
   const [error, setError] = useState('');
@@ -353,6 +354,48 @@ function EvidenceRecordDetail({ hit, fallbackEpoch }) {
       }),
     );
   };
+  let validityLabel = validityActive === false ? '已失效' : '当前有效';
+  if (!record) {
+    validityLabel = '校验中';
+  } else if (isRuntime) {
+    validityLabel = groundingStatus === 'grounded' ? 'Grounded' : '待核验';
+  }
+  let recordContent = (
+    <div className="evidence-record-loading">
+      <Loader2 className="spin" size={18} />
+      正在查回证据…
+    </div>
+  );
+  if (error) {
+    recordContent = (
+      <div className="evidence-record-error">
+        <TriangleAlert size={14} />
+        {error}
+      </div>
+    );
+  } else if (record) {
+    recordContent = (
+      <>
+        <div className="evidence-record-content">
+          <span>{isRuntime ? '运行事实摘要' : '证据原文'}</span>
+          <Markdown>
+            {record.content || record.summary || hit.snippet || '暂无可展示内容'}
+          </Markdown>
+        </div>
+        {isRuntime && (derivedFrom.length > 0 || warnings.length > 0) && (
+          <div className="evidence-record-relations">
+            <strong>有效性与关系</strong>
+            {derivedFrom.map((id) => (
+              <code key={id}>派生自 {id}</code>
+            ))}
+            {warnings.map((warning) => (
+              <span key={warning}>不确定性：{warning}</span>
+            ))}
+          </div>
+        )}
+      </>
+    );
+  }
 
   return (
     <section className="evidence-record" aria-label="证据详情">
@@ -370,22 +413,12 @@ function EvidenceRecordDetail({ hit, fallbackEpoch }) {
       <div className="evidence-record-status">
         <span
           className={
-            validityActive === false ?
-              'inactive' :
-              groundingStatus === 'unverified' ?
-                'warning' :
-                'active'
+            (validityActive === false && 'inactive') ||
+            (groundingStatus === 'unverified' && 'warning') ||
+            'active'
           }
         >
-          {!record ?
-            '校验中' :
-            isRuntime ?
-              groundingStatus === 'grounded' ?
-                'Grounded' :
-                '待核验' :
-              validityActive === false ?
-                '已失效' :
-                '当前有效'}
+          {validityLabel}
         </span>
         <span>
           {isRuntime ?
@@ -448,40 +481,7 @@ function EvidenceRecordDetail({ hit, fallbackEpoch }) {
           </>
         )}
       </dl>
-      {error ? (
-        <div className="evidence-record-error">
-          <TriangleAlert size={14} />
-          {error}
-        </div>
-      ) : record ? (
-        <>
-          <div className="evidence-record-content">
-            <span>{isRuntime ? '运行事实摘要' : '证据原文'}</span>
-            <Markdown>
-              {record.content ||
-                record.summary ||
-                hit.snippet ||
-                '暂无可展示内容'}
-            </Markdown>
-          </div>
-          {isRuntime && (derivedFrom.length > 0 || warnings.length > 0) && (
-            <div className="evidence-record-relations">
-              <strong>有效性与关系</strong>
-              {derivedFrom.map((id) => (
-                <code key={id}>派生自 {id}</code>
-              ))}
-              {warnings.map((warning) => (
-                <span key={warning}>不确定性：{warning}</span>
-              ))}
-            </div>
-          )}
-        </>
-      ) : (
-        <div className="evidence-record-loading">
-          <Loader2 className="spin" size={18} />
-          正在查回证据…
-        </div>
-      )}
+      {recordContent}
       {sourcePath && (
         <button
           type="button"

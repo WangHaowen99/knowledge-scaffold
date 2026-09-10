@@ -94,11 +94,12 @@ export function getAppearance() {
 }
 
 function resolveAppearance(appearance) {
-  return appearance === 'system' ?
-    window.matchMedia?.('(prefers-color-scheme: dark)').matches ?
-      'dark' :
-      'light' :
-    appearance;
+  if (appearance !== 'system') {
+    return appearance;
+  }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?
+    'dark' :
+    'light';
 }
 
 function stopAppearanceTransition(root) {

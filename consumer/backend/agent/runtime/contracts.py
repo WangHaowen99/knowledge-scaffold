@@ -311,7 +311,8 @@ class RuntimeEventSink(Protocol):
     async def emit(
         self,
         event: "RuntimeEvent",
-    ) -> None: ...
+    ) -> None:
+        return ...
 
 
 class AsyncAgentRuntime(Protocol):
@@ -321,16 +322,20 @@ class AsyncAgentRuntime(Protocol):
         self,
         context: RuntimeInvocationContext,
         sink: RuntimeEventSink,
-    ) -> RuntimeResult: ...
+    ) -> RuntimeResult:
+        return ...
 
     def astream(
         self,
         context: RuntimeInvocationContext,
-    ) -> AsyncIterator["RuntimeEvent"]: ...
+    ) -> AsyncIterator["RuntimeEvent"]:
+        return ...
 
-    async def cancel(self, run_id: str, reason: str) -> bool: ...
+    async def cancel(self, run_id: str, reason: str) -> bool:
+        return ...
 
-    async def release(self, jiuwen_session_id: str) -> None: ...
+    async def release(self, jiuwen_session_id: str) -> None:
+        return ...
 
 
 class RunStatus(str, Enum):
@@ -435,7 +440,8 @@ class PublicEventSink(Protocol):
     async def emit(
         self,
         draft: "PublicEventDraft",
-    ) -> None: ...
+    ) -> None:
+        return ...
 
 
 # Re-export event models for the public A/B import surface without duplicating

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
+import multiprocessing.spawn
 import sys
 import threading
 import time
+import types
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,8 +18,24 @@ from werkzeug.serving import make_server
 # Consumer-owned Connector.  Only the integration-test process imports the
 # service application used to create the independent HTTP boundary.
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-if str(REPOSITORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPOSITORY_ROOT))
+_CONTRACTS_PACKAGE = REPOSITORY_ROOT / "contracts"
+if "contracts" not in sys.modules:
+    _CONTRACTS_MODULE = types.ModuleType("contracts")
+    _CONTRACTS_MODULE.__path__ = [str(_CONTRACTS_PACKAGE)]
+    _CONTRACTS_MODULE.__package__ = "contracts"
+    sys.modules["contracts"] = _CONTRACTS_MODULE
+
+_SOLVERS_PACKAGE = REPOSITORY_ROOT / "solvers"
+_SOLVERS_SPEC = importlib.util.spec_from_file_location(
+    "solvers",
+    _SOLVERS_PACKAGE / "__init__.py",
+    submodule_search_locations=[str(_SOLVERS_PACKAGE)],
+)
+if _SOLVERS_SPEC is None or _SOLVERS_SPEC.loader is None:
+    raise ImportError("solvers package cannot be loaded")
+_SOLVERS_MODULE = importlib.util.module_from_spec(_SOLVERS_SPEC)
+sys.modules.setdefault("solvers", _SOLVERS_MODULE)
+_SOLVERS_SPEC.loader.exec_module(_SOLVERS_MODULE)
 
 from solver_coordination.canonical import sha256_digest
 from solver_coordination.compiler import ProblemIRCompiler
@@ -51,6 +70,7 @@ _ITEM_IDS = tuple("ITEM_SYNTHETIC_{:04d}".format(index) for index in range(1, 10
 class _LoopbackEndpointPolicy:
     """Test-only loopback policy; production defaults to HTTPS with explicit private-HTTP opt-in."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def validate(self, endpoint: str) -> str:
         if not endpoint.startswith("http://127.0.0.1:"):
             raise ValueError("endpoint must be a loopback test endpoint")
@@ -180,7 +200,20 @@ def _snapshot(normalized_input: NormalizedInput):
     )
 
 
-def test_nine_item_compiler_http_ortools_verifier_and_presentation_chain(tmp_path):
+def test_nine_item_compiler_http_ortools_verifier_and_presentation_chain(tmp_path, monkeypatch):
+    original_preparation_data = multiprocessing.spawn.get_preparation_data
+
+    def preparation_data_with_repository_root(process_name):
+        preparation_data = original_preparation_data(process_name)
+        repository_root = str(REPOSITORY_ROOT)
+        preparation_data["sys_path"] = [
+            repository_root,
+            *(entry for entry in preparation_data["sys_path"] if entry != repository_root),
+        ]
+        return preparation_data
+
+    monkeypatch.setattr(multiprocessing.spawn, "get_preparation_data", preparation_data_with_repository_root)
+
     normalized_input = _normalized_input()
     fact_snapshot = _snapshot(normalized_input)
     capability = _capability()
@@ -269,7 +302,7 @@ def test_nine_item_compiler_http_ortools_verifier_and_presentation_chain(tmp_pat
         )
         assert verification.status == "verified"
         assert verification.optimality == "proven_optimal"
-        assert solver_result.assignment["candidate_id"] == ("OPTION_0_TO_OPTION_1_K0004")
+        assert solver_result.assignment["candidate_id"] == "OPTION_0_TO_OPTION_1_K0004"
         assert [solver_result.assignment[item_id] for item_id in _ITEM_IDS] == [
             "OPTION_0",
             "OPTION_0",

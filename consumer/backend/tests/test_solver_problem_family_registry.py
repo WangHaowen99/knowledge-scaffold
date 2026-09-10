@@ -202,6 +202,7 @@ def test_legacy_candidate_service_dispatches_through_injected_registry():
     from solver_coordination.candidate_service import create_candidate_set
 
     class _SpyRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def enumerate(self, family_key, **kwargs):
             assert family_key == "binary_ordered_route.v1"
             return BinaryOrderedRouteAdapter().enumerate(**kwargs)

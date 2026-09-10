@@ -25,6 +25,7 @@ class _Response:
     status_code = 200
     text = ""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def json(self):
         return {
             "success": True,
@@ -41,6 +42,7 @@ class _TextAnswerResponse:
     status_code = 200
     text = ""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def json(self):
         return {
             "success": True,
@@ -54,6 +56,7 @@ class _FailureResponse:
     status_code = 503
     text = "service unavailable"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def json(self):
         return {"error": "service unavailable"}
 

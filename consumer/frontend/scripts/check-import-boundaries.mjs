@@ -1,3 +1,5 @@
+/* eslint-disable no-console -- This CLI reports architecture diagnostics through stdout and stderr. */
+
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import {
   dirname,
@@ -90,12 +92,14 @@ const resolveCssImport = (importer, specifier) => {
   const [pathSpecifier] = specifier.split(/[?#]/, 1);
   const basePath = resolve(dirname(importer), pathSpecifier);
   const extension = extname(basePath);
-  const candidates =
-    extension === '.css'
-      ? [basePath]
-      : extension
-        ? []
-        : [`${basePath}.css`, join(basePath, 'index.css')];
+  let candidates;
+  if (extension === '.css') {
+    candidates = [basePath];
+  } else if (extension) {
+    candidates = [];
+  } else {
+    candidates = [`${basePath}.css`, join(basePath, 'index.css')];
+  }
 
   return (
     candidates.find(
@@ -231,12 +235,12 @@ for (const module of modules) {
       );
     }
   }
-  if (
+  const sharedUiCallsBusinessApi =
     isCodeModule &&
     module.layer === 'shared' &&
     module.sourcePath.startsWith('shared/ui/') &&
-    /\bfetch\s*\(/.test(source)
-  ) {
+    /\bfetch\s*\(/.test(source);
+  if (sharedUiCallsBusinessApi) {
     report(module, 'shared/ui cannot call business APIs directly');
   }
 
