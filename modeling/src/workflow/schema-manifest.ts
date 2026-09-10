@@ -73,6 +73,18 @@ function fieldKey(field: DataDictField, index: number, used: Set<string>): strin
   return key;
 }
 
+/** 表头第二行往往就是字段中文名，解析器已把它识别为注释行存进 field.note。
+ *  但 cnName 原来直接回退到技术名，于是每个字段都被判成「中文名等于技术名」的
+ *  占位符，触发全量语义阻断，再让模型把文件里已经写好的名字逐个重新生成一遍。
+ *  只有形态像「名称」才采用：短、不含句读、含中文；整句说明仍旧留在 note。 */
+function fieldNameFromNote(note: unknown): string {
+  const value = String(note ?? '').trim();
+  if (!value || value.length > 20) return '';
+  if (/[。；;，,：:！!？?\n]/u.test(value)) return '';
+  if (!/[\u4e00-\u9fff]/u.test(value)) return '';
+  return value;
+}
+
 function isNamedPrimaryKeyCandidate(field: DataDictField): boolean {
   return (
     /(?:^|_)(?:id|code|key|no|number)$/iu.test(field.name)
@@ -149,15 +161,19 @@ function toSpecFields(
     if (explicitPrimaryDecision || typeof explicitRequired === 'boolean' || reliableInferredPrimary) {
       authoritativeRequiredFieldKeys.add(key);
     }
+    const noteName = fieldNameFromNote(field.note);
+    // 注释行被采纳为中文名时不再重复写进 note
+    const usedNoteAsName = !semantic?.businessName && Boolean(noteName);
+    const note = semantic?.description || (usedNoteAsName ? undefined : field.note);
     return {
       key,
-      cnName: semantic?.businessName || field.name,
+      cnName: semantic?.businessName || noteName || field.name,
       type: fieldType(field),
       sourceColumn: field.name,
       required: explicitPrimary
         || explicitRequired === true
         || reliableInferredPrimary,
-      ...((semantic?.description || field.note) ? { note: semantic?.description || field.note } : {}),
+      ...(note ? { note } : {}),
       ...(semantic?.aliases?.[0] ? { alias: semantic.aliases[0] } : {}),
     } satisfies SpecField;
   });

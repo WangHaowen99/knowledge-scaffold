@@ -4360,3 +4360,18 @@ test('目标分段校验失败时说明其它分段不受影响，且点破锚�
   // 证据格式错误要点破真正的坑：锚点里不能有空格
   assert.match(source, /锚点内不能出现空格，也不要在锚点后追加中文说明/);
 });
+
+test('表头第二行的中文名直接种进 cnName，不再全量触发语义阻断', () => {
+  // 国网汇总表 9 个 Sheet、361 个字段的中文名都写在第二行；解析器已识别为
+  // 注释行，但 cnName 回退到技术名，导致 361 项语义阻断，再让模型把文件里
+  // 已有的名字逐个重新生成一遍。
+  const source = readFileSync('src/workflow/schema-manifest.ts', 'utf8');
+  assert.match(source, /function fieldNameFromNote\(note: unknown\): string/);
+  assert.match(source, /cnName: semantic\?\.businessName \|\| noteName \|\| field\.name/);
+  // 采纳为名称后不再重复写进 note
+  assert.match(source, /const usedNoteAsName = !semantic\?\.businessName && Boolean\(noteName\)/);
+  // 只认「像名称」的注释：短、无句读、含中文
+  assert.match(source, /value\.length > 20/);
+  assert.match(source, /\[。；;，,：:！!？\?\\n\]/u);
+  assert.match(source, /\\u4e00-\\u9fff/);
+});
