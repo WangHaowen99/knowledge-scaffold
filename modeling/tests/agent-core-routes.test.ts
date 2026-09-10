@@ -4341,3 +4341,22 @@ test('长任务进度文案不把「单步耗时长」说成「没有进度」',
   assert.match(source, /working \? '这一步耗时较长，仍在处理' : '较久没有新进度'/);
   assert.doesNotMatch(source, /较久未收到新进度/);
 });
+
+test('目标分段校验失败时说明其它分段不受影响，且点破锚点不能带空格', () => {
+  // 分段各自独立存储，一段失败不该让助手把 5 段全重交一遍。
+  const source = readFileSync('src/agent/core-service.ts', 'utf8');
+  assert.match(source, /function goalSectionRetryHint\(sectionsJson: unknown, section: string\): string/);
+  assert.match(source, /已保存的分段（\$\{saved\.join\('、'\)\}）不受影响，只需重新提交 \$\{section\} 这一段/);
+  assert.match(source, /只重新提交 \$\{section\} 这一段即可，其它分段不受影响/);
+  // 六个分段级校验错误都要带上这条提示
+  for (const code of [
+    'GOAL_SECTION_UNKNOWN_FIELD', 'GOAL_SECTION_TOO_LONG', 'GOAL_SECTION_TOO_LARGE',
+    'GOAL_SECTION_EMPTY', 'GOAL_SECTION_EVIDENCE_REQUIRED', 'GOAL_SECTION_EVIDENCE_INVALID',
+  ]) {
+    const index = source.indexOf(code);
+    assert.ok(index > 0, `缺少 ${code}`);
+    assert.match(source.slice(index, index + 900), /goalSectionRetryHint\(row\.sections_json, section\)/, code);
+  }
+  // 证据格式错误要点破真正的坑：锚点里不能有空格
+  assert.match(source, /锚点内不能出现空格，也不要在锚点后追加中文说明/);
+});

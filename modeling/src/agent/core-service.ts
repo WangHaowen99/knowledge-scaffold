@@ -5963,7 +5963,7 @@ export class AgentCoreService {
       open_questions: ['items', 'evidence'],
     };
     const unknown = Object.keys(raw).filter((item) => !allowedFields[section].includes(item));
-    if (unknown.length) throw new AgentCoreError('GOAL_SECTION_UNKNOWN_FIELD', `目标草稿包含未知字段：${unknown.join('、')}`, ['删除未定义字段后重试'], 400);
+    if (unknown.length) throw new AgentCoreError('GOAL_SECTION_UNKNOWN_FIELD', `目标草稿包含未知字段：${unknown.join('、')}`, ['删除未定义字段后重试', goalSectionRetryHint(row.sections_json, section)], 400);
     const summary = section === 'objective'
       ? [raw.problem, raw.target_users, raw.success_criteria].map((item, index) => (
         item === undefined ? '' : text(item, `data.${['problem', 'target_users', 'success_criteria'][index]}`, true)
@@ -5977,13 +5977,17 @@ export class AgentCoreService {
       : raw.items === undefined ? [] : stringArray(raw.items);
     const evidence = raw.evidence === undefined ? [] : stringArray(raw.evidence);
     const oversized = [summary, ...items, ...evidence].find((item) => item.length > 4000);
-    if (oversized) throw new AgentCoreError('GOAL_SECTION_TOO_LONG', '目标草稿分段超过长度上限', ['缩短该分段内容后重试'], 400);
-    if (items.length > 30 || evidence.length > 30) throw new AgentCoreError('GOAL_SECTION_TOO_LARGE', '目标草稿分段条目数量超过上限', ['减少条目后重试'], 400);
-    if (!summary.trim() && !items.length) throw new AgentCoreError('GOAL_SECTION_EMPTY', '目标草稿分段不能为空', ['填写该分段规定的业务字段'], 400);
-    if (section !== 'open_questions' && !evidence.length) throw new AgentCoreError('GOAL_SECTION_EVIDENCE_REQUIRED', '目标草稿分段缺少证据', ['为该分段提供 material:<资料>#<原文锚点> 或 user-decision:... 证据'], 400);
+    if (oversized) throw new AgentCoreError('GOAL_SECTION_TOO_LONG', '目标草稿分段超过长度上限', ['缩短该分段内容后重试', goalSectionRetryHint(row.sections_json, section)], 400);
+    if (items.length > 30 || evidence.length > 30) throw new AgentCoreError('GOAL_SECTION_TOO_LARGE', '目标草稿分段条目数量超过上限', ['减少条目后重试', goalSectionRetryHint(row.sections_json, section)], 400);
+    if (!summary.trim() && !items.length) throw new AgentCoreError('GOAL_SECTION_EMPTY', '目标草稿分段不能为空', ['填写该分段规定的业务字段', goalSectionRetryHint(row.sections_json, section)], 400);
+    if (section !== 'open_questions' && !evidence.length) throw new AgentCoreError('GOAL_SECTION_EVIDENCE_REQUIRED', '目标草稿分段缺少证据', ['为该分段提供 material:<资料>#<原文锚点> 或 user-decision:... 证据', goalSectionRetryHint(row.sections_json, section)], 400);
     for (const token of evidence) {
       if (!/^(?:material:[^#\s]+#[^\s]+|user-decision:.+)$/u.test(token)) {
-        throw new AgentCoreError('GOAL_SECTION_EVIDENCE_INVALID', `证据格式不正确：${token}`, ['使用 material:<资料 id>#<原文锚点> 或 user-decision:<说明>'], 400);
+        throw new AgentCoreError('GOAL_SECTION_EVIDENCE_INVALID', `证据格式不正确：${token}`, [
+          '使用 material:<资料 id>#<原文锚点> 或 user-decision:<说明>',
+          '锚点内不能出现空格，也不要在锚点后追加中文说明；需要解释时写进 items 正文',
+          goalSectionRetryHint(row.sections_json, section),
+        ], 400);
       }
     }
     assertGoalMaterialEvidenceReferences(context.project.id, evidence);
@@ -9142,6 +9146,19 @@ function domainReferenceRelations(
     }
     return { kind: relationKind, targetId };
   });
+}
+
+/** 分段各自独立存储，一段校验失败不影响其它段；报错时说清楚这一点，
+ *  否则助手会保守地把全部分段重交一遍，白花好几轮调用。 */
+function goalSectionRetryHint(sectionsJson: unknown, section: string): string {
+  let saved: string[] = [];
+  try {
+    saved = Object.keys(JSON.parse(String(sectionsJson || '{}')) as Record<string, unknown>)
+      .filter((item) => item !== section);
+  } catch { /* 损坏的草稿按“没有已保存分段”处理 */ }
+  return saved.length
+    ? `已保存的分段（${saved.join('、')}）不受影响，只需重新提交 ${section} 这一段`
+    : `只重新提交 ${section} 这一段即可，其它分段不受影响`;
 }
 
 function domainMutationResponse(
