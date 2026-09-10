@@ -59,3 +59,24 @@ test('恢复提示不是把错误消息重说一遍', () => {
     .map((match) => match[1]);
   assert.deepEqual(duplicated, [], `这些提示只是复述了错误消息：${duplicated.join('；')}`);
 });
+
+test('枚举类提示由实现变量生成，不手写平行清单', () => {
+  /* 手写的取值清单会和实现漂移。现场教训：脚本补丁类型的提示里列了
+     replace_symbol / insert_symbol / delete_symbol，而实现接受的是
+     replace_function / replace_assignment / insert_before_function——
+     三个全对不上，模型照着改只会继续失败，比不给提示更糟。
+     所以「只支持 A、B、C」这种句子必须由变量拼出来，不能写死。 */
+  const source = readFileSync('src/agent/core-service.ts', 'utf8');
+  const offenders: string[] = [];
+  source.split('\n').forEach((line, index) => {
+    // 只看恢复提示所在的字符串字面量（单引号），模板串用反引号不在此列
+    for (const match of line.matchAll(/'[^']*(?:只支持|只能是|从)\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*[、,和或]\s*[A-Za-z_][A-Za-z0-9_]*)+)[^']*'/g)) {
+      offenders.push(`第 ${index + 1} 行：${match[1]}`);
+    }
+  });
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些提示手写了取值清单，请改成从判断用的同一个变量拼出来，例如 \`只支持 \${KINDS.join('、')}\`：\n${offenders.join('\n')}`,
+  );
+});

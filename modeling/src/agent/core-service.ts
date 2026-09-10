@@ -212,6 +212,14 @@ const CHANGE_CONTROL_TOOLS = new Set([
 const MANAGED_DOMAIN_MARKDOWN = /^(?:objects|operations|rules|metrics)\/(?:index|[^/]+)\.md$/u;
 const MANAGED_SCRIPT_PATH = /^scripts\/(?:index\.md|[^/]+\.md|[A-Za-z0-9_.-]+\.py)$/u;
 const MANAGED_SCRIPT_SOURCE_PATH = /^scripts\/[A-Za-z0-9_.-]+\.py$/u;
+/* 取值清单只在这里定义一次：判断和错误提示共用同一个来源。
+   手写一份平行清单迟早会漂——现场就见过提示里列的三个补丁类型全都不存在，
+   模型照着改必然继续失败，比不给提示更糟。 */
+const SOURCE_BINDING_ROLES = ['primary', 'extension'];
+const CANDIDATE_STATUSES = ['pending', 'accepted', 'revision_requested', 'rejected', 'superseded'];
+const DOMAIN_KINDS = ['object', 'rule', 'operation', 'metric'];
+const SCRIPT_FLAG_ACTIONS = ['store_true', 'store_false'];
+
 type GateResult = {
   pass: boolean;
   blockers: string[];
@@ -1091,8 +1099,9 @@ export class AgentCoreService {
     const level = String(args.level ?? '').trim();
     const code = String(args.code ?? '').trim();
     const objectKey = String(args.object_key ?? '').trim();
-    if (level && !['error', 'warning'].includes(level)) {
-      throw new AgentCoreError('INVALID_INPUT', `不支持的语义问题级别：${level}`, ['level 只支持 error 或 warning；不传表示不按级别过滤'], 400);
+    const semanticLevels = ['error', 'warning'];
+    if (level && !semanticLevels.includes(level)) {
+      throw new AgentCoreError('INVALID_INPUT', `不支持的语义问题级别：${level}`, [`level 只支持 ${semanticLevels.join(' 或 ')}；不传表示不按级别过滤`], 400, { allowed_levels: semanticLevels });
     }
     const offset = boundedInteger(args.offset, 0, 100_000, 0);
     const limit = boundedInteger(args.limit, 1, 100, 50);
@@ -3098,14 +3107,17 @@ export class AgentCoreService {
     if (!rawEdits.length || rawEdits.length > 20) {
       throw new AgentCoreError('INVALID_SCRIPT_PATCH', 'edits 必须包含 1 到 20 个符号补丁', ['把补丁拆成每批不超过 20 个符号；不要一次提交整份源码'], 400);
     }
+    // 允许的补丁类型只有一处定义，提示直接从它生成，避免人写的清单和实现漂移
+    const editableKinds = ['replace_function', 'replace_assignment', 'insert_before_function'];
     const edits: PythonSourceEdit[] = rawEdits.map((raw, index) => {
       const kind = text(raw.kind, `edits[${index}].kind`);
-      if (!['replace_function', 'replace_assignment', 'insert_before_function'].includes(kind)) {
+      if (!editableKinds.includes(kind)) {
         throw new AgentCoreError(
           'INVALID_SCRIPT_PATCH',
           `edits[${index}].kind 不属于允许的脚本补丁类型`,
-          ['kind 只支持 replace_symbol、insert_symbol 和 delete_symbol'],
+          [`kind 只支持 ${editableKinds.join('、')}`],
           400,
+          { allowed_kinds: editableKinds, actual_kind: kind },
         );
       }
       const symbol = text(raw.symbol, `edits[${index}].symbol`);
@@ -5316,12 +5328,13 @@ export class AgentCoreService {
       const documentId = text(raw.document_id, `${prefix}.document_id`);
       const tableName = text(raw.table, `${prefix}.table`);
       const role = String(raw.role ?? '');
-      if (!['primary', 'extension'].includes(role)) {
+      if (!SOURCE_BINDING_ROLES.includes(role)) {
         throw new AgentCoreError(
           'INVALID_OBJECT_SOURCE_BINDING',
-          `${prefix}.role 必须是 primary 或 extension`,
-          ['role 只支持 primary 或 extension：主表用 primary，扩展表用 extension'],
+          `${prefix}.role 必须是 ${SOURCE_BINDING_ROLES.join(' 或 ')}`,
+          [`role 只支持 ${SOURCE_BINDING_ROLES.join(' 或 ')}：主表用 primary，扩展表用 extension`],
           400,
+          { allowed_roles: SOURCE_BINDING_ROLES, actual_role: role },
         );
       }
       const sourceIdentity = `${documentId}\u0000${tableName}`;
@@ -8543,14 +8556,15 @@ function ontologyObjectPath(key: string): string {
 function candidateStatusArg(value: unknown): string {
   const normalized = String(value ?? '').trim();
   if (!normalized) return '';
-  if (['pending', 'accepted', 'revision_requested', 'rejected', 'superseded'].includes(normalized)) {
+  if (CANDIDATE_STATUSES.includes(normalized)) {
     return normalized;
   }
   throw new AgentCoreError(
     'INVALID_INPUT',
-    'status 只支持 pending、accepted、revision_requested、rejected、superseded',
-    ['status 从 pending、accepted、revision_requested、rejected、superseded 中选一个'],
+    `status 只支持 ${CANDIDATE_STATUSES.join('、')}`,
+    [`status 从 ${CANDIDATE_STATUSES.join('、')} 中选一个`],
     400,
+    { allowed_statuses: CANDIDATE_STATUSES, actual_status: normalized },
   );
 }
 
@@ -8883,12 +8897,13 @@ function scriptContractFromArgs(
     }
     const parameterType = text(parameter.type, `parameters[${index}].type`);
     const rawAction = optionalInputText(parameter.action)?.toLowerCase();
-    if (rawAction && rawAction !== 'store_true' && rawAction !== 'store_false') {
+    if (rawAction && !SCRIPT_FLAG_ACTIONS.includes(rawAction)) {
       throw new AgentCoreError(
         'INVALID_SCRIPT_CONTRACT',
-        `parameters[${index}].action 只能是 store_true 或 store_false`,
-        ['action 只支持 store_true 和 store_false'],
+        `parameters[${index}].action 只能是 ${SCRIPT_FLAG_ACTIONS.join(' 或 ')}`,
+        [`action 只支持 ${SCRIPT_FLAG_ACTIONS.join(' 和 ')}`],
         400,
+        { allowed_actions: SCRIPT_FLAG_ACTIONS, actual_action: rawAction },
       );
     }
     const action: SpecScript['parameters'][number]['action'] =
@@ -9288,12 +9303,13 @@ function assertDomainResourceHash(
 
 function domainKindArg(value: unknown): DomainKind {
   const normalized = String(value ?? '').trim();
-  if (['object', 'rule', 'operation', 'metric'].includes(normalized)) return normalized as DomainKind;
+  if (DOMAIN_KINDS.includes(normalized)) return normalized as DomainKind;
   throw new AgentCoreError(
     'INVALID_INPUT',
-    'kind 必须是 object、rule、operation 或 metric',
-    ['kind 从 object、rule、operation、metric 中选一个'],
+    `kind 必须是 ${DOMAIN_KINDS.join('、')} 之一`,
+    [`kind 从 ${DOMAIN_KINDS.join('、')} 中选一个`],
     400,
+    { allowed_kinds: DOMAIN_KINDS, actual_kind: normalized },
   );
 }
 
