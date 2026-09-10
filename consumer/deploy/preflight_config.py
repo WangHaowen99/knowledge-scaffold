@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
@@ -642,7 +643,7 @@ def main(argv: list[str] | None = None) -> int:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(rendered, encoding="utf-8")
         args.report.chmod(0o600)
-    print(rendered, end="")
+    sys.stdout.write(rendered)
     return 0 if report["ok"] else 2
 
 

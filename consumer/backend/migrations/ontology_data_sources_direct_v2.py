@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -817,7 +818,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.report:
         _write_bytes_atomic(args.report, rendered.encode("utf-8"), mode=0o600)
-    print(rendered, end="")
+    sys.stdout.write(rendered)
     return code
 
 

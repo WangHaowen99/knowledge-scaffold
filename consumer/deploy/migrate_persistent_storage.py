@@ -8,6 +8,7 @@ import hashlib
 import json
 import posixpath
 import shutil
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -403,8 +404,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.print_legacy_export_paths:
         resolved = resolve_legacy_container_storage_paths(args.root)
-        print("CHAT_STORAGE_DIR={}".format(resolved["chat_storage_dir"]))
-        print("EXECUTION_STORAGE_DIR={}".format(resolved["execution_storage_dir"]))
+        sys.stdout.write("CHAT_STORAGE_DIR={}\n".format(resolved["chat_storage_dir"]))
+        sys.stdout.write("EXECUTION_STORAGE_DIR={}\n".format(resolved["execution_storage_dir"]))
         return 0
     if args.report is None:
         raise SystemExit("--report is required unless --print-legacy-export-paths is used")

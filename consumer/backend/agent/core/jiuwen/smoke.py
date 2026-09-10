@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any, Optional
 
 from config import AppConfig, AgentConfig
@@ -110,7 +111,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except JiuwenBackendUnavailable as exc:
         payload = {"ok": False, "error": str(exc)}
         exit_code = 1
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return exit_code
 
 

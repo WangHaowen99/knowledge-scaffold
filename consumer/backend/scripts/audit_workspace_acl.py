@@ -296,14 +296,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         report = audit_workspace_acl(args.auth_users_file, args.workspaces_root)
     except ValueError as exc:
-        print(json.dumps({"clean": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        rendered_error = json.dumps(
+            {"clean": False, "error": str(exc)},
+            ensure_ascii=False,
+        )
+        sys.stderr.write(rendered_error + "\n")
         return 1
 
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
-    print(rendered, end="")
+    sys.stdout.write(rendered)
     return 0 if report["clean"] else 2
 
 

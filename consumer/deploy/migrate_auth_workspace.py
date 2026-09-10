@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -575,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
         to_version=args.to_version,
     )
     write_report(args.report, report)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     return code
 
 

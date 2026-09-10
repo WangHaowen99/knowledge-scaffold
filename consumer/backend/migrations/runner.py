@@ -13,6 +13,7 @@ import importlib
 import json
 import logging
 import os
+import sys
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -492,7 +493,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     if args.report:
         _write_report_atomic(args.report, report)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     return code
 
 

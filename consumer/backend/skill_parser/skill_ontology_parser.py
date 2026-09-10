@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .mapping import build_file_mapping
@@ -47,7 +48,7 @@ def main() -> None:
         target_root=target_root,
         write_mapping_json=bool(args.write_mapping_json),
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
 
 
 __all__ = [

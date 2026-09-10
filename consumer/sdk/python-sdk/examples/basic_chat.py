@@ -1,3 +1,5 @@
+import sys
+
 from onto_agent_sdk import OntoAgentClient
 
 
@@ -13,7 +15,7 @@ def main() -> None:
         message="请分析这个项目",
     ) as stream:
         for event in stream:
-            print(event.kind, event.payload)
+            sys.stdout.write(" ".join((str(event.kind), str(event.payload))) + "\n")
 
 
 if __name__ == "__main__":

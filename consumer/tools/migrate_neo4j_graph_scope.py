@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any, Mapping
 
 
@@ -31,7 +32,7 @@ def main() -> None:
         result = migrate_scope(driver, args)
     finally:
         driver.close()
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
 
 
 def migrate_scope(driver: Any, args: argparse.Namespace) -> dict[str, Any]:
