@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from deploy_synthetic_credentials import AUTH_ADMIN_TOKEN, BOOTSTRAP_ADMIN_PASSWORD
+from deploy_synthetic_credentials import AUTH_ADMIN_TOKEN, BOOTSTRAP_ADMIN_SECRET
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
@@ -373,7 +373,7 @@ def test_source_deploy_allows_admin_to_configure_llm_after_startup(
     (backend_root / ".env").write_text(
         "AUTH_SERVER_URL=http://auth-server:5056\n"
         f"AUTH_SERVER_ADMIN_TOKEN={AUTH_ADMIN_TOKEN}\n"
-        f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n"
+        f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_SECRET}\n"
         "MODELING_LLM_BASE_URL=\n"
         "MODELING_LLM_MODEL=\n",
         encoding="utf-8",
