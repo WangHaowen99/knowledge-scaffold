@@ -9,8 +9,9 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
+import modeling_agent.service as service_module
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
-from modeling_agent.agent import _system_prompt, build_model, context_engine_config
+from modeling_agent.agent import _system_prompt, build_model, context_engine_config, output_budget_for_phase
 from modeling_agent.rails import (
     AskRail,
     ConfirmationRail,
@@ -21,8 +22,14 @@ from modeling_agent.rails import (
     tool_trace_group_id,
 )
 from modeling_agent.errors import AgentRuntimeError
-from modeling_agent.schemas import RUN_RUNNING, RunRecord
-from modeling_agent.service import LiveRun, PURPOSE_REVIEW_ALLOWED_TOOLS, _required_tools_for_user_intent
+from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
+from modeling_agent.service import (
+    AgentService,
+    LiveRun,
+    PURPOSE_REVIEW_ALLOWED_TOOLS,
+    _absorb_plan_progress,
+    _required_tools_for_user_intent,
+)
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -39,6 +46,57 @@ from conftest import FakeGateway, ScriptedModel, ToolTurn, service
 
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_schema_semantic_confirmation_does_not_require_relation_suggestion() -> None:
+    live = SimpleNamespace(
+        required_tools=set(),
+        attempted_tools={"suggest_object_relations"},
+        observed_tools={"suggest_object_relations"},
+        stable_read_cache={"stale": {"ok": True}},
+        situation=service_module.RunSituation(),
+        recent_tool_calls=[],
+        recent_outputs=[],
+    )
+    result = {"ok": True}
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "confirm_schema_semantics",
+        {},
+        result,
+    )
+
+    assert live.required_tools == set()
+    assert live.attempted_tools == {"suggest_object_relations"}
+    assert live.observed_tools == {"suggest_object_relations"}
+    assert live.stable_read_cache == {"stale": {"ok": True}}
+
+
+async def test_explicit_relation_suggestion_does_not_become_required() -> None:
+    live = SimpleNamespace(
+        required_tools=set(),
+        attempted_tools={"suggest_object_relations"},
+        observed_tools={"suggest_object_relations"},
+        stable_read_cache={"stale": {"ok": True}},
+        situation=service_module.RunSituation(),
+        recent_tool_calls=[],
+        recent_outputs=[],
+    )
+
+    await AgentService._after_core_tool(  # noqa: SLF001
+        None,
+        live,
+        "suggest_object_relations",
+        {},
+        {"ok": True, "hasMore": True, "nextCursor": "synthetic-next-page"},
+    )
+
+    assert live.required_tools == set()
+    assert live.attempted_tools == {"suggest_object_relations"}
+    assert live.observed_tools == {"suggest_object_relations"}
+    assert live.stable_read_cache == {"stale": {"ok": True}}
 
 
 async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: float = 15) -> dict:
@@ -79,6 +137,7 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert "patch_rule" not in validation
     assert {
         "list_domain_resources", "get_domain_resource", "define_script_contract",
+        "get_product_ledger", "get_schema_semantics",
         "analyze_deterministic_capabilities", "confirm_deterministic_scope",
         "get_script_edit_context", "stage_script_patch", "run_script_test",
         "run_evaluation", "get_evaluation_results", "cancel_evaluation",
@@ -122,6 +181,40 @@ async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypa
     assert case_schema["additionalProperties"] is False
     assert "argv" not in case_schema["properties"]
     assert "function" not in case_schema["properties"]
+
+
+async def test_schema_semantic_tool_uses_dedicated_field_update_contract() -> None:
+    specs = {spec.name: spec for spec in CORE_TOOL_SPECS}
+    actions = specs["stage_schema_semantic_changes"].properties[
+        "objects"
+    ]["items"]["properties"]["actions"]
+    assert actions["maxItems"] == 500
+
+    variants = actions["items"]["oneOf"]
+    update = next(
+        variant for variant in variants
+        if variant["properties"]["op"]["enum"] == ["update_field"]
+    )
+    # #32：字段级乐观锁改为可选——补空白语义时逐字段带锁会因为一次成功写入
+    # 让剩余字段哈希整批作废，批量被迫退化为逐个提交。对象级
+    # expected_resource_hash 仍然必填，丢失更新的防护没有削弱。
+    assert update["required"] == ["op", "field_key", "changes"]
+    assert set(update["properties"]) == {
+        "op", "field_key", "expected_field_hash", "changes",
+    }
+    assert update["additionalProperties"] is False
+    assert update["properties"]["changes"] == {
+        "type": "object",
+        "properties": {
+            "cn_name": tools_module.STRING,
+            "note": tools_module.STRING,
+            "alias": tools_module.STRING,
+            "required": {"type": "boolean"},
+        },
+        "minProperties": 1,
+        "additionalProperties": False,
+    }
+    assert "deferred_warnings" not in specs["confirm_schema_semantics"].properties
 
 
 async def test_phase_transition_forces_model_boundary_before_using_stale_tools() -> None:
@@ -230,6 +323,16 @@ async def test_model_uses_stream_specific_timeouts(settings) -> None:
     assert context.default_window_message_num == 48
     assert context.default_window_round_num == 10
     assert context.enable_reload is False
+
+
+async def test_model_output_budget_is_phase_specific(settings) -> None:
+    assert output_budget_for_phase(settings, "goal") == 8_192
+    assert output_budget_for_phase(settings, "process") == 8_192
+    assert settings.analyst_output_tokens == 8_192
+    assert output_budget_for_phase(settings, "knowledge") == 8_192
+    assert output_budget_for_phase(settings, "validation") == 8_192
+    model = build_model(settings, output_tokens=1_024)
+    assert model.model_config.max_tokens == 1_024
 
 
 async def test_model_passes_thinking_request_config(settings) -> None:
@@ -458,6 +561,8 @@ async def test_query_eval_db_description_is_mysql_mirror_diagnostic() -> None:
     assert "NL2SQL 服务内部管理" in spec.description
     assert "query_eval_db 只用于诊断" in prompt
     assert "get_project_state 返回的 dataSource 摘要" in prompt
+    assert "provider 表示项目真实评测数据源的技术类型" in prompt
+    assert "default_provider_alias/provider_alias 只是知识包内部逻辑数据源别名" in prompt
 
 
 async def test_project_state_includes_core_data_source_summary(settings) -> None:
@@ -466,6 +571,7 @@ async def test_project_state_includes_core_data_source_summary(settings) -> None
             "configured": True,
             "mode": "connection",
             "provider": "neo4j",
+            "providerMeaning": "project_evaluation_data_source_type",
             "workspaceLinked": True,
             "ontologyLinked": True,
             "neo4j": {
@@ -486,6 +592,7 @@ async def test_project_state_includes_core_data_source_summary(settings) -> None
         ))
 
         assert state["dataSource"]["provider"] == "neo4j"
+        assert state["dataSource"]["providerMeaning"] == "project_evaluation_data_source_type"
         assert state["dataSource"]["neo4j"]["workspaceIsolationConfigured"] is True
         assert any(call["tool"] == "project_data_source_status" for call in gateway.calls)
     finally:
@@ -1264,6 +1371,60 @@ async def test_ask_rejects_technical_question_while_recovery_tool_is_available()
     assert result["issueId"] == issue_id
     assert result["issueStatus"] == "repairing"
     assert result["findings"][0]["ruleId"] == "interaction.technical_recovery.required"
+
+
+async def test_ask_rejects_platform_capability_question_without_recovery_record() -> None:
+    context = ToolContext(
+        project_id="project_capability_question",
+        run_id="run_capability_question",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    tool_call = type("Call", (), {
+        "arguments": json.dumps({
+            "question": "本会话工具集中没有该读取能力，请问平台侧能力是否已开放？",
+            "kind": "clarification",
+            "evidence": [],
+        }, ensure_ascii=False),
+    })()
+
+    decision = await AskRail(context).resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    result = json.loads(decision.tool_result)
+    assert result["error"] == "TECHNICAL_RECOVERY_REQUIRED"
+    assert result["findings"][0]["ruleId"] == "interaction.technical_recovery.required"
+    assert context.technical_capability_claimed is True
+
+
+async def test_option_value_is_saved_as_latest_interaction_action_key(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_option_action_key",
+            project_id="project_option_action_key",
+            session_id="session_option_action_key",
+            status=RUN_RUNNING,
+            prompt="确认脚本范围",
+            token_fingerprint="fingerprint",
+        ))
+        interaction = InteractionRecord(
+            id="interaction_option_action_key",
+            project_id=run.project_id,
+            run_id=run.id,
+            tool_call_id="call_option_action_key",
+            kind="scope_confirmation",
+            payload={"question": "是否调整脚本范围？"},
+        )
+        runtime._persist_latest_interaction(  # noqa: SLF001
+            run,
+            interaction=interaction,
+            answer={"value": "adjust", "text": "保留可选输入"},
+        )
+        snapshot = runtime.store.require_run(run.id).latest_interaction
+        assert snapshot["actionKey"] == "adjust"
+    finally:
+        await runtime.shutdown()
 
 
 async def test_structured_issue_action_resumes_terminal_run_without_fake_user_message(settings) -> None:
@@ -2504,10 +2665,41 @@ async def test_source_tools_bound_leader_context_without_losing_schema_fields() 
     assert len(rows["rows"]) == 5
     calls = {call["tool"]: call["arguments"] for call in gateway.calls}
     assert calls["read_document"]["limit"] == 6_000
-    assert calls["read_table_rows"]["limit"] == 5
+    assert calls["read_table_rows"]["limit"] == 20
 
     await read_document.invoke({"filename": "产品手册.docx", "limit": "invalid"})
     assert gateway.calls[-1]["arguments"]["limit"] == 6_000
+
+
+async def test_schema_overview_tool_is_available_to_read_only_material_agents() -> None:
+    names = {spec.name for spec in CORE_TOOL_SPECS}
+    assert "get_schema_overview" in names
+    assert "read_table_rows" in names
+
+
+async def test_repeated_read_table_rows_uses_run_cache(settings) -> None:
+    gateway = FakeGateway({
+        "read_table_rows": {
+            "table": "客户表",
+            "rows": [["C001"]],
+            "nextOffset": None,
+            "totalRows": 1,
+        },
+    })
+    context = ToolContext(
+        project_id="project_read_cache",
+        run_id="run_read_cache",
+        token="token_read_cache",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    read_rows = CoreTool(next(spec for spec in CORE_TOOL_SPECS if spec.name == "read_table_rows"), context)
+
+    first = json.loads(await read_rows.invoke({"table": "客户表", "offset": 0, "limit": 50}))
+    second = json.loads(await read_rows.invoke({"table": "客户表", "offset": 0, "limit": 50}))
+
+    assert first == second
+    assert len([call for call in gateway.calls if call["tool"] == "read_table_rows"]) == 1
 
 
 async def test_free_input_while_waiting_resumes_as_interjection(settings) -> None:
@@ -4699,6 +4891,103 @@ async def test_choice_text_with_ask_card_is_not_retried(settings) -> None:
         await runtime.shutdown()
 
 
+async def test_missing_confirmation_card_suspends_with_recovery_actions(settings) -> None:
+    model = ScriptedModel(
+        [[], [], []],
+        final="确认卡已生成，等待您确认。",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_confirmation_review_recovery",
+            token="token_1",
+            message="继续复核当前候选",
+        )
+        suspended = await wait_for_status(runtime, started["id"], {"suspended", "failed"})
+
+        assert suspended["status"] == RUN_SUSPENDED
+        recoveries = runtime.store.technical_recoveries(started["id"])
+        assert len(recoveries) == 1
+        issue_id, recovery = next(iter(recoveries.items()))
+        assert issue_id == f"confirmation-review-{started['id']}"
+        assert recovery["strategy"] == "confirmation_review"
+        assert [item["id"] for item in recovery["recoveryActions"]] == [
+            "retry_from_latest", "keep_current_progress",
+        ]
+        events = runtime.store.events_after("project_confirmation_review_recovery", 0)
+        waiting = next(
+            event.payload for event in events
+            if event.kind == "tool" and event.payload.get("issueId") == issue_id
+        )
+        assert waiting["phase"] == "waiting"
+        assert waiting["code"] == "CONFIRMATION_CARD_NOT_CREATED"
+        assert waiting["projectPhase"] == "intake"
+        assert waiting["toolProfile"] == "domain-v2"
+        assert not any(
+            event.kind == "message"
+            and "助手未能形成整体确认" in str(event.payload)
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_confirmation_review_retries_from_latest_and_recreates_card(settings) -> None:
+    group = {"id": "script", "tier": "caliber", "title": "脚本范围"}
+    model = ScriptedModel(
+        [
+            [], [], [],
+            [ToolTurn("list_domain_resources", {"kind": "operation"})],
+            [ToolTurn("request_confirmation", {"summary": "请确认脚本范围"})],
+        ],
+        final="确认卡已生成，等待您确认。",
+    )
+    gateway = FakeGateway({
+        "list_domain_resources": {
+            "working_revision": "working-revision",
+            "kind": "operation",
+            "items": [],
+            "total": 0,
+        },
+        "prepare_confirmation_groups": {"change_groups": [group]},
+        "request_confirmation_preflight": {
+            "candidate_revision": "candidate-script",
+            "auto_approved": False,
+            "change_groups": [group],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_confirmation_review_resume",
+            token="token_1",
+            message="继续复核当前候选",
+        )
+        suspended = await wait_for_status(runtime, started["id"], {"suspended", "failed"})
+        assert suspended["status"] == RUN_SUSPENDED
+        issue_id = next(iter(runtime.store.technical_recoveries(started["id"])))
+
+        resumed = await runtime.resume_issue(
+            project_id="project_confirmation_review_resume",
+            token="token_2",
+            issue_id=issue_id,
+            action_id="retry_from_latest",
+        )
+        assert resumed["mode"] == "checkpoint_resume"
+        assert resumed["run"]["id"] == started["id"]
+
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting"
+        interaction = runtime.store.pending_interaction("project_confirmation_review_resume")
+        assert interaction is not None and interaction.kind == "confirmation"
+        assert [call["tool"] for call in gateway.calls].count("list_domain_resources") == 1
+        assert runtime.store.technical_recoveries(started["id"]) == {}
+    finally:
+        await runtime.shutdown()
+
+
 async def test_text_claimed_confirmation_card_is_retried_until_real_card(settings) -> None:
     assert claims_confirmation_card("流程图已在中栏展示，确认卡已生成，等待您确认。")
     assert not claims_confirmation_card("流程确认后我会继续知识建模。")
@@ -5032,3 +5321,420 @@ async def test_state_revision_conflict_is_returned_for_agent_retry() -> None:
     assert result["code"] == "STATE_REVISION_CONFLICT"
     assert result["currentRevision"] == 3
     assert "get_project_state" in result["instruction"]
+
+
+def test_plan_progress_absorbed_from_core_result() -> None:
+    live = LiveRun(run_id="run_plan", project_id="project_plan", token="token")
+    _absorb_plan_progress(live, {"plan": {
+        "remaining_count": 3,
+        "tasks": [
+            {"title": "同步 Schema 对象", "required": True, "status": "accepted"},
+            {"title": "政府采购订单融资规则", "required": True, "status": "pending"},
+            {"title": "公务卡免息还款期", "required": True, "status": "pending"},
+        ],
+    }})
+    assert live.situation.plan_remaining == 3
+    assert live.situation.plan_next_task == "政府采购订单融资规则"
+
+    # 计划做完后必须清零，否则轮次永远收不了尾。
+    _absorb_plan_progress(live, {"plan": {"remaining_count": 0, "tasks": []}})
+    assert live.situation.plan_remaining == 0
+    assert live.situation.plan_next_task == ""
+
+    # 不带计划快照的结果不能改动已记录的进度。
+    live.situation.plan_remaining = 2
+    _absorb_plan_progress(live, {"ok": True})
+    assert live.situation.plan_remaining == 2
+
+
+def test_autonomous_continuation_prompt_names_next_plan_task(settings) -> None:
+    runtime = AgentService(settings)
+    runtime.store.create_run(RunRecord(
+        id="run_plan_prompt",
+        project_id="project_plan_prompt",
+        session_id="session_plan_prompt",
+        status=RUN_RUNNING,
+        prompt="继续执行建模计划",
+        token_fingerprint="fingerprint",
+    ))
+    live = LiveRun(run_id="run_plan_prompt", project_id="project_plan_prompt", token="token")
+    live.situation.plan_remaining = 4
+    live.situation.plan_next_task = "政府采购订单融资规则"
+
+    prompt = runtime._autonomous_continuation_prompt(  # noqa: SLF001
+        "project_plan_prompt", live, stalled=2,
+    )
+    assert "4 项必选任务" in prompt
+    assert "政府采购订单融资规则" in prompt
+    assert "连续 2 轮" in prompt
+
+    # 没有待办时不应凭空出现计划段落。
+    live.situation.plan_remaining = 0
+    live.situation.plan_next_task = ""
+    clean = runtime._autonomous_continuation_prompt(  # noqa: SLF001
+        "project_plan_prompt", live, stalled=0,
+    )
+    assert "受控建模计划待办" not in clean
+
+
+def test_full_read_intent_ignores_assistant_question_text() -> None:
+    """#1：助手问题文案复述「需要全文精读」时，不得强制拉起全文精读。"""
+    from modeling_agent.service import _required_tools_for_user_intent
+
+    assistant_question = "已将《资料.docx》设为通用业务依据，需要全文精读的资料继续按已保存设置执行"
+    answer_text = '{"choice": "confirm_all"}'
+
+    required = _required_tools_for_user_intent(
+        f"{assistant_question}\n{answer_text}",
+        full_read_text=answer_text,
+    )
+    assert "read_documents_fully" not in required
+
+    # 专家自己要求精读时仍然必须拉起
+    user_answer = '{"note": "请对这份文档做全文精读"}'
+    required_by_user = _required_tools_for_user_intent(
+        f"{assistant_question}\n{user_answer}",
+        full_read_text=user_answer,
+    )
+    assert "read_documents_fully" in required_by_user
+    assert "set_material_directive" in required_by_user
+
+    # 不传 full_read_text 时保持原行为，其它调用点不受影响
+    assert "read_documents_fully" in _required_tools_for_user_intent("请全文精读这份文档")
+
+
+def test_ambiguous_tokens_survive_english_prose() -> None:
+    """#16：普通英文单词不得被术语替换改成病句，中文语境下仍要替换。"""
+    from modeling_agent.visible_text import VisibleTextSanitizer
+
+    def clean(text: str) -> str:
+        sanitizer = VisibleTextSanitizer()
+        return sanitizer.feed(text) + sanitizer.finish()
+
+    english = "I will ask the user to confirm; the revision is stable and the diff is small"
+    assert clean(english) == english
+
+    chinese = clean("调用 ask 生成问题卡，再看 revision 和 diff")
+    assert "业务问题" in chinese and "版本" in chinese and "查看变更对照" in chinese
+
+    # 明确的内部工具名无论中英文语境都必须脱敏
+    assert "全文精读资料" in clean("calling read_documents_fully now")
+
+
+def test_reasoning_segments_are_separated() -> None:
+    """#6：多轮推理拼进同一条消息时要补断句，不能粘成一句话。"""
+    from modeling_agent.service import _segment_separator
+
+    assert _segment_separator("执行全文精读。") == "\n\n"
+    assert _segment_separator("已经换行了\n") == ""
+    assert _segment_separator("") == ""
+
+
+def test_language_reminder_appended_once() -> None:
+    """#4：每轮 query 末尾就近提醒输出语言，且不重复追加。"""
+    from modeling_agent.service import _with_language_reminder
+
+    once = _with_language_reminder("请继续推进建模计划。")
+    assert "【输出语言】" in once
+    assert once.count("【输出语言】") == 1
+    # 已带提醒的 query 不再叠加
+    assert _with_language_reminder(once) == once
+    # 非字符串 query 原样返回
+    payload = {"query": "x"}
+    assert _with_language_reminder(payload) is payload
+    assert _with_language_reminder("") == ""
+
+
+def test_schema_semantic_field_hash_is_optional() -> None:
+    """#32：字段级乐观锁必须可选，否则一次成功写入会让剩余封条整批作废。"""
+    from modeling_agent.tools import SCHEMA_SEMANTIC_ACTIONS
+
+    update_field = next(
+        item for item in SCHEMA_SEMANTIC_ACTIONS["items"]["oneOf"]
+        if "update_field" in item["properties"].get("op", {}).get("enum", [])
+    )
+    assert "expected_field_hash" not in update_field["required"]
+    # 仍然允许传，只是不强制
+    assert "expected_field_hash" in update_field["properties"]
+    assert update_field["required"] == ["op", "field_key", "changes"]
+
+
+def test_schema_semantic_batch_guidance_is_actionable() -> None:
+    """#31：工具描述要给模型真能产出的批量规模，而不是只写硬上限。"""
+    from modeling_agent.tools import CORE_TOOL_SPECS
+
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "stage_schema_semantic_changes")
+    assert "建议单批不超过 3 个对象、60 个字段" in spec.description
+    assert "截断" in spec.description
+    assert "expected_field_hash 可以省略" in spec.description
+
+
+def test_full_read_requirement_follows_saved_reading_mode() -> None:
+    """#1：没有任何资料设为全文精读时，文本里的「全文精读」不得强推该工具。"""
+    from modeling_agent.service import (
+        LiveRun, _absorb_reading_modes, _required_tools_for_user_intent,
+    )
+
+    live = LiveRun(run_id="run_r", project_id="project_r", token="token")
+    assert live.situation.materials_observed is False
+    text = "请全文精读这份文档"
+
+    # 还没观察到资料设置时保持原状，避免吞掉用户真实诉求
+    notes: list[str] = []
+    assert "read_documents_fully" in _required_tools_for_user_intent(
+        text, situation=live.situation, notes=notes,
+    )
+    assert notes == []
+
+    # 观察到全部为 on_demand → 撤掉强制精读，并留下可执行的说明
+    _absorb_reading_modes(live, {"documents": [
+        {"filename": "导则.md", "readingMode": "on_demand"},
+        {"filename": "规则.md", "readingMode": "on_demand"},
+    ]})
+    assert live.situation.materials_observed is True
+    assert live.situation.full_read_materials == ()
+    notes = []
+    required = _required_tools_for_user_intent(text, situation=live.situation, notes=notes)
+    assert "read_documents_fully" not in required
+    assert notes and "set_material_directive" in notes[0]
+
+    # 确有 full 资料时仍然强制
+    _absorb_reading_modes(live, {"documents": [
+        {"filename": "导则.md", "readingMode": "full"},
+        {"filename": "规则.md", "readingMode": "on_demand"},
+    ]})
+    assert live.situation.full_read_materials == ("导则.md",)
+    assert "read_documents_fully" in _required_tools_for_user_intent(
+        text, situation=live.situation,
+    )
+
+
+def test_purpose_review_continuation_avoids_full_read_wording() -> None:
+    """#1：前端代发的续跑文案不得命中全文精读意图。"""
+    import re
+    from pathlib import Path
+    from modeling_agent.service import _FULL_READ_INTENT
+
+    store = Path(__file__).resolve().parents[2] / "frontend/src/workbench/lib/appStore.js"
+    text = store.read_text(encoding="utf-8")
+    match = re.search(r"const PURPOSE_REVIEW_CONTINUATION = '([^']+)'", text)
+    assert match, "没有找到续跑文案常量"
+    assert not _FULL_READ_INTENT.search(match.group(1))
+
+
+def test_stage_transition_counts_as_progress() -> None:
+    """#35：切换阶段是前进；刚进新阶段不能被当成无事可做。"""
+    from modeling_agent.service import (
+        AUTONOMOUS_PROGRESS_TOOLS, LiveRun, _absorb_stage_delivery,
+    )
+
+    assert "transition_project_state" in AUTONOMOUS_PROGRESS_TOOLS
+
+    live = LiveRun(run_id="run_s", project_id="project_s", token="token")
+    # 默认不给特殊待遇，不改变既有收尾节奏
+    assert live.situation.stage_started_without_delivery is False
+
+    # 切到新阶段 → 新阶段尚无产出，放宽停滞上限
+    _absorb_stage_delivery(live, "transition_project_state", {})
+    assert live.situation.stage_started_without_delivery is True
+
+    # 只读工具不算产出，仍然保持放宽
+    _absorb_stage_delivery(live, "gate_status", {})
+    assert live.situation.stage_started_without_delivery is True
+
+    # 新阶段有写入 → 回到常规节奏
+    _absorb_stage_delivery(live, "write_file", {})
+    assert live.situation.stage_started_without_delivery is False
+
+
+def test_loop_detection_distinguishes_stuck_from_quiet() -> None:
+    """打转和没产出是两回事：反复同参调用、反复同样输出才是卡住。"""
+    from modeling_agent.service import (
+        LiveRun, _detect_loop, _record_tool_call, _record_turn_output,
+    )
+
+    live = LiveRun(run_id="run_l", project_id="project_l", token="token")
+    assert _detect_loop(live) == ""
+
+    # 不同参数的连续只读调用不算打转——那是正常取证
+    for key in ("a", "b", "c", "d"):
+        _record_tool_call(live, "search_documents", {"q": key})
+    assert _detect_loop(live) == ""
+
+    # 同工具同参数连续三次才算
+    for _ in range(3):
+        _record_tool_call(live, "gate_status", {})
+    assert "相同参数调用同一工具" in _detect_loop(live)
+
+    # 输出侧：同一段内容反复出现
+    other = LiveRun(run_id="run_o", project_id="project_o", token="token")
+    for _ in range(3):
+        _record_turn_output(other, "让我重新理解用户的意思。")
+    assert "重复同样的内容" in _detect_loop(other)
+
+    # 空输出不参与判定
+    blank = LiveRun(run_id="run_b", project_id="project_b", token="token")
+    for _ in range(5):
+        _record_turn_output(blank, "   ")
+    assert _detect_loop(blank) == ""
+
+
+def test_intent_rule_precondition_is_three_valued() -> None:
+    """#1 根治：文本只提供线索，状态拥有否决权，拿不准时按规则声明的默认走。"""
+    from modeling_agent.service import RunSituation, Verdict, _FULL_READ_RULE
+
+    unknown = RunSituation()
+    assert unknown.has_full_read_materials() is Verdict.UNKNOWN
+    # 精读规则拿不准时放行：宁可多读一次，不能吞掉用户诉求
+    assert _FULL_READ_RULE.unknown_default is Verdict.ALLOW
+    assert _FULL_READ_RULE.verdict(unknown) is Verdict.ALLOW
+
+    observed = RunSituation(materials_observed=True)
+    assert observed.has_full_read_materials() is Verdict.DENY
+    assert _FULL_READ_RULE.verdict(observed) is Verdict.DENY
+
+    has_full = RunSituation(materials_observed=True, full_read_materials=("a.md",))
+    assert _FULL_READ_RULE.verdict(has_full) is Verdict.ALLOW
+
+
+def test_denied_intent_note_reaches_the_prompt() -> None:
+    """否决必须留痕：说明要并进下一次 query，并且只消费一次。"""
+    from modeling_agent.service import LiveRun, _with_intent_notes
+
+    live = LiveRun(run_id="run_n", project_id="project_n", token="token")
+    assert _with_intent_notes(live, "继续") == "继续"
+
+    live.intent_notes.append("当前没有资料设为全文精读。")
+    merged = _with_intent_notes(live, "继续")
+    assert "【状态核对】" in merged and "全文精读" in merged
+    # 消费一次即清空，不会每轮重复叠加
+    assert live.intent_notes == []
+    assert _with_intent_notes(live, "继续") == "继续"
+
+
+def test_batch_purpose_confirmation_settles_pending_cards(tmp_path) -> None:
+    """#36：批量确认成交后，助手挂起的逐份用途卡必须一并结算。
+
+    只解开数据侧、留着交互侧，那张卡会被当成「仍未解决的原问题」自动恢复，
+    用户刚一次性确认完又被推回同一张卡。
+    """
+    from modeling_agent.schemas import RUN_QUEUED, InteractionRecord, RunRecord
+    from modeling_agent.store import RuntimeStore
+
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    run = store.create_run(RunRecord(
+        id="run_purpose",
+        project_id="project_p",
+        session_id="project:project_p:run:run_purpose",
+        status=RUN_QUEUED,
+        prompt="上传资料",
+        token_fingerprint="111111111111",
+    ))
+    interaction = store.create_interaction(InteractionRecord(
+        id="ix_purpose_1",
+        run_id=run.id,
+        project_id="project_p",
+        tool_call_id="call_1",
+        kind="ask",
+        payload={"question": "第一份资料的用途是？"},
+    ))
+    assert store.pending_interaction("project_p") is not None
+
+    settled = store.settle_interactions_resolved_elsewhere(
+        run.id, reason="资料用途已通过批量确认完成",
+    )
+    assert [item.id for item in settled] == [interaction.id]
+    # 结算后不再是待处理，不会被自动恢复
+    assert store.pending_interaction("project_p") is None
+    assert store.get_interaction(interaction.id).status == "cancelled"
+
+    # 幂等：没有挂起项时返回空，不报错
+    assert store.settle_interactions_resolved_elsewhere(run.id, reason="再来一次") == []
+
+
+def test_loop_detection_catches_paraphrased_repeats() -> None:
+    """#39：真实的打转是「换个说法再说一遍」，只比对逐字相同会全部漏掉。"""
+    from modeling_agent.service import LiveRun, _detect_loop, _record_turn_output
+
+    live = LiveRun(run_id="run_p", project_id="project_p", token="token")
+    _record_turn_output(live, "请您前往评测界面完成以下两步：录入真实场景用例、配置数据源。")
+    _record_turn_output(live, "请您在评测界面完成以下两项：录入真实场景用例，以及配置数据源。")
+    _record_turn_output(live, "请您到评测界面完成这两步：录入真实场景用例、配置数据源即可。")
+    assert "重复同样的内容" in _detect_loop(live)
+
+    # 内容真的不同就不该判为打转
+    other = LiveRun(run_id="run_q", project_id="project_q", token="token")
+    _record_turn_output(other, "已同步 9 个物理对象，接下来补全字段业务语义。")
+    _record_turn_output(other, "字段语义补全完成，现在开始创建营销决策规则。")
+    _record_turn_output(other, "规则创建完成，接下来生成业务操作和确定性脚本。")
+    assert _detect_loop(other) == ""
+
+
+def test_awaiting_user_action_settles_the_turn() -> None:
+    """#39：剩余事项只能由用户在别的界面完成时，应结束本轮而不是反复宣告。"""
+    from modeling_agent.service import LiveRun, _absorb_awaiting_user
+
+    live = LiveRun(run_id="run_w", project_id="project_w", token="token")
+    assert live.situation.awaiting_user_action is False
+
+    _absorb_awaiting_user(live, {
+        "gate": "ready_for_eval",
+        "awaitingUser": True,
+        "blockers": ["先在评测界面录入至少 1 条用户真实场景用例", "先在评测界面完成数据源配置"],
+    })
+    assert live.situation.awaiting_user_action is True
+    assert "录入" in live.situation.awaiting_user_reason
+
+    # 阻塞项被清掉后恢复正常轮转
+    _absorb_awaiting_user(live, {"gate": "ready_for_eval", "awaitingUser": False, "blockers": []})
+    assert live.situation.awaiting_user_action is False
+    assert live.situation.awaiting_user_reason == ""
+
+    # 不带该字段的结果不改变状态
+    live.situation.awaiting_user_action = True
+    _absorb_awaiting_user(live, {"gate": "releasable", "blockers": []})
+    assert live.situation.awaiting_user_action is True
+
+
+def test_purpose_batch_confirmation_is_not_treated_as_interjection() -> None:
+    """#36：批量确认的续跑消息走的是插话分支，会把逐份卡标记为待恢复。
+
+    它不是插话，而是同一个问题的答案：必须给出真实答案让在途的 ask 返回，
+    同时不设置 restore_interaction，否则卡片会被自动恢复推回给用户。
+    """
+    import inspect
+    from modeling_agent.service import AgentService
+
+    source = inspect.getsource(AgentService.steer)
+    assert "resolved_elsewhere = purpose_review_completed" in source
+    assert '"action": "resolved_elsewhere" if resolved_elsewhere else "interject"' in source
+    assert "restore_interaction=None if resolved_elsewhere else interaction" in source
+
+
+def test_repeated_tool_failure_counts_as_loop() -> None:
+    """#40：同一工具反复失败，参数每次都变，「同参数重复」判据完全失效。
+
+    现场是 put_goal_section 连续 22 次 400——报错只说哪个字段不对、
+    不说这一段允许什么，助手只能一次次猜。
+    """
+    from modeling_agent.service import (
+        LOOP_TOOL_FAILURE_THRESHOLD, LiveRun, _detect_loop, _record_tool_outcome,
+    )
+
+    live = LiveRun(run_id="run_f", project_id="project_f", token="token")
+    for _ in range(LOOP_TOOL_FAILURE_THRESHOLD - 1):
+        _record_tool_outcome(live, "put_goal_section", True)
+    assert _detect_loop(live) == ""
+
+    _record_tool_outcome(live, "put_goal_section", True)
+    assert "put_goal_section 连续失败" in _detect_loop(live)
+
+    # 成功一次就清零，正常的自我纠错不受影响
+    _record_tool_outcome(live, "put_goal_section", False)
+    assert _detect_loop(live) == ""
+
+    # 换了工具重新计数，不会把不同工具的失败累加
+    for _ in range(LOOP_TOOL_FAILURE_THRESHOLD - 1):
+        _record_tool_outcome(live, "put_goal_section", True)
+    _record_tool_outcome(live, "create_rule", True)
+    assert _detect_loop(live) == ""

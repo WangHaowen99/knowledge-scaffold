@@ -94,6 +94,8 @@
 .wb .studio-banner.warning summary { cursor: pointer; font-size: var(--t-sm); font-weight: 600; }
 .wb .studio-banner.warning ul { max-height: 116px; margin: var(--s-2) 0 0; padding-left: 20px; overflow-y: auto; color: var(--c-muted); font-size: var(--t-xs); }
 .wb .studio-banner.warning .btn { flex: none; min-height: 24px; padding: 2px 5px; }
+.wb .studio-banner.schema-semantics span { font-weight: 600; }
+.wb .studio-banner.schema-semantics .btn { flex: none; }
 
 .wb .studio-graph { flex: 1; min-height: 0; position: relative; display: flex; overflow: hidden; background: var(--c-bg); }
 .wb .studio-graph:fullscreen { width: 100%; height: 100%; background: var(--c-bg); }
@@ -682,6 +684,31 @@
   line-height: 1.5;
 }
 .wb .studio-dialog footer .btn-p { min-width: 118px; }
+.wb .studio-semantic-dialog { width: min(680px, 100%); max-height: min(720px, 88vh); grid-template-rows: auto minmax(0, 1fr) auto; }
+.wb .studio-semantic-dialog header small { color: var(--c-muted); font-size: var(--t-xs); }
+.wb .studio-semantic-issue-list { min-height: 120px; overflow-y: auto; border-block: 1px solid var(--c-line-soft); }
+.wb .studio-semantic-issue {
+  width: 100%;
+  min-height: 82px;
+  padding: var(--s-3) var(--s-2);
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--c-line-soft);
+  color: var(--c-ink-2);
+  background: transparent;
+}
+.wb .studio-semantic-issue:last-child { border-bottom: 0; }
+.wb .studio-semantic-issue:hover { background: var(--c-surface-2); }
+.wb .studio-semantic-issue > span { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); min-width: 0; }
+.wb .studio-semantic-issue b, .wb .studio-semantic-issue code { overflow-wrap: anywhere; }
+.wb .studio-semantic-issue code { color: var(--c-muted); font-size: var(--t-xs); }
+.wb .studio-semantic-issue em { max-width: 55%; margin-left: auto; color: var(--c-faint); font-size: var(--t-xs); font-style: normal; overflow-wrap: anywhere; }
+.wb .studio-semantic-issue strong { font-size: var(--t-sm); font-weight: 600; }
+.wb .studio-semantic-issue small { color: var(--c-muted); font-size: var(--t-xs); line-height: 1.45; }
+.wb .studio-semantic-dialog footer { min-width: 0; }
+.wb .studio-semantic-page { margin-right: auto; color: var(--c-muted); font-size: var(--t-xs); }
 .wb .studio-delete-impact {
   padding: var(--s-3);
   border: 1px solid var(--c-stale-line);

@@ -84,6 +84,15 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
     from migrations.observability_workspace_config_v1 import MIGRATION_ID as OBSERVABILITY_ID
     from migrations.ontology_data_sources_direct_v2 import MIGRATION_ID as DATA_SOURCE_ID
     from migrations.system_config_model_profiles_v1 import MIGRATION_ID as MODEL_CONFIG_ID
+    from migrations.system_config_model_profile_output_budget_env_v1 import (
+        MIGRATION_ID as MODEL_OUTPUT_BUDGET_ENV_ID,
+    )
+    from migrations.system_config_model_profile_output_budget_v1 import (
+        MIGRATION_ID as MODEL_OUTPUT_BUDGET_ID,
+    )
+    from migrations.workspace_model_profile_output_budget_v1 import (
+        MIGRATION_ID as WORKSPACE_OUTPUT_BUDGET_ID,
+    )
     from migrations.system_config_secret_encryption_v1 import MIGRATION_ID as SECRET_CONFIG_ID
     from migrations.workspace_mcp_endpoint_id_v1 import MIGRATION_ID as WORKSPACE_MCP_ID
     from migrations.runner import (
@@ -96,10 +105,16 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
         WORKSPACE_MCP_ID,
         DATA_SOURCE_ID,
         OBSERVABILITY_ID,
+        MODEL_OUTPUT_BUDGET_ENV_ID,
         MODEL_CONFIG_ID,
+        MODEL_OUTPUT_BUDGET_ID,
+        WORKSPACE_OUTPUT_BUDGET_ID,
         SECRET_CONFIG_ID,
     ]
     assert [migration.phase for migration in REGISTERED_MIGRATIONS] == [
+        MigrationPhase.STARTUP,
+        MigrationPhase.STARTUP,
+        MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
@@ -110,6 +125,9 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
         MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.NON_BLOCKING,
+        MigrationFailurePolicy.BLOCKING,
+        MigrationFailurePolicy.BLOCKING,
+        MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.BLOCKING,
     ]
@@ -578,7 +596,10 @@ def test_registered_issue_1_13_and_14_migrations_preserve_each_others_data(
         "workspace-mcp-endpoint-id-v1",
         "ontology-data-sources-direct-v2",
         "observability-workspace-config-v1",
+        "system-config-model-profile-output-budget-env-v1",
         "system-config-model-profiles-v1",
+        "system-config-model-profile-output-budget-v1",
+        "workspace-model-profile-output-budget-v1",
         "system-config-secret-encryption-v1",
     ]
     assert sources_path.read_bytes() == sources_bytes

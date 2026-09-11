@@ -86,3 +86,75 @@ export function linkEvidenceReferences(value, materials = []) {
   }
   return text;
 }
+
+/** Convert evidence references after Markdown parsing so inline-code delimiters cannot expose encoded links. */
+export function remarkEvidenceLinks(materials = []) {
+  const sources = evidenceSources(materials);
+  return () => (tree) => {
+    if (sources.length) transformEvidenceChildren(tree, materials, sources);
+  };
+}
+
+function evidenceSources(materials) {
+  return materials.flatMap((material) => [material?.id, material?.sourceKey, material?.filename]
+    .filter(Boolean)
+    .map((source) => ({ source: String(source), material })))
+    .sort((left, right) => right.source.length - left.source.length);
+}
+
+function transformEvidenceChildren(parent, materials, sources) {
+  if (!Array.isArray(parent?.children)) return;
+  parent.children = parent.children.flatMap((child) => {
+    if (child?.type === 'text') return evidenceTextNodes(String(child.value || ''), materials, sources);
+    if (child?.type === 'inlineCode') {
+      const reference = exactEvidenceReference(String(child.value || ''), sources);
+      return reference ? [evidenceLinkNode(reference, materials)] : [child];
+    }
+    if (!['code', 'link', 'linkReference', 'definition'].includes(child?.type)) {
+      transformEvidenceChildren(child, materials, sources);
+    }
+    return [child];
+  });
+}
+
+function evidenceTextNodes(value, materials, sources) {
+  const nodes = [];
+  let cursor = 0;
+  while (cursor < value.length) {
+    const match = nextEvidenceReference(value, cursor, sources);
+    if (!match) break;
+    if (match.start > cursor) nodes.push({ type: 'text', value: value.slice(cursor, match.start) });
+    nodes.push(evidenceLinkNode(match.reference, materials));
+    cursor = match.end;
+  }
+  if (!nodes.length) return [{ type: 'text', value }];
+  if (cursor < value.length) nodes.push({ type: 'text', value: value.slice(cursor) });
+  return nodes;
+}
+
+function nextEvidenceReference(value, offset, sources) {
+  let selected = null;
+  for (const { source } of sources) {
+    const prefix = `${MATERIAL_PREFIX}${source}#`;
+    const start = value.indexOf(prefix, offset);
+    if (start < 0 || (selected && start >= selected.start)) continue;
+    let end = start + prefix.length;
+    while (end < value.length && !ANCHOR_END.test(value[end])) end += 1;
+    if (end === start + prefix.length) continue;
+    selected = { start, end, reference: value.slice(start, end) };
+  }
+  return selected;
+}
+
+function exactEvidenceReference(value, sources) {
+  const match = nextEvidenceReference(value, 0, sources);
+  return match?.start === 0 && match.end === value.length ? match.reference : '';
+}
+
+function evidenceLinkNode(reference, materials) {
+  return {
+    type: 'link',
+    url: evidenceHref(reference),
+    children: [{ type: 'text', value: evidenceLabel(reference, materials) }],
+  };
+}

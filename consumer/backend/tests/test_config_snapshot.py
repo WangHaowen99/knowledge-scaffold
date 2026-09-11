@@ -344,24 +344,29 @@ def test_system_config_section_warm_read_copies_only_requested_subtree(
     system_config_module, config_path = _prepare_system_config(monkeypatch, tmp_path)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(system_config_module, "_SYSTEM_CONFIG_PROCESS_GENERATION", 12)
     probe = DeepCopyProbe()
-    manager = ConfigSnapshotManager(
-        source_path=config_path,
-        loader=lambda _environment: {
+
+    def load_probe_config(_environment):
+        return {
             "storage": {
                 "project_root": "/runtime/root",
                 "chat_storage_dir": "data/chats",
             },
             "auth": {"auth_secret": probe},
             "llm": {"profiles": [probe] * 100},
-        },
-        environment={},
+        }
+
+    monkeypatch.setattr(system_config_module, "_CONFIG_SNAPSHOT_MANAGER", None)
+    monkeypatch.setattr(
+        system_config_module,
+        "_load_system_config_snapshot",
+        load_probe_config,
     )
-    manager.refresh_generation()
-    probe.calls = 0
-    monkeypatch.setattr(system_config_module, "_CONFIG_SNAPSHOT_MANAGER", manager)
 
     first = system_config_module.load_system_config_section("storage")
+    manager = system_config_module._get_system_config_snapshot_manager()
+    probe.calls = 0
     first["project_root"] = "/mutated"
     second = system_config_module.load_system_config_section("storage")
 
@@ -457,6 +462,45 @@ def test_system_config_snapshot_loads_authoritatively_once_per_generation(
     assert system_config_module.invalidate_system_config_snapshot() == before + 1
     assert system_config_module.load_system_config() == first
     assert calls["load"] == 2
+
+
+def test_public_system_config_snapshot_uses_one_generation_consistent_read(
+    tmp_path,
+    monkeypatch,
+):
+    system_config_module, config_path = _prepare_system_config(monkeypatch, tmp_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("{}", encoding="utf-8")
+
+    class SingleReadManager:
+        source_path = config_path
+        generation = 17
+
+        def __init__(self):
+            self.calls = 0
+
+        def load_with_generation(self):
+            self.calls += 1
+            return (
+                {
+                    "llm": {"model": "stable"},
+                    "llm_profiles": {"profiles": []},
+                },
+                17,
+            )
+
+    manager = SingleReadManager()
+    monkeypatch.setattr(
+        system_config_module,
+        "_get_system_config_snapshot_manager",
+        lambda: manager,
+    )
+
+    snapshot = system_config_module.get_public_system_config_snapshot()
+
+    assert manager.calls == 1
+    assert snapshot["generation"] == 17
+    assert snapshot["config"]["llm"]["model"] == "stable"
 
 
 def test_system_config_snapshot_freezes_environment_across_invalidation(
@@ -1235,7 +1279,7 @@ def test_system_config_write_flushes_and_atomically_replaces_from_same_directory
     system_config_module, config_path = _prepare_system_config(monkeypatch, tmp_path)
     original_fsync = system_config_module.os.fsync
     original_replace = system_config_module.os.replace
-    calls: dict[str, Any] = {"fsync": 0, "replace": []}
+    calls: dict[str, Any] = {"fsync": 0, "replace": [], "fsync_directory": []}
 
     def recording_fsync(descriptor):
         calls["fsync"] += 1
@@ -1247,10 +1291,16 @@ def test_system_config_write_flushes_and_atomically_replaces_from_same_directory
 
     monkeypatch.setattr(system_config_module.os, "fsync", recording_fsync)
     monkeypatch.setattr(system_config_module.os, "replace", recording_replace)
+    monkeypatch.setattr(
+        system_config_module,
+        "_fsync_directory",
+        calls["fsync_directory"].append,
+    )
 
     system_config_module.update_system_config_section("agent", {"context_max_rounds": 11})
 
     assert calls["fsync"] == 1
+    assert calls["fsync_directory"] == [config_path.parent]
     assert len(calls["replace"]) == 1
     temporary_path, target_path = calls["replace"][0]
     assert temporary_path.parent == config_path.parent

@@ -669,6 +669,38 @@ class RuntimeStore:
                 )
         return self.require_run(run_id)
 
+    def settle_interactions_resolved_elsewhere(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+    ) -> list[InteractionRecord]:
+        """把已经通过别的途径解决掉的挂起交互一并结算。
+
+        资料用途有两条确认路径：批量确认直接落库到核心侧，逐份卡是助手运行时的
+        交互对象。只解开前者会让后者作为「仍未解决的原问题」被自动恢复，
+        于是用户刚一次性确认完，又被推回同一张卡（见 #36）。
+        """
+        timestamp = now_iso()
+        with self._lock, self._db:
+            rows = self._db.execute(
+                "SELECT * FROM agent_interactions WHERE run_id = ? AND status = 'pending'",
+                (run_id,),
+            ).fetchall()
+            if not rows:
+                return []
+            self._db.execute(
+                """UPDATE agent_interactions
+                SET status = 'cancelled', answer_json = ?, answered_at = ?
+                WHERE run_id = ? AND status = 'pending'""",
+                (_json({"action": "resolved_elsewhere", "reason": reason}), timestamp, run_id),
+            )
+            self._db.execute(
+                "UPDATE agent_runs SET interaction_id = '', updated_at = ? WHERE id = ?",
+                (timestamp, run_id),
+            )
+            return [_interaction_from_row(row) for row in rows]
+
     def begin_run_cancellation(
         self,
         run_id: str,

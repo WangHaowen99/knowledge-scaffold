@@ -160,6 +160,7 @@ STORAGE_ARGS=(
 SYSTEM_CONFIG_ARGS=(
     --root /release
     --report "/migration-reports/$(basename "${SYSTEM_CONFIG_REPORT}")"
+    --backup-root /migration-backups/system-config
 )
 BACKEND_MIGRATION_ARGS=(
     --runtime-root /release/.onto-runtime

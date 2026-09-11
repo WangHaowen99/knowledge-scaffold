@@ -4,8 +4,10 @@ export type GenerationPlanKind = 'object' | 'knowledge' | 'operation';
 
 export interface GenerationUnit<T> {
   index: number;
+  unitId: string;
   phase: `${GenerationPlanKind}_batch_${number}`;
   items: T[];
+  targetIds: string[];
   dependencyHash: string;
 }
 
@@ -32,8 +34,9 @@ export function dynamicBatchSize(
   items: unknown[],
   contextWindow = 1_000_000,
 ): number {
-  const limits = { object: 12, knowledge: 12, operation: 3 };
-  const minimums = { object: 8, knowledge: 8, operation: 2 };
+  const limits = { object: 4, knowledge: 4, operation: 2 };
+  // 每个单元都能独立校验和恢复，避免一个失败拖回整批；简单候选仍可在同一请求中小批合并。
+  const minimums = { object: 4, knowledge: 4, operation: 1 };
   const max = limits[kind];
   const min = minimums[kind];
   if (items.length <= min) return Math.max(1, items.length);
@@ -55,10 +58,15 @@ export function planGenerationUnits<T>(
   for (let offset = 0; offset < items.length; offset += size) {
     const batch = items.slice(offset, offset + size);
     const index = units.length + 1;
+    const targetIds = batch.map((item: any, itemIndex) => String(
+      item?.id ?? item?.key ?? item?.candidateId ?? item?.resourceId ?? `${kind}-${offset + itemIndex + 1}`,
+    ));
     units.push({
       index,
+      unitId: `${kind}-${dependencyHash({ kind, targetIds }).slice(0, 16)}`,
       phase: `${kind}_batch_${index}`,
       items: batch,
+      targetIds,
       dependencyHash: dependencyHash({ kind, items: batch }),
     });
   }

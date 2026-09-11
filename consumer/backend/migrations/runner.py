@@ -122,11 +122,37 @@ REGISTERED_MIGRATIONS = (
         failure_policy=MigrationFailurePolicy.NON_BLOCKING,
     ),
     RegisteredMigration(
+        migration_id="system-config-model-profile-output-budget-env-v1",
+        module="migrations.system_config_model_profile_output_budget_env_v1",
+        phase=MigrationPhase.STARTUP,
+        # Direct process environments may still carry a historical template
+        # default even when no persisted system config exists. This must run
+        # before legacy profile materialization so custom env values retain
+        # their precedence.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
         migration_id="system-config-model-profiles-v1",
         module="migrations.system_config_model_profiles_v1",
         phase=MigrationPhase.STARTUP,
         # Strict runtime reads reject task_llm, legacy default ids, dangling
         # refs, and conflicting profiles; startup is unsafe until conversion.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
+        migration_id="system-config-model-profile-output-budget-v1",
+        module="migrations.system_config_model_profile_output_budget_v1",
+        phase=MigrationPhase.STARTUP,
+        # Existing profiles can retain the old 4096-token default after an
+        # image upgrade; migrate that value before runtime services resolve it.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
+        migration_id="workspace-model-profile-output-budget-v1",
+        module="migrations.workspace_model_profile_output_budget_v1",
+        phase=MigrationPhase.STARTUP,
+        # Workspace-private profiles can take precedence over global profiles
+        # during resolution, so their historical budgets must be migrated too.
         failure_policy=MigrationFailurePolicy.BLOCKING,
     ),
     RegisteredMigration(
