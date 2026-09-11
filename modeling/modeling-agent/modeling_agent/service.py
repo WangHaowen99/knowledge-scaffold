@@ -3760,12 +3760,10 @@ class AgentService:
                 # 只会一轮轮重复同一段话。结束本轮，等外部事件把它唤醒。
                 if live.situation.awaiting_user_action:
                     loop_reason = loop_reason or "剩余事项需要用户在其它界面完成"
-                if (
-                    autonomous
-                    and not loop_reason
-                    and continuations < MAX_AUTONOMOUS_CONTINUATIONS
-                    and stalled < stall_budget
-                ):
+                can_continue_autonomously = autonomous and not loop_reason
+                has_continuation_budget = continuations < MAX_AUTONOMOUS_CONTINUATIONS
+                has_stall_budget = stalled < stall_budget
+                if can_continue_autonomously and has_continuation_budget and has_stall_budget:
                     continuations += 1
                     current_query = self._autonomous_continuation_prompt(
                         run.project_id, live, stalled=stalled,
