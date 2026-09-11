@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -37,8 +38,9 @@ class JiuwenboxClient:
                 timeout=timeout,
                 trust_env=False,
             )
-        if "://" not in normalized:
-            normalized = f"http://{normalized}"
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Sandbox base URL must explicitly use HTTP or HTTPS")
         return httpx.Client(
             base_url=normalized.rstrip("/"),
             timeout=timeout,

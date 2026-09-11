@@ -9,7 +9,7 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from integration.mcp.config import MCPRuntimeConfig
+from integration.mcp.config import MCPRuntimeConfig, validate_mcp_runtime_config
 from api.protocols.mcp import server as mcp_server
 from integration.mcp.scope import MCPRequestScope
 from integration.mcp.service_catalog import list_mcp_service_cards
@@ -24,7 +24,7 @@ def _config(tmp_path: Path, transport: str) -> MCPRuntimeConfig:
     return MCPRuntimeConfig(
         server_host="127.0.0.1",
         server_port=7488,
-        public_base_url="http://mcp.example",
+        public_base_url="https://service.example.net",
         agentic_base_url="",
         token_secret="test-secret-at-least-32-characters-long",
         token_algorithm="HS256",
@@ -36,6 +36,44 @@ def _config(tmp_path: Path, transport: str) -> MCPRuntimeConfig:
         transport=transport,
         token_store_path=tmp_path / "tokens.json",
     )
+
+
+def test_mcp_public_base_url_rejects_external_http(tmp_path):
+    cfg = MCPRuntimeConfig(
+        **{
+            **_config(tmp_path, "both").__dict__,
+            "public_base_url": "http://service.example.net",
+        }
+    )
+
+    with pytest.raises(ValueError, match="必须使用 HTTPS"):
+        validate_mcp_runtime_config(cfg)
+
+
+def test_mcp_public_base_url_allows_loopback_http(tmp_path):
+    cfg = MCPRuntimeConfig(
+        **{
+            **_config(tmp_path, "both").__dict__,
+            "public_base_url": "http://127.0.0.1:7488",
+        }
+    )
+
+    validate_mcp_runtime_config(cfg)
+    assert cfg.effective_public_base_url() == "http://127.0.0.1:7488"
+
+
+def test_mcp_public_base_url_is_not_derived_from_internal_host(tmp_path):
+    cfg = MCPRuntimeConfig(
+        **{
+            **_config(tmp_path, "both").__dict__,
+            "server_host": "mcp",
+            "public_base_url": "",
+        }
+    )
+
+    assert cfg.effective_public_base_url() == ""
+    cards = list_mcp_service_cards(cfg, mcp_endpoint_id=ENDPOINT_ID)
+    assert all(card["active_url"] == "" for card in cards)
 
 
 def test_search_tool_schemas_make_ontology_id_optional(tmp_path):
@@ -141,9 +179,9 @@ def test_mcp_service_catalog_reports_only_exposed_transport_urls(tmp_path):
         mcp_endpoint_id=ENDPOINT_ID,
     )
     http_search = next(card for card in http_cards if card["toolset"] == "search")
-    assert http_search["active_url"] == "http://mcp.example/{}/search/mcp".format(ENDPOINT_ID)
-    assert http_search["streamable_http_url"] == "http://mcp.example/{}/search/mcp".format(ENDPOINT_ID)
-    assert http_search["mcp_url"] == "http://mcp.example/{}/search/mcp".format(ENDPOINT_ID)
+    assert http_search["active_url"] == "https://service.example.net/{}/search/mcp".format(ENDPOINT_ID)
+    assert http_search["streamable_http_url"] == "https://service.example.net/{}/search/mcp".format(ENDPOINT_ID)
+    assert http_search["mcp_url"] == "https://service.example.net/{}/search/mcp".format(ENDPOINT_ID)
     assert http_search["sse_url"] == ""
     assert http_search["sse_enabled"] is False
 
@@ -152,10 +190,10 @@ def test_mcp_service_catalog_reports_only_exposed_transport_urls(tmp_path):
         mcp_endpoint_id=ENDPOINT_ID,
     )
     sse_search = next(card for card in sse_cards if card["toolset"] == "search")
-    assert sse_search["active_url"] == "http://mcp.example/{}/search/sse".format(ENDPOINT_ID)
+    assert sse_search["active_url"] == "https://service.example.net/{}/search/sse".format(ENDPOINT_ID)
     assert sse_search["streamable_http_url"] == ""
     assert sse_search["mcp_url"] == ""
-    assert sse_search["sse_url"] == "http://mcp.example/{}/search/sse".format(ENDPOINT_ID)
+    assert sse_search["sse_url"] == "https://service.example.net/{}/search/sse".format(ENDPOINT_ID)
     assert sse_search["sse_enabled"] is True
 
 
@@ -194,8 +232,8 @@ def test_mcp_http_root_app_mounts_all_four_endpoints_for_both_transport(monkeypa
 
     cards = list_mcp_service_cards(cfg, mcp_endpoint_id=ENDPOINT_ID)
     search = next(card for card in cards if card["toolset"] == "search")
-    assert search["streamable_http_url"] == "http://mcp.example/{}/search/mcp".format(ENDPOINT_ID)
-    assert search["sse_url"] == "http://mcp.example/{}/search/sse".format(ENDPOINT_ID)
+    assert search["streamable_http_url"] == "https://service.example.net/{}/search/mcp".format(ENDPOINT_ID)
+    assert search["sse_url"] == "https://service.example.net/{}/search/sse".format(ENDPOINT_ID)
 
 
 def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(

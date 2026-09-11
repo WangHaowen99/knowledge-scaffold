@@ -359,7 +359,7 @@ export default function McpSettingsPanel({
         <section className="settings-mcp-metrics">
           <div><span>服务状态</span><strong>{currentRemote.status.running ? '在线' : '离线'}</strong></div>
           <div><span>Transport</span><strong>{currentRemote.status.transport || '—'}</strong></div>
-          <div><span>Public URL</span><strong>{currentRemote.status.publicBaseUrl || '—'}</strong></div>
+          <div><span>Public URL</span><strong>{currentRemote.status.publicBaseUrl || '外部地址未配置'}</strong></div>
           <div><span>Active Tokens</span><strong>{activeTokenCount}</strong></div>
         </section>
       )}

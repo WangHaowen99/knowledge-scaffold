@@ -166,6 +166,32 @@ def test_read_zip_members():
     assert members["onto1/operations/foo.md"] == "# foo"
 
 
+def test_read_zip_members_enforces_resource_limits(monkeypatch):
+    from api.routes import skills as skills_routes
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as handle:
+        handle.writestr("skill-demo/data.txt", "a" * 100)
+
+    monkeypatch.setattr(skills_routes, "SKILL_ARCHIVE_MAX_MEMBER_BYTES", 50)
+    with pytest.raises(ValueError, match="member is too large"):
+        _read_zip_members(archive.getvalue())
+
+    monkeypatch.setattr(skills_routes, "SKILL_ARCHIVE_MAX_MEMBER_BYTES", 200)
+    monkeypatch.setattr(skills_routes, "SKILL_ARCHIVE_MAX_COMPRESSION_RATIO", 2)
+    with pytest.raises(ValueError, match="compression ratio"):
+        _read_zip_members(archive.getvalue())
+
+
+def test_read_zip_members_rejects_path_traversal():
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("../escaped.txt", "synthetic")
+
+    with pytest.raises(ValueError, match="unsafe path"):
+        _read_zip_members(archive.getvalue())
+
+
 def test_locate_evolved_root(tmp_path):
     root = tmp_path / "extract"
     (root / "onto1" / "operations").mkdir(parents=True)

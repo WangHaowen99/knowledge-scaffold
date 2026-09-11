@@ -179,7 +179,7 @@ def list_mcp_service_cards(
                 endpoint_id,
                 item.endpoint_prefix,
             )
-            if streamable_enabled
+            if streamable_enabled and base_url
             else ""
         )
         sse_url = (
@@ -188,7 +188,7 @@ def list_mcp_service_cards(
                 endpoint_id,
                 item.endpoint_prefix,
             )
-            if sse_enabled
+            if sse_enabled and base_url
             else ""
         )
         active_url = streamable_http_url or sse_url
