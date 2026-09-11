@@ -37,6 +37,10 @@ _FREE_TEXT_REQUESTS = (
     re.compile(r"请(?:您|你)?(?:直接)?(?:告诉|告知|描述|说明|补充|输入|填写|提供)"),
     re.compile(r"(?:您|你)可以直接(?:告诉|告知|描述|说明|补充|输入|填写|提供)"),
     re.compile(r"等待(?:您|你)(?:进一步)?(?:描述|说明|补充|输入|填写|提供)"),
+    # 模型常把待决输入藏在“下一步再继续”的延迟表述中；这类正文同样
+    # 必须回到 ask 卡片，不能让用户自行猜测何时、在哪里补充。
+    re.compile(r"(?:等待|待|需要)(?:专家|业务专家|用户)(?:明确|确认|决定|补充|说明).{0,12}(?:后|之后|再|才能)(?:继续|执行|生成|处理)"),
+    re.compile(r"(?:下一步|后续).{0,12}(?:专家|业务专家|用户)(?:明确|确认|决定).{0,12}(?:后|之后|再|才能)?(?:继续|执行|生成|处理)?"),
 )
 
 _CONFIRMATION_CARD_CLAIMS = (
@@ -661,6 +665,9 @@ class DecisionCardSafetyRail(AgentRail):
             self._context.user_input_request_in_text = True
         if claims_confirmation_card(text):
             self._context.confirmation_claimed_in_text = True
+        if _claims_missing_capability(text):
+            # 技术能力问题必须回到系统恢复链路，不能变成要求用户判断平台状态的问题。
+            self._context.technical_capability_claimed = True
 
 
 class AskRail(BaseInterruptRail):
@@ -680,10 +687,41 @@ class AskRail(BaseInterruptRail):
         del auto_confirm_config
         arguments = _arguments_from_call(tool_call)
         if user_input is None:
-            if self._context and self._context.technical_recoveries:
+            if self._context:
                 question = str(arguments.get("question") or "")
                 evidence = arguments.get("evidence")
-                if _claims_missing_capability(question) or not _is_business_ambiguity(
+                if _claims_missing_capability(question):
+                    self._context.technical_capability_claimed = True
+                    recovery = next(iter(self._context.technical_recoveries.values()), None)
+                    required_tool = str(
+                        recovery.get("requiredTool") if recovery else "list_domain_resources"
+                    ).strip() or "list_domain_resources"
+                    result = _validation_report(
+                        "TECHNICAL_RECOVERY_REQUIRED",
+                        "tool-capability-v1",
+                        [_finding(
+                            "interaction.technical_recovery.required",
+                            "",
+                            "当前问题需要系统继续核对，不能转成用户业务问题",
+                            "先完成系统指定的恢复动作；只有资料存在真实字段或口径歧义时才能提问",
+                            actual={"requiredTool": required_tool},
+                        )],
+                        instruction=(
+                            "不要声称环境无法处理，也不要询问用户如何解决技术失败；"
+                            f"立即执行恢复动作 {required_tool}。"
+                        ),
+                        display="系统正在自动恢复当前修改",
+                        retryable=False,
+                        repair_scope="interaction",
+                    )
+                    if recovery:
+                        result.update({
+                            "issueId": recovery.get("issueId"),
+                            "issueStatus": "repairing",
+                            "suppressTrace": True,
+                        })
+                    return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
+                if self._context.technical_recoveries and not _is_business_ambiguity(
                     question,
                     evidence if isinstance(evidence, list) else [],
                 ):
@@ -783,6 +821,8 @@ def _claims_missing_capability(text: str) -> bool:
     phrases = (
         "环境无法", "当前环境不能", "平台无法", "无法补写", "人工补写",
         "等待管理员", "管理员处理", "系统不支持", "没有权限修改",
+        "工具集中没有", "工具集没有", "没有该读取能力", "没有读取能力",
+        "本会话工具", "平台侧能力缺口", "平台能力缺口", "平台是否开放",
     )
     for phrase in phrases:
         if phrase in normalized:

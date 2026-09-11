@@ -387,7 +387,15 @@ def _production_python_paths() -> list[Path]:
 
 def _scanned_python_paths() -> list[Path]:
     paths = []
-    excluded_parts = {".venv", "build", "dist", "node_modules", "site-packages", "venv"}
+    excluded_parts = {
+        ".onto-runtime",
+        ".venv",
+        "build",
+        "dist",
+        "node_modules",
+        "site-packages",
+        "venv",
+    }
     for relative_root in PRODUCTION_PYTHON_ROOTS:
         for path in (REPOSITORY_ROOT / relative_root).rglob("*.py"):
             if any(part in excluded_parts for part in path.parts):

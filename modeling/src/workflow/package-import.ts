@@ -20,6 +20,7 @@ import {
 } from './package-contract.js';
 import { normalizeFieldAlias } from './field-alias.js';
 import { parseObjectIndex, type ObjectIndexEntry } from './object-index.js';
+import { publicKnowledgePackageFiles } from './package-file-scope.js';
 import { canonicalizePackageSpec } from './package-spec.js';
 
 const MAX_ZIP_BYTES = 50 * 1024 * 1024;
@@ -604,8 +605,12 @@ export function parsePackageArchive(bytes: Uint8Array): ImportedPackageArchive {
   const allFiles = archive.files;
   const embeddedSpec = parseJson<PackageSpec>(allFiles[MODEL_SPEC_PATH], '结构化知识包规格');
   const embeddedCoverage = parseJson<CoverageResult>(allFiles[MODEL_COVERAGE_PATH], '知识包覆盖结果');
-  const files = Object.fromEntries(Object.entries(allFiles).filter(([path]) => !path.startsWith('model/')));
-  const rawFiles = Object.fromEntries(Object.entries(archive.rawFiles).filter(([path]) => !path.startsWith('model/')));
+  const files = publicKnowledgePackageFiles(
+    Object.fromEntries(Object.entries(allFiles).filter(([path]) => !path.startsWith('model/'))),
+  );
+  const rawFiles = publicKnowledgePackageFiles(
+    Object.fromEntries(Object.entries(archive.rawFiles).filter(([path]) => !path.startsWith('model/'))),
+  );
   const manifest = parsePackageManifest(files['manifest.yaml']);
   const missingManifestStatus = manifest.status === undefined
     || manifest.status === null

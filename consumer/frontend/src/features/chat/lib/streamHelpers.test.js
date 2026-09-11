@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { applyLocalRunTermination, applyPublicEvent } from './streamHelpers.js';
+import {
+  applyLocalRunTermination,
+  applyPublicEvent,
+  friendlyRuntimeError,
+} from './streamHelpers.js';
 import { buildTraceViewModel } from './traceModel.js';
 
 const canonicalStatus = (status) =>
@@ -43,6 +47,17 @@ const publicEvent = (eventType, payload = {}, seq = 1, trace = {}) => {
     ...overrides,
   };
 };
+
+test('runtime capacity failures are presented as incomplete results with a retry action', () => {
+  assert.deepEqual(friendlyRuntimeError('RUNTIME_EVENT_BUFFER_FULL'), {
+    message: '执行中断，当前结果不完整，请重试。',
+    incomplete: true,
+  });
+  assert.deepEqual(friendlyRuntimeError('BUSINESS_SUMMARY_INCONSISTENT'), {
+    message: '结果口径不一致，当前结论未通过校验，请检查调整项后重试。',
+    incomplete: true,
+  });
+});
 
 test('replayed tool events keep one node and preserve the original parent', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
@@ -663,6 +678,33 @@ test('turn finished extracts a display message from structured runtime errors', 
     label: '继续执行',
     message: 'Continue from the preserved context.',
   });
+});
+
+test('interrupted turn preserves both incomplete output and continuation recovery', () => {
+  const recovery = {
+    action: 'continue',
+    label: '继续执行',
+    message: 'Continue the synthetic task from preserved context.',
+  };
+  const state = applyPublicEvent(
+    { streamSegments: [], status: 'running', isLoading: true },
+    publicEvent('turn.finished', {
+      status: 'failed',
+      content: 'synthetic partial answer',
+      error: {
+        error_code: 'RUNTIME_EVENT_BUFFER_FULL',
+        message: 'synthetic event buffer overflow',
+        retriable: true,
+      },
+      recovery,
+    }),
+  );
+
+  assert.equal(state.status, 'error');
+  assert.equal(state.content, 'synthetic partial answer');
+  assert.equal(state.meta.incomplete, true);
+  assert.equal(state.meta.error_retriable, true);
+  assert.deepEqual(state.meta.recovery, recovery);
 });
 
 test('truncated turn preserves partial output and records an incomplete error code', () => {

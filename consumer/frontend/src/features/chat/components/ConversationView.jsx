@@ -862,7 +862,8 @@ export function RunStatusBlock({
   const isFailure = turn.status === 'error';
   const isCancelled = turn.status === 'cancelled';
   const isAwaiting = turn.status === 'awaiting';
-  const isIncomplete = turn.errorCode === 'MODEL_OUTPUT_TRUNCATED';
+  const isIncomplete =
+    turn.incomplete || turn.errorCode === 'MODEL_OUTPUT_TRUNCATED';
   const activeProgress = tracksActiveRun ?
     resolveRunProgressView(runState, nowMs) :
     null;

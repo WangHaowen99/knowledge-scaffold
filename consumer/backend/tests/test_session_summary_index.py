@@ -118,6 +118,50 @@ def test_turn_count_round_trips_and_get_summary_reads_one_record(tmp_path):
     assert document["records"][0]["turn_count"] == 7
 
 
+def test_hot_projection_appends_delta_without_rewriting_base_index(tmp_path):
+    path = tmp_path / "summary-index.json"
+    index = SessionSummaryIndex(path)
+    index.upsert(_summary("hot", updated_at="2026-08-31T01:00:00+00:00"))
+    base_bytes = path.read_bytes()
+
+    index.upsert_chat(
+        _summary(
+            "hot",
+            updated_at="2026-08-31T02:00:00+00:00",
+            message_count=3,
+        )
+    )
+
+    assert path.read_bytes() == base_bytes
+    delta_path = path.with_name(f"{path.name}.delta")
+    assert delta_path.is_file()
+
+    restarted = SessionSummaryIndex(path)
+    summary = restarted.get_summary("hot")
+    assert summary is not None
+    assert summary.updated_at == "2026-08-31T02:00:00+00:00"
+    assert summary.message_count == 3
+
+
+def test_hot_projection_compacts_delta_after_threshold(tmp_path, monkeypatch):
+    import persistence.session_summary_index as index_module
+
+    monkeypatch.setattr(index_module, "_DELTA_COMPACT_THRESHOLD", 2)
+    path = tmp_path / "summary-index.json"
+    index = SessionSummaryIndex(path)
+    index.upsert(_summary("hot", updated_at="2026-08-31T01:00:00+00:00"))
+
+    index.upsert_chat(
+        _summary("hot", updated_at="2026-08-31T02:00:00+00:00", message_count=2)
+    )
+    index.upsert_chat(
+        _summary("hot", updated_at="2026-08-31T03:00:00+00:00", message_count=3)
+    )
+
+    assert not path.with_name(f"{path.name}.delta").exists()
+    assert json.loads(path.read_text(encoding="utf-8"))["index_revision"] == 3
+
+
 def test_atomic_write_failure_preserves_last_published_file_and_snapshot(tmp_path, monkeypatch):
     from persistence import session_summary_index as index_module
 

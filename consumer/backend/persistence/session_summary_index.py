@@ -19,6 +19,8 @@ SCHEMA_VERSION = 4
 _CURSOR_VERSION = 1
 _MAX_CURSOR_LENGTH = 2048
 _MAX_REBUILD_ATTEMPTS = 3
+_DELTA_SCHEMA_VERSION = 1
+_DELTA_COMPACT_THRESHOLD = 128
 
 
 class SessionSummaryIndexError(RuntimeError):
@@ -262,6 +264,7 @@ class SessionSummaryIndex:
     ) -> None:
         self._path = Path(path)
         self._dirty_path = self._path.with_name(f"{self._path.name}.dirty")
+        self._delta_path = self._path.with_name(f"{self._path.name}.delta")
         self._rebuild_loader = rebuild_loader
         self._rebuild_scheduler = rebuild_scheduler
         self._lock = threading.RLock()
@@ -275,6 +278,7 @@ class SessionSummaryIndex:
         self._state = "cold"
         self._last_error = ""
         self._owned_projection_tokens: set[str] = set()
+        self._delta_entries = 0
 
     @property
     def state(self) -> str:
@@ -448,7 +452,13 @@ class SessionSummaryIndex:
                 return self._index_revision
             next_records = dict(self._records)
             next_records[resolved.session_id] = resolved
-            self._publish_locked(next_records, self._index_revision + 1)
+            self._publish_delta_locked(
+                operation="upsert",
+                session_id=resolved.session_id,
+                summary=resolved,
+                records=next_records,
+                revision=self._index_revision + 1,
+            )
             return self._index_revision
 
     def update_runtime(
@@ -498,7 +508,13 @@ class SessionSummaryIndex:
                 return True
             next_records = dict(self._records)
             next_records[resolved_id] = updated
-            self._publish_locked(next_records, self._index_revision + 1)
+            self._publish_delta_locked(
+                operation="upsert",
+                session_id=resolved_id,
+                summary=updated,
+                records=next_records,
+                revision=self._index_revision + 1,
+            )
             return True
 
     def delete(
@@ -517,7 +533,13 @@ class SessionSummaryIndex:
                 return False
             next_records = dict(self._records)
             next_records.pop(resolved_id)
-            self._publish_locked(next_records, self._index_revision + 1)
+            self._publish_delta_locked(
+                operation="delete",
+                session_id=resolved_id,
+                summary=None,
+                records=next_records,
+                revision=self._index_revision + 1,
+            )
             return True
 
     def list_page(self, *, limit: int, cursor: str | None = None) -> SessionPage:
@@ -707,6 +729,49 @@ class SessionSummaryIndex:
             if summary.session_id in parsed:
                 raise ValueError("session summary ids must be unique")
             parsed[summary.session_id] = summary
+        delta_entries = 0
+        if self._delta_path.exists() or self._delta_path.is_symlink():
+            delta_metadata = self._delta_path.lstat()
+            if stat.S_ISLNK(delta_metadata.st_mode) or not stat.S_ISREG(
+                delta_metadata.st_mode
+            ):
+                raise ValueError("session summary delta must be a regular file")
+            with self._delta_path.open("r", encoding="utf-8") as delta_source:
+                for raw_delta in delta_source:
+                    delta = json.loads(raw_delta)
+                    if not isinstance(delta, Mapping) or set(delta) not in (
+                        {"schema_version", "index_revision", "operation", "session_id", "record"},
+                    ):
+                        raise ValueError("session summary delta is invalid")
+                    if delta["schema_version"] != _DELTA_SCHEMA_VERSION:
+                        raise ValueError("session summary delta schema is invalid")
+                    delta_revision = delta["index_revision"]
+                    if (
+                        not isinstance(delta_revision, int)
+                        or isinstance(delta_revision, bool)
+                        or delta_revision < 1
+                    ):
+                        raise ValueError("session summary delta revision is invalid")
+                    if delta_revision <= revision:
+                        continue
+                    if delta_revision != revision + 1:
+                        raise ValueError("session summary delta revisions are not contiguous")
+                    session_id = _text(delta["session_id"], "session_id", allow_empty=False)
+                    operation = delta["operation"]
+                    if operation == "upsert":
+                        summary = SessionSummary.from_dict(delta["record"])
+                        if summary.session_id != session_id:
+                            raise ValueError("session summary delta id does not match record")
+                        parsed[session_id] = summary
+                    elif operation == "delete":
+                        if delta["record"] is not None:
+                            raise ValueError("session summary delete delta must not contain a record")
+                        parsed.pop(session_id, None)
+                    else:
+                        raise ValueError("session summary delta operation is invalid")
+                    revision = delta_revision
+                    delta_entries += 1
+        self._delta_entries = delta_entries
         return {
             "schema_version": schema_version,
             "index_revision": revision,
@@ -880,12 +945,68 @@ class SessionSummaryIndex:
         self._records = records
         self._index_revision = revision
         self._loaded = True
+        self._delta_entries = 0
+        try:
+            self._delta_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to remove compacted session summary delta", exc_info=True)
         if self._dirty_marker_present_locked():
             self._state = "degraded"
             self._last_error = "source_projection_pending"
         else:
             self._state = "ready"
             self._last_error = ""
+
+    def _publish_delta_locked(
+        self,
+        *,
+        operation: str,
+        session_id: str,
+        summary: SessionSummary | None,
+        records: dict[str, SessionSummary],
+        revision: int,
+    ) -> None:
+        if operation not in {"upsert", "delete"}:
+            raise ValueError("session summary delta operation is invalid")
+        if operation == "upsert" and summary is None:
+            raise ValueError("session summary upsert delta requires a record")
+        if operation == "delete" and summary is not None:
+            raise ValueError("session summary delete delta must not contain a record")
+        self._delta_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._delta_path.is_symlink():
+            raise SessionSummaryIndexWriteError(
+                "session summary delta must not be a symbolic link",
+                committed=False,
+            )
+        delta = {
+            "schema_version": _DELTA_SCHEMA_VERSION,
+            "index_revision": revision,
+            "operation": operation,
+            "session_id": session_id,
+            "record": summary.to_dict() if summary is not None else None,
+        }
+        try:
+            with self._delta_path.open("a", encoding="utf-8", newline="\n") as output:
+                json.dump(delta, output, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+        except OSError as exc:
+            raise SessionSummaryIndexWriteError(
+                "failed to append session summary delta",
+                committed=False,
+            ) from exc
+        self._records = records
+        self._index_revision = revision
+        self._loaded = True
+        self._delta_entries += 1
+        self._state = "ready" if not self._dirty_marker_present_locked() else "degraded"
+        self._last_error = "" if self._state == "ready" else "source_projection_pending"
+        if self._delta_entries >= _DELTA_COMPACT_THRESHOLD:
+            try:
+                self._publish_locked(records, revision)
+            except SessionSummaryIndexWriteError:
+                logger.warning("Deferred session summary delta compaction failed", exc_info=True)
 
     def _quarantine_locked(self) -> None:
         try:

@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { store, actions, materialPurposeLabel } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
 import { docSample, materials } from '../lib/mock/fixtures.js';
 import Icon from '../ui/Icon.jsx';
-import { downloadMaterial, downloadTermTemplate } from '../lib/api.js';
+import { downloadMaterial, downloadTermTemplate, getPackageFile } from '../lib/api.js';
 import { readableEvidenceAnchor } from '../lib/evidence.js';
+import { materialEvidenceSelection, materialMarkdown, materialReferences, rehypeMaterialHighlights } from '../lib/materialDocument.js';
 
 const selAnchor = (s) => s.activeAnchor;
 const selMat = (s) => s.selectedMaterial;
@@ -64,7 +67,7 @@ export default function DocView() {
     const material = materialContents[matId];
     if (summary?.parseStatus === 'failed') return <Unparsed mat={{ name: summary.filename }} error={summary.parseError} />;
     if (!material) return <div className="empty">正在读取资料…</div>;
-    return <RealDocument material={material} referrers={materialReferrers[matId] || []}
+    return <RealDocument key={`${matId}:${material.revisionNo}`} material={material} referrers={materialReferrers[matId] || []}
       location={typeof anchor === 'object' ? anchor : null} />;
   }
   const mat = materials.find((m) => m.id === matId) || materials[0];
@@ -167,7 +170,43 @@ function Unparsed({ mat, error }) {
 
 function RealDocument({ material, referrers, location }) {
   const revisionInput = useRef(null);
+  const body = useRef(null);
+  const request = useRef(0);
+  const [selected, setSelected] = useState(null);
+  const [loadingPath, setLoadingPath] = useState('');
+  const [referenceError, setReferenceError] = useState('');
+  const selection = useMemo(() => materialEvidenceSelection(material,
+    selected?.locations || (location ? [location] : [])), [material, selected, location]);
   const paragraphs = documentParagraphs(material.textContent);
+  useEffect(() => () => { request.current += 1; }, []);
+  useEffect(() => {
+    request.current += 1;
+    setSelected(null);
+    setLoadingPath('');
+    setReferenceError('');
+  }, [location]);
+  useEffect(() => {
+    body.current?.querySelector('.wb-evidence-mark, .wb-evidence-table')
+      ?.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }, [selection]);
+  const locateReferrer = async (item) => {
+    const current = ++request.current;
+    setLoadingPath(item.path);
+    setReferenceError('');
+    setSelected({ path: item.path, locations: [] });
+    try {
+      // The referrer summary is truncated; read the full file to find every cited location.
+      const result = await getPackageFile(store.get().projectId, item.path);
+      if (current !== request.current) return;
+      const locations = materialReferences(result.content, material);
+      setSelected({ path: item.path, locations });
+      if (!locations.length) setReferenceError('这条知识只关联了整份资料，未记录可定位的原文片段，请结合全文核对。');
+    } catch (error) {
+      if (current === request.current) setReferenceError(error instanceof Error ? error.message : '引用内容读取失败，请点击条目重试。');
+    } finally {
+      if (current === request.current) setLoadingPath('');
+    }
+  };
   const download = async () => {
     const response = await downloadMaterial(store.get().projectId, material.id);
     const blob = await response.blob();
@@ -190,37 +229,57 @@ function RealDocument({ material, referrers, location }) {
   };
   return (
     <div className="wb-doc-layout">
-    <div className="wb-doc">
+    <div className="wb-doc" ref={body}>
       <div className="t-sm muted" style={{ marginBottom: 'var(--s-4)' }}>
         {material.filename} · v{material.revisionNo} · {material.textContent.length} 字符
       </div>
-      {location && (
+      {(location || selected) && (
         <div className="wb-evidence-location" role="status">
           <Icon name="search" size={13} />
-          <span>{location.anchor ? <>已定位到 <b>{readableEvidenceAnchor(location.anchor)}</b> 对应的原文</> : '已定位到引用的原文'}</span>
+          <span>{loadingPath ? '正在定位被引用的原文…' : <>
+            {selected?.path && <b>{selected.path.split('/').pop()}： </b>}
+            {(selection.ranges.length > 0 || selection.tableNames.length > 0) && '已高亮引用内容，可结合上下文核对。'}
+            {selection.wholeDocument && '该引用指向整份资料，未指定原文片段。'}
+            {selection.missing.length > 0 && `未找到引用位置「${selection.missing.map(readableEvidenceAnchor).join('、')}」，请结合全文核对。`}
+            {referenceError}
+          </>}</span>
+          <button type="button" className="btn btn-sm" onClick={() => {
+            request.current += 1;
+            setSelected(null);
+            setLoadingPath('');
+            setReferenceError('');
+            actions.setAnchor(null);
+          }}>清除定位</button>
         </div>
       )}
       {paragraphs.length
-        ? paragraphs.map((paragraph) => <DocumentParagraph key={paragraph.start} paragraph={paragraph} location={location} />)
+        ? isMarkdownMaterial(material.filename)
+          ? <MaterialMarkdown content={material.textContent} ranges={selection.ranges} />
+          : paragraphs.map((paragraph) => <DocumentParagraph key={paragraph.start} paragraph={paragraph} ranges={selection.ranges} />)
         : <div className="empty">这份资料没有可显示的正文{material.tables.length ? `，包含 ${material.tables.length} 张数据表` : ''}</div>}
       {material.tables.map((table) => (
-        <div className="card" key={table.name} style={{ marginTop: 'var(--s-4)' }}>
+        <div className={`card${selection.tableNames.includes(table.name) ? ' wb-evidence-table' : ''}`} key={table.name} style={{ marginTop: 'var(--s-4)' }}>
           <div className="card-h">{table.name}<span className="spacer" />{table.rowCount} 行</div>
           <div className="card-b t-sm">{table.fields.map((field) => field.name).join(' · ')}</div>
         </div>
       ))}
     </div>
     <aside className="card wb-doc-refs">
-      <div className="card-h">{location ? '这处依据被谁引用' : '这份资料被谁引用'}<span className="spacer" />{referrers.length} 条</div>
+      <div className="card-h">这份资料被谁引用<span className="spacer" />{referrers.length} 条</div>
       <div className="wb-backref">
         {referrers.map((item) => (
-          <a key={item.path} onClick={() => actions.selectPath(item.path)} title={item.path}>
-            <RefIcon path={item.path} />
-            <div>
-              <b>{item.path.split('/').pop()}</b>
-              <span>{item.why || (item.path.includes('/') ? item.path.split('/').slice(0, -1).join('/') : `第 ${item.line} 行`)}</span>
+          <div key={item.path} className={`wb-referrer${selected?.path === item.path ? ' on' : ''}`}>
+            <button type="button" className="wb-referrer-locate" onClick={() => void locateReferrer(item)}
+              aria-pressed={selected?.path === item.path} aria-busy={loadingPath === item.path}
+              title={`定位「${item.path}」引用的原文`}>
+              <RefIcon path={item.path} />
+              <span><b>{item.path.split('/').pop()}</b><small>{loadingPath === item.path ? '正在定位…' : '点击定位并高亮原文'}</small></span>
+            </button>
+            <div className="wb-referrer-actions">
+              <span>{item.occurrences ? `${item.occurrences} 处引用` : `第 ${item.line} 行`}</span>
+              <button type="button" onClick={() => actions.selectPath(item.path)}>打开知识条目 →</button>
             </div>
-          </a>
+          </div>
         ))}
         {!referrers.length && <div className="empty t-sm">当前知识包还没有引用这份资料</div>}
       </div>
@@ -254,6 +313,21 @@ function RealDocument({ material, referrers, location }) {
     </aside>
     </div>
   );
+}
+
+function isMarkdownMaterial(filename) {
+  return /\.(?:md|markdown)$/iu.test(String(filename || ''));
+}
+
+export function MaterialMarkdown({ content, ranges }) {
+  const source = materialMarkdown(content);
+  const plugins = useMemo(() => [[rehypeMaterialHighlights, { ranges, source }]], [ranges, source]);
+  return <article className="wb-markdown wb-material-markdown">
+    <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={plugins} components={{
+      table: ({ node: _node, children, ...props }) => <div className="wb-material-table"><table {...props}>{children}</table></div>,
+      img: ({ node: _node, alt }) => <span className="wb-markdown-image-note">图片：{alt || '未命名图片'}</span>,
+    }}>{source}</Markdown>
+  </article>;
 }
 
 function MaterialPurposeReviewPanel({ material }) {
@@ -386,22 +460,19 @@ export function evidenceLocationOffset(location) {
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function DocumentParagraph({ paragraph, location }) {
-  const mark = useRef(null);
-  const highlight = evidenceHighlight(paragraph, location);
-  useEffect(() => {
-    if (highlight) mark.current?.scrollIntoView({ block: 'center', inline: 'nearest' });
-  }, [highlight?.start, highlight?.end]);
-  const heading = /^#{1,5}\s/u.test(paragraph.text);
-  const prefixLength = heading ? paragraph.text.match(/^#{1,5}\s*/u)?.[0].length || 0 : 0;
-  const text = heading ? paragraph.text.slice(prefixLength) : paragraph.text;
-  const adjusted = highlight ? {
-    start: Math.max(0, highlight.start - prefixLength),
-    end: Math.max(0, highlight.end - prefixLength),
-  } : null;
-  const children = adjusted && adjusted.end > adjusted.start
-    ? <>{text.slice(0, adjusted.start)}<mark ref={mark} className="wb-evidence-mark">{text.slice(adjusted.start, adjusted.end)}</mark>{text.slice(adjusted.end)}</>
-    : text;
-  if (heading) return <h5 className={highlight ? 'wb-evidence-target' : undefined}>{children}</h5>;
-  return <p className={highlight ? 'wb-evidence-target' : undefined}>{children}</p>;
+function DocumentParagraph({ paragraph, ranges }) {
+  const hits = ranges.filter((range) => range.start < paragraph.end && range.end > paragraph.start)
+    .map((range) => ({ start: Math.max(0, range.start - paragraph.start), end: Math.min(paragraph.text.length, range.end - paragraph.start) }))
+    .sort((a, b) => a.start - b.start);
+  const children = [];
+  let cursor = 0;
+  for (const hit of hits) {
+    if (hit.end <= cursor) continue;
+    if (hit.start > cursor) children.push(paragraph.text.slice(cursor, hit.start));
+    const start = Math.max(cursor, hit.start);
+    children.push(<mark key={start} className="wb-evidence-mark">{paragraph.text.slice(start, hit.end)}</mark>);
+    cursor = hit.end;
+  }
+  children.push(paragraph.text.slice(cursor));
+  return <p className="wb-document-paragraph">{children}</p>;
 }

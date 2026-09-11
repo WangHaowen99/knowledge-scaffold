@@ -5,6 +5,10 @@ import { friendlyRequestError } from '../../shared/api/errors';
 import EvolutionWorkbench from '../evolution';
 import { useAuthContext } from '../auth';
 import ImportFlowDialog from './import/ImportFlowDialog';
+import {
+  previewValueForDetails,
+  summarizeImportPreview,
+} from './import/importPreviewSummary.js';
 import KnowledgeDataSources from './KnowledgeDataSources';
 import OntologyGraphPanel from './graph/OntologyGraphPanel';
 import {
@@ -984,34 +988,127 @@ export default function KnowledgeWorkbench({
 }
 
 function ImportPreview({ preview }) {
-  if (typeof preview === 'string') {
-    return <pre className="import-preview-content">{preview}</pre>;
-  }
-  const entries = Array.isArray(preview) ?
-    preview :
-    Object.entries(preview || {});
-  if (!entries.length) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const summary = summarizeImportPreview(preview);
+  if (summary.kind === 'empty') {
     return <EmptyState compact title="服务端未返回额外预览信息" />;
+  }
+  if (summary.kind === 'text') {
+    return <pre className="import-preview-content">{summary.text}</pre>;
+  }
+  if (summary.kind === 'array') {
+    return (
+      <div className="import-preview">
+        <PreviewSection label="导入预览条目" section={summary} />
+        <details
+          className="import-preview-details"
+          onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
+        >
+          <summary>查看原始条目（按需展开）</summary>
+          {detailsOpen && (
+            <div className="import-preview-raw-list">
+              {preview.map((item, index) => (
+                <pre
+                  className="import-preview-content"
+                  key={item?.path || index}
+                >
+                  {previewValueForDetails(item)}
+                </pre>
+              ))}
+            </div>
+          )}
+        </details>
+      </div>
+    );
   }
   return (
     <div className="import-preview">
-      {Array.isArray(preview) ?
-        preview.map((item, index) => (
-          <pre className="import-preview-content" key={item.path || index}>
-            {typeof item === 'string' ? item : JSON.stringify(item, null, 2)}
+      <div className="import-preview-summary-head">
+        <strong>导入结果摘要</strong>
+        <span>默认仅展示统计信息，原始文件内容按需展开</span>
+      </div>
+      <div className="import-preview-sections">
+        {summary.source && (
+          <PreviewSection label="源文件" section={summary.source} />
+        )}
+        {summary.result && (
+          <PreviewSection label="归一化结果" section={summary.result} />
+        )}
+      </div>
+      {summary.warnings.length > 0 && (
+        <section className="import-preview-warnings">
+          <strong>校验告警（{summary.warnings.length}）</strong>
+          <ul>
+            {summary.warnings.map(({ category, message }, index) => (
+              <li key={`${category}-${index}`}>
+                <span>{category}</span>
+                {message}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {summary.nested && summary.nested.kind !== 'empty' && (
+        <div className="import-preview-nested">
+          另有一组兼容预览数据，请展开原始诊断查看。
+        </div>
+      )}
+      <details
+        className="import-preview-details"
+        onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
+      >
+        <summary>查看原始诊断数据（按需展开）</summary>
+        {detailsOpen && (
+          <pre className="import-preview-content">
+            {previewValueForDetails(preview)}
           </pre>
-        )) :
-        entries.map(([key, value]) => (
-          <div key={key}>
-            <strong>{key}</strong>
-            <pre className="import-preview-content">
-              {typeof value === 'string' ?
-                value :
-                JSON.stringify(value, null, 2)}
-            </pre>
-          </div>
-        ))}
+        )}
+      </details>
     </div>
+  );
+}
+
+function PreviewSection({ label, section }) {
+  const status = section.isTruncated ? '部分文件未展示' : '文件清单完整';
+  return (
+    <section className="import-preview-section">
+      <div className="import-preview-section-title">
+        <strong>{label}</strong>
+        <span>{status}</span>
+      </div>
+      <dl className="import-preview-metrics">
+        <div>
+          <dt>文件总数</dt>
+          <dd>{section.totalFiles}</dd>
+        </div>
+        <div>
+          <dt>已预览</dt>
+          <dd>{section.previewedFiles}</dd>
+        </div>
+        <div>
+          <dt>文本 / 二进制</dt>
+          <dd>
+            {section.textFiles} / {section.binaryFiles}
+          </dd>
+        </div>
+        <div>
+          <dt>内容被截断</dt>
+          <dd>{section.truncatedFiles}</dd>
+        </div>
+      </dl>
+      {section.paths.length > 0 && (
+        <details className="import-preview-paths">
+          <summary>查看文件路径（{section.paths.length}）</summary>
+          <ul>
+            {section.paths.map((path, index) => (
+              <li key={`${path}-${index}`}>
+                <code>{path}</code>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </section>
   );
 }
 

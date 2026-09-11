@@ -64,6 +64,20 @@ test('计划整体变化时只恢复依赖指纹未变化的单元', () => {
   );
 });
 
+test('生成检查点保存稳定 unitId 和目标资源', () => {
+  const project = createProject({ owner: 'tester', name: '生成单元标识' });
+  const run = getPiAuthoringAdapter().start(project.id, '生成知识包', 'base-unit', {}).run;
+  const store = new GenerationCheckpointStore();
+  store.saveCompleted({
+    projectId: project.id, runId: run.id, planHash: 'plan-unit', phase: 'object_batch_1',
+    batchKind: 'object', batchIndex: 1, unitId: 'object-unit-a', targetIds: ['candidate-a'],
+    output: { objects: [] }, attemptCount: 1,
+  });
+  const restored = store.list(project.id, run.id, 'plan-unit');
+  assert.equal(restored[0].unitId, 'object-unit-a');
+  assert.deepEqual(restored[0].targetIds, ['candidate-a']);
+});
+
 test('生成门禁恢复时可把已完成批次复制到新运行', () => {
   const project = createProject({
     owner: 'tester', name: '知识生成跨运行恢复', domain: '供应链', background: '库存分析',

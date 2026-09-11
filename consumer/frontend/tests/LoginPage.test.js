@@ -238,3 +238,35 @@ test('register form still submits valid input to /auth/register', async () => {
     assert.ok(document.querySelector('.lok'));
   });
 });
+
+test('login failures use safe Chinese copy and expose an accessible alert', async () => {
+  globalThis.fetch = async (url) => {
+    if (url === '/auth/capabilities') { return jsonResponse({ registration_enabled: false }); }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  await withRenderedLoginPage(async ({ dom, renderPage, flush }) => {
+    await renderPage({
+      login: async () => ({
+        success: false,
+        status: 401,
+        error: '账号或密码错误，请重新输入。',
+      }),
+    });
+    const usernameInput = document.getElementById('login-username');
+    const passwordInput = document.getElementById('login-password');
+    await changeInputValue(dom, usernameInput, 'alice');
+    await changeInputValue(dom, passwordInput, 'wrong');
+    const form = document.querySelector('form.lcard');
+    await act(async () => {
+      form.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    const errorBox = document.querySelector('.lerr[role="alert"]');
+    assert.ok(errorBox);
+    assert.equal(errorBox.getAttribute('aria-live'), 'assertive');
+    assert.equal(errorBox.textContent, '账号或密码错误，请重新输入。');
+    assert.doesNotMatch(errorBox.textContent, /Invalid credentials|alice|wrong/);
+  });
+});

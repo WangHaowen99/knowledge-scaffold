@@ -244,6 +244,7 @@ def test_workspace_apis_publish_immediately_after_each_warm_catalog_read(
     assert members.status_code == 200, members.json()
     member_list = client.get("/agentic/workspaces", headers=headers["bob"]).json()
     member_item = next(item for item in member_list["workspaces"] if item["id"] == "cache-target")
+    bob_personal_workspace_id = member_list["preferred_workspace_id"]
     assert member_item["members"] == ["bob"]
     assert member_item["role"] == "member"
 
@@ -269,11 +270,10 @@ def test_workspace_apis_publish_immediately_after_each_warm_catalog_read(
     )
     assert deleted.status_code == 200, deleted.json()
     after_delete = client.get("/agentic/workspaces", headers=headers["admin"]).json()
-    remaining_ids = [item["id"] for item in after_delete["workspaces"]]
-    assert remaining_ids[0] == "shared"
-    assert len(remaining_ids) == 2
-    assert remaining_ids[1].startswith("home-")
-    assert "cache-target" not in remaining_ids
+    assert {item["id"] for item in after_delete["workspaces"]} == {
+        "shared",
+        bob_personal_workspace_id,
+    }
     assert (
         client.get(
             "/agentic/workspaces/cache-target",

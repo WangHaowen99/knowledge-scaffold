@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from agent.tools.base import ToolContext
 from agent.tools.execute_script import (
+    _validate_structured_result_consistency,
     MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION,
     ExecuteScriptTool,
     _is_successful_script_output,
@@ -36,6 +37,68 @@ def _context(messages):
         agent_config=SimpleNamespace(execute_script_timeout=30),
         caller="main",
     )
+
+
+def test_structured_unit_load_result_rejects_unexplained_monthly_difference():
+    payload = {
+        "operation_key": "装置负荷硬约束炼化装置容量约束与超限分流",
+        "batches": [
+            {"vgo_load_raw_feed_tons": 120, "unit_loads": {"蜡油加氢": {"input_tons": 130}}},
+            {"vgo_load_raw_feed_tons": 80, "unit_loads": {"蜡油加氢": {"input_tons": 90}}},
+        ],
+        "monthly_unit_load": {"units": {"蜡油加氢": {"monthly_input_tons": 190}}},
+    }
+
+    error = _validate_structured_result_consistency(json.dumps(payload, ensure_ascii=False))
+
+    assert error == "Error: BUSINESS_SUMMARY_INCONSISTENT"
+
+
+def test_structured_unit_load_result_skips_vgo_when_only_effective_basis_is_returned():
+    payload = {
+        "operation_key": "装置负荷硬约束炼化装置容量约束与超限分流",
+        "batches": [
+            {"unit_loads": {"蜡油加氢": {"input_tons": 120}}},
+            {"unit_loads": {"蜡油加氢": {"input_tons": 80}}},
+        ],
+        "monthly_unit_load": {"units": {"蜡油加氢": {"monthly_input_tons": 190}}},
+    }
+
+    assert _validate_structured_result_consistency(json.dumps(payload, ensure_ascii=False)) is None
+
+
+def test_structured_unit_load_result_accepts_matching_monthly_total():
+    payload = {
+        "operation_key": "装置负荷硬约束炼化装置容量约束与超限分流",
+        "batches": [
+            {"unit_loads": {"2#柴油加氢": {"input_tons": 120}}},
+            {"unit_loads": {"2#柴油加氢": {"input_tons": 80}}},
+        ],
+        "monthly_unit_load": {"units": {"柴油加氢": {"monthly_input_tons": 200}}},
+    }
+
+    assert _validate_structured_result_consistency(json.dumps(payload, ensure_ascii=False)) is None
+
+
+def test_structured_unit_load_result_allows_documented_raw_vgo_monthly_basis():
+    payload = {
+        "operation_key": "装置负荷硬约束炼化装置容量约束与超限分流",
+        "batches": [
+            {
+                "input_weight_tons": 100,
+                "vgo_load_raw_feed_tons": 90,
+                "unit_loads": {"蜡油加氢": {"input_tons": 100}},
+            },
+            {
+                "input_weight_tons": 100,
+                "vgo_load_raw_feed_tons": 90,
+                "unit_loads": {"蜡油加氢": {"input_tons": 100}},
+            },
+        ],
+        "monthly_unit_load": {"units": {"蜡油加氢": {"monthly_input_tons": 180}}},
+    }
+
+    assert _validate_structured_result_consistency(json.dumps(payload, ensure_ascii=False)) is None
 
 
 def test_identical_successful_script_call_is_reused_instead_of_executed_again():
@@ -122,6 +185,6 @@ def test_failed_script_call_does_not_consume_retry_budget():
 
 
 def test_operation_selection_redirect_does_not_consume_retry_budget():
-    content = "Operation selection blocked: load the coordinating operation first. " "The script did not run."
+    content = "Operation selection blocked: load the coordinating operation first. The script did not run."
 
     assert _is_successful_script_output(content) is False

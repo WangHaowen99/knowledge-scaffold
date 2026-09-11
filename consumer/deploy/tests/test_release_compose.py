@@ -441,12 +441,26 @@ def test_deployment_lock_has_one_production_flock_backend():
 
 def test_missing_flock_fails_before_docker_with_clear_error(tmp_path):
     bundle_root, deploy_root, env, _, docker_calls = _prepare_storage_mode_bundle(tmp_path)
-    (tmp_path / "bin" / "flock").unlink()
-    env["PATH"] = str(tmp_path / "bin")
+    bash_executable = shutil.which(TEST_BASH) or TEST_BASH
+    fake_bin = tmp_path / "bin"
+    (fake_bin / "flock").unlink()
+    if os.name != "nt":
+        fake_dirname = fake_bin / "dirname"
+        fake_dirname.write_text(
+            "#!/bin/sh\n"
+            'path="$1"\n'
+            'case "$path" in\n'
+            "  */*) printf '%s\\n' \"${path%/*}\" ;;\n"
+            "  *) printf '.\\n' ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_dirname.chmod(0o755)
+        env["PATH"] = str(fake_bin)
 
     result = subprocess.run(
         [
-            TEST_BASH,
+            bash_executable,
             "-c",
             f'source "{(deploy_root / "common.sh").as_posix()}"; docker info',
         ],
@@ -1773,14 +1787,24 @@ def test_system_config_migrations_are_ordered_only_in_shared_runner():
     runner_text = (BACKEND_ROOT / "migrations" / "runner.py").read_text(encoding="utf-8")
     forbidden_values = (
         "system-config-model-profiles-v1",
+        "system-config-model-profile-output-budget-env-v1",
+        "system-config-model-profile-output-budget-v1",
+        "workspace-model-profile-output-budget-v1",
         "system-config-secret-encryption-v1",
         "system_config_model_profiles_v1",
+        "system_config_model_profile_output_budget_env_v1",
+        "system_config_model_profile_output_budget_v1",
+        "workspace_model_profile_output_budget_v1",
         "system_config_secret_encryption_v1",
     )
 
     assert app_text.count("run_startup_migrations()") == 1
-    assert runner_text.index("system-config-model-profiles-v1") < runner_text.index(
-        "system-config-secret-encryption-v1"
+    assert (
+        runner_text.index("system-config-model-profile-output-budget-env-v1")
+        < runner_text.index("system-config-model-profiles-v1")
+        < runner_text.index("system-config-model-profile-output-budget-v1")
+        < runner_text.index("workspace-model-profile-output-budget-v1")
+        < runner_text.index("system-config-secret-encryption-v1")
     )
     for script_name in ("deploy.sh", "migrate.sh", "preflight.sh", "backup.sh"):
         script_text = (DEPLOY_ROOT / script_name).read_text(encoding="utf-8")

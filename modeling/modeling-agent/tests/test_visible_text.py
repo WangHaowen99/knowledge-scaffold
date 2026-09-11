@@ -66,3 +66,10 @@ def test_reasoning_sanitizer_removes_private_line_split_across_chunks() -> None:
     assert visible == "先分析资料结构。\n（内部配置已隐藏）\n（内部配置已隐藏）\n再核对字段。"
     assert "top-secret" not in visible
     assert "rules/demo.md" not in visible
+
+
+def test_reasoning_sanitizer_hides_platform_capability_claims() -> None:
+    sanitizer = VisibleReasoningSanitizer()
+    visible = sanitizer.feed("工具集中没有该读取能力，请确认平台是否开放。") + sanitizer.finish()
+
+    assert visible == "（内部配置已隐藏）"

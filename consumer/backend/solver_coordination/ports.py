@@ -36,6 +36,13 @@ class DecisionModelLoader(Protocol):
 
 
 class ProblemCompiler(Protocol):
+    def resolve_capability_model(
+        self, capability: Any
+    ) -> tuple[Mapping[str, Any], tuple[str, ...]]:
+        # Keep an explicit return path so static contract analyzers recognize
+        # this protocol method as value-producing. Concrete compilers override it.
+        return {}, ()
+
     def compile(
         self,
         *,

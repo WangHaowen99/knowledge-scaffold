@@ -147,7 +147,7 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
             {loadingMoreSessions && (
               <Loader2 size={13} className="spin" aria-hidden="true" />
             )}
-            <span>{loadingMoreSessions ? '姝ｅ湪鍔犺浇' : '鍔犺浇鏇村'}</span>
+            <span>{loadingMoreSessions ? '正在加载' : '加载更多'}</span>
           </button>
         )}
       </div>

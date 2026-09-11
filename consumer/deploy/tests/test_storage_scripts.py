@@ -1335,6 +1335,7 @@ def test_registered_migrations_mount_active_volumes_in_one_shot_containers(tmp_p
         flattened = " ".join(call)
         assert "consumer-runtime-data:/release/.onto-runtime:ro" in flattened
         assert "consumer-auth-data:/release/.onto-auth:ro" in flattened
+        assert sum(value.endswith(":/release/backend:ro") for value in call) == 1
         assert ":/deploy-tools:ro" in flattened
     assert any(any(value.endswith("migrate_auth_workspace.py") for value in call) for call in runs)
     assert any(any(value.endswith("migrate_persistent_storage.py") for value in call) for call in runs)

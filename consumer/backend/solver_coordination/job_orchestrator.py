@@ -1193,6 +1193,20 @@ class DurableJobOrchestrator:
                     except LeaseConflict:
                         logger.debug("Cancellation lease was already released or superseded")
 
+    def finish_cancellation(
+        self,
+        job: Mapping[str, Any],
+        *,
+        workspace_id: str,
+        owner_id: str,
+    ) -> dict[str, Any]:
+        """Complete a previously reserved cancellation through the public API."""
+        return self._finish_cancellation(
+            job,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+        )
+
     def recover_once(self, *, workspace_id: str, owner_id: str) -> tuple[dict[str, Any], ...]:
         outcomes: list[dict[str, Any]] = []
         for job in self.store.list_recoverable_jobs(

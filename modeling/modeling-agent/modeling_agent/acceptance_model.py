@@ -175,18 +175,48 @@ def _domain_turn(
                 return _tool("get_change_plan", {"plan_id": plan.get("id", "")}, available)
         return PlannedTurn(content="建模计划已经保存，批准前不会生成候选修改。")
 
-    schema_tasks = [
-        task for task in plan.get("tasks", [])
-        if isinstance(task, Mapping) and "sync_schema_objects" in (task.get("allowed_tools") or [])
-    ]
-    schema_syncs = [call for call in calls if call.name == "sync_schema_objects"]
-    if schema_tasks and not schema_syncs:
+    schema_tools = {
+        "sync_schema_objects",
+        "stage_schema_semantic_changes",
+        "confirm_schema_semantics",
+    }
+    schema_tasks: list[Mapping[str, Any]] = []
+    for task in plan.get("tasks", []):
+        if not isinstance(task, Mapping):
+            continue
+        allowed_tools = set(task.get("allowed_tools") or [])
+        if schema_tools & allowed_tools:
+            schema_tasks.append(task)
+    plan_id = str(plan.get("id") or "")
+    plan_boundary = -1
+    for call in calls:
+        if call.name not in {"create_change_plan", "get_change_plan", "revise_change_plan"}:
+            continue
+        call_plan = call.result.get("plan")
+        if not isinstance(call_plan, Mapping):
+            continue
+        if str(call_plan.get("id") or "") != plan_id:
+            continue
+        plan_boundary = max(plan_boundary, call.index)
+    schema_syncs: list[CompletedCall] = []
+    for call in calls:
+        if call.name != "sync_schema_objects" or call.index <= plan_boundary:
+            continue
+        call_plan = call.result.get("plan")
+        if isinstance(call_plan, Mapping) and str(call_plan.get("id") or "") != plan_id:
+            continue
+        schema_syncs.append(call)
+    if any("sync_schema_objects" in (task.get("allowed_tools") or []) for task in schema_tasks) and not schema_syncs:
         return _tool("sync_schema_objects", {
             "plan_task_id": schema_tasks[0].get("id", ""),
             "expected_revision": plan.get("expected_revision", ""),
             "mutation_id": "acceptance-schema-sync-1",
             "reason": "按全部合成 Schema Sheet 确定性同步物理对象",
         }, available)
+
+    semantic_turn = _schema_semantic_turn(calls, plan, schema_tasks, schema_syncs, plan_boundary, available)
+    if semantic_turn is not None:
+        return semantic_turn
 
     for kind in targets:
         if not _has_resource_list(calls, kind):
@@ -240,7 +270,8 @@ def _domain_turn(
         return _tool("stage_change_set", _change_set_arguments(effective_prompt, plan, calls, generation), available)
 
     validated = [call for call in calls if call.name == "validate_change_set"]
-    if not validated or validated[-1].index < staged_boundary:
+    validation_boundary = staged_boundary
+    if not validated or validated[-1].index < validation_boundary:
         return _tool("validate_change_set", {
             "plan_id": plan.get("id", ""),
             "summary": "核对完整合成建模计划",
@@ -249,6 +280,150 @@ def _domain_turn(
     if not _has_call_after(calls, "request_confirmation", validated[-1].index):
         return _tool("request_confirmation", {"summary": "请复核本轮合成知识修改"}, available)
     return PlannedTurn(content="待修改内容已经提交人工复核。")
+
+
+def _schema_semantic_turn(
+    calls: list[CompletedCall],
+    plan: Mapping[str, Any],
+    schema_tasks: list[Mapping[str, Any]],
+    schema_syncs: list[CompletedCall],
+    plan_boundary: int,
+    available: set[str],
+) -> PlannedTurn | None:
+    semantic_tasks = [
+        task for task in schema_tasks
+        if "confirm_schema_semantics" in (task.get("allowed_tools") or [])
+    ]
+    if not semantic_tasks:
+        return None
+    successful_syncs = [call for call in schema_syncs if call.result.get("ok") is True]
+    if any("sync_schema_objects" in (task.get("allowed_tools") or []) for task in schema_tasks) \
+            and not successful_syncs:
+        return None
+    task = semantic_tasks[0]
+    sync_index = successful_syncs[-1].index if successful_syncs else plan_boundary
+    confirmed: list[CompletedCall] = []
+    for call in calls:
+        if call.name != "confirm_schema_semantics" or call.index <= sync_index:
+            continue
+        if call.result.get("ok") is True:
+            confirmed.append(call)
+    if confirmed:
+        return None
+
+    stages = [
+        call for call in calls
+        if call.name == "stage_schema_semantic_changes" and call.index > sync_index
+    ]
+    status_boundary = max([sync_index, *(call.index for call in stages)])
+    statuses = [
+        call for call in calls
+        if call.name == "get_schema_semantics" and call.index > status_boundary
+    ]
+    if not statuses:
+        return _tool("get_schema_semantics", {"level": "error", "offset": 0, "limit": 100}, available)
+    latest_status = statuses[-1].result
+    summary = latest_status.get("summary")
+    if isinstance(summary, Mapping) and summary.get("pass") is True:
+        return _tool("confirm_schema_semantics", {
+            "plan_task_id": task.get("id", ""),
+            "expected_revision": _working_revision(calls),
+            "mutation_id": "acceptance-schema-semantics-confirm-1",
+            "reason": "确定性复核合成 Schema 业务语义",
+        }, available)
+
+    issue_items = [
+        item for item in latest_status.get("items", [])
+        if isinstance(item, Mapping) and item.get("resource_id") and item.get("resource_hash")
+    ]
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for item in issue_items:
+        grouped.setdefault(str(item.get("resource_id")), []).append(item)
+    if grouped:
+        changes: list[dict[str, Any]] = []
+        for object_index, (resource_id, issues) in enumerate(list(grouped.items())[:20]):
+            actions: list[dict[str, Any]] = [
+                {"op": "set_title", "value": f"合成业务对象{object_index + 1}"},
+                {"op": "set_description", "value": f"保存第 {object_index + 1} 类合成业务记录。"},
+            ]
+            for field_index, issue in enumerate(
+                (item for item in issues if item.get("fieldKey") and item.get("field_hash"))
+            ):
+                actions.append({
+                    "op": "update_field",
+                    "field_key": str(issue.get("fieldKey")),
+                    "expected_field_hash": str(issue.get("field_hash")),
+                    "changes": {"cn_name": f"合成字段{field_index + 1}"},
+                })
+            changes.append({
+                "resource_id": resource_id,
+                "expected_resource_hash": str(issues[0].get("resource_hash")),
+                "actions": actions,
+            })
+        return _tool("stage_schema_semantic_changes", {
+            "plan_task_id": task.get("id", ""),
+            "expected_revision": _working_revision(calls),
+            "mutation_id": f"acceptance-schema-semantics-{len(stages) + 1}",
+            "reason": "使用合成业务定义批量补全 Schema 对象",
+            "objects": changes,
+        }, available)
+
+    object_lists: list[CompletedCall] = []
+    for call in calls:
+        if call.name != "list_domain_resources" or call.index <= sync_index:
+            continue
+        if call.arguments.get("kind") == "object":
+            object_lists.append(call)
+    if not object_lists:
+        return _tool("list_domain_resources", {"kind": "object", "limit": 200}, available)
+    resources = [
+        item for item in object_lists[-1].result.get("items", [])
+        if isinstance(item, Mapping) and item.get("resource_id")
+    ]
+    staged_ids: set[str] = set()
+    for call in stages:
+        for item in call.arguments.get("objects", []):
+            if isinstance(item, Mapping):
+                staged_ids.add(str(item.get("resource_id") or ""))
+    remaining = [item for item in resources if str(item.get("resource_id")) not in staged_ids]
+    if not remaining:
+        return _tool("get_schema_semantics", {"level": "error", "offset": 0, "limit": 100}, available)
+    batch = remaining[:20]
+    for item in batch:
+        resource_id = str(item.get("resource_id"))
+        if not any(
+            call.name == "get_domain_resource"
+            and call.arguments.get("resource_id") == resource_id
+            and call.index > sync_index
+            for call in calls
+        ):
+            return _tool("get_domain_resource", {"resource_id": resource_id}, available)
+    changes = []
+    for object_index, item in enumerate(batch):
+        resource_id = str(item.get("resource_id"))
+        resource = _resource(calls, resource_id)
+        actions = [
+            {"op": "set_title", "value": f"合成业务对象{object_index + 1}"},
+            {"op": "set_description", "value": f"保存第 {object_index + 1} 类合成业务记录。"},
+        ]
+        actions.extend({
+            "op": "update_field",
+            "field_key": str(field.get("key") or ""),
+            "expected_field_hash": str(field.get("item_hash") or ""),
+            "changes": {"cn_name": f"合成字段{field_index + 1}"},
+        } for field_index, field in enumerate(_editable_items(resource, "fields")))
+        changes.append({
+            "resource_id": resource_id,
+            "expected_resource_hash": str(resource.get("resource_hash") or ""),
+            "actions": actions,
+        })
+    return _tool("stage_schema_semantic_changes", {
+        "plan_task_id": task.get("id", ""),
+        "expected_revision": _working_revision(calls),
+        "mutation_id": f"acceptance-schema-semantics-{len(stages) + 1}",
+        "reason": "使用合成业务定义批量补全 Schema 对象",
+        "objects": changes,
+    }, available)
 
 
 def _binding_turn(prompt: str, calls: list[CompletedCall], available: set[str]) -> PlannedTurn:

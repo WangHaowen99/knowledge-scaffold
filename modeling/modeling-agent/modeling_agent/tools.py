@@ -30,7 +30,12 @@ FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 FULL_READ_TOOL_TIMEOUT_SECONDS = 1830.0
 EVALUATION_PENDING_MESSAGE = "正式评测任务已创建，可在评测界面查看实时进度。"
 LEADER_DOCUMENT_PAGE_CHARS = 6_000
-LEADER_TABLE_SAMPLE_ROWS = 5
+# Keep the default leader read deliberately bounded, while allowing read-only
+# specialists to request a larger page when they are doing batch material
+# analysis.  The previous shared value of 5 caused every role to re-read the
+# same table page and made bulk analysis needlessly expensive.
+DEFAULT_TABLE_SAMPLE_ROWS = 20
+MATERIAL_ANALYST_TABLE_SAMPLE_ROWS = 50
 TABLE_FIELD_SAMPLE_VALUES = 3
 TABLE_SAMPLE_VALUE_CHARS = 120
 
@@ -55,6 +60,8 @@ VALIDATION_REPAIR_ERROR_TOOLS = frozenset({
     "patch_operation",
     "patch_metric",
     "sync_schema_objects",
+    "stage_schema_semantic_changes",
+    "confirm_schema_semantics",
     "patch_object_source_binding",
     "delete_domain_resource",
     "stage_script_source",
@@ -82,6 +89,8 @@ VALIDATION_REPAIR_PROGRESS_TOOLS = frozenset({
     "patch_operation",
     "patch_metric",
     "sync_schema_objects",
+    "stage_schema_semantic_changes",
+    "confirm_schema_semantics",
     "patch_object_source_binding",
     "delete_domain_resource",
     "stage_script_source",
@@ -160,6 +169,7 @@ class ToolContext:
     decision_request_in_text: bool = False
     user_input_request_in_text: bool = False
     confirmation_claimed_in_text: bool = False
+    technical_capability_claimed: bool = False
     decision_card_requested: bool = False
     validation_repair: CandidateValidationRepairState = field(default_factory=lambda: CandidateValidationRepairState())
     package_contract: dict[str, Any] = field(default_factory=dict)
@@ -797,6 +807,53 @@ def domain_action_schema(operations: list[str]) -> dict[str, Any]:
     }
 
 
+SCHEMA_SEMANTIC_ACTIONS = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": 500,
+    "items": {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {"op": {"type": "string", "enum": ["set_title", "set_description"]}, "value": STRING},
+                "required": ["op", "value"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {"op": {"type": "string", "enum": ["set_aliases"]}, "value": {"type": "array", "items": STRING, "maxItems": 500}},
+                "required": ["op", "value"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "enum": ["update_field"]},
+                    "field_key": STRING,
+                    "expected_field_hash": RESOURCE_HASH,
+                    "changes": {
+                        "type": "object",
+                        "properties": {
+                            "cn_name": STRING,
+                            "note": STRING,
+                            "alias": STRING,
+                            "required": {"type": "boolean"},
+                        },
+                        "minProperties": 1,
+                        "additionalProperties": False,
+                    },
+                },
+                # 补空白语义时逐字段带乐观锁会反复失效：一次成功写入就让手里剩下的
+                # 字段哈希整批作废，批量因此退化为逐个提交（见 #32）。对象级
+                # expected_resource_hash 已经足够防止丢失更新，字段级改为可选。
+                "required": ["op", "field_key", "changes"],
+                "additionalProperties": False,
+            },
+        ],
+    },
+}
+
+
 DOMAIN_MUTATION_ENVELOPE = {
     "expected_revision": WORKING_REVISION,
     "mutation_id": MUTATION_ID,
@@ -839,14 +896,15 @@ CHANGE_PLAN_TASK = {
         },
         "target_key": {
             "type": "string", "minLength": 1, "maxLength": 160,
-            "description": "一个且仅一个目标资源的稳定 key；不能填写目录、类别、通配符或多个资源的概括。",
+            "description": "普通任务填写一个且仅一个目标资源的稳定 key；Core 注入的 Schema 同步任务使用保留目标 __schema__ 并承载末尾语义阶段。",
         },
         "allowed_tools": {
             "type": "array", "minItems": 1, "maxItems": 20,
             "items": {"type": "string", "enum": [
                 "create_object", "create_rule", "create_operation", "create_metric",
                 "patch_object", "patch_rule", "patch_operation", "patch_metric",
-                "sync_schema_objects", "patch_object_source_binding", "delete_domain_resource", "stage_script_patch",
+                "sync_schema_objects", "stage_schema_semantic_changes", "confirm_schema_semantics",
+                "patch_object_source_binding", "delete_domain_resource", "stage_script_patch",
             ]},
         },
         "depends_on": {"type": "array", "maxItems": 100, "items": STRING},
@@ -955,7 +1013,87 @@ CHANGE_SET_ACTION = {"oneOf": [
 
 
 CORE_TOOL_SPECS = (
+    ToolSpec(
+        "begin_goal_draft",
+        "创建结构化建模目标草稿。目标按 section 分批提交，服务端逐段校验后再组装目标文件。",
+        {
+            "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
+            "change_group": CHANGE_GROUP,
+            "base_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+            "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        },
+        ("change_group", "base_revision", "request_id"), False, "正在建立目标草稿",
+    ),
+    ToolSpec(
+        "put_goal_section",
+        "提交一个建模目标 section。只提交 objective、scope、constraints、outputs 或 open_questions 之一，服务端会立即校验字段和证据。",
+        {
+            "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
+            "section": {"type": "string", "enum": ["objective", "scope", "constraints", "outputs", "open_questions"]},
+            "data": {"type": "object"},
+            "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+            "base_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        ("draft_id", "section", "data", "request_id", "base_revision"), False, "正在保存目标草稿分段",
+    ),
+    ToolSpec(
+        "finalize_goal_draft",
+        "完成目标草稿。服务端检查必需 section、证据格式和完整性，并负责渲染 .modeling/goal.md。",
+        {
+            "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
+            "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+            "base_revision": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        ("draft_id", "request_id", "base_revision"), False, "正在完成建模目标草稿",
+    ),
+    ToolSpec(
+        "get_goal_context",
+        "读取服务端生成的有界目标上下文，只返回结构化资料结论、约束、候选和证据引用，不返回长篇原文工具历史。",
+        {}, display="正在整理目标生成依据",
+    ),
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
+    ToolSpec(
+        "get_product_ledger",
+        "读取当前产品/规则大清单的逐项对账台账和确定性校验结果；没有台账时返回未建立状态。",
+        {},
+        display="正在读取产品清单台账",
+    ),
+    ToolSpec(
+        "stage_product_ledger",
+        "提交产品/规则大清单的结构化台账。sourceRevision 可留空，由核心绑定当前工作区修订；必须提供每个 canonical item 的唯一 ID、rule ID、原始记录定位、归并组、证据覆盖状态和处理状态；核心会确定性校验数量闭合和 ID 唯一性。",
+        {
+            "schemaVersion": {"type": "string", "enum": ["product-ledger-v1", "product-ledger-v2"]},
+            "sourceRevision": STRING,
+            "scope": STRING,
+            "rawCount": {"type": "integer", "minimum": 0},
+            "canonicalCount": {"type": "integer", "minimum": 0},
+            "mergedGroupCount": {"type": "integer", "minimum": 0},
+            "required": {"type": "boolean"},
+            "entries": {
+                "type": "array",
+                "maxItems": 10000,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "canonicalItemId": STRING,
+                        "ruleId": STRING,
+                        "ruleRefs": {"type": "array", "items": STRING, "minItems": 1, "uniqueItems": True},
+                        "sourceRecordIds": {"type": "array", "items": STRING, "minItems": 1},
+                        "sourceLocator": STRING,
+                        "mergeGroupId": STRING,
+                        "evidenceStatus": {"type": "string", "enum": ["complete", "insufficient"]},
+                        "processingStatus": {"type": "string", "enum": ["pending", "ready", "generated", "blocked"]},
+                        "insufficiencyReason": STRING,
+                    },
+                    "required": ["canonicalItemId", "sourceRecordIds", "sourceLocator", "evidenceStatus", "processingStatus"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        ("scope", "rawCount", "canonicalCount", "mergedGroupCount", "entries"),
+        False,
+        "正在校验产品清单台账",
+    ),
     ToolSpec(
         "get_schema_mapping_plan",
         "读取全部已确认 Sheet 与当前对象结构化来源的完整对照台账，返回逐 Sheet 映射状态和未闭环计数。业务流程确认并进入 knowledge 阶段后先调用，补齐来源后再次核对；只有 complete=true 才能发起知识候选确认。",
@@ -1002,6 +1140,12 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec("search_documents", "跨资料搜索原文，query 中的词按 OR 匹配。", {"query": STRING}, ("query",), display="正在检索资料"),
     ToolSpec("list_tables", "列出从表格资料解析出的数据字典。", {}, display="正在查看数据表"),
+    ToolSpec(
+        "get_schema_overview",
+        "一次返回已解析表格的结构摘要：表名、行数、字段类型、非空率、唯一性和少量样例；不返回业务数据行。用于 Schema 盘点，避免逐表分页读取整张表。",
+        {},
+        display="正在生成表结构摘要",
+    ),
     ToolSpec("describe_table", "按资料 ID 和 Sheet 名查看字段、类型、样例和唯一性，避免同名 Sheet 混淆。", {"document_id": STRING, "table": STRING}, ("document_id", "table"), display="正在分析数据表"),
     ToolSpec(
         "read_table_rows",
@@ -1028,7 +1172,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "create_change_plan",
-        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
+        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；Schema 模式的物理同步及其末尾业务语义阶段由 Core 合并为同一项 Schema 任务。要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
         {
             "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
             "mode": {"type": "string", "enum": ["expert_edit", "generation"]},
@@ -1120,8 +1264,20 @@ CORE_TOOL_SPECS = (
         display="正在读取资源快照",
     ),
     ToolSpec(
+        "get_schema_semantics",
+        "分页读取当前 Schema 对象业务语义阻断项；字段业务说明允许为空，required 已由 Schema 同步归一为布尔值。",
+        {
+            "level": {"type": "string", "enum": ["error", "warning"]},
+            "code": STRING,
+            "object_key": STRING,
+            "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        display="正在检查 Schema 对象业务语义",
+    ),
+    ToolSpec(
         "suggest_object_relations",
-        "Return deterministic object relation candidates from current objects, fields, primary keys, sources, existing relations and operation references. This tool never writes the package or mapping. Use scope to keep increment runs focused; do not show the full candidate list to experts. High-confidence candidates may be drafted into a Change Set summary, while ambiguous candidates should become only a few concrete business questions.",
+        "仅在需要补齐对象间语义关系时调用，返回基于当前对象、字段、主键、来源、已有关系和操作引用的确定性只读候选；不需要补齐时无需调用。该工具不写知识包或 mapping。调用时可用 scope 收敛增量范围；不要把完整候选列表展示给专家。高置信候选可起草进 Change Set 摘要确认，方向不清的候选只转成少量具体业务问题。",
         {
             "working_revision": WORKING_REVISION,
             "expected_revision": WORKING_REVISION,
@@ -1141,7 +1297,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "sync_schema_objects",
-        "按所有 purpose=schema 的已解析 Sheet 确定性同步物理对象。每张 Sheet 恰好生成一个对象，字段、主键、来源和 mapping 由 Core 生成；模型不得传对象正文或字段映射。",
+        "按所有 purpose=schema 的已解析 Sheet 确定性同步物理对象。每张 Sheet 恰好生成一个对象，字段、主键、来源和 mapping 由 Core 生成；required 由显式约束和确定性规则归一，模型不得传对象正文或字段映射。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
             "plan_task_id": PLAN_TASK_ID,
@@ -1149,6 +1305,43 @@ CORE_TOOL_SPECS = (
         ("plan_task_id", "expected_revision", "mutation_id", "reason"),
         False,
         "正在按数据 Schema 同步全部物理对象",
+    ),
+    ToolSpec(
+        "stage_schema_semantic_changes",
+        "在同一 Schema 同步计划任务中批量形成对象业务语义候选。只允许修改对象标题、说明、别名，以及字段中文名、可选说明、别名和 required；禁止修改物理身份。"
+        "建议单批不超过 3 个对象、60 个字段：再大会让本次调用的 JSON 超出单次输出上限被截断，整批白跑。硬上限为 20 个对象、400 个字段。"
+        "字段的 expected_field_hash 可以省略；对象级 expected_resource_hash 已提供并发保护。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
+            "objects": {
+                "type": "array", "minItems": 1, "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "resource_id": RESOURCE_ID,
+                        "expected_resource_hash": RESOURCE_HASH,
+                        "actions": SCHEMA_SEMANTIC_ACTIONS,
+                    },
+                    "required": ["resource_id", "expected_resource_hash", "actions"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        ("plan_task_id", "expected_revision", "mutation_id", "reason", "objects"),
+        False,
+        "正在批量补全 Schema 对象业务语义",
+    ),
+    ToolSpec(
+        "confirm_schema_semantics",
+        "在同一 Schema 同步计划任务的最后确认所有 Schema 对象业务语义；所有 error 清零后才能继续后续任务。",
+        {
+            **DOMAIN_MUTATION_ENVELOPE,
+            "plan_task_id": PLAN_TASK_ID,
+        },
+        ("plan_task_id", "expected_revision", "mutation_id", "reason"),
+        False,
+        "正在确认 Schema 对象业务语义",
     ),
     ToolSpec(
         "create_object",
@@ -2028,7 +2221,13 @@ PROJECT_STATE_TOOL_SPECS = (
 
 
 class CoreTool(Tool):
-    def __init__(self, spec: ToolSpec, context: ToolContext) -> None:
+    def __init__(
+        self,
+        spec: ToolSpec,
+        context: ToolContext,
+        *,
+        table_sample_row_limit: int | None = None,
+    ) -> None:
         super().__init__(
             ToolCard(
                 id=f"{spec.name}_{context.run_id}",
@@ -2044,6 +2243,10 @@ class CoreTool(Tool):
         )
         self.spec = spec
         self.context = context
+        self.table_sample_row_limit = _bounded_positive_integer(
+            table_sample_row_limit,
+            DEFAULT_TABLE_SAMPLE_ROWS,
+        )
 
     async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
         if self.context.cancel_event is not None and self.context.cancel_event.is_set():
@@ -2072,7 +2275,16 @@ class CoreTool(Tool):
                 ),
                 "display": {"text": "已阻止全量生成计划，请只规划本轮受影响内容"},
             }, ensure_ascii=False)
-        arguments = _bounded_source_arguments(self.spec.name, arguments)
+        arguments = _bounded_source_arguments(
+            self.spec.name,
+            arguments,
+            table_sample_row_limit=self.table_sample_row_limit,
+        )
+        cache_key = _stable_read_cache_key(self.spec.name, arguments)
+        if cache_key is not None:
+            cached = self.context.stable_read_cache.get(cache_key)
+            if cached is not None:
+                return json.dumps(cached, ensure_ascii=False)
         started_after = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         activity_id = f"{self.spec.name}:{started_after}"
         if self.spec.name == "read_documents_fully":
@@ -2148,6 +2360,8 @@ class CoreTool(Tool):
         finally:
             if self.context.inflight_core_calls is not None:
                 self.context.inflight_core_calls.discard(call)
+        if cache_key is not None and not result.get("error"):
+            self.context.stable_read_cache[cache_key] = result
         autonomous_recovery = _autonomous_recovery(self.spec.name, arguments, result, self.context)
         if autonomous_recovery is not None:
             result = autonomous_recovery
@@ -2195,7 +2409,9 @@ class CoreTool(Tool):
                 }
         if result.get("problemVisibility") == "recovery":
             self.context.recovery_waiting = True
-        if not result.get("error") and self.context.after_core_tool is not None:
+        # 失败也要上报：连续撞同一个错误同样是打转，原来只在成功时回调，
+        # 于是一个反复失败的工具在停滞判据里完全不可见（见 #40）。
+        if self.context.after_core_tool is not None:
             await self.context.after_core_tool(self.spec.name, arguments, result)
         return json.dumps(_compact_source_result(self.spec.name, result), ensure_ascii=False)
 
@@ -2203,7 +2419,12 @@ class CoreTool(Tool):
         yield await self.invoke(inputs, **kwargs)
 
 
-def _bounded_source_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _bounded_source_arguments(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    table_sample_row_limit: int = DEFAULT_TABLE_SAMPLE_ROWS,
+) -> dict[str, Any]:
     bounded = dict(arguments)
     if name == "read_document":
         bounded["limit"] = _bounded_positive_integer(
@@ -2211,9 +2432,21 @@ def _bounded_source_arguments(name: str, arguments: dict[str, Any]) -> dict[str,
         )
     elif name == "read_table_rows":
         bounded["limit"] = _bounded_positive_integer(
-            bounded.get("limit"), LEADER_TABLE_SAMPLE_ROWS,
+            bounded.get("limit"), table_sample_row_limit,
         )
     return bounded
+
+
+def _stable_read_cache_key(name: str, arguments: Mapping[str, Any]) -> str | None:
+    if name not in {"list_tables", "read_table_rows"}:
+        return None
+    return json.dumps(
+        {"tool": name, "arguments": dict(arguments)},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
 
 
 def _is_retryable_validation_failure(name: str, result: Mapping[str, Any]) -> bool:
@@ -2595,6 +2828,9 @@ class AskTool(Tool):
                                     "value": STRING,
                                     "requiresText": {"type": "boolean"},
                                     "textPrompt": {"type": "string", "minLength": 1, "maxLength": 500},
+                                    # 选项需要用户去别的界面完成时必须声明 route，
+                                    # 否则点了只是把这句话发回来，界面不会跳转（见 #39）。
+                                    "route": {"type": "string", "enum": ["evaluation"]},
                                 },
                                 "required": ["label", "description", "value"],
                                 "additionalProperties": False,
@@ -2673,12 +2909,19 @@ DOMAIN_PHASE_TOOLS = frozenset({
     "list_domain_resources", "get_domain_resource",
     "create_object", "create_rule", "create_operation", "create_metric",
     "patch_object", "patch_rule", "patch_operation", "patch_metric",
-    "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
+    "sync_schema_objects", "get_schema_semantics", "stage_schema_semantic_changes",
+    "confirm_schema_semantics", "suggest_object_relations", "patch_object_source_binding",
     "preview_domain_delete", "delete_domain_resource",
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
     "stage_tabular_dataset",
+    "get_product_ledger", "stage_product_ledger",
 })
-DOMAIN_READ_TOOLS = frozenset({"list_domain_resources", "get_domain_resource"})
+DOMAIN_READ_TOOLS = frozenset({
+    "list_domain_resources",
+    "get_domain_resource",
+    "get_product_ledger",
+    "get_schema_semantics",
+})
 FUSION_PHASE_TOOLS = frozenset({
     "analyze_material_impact", "list_package_sources", "list_package_fusion_plans",
     "get_package_fusion_plan", "create_package_fusion_plan", "update_package_fusion_plan",
@@ -2751,7 +2994,16 @@ def core_tool_specs_for_phase(
 
 def build_core_tools(context: ToolContext, names: set[str]) -> list[Tool]:
     """Build a least-privilege tool surface for an openJiuwen subagent."""
-    return [CoreTool(spec, context) for spec in CORE_TOOL_SPECS if spec.name in names]
+    table_limit = (
+        MATERIAL_ANALYST_TABLE_SAMPLE_ROWS
+        if "read_documents_fully" in names and "search_documents" in names
+        else DEFAULT_TABLE_SAMPLE_ROWS
+    )
+    return [
+        CoreTool(spec, context, table_sample_row_limit=table_limit)
+        for spec in CORE_TOOL_SPECS
+        if spec.name in names
+    ]
 
 
 def input_dict(inputs: Any) -> dict[str, Any]:

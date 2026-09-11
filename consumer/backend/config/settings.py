@@ -248,7 +248,7 @@ class AppConfig:
         return bool(re.match(r"^[A-Za-z]:[\\/]", value)) or value.startswith("\\\\")
 
     @staticmethod
-    def _resolve_storage_path(
+    def resolve_storage_path(
         value: str,
         *,
         project_root: str,
@@ -338,23 +338,23 @@ class StorageConfig:
 
     @classmethod
     def from_mapping(cls, storage: Dict[str, Any]) -> "StorageConfig":
-        project_root = AppConfig._resolve_storage_path(
+        project_root = AppConfig.resolve_storage_path(
             storage["project_root"],
             project_root=storage["project_root"],
         )
         return cls(
-            chat_storage_dir=AppConfig._resolve_storage_path(
+            chat_storage_dir=AppConfig.resolve_storage_path(
                 storage["chat_storage_dir"],
                 project_root=project_root,
                 default_relative="data/chats",
             ),
-            execution_storage_dir=AppConfig._resolve_storage_path(
+            execution_storage_dir=AppConfig.resolve_storage_path(
                 storage["execution_storage_dir"],
                 project_root=project_root,
                 default_relative="data/executions",
             ),
             project_root=project_root,
-            auth_users_file=AppConfig._resolve_storage_path(
+            auth_users_file=AppConfig.resolve_storage_path(
                 storage["auth_users_file"],
                 project_root=project_root,
                 default_relative="users.json",

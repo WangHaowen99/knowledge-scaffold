@@ -191,9 +191,11 @@ function balancedChunkReduceInput(chunks: MaterialAnalysisChunkRecord[], llm: Ll
     12_288,
     Math.floor(contextWindow * 0.20),
   ));
+  // 汇总输入只保留结构化分块结果。限制在上下文窗口的四分之一，
+  // 给系统提示、工具回执和输出推理留下空间，避免长文档汇总再次撑满上下文。
   const totalBudget = Math.max(2_000, Math.min(
-    120_000,
-    contextWindow - outputReserve - 4_096 - Math.floor(contextWindow * 0.10),
+    32_000,
+    Math.floor(contextWindow * 0.25),
   ));
   const perChunk = Math.max(160, Math.floor(totalBudget / Math.max(1, chunks.length)));
   return chunks.map((chunk) => {
@@ -252,7 +254,7 @@ function balancedDomainDocuments(
   llm: LlmDeps,
 ) {
   const contextWindow = Math.max(8_192, Number(llm.model?.contextWindow) || 128_000);
-  const totalBudget = Math.max(2_000, Math.min(100_000, Math.floor(contextWindow * 0.45)));
+  const totalBudget = Math.max(2_000, Math.min(32_000, Math.floor(contextWindow * 0.25)));
   const perDocument = Math.max(400, Math.floor(totalBudget / Math.max(1, documents.length)));
   return documents.map((document) => {
     const candidates = document.payload.candidates.map((candidate) => ({
@@ -286,7 +288,7 @@ function balancedDomainDocuments(
 
 function balancedTableSummaries(tables: DataDictTable[], llm: LlmDeps) {
   const contextWindow = Math.max(8_192, Number(llm.model?.contextWindow) || 128_000);
-  const totalBudget = Math.max(2_000, Math.min(60_000, Math.floor(contextWindow * 0.25)));
+  const totalBudget = Math.max(2_000, Math.min(24_000, Math.floor(contextWindow * 0.20)));
   const fieldsPerTable = Math.max(4, Math.min(80, Math.floor(totalBudget / Math.max(1, tables.length) / 80)));
   return tables.map((table) => ({
     name: table.name,

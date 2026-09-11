@@ -50,6 +50,8 @@ import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { parsePackageArchive, renameImportedPackageArchive } from './workflow/package-import.js';
+import { publicKnowledgePackageFiles } from './workflow/package-file-scope.js';
+import { updateManifestPlatformMetadata } from './workflow/package-contract.js';
 import { normalizeFlowchartDocument } from './flowchart/document.js';
 import { renderDiagramFiles } from './flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
@@ -178,7 +180,7 @@ import {
   LlmDefaultSyncError,
   syncUserLlmToPlatformDefault,
 } from './settings/llm-default-sync.js';
-import { testConsumerConnectivity } from './consumer/client.js';
+import { modelingServiceFetch, testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { AnalysisResult, DataDictTable } from './types.js';
 import type { DocumentRecord } from './types.js';
@@ -1554,6 +1556,17 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       });
     });
 
+/** 长任务的业务说法。防重入拒绝时要说清楚「谁还没结束」，
+     *  只说「该操作」用户无从判断该等多久、还是该去别处看看。 */
+    const OPERATION_LABELS: Record<string, string> = {
+      analyze: '资料分析',
+      'package-chat': '知识包对话',
+      diagnose: '失败根因诊断',
+      'optimize-propose': '优化建议生成',
+      'optimize-apply': '知识包候选生成',
+      evaluate: '正式评测',
+    };
+
     // 长任务防重入（同项目同操作并发触发 → 409），并登记操作类型供前端恢复运行状态
     const inFlight = new InFlightOperations();
     const withLock = async (
@@ -1566,7 +1579,17 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return await inFlight.run(key, operation, fn);
       } catch (error) {
         if (error instanceof OperationAlreadyRunningError) {
-          return reply.code(409).send({ error: '该操作正在进行中，请稍候（切换页面不会中断执行）' });
+          /* 这是一次「拒绝」，不是状态播报。原文案「该操作正在进行中，请稍候」
+             被渲染在错误框里读起来像进度条，用户会盯着它干等——现场就出现过
+             对着它等了六分钟，而请求其实在 33 毫秒就被拒了（见 #41）。
+             改成明确的拒绝语气，并带上是哪个操作、跑了多久，让前端能给出等待预期。 */
+          const current = inFlight.status(key);
+          const running = current ? OPERATION_LABELS[current.operation] || current.operation : '上一个任务';
+          return reply.code(409).send({
+            error: `${running}还没有结束，等它完成后再点这里；切换页面不会中断它`,
+            runningOperation: current?.operation || operation,
+            runningStartedAt: current?.startedAt || '',
+          });
         }
         throw error;
       }
@@ -2358,14 +2381,15 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         packageArtifacts.readPackageArchiveFiles(c.p.id, pv.revision.oid),
       ]);
       // 导出前仍执行确定性渲染格式校验，防止异常规格产出无效交付包。
-      const bad = runFormatChecks(pv.spec, snapshot.files).filter((f) => f.severity === '错误');
+      const exportFiles = publicKnowledgePackageFiles(snapshot.files);
+      const bad = runFormatChecks(pv.spec, exportFiles).filter((f) => f.severity === '错误');
       if (bad.length) {
         return reply.code(400).send({
           error: `导出中止：包格式校验未通过——${bad.map((f) => f.message).join('；')}`,
           findings: bad,
         });
       }
-      const zip = zipPackage(archive.files);
+      const zip = zipPackage(publicKnowledgePackageFiles(archive.files));
       reply.header('Content-Type', 'application/zip');
       reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.packageVersion}.zip"`);
       return reply.send(Buffer.from(zip));
@@ -2966,6 +2990,32 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         if (round.status === 'done' && !failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需诊断' });
         const analyzeNode = latestNodeOf(listNodes(c.p.id), 'analyze', ['done', 'stale']);
         const qualityGaps = ((analyzeNode?.output as any)?.quality?.gaps ?? []) as any[];
+        const projectDataSource = getProjectDataSource(c.p.id);
+        const runtimeDataSearch = projectDataSource?.mode === 'connection'
+          && projectDataSource.ontologyId === version.spec.id
+          && config.modelingServiceToken.length >= 32
+          ? async ({ entity, query }: { entity: string; query: string }): Promise<string> => {
+            const response = await modelingServiceFetch(
+              '/agentic/internal/modeling/business-data/search',
+              {
+                method: 'POST',
+                workspaceId: projectDataSource.workspaceId,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  ontology_id: version.spec.id,
+                  ontology_version: version.spec.version,
+                  entity,
+                  query,
+                }),
+              },
+            );
+            const data = await response.json().catch(() => ({})) as any;
+            if (!response.ok) {
+              throw new Error(String(data.error ?? data.detail ?? `Consumer 返回 ${response.status}`));
+            }
+            return String(data.result ?? '');
+          }
+          : undefined;
         try {
           const report = await diagnoseEvaluationFailures({
             projectId: c.p.id,
@@ -2975,6 +3025,14 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             traces: m3repo.listResultTraces(round.id),
             tables: c.ctx.tables,
             documents: c.ctx.documents,
+            runtimeDataSource: projectDataSource
+              ? {
+                mode: projectDataSource.mode,
+                provider: projectDataSource.provider,
+                available: Boolean(runtimeDataSearch),
+              }
+              : undefined,
+            runtimeDataSearch,
             roundFailure: round.status === 'failed' ? round.log : undefined,
           }, buildTaskLlm({ maxTokensCap: 12_000 }));
           const diagnoses = diagnosisRepo.replaceFailureDiagnoses(
@@ -3597,6 +3655,49 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             });
           }
           const version = promoteReleaseCandidate(current.packageVersion);
+          const releasedSpec = { ...current.spec, version, status: 'released' as const };
+          const [deliverySnapshot, deliveryArchive] = await Promise.all([
+            packageArtifacts.readPackageFiles(c.p.id, current.revision.oid),
+            packageArtifacts.readPackageArchiveFiles(c.p.id, current.revision.oid),
+          ]);
+          const deliveryFiles = publicKnowledgePackageFiles(deliverySnapshot.files);
+          let deliveryFailure = '';
+          try {
+            if (deliveryFiles['manifest.yaml'] !== undefined) {
+              deliveryFiles['manifest.yaml'] = updateManifestPlatformMetadata(
+                deliveryFiles['manifest.yaml'],
+                releasedSpec,
+              );
+            }
+          } catch (error) {
+            deliveryFailure = error instanceof Error ? error.message : '交付包 manifest 无法更新';
+          }
+          const deliveryErrors = deliveryFailure
+            ? []
+            : runFormatChecks(releasedSpec, deliveryFiles).filter((finding) => finding.severity === '错误');
+          if (!deliveryFailure && !deliveryErrors.length) {
+            try {
+              const archiveFiles = publicKnowledgePackageFiles(deliveryArchive.files);
+              if (deliveryFiles['manifest.yaml'] !== undefined) {
+                archiveFiles['manifest.yaml'] = new TextEncoder().encode(deliveryFiles['manifest.yaml']);
+              }
+              zipPackage(archiveFiles);
+            } catch (error) {
+              deliveryFailure = error instanceof Error ? error.message : '交付包无法生成 ZIP';
+            }
+          }
+          if (deliveryFailure || deliveryErrors.length) {
+            const detail = deliveryFailure
+              || `${deliveryErrors.length} 个公开包格式错误`;
+            return reply.code(409).send({
+              error: '发布条件未满足',
+              gates: [
+                ...readiness.gates,
+                { id: 'delivery', label: '交付包', passed: false, detail },
+              ],
+              findings: deliveryErrors,
+            });
+          }
           const action = {
             cause: 'release',
             summary: `发布 ${version}`,

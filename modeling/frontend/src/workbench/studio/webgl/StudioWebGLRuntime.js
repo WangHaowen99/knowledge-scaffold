@@ -118,8 +118,13 @@ export class WebGLGraphRuntime {
   async mount(host, minimap) {
     this.host = host;
     this.minimap = minimap;
-    this.app = new Application();
-    await this.app.init({
+    /* init 是异步的：这段窗口里 app 已存在但 renderer 还没建好，读 app.canvas
+       的 getter 会抛。切走视图（比如从 Studio 切到评测）正好落在窗口里，
+       destroy() 抛出的异常会中断 React 的卸载提交，目标面板就渲染不出来。
+       所以两边都持局部引用，并按 renderer 是否就绪判断能不能碰画布。 */
+    const app = new Application();
+    this.app = app;
+    await app.init({
       preference: 'webgl',
       width: Math.max(1, host.clientWidth),
       height: Math.max(1, host.clientHeight),
@@ -130,7 +135,8 @@ export class WebGLGraphRuntime {
       powerPreference: 'high-performance',
     });
     if (this.destroyed) {
-      this.app.destroy(true, { children: true });
+      app.destroy(true, { children: true });
+      if (this.app === app) this.app = null;
       return;
     }
 
@@ -1549,12 +1555,14 @@ export class WebGLGraphRuntime {
     this.minimap?.removeEventListener('pointerdown', this.handleMinimapPointer);
     this.nodeTooltip?.remove();
     this.nodeTooltip = null;
-    if (this.app) {
-      this.app.canvas.removeEventListener('webglcontextlost', this.handleContextLost);
-      this.app.canvas.removeEventListener('wheel', this.handleWheel);
-      this.app.ticker.remove(this.tick);
-      this.app.destroy(true, { children: true });
-      this.app = null;
+    const app = this.app;
+    this.app = null;
+    // renderer 还没建好说明 init 还在飞，交给 mount() 返回后自己销毁
+    if (app?.renderer) {
+      app.canvas.removeEventListener('webglcontextlost', this.handleContextLost);
+      app.canvas.removeEventListener('wheel', this.handleWheel);
+      app.ticker.remove(this.tick);
+      app.destroy(true, { children: true });
     }
   }
 }

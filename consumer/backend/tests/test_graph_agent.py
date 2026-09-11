@@ -44,8 +44,6 @@ class JiuwenGraphQueryAgent(NativeJiuwenGraphQueryAgent):
     """Test harness that drives the production native-async entry."""
 
     def run(self, **kwargs):
-        import asyncio
-
         return asyncio.run(self.arun(**kwargs))
 
 

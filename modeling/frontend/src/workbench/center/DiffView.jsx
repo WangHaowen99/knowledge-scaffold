@@ -6,7 +6,7 @@ import { actions, store } from '../lib/appStore.js';
 import {
   displayEvidenceReferences,
   evidenceReferenceFromHref,
-  linkEvidenceReferences,
+  remarkEvidenceLinks,
 } from '../lib/evidence.js';
 import { useStore } from '../lib/store.js';
 import { MermaidPreview } from './FlowView.jsx';
@@ -120,7 +120,7 @@ function CandidateFileDiff({ file, materials }) {
 
 function MarkdownCandidatePreview({ file, materials, sourceDiff }) {
   const [mode, setMode] = useState('rendered');
-  const content = linkEvidenceReferences(stripFrontmatter(file.after), materials);
+  const content = stripFrontmatter(file.after);
   return (
     <div className="wb-diff wb-diff-markdown">
       <div className="fh">
@@ -137,7 +137,8 @@ function MarkdownCandidatePreview({ file, materials, sourceDiff }) {
           </div>
         </div>
         {mode === 'rendered'
-          ? <article className="wb-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{
+          ? <article className="wb-markdown"><Markdown
+            remarkPlugins={[remarkGfm, remarkEvidenceLinks(materials)]} components={{
               a: ({ node: _node, href, children, ...props }) => {
                 const reference = evidenceReferenceFromHref(href);
                 return reference

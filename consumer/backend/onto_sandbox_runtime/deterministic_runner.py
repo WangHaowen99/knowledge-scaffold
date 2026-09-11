@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 
+_GET_FRAME = vars(sys).get("_getframe")
+
+
 def _load_runtime_contract() -> Mapping[str, Any]:
     module_path = Path(__file__).resolve()
     candidates = (
@@ -98,8 +101,10 @@ def _path_value_is_within(raw_path: object, root: str) -> bool:
 
 
 def _package_caller(ontology_root: str) -> bool:
+    if not callable(_GET_FRAME):
+        return False
     try:
-        frame = sys._getframe(2)
+        frame = _GET_FRAME(2)
     except ValueError:
         return False
     while frame is not None:

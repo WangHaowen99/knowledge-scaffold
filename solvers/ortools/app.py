@@ -34,7 +34,7 @@ _PREFER_RE = re.compile(r"^wait=([0-9]{1,8})$")
 class BearerOnlySessionInterface(SessionInterface):
     """Disable cookie-backed sessions for the bearer-only solver API."""
 
-    def open_session(self, app: Flask, request: Any) -> NullSession:
+    def open_session(self, app: Flask, request_obj: Any) -> NullSession:
         return NullSession()
 
     def save_session(

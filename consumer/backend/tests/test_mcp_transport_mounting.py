@@ -1076,3 +1076,140 @@ def test_run_server_runs_startup_migrations_before_listening(monkeypatch, tmp_pa
         "create-app",
         "listen:True:127.0.0.1:7488",
     ]
+
+
+def test_run_server_runs_startup_migrations_before_loading_implicit_config(
+    monkeypatch,
+    tmp_path,
+):
+    calls: list[str] = []
+    config = _config(tmp_path, "streamable-http")
+    fake_app = object()
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_load_mcp_dotenv",
+        lambda: calls.append("load-dotenv"),
+    )
+    monkeypatch.setattr(
+        "migrations.runner.run_startup_migrations",
+        lambda: calls.append("migrate"),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "load_mcp_runtime_config",
+        lambda: calls.append("load-config") or config,
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "create_mcp_http_root_app",
+        lambda *_args, **_kwargs: calls.append("create-app") or fake_app,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "uvicorn",
+        SimpleNamespace(
+            run=lambda app, *, host, port: calls.append(
+                "listen:{}:{}:{}".format(app is fake_app, host, port),
+            ),
+        ),
+    )
+
+    mcp_server.run_server()
+
+    assert calls == [
+        "load-dotenv",
+        "migrate",
+        "load-config",
+        "create-app",
+        "listen:True:127.0.0.1:7488",
+    ]
+
+
+def test_mcp_cli_migrates_before_loading_config_and_does_not_repeat_migration(
+    monkeypatch,
+    tmp_path,
+):
+    calls: list[str] = []
+    config = _config(tmp_path, "streamable-http")
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_load_mcp_dotenv",
+        lambda: calls.append("load-dotenv"),
+    )
+    monkeypatch.setattr(
+        "migrations.runner.run_startup_migrations",
+        lambda: calls.append("migrate"),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "load_mcp_runtime_config",
+        lambda: calls.append("load-config") or config,
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "run_server",
+        lambda cfg, **kwargs: calls.append(
+            "run-server:{}:{}".format(cfg is config, kwargs.get("_migrations_already_run"))
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["mcp-server"])
+
+    mcp_server.main()
+
+    assert calls == [
+        "load-dotenv",
+        "migrate",
+        "load-config",
+        "run-server:True:True",
+    ]
+
+
+def test_mcp_cli_stdio_migrates_before_loading_dotenv_backed_config(
+    monkeypatch,
+    tmp_path,
+):
+    calls: list[str] = []
+    config = _config(tmp_path, "stdio")
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_load_mcp_dotenv",
+        lambda: calls.append("load-dotenv"),
+    )
+    monkeypatch.setattr(
+        "migrations.runner.run_startup_migrations",
+        lambda: calls.append("migrate"),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "load_mcp_runtime_config",
+        lambda: calls.append("load-config") or config,
+    )
+
+    class FakeServer:
+        def run(self, *, transport=None):
+            calls.append("run:{}".format(transport))
+
+    monkeypatch.setattr(
+        mcp_server,
+        "create_mcp_server",
+        lambda *_args, **_kwargs: calls.append("create-server") or FakeServer(),
+    )
+    monkeypatch.setattr(
+        "integration.observability.otel.initialize_open_telemetry",
+        lambda: calls.append("otel"),
+    )
+    monkeypatch.setattr(sys, "argv", ["mcp-server", "--transport", "stdio"])
+
+    mcp_server.main()
+
+    assert calls == [
+        "load-dotenv",
+        "migrate",
+        "load-config",
+        "otel",
+        "create-server",
+        "run:stdio",
+    ]
