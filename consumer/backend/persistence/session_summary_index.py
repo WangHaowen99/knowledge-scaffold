@@ -638,7 +638,7 @@ class SessionSummaryIndex:
         if not self._loaded:
             try:
                 document = self._read_document_locked()
-            except FileNotFoundError:
+            except FileNotFoundError as exc:
                 if self._rebuild_loader is None:
                     self._records = {}
                     self._index_revision = 0
@@ -648,17 +648,21 @@ class SessionSummaryIndex:
                 elif allow_dirty:
                     self._state = "degraded"
                     self._last_error = "index_not_ready"
-                    raise SessionSummaryIndexError("session summary index is not ready for projection")
+                    raise SessionSummaryIndexError(
+                        "session summary index is not ready for projection"
+                    ) from exc
                 else:
                     self._rebuild_or_fail_locked(
                         base_revision=0,
                         wait_for_existing=not allow_dirty,
                     )
-            except Exception:
+            except Exception as exc:
                 if allow_dirty:
                     self._state = "degraded"
                     self._last_error = "index_invalid"
-                    raise SessionSummaryIndexCorruptionError("session summary index requires a background rebuild")
+                    raise SessionSummaryIndexCorruptionError(
+                        "session summary index requires a background rebuild"
+                    ) from exc
                 try:
                     self._quarantine_locked()
                 except Exception as quarantine_error:

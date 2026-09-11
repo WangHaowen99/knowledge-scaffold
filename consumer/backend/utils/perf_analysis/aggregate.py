@@ -452,7 +452,7 @@ def filter_summary_rows(
         status_matches = not normalized_status or str(row.get("status") or "").lower() == normalized_status
         provider_matches = not model_provider or row.get("model_provider") == model_provider
         mode_matches = not agent_mode or row.get("agent_mode") == agent_mode
-        if workspace_matches and status_matches and provider_matches and mode_matches:
+        if all((workspace_matches, status_matches, provider_matches, mode_matches)):
             resolved.append(row)
     return resolved
 

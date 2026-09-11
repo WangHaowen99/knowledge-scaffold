@@ -175,10 +175,13 @@ def load_user_store(path: Path, *, label: str) -> UserStore:
 
 def _safe_diff_value(field: str, value: Any) -> Any:
     lowered = field.lower()
-    if "password_hash" in lowered:
+    has_password_hash = "password_hash" in lowered
+    if has_password_hash:
         digest = hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()[:16]
         return f"sha256:{digest}"
-    if "password" in lowered or "secret" in lowered or ("token" in lowered and field != "token_version"):
+    has_sensitive_name = any(("password" in lowered, "secret" in lowered))
+    has_non_version_token = "token" in lowered and field != "token_version"
+    if has_sensitive_name or has_non_version_token:
         return "<redacted>" if value is not None else None
     return value
 

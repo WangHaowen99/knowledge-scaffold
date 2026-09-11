@@ -7,10 +7,14 @@ from typing import Any, Dict
 from urllib.parse import quote
 
 import requests
+from shared_capabilities.business_data import create_provider_client
+
 from agent.tools.business_data.effective_connection import build_effective_connection
 from agent.tools.business_data.providers.graph.timeouts import resolve_graph_connect_timeout_seconds
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
-from shared_capabilities.business_data import create_provider_client
+from utils.logging import get_logger
+
+logger = get_logger("business_data.connection_tester")
 
 
 def _utc_now() -> str:
@@ -28,8 +32,13 @@ def _error_detail(response: requests.Response | None) -> str:
         body = response.json()
         if isinstance(body, dict):
             return _coerce_string(body.get("message") or body.get("error") or body.get("detail"))
-    except Exception:
-        pass
+    except (ValueError, TypeError, requests.exceptions.RequestException) as exc:
+        logger.debug(
+            "Unable to decode business-data error response: %s",
+            exc,
+            exc_info=True,
+        )
+        return _coerce_string(getattr(response, "text", ""))
     return _coerce_string(getattr(response, "text", ""))
 
 
@@ -135,8 +144,8 @@ def _test_neo4j(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
         if driver is not None:
             try:
                 driver.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Neo4J driver close failed: %s", exc, exc_info=True)
 
 
 def _test_hugegraph(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
