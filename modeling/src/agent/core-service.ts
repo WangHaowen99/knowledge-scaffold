@@ -9144,10 +9144,7 @@ function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Re
       flow: requiredStringArray(args.flow, 'flow'),
       notes: stringArray(args.notes),
       evidence: requiredStringArray(args.evidence, 'evidence'),
-      relations: domainReferenceRelations(
-        'operation',
-        requiredStringArray(args.references ?? [], 'references', true),
-      ),
+      relations: domainReferenceRelations('operation', operationReferences(args)),
     };
   }
   return {
@@ -9171,6 +9168,28 @@ function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Re
       requiredStringArray(args.object_references ?? [], 'object_references', true),
     ),
   };
+}
+
+/* 操作必须就「我读写哪些对象」表态。upsert_operation 一直要求 related_objects 非空，
+   但增量路径的 create_operation 把它写成了 args.references ?? [] + allowEmpty，
+   缺省即放行——于是助手只往 references 里塞规则 ID，九个物理对象里六个成了没人引用的
+   孤儿，操作不知道该查哪张表，脚本只能生成占位模板，评测必挂。
+   这里不强制「必须绑」（真不读写数据的操作被逼着绑，只会造出查不出来的假边），
+   而是强制「必须说清楚」：要么列出对象，要么写明为什么一个都不读写。 */
+function operationReferences(args: Record<string, unknown>): string[] {
+  const references = requiredStringArray(args.references ?? [], 'references', true);
+  if (references.some((item) => item.startsWith('object:'))) return references;
+  const reason = String(args.no_object_reason ?? '').trim();
+  if (reason) return references;
+  throw new AgentCoreError(
+    'OPERATION_OBJECT_BINDING_REQUIRED',
+    '操作没有声明读写的对象',
+    [
+      `把这个操作读写的对象写进 references（形如 object:业务受理），对照 flow 和 inputs/outputs 里提到的业务实体逐个核对`,
+      '确实不读写任何业务数据时（例如纯告知、纯人工协调类操作），用 no_object_reason 写明原因',
+    ],
+    400,
+  );
 }
 
 function domainReferenceRelations(

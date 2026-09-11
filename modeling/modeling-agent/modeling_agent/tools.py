@@ -974,8 +974,9 @@ CHANGE_SET_CREATE_OPERATION_ARGUMENTS = change_set_arguments({
     "flow": {"type": "array", "minItems": 1, "items": STRING},
     "notes": {"type": "array", "items": STRING},
     "references": {"type": "array", "items": RESOURCE_ID},
+    "no_object_reason": STRING,
     "evidence": {"type": "array", "minItems": 1, "items": STRING},
-}, ["key", "title", "description", "flow", "evidence"])
+}, ["key", "title", "description", "flow", "references", "evidence"])
 CHANGE_SET_CREATE_METRIC_ARGUMENTS = change_set_arguments({
     "key": STRING, "title": STRING, "description": STRING, "unit": STRING, "grain": STRING,
     "caliber": STRING, "boundaries": {"type": "array", "minItems": 1, "items": STRING},
@@ -1377,7 +1378,10 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "create_operation",
-        "创建业务操作。references 使用对象、规则或指标资源 ID；服务端生成详情与索引。",
+        "创建业务操作。references 必须声明这个操作读写的对象（object:key），以及用到的规则和指标；"
+        "对照 flow 和 inputs/outputs 里提到的业务实体逐个核对，不要只填规则。"
+        "确实不读写任何业务数据时（纯告知、纯人工协调类操作），references 只填规则或指标，"
+        "并用 no_object_reason 写明原因。服务端生成详情与索引。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
             "key": STRING, "title": STRING, "description": STRING,
@@ -1395,9 +1399,11 @@ CORE_TOOL_SPECS = (
             "flow": {"type": "array", "minItems": 1, "items": STRING},
             "notes": {"type": "array", "items": STRING},
             "references": {"type": "array", "items": RESOURCE_ID},
+            "no_object_reason": STRING,
             "evidence": {"type": "array", "minItems": 1, "items": STRING},
         },
-        ("expected_revision", "mutation_id", "reason", "key", "title", "description", "flow", "evidence"),
+        ("expected_revision", "mutation_id", "reason", "key", "title", "description",
+         "flow", "references", "evidence"),
         False,
         "正在创建业务操作",
     ),

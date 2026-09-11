@@ -113,3 +113,23 @@ test('评测优化失败时把服务端附带的诊断摊开，不只取一句 m
     assert.doesNotMatch(scope, /settleTask\(\);\s*\n\s*\} catch/);
   }
 });
+
+test('操作必须就读写哪些对象表态，两条创建路径不能各说各话', () => {
+  /* upsert_operation 一直要求 related_objects 非空，但增量路径的 create_operation
+     写成了 args.references ?? [] + allowEmpty，缺省即放行。助手于是只往 references
+     里塞规则 ID，九个物理对象里六个成了孤儿，操作不知道该查哪张表（见 #46）。
+     这里锁的是「必须表态」，不是「必须绑」——强制绑定只会把缺边换成查不出来的假边。 */
+  const source = readFileSync('src/agent/core-service.ts', 'utf8');
+  assert.match(source, /function operationReferences\(args: Record<string, unknown>\)/);
+  assert.match(source, /OPERATION_OBJECT_BINDING_REQUIRED/);
+  // 允许显式弃权，但必须写明理由
+  assert.match(source, /args\.no_object_reason/);
+  // 不能再退回「缺省即放行」
+  assert.doesNotMatch(source, /domainReferenceRelations\(\s*'operation',\s*\n?\s*requiredStringArray\(args\.references \?\? \[\]/);
+
+  const tools = readFileSync('modeling-agent/modeling_agent/tools.py', 'utf8');
+  // 两条创建路径都要把 references 列进必填，且都提供弃权字段
+  assert.equal((tools.match(/"no_object_reason": STRING,/g) || []).length, 2);
+  assert.match(tools, /\["key", "title", "description", "flow", "references", "evidence"\]/);
+  assert.match(tools, /"flow", "references", "evidence"\)/);
+});
