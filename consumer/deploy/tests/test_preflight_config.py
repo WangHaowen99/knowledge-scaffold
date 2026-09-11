@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from deploy_synthetic_credentials import (  # noqa: E402
     AUTH_ADMIN_TOKEN,
-    BOOTSTRAP_ADMIN_PASSWORD,
+    BOOTSTRAP_ADMIN_SECRET,
     MCP_TOKEN_SECRET,
     PLAINTEXT_GRAPH_SECRET,
     SHARED_SECRET,
@@ -266,7 +266,7 @@ services:
 
     def test_rejects_missing_or_reused_bootstrap_password(self) -> None:
         self.env_file.write_text(
-            VALID_ENV.replace(f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n", ""),
+            VALID_ENV.replace(f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_SECRET}\n", ""),
             encoding="utf-8",
         )
         missing = validate_config(
@@ -280,7 +280,7 @@ services:
         )
 
         self.env_file.write_text(
-            VALID_ENV.replace(BOOTSTRAP_ADMIN_PASSWORD, AUTH_ADMIN_TOKEN),
+            VALID_ENV.replace(BOOTSTRAP_ADMIN_SECRET, AUTH_ADMIN_TOKEN),
             encoding="utf-8",
         )
         reused = validate_config(
@@ -295,7 +295,7 @@ services:
 
     def test_existing_auth_user_store_does_not_require_bootstrap_password(self) -> None:
         self.env_file.write_text(
-            VALID_ENV.replace(f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n", ""),
+            VALID_ENV.replace(f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_SECRET}\n", ""),
             encoding="utf-8",
         )
         user_store = self.root / ".onto-auth" / "users.json"

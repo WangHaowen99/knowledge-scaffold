@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from deploy_synthetic_credentials import AUTH_ADMIN_TOKEN, BOOTSTRAP_ADMIN_PASSWORD, MCP_TOKEN_SECRET
+from deploy_synthetic_credentials import AUTH_ADMIN_TOKEN, BOOTSTRAP_ADMIN_SECRET, MCP_TOKEN_SECRET
 
 COMPOSE_PATH = Path(__file__).resolve().parents[1] / "docker-compose.release.yml"
 DEPLOY_ROOT = COMPOSE_PATH.parent
@@ -1423,7 +1423,7 @@ def test_preflight_uses_legacy_mcp_host_port_without_root_config_override(
     (backend_root / ".env").write_text(
         "AUTH_SERVER_URL=http://auth-server:5056\n"
         f"AUTH_SERVER_ADMIN_TOKEN={AUTH_ADMIN_TOKEN}\n"
-        f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n"
+        f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_SECRET}\n"
         "MCP_SERVER_PORT=7488\n"
         f"MCP_TOKEN_SECRET={MCP_TOKEN_SECRET}\n"
         "USER_MAX_COUNT=10\n"
@@ -1569,7 +1569,7 @@ def test_preflight_supports_docker_compose_v1_fallback_for_release_port_resoluti
     (backend_root / ".env").write_text(
         "AUTH_SERVER_URL=http://auth-server:5056\n"
         f"AUTH_SERVER_ADMIN_TOKEN={AUTH_ADMIN_TOKEN}\n"
-        f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n"
+        f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_SECRET}\n"
         "MCP_SERVER_PORT=7488\n"
         f"MCP_TOKEN_SECRET={MCP_TOKEN_SECRET}\n"
         "USER_MAX_COUNT=10\n"

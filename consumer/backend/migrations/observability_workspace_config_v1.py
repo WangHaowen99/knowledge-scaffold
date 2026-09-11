@@ -485,15 +485,17 @@ def _load_marker(runtime_root: Path) -> Optional[dict[str, Any]]:
     workspace_ids = marker.get("workspace_ids")
     owned_workspace_ids = marker.get("owned_workspace_ids")
     backup_paths = marker.get("manual_recovery_backups")
-    if (
-        marker.get("migration_id") != MIGRATION_ID
-        or marker.get("version") != MIGRATION_VERSION
-        or marker.get("status") not in {MARKER_PREPARED, MARKER_COMPLETED}
-        or not isinstance(workspace_ids, list)
-        or not isinstance(owned_workspace_ids, list)
-        or not isinstance(backup_paths, list)
-        or marker.get("errors") not in (None, [])
-    ):
+    valid_identity = (
+        marker.get("migration_id") == MIGRATION_ID
+        and marker.get("version") == MIGRATION_VERSION
+        and marker.get("status") in {MARKER_PREPARED, MARKER_COMPLETED}
+    )
+    valid_collections = (
+        isinstance(workspace_ids, list)
+        and isinstance(owned_workspace_ids, list)
+        and isinstance(backup_paths, list)
+    )
+    if not (valid_identity and valid_collections and marker.get("errors") in (None, [])):
         raise _ProblemError(
             _problem(
                 "INVALID_MIGRATION_MARKER",

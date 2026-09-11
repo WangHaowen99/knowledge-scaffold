@@ -36,6 +36,6 @@ def coerce_final_output_to_text(final_output: Any) -> str:
     if isinstance(final_output, (dict, list)):
         try:
             return json.dumps(final_output, ensure_ascii=False)
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            return str(final_output)
     return str(final_output)

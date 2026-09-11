@@ -2401,7 +2401,7 @@ def _decode_zip_member_name(member: zipfile.ZipInfo) -> str:
 
     try:
         raw_bytes = raw_name.encode("cp437")
-    except Exception:
+    except UnicodeEncodeError:
         return raw_name
 
     for encoding in ("utf-8", "gbk", "gb18030", "big5"):
@@ -2409,7 +2409,7 @@ def _decode_zip_member_name(member: zipfile.ZipInfo) -> str:
             decoded = raw_bytes.decode(encoding)
             if decoded:
                 return decoded
-        except Exception:
+        except UnicodeDecodeError:
             continue
 
     return raw_name

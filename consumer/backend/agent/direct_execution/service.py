@@ -228,12 +228,12 @@ class DeterministicExecutionService:
             raise OSError("deterministic artifact staging lease is invalid")
         try:
             os.utime(path, follow_symlinks=False)
-        except NotImplementedError:
+        except NotImplementedError as exc:
             # Windows does not implement the follow_symlinks keyword for
             # os.utime.  This directory has an unguessable, process-owned name;
             # re-check it immediately before using the portable call.
             if path.is_symlink() or not path.is_dir():
-                raise OSError("deterministic artifact staging lease is invalid")
+                raise OSError("deterministic artifact staging lease is invalid") from exc
             os.utime(path)
 
     def execute(

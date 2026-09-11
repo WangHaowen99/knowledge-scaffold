@@ -48,8 +48,10 @@ class ProfileDispatchVerifier:
                 fact_snapshot=fact_snapshot,
                 solver_result=solver_result,
             )
-        except (VerificationDivergenceError, VerificationRuntimeFailure):
-            raise
+        except VerificationDivergenceError as exc:
+            raise VerificationDivergenceError(str(exc)) from exc
+        except VerificationRuntimeFailure as exc:
+            raise VerificationRuntimeFailure(str(exc)) from exc
         except Exception as exc:
             raise VerificationDivergenceError("solver profile verification failed") from exc
 

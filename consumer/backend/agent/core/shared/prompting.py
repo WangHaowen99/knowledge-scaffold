@@ -9,9 +9,12 @@ from agent.prompts.universal import build_lang_instruction, build_universal_syst
 from utils.lang import detect_language
 from ontology.ontologies import build_ontologies_section
 from utils.skills import build_skills_section
+from utils.logging import get_logger
 from workspace.workspaces import get_current_workspace_runtime_config, get_workspace_runtime_config
 from .interaction_policy import user_interaction_supported_from_state
 from .ontology_context import active_ontology_id_from_state
+
+logger = get_logger("agent.prompting")
 
 
 def build_main_system_prompt(state: Mapping[str, Any], *, include_orchestration: bool = True) -> str:
@@ -35,8 +38,8 @@ def build_main_system_prompt(state: Mapping[str, Any], *, include_orchestration:
                 )
             detected_lang = state.get("_lang_detected") if isinstance(state, Mapping) else None
             lang_instruction = build_lang_instruction(detected_lang)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Unable to resolve runtime language configuration: %s", exc, exc_info=True)
 
     return build_universal_system_prompt(
         ontologies_section=build_ontologies_section(
