@@ -115,17 +115,15 @@ def decode_workspace_observability_document(
     speedscope = raw.get("speedscope")
     langfuse = raw.get("langfuse")
     is_legacy_document = set(raw) == _LEGACY_TOP_LEVEL_KEYS
-    if (
-        (set(raw) != _TOP_LEVEL_KEYS and not is_legacy_document)
-        or not isinstance(local, dict)
-        or set(local) != _LOCAL_KEYS
-        or (speedscope is not None and not isinstance(speedscope, dict))
-        or (isinstance(speedscope, dict) and set(speedscope) != _SPEEDSCOPE_KEYS)
-        or not isinstance(langfuse, dict)
-        or set(langfuse) != _LANGFUSE_KEYS
-        or not isinstance(raw.get("enabled"), bool)
-        or raw.get("mode") not in {"local", "langfuse"}
-    ):
+    valid_top_level = set(raw) == _TOP_LEVEL_KEYS or is_legacy_document
+    valid_local = isinstance(local, dict) and set(local) == _LOCAL_KEYS
+    valid_speedscope = (
+        speedscope is None
+        or (isinstance(speedscope, dict) and set(speedscope) == _SPEEDSCOPE_KEYS)
+    )
+    valid_langfuse = isinstance(langfuse, dict) and set(langfuse) == _LANGFUSE_KEYS
+    valid_flags = isinstance(raw.get("enabled"), bool) and raw.get("mode") in {"local", "langfuse"}
+    if not all((valid_top_level, valid_local, valid_speedscope, valid_langfuse, valid_flags)):
         raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
     retention_days = local.get("retention_days")
     speedscope_retention_days = (
@@ -133,19 +131,17 @@ def decode_workspace_observability_document(
         if isinstance(speedscope, dict)
         else DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["speedscope"]["retention_days"]
     )
-    if (
-        isinstance(retention_days, bool)
-        or not isinstance(retention_days, int)
-        or retention_days < 1
-        or isinstance(speedscope_retention_days, bool)
-        or not isinstance(speedscope_retention_days, int)
-        or speedscope_retention_days < 1
-        or not isinstance(langfuse.get("debug"), bool)
-        or any(
-            not isinstance(langfuse.get(field_name), str)
-            for field_name in ("public_key", "secret_key", "base_url")
-        )
-    ):
+    valid_retention = isinstance(retention_days, int) and not isinstance(retention_days, bool) and retention_days >= 1
+    valid_speedscope_retention = (
+        isinstance(speedscope_retention_days, int)
+        and not isinstance(speedscope_retention_days, bool)
+        and speedscope_retention_days >= 1
+    )
+    valid_langfuse_fields = isinstance(langfuse.get("debug"), bool) and all(
+        isinstance(langfuse.get(field_name), str)
+        for field_name in ("public_key", "secret_key", "base_url")
+    )
+    if not all((valid_retention, valid_speedscope_retention, valid_langfuse_fields)):
         raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
 
     result = copy.deepcopy(raw)

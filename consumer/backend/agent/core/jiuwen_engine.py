@@ -1931,8 +1931,8 @@ def _configure_jiuwen_log_path() -> None:
         jiuwen_log_path = os.path.join(LOG_DIR, "jiuwen") + os.sep
         configure_log_config({"log_path": jiuwen_log_path})
         _JIUWEN_LOG_CONFIGURED = True
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Unable to configure Jiuwen log path: %s", exc, exc_info=True)
 
 
 def create_default_jiuwen_agent(
@@ -2722,11 +2722,13 @@ def _remove_owned_jiuwen_callback_metrics(
     owned_prefix = "{}_".format(agent_id) if agent_id else ""
     for key in tuple(metrics.keys()):
         event_name = str(key).split(":", 1)[0]
-        if event_name in owned_event_names or (
+        matches_owned_event = event_name in owned_event_names
+        matches_owned_prefix = (
             not owned_event_names
-            and owned_prefix
+            and bool(owned_prefix)
             and event_name.startswith(owned_prefix)
-        ):
+        )
+        if matches_owned_event or matches_owned_prefix:
             metrics.pop(key, None)
 
 

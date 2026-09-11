@@ -245,7 +245,13 @@ def find_best_script_operation(
             user_request=user_request,
         )
 
-        if best_key is None or score > best_score or (score == best_score and len(op_key) > len(best_key)):
+        is_better_score = score > best_score
+        is_longer_tie = (
+            score == best_score
+            and best_key is not None
+            and len(op_key) > len(best_key)
+        )
+        if best_key is None or is_better_score or is_longer_tie:
             best_score = score
             best_entry = entry
             best_key = op_key

@@ -363,6 +363,13 @@ class _WorkspaceEndpointBindingApp:
         async def send_with_session_binding(message: dict[str, Any]) -> None:
             nonlocal connection_session_id, reservation_id
             nonlocal response_session_id, response_status
+            is_initial_sse_body = all(
+                (
+                    not connection_session_id,
+                    message.get("type") == "http.response.body",
+                    bool(message.get("body")),
+                )
+            )
             if message.get("type") == "http.response.start":
                 response_status = int(message.get("status") or 0)
                 response_session_id = _response_mcp_session_id(message)
@@ -373,12 +380,7 @@ class _WorkspaceEndpointBindingApp:
                         reservation_id=reservation_id,
                     )
                     reservation_id = None
-            elif (
-                release_session_on_disconnect
-                and not connection_session_id
-                and message.get("type") == "http.response.body"
-                and message.get("body")
-            ):
+            elif release_session_on_disconnect and is_initial_sse_body:
                 if len(sse_response_buffer) < 8192:
                     sse_response_buffer.extend(bytes(message["body"]))
                 match = _SSE_SESSION_ID_PATTERN.search(sse_response_buffer)

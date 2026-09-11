@@ -50,7 +50,14 @@ class PlatformConfig:
             _env_text("ONTO_PLATFORM_INSTANCE_ID"),
         )
         instance_id = configured_instance_id
-        if enabled and base_url and environment_id and api_key and not instance_id:
+        requires_instance_id = (
+            enabled
+            and bool(base_url)
+            and bool(environment_id)
+            and bool(api_key)
+            and not instance_id
+        )
+        if requires_instance_id:
             instance_id = _load_or_create_instance_id(_instance_id_file())
 
         return cls(
@@ -184,7 +191,14 @@ def build_platform_config(data: dict[str, Any] | None = None) -> PlatformConfig:
         raise PlatformConfigValidationError("配置必须是对象")
     merged = _merge_platform_config(_config_to_dict(base), data)
     instance_id = str(merged["instance_id"] or "").strip()
-    if merged["enabled"] and merged["base_url"] and merged["environment_id"] and merged["api_key"] and not instance_id:
+    requires_instance_id = (
+        merged["enabled"]
+        and bool(merged["base_url"])
+        and bool(merged["environment_id"])
+        and bool(merged["api_key"])
+        and not instance_id
+    )
+    if requires_instance_id:
         instance_id = _load_or_create_instance_id(_instance_id_file())
     return PlatformConfig(
         enabled=bool(merged["enabled"]),

@@ -927,7 +927,7 @@ class SolverCoordinationService:
                 outcome = self.job_orchestrator.poll_once(
                     outcome["job_id"], workspace_id=workspace_id, owner_id=owner_id
                 )
-            except (LeaseConflict, OptimisticLockError):
+            except (LeaseConflict, OptimisticLockError) as exc:
                 current_job = self.store.get_job(
                     outcome["job_id"],
                     workspace_id=workspace_id,
@@ -936,7 +936,7 @@ class SolverCoordinationService:
                 if current_job is None:
                     raise SolverServiceError(
                         "solver_unavailable", "solve", "solver job disappeared"
-                    )
+                    ) from exc
                 current_attempt = self.store.latest_attempt(
                     outcome["job_id"],
                     workspace_id=workspace_id,
@@ -2738,7 +2738,7 @@ class SolverCoordinationService:
                 verification_payload=verification_event_payload,
                 authoritative_payload=public_result,
             )
-        except (JobStoreConflict, OptimisticLockError, LeaseConflict, TerminalStateError):
+        except (JobStoreConflict, OptimisticLockError, LeaseConflict, TerminalStateError) as exc:
             current = self.store.get_job(
                 job_id, workspace_id=workspace_id, owner_id=owner_id
             )
@@ -2747,7 +2747,7 @@ class SolverCoordinationService:
                     "solver_unavailable",
                     "publish",
                     "solver completion lost its verification fence",
-                )
+                ) from exc
             if current["status"] == "completed":
                 recovered = self._existing_authoritative_event(
                     workspace_id=workspace_id,
@@ -2763,7 +2763,7 @@ class SolverCoordinationService:
                         "artifact_persist_failed",
                         "resume",
                         "completed solver job has no authoritative event",
-                    )
+                    ) from exc
                 public_result = recovered
             else:
                 public_result = self._backend_terminal_result(

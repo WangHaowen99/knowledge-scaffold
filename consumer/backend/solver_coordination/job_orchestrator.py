@@ -1035,7 +1035,7 @@ class DurableJobOrchestrator:
                 ),
                 None,
             )
-        except BackendTransientError:
+        except BackendTransientError as exc:
             current = self._require_job(
                 job_id, workspace_id=workspace_id, owner_id=owner_id
             )
@@ -1043,7 +1043,7 @@ class DurableJobOrchestrator:
                 current.get("lease_owner") != poll_lease_owner
                 or current.get("fencing_token") != claimed.get("fencing_token")
             ):
-                raise LeaseConflict("solver poll lease is stale")
+                raise LeaseConflict("solver poll lease is stale") from exc
             current_attempt = self.store.latest_attempt(
                 job_id, workspace_id=workspace_id, owner_id=owner_id
             )

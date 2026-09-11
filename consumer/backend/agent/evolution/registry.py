@@ -13,6 +13,9 @@ from typing import Optional
 
 from agent.evolution.buffer import ProposalBuffer
 from agent.evolution.patcher import OperationPatcher, PatcherConfig
+from utils.logging import get_logger
+
+logger = get_logger("agent.evolution.registry")
 
 _INSTANCE: Optional[ProposalBuffer] = None
 _PATCHER: Optional[OperationPatcher] = None
@@ -88,5 +91,5 @@ def reset_operation_patcher() -> None:
         finally:
             try:
                 get_proposal_buffer().set_change_listener(None)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("proposal buffer listener cleanup failed: %s", exc, exc_info=True)

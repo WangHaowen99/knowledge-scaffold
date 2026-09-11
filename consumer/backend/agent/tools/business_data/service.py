@@ -11,6 +11,9 @@ from workspace.workspaces import get_workspace, get_workspace_paths
 from agent.tools.business_data.effective_connection import build_effective_connection
 from agent.tools.business_data.provider_registry import get_provider_spec
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
+from utils.logging import get_logger
+
+logger = get_logger("business_data.service")
 
 
 @dataclass(frozen=True)
@@ -37,8 +40,8 @@ def query_business_data_stream(
     if request.workspace_id:
         try:
             workspace_root = str(get_workspace_paths(request.workspace_id).ontologies_dir)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Unable to resolve business-data workspace paths: %s", exc, exc_info=True)
 
     if connection.provider not in {"neo4j", "hugegraph"}:
         if connection.provider == "nl2sql_template":
@@ -181,8 +184,8 @@ def _build_graph_provider(
             workspace_root = str(
                 get_workspace_paths(request.workspace_id).ontologies_dir
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Unable to resolve graph workspace paths: %s", exc, exc_info=True)
     scoped_provider_config: dict[str, Any] = {
         **dict(connection.config),
         "_workspace_root": workspace_root,
@@ -231,12 +234,9 @@ def _append_field_alias_mappings(
     for name, field_key in mappings:
         normalized_name = str(name or "").strip()
         normalized_key = str(field_key or "").strip()
-        if (
-            normalized_name
-            and normalized_key
-            and len(normalized_name) <= 128
-            and len(normalized_key) <= 128
-        ):
+        has_valid_name = bool(normalized_name) and len(normalized_name) <= 128
+        has_valid_key = bool(normalized_key) and len(normalized_key) <= 128
+        if has_valid_name and has_valid_key:
             valid_mappings.add((normalized_name, normalized_key))
     normalized_mappings = sorted(
         valid_mappings,

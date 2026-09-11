@@ -58,8 +58,8 @@ def _positive_decimal(value: object, field_name: str) -> Decimal:
             normalized = Decimal(value)
         else:
             raise InvalidOperation
-    except (InvalidOperation, ValueError, AttributeError):
-        raise SolverContractError("{} must be a finite positive decimal".format(field_name))
+    except (InvalidOperation, ValueError, AttributeError) as exc:
+        raise SolverContractError("{} must be a finite positive decimal".format(field_name)) from exc
     if not normalized.is_finite() or normalized <= 0:
         raise SolverContractError("{} must be a finite positive decimal".format(field_name))
     sign, digits, exponent = normalized.as_tuple()

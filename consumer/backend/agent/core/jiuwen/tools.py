@@ -531,11 +531,17 @@ def _canonical_tool_error(batch_result: Any) -> Optional[str]:
         return _canonical_json(parsed) if is_error else None
     normalized = " ".join(text.split())
     lowered = normalized.lower()
-    if (
-        lowered.startswith("error:")
-        or lowered.startswith("tool execution failed")
-        or lowered.startswith("error executing script")
-        or normalized.startswith("工具执行失败")
+    starts_with_error = lowered.startswith("error:")
+    starts_with_tool_failure = lowered.startswith("tool execution failed")
+    starts_with_script_failure = lowered.startswith("error executing script")
+    starts_with_localized_failure = normalized.startswith("工具执行失败")
+    if any(
+        (
+            starts_with_error,
+            starts_with_tool_failure,
+            starts_with_script_failure,
+            starts_with_localized_failure,
+        )
     ):
         return normalized
     return None

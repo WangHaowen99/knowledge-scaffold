@@ -109,8 +109,8 @@ class JiuwenModelTraceBridge:
                 result = unregister(event, callback)
                 if isawaitable(result):
                     await result
-            except Exception:
-                continue
+            except Exception as exc:
+                logger.warning("Jiuwen callback unregister failed: %s", exc, exc_info=True)
         self._registered = []
 
     async def _on_before_model_call(self, ctx: Any) -> None:
@@ -339,9 +339,9 @@ def jiuwen_tool_calls_to_dicts(tool_calls: Any) -> list[Dict[str, Any]]:
         try:
             normalized.append(jiuwen_tool_call_to_trace_tool_call(tool_call))
             continue
-        except Exception:
-            pass
-        payload = object_to_dict(tool_call)
+        except Exception as exc:
+            logger.debug("Jiuwen tool call normalization failed: %s", exc, exc_info=True)
+            payload = object_to_dict(tool_call)
         if payload:
             normalized.append(payload)
     return normalized
