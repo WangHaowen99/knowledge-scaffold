@@ -72,13 +72,11 @@ def _skill_archive_parts(name: str, *, is_directory: bool) -> tuple[str, ...]:
     normalized = str(name or "").replace("\\", "/")
     if is_directory:
         normalized = normalized.rstrip("/")
-    if (
-        not normalized
-        or "\x00" in normalized
-        or normalized.startswith("/")
-        or re.match(r"^[A-Za-z]:", normalized)
-        or len(normalized.encode("utf-8")) > SKILL_ARCHIVE_MAX_PATH_BYTES
-    ):
+    if not normalized or "\x00" in normalized:
+        raise ValueError("Archive contains an unsafe path")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        raise ValueError("Archive contains an unsafe path")
+    if len(normalized.encode("utf-8")) > SKILL_ARCHIVE_MAX_PATH_BYTES:
         raise ValueError("Archive contains an unsafe path")
     parts = tuple(normalized.split("/"))
     if (
@@ -243,7 +241,7 @@ def _extract_skill_tar(archive_path: Path, extract_dir: Path) -> None:
         raise ValueError("Archive file is too large")
     targets: dict[str, str] = {}
     total_bytes = 0
-    with tarfile.open(archive_path, "r:*") as archive:
+    with tarfile.TarFile.open(archive_path, "r:*") as archive:
         for member_count, member in enumerate(archive, start=1):
             if not (member.isdir() or member.isfile()):
                 raise ValueError("Archive contains a link or special file")
@@ -259,7 +257,7 @@ def _extract_skill_tar(archive_path: Path, extract_dir: Path) -> None:
     _check_skill_archive_ratio(total_bytes, archive_bytes)
 
     actual_total_bytes = 0
-    with tarfile.open(archive_path, "r:*") as archive:
+    with tarfile.TarFile.open(archive_path, "r:*") as archive:
         for member in archive:
             parts = _skill_archive_parts(member.name, is_directory=member.isdir())
             target_path = extract_dir.joinpath(*parts)

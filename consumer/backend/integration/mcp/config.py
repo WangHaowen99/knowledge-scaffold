@@ -6,7 +6,7 @@ import ipaddress
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from config import AppConfig
 
@@ -111,7 +111,7 @@ class MCPRuntimeConfig:
         if not _is_loopback_host(host):
             return ""
         rendered_host = "[{}]".format(host) if ":" in host else host
-        return "http://{}:{}".format(rendered_host, self.server_port)
+        return urlunsplit(("http", "{}:{}".format(rendered_host, self.server_port), "", "", ""))
 
 
 def load_mcp_runtime_config() -> MCPRuntimeConfig:

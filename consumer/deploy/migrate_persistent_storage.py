@@ -234,7 +234,9 @@ def _legacy_archive_target(
     raw_name: str,
     seen: set[str],
 ) -> Path:
-    if not raw_name or raw_name.startswith("/") or "\\" in raw_name or "\x00" in raw_name:
+    if not raw_name:
+        raise ValueError(f"legacy archive contains an unsafe path: {raw_name}")
+    if raw_name.startswith("/") or "\\" in raw_name or "\x00" in raw_name:
         raise ValueError(f"legacy archive contains an unsafe path: {raw_name}")
     path = PurePosixPath(raw_name.rstrip("/"))
     if any(part in {"", ".", ".."} for part in path.parts):
@@ -259,7 +261,7 @@ def _inspect_legacy_archive(
     total_bytes = 0
     member_count = 0
     seen: set[str] = set()
-    with tarfile.open(archive_path, "r|gz") as archive:
+    with tarfile.TarFile.open(archive_path, "r|gz") as archive:
         for member in archive:
             archive.members.clear()
             member_count += 1
@@ -295,7 +297,7 @@ def _extract_archive(
 
     actual_bytes = 0
     seen: set[str] = set()
-    with tarfile.open(archive_path, "r|gz") as archive:
+    with tarfile.TarFile.open(archive_path, "r|gz") as archive:
         for member in archive:
             archive.members.clear()
             target_path = _legacy_archive_target(destination_root, member.name, seen)
@@ -310,7 +312,10 @@ def _extract_archive(
             target_path.parent.mkdir(parents=True, exist_ok=True)
             member_bytes = 0
             with source, target_path.open("xb") as target:
-                while chunk := source.read(_COPY_CHUNK_BYTES):
+                while True:
+                    chunk = source.read(_COPY_CHUNK_BYTES)
+                    if not chunk:
+                        break
                     member_bytes += len(chunk)
                     actual_bytes += len(chunk)
                     if member_bytes > member.size or actual_bytes > max_bytes:
