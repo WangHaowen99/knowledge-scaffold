@@ -104,7 +104,7 @@ def test_garbage_token_returns_401(client):
     assert response.json() == {"error": "Unauthorized"}
 
 
-def test_cors_reflects_origin_and_allows_locked_headers(client):
+def test_cors_does_not_allow_cross_origin_credentials(client):
     origin = "http://localhost:6600"
 
     response = client.options(
@@ -118,7 +118,7 @@ def test_cors_reflects_origin_and_allows_locked_headers(client):
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
-    assert response.headers["access-control-allow-credentials"] == "true"
+    assert "access-control-allow-credentials" not in response.headers
     assert "Authorization" in response.headers["access-control-allow-headers"]
     assert "X-Workspace-Id" in response.headers["access-control-allow-headers"]
 
