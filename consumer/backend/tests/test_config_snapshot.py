@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from config.config_snapshot import (
     ConfigSnapshot,
     ConfigSnapshotManager,
@@ -106,9 +106,7 @@ def test_snapshot_manager_preserves_monotonic_initial_generation(tmp_path):
     clock = FakeClock()
     manager = ConfigSnapshotManager(
         source_path=source_path,
-        loader=lambda _environment: json.loads(
-            source_path.read_text(encoding="utf-8")
-        ),
+        loader=lambda _environment: json.loads(source_path.read_text(encoding="utf-8")),
         environment={},
         clock=clock,
         initial_generation=7,
@@ -165,7 +163,7 @@ def test_snapshot_manager_section_copy_runs_outside_manager_lock(tmp_path, monke
         source_path=source_path,
         loader=lambda _environment: {
             "storage": "/runtime/root",
-            "auth": {"auth_secret": "synthetic-secret"},
+            "auth": {"auth_secret": synthetic_secret("config_snapshot-credential-04")},
         },
         environment={},
         clock=clock,
@@ -259,9 +257,7 @@ def test_snapshot_keeps_last_good_value_for_whitelisted_transient_drift_error(tm
         loader=loader,
         environment={},
         clock=clock,
-        is_transient_error=lambda exc: (
-            isinstance(exc, OSError) and exc.errno == errno.EAGAIN
-        ),
+        is_transient_error=lambda exc: (isinstance(exc, OSError) and exc.errno == errno.EAGAIN),
     )
     assert manager.load() == {"value": "valid"}
 
@@ -397,7 +393,7 @@ def test_disabled_system_config_section_uses_full_authoritative_loader(
         calls.append(True)
         return {
             "storage": {"project_root": "/runtime/root"},
-            "auth": {"auth_secret": "synthetic-secret"},
+            "auth": {"auth_secret": synthetic_secret("config_snapshot-credential-04")},
         }
 
     monkeypatch.setattr(
@@ -567,7 +563,7 @@ def test_system_config_security_signature_errors_fail_closed(
     )
     system_config_module.update_system_config_section(
         "llm",
-        {"api_key": "synthetic-secret"},
+        {"api_key": synthetic_secret("config_snapshot-credential-04")},
     )
     manager = system_config_module._get_system_config_snapshot_manager()
 
@@ -593,7 +589,7 @@ def test_system_config_transient_signature_error_keeps_last_good_snapshot(
     )
     system_config_module.update_system_config_section(
         "llm",
-        {"api_key": "synthetic-secret"},
+        {"api_key": synthetic_secret("config_snapshot-credential-04")},
     )
     generation = system_config_module.get_system_config_generation()
     manager = system_config_module._get_system_config_snapshot_manager()
@@ -604,7 +600,7 @@ def test_system_config_transient_signature_error_keeps_last_good_snapshot(
     monkeypatch.setattr(manager, "_signature_loader", fail_signature_check)
 
     config = system_config_module.load_system_config()
-    assert config["llm"]["api_key"] == "synthetic-secret"
+    assert config["llm"]["api_key"] == synthetic_secret("config_snapshot-credential-04")
     assert system_config_module.get_system_config_generation() == generation
 
 
@@ -620,7 +616,7 @@ def test_system_config_transient_loader_io_error_keeps_last_good_snapshot(
     )
     system_config_module.update_system_config_section(
         "llm",
-        {"api_key": "synthetic-secret"},
+        {"api_key": synthetic_secret("config_snapshot-credential-04")},
     )
     manager = system_config_module._get_system_config_snapshot_manager()
     generation = manager.generation
@@ -635,7 +631,7 @@ def test_system_config_transient_loader_io_error_keeps_last_good_snapshot(
     monkeypatch.setattr(system_config_module.os, "open", fail_open)
 
     config = system_config_module.load_system_config()
-    assert config["llm"]["api_key"] == "synthetic-secret"
+    assert config["llm"]["api_key"] == synthetic_secret("config_snapshot-credential-04")
     assert manager.generation == generation
     assert manager._snapshot is not None
 
@@ -652,7 +648,7 @@ def test_system_config_secret_error_with_transient_cause_still_fails_closed(
     )
     system_config_module.update_system_config_section(
         "llm",
-        {"api_key": "synthetic-secret"},
+        {"api_key": synthetic_secret("config_snapshot-credential-04")},
     )
     manager = system_config_module._get_system_config_snapshot_manager()
     config_path.write_text(
@@ -664,9 +660,7 @@ def test_system_config_secret_error_with_transient_cause_still_fails_closed(
         try:
             raise BlockingIOError(errno.EAGAIN, "synthetic nested transient cause")
         except BlockingIOError as cause:
-            raise system_config_module.SecretEncryptionError(
-                "synthetic secret failure"
-            ) from cause
+            raise system_config_module.SecretEncryptionError("synthetic secret failure") from cause
 
     monkeypatch.setattr(system_config_module, "decrypt_secret", fail_decrypt)
 
@@ -775,9 +769,7 @@ def test_successful_update_and_import_each_advance_generation(tmp_path, monkeypa
     after_update = system_config_module.get_system_config_generation()
     assert after_update == initial_generation + 1
 
-    imported_sections, _ = system_config_module.import_system_config(
-        {"agent": {"context_max_rounds": 12}}
-    )
+    imported_sections, _ = system_config_module.import_system_config({"agent": {"context_max_rounds": 12}})
     assert imported_sections == ["agent"]
     assert system_config_module.get_system_config_generation() == after_update + 1
 
@@ -794,9 +786,7 @@ def test_failed_atomic_replace_preserves_file_and_generation(tmp_path, monkeypat
     monkeypatch.setattr(system_config_module.os, "replace", fail_replace)
 
     with pytest.raises(OSError, match="synthetic replace failure"):
-        system_config_module.update_system_config_section(
-            "agent", {"context_max_rounds": 12}
-        )
+        system_config_module.update_system_config_section("agent", {"context_max_rounds": 12})
 
     assert config_path.read_bytes() == before_bytes
     assert system_config_module.get_system_config_generation() == before_generation
@@ -822,9 +812,7 @@ def test_failed_replace_is_not_masked_by_temporary_cleanup_failure(
     monkeypatch.setattr(system_config_module.Path, "unlink", fail_unlink)
 
     with pytest.raises(OSError) as exc_info:
-        system_config_module.update_system_config_section(
-            "agent", {"context_max_rounds": 12}
-        )
+        system_config_module.update_system_config_section("agent", {"context_max_rounds": 12})
 
     assert exc_info.value is replace_error
     assert system_config_module.get_system_config_generation() == before_generation
@@ -868,9 +856,7 @@ def test_config_directory_fsync_uses_directory_descriptor_on_posix(
 
     system_config_module._fsync_directory(tmp_path)
 
-    assert opened == [
-        (tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), 0o700)
-    ]
+    assert opened == [(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), 0o700)]
     assert fsynced == [73]
     assert closed == [73]
 
@@ -906,17 +892,13 @@ def test_update_directory_fsync_failure_reports_committed_and_publishes_generati
     monkeypatch.setattr(system_config_module, "_fsync_directory", fail_directory_fsync)
 
     with pytest.raises(OSError) as exc_info:
-        system_config_module.update_system_config_section(
-            "agent", {"context_max_rounds": 11}
-        )
+        system_config_module.update_system_config_section("agent", {"context_max_rounds": 11})
 
     durability_error = exc_info.value
     assert getattr(durability_error, "committed", False) is True
     assert isinstance(durability_error, system_config_module.SystemConfigDurabilityError)
     assert durability_error.__cause__ is fsync_error
-    assert json.loads(config_path.read_text(encoding="utf-8"))["agent"][
-        "context_max_rounds"
-    ] == 11
+    assert json.loads(config_path.read_text(encoding="utf-8"))["agent"]["context_max_rounds"] == 11
     assert system_config_module.get_system_config_generation() == before_generation + 1
     assert system_config_module.load_system_config()["agent"]["context_max_rounds"] == 11
 
@@ -936,17 +918,13 @@ def test_import_directory_fsync_failure_reports_committed_and_publishes_generati
     monkeypatch.setattr(system_config_module, "_fsync_directory", fail_directory_fsync)
 
     with pytest.raises(OSError) as exc_info:
-        system_config_module.import_system_config(
-            {"agent": {"context_max_rounds": 12}}
-        )
+        system_config_module.import_system_config({"agent": {"context_max_rounds": 12}})
 
     durability_error = exc_info.value
     assert getattr(durability_error, "committed", False) is True
     assert isinstance(durability_error, system_config_module.SystemConfigDurabilityError)
     assert durability_error.__cause__ is fsync_error
-    assert json.loads(config_path.read_text(encoding="utf-8"))["agent"][
-        "context_max_rounds"
-    ] == 12
+    assert json.loads(config_path.read_text(encoding="utf-8"))["agent"]["context_max_rounds"] == 12
     assert system_config_module.get_system_config_generation() == before_generation + 1
     assert system_config_module.load_system_config()["agent"]["context_max_rounds"] == 12
 
@@ -975,9 +953,7 @@ def test_invalidation_failure_does_not_mask_committed_durability_error(
     )
 
     with pytest.raises(OSError) as exc_info:
-        system_config_module.update_system_config_section(
-            "agent", {"context_max_rounds": 11}
-        )
+        system_config_module.update_system_config_section("agent", {"context_max_rounds": 11})
 
     durability_error = exc_info.value
     assert getattr(durability_error, "committed", False) is True
@@ -989,7 +965,7 @@ def test_invalidation_failure_does_not_mask_committed_durability_error(
 def _synthetic_app_config(settings_module, *, marker: str):
     return settings_module.AppConfig(
         llm=settings_module.LLMConfig(
-            base_url="https://llm.example/v1",
+            base_url="https://llm.example.net/v1",
             model=f"main-{marker}",
             api_key=f"secret-{marker}",
             timeout=30,
@@ -997,7 +973,7 @@ def _synthetic_app_config(settings_module, *, marker: str):
             temperature=0.2,
         ),
         task_llm=settings_module.LLMConfig(
-            base_url="https://llm.example/v1",
+            base_url="https://llm.example.net/v1",
             model=f"task-{marker}",
             api_key=f"task-secret-{marker}",
             timeout=30,
@@ -1069,17 +1045,15 @@ def test_app_config_returns_deep_defensive_copies_of_cached_secrets(monkeypatch)
     monkeypatch.setattr(
         settings_module.AppConfig,
         "_build_from_env",
-        classmethod(
-            lambda cls: _synthetic_app_config(settings_module, marker="stable")
-        ),
+        classmethod(lambda cls: _synthetic_app_config(settings_module, marker="stable")),
         raising=False,
     )
 
     first = settings_module.AppConfig.from_env()
     first.llm.model = "mutated-model"
-    first.llm.api_key = "mutated-secret"
-    first.task_llm.api_key = "mutated-task-secret"
-    first.auth_secret = "mutated-auth-secret"
+    first.llm.api_key = synthetic_secret("config_snapshot-credential-02")
+    first.task_llm.api_key = synthetic_secret("config_snapshot-credential-03")
+    first.auth_secret = synthetic_secret("config_snapshot-credential-01")
 
     second = settings_module.AppConfig.from_env()
     assert second.llm.model == "main-stable"
@@ -1144,9 +1118,7 @@ def test_app_config_defensive_copy_runs_outside_cache_lock(monkeypatch):
     monkeypatch.setattr(
         settings_module.AppConfig,
         "_build_from_env",
-        classmethod(
-            lambda cls: _synthetic_app_config(settings_module, marker="copy")
-        ),
+        classmethod(lambda cls: _synthetic_app_config(settings_module, marker="copy")),
         raising=False,
     )
     settings_module.AppConfig.from_env()
@@ -1334,9 +1306,7 @@ def test_successful_write_publishes_file_and_generation_as_one_transition(
 
     def update_config():
         try:
-            system_config_module.update_system_config_section(
-                "agent", {"context_max_rounds": 11}
-            )
+            system_config_module.update_system_config_section("agent", {"context_max_rounds": 11})
         except BaseException as exc:
             errors.append(exc)
 

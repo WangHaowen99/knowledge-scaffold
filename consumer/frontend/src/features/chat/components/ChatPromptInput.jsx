@@ -11,12 +11,17 @@ export default function ChatPromptInput({
 }) {
   useLayoutEffect(() => {
     const element = inputRef.current;
-    if (!element) return;
+    if (!element) {
+      return;
+    }
 
     element.style.height = 'auto';
-    if (element.scrollHeight <= 0) return;
+    if (element.scrollHeight <= 0) {
+      return;
+    }
     element.style.height = `${Math.min(element.scrollHeight, MAX_PROMPT_HEIGHT)}px`;
-    element.style.overflowY = element.scrollHeight > MAX_PROMPT_HEIGHT ? 'auto' : 'hidden';
+    element.style.overflowY =
+      element.scrollHeight > MAX_PROMPT_HEIGHT ? 'auto' : 'hidden';
   }, [inputRef, value]);
 
   return (
@@ -30,7 +35,13 @@ export default function ChatPromptInput({
       readOnly={isSubmitting}
       onChange={onChange}
       onKeyDown={(event) => {
-        if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+        if (
+          event.key !== 'Enter' ||
+          event.shiftKey ||
+          event.nativeEvent.isComposing
+        ) {
+          return;
+        }
         event.preventDefault();
         onSend();
       }}

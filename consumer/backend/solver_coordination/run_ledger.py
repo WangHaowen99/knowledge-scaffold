@@ -246,9 +246,8 @@ class SolverRunLedger:
         values = list(updates.values()) + [_utc_now(), safe_run_id, self.workspace_id, owner]
         with self._connect() as connection:
             connection.execute(
-                "UPDATE solve_runs SET {}, updated_at = ? WHERE run_id = ? AND workspace_id = ? AND owner_id = ?".format(
-                    assignments
-                ),
+                "UPDATE solve_runs SET {}, updated_at = ? WHERE run_id = ? AND workspace_id = ? AND owner_id = ?"
+                .format(assignments),
                 values,
             )
             row = connection.execute(

@@ -12,6 +12,7 @@ class RuntimeObserver(Protocol):
     def enabled(self) -> bool:
         """Whether runtime code should materialize observability payloads."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def emit(self, event: RuntimeEvent) -> bool:
         """Publish ``event`` without blocking the agent execution path."""
 
@@ -19,10 +20,12 @@ class RuntimeObserver(Protocol):
 class NoopObserver:
     enabled = False
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def emit(self, event: RuntimeEvent) -> bool:
         del event
         return False
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self, timeout: float = 0.0) -> None:
         del timeout
 

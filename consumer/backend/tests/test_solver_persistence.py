@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
-import json
 
 import pytest
-
-from solver_coordination.run_ledger import SolverRunLedger
-from solver_coordination.candidate_store import CandidateSetNotFoundError, CandidateSetStore
 from solver_coordination.candidate_service import create_candidate_set
+from solver_coordination.candidate_store import CandidateSetNotFoundError, CandidateSetStore
+from solver_coordination.run_ledger import SolverRunLedger
 from solver_coordination.validation_store import ValidationRunStore, ValidationRunStoreError
 from workspace.workspaces import create_workspace
 
@@ -65,18 +64,11 @@ def test_run_ledger_uses_wal_and_survives_reopen(tmp_path, monkeypatch):
 
     with sqlite3.connect(ledger.database_path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-        }
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"solve_runs", "solve_artifacts"}.issubset(tables)
 
     reopened = SolverRunLedger("ledger_demo")
-    assert reopened.get_run("solve_synthetic_001", owner_id="synthetic_operator")["run_id"] == (
-        "solve_synthetic_001"
-    )
+    assert reopened.get_run("solve_synthetic_001", owner_id="synthetic_operator")["run_id"] == ("solve_synthetic_001")
     # A different owner must not learn that the run exists.
     assert reopened.get_run("solve_synthetic_001", owner_id="other_operator") is None
 
@@ -104,18 +96,17 @@ def test_run_ledger_artifact_is_owner_scoped_and_restartable(tmp_path, monkeypat
         source_run_id="solve_synthetic_002",
     )
     assert artifact["artifact_type"] == "candidate_set"
-    assert ledger.get_artifact(artifact["artifact_digest"], owner_id="synthetic_operator")[
-        "artifact_ref"
-    ].startswith("candidate_set_")
+    assert ledger.get_artifact(artifact["artifact_digest"], owner_id="synthetic_operator")["artifact_ref"].startswith(
+        "candidate_set_"
+    )
     assert ledger.get_artifact(artifact["artifact_digest"], owner_id="other_operator") is None
-    assert SolverRunLedger("artifact_demo").get_artifact(
-        artifact["artifact_digest"], owner_id="synthetic_operator"
-    ) is not None
+    assert (
+        SolverRunLedger("artifact_demo").get_artifact(artifact["artifact_digest"], owner_id="synthetic_operator")
+        is not None
+    )
 
 
-def test_idempotency_key_isolated_by_owner_and_lock_registry_reclaims_entries(
-    tmp_path, monkeypatch
-):
+def test_idempotency_key_isolated_by_owner_and_lock_registry_reclaims_entries(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     create_workspace("Synthetic Workspace", workspace_id="idem_demo", set_as_default=True)
     store = ValidationRunStore("idem_demo")
@@ -135,27 +126,25 @@ def test_idempotency_key_isolated_by_owner_and_lock_registry_reclaims_entries(
         payload=_validation_payload("validation_run_synthetic_002", "2"),
     )
     assert first["validation_run_id"] != second["validation_run_id"]
-    assert store.get_idempotent(
-        idempotency_key=key,
-        owner_id="synthetic_operator",
-        request_fingerprint="sha256:v1:" + "1" * 64,
-    )["validation_run_id"] == "validation_run_synthetic_001"
-    assert store.get_idempotent(
-        idempotency_key=key,
-        owner_id="other_operator",
-        request_fingerprint="sha256:v1:" + "2" * 64,
-    )["validation_run_id"] == "validation_run_synthetic_002"
+    assert (
+        store.get_idempotent(
+            idempotency_key=key,
+            owner_id="synthetic_operator",
+            request_fingerprint="sha256:v1:" + "1" * 64,
+        )["validation_run_id"]
+        == "validation_run_synthetic_001"
+    )
+    assert (
+        store.get_idempotent(
+            idempotency_key=key,
+            owner_id="other_operator",
+            request_fingerprint="sha256:v1:" + "2" * 64,
+        )["validation_run_id"]
+        == "validation_run_synthetic_002"
+    )
     # The durable result itself is owner-namespaced as well.
-    first_path = (
-        store._runs_root
-        / store._owner_digest("synthetic_operator")
-        / "validation_run_synthetic_001.json"
-    )
-    second_path = (
-        store._runs_root
-        / store._owner_digest("other_operator")
-        / "validation_run_synthetic_002.json"
-    )
+    first_path = store._runs_root / store._owner_digest("synthetic_operator") / "validation_run_synthetic_001.json"
+    second_path = store._runs_root / store._owner_digest("other_operator") / "validation_run_synthetic_002.json"
     assert first_path.is_file()
     assert second_path.is_file()
     assert first_path.parent != second_path.parent
@@ -165,9 +154,7 @@ def test_idempotency_key_isolated_by_owner_and_lock_registry_reclaims_entries(
 
     def worker(owner: str) -> None:
         try:
-            with store.idempotency_lock(
-                workspace_id="idem_demo", owner_id=owner, idempotency_key="temporary-key"
-            ):
+            with store.idempotency_lock(workspace_id="idem_demo", owner_id=owner, idempotency_key="temporary-key"):
                 pass
         except BaseException as exc:  # pragma: no cover - assertion below reports it
             errors.append(exc)

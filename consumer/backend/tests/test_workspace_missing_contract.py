@@ -5,10 +5,10 @@ from __future__ import annotations
 from api.auth.auth import AuthManager
 from api.routes import initialize_runtime_dependencies, register_routers
 from api.routes.auth import auth_router
-from fastapi.testclient import TestClient
-
 from api.testing import TestApplication
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD
 from config import AgentConfig, AppConfig
+from fastapi.testclient import TestClient
 from llm import LLMRouter, configure_llm_router
 from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
@@ -20,7 +20,7 @@ def _build_client(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAT_STORAGE_DIR", str(tmp_path / "chats"))
     monkeypatch.setenv("EXECUTION_STORAGE_DIR", str(tmp_path / "executions"))
     monkeypatch.setenv("SYSTEM_CONFIG_PATH", str(runtime_root / "config" / "system_config.json"))
-    monkeypatch.setenv("LLM_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("LLM_BASE_URL", "https://llm.example.net/v1")
     monkeypatch.setenv("LLM_MODEL", "unit-model")
 
     config = AppConfig.from_env()
@@ -31,7 +31,7 @@ def _build_client(tmp_path, monkeypatch):
         "config": config,
         "agent_config": agent_config,
         "llm_router": llm_router,
-        "auth_manager": AuthManager(str(tmp_path / "users.json"), "test-secret"),
+        "auth_manager": AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET),
         "user_store_manager": UserStoreManager(
             config.chat_storage_dir,
             config.execution_storage_dir,
@@ -55,9 +55,9 @@ def _build_client(tmp_path, monkeypatch):
     )
     client = TestClient(app)
     auth_manager = runtime["auth_manager"]
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
-    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
     token = auth_manager.issue_token(user)
     return client, {"Authorization": "Bearer {}".format(token)}

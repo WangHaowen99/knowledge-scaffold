@@ -37,7 +37,6 @@ from .jiuwen_events import JiuwenRuntimeEventBridge
 from .lifecycle import JiuwenRuntimeLifecycleError, get_jiuwen_runner_lifecycle
 from .preflight_cache import materialize_preflight_product
 
-
 _STATE_SNAPSHOT_CALLBACK: ContextVar[Any] = ContextVar(
     "jiuwen_state_snapshot_callback",
     default=None,
@@ -83,11 +82,7 @@ def _build_resumable_llm_context(messages: Any) -> list[dict[str, Any]]:
     for raw_message in messages:
         if not isinstance(raw_message, Mapping):
             break
-        candidate = {
-            key: copy.deepcopy(value)
-            for key, value in raw_message.items()
-            if key in _HISTORY_MESSAGE_FIELDS
-        }
+        candidate = {key: copy.deepcopy(value) for key, value in raw_message.items() if key in _HISTORY_MESSAGE_FIELDS}
         if candidate.get("content") is None:
             candidate["content"] = ""
         try:
@@ -122,9 +117,7 @@ def _build_resumable_llm_context(messages: Any) -> list[dict[str, Any]]:
             checkpoint.pop()
             break
         tool_call_ids = [
-            str(tool_call.get("id") or "").strip()
-            for tool_call in tool_calls
-            if isinstance(tool_call, Mapping)
+            str(tool_call.get("id") or "").strip() for tool_call in tool_calls if isinstance(tool_call, Mapping)
         ]
         if (
             len(tool_call_ids) != len(tool_calls)
@@ -166,12 +159,9 @@ def _accepted_preflight_model_profile(
     from config.model_profile_refs import model_profile_ref_to_dict
 
     try:
-        expected = model_profile_ref_to_dict(
-            context.model_profile_ref or context.model_profile_id
-        )
+        expected = model_profile_ref_to_dict(context.model_profile_ref or context.model_profile_id)
         actual = model_profile_ref_to_dict(
-            snapshot.model_profile.get("model_profile_ref")
-            or snapshot.model_profile.get("id")
+            snapshot.model_profile.get("model_profile_ref") or snapshot.model_profile.get("id")
         )
     except (TypeError, ValueError):
         return None
@@ -184,12 +174,7 @@ def _accepted_preflight_ontology_snapshot(
     context: RuntimeInvocationContext,
 ) -> Any:
     snapshot = _matching_preflight_ontology_products(context)
-    return (
-        snapshot
-        if snapshot is not None
-        and isinstance(snapshot.ontology_manifest, Mapping)
-        else None
-    )
+    return snapshot if snapshot is not None and isinstance(snapshot.ontology_manifest, Mapping) else None
 
 
 def _matching_preflight_ontology_products(
@@ -199,13 +184,9 @@ def _matching_preflight_ontology_products(
 
     snapshot = context.preflight_snapshot
     arguments = dict(context.arguments or {})
-    selected_ontology_id = str(
-        arguments.get("selected_ontology_id") or ""
-    ).strip()
+    selected_ontology_id = str(arguments.get("selected_ontology_id") or "").strip()
     selected_ontology_version = str(
-        arguments.get("selected_ontology_version")
-        or arguments.get("selected_version")
-        or ""
+        arguments.get("selected_ontology_version") or arguments.get("selected_version") or ""
     ).strip()
     if snapshot is None:
         return None
@@ -250,9 +231,7 @@ class JiuwenAsyncAgentRuntime:
         memory_manager: Any = None,
         agent_config: Any = None,
         engine_factory: Optional[Callable[..., Any]] = None,
-        memory_manager_provider: Optional[
-            Callable[[RuntimeInvocationContext], Any]
-        ] = None,
+        memory_manager_provider: Optional[Callable[[RuntimeInvocationContext], Any]] = None,
         allowed_lifecycle_modes: Collection[str] = ("async",),
         max_event_buffer_size: int = 1024,
     ) -> None:
@@ -264,9 +243,7 @@ class JiuwenAsyncAgentRuntime:
         self.agent_config = agent_config
         self._engine_factory = engine_factory
         self._memory_manager_provider = memory_manager_provider
-        self._allowed_lifecycle_modes = frozenset(
-            str(mode or "").strip() for mode in allowed_lifecycle_modes
-        )
+        self._allowed_lifecycle_modes = frozenset(str(mode or "").strip() for mode in allowed_lifecycle_modes)
         if self._allowed_lifecycle_modes != {"async"}:
             raise ValueError("allowed_lifecycle_modes must contain only async")
         self.max_event_buffer_size = max(1, int(max_event_buffer_size))
@@ -308,11 +285,7 @@ class JiuwenAsyncAgentRuntime:
         active = _ActiveJiuwenRun(owner_loop=asyncio.get_running_loop())
         with self._runs_lock:
             if context.run_id in self._runs:
-                raise RuntimeError(
-                    "Jiuwen runtime already has an active run '{}'".format(
-                        context.run_id
-                    )
-                )
+                raise RuntimeError("Jiuwen runtime already has an active run '{}'".format(context.run_id))
             self._runs[context.run_id] = active
         clear_subagent_manager: Callable[[str | None], None] | None = None
         try:
@@ -364,9 +337,7 @@ class JiuwenAsyncAgentRuntime:
                     engine_state = await self._prepare_engine_state(context)
                     runtime_arguments = dict(context.arguments or {})
                     has_solver_package_context = bool(
-                        str(
-                            runtime_arguments.get("selected_ontology_id") or ""
-                        ).strip()
+                        str(runtime_arguments.get("selected_ontology_id") or "").strip()
                         and str(
                             runtime_arguments.get("selected_ontology_version")
                             or runtime_arguments.get("selected_version")
@@ -381,13 +352,9 @@ class JiuwenAsyncAgentRuntime:
                             solver_route_requirement_from_state,
                         )
 
-                        solver_requirement = solver_route_requirement_from_state(
-                            engine_state
-                        )
+                        solver_requirement = solver_route_requirement_from_state(engine_state)
                         if solver_requirement is not None:
-                            solver_guard = SolverRouteExecutionGuard(
-                                solver_requirement
-                            )
+                            solver_guard = SolverRouteExecutionGuard(solver_requirement)
 
                     def observe_protocol_event(
                         event_type: str,
@@ -402,16 +369,12 @@ class JiuwenAsyncAgentRuntime:
                             )
                         bridge.protocol_event(event_type, payload)
 
-                    direct_arguments = engine_state.get(
-                        "_solver_direct_arguments"
-                    )
+                    direct_arguments = engine_state.get("_solver_direct_arguments")
                     from agent.core.shared.tool_context import (
                         ontology_preflight_tool_context,
                     )
 
-                    with ontology_preflight_tool_context(
-                        _accepted_preflight_ontology_snapshot(context)
-                    ):
+                    with ontology_preflight_tool_context(_accepted_preflight_ontology_snapshot(context)):
                         if solver_requirement is not None and isinstance(
                             direct_arguments,
                             Mapping,
@@ -430,9 +393,7 @@ class JiuwenAsyncAgentRuntime:
                                 jiuwen_preflight_llm_config_context,
                             )
 
-                            with jiuwen_preflight_llm_config_context(
-                                _accepted_preflight_model_profile(context)
-                            ):
+                            with jiuwen_preflight_llm_config_context(_accepted_preflight_model_profile(context)):
                                 final_state = await engine.arun(
                                     engine_state,
                                     caller="main",
@@ -449,8 +410,7 @@ class JiuwenAsyncAgentRuntime:
                     if solver_guard is not None:
                         solver_guard.ensure_terminal(
                             allow_awaiting_input=(
-                                isinstance(pending_interaction, Mapping)
-                                and bool(pending_interaction)
+                                isinstance(pending_interaction, Mapping) and bool(pending_interaction)
                             )
                         )
                     if isinstance(pending_interaction, Mapping) and pending_interaction:
@@ -468,9 +428,7 @@ class JiuwenAsyncAgentRuntime:
                         reject_if_cancel_requested=True,
                     ):
                         raise asyncio.CancelledError
-                    bridge.finish(
-                        bridge.turn_finished(terminal_status, terminal_payload)
-                    )
+                    bridge.finish(bridge.turn_finished(terminal_status, terminal_payload))
                 except (WorkflowCancelledError, asyncio.CancelledError):
                     await finish_cancelled()
                 except Exception as exc:
@@ -478,29 +436,24 @@ class JiuwenAsyncAgentRuntime:
                         await finish_cancelled()
                     elif self._commit_terminal(active):
                         error = self._runtime_error(exc)
-                        terminal_payload: dict[str, Any] = {
-                            "error": error.model_dump(mode="json")
-                        }
-                        if isinstance(
-                            exc,
-                            (ModelOutputTruncatedError, ModelContentFilteredError),
-                        ) and exc.partial_output:
+                        terminal_payload: dict[str, Any] = {"error": error.model_dump(mode="json")}
+                        if (
+                            isinstance(
+                                exc,
+                                (ModelOutputTruncatedError, ModelContentFilteredError),
+                            )
+                            and exc.partial_output
+                        ):
                             terminal_payload["content"] = exc.partial_output
                         if engine_state is not None:
-                            checkpoint = _build_resumable_llm_context(
-                                self._history_from_state(engine_state)
-                            )
+                            checkpoint = _build_resumable_llm_context(self._history_from_state(engine_state))
                             if checkpoint:
                                 terminal_payload["history_messages"] = checkpoint
                             read_documents = engine_state.get("read_documents")
                             if isinstance(read_documents, Mapping):
-                                terminal_payload["read_documents"] = dict(
-                                    read_documents
-                                )
+                                terminal_payload["read_documents"] = dict(read_documents)
                             if checkpoint and error.retriable:
-                                terminal_payload["recovery"] = (
-                                    _CONTINUE_RECOVERY_ACTION.model_dump(mode="json")
-                                )
+                                terminal_payload["recovery"] = _CONTINUE_RECOVERY_ACTION.model_dump(mode="json")
                         bridge.finish(
                             bridge.turn_finished(
                                 "failed",
@@ -513,9 +466,7 @@ class JiuwenAsyncAgentRuntime:
             try:
                 async with asyncio.TaskGroup() as task_group:
                     producer = task_group.create_task(produce())
-                    producer.set_name(
-                        "jiuwen-runtime-{}".format(context.run_id)
-                    )
+                    producer.set_name("jiuwen-runtime-{}".format(context.run_id))
                     active.task = producer
                     while True:
                         event = await bridge.get()
@@ -546,10 +497,7 @@ class JiuwenAsyncAgentRuntime:
     @classmethod
     def _contains_only_generator_exit(cls, exc: BaseException) -> bool:
         if isinstance(exc, BaseExceptionGroup):
-            return bool(exc.exceptions) and all(
-                cls._contains_only_generator_exit(child)
-                for child in exc.exceptions
-            )
+            return bool(exc.exceptions) and all(cls._contains_only_generator_exit(child) for child in exc.exceptions)
         return isinstance(exc, GeneratorExit)
 
     async def cancel(self, run_id: str, reason: str) -> bool:
@@ -579,9 +527,7 @@ class JiuwenAsyncAgentRuntime:
 
     def _create_engine(self, context: RuntimeInvocationContext) -> Any:
         memory_manager = (
-            self._memory_manager_provider(context)
-            if self._memory_manager_provider is not None
-            else self.memory_manager
+            self._memory_manager_provider(context) if self._memory_manager_provider is not None else self.memory_manager
         )
         if self._engine_factory is not None:
             return self._engine_factory(
@@ -646,23 +592,14 @@ class JiuwenAsyncAgentRuntime:
         state["messages"] = messages
         await self._emit_state_snapshot(state, context.run_id)
 
-        selected_ontology_id = str(
-            dict(state.get("user_context") or {}).get(
-                "selected_ontology_id"
-            )
-            or ""
-        ).strip()
+        selected_ontology_id = str(dict(state.get("user_context") or {}).get("selected_ontology_id") or "").strip()
         selected_ontology_version = str(
-            dict(state.get("user_context") or {}).get(
-                "selected_ontology_version"
-            )
+            dict(state.get("user_context") or {}).get("selected_ontology_version")
             or dict(state.get("user_context") or {}).get("selected_version")
             or ""
         ).strip()
         memory_manager = (
-            self._memory_manager_provider(context)
-            if self._memory_manager_provider is not None
-            else self.memory_manager
+            self._memory_manager_provider(context) if self._memory_manager_provider is not None else self.memory_manager
         )
         from agent.core.shared.tool_context import (
             current_ontology_preflight_tool_fields,
@@ -713,9 +650,7 @@ class JiuwenAsyncAgentRuntime:
                     separators=(",", ":"),
                 )
             )
-            state.setdefault("messages", []).append(
-                {"role": "assistant", "content": assistant_content}
-            )
+            state.setdefault("messages", []).append({"role": "assistant", "content": assistant_content})
         await self._emit_state_snapshot(state, context.run_id)
         return state
 
@@ -746,14 +681,10 @@ class JiuwenAsyncAgentRuntime:
             )
         if snapshot.mode not in self._allowed_lifecycle_modes:
             raise JiuwenRuntimeLifecycleError(
-                "openJiuwen Runner mode {!r} is not allowed for this runtime".format(
-                    snapshot.mode
-                )
+                "openJiuwen Runner mode {!r} is not allowed for this runtime".format(snapshot.mode)
             )
         if snapshot.owner_loop_id != current_loop_id:
-            raise JiuwenRuntimeLifecycleError(
-                "openJiuwen Runner is bound to a different event loop"
-            )
+            raise JiuwenRuntimeLifecycleError("openJiuwen Runner is bound to a different event loop")
 
     def _commit_terminal(
         self,
@@ -777,8 +708,7 @@ class JiuwenAsyncAgentRuntime:
     def _build_engine_state(context: RuntimeInvocationContext) -> dict[str, Any]:
         arguments = dict(context.arguments or {})
         history_messages = [
-            message.model_dump(mode="python", exclude_none=True)
-            for message in context.history_messages
+            message.model_dump(mode="python", exclude_none=True) for message in context.history_messages
         ]
         user_context: dict[str, Any] = {
             "agent_mode": context.agent_mode,
@@ -800,13 +730,9 @@ class JiuwenAsyncAgentRuntime:
         ):
             if arguments.get(key) not in (None, ""):
                 user_context[key] = arguments[key]
-        selected_ontology_id = str(
-            arguments.get("selected_ontology_id") or ""
-        ).strip()
+        selected_ontology_id = str(arguments.get("selected_ontology_id") or "").strip()
         selected_ontology_version = str(
-            arguments.get("selected_ontology_version")
-            or arguments.get("selected_version")
-            or ""
+            arguments.get("selected_ontology_version") or arguments.get("selected_version") or ""
         ).strip()
         solver_requirement = None
         if selected_ontology_id and selected_ontology_version:
@@ -826,25 +752,17 @@ class JiuwenAsyncAgentRuntime:
             preflight = _matching_preflight_ontology_products(context)
             if preflight is not None:
                 solver_kwargs["root_payload"] = (
-                    preflight.root_payload
-                    if isinstance(preflight.root_payload, Mapping)
-                    else {}
+                    preflight.root_payload if isinstance(preflight.root_payload, Mapping) else {}
                 )
             solver_requirement = resolve_solver_route_requirement(**solver_kwargs)
             user_context = bind_solver_route_requirement(
                 user_context,
                 solver_requirement,
-                suppress_solver_tools=(
-                    solver_requirement is None
-                    and should_suppress_solver_tools(context.query)
-                ),
+                suppress_solver_tools=(solver_requirement is None and should_suppress_solver_tools(context.query)),
             )
         model_query = context.query
         if context.interaction_cancellation:
-            model_query = (
-                "<user-interaction-cancellation>\n{}\n"
-                "</user-interaction-cancellation>\n\n{}"
-            ).format(
+            model_query = "<user-interaction-cancellation>\n{}\n</user-interaction-cancellation>\n\n{}".format(
                 json.dumps(
                     context.interaction_cancellation,
                     ensure_ascii=False,
@@ -856,10 +774,7 @@ class JiuwenAsyncAgentRuntime:
             # Keep the persisted/displayed user message human-readable while
             # giving the resumed agent the structured checkpoint response it
             # needs to continue the interrupted operation deterministically.
-            model_query = (
-                "{}\n\n<user-interaction-response>\n{}\n"
-                "</user-interaction-response>"
-            ).format(
+            model_query = "{}\n\n<user-interaction-response>\n{}\n</user-interaction-response>".format(
                 context.query,
                 json.dumps(
                     context.interaction_response,
@@ -893,17 +808,13 @@ class JiuwenAsyncAgentRuntime:
                 selected_ontology_id,
                 selected_ontology_version,
             )
-            state["_selected_ontology_context_cache"] = (
-                preflight.selected_ontology_context
-            )
+            state["_selected_ontology_context_cache"] = preflight.selected_ontology_context
             if preflight.preload_records:
-                state["_preflight_selected_ontology_preload_records"] = (
-                    materialize_preflight_product(preflight.preload_records)
+                state["_preflight_selected_ontology_preload_records"] = materialize_preflight_product(
+                    preflight.preload_records
                 )
         if solver_requirement is not None and solver_requirement.direct_arguments is not None:
-            state["_solver_direct_arguments"] = copy.deepcopy(
-                solver_requirement.direct_arguments
-            )
+            state["_solver_direct_arguments"] = copy.deepcopy(solver_requirement.direct_arguments)
         return state
 
     async def _prepare_engine_state(
@@ -911,13 +822,9 @@ class JiuwenAsyncAgentRuntime:
         context: RuntimeInvocationContext,
     ) -> dict[str, Any]:
         arguments = dict(context.arguments or {})
-        selected_ontology_id = str(
-            arguments.get("selected_ontology_id") or ""
-        ).strip()
+        selected_ontology_id = str(arguments.get("selected_ontology_id") or "").strip()
         selected_ontology_version = str(
-            arguments.get("selected_ontology_version")
-            or arguments.get("selected_version")
-            or ""
+            arguments.get("selected_ontology_version") or arguments.get("selected_version") or ""
         ).strip()
         if not selected_ontology_id or not selected_ontology_version:
             return self._build_engine_state(context)
@@ -937,24 +844,17 @@ class JiuwenAsyncAgentRuntime:
         final_output = state.get("final_output")
         if isinstance(final_output, Mapping):
             content = str(
-                final_output.get("text")
-                or final_output.get("output")
-                or final_output.get("content")
-                or final_output
+                final_output.get("text") or final_output.get("output") or final_output.get("content") or final_output
             )
         else:
             content = str(final_output or "")
         payload: dict[str, Any] = {"content": content}
-        payload["history_messages"] = JiuwenAsyncAgentRuntime._history_from_state(
-            state
-        )
+        payload["history_messages"] = JiuwenAsyncAgentRuntime._history_from_state(state)
         if isinstance(state.get("read_documents"), Mapping):
             payload["read_documents"] = dict(state["read_documents"])
         if isinstance(state.get("evolution_recall_records"), list):
             payload["evolution_recall_records"] = [
-                dict(item)
-                for item in state["evolution_recall_records"]
-                if isinstance(item, Mapping)
+                dict(item) for item in state["evolution_recall_records"] if isinstance(item, Mapping)
             ]
         structured = state.get("structured_content")
         if isinstance(structured, (dict, list)):
@@ -989,9 +889,7 @@ class JiuwenAsyncAgentRuntime:
             payload["read_documents"] = dict(state["read_documents"])
         if isinstance(state.get("evolution_recall_records"), list):
             payload["evolution_recall_records"] = [
-                dict(item)
-                for item in state["evolution_recall_records"]
-                if isinstance(item, Mapping)
+                dict(item) for item in state["evolution_recall_records"] if isinstance(item, Mapping)
             ]
         usage = JiuwenAsyncAgentRuntime._extract_usage(state)
         if usage:
@@ -1021,9 +919,7 @@ class JiuwenAsyncAgentRuntime:
                 latest_user_index = index
                 break
         if latest_user_index is not None:
-            latest_content = str(
-                history[latest_user_index].get("content") or ""
-            )
+            latest_content = str(history[latest_user_index].get("content") or "")
             if latest_content == current_query:
                 return history
             if dict(state.get("user_context") or {}).get("interaction_response"):
@@ -1063,23 +959,16 @@ class JiuwenAsyncAgentRuntime:
                 for child in exc.exceptions
                 if isinstance(child, Exception)
             ]
-            if child_errors and all(
-                error.error_code != "INTERNAL_ERROR"
-                for error in child_errors
-            ):
+            if child_errors and all(error.error_code != "INTERNAL_ERROR" for error in child_errors):
                 first = child_errors[0]
                 first_payload = first.model_dump(mode="json")
-                if all(
-                    item.model_dump(mode="json") == first_payload
-                    for item in child_errors[1:]
-                ):
+                if all(item.model_dump(mode="json") == first_payload for item in child_errors[1:]):
                     return first
 
         exception_type = type(exc)
         is_solver_guard_error = (
             exception_type.__name__ == "SolverRouteGuardError"
-            and exception_type.__module__
-            == "agent.core.shared.solver_route_guard"
+            and exception_type.__module__ == "agent.core.shared.solver_route_guard"
         )
         if is_solver_guard_error:
             details = {}
@@ -1087,13 +976,8 @@ class JiuwenAsyncAgentRuntime:
             if phase:
                 details["phase"] = phase
             return RuntimeErrorInfo(
-                error_code=str(
-                    getattr(exc, "code", "solver_route_guard_failed")
-                    or "solver_route_guard_failed"
-                ),
-                message=redact_sensitive_text(
-                    str(getattr(exc, "public_message", exc) or exc)
-                ).strip()[:1000],
+                error_code=str(getattr(exc, "code", "solver_route_guard_failed") or "solver_route_guard_failed"),
+                message=redact_sensitive_text(str(getattr(exc, "public_message", exc) or exc)).strip()[:1000],
                 retriable=bool(getattr(exc, "retryable", False)),
                 source="tool",
                 details=details,
@@ -1107,9 +991,7 @@ class JiuwenAsyncAgentRuntime:
                 details={},
             )
         if isinstance(exc, ModelInvocationError):
-            category, status_code = JiuwenAsyncAgentRuntime._classify_runtime_error(
-                exc.cause
-            )
+            category, status_code = JiuwenAsyncAgentRuntime._classify_runtime_error(exc.cause)
             if category == "internal":
                 category = "provider"
             error_code, message, retriable = {
@@ -1137,14 +1019,9 @@ class JiuwenAsyncAgentRuntime:
                 details=details,
             )
 
-        safe_public_message = str(
-            getattr(exc, "public_message", None) or ""
-        ).strip()
+        safe_public_message = str(getattr(exc, "public_message", None) or "").strip()
         if safe_public_message:
-            explicit_code = str(
-                getattr(exc, "error_code", None)
-                or type(exc).__name__
-            ).strip()
+            explicit_code = str(getattr(exc, "error_code", None) or type(exc).__name__).strip()
             source = (
                 "tool"
                 if str(getattr(exc, "tool_name", None) or "").strip()
@@ -1162,11 +1039,14 @@ class JiuwenAsyncAgentRuntime:
         if explicit_code:
             source = JiuwenAsyncAgentRuntime._error_source_from_code(explicit_code)
             public_message = getattr(exc, "public_message", None)
-            message = str(public_message or {
-                "model": "模型服务请求失败",
-                "tool": "工具执行失败",
-                "runtime": "Agent Runtime 执行失败",
-            }[source])
+            message = str(
+                public_message
+                or {
+                    "model": "模型服务请求失败",
+                    "tool": "工具执行失败",
+                    "runtime": "Agent Runtime 执行失败",
+                }[source]
+            )
             message = redact_sensitive_text(message).strip()[:1000]
             return RuntimeErrorInfo(
                 error_code=explicit_code[:160],
@@ -1203,17 +1083,14 @@ class JiuwenAsyncAgentRuntime:
         if status_code == 429 or any("ratelimit" in name or "rate_limit" in name for name in type_names):
             return "rate_limit", status_code
         if status_code in {401, 403} or any(
-            "authentication" in name or "permissiondenied" in name
-            for name in type_names
+            "authentication" in name or "permissiondenied" in name for name in type_names
         ):
             return "authentication", status_code
         if JiuwenAsyncAgentRuntime._contains_connection_error(chain, type_names):
             return "connection", status_code
         if status_code is not None:
             return (
-                "provider_retryable"
-                if status_code == 409 or 500 <= status_code < 600
-                else "provider",
+                "provider_retryable" if status_code == 409 or 500 <= status_code < 600 else "provider",
                 status_code,
             )
         return "internal", None
@@ -1281,16 +1158,10 @@ class JiuwenAsyncAgentRuntime:
         *,
         include_trace: bool,
     ) -> RuntimeResult:
-        payload = PublicEventAdapter(
-            include_trace=include_trace
-        ).adapt_runtime_result_payload(event)
-        history = _validated_history_messages(
-            event.payload.get("history_messages")
-        )
+        payload = PublicEventAdapter(include_trace=include_trace).adapt_runtime_result_payload(event)
+        history = _validated_history_messages(event.payload.get("history_messages"))
         read_documents = (
-            dict(event.payload["read_documents"])
-            if isinstance(event.payload.get("read_documents"), Mapping)
-            else None
+            dict(event.payload["read_documents"]) if isinstance(event.payload.get("read_documents"), Mapping) else None
         )
         if event.status in {"completed", "awaiting_input"}:
             return RuntimeResult(

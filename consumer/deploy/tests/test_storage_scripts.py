@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 DEPLOY_ROOT = Path(__file__).resolve().parents[1]
 INTEGRITY_TOOL = DEPLOY_ROOT / "storage_integrity.py"
 
@@ -48,9 +47,7 @@ def _write_synthetic_tree(root: Path) -> tuple[Path, Path]:
     (runtime / "nested").mkdir(parents=True)
     (auth / "keys").mkdir(parents=True)
     (runtime / "empty.txt").write_bytes(b"")
-    (runtime / "nested" / "session.json").write_text(
-        '{"synthetic": true}\n', encoding="utf-8"
-    )
+    (runtime / "nested" / "session.json").write_text('{"synthetic": true}\n', encoding="utf-8")
     (auth / "keys" / "signing.key").write_bytes(b"synthetic-key-material\n")
     return runtime, auth
 
@@ -58,7 +55,7 @@ def _write_synthetic_tree(root: Path) -> tuple[Path, Path]:
 def _install_fake_docker(fake_bin: Path, volume_root: Path, log_path: Path) -> None:
     implementation = fake_bin / "fake_docker.py"
     implementation.write_text(
-        r'''import json
+        r"""import json
 import os
 import shutil
 import subprocess
@@ -160,7 +157,7 @@ if "migrations.runner" in translated:
     raise SystemExit(0)
 result = subprocess.run(translated, env=os.environ.copy(), check=False)
 raise SystemExit(result.returncode)
-''',
+""",
         encoding="utf-8",
     )
     wrapper = fake_bin / "docker"
@@ -233,18 +230,16 @@ def _prepare_bundle(tmp_path: Path, storage_mode: str) -> tuple[Path, dict[str, 
     fake_flock.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_flock.chmod(0o755)
     fake_python = fake_bin / "python3"
-    fake_python.write_text(
-        '#!/bin/bash\nexec "$FAKE_DOCKER_PYTHON" "$@"\n', encoding="utf-8"
-    )
+    fake_python.write_text('#!/bin/bash\nexec "$FAKE_DOCKER_PYTHON" "$@"\n', encoding="utf-8")
     fake_python.chmod(0o755)
     state_io = fake_bin / "state-io"
     state_io.write_text(
         "#!/bin/sh\n"
-        "operation=\"$1\"\nshift\n"
-        "case \"$operation\" in\n"
-        "  fsync-file) test -f \"$1\" ;;\n"
-        "  replace) mv \"$1\" \"$2\" ;;\n"
-        "  fsync-dir) test -d \"$1\" ;;\n"
+        'operation="$1"\nshift\n'
+        'case "$operation" in\n'
+        '  fsync-file) test -f "$1" ;;\n'
+        '  replace) mv "$1" "$2" ;;\n'
+        '  fsync-dir) test -d "$1" ;;\n'
         "  *) exit 64 ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -302,9 +297,7 @@ def _create_backup(tmp_path: Path, source_root: Path, storage_mode: str = "bind"
 
 
 def _tree_digest(backup: Path) -> str:
-    return json.loads(
-        (backup / "storage-manifest.json").read_text(encoding="utf-8")
-    )["tree_sha256"]
+    return json.loads((backup / "storage-manifest.json").read_text(encoding="utf-8"))["tree_sha256"]
 
 
 def _write_storage_operation(
@@ -344,9 +337,7 @@ def _write_storage_operation(
     )
 
 
-def _set_volume_pointer(
-    bundle: Path, runtime_volume: str, auth_volume: str, *, current: bool = True
-) -> None:
+def _set_volume_pointer(bundle: Path, runtime_volume: str, auth_volume: str, *, current: bool = True) -> None:
     marker = bundle / "deploy" / "state" / "storage-mode.env"
     marker.write_text(
         "STORAGE_MODE_STATUS=installed\n"
@@ -421,7 +412,10 @@ def test_integrity_archive_has_canonical_manifest_and_verifies(tmp_path):
     assert manifest["storage_mode"] == "bind"
     assert manifest["totals"] == {
         "file_count": 3,
-        "bytes": sum(path.stat().st_size for path in (runtime / "empty.txt", runtime / "nested" / "session.json", auth / "keys" / "signing.key")),
+        "bytes": sum(
+            path.stat().st_size
+            for path in (runtime / "empty.txt", runtime / "nested" / "session.json", auth / "keys" / "signing.key")
+        ),
     }
     runtime_files = manifest["datasets"]["runtime"]["files"]
     assert [item["path"] for item in runtime_files] == [
@@ -544,9 +538,7 @@ def test_integrity_extracts_only_into_empty_staging_roots(tmp_path):
     assert (target_runtime / "nested" / "session.json").read_bytes() == (
         runtime / "nested" / "session.json"
     ).read_bytes()
-    assert (target_auth / "keys" / "signing.key").read_bytes() == (
-        auth / "keys" / "signing.key"
-    ).read_bytes()
+    assert (target_auth / "keys" / "signing.key").read_bytes() == (auth / "keys" / "signing.key").read_bytes()
 
     rerun = _run_integrity(
         "extract-archive",
@@ -561,9 +553,7 @@ def test_integrity_extracts_only_into_empty_staging_roots(tmp_path):
 
     # A killed staging copy can leave expected paths partial. Retrying repairs
     # those files while still rejecting any unexpected entry below.
-    (target_runtime / "nested" / "session.json").write_text(
-        "partial", encoding="utf-8"
-    )
+    (target_runtime / "nested" / "session.json").write_text("partial", encoding="utf-8")
     (target_auth / "keys" / "signing.key").unlink()
     resumed = _run_integrity(
         "extract-archive",
@@ -607,9 +597,7 @@ def test_integrity_rejects_archive_path_traversal_before_writing(tmp_path):
         "auth": {"directories": [], "files": [], "file_count": 0, "bytes": 0},
     }
     tree_sha256 = hashlib.sha256(
-        json.dumps(
-            datasets, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        json.dumps(datasets, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     (backup / "storage-manifest.json").write_text(
         json.dumps(
@@ -652,12 +640,8 @@ def test_preflight_view_exports_only_required_volume_metadata(tmp_path):
     (runtime / "data" / "chats").mkdir(parents=True)
     (auth / "keys").mkdir(parents=True)
     (runtime / "config" / "system_config.json").write_text("{}", encoding="utf-8")
-    (runtime / "workspaces" / "ws-1" / "ontology-data-sources.json").write_text(
-        '{"sources": {}}', encoding="utf-8"
-    )
-    (runtime / "data" / "chats" / "large-session.json").write_text(
-        "must-not-copy", encoding="utf-8"
-    )
+    (runtime / "workspaces" / "ws-1" / "ontology-data-sources.json").write_text('{"sources": {}}', encoding="utf-8")
+    (runtime / "data" / "chats" / "large-session.json").write_text("must-not-copy", encoding="utf-8")
     (auth / "users.json").write_text('{"users": []}', encoding="utf-8")
     (auth / "keys" / "signing.key").write_text("must-not-copy", encoding="utf-8")
     output = tmp_path / "view"
@@ -674,13 +658,7 @@ def test_preflight_view_exports_only_required_volume_metadata(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (output / ".onto-runtime" / "config" / "system_config.json").is_file()
-    assert (
-        output
-        / ".onto-runtime"
-        / "workspaces"
-        / "ws-1"
-        / "ontology-data-sources.json"
-    ).is_file()
+    assert (output / ".onto-runtime" / "workspaces" / "ws-1" / "ontology-data-sources.json").is_file()
     assert (output / ".onto-auth" / "users.json").is_file()
     assert not (output / ".onto-runtime" / "data").exists()
     assert not (output / ".onto-auth" / "keys").exists()
@@ -702,16 +680,12 @@ def test_bind_backup_creates_and_verifies_canonical_storage_bundle(tmp_path):
     shutil.move(runtime, bundle / ".onto-runtime")
     shutil.move(auth, bundle / ".onto-auth")
 
-    result = _run_script(
-        bundle, env, "backup.sh", "--confirm-writes-stopped", "v2", "v1"
-    )
+    result = _run_script(bundle, env, "backup.sh", "--confirm-writes-stopped", "v2", "v1")
 
     assert result.returncode == 0, result.stdout + result.stderr
     backups = list((bundle / "deploy" / "backups").iterdir())
     assert len(backups) == 1
-    manifest = json.loads(
-        (backups[0] / "storage-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((backups[0] / "storage-manifest.json").read_text(encoding="utf-8"))
     assert manifest["storage_mode"] == "bind"
     verified = _run_integrity("verify-backup", "--backup-dir", backups[0])
     assert verified.returncode == 0, verified.stderr
@@ -725,21 +699,15 @@ def test_volume_backup_uses_read_only_sources_and_release_pinned_utility(tmp_pat
     auth = volume_root / "consumer-auth-data"
     (runtime / "nested").mkdir(parents=True)
     (auth / "keys").mkdir(parents=True)
-    (runtime / "nested" / "session.json").write_text(
-        '{"synthetic": true}\n', encoding="utf-8"
-    )
+    (runtime / "nested" / "session.json").write_text('{"synthetic": true}\n', encoding="utf-8")
     (runtime / "empty.txt").write_bytes(b"")
     (auth / "keys" / "signing.key").write_text("synthetic-key\n", encoding="utf-8")
 
-    result = _run_script(
-        bundle, env, "backup.sh", "--confirm-writes-stopped", "v2", "v1"
-    )
+    result = _run_script(bundle, env, "backup.sh", "--confirm-writes-stopped", "v2", "v1")
 
     assert result.returncode == 0, result.stdout + result.stderr
     backup = next((bundle / "deploy" / "backups").iterdir())
-    manifest = json.loads(
-        (backup / "storage-manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((backup / "storage-manifest.json").read_text(encoding="utf-8"))
     assert manifest["storage_mode"] == "volume"
     calls = [call for call in _docker_calls(log_path) if call[:1] == ["run"]]
     assert calls
@@ -755,9 +723,7 @@ def test_volume_backup_rejects_unpinned_utility_image_before_docker_run(tmp_path
     bundle, env, log_path = _prepare_bundle(tmp_path, "volume")
     env["STORAGE_UTILITY_IMAGE"] = "synthetic/storage-utility:latest"
 
-    result = _run_script(
-        bundle, env, "backup.sh", "--confirm-writes-stopped", "v2", "v1"
-    )
+    result = _run_script(bundle, env, "backup.sh", "--confirm-writes-stopped", "v2", "v1")
 
     assert result.returncode != 0
     assert "pinned" in result.stderr.lower()
@@ -825,16 +791,10 @@ def test_bind_restore_verifies_then_switches_and_rerun_is_idempotent(tmp_path):
     backup = _create_backup(tmp_path, tmp_path / "desired")
     (bundle / ".onto-runtime").mkdir()
     (bundle / ".onto-auth").mkdir()
-    (bundle / ".onto-runtime" / "active-only.txt").write_text(
-        "old-runtime", encoding="utf-8"
-    )
-    (bundle / ".onto-auth" / "active-only.txt").write_text(
-        "old-auth", encoding="utf-8"
-    )
+    (bundle / ".onto-runtime" / "active-only.txt").write_text("old-runtime", encoding="utf-8")
+    (bundle / ".onto-auth" / "active-only.txt").write_text("old-auth", encoding="utf-8")
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind")
 
     assert result.returncode == 0, result.stdout + result.stderr
     _assert_tree_matches_backup(bundle / ".onto-runtime", bundle / ".onto-auth", backup)
@@ -843,17 +803,13 @@ def test_bind_restore_verifies_then_switches_and_rerun_is_idempotent(tmp_path):
     assert len(runtime_rollbacks) == len(auth_rollbacks) == 1
     assert (runtime_rollbacks[0] / "active-only.txt").read_text() == "old-runtime"
     assert (auth_rollbacks[0] / "active-only.txt").read_text() == "old-auth"
-    state_text = (bundle / "deploy" / "state" / "storage-mode.env").read_text(
-        encoding="utf-8"
-    )
+    state_text = (bundle / "deploy" / "state" / "storage-mode.env").read_text(encoding="utf-8")
     assert "STORAGE_MODE_STATUS=installed" in state_text
     assert "STORAGE_MODE=bind" in state_text
     assert f"LAST_STORAGE_OPERATION_DIGEST={_tree_digest(backup)}" in state_text
     calls_before = _docker_calls(log_path)
 
-    rerun = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind"
-    )
+    rerun = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind")
 
     assert rerun.returncode == 0, rerun.stdout + rerun.stderr
     assert "already matches" in rerun.stdout.lower()
@@ -873,9 +829,7 @@ def test_corrupt_restore_never_stops_or_overwrites_active_bind_data(tmp_path):
     payload[len(payload) // 2] ^= 0xFF
     archive.write_bytes(payload)
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind")
 
     assert result.returncode != 0
     assert "checksum" in result.stderr.lower() or "archive" in result.stderr.lower()
@@ -895,9 +849,7 @@ def test_volume_restore_switches_pointer_only_after_staging_verification(tmp_pat
     (old_runtime / "old.txt").write_text("old-runtime", encoding="utf-8")
     (old_auth / "old.txt").write_text("old-auth", encoding="utf-8")
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume")
 
     assert result.returncode == 0, result.stdout + result.stderr
     digest_prefix = _tree_digest(backup)[:12]
@@ -917,9 +869,7 @@ def test_volume_restore_switches_pointer_only_after_staging_verification(tmp_pat
     create_count = sum(call[:2] == ["volume", "create"] for call in calls)
     compose_count = sum(call[:1] == ["compose"] for call in calls)
 
-    rerun = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume"
-    )
+    rerun = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume")
     assert rerun.returncode == 0, rerun.stdout + rerun.stderr
     rerun_calls = _docker_calls(log_path)
     assert sum(call[:2] == ["volume", "create"] for call in rerun_calls) == create_count
@@ -938,17 +888,13 @@ def test_failed_volume_restore_verification_keeps_old_active_pointer(tmp_path):
     (old_auth / "old.txt").write_text("old-auth", encoding="utf-8")
     env["FAKE_DOCKER_FAIL_COMMAND"] = "verify-tree"
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume")
 
     assert result.returncode != 0
     assert "staging verification failed" in result.stderr.lower()
     assert (old_runtime / "old.txt").read_text() == "old-runtime"
     assert (old_auth / "old.txt").read_text() == "old-auth"
-    assert (bundle / "deploy" / "state" / "current.env").read_text().endswith(
-        "CURRENT_STORAGE_MODE=volume\n"
-    )
+    assert (bundle / "deploy" / "state" / "current.env").read_text().endswith("CURRENT_STORAGE_MODE=volume\n")
     state_text = (bundle / "deploy" / "state" / "storage-mode.env").read_text()
     assert state_text == "STORAGE_MODE_STATUS=installed\nSTORAGE_MODE=volume\n"
 
@@ -965,9 +911,7 @@ def test_volume_restore_health_failure_reverts_pointer_and_keeps_both_volumes(tm
     (old_auth / "old.txt").write_text("old-auth", encoding="utf-8")
     env["FAKE_DOCKER_HEALTH"] = "unhealthy"
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume")
 
     assert result.returncode != 0
     assert "source storage remains active" in result.stderr.lower()
@@ -986,9 +930,7 @@ def test_volume_restore_health_failure_reverts_pointer_and_keeps_both_volumes(tm
 
 
 @pytest.mark.parametrize("operation", ("restore", "migration"))
-def test_retry_after_volume_target_health_rollback_reuses_verified_target(
-    tmp_path, operation
-):
+def test_retry_after_volume_target_health_rollback_reuses_verified_target(tmp_path, operation):
     bundle, env, log_path = _prepare_bundle(tmp_path, "bind")
     runtime, auth = _write_synthetic_tree(bundle / "source")
     shutil.move(runtime, bundle / ".onto-runtime")
@@ -1012,9 +954,7 @@ def test_retry_after_volume_target_health_rollback_reuses_verified_target(
     assert "source storage remains active" in first.stderr.lower()
     if backup is None:
         backup = next(
-            path
-            for path in (bundle / "deploy" / "backups").iterdir()
-            if path.name.startswith("storage-migration-")
+            path for path in (bundle / "deploy" / "backups").iterdir() if path.name.startswith("storage-migration-")
         )
     digest_prefix = _tree_digest(backup)[:12]
     volume_root = Path(env["FAKE_DOCKER_VOLUME_ROOT"])
@@ -1030,9 +970,7 @@ def test_retry_after_volume_target_health_rollback_reuses_verified_target(
     retry_calls = _docker_calls(log_path)[calls_before_retry:]
     assert not any("extract-archive" in call for call in retry_calls)
     _assert_tree_matches_backup(target_runtime, target_auth, backup)
-    operation_state = (
-        bundle / "deploy" / "state" / "storage-operation.env"
-    ).read_text(encoding="utf-8")
+    operation_state = (bundle / "deploy" / "state" / "storage-operation.env").read_text(encoding="utf-8")
     assert "STORAGE_OPERATION_STATUS=complete" in operation_state
 
 
@@ -1051,9 +989,7 @@ def test_restore_refuses_to_overwrite_mismatched_existing_target_volumes(tmp_pat
     conflicting_file = target_runtime / "nested" / "session.json"
     conflicting_file.write_text("must-not-be-overwritten", encoding="utf-8")
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume")
 
     assert result.returncode != 0
     assert "staging verification failed" in result.stderr.lower()
@@ -1064,9 +1000,7 @@ def test_restore_refuses_to_overwrite_mismatched_existing_target_volumes(tmp_pat
 @pytest.mark.parametrize("phase", ("starting", "healthy"))
 def test_started_target_resume_preserves_post_start_writes(tmp_path, operation, phase):
     bundle, env, _ = _prepare_bundle(tmp_path, "volume")
-    backup = _create_backup(
-        tmp_path, tmp_path / "desired", storage_mode="bind"
-    )
+    backup = _create_backup(tmp_path, tmp_path / "desired", storage_mode="bind")
     digest = _tree_digest(backup)
     runtime_name = f"consumer-runtime-data.{operation}-{digest[:12]}"
     auth_name = f"consumer-auth-data.{operation}-{digest[:12]}"
@@ -1114,9 +1048,7 @@ def test_started_target_resume_preserves_post_start_writes(tmp_path, operation, 
     current = (bundle / "deploy" / "state" / "current.env").read_text()
     assert f"RUNTIME_VOLUME_NAME={runtime_name}" in marker
     assert f"CURRENT_RUNTIME_VOLUME={runtime_name}" in current
-    operation_state = (
-        bundle / "deploy" / "state" / "storage-operation.env"
-    ).read_text(encoding="utf-8")
+    operation_state = (bundle / "deploy" / "state" / "storage-operation.env").read_text(encoding="utf-8")
     assert "STORAGE_OPERATION_STATUS=complete" in operation_state
 
 
@@ -1174,9 +1106,7 @@ def test_verified_target_pointer_split_failure_recovers_source(tmp_path, operati
 
 @pytest.mark.parametrize("operation", ("restore", "migration"))
 @pytest.mark.parametrize("target_state", ("runtime-only", "both-partial"))
-def test_staging_resume_uses_unique_target_for_incomplete_volumes(
-    tmp_path, operation, target_state
-):
+def test_staging_resume_uses_unique_target_for_incomplete_volumes(tmp_path, operation, target_state):
     bundle, env, log_path = _prepare_bundle(tmp_path, "bind")
     backup = _create_backup(tmp_path, tmp_path / "desired")
     shutil.copytree(tmp_path / "desired" / "runtime", bundle / ".onto-runtime")
@@ -1188,14 +1118,10 @@ def test_staging_resume_uses_unique_target_for_incomplete_volumes(
     original_runtime = volume_root / runtime_name
     original_auth = volume_root / auth_name
     original_runtime.mkdir()
-    (original_runtime / "partial.txt").write_text(
-        "partial-runtime", encoding="utf-8"
-    )
+    (original_runtime / "partial.txt").write_text("partial-runtime", encoding="utf-8")
     if target_state == "both-partial":
         original_auth.mkdir()
-        (original_auth / "partial.txt").write_text(
-            "partial-auth", encoding="utf-8"
-        )
+        (original_auth / "partial.txt").write_text("partial-auth", encoding="utf-8")
     _write_storage_operation(
         bundle,
         status="staging",
@@ -1225,42 +1151,30 @@ def test_staging_resume_uses_unique_target_for_incomplete_volumes(
     assert result.returncode == 0, result.stdout + result.stderr
     marker = dict(
         line.split("=", 1)
-        for line in (bundle / "deploy" / "state" / "storage-mode.env")
-        .read_text(encoding="utf-8")
-        .splitlines()
+        for line in (bundle / "deploy" / "state" / "storage-mode.env").read_text(encoding="utf-8").splitlines()
         if "=" in line
     )
     final_runtime_name = marker["RUNTIME_VOLUME_NAME"]
     final_auth_name = marker["AUTH_VOLUME_NAME"]
     assert final_runtime_name != runtime_name
     assert final_auth_name != auth_name
-    _assert_tree_matches_backup(
-        volume_root / final_runtime_name, volume_root / final_auth_name, backup
-    )
+    _assert_tree_matches_backup(volume_root / final_runtime_name, volume_root / final_auth_name, backup)
     assert (original_runtime / "partial.txt").read_text() == "partial-runtime"
     if target_state == "both-partial":
         assert (original_auth / "partial.txt").read_text() == "partial-auth"
     else:
         assert not original_auth.exists()
-    assert not any(
-        call[:2] == ["volume", "rm"] for call in _docker_calls(log_path)
-    )
-    operation_state = (
-        bundle / "deploy" / "state" / "storage-operation.env"
-    ).read_text(encoding="utf-8")
+    assert not any(call[:2] == ["volume", "rm"] for call in _docker_calls(log_path))
+    operation_state = (bundle / "deploy" / "state" / "storage-operation.env").read_text(encoding="utf-8")
     assert "STORAGE_OPERATION_STATUS=complete" in operation_state
 
 
 @pytest.mark.parametrize("new_operation", ("restore", "migration"))
-def test_unfinished_restore_journal_blocks_a_different_operation(
-    tmp_path, new_operation
-):
+def test_unfinished_restore_journal_blocks_a_different_operation(tmp_path, new_operation):
     bundle, env, log_path = _prepare_bundle(tmp_path, "bind")
     backup_a = _create_backup(tmp_path / "a", tmp_path / "a" / "desired")
     runtime_b, auth_b = _write_synthetic_tree(tmp_path / "b" / "desired")
-    (runtime_b / "nested" / "session.json").write_text(
-        '{"different": true}\n', encoding="utf-8"
-    )
+    (runtime_b / "nested" / "session.json").write_text('{"different": true}\n', encoding="utf-8")
     backup_b = tmp_path / "b" / "synthetic-backup"
     backup_b.mkdir()
     create_b = _run_integrity(
@@ -1287,12 +1201,8 @@ def test_unfinished_restore_journal_blocks_a_different_operation(
     shutil.copytree(tmp_path / "a" / "desired" / "auth", bundle / staged_auth_name)
     (bundle / ".onto-runtime").mkdir()
     (bundle / ".onto-auth").mkdir()
-    (bundle / ".onto-runtime" / "source-runtime.txt").write_text(
-        "old-runtime", encoding="utf-8"
-    )
-    (bundle / ".onto-auth" / "source-auth.txt").write_text(
-        "old-auth", encoding="utf-8"
-    )
+    (bundle / ".onto-runtime" / "source-runtime.txt").write_text("old-runtime", encoding="utf-8")
+    (bundle / ".onto-auth" / "source-auth.txt").write_text("old-auth", encoding="utf-8")
     shutil.move(bundle / ".onto-runtime", bundle / rollback_runtime_name)
     _write_storage_operation(
         bundle,
@@ -1316,9 +1226,7 @@ def test_unfinished_restore_journal_blocks_a_different_operation(
     calls_before = _docker_calls(log_path)
 
     if new_operation == "restore":
-        result = _run_script(
-            bundle, env, "restore.sh", backup_b.as_posix(), "--target-mode", "bind"
-        )
+        result = _run_script(bundle, env, "restore.sh", backup_b.as_posix(), "--target-mode", "bind")
     else:
         result = _run_script(bundle, env, "migrate_storage.sh", "--to", "volume")
 
@@ -1343,9 +1251,7 @@ def test_bind_to_volume_migration_retains_source_and_is_idempotent(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     backup = next(
-        path
-        for path in (bundle / "deploy" / "backups").iterdir()
-        if path.name.startswith("storage-migration-")
+        path for path in (bundle / "deploy" / "backups").iterdir() if path.name.startswith("storage-migration-")
     )
     digest_prefix = _tree_digest(backup)[:12]
     volume_root = Path(env["FAKE_DOCKER_VOLUME_ROOT"])
@@ -1384,9 +1290,7 @@ def test_volume_to_bind_migration_retains_source_volume_and_stale_bind_rollback(
 
     assert result.returncode == 0, result.stdout + result.stderr
     backup = next(
-        path
-        for path in (bundle / "deploy" / "backups").iterdir()
-        if path.name.startswith("storage-migration-")
+        path for path in (bundle / "deploy" / "backups").iterdir() if path.name.startswith("storage-migration-")
     )
     _assert_tree_matches_backup(bundle / ".onto-runtime", bundle / ".onto-auth", backup)
     assert (runtime / "nested" / "session.json").read_text() == "synthetic"
@@ -1447,9 +1351,7 @@ def test_registered_migrations_mount_active_storage_read_write_only_after_stop_c
     (volume_root / "consumer-runtime-data").mkdir()
     (volume_root / "consumer-auth-data").mkdir()
 
-    result = _run_script(
-        bundle, env, "migrate.sh", "v1", "v2", "--confirm-writes-stopped"
-    )
+    result = _run_script(bundle, env, "migrate.sh", "v1", "v2", "--confirm-writes-stopped")
 
     assert result.returncode == 0, result.stdout + result.stderr
     runs = [call for call in _docker_calls(log_path) if call[:1] == ["run"]]
@@ -1459,13 +1361,10 @@ def test_registered_migrations_mount_active_storage_read_write_only_after_stop_c
         assert "consumer-runtime-data:/release/.onto-runtime:rw" in flattened
         assert "consumer-auth-data:/release/.onto-auth:rw" in flattened
         writes_backend = any(
-            value.endswith(("migrate_persistent_storage.py", "migrate_system_config.py"))
-            for value in call
+            value.endswith(("migrate_persistent_storage.py", "migrate_system_config.py")) for value in call
         )
         expected_access = "rw" if writes_backend else "ro"
-        assert sum(
-            value.endswith(f":/release/backend:{expected_access}") for value in call
-        ) == 1
+        assert sum(value.endswith(f":/release/backend:{expected_access}") for value in call) == 1
 
 
 def test_release_state_write_preserves_versioned_active_volume_pointer(tmp_path):
@@ -1484,7 +1383,9 @@ def test_release_state_write_preserves_versioned_active_volume_pointer(tmp_path)
         "RUNTIME_VOLUME_NAME=consumer-runtime-data.restore-123456789abc\n"
         "AUTH_VOLUME_NAME=consumer-auth-data.restore-123456789abc\n"
         "LAST_STORAGE_OPERATION=restore\n"
-        "LAST_STORAGE_OPERATION_DIGEST=" + "1" * 64 + "\n",
+        "LAST_STORAGE_OPERATION_DIGEST="
+        + "1" * 64
+        + "\n",
         encoding="utf-8",
     )
 
@@ -1492,9 +1393,11 @@ def test_release_state_write_preserves_versioned_active_volume_pointer(tmp_path)
         [
             TEST_BASH,
             "-c",
-            f'source "{(bundle / "deploy" / "common.sh").as_posix()}"; '
-            "load_state; write_state v2 v1 backup backend frontend old-backend "
-            "old-frontend auth old-auth sandbox old-sandbox",
+            (
+                f'source "{(bundle / "deploy" / "common.sh").as_posix()}"; '
+                "load_state; write_state v2 v1 backup backend frontend old-backend "
+                "old-frontend auth old-auth sandbox old-sandbox"
+            ),
         ],
         cwd=bundle,
         env=env,
@@ -1533,16 +1436,12 @@ def test_restore_resumes_startup_after_pointer_switch_instead_of_early_exit(tmp_
         backup=backup,
     )
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind")
 
     assert result.returncode == 0, result.stdout + result.stderr
     calls = _docker_calls(log_path)
     assert any(call[:1] == ["compose"] and "up" in call for call in calls)
-    operation_state = (
-        bundle / "deploy" / "state" / "storage-operation.env"
-    ).read_text(encoding="utf-8")
+    operation_state = (bundle / "deploy" / "state" / "storage-operation.env").read_text(encoding="utf-8")
     assert "STORAGE_OPERATION_STATUS=complete" in operation_state
 
 
@@ -1575,9 +1474,7 @@ def test_migration_resumes_startup_after_pointer_switch(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     calls = _docker_calls(log_path)
     assert any(call[:1] == ["compose"] and "up" in call for call in calls)
-    operation_state = (
-        bundle / "deploy" / "state" / "storage-operation.env"
-    ).read_text(encoding="utf-8")
+    operation_state = (bundle / "deploy" / "state" / "storage-operation.env").read_text(encoding="utf-8")
     assert "STORAGE_OPERATION_STATUS=complete" in operation_state
 
 
@@ -1617,18 +1514,14 @@ def test_restore_recovers_marker_current_split_during_health_rollback(tmp_path):
         backup=backup,
     )
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "volume")
 
     assert result.returncode != 0
     assert "source storage remains active" in result.stderr.lower()
     current_text = current.read_text(encoding="utf-8")
     assert "CURRENT_RUNTIME_VOLUME=consumer-runtime-data" in current_text
     assert "CURRENT_AUTH_VOLUME=consumer-auth-data" in current_text
-    operation_state = (
-        bundle / "deploy" / "state" / "storage-operation.env"
-    ).read_text(encoding="utf-8")
+    operation_state = (bundle / "deploy" / "state" / "storage-operation.env").read_text(encoding="utf-8")
     assert "STORAGE_OPERATION_STATUS=failed" in operation_state
     assert any(call[:1] == ["compose"] and "up" in call for call in _docker_calls(log_path))
 
@@ -1648,9 +1541,7 @@ def test_restore_recovers_marker_current_split_during_health_rollback(tmp_path):
         ),
     ),
 )
-def test_bind_switch_resumes_each_rename_boundary_without_mixing_rollback_pair(
-    tmp_path, phase, moves
-):
+def test_bind_switch_resumes_each_rename_boundary_without_mixing_rollback_pair(tmp_path, phase, moves):
     bundle, env, log_path = _prepare_bundle(tmp_path, "bind")
     backup = _create_backup(tmp_path, tmp_path / "desired")
     digest = _tree_digest(backup)
@@ -1667,12 +1558,8 @@ def test_bind_switch_resumes_each_rename_boundary_without_mixing_rollback_pair(
     shutil.copytree(tmp_path / "desired" / "auth", staged_auth)
     (bundle / ".onto-runtime").mkdir()
     (bundle / ".onto-auth").mkdir()
-    (bundle / ".onto-runtime" / "source-runtime.txt").write_text(
-        "old-runtime", encoding="utf-8"
-    )
-    (bundle / ".onto-auth" / "source-auth.txt").write_text(
-        "old-auth", encoding="utf-8"
-    )
+    (bundle / ".onto-runtime" / "source-runtime.txt").write_text("old-runtime", encoding="utf-8")
+    (bundle / ".onto-auth" / "source-auth.txt").write_text("old-auth", encoding="utf-8")
     if "old-runtime" in moves:
         shutil.move(bundle / ".onto-runtime", rollback_runtime)
     if "old-auth" in moves:
@@ -1699,18 +1586,14 @@ def test_bind_switch_resumes_each_rename_boundary_without_mixing_rollback_pair(
         rollback_auth_name=rollback_auth_name,
     )
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind")
 
     assert result.returncode == 0, result.stdout + result.stderr
     _assert_tree_matches_backup(bundle / ".onto-runtime", bundle / ".onto-auth", backup)
     assert (rollback_runtime / "source-runtime.txt").read_text() == "old-runtime"
     assert (rollback_auth / "source-auth.txt").read_text() == "old-auth"
     assert not list(bundle.glob(".onto-runtime.rollback-*")) == []
-    operation_state = (
-        bundle / "deploy" / "state" / "storage-operation.env"
-    ).read_text(encoding="utf-8")
+    operation_state = (bundle / "deploy" / "state" / "storage-operation.env").read_text(encoding="utf-8")
     assert "STORAGE_OPERATION_STATUS=complete" in operation_state
     assert f"ROLLBACK_RUNTIME_NAME={rollback_runtime_name}" in operation_state
     assert f"ROLLBACK_AUTH_NAME={rollback_auth_name}" in operation_state
@@ -1726,12 +1609,8 @@ def test_bind_health_rollback_resume_keeps_already_restored_source_pair(tmp_path
     rollback_auth_name = f".onto-auth.rollback-restore-{suffix}-source"
     (bundle / ".onto-runtime").mkdir()
     (bundle / ".onto-auth").mkdir()
-    (bundle / ".onto-runtime" / "source-runtime.txt").write_text(
-        "old-runtime", encoding="utf-8"
-    )
-    (bundle / ".onto-auth" / "source-auth.txt").write_text(
-        "old-auth", encoding="utf-8"
-    )
+    (bundle / ".onto-runtime" / "source-runtime.txt").write_text("old-runtime", encoding="utf-8")
+    (bundle / ".onto-auth" / "source-auth.txt").write_text("old-auth", encoding="utf-8")
     _write_storage_operation(
         bundle,
         status="rollback-pointer-switched",
@@ -1748,9 +1627,7 @@ def test_bind_health_rollback_resume_keeps_already_restored_source_pair(tmp_path
         rollback_auth_name=rollback_auth_name,
     )
 
-    result = _run_script(
-        bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind"
-    )
+    result = _run_script(bundle, env, "restore.sh", backup.as_posix(), "--target-mode", "bind")
 
     assert result.returncode != 0
     assert "source storage remains active" in result.stderr.lower()
@@ -1776,21 +1653,15 @@ def test_staging_resume_materializes_and_verifies_explicit_target_before_switch(
     tmp_path, operation, source_mode, target_mode, phase
 ):
     bundle, env, _ = _prepare_bundle(tmp_path, source_mode)
-    backup = _create_backup(
-        tmp_path, tmp_path / "desired", storage_mode=source_mode
-    )
+    backup = _create_backup(tmp_path, tmp_path / "desired", storage_mode=source_mode)
     digest = _tree_digest(backup)
     volume_root = Path(env["FAKE_DOCKER_VOLUME_ROOT"])
     if source_mode == "bind":
         shutil.copytree(tmp_path / "desired" / "runtime", bundle / ".onto-runtime")
         shutil.copytree(tmp_path / "desired" / "auth", bundle / ".onto-auth")
     else:
-        shutil.copytree(
-            tmp_path / "desired" / "runtime", volume_root / "consumer-runtime-data"
-        )
-        shutil.copytree(
-            tmp_path / "desired" / "auth", volume_root / "consumer-auth-data"
-        )
+        shutil.copytree(tmp_path / "desired" / "runtime", volume_root / "consumer-runtime-data")
+        shutil.copytree(tmp_path / "desired" / "auth", volume_root / "consumer-auth-data")
 
     target_runtime = "consumer-runtime-data"
     target_auth = "consumer-auth-data"
@@ -1825,14 +1696,8 @@ def test_staging_resume_materializes_and_verifies_explicit_target_before_switch(
 
     assert result.returncode == 0, result.stdout + result.stderr
     if target_mode == "volume":
-        _assert_tree_matches_backup(
-            volume_root / target_runtime, volume_root / target_auth, backup
-        )
+        _assert_tree_matches_backup(volume_root / target_runtime, volume_root / target_auth, backup)
     else:
-        _assert_tree_matches_backup(
-            bundle / ".onto-runtime", bundle / ".onto-auth", backup
-        )
-    operation_state = (
-        bundle / "deploy" / "state" / "storage-operation.env"
-    ).read_text(encoding="utf-8")
+        _assert_tree_matches_backup(bundle / ".onto-runtime", bundle / ".onto-auth", backup)
+    operation_state = (bundle / "deploy" / "state" / "storage-operation.env").read_text(encoding="utf-8")
     assert "STORAGE_OPERATION_STATUS=complete" in operation_state

@@ -24,7 +24,6 @@ from threading import RLock
 from typing import Any, Iterator, Mapping
 
 import requests
-
 from config.config_snapshot import ConfigSnapshotManager
 from config.ops_config import resolve_model_profile_max_count
 from utils.security.secrets import (
@@ -33,7 +32,6 @@ from utils.security.secrets import (
     encrypt_secret,
     is_encrypted_secret,
 )
-
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -152,33 +150,69 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "main_agent_max_iterations": {"env": "AGENT_MAIN_LOOP_MAX_ITERATIONS", "type": "int", "default": 50},
         "sub_agent_max_iterations": {"env": "AGENT_SUB_AGENT_MAX_ITERATIONS", "type": "int", "default": 20},
         "sub_agent_max_concurrency": {"env": "AGENT_SUB_AGENT_MAX_CONCURRENCY", "type": "int", "default": 6},
-        "sub_agent_max_depth": {"env": "AGENT_SUB_AGENT_MAX_DEPTH", "type": "int", "default":10},
+        "sub_agent_max_depth": {"env": "AGENT_SUB_AGENT_MAX_DEPTH", "type": "int", "default": 10},
         "parallel_default_max_workers": {"env": "AGENT_PARALLEL_DEFAULT_MAX_WORKERS", "type": "int", "default": 10},
         "tool_timeout_seconds": {"env": "AGENT_TOOL_TIMEOUT_SECONDS", "type": "int", "default": 600},
-        "shutdown_total_deadline_seconds": {"env": "AGENTIC_SHUTDOWN_TOTAL_DEADLINE_SECONDS", "type": "float", "default": 30.0},
+        "shutdown_total_deadline_seconds": {
+            "env": "AGENTIC_SHUTDOWN_TOTAL_DEADLINE_SECONDS",
+            "type": "float",
+            "default": 30.0,
+        },
         "sse_subscriber_queue_size": {"env": "AGENTIC_SSE_SUBSCRIBER_QUEUE_SIZE", "type": "int", "default": 512},
         "sse_max_subscribers_per_run": {"env": "AGENTIC_SSE_MAX_SUBSCRIBERS_PER_RUN", "type": "int", "default": 3},
         "sse_max_subscribers_total": {"env": "AGENTIC_SSE_MAX_SUBSCRIBERS_TOTAL", "type": "int", "default": 100},
-        "completed_replay_ttl_seconds": {"env": "AGENTIC_RUN_COMPLETED_REPLAY_TTL_SECONDS", "type": "float", "default": 120.0},
+        "completed_replay_ttl_seconds": {
+            "env": "AGENTIC_RUN_COMPLETED_REPLAY_TTL_SECONDS",
+            "type": "float",
+            "default": 120.0,
+        },
         "short_io_workers": {"env": "AGENTIC_SHORT_IO_WORKERS", "type": "int", "default": 8},
         "short_io_max_pending": {"env": "AGENTIC_SHORT_IO_MAX_PENDING", "type": "int", "default": 64},
-        "short_io_capacity_wait_seconds": {"env": "AGENTIC_SHORT_IO_CAPACITY_WAIT_SECONDS", "type": "float", "default": 1.0},
-        "short_io_operation_timeout_seconds": {"env": "AGENTIC_SHORT_IO_OPERATION_TIMEOUT_SECONDS", "type": "float", "default": 30.0},
+        "short_io_capacity_wait_seconds": {
+            "env": "AGENTIC_SHORT_IO_CAPACITY_WAIT_SECONDS",
+            "type": "float",
+            "default": 1.0,
+        },
+        "short_io_operation_timeout_seconds": {
+            "env": "AGENTIC_SHORT_IO_OPERATION_TIMEOUT_SECONDS",
+            "type": "float",
+            "default": 30.0,
+        },
         "external_io_workers": {"env": "AGENTIC_EXTERNAL_IO_WORKERS", "type": "int", "default": 16},
         "external_io_max_pending": {"env": "AGENTIC_EXTERNAL_IO_MAX_PENDING", "type": "int", "default": 16},
-        "external_io_capacity_wait_seconds": {"env": "AGENTIC_EXTERNAL_IO_CAPACITY_WAIT_SECONDS", "type": "float", "default": 0.1},
-        "external_io_operation_timeout_seconds": {"env": "AGENTIC_EXTERNAL_IO_OPERATION_TIMEOUT_SECONDS", "type": "float", "default": 300.0},
+        "external_io_capacity_wait_seconds": {
+            "env": "AGENTIC_EXTERNAL_IO_CAPACITY_WAIT_SECONDS",
+            "type": "float",
+            "default": 0.1,
+        },
+        "external_io_operation_timeout_seconds": {
+            "env": "AGENTIC_EXTERNAL_IO_OPERATION_TIMEOUT_SECONDS",
+            "type": "float",
+            "default": 300.0,
+        },
         "tool_io_workers": {"env": "AGENTIC_TOOL_IO_WORKERS", "type": "int", "default": 8},
         "tool_io_max_pending": {"env": "AGENTIC_TOOL_IO_MAX_PENDING", "type": "int", "default": 16},
-        "tool_io_capacity_wait_seconds": {"env": "AGENTIC_TOOL_IO_CAPACITY_WAIT_SECONDS", "type": "float", "default": 0.1},
-        "tool_io_operation_timeout_seconds": {"env": "AGENTIC_TOOL_IO_OPERATION_TIMEOUT_SECONDS", "type": "float", "default": 600.0},
+        "tool_io_capacity_wait_seconds": {
+            "env": "AGENTIC_TOOL_IO_CAPACITY_WAIT_SECONDS",
+            "type": "float",
+            "default": 0.1,
+        },
+        "tool_io_operation_timeout_seconds": {
+            "env": "AGENTIC_TOOL_IO_OPERATION_TIMEOUT_SECONDS",
+            "type": "float",
+            "default": 600.0,
+        },
         "context_max_rounds": {"env": "AGENT_CONTEXT_MAX_ROUNDS", "type": "int", "default": 10},
         "runtime_warmup_enabled": {"env": "AGENT_RUNTIME_WARMUP_ENABLED", "type": "bool", "default": True},
         # Operation evolution thresholds
         "evolution_min_occurrences": {"env": "EVO_MIN_OCCURRENCES", "type": "int", "default": 3},
         "evolution_min_applied": {"env": "EVO_MIN_APPLIED", "type": "int", "default": 2},
         "evolution_max_rejection": {"env": "EVO_MAX_REJECTION", "type": "int", "default": 0},
-        "evolution_passive_reflection_enabled": {"env": "EVO_PASSIVE_REFLECTION_ENABLED", "type": "bool", "default": False},
+        "evolution_passive_reflection_enabled": {
+            "env": "EVO_PASSIVE_REFLECTION_ENABLED",
+            "type": "bool",
+            "default": False,
+        },
         "evolution_patch_auto_apply": {"env": "EVO_PATCH_AUTO_APPLY", "type": "bool", "default": False},
         "evolution_patch_cooldown_sec": {"env": "EVO_PATCH_COOLDOWN_SEC", "type": "int", "default": 3600},
         "evolution_sweep_interval_sec": {"env": "EVO_SWEEP_INTERVAL_SEC", "type": "int", "default": 1800},
@@ -222,13 +256,37 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "tool_exposure_mode": {"env": "ONTOLOGY_EVIDENCE_TOOL_EXPOSURE_MODE", "type": "str", "default": "adaptive"},
         "auto_build_enabled": {"env": "ONTOLOGY_EVIDENCE_AUTO_BUILD_ENABLED", "type": "bool", "default": False},
         "sweeper_enabled": {"env": "ONTOLOGY_EVIDENCE_SWEEPER_ENABLED", "type": "bool", "default": True},
-        "sweeper_interval_seconds": {"env": "ONTOLOGY_EVIDENCE_SWEEPER_INTERVAL_SECONDS", "type": "int", "default": 1800},
-        "structured_context_enabled": {"env": "ONTOLOGY_EVIDENCE_STRUCTURED_CONTEXT_ENABLED", "type": "bool", "default": True},
-        "auto_ground_business_data": {"env": "ONTOLOGY_EVIDENCE_AUTO_GROUND_BUSINESS_DATA", "type": "bool", "default": True},
-        "runtime_fact_write_mode": {"env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_WRITE_MODE", "type": "str", "default": "sync"},
-        "runtime_fact_write_timeout_ms": {"env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_WRITE_TIMEOUT_MS", "type": "int", "default": 50},
+        "sweeper_interval_seconds": {
+            "env": "ONTOLOGY_EVIDENCE_SWEEPER_INTERVAL_SECONDS",
+            "type": "int",
+            "default": 1800,
+        },
+        "structured_context_enabled": {
+            "env": "ONTOLOGY_EVIDENCE_STRUCTURED_CONTEXT_ENABLED",
+            "type": "bool",
+            "default": True,
+        },
+        "auto_ground_business_data": {
+            "env": "ONTOLOGY_EVIDENCE_AUTO_GROUND_BUSINESS_DATA",
+            "type": "bool",
+            "default": True,
+        },
+        "runtime_fact_write_mode": {
+            "env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_WRITE_MODE",
+            "type": "str",
+            "default": "sync",
+        },
+        "runtime_fact_write_timeout_ms": {
+            "env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_WRITE_TIMEOUT_MS",
+            "type": "int",
+            "default": 50,
+        },
         "runtime_fact_batch_size": {"env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_BATCH_SIZE", "type": "int", "default": 10},
-        "runtime_fact_flush_interval_ms": {"env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_FLUSH_INTERVAL_MS", "type": "int", "default": 100},
+        "runtime_fact_flush_interval_ms": {
+            "env": "ONTOLOGY_EVIDENCE_RUNTIME_FACT_FLUSH_INTERVAL_MS",
+            "type": "int",
+            "default": 100,
+        },
         "semantic_mode": {"env": "ONTOLOGY_EVIDENCE_SEMANTIC_MODE", "type": "str", "default": "off"},
         "graph_enabled": {"env": "ONTOLOGY_EVIDENCE_GRAPH_ENABLED", "type": "bool", "default": True},
     },
@@ -320,10 +378,13 @@ def _get_system_config_snapshot_manager() -> ConfigSnapshotManager:
         if _CONFIG_SNAPSHOT_MANAGER is not None:
             if _CONFIG_SNAPSHOT_MANAGER.source_path == source_path:
                 return _CONFIG_SNAPSHOT_MANAGER
-            _SYSTEM_CONFIG_PROCESS_GENERATION = max(
-                _SYSTEM_CONFIG_PROCESS_GENERATION,
-                _CONFIG_SNAPSHOT_MANAGER.generation,
-            ) + 1
+            _SYSTEM_CONFIG_PROCESS_GENERATION = (
+                max(
+                    _SYSTEM_CONFIG_PROCESS_GENERATION,
+                    _CONFIG_SNAPSHOT_MANAGER.generation,
+                )
+                + 1
+            )
             initial_generation = _SYSTEM_CONFIG_PROCESS_GENERATION
 
         if _CONFIG_SNAPSHOT_MANAGER is None or _CONFIG_SNAPSHOT_MANAGER.source_path != source_path:
@@ -361,10 +422,7 @@ def _config_write_publication() -> Iterator[None]:
                 try:
                     invalidate_system_config_snapshot()
                 except BaseException as invalidate_error:
-                    exc.add_note(
-                        "Snapshot invalidation also failed: "
-                        f"{type(invalidate_error).__name__}"
-                    )
+                    exc.add_note("Snapshot invalidation also failed: " f"{type(invalidate_error).__name__}")
             raise
         else:
             invalidate_system_config_snapshot()
@@ -423,9 +481,7 @@ def _generate_profile_id(prefix: str = "model") -> str:
 def _coerce_llm_provider(value: Any) -> str:
     provider = _coerce_string(value).lower() or "openai_compatible"
     if provider not in _SUPPORTED_LLM_PROVIDERS:
-        raise SystemConfigValidationError(
-            "provider 仅支持 {}".format(" | ".join(sorted(_SUPPORTED_LLM_PROVIDERS)))
-        )
+        raise SystemConfigValidationError("provider 仅支持 {}".format(" | ".join(sorted(_SUPPORTED_LLM_PROVIDERS))))
     return provider
 
 
@@ -754,10 +810,7 @@ def _load_raw_system_config_unlocked(
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     document = _read_config_document_unlocked(environment=environment)
-    config = {
-        section: dict(document.get(section) or {})
-        for section in SECTION_KEYS
-    }
+    config = {section: dict(document.get(section) or {}) for section in SECTION_KEYS}
 
     return config
 
@@ -876,7 +929,11 @@ def _legacy_llm_profile(llm_config: dict[str, Any]) -> dict[str, Any]:
             "api_key": _coerce_string(llm_config.get("api_key")),
             "timeout": int(llm_config.get("timeout") or _LLM_PROFILE_DEFAULTS["timeout"]),
             "max_tokens": int(llm_config.get("max_tokens") or _LLM_PROFILE_DEFAULTS["max_tokens"]),
-            "temperature": float(llm_config.get("temperature") if llm_config.get("temperature") is not None else _LLM_PROFILE_DEFAULTS["temperature"]),
+            "temperature": float(
+                llm_config.get("temperature")
+                if llm_config.get("temperature") is not None
+                else _LLM_PROFILE_DEFAULTS["temperature"]
+            ),
             "enabled": True,
         }
     )
@@ -977,23 +1034,35 @@ def _normalize_llm_profile(
             path=[_LLM_PROFILES_SECTION, "profiles", "api_key"],
         )
 
-    if "clear_api_key" in raw_profile and _coerce_bool(raw_profile.get("clear_api_key"), field_name="profiles[{}].clear_api_key".format(index)):
+    if "clear_api_key" in raw_profile and _coerce_bool(
+        raw_profile.get("clear_api_key"), field_name="profiles[{}].clear_api_key".format(index)
+    ):
         profile["api_key"] = ""
 
     for field_name in ("timeout", "max_tokens"):
         if field_name in raw_profile:
-            profile[field_name] = _coerce_int(raw_profile.get(field_name), field_name="profiles[{}].{}".format(index, field_name))
+            profile[field_name] = _coerce_int(
+                raw_profile.get(field_name), field_name="profiles[{}].{}".format(index, field_name)
+            )
         else:
             profile[field_name] = int(profile.get(field_name) or _LLM_PROFILE_DEFAULTS[field_name])
 
     if "temperature" in raw_profile:
-        profile["temperature"] = _coerce_float(raw_profile.get("temperature"), field_name="profiles[{}].temperature".format(index))
+        profile["temperature"] = _coerce_float(
+            raw_profile.get("temperature"), field_name="profiles[{}].temperature".format(index)
+        )
     else:
-        profile["temperature"] = float(profile.get("temperature") if profile.get("temperature") is not None else _LLM_PROFILE_DEFAULTS["temperature"])
+        profile["temperature"] = float(
+            profile.get("temperature")
+            if profile.get("temperature") is not None
+            else _LLM_PROFILE_DEFAULTS["temperature"]
+        )
 
     for field_name in ("enabled",):
         if field_name in raw_profile:
-            profile[field_name] = _coerce_bool(raw_profile.get(field_name), field_name="profiles[{}].{}".format(index, field_name))
+            profile[field_name] = _coerce_bool(
+                raw_profile.get(field_name), field_name="profiles[{}].{}".format(index, field_name)
+            )
         else:
             profile[field_name] = bool(profile.get(field_name))
 
@@ -1077,13 +1146,8 @@ def _normalize_llm_profiles_section(
     max_profiles = resolve_model_profile_max_count()
     target_profile_count = len(profiles)
     persisted_profiles = current_section.get("profiles")
-    persisted_profile_count = (
-        len(persisted_profiles) if isinstance(persisted_profiles, list) else 0
-    )
-    if (
-        target_profile_count > max_profiles
-        and target_profile_count > persisted_profile_count
-    ):
+    persisted_profile_count = len(persisted_profiles) if isinstance(persisted_profiles, list) else 0
+    if target_profile_count > max_profiles and target_profile_count > persisted_profile_count:
         raise SystemConfigValidationError("模型数量已达上限: {}".format(max_profiles))
 
     default_main_profile_ref = _normalize_default_profile_ref(
@@ -1170,15 +1234,9 @@ def _normalize_agent_effective(section: dict[str, Any]) -> dict[str, Any]:
     )
     for field_name in positive_fields:
         if float(normalized.get(field_name) or 0) <= 0:
-            raise SystemConfigValidationError(
-                f"agent.{field_name} 必须大于 0"
-            )
-    if int(normalized["sse_max_subscribers_total"]) < int(
-        normalized["sse_max_subscribers_per_run"]
-    ):
-        raise SystemConfigValidationError(
-            "sse_max_subscribers_total 不能小于 sse_max_subscribers_per_run"
-        )
+            raise SystemConfigValidationError(f"agent.{field_name} 必须大于 0")
+    if int(normalized["sse_max_subscribers_total"]) < int(normalized["sse_max_subscribers_per_run"]):
+        raise SystemConfigValidationError("sse_max_subscribers_total 不能小于 sse_max_subscribers_per_run")
     return normalized
 
 
@@ -1239,9 +1297,7 @@ def _normalize_ontology_evidence_effective(section: dict[str, Any]) -> dict[str,
     structured_enabled = bool(normalized.get("structured_context_enabled", True))
     search_enabled = bool(normalized.get("search_enabled", True))
     if search_enabled and not structured_enabled:
-        raise SystemConfigValidationError(
-            "ontology_evidence.search_enabled=true 要求 structured_context_enabled=true"
-        )
+        raise SystemConfigValidationError("ontology_evidence.search_enabled=true 要求 structured_context_enabled=true")
     normalized.update(
         {
             "enabled": bool(normalized.get("enabled", False)),
@@ -1281,9 +1337,7 @@ def load_system_config() -> dict[str, dict[str, Any]]:
 def load_system_config_section(section: str) -> dict[str, Any]:
     normalized_section = _coerce_string(section).lower()
     if normalized_section not in SECTION_KEYS:
-        raise SystemConfigValidationError(
-            "section invalid; supported values: {}".format(" | ".join(SECTION_KEYS))
-        )
+        raise SystemConfigValidationError("section invalid; supported values: {}".format(" | ".join(SECTION_KEYS)))
 
     with _CONFIG_PUBLICATION_LOCK:
         if _config_snapshot_enabled():
@@ -1446,10 +1500,7 @@ def get_public_system_config_snapshot() -> dict[str, Any]:
             config = load_system_config()
             generation = get_system_config_generation()
         return {
-            "config": {
-                section: _public_section(section, config)
-                for section in SECTION_KEYS
-            },
+            "config": {section: _public_section(section, config) for section in SECTION_KEYS},
             "generation": generation,
             "llm_profiles_fingerprint": _llm_profiles_fingerprint(config),
         }
@@ -1462,8 +1513,7 @@ def get_system_config_template() -> dict[str, dict[str, Any]]:
         for field_name, field_spec in fields.items():
             if isinstance(field_spec, dict) and "type" not in field_spec:
                 template[section][field_name] = {
-                    nested_name: nested_spec["default"]
-                    for nested_name, nested_spec in field_spec.items()
+                    nested_name: nested_spec["default"] for nested_name, nested_spec in field_spec.items()
                 }
             else:
                 template[section][field_name] = field_spec["default"]
@@ -1616,11 +1666,7 @@ def _write_config_document_unlocked(
     retires.
     """
     removed = set(drop_top_level_keys or ())
-    document = {
-        key: value
-        for key, value in source_document.items()
-        if key not in SECTION_KEYS and key not in removed
-    }
+    document = {key: value for key, value in source_document.items() if key not in SECTION_KEYS and key not in removed}
     document.update(_encrypt_config_document(config))
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(document, ensure_ascii=False, indent=2)
@@ -1642,8 +1688,7 @@ def _write_config_document_unlocked(
             _fsync_directory(CONFIG_PATH.parent)
         except Exception as exc:
             raise SystemConfigDurabilityError(
-                "System configuration replacement committed, but directory "
-                "durability could not be confirmed",
+                "System configuration replacement committed, but directory " "durability could not be confirmed",
                 committed=True,
             ) from exc
     except BaseException as exc:
@@ -1751,15 +1796,9 @@ def _normalize_model_profile_precondition(value: Any) -> dict[str, Any]:
         raise SystemConfigValidationError("precondition 必须是对象")
     unknown = set(value) - _MODEL_PROFILE_PRECONDITION_FIELDS
     if unknown:
-        raise SystemConfigValidationError(
-            "precondition 不支持字段: {}".format(", ".join(sorted(unknown)))
-        )
+        raise SystemConfigValidationError("precondition 不支持字段: {}".format(", ".join(sorted(unknown))))
     generation = value.get("config_generation")
-    if (
-        not isinstance(generation, int)
-        or isinstance(generation, bool)
-        or generation < 0
-    ):
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
         raise SystemConfigValidationError("precondition.config_generation 必须是非负整数")
     removed = value.get("removed_profile_ids")
     if not isinstance(removed, list) or not removed:
@@ -1783,9 +1822,7 @@ def _normalize_model_profile_precondition(value: Any) -> dict[str, Any]:
     new_ids: set[str] = set()
     for index, item in enumerate(raw_renames):
         if not isinstance(item, dict) or set(item) != {"original_id", "new_id"}:
-            raise SystemConfigValidationError(
-                f"precondition.renames[{index}] 必须只包含 original_id 和 new_id"
-            )
+            raise SystemConfigValidationError(f"precondition.renames[{index}] 必须只包含 original_id 和 new_id")
         original_id = _normalize_profile_id(
             item.get("original_id"),
             field_name=f"precondition.renames[{index}].original_id",
@@ -1827,11 +1864,7 @@ def _prepare_llm_profiles_update(
     effective: dict[str, dict[str, Any]],
     precondition: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], list[str], dict[str, Any] | None]:
-    normalized_precondition = (
-        _normalize_model_profile_precondition(precondition)
-        if precondition is not None
-        else None
-    )
+    normalized_precondition = _normalize_model_profile_precondition(precondition) if precondition is not None else None
     current_ids = [
         _coerce_string(profile.get("id"))
         for profile in (current_raw_section.get("profiles") or [])
@@ -1839,19 +1872,12 @@ def _prepare_llm_profiles_update(
     ]
     current_id_set = set(current_ids)
     renames = (normalized_precondition or {}).get("renames", [])
-    rename_sources_by_target = {
-        item["new_id"]: item["original_id"]
-        for item in renames
-    }
+    rename_sources_by_target = {item["new_id"]: item["original_id"] for item in renames}
     for item in renames:
         if item["original_id"] not in current_id_set:
-            raise SystemConfigValidationError(
-                "rename 原 profile 不存在: {}".format(item["original_id"])
-            )
+            raise SystemConfigValidationError("rename 原 profile 不存在: {}".format(item["original_id"]))
         if item["new_id"] in current_id_set:
-            raise SystemConfigValidationError(
-                "rename 目标已存在: {}".format(item["new_id"])
-            )
+            raise SystemConfigValidationError("rename 目标已存在: {}".format(item["new_id"]))
 
     candidate = _normalize_llm_profiles_section(
         data,
@@ -1966,19 +1992,11 @@ def _read_llm_profiles_update_state(
     precondition: dict[str, Any] | None,
 ) -> _LlmProfilesUpdateState:
     document = _read_config_document_unlocked()
-    raw_config = {
-        section_key: dict(document.get(section_key) or {})
-        for section_key in SECTION_KEYS
-    }
+    raw_config = {section_key: dict(document.get(section_key) or {}) for section_key in SECTION_KEYS}
     effective = _load_system_config_unlocked()
     current_profiles_section = raw_config[_LLM_PROFILES_SECTION]
-    if (
-        precondition is not None
-        and not isinstance(current_profiles_section.get("profiles"), list)
-    ):
-        projected_profiles = (
-            effective.get(_LLM_PROFILES_SECTION, {}).get("profiles") or []
-        )
+    if precondition is not None and not isinstance(current_profiles_section.get("profiles"), list):
+        projected_profiles = effective.get(_LLM_PROFILES_SECTION, {}).get("profiles") or []
         current_profiles_section = {"profiles": deepcopy(projected_profiles)}
     candidate, removed_ids, normalized_precondition = _prepare_llm_profiles_update(
         data,
@@ -2066,10 +2084,7 @@ def update_system_config_section(
 
     with _config_write_publication():
         document = _read_config_document_unlocked()
-        raw_config = {
-            section_key: dict(document.get(section_key) or {})
-            for section_key in SECTION_KEYS
-        }
+        raw_config = {section_key: dict(document.get(section_key) or {}) for section_key in SECTION_KEYS}
         effective = _load_system_config_unlocked()
 
         raw_config[normalized_section] = _merge_section_update(
@@ -2097,17 +2112,10 @@ def import_system_config(config_payload: dict[str, Any]) -> tuple[list[str], dic
     )
 
     with model_profile_reference_guard():
-        inventory = (
-            get_model_profile_references()
-            if _LLM_PROFILES_SECTION in imported_sections
-            else None
-        )
+        inventory = get_model_profile_references() if _LLM_PROFILES_SECTION in imported_sections else None
         with _config_write_publication():
             document = _read_config_document_unlocked()
-            raw_config = {
-                section_key: dict(document.get(section_key) or {})
-                for section_key in SECTION_KEYS
-            }
+            raw_config = {section_key: dict(document.get(section_key) or {}) for section_key in SECTION_KEYS}
             effective = _load_system_config_unlocked()
             removed_profile_ids: list[str] = []
             for section in imported_sections:
@@ -2121,10 +2129,7 @@ def import_system_config(config_payload: dict[str, Any]) -> tuple[list[str], dic
                         current_raw_section=raw_config[section],
                         allow_profile_id_colon=False,
                     )
-                    candidate_ids = {
-                        _coerce_string(profile.get("id"))
-                        for profile in candidate["profiles"]
-                    }
+                    candidate_ids = {_coerce_string(profile.get("id")) for profile in candidate["profiles"]}
                     removed_profile_ids = [
                         _coerce_string(profile.get("id"))
                         for profile in effective[_LLM_PROFILES_SECTION]["profiles"]
@@ -2139,9 +2144,7 @@ def import_system_config(config_payload: dict[str, Any]) -> tuple[list[str], dic
                     )
             if removed_profile_ids:
                 if inventory is None:
-                    raise RuntimeError(
-                        "model profile inventory is required for destructive imports"
-                    )
+                    raise RuntimeError("model profile inventory is required for destructive imports")
                 _assert_model_profile_inventory_allows_removal(
                     removed_profile_ids,
                     inventory,
@@ -2206,9 +2209,7 @@ def resolve_role_config(
     candidates = workspace_profiles if parsed.scope == "workspace" else global_profiles
     resolved = next((dict(profile) for profile in candidates if profile.get("id") == parsed.id), None)
     if resolved is None:
-        raise SystemConfigValidationError(
-            "模型配置不存在或未启用: {}".format(encode_model_profile_ref(parsed))
-        )
+        raise SystemConfigValidationError("模型配置不存在或未启用: {}".format(encode_model_profile_ref(parsed)))
 
     encoded_ref = encode_model_profile_ref(parsed)
     resolved["profile_id"] = resolved["id"]
@@ -2258,7 +2259,7 @@ def _workspace_default_ref(workspace_id: str | None, role: str) -> dict[str, str
     try:
         from workspace.workspaces import get_workspace_runtime_config
 
-        llm_config = (get_workspace_runtime_config(workspace_id).get("llm") or {})
+        llm_config = get_workspace_runtime_config(workspace_id).get("llm") or {}
         default_ref = llm_config.get("default_{}_profile_ref".format(role))
     except Exception:
         return None
@@ -2434,9 +2435,7 @@ def get_public_llm_profiles(workspace_id: str | None = None) -> dict[str, Any]:
         profiles[0]["is_default"] = True
         default_main_id = profiles[0]["id"]
     default_main_ref = (
-        model_profile_ref_to_dict(ModelProfileRef(scope="global", id=default_main_id))
-        if default_main_id
-        else None
+        model_profile_ref_to_dict(ModelProfileRef(scope="global", id=default_main_id)) if default_main_id else None
     )
     return {
         "default_profile_id": default_main_id or "",
@@ -2523,9 +2522,7 @@ def _agent_config_for_connection_check(effective: dict[str, Any]) -> Any:
         evolution_min_occurrences=int(effective.get("evolution_min_occurrences", 3)),
         evolution_min_applied=int(effective.get("evolution_min_applied", 2)),
         evolution_max_rejection=int(effective.get("evolution_max_rejection", 0)),
-        evolution_passive_reflection_enabled=bool(
-            effective.get("evolution_passive_reflection_enabled", False)
-        ),
+        evolution_passive_reflection_enabled=bool(effective.get("evolution_passive_reflection_enabled", False)),
         evolution_patch_auto_apply=bool(effective.get("evolution_patch_auto_apply", False)),
         evolution_patch_cooldown_sec=int(effective.get("evolution_patch_cooldown_sec", 3600)),
         evolution_sweep_interval_sec=int(effective.get("evolution_sweep_interval_sec", 1800)),
@@ -2654,7 +2651,11 @@ def test_system_config_connection(section: str, data: dict[str, Any] | None = No
             return {"success": True, "message": "联网搜索已关闭", "tested_at": tested_at}
         provider = _coerce_string(effective.get("provider")).lower()
         if provider != "tavily":
-            return {"success": False, "message": "不支持的联网搜索 provider: {}".format(provider), "tested_at": tested_at}
+            return {
+                "success": False,
+                "message": "不支持的联网搜索 provider: {}".format(provider),
+                "tested_at": tested_at,
+            }
         api_key = _coerce_string(effective.get("api_key"))
         if not api_key:
             return {"success": False, "message": "联网搜索 API Key 未配置", "tested_at": tested_at}

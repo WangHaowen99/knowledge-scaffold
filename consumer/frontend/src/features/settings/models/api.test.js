@@ -19,7 +19,10 @@ import {
 } from './api.js';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const modelSettingsSource = readFileSync(join(currentDir, 'ModelSettings.jsx'), 'utf8');
+const modelSettingsSource = readFileSync(
+  join(currentDir, 'ModelSettings.jsx'),
+  'utf8',
+);
 
 const response = (payload, { ok = true, status = 200, headers = {} } = {}) => ({
   ok,
@@ -30,8 +33,19 @@ const response = (payload, { ok = true, status = 200, headers = {} } = {}) => ({
 
 test('request adapter preserves backend detail, status, and code', async () => {
   await assert.rejects(
-    () => requestModelJson(async () => response({ detail: '模型引用无效', code: 'BAD_REF' }, { ok: false, status: 400 }), '/models'),
-    (error) => error.message === '模型引用无效' && error.status === 400 && error.code === 'BAD_REF',
+    () =>
+      requestModelJson(
+        async () =>
+          response(
+            { detail: '模型引用无效', code: 'BAD_REF' },
+            { ok: false, status: 400 },
+          ),
+        '/models',
+      ),
+    (error) =>
+      error.message === '模型引用无效' &&
+      error.status === 400 &&
+      error.code === 'BAD_REF',
   );
 });
 
@@ -63,8 +77,14 @@ test('global API uses llm_profiles section for save and unsaved test', async () 
     removed_profile_ids: ['legacy'],
     renames: [{ original_id: 'legacy', new_id: 'fast' }],
   };
-  await saveGlobalModels({ profiles: [{ id: 'fast' }] }, { request, precondition });
-  await testGlobalModel({ profiles: [{ id: 'fast' }], profile_id: 'fast' }, { request });
+  await saveGlobalModels(
+    { profiles: [{ id: 'fast' }] },
+    { request, precondition },
+  );
+  await testGlobalModel(
+    { profiles: [{ id: 'fast' }], profile_id: 'fast' },
+    { request },
+  );
 
   assert.equal(calls[1].url, '/api/system-config');
   assert.equal(calls[1].options.method, 'PATCH');
@@ -91,9 +111,15 @@ test('workspace API loads available, private, and runtime configs from exact rou
   const calls = [];
   const request = async (url) => {
     calls.push(url);
-    if (url === '/agentic/model-profiles') return response({ profiles: [{ id: 'global:fast' }] });
-    if (url.endsWith('/llm-profiles')) return response({ profiles: [{ id: 'private' }] });
-    return response({ llm: { default_main_profile_ref: { scope: 'global', id: 'fast' } } });
+    if (url === '/agentic/model-profiles') {
+      return response({ profiles: [{ id: 'global:fast' }] });
+    }
+    if (url.endsWith('/llm-profiles')) {
+      return response({ profiles: [{ id: 'private' }] });
+    }
+    return response({
+      llm: { default_main_profile_ref: { scope: 'global', id: 'fast' } },
+    });
   };
   const bundle = await loadWorkspaceModels('space / a', { request });
   assert.deepEqual(calls, [
@@ -109,7 +135,9 @@ test('workspace runtime reference refresh uses the scoped GET endpoint', async (
   const calls = [];
   const request = async (url, options) => {
     calls.push({ url, options });
-    return response({ llm: { default_task_profile_ref: { scope: 'workspace', id: 'private' } } });
+    return response({
+      llm: { default_task_profile_ref: { scope: 'workspace', id: 'private' } },
+    });
   };
   const runtime = await loadWorkspaceRuntime('alpha', { request });
   assert.equal(runtime.llm.default_task_profile_ref.id, 'private');
@@ -131,19 +159,33 @@ test('workspace private model snapshot refresh uses the scoped GET endpoint', as
 
 test('workspace save, test, and role refs use PATCH/POST contracts without DELETE', async () => {
   const calls = [];
-  const request = async (url, options) => { calls.push({ url, options }); return response({ success: true }); };
+  const request = async (url, options) => {
+    calls.push({ url, options });
+    return response({ success: true });
+  };
   await saveWorkspaceModels('alpha', { profiles: [] }, { request });
-  await testWorkspaceModel('alpha', { profiles: [{ id: 'private' }], profile_id: 'private' }, { request });
-  await saveWorkspaceModelRefs('alpha', {
-    default_main_profile_ref: { scope: 'workspace', id: 'private' },
-    default_task_profile_ref: null,
-  }, { request });
+  await testWorkspaceModel(
+    'alpha',
+    { profiles: [{ id: 'private' }], profile_id: 'private' },
+    { request },
+  );
+  await saveWorkspaceModelRefs(
+    'alpha',
+    {
+      default_main_profile_ref: { scope: 'workspace', id: 'private' },
+      default_task_profile_ref: null,
+    },
+    { request },
+  );
 
-  assert.deepEqual(calls.map((call) => [call.url, call.options.method]), [
-    ['/agentic/workspaces/alpha/llm-profiles', 'PATCH'],
-    ['/agentic/workspaces/alpha/llm-profiles/test', 'POST'],
-    ['/agentic/workspaces/alpha/runtime-config', 'PATCH'],
-  ]);
+  assert.deepEqual(
+    calls.map((call) => [call.url, call.options.method]),
+    [
+      ['/agentic/workspaces/alpha/llm-profiles', 'PATCH'],
+      ['/agentic/workspaces/alpha/llm-profiles/test', 'POST'],
+      ['/agentic/workspaces/alpha/runtime-config', 'PATCH'],
+    ],
+  );
   assert.deepEqual(JSON.parse(calls[0].options.body), { profiles: [] });
   assert.deepEqual(JSON.parse(calls[2].options.body), {
     llm: {
@@ -160,18 +202,28 @@ test('reference inventory uses one aggregate request and normalizes the authorit
     return response({
       complete: true,
       generation: 'sha256:inventory-a',
-      entries: [{
-        workspace_id: 'alpha',
-        workspace_name: 'Alpha',
-        config_generation: 7,
-        references: [{ field: 'default_main_profile_ref', scope: 'global', profile_id: 'fast' }],
-      }],
+      entries: [
+        {
+          workspace_id: 'alpha',
+          workspace_name: 'Alpha',
+          config_generation: 7,
+          references: [
+            {
+              field: 'default_main_profile_ref',
+              scope: 'global',
+              profile_id: 'fast',
+            },
+          ],
+        },
+      ],
     });
   };
   const inventory = await loadModelProfileReferences('global:fast', {
     request,
   });
-  assert.deepEqual(calls, ['/api/model-profile-references?profile_id=global%3Afast']);
+  assert.deepEqual(calls, [
+    '/api/model-profile-references?profile_id=global%3Afast',
+  ]);
   assert.equal(inventory.complete, true);
   assert.equal(inventory.generation, 'sha256:inventory-a');
   assert.equal(inventory.entries[0].runtimeKnown, true);
@@ -181,17 +233,23 @@ test('reference inventory uses one aggregate request and normalizes the authorit
 
 test('aggregate reference inventory preserves fail-closed diagnostics', async () => {
   const inventory = await loadModelProfileReferences('global:fast', {
-    request: async () => response({
-      complete: false,
-      generation: 'sha256:inventory-b',
-      entries: [{
-        workspace_id: 'broken',
-        workspace_name: 'Broken',
-        config_generation: null,
-        references: [],
-        diagnostic: { code: 'runtime_config_invalid', message: 'not verified' },
-      }],
-    }),
+    request: async () =>
+      response({
+        complete: false,
+        generation: 'sha256:inventory-b',
+        entries: [
+          {
+            workspace_id: 'broken',
+            workspace_name: 'Broken',
+            config_generation: null,
+            references: [],
+            diagnostic: {
+              code: 'runtime_config_invalid',
+              message: 'not verified',
+            },
+          },
+        ],
+      }),
   });
 
   assert.equal(inventory.complete, false);
@@ -205,9 +263,15 @@ test('global model first paint skips inventory and destructive ID changes share 
   const initialLoad = modelSettingsSource.slice(loadStart, loadEnd);
 
   assert.equal(initialLoad.includes('loadModelProfileReferences'), false);
-  assert.equal(modelSettingsSource.includes('loadModelProfileReferences(undefined'), true);
+  assert.equal(
+    modelSettingsSource.includes('loadModelProfileReferences(undefined'),
+    true,
+  );
   assert.equal(modelSettingsSource.includes('skipReferencePreflight'), false);
-  assert.equal(modelSettingsSource.includes('globalProfileMutationDecision'), true);
+  assert.equal(
+    modelSettingsSource.includes('globalProfileMutationDecision'),
+    true,
+  );
   assert.equal(modelSettingsSource.includes('profile.id !== originalId'), true);
   assert.equal(modelSettingsSource.includes('disabled={isEdit}'), false);
 });

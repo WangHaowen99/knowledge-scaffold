@@ -6,13 +6,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from utils.security.secrets import decrypt_secret, encrypt_secret
-from workspace.workspaces import WorkspaceNotFoundError, get_workspace_paths, workspace_exists
 from config.ops_config import resolve_model_profile_max_count
 from config.system_config import (
-    SystemConfigValidationError,
     _LLM_PROFILE_DEFAULTS,
     _LLM_PROFILES_SECTION,
+    SystemConfigValidationError,
     _coerce_bool,
     _coerce_float,
     _coerce_int,
@@ -24,6 +22,8 @@ from config.system_config import (
     _public_llm_profile,
     test_system_config_connection,
 )
+from utils.security.secrets import decrypt_secret, encrypt_secret
+from workspace.workspaces import WorkspaceNotFoundError, get_workspace_paths, workspace_exists
 
 
 def _workspace_llm_profiles_path(workspace_id: str) -> Path:
@@ -81,11 +81,11 @@ def _normalize_workspace_profile(
         profile["id"] = _generate_profile_id("workspace_model")
 
     profile["name"] = (
-        _coerce_string(raw_profile.get("name"))
-        if "name" in raw_profile
-        else _coerce_string(profile.get("name"))
+        _coerce_string(raw_profile.get("name")) if "name" in raw_profile else _coerce_string(profile.get("name"))
     ) or profile["id"]
-    profile["provider"] = _coerce_llm_provider(raw_profile.get("provider") if "provider" in raw_profile else profile.get("provider"))
+    profile["provider"] = _coerce_llm_provider(
+        raw_profile.get("provider") if "provider" in raw_profile else profile.get("provider")
+    )
 
     for field_name in ("base_url", "model"):
         if field_name in raw_profile:
@@ -124,7 +124,9 @@ def _normalize_workspace_profile(
             profile[field_name] = int(profile.get(field_name) or _LLM_PROFILE_DEFAULTS[field_name])
 
     if "temperature" in raw_profile:
-        profile["temperature"] = _coerce_float(raw_profile.get("temperature"), field_name="profiles[{}].temperature".format(index))
+        profile["temperature"] = _coerce_float(
+            raw_profile.get("temperature"), field_name="profiles[{}].temperature".format(index)
+        )
     else:
         profile["temperature"] = float(
             profile.get("temperature")

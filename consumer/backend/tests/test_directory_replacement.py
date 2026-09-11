@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from ontology import directory_replacement
 from ontology.directory_replacement import (
     DirectoryReplacementRecoveryError,
@@ -28,17 +27,14 @@ def test_sync_directory_opens_with_explicit_restrictive_mode(tmp_path, monkeypat
     assert opened == [
         (
             tmp_path,
-            directory_replacement.os.O_RDONLY
-            | getattr(directory_replacement.os, "O_DIRECTORY", 0),
+            directory_replacement.os.O_RDONLY | getattr(directory_replacement.os, "O_DIRECTORY", 0),
             0o600,
         )
     ]
 
 
 def _interrupted_backup(parent, target_name):
-    backup_root = parent / ".{}.replace-backup-transaction_demo".format(
-        target_name
-    )
+    backup_root = parent / ".{}.replace-backup-transaction_demo".format(target_name)
     previous = backup_root / "previous"
     previous.mkdir(parents=True)
     (backup_root / ".replace-transaction-v1").write_text("1\n", encoding="utf-8")
@@ -101,6 +97,4 @@ def test_workspace_startup_recovery_scans_each_ontology_tree(tmp_path):
     recovered = recover_workspace_ontology_replacements(tmp_path)
 
     assert recovered == 1
-    assert (
-        ontologies_root / "knowledge_package_demo" / "state.txt"
-    ).read_text(encoding="utf-8") == "previous"
+    assert (ontologies_root / "knowledge_package_demo" / "state.txt").read_text(encoding="utf-8") == "previous"

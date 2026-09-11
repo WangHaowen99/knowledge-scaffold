@@ -5,18 +5,24 @@ from __future__ import annotations
 import json
 
 import pytest
-from authlib.jose import JsonWebKey, JsonWebToken
-
 from auth_server import create_app
 from auth_server.config import AuthServerConfig
 from auth_server.users import UserStore
+from auth_server_synthetic_credentials import (
+    ADMIN_TOKEN,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    COMMON_PASSWORD,
+    INVALID_PASSWORD,
+    INVALID_TOKEN,
+    LEGACY_PASSWORD,
+    NEW_STRONG_PASSWORD,
+    STRONG_PASSWORD,
+    username_password_violation,
+)
+from authlib.jose import JsonWebKey, JsonWebToken
 
-ADMIN_TOKEN = "test-admin-token"
-ISSUER = "http://auth-server-test:5056"
+ISSUER = "https://service.example.net"
 AUDIENCE = "meta-wise"
-STRONG_PASSWORD = "Str0ng!Pass"
-NEW_STRONG_PASSWORD = "N3w!Str0ngPass"
-BOOTSTRAP_ADMIN_PASSWORD = "TestBootstrap#2026"
 
 
 def make_config(tmp_path, **overrides):
@@ -43,9 +49,7 @@ def client(tmp_path):
 
 @pytest.fixture()
 def registration_disabled_client(tmp_path):
-    return create_app(
-        make_config(tmp_path, enable_registration=False)
-    ).test_client()
+    return create_app(make_config(tmp_path, enable_registration=False)).test_client()
 
 
 def login(client, username="admin", password=BOOTSTRAP_ADMIN_PASSWORD):
@@ -56,9 +60,7 @@ def login(client, username="admin", password=BOOTSTRAP_ADMIN_PASSWORD):
 
 
 def refresh(client, refresh_token):
-    return client.post(
-        "/token", json={"grant_type": "refresh_token", "refresh_token": refresh_token}
-    )
+    return client.post("/token", json={"grant_type": "refresh_token", "refresh_token": refresh_token})
 
 
 def decode_with_jwks(client, token):
@@ -111,7 +113,7 @@ def test_bootstrap_and_password_grant_login(client, tmp_path):
 
 
 def test_wrong_password_invalid_grant(client):
-    resp = login(client, password="wrong-password")
+    resp = login(client, password=NEW_STRONG_PASSWORD)
     assert resp.status_code == 400
     body = resp.get_json()
     assert body["error"] == "invalid_grant"
@@ -164,7 +166,7 @@ def test_refresh_rotates_token_pair(client):
 def test_refresh_rejects_access_token_and_garbage(client):
     body = login(client).get_json()
     assert refresh(client, body["access_token"]).status_code == 400
-    assert refresh(client, "not-a-jwt").status_code == 400
+    assert refresh(client, INVALID_TOKEN).status_code == 400
     assert refresh(client, "").status_code == 400
 
 
@@ -189,7 +191,7 @@ def test_revoke_invalidates_refresh_but_allows_new_login(client):
 
 
 def test_revoke_always_returns_200(client):
-    assert client.post("/revoke", data={"token": "garbage"}).status_code == 200
+    assert client.post("/revoke", data={"token": INVALID_TOKEN}).status_code == 200
     assert client.post("/revoke", json={"token": ""}).status_code == 200
     # access token 不是合法 refresh token，同样 200 且不吊销
     body = login(client).get_json()
@@ -201,9 +203,7 @@ def test_admin_reset_revokes_refresh_without_requiring_password_change(client):
     assert create_user(client, "alice").status_code == 201
     old = login(client, "alice", STRONG_PASSWORD).get_json()
 
-    resp = client.put(
-        "/admin/users/alice", json={"password": NEW_STRONG_PASSWORD}, headers=admin_headers()
-    )
+    resp = client.put("/admin/users/alice", json={"password": NEW_STRONG_PASSWORD}, headers=admin_headers())
     assert resp.status_code == 200
     assert resp.get_json()["user"] == {
         "username": "alice",
@@ -253,7 +253,7 @@ def test_change_password_clears_pwd_cr_and_revokes(client, tmp_path):
 def test_change_password_error_messages(client):
     resp = client.put(
         "/admin/change-password",
-        json={"username": "admin", "old_password": "", "new_password": "x"},
+        json={"username": "admin", "old_password": "", "new_password": INVALID_PASSWORD},
         headers=admin_headers(),
     )
     assert resp.status_code == 400
@@ -261,7 +261,7 @@ def test_change_password_error_messages(client):
 
     resp = client.put(
         "/admin/change-password",
-        json={"username": "admin", "old_password": "wrong", "new_password": STRONG_PASSWORD},
+        json={"username": "admin", "old_password": NEW_STRONG_PASSWORD, "new_password": STRONG_PASSWORD},
         headers=admin_headers(),
     )
     assert resp.status_code == 400
@@ -286,7 +286,7 @@ def test_bootstrap_requires_explicit_strong_password(tmp_path):
         create_app(make_config(tmp_path, bootstrap_admin_password=None))
 
     with pytest.raises(ValueError, match="密码复杂度"):
-        create_app(make_config(tmp_path, bootstrap_admin_password="admin123"))
+        create_app(make_config(tmp_path, bootstrap_admin_password=INVALID_PASSWORD))
 
 
 # ------------------------------------------------------------------ 密码策略
@@ -294,7 +294,7 @@ def test_bootstrap_requires_explicit_strong_password(tmp_path):
 
 def test_password_policy_violation_codes_exact(client):
     # 多重违规：首尾空白 + 过短 + 含用户名 + 字符类不足
-    resp = create_user(client, "alice", password=" alice ")
+    resp = create_user(client, "alice", password=username_password_violation("alice"))
     assert resp.status_code == 400
     body = resp.get_json()
     assert body["error"] == "密码复杂度不满足要求"
@@ -307,7 +307,7 @@ def test_password_policy_violation_codes_exact(client):
     ]
 
     # 常见弱口令
-    resp = create_user(client, "alice", password="Password123")
+    resp = create_user(client, "alice", password=COMMON_PASSWORD)
     assert resp.get_json()["violations"] == ["common_password"]
 
     # 超长
@@ -370,9 +370,7 @@ def test_openid_configuration(client):
 
 def test_userinfo(client):
     body = login(client).get_json()
-    resp = client.get(
-        "/userinfo", headers={"Authorization": "Bearer " + body["access_token"]}
-    )
+    resp = client.get("/userinfo", headers={"Authorization": "Bearer " + body["access_token"]})
     assert resp.status_code == 200
     assert resp.get_json() == {
         "sub": "admin",
@@ -382,17 +380,13 @@ def test_userinfo(client):
 
     # 缺头 / 垃圾 token / 用 refresh token 冒充 access → 401
     assert client.get("/userinfo").status_code == 401
-    assert client.get("/userinfo", headers={"Authorization": "Bearer junk"}).status_code == 401
-    resp = client.get(
-        "/userinfo", headers={"Authorization": "Bearer " + body["refresh_token"]}
-    )
+    assert client.get("/userinfo", headers={"Authorization": f"Bearer {INVALID_TOKEN}"}).status_code == 401
+    resp = client.get("/userinfo", headers={"Authorization": "Bearer " + body["refresh_token"]})
     assert resp.status_code == 401
 
     # revoke 后 ver 不匹配 → 401
     client.post("/revoke", data={"token": body["refresh_token"]})
-    resp = client.get(
-        "/userinfo", headers={"Authorization": "Bearer " + body["access_token"]}
-    )
+    resp = client.get("/userinfo", headers={"Authorization": "Bearer " + body["access_token"]})
     assert resp.status_code == 401
 
 
@@ -402,13 +396,9 @@ def test_health(client):
     assert resp.get_json() == {"status": "ok"}
 
 
-def test_capabilities_reflect_registration_setting(
-    client, registration_disabled_client
-):
+def test_capabilities_reflect_registration_setting(client, registration_disabled_client):
     assert client.get("/capabilities").get_json() == {"registration_enabled": True}
-    assert registration_disabled_client.get("/capabilities").get_json() == {
-        "registration_enabled": False
-    }
+    assert registration_disabled_client.get("/capabilities").get_json() == {"registration_enabled": False}
 
 
 # ------------------------------------------------------------------ Admin 鉴权
@@ -420,9 +410,7 @@ def test_admin_api_rejects_missing_or_wrong_token(client):
 
     resp = client.get("/admin/users", headers=admin_headers())
     assert resp.status_code == 200
-    assert resp.get_json() == {
-        "users": [{"username": "admin", "role": "admin", "password_change_required": False}]
-    }
+    assert resp.get_json() == {"users": [{"username": "admin", "role": "admin", "password_change_required": False}]}
 
 
 def test_admin_api_disabled_without_env(tmp_path):
@@ -516,7 +504,7 @@ def test_legacy_users_json_without_token_version(tmp_path):
             {
                 # 低迭代旧哈希：登录成功后应自动 rehash 到 600000
                 "username": "eve",
-                "password_hash": UserStore.hash_password("Ev3!Legacy#Pass", iterations=100_000),
+                "password_hash": UserStore.hash_password(LEGACY_PASSWORD, iterations=100_000),
                 "role": "user",
                 "must_change_password": False,
                 "password_changed_at": "2025-01-01T00:00:00+00:00",
@@ -525,18 +513,16 @@ def test_legacy_users_json_without_token_version(tmp_path):
             {
                 # 遗留明文 password 字段：登录时迁移为哈希。
                 "username": "frank",
-                "password": "Fr4nk!Plain#Pass",
+                "password": NEW_STRONG_PASSWORD,
                 "role": "admin",
             },
         ]
     }
-    (data_dir / "users.json").write_text(
-        json.dumps(legacy, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    (data_dir / "users.json").write_text(json.dumps(legacy, ensure_ascii=False, indent=2), encoding="utf-8")
 
     client = create_app(make_config(tmp_path)).test_client()
 
-    resp = login(client, "eve", "Ev3!Legacy#Pass")
+    resp = login(client, "eve", LEGACY_PASSWORD)
     assert resp.status_code == 200
     body = resp.get_json()
     claims = decode_with_jwks(client, body["access_token"])
@@ -544,7 +530,7 @@ def test_legacy_users_json_without_token_version(tmp_path):
     assert claims["pwd_cr"] is False
     assert refresh(client, body["refresh_token"]).status_code == 200
 
-    resp = login(client, "frank", "Fr4nk!Plain#Pass")
+    resp = login(client, "frank", NEW_STRONG_PASSWORD)
     assert resp.status_code == 200
     assert decode_with_jwks(client, resp.get_json()["access_token"])["pwd_cr"] is False
 
@@ -600,9 +586,7 @@ def test_register_creates_user_and_login_full_flow(reg_client, tmp_path):
     claims = decode_with_jwks(reg_client, body["access_token"])
     assert claims["role"] == "user"
     assert claims["pwd_cr"] is False
-    resp = reg_client.get(
-        "/userinfo", headers={"Authorization": "Bearer " + body["access_token"]}
-    )
+    resp = reg_client.get("/userinfo", headers={"Authorization": "Bearer " + body["access_token"]})
     assert resp.get_json() == {
         "sub": "walter",
         "role": "user",
@@ -650,7 +634,7 @@ def test_register_duplicate_username_and_email(reg_client):
 
 
 def test_register_password_policy_violations_passthrough(reg_client):
-    resp = register(reg_client, "gina", "gina@example.com", password=" gina ")
+    resp = register(reg_client, "gina", "gina@example.com", password=username_password_violation("gina"))
     assert resp.status_code == 400
     body = resp.get_json()
     assert body["error"] == "密码复杂度不满足要求"
@@ -674,11 +658,11 @@ def test_register_rate_limited_by_ip(reg_client):
 
 def test_register_rate_limited_by_email_across_ips(reg_client):
     email = "flood@example.com"
-    assert register(reg_client, "flood0", email, ip="10.0.0.10").status_code == 200
+    assert register(reg_client, "flood0", email, ip="192.0.2.10").status_code == 200
     for i in range(1, 5):
         # 重复邮箱 → 400，但每次请求都计入该 email 的窗口额度
-        assert register(reg_client, f"flood{i}", email, ip=f"10.0.0.{10 + i}").status_code == 400
-    resp = register(reg_client, "flood5", email, ip="10.0.0.99")
+        assert register(reg_client, f"flood{i}", email, ip=f"192.0.2.{10 + i}").status_code == 400
+    resp = register(reg_client, "flood5", email, ip="192.0.2.99")
     assert resp.status_code == 429
 
 

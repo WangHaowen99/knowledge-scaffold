@@ -151,9 +151,7 @@ def test_skill_registry_refresh_publishes_one_complete_snapshot(tmp_path, monkey
     assert set(registry.list_skills()) == {"old-skill", "new-skill"}
 
 
-def test_skill_tool_uses_context_workspace_and_rejects_other_workspace_skill(
-    tmp_path, monkeypatch
-):
+def test_skill_tool_uses_context_workspace_and_rejects_other_workspace_skill(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     create_workspace("Workspace A", workspace_id="workspace-a")
     create_workspace("Workspace B", workspace_id="workspace-b", set_as_default=True)
@@ -170,12 +168,17 @@ def test_skill_tool_uses_context_workspace_and_rejects_other_workspace_skill(
 
     assert outcome.content is not None
     assert outcome.content.startswith("Error: Skill 'only-b' not found")
-    assert json.loads(
-        SkillTool().execute(
-            args={"skill_name": "only-a", "resource": "root"},
-            context=_tool_context("workspace-a"),
-        ).content
-    )["skill"]["name"] == "only-a"
+    assert (
+        json.loads(
+            SkillTool()
+            .execute(
+                args={"skill_name": "only-a", "resource": "root"},
+                context=_tool_context("workspace-a"),
+            )
+            .content
+        )["skill"]["name"]
+        == "only-a"
+    )
 
 
 def test_subagent_prompt_uses_explicit_workspace_skill_registry(tmp_path, monkeypatch):
@@ -205,9 +208,6 @@ def test_tool_schema_uses_explicit_workspace_skill_registry(tmp_path, monkeypatc
 
     from agent.tools.registry import get_tools_schema
 
-    schema_names = {
-        schema["function"]["name"]
-        for schema in get_tools_schema("main", workspace_id="workspace-a")
-    }
+    schema_names = {schema["function"]["name"] for schema in get_tools_schema("main", workspace_id="workspace-a")}
 
     assert "skill" not in schema_names

@@ -13,16 +13,15 @@ import secrets
 from typing import Any, Callable, Iterable
 
 from api.auth.user_deletion import identity_reference_guard
+from workspace.workspaces import _normalize_workspace_members as normalize_workspace_members
+from workspace.workspaces import _normalize_workspace_owner as normalize_workspace_owner
 from workspace.workspaces import (
-    _normalize_workspace_members as normalize_workspace_members,
-    _normalize_workspace_owner as normalize_workspace_owner,
     create_workspace,
     get_workspace,
     list_workspaces,
     update_workspace,
     update_workspace_authorized,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +47,7 @@ def ensure_user_personal_workspace(
     with identity_reference_guard((username,)):
         available_workspaces = list_workspaces()
         base_workspace_id = _personal_workspace_id(username)
-        owned = [
-            workspace
-            for workspace in available_workspaces
-            if workspace.get("owner") == username
-        ]
+        owned = [workspace for workspace in available_workspaces if workspace.get("owner") == username]
         if owned:
             personal_workspace = min(
                 owned,

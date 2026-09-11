@@ -17,11 +17,13 @@ def _report(
     lists=1,
     eager=0,
 ):
-    metric = lambda value: {
-        "warm_p95_ms": value,
-        "warm_authoritative_traversals": traversals,
-        "warm_io": {"open": 0, "stat": 0, "traversal": warm_io_traversals},
-    }
+    def metric(value):
+        return {
+            "warm_p95_ms": value,
+            "warm_authoritative_traversals": traversals,
+            "warm_io": {"open": 0, "stat": 0, "traversal": warm_io_traversals},
+        }
+
     return {
         "thresholds_ms": {
             "workspace_warm_p95": 200.0,
@@ -50,9 +52,7 @@ def test_metadata_gate_accepts_values_strictly_below_every_limit():
 
 
 def test_metadata_gate_rejects_equal_thresholds_traversals_and_request_fanout():
-    violations = evaluate_thresholds(
-        _report(workspace=200.0, ontology=300.0, traversals=1, lists=2, eager=1)
-    )
+    violations = evaluate_thresholds(_report(workspace=200.0, ontology=300.0, traversals=1, lists=2, eager=1))
     codes = [violation["code"] for violation in violations]
 
     assert "warm_p95_exceeded" in codes
@@ -65,8 +65,7 @@ def test_metadata_gate_rejects_warm_filesystem_traversal_without_a_rebuild():
     violations = evaluate_thresholds(_report(warm_io_traversals=1))
 
     assert any(
-        violation["code"] == "warm_filesystem_traversal"
-        and violation["metric"] == "workspace_list"
+        violation["code"] == "warm_filesystem_traversal" and violation["metric"] == "workspace_list"
         for violation in violations
     )
 
@@ -77,10 +76,13 @@ def test_frontend_contract_uses_executable_behavior_probe():
     def run(command, **kwargs):
         calls.append((command, kwargs))
         return SimpleNamespace(
-            stdout=json.dumps({
-                "ontology_list_requests": 1,
-                "non_knowledge_tree_requests": 0,
-            }) + "\n",
+            stdout=json.dumps(
+                {
+                    "ontology_list_requests": 1,
+                    "non_knowledge_tree_requests": 0,
+                }
+            )
+            + "\n",
         )
 
     assert benchmark._frontend_request_contract(runner=run) == {

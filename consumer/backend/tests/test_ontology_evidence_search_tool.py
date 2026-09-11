@@ -10,6 +10,7 @@ from agent.tools.base import ToolContext
 from agent.tools.ontology_evidence_search import OntologyEvidenceSearchTool
 from agent.tools.registry import get_tools_schema
 from config import AgentConfig
+from config.evidence_config import EvidenceConfig
 from ontology.evidence.manager import EvidenceIndexManager
 from utils.read_docs import (
     build_grounding_subject_key,
@@ -99,6 +100,10 @@ def _root(pointer, *, epoch=None, revision=None):
 def _enable(monkeypatch, mode="all"):
     monkeypatch.setenv("ONTOLOGY_EVIDENCE_ENABLED", "true")
     monkeypatch.setenv("ONTOLOGY_EVIDENCE_ROLLOUT_MODE", mode)
+    monkeypatch.setattr(
+        "agent.tools.ontology_evidence_search.EvidenceConfig.load",
+        classmethod(lambda cls: cls.from_env()),
+    )
 
 
 def test_schema_is_adaptive_and_legacy_context_schema_is_preserved_off(tmp_path: Path, monkeypatch):

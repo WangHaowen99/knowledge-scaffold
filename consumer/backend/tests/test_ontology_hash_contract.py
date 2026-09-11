@@ -1,7 +1,6 @@
 """Golden and safety tests for ontology HashFrame/v1."""
 
 import pytest
-
 from ontology.hash_contract import (
     field_h,
     field_i,

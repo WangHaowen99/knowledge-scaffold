@@ -4,7 +4,6 @@ from pathlib import Path
 
 import yaml
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -17,9 +16,7 @@ def test_development_solver_overlay_uses_one_private_http_solver_service():
     services = _solver_services("consumer/docker-compose.solver.yml")
 
     assert set(services) == {"ortools-solver", "backend"}
-    assert services["ortools-solver"]["tmpfs"] == [
-        "/tmp:rw,noexec,nosuid,size=16m"
-    ]
+    assert services["ortools-solver"]["tmpfs"] == ["/tmp:rw,noexec,nosuid,size=16m"]
     assert "ports" not in services["ortools-solver"]
     backend = services["backend"]
     assert "SOLVER_SERVICE_ALLOW_HTTP=true" in backend["environment"]
@@ -34,9 +31,7 @@ def test_release_solver_overlay_uses_one_private_http_solver_service():
     services = _solver_services("consumer/deploy/docker-compose.solver.release.yml")
 
     assert set(services) == {"ortools-solver", "backend"}
-    assert services["ortools-solver"]["tmpfs"] == [
-        "/tmp:rw,noexec,nosuid,size=16m"
-    ]
+    assert services["ortools-solver"]["tmpfs"] == ["/tmp:rw,noexec,nosuid,size=16m"]
     assert "ports" not in services["ortools-solver"]
     backend = services["backend"]
     assert "SOLVER_SERVICE_ALLOW_HTTP=true" in backend["environment"]

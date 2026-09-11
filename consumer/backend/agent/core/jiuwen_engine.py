@@ -7,8 +7,8 @@ translation layer and lazy dependency checks.
 
 from __future__ import annotations
 
-import importlib.util
 import asyncio
+import importlib.util
 import json
 import threading
 import time
@@ -21,74 +21,69 @@ from dataclasses import is_dataclass, replace
 from inspect import isawaitable
 from typing import Any, Callable, Dict, Optional
 
+from integration.observability import NOOP_OBSERVER, AgentRuntimeTrace, RuntimeStatus, bind_observability_context
+from integration.observability.stack_profiler import profile_current_thread
+from llm import LLMPurpose, get_llm_router
+from llm.llm_request_mode import is_llm_streaming_enabled
+from llm.provider_adapters import get_provider_adapter
+from utils.logging import bind_log_context, get_logger
+from workspace.workspaces import (
+    get_current_workspace_id,
+    get_workspace_project_root,
+)
+
 from ..exceptions import (
     ModelContentFilteredError,
     ModelInvocationError,
     ModelOutputTruncatedError,
     WorkflowCancelledError,
 )
-from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER, RuntimeStatus
-from integration.observability import bind_observability_context
-from integration.observability.stack_profiler import profile_current_thread
-from llm import LLMPurpose, get_llm_router
-from llm.provider_adapters import get_provider_adapter
-from ..tools.executor import aexecute_tool_batch
 from ..tools.base import ToolContext
-from llm.llm_request_mode import is_llm_streaming_enabled
-from utils.logging import bind_log_context, get_logger
-from workspace.workspaces import (
-    get_current_workspace_id,
-    get_workspace_project_root,
-)
+from ..tools.executor import aexecute_tool_batch
 from .jiuwen.common import (
     JiuwenBackendUnavailable,
-    format_jiuwen_import_error as _format_jiuwen_import_error,
-    read_field as _read_field,
-    to_mapping as _to_mapping,
 )
+from .jiuwen.common import format_jiuwen_import_error as _format_jiuwen_import_error
+from .jiuwen.common import read_field as _read_field
+from .jiuwen.common import to_mapping as _to_mapping
+from .jiuwen.concurrency import current_jiuwen_tool_call_identity as _current_jiuwen_tool_call_identity
 from .jiuwen.concurrency import (
-    current_jiuwen_tool_call_identity as _current_jiuwen_tool_call_identity,
     install_jiuwen_concurrency_ability_manager as _install_jiuwen_concurrency_ability_manager,
 )
 from .jiuwen.patches import patch_jiuwen_openai_reasoning_alias as _patch_jiuwen_openai_reasoning_alias
+from .jiuwen.tools import build_jiuwen_agent_resource_id as _build_jiuwen_agent_resource_id
+from .jiuwen.tools import clear_jiuwen_pending_assistant_context as _clear_jiuwen_pending_assistant_context
+from .jiuwen.tools import first_tool_message_content as _first_tool_message_content
 from .jiuwen.tools import (
-    clear_jiuwen_pending_assistant_context as _clear_jiuwen_pending_assistant_context,
-    first_tool_message_content as _first_tool_message_content,
-    build_jiuwen_agent_resource_id as _build_jiuwen_agent_resource_id,
     get_jiuwen_tool_infos,
-    record_jiuwen_pending_assistant_text as _record_jiuwen_pending_assistant_text,
-    register_current_runtime_tools as _register_current_runtime_tools,
-    unregister_current_runtime_tools as _unregister_current_runtime_tools,
 )
-from .jiuwen.trace import (
-    JiuwenModelTraceBridge as _BaseJiuwenModelTraceBridge,
-    jiuwen_agent_callback_event_class as _default_jiuwen_agent_callback_event_class,
-)
+from .jiuwen.tools import record_jiuwen_pending_assistant_text as _record_jiuwen_pending_assistant_text
+from .jiuwen.tools import register_current_runtime_tools as _register_current_runtime_tools
+from .jiuwen.tools import unregister_current_runtime_tools as _unregister_current_runtime_tools
+from .jiuwen.trace import JiuwenModelTraceBridge as _BaseJiuwenModelTraceBridge
+from .jiuwen.trace import jiuwen_agent_callback_event_class as _default_jiuwen_agent_callback_event_class
 from .model_connection_policy import resolve_model_connection_policy
 from .shared.events import (
     emit_iteration_completed_event,
     emit_reasoning_summary_event,
     emit_token_delta_event,
 )
-from .shared.interaction_policy import (
-    user_interaction_supported_from_state as _user_interaction_supported_from_state,
-)
+from .shared.interaction_policy import user_interaction_supported_from_state as _user_interaction_supported_from_state
 from .shared.messages import append_current_date_reminder_to_text
 from .shared.modes import resolve_agent_mode as _resolve_agent_mode
+from .shared.ontology_context import active_ontology_id_from_state as _active_ontology_id_from_state
 from .shared.ontology_context import (
     get_selected_ontology_context,
     hydrate_selected_ontology_read_documents,
-    active_ontology_id_from_state as _active_ontology_id_from_state,
-    selected_ontology_id_from_state as _selected_ontology_id_from_state,
-    selected_ontology_version_from_state as _selected_ontology_version_from_state,
 )
+from .shared.ontology_context import selected_ontology_id_from_state as _selected_ontology_id_from_state
+from .shared.ontology_context import selected_ontology_version_from_state as _selected_ontology_version_from_state
 from .shared.prompting import build_main_system_prompt
-from .shared.timing import (
-    build_public_iteration_timing as _build_public_iteration_timing,
-    build_tool_timing_metrics as _build_jiuwen_tool_timing_metrics,
-    tool_window_elapsed_ms as _tool_window_elapsed_ms,
-)
+from .shared.timing import build_public_iteration_timing as _build_public_iteration_timing
+from .shared.timing import build_tool_timing_metrics as _build_jiuwen_tool_timing_metrics
+from .shared.timing import tool_window_elapsed_ms as _tool_window_elapsed_ms
 from .shared.tool_context import build_tool_context
+
 logger = get_logger("jiuwen_engine")
 
 
@@ -161,9 +156,7 @@ class _JiuwenModelCompletionSignal:
 
     _TRUNCATED_REASONS = frozenset({"length", "max_tokens", "max_output_tokens"})
     _FILTERED_REASONS = frozenset({"content_filter"})
-    _COMPLETE_OR_UNSPECIFIED_REASONS = frozenset(
-        {None, "stop", "eos", "stop_sequence"}
-    )
+    _COMPLETE_OR_UNSPECIFIED_REASONS = frozenset({None, "stop", "eos", "stop_sequence"})
 
     def __init__(self, *, max_output_tokens: Any = None) -> None:
         self._lock = threading.Lock()
@@ -187,9 +180,7 @@ class _JiuwenModelCompletionSignal:
 
     def record(self, completion: Mapping[str, Any]) -> None:
         normalized = dict(completion)
-        normalized["finish_reason"] = self.normalize_finish_reason(
-            completion.get("finish_reason")
-        )
+        normalized["finish_reason"] = self.normalize_finish_reason(completion.get("finish_reason"))
         with self._lock:
             self._latest = normalized
 
@@ -208,10 +199,7 @@ class _JiuwenModelCompletionSignal:
             raise ModelContentFilteredError(partial_output)
         if completion.get("has_tool_calls"):
             return
-        if (
-            reason in self._COMPLETE_OR_UNSPECIFIED_REASONS
-            and self._reached_configured_output_limit(completion)
-        ):
+        if reason in self._COMPLETE_OR_UNSPECIFIED_REASONS and self._reached_configured_output_limit(completion):
             raise ModelOutputTruncatedError(
                 partial_output,
                 finish_reason="token_limit_reached",
@@ -249,9 +237,7 @@ class _JiuwenEngineEventBuffer:
         self.max_buffer_size = int(max_buffer_size)
         self._loop = asyncio.get_running_loop()
         self._loop_thread_id = threading.get_ident()
-        self._queue: asyncio.Queue[Any] = asyncio.Queue(
-            maxsize=self.max_buffer_size
-        )
+        self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self.max_buffer_size)
         self._closed_marker = object()
         self._queued_event_tag = object()
         self._lock = threading.Lock()
@@ -279,8 +265,7 @@ class _JiuwenEngineEventBuffer:
                 overflow_error = self._overflow_error
                 if overflow_error is None:
                     overflow_error = JiuwenEngineEventBufferFull(
-                        "Jiuwen Engine event buffer is full "
-                        "(max_buffer_size={})".format(self.max_buffer_size)
+                        "Jiuwen Engine event buffer is full (max_buffer_size={})".format(self.max_buffer_size)
                     )
                     self._overflow_error = overflow_error
                 self._accepting = False
@@ -303,11 +288,7 @@ class _JiuwenEngineEventBuffer:
         item = await self._queue.get()
         if item is self._closed_marker:
             return None
-        if (
-            isinstance(item, tuple)
-            and len(item) == 2
-            and item[0] is self._queued_event_tag
-        ):
+        if isinstance(item, tuple) and len(item) == 2 and item[0] is self._queued_event_tag:
             item = item[1]
         should_close = False
         with self._lock:
@@ -342,8 +323,7 @@ class _JiuwenEngineEventBuffer:
             with self._lock:
                 if self._overflow_error is None:
                     self._overflow_error = JiuwenEngineEventBufferFull(
-                        "Jiuwen Engine event buffer is full "
-                        "(max_buffer_size={})".format(self.max_buffer_size)
+                        "Jiuwen Engine event buffer is full (max_buffer_size={})".format(self.max_buffer_size)
                     )
                 self._accepting = False
                 self._close_pending = True
@@ -425,11 +405,7 @@ class _JiuwenTerminalForceFinishBridge:
             self._event = None
 
     async def _on_after_tool_call(self, ctx: Any) -> None:
-        terminal_error = (
-            self.terminal_error_signal.get()
-            if self.terminal_error_signal is not None
-            else None
-        )
+        terminal_error = self.terminal_error_signal.get() if self.terminal_error_signal is not None else None
         if terminal_error is not None:
             await self._request_force_finish(
                 ctx,
@@ -450,18 +426,13 @@ class _JiuwenTerminalForceFinishBridge:
         expected_token = self.terminal_result.get("correlation_token")
         if expected_token is not None:
             current_identity = _current_jiuwen_tool_call_identity()
-            if (
-                current_identity is None
-                or current_identity.correlation_token is not expected_token
-            ):
+            if current_identity is None or current_identity.correlation_token is not expected_token:
                 return
         elif "model_tool_call_id" in self.terminal_result:
             inputs = _read_field(ctx, "inputs")
             tool_call = _read_field(inputs, "tool_call")
             actual_tool_call_id = str(_read_field(tool_call, "id") or "")
-            expected_tool_call_id = str(
-                self.terminal_result.get("model_tool_call_id") or ""
-            )
+            expected_tool_call_id = str(self.terminal_result.get("model_tool_call_id") or "")
             if actual_tool_call_id != expected_tool_call_id:
                 return
         await self._request_force_finish(
@@ -547,9 +518,7 @@ class JiuwenReactLoopEngine:
         **kwargs: Any,
     ) -> AsyncIterator[Dict[str, Any]]:
         """Yield existing engine events while the same ``arun`` core executes."""
-        buffer = _JiuwenEngineEventBuffer(
-            max_buffer_size=max(1, int(max_event_buffer_size))
-        )
+        buffer = _JiuwenEngineEventBuffer(max_buffer_size=max(1, int(max_event_buffer_size)))
         producer_errors: list[BaseException] = []
 
         def capture_event(event: Dict[str, Any]) -> None:
@@ -653,14 +622,14 @@ class JiuwenReactLoopEngine:
         def record_model_timing(iteration: int, elapsed_ms: int) -> None:
             normalized_iteration = max(1, int(iteration or 1))
             with model_timing_lock:
-                model_elapsed_ms_by_iteration[normalized_iteration] = (
-                    model_elapsed_ms_by_iteration.get(normalized_iteration, 0)
-                    + max(0, int(elapsed_ms or 0))
-                )
+                model_elapsed_ms_by_iteration[normalized_iteration] = model_elapsed_ms_by_iteration.get(
+                    normalized_iteration, 0
+                ) + max(0, int(elapsed_ms or 0))
 
         def model_elapsed_for_iteration(iteration: int) -> Optional[int]:
             with model_timing_lock:
                 return model_elapsed_ms_by_iteration.get(max(1, int(iteration or 1)))
+
         cancel_event = _get_jiuwen_cancel_event(state)
         _run_jiuwen_setup_step(runtime_trace, _raise_if_jiuwen_cancelled, cancel_event, state)
         max_iterations = _run_jiuwen_setup_step(
@@ -677,9 +646,7 @@ class JiuwenReactLoopEngine:
             state,
             system_prompt=system_prompt_for_agent,
         )
-        interaction_response = dict(state.get("user_context") or {}).get(
-            "interaction_response"
-        )
+        interaction_response = dict(state.get("user_context") or {}).get("interaction_response")
         history_source_messages = _run_jiuwen_setup_step(
             runtime_trace,
             _build_jiuwen_history_source_messages,
@@ -695,9 +662,7 @@ class JiuwenReactLoopEngine:
                 interaction_response=interaction_response,
             )
         else:
-            configured_rounds = _normalize_context_max_rounds(
-                getattr(self.agent_config, "context_max_rounds", 10)
-            )
+            configured_rounds = _normalize_context_max_rounds(getattr(self.agent_config, "context_max_rounds", 10))
             effective_context_max_rounds = _resolve_effective_context_max_rounds(
                 configured_rounds,
                 state,
@@ -741,9 +706,7 @@ class JiuwenReactLoopEngine:
                 agent_config=self.agent_config,
             )
         )
-        stream_enabled = is_llm_streaming_enabled(
-            (state.get("user_context") or {}).get("llm_request_mode")
-        )
+        stream_enabled = is_llm_streaming_enabled((state.get("user_context") or {}).get("llm_request_mode"))
         trace_iteration = 1
         prepared_iterations: set[int] = set()
         model_name = str(getattr(llm_config_for_agent, "model", "") or "jiuwen_agent_factory")
@@ -853,9 +816,7 @@ class JiuwenReactLoopEngine:
             tool_intervals = list(progress.get("active_tool_intervals_ms") or [])
             tool_names = list(progress.get("active_tool_names") or [])
             finished_at = float(progress.get("last_completed_at") or time.perf_counter())
-            total_elapsed_ms = int(
-                (finished_at - float(progress.get("active_started_at") or started_at)) * 1000
-            )
+            total_elapsed_ms = int((finished_at - float(progress.get("active_started_at") or started_at)) * 1000)
             timing_metrics = _build_jiuwen_tool_timing_metrics(
                 tool_intervals,
                 tools_window_elapsed_ms=_tool_window_elapsed_ms(tool_intervals),
@@ -955,9 +916,7 @@ class JiuwenReactLoopEngine:
             progress["active_tool_names"] = tool_names
             progress["active_has_tools"] = True
             progress["iteration"] = max(int(progress.get("iteration") or 0), iteration)
-            total_elapsed_ms = int(
-                (finished_at - float(progress.get("active_started_at") or started_at)) * 1000
-            )
+            total_elapsed_ms = int((finished_at - float(progress.get("active_started_at") or started_at)) * 1000)
             timing_metrics = _build_jiuwen_tool_timing_metrics(
                 tool_intervals,
                 tools_window_elapsed_ms=_tool_window_elapsed_ms(tool_intervals),
@@ -1133,7 +1092,8 @@ class JiuwenReactLoopEngine:
                 (
                     time.perf_counter()
                     - float(progress.get("active_started_at") or progress.get("last_completed_at") or started_at)
-                ) * 1000
+                )
+                * 1000
             )
             public_timing = _build_public_iteration_timing(
                 total_elapsed_ms=final_elapsed_ms,
@@ -1238,18 +1198,12 @@ class JiuwenReactLoopEngine:
 
         effective_rounds = context_max_rounds
         if effective_rounds is None:
-            configured_rounds = _normalize_context_max_rounds(
-                getattr(self.agent_config, "context_max_rounds", 10)
-            )
+            configured_rounds = _normalize_context_max_rounds(getattr(self.agent_config, "context_max_rounds", 10))
             effective_rounds = _resolve_effective_context_max_rounds(configured_rounds, state)
 
         from .shared.solver_route_guard import solver_route_requirement_from_state
 
-        tool_choice = (
-            "required"
-            if solver_route_requirement_from_state(state) is not None
-            else None
-        )
+        tool_choice = "required" if solver_route_requirement_from_state(state) is not None else None
 
         return create_default_jiuwen_agent(
             llm_config=llm_config
@@ -1272,7 +1226,8 @@ class JiuwenReactLoopEngine:
             tool_choice=tool_choice,
         )
 
-    def _seed_initial_messages(self, state: Dict[str, Any], *, system_prompt: Optional[str]) -> None:
+    @staticmethod
+    def _seed_initial_messages(state: Dict[str, Any], *, system_prompt: Optional[str]) -> None:
         if state.get("messages"):
             return
         user_content = str(state.get("user_request") or "").strip()
@@ -1283,7 +1238,8 @@ class JiuwenReactLoopEngine:
             {"role": "user", "content": user_content},
         ]
 
-    def _build_main_system_prompt(self, state: Mapping[str, Any], *, include_orchestration: bool = True) -> str:
+    @staticmethod
+    def _build_main_system_prompt(state: Mapping[str, Any], *, include_orchestration: bool = True) -> str:
         return build_main_system_prompt(state, include_orchestration=include_orchestration)
 
     async def _invoke_agent(
@@ -1571,11 +1527,7 @@ class JiuwenReactLoopEngine:
                     event_writer=event_writer,
                     channel=channel,
                     text=content,
-                    iteration=(
-                        int(iteration_provider())
-                        if callable(iteration_provider)
-                        else 1
-                    ),
+                    iteration=(int(iteration_provider()) if callable(iteration_provider) else 1),
                     token_callback=token_callback,
                     meta=meta,
                     event_source_node=event_source_node,
@@ -1594,11 +1546,7 @@ class JiuwenReactLoopEngine:
                     event_writer=event_writer,
                     channel="content",
                     text=output,
-                    iteration=(
-                        int(iteration_provider())
-                        if callable(iteration_provider)
-                        else 1
-                    ),
+                    iteration=(int(iteration_provider()) if callable(iteration_provider) else 1),
                     token_callback=token_callback,
                     event_source_node=event_source_node,
                 )
@@ -1610,8 +1558,8 @@ class JiuwenReactLoopEngine:
             }
         return None
 
+    @staticmethod
     def _emit_token_delta(
-        self,
         state: Mapping[str, Any],
         *,
         caller: str,
@@ -1635,8 +1583,8 @@ class JiuwenReactLoopEngine:
             source_node=event_source_node,
         )
 
+    @staticmethod
     def _dispatch_reasoning_summary(
-        self,
         state: Mapping[str, Any],
         *,
         caller: str,
@@ -1710,10 +1658,7 @@ class JiuwenReactLoopEngine:
                 "",
                 "<Current-Turn-Tool-Provenance>",
                 "Only the latest user message defines the active request.",
-                (
-                    "Earlier completed tool-using turns may have been omitted from "
-                    "the active context."
-                ),
+                "Earlier completed tool-using turns may have been omitted from the active context.",
                 (
                     "Do not infer, continue, or report an omitted task unless the "
                     "latest user message explicitly requests it."
@@ -1740,9 +1685,8 @@ class JiuwenReactLoopEngine:
                 if selected_ontology_version
                 else ""
             ),
-            'Always use ontology_id "{}" when calling ontology_context, business_data_search, or execute_script.'.format(
-                selected_ontology_id
-            ),
+            'Always use ontology_id "{}" when calling ontology_context, business_data_search, or execute_script.'
+            .format(selected_ontology_id),
             (
                 'Always use ontology version "{}" for this session; do not follow active_version changes.'.format(
                     selected_ontology_version
@@ -1758,10 +1702,12 @@ class JiuwenReactLoopEngine:
             lines.extend(["", selected_ontology_context])
         return "\n".join(line for line in lines if line != "").strip()
 
-    def _get_selected_ontology_context(self, state: Mapping[str, Any]) -> Optional[str]:
+    @staticmethod
+    def _get_selected_ontology_context(state: Mapping[str, Any]) -> Optional[str]:
         return get_selected_ontology_context(state)
 
-    def _hydrate_selected_ontology_read_documents(self, state: Dict[str, Any]) -> None:
+    @staticmethod
+    def _hydrate_selected_ontology_read_documents(state: Dict[str, Any]) -> None:
         hydrate_selected_ontology_read_documents(state)
 
     def _build_tool_context(
@@ -1802,7 +1748,9 @@ class JiuwenReactLoopEngine:
             solver_tools_suppressed_from_state,
         )
 
-        schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
+        schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(
+            state, caller=caller
+        )
         workspace_id = str(state.get("workspace_id") or "").strip() or _resolve_current_workspace_id()
         include_memory = _memory_tool_requested_in_state(state)
         schemas = get_tools_schema(
@@ -1829,7 +1777,9 @@ class JiuwenReactLoopEngine:
             solver_tools_suppressed_from_state,
         )
 
-        schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
+        schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(
+            state, caller=caller
+        )
         workspace_id = str(state.get("workspace_id") or "").strip() or _resolve_current_workspace_id()
         include_memory = _memory_tool_requested_in_state(state)
         infos = get_jiuwen_tool_infos(
@@ -1856,8 +1806,8 @@ class JiuwenReactLoopEngine:
         include_interaction = _user_interaction_supported_from_state(state)
         return schema_caller, agent_mode == "multi_agent", include_web_search, include_interaction
 
+    @staticmethod
     def _emit_iteration_completed(
-        self,
         state: Mapping[str, Any],
         *,
         caller: str,
@@ -1925,9 +1875,11 @@ def _configure_jiuwen_log_path() -> None:
     if _JIUWEN_LOG_CONFIGURED:
         return
     try:
+        import os
+
         from openjiuwen.core.common.logging.log_config import configure_log_config
         from utils.logging import LOG_DIR
-        import os
+
         jiuwen_log_path = os.path.join(LOG_DIR, "jiuwen") + os.sep
         configure_log_config({"log_path": jiuwen_log_path})
         _JIUWEN_LOG_CONFIGURED = True
@@ -1954,9 +1906,7 @@ def create_default_jiuwen_agent(
         model_config_module = importlib.import_module("openjiuwen.core.foundation.llm.schema.config")
         context_engine_module = importlib.import_module("openjiuwen.core.context_engine")
     except ImportError as exc:
-        raise JiuwenBackendUnavailable(
-            _format_jiuwen_import_error(exc)
-        ) from exc
+        raise JiuwenBackendUnavailable(_format_jiuwen_import_error(exc)) from exc
     try:
         openai_client_module = importlib.import_module(
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client"
@@ -1971,9 +1921,7 @@ def create_default_jiuwen_agent(
     model_client_config_cls = model_config_module.ModelClientConfig
     model_request_config_cls = model_config_module.ModelRequestConfig
 
-    connection_policy = resolve_model_connection_policy(
-        configured_timeout=getattr(llm_config, "timeout", None)
-    )
+    connection_policy = resolve_model_connection_policy(configured_timeout=getattr(llm_config, "timeout", None))
     model_client_config = model_client_config_cls(
         client_provider=_map_jiuwen_provider(getattr(llm_config, "provider", None)),
         api_key=str(getattr(llm_config, "api_key", "") or ""),
@@ -1982,9 +1930,9 @@ def create_default_jiuwen_agent(
         max_retries=connection_policy.max_retries,
         verify_ssl=False,
     )
-    reasoning_extra_body = get_provider_adapter(
-        getattr(llm_config, "provider", None)
-    ).extra_body(enable_reasoning=bool(enable_reasoning))
+    reasoning_extra_body = get_provider_adapter(getattr(llm_config, "provider", None)).extra_body(
+        enable_reasoning=bool(enable_reasoning)
+    )
     model_request_kwargs = {
         "model": str(getattr(llm_config, "model", "") or ""),
         "temperature": float(getattr(llm_config, "temperature", 0.95)),
@@ -1997,9 +1945,7 @@ def create_default_jiuwen_agent(
             raise ValueError("tool_choice must be required or None")
         model_request_kwargs["tool_choice"] = tool_choice
     model_request_kwargs.update(
-        get_provider_adapter(getattr(llm_config, "provider", None)).top_level_params(
-            stream=bool(stream_enabled)
-        )
+        get_provider_adapter(getattr(llm_config, "provider", None)).top_level_params(stream=bool(stream_enabled))
     )
     model_request_config = model_request_config_cls(**model_request_kwargs)
     context_engine_config_cls = context_engine_module.ContextEngineConfig
@@ -2014,11 +1960,7 @@ def create_default_jiuwen_agent(
         model_name=str(getattr(llm_config, "model", "") or ""),
         model_provider=_map_jiuwen_provider(getattr(llm_config, "provider", None)),
         max_iterations=_normalize_max_iterations(max_iterations),
-        prompt_template=(
-            [{"role": "system", "content": system_prompt}]
-            if str(system_prompt or "").strip()
-            else []
-        ),
+        prompt_template=([{"role": "system", "content": system_prompt}] if str(system_prompt or "").strip() else []),
         context_engine_config=context_engine_config,
         kv_cache_affinity_config={
             "enable_kv_cache_release": False,
@@ -2047,9 +1989,7 @@ def create_default_jiuwen_agent(
 
 
 def _terminal_tool_call_id(batch_result: Any) -> str:
-    explicit_tool_call_id = str(
-        getattr(batch_result, "terminal_tool_call_id", None) or ""
-    ).strip()
+    explicit_tool_call_id = str(getattr(batch_result, "terminal_tool_call_id", None) or "").strip()
     if explicit_tool_call_id:
         return explicit_tool_call_id
     for message in reversed(list(getattr(batch_result, "messages", None) or [])):
@@ -2182,12 +2122,8 @@ def _resolve_max_iterations(
     if iteration_limit is not None:
         return _normalize_max_iterations(iteration_limit)
     if str(caller or "").strip() == "subagent":
-        return _normalize_max_iterations(
-            getattr(agent_config, "sub_agent_max_iterations", None)
-        )
-    return _normalize_max_iterations(
-        getattr(agent_config, "main_agent_max_iterations", None)
-    )
+        return _normalize_max_iterations(getattr(agent_config, "sub_agent_max_iterations", None))
+    return _normalize_max_iterations(getattr(agent_config, "main_agent_max_iterations", None))
 
 
 def _normalize_max_iterations(value: Optional[Any]) -> int:
@@ -2245,24 +2181,17 @@ def _reject_factory_agent_with_history(
         return
     resolved_interaction_response = interaction_response
     if resolved_interaction_response is None:
-        resolved_interaction_response = dict(state.get("user_context") or {}).get(
-            "interaction_response"
-        )
+        resolved_interaction_response = dict(state.get("user_context") or {}).get("interaction_response")
     if resolved_interaction_response:
         raise ValueError(
             "_agent_factory cannot be used for ask-user resume requests "
             "with interaction_response; use the default agent path instead."
         )
     history_source = (
-        history_source_messages
-        if history_source_messages is not None
-        else _build_jiuwen_history_source_messages(state)
+        history_source_messages if history_source_messages is not None else _build_jiuwen_history_source_messages(state)
     )
     if history_source:
-        raise ValueError(
-            "_agent_factory cannot be used with conversation history; "
-            "use the default agent path instead."
-        )
+        raise ValueError("_agent_factory cannot be used with conversation history; use the default agent path instead.")
 
 
 _PREFLIGHT_MAIN_LLM_CONFIG: ContextVar[Any] = ContextVar(
@@ -2297,10 +2226,7 @@ def _resolve_jiuwen_llm_config(
 ) -> Any:
     user_context = dict((state or {}).get("user_context") or {})
     profile_id = str(user_context.get("model_profile_id") or "").strip()
-    workspace_id = (
-        str((state or {}).get("workspace_id") or "").strip()
-        or _resolve_current_workspace_id()
-    )
+    workspace_id = str((state or {}).get("workspace_id") or "").strip() or _resolve_current_workspace_id()
     purpose = LLMPurpose.MAIN if str(caller or "").strip() in {"main", "acp"} else LLMPurpose.SUBAGENT
     admitted_config = _PREFLIGHT_MAIN_LLM_CONFIG.get()
     if purpose == LLMPurpose.MAIN and admitted_config is not None:
@@ -2392,9 +2318,7 @@ def _build_jiuwen_history_messages(
 ) -> list[Any]:
     del agent_config
     history_messages = (
-        history_source_messages
-        if history_source_messages is not None
-        else _build_jiuwen_history_source_messages(state)
+        history_source_messages if history_source_messages is not None else _build_jiuwen_history_source_messages(state)
     )
     converted: list[Any] = []
     for message in history_messages:
@@ -2406,11 +2330,7 @@ def _build_jiuwen_history_messages(
 
 def _build_jiuwen_history_source_messages(state: Mapping[str, Any]) -> list[Dict[str, Any]]:
     """Return the exact persisted history source used for ContextEngine seeding."""
-    messages = [
-        dict(message)
-        for message in list(state.get("messages") or [])
-        if isinstance(message, Mapping)
-    ]
+    messages = [dict(message) for message in list(state.get("messages") or []) if isinstance(message, Mapping)]
     history = _drop_current_user_message(messages, state)
     from .shared.solver_route_guard import (
         filter_solver_history_messages,
@@ -2438,15 +2358,9 @@ def _build_jiuwen_context_messages(
     larger than the final model window.
     """
     del agent_config
-    messages = [
-        dict(message)
-        for message in list(state.get("messages") or [])
-        if isinstance(message, Mapping)
-    ]
+    messages = [dict(message) for message in list(state.get("messages") or []) if isinstance(message, Mapping)]
     estimated_messages = [
-        dict(message)
-        for message in messages
-        if isinstance(message, Mapping) and message.get("role") != "system"
+        dict(message) for message in messages if isinstance(message, Mapping) and message.get("role") != "system"
     ]
     query = str(inputs.get("query") or "").strip()
     if estimated_messages and estimated_messages[-1].get("role") == "user":
@@ -2522,9 +2436,7 @@ def _jiuwen_message_classes() -> Dict[str, Any]:
     try:
         message_module = importlib.import_module("openjiuwen.core.foundation.llm.schema.message")
     except ImportError as exc:
-        raise JiuwenBackendUnavailable(
-            _format_jiuwen_import_error(exc)
-        ) from exc
+        raise JiuwenBackendUnavailable(_format_jiuwen_import_error(exc)) from exc
     return {
         "user": message_module.UserMessage,
         "assistant": message_module.AssistantMessage,
@@ -2576,9 +2488,7 @@ def _create_jiuwen_agent_session(agent: Any, inputs: Mapping[str, Any]) -> Any:
     try:
         session_module = importlib.import_module("openjiuwen.core.session.agent")
     except ImportError as exc:
-        raise JiuwenBackendUnavailable(
-            _format_jiuwen_import_error(exc)
-        ) from exc
+        raise JiuwenBackendUnavailable(_format_jiuwen_import_error(exc)) from exc
     conversation_id = str(inputs.get("conversation_id") or "default_session")
     return session_module.create_agent_session(
         session_id=conversation_id,
@@ -2587,9 +2497,7 @@ def _create_jiuwen_agent_session(agent: Any, inputs: Mapping[str, Any]) -> Any:
 
 
 def _supports_managed_jiuwen_stream(agent: Any) -> bool:
-    return callable(getattr(agent, "invoke", None)) and callable(
-        getattr(agent, "write_invoke_result_to_stream", None)
-    )
+    return callable(getattr(agent, "invoke", None)) and callable(getattr(agent, "write_invoke_result_to_stream", None))
 
 
 async def _produce_managed_jiuwen_stream(
@@ -2690,19 +2598,11 @@ def _owned_jiuwen_agent_event_names(agent: Any) -> set[str]:
     try:
         events = list(event_cls)
     except TypeError:
-        events = [
-            getattr(event_cls, name)
-            for name in dir(event_cls)
-            if name.isupper() and not name.startswith("_")
-        ]
+        events = [getattr(event_cls, name) for name in dir(event_cls) if name.isupper() and not name.startswith("_")]
     get_agent_event = getattr(manager, "_get_agent_event", None)
     if callable(get_agent_event):
         return {str(get_agent_event(event)) for event in events}
-    agent_id = str(
-        getattr(manager, "agent_id", None)
-        or getattr(getattr(agent, "card", None), "id", "")
-        or ""
-    ).strip()
+    agent_id = str(getattr(manager, "agent_id", None) or getattr(getattr(agent, "card", None), "id", "") or "").strip()
     if not agent_id:
         return set()
     return {"{}_{}".format(agent_id, event) for event in events}
@@ -2790,6 +2690,8 @@ async def _with_observability_context(
             parent_key=parent_key,
         ):
             return await awaitable
+
+
 def _raise_if_jiuwen_cancelled(
     cancel_event: Optional[threading.Event],
     state: Optional[Mapping[str, Any]],
@@ -2835,9 +2737,7 @@ def _extract_output(result: Any) -> str:
 
 
 def _terminal_tool_call_id(batch_result: Any) -> str:
-    explicit_tool_call_id = str(
-        getattr(batch_result, "terminal_tool_call_id", None) or ""
-    ).strip()
+    explicit_tool_call_id = str(getattr(batch_result, "terminal_tool_call_id", None) or "").strip()
     if explicit_tool_call_id:
         return explicit_tool_call_id
     for message in reversed(list(getattr(batch_result, "messages", None) or [])):
@@ -2916,11 +2816,7 @@ def _should_emit_answer_delta(stream_state: Optional[Mapping[str, str]], output:
 def _memory_tool_requested_in_state(state: Mapping[str, Any]) -> bool:
     from ..tools.memory import has_explicit_memory_request
 
-    messages = [
-        dict(message)
-        for message in list(state.get("messages") or [])
-        if isinstance(message, Mapping)
-    ]
+    messages = [dict(message) for message in list(state.get("messages") or []) if isinstance(message, Mapping)]
     current_request = str(state.get("user_request") or "").strip()
     should_append_request = bool(current_request)
     if should_append_request and messages:

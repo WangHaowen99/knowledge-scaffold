@@ -1,12 +1,12 @@
 """Tests for user memory management routes."""
 
-from fastapi.testclient import TestClient
-
 from agent.memory.filesystem_manager import FileSystemMemoryManager
-from api.testing import TestApplication
+from api.auth.auth import AuthManager
 from api.routes import memories as memories_module
 from api.routes.memories import memories_router
-from api.auth.auth import AuthManager
+from api.testing import TestApplication
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD
+from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace
 
 
@@ -22,11 +22,11 @@ def _build_test_client(tmp_path, monkeypatch):
     app = TestApplication()
     app.state.services["TESTING"] = True
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
     if user.password_change_required:
-        user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+        user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(memories_router)
 
@@ -36,6 +36,7 @@ def _build_test_client(tmp_path, monkeypatch):
     )
 
     class _FakeOrchestrator:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_memory_manager(self, user_id):
             assert user_id == "admin"
             return manager

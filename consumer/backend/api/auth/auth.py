@@ -17,9 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional, Protocol
 
-from fastapi import Request as StarletteRequest
 from agent.runtime.offload import OffloadPoolClosed, OffloadPoolSaturated
 from api.exceptions import APIError
+from fastapi import Request as StarletteRequest
 
 
 @dataclass(frozen=True)
@@ -62,15 +62,20 @@ class PasswordPolicyError(ValueError):
 class AuthBackend(Protocol):
     """Authentication contract shared by the remote backend and test backend."""
 
-    def login(self, username: str, password: str) -> Optional[LoginResult]: ...
+    def login(self, username: str, password: str) -> Optional[LoginResult]:
+        return ...
 
-    def verify_token(self, token: str) -> Optional[AuthUser]: ...
+    def verify_token(self, token: str) -> Optional[AuthUser]:
+        return ...
 
-    def get_user(self, username: str) -> Optional[AuthUser]: ...
+    def get_user(self, username: str) -> Optional[AuthUser]:
+        return ...
 
-    def list_users(self) -> list: ...
+    def list_users(self) -> list:
+        return ...
 
-    def create_user(self, username: str, password: str, role: str = "user") -> AuthUser: ...
+    def create_user(self, username: str, password: str, role: str = "user") -> AuthUser:
+        return ...
 
     def update_user(
         self,
@@ -78,11 +83,19 @@ class AuthBackend(Protocol):
         *,
         password: Optional[str] = None,
         role: Optional[str] = None,
-    ) -> AuthUser: ...
+    ) -> AuthUser:
+        return ...
 
-    def delete_user(self, username: str) -> None: ...
+    def delete_user(self, username: str) -> None:
+        return ...
 
-    def change_password(self, username: str, old_password: str, new_password: str) -> AuthUser: ...
+    def change_password(
+        self,
+        username: str,
+        old_password: str,
+        new_password: str,
+    ) -> AuthUser:
+        return ...
 
 
 class AuthManager:
@@ -113,9 +126,7 @@ class AuthManager:
         self._lock = threading.Lock()
         self._users_cache: Optional[Dict[str, Dict[str, Any]]] = None
         self._users_mtime: Optional[float] = None
-        self._bootstrap_admin_password = (
-            bootstrap_admin_password or os.environ.get("AUTH_BOOTSTRAP_ADMIN_PASSWORD")
-        )
+        self._bootstrap_admin_password = bootstrap_admin_password or os.environ.get("AUTH_BOOTSTRAP_ADMIN_PASSWORD")
         self.ensure_users_file()
 
     def ensure_users_file(self) -> None:
@@ -123,9 +134,7 @@ class AuthManager:
             return
         bootstrap_password = self._bootstrap_admin_password
         if not bootstrap_password:
-            raise RuntimeError(
-                "首次启动必须配置 AUTH_BOOTSTRAP_ADMIN_PASSWORD；已有 users.json 的部署无需配置"
-            )
+            raise RuntimeError("首次启动必须配置 AUTH_BOOTSTRAP_ADMIN_PASSWORD；已有 users.json 的部署无需配置")
         self.validate_password_policy("admin", bootstrap_password)
         self.users_file.parent.mkdir(parents=True, exist_ok=True)
         default_users = [
@@ -327,9 +336,7 @@ class AuthManager:
                 entry["password_hash"] = self.hash_password(record["password"])
             entry["role"] = record.get("role", "user")
             entry["must_change_password"] = self._password_change_required(record)
-            entry["password_changed_at"] = str(
-                record.get("password_changed_at") or self._now_iso()
-            )
+            entry["password_changed_at"] = str(record.get("password_changed_at") or self._now_iso())
             entry["password_version"] = self._password_version(record)
             records.append(entry)
         with self._lock:
@@ -342,11 +349,13 @@ class AuthManager:
         users = self._load_users()
         result = []
         for record in users.values():
-            result.append({
-                "username": record["username"],
-                "role": record.get("role", "user"),
-                "password_change_required": self._password_change_required(record),
-            })
+            result.append(
+                {
+                    "username": record["username"],
+                    "role": record.get("role", "user"),
+                    "password_change_required": self._password_change_required(record),
+                }
+            )
         return result
 
     def create_user(self, username: str, password: str, role: str = "user") -> AuthUser:
@@ -555,10 +564,7 @@ async def authenticate_user(
     """Authenticate one native ASGI request without consuming its body."""
     runtime = getattr(request.app.state, "runtime_container", None)
     app_type = type(request.app)
-    is_isolated_test = (
-        app_type.__module__ == "api.testing"
-        and app_type.__name__ == "TestApplication"
-    )
+    is_isolated_test = app_type.__module__ == "api.testing" and app_type.__name__ == "TestApplication"
     if runtime is None and is_isolated_test:
         runtime = getattr(request.app.state, "agent_execution_runtime", None)
     pool = getattr(runtime, "external_io", None) if runtime is not None else None

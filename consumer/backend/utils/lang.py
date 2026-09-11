@@ -317,7 +317,7 @@ def _detect_language_via_llm(text: str, script_hint: str | None = None) -> str |
         if result and len(result) <= 5 and result.replace("-", "").isalpha():
             return result
     except Exception as e:
-        logger.debug(f"[lang] LLM detection failed: {e}")
+        logger.debug("[lang] LLM detection failed: %s", e)
     return None
 
 
@@ -354,7 +354,7 @@ def detect_language(text: str, lang: str | None = None, default_lang: str | None
     try:
         lang = detect(text)
     except LangDetectException:
-        logger.debug(f"[langdetect] Failed to detect language for text: {text[:100]}")
+        logger.debug("[langdetect] Failed to detect language for text: %s", text[:100])
         return default_validated
 
     if lang == "ko" and not script["hangul"]:
@@ -437,6 +437,6 @@ def translate_text(text: str, target_lang: str, source_lang: str = "auto") -> st
         if result:
             return result
     except Exception as e:
-        logger.warning(f"[lang] Translation failed for {target_lang}: {e}")
+        logger.warning("[lang] Translation failed for %s: %s", target_lang, e)
 
     return text

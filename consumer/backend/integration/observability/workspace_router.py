@@ -91,26 +91,20 @@ class _WorkspaceExporterFanout:
                 if callable(export_batch):
                     result = export_batch(batch)
                     outcome = outcome.combine(
-                        result
-                        if isinstance(result, BatchExportOutcome)
-                        else BatchExportOutcome(succeeded_deliveries=1)
+                        result if isinstance(result, BatchExportOutcome) else BatchExportOutcome(succeeded_deliveries=1)
                     )
                     continue
                 for event in batch:
                     try:
                         exporter.export(event)
                     except Exception:
-                        outcome = outcome.combine(
-                            BatchExportOutcome(failed_deliveries=1)
-                        )
+                        outcome = outcome.combine(BatchExportOutcome(failed_deliveries=1))
                         logger.warning(
                             "Workspace observability exporter failed in batch fallback",
                             exc_info=True,
                         )
                     else:
-                        outcome = outcome.combine(
-                            BatchExportOutcome(succeeded_deliveries=1)
-                        )
+                        outcome = outcome.combine(BatchExportOutcome(succeeded_deliveries=1))
             except Exception:
                 outcome = outcome.combine(BatchExportOutcome(failed_deliveries=1))
                 logger.warning(
@@ -302,9 +296,7 @@ class WorkspaceObservabilityRouter:
         with self._lock:
             self._retiring = True
             should_close = not self._run_workspaces
-        if not force_flush_open_telemetry(
-            timeout_millis=_remaining_timeout_millis(deadline)
-        ):
+        if not force_flush_open_telemetry(timeout_millis=_remaining_timeout_millis(deadline)):
             logger.warning(
                 "OpenTelemetry flush failed while retiring workspace router: router_id=%s",
                 self.router_id,
@@ -346,10 +338,7 @@ class WorkspaceObservabilityRouter:
 
                     no_local_resources = (
                         self._close_phase == _CLOSE_PHASE_FORCE_FLUSH
-                        and (
-                            self._close_worker is None
-                            or not self._close_worker.is_alive()
-                        )
+                        and (self._close_worker is None or not self._close_worker.is_alive())
                         and not self._run_workspaces
                         and not self._pending_spans_by_run
                         and not self._observers_by_workspace
@@ -432,9 +421,7 @@ class WorkspaceObservabilityRouter:
             clear_runtime_trace_identity(run_id)
         flush_succeeded = True
         try:
-            trace_flush_succeeded = force_flush_open_telemetry(
-                timeout_millis=_remaining_timeout_millis(deadline)
-            )
+            trace_flush_succeeded = force_flush_open_telemetry(timeout_millis=_remaining_timeout_millis(deadline))
         except Exception:
             flush_succeeded = False
             logger.warning(
@@ -504,19 +491,13 @@ class WorkspaceObservabilityRouter:
     def _close_buses_for_close(self, deadline: float) -> bool:
         with self._run_flush_lock:
             with self._lock:
-                observers = [
-                    observer
-                    for observer in self._observers_by_workspace.values()
-                    if observer is not None
-                ]
+                observers = [observer for observer in self._observers_by_workspace.values() if observer is not None]
             if observers and _remaining_timeout_seconds(deadline) <= 0:
                 return False
             buses_quiescent = True
             for observer in observers:
                 try:
-                    result = observer.close(
-                        timeout=_remaining_timeout_seconds(deadline)
-                    )
+                    result = observer.close(timeout=_remaining_timeout_seconds(deadline))
                     buses_quiescent = result is not False and buses_quiescent
                 except Exception:
                     buses_quiescent = False
@@ -566,10 +547,7 @@ class WorkspaceObservabilityRouter:
             if self._closed and not self._draining_otel:
                 return
         resolved_workspace_id = str(
-            workspace_id
-            or attributes.get("agent.workspace_id")
-            or record.get("workspace_id")
-            or ""
+            workspace_id or attributes.get("agent.workspace_id") or record.get("workspace_id") or ""
         ).strip()
         if not resolved_workspace_id:
             return
@@ -757,9 +735,7 @@ class WorkspaceObservabilityRouter:
                 drop_count = self._pending_span_drop_count
             current_depth = self._pending_span_count
             peak_depth = self._pending_span_peak_count
-            workspace_id = str(
-                span.workspace_id or self._run_workspaces.get(span.run_id, "")
-            ).strip()
+            workspace_id = str(span.workspace_id or self._run_workspaces.get(span.run_id, "")).strip()
         self._record_pending_span_metrics(
             workspace_id=workspace_id,
             current_depth=current_depth,
@@ -818,9 +794,7 @@ class WorkspaceObservabilityRouter:
 
     def _discard_pending_detail_span(self, *, preferred_run_id: str) -> bool:
         ordered_run_ids = [preferred_run_id] + [
-            run_id
-            for run_id in self._pending_spans_by_run
-            if run_id != preferred_run_id
+            run_id for run_id in self._pending_spans_by_run if run_id != preferred_run_id
         ]
         for run_id in ordered_run_ids:
             spans = self._pending_spans_by_run.get(run_id)
@@ -836,7 +810,8 @@ class WorkspaceObservabilityRouter:
                 return True
         return False
 
-    def _build_exporter(self, workspace_id: str) -> object | None:
+    @staticmethod
+    def _build_exporter(workspace_id: str) -> object | None:
         try:
             config = get_workspace_observability_config(workspace_id)
         except Exception:

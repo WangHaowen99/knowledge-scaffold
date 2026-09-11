@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 
 DEPLOY_DIR = Path(__file__).resolve().parents[1]
-if str(DEPLOY_DIR) not in sys.path:
-    sys.path.insert(0, str(DEPLOY_DIR))
+from deploy import migrate_system_config as migration_module
 
-import migrate_system_config as migration_module
-from migrate_system_config import migrate
+migrate = migration_module.migrate
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -87,7 +84,7 @@ def test_dry_run_reports_legacy_llm_budget_without_writing(tmp_path):
 def test_apply_migrates_legacy_llm_budget_with_verified_backup(tmp_path):
     env_path = tmp_path / "backend" / ".env"
     env_path.parent.mkdir(parents=True)
-    original = "KEEP=value\nexport LLM_MAX_TOKENS=\"8192\"\n"
+    original = 'KEEP=value\nexport LLM_MAX_TOKENS="8192"\n'
     env_path.write_text(original, encoding="utf-8")
     original_bytes = env_path.read_bytes()
 
@@ -95,9 +92,7 @@ def test_apply_migrates_legacy_llm_budget_with_verified_backup(tmp_path):
 
     assert report["changed"] is True
     assert report["backend_env"]["max_tokens_migrated_count"] == 1
-    assert env_path.read_text(encoding="utf-8") == (
-        "KEEP=value\nexport LLM_MAX_TOKENS=\"32768\"\n"
-    )
+    assert env_path.read_text(encoding="utf-8") == 'KEEP=value\nexport LLM_MAX_TOKENS="32768"\n'
     backup_path = Path(report["backend_env"]["max_tokens_backup_path"])
     assert backup_path.read_bytes() == original_bytes
 
@@ -157,10 +152,7 @@ def test_apply_can_place_env_backup_in_separate_writable_root(tmp_path):
 def test_custom_or_commented_llm_budget_is_not_rewritten(tmp_path):
     env_path = tmp_path / "backend" / ".env"
     env_path.parent.mkdir(parents=True)
-    original = (
-        "# LLM_MAX_TOKENS=4096\n"
-        "LLM_MAX_TOKENS=16384 # intentional custom budget\n"
-    )
+    original = "# LLM_MAX_TOKENS=4096\nLLM_MAX_TOKENS=16384 # intentional custom budget\n"
     env_path.write_text(original, encoding="utf-8")
 
     report = migrate(tmp_path, dry_run=False)
@@ -183,12 +175,10 @@ def test_cleaned_files_leave_legacy_backend_with_empty_prune_set(tmp_path, monke
     monkeypatch.delenv("AGENT_CONTEXT_PRUNE_TOOLS", raising=False)
 
     legacy_json_value = (cleaned_config.get("agent") or {}).get("context_prune_tools", "")
-    legacy_env_value = os.getenv("AGENT_CONTEXT_PRUNE_TOOLS", "") if LEGACY_ENV_LINE not in cleaned_env else "unexpected"
-    legacy_prune_tools = {
-        item.strip()
-        for item in (legacy_json_value or legacy_env_value).split(",")
-        if item.strip()
-    }
+    legacy_env_value = (
+        os.getenv("AGENT_CONTEXT_PRUNE_TOOLS", "") if LEGACY_ENV_LINE not in cleaned_env else "unexpected"
+    )
+    legacy_prune_tools = {item.strip() for item in (legacy_json_value or legacy_env_value).split(",") if item.strip()}
     assert legacy_prune_tools == set()
 
 
@@ -206,4 +196,4 @@ def test_release_migration_entrypoint_invokes_system_config_cleanup():
 def test_release_backend_migration_uses_writable_log_dir_in_read_only_sandbox():
     migrate_shell = (DEPLOY_DIR / "migrate.sh").read_text(encoding="utf-8")
 
-    assert 'LOG_DIR=/tmp/logs' in migrate_shell
+    assert "LOG_DIR=/tmp/logs" in migrate_shell

@@ -3,16 +3,16 @@ function isRecord(value) {
 }
 
 function fileLabel(file, index) {
-  if (typeof file === 'string') return file;
-  if (isRecord(file) && file.path) return String(file.path);
+  if (typeof file === 'string') { return file; }
+  if (isRecord(file) && file.path) { return String(file.path); }
   return `条目 ${index + 1}`;
 }
 
 function summarizeFileSection(section) {
   const files = Array.isArray(section?.files) ? section.files : [];
-  const totalFiles = Number.isFinite(Number(section?.total_files))
-    ? Number(section.total_files)
-    : files.length;
+  const totalFiles = Number.isFinite(Number(section?.total_files)) ?
+    Number(section.total_files) :
+    files.length;
   const binaryFiles = files.filter((file) => isRecord(file) && file.binary === true).length;
   const truncatedFiles = files.filter((file) => isRecord(file) && file.truncated === true).length;
   return {
@@ -27,24 +27,24 @@ function summarizeFileSection(section) {
 }
 
 function warningMessages(value) {
-  if (Array.isArray(value)) return value.flatMap(warningMessages);
-  if (isRecord(value)) return Object.values(value).flatMap(warningMessages);
+  if (Array.isArray(value)) { return value.flatMap(warningMessages); }
+  if (isRecord(value)) { return Object.values(value).flatMap(warningMessages); }
   const message = String(value ?? '').trim();
   return message ? [message] : [];
 }
 
 function summarizeWarnings(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return warningMessages(value).map((message) => ({ category: 'general', message }));
-  if (!isRecord(value)) return warningMessages(value).map((message) => ({ category: 'general', message }));
+  if (!value) { return []; }
+  if (Array.isArray(value)) { return warningMessages(value).map((message) => ({ category: 'general', message })); }
+  if (!isRecord(value)) { return warningMessages(value).map((message) => ({ category: 'general', message })); }
   return Object.entries(value).flatMap(([category, messages]) => (
     warningMessages(messages).map((message) => ({ category, message }))
   ));
 }
 
 export function summarizeImportPreview(preview) {
-  if (preview == null || preview === '') return { kind: 'empty' };
-  if (typeof preview === 'string') return { kind: 'text', text: preview };
+  if (preview == null || preview === '') { return { kind: 'empty' }; }
+  if (typeof preview === 'string') { return { kind: 'text', text: preview }; }
 
   if (Array.isArray(preview)) {
     const files = preview;
@@ -63,19 +63,21 @@ export function summarizeImportPreview(preview) {
     };
   }
 
-  if (!isRecord(preview)) return { kind: 'empty' };
+  if (!isRecord(preview)) { return { kind: 'empty' }; }
   const source = preview.source && isRecord(preview.source) ? summarizeFileSection(preview.source) : null;
   const result = preview.result && isRecord(preview.result) ? summarizeFileSection(preview.result) : null;
   const warnings = summarizeWarnings(preview.warnings);
-  const nested = Object.prototype.hasOwnProperty.call(preview, 'preview')
-    ? summarizeImportPreview(preview.preview)
-    : null;
-  if (!source && !result && !warnings.length && (!nested || nested.kind === 'empty')) return { kind: 'empty' };
-  return { kind: 'structured', source, result, warnings, nested };
+  const nested = Object.prototype.hasOwnProperty.call(preview, 'preview') ?
+    summarizeImportPreview(preview.preview) :
+    null;
+  if (!source && !result && !warnings.length && (!nested || nested.kind === 'empty')) { return { kind: 'empty' }; }
+  return {
+    kind: 'structured', source, result, warnings, nested
+  };
 }
 
 export function previewValueForDetails(value) {
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') { return value; }
   try {
     return JSON.stringify(value, null, 2);
   } catch {

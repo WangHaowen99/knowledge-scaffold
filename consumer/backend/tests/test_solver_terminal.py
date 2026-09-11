@@ -22,6 +22,4 @@ def test_terminal_projector_explains_an_incompatible_knowledge_package_contract(
         "status": "error",
     }
     assert outcome.terminal is True
-    assert outcome.state_updates["final_output"] == (
-        "知识包求解器契约版本不兼容，请升级或重新导入知识包。"
-    )
+    assert outcome.state_updates["final_output"] == ("知识包求解器契约版本不兼容，请升级或重新导入知识包。")

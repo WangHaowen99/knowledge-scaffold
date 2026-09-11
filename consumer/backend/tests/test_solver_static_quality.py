@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import ast
 import binascii
+import io
 import json
+import re
+import tokenize
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
@@ -25,19 +27,14 @@ EXCEPTION_TARGETS = (
     "contracts/solver/validation.py",
     "contracts/solver_services/ortools/validation.py",
 )
-ASSERT_TARGETS = (
-    "consumer/backend/api/routes/ontologies.py",
-    "contracts/solver/tck/runner.py",
-    "solvers/ortools/store.py",
+PRODUCTION_PYTHON_ROOTS = (
+    "auth-server",
+    "consumer",
+    "contracts",
+    "deploy",
+    "solvers",
 )
-NAMED_EXPRESSION_TARGETS = (
-    "consumer/backend/api/routes/solver_coordination.py",
-    "consumer/backend/solver_coordination/compiler.py",
-    "consumer/backend/solver_coordination/job_store.py",
-)
-LAMBDA_ASSIGNMENT_TARGETS = (
-    "consumer/backend/solver_coordination/service.py",
-)
+ASSERT_TEST_HELPER_TARGETS = ("consumer/backend/tests/system_config_migration_helpers.py",)
 COMPLEX_COMPREHENSION_OWNERS = (
     (
         "consumer/backend/agent/core/shared/solver_route_guard.py",
@@ -250,16 +247,8 @@ PRINT_TARGETS = (
     "consumer/backend/scripts/run_controlled_solver_validation.py",
     "contracts/solver/tck/__main__.py",
 )
-SYS_PATH_TARGETS = (
-    "consumer/backend/integration/solver_route_fact_worker.py",
-    "solvers/ortools/tests/conftest.py",
-)
-EXCEPTION_ORDER_TARGETS = (
-    "consumer/backend/api/routes/solver_coordination.py",
-)
-EXCEPTION_SUBCLASS_PAIRS = (
-    ("JobStoreError", "ValueError"),
-)
+EXCEPTION_ORDER_TARGETS = ("consumer/backend/api/routes/solver_coordination.py",)
+EXCEPTION_SUBCLASS_PAIRS = (("JobStoreError", "ValueError"),)
 
 EXCEPTION_TYPES = {
     "FileNotFoundError": FileNotFoundError,
@@ -299,12 +288,10 @@ def _boolean_term_count(node: ast.expr) -> int:
 
 
 def _function(tree: ast.AST, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
-    matches = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == name
-    ]
+    matches = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            matches.append(node)
     assert len(matches) == 1
     return matches[0]
 
@@ -316,18 +303,12 @@ def _owned_function(
 ) -> ast.FunctionDef | ast.AsyncFunctionDef:
     if owner_name is None:
         return _function(tree, function_name)
-    owners = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef) and node.name == owner_name
-    ]
+    owners = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == owner_name]
     assert len(owners) == 1
-    matches = [
-        node
-        for node in owners[0].body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function_name
-    ]
+    matches = []
+    for node in owners[0].body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
+            matches.append(node)
     assert len(matches) == 1
     return matches[0]
 
@@ -336,20 +317,16 @@ def test_solver_exception_handlers_do_not_repeat_parent_and_child_types():
     duplicates: list[str] = []
     for relative_path in EXCEPTION_TARGETS:
         for node in ast.walk(_tree(relative_path)):
-            if not isinstance(node, ast.ExceptHandler) or not isinstance(
-                node.type, ast.Tuple
-            ):
+            if not isinstance(node, ast.ExceptHandler) or not isinstance(node.type, ast.Tuple):
                 continue
-            resolved = [
-                (name, EXCEPTION_TYPES[name])
-                for item in node.type.elts
-                if (name := _qualified_name(item)) in EXCEPTION_TYPES
-            ]
+            resolved = []
+            for item in node.type.elts:
+                name = _qualified_name(item)
+                if name in EXCEPTION_TYPES:
+                    resolved.append((name, EXCEPTION_TYPES[name]))
             for index, (left_name, left_type) in enumerate(resolved):
                 for right_name, right_type in resolved[index + 1 :]:
-                    if issubclass(left_type, right_type) or issubclass(
-                        right_type, left_type
-                    ):
+                    if issubclass(left_type, right_type) or issubclass(right_type, left_type):
                         duplicates.append(
                             "{}:{} {} / {}".format(
                                 relative_path,
@@ -370,37 +347,21 @@ def test_solver_exception_handlers_catch_subclasses_before_parent_types():
             handler_names = [
                 {
                     _qualified_name(item)
-                    for item in (
-                        handler.type.elts
-                        if isinstance(handler.type, ast.Tuple)
-                        else (handler.type,)
-                    )
+                    for item in (handler.type.elts if isinstance(handler.type, ast.Tuple) else (handler.type,))
                     if item is not None
                 }
                 for handler in node.handlers
             ]
             for child_name, parent_name in EXCEPTION_SUBCLASS_PAIRS:
                 child_index = next(
-                    (
-                        index
-                        for index, names in enumerate(handler_names)
-                        if child_name in names
-                    ),
+                    (index for index, names in enumerate(handler_names) if child_name in names),
                     None,
                 )
                 parent_index = next(
-                    (
-                        index
-                        for index, names in enumerate(handler_names)
-                        if parent_name in names
-                    ),
+                    (index for index, names in enumerate(handler_names) if parent_name in names),
                     None,
                 )
-                if (
-                    child_index is not None
-                    and parent_index is not None
-                    and child_index > parent_index
-                ):
+                if child_index is not None and parent_index is not None and child_index > parent_index:
                     violations.append(
                         "{}:{} {} after {}".format(
                             relative_path,
@@ -412,34 +373,114 @@ def test_solver_exception_handlers_catch_subclasses_before_parent_types():
     assert violations == []
 
 
-def test_solver_production_paths_do_not_use_assert_statements():
-    violations = [
-        "{}:{}".format(relative_path, node.lineno)
-        for relative_path in ASSERT_TARGETS
-        for node in ast.walk(_tree(relative_path))
-        if isinstance(node, ast.Assert)
-    ]
+def _production_python_paths() -> list[Path]:
+    paths: list[Path] = []
+    for relative_root in PRODUCTION_PYTHON_ROOTS:
+        for path in (REPOSITORY_ROOT / relative_root).rglob("*.py"):
+            relative_path = path.relative_to(REPOSITORY_ROOT)
+            if "tests" in relative_path.parts or path.name.startswith("test_") or path.name.endswith("_test.py"):
+                continue
+            paths.append(relative_path)
+    paths.extend(Path(relative_path) for relative_path in ASSERT_TEST_HELPER_TARGETS)
+    return sorted(set(paths))
+
+
+def _scanned_python_paths() -> list[Path]:
+    paths = []
+    excluded_parts = {
+        ".onto-runtime",
+        ".venv",
+        "build",
+        "dist",
+        "node_modules",
+        "site-packages",
+        "venv",
+    }
+    for relative_root in PRODUCTION_PYTHON_ROOTS:
+        for path in (REPOSITORY_ROOT / relative_root).rglob("*.py"):
+            if any(part in excluded_parts for part in path.parts):
+                continue
+            paths.append(path.relative_to(REPOSITORY_ROOT))
+    return sorted(paths)
+
+
+def test_production_and_runtime_test_helpers_do_not_use_assert_statements():
+    violations = []
+    for relative_path in _production_python_paths():
+        for node in ast.walk(_tree(relative_path.as_posix())):
+            if isinstance(node, ast.Assert):
+                violations.append("{}:{}".format(relative_path.as_posix(), node.lineno))
     assert violations == []
 
 
-def test_solver_production_paths_avoid_named_expressions():
-    violations = [
-        "{}:{}".format(relative_path, node.lineno)
-        for relative_path in NAMED_EXPRESSION_TARGETS
-        for node in ast.walk(_tree(relative_path))
-        if isinstance(node, ast.NamedExpr)
-    ]
+def test_production_and_test_paths_avoid_named_expressions():
+    violations = []
+    for relative_path in _scanned_python_paths():
+        for node in ast.walk(_tree(relative_path.as_posix())):
+            if isinstance(node, ast.NamedExpr):
+                violations.append("{}:{}".format(relative_path, node.lineno))
     assert violations == []
 
 
-def test_solver_production_paths_do_not_assign_lambdas():
-    violations = [
-        "{}:{}".format(relative_path, node.lineno)
-        for relative_path in LAMBDA_ASSIGNMENT_TARGETS
-        for node in ast.walk(_tree(relative_path))
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-        and isinstance(node.value, ast.Lambda)
-    ]
+def test_production_and_test_paths_do_not_assign_lambdas():
+    violations = []
+    for relative_path in _scanned_python_paths():
+        for node in ast.walk(_tree(relative_path.as_posix())):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Lambda):
+                violations.append("{}:{}".format(relative_path, node.lineno))
+    assert violations == []
+
+
+def test_production_and_test_paths_do_not_call_dunder_import():
+    violations = []
+    for relative_path in _scanned_python_paths():
+        for node in ast.walk(_tree(relative_path.as_posix())):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "__import__":
+                violations.append("{}:{}".format(relative_path, node.lineno))
+    assert violations == []
+
+
+def test_production_and_test_paths_do_not_use_mutable_defaults():
+    mutable_literals = (ast.Dict, ast.List, ast.Set)
+    violations: list[str] = []
+    for relative_path in _scanned_python_paths():
+        for node in ast.walk(_tree(relative_path.as_posix())):
+            if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                continue
+            defaults = [
+                *node.args.defaults,
+                *(default for default in node.args.kw_defaults if default is not None),
+            ]
+            if any(isinstance(default, mutable_literals) for default in defaults):
+                violations.append("{}:{}:{}".format(relative_path, node.lineno, node.name))
+    assert violations == []
+
+
+def test_production_and_test_python_lines_do_not_exceed_120_characters():
+    violations = []
+    for relative_path in _scanned_python_paths():
+        lines = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8").splitlines()
+        for line_number, line in enumerate(lines, start=1):
+            if len(line) > 120:
+                violations.append("{}:{}:{}".format(relative_path, line_number, len(line)))
+    assert violations == []
+
+
+def test_production_and_test_paths_keep_one_statement_per_line():
+    violations: list[str] = []
+    inline_definition = re.compile(r":\s*\.\.\.\s*(?:#.*)?$")
+    for relative_path in _scanned_python_paths():
+        source = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+        violations.extend(
+            "{}:{}:inline-definition".format(relative_path, line_number)
+            for line_number, line in enumerate(source.splitlines(), start=1)
+            if inline_definition.search(line)
+        )
+        violations.extend(
+            "{}:{}:semicolon".format(relative_path, token.start[0])
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            if token.type == tokenize.OP and token.string == ";"
+        )
     assert violations == []
 
 
@@ -450,14 +491,35 @@ def test_scanned_functions_use_explicit_loops_instead_of_comprehensions():
         ast.ListComp,
         ast.SetComp,
     )
-    violations = [
-        "{}:{}:{}".format(relative_path, function_name, node.lineno)
-        for relative_path, owner_name, function_name in COMPLEX_COMPREHENSION_OWNERS
-        for node in ast.walk(
-            _owned_function(_tree(relative_path), owner_name, function_name)
-        )
-        if isinstance(node, comprehension_types)
-    ]
+    violations = []
+    for relative_path, owner_name, function_name in COMPLEX_COMPREHENSION_OWNERS:
+        function = _owned_function(_tree(relative_path), owner_name, function_name)
+        for node in ast.walk(function):
+            if isinstance(node, comprehension_types):
+                violations.append("{}:{}:{}".format(relative_path, function_name, node.lineno))
+    assert violations == []
+
+
+def _has_complex_comprehension_clause(node: ast.AST) -> bool:
+    clauses = len(node.generators) + sum(len(generator.ifs) for generator in node.generators)
+    if clauses > 2:
+        return True
+    for generator in node.generators:
+        if generator.target.lineno != generator.iter.end_lineno:
+            return True
+        for condition in generator.ifs:
+            if condition.lineno != condition.end_lineno:
+                return True
+    return False
+
+
+def test_production_and_test_paths_avoid_complex_comprehensions():
+    comprehension_types = (ast.DictComp, ast.GeneratorExp, ast.ListComp, ast.SetComp)
+    violations = []
+    for relative_path in _scanned_python_paths():
+        for node in ast.walk(_tree(relative_path.as_posix())):
+            if isinstance(node, comprehension_types) and _has_complex_comprehension_clause(node):
+                violations.append("{}:{}".format(relative_path, node.lineno))
     assert violations == []
 
 
@@ -469,9 +531,7 @@ def test_validation_result_counts_use_typed_locals():
     violations = [
         node.lineno
         for node in ast.walk(function)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "counts"
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "counts"
     ]
     assert violations == []
 
@@ -484,9 +544,7 @@ def test_special_tank_rates_are_not_recovered_through_dict_subscripts():
     violations = [
         node.lineno
         for node in ast.walk(function)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "rates"
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "rates"
     ]
     assert violations == []
 
@@ -496,31 +554,29 @@ def test_recovery_uses_a_typed_fact_payload_local():
         _tree("consumer/backend/solver_coordination/service.py"),
         "recover_job",
     )
-    violations = [
-        node.lineno
-        for node in ast.walk(function)
-        if isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "frozen_payloads"
-        and isinstance(node.ctx, ast.Load)
-    ]
+    violations = []
+    for node in ast.walk(function):
+        is_frozen_payload_read = (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "frozen_payloads"
+            and isinstance(node.ctx, ast.Load)
+        )
+        if is_frozen_payload_read:
+            violations.append(node.lineno)
     assert violations == []
 
 
 def test_solver_service_compile_and_verify_ports_are_typed():
     service = next(
         node
-        for node in ast.walk(
-            _tree("consumer/backend/solver_coordination/service.py")
-        )
-        if isinstance(node, ast.ClassDef)
-        and node.name == "SolverCoordinationService"
+        for node in ast.walk(_tree("consumer/backend/solver_coordination/service.py"))
+        if isinstance(node, ast.ClassDef) and node.name == "SolverCoordinationService"
     )
     annotations = {
         node.target.id: _qualified_name(node.annotation)
         for node in service.body
-        if isinstance(node, ast.AnnAssign)
-        and isinstance(node.target, ast.Name)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
     }
     assert annotations["compiler"] == "ProblemCompiler"
     assert annotations["verifier"] == "IndependentVerifier"
@@ -540,63 +596,54 @@ def test_staged_revision_manifest_checks_stay_within_boolean_term_budget():
 
 
 def test_solver_control_predicates_stay_within_boolean_term_budget():
-    violations = [
-        "{}:{} terms={}".format(
-            relative_path,
-            node.lineno,
-            _boolean_term_count(node.test),
-        )
-        for relative_path in CONTROL_COMPLEXITY_TARGETS
-        for node in ast.walk(_tree(relative_path))
-        if isinstance(node, (ast.If, ast.IfExp, ast.While))
-        and _boolean_term_count(node.test) >= 4
-    ]
+    violations = []
+    for relative_path in CONTROL_COMPLEXITY_TARGETS:
+        for node in ast.walk(_tree(relative_path)):
+            if isinstance(node, (ast.If, ast.IfExp, ast.While)) and _boolean_term_count(node.test) >= 4:
+                violations.append("{}:{} terms={}".format(relative_path, node.lineno, _boolean_term_count(node.test)))
     assert violations == []
 
 
 def test_solver_code_does_not_use_general_print_for_protocol_output():
-    violations = [
-        "{}:{}".format(relative_path, node.lineno)
-        for relative_path in PRINT_TARGETS
-        for node in ast.walk(_tree(relative_path))
-        if isinstance(node, ast.Call) and _qualified_name(node.func) == "print"
-    ]
+    violations = []
+    for relative_path in PRINT_TARGETS:
+        for node in ast.walk(_tree(relative_path)):
+            if isinstance(node, ast.Call) and _qualified_name(node.func) == "print":
+                violations.append("{}:{}".format(relative_path, node.lineno))
     assert violations == []
 
 
-def test_solver_code_does_not_mutate_sys_path():
-    violations = [
-        "{}:{}".format(relative_path, node.lineno)
-        for relative_path in SYS_PATH_TARGETS
-        for node in ast.walk(_tree(relative_path))
-        if isinstance(node, ast.Call)
-        and _qualified_name(node.func) in {"sys.path.append", "sys.path.insert"}
-    ]
+def test_production_and_test_code_does_not_extend_sys_path():
+    violations = []
+    mutation_calls = {"sys.path.append", "sys.path.extend", "sys.path.insert"}
+    for relative_path in _scanned_python_paths():
+        for node in ast.walk(_tree(relative_path.as_posix())):
+            if isinstance(node, ast.Call) and _qualified_name(node.func) in mutation_calls:
+                violations.append("{}:{}".format(relative_path, node.lineno))
     assert violations == []
 
 
 def test_solver_code_has_no_direct_exception_rethrows():
-    violations = [
-        "{}:{}".format(relative_path, node.lineno)
-        for relative_path in DIRECT_RETHROW_TARGETS
-        for node in ast.walk(_tree(relative_path))
-        if isinstance(node, ast.ExceptHandler)
-        and len(node.body) == 1
-        and isinstance(node.body[0], ast.Raise)
-        and node.body[0].exc is None
-    ]
+    violations = []
+    for relative_path in DIRECT_RETHROW_TARGETS:
+        for node in ast.walk(_tree(relative_path)):
+            is_direct_rethrow = (
+                isinstance(node, ast.ExceptHandler)
+                and len(node.body) == 1
+                and isinstance(node.body[0], ast.Raise)
+                and node.body[0].exc is None
+            )
+            if is_direct_rethrow:
+                violations.append("{}:{}".format(relative_path, node.lineno))
     assert violations == []
 
 
 def test_solver_exception_handlers_do_not_silently_pass():
-    violations = [
-        "{}:{}".format(relative_path, node.lineno)
-        for relative_path in PASS_HANDLER_TARGETS
-        for node in ast.walk(_tree(relative_path))
-        if isinstance(node, ast.ExceptHandler)
-        and len(node.body) == 1
-        and isinstance(node.body[0], ast.Pass)
-    ]
+    violations = []
+    for relative_path in PASS_HANDLER_TARGETS:
+        for node in ast.walk(_tree(relative_path)):
+            if isinstance(node, ast.ExceptHandler) and len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+                violations.append("{}:{}".format(relative_path, node.lineno))
     assert violations == []
 
 
@@ -616,9 +663,7 @@ def test_controlled_validation_read_only_open_declares_a_safe_mode():
     violations = [
         call.lineno
         for call in ast.walk(node)
-        if isinstance(call, ast.Call)
-        and _qualified_name(call.func) == "os.open"
-        and len(call.args) < 3
+        if isinstance(call, ast.Call) and _qualified_name(call.func) == "os.open" and len(call.args) < 3
     ]
     assert violations == []
 
@@ -635,19 +680,14 @@ def test_solver_service_uses_a_hardened_app_factory():
 def test_package_evaluator_subprocess_declares_isolation_controls():
     calls = [
         node
-        for node in ast.walk(
-            _tree("consumer/backend/integration/solver_fact_providers.py")
-        )
-        if isinstance(node, ast.Call)
-        and _qualified_name(node.func) == "subprocess.run"
+        for node in ast.walk(_tree("consumer/backend/integration/solver_fact_providers.py"))
+        if isinstance(node, ast.Call) and _qualified_name(node.func) == "subprocess.run"
     ]
     assert len(calls) == 1
     call = calls[0]
     keywords = {keyword.arg: keyword.value for keyword in call.keywords}
     assert isinstance(keywords.get("shell"), ast.Constant)
     assert keywords["shell"].value is False
-    assert {"input", "env", "timeout", "capture_output", "check"}.issubset(
-        keywords
-    )
+    assert {"input", "env", "timeout", "capture_output", "check"}.issubset(keywords)
     assert isinstance(call.args[0], ast.List)
     assert _qualified_name(call.args[0].elts[0]) == "sys.executable"

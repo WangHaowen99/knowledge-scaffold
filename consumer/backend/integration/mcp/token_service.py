@@ -11,7 +11,6 @@ from .config import MCPRuntimeConfig, load_mcp_runtime_config, validate_mcp_runt
 from .token_crypto import decode_jwt, encode_jwt, hash_token, mask_token
 from .token_store import MCPTokenStore, utc_now_iso
 
-
 DEFAULT_SCOPES = ("mcp:search", "mcp:chat")
 ALLOWED_SCOPES = set(DEFAULT_SCOPES)
 
@@ -140,7 +139,9 @@ def revoke_all_mcp_tokens_for_user(
     return (store or MCPTokenStore()).revoke_user_tokens(username=username)
 
 
-def verify_mcp_token(token: str, *, required_scope: str | None = None, config: MCPRuntimeConfig | None = None) -> dict[str, Any]:
+def verify_mcp_token(
+    token: str, *, required_scope: str | None = None, config: MCPRuntimeConfig | None = None
+) -> dict[str, Any]:
     cfg = config or load_mcp_runtime_config()
     try:
         validate_mcp_runtime_config(cfg)

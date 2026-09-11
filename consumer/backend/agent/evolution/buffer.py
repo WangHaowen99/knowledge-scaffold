@@ -54,14 +54,17 @@ def _safe_segment(value: str) -> str:
 
 
 def _normalize_operation_key(operation_key: Optional[str]) -> Optional[str]:
+    """Normalize an operation key while preserving an empty value as None."""
     return str(operation_key or "").strip() or None
 
 
 def _storage_operation_key(operation_key: Optional[str]) -> str:
+    """Return the on-disk operation key, including the ontology-level sentinel."""
     return _normalize_operation_key(operation_key) or ONTOLOGY_LEVEL_OPERATION_KEY
 
 
 def _semantic_operation_key(storage_operation_key: str) -> Optional[str]:
+    """Convert a storage key back to its semantic operation key."""
     normalized = str(storage_operation_key or "").strip()
     if normalized == ONTOLOGY_LEVEL_OPERATION_KEY:
         return None
@@ -69,6 +72,7 @@ def _semantic_operation_key(storage_operation_key: str) -> Optional[str]:
 
 
 def _thread_lock_for(path: Path) -> RLock:
+    """Return the process-local lock associated with an operation directory."""
     key = str(path)
     with _THREAD_LOCKS_GUARD:
         lock = _THREAD_LOCKS.get(key)
@@ -80,6 +84,7 @@ def _thread_lock_for(path: Path) -> RLock:
 
 @contextmanager
 def _file_lock(op_dir: Path):
+    """Acquire the process and, when available, filesystem lock for an op dir."""
     op_dir.mkdir(parents=True, exist_ok=True)
     sentinel = op_dir / ".lock"
     tlock = _thread_lock_for(op_dir)
@@ -139,6 +144,7 @@ class ProposalBuffer:
         *,
         workspace_id: Optional[str] = None,
     ) -> Path:
+        """Return the workspace-scoped storage directory for one operation."""
         storage_operation_key = _storage_operation_key(operation_key)
         if workspace_id:
             return (
@@ -386,6 +392,7 @@ class ProposalBuffer:
         ontology_id: Optional[str] = None,
         operation_key: Optional[str] = None,
     ) -> None:
+        """Apply a user's changed vote to matching proposal aggregates."""
         vote = str(vote or "").strip().lower()
         previous_vote = str(previous_vote or "").strip().lower() or None
         if vote not in {"up", "down", "none"}:
@@ -429,6 +436,7 @@ class ProposalBuffer:
         *,
         workspace_id: Optional[str] = None,
     ) -> None:
+        """Add one endorsement to a proposal aggregate when it exists."""
         with _file_lock(self.op_dir(ontology_id, operation_key, workspace_id=workspace_id)):
             aggs = self._load_aggregates(ontology_id, operation_key, workspace_id=workspace_id)
             agg = aggs.get(fingerprint)
@@ -447,6 +455,7 @@ class ProposalBuffer:
         *,
         workspace_id: Optional[str] = None,
     ) -> None:
+        """Reject a proposal aggregate and record the rejection count."""
         with _file_lock(self.op_dir(ontology_id, operation_key, workspace_id=workspace_id)):
             aggs = self._load_aggregates(ontology_id, operation_key, workspace_id=workspace_id)
             agg = aggs.get(fingerprint)
@@ -626,6 +635,7 @@ class ProposalBuffer:
         workspace_id: Optional[str] = None,
         statuses: Optional[Iterable[str]] = None,
     ) -> List[Aggregate]:
+        """Return aggregates for an operation filtered by their current status."""
         wanted = (
             {s.strip().lower() for s in statuses if s}
             if statuses is not None
@@ -643,6 +653,7 @@ class ProposalBuffer:
         fingerprint: Optional[str] = None,
         limit: int = 200,
     ) -> List[Proposal]:
+        """Return recent durable proposal records for one operation."""
         path = self._proposals_path(ontology_id, operation_key, workspace_id=workspace_id)
         if not path.exists():
             return []
@@ -718,8 +729,7 @@ class ProposalBuffer:
         return out[: max(0, int(k))]
 
     def iter_op_dirs(self) -> List[tuple]:
-        """Return all (workspace_id, ontology_id, operation_key) triples currently on disk.
-        Used by the patcher sweep loop and the pending-badge endpoint."""
+        """Return all persisted workspace, ontology, and operation triples."""
         out: List[tuple] = []
         if not self._root.exists():
             return out

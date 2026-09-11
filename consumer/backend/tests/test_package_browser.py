@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 
 import pytest
-
 from ontology.ontology_catalog import build_asset_catalog, find_asset_file
 from ontology.package_browser import (
     MAX_VIEW_BYTES,
@@ -143,11 +142,14 @@ def test_asset_resolution_can_allow_hidden_file_without_allowing_hidden_director
     (tmp_path / ".hidden").mkdir()
     (tmp_path / ".hidden" / "secret.txt").write_text("secret\n", encoding="utf-8")
 
-    assert resolve_package_file(
-        tmp_path,
-        ".env",
-        allow_hidden_file=True,
-    ) == tmp_path / ".env"
+    assert (
+        resolve_package_file(
+            tmp_path,
+            ".env",
+            allow_hidden_file=True,
+        )
+        == tmp_path / ".env"
+    )
     with pytest.raises(PackageBrowserError):
         resolve_package_file(
             tmp_path,

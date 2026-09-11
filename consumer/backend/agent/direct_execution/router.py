@@ -24,8 +24,11 @@ logger = get_logger("direct_execution.router")
 
 
 class OperationDirectRouter:
-    """Determines whether the current user request can be handled by the
-    direct script execution branch, bypassing the AgentLoopEngine."""
+    """Determine whether a request can use direct script execution.
+
+    The router bypasses the AgentLoopEngine only when the selected operation
+    and runtime requirements are satisfied.
+    """
 
     def __init__(self, config: DirectExecutionConfig) -> None:
         self._config = config
@@ -207,8 +210,8 @@ class OperationDirectRouter:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
     def _fallback(
-        self,
         reason: str,
         *,
         ontology_id: Optional[str] = None,
@@ -222,8 +225,8 @@ class OperationDirectRouter:
             operation_key=operation_key,
         )
 
+    @staticmethod
     def _check_runtime_requirements(
-        self,
         requirements: list[str],
         runtime_context: RuntimeContext,
     ) -> list[str]:

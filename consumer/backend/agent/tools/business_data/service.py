@@ -6,12 +6,12 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterator, Mapping, Tuple
 
 from agent.runtime.async_utils import run_sync_compat
-from agent.tools.business_data.providers.base import OntologySearchEvent
-from workspace.workspaces import get_workspace, get_workspace_paths
 from agent.tools.business_data.effective_connection import build_effective_connection
+from agent.tools.business_data.providers.base import OntologySearchEvent
 from agent.tools.business_data.provider_registry import get_provider_spec
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 from utils.logging import get_logger
+from workspace.workspaces import get_workspace, get_workspace_paths
 
 logger = get_logger("business_data.service")
 
@@ -41,7 +41,11 @@ def query_business_data_stream(
         try:
             workspace_root = str(get_workspace_paths(request.workspace_id).ontologies_dir)
         except Exception as exc:
-            logger.warning("Unable to resolve business-data workspace paths: %s", exc, exc_info=True)
+            logger.warning(
+                "Unable to resolve business-data workspace paths: %s",
+                exc,
+                exc_info=True,
+            )
 
     if connection.provider not in {"neo4j", "hugegraph"}:
         if connection.provider == "nl2sql_template":
@@ -90,19 +94,22 @@ def query_business_data_stream(
             ).strip()
         except Exception:
             scoped_provider_config["workspace_name"] = ""
-    scoped_provider_config.update({
-        key: value
-        for key, value in dict(request.provider_runtime_context or {}).items()
-        if key in {
-            "run_id",
-            "session_id",
-            "turn_id",
-            "parent_span_key",
-            "agent_iteration",
-            "model_profile_id",
-            "_observer",
+    runtime_context_keys = {
+        "run_id",
+        "session_id",
+        "turn_id",
+        "parent_span_key",
+        "agent_iteration",
+        "model_profile_id",
+        "_observer",
+    }
+    scoped_provider_config.update(
+        {
+            key: value
+            for key, value in dict(request.provider_runtime_context or {}).items()
+            if key in runtime_context_keys
         }
-    })
+    )
 
     provider_config = {
         "ontology_search": {
@@ -130,11 +137,8 @@ async def query_business_data_async(
 
     if connection.provider not in {"neo4j", "hugegraph"}:
         events = await run_sync_compat(
-            lambda: list(
-                query_business_data_stream(request, connection=connection)
-            ),
-            run_id=str(request.provider_runtime_context.get("run_id") or "")
-            or None,
+            lambda: list(query_business_data_stream(request, connection=connection)),
+            run_id=str(request.provider_runtime_context.get("run_id") or "") or None,
             task_name="business-data-provider",
             offload_kind="tool",
         )
@@ -146,8 +150,7 @@ async def query_business_data_async(
         _build_graph_provider,
         request,
         connection,
-        run_id=str(request.provider_runtime_context.get("run_id") or "")
-        or None,
+        run_id=str(request.provider_runtime_context.get("run_id") or "") or None,
         task_name="graph-provider-setup",
         offload_kind="tool",
     )
@@ -162,10 +165,7 @@ async def query_business_data_async(
         if callable(close):
             await run_sync_compat(
                 close,
-                run_id=str(
-                    request.provider_runtime_context.get("run_id") or ""
-                )
-                or None,
+                run_id=str(request.provider_runtime_context.get("run_id") or "") or None,
                 task_name="graph-provider-close",
                 offload_kind="tool",
             )
@@ -181,11 +181,13 @@ def _build_graph_provider(
     workspace_root = ""
     if request.workspace_id:
         try:
-            workspace_root = str(
-                get_workspace_paths(request.workspace_id).ontologies_dir
-            )
+            workspace_root = str(get_workspace_paths(request.workspace_id).ontologies_dir)
         except Exception as exc:
-            logger.warning("Unable to resolve graph workspace paths: %s", exc, exc_info=True)
+            logger.warning(
+                "Unable to resolve graph workspace paths: %s",
+                exc,
+                exc_info=True,
+            )
     scoped_provider_config: dict[str, Any] = {
         **dict(connection.config),
         "_workspace_root": workspace_root,
@@ -193,10 +195,7 @@ def _build_graph_provider(
         "ontology_id": request.ontology_id,
         "ontology_version": request.ontology_version,
     }
-    workspace_property = str(
-        scoped_provider_config.get("workspace_property")
-        or "d2o_workspace_id"
-    ).strip()
+    workspace_property = str(scoped_provider_config.get("workspace_property") or "d2o_workspace_id").strip()
     if workspace_property == "workspace_name":
         try:
             scoped_provider_config["workspace_name"] = str(
@@ -253,9 +252,6 @@ def _append_field_alias_mappings(
         normalized_query,
         "",
         "字段映射（使用右侧正式字段 key）：",
-        *[
-            "- {} -> {}".format(name, field_key)
-            for name, field_key in normalized_mappings
-        ],
+        *["- {} -> {}".format(name, field_key) for name, field_key in normalized_mappings],
     ]
     return "\n".join(lines)

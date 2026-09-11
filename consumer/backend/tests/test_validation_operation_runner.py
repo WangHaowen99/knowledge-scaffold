@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from solver_coordination.contracts import Candidate, CandidateSet, Option, OrderedPlan, PlanItem
 from solver_coordination.errors import VerificationDivergenceError, VerificationRuntimeFailure
 from solver_coordination.operation_validation import ResolvedValidationContext
@@ -85,9 +84,7 @@ def test_runner_invokes_one_frozen_batch_and_trusts_platform_identity(tmp_path):
 
     assert len(calls) == 1
     assert calls[0]["data_access"] == "frozen_snapshot"
-    assert calls[0]["request_payload"]["fact_snapshot"]["payload"] == {
-        "synthetic_fact": "value"
-    }
+    assert calls[0]["request_payload"]["fact_snapshot"]["payload"] == {"synthetic_fact": "value"}
     assert results[0].status is CandidateValidationStatus.FEASIBLE
     assert results[0].candidate_digest == _candidate_set().candidates[0].candidate_digest
     assert results[0].evidence_ref == "validation_evidence_demo"
@@ -116,6 +113,7 @@ def test_bound_operation_rechecks_resolved_script_path_and_digest(tmp_path, monk
     captured = []
 
     class _Runtime:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def execute(self, invocation):
             captured.append(invocation)
             return json.dumps(

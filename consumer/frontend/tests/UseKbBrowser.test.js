@@ -17,7 +17,9 @@ const vite = await createServer({
 const { default: useKbBrowser } = await vite.ssrLoadModule(
   '/src/features/knowledge/hooks/useKbBrowser.js',
 );
-const { AuthCtx } = await vite.ssrLoadModule('/src/features/auth/useAuthContext.js');
+const { AuthCtx } = await vite.ssrLoadModule(
+  '/src/features/auth/useAuthContext.js',
+);
 
 after(async () => {
   await vite.close();
@@ -49,9 +51,13 @@ function createInstrumentedResource() {
     fetcher: (_url, { signal }) => {
       const pending = deferred();
       requests.push({ signal, pending });
-      signal.addEventListener('abort', () => {
-        pending.reject(new DOMException('aborted', 'AbortError'));
-      }, { once: true });
+      signal.addEventListener(
+        'abort',
+        () => {
+          pending.reject(new DOMException('aborted', 'AbortError'));
+        },
+        { once: true },
+      );
       return pending.promise;
     },
   });
@@ -89,9 +95,12 @@ function HookHarness({ listEnabled, resource, onSnapshot }) {
 }
 
 async function withRenderedHook(run) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="root"></div></body></html>',
+    {
+      url: 'http://localhost/',
+    },
+  );
   const testGlobals = {
     window: dom.window,
     document: dom.window.document,
@@ -101,16 +110,25 @@ async function withRenderedHook(run) {
     IS_REACT_ACT_ENVIRONMENT: true,
   };
   const originalGlobals = new Map(
-    Object.keys(testGlobals).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
+    Object.keys(testGlobals).map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
   );
   for (const [name, value] of Object.entries(testGlobals)) {
-    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      writable: true,
+      value,
+    });
   }
 
   const { createRoot } = await import('react-dom/client');
   const root = createRoot(document.getElementById('root'));
   let latestState = null;
-  const onSnapshot = (state) => { latestState = state; };
+  const onSnapshot = (state) => {
+    latestState = state;
+  };
   const renderHook = async ({ workspaceId, listEnabled, resource }) => {
     const authValue = {
       can: () => true,
@@ -124,7 +142,11 @@ async function withRenderedHook(run) {
         React.createElement(
           AuthCtx.Provider,
           { value: authValue },
-          React.createElement(HookHarness, { listEnabled, resource, onSnapshot }),
+          React.createElement(HookHarness, {
+            listEnabled,
+            resource,
+            onSnapshot,
+          }),
         ),
       );
     });
@@ -160,8 +182,11 @@ async function withRenderedHook(run) {
     await act(async () => root.unmount());
     dom.window.close();
     for (const [name, descriptor] of originalGlobals) {
-      if (descriptor === undefined) delete globalThis[name];
-      else Object.defineProperty(globalThis, name, descriptor);
+      if (descriptor === undefined) {
+        delete globalThis[name];
+      } else {
+        Object.defineProperty(globalThis, name, descriptor);
+      }
     }
   }
 }
@@ -176,7 +201,12 @@ test('late workspace A invalidation does not abort or replace the active workspa
     });
     await waitFor(() => assert.equal(instrumented.requests.length, 1));
     instrumented.requests[0].pending.resolve(ontologyResponse('onto-a'));
-    await waitFor(() => assert.deepEqual(getState().packages.map((item) => item.id), ['onto-a']));
+    await waitFor(() =>
+      assert.deepEqual(
+        getState().packages.map((item) => item.id),
+        ['onto-a'],
+      ),
+    );
     const lateWorkspaceARefresh = getState().retryPackages;
 
     await renderHook({
@@ -198,7 +228,10 @@ test('late workspace A invalidation does not abort or replace the active workspa
     instrumented.requests[1].pending.resolve(ontologyResponse('onto-b'));
     await waitFor(() => {
       assert.equal(getState().pkgsLoading, false);
-      assert.deepEqual(getState().packages.map((item) => item.id), ['onto-b']);
+      assert.deepEqual(
+        getState().packages.map((item) => item.id),
+        ['onto-b'],
+      );
     });
   });
 });
@@ -230,7 +263,10 @@ test('late invalidation after the final list surface leaves does not create a ne
     });
     await flush();
 
-    assert.equal(instrumented.subscriptions.length, subscriptionsBeforeLateCallback);
+    assert.equal(
+      instrumented.subscriptions.length,
+      subscriptionsBeforeLateCallback,
+    );
     assert.equal(instrumented.requests.length, 1);
     assert.equal(getState().pkgsLoading, false);
   });

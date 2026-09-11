@@ -9,38 +9,54 @@
 from __future__ import annotations
 
 import socket
-import sys
 import threading
-from contextlib import nullcontext
+import importlib
+import importlib.util
+import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
-from werkzeug.serving import make_server
-
-from auth_test_backend import AuthManager
+from api import workspace_acl_service
 from api.auth.auth import PasswordPolicyError
 from api.auth.remote_auth import RemoteAuthBackend
-from api import workspace_acl_service
-from api.workspace_acl_service import WorkspaceIdentityNotFoundError
 from api.routes.auth import auth_router
 from api.testing import TestApplication
+from api.workspace_acl_service import WorkspaceIdentityNotFoundError
+from auth_test_backend import AuthManager
+from backend_synthetic_credentials import (
+    ACCESS_KEY_SECRET,
+    ADMIN_API_TOKEN,
+    API_KEY,
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    INVALID_PASSWORD,
+    STRONG_PASSWORD,
+    STRONG_PASSWORD_2,
+    STRONG_PASSWORD_3,
+)
+from fastapi.testclient import TestClient
+from werkzeug.serving import make_server
 
 # 测试专用例外：决策 D4 禁止 consumer 与 auth-server 之间任何生产代码 Python import
 # （唯一接口是 HTTP）。集成测试为了进程内起真实 server 而 import auth_server，
 # 属于测试基础设施，不构成生产依赖；生产代码严禁效仿。
 AUTH_SERVER_DIR = Path(__file__).resolve().parents[3] / "auth-server"
-sys.path.insert(0, str(AUTH_SERVER_DIR))
-
-from auth_server import create_app as create_auth_server_app  # noqa: E402
-from auth_server.config import AuthServerConfig  # noqa: E402
-
-ADMIN_TOKEN = "test-admin-token"
-BOOTSTRAP_ADMIN_PASSWORD = "TestBootstrap#2026"
-STRONG_PASSWORD = "Zq7#Wmx2Lp8!"
-STRONG_PASSWORD_2 = "Kv3$Ntb6Rd5?"
+_AUTH_SERVER_PACKAGE = AUTH_SERVER_DIR / "auth_server"
+_AUTH_SERVER_SPEC = importlib.util.spec_from_file_location(
+    "auth_server",
+    _AUTH_SERVER_PACKAGE / "__init__.py",
+    submodule_search_locations=[str(_AUTH_SERVER_PACKAGE)],
+)
+if _AUTH_SERVER_SPEC is None or _AUTH_SERVER_SPEC.loader is None:
+    raise ImportError("auth_server package cannot be loaded")
+_AUTH_SERVER_MODULE = importlib.util.module_from_spec(_AUTH_SERVER_SPEC)
+sys.modules.setdefault("auth_server", _AUTH_SERVER_MODULE)
+_AUTH_SERVER_SPEC.loader.exec_module(_AUTH_SERVER_MODULE)
+create_auth_server_app = _AUTH_SERVER_MODULE.create_app
+AuthServerConfig = importlib.import_module("auth_server.config").AuthServerConfig
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +83,7 @@ def auth_server(tmp_path):
         issuer=base_url,
         audience="meta-wise",
         access_ttl_seconds=60,  # server 允许的最小值；测试内旧 access 始终处于 TTL 窗口
-        admin_token=ADMIN_TOKEN,
+        admin_token=ADMIN_API_TOKEN,
         bootstrap_admin_password=BOOTSTRAP_ADMIN_PASSWORD,
         enable_registration=True,
     )
@@ -84,7 +100,7 @@ def auth_server(tmp_path):
 
 @pytest.fixture()
 def backend(auth_server):
-    return RemoteAuthBackend(auth_server.base_url, admin_token=ADMIN_TOKEN)
+    return RemoteAuthBackend(auth_server.base_url, admin_token=ADMIN_API_TOKEN)
 
 
 def _build_consumer_app(auth_manager):
@@ -127,7 +143,7 @@ class _StubSession:
 
 
 def test_password_login_issue_and_verify(backend):
-    result = backend.login("admin", "TestBootstrap#2026")
+    result = backend.login("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert result is not None
     user = result.user
     assert user.username == "admin"
@@ -148,7 +164,7 @@ def test_password_login_issue_and_verify(backend):
 
 
 def test_login_rejects_bad_credentials(backend):
-    assert backend.login("admin", "wrong-password") is None
+    assert backend.login("admin", INVALID_PASSWORD) is None
     assert backend.login("no-such-user", "whatever") is None
     assert backend.login("", "") is None
 
@@ -159,7 +175,7 @@ def test_concurrent_same_username_logins_keep_token_pairs_isolated(backend):
 
     def login_once():
         barrier.wait(timeout=5)
-        return backend.login("admin", "TestBootstrap#2026")
+        return backend.login("admin", BOOTSTRAP_ADMIN_PASSWORD)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(login_once) for _ in range(2)]
@@ -176,34 +192,32 @@ def test_concurrent_same_username_logins_keep_token_pairs_isolated(backend):
 
 def test_token_endpoint_200_requires_complete_verified_token_pair(monkeypatch):
     incomplete = RemoteAuthBackend(
-        "http://auth.example",
-        session=_StubSession(
-            token_payload={"refresh_token": "refresh", "expires_in": 60}
-        ),
+        "http://auth.example.net",
+        session=_StubSession(token_payload={"refresh_token": ACCESS_KEY_SECRET, "expires_in": 60}),
     )
     with pytest.raises(ValueError, match="认证服务暂不可用"):
-        incomplete.login("admin", "password")
+        incomplete.login("admin", INVALID_PASSWORD)
 
     malformed = RemoteAuthBackend(
-        "http://auth.example",
+        "http://auth.example.net",
         session=_StubSession(
             token_payload={
-                "access_token": "access",
-                "refresh_token": "refresh",
+                "access_token": API_KEY,
+                "refresh_token": ACCESS_KEY_SECRET,
                 "expires_in": 60,
             }
         ),
     )
     monkeypatch.setattr(malformed, "_verify_access_token_locally", lambda _token: None)
     with pytest.raises(ValueError, match="认证服务暂不可用"):
-        malformed.login("admin", "password")
+        malformed.login("admin", INVALID_PASSWORD)
     with pytest.raises(ValueError, match="认证服务暂不可用"):
-        malformed.refresh_tokens("refresh")
+        malformed.refresh_tokens(ACCESS_KEY_SECRET)
 
 
 def test_jwks_refresh_throttles_unknown_kids_and_drops_removed_key(monkeypatch):
     session = _StubSession(jwks_payload={"keys": []})
-    backend = RemoteAuthBackend("http://auth.example", session=session)
+    backend = RemoteAuthBackend("http://auth.example.net", session=session)
 
     assert backend._signing_key("forged-a") is None
     assert backend._signing_key("forged-b") is None
@@ -227,19 +241,19 @@ def test_jwks_refresh_throttles_unknown_kids_and_drops_removed_key(monkeypatch):
 
 
 def test_verify_token_rejects_non_access_tokens(backend):
-    result = backend.login("admin", "TestBootstrap#2026")
+    result = backend.login("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert result is not None and result.refresh_token
 
     # refresh token 不能当访问凭据（typ != access）
     assert backend.verify_token(result.refresh_token) is None
     # 篡改签名
     assert backend.verify_token(result.access_token[:-3] + "abc") is None
-    assert backend.verify_token("not-a-token") is None
+    assert backend.verify_token(API_KEY) is None
     assert backend.verify_token("") is None
 
 
 def test_refresh_tokens_rotates_pair(backend):
-    result = backend.login("admin", "TestBootstrap#2026")
+    result = backend.login("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert result is not None and result.refresh_token
 
     renewed = backend.refresh_tokens(result.refresh_token)
@@ -249,15 +263,15 @@ def test_refresh_tokens_rotates_pair(backend):
     verified = backend.verify_token(renewed["access_token"])
     assert verified is not None and verified.username == "admin"
 
-    assert backend.refresh_tokens("garbage") is None
+    assert backend.refresh_tokens(API_KEY) is None
     assert backend.refresh_tokens("") is None
 
 
 def test_change_password_revokes_refresh_but_old_access_survives_ttl(backend):
-    old_login = backend.login("admin", "TestBootstrap#2026")
+    old_login = backend.login("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert old_login is not None and old_login.refresh_token
 
-    changed = backend.change_password("admin", "TestBootstrap#2026", "NewRemote#2026")
+    changed = backend.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, STRONG_PASSWORD_3)
     assert changed.username == "admin"
     assert changed.password_change_required is False
 
@@ -268,8 +282,8 @@ def test_change_password_revokes_refresh_but_old_access_survives_ttl(backend):
     still_valid = backend.verify_token(old_login.access_token)
     assert still_valid is not None and still_valid.username == "admin"
 
-    assert backend.login("admin", "TestBootstrap#2026") is None
-    renewed = backend.login("admin", "NewRemote#2026")
+    assert backend.login("admin", BOOTSTRAP_ADMIN_PASSWORD) is None
+    renewed = backend.login("admin", STRONG_PASSWORD_3)
     assert renewed is not None and renewed.user.password_change_required is False
 
 
@@ -292,7 +306,7 @@ def test_user_management_via_admin_api(backend):
     updated = backend.update_user("alice", password=STRONG_PASSWORD_2)
     assert updated.password_change_required is False
 
-    changed = backend.change_password("alice", STRONG_PASSWORD_2, "Alz9$Pwd7Xy1!")
+    changed = backend.change_password("alice", STRONG_PASSWORD_2, STRONG_PASSWORD_3)
     assert changed.password_change_required is False
 
     backend.delete_user("alice")
@@ -345,12 +359,12 @@ def test_admin_methods_require_admin_token(auth_server):
 
 def test_auth_server_down_raises_unavailable(tmp_path):
     dead_url = f"http://127.0.0.1:{_free_port()}"  # 无人监听的端口
-    backend = RemoteAuthBackend(dead_url, admin_token=ADMIN_TOKEN)
+    backend = RemoteAuthBackend(dead_url, admin_token=ADMIN_API_TOKEN)
 
     with pytest.raises(ValueError, match="认证服务暂不可用"):
-        backend.login("admin", "TestBootstrap#2026")
+        backend.login("admin", BOOTSTRAP_ADMIN_PASSWORD)
     with pytest.raises(ValueError, match="认证服务暂不可用"):
-        backend.refresh_tokens("some-refresh-token")
+        backend.refresh_tokens(ACCESS_KEY_SECRET)
     with pytest.raises(ValueError, match="认证服务暂不可用"):
         backend.list_users()
     # verify_token 不抛错：拿不到 JWKS → None（require_auth 走 401）
@@ -361,10 +375,10 @@ def test_auth_server_down_raises_unavailable(tmp_path):
 
 
 def test_login_and_refresh_routes_remote_mode(auth_server):
-    backend = RemoteAuthBackend(auth_server.base_url, admin_token=ADMIN_TOKEN)
+    backend = RemoteAuthBackend(auth_server.base_url, admin_token=ADMIN_API_TOKEN)
     client = TestClient(_build_consumer_app(backend))
 
-    login = client.post("/auth/login", json={"username": "admin", "password": "TestBootstrap#2026"})
+    login = client.post("/auth/login", json={"username": "admin", "password": BOOTSTRAP_ADMIN_PASSWORD})
     assert login.status_code == 200
     data = login.json()
     # 冻结契约 {token, user} 之上的加法扩展
@@ -385,19 +399,13 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
     assert refreshed.status_code == 200
     refreshed_data = refreshed.json()
     assert set(refreshed_data.keys()) == {"token", "refresh_token", "expires_in"}
-    me2 = client.get(
-        "/auth/me", headers={"Authorization": f"Bearer {refreshed_data['token']}"}
-    )
+    me2 = client.get("/auth/me", headers={"Authorization": f"Bearer {refreshed_data['token']}"})
     assert me2.status_code == 200
 
-    logout = client.post(
-        "/auth/logout", json={"refresh_token": refreshed_data["refresh_token"]}
-    )
+    logout = client.post("/auth/logout", json={"refresh_token": refreshed_data["refresh_token"]})
     assert logout.status_code == 200
     assert logout.json() == {"success": True}
-    revoked = client.post(
-        "/auth/refresh", json={"refresh_token": refreshed_data["refresh_token"]}
-    )
+    revoked = client.post("/auth/refresh", json={"refresh_token": refreshed_data["refresh_token"]})
     assert revoked.status_code == 401
     assert revoked.json() == {"error": "Unauthorized"}
 
@@ -405,7 +413,7 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
     assert missing_logout_token.status_code == 400
 
     # 上游拒绝（无效 refresh）→ 401，前端据此登出
-    rejected = client.post("/auth/refresh", json={"refresh_token": "garbage"})
+    rejected = client.post("/auth/refresh", json={"refresh_token": API_KEY})
     assert rejected.status_code == 401
     assert rejected.json() == {"error": "Unauthorized"}
 
@@ -413,16 +421,16 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
 def test_login_wrong_password_remote_mode_contract(auth_server):
     backend = RemoteAuthBackend(auth_server.base_url)
     client = TestClient(_build_consumer_app(backend))
-    response = client.post("/auth/login", json={"username": "admin", "password": "nope"})
+    response = client.post("/auth/login", json={"username": "admin", "password": INVALID_PASSWORD})
     assert response.status_code == 401
     assert response.json() == {"error": "Invalid credentials"}
 
 
 def test_refresh_route_backend_without_refresh_returns_503(tmp_path):
     # 后端未实现 refresh_tokens（如 AuthManager 契约测试后端）时，/auth/refresh 返回 503
-    backend_without_refresh = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    backend_without_refresh = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
     client = TestClient(_build_consumer_app(backend_without_refresh))
-    response = client.post("/auth/refresh", json={"refresh_token": "anything"})
+    response = client.post("/auth/refresh", json={"refresh_token": API_KEY})
     assert response.status_code == 503
     assert response.json() == {"error": "当前认证模式不支持刷新"}
 
@@ -434,7 +442,7 @@ def test_build_runtime_services_assembles_remote_backend(auth_server, tmp_path, 
     import app as app_module
 
     monkeypatch.setenv("AUTH_SERVER_URL", auth_server.base_url)
-    monkeypatch.setenv("AUTH_SERVER_ADMIN_TOKEN", ADMIN_TOKEN)
+    monkeypatch.setenv("AUTH_SERVER_ADMIN_TOKEN", ADMIN_API_TOKEN)
     monkeypatch.setenv("AUTH_SERVER_ISSUER", auth_server.base_url)
     monkeypatch.setenv("AUTH_SERVER_AUDIENCE", "meta-wise")
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "project"))
@@ -445,7 +453,7 @@ def test_build_runtime_services_assembles_remote_backend(auth_server, tmp_path, 
     assert isinstance(remote, RemoteAuthBackend)
 
     # 装配后端可用：真 HTTP 打到 fixture 起的 auth server
-    result = remote.login("admin", "TestBootstrap#2026")
+    result = remote.login("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert result is not None and result.user.role == "admin"
 
 

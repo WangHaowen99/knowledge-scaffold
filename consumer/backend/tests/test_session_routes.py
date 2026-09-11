@@ -7,13 +7,13 @@ from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
-
 from agent.runtime.errors import SessionBusyError
-from api.testing import TestApplication
-from config.workspace_llm_profiles import update_workspace_llm_profiles
 from api.routes.sessions import _converge_session_prune_batches, sessions_router
+from api.testing import TestApplication
 from auth_test_backend import AuthManager
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD, synthetic_secret
+from config.workspace_llm_profiles import update_workspace_llm_profiles
+from fastapi.testclient import TestClient
 from persistence.chat_store import ChatStore
 from persistence.execution_store import (
     INTERACTION_CANCELLED_MESSAGE,
@@ -55,6 +55,7 @@ class _FakeChatStore:
         self.created_sessions.append({"title": title, "metadata": dict(metadata or {})})
         return self.session
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def prune_old_sessions(self, max_sessions):
         del max_sessions
         return []
@@ -136,10 +137,7 @@ def test_background_prune_converges_across_bounded_batches():
     def prune(batch_size):
         calls.append(batch_size)
         remaining = max(0, 60 - (len(calls) - 1) * batch_size)
-        deleted = tuple(
-            f"session-{index}"
-            for index in range(min(batch_size, remaining))
-        )
+        deleted = tuple(f"session-{index}" for index in range(min(batch_size, remaining)))
         return SimpleNamespace(
             deleted_session_ids=deleted,
             has_more=remaining > batch_size,
@@ -288,10 +286,10 @@ def _build_test_client(
     app = TestApplication()
     app.state.services["TESTING"] = True
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
-    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     assert user is not None
 
     app.state.services["AUTH_MANAGER"] = auth_manager
@@ -461,12 +459,11 @@ def test_cancel_pending_interaction_is_durable_and_idempotent(tmp_path, monkeypa
         1,
     )
     loaded = chat_store.get_session("sess-cancel")
-    cancellation_events = [
-        event for event in loaded.events
-        if event.get("event") == "chat_message"
-        and (event.get("data") or {}).get("metadata", {}).get("type")
-        == "interaction_cancelled"
-    ]
+    cancellation_events = []
+    for event in loaded.events:
+        event_type = (event.get("data") or {}).get("metadata", {}).get("type")
+        if event.get("event") == "chat_message" and event_type == "interaction_cancelled":
+            cancellation_events.append(event)
     assert len(cancellation_events) == 1
     assert cancellation_events[0]["data"]["role"] == "system"
     assert cancellation_events[0]["data"]["content"] == INTERACTION_CANCELLED_NOTICE
@@ -480,11 +477,13 @@ def test_cancel_pending_interaction_is_durable_and_idempotent(tmp_path, monkeypa
 def test_list_session_turns_filters_status_and_feedback(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = _FakeChatStore(_FakeSession("sess-1"))
-    execution_store = _FakeExecutionStore([
-        {"turn_id": 1, "status": "success"},
-        {"turn_id": 2, "status": "failed", "feedback": {"vote": "down"}},
-        {"turn_id": 3, "status": "failed"},
-    ])
+    execution_store = _FakeExecutionStore(
+        [
+            {"turn_id": 1, "status": "success"},
+            {"turn_id": 2, "status": "failed", "feedback": {"vote": "down"}},
+            {"turn_id": 3, "status": "failed"},
+        ]
+    )
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, execution_store),
@@ -521,9 +520,9 @@ def _write_system_profiles(tmp_path, monkeypatch):
                             "id": "fast",
                             "name": "Fast Global",
                             "provider": "openai_compatible",
-                            "base_url": "https://fast.example/v1",
+                            "base_url": "https://fast.example.net/v1",
                             "model": "fast-model",
-                            "api_key": "fast-secret",
+                            "api_key": synthetic_secret("session_routes-credential-01"),
                             "enabled": True,
                         }
                     ],
@@ -554,9 +553,9 @@ def test_create_session_accepts_workspace_private_model_profile(tmp_path, monkey
                     "id": "private",
                     "name": "Private Model",
                     "provider": "openai_compatible",
-                    "base_url": "https://private.example/v1",
+                    "base_url": "https://private.example.net/v1",
                     "model": "private-model",
-                    "api_key": "private-secret",
+                    "api_key": synthetic_secret("session_routes-credential-02"),
                     "enabled": True,
                 }
             ]
@@ -639,9 +638,11 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
             scope_events.append(("exit", workspace_id))
 
     class FakeRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def refresh(self):
             raise AssertionError("session creation must use the maintained registry cache")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_ontology(self, ontology_id):
             assert active_workspaces == ["session-test"]
             if ontology_id == "demo-ontology":
@@ -695,10 +696,7 @@ def test_create_session_omits_empty_selected_ontology_metadata(tmp_path, monkeyp
         assert response.status_code == 201
         assert "selected_ontology_id" not in response.json()["metadata"]
 
-    assert all(
-        "selected_ontology_id" not in item["metadata"]
-        for item in chat_store.created_sessions
-    )
+    assert all("selected_ontology_id" not in item["metadata"] for item in chat_store.created_sessions)
 
 
 def test_create_session_rejects_selected_ontology_missing_from_workspace(tmp_path, monkeypatch):
@@ -707,9 +705,11 @@ def test_create_session_rejects_selected_ontology_missing_from_workspace(tmp_pat
     _stub_session_create_dependencies(monkeypatch, chat_store)
 
     class EmptyRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def refresh(self):
             return 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_ontology(self, ontology_id):
             del ontology_id
             return None
@@ -733,9 +733,11 @@ def test_create_session_rejects_disabled_selected_ontology(tmp_path, monkeypatch
     _stub_session_create_dependencies(monkeypatch, chat_store)
 
     class DisabledRegistry:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def refresh(self):
             return 1
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_ontology(self, ontology_id):
             return SimpleNamespace(id=ontology_id, enabled=False)
 
@@ -838,9 +840,7 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
         lambda: (chat_store, _FakeExecutionStore()),
     )
     response = client.get(
-        "/agentic/sessions/sess-output/runs/run-output/tool-outputs/{}".format(
-            artifact["output_ref"]
-        ),
+        "/agentic/sessions/sess-output/runs/run-output/tool-outputs/{}".format(artifact["output_ref"]),
         headers=headers,
     )
 
@@ -848,15 +848,11 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["content-type"].startswith("text/plain")
     assert response.text == complete_output
-    assert response.headers["X-Tool-Output-Size"] == str(
-        len(complete_output.encode("utf-8"))
-    )
+    assert response.headers["X-Tool-Output-Size"] == str(len(complete_output.encode("utf-8")))
     assert response.headers["X-Tool-Call-Id"] == "call-output"
     assert response.headers["X-Tool-Output-Ref"] == artifact["output_ref"]
     assert response.headers["X-Tool-Output-SHA256"] == artifact["sha256"]
-    assert "X-Tool-Output-SHA256" in response.headers[
-        "Access-Control-Expose-Headers"
-    ]
+    assert "X-Tool-Output-SHA256" in response.headers["Access-Control-Expose-Headers"]
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Content-Security-Policy"] == "sandbox; default-src 'none'"
 
@@ -878,9 +874,7 @@ def test_get_tool_output_rejects_invalid_workspace_before_store_lookup(
         unexpected_store_lookup,
     )
     response = client.get(
-        "/agentic/sessions/sess-output/runs/run-output/tool-outputs/{}".format(
-            "a" * 32
-        ),
+        "/agentic/sessions/sess-output/runs/run-output/tool-outputs/{}".format("a" * 32),
         headers={**headers, "X-Workspace-Id": "../invalid"},
     )
 
@@ -909,9 +903,7 @@ def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monk
         lambda: (foreign_workspace_store, _FakeExecutionStore()),
     )
     foreign_response = client.get(
-        "/agentic/sessions/shared-session/runs/owner-run/tool-outputs/{}".format(
-            artifact["output_ref"]
-        ),
+        "/agentic/sessions/shared-session/runs/owner-run/tool-outputs/{}".format(artifact["output_ref"]),
         headers=headers,
     )
     assert foreign_response.status_code == 404
@@ -921,17 +913,13 @@ def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monk
         lambda: (owner_store, _FakeExecutionStore()),
     )
     wrong_run_response = client.get(
-        "/agentic/sessions/shared-session/runs/another-run/tool-outputs/{}".format(
-            artifact["output_ref"]
-        ),
+        "/agentic/sessions/shared-session/runs/another-run/tool-outputs/{}".format(artifact["output_ref"]),
         headers=headers,
     )
     assert wrong_run_response.status_code == 404
 
     wrong_session_response = client.get(
-        "/agentic/sessions/missing-session/runs/owner-run/tool-outputs/{}".format(
-            artifact["output_ref"]
-        ),
+        "/agentic/sessions/missing-session/runs/owner-run/tool-outputs/{}".format(artifact["output_ref"]),
         headers=headers,
     )
     assert wrong_session_response.status_code == 404
@@ -1107,23 +1095,22 @@ class _FaultingSummaryIndex:
     def state(self):
         return "degraded" if self.stage == "rebuild" else "ready"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def rebuild(self):
         raise OSError("synthetic index rebuild failure")
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def list_all(self):
         raise AssertionError("legacy fallback must not read the failed index")
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def list_page(self, **_options):
         raise OSError("synthetic index page failure")
 
 
 def _summary_record(index, *, pending=False):
     status = "awaiting_input" if pending else "idle"
-    interaction = (
-        {"id": "interaction-{}".format(index), "type": "input"}
-        if pending
-        else None
-    )
+    interaction = {"id": "interaction-{}".format(index), "type": "input"} if pending else None
     return SessionSummary.create(
         session_id="session-{:04d}".format(index),
         title="Synthetic {}".format(index),
@@ -1146,10 +1133,7 @@ def test_create_session_schedules_prune_until_retention_converges(tmp_path, monk
     def prune_request_sessions_batch(*, max_sessions, batch_size):
         del max_sessions
         calls.append(batch_size)
-        deleted = tuple(
-            f"deleted-{index}"
-            for index in range(batch_size if len(calls) < 3 else 3)
-        )
+        deleted = tuple(f"deleted-{index}" for index in range(batch_size if len(calls) < 3 else 3))
         return SimpleNamespace(
             deleted_session_ids=deleted,
             has_more=len(calls) < 3,
@@ -1158,6 +1142,7 @@ def test_create_session_schedules_prune_until_retention_converges(tmp_path, monk
         )
 
     class Supervisor:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def start_derived(self, operation, *, name):
             scheduled.append((operation, name))
 
@@ -1211,9 +1196,7 @@ def test_list_sessions_uses_revisioned_index_pagination_without_detail_reads(
         headers=headers,
     )
     assert second.status_code == 200
-    assert [item["id"] for item in second.json()["sessions"]] == [
-        "session-0000"
-    ]
+    assert [item["id"] for item in second.json()["sessions"]] == ["session-0000"]
     assert second.json()["has_more"] is False
     assert second.json()["next_cursor"] is None
     assert chat_store.list_calls == 0
@@ -1452,10 +1435,7 @@ def test_first_page_of_1000_sessions_recovers_only_page_active_or_pending_items(
     tmp_path,
     monkeypatch,
 ):
-    records = [
-        _summary_record(index, pending=index in {0, 999})
-        for index in range(1000)
-    ]
+    records = [_summary_record(index, pending=index in {0, 999}) for index in range(1000)]
     index = SessionSummaryIndex(
         tmp_path / "session-summary-index.json",
         rebuild_loader=lambda: records,

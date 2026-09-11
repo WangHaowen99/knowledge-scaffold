@@ -8,17 +8,17 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from ontology.ontology_catalog import (
     ObjectDataMappingStatus,
-    find_field_alias_matches,
     find_exact_object_data_mapping_result,
+    find_field_alias_matches,
     find_script_entry,
     load_script_catalog,
-    split_markdown_frontmatter,
     resolve_field_reference,
     resolve_object_reference,
+    split_markdown_frontmatter,
 )
+from ontology.operation_execution import DeterministicPackageError
 from ontology.package_import import (
     PackageNormalizationError,
     inspect_importable_package,
@@ -26,8 +26,6 @@ from ontology.package_import import (
     validate_imported_field_aliases,
     validate_imported_object_aliases,
 )
-from ontology.operation_execution import DeterministicPackageError
-
 
 V01_MANIFEST = """\
 kind: ontology-package
@@ -92,7 +90,7 @@ def _write_legacy_package(root):
     (root / "scripts" / "query_part.py").write_text("print('ok')\n", encoding="utf-8")
     (root / "scripts-list.md").write_text(
         "- `QueryPart` -> `scripts/query_part.py`\n"
-        "  `parameters`: `[{\"name\":\"part_code\",\"flag\":\"--part-code\",\"required\":true,\"type\":\"string\"}]`\n",
+        '  `parameters`: `[{"name":"part_code","flag":"--part-code","required":true,"type":"string"}]`\n',
         encoding="utf-8",
     )
 
@@ -123,9 +121,7 @@ def _write_v02_solver_package_with_compat_index(root):
             ]
         },
     }
-    (root / "manifest.yaml").write_text(
-        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
-    )
+    (root / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     (root / "decision-models" / "route-choice.yaml").write_text(
         "kind: decision-model\nid: route_choice\nvariables: [route_a, route_b]\n",
         encoding="utf-8",
@@ -140,12 +136,8 @@ def _write_v02_solver_package_with_compat_index(root):
             {"type": "object", "properties": {"route": {"type": "string"}}},
         ),
     ):
-        (root / "schemas" / filename).write_text(
-            json.dumps(document), encoding="utf-8"
-        )
-    (root / "presentations" / "result.yaml").write_text(
-        "title: Route result\n", encoding="utf-8"
-    )
+        (root / "schemas" / filename).write_text(json.dumps(document), encoding="utf-8")
+    (root / "presentations" / "result.yaml").write_text("title: Route result\n", encoding="utf-8")
     (root / "operations" / "optimize-route.md").write_text(
         "---\nresource: operation\nkey: optimize_route\ntitle: Optimize route\n"
         "execution:\n  mode: solver_workflow\n  decision_model: route_choice\n"
@@ -284,21 +276,13 @@ def test_normalize_v01_keeps_only_new_layout_and_completes_required_indexes(tmp_
 def test_normalize_v02_preserves_compat_list_index_and_solver_contract(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "normalized"
-    source_manifest, compat_bytes = _write_v02_solver_package_with_compat_index(
-        source
-    )
+    source_manifest, compat_bytes = _write_v02_solver_package_with_compat_index(source)
 
     result = normalize_imported_package(source, target)
 
-    normalized_manifest = yaml.safe_load(
-        (target / "manifest.yaml").read_text(encoding="utf-8")
-    )
+    normalized_manifest = yaml.safe_load((target / "manifest.yaml").read_text(encoding="utf-8"))
     assert result.generated_files == ()
-    assert (
-        normalized_manifest["schema_version"]
-        == source_manifest["schema_version"]
-        == "0.2"
-    )
+    assert normalized_manifest["schema_version"] == source_manifest["schema_version"] == "0.2"
     assert (target / "operations-list.md").read_bytes() == compat_bytes
     assert not (target / ".deterministic-lock.json").exists()
 
@@ -409,17 +393,13 @@ def test_normalize_legacy_package_projects_aliases_and_removes_empty_field_alias
     assert "| 仓库编号 | warehouse_id | 唯一标识 | 仓编号 |" in converted
 
     channel_frontmatter = yaml.safe_load(
-        (target / "objects" / "Channel.md")
-        .read_text(encoding="utf-8")
-        .split("---", 2)[1]
+        (target / "objects" / "Channel.md").read_text(encoding="utf-8").split("---", 2)[1]
     )
     assert channel_frontmatter["description"] == "渠道对象"
     assert "aliases" not in channel_frontmatter
 
     product_frontmatter = yaml.safe_load(
-        (target / "objects" / "Product.md")
-        .read_text(encoding="utf-8")
-        .split("---", 2)[1]
+        (target / "objects" / "Product.md").read_text(encoding="utf-8").split("---", 2)[1]
     )
     assert product_frontmatter["description"] == "产品对象"
     assert product_frontmatter["aliases"] == ["商品", "SKU"]
@@ -432,9 +412,7 @@ def test_normalize_legacy_package_canonicalizes_outerless_object_catalog(tmp_pat
     target = tmp_path / "normalized"
     _write_legacy_package(source)
     (source / "objects-list.md").write_text(
-        "key | aliases | description\n"
-        "--- | --- | ---\n"
-        "Part | CatalogAlias | Part object\n",
+        "key | aliases | description\n" "--- | --- | ---\n" "Part | CatalogAlias | Part object\n",
         encoding="utf-8",
     )
     (source / "objects" / "Part.md").write_text("# Part\n", encoding="utf-8")
@@ -444,11 +422,7 @@ def test_normalize_legacy_package_canonicalizes_outerless_object_catalog(tmp_pat
     object_index = (target / "objects" / "index.md").read_text(encoding="utf-8")
     assert "| key | aliases | description |" in object_index
     assert "| Part | CatalogAlias | Part object |" in object_index
-    frontmatter = yaml.safe_load(
-        (target / "objects" / "Part.md")
-        .read_text(encoding="utf-8")
-        .split("---", 2)[1]
-    )
+    frontmatter = yaml.safe_load((target / "objects" / "Part.md").read_text(encoding="utf-8").split("---", 2)[1])
     assert frontmatter["aliases"] == ["CatalogAlias"]
     resolution, error = resolve_object_reference(target, "CatalogAlias")
     assert error is None
@@ -551,8 +525,8 @@ def test_normalize_legacy_package_preserves_boolean_actions(tmp_path):
     _write_legacy_package(source)
     (source / "scripts-list.md").write_text(
         "- `QueryPart` -> `scripts/query_part.py`\n"
-        "  `parameters`: `[{\"name\":\"json\",\"flag\":\"--json\","
-        "\"required\":false,\"type\":\"boolean\",\"action\":\"store_true\"}]`\n",
+        '  `parameters`: `[{"name":"json","flag":"--json",'
+        '"required":false,"type":"boolean","action":"store_true"}]`\n',
         encoding="utf-8",
     )
 
@@ -699,9 +673,7 @@ def test_object_alias_normalizes_unicode_and_keeps_optional_canonical_key(tmp_pa
     objects_dir.mkdir()
     decomposed_alias = "Cafe\u0301"
     (objects_dir / "index.md").write_text(
-        "| object key | 别名 |\n"
-        "| --- | --- |\n"
-        "| 咖啡 | {} |\n".format(decomposed_alias),
+        "| object key | 别名 |\n" "| --- | --- |\n" "| 咖啡 | {} |\n".format(decomposed_alias),
         encoding="utf-8",
     )
     _write_object_definition(tmp_path, "coffee.md", key="咖啡", aliases=(decomposed_alias,))
@@ -718,10 +690,7 @@ def test_object_alias_validation_compares_normalized_sets_and_aggregates_errors(
     objects_dir = tmp_path / "objects"
     objects_dir.mkdir()
     (objects_dir / "index.md").write_text(
-        "| object key | 别名 |\n"
-        "| --- | --- |\n"
-        "| A | SECOND；First |\n"
-        "| B | Shared |\n",
+        "| object key | 别名 |\n" "| --- | --- |\n" "| A | SECOND；First |\n" "| B | Shared |\n",
         encoding="utf-8",
     )
     _write_object_definition(tmp_path, "a.md", key="A", aliases=("first", "second"))
@@ -744,8 +713,7 @@ def test_object_alias_validation_compares_normalized_sets_and_aggregates_errors(
     assert any("Object catalog key 'Missing' has no matching detail" in error for error in invalid.errors)
     assert any("Object alias 'shared' points to multiple objects: A, B" in error for error in invalid.errors)
     assert any(
-        "对象 key='A'、title='A' 别名不一致：objects/index.md = [Other, Shared]；"
-        "a.md = [first, second]" == error
+        "对象 key='A'、title='A' 别名不一致：objects/index.md = [Other, Shared]；" "a.md = [first, second]" == error
         for error in invalid.errors
     )
     assert invalid.warnings == ()
@@ -784,9 +752,7 @@ def test_object_alias_validation_splits_delimiters_inside_yaml_list_items(tmp_pa
     objects_dir = tmp_path / "objects"
     objects_dir.mkdir()
     (objects_dir / "index.md").write_text(
-        "| object key | 别名 |\n"
-        "| :--- | ---: |\n"
-        "| WithAliases | SourceItem/TargetItem |\n",
+        "| object key | 别名 |\n" "| :--- | ---: |\n" "| WithAliases | SourceItem/TargetItem |\n",
         encoding="utf-8",
     )
     _write_object_definition(
@@ -811,9 +777,7 @@ def test_object_alias_validation_reports_normalized_duplicates_once(tmp_path):
     objects_dir = tmp_path / "objects"
     objects_dir.mkdir()
     (objects_dir / "index.md").write_text(
-        "| object key | 别名 |\n"
-        "| --- | --- |\n"
-        "| WithDuplicates | Alpha/ALPHA/Beta/alpha |\n",
+        "| object key | 别名 |\n" "| --- | --- |\n" "| WithDuplicates | Alpha/ALPHA/Beta/alpha |\n",
         encoding="utf-8",
     )
     _write_object_definition(
@@ -846,9 +810,7 @@ def test_object_alias_unknown_key_header_warns_and_uses_detail_fallback(tmp_path
     objects_dir = tmp_path / "objects"
     objects_dir.mkdir()
     (objects_dir / "index.md").write_text(
-        "| unsupported | alias |\n"
-        "| --- | --- |\n"
-        "| WrongCatalogValue | DetailAlias |\n",
+        "| unsupported | alias |\n" "| --- | --- |\n" "| WrongCatalogValue | DetailAlias |\n",
         encoding="utf-8",
     )
     _write_object_definition(
@@ -905,21 +867,15 @@ def test_invalid_utf8_object_mapping_returns_structured_error_and_fails_import(
     assert not_found_result.status == ObjectDataMappingStatus.NOT_FOUND
     assert mapping_result.status == ObjectDataMappingStatus.INVALID
     assert mapping_result.mapping is None
-    assert mapping_result.error == (
-        "Error: Failed to decode mappings/object-data-mappings.json as UTF-8."
-    )
-    assert validation.errors == (
-        "Failed to decode mappings/object-data-mappings.json as UTF-8.",
-    )
+    assert mapping_result.error == ("Error: Failed to decode mappings/object-data-mappings.json as UTF-8.")
+    assert validation.errors == ("Failed to decode mappings/object-data-mappings.json as UTF-8.",)
 
 
 def test_object_alias_validation_rejects_catalog_key_detail_key_mismatch(tmp_path):
     objects_dir = tmp_path / "objects"
     objects_dir.mkdir()
     (objects_dir / "index.md").write_text(
-        "| object key | alias |\n"
-        "| --- | --- |\n"
-        "| ExpectedKey | Alias |\n",
+        "| object key | alias |\n" "| --- | --- |\n" "| ExpectedKey | Alias |\n",
         encoding="utf-8",
     )
     _write_object_definition(
@@ -931,9 +887,7 @@ def test_object_alias_validation_rejects_catalog_key_detail_key_mismatch(tmp_pat
 
     validation = validate_imported_object_aliases(tmp_path)
 
-    assert validation.errors == (
-        "Object catalog key 'ExpectedKey' does not exactly match detail key 'ActualKey'.",
-    )
+    assert validation.errors == ("Object catalog key 'ExpectedKey' does not exactly match detail key 'ActualKey'.",)
 
 
 def test_object_alias_validation_rejects_invalid_canonical_key(tmp_path):
@@ -1141,9 +1095,7 @@ def test_field_alias_parser_prefers_explicit_field_table_over_generic_table(tmp_
     assert error is None
     assert resolution is not None
     assert resolution.field_key == "ActualCode"
-    assert find_field_alias_matches(object_path, "查询业务编号") == (
-        ("业务编号", "ActualCode"),
-    )
+    assert find_field_alias_matches(object_path, "查询业务编号") == (("业务编号", "ActualCode"),)
 
 
 def test_field_alias_validation_uses_explicit_field_table_after_generic_table(tmp_path):
@@ -1163,9 +1115,7 @@ def test_field_alias_validation_uses_explicit_field_table_after_generic_table(tm
 
     validation = validate_imported_field_aliases(tmp_path)
 
-    assert validation.errors == (
-        "对象“object”的字段名称“编号”同时指向 [FieldA, FieldB]",
-    )
+    assert validation.errors == ("对象“object”的字段名称“编号”同时指向 [FieldA, FieldB]",)
 
 
 def test_field_alias_parser_reads_only_recognized_field_section(tmp_path):
@@ -1196,13 +1146,14 @@ def test_field_alias_parser_reads_only_recognized_field_section(tmp_path):
 
     assert validation.errors == ()
     assert validation.warnings == ()
-    assert find_field_alias_matches(object_path, "查询业务编号") == (
-        ("业务编号", "ActualCode"),
+    assert find_field_alias_matches(object_path, "查询业务编号") == (("业务编号", "ActualCode"),)
+    assert (
+        find_field_alias_matches(
+            object_path,
+            "查询示例编号、旧编号和缩进编号",
+        )
+        == ()
     )
-    assert find_field_alias_matches(
-        object_path,
-        "查询示例编号、旧编号和缩进编号",
-    ) == ()
 
 
 def test_field_alias_parser_ignores_fenced_field_heading(tmp_path):
@@ -1227,9 +1178,7 @@ def test_field_alias_parser_ignores_fenced_field_heading(tmp_path):
 
     assert validation.errors == ()
     assert validation.warnings == ()
-    assert find_field_alias_matches(object_path, "查询业务编号") == (
-        ("业务编号", "ActualCode"),
-    )
+    assert find_field_alias_matches(object_path, "查询业务编号") == (("业务编号", "ActualCode"),)
     assert find_field_alias_matches(object_path, "查询示例编号") == ()
 
 
@@ -1256,9 +1205,7 @@ def test_field_alias_parser_ignores_standalone_html_comment_blocks(tmp_path):
 
     assert validation.errors == ()
     assert validation.warnings == ()
-    assert find_field_alias_matches(object_path, "查询业务编号") == (
-        ("业务编号", "ActualCode"),
-    )
+    assert find_field_alias_matches(object_path, "查询业务编号") == (("业务编号", "ActualCode"),)
     assert find_field_alias_matches(object_path, "查询编号") == ()
 
 
@@ -1267,10 +1214,7 @@ def test_field_alias_parser_requires_recognized_field_section(tmp_path):
     objects_dir.mkdir()
     object_path = objects_dir / "object.md"
     object_path.write_text(
-        "# 示例\n\n"
-        "| 字段 key | 中文名 | 别名 |\n"
-        "| --- | --- | --- |\n"
-        "| ExampleCode | 示例编码 | 示例编号 |\n",
+        "# 示例\n\n" "| 字段 key | 中文名 | 别名 |\n" "| --- | --- | --- |\n" "| ExampleCode | 示例编码 | 示例编号 |\n",
         encoding="utf-8",
     )
 
@@ -1297,9 +1241,7 @@ def test_field_alias_parser_supports_display_name_english_name_table(tmp_path):
     assert error is None
     assert resolution is not None
     assert resolution.field_key == "productid"
-    assert find_field_alias_matches(object_path, "查询产品编号") == (
-        ("产品编号", "productid"),
-    )
+    assert find_field_alias_matches(object_path, "查询产品编号") == (("产品编号", "productid"),)
 
 
 def test_field_alias_validation_checks_display_name_english_name_table(tmp_path):
@@ -1316,9 +1258,7 @@ def test_field_alias_validation_checks_display_name_english_name_table(tmp_path)
 
     validation = validate_imported_field_aliases(tmp_path)
 
-    assert validation.errors == (
-        "对象“product”的字段 key“productid”重复",
-    )
+    assert validation.errors == ("对象“product”的字段 key“productid”重复",)
 
 
 def test_field_alias_query_matches_only_declared_names_with_safe_ascii_boundaries(
@@ -1346,9 +1286,7 @@ def test_field_alias_query_matches_only_declared_names_with_safe_ascii_boundarie
         ("物料变更类型", "MaterialType"),
     )
     assert find_field_alias_matches(object_path, "查询 CHANGE_ORDER_ID") == ()
-    assert find_field_alias_matches(object_path, "查询 Café") == (
-        ("Cafe\u0301", "CafeName"),
-    )
+    assert find_field_alias_matches(object_path, "查询 Café") == (("Cafe\u0301", "CafeName"),)
 
 
 def test_field_alias_query_prefers_longest_overlapping_name(tmp_path):
@@ -1362,16 +1300,12 @@ def test_field_alias_query_prefers_longest_overlapping_name(tmp_path):
         encoding="utf-8",
     )
 
-    assert find_field_alias_matches(object_path, "查询工时单位") == (
-        ("工时单位", "WorkHourUnit"),
-    )
+    assert find_field_alias_matches(object_path, "查询工时单位") == (("工时单位", "WorkHourUnit"),)
     assert find_field_alias_matches(object_path, "查询工时以及工时单位") == (
         ("工时", "WorkHour"),
         ("工时单位", "WorkHourUnit"),
     )
-    assert find_field_alias_matches(object_path, "查询作业时长单位") == (
-        ("作业时长单位", "WorkHourUnit"),
-    )
+    assert find_field_alias_matches(object_path, "查询作业时长单位") == (("作业时长单位", "WorkHourUnit"),)
 
 
 def test_field_alias_parser_supports_escaped_markdown_pipe(tmp_path):
@@ -1389,9 +1323,7 @@ def test_field_alias_parser_supports_escaped_markdown_pipe(tmp_path):
     assert error is None
     assert resolution is not None
     assert resolution.field_key == "PipeCode"
-    assert find_field_alias_matches(object_path, "查询 A|B") == (
-        ("A|B", "PipeCode"),
-    )
+    assert find_field_alias_matches(object_path, "查询 A|B") == (("A|B", "PipeCode"),)
 
 
 @pytest.mark.parametrize(
@@ -1437,9 +1369,7 @@ def test_field_alias_parser_allows_optional_outer_pipes_and_short_rows(
 
     assert validation.errors == ()
     assert validation.warnings == ()
-    assert find_field_alias_matches(object_path, "查询业务编号") == (
-        ("业务编号", "ActualCode"),
-    )
+    assert find_field_alias_matches(object_path, "查询业务编号") == (("业务编号", "ActualCode"),)
 
 
 def test_field_alias_parser_stops_at_markdown_block_after_field_table(
@@ -1463,9 +1393,7 @@ def test_field_alias_parser_stops_at_markdown_block_after_field_table(
 
     assert validation.errors == ()
     assert validation.warnings == ()
-    assert find_field_alias_matches(object_path, "查询业务编号") == (
-        ("业务编号", "ActualCode"),
-    )
+    assert find_field_alias_matches(object_path, "查询业务编号") == (("业务编号", "ActualCode"),)
     assert find_field_alias_matches(object_path, "查询伪别名") == ()
 
 
@@ -1480,9 +1408,7 @@ def test_field_alias_query_ignores_definition_without_field_key(tmp_path):
         encoding="utf-8",
     )
 
-    assert find_field_alias_matches(object_path, "查询编号和业务编号") == (
-        ("编号", "OtherField"),
-    )
+    assert find_field_alias_matches(object_path, "查询编号和业务编号") == (("编号", "OtherField"),)
 
 
 def test_field_alias_query_skips_case_insensitive_field_key_ambiguity(tmp_path):
@@ -1499,10 +1425,7 @@ def test_field_alias_query_skips_case_insensitive_field_key_ambiguity(tmp_path):
     resolution, error = resolve_field_reference(object_path, "编号")
 
     assert resolution is None
-    assert error == (
-        "Error: field reference '编号' is ambiguous. "
-        "Candidate field keys: FieldA, fielda."
-    )
+    assert error == ("Error: field reference '编号' is ambiguous. " "Candidate field keys: FieldA, fielda.")
     assert find_field_alias_matches(object_path, "查询编号") == ()
 
 
@@ -1521,12 +1444,8 @@ def test_field_alias_validation_reports_conflicts_and_duplicate_warnings(tmp_pat
 
     validation = validate_imported_field_aliases(tmp_path)
 
-    assert validation.errors == (
-        "对象“冲突对象”的字段名称“编号”同时指向 [FieldA, FieldB]",
-    )
-    assert validation.warnings == (
-        "对象“冲突对象”的字段“FieldA”存在重复别名“重复”",
-    )
+    assert validation.errors == ("对象“冲突对象”的字段名称“编号”同时指向 [FieldA, FieldB]",)
+    assert validation.warnings == ("对象“冲突对象”的字段“FieldA”存在重复别名“重复”",)
 
 
 def test_field_alias_validation_allows_object_without_alias_column(tmp_path):
@@ -1545,9 +1464,7 @@ def test_field_alias_validation_allows_object_without_alias_column(tmp_path):
 
     assert validation.errors == ()
     assert validation.warnings == ()
-    assert find_field_alias_matches(object_path, "查询受影响编码") == (
-        ("受影响编码", "AffectedObjectCode"),
-    )
+    assert find_field_alias_matches(object_path, "查询受影响编码") == (("受影响编码", "AffectedObjectCode"),)
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")

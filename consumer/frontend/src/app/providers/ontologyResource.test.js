@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { createOntologyResource } from './ontologyResource.js';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const appShellSource = readFileSync(join(currentDir, '../AppShell.jsx'), 'utf8');
+const appShellSource = readFileSync(
+  join(currentDir, '../AppShell.jsx'),
+  'utf8',
+);
 const kbBrowserSource = readFileSync(
   join(currentDir, '../../features/knowledge/hooks/useKbBrowser.js'),
   'utf8',
@@ -67,8 +70,16 @@ test('a new revision performs one new request without reusing stale data', async
     fetcher: async () => response([{ id: `onto-${++calls}` }]),
   });
 
-  const first = await resource.load({ principalId: 'user-a', workspaceId: 'ws-a', revision: 3 });
-  const second = await resource.load({ principalId: 'user-a', workspaceId: 'ws-a', revision: 4 });
+  const first = await resource.load({
+    principalId: 'user-a',
+    workspaceId: 'ws-a',
+    revision: 3,
+  });
+  const second = await resource.load({
+    principalId: 'user-a',
+    workspaceId: 'ws-a',
+    revision: 4,
+  });
 
   assert.deepEqual(first, [{ id: 'onto-1' }]);
   assert.deepEqual(second, [{ id: 'onto-2' }]);
@@ -84,7 +95,9 @@ test('invalid ontology JSON is rejected and evicted so the same scope can refetc
         return {
           ok: true,
           status: 200,
-          json: async () => { throw new SyntaxError('truncated JSON'); },
+          json: async () => {
+            throw new SyntaxError('truncated JSON');
+          },
         };
       }
       return response([{ id: 'fresh-after-json-error' }]);
@@ -93,7 +106,9 @@ test('invalid ontology JSON is rejected and evicted so the same scope can refetc
   const scope = { principalId: 'user-a', workspaceId: 'ws-a', revision: 0 };
 
   await assert.rejects(resource.load(scope), /valid JSON/i);
-  assert.deepEqual(await resource.load(scope), [{ id: 'fresh-after-json-error' }]);
+  assert.deepEqual(await resource.load(scope), [
+    { id: 'fresh-after-json-error' },
+  ]);
   assert.equal(calls, 2);
 });
 
@@ -115,7 +130,9 @@ test('invalid ontology payload shape is rejected and evicted so the same scope c
   const scope = { principalId: 'user-a', workspaceId: 'ws-a', revision: 0 };
 
   await assert.rejects(resource.load(scope), /ontologies array/i);
-  assert.deepEqual(await resource.load(scope), [{ id: 'fresh-after-shape-error' }]);
+  assert.deepEqual(await resource.load(scope), [
+    { id: 'fresh-after-shape-error' },
+  ]);
   assert.equal(calls, 2);
 });
 
@@ -128,18 +145,24 @@ test('invalid ontology items are rejected and evicted so the same scope can refe
       const resource = createOntologyResource({
         fetcher: async () => {
           calls += 1;
-          return calls === 1
-            ? response([invalidItem])
-            : response([{ id: `fresh-after-invalid-item-${index + 1}` }]);
+          return calls === 1 ?
+            response([invalidItem]) :
+            response([{ id: `fresh-after-invalid-item-${index + 1}` }]);
         },
       });
-      const scope = { principalId: 'user-a', workspaceId: 'ws-a', revision: index };
+      const scope = {
+        principalId: 'user-a',
+        workspaceId: 'ws-a',
+        revision: index,
+      };
 
-      await assert.rejects(resource.load(scope), /valid ontology object with a non-empty id/i);
-      assert.deepEqual(
-        await resource.load(scope),
-        [{ id: `fresh-after-invalid-item-${index + 1}` }],
+      await assert.rejects(
+        resource.load(scope),
+        /valid ontology object with a non-empty id/i,
       );
+      assert.deepEqual(await resource.load(scope), [
+        { id: `fresh-after-invalid-item-${index + 1}` },
+      ]);
       assert.equal(calls, 2);
     });
   }
@@ -151,9 +174,13 @@ test('scope invalidation aborts the old request and permits a clean retry', asyn
     fetcher: (_url, { signal }) => {
       const pending = deferredResponse();
       requests.push({ signal, pending });
-      signal.addEventListener('abort', () => {
-        pending.reject(new DOMException('aborted', 'AbortError'));
-      }, { once: true });
+      signal.addEventListener(
+        'abort',
+        () => {
+          pending.reject(new DOMException('aborted', 'AbortError'));
+        },
+        { once: true },
+      );
       return pending.promise;
     },
   });
@@ -178,9 +205,13 @@ test('releasing the last pending subscriber aborts the shared request and permit
     fetcher: (_url, { signal }) => {
       const pending = deferredResponse();
       requests.push({ signal, pending });
-      signal.addEventListener('abort', () => {
-        pending.reject(new DOMException('aborted', 'AbortError'));
-      }, { once: true });
+      signal.addEventListener(
+        'abort',
+        () => {
+          pending.reject(new DOMException('aborted', 'AbortError'));
+        },
+        { once: true },
+      );
       return pending.promise;
     },
   });
@@ -252,57 +283,128 @@ test('logout clears only the matching principal cache entries', async () => {
 
 test('AppShell gates list and tree subscribers and clears the principal on logout', () => {
   assert.equal(appShellSource.includes('ontologyRequestPolicy({'), true);
-  assert.equal(appShellSource.includes('listEnabled: ontologyPolicy.listEnabled'), true);
-  assert.equal(appShellSource.includes('treeEnabled: ontologyPolicy.treeEnabled'), true);
+  assert.equal(
+    appShellSource.includes('listEnabled: ontologyPolicy.listEnabled'),
+    true,
+  );
+  assert.equal(
+    appShellSource.includes('treeEnabled: ontologyPolicy.treeEnabled'),
+    true,
+  );
   assert.equal(appShellSource.includes('ontologyResource,'), true);
-  assert.equal(appShellSource.includes('clearOntologyResourcePrincipal(principalId)'), true);
+  assert.equal(
+    appShellSource.includes('clearOntologyResourcePrincipal(principalId)'),
+    true,
+  );
   assert.equal(appShellSource.includes('ontologies={kb.packages}'), true);
   assert.equal(
-    kbBrowserSource.includes('if (!treeEnabled || !workspaceDataReady || !listStateCurrent || !pkgId)'),
+    kbBrowserSource.includes(
+      'if (!treeEnabled || !workspaceDataReady || !listStateCurrent || !pkgId)',
+    ),
     true,
   );
   assert.equal(configCenterSource.includes('ontologies={ontologies}'), true);
-  assert.equal(mcpSettingsSource.includes("request('/agentic/ontologies'"), false);
+  assert.equal(
+    mcpSettingsSource.includes("request('/agentic/ontologies'"),
+    false,
+  );
 });
 
 test('AppShell propagates authoritative ontology loading, error and retry state to chat and MCP', () => {
-  assert.equal((appShellSource.match(/ontologiesLoading=\{kb\.pkgsLoading\}/g) || []).length, 2);
-  assert.equal((appShellSource.match(/ontologiesError=\{kb\.packagesError\}/g) || []).length, 2);
-  assert.equal((appShellSource.match(/onRetryOntologies=\{kb\.retryPackages\}/g) || []).length, 2);
-  assert.equal(configCenterSource.includes('ontologiesLoading={ontologiesLoading}'), true);
-  assert.equal(configCenterSource.includes('ontologiesError={ontologiesError}'), true);
-  assert.equal(configCenterSource.includes('onRetryOntologies={onRetryOntologies}'), true);
-  assert.equal(mcpSettingsSource.includes('const ontologyListReady = !ontologiesLoading && !ontologiesError;'), true);
-  assert.equal(mcpSettingsSource.includes('const refreshAll = useCallback'), true);
+  assert.equal(
+    (appShellSource.match(/ontologiesLoading=\{kb\.pkgsLoading\}/g) || [])
+      .length,
+    2,
+  );
+  assert.equal(
+    (appShellSource.match(/ontologiesError=\{kb\.packagesError\}/g) || [])
+      .length,
+    2,
+  );
+  assert.equal(
+    (appShellSource.match(/onRetryOntologies=\{kb\.retryPackages\}/g) || [])
+      .length,
+    2,
+  );
+  assert.equal(
+    configCenterSource.includes('ontologiesLoading={ontologiesLoading}'),
+    true,
+  );
+  assert.equal(
+    configCenterSource.includes('ontologiesError={ontologiesError}'),
+    true,
+  );
+  assert.equal(
+    configCenterSource.includes('onRetryOntologies={onRetryOntologies}'),
+    true,
+  );
+  assert.equal(
+    mcpSettingsSource.includes(
+      'const ontologyListReady = !ontologiesLoading && !ontologiesError;',
+    ),
+    true,
+  );
+  assert.equal(
+    mcpSettingsSource.includes('const refreshAll = useCallback'),
+    true,
+  );
   assert.equal(mcpSettingsSource.includes('onRetryOntologies?.()'), true);
   assert.equal(mcpSettingsSource.includes('ontologiesRef'), false);
   assert.equal(
-    mcpSettingsSource.includes('() => (ontologyListReady ? normalizedOntologies : [])'),
+    mcpSettingsSource.includes(
+      '() => (ontologyListReady ? normalizedOntologies : [])',
+    ),
     true,
   );
-  assert.equal(mcpSettingsSource.includes('if (!ontologyListReady) return;'), true);
+  assert.match(
+    mcpSettingsSource,
+    /if \(!ontologyListReady\)\s*\{\s*return;\s*\}/,
+  );
   assert.equal(
-    mcpSettingsSource.includes('{ontologyListReady && !ontologyOptions.some((item) => item.eligibility.eligible) && ('),
+    /\{\s*ontologyListReady\s*&&\s*!ontologyOptions\.some\(\(item\) => item\.eligibility\.eligible\)\s*&&\s*\(/.test(
+      mcpSettingsSource,
+    ),
     true,
   );
 });
 
 test('ontology list view is non-authoritative until the active scope subscription is initialized', () => {
   assert.equal(
-    kbBrowserSource.includes("const listStateKey = `${scopeKey}:${listEnabled ? 'enabled' : 'disabled'}`;"),
+    kbBrowserSource.includes(
+      "const listStateKey = `${scopeKey}:${listEnabled ? 'enabled' : 'disabled'}`;",
+    ),
     true,
   );
-  assert.equal(kbBrowserSource.includes('const listStateCurrent = resolvedListStateKey === listStateKey;'), true);
-  assert.equal(kbBrowserSource.includes('packages: listStateCurrent ? packages : [],'), true);
   assert.equal(
-    kbBrowserSource.includes('pkgsLoading: listStateCurrent ? pkgsLoading : Boolean(listEnabled && workspaceDataReady),'),
+    kbBrowserSource.includes(
+      'const listStateCurrent = resolvedListStateKey === listStateKey;',
+    ),
     true,
   );
-  assert.equal(kbBrowserSource.includes("packagesError: listStateCurrent ? packagesError : '',"), true);
+  assert.equal(
+    kbBrowserSource.includes('packages: listStateCurrent ? packages : [],'),
+    true,
+  );
+  assert.match(
+    kbBrowserSource,
+    /pkgsLoading:\s*listStateCurrent\s*\?\s*pkgsLoading\s*:\s*Boolean\(listEnabled\s*&&\s*workspaceDataReady\),/,
+  );
+  assert.equal(
+    kbBrowserSource.includes(
+      "packagesError: listStateCurrent ? packagesError : '',",
+    ),
+    true,
+  );
 });
 
 test('useKbBrowser releases its active ontology subscription when the list surface leaves', () => {
-  assert.equal(kbBrowserSource.includes('const packageSubscriptionRef = useRef(null);'), true);
-  assert.equal(kbBrowserSource.includes('ontologyResource.subscribe({ principalId, workspaceId, revision })'), true);
+  assert.equal(
+    kbBrowserSource.includes('const packageSubscriptionRef = useRef(null);'),
+    true,
+  );
+  assert.match(
+    kbBrowserSource,
+    /ontologyResource\.subscribe\(\{\s*principalId,\s*workspaceId,\s*revision,?\s*\}\)/,
+  );
   assert.equal(kbBrowserSource.includes('releasePackageSubscription();'), true);
 });

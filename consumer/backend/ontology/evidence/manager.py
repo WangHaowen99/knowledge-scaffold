@@ -31,7 +31,6 @@ from ontology.file_lock import exclusive_file_lock
 from ontology.resource_parser import PARSER_VERSION, parse_resource_cached
 from persistence.evidence_catalog import EvidenceCatalog
 
-
 logger = logging.getLogger("ontology.evidence.manager")
 
 
@@ -39,37 +38,21 @@ MAX_SOURCE_FILES = 5_000
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_CHUNKS = 50_000
 
-SERVICEABLE_POINTER_STATUSES = frozenset(
-    {"lexical_ready", "building_semantic", "ready", "semantic_degraded"}
-)
+SERVICEABLE_POINTER_STATUSES = frozenset({"lexical_ready", "building_semantic", "ready", "semantic_degraded"})
 
 _ALLOWED_BUILD_TRANSITIONS: dict[str | None, frozenset[str]] = {
     None: frozenset({"queued", "building_base", "epoch_failed"}),
-    "disabled": frozenset(
-        {"disabled", "epoch_pending", "manual_required", "queued", "building_base", "epoch_failed"}
-    ),
-    "stale": frozenset(
-        {"stale", "epoch_pending", "manual_required", "queued", "building_base", "epoch_failed"}
-    ),
-    "epoch_pending": frozenset(
-        {"manual_required", "queued", "building_base", "epoch_failed", "disabled"}
-    ),
+    "disabled": frozenset({"disabled", "epoch_pending", "manual_required", "queued", "building_base", "epoch_failed"}),
+    "stale": frozenset({"stale", "epoch_pending", "manual_required", "queued", "building_base", "epoch_failed"}),
+    "epoch_pending": frozenset({"manual_required", "queued", "building_base", "epoch_failed", "disabled"}),
     "epoch_failed": frozenset(
         {"epoch_failed", "epoch_pending", "manual_required", "queued", "building_base", "disabled"}
     ),
     "manual_required": frozenset({"queued", "building_base", "epoch_failed", "disabled"}),
-    "queued": frozenset(
-        {"building_base", "epoch_failed", "base_failed", "stale", "disabled"}
-    ),
-    "building_base": frozenset(
-        {"lexical_ready", "epoch_failed", "base_failed", "stale", "disabled"}
-    ),
-    "lexical_ready": frozenset(
-        {"ready", "building_semantic", "epoch_failed", "stale", "disabled"}
-    ),
-    "building_semantic": frozenset(
-        {"ready", "semantic_degraded", "epoch_failed", "stale", "disabled"}
-    ),
+    "queued": frozenset({"building_base", "epoch_failed", "base_failed", "stale", "disabled"}),
+    "building_base": frozenset({"lexical_ready", "epoch_failed", "base_failed", "stale", "disabled"}),
+    "lexical_ready": frozenset({"ready", "building_semantic", "epoch_failed", "stale", "disabled"}),
+    "building_semantic": frozenset({"ready", "semantic_degraded", "epoch_failed", "stale", "disabled"}),
     "ready": frozenset(
         {"queued", "building_base", "epoch_pending", "epoch_failed", "manual_required", "stale", "disabled"}
     ),
@@ -235,11 +218,7 @@ class EvidenceIndexManager:
             str((current or {}).get("active_generation") or ""),
         )
         expected_generation = (mutation_revision, epoch, generation)
-        if (
-            generation_valid
-            and active_pointer_is_serviceable(current)
-            and current_generation == expected_generation
-        ):
+        if generation_valid and active_pointer_is_serviceable(current) and current_generation == expected_generation:
             return dict(current or {})
 
         job_id = "idxjob_{}".format(uuid.uuid4().hex)
@@ -353,9 +332,7 @@ class EvidenceIndexManager:
         error_code: str | None = None,
     ) -> dict[str, Any]:
         path = ontology_root / "active.json"
-        with exclusive_file_lock(
-            _pointer_lock_path(self.runtime_root.parent, str(pointer["ontology_id"]))
-        ):
+        with exclusive_file_lock(_pointer_lock_path(self.runtime_root.parent, str(pointer["ontology_id"]))):
             current = read_active_pointer_snapshot(self.runtime_root.parent, str(pointer["ontology_id"]))
             _validate_pointer_scope(
                 current,
@@ -384,6 +361,7 @@ class EvidenceIndexManager:
             _atomic_json_write(path, payload)
             return payload
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def plan(
         self,
         *,
@@ -492,9 +470,7 @@ class EvidenceIndexManager:
                     key=lambda item: (item.stat().st_mtime, item.name),
                     reverse=True,
                 )
-                recent_generations = {
-                    item.name for item in generation_dirs[: max(0, int(recent_count))]
-                }
+                recent_generations = {item.name for item in generation_dirs[: max(0, int(recent_count))]}
                 for generation_dir in sorted(generation_dirs, key=lambda item: item.name):
                     if not generation_dir.is_dir():
                         continue
@@ -503,11 +479,7 @@ class EvidenceIndexManager:
                         _validate_digest(generation, "index_generation")
                     except EvidenceIndexManagerError:
                         continue
-                    size_bytes = sum(
-                        path.stat().st_size
-                        for path in generation_dir.rglob("*")
-                        if path.is_file()
-                    )
+                    size_bytes = sum(path.stat().st_size for path in generation_dir.rglob("*") if path.is_file())
                     modified_at = datetime.fromtimestamp(generation_dir.stat().st_mtime, tz=timezone.utc)
                     reasons: list[str] = []
                     eligible = True
@@ -551,20 +523,14 @@ class EvidenceIndexManager:
                 item_ontology_id = str(item["ontology_id"])
                 generation = str(item["index_generation"])
                 ontology_root = self.runtime_root / "ontologies" / item_ontology_id
-                generation_dir = (
-                    ontology_root
-                    / "generations"
-                    / generation
-                )
+                generation_dir = ontology_root / "generations" / generation
                 with exclusive_file_lock(ontology_root / "locks" / "build.lock"):
                     # Runtime Fact persistence and release use the same
                     # workspace-local lock. Holding it across the final hold
                     # check, route removal and directory deletion closes the
                     # reference-registration/cleanup race.
                     with exclusive_file_lock(self.runtime_root / "retention.lock"):
-                        with exclusive_file_lock(
-                            _pointer_lock_path(self.runtime_root.parent, item_ontology_id)
-                        ):
+                        with exclusive_file_lock(_pointer_lock_path(self.runtime_root.parent, item_ontology_id)):
                             latest_pointer = read_active_pointer_snapshot(
                                 self.runtime_root.parent,
                                 item_ontology_id,
@@ -602,8 +568,7 @@ class EvidenceIndexManager:
                 "candidate_bytes": sum(int(item["bytes"]) for item in eligible_items),
                 "protected_by_active": sum("ACTIVE_GENERATION" in item["reasons"] for item in candidates),
                 "protected_by_retention": sum(
-                    "WITHIN_MIN_RETENTION" in item["reasons"]
-                    or "WITHIN_RECENT_COUNT" in item["reasons"]
+                    "WITHIN_MIN_RETENTION" in item["reasons"] or "WITHIN_RECENT_COUNT" in item["reasons"]
                     for item in candidates
                 ),
                 "protected_by_reference": sum("REFERENCE_HOLD" in item["reasons"] for item in candidates),
@@ -613,6 +578,7 @@ class EvidenceIndexManager:
             "items": candidates,
         }
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def _build_generation(
         self,
         *,
@@ -796,9 +762,8 @@ def mark_active_pointer_state(
         pointer = read_active_pointer_snapshot(runtime_root, ontology_id)
         if pointer is None:
             return False
-        if (
-            str(pointer.get("workspace_id") or "") != workspace_id
-            or int(pointer.get("mutation_revision") or -1) != int(mutation_revision)
+        if str(pointer.get("workspace_id") or "") != workspace_id or int(pointer.get("mutation_revision") or -1) != int(
+            mutation_revision
         ):
             return False
         current_status = str(pointer.get("status") or "") or None
@@ -845,11 +810,7 @@ def _validate_pointer_scope(
             "EVIDENCE_SCOPE_MISMATCH",
             "evidence pointer does not belong to ontology",
         )
-    pointer_revision = int(
-        pointer.get("mutation_revision")
-        if pointer.get("mutation_revision") is not None
-        else -1
-    )
+    pointer_revision = int(pointer.get("mutation_revision") if pointer.get("mutation_revision") is not None else -1)
     if pointer_revision > int(mutation_revision):
         raise EvidenceIndexManagerError(
             "INDEX_STALE",

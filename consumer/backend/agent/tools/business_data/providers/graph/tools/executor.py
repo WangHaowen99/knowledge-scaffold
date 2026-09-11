@@ -12,7 +12,6 @@ from ..backends.base import GraphBackend, GraphBackendUnsupportedError
 from ..models import GraphBackendResult, GraphEntityMapping, GraphSearchRuntimeContext
 from ..scope import sanitize_return_properties
 
-
 GraphToolEventSink = Callable[[OntologySearchEvent], None]
 
 
@@ -166,10 +165,12 @@ class GraphToolExecutor:
                     "truncated": True,
                 }
                 if diagnostic_fallback:
-                    row.update({
-                        "diagnostic": True,
-                        "diagnostic_reason": "empty_filter_after_constrained_query",
-                    })
+                    row.update(
+                        {
+                            "diagnostic": True,
+                            "diagnostic_reason": "empty_filter_after_constrained_query",
+                        }
+                    )
                 rows.append(row)
                 continue
             result = self.backend.property_filter(
@@ -193,13 +194,15 @@ class GraphToolExecutor:
             }
             if diagnostic_fallback:
                 ignored_count = _backend_result_count(result, len(items))
-                row.update({
-                    "diagnostic": True,
-                    "diagnostic_reason": "empty_filter_after_constrained_query",
-                    "diagnostic_sample_count": len(items),
-                    "ignored_count": ignored_count,
-                    "diagnostic_sample_truncated": bool(result.truncated),
-                })
+                row.update(
+                    {
+                        "diagnostic": True,
+                        "diagnostic_reason": "empty_filter_after_constrained_query",
+                        "diagnostic_sample_count": len(items),
+                        "ignored_count": ignored_count,
+                        "diagnostic_sample_truncated": bool(result.truncated),
+                    }
+                )
                 _append_warning_once(
                     warnings,
                     (
@@ -220,11 +223,13 @@ class GraphToolExecutor:
             "message": {"description": "查询成功"},
         }
         if total_returned > 0 and _record_filter_hit_is_sufficient(self.context.schema_context):
-            payload.update({
-                "sufficient_for_query": True,
-                "recommended_next_action": "final",
-                "completion_reason": "record_query_property_filter_hit",
-            })
+            payload.update(
+                {
+                    "sufficient_for_query": True,
+                    "recommended_next_action": "final",
+                    "completion_reason": "record_query_property_filter_hit",
+                }
+            )
         if warnings:
             payload["warnings"] = list(warnings)
         backend_result = GraphBackendResult(
@@ -251,19 +256,23 @@ class GraphToolExecutor:
             count = int(result.total or 0)
             total += count
             warnings.extend(result.warnings or [])
-            rows.append({
-                "query_id": query["query_id"] or "q{}".format(index + 1),
-                "element_class": query["element_class"],
-                "element_type": query["element_type"],
-                "count": count,
-                "applied_filter": dict(query["filter_dict"] or {}),
-            })
+            rows.append(
+                {
+                    "query_id": query["query_id"] or "q{}".format(index + 1),
+                    "element_class": query["element_class"],
+                    "element_type": query["element_type"],
+                    "count": count,
+                    "applied_filter": dict(query["filter_dict"] or {}),
+                }
+            )
         payload = {
             "result": rows[0] if len(rows) == 1 else {"results": rows, "count": len(rows), "total_count": total},
             "success": True,
             "message": {"description": "统计成功"},
         }
-        backend_result = GraphBackendResult(records=[], total=total, truncated=False, warnings=warnings, payload=payload)
+        backend_result = GraphBackendResult(
+            records=[], total=total, truncated=False, warnings=warnings, payload=payload
+        )
         return GraphToolExecution("count_search", args, payload, backend_result)
 
     def _aggregate_search(self, args: dict[str, Any]) -> GraphToolExecution:
@@ -333,11 +342,13 @@ class GraphToolExecutor:
             "message": {"description": "排序查询成功"},
         }
         if result.records and _record_filter_hit_is_sufficient(self.context.schema_context):
-            payload.update({
-                "sufficient_for_query": True,
-                "recommended_next_action": "final",
-                "completion_reason": "record_query_sorted_search_hit",
-            })
+            payload.update(
+                {
+                    "sufficient_for_query": True,
+                    "recommended_next_action": "final",
+                    "completion_reason": "record_query_sorted_search_hit",
+                }
+            )
         backend_result = GraphBackendResult(
             records=list(result.records or []),
             total=result.total if result.total is not None else len(result.records or []),
@@ -528,15 +539,17 @@ class GraphToolExecutor:
 def _normalize_property_queries(args: Mapping[str, Any]) -> list[dict[str, Any]]:
     raw_queries = args.get("queries")
     if raw_queries is None:
-        raw_queries = [{
-            "query_id": "q1",
-            "element_class": args.get("element_class"),
-            "element_type": args.get("element_type"),
-            "filter_dict": args.get("filter_dict") or {},
-            "return_properties": args.get("return_properties"),
-            "limit": args.get("limit"),
-            "offset": args.get("offset"),
-        }]
+        raw_queries = [
+            {
+                "query_id": "q1",
+                "element_class": args.get("element_class"),
+                "element_type": args.get("element_type"),
+                "filter_dict": args.get("filter_dict") or {},
+                "return_properties": args.get("return_properties"),
+                "limit": args.get("limit"),
+                "offset": args.get("offset"),
+            }
+        ]
     if not isinstance(raw_queries, list) or not raw_queries:
         raise GraphToolInputError("queries 必须是非空数组")
     normalized: list[dict[str, Any]] = []
@@ -555,15 +568,19 @@ def _normalize_property_queries(args: Mapping[str, Any]) -> list[dict[str, Any]]
         query_id = str(item.get("query_id") or "").strip() or "q{}".format(index + 1)
         expanded_filters = _expand_simple_or_filter_dict(filter_dict, "queries[{}].filter_dict".format(index))
         for expanded_index, expanded_filter in enumerate(expanded_filters):
-            normalized.append({
-                "query_id": query_id if len(expanded_filters) == 1 else "{}_or{}".format(query_id, expanded_index + 1),
-                "element_class": element_class,
-                "element_type": element_type,
-                "filter_dict": expanded_filter,
-                "return_properties": _optional_string_list(item.get("return_properties")),
-                "limit": _positive_int(item.get("limit"), default=100, upper=2000),
-                "offset": _non_negative_int(item.get("offset"), default=0),
-            })
+            normalized.append(
+                {
+                    "query_id": (
+                        query_id if len(expanded_filters) == 1 else "{}_or{}".format(query_id, expanded_index + 1)
+                    ),
+                    "element_class": element_class,
+                    "element_type": element_type,
+                    "filter_dict": expanded_filter,
+                    "return_properties": _optional_string_list(item.get("return_properties")),
+                    "limit": _positive_int(item.get("limit"), default=100, upper=2000),
+                    "offset": _non_negative_int(item.get("offset"), default=0),
+                }
+            )
     return normalized
 
 
@@ -598,12 +615,14 @@ def _append_warning_once(warnings: list[str], warning: str) -> None:
 def _normalize_count_queries(args: Mapping[str, Any]) -> list[dict[str, Any]]:
     raw_queries = args.get("queries")
     if raw_queries is None:
-        raw_queries = [{
-            "query_id": "q1",
-            "element_class": args.get("element_class"),
-            "element_type": args.get("element_type"),
-            "filter_dict": args.get("filter_dict") or {},
-        }]
+        raw_queries = [
+            {
+                "query_id": "q1",
+                "element_class": args.get("element_class"),
+                "element_type": args.get("element_type"),
+                "filter_dict": args.get("filter_dict") or {},
+            }
+        ]
     if not isinstance(raw_queries, list) or not raw_queries:
         raise GraphToolInputError("queries 必须是非空数组")
     normalized: list[dict[str, Any]] = []
@@ -622,12 +641,16 @@ def _normalize_count_queries(args: Mapping[str, Any]) -> list[dict[str, Any]]:
         query_id = str(item.get("query_id") or "").strip() or "q{}".format(index + 1)
         expanded_filters = _expand_simple_or_filter_dict(filter_dict, "queries[{}].filter_dict".format(index))
         for expanded_index, expanded_filter in enumerate(expanded_filters):
-            normalized.append({
-                "query_id": query_id if len(expanded_filters) == 1 else "{}_or{}".format(query_id, expanded_index + 1),
-                "element_class": element_class,
-                "element_type": element_type,
-                "filter_dict": expanded_filter,
-            })
+            normalized.append(
+                {
+                    "query_id": (
+                        query_id if len(expanded_filters) == 1 else "{}_or{}".format(query_id, expanded_index + 1)
+                    ),
+                    "element_class": element_class,
+                    "element_type": element_type,
+                    "filter_dict": expanded_filter,
+                }
+            )
     return normalized
 
 
@@ -637,24 +660,22 @@ def _expand_simple_or_filter_dict(filter_dict: Mapping[str, Any], field_name: st
         return [{}]
 
     logical_keys = [
-        str(key or "").strip()
-        for key in filter_dict
-        if str(key or "").strip().lower() in {"$or", "$and", "$nor"}
+        str(key or "").strip() for key in filter_dict if str(key or "").strip().lower() in {"$or", "$and", "$nor"}
     ]
     if not logical_keys:
         return [dict(filter_dict)]
 
     if len(logical_keys) != 1 or logical_keys[0].lower() != "$or":
-        raise GraphToolInputError("{} 不支持顶层逻辑操作符 {}；请用 queries 拆分子查询".format(field_name, ", ".join(logical_keys)))
+        raise GraphToolInputError(
+            "{} 不支持顶层逻辑操作符 {}；请用 queries 拆分子查询".format(field_name, ", ".join(logical_keys))
+        )
 
     raw_or = filter_dict.get(logical_keys[0])
     if not isinstance(raw_or, list) or not raw_or:
         raise GraphToolInputError("{}.{} 必须是非空对象数组".format(field_name, logical_keys[0]))
 
     common_filter = {
-        str(key or "").strip(): value
-        for key, value in filter_dict.items()
-        if str(key or "").strip().lower() != "$or"
+        str(key or "").strip(): value for key, value in filter_dict.items() if str(key or "").strip().lower() != "$or"
     }
     expanded: list[dict[str, Any]] = []
     for index, branch in enumerate(raw_or):
@@ -662,12 +683,14 @@ def _expand_simple_or_filter_dict(filter_dict: Mapping[str, Any], field_name: st
         if not isinstance(branch, Mapping):
             raise GraphToolInputError("{} 必须是对象".format(branch_name))
         branch_logical_keys = [
-            str(key or "").strip()
-            for key in branch
-            if str(key or "").strip().lower() in {"$or", "$and", "$nor"}
+            str(key or "").strip() for key in branch if str(key or "").strip().lower() in {"$or", "$and", "$nor"}
         ]
         if branch_logical_keys:
-            raise GraphToolInputError("{} 不支持嵌套逻辑操作符 {}；请用 queries 拆分子查询".format(branch_name, ", ".join(branch_logical_keys)))
+            raise GraphToolInputError(
+                "{} 不支持嵌套逻辑操作符 {}；请用 queries 拆分子查询".format(
+                    branch_name, ", ".join(branch_logical_keys)
+                )
+            )
         merged = dict(common_filter)
         for raw_key, value in branch.items():
             key = str(raw_key or "").strip()
@@ -928,9 +951,7 @@ def _validate_filter_fields(raw_props: Any, allowed_fields: set[str] | None, tar
     if not isinstance(raw_props, Mapping):
         return
     unknown = [
-        str(field).strip()
-        for field in raw_props
-        if str(field).strip() and str(field).strip() not in allowed_fields
+        str(field).strip() for field in raw_props if str(field).strip() and str(field).strip() not in allowed_fields
     ]
     if unknown:
         raise GraphToolInputError("{} 过滤字段不存在于预取图 schema: {}".format(target, ", ".join(unknown)))

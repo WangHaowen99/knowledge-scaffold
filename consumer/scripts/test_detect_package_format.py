@@ -6,6 +6,7 @@ Run with:
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -13,18 +14,24 @@ import pytest
 
 # Ensure the module under test is importable.
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.append(str(SCRIPT_DIR))
-
-from legacy_package_converter import (  # noqa: E402
-    PackageFormatProfile,
-    _has_frontmatter,
-    detect_package_format,
+_CONVERTER_SPEC = importlib.util.spec_from_file_location(
+    "legacy_package_converter",
+    SCRIPT_DIR / "legacy_package_converter.py",
 )
+if _CONVERTER_SPEC is None or _CONVERTER_SPEC.loader is None:
+    raise ImportError("legacy_package_converter cannot be loaded")
+_CONVERTER = importlib.util.module_from_spec(_CONVERTER_SPEC)
+sys.modules[_CONVERTER_SPEC.name] = _CONVERTER
+_CONVERTER_SPEC.loader.exec_module(_CONVERTER)
+PackageFormatProfile = _CONVERTER.PackageFormatProfile
+_has_frontmatter = _CONVERTER._has_frontmatter
+detect_package_format = _CONVERTER.detect_package_format
 
 
 # --------------------------------------------------------------------------- #
 # Tests: _has_frontmatter helper
 # --------------------------------------------------------------------------- #
+
 
 class TestHasFrontmatter:
     """Tests for the _has_frontmatter helper."""
@@ -55,6 +62,7 @@ class TestHasFrontmatter:
 # --------------------------------------------------------------------------- #
 # Tests: error handling
 # --------------------------------------------------------------------------- #
+
 
 class TestErrorHandling:
     """Tests for error and edge cases."""
@@ -90,6 +98,7 @@ class TestErrorHandling:
 # --------------------------------------------------------------------------- #
 # Tests: synthetic packages
 # --------------------------------------------------------------------------- #
+
 
 class TestSyntheticPackages:
     """Tests with minimal synthetic package structures."""
@@ -168,8 +177,7 @@ class TestSyntheticPackages:
         objects_dir = tmp_path / "objects"
         objects_dir.mkdir()
         (objects_dir / "Foo.md").write_text(
-            "# Foo\n\n| 属性名称 | 来源表 | 来源字段 | 数据类型 |\n"
-            "| --- | --- | --- | --- |\n",
+            "# Foo\n\n| 属性名称 | 来源表 | 来源字段 | 数据类型 |\n| --- | --- | --- | --- |\n",
             encoding="utf-8",
         )
 

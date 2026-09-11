@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import json
 import re
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
-from .base import GraphBackendError, GraphBackendTimeoutError, GraphBackendUnsupportedError
 from ..filter_expr import build_filter_where, cypher_prop_ref, safe_prop
 from ..models import GraphBackendResult, GraphScope
 from ..scope import (
@@ -21,7 +20,7 @@ from ..timeouts import (
     resolve_graph_connect_timeout_seconds,
     resolve_graph_query_timeout_seconds,
 )
-
+from .base import GraphBackendError, GraphBackendTimeoutError, GraphBackendUnsupportedError
 
 _ENTITY_TYPE_ID_TOKEN_RE = re.compile(r"^[eE]\d+$")
 _RELATION_TYPE_ID_TOKEN_RE = re.compile(r"^[rR]\d+$")
@@ -201,18 +200,20 @@ class Neo4jGraphBackend:
                 continue
             if relation_type:
                 relationship_types.add(relation_type)
-            relation_triples.append({
-                "source_entity_type_id": _record_get(record, "source_entity_type_id") or "",
-                "source_entity_name": _record_get(record, "source_entity_name") or "",
-                "source_label": _pick_business_label(_record_get(record, "source_labels")),
-                "relation_type_id": _record_get(record, "relation_type_id") or "",
-                "relation_type": relation_type,
-                "relation_name": _record_get(record, "relation_name") or "",
-                "target_entity_type_id": _record_get(record, "target_entity_type_id") or "",
-                "target_entity_name": _record_get(record, "target_entity_name") or "",
-                "target_label": _pick_business_label(_record_get(record, "target_labels")),
-                "edge_count": int(_record_get(record, "edge_count") or 0),
-            })
+            relation_triples.append(
+                {
+                    "source_entity_type_id": _record_get(record, "source_entity_type_id") or "",
+                    "source_entity_name": _record_get(record, "source_entity_name") or "",
+                    "source_label": _pick_business_label(_record_get(record, "source_labels")),
+                    "relation_type_id": _record_get(record, "relation_type_id") or "",
+                    "relation_type": relation_type,
+                    "relation_name": _record_get(record, "relation_name") or "",
+                    "target_entity_type_id": _record_get(record, "target_entity_type_id") or "",
+                    "target_entity_name": _record_get(record, "target_entity_name") or "",
+                    "target_label": _pick_business_label(_record_get(record, "target_labels")),
+                    "edge_count": int(_record_get(record, "edge_count") or 0),
+                }
+            )
 
         return {
             "relationship_types": sorted(relationship_types),
@@ -251,10 +252,7 @@ class Neo4jGraphBackend:
             where_parts.extend(_build_scope_where("e", scope, params))
             where_parts.extend(_build_exclude_logic_where("e"))
             where_parts.extend(build_filter_where(filter_dict or {}, "e", params, "fp"))
-            query = (
-                "MATCH (e) WHERE {class_where} AND {where} "
-                "RETURN e SKIP $offset LIMIT $limit"
-            ).format(
+            query = ("MATCH (e) WHERE {class_where} AND {where} " "RETURN e SKIP $offset LIMIT $limit").format(
                 class_where=_build_element_class_match("e", elem_type),
                 where=" AND ".join(where_parts),
             )
@@ -262,8 +260,7 @@ class Neo4jGraphBackend:
             where_parts.extend(_build_edge_scope_where("a", "e", "b", scope, params))
             where_parts.extend(build_filter_where(filter_dict or {}, "e", params, "fp"))
             query = (
-                "MATCH (a)-[e]->(b) WHERE {class_where} AND {where} "
-                "RETURN e, a, b SKIP $offset LIMIT $limit"
+                "MATCH (a)-[e]->(b) WHERE {class_where} AND {where} " "RETURN e, a, b SKIP $offset LIMIT $limit"
             ).format(
                 class_where=_build_element_class_match("e", elem_type),
                 where=" AND ".join(where_parts),
@@ -274,19 +271,23 @@ class Neo4jGraphBackend:
             hidden_properties = _scope_hidden_properties(scope)
             for record in self._run(query, params):
                 if elem_type == "NODE":
-                    records.append(_normalize_node(
-                        _record_get(record, "e"),
-                        return_properties=return_properties,
-                        hidden_properties=hidden_properties,
-                    ))
+                    records.append(
+                        _normalize_node(
+                            _record_get(record, "e"),
+                            return_properties=return_properties,
+                            hidden_properties=hidden_properties,
+                        )
+                    )
                 else:
-                    records.append(_normalize_relationship(
-                        _record_get(record, "e"),
-                        start_node=_record_get(record, "a"),
-                        end_node=_record_get(record, "b"),
-                        return_properties=return_properties,
-                        hidden_properties=hidden_properties,
-                    ))
+                    records.append(
+                        _normalize_relationship(
+                            _record_get(record, "e"),
+                            start_node=_record_get(record, "a"),
+                            end_node=_record_get(record, "b"),
+                            return_properties=return_properties,
+                            hidden_properties=hidden_properties,
+                        )
+                    )
         except Exception as exc:
             _raise_backend_error("Neo4J property_filter failed", exc)
         return GraphBackendResult(records=records, truncated=len(records) >= params["limit"])
@@ -426,8 +427,7 @@ class Neo4jGraphBackend:
             where_parts.extend(_build_exclude_logic_where("e"))
             where_parts.extend(build_filter_where(filter_dict or {}, "e", params, "fp"))
             query = (
-                "MATCH (e) WHERE {class_where} AND {where} "
-                "RETURN e{order_clause} SKIP $offset LIMIT $limit"
+                "MATCH (e) WHERE {class_where} AND {where} " "RETURN e{order_clause} SKIP $offset LIMIT $limit"
             ).format(
                 class_where=_build_element_class_match("e", elem_type),
                 where=" AND ".join(where_parts),
@@ -449,19 +449,23 @@ class Neo4jGraphBackend:
             hidden_properties = _scope_hidden_properties(scope)
             for record in self._run(query, params):
                 if elem_type == "NODE":
-                    records.append(_normalize_node(
-                        _record_get(record, "e"),
-                        return_properties=return_properties,
-                        hidden_properties=hidden_properties,
-                    ))
+                    records.append(
+                        _normalize_node(
+                            _record_get(record, "e"),
+                            return_properties=return_properties,
+                            hidden_properties=hidden_properties,
+                        )
+                    )
                 else:
-                    records.append(_normalize_relationship(
-                        _record_get(record, "e"),
-                        start_node=_record_get(record, "a"),
-                        end_node=_record_get(record, "b"),
-                        return_properties=return_properties,
-                        hidden_properties=hidden_properties,
-                    ))
+                    records.append(
+                        _normalize_relationship(
+                            _record_get(record, "e"),
+                            start_node=_record_get(record, "a"),
+                            end_node=_record_get(record, "b"),
+                            return_properties=return_properties,
+                            hidden_properties=hidden_properties,
+                        )
+                    )
         except Exception as exc:
             _raise_backend_error("Neo4J sorted_search failed", exc)
         return GraphBackendResult(records=records, total=len(records), truncated=len(records) >= limit_value)
@@ -490,11 +494,7 @@ class Neo4jGraphBackend:
             for record in self._run(query, params):
                 raw_nodes = list(_record_get(record, "nodes") or [])
                 raw_relationships = list(_record_get(record, "relationships") or [])
-                node_values = {
-                    alias: node
-                    for alias, node in zip(node_aliases, raw_nodes)
-                    if alias in selected_var_set
-                }
+                node_values = {alias: node for alias, node in zip(node_aliases, raw_nodes) if alias in selected_var_set}
                 relationship_values = {
                     alias: rel
                     for alias, rel in zip(relationship_aliases, raw_relationships)
@@ -518,32 +518,34 @@ class Neo4jGraphBackend:
                             top_level_return_properties=top_level_return_properties,
                             hidden_properties=hidden_properties,
                         )
-                records.append({
-                    "nodes": [
-                        _normalize_pattern_node(
-                            node,
-                            alias=alias,
-                            segment_return_properties=segment_return_properties,
-                            top_level_return_properties=top_level_return_properties,
-                            hidden_properties=hidden_properties,
-                        )
-                        for alias, node in zip(node_aliases, raw_nodes)
-                        if alias in selected_var_set
-                    ],
-                    "relationships": [
-                        _normalize_pattern_relationship(
-                            rel,
-                            alias=alias,
-                            segment_return_properties=segment_return_properties,
-                            top_level_return_properties=top_level_return_properties,
-                            hidden_properties=hidden_properties,
-                        )
-                        for alias, rel in zip(relationship_aliases, raw_relationships)
-                        if alias in selected_var_set
-                    ],
-                    "return_vars": selected_vars,
-                    "selected": selected,
-                })
+                records.append(
+                    {
+                        "nodes": [
+                            _normalize_pattern_node(
+                                node,
+                                alias=alias,
+                                segment_return_properties=segment_return_properties,
+                                top_level_return_properties=top_level_return_properties,
+                                hidden_properties=hidden_properties,
+                            )
+                            for alias, node in zip(node_aliases, raw_nodes)
+                            if alias in selected_var_set
+                        ],
+                        "relationships": [
+                            _normalize_pattern_relationship(
+                                rel,
+                                alias=alias,
+                                segment_return_properties=segment_return_properties,
+                                top_level_return_properties=top_level_return_properties,
+                                hidden_properties=hidden_properties,
+                            )
+                            for alias, rel in zip(relationship_aliases, raw_relationships)
+                            if alias in selected_var_set
+                        ],
+                        "return_vars": selected_vars,
+                        "selected": selected,
+                    }
+                )
         except Exception as exc:
             _raise_backend_error("Neo4J pattern_search failed", exc)
         return GraphBackendResult(records=records, truncated=len(records) >= max(1, int(limit or 100)))
@@ -697,15 +699,21 @@ class Neo4jGraphBackend:
                     content = _normalize_text(entry.get("logic_content"))
                     if not title:
                         continue
-                    dedup_key = (_normalize_text(entry.get("entity_type")).casefold(), title.casefold(), content.casefold())
+                    dedup_key = (
+                        _normalize_text(entry.get("entity_type")).casefold(),
+                        title.casefold(),
+                        content.casefold(),
+                    )
                     if dedup_key in seen:
                         continue
                     seen.add(dedup_key)
-                    items.append({
-                        "entity_instance_id": _normalize_text(entry.get("entity_instance_id")),
-                        "entity_type": _normalize_text(entry.get("entity_type")),
-                        "logic_title": title,
-                    })
+                    items.append(
+                        {
+                            "entity_instance_id": _normalize_text(entry.get("entity_instance_id")),
+                            "entity_type": _normalize_text(entry.get("entity_type")),
+                            "logic_title": title,
+                        }
+                    )
         except Exception as exc:
             _raise_backend_error("Neo4J list_logic_titles failed", exc)
         return GraphBackendResult(records=items, total=len(items), truncated=False)
@@ -747,16 +755,22 @@ class Neo4jGraphBackend:
                         continue
                     if not title or not content:
                         continue
-                    dedup_key = (_normalize_text(entry.get("entity_type")).casefold(), title.casefold(), content.casefold())
+                    dedup_key = (
+                        _normalize_text(entry.get("entity_type")).casefold(),
+                        title.casefold(),
+                        content.casefold(),
+                    )
                     if dedup_key in seen:
                         continue
                     seen.add(dedup_key)
-                    items.append({
-                        "entity_instance_id": _normalize_text(entry.get("entity_instance_id")),
-                        "entity_type": _normalize_text(entry.get("entity_type")),
-                        "logic_title": title,
-                        "logic_content": content,
-                    })
+                    items.append(
+                        {
+                            "entity_instance_id": _normalize_text(entry.get("entity_instance_id")),
+                            "entity_type": _normalize_text(entry.get("entity_type")),
+                            "logic_title": title,
+                            "logic_content": content,
+                        }
+                    )
         except Exception as exc:
             _raise_backend_error("Neo4J get_logic_content failed", exc)
         return GraphBackendResult(records=items, total=len(items), truncated=False)
@@ -906,19 +920,23 @@ def _build_scope_where(
     parts = []
     workspace_param = "{}_workspace_value".format(prefix)
     params[workspace_param] = scope.workspace_value
-    parts.append("{}.{} = ${}".format(
-        alias,
-        quote_graph_identifier(scope.workspace_property, "workspace_property"),
-        workspace_param,
-    ))
+    parts.append(
+        "{}.{} = ${}".format(
+            alias,
+            quote_graph_identifier(scope.workspace_property, "workspace_property"),
+            workspace_param,
+        )
+    )
     if scope.ontology_property:
         ontology_param = "{}_ontology_value".format(prefix)
         params[ontology_param] = scope.ontology_value
-        parts.append("{}.{} = ${}".format(
-            alias,
-            quote_graph_identifier(scope.ontology_property, "ontology_property"),
-            ontology_param,
-        ))
+        parts.append(
+            "{}.{} = ${}".format(
+                alias,
+                quote_graph_identifier(scope.ontology_property, "ontology_property"),
+                ontology_param,
+            )
+        )
     return parts
 
 
@@ -983,7 +1001,11 @@ def _normalize_path_segments(path_pattern: list[Any] | None) -> list[dict[str, A
             selector = raw_segment[0]
             props = _segment_extra_props(raw_segment)
             return_properties = _segment_return_properties(selector) if isinstance(selector, Mapping) else None
-            props_return_properties = _segment_return_properties(raw_segment[1]) if len(raw_segment) > 1 and isinstance(raw_segment[1], Mapping) else None
+            props_return_properties = (
+                _segment_return_properties(raw_segment[1])
+                if len(raw_segment) > 1 and isinstance(raw_segment[1], Mapping)
+                else None
+            )
             if props_return_properties is not None:
                 return_properties = props_return_properties
             if isinstance(selector, str):
@@ -1063,11 +1085,7 @@ def _segment_extra_props(raw_segment: Any) -> dict[str, Any]:
             }
             direct.update(nested)
             return direct
-        return {
-            key: item
-            for key, item in value.items()
-            if str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS
-        }
+        return {key: item for key, item in value.items() if str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS}
     return {}
 
 
@@ -1092,11 +1110,13 @@ def _segment_props(segment: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("props", "filters"):
         raw = segment.get(key)
         if isinstance(raw, Mapping):
-            props.update({
-                str(prop): value
-                for prop, value in raw.items()
-                if str(prop or "").strip() not in _PATTERN_SEGMENT_META_KEYS
-            })
+            props.update(
+                {
+                    str(prop): value
+                    for prop, value in raw.items()
+                    if str(prop or "").strip() not in _PATTERN_SEGMENT_META_KEYS
+                }
+            )
     return props
 
 
@@ -1114,7 +1134,9 @@ def _build_path_query(segments: list[dict[str, Any]], scope: GraphScope, limit: 
         if index % 2 == 0:
             var = str(segment.get("var") or _node_alias(index // 2)).strip()
             label = str(segment.get("label") or "").strip()
-            pattern_parts.append("({}{})".format(var, ":" + quote_graph_identifier(label, "path label") if label else ""))
+            pattern_parts.append(
+                "({}{})".format(var, ":" + quote_graph_identifier(label, "path label") if label else "")
+            )
             aliases.append((var, "node"))
             props = _segment_props(segment)
             if segment.get("entity_type_id"):
@@ -1125,14 +1147,18 @@ def _build_path_query(segments: list[dict[str, Any]], scope: GraphScope, limit: 
             if segment.get("entity_instance_id"):
                 key = "node_instance_{}".format(index)
                 params[key] = str(segment.get("entity_instance_id")).strip()
-                where_parts.append("(elementId({alias}) = ${key} OR toString({alias}.id) = ${key})".format(alias=var, key=key))
+                where_parts.append(
+                    "(elementId({alias}) = ${key} OR toString({alias}.id) = ${key})".format(alias=var, key=key)
+                )
             where_parts.extend(_build_exclude_logic_where(var))
             continue
 
         var = str(segment.get("var") or "r{}".format((index + 1) // 2)).strip()
         rel_type = str(segment.get("type") or "").strip()
         direction = str(segment.get("direction") or "->").strip()
-        rel_body = "[{}{}]".format(var, ":" + quote_graph_identifier(rel_type, "path relationship type") if rel_type else "")
+        rel_body = "[{}{}]".format(
+            var, ":" + quote_graph_identifier(rel_type, "path relationship type") if rel_type else ""
+        )
         if direction == "<-":
             pattern_parts.append("<-{}-".format(rel_body))
         elif direction == "--":
@@ -1155,8 +1181,7 @@ def _build_path_query(segments: list[dict[str, Any]], scope: GraphScope, limit: 
         where_parts.extend(_build_scope_where(alias, scope, params, prefix="path{}_{}".format(index, alias)))
 
     query = (
-        "MATCH p = {pattern} WHERE {where} "
-        "RETURN nodes(p) AS nodes, relationships(p) AS relationships LIMIT $limit"
+        "MATCH p = {pattern} WHERE {where} " "RETURN nodes(p) AS nodes, relationships(p) AS relationships LIMIT $limit"
     ).format(pattern="".join(pattern_parts), where=" AND ".join(where_parts))
     return query, params
 
@@ -1199,8 +1224,7 @@ def _path_return_property_map(segments: list[dict[str, Any]]) -> dict[str, list[
     mapping: dict[str, list[str]] = {}
     for index, segment in enumerate(segments):
         alias = str(
-            segment.get("var")
-            or (_node_alias(index // 2) if index % 2 == 0 else "r{}".format((index + 1) // 2))
+            segment.get("var") or (_node_alias(index // 2) if index % 2 == 0 else "r{}".format((index + 1) // 2))
         ).strip()
         if not alias or "return_properties" not in segment:
             continue
@@ -1317,8 +1341,7 @@ def _relationship_with_compat(
 
 def _normalize_graph_path(path: Any, *, hidden_properties: list[str] | None = None) -> dict[str, Any]:
     nodes = [
-        _normalize_node(node, hidden_properties=hidden_properties)
-        for node in list(getattr(path, "nodes", []) or [])
+        _normalize_node(node, hidden_properties=hidden_properties) for node in list(getattr(path, "nodes", []) or [])
     ]
     relationships = [
         _relationship_with_compat(rel, hidden_properties=hidden_properties)
@@ -1411,15 +1434,19 @@ def _default_pattern_return_properties(properties: Mapping[str, Any]) -> list[st
 
 
 def _scope_hidden_properties(scope: GraphScope) -> list[str]:
-    return [
-        value
-        for value in (scope.workspace_property, scope.ontology_property)
-        if str(value or "").strip()
-    ]
+    return [value for value in (scope.workspace_property, scope.ontology_property) if str(value or "").strip()]
 
 
 def _schema_excluded_keys(scope: GraphScope) -> set[str]:
-    return {"id", "user_id", "workspace_name", "scene_name", "logic_blocks", "_d2o_record_key", *set(_scope_hidden_properties(scope))}
+    return {
+        "id",
+        "user_id",
+        "workspace_name",
+        "scene_name",
+        "logic_blocks",
+        "_d2o_record_key",
+        *set(_scope_hidden_properties(scope)),
+    }
 
 
 def _record_get(record: Any, key: str) -> Any:
@@ -1501,12 +1528,14 @@ def _iter_logic_entries(record: Any) -> list[dict[str, str]]:
         content = _normalize_text(block.get("logic_content"))
         if not title or not content:
             continue
-        result.append({
-            "entity_instance_id": entity_instance_id,
-            "entity_type": entity_type,
-            "logic_title": title,
-            "logic_content": content,
-        })
+        result.append(
+            {
+                "entity_instance_id": entity_instance_id,
+                "entity_type": entity_type,
+                "logic_title": title,
+                "logic_content": content,
+            }
+        )
     return result
 
 

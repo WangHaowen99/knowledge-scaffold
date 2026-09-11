@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-import sqlite3
 
 import pytest
-
 from solver_coordination.job_store import (
     AttemptPayloadConflict,
     JobStoreConflict,
@@ -14,7 +13,6 @@ from solver_coordination.job_store import (
     SolverJobStore,
     TerminalStateError,
 )
-
 
 WORKSPACE_ID = "workspace_synthetic"
 OWNER_ID = "owner_synthetic"
@@ -54,12 +52,7 @@ def test_store_uses_wal_creates_all_durable_entities_and_survives_reopen(tmp_pat
     assert job["workspace_id"] == WORKSPACE_ID
     with sqlite3.connect(store.database_path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
-        }
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {
         "solver_binding_revisions",
         "solve_jobs",
@@ -72,9 +65,10 @@ def test_store_uses_wal_creates_all_durable_entities_and_survives_reopen(tmp_pat
     }.issubset(tables)
 
     reopened = SolverJobStore(store.database_path)
-    assert reopened.get_job(
-        job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["logical_job_key"] == job["logical_job_key"]
+    assert (
+        reopened.get_job(job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["logical_job_key"]
+        == job["logical_job_key"]
+    )
 
 
 def test_job_reads_events_artifacts_and_verification_are_owner_scoped(tmp_path):
@@ -107,21 +101,18 @@ def test_job_reads_events_artifacts_and_verification_are_owner_scoped(tmp_path):
     )
 
     assert event["event_seq"] == 1
-    assert store.get_job(
-        job["job_id"], workspace_id=WORKSPACE_ID, owner_id="owner_other"
-    ) is None
-    assert store.read_events(
-        job["job_id"],
-        workspace_id=WORKSPACE_ID,
-        owner_id="owner_other",
-        after_event_seq=0,
-    ) == ()
-    assert store.list_artifacts(
-        job["job_id"], workspace_id=WORKSPACE_ID, owner_id="owner_other"
-    ) == ()
-    assert store.list_verification_results(
-        job["job_id"], workspace_id=WORKSPACE_ID, owner_id="owner_other"
-    ) == ()
+    assert store.get_job(job["job_id"], workspace_id=WORKSPACE_ID, owner_id="owner_other") is None
+    assert (
+        store.read_events(
+            job["job_id"],
+            workspace_id=WORKSPACE_ID,
+            owner_id="owner_other",
+            after_event_seq=0,
+        )
+        == ()
+    )
+    assert store.list_artifacts(job["job_id"], workspace_id=WORKSPACE_ID, owner_id="owner_other") == ()
+    assert store.list_verification_results(job["job_id"], workspace_id=WORKSPACE_ID, owner_id="owner_other") == ()
 
 
 def test_optimistic_updates_leases_and_fencing_reject_stale_workers(tmp_path):
@@ -640,11 +631,7 @@ def test_concurrent_initial_attempt_creation_converges_on_one_attempt(tmp_path):
     attempt_ids = {outcome[0]["attempt_id"] for outcome in outcomes}
     assert len(attempt_ids) == 1
     assert sum(1 for _, created in outcomes if created) == 1
-    assert len(
-        store.list_attempts(
-            job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-        )
-    ) == 1
+    assert len(store.list_attempts(job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)) == 1
 
 
 def test_event_sequence_and_tool_result_write_are_atomic_and_idempotent(tmp_path):
@@ -719,9 +706,7 @@ def test_event_sequence_and_tool_result_write_are_atomic_and_idempotent(tmp_path
             contract_digest=link["contract_digest"],
             result=result,
         )
-    current_job = store.get_job(
-        job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    current_job = store.get_job(job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     store.update_job(
         job["job_id"],
         workspace_id=WORKSPACE_ID,
@@ -761,9 +746,7 @@ def test_event_sequence_and_tool_result_write_are_atomic_and_idempotent(tmp_path
     assert [event["event_seq"] for event in events] == [1, 2, 3]
     assert events[-1]["event_type"] == "solver.tool_result.ready"
     reopened = SolverJobStore(store.database_path)
-    unpublished = reopened.list_unpublished_events(
-        workspace_id=WORKSPACE_ID, owner_id=OWNER_ID, limit=10
-    )
+    unpublished = reopened.list_unpublished_events(workspace_id=WORKSPACE_ID, owner_id=OWNER_ID, limit=10)
     assert [event["event_seq"] for event in unpublished] == [1, 2, 3]
     reopened.mark_event_published(
         job["job_id"],
@@ -773,9 +756,7 @@ def test_event_sequence_and_tool_result_write_are_atomic_and_idempotent(tmp_path
     )
     assert [
         event["event_seq"]
-        for event in reopened.list_unpublished_events(
-            workspace_id=WORKSPACE_ID, owner_id=OWNER_ID, limit=10
-        )
+        for event in reopened.list_unpublished_events(workspace_id=WORKSPACE_ID, owner_id=OWNER_ID, limit=10)
     ] == [2, 3]
     with pytest.raises(JobStoreConflict):
         store.write_tool_result(
@@ -805,12 +786,11 @@ def test_job_transition_and_outbox_event_are_committed_together(tmp_path):
     assert transitioned["status"] == "submitting"
     assert event["event_type"] == "solver.job.submitting"
     reopened = SolverJobStore(store.database_path)
-    assert reopened.get_job(
-        job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["status"] == "submitting"
-    assert reopened.list_unpublished_events(
-        workspace_id=WORKSPACE_ID, owner_id=OWNER_ID, limit=10
-    )[-1]["event_type"] == "solver.job.submitting"
+    assert reopened.get_job(job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"] == "submitting"
+    assert (
+        reopened.list_unpublished_events(workspace_id=WORKSPACE_ID, owner_id=OWNER_ID, limit=10)[-1]["event_type"]
+        == "solver.job.submitting"
+    )
 
 
 def test_subscription_cancellation_is_local_and_reports_last_subscriber(tmp_path):
@@ -854,9 +834,7 @@ def test_subscription_cancellation_is_local_and_reports_last_subscriber(tmp_path
     assert second["active_subscriber_count"] == 0
     assert second["last_subscriber"] is True
     assert second["cancel_reserved"] is True
-    assert store.get_job(
-        job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["status"] == "cancelling"
+    assert store.get_job(job["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"] == "cancelling"
     with pytest.raises(JobStoreConflict):
         store.create_subscription_and_link(
             workspace_id=WORKSPACE_ID,
@@ -993,9 +971,7 @@ def test_job_history_uses_scoped_keyset_pagination_without_private_bodies(tmp_pa
             job_id="job_synthetic_history_{}".format(index + 1),
         )
 
-    first_page = store.list_jobs(
-        workspace_id=WORKSPACE_ID, owner_id=OWNER_ID, limit=2
-    )
+    first_page = store.list_jobs(workspace_id=WORKSPACE_ID, owner_id=OWNER_ID, limit=2)
     second_page = store.list_jobs(
         workspace_id=WORKSPACE_ID,
         owner_id=OWNER_ID,
@@ -1004,9 +980,7 @@ def test_job_history_uses_scoped_keyset_pagination_without_private_bodies(tmp_pa
     )
     assert len(first_page["items"]) == 2
     assert len(second_page["items"]) == 1
-    assert {
-        item["job_id"] for item in first_page["items"] + second_page["items"]
-    } == {
+    assert {item["job_id"] for item in first_page["items"] + second_page["items"]} == {
         "job_synthetic_history_1",
         "job_synthetic_history_2",
         "job_synthetic_history_3",
@@ -1014,6 +988,4 @@ def test_job_history_uses_scoped_keyset_pagination_without_private_bodies(tmp_pa
     assert second_page["next_cursor"] is None
     forbidden = {"problem", "problem_json", "run_policy", "run_policy_json", "configuration"}
     assert all(not (forbidden & set(item)) for item in first_page["items"])
-    assert store.list_jobs(
-        workspace_id=WORKSPACE_ID, owner_id="owner_other", limit=10
-    )["items"] == []
+    assert store.list_jobs(workspace_id=WORKSPACE_ID, owner_id="owner_other", limit=10)["items"] == []

@@ -1,22 +1,21 @@
-from contextvars import Context
 import json
 import multiprocessing
 import os
-from pathlib import Path
 import queue
 import sys
 import threading
 import time
+from contextvars import Context
+from pathlib import Path
 
 import pytest
-
-from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability import stack_profiler as stack_profiler_module
 from integration.observability.bus import ObservabilityBus
+from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability.exporters.speedscope.exporter import SpeedscopeExporter
 from integration.observability.speedscope_io import speedscope_session_lock_path
-from integration.observability.traces.run import RunRuntimeTrace
 from integration.observability.stack_profiler import _RunStackProfile, _write_stack_profile
+from integration.observability.traces.run import RunRuntimeTrace
 from utils.identifiers import safe_user_storage_key
 
 
@@ -37,10 +36,7 @@ def test_stack_profiler_merges_sampled_profile_into_evented_session(tmp_path):
     assert {profile["type"] for profile in profiles} == {"evented", "sampled"}
     assert _active_profile(document)["type"] == "sampled"
     assert _active_profile(document)["name"].startswith("Code Lines / Turn 1 / Run run-merge")
-    assert any(
-        "agentic.fake.run L10" in frame["name"]
-        for frame in document["shared"]["frames"]
-    )
+    assert any("agentic.fake.run L10" in frame["name"] for frame in document["shared"]["frames"])
 
 
 def test_speedscope_event_rewrite_preserves_active_sampled_profile(tmp_path):
@@ -607,14 +603,8 @@ def test_speedscope_session_file_lock_preserves_profiles_across_processes(tmp_pa
     document = _load_single_speedscope_document(tmp_path)
     profile_names = [profile["name"] for profile in document["profiles"]]
     for run_id in run_ids:
-        assert any(
-            name.startswith("Turn") and "Run {}".format(run_id) in name
-            for name in profile_names
-        )
-        assert any(
-            name.startswith("Code Lines") and "Run {}".format(run_id) in name
-            for name in profile_names
-        )
+        assert any(name.startswith("Turn") and "Run {}".format(run_id) in name for name in profile_names)
+        assert any(name.startswith("Code Lines") and "Run {}".format(run_id) in name for name in profile_names)
 
 
 def _emit_minimal_run(
@@ -738,7 +728,9 @@ def _active_profile(document):
     return document["profiles"][document["activeProfileIndex"]]
 
 
-def _write_run_profiles_in_process(output_dir, session_id, run_id, turn_id, start_event, errors):
+def _write_run_profiles_in_process(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
+    output_dir, session_id, run_id, turn_id, start_event, errors
+):
     try:
         if not start_event.wait(timeout=5.0):
             raise TimeoutError("timed out waiting to start child writer")

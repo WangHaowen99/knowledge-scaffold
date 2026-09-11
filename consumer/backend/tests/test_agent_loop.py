@@ -1,7 +1,6 @@
 """Contract tests for the stable Jiuwen-only engine facade."""
 
 import pytest
-
 from agent.core.engine import AgentLoopEngine
 from agent.core.jiuwen.common import JiuwenBackendUnavailable
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine

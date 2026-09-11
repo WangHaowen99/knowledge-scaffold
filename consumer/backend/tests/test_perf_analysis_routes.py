@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
-
-from api.routes.performance import performance_router
 from api.auth.auth import AuthManager
+from api.routes.performance import performance_router
+from api.testing import TestApplication
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD, synthetic_secret
+from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace
 
 
@@ -38,11 +36,11 @@ def _build_test_client(tmp_path, *, role="admin", monkeypatch=None):
     app = TestApplication()
     app.state.services["TESTING"] = True
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
     if role == "admin":
-        user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+        user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
         assert user is not None
-        user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+        user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     else:
         user = auth_manager.create_user("perf-user", "PerfStrong123!", role=role)
         user = auth_manager.change_password("perf-user", "PerfStrong123!", "ChangedStrong123!")
@@ -103,8 +101,7 @@ def test_session_performance_availability_uses_lightweight_probe(tmp_path, monke
     )
     monkeypatch.setattr(
         "api.routes.performance.check_session_availability",
-        lambda session_id, **kwargs: captured.update(kwargs)
-        or {"session_id": session_id, "available": True},
+        lambda session_id, **kwargs: captured.update(kwargs) or {"session_id": session_id, "available": True},
     )
     monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "ws-a")
     monkeypatch.setattr(
@@ -222,7 +219,8 @@ def test_user_run_detail_requires_current_session_ownership(tmp_path, monkeypatc
     )
     monkeypatch.setattr(
         "api.routes.performance.analyze_run_detail",
-        lambda run_id, **kwargs: captured.update(kwargs) or {"run": {"run_id": run_id}, "timeline": [{"event": "run.finished"}]},
+        lambda run_id, **kwargs: captured.update(kwargs)
+        or {"run": {"run_id": run_id}, "timeline": [{"event": "run.finished"}]},
     )
     monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "ws-a")
     monkeypatch.setattr(
@@ -274,7 +272,10 @@ def test_modeling_trace_endpoint_rejects_an_invalid_service_token(tmp_path, monk
 
     response = client.get(
         "/agentic/internal/modeling/performance/runs/run-a",
-        headers={"Authorization": "Bearer invalid", "X-Workspace-Id": "mw-shadow-project-1"},
+        headers={
+            "Authorization": f"Bearer {synthetic_secret('perf_analysis_routes-credential-01')}",
+            "X-Workspace-Id": "mw-shadow-project-1",
+        },
     )
 
     assert response.status_code == 403

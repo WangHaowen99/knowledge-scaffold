@@ -7,8 +7,8 @@ public ProblemIR wire document.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 try:
@@ -163,9 +163,7 @@ def _parse_problem(problem: Mapping[str, Any]) -> tuple[list[dict[str, Any]], li
     for candidate in parsed:
         for objective in parsed_objectives:
             if objective["metric"] not in candidate["metrics"]:
-                raise ProblemValidationError(
-                    f"candidate metric is missing: {objective['metric']}"
-                )
+                raise ProblemValidationError(f"candidate metric is missing: {objective['metric']}")
     limits = payload.get("limits")
     if not isinstance(limits, Mapping):
         raise ProblemValidationError("problem limits must be an object")
@@ -175,7 +173,9 @@ def _parse_problem(problem: Mapping[str, Any]) -> tuple[list[dict[str, Any]], li
     return parsed, parsed_objectives
 
 
-def _new_model(candidates: list[dict[str, Any]], fixed: list[tuple[str, int]]) -> tuple[cp_model.CpModel, list[cp_model.IntVar]]:
+def _new_model(
+    candidates: list[dict[str, Any]], fixed: list[tuple[str, int]]
+) -> tuple[cp_model.CpModel, list[cp_model.IntVar]]:
     model = cp_model.CpModel()
     selected = [model.NewBoolVar(f"selected_{index}") for index in range(len(candidates))]
     model.Add(sum(selected) == 1)
@@ -184,8 +184,7 @@ def _new_model(candidates: list[dict[str, Any]], fixed: list[tuple[str, int]]) -
             model.Add(selected[index] == 0)
     for metric, value in fixed:
         model.Add(
-            sum(candidate["metrics"][metric] * selected[index] for index, candidate in enumerate(candidates))
-            == value
+            sum(candidate["metrics"][metric] * selected[index] for index, candidate in enumerate(candidates)) == value
         )
     return model, selected
 
@@ -198,9 +197,7 @@ def _validate_model(model: cp_model.CpModel) -> None:
         raise EngineExecutionError("candidate model is invalid")
 
 
-def solve_candidate_selection(
-    problem: Mapping[str, Any], *, solve_time_ms: int, workers: int
-) -> EngineResult:
+def solve_candidate_selection(problem: Mapping[str, Any], *, solve_time_ms: int, workers: int) -> EngineResult:
     """Solve one canonical candidate-selection ProblemIR with CP-SAT."""
 
     if cp_model is None:
@@ -220,8 +217,7 @@ def solve_candidate_selection(
             raise EngineDeadlineExceeded("solver deadline exhausted")
         model, selected = _new_model(candidates, fixed)
         expression = sum(
-            candidate["metrics"][objective["metric"]] * selected[index]
-            for index, candidate in enumerate(candidates)
+            candidate["metrics"][objective["metric"]] * selected[index] for index, candidate in enumerate(candidates)
         )
         if objective["sense"] == "maximize":
             model.Maximize(expression)
@@ -237,20 +233,14 @@ def solve_candidate_selection(
         solver.parameters.log_search_progress = False
         status = solver.Solve(model)
         if status == cp_model.INFEASIBLE:
-            return EngineResult(
-                "infeasible", {}, {}, None, None, engine_version=engine_version()
-            )
+            return EngineResult("infeasible", {}, {}, None, None, engine_version=engine_version())
         if status not in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
             if time.monotonic() >= deadline:
                 raise EngineDeadlineExceeded("solver deadline exhausted")
-            return EngineResult(
-                "unknown", {}, {}, None, None, engine_version=engine_version()
-            )
+            return EngineResult("unknown", {}, {}, None, None, engine_version=engine_version())
         if status != cp_model.OPTIMAL:
             # A lexicographic phase cannot be frozen from an unproven value.
-            return EngineResult(
-                "unknown", {}, {}, None, None, engine_version=engine_version()
-            )
+            return EngineResult("unknown", {}, {}, None, None, engine_version=engine_version())
         value = int(solver.Value(expression))
         fixed.append((objective["metric"], value))
         final_solver, final_selected = solver, selected
@@ -259,16 +249,11 @@ def solve_candidate_selection(
         raise EngineExecutionError("solver produced no result")
     if time.monotonic() >= deadline:
         raise EngineDeadlineExceeded("solver deadline exhausted")
-    selected_indices = [
-        index for index, variable in enumerate(final_selected) if final_solver.Value(variable) == 1
-    ]
+    selected_indices = [index for index, variable in enumerate(final_selected) if final_solver.Value(variable) == 1]
     if len(selected_indices) != 1:
         raise EngineExecutionError("solver selected an invalid candidate count")
     candidate = candidates[selected_indices[0]]
-    objective_values = {
-        objective["metric"]: int(candidate["metrics"][objective["metric"]])
-        for objective in objectives
-    }
+    objective_values = {objective["metric"]: int(candidate["metrics"][objective["metric"]]) for objective in objectives}
     assignments = {"candidate_id": candidate["candidate_id"], **candidate["assignment"]}
     return EngineResult(
         solve_outcome="optimal",

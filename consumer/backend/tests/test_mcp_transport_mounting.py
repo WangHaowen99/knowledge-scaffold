@@ -11,10 +11,10 @@ from starlette.applications import Starlette
 
 from integration.mcp.config import MCPRuntimeConfig, validate_mcp_runtime_config
 from api.protocols.mcp import server as mcp_server
+from backend_synthetic_credentials import synthetic_secret
 from integration.mcp.scope import MCPRequestScope
 from integration.mcp.service_catalog import list_mcp_service_cards
 from integration.mcp.token_service import MCPTokenAuthError
-
 
 ENDPOINT_ID = "cdd181f5b6cb47a9"
 OTHER_ENDPOINT_ID = "a" * 16
@@ -26,7 +26,7 @@ def _config(tmp_path: Path, transport: str) -> MCPRuntimeConfig:
         server_port=7488,
         public_base_url="https://service.example.net",
         agentic_base_url="",
-        token_secret="test-secret-at-least-32-characters-long",
+        token_secret=synthetic_secret("mcp_transport_mounting-credential-02"),
         token_algorithm="HS256",
         token_issuer="meta-wise",
         token_audience="meta-wise-mcp",
@@ -82,10 +82,7 @@ def test_search_tool_schemas_make_ontology_id_optional(tmp_path):
             _config(tmp_path, "streamable-http"),
             toolset="search",
         )
-        return {
-            name: tool.parameters
-            for name, tool in (await server.get_tools()).items()
-        }
+        return {name: tool.parameters for name, tool in (await server.get_tools()).items()}
 
     schemas = asyncio.run(load_schemas())
 
@@ -319,9 +316,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
 
     def jsonrpc_payload(response):
         if response.headers.get("content-type", "").startswith("text/event-stream"):
-            data_line = next(
-                line for line in response.text.splitlines() if line.startswith("data: ")
-            )
+            data_line = next(line for line in response.text.splitlines() if line.startswith("data: "))
             return json.loads(data_line.removeprefix("data: "))
         return response.json() if response.content else None
 
@@ -393,9 +388,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                     },
                 )
                 tools_payload = jsonrpc_payload(tools_response)
-                assert [
-                    item["name"] for item in tools_payload["result"]["tools"]
-                ] == ["chat"]
+                assert [item["name"] for item in tools_payload["result"]["tools"]] == ["chat"]
 
                 call_response = await client.post(
                     endpoint_path,
@@ -414,9 +407,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                     },
                 )
                 call_payload = jsonrpc_payload(call_response)
-                assert call_payload["result"]["structuredContent"][
-                    "endpoint_id"
-                ] == ENDPOINT_ID
+                assert call_payload["result"]["structuredContent"]["endpoint_id"] == ENDPOINT_ID
 
                 progress_response = await client.post(
                     endpoint_path,
@@ -443,22 +434,12 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                     if line.startswith("data: ")
                 ]
                 notification_payload = next(
-                    item
-                    for item in progress_messages
-                    if item.get("method") == "notifications/progress"
+                    item for item in progress_messages if item.get("method") == "notifications/progress"
                 )
-                assert notification_payload["params"]["progressToken"] == (
-                    "progress_demo"
-                )
-                assert json.loads(notification_payload["params"]["message"])[
-                    "event"
-                ] == "run.started"
-                terminal_payload = next(
-                    item for item in progress_messages if item.get("id") == 4
-                )
-                assert terminal_payload["result"]["structuredContent"][
-                    "endpoint_id"
-                ] == ENDPOINT_ID
+                assert notification_payload["params"]["progressToken"] == "progress_demo"
+                assert json.loads(notification_payload["params"]["message"])["event"] == "run.started"
+                terminal_payload = next(item for item in progress_messages if item.get("id") == 4)
+                assert terminal_payload["result"]["structuredContent"]["endpoint_id"] == ENDPOINT_ID
 
                 terminated = await client.delete(endpoint_path, headers=headers)
                 assert terminated.status_code == 200
@@ -528,11 +509,7 @@ def test_workspace_endpoint_binding_app_validates_and_resets_context():
             receive,
             send,
         )
-        return next(
-            message["status"]
-            for message in messages
-            if message["type"] == "http.response.start"
-        )
+        return next(message["status"] for message in messages if message["type"] == "http.response.start")
 
     async def exercise_binding():
         assert await invoke(ENDPOINT_ID) == 200
@@ -597,28 +574,33 @@ def test_workspace_endpoint_binding_app_pins_and_releases_http_session():
             receive,
             send,
         )
-        start = next(
-            message
-            for message in messages
-            if message["type"] == "http.response.start"
-        )
+        start = next(message for message in messages if message["type"] == "http.response.start")
         return start["status"]
 
     async def exercise_binding():
         assert await invoke(ENDPOINT_ID) == 200
-        assert await invoke(
-            OTHER_ENDPOINT_ID,
-            session_id="session-a",
-        ) == 404
-        assert await invoke(
-            ENDPOINT_ID,
-            method="DELETE",
-            session_id="session-a",
-        ) == 200
-        assert await invoke(
-            OTHER_ENDPOINT_ID,
-            session_id="session-a",
-        ) == 200
+        assert (
+            await invoke(
+                OTHER_ENDPOINT_ID,
+                session_id="session-a",
+            )
+            == 404
+        )
+        assert (
+            await invoke(
+                ENDPOINT_ID,
+                method="DELETE",
+                session_id="session-a",
+            )
+            == 200
+        )
+        assert (
+            await invoke(
+                OTHER_ENDPOINT_ID,
+                session_id="session-a",
+            )
+            == 200
+        )
 
     asyncio.run(exercise_binding())
 
@@ -729,20 +711,10 @@ def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
             receive,
             send,
         )
-        start = next(
-            message
-            for message in messages
-            if message["type"] == "http.response.start"
-        )
-        body = next(
-            message["body"]
-            for message in messages
-            if message["type"] == "http.response.body"
-        )
+        start = next(message for message in messages if message["type"] == "http.response.start")
+        body = next(message["body"] for message in messages if message["type"] == "http.response.body")
         assert start["status"] == 503
-        assert json.loads(body)["error"]["message"] == (
-            "Server session capacity reached"
-        )
+        assert json.loads(body)["error"]["message"] == "Server session capacity reached"
 
     asyncio.run(exercise_binding())
     assert child_calls == []
@@ -792,11 +764,7 @@ def test_workspace_endpoint_binding_tracks_session_from_error_response():
             receive,
             send,
         )
-        start = next(
-            message
-            for message in messages
-            if message["type"] == "http.response.start"
-        )
+        start = next(message for message in messages if message["type"] == "http.response.start")
         assert start["status"] == 400
 
     asyncio.run(exercise_binding())
@@ -914,6 +882,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
         )
 
     monkeypatch.setattr(mcp_server, "resolve_mcp_scope_from_token", resolve_scope)
+
     async def execute_chat_tool(_args, *, scope, progress_callback=None):
         assert progress_callback is None
         return {
@@ -933,11 +902,13 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
         receive_queue: asyncio.Queue[dict] = asyncio.Queue()
         send_queue: asyncio.Queue[dict] = asyncio.Queue()
         event_buffer = ""
-        await receive_queue.put({
-            "type": "http.request",
-            "body": b"",
-            "more_body": False,
-        })
+        await receive_queue.put(
+            {
+                "type": "http.request",
+                "body": b"",
+                "more_body": False,
+            }
+        )
 
         async def receive():
             return await receive_queue.get()
@@ -950,8 +921,8 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
             while True:
                 separator = re.search(r"\r?\n\r?\n", event_buffer)
                 if separator is not None:
-                    raw_event = event_buffer[:separator.start()]
-                    event_buffer = event_buffer[separator.end():]
+                    raw_event = event_buffer[: separator.start()]
+                    event_buffer = event_buffer[separator.end() :]
                     event_match = re.search(
                         r"event: ([^\r\n]+)\r?\ndata: ([^\r\n]+)",
                         raw_event,
@@ -1059,9 +1030,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
                 event_name, event_data = await next_sse_event()
                 tools_payload = json.loads(event_data)
                 assert event_name == "message"
-                assert [
-                    item["name"] for item in tools_payload["result"]["tools"]
-                ] == ["chat"]
+                assert [item["name"] for item in tools_payload["result"]["tools"]] == ["chat"]
 
                 call_response = await client.post(
                     message_url,
@@ -1080,9 +1049,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
                 event_name, event_data = await next_sse_event()
                 call_payload = json.loads(event_data)
                 assert event_name == "message"
-                assert call_payload["result"]["structuredContent"][
-                    "endpoint_id"
-                ] == ENDPOINT_ID
+                assert call_payload["result"]["structuredContent"]["endpoint_id"] == ENDPOINT_ID
         finally:
             await receive_queue.put({"type": "http.disconnect"})
             await asyncio.wait_for(sse_task, timeout=5)

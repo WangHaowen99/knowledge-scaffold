@@ -24,12 +24,28 @@ def _configure_cli_logging() -> None:
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
+
 _LANG_DISPLAY = {
-    "zh": "中文", "en": "英文", "ja": "日文", "ko": "韩文",
-    "ru": "俄文", "de": "德文", "fr": "法文", "es": "西班牙文",
-    "pt": "葡萄牙文", "ar": "阿拉伯文", "it": "意大利文", "nl": "荷兰文",
-    "pl": "波兰文", "tr": "土耳其文", "vi": "越南文", "th": "泰文",
-    "hi": "印地文", "id": "印尼文", "uk": "乌克兰文", "cs": "捷克文",
+    "zh": "中文",
+    "en": "英文",
+    "ja": "日文",
+    "ko": "韩文",
+    "ru": "俄文",
+    "de": "德文",
+    "fr": "法文",
+    "es": "西班牙文",
+    "pt": "葡萄牙文",
+    "ar": "阿拉伯文",
+    "it": "意大利文",
+    "nl": "荷兰文",
+    "pl": "波兰文",
+    "tr": "土耳其文",
+    "vi": "越南文",
+    "th": "泰文",
+    "hi": "印地文",
+    "id": "印尼文",
+    "uk": "乌克兰文",
+    "cs": "捷克文",
 }
 
 
@@ -64,10 +80,13 @@ def _resolve_languages() -> list[tuple[str, str]]:
     codes = [c.strip() for c in raw.split(",") if c.strip()]
     if codes == ["all"]:
         cases_dir = os.path.join(_SCRIPT_DIR, "translated_cases")
-        codes = sorted(
-            d for d in os.listdir(cases_dir)
-            if os.path.isdir(os.path.join(cases_dir, d)) and os.path.isfile(os.path.join(cases_dir, d, f"cases_{d}.json"))
-        )
+        available_codes = []
+        for directory_name in os.listdir(cases_dir):
+            language_dir = os.path.join(cases_dir, directory_name)
+            cases_path = os.path.join(language_dir, f"cases_{directory_name}.json")
+            if os.path.isdir(language_dir) and os.path.isfile(cases_path):
+                available_codes.append(directory_name)
+        codes = sorted(available_codes)
         if "zh" not in codes:
             codes.insert(0, "zh")
     result = []
@@ -158,9 +177,11 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
             remaining = max(0, total_seen - done)
             eta = avg_per_q * remaining if remaining > 0 else 0
             eta_str = _fmt_duration(eta) if remaining > 0 else "—"
-            logger.info(f"  ✅ [{q}] 完成 | 平均耗时: {m.group(2)} | 成功: {m.group(3)}/{m.group(4)} | "
-                  f"耗时: {_fmt_duration(q_elapsed)} | "
-                  f"进度: {done}/{total_seen} | 预计剩余: {eta_str}")
+            logger.info(
+                f"  ✅ [{q}] 完成 | 平均耗时: {m.group(2)} | 成功: {m.group(3)}/{m.group(4)} | "
+                f"耗时: {_fmt_duration(q_elapsed)} | "
+                f"进度: {done}/{total_seen} | 预计剩余: {eta_str}"
+            )
             sys.stdout.flush()
             return
 
@@ -277,56 +298,64 @@ def _parse_output(text: str, lang_code: str, lang_name: str, wall_seconds: float
 
     kg_match = re.search(
         r"knowledge_graph_tool\.py 执行统计.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if kg_match:
         result["kg_tool_stats"] = kg_match.group(1).strip()
 
     mindsdb_match = re.search(
         r"mindsdb_tool\.py 执行统计.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if mindsdb_match:
         result["mindsdb_tool_stats"] = mindsdb_match.group(1).strip()
 
     wos_match = re.search(
         r"work_order_sync\.py 执行统计.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if wos_match:
         result["wos_tool_stats"] = wos_match.group(1).strip()
 
     flywheel_match = re.search(
         r"飞轮问题 work_order_sync\.py 覆盖检测.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if flywheel_match:
         result["flywheel_wos_check"] = flywheel_match.group(1).strip()
 
     chinese_section = re.search(
         r"中文混入检测.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if chinese_section:
         result["chinese_intrusion"] = chinese_section.group(1).strip()
 
     kg_chinese = re.search(
         r"knowledge_graph_tool 返回中文检测.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if kg_chinese:
         result["kg_chinese_detection"] = kg_chinese.group(1).strip()
 
     kg_lang_param = re.search(
         r"knowledge_graph_tool language参数检测.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if kg_lang_param:
         result["kg_lang_param_detection"] = kg_lang_param.group(1).strip()
 
     kg_output_lang = re.search(
         r"knowledge_graph_tool 输出语言匹配检测.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if kg_output_lang:
         result["kg_output_lang_detection"] = kg_output_lang.group(1).strip()
@@ -344,13 +373,15 @@ def _parse_output(text: str, lang_code: str, lang_name: str, wall_seconds: float
     for sheet, lang_info in q_blocks:
         if sheet in completion_map:
             dur, succ, total = completion_map[sheet]
-            result["per_question_summary"].append({
-                "sheet": sheet,
-                "lang_info": lang_info,
-                "avg_duration": dur,
-                "success": succ,
-                "total": total,
-            })
+            result["per_question_summary"].append(
+                {
+                    "sheet": sheet,
+                    "lang_info": lang_info,
+                    "avg_duration": dur,
+                    "success": succ,
+                    "total": total,
+                }
+            )
 
     return result
 
@@ -440,13 +471,15 @@ def _print_final_report(results: list[dict]):
                     content = f.read()
                 m = re.search(
                     r"(## 环境配置\s*\n.*?---\s*\n)",
-                    content, re.DOTALL,
+                    content,
+                    re.DOTALL,
                 )
                 if m:
                     return m.group(1).rstrip()
                 m = re.search(
                     r"(## 环境配置\s*\n.*?)(?=##\s全局统计)",
-                    content, re.DOTALL,
+                    content,
+                    re.DOTALL,
                 )
                 if m:
                     return m.group(1).rstrip()
@@ -488,11 +521,31 @@ def _print_final_report(results: list[dict]):
     a(f"|------|-----|")
     a(f"| 总问题数(跨语言) | {sum(r.get('total_questions') or 0 for r in results)} |")
     a(f"| 总执行次数 | {total_runs} |")
-    a(f"| 总成功率 | {total_success}/{total_success_runs} ({total_success/total_success_runs*100:.1f}%) |" if total_success_runs else f"| 总成功率 | N/A |")
-    a(f"| 跨语言平均耗时 | {sum(avg_seconds_vals)/len(avg_seconds_vals):.2f}s |" if avg_seconds_vals else f"| 跨语言平均耗时 | N/A |")
-    a(f"| 跨语言平均 Tokens | {sum(avg_tokens_vals)/len(avg_tokens_vals):.0f} |" if avg_tokens_vals else f"| 跨语言平均 Tokens | N/A |")
-    a(f"| 跨语言平均首Token时延 | {sum(ftl_vals)/len(ftl_vals):.3f}s |" if ftl_vals else f"| 跨语言平均首Token时延 | N/A |")
-    a(f"| 跨语言平均增量Token时延 | {sum(aitl_vals)/len(aitl_vals):.3f}s |" if aitl_vals else f"| 跨语言平均增量Token时延 | N/A |")
+    a(
+        f"| 总成功率 | {total_success}/{total_success_runs} ({total_success/total_success_runs*100:.1f}%) |"
+        if total_success_runs
+        else f"| 总成功率 | N/A |"
+    )
+    a(
+        f"| 跨语言平均耗时 | {sum(avg_seconds_vals)/len(avg_seconds_vals):.2f}s |"
+        if avg_seconds_vals
+        else f"| 跨语言平均耗时 | N/A |"
+    )
+    a(
+        f"| 跨语言平均 Tokens | {sum(avg_tokens_vals)/len(avg_tokens_vals):.0f} |"
+        if avg_tokens_vals
+        else f"| 跨语言平均 Tokens | N/A |"
+    )
+    a(
+        f"| 跨语言平均首Token时延 | {sum(ftl_vals)/len(ftl_vals):.3f}s |"
+        if ftl_vals
+        else f"| 跨语言平均首Token时延 | N/A |"
+    )
+    a(
+        f"| 跨语言平均增量Token时延 | {sum(aitl_vals)/len(aitl_vals):.3f}s |"
+        if aitl_vals
+        else f"| 跨语言平均增量Token时延 | N/A |"
+    )
     a(f"")
 
     a(f"---")
@@ -667,6 +720,7 @@ def _print_final_report(results: list[dict]):
 def _generate_multilang_charts(results: list[dict], output_dir: str):
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import numpy as np
@@ -738,13 +792,32 @@ def _generate_multilang_charts(results: list[dict], output_dir: str):
             pct = v / total_avgs[i] * 100
             mid = bottoms[i] + v / 2
             if v > 1.5:
-                ax_bar.text(x[i], mid, f"{v:.1f}s\n({pct:.0f}%)", ha="center", va="center", fontsize=7.5, color="white", fontweight="bold")
+                ax_bar.text(
+                    x[i],
+                    mid,
+                    f"{v:.1f}s\n({pct:.0f}%)",
+                    ha="center",
+                    va="center",
+                    fontsize=7.5,
+                    color="white",
+                    fontweight="bold",
+                )
             elif v > 0.3:
-                ax_bar.text(x[i], mid, f"{v:.1f}s", ha="center", va="center", fontsize=7, color="white", fontweight="bold")
+                ax_bar.text(
+                    x[i], mid, f"{v:.1f}s", ha="center", va="center", fontsize=7, color="white", fontweight="bold"
+                )
         bottoms = bottoms + vals_arr
 
     for i in range(len(langs)):
-        ax_bar.text(x[i], total_avgs[i] + 0.8, f"总计 {total_avgs[i]:.1f}s", ha="center", va="bottom", fontsize=10, fontweight="bold")
+        ax_bar.text(
+            x[i],
+            total_avgs[i] + 0.8,
+            f"总计 {total_avgs[i]:.1f}s",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            fontweight="bold",
+        )
 
     ax_bar.set_ylabel("时间 (秒)", fontsize=11)
     ax_bar.set_title("各语言执行时间分解", fontsize=13, fontweight="bold")
@@ -768,8 +841,14 @@ def _generate_multilang_charts(results: list[dict], output_dir: str):
     bars = ax_sum.barh(labels, vals, color=colors)
     for bar, v in zip(bars, vals):
         pct = v / avg_total * 100 if avg_total else 0
-        ax_sum.text(bar.get_width() + 0.2, bar.get_y() + bar.get_height() / 2,
-                    f"{v:.2f}s ({pct:.0f}%)", ha="left", va="center", fontsize=10)
+        ax_sum.text(
+            bar.get_width() + 0.2,
+            bar.get_y() + bar.get_height() / 2,
+            f"{v:.2f}s ({pct:.0f}%)",
+            ha="left",
+            va="center",
+            fontsize=10,
+        )
 
     ax_sum.set_xlabel("时间 (秒)", fontsize=11)
     ax_sum.set_title(f"所有语言平均 (总耗时 {avg_total:.2f}s)", fontsize=13, fontweight="bold")
@@ -795,6 +874,7 @@ def _generate_multilang_charts(results: list[dict], output_dir: str):
             if not os.path.exists(json_path):
                 continue
             import json
+
             with open(json_path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             for sn in tool_names:
@@ -948,9 +1028,11 @@ def main():
         if remaining > 0 and lang_times:
             avg_lang = sum(lang_times) / len(lang_times)
             eta = avg_lang * remaining
-            logger.info(f"\n  📊 整体进度: {idx}/{len(LANGUAGES)} 语言完成 | "
-                  f"已用: {_fmt_duration(time.time() - overall_start)} | "
-                  f"预计剩余: {_fmt_duration(eta)}")
+            logger.info(
+                f"\n  📊 整体进度: {idx}/{len(LANGUAGES)} 语言完成 | "
+                f"已用: {_fmt_duration(time.time() - overall_start)} | "
+                f"预计剩余: {_fmt_duration(eta)}"
+            )
 
     overall_elapsed = time.time() - overall_start
     logger.info(f"\n{'#'*80}")

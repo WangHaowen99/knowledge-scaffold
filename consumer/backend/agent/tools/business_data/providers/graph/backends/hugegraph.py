@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import json
-import re
 from typing import Any
-from urllib.parse import quote
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
 
-from .base import GraphBackendError, GraphBackendTimeoutError, GraphBackendUnsupportedError
 from ..filter_expr import normalize_structured_operator, safe_prop
 from ..models import GraphBackendResult, GraphScope
 from ..scope import sanitize_labels, sanitize_properties, sanitize_return_properties
@@ -22,6 +20,7 @@ from ..timeouts import (
     resolve_graph_connect_timeout_seconds,
     resolve_graph_query_timeout_seconds,
 )
+from .base import GraphBackendError, GraphBackendTimeoutError, GraphBackendUnsupportedError
 
 _ENTITY_TYPE_ID_TOKEN_RE = re.compile(r"^[eE]\d+$")
 _RELATION_TYPE_ID_TOKEN_RE = re.compile(r"^[rR]\d+$")
@@ -72,6 +71,8 @@ class _PinnedTLSAdapter(HTTPAdapter):
             block=block,
             **pool_kwargs,
         )
+
+
 _PATTERN_SEGMENT_META_KEYS = {"return_properties"}
 _PATTERN_COMPACT_EXACT_KEYS = {
     "ID",
@@ -194,6 +195,7 @@ class HugeGraphBackend:
                     _PinnedTLSAdapter(server_hostname),
                 )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self) -> None:
         if self._pinned_session is not None:
             self._pinned_session.close()
@@ -202,10 +204,7 @@ class HugeGraphBackend:
     def verify_connectivity(self) -> None:
         if not self.url:
             raise GraphBackendError("HugeGraph URL 未配置")
-        try:
-            self._request("GET", self._graph_path("/schema"))
-        except GraphBackendError:
-            raise
+        self._request("GET", self._graph_path("/schema"))
 
     def get_nodes_schema(
         self,
@@ -321,9 +320,11 @@ class HugeGraphBackend:
         page = selected[normalized_offset : normalized_offset + normalized_limit]
         elem_type = _text(element_type).upper()
         records = [
-            _node_payload(item, scope=scope, return_properties=return_properties)
-            if elem_type == "NODE"
-            else _edge_payload(item, scope=scope, return_properties=return_properties)
+            (
+                _node_payload(item, scope=scope, return_properties=return_properties)
+                if elem_type == "NODE"
+                else _edge_payload(item, scope=scope, return_properties=return_properties)
+            )
             for item in page
         ]
         return GraphBackendResult(
@@ -376,9 +377,7 @@ class HugeGraphBackend:
             value = len(selected) if not target else sum(1 for item in values if item is not None)
         else:
             numeric_values = [
-                float(item)
-                for item in values
-                if isinstance(item, (int, float)) and not isinstance(item, bool)
+                float(item) for item in values if isinstance(item, (int, float)) and not isinstance(item, bool)
             ]
             value = None
             if numeric_values:
@@ -431,9 +430,11 @@ class HugeGraphBackend:
         page = selected[normalized_offset : normalized_offset + normalized_limit]
         elem_type = _text(element_type).upper()
         records = [
-            _node_payload(item, scope=scope, return_properties=return_properties)
-            if elem_type == "NODE"
-            else _edge_payload(item, scope=scope, return_properties=return_properties)
+            (
+                _node_payload(item, scope=scope, return_properties=return_properties)
+                if elem_type == "NODE"
+                else _edge_payload(item, scope=scope, return_properties=return_properties)
+            )
             for item in page
         ]
         return GraphBackendResult(
@@ -524,7 +525,9 @@ class HugeGraphBackend:
             if edge.relation_instance_id in selected_edges
         ]
         payload = _hop_payload(node_payloads, edge_payloads, normalized_start, depth_limit, accurate_flag)
-        return GraphBackendResult(records=[payload], total=len(node_payloads), truncated=False, payload={"result": payload})
+        return GraphBackendResult(
+            records=[payload], total=len(node_payloads), truncated=False, payload={"result": payload}
+        )
 
     def shortest_path_search(
         self,
@@ -588,11 +591,13 @@ class HugeGraphBackend:
                     edge_record = self._find_edge(snapshot, edge_id)
                     if edge_record is not None:
                         relationships.append(_edge_payload_with_compat(edge_record, scope=scope))
-                records.append({
-                    "nodes": [_node_payload(snapshot.nodes_by_id[node_id], scope=scope) for node_id in node_ids],
-                    "edges": relationships,
-                    "relationships": relationships,
-                })
+                records.append(
+                    {
+                        "nodes": [_node_payload(snapshot.nodes_by_id[node_id], scope=scope) for node_id in node_ids],
+                        "edges": relationships,
+                        "relationships": relationships,
+                    }
+                )
                 if len(records) >= 5:
                     return GraphBackendResult(records=records, total=len(records), truncated=False)
             if len(records) >= 5:
@@ -624,11 +629,13 @@ class HugeGraphBackend:
                 if dedup_key in seen:
                     continue
                 seen.add(dedup_key)
-                items.append({
-                    "entity_instance_id": node.entity_instance_id,
-                    "entity_type": entity_type_value,
-                    "logic_title": title,
-                })
+                items.append(
+                    {
+                        "entity_instance_id": node.entity_instance_id,
+                        "entity_type": entity_type_value,
+                        "logic_title": title,
+                    }
+                )
         return GraphBackendResult(records=items, total=len(items), truncated=False)
 
     def get_logic_content(
@@ -661,12 +668,14 @@ class HugeGraphBackend:
                 if dedup_key in seen:
                     continue
                 seen.add(dedup_key)
-                items.append({
-                    "entity_instance_id": node.entity_instance_id,
-                    "entity_type": entity_type_value,
-                    "logic_title": title,
-                    "logic_content": content,
-                })
+                items.append(
+                    {
+                        "entity_instance_id": node.entity_instance_id,
+                        "entity_type": entity_type_value,
+                        "logic_title": title,
+                        "logic_content": content,
+                    }
+                )
         return GraphBackendResult(records=items, total=len(items), truncated=False)
 
     def get_element_info(
@@ -701,11 +710,12 @@ class HugeGraphBackend:
                 return payload
         return {"found": False, "element_id": normalized_id, "element_instance_id": normalized_id}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self) -> None:
         return None
 
+    @staticmethod
     def _shortest_distance_map(
-        self,
         snapshot: _GraphSnapshot,
         start_node_id: str,
         max_depth: int,
@@ -724,8 +734,8 @@ class HugeGraphBackend:
                 queue.append(neighbor_id)
         return distance
 
+    @staticmethod
     def _select_exact_hop_subgraph(
-        self,
         snapshot: _GraphSnapshot,
         distance: dict[str, int],
         hop_num: int,
@@ -767,8 +777,8 @@ class HugeGraphBackend:
             selected_edges.add(edge.relation_instance_id)
         return selected_nodes, selected_edges
 
+    @staticmethod
     def _find_shortest_path(
-        self,
         *,
         snapshot: _GraphSnapshot,
         start_id: str,
@@ -816,7 +826,8 @@ class HugeGraphBackend:
         edge_ids.reverse()
         return node_ids, edge_ids
 
-    def _find_edge(self, snapshot: _GraphSnapshot, edge_id: str) -> _EdgeRecord | None:
+    @staticmethod
+    def _find_edge(snapshot: _GraphSnapshot, edge_id: str) -> _EdgeRecord | None:
         for edge in snapshot.edges:
             if edge.relation_instance_id == edge_id:
                 return edge
@@ -921,19 +932,23 @@ class HugeGraphBackend:
         if len(results) >= limit:
             return
         if depth >= len(edge_steps):
-            results.append(_pattern_record(
-                node_steps,
-                edge_steps,
-                assignment,
-                output_selection,
-                return_properties=return_properties,
-                scope=scope,
-            ))
+            results.append(
+                _pattern_record(
+                    node_steps,
+                    edge_steps,
+                    assignment,
+                    output_selection,
+                    return_properties=return_properties,
+                    scope=scope,
+                )
+            )
             return
 
         edge_step = edge_steps[depth]
         next_node_step = node_steps[depth + 1]
-        for edge, neighbor_id in _iter_neighbors(snapshot, current_node.entity_instance_id, directed=edge_step.direction == "->"):
+        for edge, neighbor_id in _iter_neighbors(
+            snapshot, current_node.entity_instance_id, directed=edge_step.direction == "->"
+        ):
             if edge_step.direction == "<-" and edge.target_entity_instance_id != current_node.entity_instance_id:
                 continue
             if edge_step.direction == "->" and edge.source_entity_instance_id != current_node.entity_instance_id:
@@ -1019,11 +1034,7 @@ class HugeGraphBackend:
         last_exc: Exception | None = None
         for _attempt in range(attempts):
             try:
-                request = (
-                    self._pinned_session.request
-                    if self._pinned_session is not None
-                    else requests.request
-                )
+                request = self._pinned_session.request if self._pinned_session is not None else requests.request
                 request_options = {
                     "method": method,
                     "url": url,
@@ -1036,12 +1047,8 @@ class HugeGraphBackend:
                 if self.resolved_url:
                     request_options["allow_redirects"] = False
                 response = request(**request_options)
-                if self.resolved_url and 300 <= int(
-                    getattr(response, "status_code", 200)
-                ) < 400:
-                    raise requests.exceptions.RequestException(
-                        "HugeGraph fixed endpoint refused redirect"
-                    )
+                if self.resolved_url and 300 <= int(getattr(response, "status_code", 200)) < 400:
+                    raise requests.exceptions.RequestException("HugeGraph fixed endpoint refused redirect")
                 response.raise_for_status()
                 try:
                     return response.json()
@@ -1142,9 +1149,7 @@ def _build_edge_record(raw: Mapping[str, Any]) -> _EdgeRecord | None:
         or _text(raw.get("label"))
     )
     relation_name = (
-        _text(properties.get("relation_name"))
-        or _text(raw_properties.get("d2o_relation_name"))
-        or relation_type
+        _text(properties.get("relation_name")) or _text(raw_properties.get("d2o_relation_name")) or relation_type
     )
     properties.setdefault("relation_id", relation_type_id)
     properties.setdefault("relation_type", relation_type)
@@ -1252,36 +1257,40 @@ def _pattern_record(
     scope: GraphScope,
 ) -> dict[str, Any]:
     selected_aliases = {query_var for _output_var, query_var in output_selection}
-    nodes = [
-        _node_payload(
-            value,
-            scope=scope,
-            return_properties=_pattern_return_properties(
-                alias=step.alias,
-                step_return_properties=step.return_properties,
-                top_level_return_properties=return_properties,
-                properties=value.properties,
-            ),
+    nodes = []
+    for step in node_steps:
+        value = assignment.get(step.alias)
+        if step.alias not in selected_aliases or not isinstance(value, _NodeRecord):
+            continue
+        nodes.append(
+            _node_payload(
+                value,
+                scope=scope,
+                return_properties=_pattern_return_properties(
+                    alias=step.alias,
+                    step_return_properties=step.return_properties,
+                    top_level_return_properties=return_properties,
+                    properties=value.properties,
+                ),
+            )
         )
-        for step in node_steps
-        for value in [assignment.get(step.alias)]
-        if step.alias in selected_aliases and isinstance(value, _NodeRecord)
-    ]
-    relationships = [
-        _edge_payload(
-            value,
-            scope=scope,
-            return_properties=_pattern_return_properties(
-                alias=step.alias,
-                step_return_properties=step.return_properties,
-                top_level_return_properties=return_properties,
-                properties=value.properties,
-            ),
+    relationships = []
+    for step in edge_steps:
+        value = assignment.get(step.alias)
+        if step.alias not in selected_aliases or not isinstance(value, _EdgeRecord):
+            continue
+        relationships.append(
+            _edge_payload(
+                value,
+                scope=scope,
+                return_properties=_pattern_return_properties(
+                    alias=step.alias,
+                    step_return_properties=step.return_properties,
+                    top_level_return_properties=return_properties,
+                    properties=value.properties,
+                ),
+            )
         )
-        for step in edge_steps
-        for value in [assignment.get(step.alias)]
-        if step.alias in selected_aliases and isinstance(value, _EdgeRecord)
-    ]
     node_steps_by_alias = {step.alias: step for step in node_steps}
     edge_steps_by_alias = {step.alias: step for step in edge_steps}
     selected: dict[str, Any] = {}
@@ -1347,12 +1356,14 @@ def _build_pattern_steps(path_pattern: list[Any]) -> tuple[list[_NodeStep], list
                     selector["props"] = merged_props
                     selector.pop("filters", None)
                     props = {}
-            node_steps.append(_NodeStep(
-                alias=alias,
-                selector=selector,
-                props=dict(props),
-                return_properties=return_properties,
-            ))
+            node_steps.append(
+                _NodeStep(
+                    alias=alias,
+                    selector=selector,
+                    props=dict(props),
+                    return_properties=return_properties,
+                )
+            )
         else:
             alias = "r{}".format((index + 1) // 2)
             selector = item[0]
@@ -1504,11 +1515,13 @@ def _segment_props(segment: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("props", "filters"):
         raw = segment.get(key)
         if isinstance(raw, Mapping):
-            props.update({
-                str(prop): value
-                for prop, value in raw.items()
-                if str(prop or "").strip() not in _PATTERN_SEGMENT_META_KEYS
-            })
+            props.update(
+                {
+                    str(prop): value
+                    for prop, value in raw.items()
+                    if str(prop or "").strip() not in _PATTERN_SEGMENT_META_KEYS
+                }
+            )
     return props
 
 
@@ -1516,9 +1529,7 @@ def _expand_segment_props(segment: Mapping[str, Any]) -> dict[str, Any]:
     nested = _segment_props(segment)
     if not nested:
         return {
-            key: value
-            for key, value in segment.items()
-            if str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS
+            key: value for key, value in segment.items() if str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS
         }
     direct = {
         key: value
@@ -1666,9 +1677,13 @@ def _match_structured_expression(value: Any, expression: Mapping[str, Any], fiel
             return False
         if op == "contains" and str(_ensure_scalar(operand, "{}.contains".format(field_name))) not in str(value or ""):
             return False
-        if op == "starts_with" and not str(value or "").startswith(str(_ensure_scalar(operand, "{}.starts_with".format(field_name)))):
+        if op == "starts_with" and not str(value or "").startswith(
+            str(_ensure_scalar(operand, "{}.starts_with".format(field_name)))
+        ):
             return False
-        if op == "ends_with" and not str(value or "").endswith(str(_ensure_scalar(operand, "{}.ends_with".format(field_name)))):
+        if op == "ends_with" and not str(value or "").endswith(
+            str(_ensure_scalar(operand, "{}.ends_with".format(field_name)))
+        ):
             return False
         if op == "in" and value not in _validate_sequence(operand, "{}.in".format(field_name)):
             return False
@@ -1681,7 +1696,20 @@ def _match_structured_expression(value: Any, expression: Mapping[str, Any], fiel
                 return False
             if not operand and value is None:
                 return False
-        if op not in {"eq", "ne", "gt", "gte", "lt", "lte", "contains", "starts_with", "ends_with", "in", "not_in", "is_null"}:
+        if op not in {
+            "eq",
+            "ne",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "contains",
+            "starts_with",
+            "ends_with",
+            "in",
+            "not_in",
+            "is_null",
+        }:
             raise GraphBackendUnsupportedError("{} 包含不支持的操作符: {}".format(field_name, raw_op))
     return True
 
@@ -1921,8 +1949,4 @@ def _hidden_properties(scope: GraphScope) -> list[str]:
         scope.workspace_property,
         scope.ontology_property,
     ]
-    return [
-        item
-        for item in [*dynamic, *_HUGEG_INTERNAL_KEYS]
-        if _text(item)
-    ]
+    return [item for item in [*dynamic, *_HUGEG_INTERNAL_KEYS] if _text(item)]

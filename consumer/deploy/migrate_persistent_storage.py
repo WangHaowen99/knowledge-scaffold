@@ -17,7 +17,6 @@ import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Any, TextIO
 
-
 CANONICAL_PROJECT_ROOT = "/app/.onto-runtime"
 CANONICAL_CHAT_STORAGE_DIR = "/app/.onto-runtime/data/chats"
 CANONICAL_EXECUTION_STORAGE_DIR = "/app/.onto-runtime/data/executions"
@@ -207,7 +206,7 @@ def _container_path_to_host(root: Path, container_path: str) -> Path:
     prefix = CANONICAL_PROJECT_ROOT + "/"
     if not normalized.startswith(prefix):
         raise ValueError("container storage path is outside canonical runtime root")
-    return root / ".onto-runtime" / normalized[len(prefix):]
+    return root / ".onto-runtime" / normalized[len(prefix) :]
 
 
 def _existing_filesystem_path(path: Path) -> Path:
@@ -376,9 +375,7 @@ def _merge_legacy_tree(
     if conflicts:
         report["conflicts"] = conflicts
         raise ValueError(
-            "legacy storage import conflicts with existing runtime data: {}".format(
-                ", ".join(conflicts[:10])
-            )
+            "legacy storage import conflicts with existing runtime data: {}".format(", ".join(conflicts[:10]))
         )
 
     report["copied_files"] = copied_files

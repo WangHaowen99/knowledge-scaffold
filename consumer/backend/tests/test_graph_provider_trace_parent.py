@@ -73,14 +73,16 @@ def test_graph_tool_spans_attach_to_outer_business_data_span():
     observer = _CapturingObserver()
     parent_key = "tool:main:3:business_data_search:call-1"
     sink = GraphToolTraceSink(
-        _make_context({
-            "run_id": "run-1",
-            "session_id": "session-1",
-            "turn_id": 7,
-            "agent_iteration": 3,
-            "parent_span_key": parent_key,
-            "_observer": observer,
-        })
+        _make_context(
+            {
+                "run_id": "run-1",
+                "session_id": "session-1",
+                "turn_id": 7,
+                "agent_iteration": 3,
+                "parent_span_key": parent_key,
+                "_observer": observer,
+            }
+        )
     )
 
     sink({"type": "start", "content": "开始执行图工具: property_filter"})
@@ -99,11 +101,13 @@ def test_graph_tool_spans_attach_to_outer_business_data_span():
 def test_graph_tool_failure_closes_same_child_span():
     observer = _CapturingObserver()
     sink = GraphToolTraceSink(
-        _make_context({
-            "run_id": "run-1",
-            "parent_span_key": "tool:main:1:business_data_search:call-2",
-            "_observer": observer,
-        })
+        _make_context(
+            {
+                "run_id": "run-1",
+                "parent_span_key": "tool:main:1:business_data_search:call-2",
+                "_observer": observer,
+            }
+        )
     )
 
     sink({"type": "start", "content": "开始执行图工具: count_search"})
@@ -118,11 +122,13 @@ def test_graph_model_trace_uses_outer_tool_span_as_parent():
     parent_key = "tool:main:2:business_data_search:call-3"
     observer = _CapturingObserver()
     runtime_trace = build_graph_agent_runtime_trace(
-        _make_context({
-            "run_id": "run-1",
-            "parent_span_key": parent_key,
-            "_observer": observer,
-        })
+        _make_context(
+            {
+                "run_id": "run-1",
+                "parent_span_key": parent_key,
+                "_observer": observer,
+            }
+        )
     )
 
     assert runtime_trace.loop_span_key == parent_key

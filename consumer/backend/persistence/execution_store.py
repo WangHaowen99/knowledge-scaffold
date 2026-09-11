@@ -31,7 +31,6 @@ from persistence.session_summary_index import SessionSummaryIndex
 from utils.identifiers import resolve_session_storage_dir, validate_session_id
 from utils.read_docs import normalize_read_documents_registry
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -160,9 +159,7 @@ def _solver_checkpoint_payload(checkpoint: Dict[str, Any]) -> Dict[str, Any]:
     user_context = filtered_state.get("user_context")
     if isinstance(user_context, dict):
         filtered_state["user_context"] = {
-            key: value
-            for key, value in user_context.items()
-            if key in _SOLVER_CHECKPOINT_USER_CONTEXT_FIELDS
+            key: value for key, value in user_context.items() if key in _SOLVER_CHECKPOINT_USER_CONTEXT_FIELDS
         }
     elif user_context is not None:
         raise SolverCheckpointError("solver checkpoint user context is invalid")
@@ -238,11 +235,7 @@ def _latest_pending_interaction(
         interaction = turn.get("pending_interaction")
         if not isinstance(interaction, dict):
             final_output = turn.get("final_output")
-            interaction = (
-                final_output.get("interaction")
-                if isinstance(final_output, dict)
-                else None
-            )
+            interaction = final_output.get("interaction") if isinstance(final_output, dict) else None
         if not isinstance(interaction, dict):
             raise InteractionCheckpointError(
                 "pending interaction checkpoint is invalid",
@@ -259,11 +252,7 @@ def _turn_interaction(
     if isinstance(interaction, dict):
         return interaction
     final_output = turn.get("final_output")
-    interaction = (
-        final_output.get("interaction")
-        if isinstance(final_output, dict)
-        else None
-    )
+    interaction = final_output.get("interaction") if isinstance(final_output, dict) else None
     return interaction if isinstance(interaction, dict) else None
 
 
@@ -318,10 +307,7 @@ def _is_standard_json_value(value: Any) -> bool:
     if isinstance(value, list):
         return all(_is_standard_json_value(item) for item in value)
     if isinstance(value, dict):
-        return all(
-            isinstance(key, str) and _is_standard_json_value(item)
-            for key, item in value.items()
-        )
+        return all(isinstance(key, str) and _is_standard_json_value(item) for key, item in value.items())
     return False
 
 
@@ -332,9 +318,7 @@ def _validated_interaction_response(
     _pending_turn, interaction = _latest_pending_interaction(history)
     claimed_response: Optional[Dict[str, Any]] = None
     if interaction is None:
-        _claimed_turn, _source_turn, interaction, claimed_response = (
-            _latest_recoverable_interaction_claim(history)
-        )
+        _claimed_turn, _source_turn, interaction, claimed_response = _latest_recoverable_interaction_claim(history)
         if interaction is None:
             if response is not None:
                 raise InteractionCheckpointError("session has no pending interaction")
@@ -370,9 +354,7 @@ def _validated_interaction_response(
             raise InteractionCheckpointError("input interaction value must not be empty")
         canonical["value"] = deepcopy(value)
         if claimed_response is not None and canonical != claimed_response:
-            raise InteractionCheckpointError(
-                "interaction response does not match the in-progress recovery claim"
-            )
+            raise InteractionCheckpointError("interaction response does not match the in-progress recovery claim")
         return canonical
 
     options = interaction.get("options")
@@ -384,17 +366,15 @@ def _validated_interaction_response(
     if option_id:
         selected = next(
             (
-                option for option in options
+                option
+                for option in options
                 if isinstance(option, dict) and str(option.get("id") or "").strip() == option_id
             ),
             None,
         )
     elif "value" in response:
         selected = next(
-            (
-                option for option in options
-                if isinstance(option, dict) and option.get("value") == response.get("value")
-            ),
+            (option for option in options if isinstance(option, dict) and option.get("value") == response.get("value")),
             None,
         )
 
@@ -406,9 +386,7 @@ def _validated_interaction_response(
     canonical["option_id"] = str(selected.get("id") or "").strip()
     canonical["value"] = selected.get("value")
     if claimed_response is not None and canonical != claimed_response:
-        raise InteractionCheckpointError(
-            "interaction response does not match the in-progress recovery claim"
-        )
+        raise InteractionCheckpointError("interaction response does not match the in-progress recovery claim")
     return canonical
 
 
@@ -450,11 +428,7 @@ def _normalize_loaded_history(
         if isinstance(turn.get("pending_interaction"), dict):
             continue
         final_output = turn.get("final_output")
-        interaction = (
-            final_output.get("interaction")
-            if isinstance(final_output, dict)
-            else None
-        )
+        interaction = final_output.get("interaction") if isinstance(final_output, dict) else None
         if isinstance(interaction, dict):
             turn["pending_interaction"] = copy.deepcopy(interaction)
     normalized.setdefault("session_history", [])
@@ -476,10 +450,13 @@ def _turn_for_idempotency_key(
 
 
 def _next_turn_id(history: SessionExecutionHistory) -> int:
-    return max(
-        (int(turn.get("turn_id") or 0) for turn in history.get("turns", [])),
-        default=0,
-    ) + 1
+    return (
+        max(
+            (int(turn.get("turn_id") or 0) for turn in history.get("turns", [])),
+            default=0,
+        )
+        + 1
+    )
 
 
 def _mark_interrupted_turns(history: SessionExecutionHistory) -> int:
@@ -508,15 +485,8 @@ def _turn_for_interaction(
         interaction = turn.get("pending_interaction")
         if not isinstance(interaction, dict):
             final_output = turn.get("final_output")
-            interaction = (
-                final_output.get("interaction")
-                if isinstance(final_output, dict)
-                else None
-            )
-        if (
-            isinstance(interaction, dict)
-            and str(interaction.get("id") or "").strip() == requested_id
-        ):
+            interaction = final_output.get("interaction") if isinstance(final_output, dict) else None
+        if isinstance(interaction, dict) and str(interaction.get("id") or "").strip() == requested_id:
             return turn, interaction
     return None, None
 
@@ -714,15 +684,10 @@ class ExecutionStore:
             return None
         try:
             if session_id in self._corrupt_sessions:
-                raise ExecutionStoreCorruptionError(
-                    "execution history is isolated as corrupt"
-                )
+                raise ExecutionStoreCorruptionError("execution history is isolated as corrupt")
             history = self._cache.get(session_id)
             if history is None:
-                session_path = (
-                    resolve_session_storage_dir(self.storage_dir, session_id)
-                    / "execution.json"
-                )
+                session_path = resolve_session_storage_dir(self.storage_dir, session_id) / "execution.json"
                 try:
                     with session_path.open("r", encoding="utf-8") as source:
                         document = json.load(source)
@@ -730,9 +695,7 @@ class ExecutionStore:
                     document = None
                 if document is not None:
                     if not isinstance(document, dict):
-                        raise ExecutionStoreCorruptionError(
-                            "execution history root must be an object"
-                        )
+                        raise ExecutionStoreCorruptionError("execution history root must be an object")
                     history = _normalize_loaded_history(document)
             if history is None:
                 return self._runtime_fields({"turns": []})
@@ -751,10 +714,7 @@ class ExecutionStore:
         normalized = validate_session_id(session_id)
         coordinator = self._protocol_id_coordinator
         with coordinator.lock:
-            if (
-                normalized in coordinator.session_admissions
-                or normalized in coordinator.session_prunes
-            ):
+            if normalized in coordinator.session_admissions or normalized in coordinator.session_prunes:
                 return None
             token = uuid4().hex
             coordinator.session_admissions[normalized] = token
@@ -812,10 +772,7 @@ class ExecutionStore:
         normalized = validate_session_id(session_id)
         coordinator = self._protocol_id_coordinator
         with coordinator.lock:
-            if (
-                normalized in coordinator.session_admissions
-                or normalized in coordinator.session_prunes
-            ):
+            if normalized in coordinator.session_admissions or normalized in coordinator.session_prunes:
                 yield False
                 return
             coordinator.session_prunes.add(normalized)
@@ -835,7 +792,8 @@ class ExecutionStore:
             return bool(
                 fields.get("active_run_id")
                 or fields.get("pending_interaction")
-                or status not in {
+                or status
+                not in {
                     "idle",
                     "completed",
                     "failed",
@@ -873,9 +831,7 @@ class ExecutionStore:
         """Load session execution history from disk or create new."""
         session_id = validate_session_id(session_id)
         if session_id in self._corrupt_sessions:
-            raise ExecutionStoreCorruptionError(
-                "execution history is isolated as corrupt"
-            )
+            raise ExecutionStoreCorruptionError("execution history is isolated as corrupt")
         if session_id in self._cache:
             return self._cache[session_id]
 
@@ -885,9 +841,7 @@ class ExecutionStore:
                 with open(session_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if not isinstance(data, dict):
-                    raise ExecutionStoreCorruptionError(
-                        "execution history root must be an object"
-                    )
+                    raise ExecutionStoreCorruptionError("execution history root must be an object")
                 normalized = _normalize_loaded_history(data)
                 if _mark_interrupted_turns(normalized):
                     return self._save_session(
@@ -899,17 +853,13 @@ class ExecutionStore:
                 return normalized
             except (json.JSONDecodeError, OSError, ExecutionStoreCorruptionError) as exc:
                 suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-                quarantine_path = session_path.with_name(
-                    "execution.json.corrupt.{}.{}".format(suffix, uuid4().hex)
-                )
+                quarantine_path = session_path.with_name("execution.json.corrupt.{}.{}".format(suffix, uuid4().hex))
                 try:
                     os.replace(session_path, quarantine_path)
                     _fsync_directory(session_path.parent)
                 finally:
                     self._corrupt_sessions[session_id] = str(quarantine_path)
-                raise ExecutionStoreCorruptionError(
-                    "execution history is corrupt and was isolated"
-                ) from exc
+                raise ExecutionStoreCorruptionError("execution history is corrupt and was isolated") from exc
 
         # Create new session history
         now = _utc_now_iso()
@@ -927,16 +877,11 @@ class ExecutionStore:
     def _get_existing_session_unlocked(self, session_id: str) -> Optional[SessionExecutionHistory]:
         """Return existing session history while caller owns self._lock."""
         if session_id in self._corrupt_sessions:
-            raise ExecutionStoreCorruptionError(
-                "execution history is isolated as corrupt"
-            )
+            raise ExecutionStoreCorruptionError("execution history is isolated as corrupt")
         if session_id in self._cache:
             return self._cache[session_id]
 
-        session_path = (
-            resolve_session_storage_dir(self.storage_dir, session_id)
-            / "execution.json"
-        )
+        session_path = resolve_session_storage_dir(self.storage_dir, session_id) / "execution.json"
         if not session_path.exists():
             return None
         return self._load_session(session_id)
@@ -952,16 +897,12 @@ class ExecutionStore:
 
         session_id = validate_session_id(session_id)
         if session_id in self._corrupt_sessions:
-            raise ExecutionStoreCorruptionError(
-                "execution history is isolated as corrupt"
-            )
+            raise ExecutionStoreCorruptionError("execution history is isolated as corrupt")
         source = history if history is not None else self._cache.get(session_id)
         if source is None:
             raise KeyError(session_id)
         try:
-            projection_token = (
-                self._begin_runtime_projection() if project_runtime else None
-            )
+            projection_token = self._begin_runtime_projection() if project_runtime else None
         except Exception:
             self._cache.pop(session_id, None)
             raise
@@ -970,9 +911,7 @@ class ExecutionStore:
             committed = copy.deepcopy(source)
             committed["updated_at"] = _utc_now_iso()
             session_path = self._get_session_path(session_id)
-            temp_path = session_path.with_name(
-                ".execution.json.{}.tmp".format(uuid4().hex)
-            )
+            temp_path = session_path.with_name(".execution.json.{}.tmp".format(uuid4().hex))
             with open(temp_path, "x", encoding="utf-8") as f:
                 json.dump(
                     committed,
@@ -1026,12 +965,8 @@ class ExecutionStore:
             )
             if existing is None:
                 return None
-            if str(existing.get("request_fingerprint") or "") != str(
-                request_fingerprint or ""
-            ):
-                raise IdempotencyConflictError(
-                    "idempotency key was already used for another request"
-                )
+            if str(existing.get("request_fingerprint") or "") != str(request_fingerprint or ""):
+                raise IdempotencyConflictError("idempotency key was already used for another request")
             return copy.deepcopy(existing)
 
     def lookup_consumed_interaction_turn(
@@ -1075,22 +1010,12 @@ class ExecutionStore:
             )
             if not source_turn.get("interaction_consumed_at"):
                 return None
-            consumed_by_turn_id = source_turn.get(
-                "interaction_consumed_by_turn_id"
-            )
+            consumed_by_turn_id = source_turn.get("interaction_consumed_by_turn_id")
             existing_turn = next(
-                (
-                    turn
-                    for turn in history.get("turns", [])
-                    if turn.get("turn_id") == consumed_by_turn_id
-                ),
+                (turn for turn in history.get("turns", []) if turn.get("turn_id") == consumed_by_turn_id),
                 None,
             )
-            existing_run_id = (
-                str(existing_turn.get("run_id") or "") or None
-                if existing_turn is not None
-                else None
-            )
+            existing_run_id = str(existing_turn.get("run_id") or "") or None if existing_turn is not None else None
             if source_turn.get("interaction_response") == canonical_response:
                 if existing_turn is not None:
                     return copy.deepcopy(existing_turn)
@@ -1125,12 +1050,8 @@ class ExecutionStore:
             history = copy.deepcopy(self._load_session(session_id))
             existing = _turn_for_idempotency_key(history, idempotency_key_hash)
             if existing is not None:
-                if str(existing.get("request_fingerprint") or "") != str(
-                    request_fingerprint or ""
-                ):
-                    raise IdempotencyConflictError(
-                        "idempotency key was already used for another request"
-                    )
+                if str(existing.get("request_fingerprint") or "") != str(request_fingerprint or ""):
+                    raise IdempotencyConflictError("idempotency key was already used for another request")
                 return copy.deepcopy(existing), False
 
             pending_turn, _pending = _latest_pending_interaction(history)
@@ -1141,13 +1062,8 @@ class ExecutionStore:
                 )
 
             turn_id = _next_turn_id(history)
-            allocated_run_id = str(run_id or "").strip() or "agentic-{}".format(
-                uuid4().hex
-            )
-            if any(
-                str(item.get("run_id") or "") == allocated_run_id
-                for item in history.get("turns", [])
-            ):
+            allocated_run_id = str(run_id or "").strip() or "agentic-{}".format(uuid4().hex)
+            if any(str(item.get("run_id") or "") == allocated_run_id for item in history.get("turns", [])):
                 raise ValueError("run_id is already allocated")
             started_at = _utc_now_iso()
             turn: TurnExecutionRecord = {
@@ -1252,9 +1168,7 @@ class ExecutionStore:
             if coordinator.reservations.get(key) != normalized_reservation:
                 raise RuntimeError("protocol run reservation is unavailable")
             try:
-                _existing_session_id, existing = (
-                    self._find_durable_turn_by_protocol_id(*key)
-                )
+                _existing_session_id, existing = self._find_durable_turn_by_protocol_id(*key)
                 if existing is not None:
                     return existing, False
                 metadata = dict(protocol_metadata or {})
@@ -1302,12 +1216,8 @@ class ExecutionStore:
                 idempotency_key_hash,
             )
             if existing_by_key is not None:
-                if str(existing_by_key.get("request_fingerprint") or "") != str(
-                    request_fingerprint or ""
-                ):
-                    raise IdempotencyConflictError(
-                        "idempotency key was already used for another request"
-                    )
+                if str(existing_by_key.get("request_fingerprint") or "") != str(request_fingerprint or ""):
+                    raise IdempotencyConflictError("idempotency key was already used for another request")
                 return copy.deepcopy(existing_by_key), False
 
             source_turn, interaction = _turn_for_interaction(history, requested_id)
@@ -1330,15 +1240,9 @@ class ExecutionStore:
             consumed_at = source_turn.get("interaction_consumed_at")
             if consumed_at:
                 existing_run_id = None
-                consumed_by_turn_id = source_turn.get(
-                    "interaction_consumed_by_turn_id"
-                )
+                consumed_by_turn_id = source_turn.get("interaction_consumed_by_turn_id")
                 existing_turn = next(
-                    (
-                        turn
-                        for turn in history.get("turns", [])
-                        if turn.get("turn_id") == consumed_by_turn_id
-                    ),
+                    (turn for turn in history.get("turns", []) if turn.get("turn_id") == consumed_by_turn_id),
                     None,
                 )
                 if existing_turn is not None:
@@ -1403,7 +1307,7 @@ class ExecutionStore:
             self._current_turns[session_id] = turn_id
             return copy.deepcopy(committed["turns"][-1]), True
 
-    def start_turn(
+    def start_turn(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         session_id: str,
         turn_id: int,
@@ -1475,9 +1379,7 @@ class ExecutionStore:
     ) -> tuple[TurnExecutionRecord, Optional[Dict[str, Any]]]:
         expected_turn_id = _next_turn_id(history)
         if int(turn_id) != expected_turn_id:
-            raise ValueError(
-                "turn_id must be allocated monotonically by ExecutionStore"
-            )
+            raise ValueError("turn_id must be allocated monotonically by ExecutionStore")
         canonical_response = _validated_interaction_response(
             history,
             interaction_response,
@@ -1565,14 +1467,10 @@ class ExecutionStore:
                 raise RuntimeError("deterministic artifact journal is invalid")
             transactions = pending.get("transactions")
             if not isinstance(transactions, dict) or any(
-                not isinstance(transaction, dict)
-                for transaction in transactions.values()
+                not isinstance(transaction, dict) for transaction in transactions.values()
             ):
                 raise RuntimeError("deterministic artifact journal is invalid")
-            return [
-                deepcopy(transaction)
-                for _run_id, transaction in sorted(transactions.items())
-            ]
+            return [deepcopy(transaction) for _run_id, transaction in sorted(transactions.items())]
 
     def reserve_deterministic_artifact(
         self,
@@ -1603,10 +1501,7 @@ class ExecutionStore:
         normalized_refs = []
         for output_ref in output_refs:
             normalized_ref = str(output_ref or "").strip().lower()
-            if len(normalized_ref) != 32 or any(
-                character not in "0123456789abcdef"
-                for character in normalized_ref
-            ):
+            if len(normalized_ref) != 32 or any(character not in "0123456789abcdef" for character in normalized_ref):
                 raise ValueError("output_ref is invalid")
             if normalized_ref not in normalized_refs:
                 normalized_refs.append(normalized_ref)
@@ -1616,11 +1511,7 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             turn = next(
-                (
-                    item
-                    for item in history.get("turns", [])
-                    if item.get("turn_id") == turn_id
-                ),
+                (item for item in history.get("turns", []) if item.get("turn_id") == turn_id),
                 None,
             )
             if turn is None or str(turn.get("run_id") or "") != normalized_run_id:
@@ -1674,23 +1565,15 @@ class ExecutionStore:
         """Remove refs already rolled back and discard an empty transaction."""
         normalized_run_id = str(run_id or "").strip()
         released = {
-            str(output_ref or "").strip().lower()
-            for output_ref in output_refs
-            if str(output_ref or "").strip()
+            str(output_ref or "").strip().lower() for output_ref in output_refs if str(output_ref or "").strip()
         }
         if not normalized_run_id or not released:
             return
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             pending = history.get("pending_deterministic_artifacts")
-            transactions = (
-                pending.get("transactions") if isinstance(pending, dict) else None
-            )
-            transaction = (
-                transactions.get(normalized_run_id)
-                if isinstance(transactions, dict)
-                else None
-            )
+            transactions = pending.get("transactions") if isinstance(pending, dict) else None
+            transaction = transactions.get(normalized_run_id) if isinstance(transactions, dict) else None
             if not isinstance(transaction, dict):
                 return
 
@@ -1728,22 +1611,12 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             pending = history.get("pending_deterministic_artifacts")
-            transactions = (
-                pending.get("transactions") if isinstance(pending, dict) else None
-            )
-            transaction = (
-                transactions.get(normalized_run_id)
-                if isinstance(transactions, dict)
-                else None
-            )
+            transactions = pending.get("transactions") if isinstance(pending, dict) else None
+            transaction = transactions.get(normalized_run_id) if isinstance(transactions, dict) else None
             if not isinstance(transaction, dict):
                 return
             turn = next(
-                (
-                    item
-                    for item in history.get("turns", [])
-                    if item.get("turn_id") == turn_id
-                ),
+                (item for item in history.get("turns", []) if item.get("turn_id") == turn_id),
                 None,
             )
             if turn is None:
@@ -1756,9 +1629,7 @@ class ExecutionStore:
                 raise RuntimeError("deterministic artifacts have no committed success")
 
             updated_history = deepcopy(history)
-            updated_transactions = updated_history[
-                "pending_deterministic_artifacts"
-            ]["transactions"]
+            updated_transactions = updated_history["pending_deterministic_artifacts"]["transactions"]
             updated_transactions.pop(normalized_run_id, None)
             if not updated_transactions:
                 updated_history.pop("pending_deterministic_artifacts", None)
@@ -1791,11 +1662,7 @@ class ExecutionStore:
         event_ids: List[str] = []
         for event in events:
             data = event.get("data") if isinstance(event, dict) else None
-            event_id = (
-                str(data.get("event_id") or "").strip()
-                if isinstance(data, dict)
-                else ""
-            )
+            event_id = str(data.get("event_id") or "").strip() if isinstance(data, dict) else ""
             if not event_id:
                 raise ValueError("deterministic terminal events require event_id")
             event_ids.append(event_id)
@@ -1804,11 +1671,7 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             turn = next(
-                (
-                    item
-                    for item in history.get("turns", [])
-                    if item.get("turn_id") == turn_id
-                ),
+                (item for item in history.get("turns", []) if item.get("turn_id") == turn_id),
                 None,
             )
             if turn is None:
@@ -1827,9 +1690,7 @@ class ExecutionStore:
                 "llm_context": deepcopy(llm_context),
                 "events": deepcopy(events),
                 "deterministic_checkpoint": (
-                    deepcopy(deterministic_checkpoint)
-                    if deterministic_checkpoint is not None
-                    else None
+                    deepcopy(deterministic_checkpoint) if deterministic_checkpoint is not None else None
                 ),
             }
             self._cache[session_id] = updated_history
@@ -1850,11 +1711,7 @@ class ExecutionStore:
             updated_history = deepcopy(history)
             updated_pending = updated_history["pending_deterministic_terminal"]
             turn = next(
-                (
-                    item
-                    for item in updated_history.get("turns", [])
-                    if item.get("turn_id") == turn_id
-                ),
+                (item for item in updated_history.get("turns", []) if item.get("turn_id") == turn_id),
                 None,
             )
             if turn is None:
@@ -1868,9 +1725,7 @@ class ExecutionStore:
                 turn["deterministic_checkpoint"] = deepcopy(checkpoint)
             else:
                 turn.pop("deterministic_checkpoint", None)
-            updated_history["session_history"] = deepcopy(
-                updated_pending.get("llm_context") or []
-            )
+            updated_history["session_history"] = deepcopy(updated_pending.get("llm_context") or [])
             updated_history.pop("pending_deterministic_terminal", None)
             self._cache[session_id] = updated_history
             try:
@@ -1919,29 +1774,18 @@ class ExecutionStore:
                 )
             existing_response = source_turn.get("interaction_response")
             if source_turn.get("interaction_consumed_at"):
-                if (
-                    isinstance(existing_response, dict)
-                    and existing_response.get("action") == "cancel"
-                ):
+                if isinstance(existing_response, dict) and existing_response.get("action") == "cancel":
                     return copy.deepcopy(existing_response)
-                consumed_by_turn_id = source_turn.get(
-                    "interaction_consumed_by_turn_id"
-                )
+                consumed_by_turn_id = source_turn.get("interaction_consumed_by_turn_id")
                 existing_turn = next(
-                    (
-                        turn
-                        for turn in history.get("turns", [])
-                        if turn.get("turn_id") == consumed_by_turn_id
-                    ),
+                    (turn for turn in history.get("turns", []) if turn.get("turn_id") == consumed_by_turn_id),
                     None,
                 )
                 raise InteractionCheckpointError(
                     "interaction was already consumed by an answer",
                     code="INTERACTION_ALREADY_CONSUMED",
                     existing_run_id=(
-                        str(existing_turn.get("run_id") or "") or None
-                        if existing_turn is not None
-                        else None
+                        str(existing_turn.get("run_id") or "") or None if existing_turn is not None else None
                     ),
                 )
             if source_turn.get("status") != "awaiting_input":
@@ -1994,7 +1838,10 @@ class ExecutionStore:
 
             turn = self._turn_for_update(history, turn_id, run_id)
             if turn is not None and str(turn.get("status") or "") not in {
-                "success", "failed", "cancelled", "awaiting_input"
+                "success",
+                "failed",
+                "cancelled",
+                "awaiting_input",
             }:
                 turn["end_time"] = _utc_now_iso()
                 turn["status"] = "success"
@@ -2024,15 +1871,14 @@ class ExecutionStore:
 
             turn = self._turn_for_update(history, turn_id, run_id)
             if turn is not None and str(turn.get("status") or "") not in {
-                "success", "failed", "cancelled", "awaiting_input"
+                "success",
+                "failed",
+                "cancelled",
+                "awaiting_input",
             }:
                 turn["end_time"] = _utc_now_iso()
                 turn["status"] = "failed"
-                output = (
-                    copy.deepcopy(error)
-                    if isinstance(error, dict)
-                    else {"error": str(error)}
-                )
+                output = copy.deepcopy(error) if isinstance(error, dict) else {"error": str(error)}
                 nested_error = output.get("error")
                 error_code = (
                     nested_error.get("error_code") or nested_error.get("code")
@@ -2069,7 +1915,10 @@ class ExecutionStore:
 
             turn = self._turn_for_update(history, turn_id, run_id)
             if turn is not None and str(turn.get("status") or "") not in {
-                "success", "failed", "cancelled", "awaiting_input"
+                "success",
+                "failed",
+                "cancelled",
+                "awaiting_input",
             }:
                 turn["end_time"] = _utc_now_iso()
                 turn["status"] = "cancelled"
@@ -2108,9 +1957,7 @@ class ExecutionStore:
             if turn is None:
                 raise TurnOwnershipError("canonical terminal turn is missing")
             existing_error_code = str(turn.get("error_code") or "")
-            target_error_code = (
-                str(error_code or "RUNTIME_FAILED") if status == "failed" else ""
-            )
+            target_error_code = str(error_code or "RUNTIME_FAILED") if status == "failed" else ""
             if (
                 str(turn.get("status") or "") == status
                 and turn.get("final_output") == final_output
@@ -2165,17 +2012,16 @@ class ExecutionStore:
 
             turn = self._turn_for_update(history, turn_id, run_id)
             if turn is not None and str(turn.get("status") or "") not in {
-                "success", "failed", "cancelled", "awaiting_input"
+                "success",
+                "failed",
+                "cancelled",
+                "awaiting_input",
             }:
                 turn["end_time"] = _utc_now_iso()
                 turn["status"] = "awaiting_input"
                 turn["final_output"] = final_output or {"status": "awaiting_input"}
                 output = turn["final_output"]
-                interaction = (
-                    output.get("interaction")
-                    if isinstance(output, dict)
-                    else None
-                )
+                interaction = output.get("interaction") if isinstance(output, dict) else None
                 if not isinstance(interaction, dict) and isinstance(output, dict):
                     interaction = output.get("pending_user_interaction")
                 if not isinstance(interaction, dict):
@@ -2185,9 +2031,7 @@ class ExecutionStore:
                     )
                 turn["pending_interaction"] = copy.deepcopy(interaction)
                 if deterministic_checkpoint is not None:
-                    turn["deterministic_checkpoint"] = copy.deepcopy(
-                        deterministic_checkpoint
-                    )
+                    turn["deterministic_checkpoint"] = copy.deepcopy(deterministic_checkpoint)
                 if summary is not None:
                     turn["summary"] = summary
 
@@ -2199,11 +2043,7 @@ class ExecutionStore:
         turn_id: int,
         run_id: Optional[str],
     ) -> Optional[TurnExecutionRecord]:
-        matching_turns = [
-            turn
-            for turn in history.get("turns", [])
-            if turn.get("turn_id") == turn_id
-        ]
+        matching_turns = [turn for turn in history.get("turns", []) if turn.get("turn_id") == turn_id]
         if run_id is None:
             return matching_turns[0] if matching_turns else None
         if not matching_turns:
@@ -2211,9 +2051,7 @@ class ExecutionStore:
         for turn in matching_turns:
             if turn.get("run_id") == run_id:
                 return turn
-        raise TurnOwnershipError(
-            "turn does not belong to run '{}'".format(run_id)
-        )
+        raise TurnOwnershipError("turn does not belong to run '{}'".format(run_id))
 
     def set_turn_feedback(
         self,
@@ -2253,11 +2091,7 @@ class ExecutionStore:
     ) -> bool:
         """Persist recall anchors on the authoritative Turn record."""
 
-        normalized = [
-            copy.deepcopy(record)
-            for record in records
-            if isinstance(record, dict)
-        ]
+        normalized = [copy.deepcopy(record) for record in records if isinstance(record, dict)]
         with self._lock_for_session(session_id):
             existing = self._get_existing_session_unlocked(session_id)
             history = copy.deepcopy(existing) if existing is not None else None
@@ -2350,11 +2184,7 @@ class ExecutionStore:
 
         session_ids = set(self._cache)
         if self.storage_dir.exists():
-            session_ids.update(
-                path.name
-                for path in self.storage_dir.iterdir()
-                if path.is_dir()
-            )
+            session_ids.update(path.name for path in self.storage_dir.iterdir() if path.is_dir())
         for session_id in sorted(session_ids):
             try:
                 turn = self.get_turn_by_run_id(session_id, run_id)
@@ -2377,11 +2207,7 @@ class ExecutionStore:
             return None, None
         session_ids = set(self._cache)
         if self.storage_dir.exists():
-            session_ids.update(
-                path.name
-                for path in self.storage_dir.iterdir()
-                if path.is_dir()
-            )
+            session_ids.update(path.name for path in self.storage_dir.iterdir() if path.is_dir())
         for session_id in sorted(session_ids):
             try:
                 history = self.get_session_history(session_id)
@@ -2395,11 +2221,7 @@ class ExecutionStore:
                     continue
                 if str(metadata.get("protocol") or "").strip().lower() != normalized_protocol:
                     continue
-                candidate = str(
-                    metadata.get("external_run_id")
-                    or metadata.get("external_id")
-                    or ""
-                ).strip()
+                candidate = str(metadata.get("external_run_id") or metadata.get("external_id") or "").strip()
                 if candidate == normalized_external_id:
                     return session_id, copy.deepcopy(turn)
         return None, None
@@ -2418,10 +2240,7 @@ class ExecutionStore:
         for session_dir in session_dirs:
             try:
                 session_id = validate_session_id(session_dir.name)
-                session_path = (
-                    resolve_session_storage_dir(self.storage_dir, session_id)
-                    / "execution.json"
-                )
+                session_path = resolve_session_storage_dir(self.storage_dir, session_id) / "execution.json"
             except ValueError:
                 continue
             if not session_path.is_file():
@@ -2430,16 +2249,12 @@ class ExecutionStore:
                 with open(session_path, "r", encoding="utf-8") as stream:
                     history = json.load(stream)
             except (json.JSONDecodeError, OSError) as exc:
-                raise ExecutionStoreCorruptionError(
-                    "execution history is corrupt during protocol lookup"
-                ) from exc
+                raise ExecutionStoreCorruptionError("execution history is corrupt during protocol lookup") from exc
             if not isinstance(history, dict) or not isinstance(
                 history.get("turns"),
                 list,
             ):
-                raise ExecutionStoreCorruptionError(
-                    "execution history is invalid during protocol lookup"
-                )
+                raise ExecutionStoreCorruptionError("execution history is invalid during protocol lookup")
             for turn in reversed(history["turns"]):
                 if not isinstance(turn, dict):
                     continue
@@ -2448,11 +2263,7 @@ class ExecutionStore:
                     continue
                 if str(metadata.get("protocol") or "").strip().lower() != normalized_protocol:
                     continue
-                candidate = str(
-                    metadata.get("external_run_id")
-                    or metadata.get("external_id")
-                    or ""
-                ).strip()
+                candidate = str(metadata.get("external_run_id") or metadata.get("external_id") or "").strip()
                 if candidate == normalized_external_id:
                     return session_id, copy.deepcopy(turn)
         return None, None
@@ -2469,11 +2280,7 @@ class ExecutionStore:
         latest: Dict[str, TurnExecutionRecord] = {}
         session_ids = set(self._cache)
         if self.storage_dir.exists():
-            session_ids.update(
-                path.name
-                for path in self.storage_dir.iterdir()
-                if path.is_dir()
-            )
+            session_ids.update(path.name for path in self.storage_dir.iterdir() if path.is_dir())
         for session_id in sorted(session_ids):
             try:
                 history = self.get_session_history(session_id)
@@ -2487,17 +2294,13 @@ class ExecutionStore:
                     continue
                 if str(metadata.get("protocol") or "").strip().lower() != normalized_protocol:
                     continue
-                external_id = str(
-                    metadata.get("external_run_id")
-                    or metadata.get("external_id")
-                    or ""
-                ).strip()
+                external_id = str(metadata.get("external_run_id") or metadata.get("external_id") or "").strip()
                 if not external_id:
                     continue
                 current = latest.get(external_id)
-                if current is None or _datetime_sort_key(
-                    turn.get("start_time")
-                ) > _datetime_sort_key(current.get("start_time")):
+                if current is None or _datetime_sort_key(turn.get("start_time")) > _datetime_sort_key(
+                    current.get("start_time")
+                ):
                     latest[external_id] = copy.deepcopy(turn)
         return sorted(
             latest.values(),
@@ -2627,11 +2430,7 @@ class ExecutionStore:
             turns = list(history.get("turns", []))
             normalized_status = str(status or "").strip()
             if normalized_status:
-                turns = [
-                    turn
-                    for turn in turns
-                    if str(turn.get("status") or "") == normalized_status
-                ]
+                turns = [turn for turn in turns if str(turn.get("status") or "") == normalized_status]
             return copy.deepcopy(list(reversed(turns)))
 
     def save_waiting_solver_checkpoint(
@@ -2666,16 +2465,8 @@ class ExecutionStore:
                 raise SolverCheckpointError("solver checkpoint state identity drifted")
             existing = turn.get("solver_checkpoint")
             existing_checkpoint = existing.get("checkpoint") if isinstance(existing, dict) else None
-            existing_call = (
-                existing_checkpoint.get("tool_call")
-                if isinstance(existing_checkpoint, dict)
-                else None
-            )
-            existing_call_id = (
-                str(existing_call.get("id") or "").strip()
-                if isinstance(existing_call, dict)
-                else ""
-            )
+            existing_call = existing_checkpoint.get("tool_call") if isinstance(existing_checkpoint, dict) else None
+            existing_call_id = str(existing_call.get("id") or "").strip() if isinstance(existing_call, dict) else ""
             new_call_id = str(canonical["tool_call"]["id"]).strip()
             existing_inbox = existing.get("tool_result_inbox") if isinstance(existing, dict) else None
             inbox = (
@@ -2683,8 +2474,7 @@ class ExecutionStore:
                 if (
                     existing_call_id == new_call_id
                     and isinstance(existing_inbox, dict)
-                    and str(existing_inbox.get("tool_call_id") or "").strip()
-                    == new_call_id
+                    and str(existing_inbox.get("tool_call_id") or "").strip() == new_call_id
                 )
                 else None
             )
@@ -2813,6 +2603,7 @@ class ExecutionStore:
             session_dir = resolve_session_storage_dir(self.storage_dir, session_id)
             if session_dir.exists():
                 import shutil
+
                 shutil.rmtree(session_dir)
                 deleted = True
 
@@ -2843,7 +2634,10 @@ class ExecutionStore:
                     return 0
             except Exception:
                 # The index is derived state; authoritative history remains the fallback.
-                pass
+                logger.warning(
+                    "Session summary turn-count lookup failed; falling back to execution history",
+                    exc_info=True,
+                )
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             return len(history.get("turns", []))
@@ -2901,9 +2695,7 @@ class ExecutionStore:
         """
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
-            return copy.deepcopy(
-                normalize_read_documents_registry(history.get("read_documents"))
-            )
+            return copy.deepcopy(normalize_read_documents_registry(history.get("read_documents")))
 
     def set_read_documents_context(
         self,

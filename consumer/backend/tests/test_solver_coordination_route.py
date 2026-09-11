@@ -3,10 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 
-from fastapi import APIRouter
-from fastapi.testclient import TestClient
 import pytest
-
 from api.auth.auth import AuthManager
 from api.middleware import MAX_REQUEST_BODY_BYTES
 from api.routes.solver_coordination import (
@@ -14,6 +11,8 @@ from api.routes.solver_coordination import (
     solver_coordination_router,
 )
 from api.testing import TestApplication
+from fastapi import APIRouter
+from fastapi.testclient import TestClient
 from solver_coordination.run_ledger import SolverRunLedger
 from workspace.workspaces import create_workspace
 
@@ -42,9 +41,7 @@ def _client(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
     app = TestApplication()
-    auth_manager = AuthManager(
-        str(tmp_path / "users.json"), secrets.token_urlsafe(32)
-    )
+    auth_manager = AuthManager(str(tmp_path / "users.json"), secrets.token_urlsafe(32))
     initial_credential = secrets.token_urlsafe(32) + "Aa1!"
     replacement_credential = secrets.token_urlsafe(32) + "Bb2!"
     auth_manager.create_user(
@@ -93,9 +90,7 @@ def test_candidate_set_route_returns_structured_eighteen_candidate_response(tmp_
     assert len(body["candidates"]) == 18
     assert all(candidate["candidate_digest"].startswith("sha256:") for candidate in body["candidates"])
     assert "owner_id" not in body
-    run = SolverRunLedger("demo").get_run(
-        body["source_run_id"], owner_id="synthetic_operator"
-    )
+    run = SolverRunLedger("demo").get_run(body["source_run_id"], owner_id="synthetic_operator")
     assert run is not None
     assert run["run_type"] == "solve"
     assert run["status"] == "completed"
@@ -205,9 +200,7 @@ def test_candidate_set_route_rejects_declared_body_over_limit(tmp_path, monkeypa
     )
 
     assert response.status_code == 413
-    assert response.json() == {
-        "detail": "Request body exceeds the configured size limit"
-    }
+    assert response.json() == {"detail": "Request body exceeds the configured size limit"}
 
 
 def test_candidate_set_route_preserves_missing_workspace_404(tmp_path, monkeypatch):

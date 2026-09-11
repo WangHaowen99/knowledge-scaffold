@@ -9,9 +9,9 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
+from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+SECRET_TEST_KEY = ENCRYPTION_KEY
 
 
 def _config_path(runtime_root: Path) -> Path:
@@ -56,7 +56,7 @@ def _profile(
     *,
     model: str = "main-model",
     api_key: str = "",
-    base_url: str = "https://llm.example/v1",
+    base_url: str = "https://llm.example.net/v1",
 ):
     return {
         "id": profile_id,
@@ -112,25 +112,25 @@ def test_two_dry_runs_are_read_only_and_preview_over_limit_model_projection(
         runtime_root,
         {
             "llm": {
-                "base_url": "https://main.example/v1",
+                "base_url": "https://main.example.net/v1",
                 "model": "main-model",
-                "api_key": "main-secret",
+                "api_key": synthetic_secret("system_config_migrations-credential-05"),
             },
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
-                "api_key": "task-secret",
+                "api_key": synthetic_secret("system_config_migrations-credential-13"),
                 "timeout": 45,
             },
             "llm_profiles": {
                 "default_profile_id": "main",
-                "profiles": [_profile("main", api_key="profile-secret")],
+                "profiles": [_profile("main", api_key=synthetic_secret("system_config_migrations-credential-09"))],
             },
             "auth": {
-                "auth_secret": "auth-secret",
-                "auth_server_admin_token": "admin-token",
+                "auth_secret": synthetic_secret("system_config_migrations-credential-03"),
+                "auth_server_admin_token": synthetic_secret("system_config_migrations-credential-02"),
             },
-            "web_search": {"api_key": "search-secret"},
+            "web_search": {"api_key": synthetic_secret("system_config_migrations-credential-12")},
         },
     )
     before = _tree_snapshot(runtime_root)
@@ -152,38 +152,34 @@ def test_two_migrations_apply_with_independent_backups_markers_and_contexts(
     tmp_path,
     monkeypatch,
 ):
-    from migrations.system_config_model_profiles_v1 import (
-        BACKUP_SUFFIX as MODEL_BACKUP_SUFFIX,
-        MIGRATION_ID as MODEL_ID,
-    )
-    from migrations.system_config_secret_encryption_v1 import (
-        BACKUP_SUFFIX as SECRET_BACKUP_SUFFIX,
-        MIGRATION_ID as SECRET_ID,
-    )
+    from migrations.system_config_model_profiles_v1 import BACKUP_SUFFIX as MODEL_BACKUP_SUFFIX
+    from migrations.system_config_model_profiles_v1 import MIGRATION_ID as MODEL_ID
+    from migrations.system_config_secret_encryption_v1 import BACKUP_SUFFIX as SECRET_BACKUP_SUFFIX
+    from migrations.system_config_secret_encryption_v1 import MIGRATION_ID as SECRET_ID
     from utils.security.secrets import decrypt_secret
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
     original = {
         "llm": {
-            "base_url": "https://main.example/v1",
+            "base_url": "https://main.example.net/v1",
             "model": "main-model",
-            "api_key": "main-secret",
+            "api_key": synthetic_secret("system_config_migrations-credential-05"),
         },
         "task_llm": {
-            "base_url": "https://task.example/v1",
+            "base_url": "https://task.example.net/v1",
             "model": "task-model",
-            "api_key": "task-secret",
+            "api_key": synthetic_secret("system_config_migrations-credential-13"),
             "timeout": 45,
         },
         "llm_profiles": {
             "default_profile_id": "main",
-            "profiles": [_profile("main", api_key="profile-secret")],
+            "profiles": [_profile("main", api_key=synthetic_secret("system_config_migrations-credential-09"))],
         },
         "auth": {
-            "auth_secret": "auth-secret",
-            "auth_server_admin_token": "admin-token",
+            "auth_secret": synthetic_secret("system_config_migrations-credential-03"),
+            "auth_server_admin_token": synthetic_secret("system_config_migrations-credential-02"),
         },
-        "web_search": {"api_key": "search-secret"},
+        "web_search": {"api_key": synthetic_secret("system_config_migrations-credential-12")},
         "observability": {"enabled": True, "mode": "local"},
         "future_section": {"preserved": True},
     }
@@ -206,28 +202,26 @@ def test_two_migrations_apply_with_independent_backups_markers_and_contexts(
         "id": "legacy-task-llm",
     }
     task_profile = next(
-        profile
-        for profile in migrated["llm_profiles"]["profiles"]
-        if profile["id"] == "legacy-task-llm"
+        profile for profile in migrated["llm_profiles"]["profiles"] if profile["id"] == "legacy-task-llm"
     )
     assert decrypt_secret(
         task_profile["api_key"],
         context="llm_profiles.profiles.api_key",
         allow_key_creation=False,
         runtime_root=runtime_root,
-    ) == "task-secret"
+    ) == synthetic_secret("system_config_migrations-credential-13")
     assert task_profile["max_tokens"] == 4096
     assert migrated["observability"] == original["observability"]
     assert migrated["future_section"] == original["future_section"]
-    assert "main-secret" not in _config_path(runtime_root).read_text(encoding="utf-8")
-    assert "admin-token" not in _config_path(runtime_root).read_text(encoding="utf-8")
+    assert synthetic_secret("system_config_migrations-credential-05") not in _config_path(runtime_root).read_text(
+        encoding="utf-8"
+    )
+    assert synthetic_secret("system_config_migrations-credential-02") not in _config_path(runtime_root).read_text(
+        encoding="utf-8"
+    )
 
-    model_backup = _config_path(runtime_root).with_name(
-        f"system_config.json.{MODEL_BACKUP_SUFFIX}.bak"
-    )
-    secret_backup = _config_path(runtime_root).with_name(
-        f"system_config.json.{SECRET_BACKUP_SUFFIX}.bak"
-    )
+    model_backup = _config_path(runtime_root).with_name(f"system_config.json.{MODEL_BACKUP_SUFFIX}.bak")
+    secret_backup = _config_path(runtime_root).with_name(f"system_config.json.{SECRET_BACKUP_SUFFIX}.bak")
     assert model_backup.read_bytes() == original_bytes
     assert secret_backup.read_bytes() == model_document_bytes
     if os.name == "posix":  # POSIX permission bits are meaningless on Windows
@@ -254,9 +248,9 @@ def test_two_migrations_apply_without_posix_only_file_operations(
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
-                "api_key": "task-secret",
+                "api_key": synthetic_secret("system_config_migrations-credential-13"),
             }
         },
     )
@@ -309,9 +303,9 @@ def test_repeated_execution_validates_target_without_rewriting(tmp_path, monkeyp
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
-                "api_key": "task-secret",
+                "api_key": synthetic_secret("system_config_migrations-credential-13"),
             }
         },
     )
@@ -361,7 +355,7 @@ def test_system_config_symlink_is_rejected_without_touching_target(
 ):
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
     real_path = tmp_path / "external-system-config.json"
-    original = json.dumps({"llm": {"api_key": "plaintext-secret"}}).encode()
+    original = json.dumps({"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}).encode()
     real_path.write_bytes(original)
     symlink_path = runtime_root / "config" / "linked-system-config.json"
     symlink_path.parent.mkdir(parents=True, exist_ok=True)
@@ -379,9 +373,9 @@ def test_system_config_symlink_is_rejected_without_touching_target(
 def test_same_legacy_task_and_referenced_profile_reuses_target(tmp_path, monkeypatch):
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
     task = {
-        "base_url": "https://task.example/v1",
+        "base_url": "https://task.example.net/v1",
         "model": "task-model",
-        "api_key": "same-secret",
+        "api_key": synthetic_secret("system_config_migrations-credential-11"),
         "timeout": 600,
     }
     _write_document(
@@ -394,8 +388,8 @@ def test_same_legacy_task_and_referenced_profile_reuses_target(tmp_path, monkeyp
                     _profile(
                         "task",
                         model="task-model",
-                        api_key="same-secret",
-                        base_url="https://task.example/v1",
+                        api_key=synthetic_secret("system_config_migrations-credential-11"),
+                        base_url="https://task.example.net/v1",
                     )
                 ],
             },
@@ -417,13 +411,17 @@ def test_conflicting_legacy_task_and_referenced_profile_blocks(tmp_path, monkeyp
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "old-task",
-                "api_key": "old-secret",
+                "api_key": synthetic_secret("system_config_migrations-credential-07"),
             },
             "llm_profiles": {
                 "default_task_profile_ref": {"scope": "global", "id": "task"},
-                "profiles": [_profile("task", model="new-task", api_key="new-secret")],
+                "profiles": [
+                    _profile(
+                        "task", model="new-task", api_key=synthetic_secret("system_config_migrations-credential-06")
+                    )
+                ],
             },
         },
     )
@@ -441,12 +439,10 @@ def test_stable_task_profile_id_collision_blocks_without_overwrite(tmp_path, mon
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "legacy-task",
             },
-            "llm_profiles": {
-                "profiles": [_profile("legacy-task-llm", model="unrelated-model")]
-            },
+            "llm_profiles": {"profiles": [_profile("legacy-task-llm", model="unrelated-model")]},
         },
     )
 
@@ -470,15 +466,10 @@ def test_startup_runner_migrates_over_limit_profiles_without_blocking_runtime(
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
             },
-            "llm_profiles": {
-                "profiles": [
-                    _profile("profile-{}".format(index))
-                    for index in range(10)
-                ]
-            },
+            "llm_profiles": {"profiles": [_profile("profile-{}".format(index)) for index in range(10)]},
         },
     )
 
@@ -486,9 +477,7 @@ def test_startup_runner_migrates_over_limit_profiles_without_blocking_runtime(
 
     assert report["ok"] is True
     model_report = next(
-        item
-        for item in report["migrations"]
-        if item["migration_id"] == "system-config-model-profiles-v1"
+        item for item in report["migrations"] if item["migration_id"] == "system-config-model-profiles-v1"
     )
     assert model_report["status"] == "applied"
     config_path = _config_path(runtime_root)
@@ -515,7 +504,7 @@ def test_encrypted_legacy_task_secret_is_rebound_to_profile_context(
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
                 "api_key": legacy_ciphertext,
             }
@@ -528,12 +517,15 @@ def test_encrypted_legacy_task_secret_is_rebound_to_profile_context(
     migrated = json.loads(_config_path(runtime_root).read_text(encoding="utf-8"))
     rebound = migrated["llm_profiles"]["profiles"][0]["api_key"]
     assert rebound != legacy_ciphertext
-    assert decrypt_secret(
-        rebound,
-        context="llm_profiles.profiles.api_key",
-        allow_key_creation=False,
-        runtime_root=runtime_root,
-    ) == "legacy-encrypted-secret"
+    assert (
+        decrypt_secret(
+            rebound,
+            context="llm_profiles.profiles.api_key",
+            allow_key_creation=False,
+            runtime_root=runtime_root,
+        )
+        == "legacy-encrypted-secret"
+    )
     with pytest.raises(SecretEncryptionError):
         decrypt_secret(
             rebound,
@@ -624,10 +616,10 @@ def test_duplicate_profile_ids_and_missing_targets_block(
     [
         [],
         {"base_url": ["invalid"], "model": "task"},
-        {"base_url": "https://task.example/v1", "model": ""},
+        {"base_url": "https://task.example.net/v1", "model": ""},
         {"base_url": "", "model": "", "timeout": 45},
-        {"base_url": "https://task.example/v1", "model": "task", "timeout": "600"},
-        {"base_url": "https://task.example/v1", "model": "task", "timeout": {}},
+        {"base_url": "https://task.example.net/v1", "model": "task", "timeout": "600"},
+        {"base_url": "https://task.example.net/v1", "model": "task", "timeout": {}},
     ],
 )
 def test_legacy_task_invalid_types_or_incomplete_fields_block(
@@ -667,9 +659,7 @@ def test_default_only_legacy_task_section_is_safely_removed(tmp_path, monkeypatc
 
     assert code == 0
     assert report["status"] == "applied"
-    assert "task_llm" not in json.loads(
-        _config_path(runtime_root).read_text(encoding="utf-8")
-    )
+    assert "task_llm" not in json.loads(_config_path(runtime_root).read_text(encoding="utf-8"))
 
 
 def test_legacy_main_without_max_tokens_migrates_to_current_default(
@@ -681,7 +671,7 @@ def test_legacy_main_without_max_tokens_migrates_to_current_default(
         runtime_root,
         {
             "llm": {
-                "base_url": "https://main.example/v1",
+                "base_url": "https://main.example.net/v1",
                 "model": "synthetic-main-model",
             },
             "task_llm": {
@@ -695,11 +685,7 @@ def test_legacy_main_without_max_tokens_migrates_to_current_default(
     assert code == 0
     assert report["status"] == "applied"
     migrated = json.loads(_config_path(runtime_root).read_text(encoding="utf-8"))
-    main_profile = next(
-        profile
-        for profile in migrated["llm_profiles"]["profiles"]
-        if profile["id"] == "default"
-    )
+    main_profile = next(profile for profile in migrated["llm_profiles"]["profiles"] if profile["id"] == "default")
     assert main_profile["max_tokens"] == 32768
 
 
@@ -711,13 +697,13 @@ def test_plaintext_encrypted_and_mixed_secrets_are_fully_validated_and_encrypted
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
     encrypted_auth = encrypt_secret(
-        "auth-secret",
+        synthetic_secret("system_config_migrations-credential-03"),
         context="auth.auth_secret",
         allow_key_creation=False,
         runtime_root=runtime_root,
     )
     encrypted_profile = encrypt_secret(
-        "profile-secret",
+        synthetic_secret("system_config_migrations-credential-09"),
         context="llm_profiles.profiles.api_key",
         allow_key_creation=False,
         runtime_root=runtime_root,
@@ -725,13 +711,13 @@ def test_plaintext_encrypted_and_mixed_secrets_are_fully_validated_and_encrypted
     _write_document(
         runtime_root,
         {
-            "llm": {"api_key": "main-secret"},
+            "llm": {"api_key": synthetic_secret("system_config_migrations-credential-05")},
             "llm_profiles": {"profiles": [_profile("main", api_key=encrypted_profile)]},
             "auth": {
                 "auth_secret": encrypted_auth,
-                "auth_server_admin_token": "admin-secret",
+                "auth_server_admin_token": synthetic_secret("system_config_migrations-credential-01"),
             },
-            "web_search": {"api_key": "search-secret"},
+            "web_search": {"api_key": synthetic_secret("system_config_migrations-credential-12")},
         },
     )
 
@@ -742,21 +728,24 @@ def test_plaintext_encrypted_and_mixed_secrets_are_fully_validated_and_encrypted
     assert report["counts"]["encrypted_secrets"] == 2
     migrated = json.loads(_config_path(runtime_root).read_text(encoding="utf-8"))
     expected = {
-        ("llm", "api_key"): ("main-secret", "llm.api_key"),
-        ("auth", "auth_secret"): ("auth-secret", "auth.auth_secret"),
+        ("llm", "api_key"): (synthetic_secret("system_config_migrations-credential-05"), "llm.api_key"),
+        ("auth", "auth_secret"): (synthetic_secret("system_config_migrations-credential-03"), "auth.auth_secret"),
         ("auth", "auth_server_admin_token"): (
-            "admin-secret",
+            synthetic_secret("system_config_migrations-credential-01"),
             "auth.auth_server_admin_token",
         ),
-        ("web_search", "api_key"): ("search-secret", "web_search.api_key"),
+        ("web_search", "api_key"): (synthetic_secret("system_config_migrations-credential-12"), "web_search.api_key"),
     }
     for (section, field), (plaintext, context) in expected.items():
-        assert decrypt_secret(
-            migrated[section][field],
-            context=context,
-            allow_key_creation=False,
-            runtime_root=runtime_root,
-        ) == plaintext
+        assert (
+            decrypt_secret(
+                migrated[section][field],
+                context=context,
+                allow_key_creation=False,
+                runtime_root=runtime_root,
+            )
+            == plaintext
+        )
 
 
 @pytest.mark.parametrize(
@@ -775,7 +764,9 @@ def test_missing_or_invalid_key_blocks_without_creating_key_or_writing(
     runtime_root = _configure_runtime(tmp_path, monkeypatch, with_key=False)
     if key_value is not None:
         monkeypatch.setenv("SECRET_ENCRYPTION_KEY", key_value)
-    original = _write_document(runtime_root, {"llm": {"api_key": "plaintext-secret"}})
+    original = _write_document(
+        runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}
+    )
 
     code, report = _execute_secret(runtime_root, dry_run=False)
 
@@ -792,7 +783,9 @@ def test_symlink_key_is_invalid_and_never_followed(tmp_path, monkeypatch):
     key_path = runtime_root / "config" / "secret.key"
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.symlink_to(external_key)
-    original = _write_document(runtime_root, {"llm": {"api_key": "plaintext-secret"}})
+    original = _write_document(
+        runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}
+    )
 
     code, report = _execute_secret(runtime_root, dry_run=False)
 
@@ -827,7 +820,9 @@ def test_encryption_failure_is_detected_before_backup_or_overwrite(tmp_path, mon
     from utils.security.secrets import SecretEncryptionError
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
-    original = _write_document(runtime_root, {"llm": {"api_key": "plaintext-secret"}})
+    original = _write_document(
+        runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}
+    )
 
     def fail_encryption(*_args, **_kwargs):
         raise SecretEncryptionError("sensitive provider detail")
@@ -847,7 +842,9 @@ def test_backup_failure_preserves_original(tmp_path, monkeypatch):
     import migrations.system_config_v1_support as support
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
-    original = _write_document(runtime_root, {"llm": {"api_key": "plaintext-secret"}})
+    original = _write_document(
+        runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}
+    )
     monkeypatch.setattr(
         support,
         "_create_verified_backup",
@@ -865,7 +862,9 @@ def test_backup_verification_failure_preserves_original(tmp_path, monkeypatch):
     import migrations.system_config_v1_support as support
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
-    original = _write_document(runtime_root, {"llm": {"api_key": "plaintext-secret"}})
+    original = _write_document(
+        runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}
+    )
     monkeypatch.setattr(
         support,
         "_ensure_private_file",
@@ -886,7 +885,9 @@ def test_source_change_after_backup_is_reported_as_target_conflict(
     import migrations.system_config_v1_support as support
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
-    original = _write_document(runtime_root, {"llm": {"api_key": "plaintext-secret"}})
+    original = _write_document(
+        runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}
+    )
     replacement = json.dumps({"external_change": True}).encode()
     real_create_backup = support._create_verified_backup
 
@@ -917,7 +918,9 @@ def test_atomic_replace_failure_preserves_original_and_verified_backup(
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
     config_path = _config_path(runtime_root)
-    original = _write_document(runtime_root, {"llm": {"api_key": "plaintext-secret"}})
+    original = _write_document(
+        runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}
+    )
     real_replace = support.os.replace
 
     def fail_target_replace(source, target):
@@ -943,7 +946,7 @@ def test_marker_write_failure_blocks_then_retry_completes_marker(
     import migrations.system_config_v1_support as support
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
-    _write_document(runtime_root, {"llm": {"api_key": "plaintext-secret"}})
+    _write_document(runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}})
     real_write_marker = support._write_marker
     monkeypatch.setattr(
         support,
@@ -972,9 +975,9 @@ def test_model_success_secret_failure_is_retained_and_retryable(tmp_path, monkey
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
-                "api_key": "task-secret",
+                "api_key": synthetic_secret("system_config_migrations-credential-13"),
             }
         },
     )
@@ -1005,9 +1008,9 @@ def test_marker_does_not_hide_reintroduced_legacy_or_plaintext_data(
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
-                "api_key": "task-secret",
+                "api_key": synthetic_secret("system_config_migrations-credential-13"),
             }
         },
     )
@@ -1015,10 +1018,10 @@ def test_marker_does_not_hide_reintroduced_legacy_or_plaintext_data(
     assert _execute_secret(runtime_root, dry_run=False)[0] == 0
     damaged = json.loads(_config_path(runtime_root).read_text(encoding="utf-8"))
     damaged["task_llm"] = {
-        "base_url": "https://conflict.example/v1",
+        "base_url": "https://conflict.example.net/v1",
         "model": "conflict-model",
     }
-    damaged.setdefault("llm", {})["api_key"] = "reintroduced-plaintext"
+    damaged.setdefault("llm", {})["api_key"] = synthetic_secret("system_config_migrations-credential-10")
     _write_document(runtime_root, damaged)
 
     model_code, model_report = _execute_model(runtime_root, dry_run=True)
@@ -1036,19 +1039,16 @@ def test_concurrent_startup_serializes_and_applies_each_step_once(tmp_path, monk
         runtime_root,
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
-                "api_key": "task-secret",
+                "api_key": synthetic_secret("system_config_migrations-credential-13"),
             },
-            "auth": {"auth_secret": "auth-secret"},
+            "auth": {"auth_secret": synthetic_secret("system_config_migrations-credential-03")},
         },
     )
 
     with ProcessPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(_run_startup_in_process, runtime_root, SECRET_TEST_KEY)
-            for _ in range(2)
-        ]
+        futures = [executor.submit(_run_startup_in_process, runtime_root, SECRET_TEST_KEY) for _ in range(2)]
         reports = [future.result(timeout=30) for future in futures]
 
     assert all(report["ok"] for report in reports)
@@ -1061,7 +1061,7 @@ def test_concurrent_startup_serializes_and_applies_each_step_once(tmp_path, monk
 
 def test_reports_are_structured_and_redacted(tmp_path, monkeypatch):
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
-    secret = "do-not-report-this-token"
+    secret = synthetic_secret("system_config_migrations-credential-04")
     _write_document(runtime_root, {"llm": {"api_key": secret}})
 
     dry_code, dry_report = _execute_secret(runtime_root, dry_run=True)

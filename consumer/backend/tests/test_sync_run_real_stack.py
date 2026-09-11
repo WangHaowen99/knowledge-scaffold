@@ -3,27 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
 import importlib.util
 import logging
-from pathlib import Path
 import sys
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
 import pytest
-
 from agent.runtime.manager import AsyncRunManager
 from agent.runtime.mock import FixedAsyncAgentRuntime
 from agent.runtime.offload import BoundedOffloadPool
 from agent.runtime.runtime import RuntimeState
 from agent.runtime.service import AsyncExecutionService, OrchestratorSessionAdapter
 from api.auth.auth import AuthUser
+from fastapi import FastAPI
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
-
 
 # Load only the focused router. Importing ``api.routes`` would also import
 # unrelated route modules and make this regression depend on their state.
@@ -169,9 +167,7 @@ class _RecordingRunManager(AsyncRunManager):
 class _SyntheticOrchestrator:
     def __init__(self, tmp_path: Path) -> None:
         self.chat_store = ChatStore(str(tmp_path / "synthetic-chat"))
-        self.execution_store = ExecutionStore(
-            str(tmp_path / "synthetic-executions")
-        )
+        self.execution_store = ExecutionStore(str(tmp_path / "synthetic-executions"))
 
     def _get_stores(self, username: str, workspace_id: str):
         assert username == _USER.username
@@ -247,12 +243,8 @@ def _install_harness(
     async def workspace_override() -> str:
         return _WORKSPACE_ID
 
-    app.dependency_overrides[
-        workflows.require_authenticated_user
-    ] = authenticated_user_override
-    app.dependency_overrides[
-        workflows.require_workspace_id
-    ] = workspace_override
+    app.dependency_overrides[workflows.require_authenticated_user] = authenticated_user_override
+    app.dependency_overrides[workflows.require_workspace_id] = workspace_override
     return app, harness
 
 
@@ -316,16 +308,10 @@ def test_sync_run_real_stack_returns_success_and_public_trace(
                 "token.delta",
                 "turn.finished",
             ]
-            assert [event.seq for event in events] == list(
-                range(1, len(events) + 1)
-            )
+            assert [event.seq for event in events] == list(range(1, len(events) + 1))
 
-            history = harness.execution_store.get_session_history(
-                "session_sync_real_success"
-            )
-            assert history["turns"][0]["protocol_metadata"] == {
-                "protocol": "agentic_sync"
-            }
+            history = harness.execution_store.get_session_history("session_sync_real_success")
+            assert history["turns"][0]["protocol_metadata"] == {"protocol": "agentic_sync"}
             durable_turn = harness.execution_store.get_turn(
                 "session_sync_real_success",
                 snapshot.turn_id,
@@ -336,9 +322,7 @@ def test_sync_run_real_stack_returns_success_and_public_trace(
             assert durable_turn["final_output"] == {"text": "mock answer"}
             _assert_no_sync_subscriber_leak(harness)
         finally:
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -386,12 +370,8 @@ def test_sync_run_real_stack_preserves_run_id_through_bounded_offload(
             assert durable_turn["status"] == "success"
             _assert_no_sync_subscriber_leak(harness)
         finally:
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
-            assert await short_io.close(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
+            assert await short_io.close(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -423,9 +403,7 @@ def test_sync_run_admission_failure_does_not_log_exception_text(
             assert response.status_code == 500, response.text
             _assert_no_sync_subscriber_leak(harness)
         finally:
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     with caplog.at_level(logging.ERROR, logger=workflows.logger.name):
         asyncio.run(scenario())
@@ -433,8 +411,7 @@ def test_sync_run_admission_failure_does_not_log_exception_text(
     records = [
         record
         for record in caplog.records
-        if record.name == workflows.logger.name
-        and "sync run admission failed" in record.getMessage()
+        if record.name == workflows.logger.name and "sync run admission failed" in record.getMessage()
     ]
     assert len(records) == 1
     assert private_marker not in caplog.text
@@ -450,9 +427,7 @@ def test_sync_run_subscriber_capacity_retry_does_not_duplicate_history(
     async def scenario() -> None:
         app, harness = _install_harness(monkeypatch, tmp_path)
         harness.manager.event_bus.max_subscribers_total = 1
-        holder = await harness.manager.event_bus.reserve_subscriber(
-            "agentic-capacity-holder"
-        )
+        holder = await harness.manager.event_bus.reserve_subscriber("agentic-capacity-holder")
         try:
             async with await _client_for(app) as client:
                 limited = await client.post(
@@ -464,14 +439,10 @@ def test_sync_run_subscriber_capacity_retry_does_not_duplicate_history(
                 )
                 assert limited.status_code == 429, limited.text
                 assert "run_id" not in limited.json()
-                history = harness.execution_store.get_session_history(
-                    "session_sync_capacity_retry"
-                )
+                history = harness.execution_store.get_session_history("session_sync_capacity_retry")
                 assert history is None
 
-                await harness.manager.event_bus.release_subscriber_reservation(
-                    holder
-                )
+                await harness.manager.event_bus.release_subscriber_reservation(holder)
                 holder = ""
                 retried = await client.post(
                     "/agentic/runs/sync",
@@ -483,26 +454,18 @@ def test_sync_run_subscriber_capacity_retry_does_not_duplicate_history(
 
             assert retried.status_code == 200, retried.text
             assert retried.json()["status"] == "success"
-            history = harness.execution_store.get_session_history(
-                "session_sync_capacity_retry"
-            )
+            history = harness.execution_store.get_session_history("session_sync_capacity_retry")
             assert len(history["turns"]) == 1
             assert [
                 message["content"]
-                for message in harness.execution_store.get_llm_context(
-                    "session_sync_capacity_retry"
-                )
+                for message in harness.execution_store.get_llm_context("session_sync_capacity_retry")
                 if message["role"] == "user"
             ] == ["Analyze synthetic retry input"]
             _assert_no_sync_subscriber_leak(harness)
         finally:
             if holder:
-                await harness.manager.event_bus.release_subscriber_reservation(
-                    holder
-                )
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+                await harness.manager.event_bus.release_subscriber_reservation(holder)
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -539,12 +502,8 @@ def test_sync_run_real_stack_has_no_total_timeout_and_request_cancel_cleans_up(
             snapshot = snapshots[0]
             assert snapshot.status.value == "cancelled"
             assert snapshot.cancel_reason == "sync_request_cancelled"
-            assert harness.runtime.cancel_reasons == [
-                "sync_request_cancelled"
-            ]
-            assert harness.manager.cancel_reasons == [
-                "sync_request_cancelled"
-            ]
+            assert harness.runtime.cancel_reasons == ["sync_request_cancelled"]
+            assert harness.manager.cancel_reasons == ["sync_request_cancelled"]
 
             durable_turn = harness.execution_store.get_turn(
                 "session_sync_no_total_timeout",
@@ -568,9 +527,7 @@ def test_sync_run_real_stack_has_no_total_timeout_and_request_cancel_cleans_up(
             if request_task is not None and not request_task.done():
                 request_task.cancel()
                 await asyncio.gather(request_task, return_exceptions=True)
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -615,14 +572,10 @@ def test_sync_run_real_stack_persists_terminal_failure(monkeypatch, tmp_path):
             )
             assert durable_turn is not None
             assert durable_turn["status"] == "failed"
-            assert durable_turn["final_output"] == {
-                "error": "Mock tool failed"
-            }
+            assert durable_turn["final_output"] == {"error": "Mock tool failed"}
             _assert_no_sync_subscriber_leak(harness)
         finally:
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -673,13 +626,9 @@ def test_sync_run_rejects_immediate_interaction_without_pending_checkpoint(
             )
             assert durable_turn is not None
             assert durable_turn["status"] == "failed"
-            assert durable_turn["final_output"] == {
-                "error": "当前协议不支持用户交互"
-            }
+            assert durable_turn["final_output"] == {"error": "当前协议不支持用户交互"}
             assert durable_turn.get("pending_user_interaction") is None
-            assert harness.execution_store.get_llm_context(
-                "session_sync_interaction_unsupported"
-            ) == [
+            assert harness.execution_store.get_llm_context("session_sync_interaction_unsupported") == [
                 {
                     "role": "user",
                     "content": "Analyze synthetic interactive input",
@@ -696,9 +645,7 @@ def test_sync_run_rejects_immediate_interaction_without_pending_checkpoint(
             assert follow_up["status"] == "running"
             _assert_no_sync_subscriber_leak(harness)
         finally:
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -765,21 +712,15 @@ def test_sync_run_admission_exit_cancellation_cancels_run_and_reservation(
             snapshot = snapshots[0]
             assert snapshot.status.value == "cancelled"
             assert snapshot.cancel_reason == "sync_request_cancelled"
-            assert harness.manager.cancel_reasons == [
-                "sync_request_cancelled"
-            ]
-            assert harness.runtime.cancel_reasons == [
-                "sync_request_cancelled"
-            ]
+            assert harness.manager.cancel_reasons == ["sync_request_cancelled"]
+            assert harness.runtime.cancel_reasons == ["sync_request_cancelled"]
         finally:
             release_admission_exit.set()
             harness.manager.cancel_release.set()
             if request_task is not None and not request_task.done():
                 request_task.cancel()
                 await asyncio.gather(request_task, return_exceptions=True)
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -818,9 +759,7 @@ def test_sync_run_cancelled_during_reservation_leaves_no_durable_turn(
                 with pytest.raises(asyncio.CancelledError):
                     await request_task
 
-            history = harness.execution_store.get_session_history(
-                "session_sync_reserve_cancel"
-            )
+            history = harness.execution_store.get_session_history("session_sync_reserve_cancel")
             assert history is None
             assert await harness.manager.repository.list_snapshots() == []
             _assert_no_sync_subscriber_leak(harness)
@@ -828,9 +767,7 @@ def test_sync_run_cancelled_during_reservation_leaves_no_durable_turn(
             if request_task is not None and not request_task.done():
                 request_task.cancel()
                 await asyncio.gather(request_task, return_exceptions=True)
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -871,9 +808,7 @@ def test_sync_run_cancelled_during_turn_allocation_compensates_durable_turn(
                 harness.short_io.mark_finished.wait(),
                 timeout=1.0,
             )
-            history = harness.execution_store.get_session_history(
-                "session_sync_allocation_cancel"
-            )
+            history = harness.execution_store.get_session_history("session_sync_allocation_cancel")
             assert len(history["turns"]) == 1
             durable_turn = history["turns"][0]
             assert durable_turn["status"] == "failed"
@@ -886,9 +821,7 @@ def test_sync_run_cancelled_during_turn_allocation_compensates_durable_turn(
             if request_task is not None and not request_task.done():
                 request_task.cancel()
                 await asyncio.gather(request_task, return_exceptions=True)
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())
 
@@ -900,9 +833,7 @@ def test_sync_run_create_cancel_then_release_cancel_still_fails_turn(
     async def scenario() -> None:
         app, harness = _install_harness(monkeypatch, tmp_path)
         harness.manager.block_create_before_registration = True
-        original_release = (
-            harness.manager.event_bus.release_subscriber_reservation
-        )
+        original_release = harness.manager.event_bus.release_subscriber_reservation
         release_started = asyncio.Event()
         release_gate = asyncio.Event()
 
@@ -940,9 +871,7 @@ def test_sync_run_create_cancel_then_release_cancel_still_fails_turn(
                 with pytest.raises(asyncio.CancelledError):
                     await request_task
 
-            history = harness.execution_store.get_session_history(
-                "session_sync_create_cancel"
-            )
+            history = harness.execution_store.get_session_history("session_sync_create_cancel")
             assert len(history["turns"]) == 1
             durable_turn = history["turns"][0]
             assert durable_turn["status"] == "failed"
@@ -955,8 +884,6 @@ def test_sync_run_create_cancel_then_release_cancel_still_fails_turn(
             if request_task is not None and not request_task.done():
                 request_task.cancel()
                 await asyncio.gather(request_task, return_exceptions=True)
-            await harness.manager.shutdown(
-                deadline=asyncio.get_running_loop().time() + 1.0
-            )
+            await harness.manager.shutdown(deadline=asyncio.get_running_loop().time() + 1.0)
 
     asyncio.run(scenario())

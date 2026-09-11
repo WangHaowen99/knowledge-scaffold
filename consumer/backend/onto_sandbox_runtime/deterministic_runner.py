@@ -87,9 +87,7 @@ def _reject_local_module_collisions(
                 runtime_paths,
             )
             if runtime_spec is not None:
-                raise ImportError(
-                    "local deterministic module collides with a runtime module"
-                )
+                raise ImportError("local deterministic module collides with a runtime module")
 
 
 def _path_value_is_within(raw_path: object, root: str) -> bool:
@@ -129,13 +127,9 @@ def _install_runtime_guards(
     script_dir: Path,
     contract: Mapping[str, Any],
 ) -> None:
-    allowed_standard = frozenset(
-        str(item).strip()
-        for item in contract.get("allowed_standard_library_imports") or []
-    )
+    allowed_standard = frozenset(str(item).strip() for item in contract.get("allowed_standard_library_imports") or [])
     allowed_external_roots = frozenset(
-        str(item).strip().split(".", 1)[0]
-        for item in contract.get("allowed_external_import_roots") or []
+        str(item).strip().split(".", 1)[0] for item in contract.get("allowed_external_import_roots") or []
     )
     runtime_imports = contract.get("allowed_runtime_imports") or {}
     allowed_runtime_exports = {
@@ -179,8 +173,8 @@ def _install_runtime_guards(
 
     def guarded_import(
         name: str,
-        globals: Mapping[str, Any] | None = None,
-        locals: Mapping[str, Any] | None = None,
+        globals: Mapping[str, Any] | None = None,  # pylint: disable=redefined-builtin
+        locals: Mapping[str, Any] | None = None,  # pylint: disable=redefined-builtin
         fromlist: Sequence[str] = (),
         level: int = 0,
     ) -> Any:
@@ -196,9 +190,7 @@ def _install_runtime_guards(
         import_root = module_name.split(".", 1)[0]
         requested_exports = frozenset(str(item).strip() for item in (fromlist or ()))
         if package_call and requested_exports.intersection(forbidden_import_exports):
-            raise ImportError(
-                "module export is outside the deterministic runtime capability contract"
-            )
+            raise ImportError("module export is outside the deterministic runtime capability contract")
         runtime_import_allowed = (
             module_name in allowed_runtime_exports
             and bool(requested_exports)
@@ -212,9 +204,7 @@ def _install_runtime_guards(
             or _local_module_exists(module_name, (script_dir, ontology_root))
         )
         if not allowed:
-            raise ImportError(
-                "module is outside the deterministic runtime capability contract"
-            )
+            raise ImportError("module is outside the deterministic runtime capability contract")
         return original_import(name, globals, locals, fromlist, level)
 
     builtins.__import__ = guarded_import
@@ -222,9 +212,7 @@ def _install_runtime_guards(
     def guard_callable(original: Callable[..., Any], capability: str) -> Callable[..., Any]:
         def guarded(*args: Any, **kwargs: Any) -> Any:
             if _package_caller(ontology_root_value):
-                raise PermissionError(
-                    "{} is unavailable to deterministic package code".format(capability)
-                )
+                raise PermissionError("{} is unavailable to deterministic package code".format(capability))
             return original(*args, **kwargs)
 
         return guarded

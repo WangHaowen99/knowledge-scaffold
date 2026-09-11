@@ -7,28 +7,27 @@ import json
 import threading
 from types import SimpleNamespace
 
-import pytest
-
-from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 import agent.core.shared.solver_route_guard  # noqa: F401
+import agent.runtime.preflight as preflight_module
+import agent.tools.execute_script as execute_script_module
+import agent.tools.registry as tool_registry
+import agent.tools.solver as solver_module
+import pytest
+from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 from agent.core.shared.tool_context import (
     build_tool_context,
     ontology_preflight_tool_context,
 )
-from agent.runtime.contracts import RunPreflightSnapshot, RuntimeInvocationContext
-from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.runtime.async_utils import (
     clear_bounded_offload_pools,
     configure_bounded_offload_pools,
 )
+from agent.runtime.contracts import RunPreflightSnapshot, RuntimeInvocationContext
+from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.runtime.offload import BoundedOffloadPool
 from agent.tools.base import ToolInvocation
 from agent.tools.executor import aexecute_tool_batch
-import agent.tools.execute_script as execute_script_module
-import agent.tools.registry as tool_registry
-import agent.tools.solver as solver_module
-import agent.runtime.preflight as preflight_module
-
+from backend_synthetic_credentials import synthetic_secret
 
 WORKSPACE_ID = "workspace-admitted"
 ONTOLOGY_ID = "ontology-admitted"
@@ -94,7 +93,7 @@ def _snapshot():
         solver_capabilities=(_solver_capability(),),
         model_profile={
             "id": "profile-secret",
-            "api_key": "must-never-reach-tool-context",
+            "api_key": synthetic_secret("tool_schema_preflight_pin-credential-01"),
         },
     )
 
@@ -162,9 +161,7 @@ def test_pure_execute_schema_builder_does_not_mutate_admitted_catalog():
     catalog = [
         {
             "operation_key": OPERATION_KEY,
-            "parameters": [
-                {"name": "batch_count", "type": "integer", "required": True}
-            ],
+            "parameters": [{"name": "batch_count", "type": "integer", "required": True}],
         }
     ]
 
@@ -172,16 +169,12 @@ def test_pure_execute_schema_builder_does_not_mutate_admitted_catalog():
         ontology_ids=(ONTOLOGY_ID,),
         script_catalog=catalog,
     )
-    schema["function"]["parameters"]["properties"]["operation_key"]["enum"].append(
-        "mutated"
-    )
+    schema["function"]["parameters"]["properties"]["operation_key"]["enum"].append("mutated")
 
     assert catalog == [
         {
             "operation_key": OPERATION_KEY,
-            "parameters": [
-                {"name": "batch_count", "type": "integer", "required": True}
-            ],
+            "parameters": [{"name": "batch_count", "type": "integer", "required": True}],
         }
     ]
 
@@ -260,13 +253,11 @@ def test_default_preflight_package_loader_freezes_dynamic_tool_products(
 
     product = preflight_module._default_package_loader(manifest, WORKSPACE_ID)
 
-    assert product["execute_script_tool_schema"]["function"]["parameters"][
-        "properties"
-    ]["operation_key"]["enum"] == [OPERATION_KEY]
+    assert product["execute_script_tool_schema"]["function"]["parameters"]["properties"]["operation_key"]["enum"] == [
+        OPERATION_KEY
+    ]
     assert product["solver_capabilities"] == (_solver_capability(),)
-    assert product["script_bindings"][OPERATION_KEY][
-        "_expected_script_path"
-    ] == str(script_path.resolve())
+    assert product["script_bindings"][OPERATION_KEY]["_expected_script_path"] == str(script_path.resolve())
 
 
 def test_matching_snapshot_drives_real_agent_schema_and_solver_lookup_without_live_reads(
@@ -286,16 +277,8 @@ def test_matching_snapshot_drives_real_agent_schema_and_solver_lookup_without_li
             _state(),
             caller="main",
         )
-        execute_schema = next(
-            item
-            for item in schemas
-            if item["function"]["name"] == "execute_script"
-        )
-        solver_schema = next(
-            item
-            for item in schemas
-            if str(item["function"]["name"]).startswith("solve_")
-        )
+        execute_schema = next(item for item in schemas if item["function"]["name"] == "execute_script")
+        solver_schema = next(item for item in schemas if str(item["function"]["name"]).startswith("solve_"))
         solver_spec = tool_registry.get_tool_spec(
             solver_schema["function"]["name"],
             selected_ontology_id=ONTOLOGY_ID,
@@ -303,22 +286,16 @@ def test_matching_snapshot_drives_real_agent_schema_and_solver_lookup_without_li
             workspace_id=WORKSPACE_ID,
         )
 
-    assert execute_schema["function"]["parameters"]["properties"][
-        "operation_key"
-    ]["enum"] == [OPERATION_KEY]
-    assert execute_schema["function"]["parameters"]["properties"]["arguments"][
-        "properties"
-    ] == {"batch_count": {"type": "integer"}}
-    assert next(
-        info for info in tool_infos if info["name"] == "execute_script"
-    )["parameters"] == execute_schema["function"]["parameters"]
-    assert any(
-        str(info["name"]).startswith("solve_")
-        for info in tool_infos
+    assert execute_schema["function"]["parameters"]["properties"]["operation_key"]["enum"] == [OPERATION_KEY]
+    assert execute_schema["function"]["parameters"]["properties"]["arguments"]["properties"] == {
+        "batch_count": {"type": "integer"}
+    }
+    assert (
+        next(info for info in tool_infos if info["name"] == "execute_script")["parameters"]
+        == execute_schema["function"]["parameters"]
     )
-    execute_schema["function"]["parameters"]["properties"]["operation_key"][
-        "enum"
-    ].append("mutated-operation")
+    assert any(str(info["name"]).startswith("solve_") for info in tool_infos)
+    execute_schema["function"]["parameters"]["properties"]["operation_key"]["enum"].append("mutated-operation")
     with ontology_preflight_tool_context(snapshot):
         fresh_execute_schema = tool_registry.get_tool_schema_for_context(
             tool_registry.TOOL_SPECS["execute_script"],
@@ -326,15 +303,16 @@ def test_matching_snapshot_drives_real_agent_schema_and_solver_lookup_without_li
             selected_ontology_version=ONTOLOGY_VERSION,
             workspace_id=WORKSPACE_ID,
         )
-    assert fresh_execute_schema["function"]["parameters"]["properties"][
-        "operation_key"
-    ]["enum"] == [OPERATION_KEY]
+    assert fresh_execute_schema["function"]["parameters"]["properties"]["operation_key"]["enum"] == [OPERATION_KEY]
     assert solver_spec is not None
-    assert tool_registry.validate_tool_arguments(
-        solver_spec.name,
-        {"batch_count": 2},
-        tool_schema=solver_schema,
-    ) is None
+    assert (
+        tool_registry.validate_tool_arguments(
+            solver_spec.name,
+            {"batch_count": 2},
+            tool_schema=solver_schema,
+        )
+        is None
+    )
     assert "must be integer" in str(
         tool_registry.validate_tool_arguments(
             solver_spec.name,
@@ -342,9 +320,7 @@ def test_matching_snapshot_drives_real_agent_schema_and_solver_lookup_without_li
             tool_schema=solver_schema,
         )
     )
-    solver_spec.schema["function"]["parameters"]["properties"]["batch_count"][
-        "minimum"
-    ] = 999
+    solver_spec.schema["function"]["parameters"]["properties"]["batch_count"]["minimum"] = 999
     with ontology_preflight_tool_context(snapshot):
         fresh_spec = tool_registry.get_tool_spec(
             solver_spec.name,
@@ -353,9 +329,7 @@ def test_matching_snapshot_drives_real_agent_schema_and_solver_lookup_without_li
             workspace_id=WORKSPACE_ID,
         )
     assert fresh_spec is not None
-    assert fresh_spec.schema["function"]["parameters"]["properties"][
-        "batch_count"
-    ]["minimum"] == 1
+    assert fresh_spec.schema["function"]["parameters"]["properties"]["batch_count"]["minimum"] == 1
 
 
 def test_executor_lookup_validation_and_solver_dispatch_share_frozen_binding(
@@ -364,6 +338,7 @@ def test_executor_lookup_validation_and_solver_dispatch_share_frozen_binding(
     calls = []
 
     class Service:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def start_or_resume(self, **kwargs):
             kwargs["worker_thread_id"] = threading.get_ident()
             calls.append(kwargs)
@@ -544,9 +519,7 @@ def test_matching_snapshot_with_missing_schema_fails_closed_without_live_read(
             workspace_id=WORKSPACE_ID,
         )
 
-    operation_schema = schema["function"]["parameters"]["properties"][
-        "operation_key"
-    ]
+    operation_schema = schema["function"]["parameters"]["properties"]["operation_key"]
     assert "enum" not in operation_schema
 
 
@@ -683,11 +656,7 @@ def test_missing_or_identity_mismatched_snapshot_preserves_legacy_loaders(
     )
     monkeypatch.setattr(solver_module, "_load_public_capabilities", legacy_capabilities)
     monkeypatch.setattr(solver_module, "_SOLVER_COORDINATION_SERVICE", SimpleNamespace())
-    context = (
-        ontology_preflight_tool_context(_snapshot())
-        if bind_snapshot
-        else ontology_preflight_tool_context(None)
-    )
+    context = ontology_preflight_tool_context(_snapshot()) if bind_snapshot else ontology_preflight_tool_context(None)
 
     with context:
         execute = tool_registry.get_tool_schema_for_context(

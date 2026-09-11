@@ -3,10 +3,10 @@ import shutil
 import threading
 from types import SimpleNamespace
 
-import pytest
-
 import agent.tools.execute_script as execute_script_module
-
+import pytest
+from agent.tools.execute_script import handle_execute_script, handle_execute_script_path
+from agent.tools.ontology_context import handle_ontology_context
 from api.routes.ontologies import (
     _copy_versioned_package_contents,
     _deterministic_package_immutable_response,
@@ -25,8 +25,6 @@ from ontology.operation_execution import (
     validate_and_lock_deterministic_operations,
     verify_deterministic_package_lock,
 )
-from agent.tools.execute_script import handle_execute_script, handle_execute_script_path
-from agent.tools.ontology_context import handle_ontology_context
 
 
 def _write_package(root, *, execution=True, data_access="none", aliases=None):
@@ -169,9 +167,7 @@ def test_validation_workflow_skips_deterministic_specs_but_stays_protected(tmp_p
     assert validate_and_lock_deterministic_operations(tmp_path) == ()
     assert load_deterministic_operation_specs(tmp_path, require_lock=False) == ()
     assert not (tmp_path / DETERMINISTIC_LOCK_NAME).exists()
-    assert protected_operation_keys(tmp_path) == frozenset(
-        {"validate_query", "Validate Query"}
-    )
+    assert protected_operation_keys(tmp_path) == frozenset({"validate_query", "Validate Query"})
 
 
 @pytest.mark.parametrize(
@@ -231,12 +227,7 @@ def test_generic_execution_rejects_deterministic_operation_before_loose_script_l
         encoding="utf-8",
     )
     (tmp_path / "scripts" / "a-legacy.md").write_text(
-        "---\n"
-        "resource: script\n"
-        "key: query\n"
-        "bound_operation: legacy\n"
-        "entrypoint: legacy.py\n"
-        "---\n",
+        "---\n" "resource: script\n" "key: query\n" "bound_operation: legacy\n" "entrypoint: legacy.py\n" "---\n",
         encoding="utf-8",
     )
     (tmp_path / "scripts" / "legacy.py").write_text(
@@ -325,13 +316,11 @@ def test_v1_lock_hashes_operation_declarations_before_routing(tmp_path):
     (
         "import json, random\nprint(json.dumps({'value': random.random()}))\n",
         "import json\nfrom random import *\nprint(json.dumps({'value': random()}))\n",
-        "import json\nfrom datetime import datetime\n"
-        "print(json.dumps({'value': datetime.now().isoformat()}))\n",
+        "import json\nfrom datetime import datetime\n" "print(json.dumps({'value': datetime.now().isoformat()}))\n",
         "import json\nfrom datetime import datetime\n"
         "clock = datetime.now\nprint(json.dumps({'value': clock().isoformat()}))\n",
         "import json, uuid\nprint(json.dumps({'value': uuid.uuid4().hex}))\n",
-        "import json, subprocess\n"
-        "subprocess.Popen(['true'])\nprint(json.dumps({'value': 'ok'}))\n",
+        "import json, subprocess\n" "subprocess.Popen(['true'])\nprint(json.dumps({'value': 'ok'}))\n",
         "import json, os\nos.system('true')\nprint(json.dumps({'value': 'ok'}))\n",
         "import json, os\nprint(json.dumps({'value': os.getpid()}))\n",
         "import json, platform\nprint(json.dumps({'value': platform.node()}))\n",
@@ -339,10 +328,8 @@ def test_v1_lock_hashes_operation_declarations_before_routing(tmp_path):
         "import json\nprint(json.dumps({'value': open('/proc/self/stat').read()}))\n",
         "import json\nloader = __builtins__['__import__']\n"
         "module = loader('os')\nprint(json.dumps({'value': module.getpid()}))\n",
-        "import json\nfrom requests.utils import os\n"
-        "print(json.dumps({'value': os.urandom(8).hex()}))\n",
-        "import json\nfrom requests import utils\n"
-        "print(json.dumps({'value': utils.os.urandom(8).hex()}))\n",
+        "import json\nfrom requests.utils import os\n" "print(json.dumps({'value': os.urandom(8).hex()}))\n",
+        "import json\nfrom requests import utils\n" "print(json.dumps({'value': utils.os.urandom(8).hex()}))\n",
     ),
 )
 def test_deterministic_package_rejects_obvious_nondeterministic_apis(
@@ -395,8 +382,7 @@ def test_deterministic_package_qualifies_parent_package_initializers(tmp_path):
     package_dir = tmp_path / "scripts" / "helper_pkg"
     package_dir.mkdir()
     (tmp_path / "scripts" / "query.py").write_text(
-        "import json\nfrom helper_pkg.value import value\n"
-        "print(json.dumps({'value': value()}))\n",
+        "import json\nfrom helper_pkg.value import value\n" "print(json.dumps({'value': value()}))\n",
         encoding="utf-8",
     )
     (package_dir / "__init__.py").write_text(
@@ -421,8 +407,7 @@ def test_deterministic_package_accepts_relative_import_from_qualified_initialize
     package_dir = tmp_path / "scripts" / "helper_pkg"
     package_dir.mkdir()
     (tmp_path / "scripts" / "query.py").write_text(
-        "import json\nfrom helper_pkg.value import value\n"
-        "print(json.dumps({'value': value()}))\n",
+        "import json\nfrom helper_pkg.value import value\n" "print(json.dumps({'value': value()}))\n",
         encoding="utf-8",
     )
     (package_dir / "__init__.py").write_text(
@@ -430,8 +415,7 @@ def test_deterministic_package_accepts_relative_import_from_qualified_initialize
         encoding="utf-8",
     )
     (package_dir / "value.py").write_text(
-        "from . import PACKAGE_VALUE\n"
-        "def value():\n    return PACKAGE_VALUE\n",
+        "from . import PACKAGE_VALUE\n" "def value():\n    return PACKAGE_VALUE\n",
         encoding="utf-8",
     )
 
@@ -443,9 +427,7 @@ def test_deterministic_package_accepts_relative_import_from_qualified_initialize
 def test_deterministic_package_rejects_dependency_outside_sandbox_contract(tmp_path):
     _write_package(tmp_path)
     (tmp_path / "scripts" / "query.py").write_text(
-        "import dependency_that_does_not_exist_onto\n"
-        "import json\n"
-        "print(json.dumps({'value': 'ok'}))\n",
+        "import dependency_that_does_not_exist_onto\n" "import json\n" "print(json.dumps({'value': 'ok'}))\n",
         encoding="utf-8",
     )
 
@@ -460,10 +442,7 @@ def test_deterministic_package_rejects_dependency_outside_sandbox_contract(tmp_p
     "source",
     (
         "import requests\nvalue = requests.__name__\n",
-        (
-            "from requests.sessions import preferred_clock\n"
-            "value = preferred_clock()\n"
-        ),
+        ("from requests.sessions import preferred_clock\n" "value = preferred_clock()\n"),
         "from neo4j import GraphDatabase\nvalue = GraphDatabase.__name__\n",
     ),
 )
@@ -526,8 +505,7 @@ def test_deterministic_package_rejects_runtime_capability_introspection(
         "import json\n"
         "import operator\n"
         "from shared_capabilities.ontology_script_sdk import write_artifact\n"
-        "value = {}\n".format(introspection)
-        + "print(json.dumps({'value': str(value)}))\n",
+        "value = {}\n".format(introspection) + "print(json.dumps({'value': str(value)}))\n",
         encoding="utf-8",
     )
 
@@ -566,9 +544,7 @@ def test_deterministic_package_accepts_local_namespace_package(tmp_path):
         encoding="utf-8",
     )
     (tmp_path / "scripts" / "query.py").write_text(
-        "import json\n"
-        "from helpers import normalize\n"
-        "print(json.dumps({'value': normalize.value()}))\n",
+        "import json\n" "from helpers import normalize\n" "print(json.dumps({'value': normalize.value()}))\n",
         encoding="utf-8",
     )
 
@@ -653,16 +629,12 @@ def test_lock_integrity_includes_top_level_versions_python_dependencies(tmp_path
         encoding="utf-8",
     )
     (tmp_path / "scripts" / "query.py").write_text(
-        "import json\n"
-        "from versions.helper import VALUE\n"
-        "print(json.dumps({'value': VALUE}))\n",
+        "import json\n" "from versions.helper import VALUE\n" "print(json.dumps({'value': VALUE}))\n",
         encoding="utf-8",
     )
 
     validate_and_lock_deterministic_operations(tmp_path)
-    lock = json.loads(
-        (tmp_path / DETERMINISTIC_LOCK_NAME).read_text(encoding="utf-8")
-    )
+    lock = json.loads((tmp_path / DETERMINISTIC_LOCK_NAME).read_text(encoding="utf-8"))
 
     assert "versions/helper.py" in {entry["path"] for entry in lock["files"]}
     (dependency_dir / "helper.py").write_text(
@@ -764,9 +736,7 @@ def test_remote_dynamic_schema_ref_is_rejected(tmp_path):
     _write_package(tmp_path)
     schema_path = tmp_path / "schemas" / "query.input.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    schema["properties"]["code"] = {
-        "$dynamicRef": "https://example.com/code.json"
-    }
+    schema["properties"]["code"] = {"$dynamicRef": "https://example.com/code.json"}
     schema_path.write_text(json.dumps(schema), encoding="utf-8")
 
     with pytest.raises(DeterministicPackageError) as exc:
@@ -885,12 +855,15 @@ def test_indented_execution_in_invalid_frontmatter_fails_closed(tmp_path):
 
     assert exc.value.code == "execution_declaration_invalid"
     assert public_script_catalog(load_script_catalog(tmp_path)) == []
-    assert handle_execute_script_path(
-        script_path="scripts/query.py",
-        base_path=tmp_path,
-        caller="main",
-        ontology_dir=tmp_path,
-    ) == "Error: deterministic_operation_protected"
+    assert (
+        handle_execute_script_path(
+            script_path="scripts/query.py",
+            base_path=tmp_path,
+            caller="main",
+            ontology_dir=tmp_path,
+        )
+        == "Error: deterministic_operation_protected"
+    )
 
 
 @pytest.mark.parametrize(
@@ -930,12 +903,15 @@ def test_invalid_execution_declaration_without_lock_still_protects_routes_and_ha
 
     assert protected_operation_keys(tmp_path) == frozenset({"query", "Query Exact"})
     assert public_script_catalog(load_script_catalog(tmp_path)) == []
-    assert handle_execute_script_path(
-        script_path="scripts/query.py",
-        base_path=tmp_path,
-        caller="main",
-        ontology_dir=tmp_path,
-    ) == "Error: deterministic_operation_protected"
+    assert (
+        handle_execute_script_path(
+            script_path="scripts/query.py",
+            base_path=tmp_path,
+            caller="main",
+            ontology_dir=tmp_path,
+        )
+        == "Error: deterministic_operation_protected"
+    )
 
     monkeypatch.setattr(
         execute_script_module,
@@ -952,12 +928,15 @@ def test_invalid_execution_declaration_without_lock_still_protects_routes_and_ha
         lambda **kwargs: bypass_calls.append(kwargs) or "BYPASSED",
     )
     for operation_key in ("query", "Query Exact"):
-        assert handle_execute_script(
-            ontology_id="demo",
-            operation_key=operation_key,
-            arguments={},
-            base_path=tmp_path,
-        ) == "Error: deterministic_operation_protected"
+        assert (
+            handle_execute_script(
+                ontology_id="demo",
+                operation_key=operation_key,
+                arguments={},
+                base_path=tmp_path,
+            )
+            == "Error: deterministic_operation_protected"
+        )
     assert bypass_calls == []
 
     with pytest.raises(DeterministicPackageError) as exc:
@@ -1108,9 +1087,7 @@ def test_symlinked_deterministic_lock_remains_immutable_in_file_editor(tmp_path)
     operations_dir = version_dir / "operations"
     operations_dir.mkdir(parents=True)
     try:
-        (version_dir / DETERMINISTIC_LOCK_NAME).symlink_to(
-            version_dir / "missing-lock"
-        )
+        (version_dir / DETERMINISTIC_LOCK_NAME).symlink_to(version_dir / "missing-lock")
     except (OSError, NotImplementedError):
         pytest.skip("Symbolic link creation not permitted on this platform")
 
@@ -1165,9 +1142,7 @@ def test_new_version_install_regenerates_lock_for_evolved_snapshot(tmp_path):
         verify_integrity=True,
     )
     assert installed_specs[0].package_revision != original_revision
-    assert verify_deterministic_package_lock(installed) == (
-        installed_specs[0].package_revision
-    )
+    assert verify_deterministic_package_lock(installed) == (installed_specs[0].package_revision)
 
 
 @pytest.mark.parametrize(
@@ -1218,9 +1193,7 @@ def test_deterministic_operation_context_is_protected_by_resolved_filename(
     filename_key,
 ):
     _write_package(tmp_path)
-    (tmp_path / "operations" / "query.md").rename(
-        tmp_path / "operations" / "operation-description.md"
-    )
+    (tmp_path / "operations" / "query.md").rename(tmp_path / "operations" / "operation-description.md")
     validate_and_lock_deterministic_operations(tmp_path)
     monkeypatch.setattr(
         "agent.tools.ontology_context.get_ontology_manifest",

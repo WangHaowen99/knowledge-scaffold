@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from integration.mcp.service_catalog import load_mcp_service_catalog, list_search_tools
-from api.protocols.mcp.tool_contracts import normalize_search_tool_args
 from api.protocols.mcp import server as mcp_server
+from api.protocols.mcp.tool_contracts import normalize_search_tool_args
+from integration.mcp.service_catalog import list_search_tools, load_mcp_service_catalog
 
 
 def test_mcp_search_extra_tools_are_advertised_as_supported():
@@ -27,7 +27,7 @@ def test_mcp_pattern_search_normalizes_json_string_and_rejects_wrapped_path():
     args, issue = normalize_search_tool_args(
         "pattern_search",
         {
-            "path_pattern": '[[\"A\",{}],[\"R\",\"->\"],[\"B\",{}]]',
+            "path_pattern": '[["A",{}],["R","->"],["B",{}]]',
             "return_vars": '["a","r1","b"]',
         },
     )
@@ -85,6 +85,7 @@ def test_mcp_server_registers_exactly_fourteen_private_search_tools():
             def decorate(func):
                 registered.append(func.__name__)
                 return func
+
             return decorate
 
     mcp_server._register_search_tools(

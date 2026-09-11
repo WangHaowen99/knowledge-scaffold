@@ -9,12 +9,20 @@
 from types import SimpleNamespace
 
 import pytest
-
-from auth_test_backend import AuthManager
 from api.routes.auth import auth_router
-from fastapi.testclient import TestClient
-
 from api.testing import TestApplication
+from auth_test_backend import AuthManager
+from backend_synthetic_credentials import (
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    INVALID_PASSWORD,
+    MCP_TOKEN_SECRET,
+    STRONG_PASSWORD,
+    STRONG_PASSWORD_2,
+    STRONG_PASSWORD_3,
+    synthetic_secret,
+)
+from fastapi.testclient import TestClient
 
 
 def _build_app(auth_manager):
@@ -27,7 +35,7 @@ def _build_app(auth_manager):
 
 @pytest.fixture()
 def auth_manager(tmp_path):
-    return AuthManager(str(tmp_path / "users.json"), "test-secret")
+    return AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
 
 
 @pytest.fixture()
@@ -36,7 +44,7 @@ def app(auth_manager, tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
     monkeypatch.setenv("MEMORY_WORKSPACE_ROOT", str(runtime_root / "memory"))
     monkeypatch.setenv("MCP_TOKEN_STORE_PATH", str(runtime_root / "mcp-tokens.json"))
-    monkeypatch.setenv("MCP_TOKEN_SECRET", "test-mcp-secret")
+    monkeypatch.setenv("MCP_TOKEN_SECRET", MCP_TOKEN_SECRET)
     return _build_app(auth_manager)
 
 
@@ -45,7 +53,7 @@ def client(app):
     return TestClient(app)
 
 
-def _login(client, username="admin", password="TestBootstrap#2026"):
+def _login(client, username="admin", password=BOOTSTRAP_ADMIN_PASSWORD):
     return client.post("/auth/login", json={"username": username, "password": password})
 
 
@@ -57,6 +65,7 @@ def _admin_headers(client, auth_manager):
 
 
 # ---- 登录契约 ----
+
 
 def test_login_response_shape(client):
     response = _login(client)
@@ -73,12 +82,13 @@ def test_login_response_shape(client):
 
 
 def test_login_invalid_credentials(client):
-    response = _login(client, password="wrong-password")
+    response = _login(client, password=INVALID_PASSWORD)
     assert response.status_code == 401
     assert response.json() == {"error": "Invalid credentials"}
 
 
 # ---- 鉴权 HTTP 语义 ----
+
 
 def test_missing_token_returns_401(client):
     response = client.get("/auth/me")
@@ -87,7 +97,9 @@ def test_missing_token_returns_401(client):
 
 
 def test_garbage_token_returns_401(client):
-    response = client.get("/auth/me", headers={"Authorization": "Bearer not-a-token"})
+    response = client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {synthetic_secret('auth_contract-credential-01')}"}
+    )
     assert response.status_code == 401
     assert response.json() == {"error": "Unauthorized"}
 
@@ -116,24 +128,22 @@ def test_app_configures_request_content_limit(app):
     from server_config import MAX_CONTENT_LENGTH
 
     assert MAX_REQUEST_BODY_BYTES == MAX_CONTENT_LENGTH
-    assert any(
-        middleware.cls is RequestBodyLimitMiddleware
-        for middleware in app.user_middleware
-    )
+    assert any(middleware.cls is RequestBodyLimitMiddleware for middleware in app.user_middleware)
 
 
 def test_non_admin_on_admin_route_returns_403(client, auth_manager):
     headers = _admin_headers(client, auth_manager)
-    client.post("/auth/users", headers=headers, json={"username": "alice", "password": "Zq7#Wmx2Lp8!"})
-    token = _login(client, "alice", "Zq7#Wmx2Lp8!").json()["token"]
-    auth_manager.change_password("alice", "Zq7#Wmx2Lp8!", "Zq7#Wmx2Lp9!")
-    token = _login(client, "alice", "Zq7#Wmx2Lp9!").json()["token"]
+    client.post("/auth/users", headers=headers, json={"username": "alice", "password": STRONG_PASSWORD})
+    token = _login(client, "alice", STRONG_PASSWORD).json()["token"]
+    auth_manager.change_password("alice", STRONG_PASSWORD, STRONG_PASSWORD_2)
+    token = _login(client, "alice", STRONG_PASSWORD_2).json()["token"]
     response = client.get("/auth/users", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 403
     assert response.json() == {"error": "Forbidden"}
 
 
 # ---- 存量强制改密状态兼容 ----
+
 
 def test_password_change_required_state_does_not_block_routes(client, auth_manager):
     users = auth_manager._load_users()
@@ -153,7 +163,7 @@ def test_change_password_contract_and_token_invalidation(client, auth_manager):
     response = client.put(
         "/auth/change-password",
         headers=headers,
-        json={"old_password": "TestBootstrap#2026", "new_password": "ContractTest#2026"},
+        json={"old_password": BOOTSTRAP_ADMIN_PASSWORD, "new_password": STRONG_PASSWORD},
     )
     assert response.status_code == 200
     assert response.json() == {"success": True, "requires_relogin": True}
@@ -167,7 +177,7 @@ def test_change_password_requires_both_fields(client):
     response = client.put(
         "/auth/change-password",
         headers={"Authorization": f"Bearer {token}"},
-        json={"old_password": "TestBootstrap#2026"},
+        json={"old_password": BOOTSTRAP_ADMIN_PASSWORD},
     )
     assert response.status_code == 400
     assert response.json() == {"error": "原密码和新密码不能为空"}
@@ -175,16 +185,22 @@ def test_change_password_requires_both_fields(client):
 
 # ---- 用户管理契约 ----
 
+
 def test_create_user_password_policy_violation_codes(client, auth_manager):
     headers = _admin_headers(client, auth_manager)
-    response = client.post("/auth/users", headers=headers, json={"username": "bob", "password": "123456"})
+    response = client.post("/auth/users", headers=headers, json={"username": "bob", "password": INVALID_PASSWORD})
     assert response.status_code == 400
     data = response.json()
     assert data["code"] == "PASSWORD_POLICY_FAILED"
     assert isinstance(data["violations"], list) and data["violations"]
     known_codes = {
-        "surrounding_whitespace", "min_length", "max_length",
-        "contains_username", "character_classes", "common_password", "same_as_old",
+        "surrounding_whitespace",
+        "min_length",
+        "max_length",
+        "contains_username",
+        "character_classes",
+        "common_password",
+        "same_as_old",
     }
     assert set(data["violations"]) <= known_codes
     assert isinstance(data["error"], str)
@@ -193,7 +209,7 @@ def test_create_user_password_policy_violation_codes(client, auth_manager):
 def test_user_crud_shapes(client, auth_manager):
     headers = _admin_headers(client, auth_manager)
 
-    created = client.post("/auth/users", headers=headers, json={"username": "carol", "password": "Kv3$Ntb6Rd5?"})
+    created = client.post("/auth/users", headers=headers, json={"username": "carol", "password": STRONG_PASSWORD})
     assert created.status_code == 201
     assert created.json() == {
         "user": {"username": "carol", "role": "user", "password_change_required": False},
@@ -211,10 +227,10 @@ def test_user_crud_shapes(client, auth_manager):
 
 def test_admin_reset_allows_direct_login_and_invalidates_tokens(client, auth_manager):
     headers = _admin_headers(client, auth_manager)
-    client.post("/auth/users", headers=headers, json={"username": "dave", "password": "Hf4%Jsc8Qw1!"})
-    dave_token = _login(client, "dave", "Hf4%Jsc8Qw1!").json()["token"]
+    client.post("/auth/users", headers=headers, json={"username": "dave", "password": STRONG_PASSWORD})
+    dave_token = _login(client, "dave", STRONG_PASSWORD).json()["token"]
 
-    reset = client.put("/auth/users/dave", headers=headers, json={"password": "Hf4%Jsc8Qw2!"})
+    reset = client.put("/auth/users/dave", headers=headers, json={"password": STRONG_PASSWORD_2})
     assert reset.status_code == 200
     assert reset.json()["user"]["password_change_required"] is False
     # 管理员重置必须使被重置用户的旧 token 立即失效
@@ -235,7 +251,7 @@ def test_delete_protections_chinese_messages(client, auth_manager):
     assert whitespace_self_delete.json() == {"error": "不能删除自己"}
     assert auth_manager.get_user("admin") is not None
 
-    reset_self = client.put("/auth/users/admin", headers=headers, json={"password": "SelfReset#123"})
+    reset_self = client.put("/auth/users/admin", headers=headers, json={"password": STRONG_PASSWORD_3})
     assert reset_self.status_code == 400
     assert reset_self.json() == {
         "error": "不能通过用户管理重置当前登录用户密码，请使用修改密码入口",
@@ -244,7 +260,7 @@ def test_delete_protections_chinese_messages(client, auth_manager):
     whitespace_reset_self = client.put(
         "/auth/users/%20admin%20",
         headers=headers,
-        json={"password": "SelfReset#123"},
+        json={"password": STRONG_PASSWORD_3},
     )
     assert whitespace_reset_self.status_code == 400
     assert whitespace_reset_self.json() == {

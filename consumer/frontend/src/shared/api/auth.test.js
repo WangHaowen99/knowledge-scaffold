@@ -17,7 +17,10 @@ import {
   synchronizeAuthStateFromStorage,
 } from './auth.js';
 
-const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
+const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  'window',
+);
 test.after(() => {
   if (originalWindowDescriptor) {
     Object.defineProperty(globalThis, 'window', originalWindowDescriptor);
@@ -29,7 +32,10 @@ test.after(() => {
 // Node 24 exposes an experimental global Web Locks implementation. These
 // tests intentionally exercise the storage-restricted fallback used when the
 // browser-owned window has no LockManager, so isolate that environment here.
-const nodeNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+const nodeNavigatorDescriptor = Object.getOwnPropertyDescriptor(
+  globalThis,
+  'navigator',
+);
 if (nodeNavigatorDescriptor?.configurable) {
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
@@ -85,20 +91,30 @@ test('credential locking never enters the origin-wide Web Locks namespace', asyn
 
 test('an expiring access token refreshes before the protected request', async () => {
   installWindow();
-  await setAuthToken(jwtWithExpiry(Math.floor(Date.now() / 1000) - 1), 'old-refresh');
+  await setAuthToken(
+    jwtWithExpiry(Math.floor(Date.now() / 1000) - 1),
+    'old-refresh',
+  );
   let refreshCalls = 0;
   let protectedCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
     if (url === '/auth/refresh') {
       refreshCalls += 1;
-      return new Response(JSON.stringify({ token: 'new-access', refresh_token: 'new-refresh' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({ token: 'new-access', refresh_token: 'new-refresh' }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     protectedCalls += 1;
     return new Response('', {
-      status: new Headers(options.headers).get('Authorization') === 'Bearer new-access' ? 200 : 401,
+      status:
+        new Headers(options.headers).get('Authorization') ===
+        'Bearer new-access' ?
+          200 :
+          401,
     });
   };
 
@@ -111,51 +127,77 @@ test('an expiring access token refreshes before the protected request', async ()
 
 test('concurrent requests with an expiring token share the proactive refresh', async () => {
   installWindow();
-  await setAuthToken(jwtWithExpiry(Math.floor(Date.now() / 1000) + 5), 'old-refresh');
+  await setAuthToken(
+    jwtWithExpiry(Math.floor(Date.now() / 1000) + 5),
+    'old-refresh',
+  );
   let refreshCalls = 0;
   let protectedCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
     if (url === '/auth/refresh') {
       refreshCalls += 1;
       await new Promise((resolve) => setTimeout(resolve, 5));
-      return new Response(JSON.stringify({ token: 'new-access', refresh_token: 'new-refresh' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({ token: 'new-access', refresh_token: 'new-refresh' }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     protectedCalls += 1;
     return new Response('', {
-      status: new Headers(options.headers).get('Authorization') === 'Bearer new-access' ? 200 : 401,
+      status:
+        new Headers(options.headers).get('Authorization') ===
+        'Bearer new-access' ?
+          200 :
+          401,
     });
   };
 
-  const responses = await Promise.all([authFetch('/first'), authFetch('/second')]);
+  const responses = await Promise.all([
+    authFetch('/first'),
+    authFetch('/second'),
+  ]);
 
-  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [200, 200],
+  );
   assert.equal(refreshCalls, 1);
   assert.equal(protectedCalls, 2);
 });
 
 test('an account switch during proactive refresh aborts the original protected request', async () => {
   installWindow();
-  await setAuthToken(jwtWithExpiry(Math.floor(Date.now() / 1000) - 1), 'old-refresh');
+  await setAuthToken(
+    jwtWithExpiry(Math.floor(Date.now() / 1000) - 1),
+    'old-refresh',
+  );
   let releaseRefresh;
-  const refreshReady = new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshReady = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
   let refreshStarted;
-  const started = new Promise((resolve) => { refreshStarted = resolve; });
+  const started = new Promise((resolve) => {
+    refreshStarted = resolve;
+  });
   let protectedCalls = 0;
 
   globalThis.fetch = async (url) => {
     if (url === '/auth/refresh') {
       refreshStarted();
       await refreshReady;
-      return new Response(JSON.stringify({
-        token: 'stale-refreshed-token',
-        refresh_token: 'stale-refreshed-refresh',
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({
+          token: 'stale-refreshed-token',
+          refresh_token: 'stale-refreshed-refresh',
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     protectedCalls += 1;
     return new Response('', { status: 200 });
@@ -177,9 +219,13 @@ test('an account switch discards an old successful response before its body is e
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseRequest;
-  const requestReady = new Promise((resolve) => { releaseRequest = resolve; });
+  const requestReady = new Promise((resolve) => {
+    releaseRequest = resolve;
+  });
   let requestStarted;
-  const started = new Promise((resolve) => { requestStarted = resolve; });
+  const started = new Promise((resolve) => {
+    requestStarted = resolve;
+  });
 
   globalThis.fetch = async (url) => {
     assert.equal(url, '/protected');
@@ -207,18 +253,26 @@ test('an account switch after response headers prevents reading the old response
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseBody;
-  const bodyReady = new Promise((resolve) => { releaseBody = resolve; });
-
-  globalThis.fetch = async () => new Response(new ReadableStream({
-    async pull(controller) {
-      await bodyReady;
-      controller.enqueue(new TextEncoder().encode(JSON.stringify({ secret: 'old-only' })));
-      controller.close();
-    },
-  }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
+  const bodyReady = new Promise((resolve) => {
+    releaseBody = resolve;
   });
+
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        async pull(controller) {
+          await bodyReady;
+          controller.enqueue(
+            new TextEncoder().encode(JSON.stringify({ secret: 'old-only' })),
+          );
+          controller.close();
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
 
   const response = await authFetch('/protected');
   await setAuthToken('new-access', 'new-refresh');
@@ -232,11 +286,15 @@ test('a guarded streaming response stops on an account switch without buffering 
   installWindow();
   await setAuthToken('stream-access', 'stream-refresh');
   let sourceController;
-  globalThis.fetch = async () => new Response(new ReadableStream({
-    start(controller) {
-      sourceController = controller;
-    },
-  }), { status: 200 });
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          sourceController = controller;
+        },
+      }),
+      { status: 200 },
+    );
 
   const response = await authFetch('/agentic/runs/run-1/events');
   const reader = response.body.getReader();
@@ -262,7 +320,9 @@ test('legacy access and refresh keys migrate atomically into the auth envelope',
   target.localStorage.setItem('onto_agent_refresh_token', 'legacy-refresh');
 
   const result = await migrateLegacyAuthState();
-  const envelope = JSON.parse(target.localStorage.getItem(AUTH_STATE_STORAGE_KEY));
+  const envelope = JSON.parse(
+    target.localStorage.getItem(AUTH_STATE_STORAGE_KEY),
+  );
 
   assert.equal(result.migrated, true);
   assert.equal(envelope.accessToken, 'legacy-access');
@@ -292,9 +352,13 @@ test('logout revoke and a new login are serialized before the new credentials co
   await setAuthToken('old-access', 'old-refresh');
   const sequence = [];
   let releaseLogout;
-  const logoutReady = new Promise((resolve) => { releaseLogout = resolve; });
+  const logoutReady = new Promise((resolve) => {
+    releaseLogout = resolve;
+  });
   let logoutStarted;
-  const started = new Promise((resolve) => { logoutStarted = resolve; });
+  const started = new Promise((resolve) => {
+    logoutStarted = resolve;
+  });
 
   globalThis.fetch = async (url) => {
     if (url === '/auth/logout') {
@@ -306,14 +370,17 @@ test('logout revoke and a new login are serialized before the new credentials co
     }
     if (url === '/auth/login') {
       sequence.push('login');
-      return new Response(JSON.stringify({
-        token: 'new-access',
-        refresh_token: 'new-refresh',
-        user: { username: 'same-user' },
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({
+          token: 'new-access',
+          refresh_token: 'new-refresh',
+          user: { username: 'same-user' },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     throw new Error(`Unexpected URL: ${url}`);
   };
@@ -338,19 +405,20 @@ test('a stalled login times out and releases the credential lock for logout', as
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   const nativeSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (callback, delay, ...args) => nativeSetTimeout(
-    callback,
-    delay === 10_000 ? 10 : delay,
-    ...args,
-  );
+  globalThis.setTimeout = (callback, delay, ...args) =>
+    nativeSetTimeout(callback, delay === 10_000 ? 10 : delay, ...args);
   let loginStarted;
-  const started = new Promise((resolve) => { loginStarted = resolve; });
+  const started = new Promise((resolve) => {
+    loginStarted = resolve;
+  });
   globalThis.fetch = async (url) => {
     if (url === '/auth/login') {
       loginStarted();
       return new Promise(() => {});
     }
-    if (url === '/auth/logout') return new Response('', { status: 200 });
+    if (url === '/auth/logout') {
+      return new Response('', { status: 200 });
+    }
     throw new Error(`Unexpected URL: ${url}`);
   };
 
@@ -371,9 +439,13 @@ test('logout preserves a new envelope written by a client that bypasses the lock
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseLogout;
-  const logoutReady = new Promise((resolve) => { releaseLogout = resolve; });
+  const logoutReady = new Promise((resolve) => {
+    releaseLogout = resolve;
+  });
   let logoutStarted;
-  const started = new Promise((resolve) => { logoutStarted = resolve; });
+  const started = new Promise((resolve) => {
+    logoutStarted = resolve;
+  });
   globalThis.fetch = async (url) => {
     assert.equal(url, '/auth/logout');
     logoutStarted();
@@ -383,12 +455,15 @@ test('logout preserves a new envelope written by a client that bypasses the lock
 
   const logout = logoutAuthSession();
   await started;
-  window.localStorage.setItem(AUTH_STATE_STORAGE_KEY, JSON.stringify({
-    accessToken: 'bypass-access',
-    refreshToken: 'bypass-refresh',
-    sessionId: 'bypass-session',
-    tokenVersion: 0,
-  }));
+  window.localStorage.setItem(
+    AUTH_STATE_STORAGE_KEY,
+    JSON.stringify({
+      accessToken: 'bypass-access',
+      refreshToken: 'bypass-refresh',
+      sessionId: 'bypass-session',
+      tokenVersion: 0,
+    }),
+  );
   releaseLogout();
   const result = await logout;
 
@@ -401,9 +476,13 @@ test('logout wins over an unmarked legacy login written while revoke is in fligh
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseLogout;
-  const logoutReady = new Promise((resolve) => { releaseLogout = resolve; });
+  const logoutReady = new Promise((resolve) => {
+    releaseLogout = resolve;
+  });
   let logoutStarted;
-  const started = new Promise((resolve) => { logoutStarted = resolve; });
+  const started = new Promise((resolve) => {
+    logoutStarted = resolve;
+  });
   globalThis.fetch = async () => {
     logoutStarted();
     await logoutReady;
@@ -427,9 +506,13 @@ test('logout wins over a same-session refresh committed while revoke is in fligh
   installWindow();
   const initialState = await setAuthToken('old-access', 'old-refresh');
   let releaseLogout;
-  const logoutReady = new Promise((resolve) => { releaseLogout = resolve; });
+  const logoutReady = new Promise((resolve) => {
+    releaseLogout = resolve;
+  });
   let logoutStarted;
-  const started = new Promise((resolve) => { logoutStarted = resolve; });
+  const started = new Promise((resolve) => {
+    logoutStarted = resolve;
+  });
   globalThis.fetch = async () => {
     logoutStarted();
     await logoutReady;
@@ -438,12 +521,15 @@ test('logout wins over a same-session refresh committed while revoke is in fligh
 
   const logout = logoutAuthSession();
   await started;
-  window.localStorage.setItem(AUTH_STATE_STORAGE_KEY, JSON.stringify({
-    accessToken: 'refreshed-access',
-    refreshToken: 'refreshed-refresh',
-    sessionId: initialState.sessionId,
-    tokenVersion: initialState.tokenVersion + 1,
-  }));
+  window.localStorage.setItem(
+    AUTH_STATE_STORAGE_KEY,
+    JSON.stringify({
+      accessToken: 'refreshed-access',
+      refreshToken: 'refreshed-refresh',
+      sessionId: initialState.sessionId,
+      tokenVersion: initialState.tokenVersion + 1,
+    }),
+  );
   releaseLogout();
   const result = await logout;
 
@@ -455,9 +541,13 @@ test('a direct cross-tab credential switch never refreshes or replays an old POS
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseRequest;
-  const requestReady = new Promise((resolve) => { releaseRequest = resolve; });
+  const requestReady = new Promise((resolve) => {
+    releaseRequest = resolve;
+  });
   let requestStarted;
-  const started = new Promise((resolve) => { requestStarted = resolve; });
+  const started = new Promise((resolve) => {
+    requestStarted = resolve;
+  });
   const authorizations = [];
   let refreshCalls = 0;
 
@@ -472,18 +562,24 @@ test('a direct cross-tab credential switch never refreshes or replays an old POS
     return new Response('', { status: 401 });
   };
 
-  const request = authFetch('/protected', { method: 'POST', body: 'old-account-action' });
+  const request = authFetch('/protected', {
+    method: 'POST',
+    body: 'old-account-action',
+  });
   await started;
   // Simulate another tab writing the shared token keys directly. The managed
   // session/version markers intentionally remain unchanged.
-  window.localStorage.setItem(AUTH_STATE_STORAGE_KEY, JSON.stringify({
-    accessToken: 'new-tab-access',
-    refreshToken: 'new-tab-refresh',
-    sessionId: 'new-tab-session',
-    tokenVersion: 0,
-  }));
-  const synchronized = synchronizeAuthStateFromStorage();
-  assert.equal(synchronized.identityChanged, true);
+  window.localStorage.setItem(
+    AUTH_STATE_STORAGE_KEY,
+    JSON.stringify({
+      accessToken: 'new-tab-access',
+      refreshToken: 'new-tab-refresh',
+      sessionId: 'new-tab-session',
+      tokenVersion: 0,
+    }),
+  );
+  const synchronizedState = synchronizeAuthStateFromStorage();
+  assert.equal(synchronizedState.identityChanged, true);
   releaseRequest();
 
   const response = await request;
@@ -500,10 +596,16 @@ test('a transient proactive refresh failure keeps a still-valid access token usa
   await setAuthToken(accessToken, 'old-refresh');
   let protectedCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
-    if (url === '/auth/refresh') return new Response('', { status: 503 });
+    if (url === '/auth/refresh') {
+      return new Response('', { status: 503 });
+    }
     protectedCalls += 1;
     return new Response('', {
-      status: new Headers(options.headers).get('Authorization') === `Bearer ${accessToken}` ? 200 : 401,
+      status:
+        new Headers(options.headers).get('Authorization') ===
+        `Bearer ${accessToken}` ?
+          200 :
+          401,
     });
   };
 
@@ -521,10 +623,16 @@ test('a proactive refresh network error still attempts the protected request', a
   await setAuthToken(accessToken, 'old-refresh');
   let protectedCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
-    if (url === '/auth/refresh') throw new TypeError('network unavailable');
+    if (url === '/auth/refresh') {
+      throw new TypeError('network unavailable');
+    }
     protectedCalls += 1;
     return new Response('', {
-      status: new Headers(options.headers).get('Authorization') === `Bearer ${accessToken}` ? 200 : 401,
+      status:
+        new Headers(options.headers).get('Authorization') ===
+        `Bearer ${accessToken}` ?
+          200 :
+          401,
     });
   };
 
@@ -545,14 +653,19 @@ test('concurrent 401 responses share one refresh request and retry once', async 
     if (url === '/auth/refresh') {
       refreshCalls += 1;
       await new Promise((resolve) => setTimeout(resolve, 5));
-      return new Response(JSON.stringify({ token: 'new-access', refresh_token: 'new-refresh' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({ token: 'new-access', refresh_token: 'new-refresh' }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     protectedCalls += 1;
     const auth = new Headers(options.headers).get('Authorization');
-    return new Response('', { status: auth === 'Bearer new-access' ? 200 : 401 });
+    return new Response('', {
+      status: auth === 'Bearer new-access' ? 200 : 401,
+    });
   };
 
   const [first, second] = await Promise.all([
@@ -572,10 +685,11 @@ test('failed refresh clears both credentials and emits the logout signal', async
   const target = installWindow();
   await setAuthToken('expired-access', 'expired-refresh');
   let cleared = 0;
-  target.addEventListener(AUTH_CLEARED_EVENT, () => { cleared += 1; });
-  globalThis.fetch = async (url) => (
-    new Response('', { status: url === '/auth/refresh' ? 401 : 401 })
-  );
+  target.addEventListener(AUTH_CLEARED_EVENT, () => {
+    cleared += 1;
+  });
+  globalThis.fetch = async (url) =>
+    new Response('', { status: url === '/auth/refresh' ? 401 : 401 });
 
   const response = await authFetch('/protected');
 
@@ -603,10 +717,13 @@ test('401 retry keeps the workspace captured by the original request', async () 
   globalThis.fetch = async (url, options = {}) => {
     if (url === '/auth/refresh') {
       setCurrentWorkspaceId('workspace-b');
-      return new Response(JSON.stringify({ token: 'new-access', refresh_token: 'new-refresh' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({ token: 'new-access', refresh_token: 'new-refresh' }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     const headers = new Headers(options.headers);
     protectedWorkspaces.push(headers.get('X-Workspace-Id'));
@@ -675,7 +792,10 @@ test('the same account restores its workspace selection after a simulated refres
   refreshedWindow.localStorage = storage;
   const refreshedAuth = await import('./auth.js?workspace-refresh-test');
 
-  assert.equal(refreshedAuth.getCurrentWorkspaceId('account-alpha'), 'remembered-space');
+  assert.equal(
+    refreshedAuth.getCurrentWorkspaceId('account-alpha'),
+    'remembered-space',
+  );
 });
 
 test('workspace selection APIs preserve optional-username compatibility', () => {
@@ -684,25 +804,37 @@ test('workspace selection APIs preserve optional-username compatibility', () => 
   setCurrentWorkspaceId('current-tab-space');
 
   assert.equal(getCurrentWorkspaceId(), 'current-tab-space');
-  assert.equal(target.localStorage.getItem('onto_agent_workspace_id'), 'current-tab-space');
+  assert.equal(
+    target.localStorage.getItem('onto_agent_workspace_id'),
+    'current-tab-space',
+  );
 });
 
 test('logout during refresh cannot restore stale credentials', async () => {
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseRefresh;
-  const refreshReady = new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshReady = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
   let refreshStarted;
-  const started = new Promise((resolve) => { refreshStarted = resolve; });
+  const started = new Promise((resolve) => {
+    refreshStarted = resolve;
+  });
 
   globalThis.fetch = async (url) => {
-    if (url !== '/auth/refresh') return new Response('', { status: 401 });
+    if (url !== '/auth/refresh') {
+      return new Response('', { status: 401 });
+    }
     refreshStarted();
     await refreshReady;
-    return new Response(JSON.stringify({ token: 'stale-access', refresh_token: 'stale-refresh' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({ token: 'stale-access', refresh_token: 'stale-refresh' }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
   };
 
   const request = authFetch('/protected');
@@ -720,21 +852,30 @@ test('a new login during refresh cannot be cleared by the stale 401 request', as
   installWindow();
   await setAuthToken('old-token', 'old-refresh');
   let releaseRefresh;
-  const refreshReady = new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshReady = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
   let refreshStarted;
-  const started = new Promise((resolve) => { refreshStarted = resolve; });
+  const started = new Promise((resolve) => {
+    refreshStarted = resolve;
+  });
   globalThis.fetch = async (url) => {
-    if (url === '/protected') return new Response('', { status: 401 });
+    if (url === '/protected') {
+      return new Response('', { status: 401 });
+    }
     if (url === '/auth/refresh') {
       refreshStarted();
       await refreshReady;
-      return new Response(JSON.stringify({
-        token: 'stale-refreshed-token',
-        refresh_token: 'stale-refreshed-refresh',
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({
+          token: 'stale-refreshed-token',
+          refresh_token: 'stale-refreshed-refresh',
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     throw new Error(`Unexpected URL: ${url}`);
   };
@@ -754,9 +895,13 @@ test('a request from a new login uses its own refresh and survives an older fail
   installWindow();
   await setAuthToken('old-token', 'old-refresh');
   let releaseRefresh;
-  const refreshReady = new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshReady = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
   let refreshStarted;
-  const started = new Promise((resolve) => { refreshStarted = resolve; });
+  const started = new Promise((resolve) => {
+    refreshStarted = resolve;
+  });
   let protectedCalls = 0;
 
   const refreshTokens = [];
@@ -769,18 +914,23 @@ test('a request from a new login uses its own refresh and survives an older fail
         await refreshReady;
         return new Response('', { status: 401 });
       }
-      return new Response(JSON.stringify({
-        token: 'new-refreshed-token',
-        refresh_token: 'new-refreshed-refresh',
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({
+          token: 'new-refreshed-token',
+          refresh_token: 'new-refreshed-refresh',
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
     }
     if (url === '/protected') {
       protectedCalls += 1;
       const authorization = new Headers(options.headers).get('Authorization');
-      return new Response('', { status: authorization === 'Bearer new-refreshed-token' ? 200 : 401 });
+      return new Response('', {
+        status: authorization === 'Bearer new-refreshed-token' ? 200 : 401,
+      });
     }
     throw new Error(`Unexpected URL: ${url}`);
   };
@@ -791,7 +941,10 @@ test('a request from a new login uses its own refresh and survives an older fail
   const newRequest = authFetch('/protected');
   releaseRefresh();
 
-  const [oldResponse, newResponse] = await Promise.all([oldRequest, newRequest]);
+  const [oldResponse, newResponse] = await Promise.all([
+    oldRequest,
+    newRequest,
+  ]);
   assert.equal(oldResponse.status, 401);
   assert.equal(newResponse.status, 200);
   assert.equal(protectedCalls, 3);

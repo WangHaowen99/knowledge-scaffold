@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = REPO_ROOT / "backend"
 PROVIDER_ROOT = BACKEND_ROOT / "shared_capabilities" / "business_data"
@@ -47,9 +46,7 @@ def test_legacy_sandbox_sdk_is_deleted():
 
 
 def test_shared_capability_copy_allowlist_contains_only_required_roots():
-    build_script = (REPO_ROOT / "deploy/build_jiuwenbox.sh").read_text(
-        encoding="utf-8"
-    )
+    build_script = (REPO_ROOT / "deploy/build_jiuwenbox.sh").read_text(encoding="utf-8")
     assert "backend/shared_capabilities/business_data" in build_script
     assert "backend/shared_capabilities/ontology_script_sdk" in build_script
     assert 'cp -R "${PROJECT_ROOT}/backend"' not in build_script

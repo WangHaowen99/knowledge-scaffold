@@ -11,7 +11,6 @@ from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.events import emit_protocol_event
 from ontology.capabilities import is_business_checkpoint_available
 
-
 _STAGE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 _LIFECYCLES = {"started", "completed", "skipped", "failed", "waiting_user"}
 _RENDER_INTENTS = {
@@ -97,7 +96,7 @@ def _build_checkpoint_payload(args: Dict[str, Any], *, tool_call_id: Optional[st
         raise ValueError("stage must be lower snake_case")
     phase = _required_text(args.get("phase"), "phase", 160)
     prefix = "{}.".format(stage)
-    if not phase.startswith(prefix) or phase[len(prefix):] not in _LIFECYCLES:
+    if not phase.startswith(prefix) or phase[len(prefix) :] not in _LIFECYCLES:
         raise ValueError("phase must be <stage>.<supported lifecycle>")
 
     payload: Dict[str, Any] = {
@@ -152,6 +151,7 @@ class ReportBusinessCheckpointTool:
         object.__setattr__(self, "schema", REPORT_BUSINESS_CHECKPOINT_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main"})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
@@ -171,9 +171,7 @@ class ReportBusinessCheckpointTool:
                 workspace_id=context.workspace_id,
             )
         ):
-            return ToolOutcome(
-                content="Error: report_business_checkpoint is disabled for the selected ontology."
-            )
+            return ToolOutcome(content="Error: report_business_checkpoint is disabled for the selected ontology.")
 
         payload = _build_checkpoint_payload(args, tool_call_id=tool_call_id)
         emit_protocol_event(
@@ -184,10 +182,6 @@ class ReportBusinessCheckpointTool:
         )
         lifecycle = payload["phase"].rsplit(".", 1)[-1]
         suffix = (
-            " Call request_user_interaction now and stop automatic progress."
-            if lifecycle == "waiting_user"
-            else ""
+            " Call request_user_interaction now and stop automatic progress." if lifecycle == "waiting_user" else ""
         )
-        return ToolOutcome(
-            content="Business CheckPoint reported: {}.{}".format(payload["phase"], suffix)
-        )
+        return ToolOutcome(content="Business CheckPoint reported: {}.{}".format(payload["phase"], suffix))

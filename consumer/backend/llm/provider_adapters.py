@@ -10,14 +10,17 @@ from typing import Any, Dict
 class ProviderPayloadAdapter:
     """Base adapter for provider-specific request fields."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def extra_body(self, *, enable_reasoning: bool) -> Dict[str, Any]:
         del enable_reasoning
         return {}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def top_level_params(self, *, stream: bool) -> Dict[str, Any]:
         del stream
         return {}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def normalize_usage(self, usage: Dict[str, Any]) -> Dict[str, Any]:
         return dict(usage or {})
 
@@ -32,11 +35,9 @@ class GLMPayloadAdapter(ProviderPayloadAdapter):
                 "thinking": enable_reasoning,
                 "enable_thinking": enable_reasoning,
             },
-            "thinking": {"type": ("enabled" if enable_reasoning else "disabled")},
+            "thinking": {"type": "enabled" if enable_reasoning else "disabled"},
             "reasoning": {"enabled": bool(enable_reasoning)},
-            "provider": {
-                "order": ["z-ai", "siliconflow/fp8", "deepinfra/fp8"]
-            },
+            "provider": {"order": ["z-ai", "siliconflow/fp8", "deepinfra/fp8"]},
         }
 
     def top_level_params(self, *, stream: bool) -> Dict[str, Any]:
@@ -68,7 +69,7 @@ class DeepSeekPayloadAdapter(ProviderPayloadAdapter):
         # but we avoid setting effort by default so users do not get a hidden
         # reasoning-cost policy from provider selection alone.
         return {
-            "thinking": {"type": ("enabled" if enable_reasoning else "disabled")},
+            "thinking": {"type": "enabled" if enable_reasoning else "disabled"},
         }
 
     def top_level_params(self, *, stream: bool) -> Dict[str, Any]:

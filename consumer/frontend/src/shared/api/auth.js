@@ -30,24 +30,35 @@ const readStorage = (key) => {
 };
 
 const normalizeCredentialState = (value) => {
-  if (!value || typeof value !== 'object') return null;
-  const accessToken = typeof value.accessToken === 'string' && value.accessToken
-    ? value.accessToken
-    : null;
-  if (!accessToken) return null;
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const accessToken =
+    typeof value.accessToken === 'string' && value.accessToken ?
+      value.accessToken :
+      null;
+  if (!accessToken) {
+    return null;
+  }
   const parsedVersion = Number(value.tokenVersion);
   return {
     accessToken,
-    refreshToken: typeof value.refreshToken === 'string' && value.refreshToken
-      ? value.refreshToken
-      : null,
+    refreshToken:
+      typeof value.refreshToken === 'string' && value.refreshToken ?
+        value.refreshToken :
+        null,
     sessionId: typeof value.sessionId === 'string' ? value.sessionId : '',
-    tokenVersion: Number.isSafeInteger(parsedVersion) && parsedVersion >= 0 ? parsedVersion : 0,
+    tokenVersion:
+      Number.isSafeInteger(parsedVersion) && parsedVersion >= 0 ?
+        parsedVersion :
+        0,
   };
 };
 
 const parseCredentialEnvelope = (rawValue) => {
-  if (!rawValue) return null;
+  if (!rawValue) {
+    return null;
+  }
   try {
     return normalizeCredentialState(JSON.parse(rawValue));
   } catch {
@@ -57,41 +68,48 @@ const parseCredentialEnvelope = (rawValue) => {
 
 const readLegacyCredentialState = () => {
   const accessToken = readStorage(LEGACY_TOKEN_KEY);
-  if (!accessToken) return null;
+  if (!accessToken) {
+    return null;
+  }
   const parsedVersion = Number(readStorage(LEGACY_TOKEN_VERSION_KEY));
   return {
     accessToken,
     refreshToken: readStorage(LEGACY_REFRESH_TOKEN_KEY),
     sessionId: readStorage(LEGACY_AUTH_SESSION_KEY) || '',
-    tokenVersion: Number.isSafeInteger(parsedVersion) && parsedVersion >= 0 ? parsedVersion : 0,
+    tokenVersion:
+      Number.isSafeInteger(parsedVersion) && parsedVersion >= 0 ?
+        parsedVersion :
+        0,
   };
 };
 
 const readStoredCredentialState = () => {
   const envelope = parseCredentialEnvelope(readStorage(AUTH_STATE_STORAGE_KEY));
-  if (envelope) return envelope;
+  if (envelope) {
+    return envelope;
+  }
 
   // Synchronous compatibility read for the first render. useAuth immediately
   // migrates this pair under the shared credential lock before verification.
   const legacyState = readLegacyCredentialState();
-  return legacyState
-    ? { ...legacyState, sessionId: legacyState.sessionId || 'legacy-session' }
-    : emptyCredentialState();
+  return legacyState ?
+    { ...legacyState, sessionId: legacyState.sessionId || 'legacy-session' } :
+    emptyCredentialState();
 };
 
-const sameCredentialState = (left, right) => Boolean(left && right)
-  && left.accessToken === right.accessToken
-  && left.refreshToken === right.refreshToken
-  && left.sessionId === right.sessionId
-  && left.tokenVersion === right.tokenVersion;
+const sameCredentialState = (left, right) =>
+  Boolean(left && right) &&
+  left.accessToken === right.accessToken &&
+  left.refreshToken === right.refreshToken &&
+  left.sessionId === right.sessionId &&
+  left.tokenVersion === right.tokenVersion;
 
-const sameCredentialIdentity = (left, right) => Boolean(left && right)
-  && Boolean(left.accessToken) === Boolean(right.accessToken)
-  && left.sessionId === right.sessionId
-  && (
-    left.sessionId !== 'legacy-session'
-    || left.accessToken === right.accessToken
-  );
+const sameCredentialIdentity = (left, right) =>
+  Boolean(left && right) &&
+  Boolean(left.accessToken) === Boolean(right.accessToken) &&
+  left.sessionId === right.sessionId &&
+  (left.sessionId !== 'legacy-session' ||
+    left.accessToken === right.accessToken);
 
 const createAuthSessionId = () => {
   const randomId = globalThis.crypto?.randomUUID?.();
@@ -138,14 +156,18 @@ let credentialSnapshot = null;
 let credentialIdentityAbortController = new AbortController();
 
 const setCredentialSnapshot = (state) => {
-  const previousState = credentialSnapshotOwner === window ? credentialSnapshot : null;
+  const previousState =
+    credentialSnapshotOwner === window ? credentialSnapshot : null;
   if (credentialSnapshotOwner !== window) {
     credentialIdentityAbortController.abort();
     credentialIdentityAbortController = new AbortController();
   }
   credentialSnapshotOwner = window;
   credentialSnapshot = { ...state };
-  if (previousState && !sameCredentialIdentity(previousState, credentialSnapshot)) {
+  if (
+    previousState &&
+    !sameCredentialIdentity(previousState, credentialSnapshot)
+  ) {
     credentialIdentityAbortController.abort();
     credentialIdentityAbortController = new AbortController();
   }
@@ -162,47 +184,52 @@ const getCredentialState = () => {
   // login remains quarantined until useAuth handles the storage event and freezes UI.
   const storedState = readStoredCredentialState();
   if (
-    credentialSnapshot.sessionId
-    && storedState.sessionId === credentialSnapshot.sessionId
-    && storedState.tokenVersion > credentialSnapshot.tokenVersion
-  ) return setCredentialSnapshot(storedState);
+    credentialSnapshot.sessionId &&
+    storedState.sessionId === credentialSnapshot.sessionId &&
+    storedState.tokenVersion > credentialSnapshot.tokenVersion
+  ) {
+    return setCredentialSnapshot(storedState);
+  }
   return credentialSnapshot;
 };
 
-export const migrateLegacyAuthState = async () => withCredentialLock(() => {
-  const envelope = parseCredentialEnvelope(readStorage(AUTH_STATE_STORAGE_KEY));
-  const legacyState = readLegacyCredentialState();
-  let nextState = envelope;
+export const migrateLegacyAuthState = async () =>
+  withCredentialLock(() => {
+    const envelope = parseCredentialEnvelope(
+      readStorage(AUTH_STATE_STORAGE_KEY),
+    );
+    const legacyState = readLegacyCredentialState();
+    let nextState = envelope;
 
-  if (
-    legacyState
-    && (
-      !envelope
-      || envelope.accessToken !== legacyState.accessToken
-      || envelope.refreshToken !== legacyState.refreshToken
-    )
-  ) {
-    nextState = {
-      ...legacyState,
-      sessionId: legacyState.sessionId || createAuthSessionId(),
+    const legacyStateChanged =
+      legacyState &&
+      (!envelope ||
+        envelope.accessToken !== legacyState.accessToken ||
+        envelope.refreshToken !== legacyState.refreshToken);
+    if (legacyStateChanged) {
+      nextState = {
+        ...legacyState,
+        sessionId: legacyState.sessionId || createAuthSessionId(),
+      };
+    }
+
+    if (nextState) {
+      // Persisting even an equivalent envelope removes the old two-key shape in
+      // the same lock. An old application tab that writes the legacy keys again
+      // is detected by useAuth's transitional storage listener and re-migrated.
+      if (legacyState) {
+        persistCredentialState(nextState);
+      }
+      setCredentialSnapshot(nextState);
+    } else {
+      setCredentialSnapshot(emptyCredentialState());
+    }
+
+    return {
+      migrated: Boolean(legacyState),
+      state: { ...(nextState || emptyCredentialState()) },
     };
-  }
-
-  if (nextState) {
-    // Persisting even an equivalent envelope removes the old two-key shape in
-    // the same lock. An old application tab that writes the legacy keys again
-    // is detected by useAuth's transitional storage listener and re-migrated.
-    if (legacyState) persistCredentialState(nextState);
-    setCredentialSnapshot(nextState);
-  } else {
-    setCredentialSnapshot(emptyCredentialState());
-  }
-
-  return {
-    migrated: Boolean(legacyState),
-    state: { ...(nextState || emptyCredentialState()) },
-  };
-});
+  });
 
 export const synchronizeAuthStateFromStorage = () => {
   const previousState = { ...getCredentialState() };
@@ -253,46 +280,54 @@ const withAuthRequestTimeout = async (callback, message) => {
     }, AUTH_TRANSACTION_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([callback(controller.signal, timeoutError), timeout]);
+    return await Promise.race([
+      callback(controller.signal, timeoutError),
+      timeout,
+    ]);
   } finally {
     globalThis.clearTimeout(timeoutId);
   }
 };
 
-export const loginWithPassword = async (username, password) => withCredentialLock(
-  () => withAuthRequestTimeout(async (signal, timeoutError) => {
-    const response = await fetch('/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-      signal,
-    });
-    const data = await response.json().catch(() => ({}));
-    if (signal.aborted) throw timeoutError;
-    let committedState = null;
-    if (response.ok && data.token) {
-      committedState = {
-        accessToken: data.token,
-        refreshToken: data.refresh_token || null,
-        sessionId: createAuthSessionId(),
-        tokenVersion: 0,
+export const loginWithPassword = async (username, password) =>
+  withCredentialLock(() =>
+    withAuthRequestTimeout(async (signal, timeoutError) => {
+      const response = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+        signal,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (signal.aborted) {
+        throw timeoutError;
+      }
+      let committedState = null;
+      if (response.ok && data.token) {
+        committedState = {
+          accessToken: data.token,
+          refreshToken: data.refresh_token || null,
+          sessionId: createAuthSessionId(),
+          tokenVersion: 0,
+        };
+        persistCredentialState(committedState);
+        setCredentialSnapshot(committedState);
+      }
+      return {
+        ok: response.ok,
+        status: response.status,
+        data,
+        state: committedState ? { ...committedState } : null,
       };
-      persistCredentialState(committedState);
-      setCredentialSnapshot(committedState);
-    }
-    return {
-      ok: response.ok,
-      status: response.status,
-      data,
-      state: committedState ? { ...committedState } : null,
-    };
-  }, '登录请求超时'),
-);
+    }, '登录请求超时'),
+  );
 
 export const clearAuthToken = async (expectedState = getCredentialState()) => {
   const expected = { ...expectedState };
   const cleared = await withCredentialLock(() => {
-    if (!sameCredentialState(readStoredCredentialState(), expected)) return false;
+    if (!sameCredentialState(readStoredCredentialState(), expected)) {
+      return false;
+    }
     removeStoredCredentialState();
     setCredentialSnapshot(emptyCredentialState());
     return true;
@@ -320,13 +355,21 @@ export const logoutAuthSession = async () => {
 
     if (currentState.refreshToken) {
       try {
-        const response = await withAuthRequestTimeout((signal) => fetch('/auth/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: currentState.refreshToken }),
-          signal,
-        }), '登出请求超时');
-        if (!response.ok) revokeError = new Error(`登出吊销失败（${response.status}）`);
+        const response = await withAuthRequestTimeout(
+          (signal) =>
+            fetch('/auth/logout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                refresh_token: currentState.refreshToken,
+              }),
+              signal,
+            }),
+          '登出请求超时',
+        );
+        if (!response.ok) {
+          revokeError = new Error(`登出吊销失败（${response.status}）`);
+        }
       } catch (error) {
         revokeError = error;
       }
@@ -334,15 +377,13 @@ export const logoutAuthSession = async () => {
 
     const storedAfterRevoke = readStoredCredentialState();
     const legacyAfterRevoke = readLegacyCredentialState();
-    if (
-      legacyAfterRevoke
-      && (
-        legacyAfterRevoke.accessToken !== currentState.accessToken
-        || legacyAfterRevoke.refreshToken !== currentState.refreshToken
-      )
-      && legacyAfterRevoke.sessionId
-      && legacyAfterRevoke.sessionId !== currentState.sessionId
-    ) {
+    const differentLegacySession =
+      legacyAfterRevoke &&
+      (legacyAfterRevoke.accessToken !== currentState.accessToken ||
+        legacyAfterRevoke.refreshToken !== currentState.refreshToken) &&
+      legacyAfterRevoke.sessionId &&
+      legacyAfterRevoke.sessionId !== currentState.sessionId;
+    if (differentLegacySession) {
       // A transitional client that already has an explicit different session
       // marker represents a new login. Unmarked legacy writes are logout-wins
       // and force that old page to reload the current application build.
@@ -354,12 +395,12 @@ export const logoutAuthSession = async () => {
       return;
     }
     if (!sameCredentialState(storedAfterRevoke, currentState)) {
-      if (
-        storedAfterRevoke.accessToken
-        && storedAfterRevoke.sessionId
-        && storedAfterRevoke.sessionId !== 'legacy-session'
-        && storedAfterRevoke.sessionId !== currentState.sessionId
-      ) {
+      const storedSessionChanged =
+        storedAfterRevoke.accessToken &&
+        storedAfterRevoke.sessionId &&
+        storedAfterRevoke.sessionId !== 'legacy-session' &&
+        storedAfterRevoke.sessionId !== currentState.sessionId;
+      if (storedSessionChanged) {
         resultingState = storedAfterRevoke;
         setCredentialSnapshot(resultingState);
         return;
@@ -394,34 +435,42 @@ let workspaceSnapshotOwner = null;
 let workspaceSnapshot = DEFAULT_WORKSPACE_ID;
 let workspaceSnapshotUsername = null;
 
-const normalizeWorkspaceUsername = (username) => (
-  typeof username === 'string' && username.trim() ? username.trim() : null
-);
+const normalizeWorkspaceUsername = (username) =>
+  typeof username === 'string' && username.trim() ? username.trim() : null;
 
-const workspaceStorageKey = (username) => (
-  username ? `${WORKSPACE_KEY}:${encodeURIComponent(username)}` : WORKSPACE_KEY
-);
+const workspaceStorageKey = (username) =>
+  username ? `${WORKSPACE_KEY}:${encodeURIComponent(username)}` : WORKSPACE_KEY;
 
 const ensureWorkspaceSnapshot = (username) => {
   const normalizedUsername = normalizeWorkspaceUsername(username);
-  if (workspaceSnapshotOwner !== window || workspaceSnapshotUsername !== normalizedUsername) {
+  if (
+    workspaceSnapshotOwner !== window ||
+    workspaceSnapshotUsername !== normalizedUsername
+  ) {
     workspaceSnapshotOwner = window;
     workspaceSnapshotUsername = normalizedUsername;
-    workspaceSnapshot = readStorage(workspaceStorageKey(normalizedUsername)) || DEFAULT_WORKSPACE_ID;
+    workspaceSnapshot =
+      readStorage(workspaceStorageKey(normalizedUsername)) ||
+      DEFAULT_WORKSPACE_ID;
   }
   return workspaceSnapshot;
 };
 
 export const getCurrentWorkspaceId = (username) => {
-  if (username !== undefined) return ensureWorkspaceSnapshot(username);
-  if (workspaceSnapshotOwner !== window) return ensureWorkspaceSnapshot(null);
+  if (username !== undefined) {
+    return ensureWorkspaceSnapshot(username);
+  }
+  if (workspaceSnapshotOwner !== window) {
+    return ensureWorkspaceSnapshot(null);
+  }
   return workspaceSnapshot;
 };
 
 export const setCurrentWorkspaceId = (workspaceId, username) => {
-  const normalizedUsername = username === undefined && workspaceSnapshotOwner === window
-    ? workspaceSnapshotUsername
-    : normalizeWorkspaceUsername(username);
+  const normalizedUsername =
+    username === undefined && workspaceSnapshotOwner === window ?
+      workspaceSnapshotUsername :
+      normalizeWorkspaceUsername(username);
   workspaceSnapshotOwner = window;
   workspaceSnapshotUsername = normalizedUsername;
   workspaceSnapshot = workspaceId || DEFAULT_WORKSPACE_ID;
@@ -444,7 +493,9 @@ const doAuthFetch = (
   accessToken = null,
 ) => {
   const headers = new Headers(options.headers || {});
-  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+  if (accessToken) {
+    headers.set('Authorization', `Bearer ${accessToken}`);
+  }
   if (workspaceId) {
     // Headers.set only supports ISO-8859-1, so we encode for safety
     headers.set('X-Workspace-Id', encodeURIComponent(workspaceId));
@@ -466,7 +517,10 @@ class RefreshFailure extends Error {
 let refreshInFlight = null;
 
 const refreshAuthToken = (expectedState) => {
-  if (refreshInFlight && sameCredentialState(refreshInFlight.from, expectedState)) {
+  if (
+    refreshInFlight &&
+    sameCredentialState(refreshInFlight.from, expectedState)
+  ) {
     return refreshInFlight;
   }
 
@@ -494,21 +548,25 @@ const refreshAuthToken = (expectedState) => {
         permanent: [400, 401, 403].includes(response.status),
       });
     }
-    if (!data.token) throw new RefreshFailure('刷新响应缺少登录令牌');
+    if (!data.token) {
+      throw new RefreshFailure('刷新响应缺少登录令牌');
+    }
 
     return withCredentialLock(() => {
       const storedState = readStoredCredentialState();
       if (!sameCredentialState(storedState, expectedState)) {
-        if (
-          expectedState.sessionId
-          && storedState.sessionId === expectedState.sessionId
-          && storedState.tokenVersion > expectedState.tokenVersion
-          && storedState.accessToken
-        ) {
+        const newerStoredState =
+          expectedState.sessionId &&
+          storedState.sessionId === expectedState.sessionId &&
+          storedState.tokenVersion > expectedState.tokenVersion &&
+          storedState.accessToken;
+        if (newerStoredState) {
           setCredentialSnapshot(storedState);
           return storedState;
         }
-        throw new RefreshFailure('登录状态已变化，忽略过期的令牌刷新结果', { stale: true });
+        throw new RefreshFailure('登录状态已变化，忽略过期的令牌刷新结果', {
+          stale: true,
+        });
       }
       const nextState = {
         accessToken: data.token,
@@ -520,22 +578,29 @@ const refreshAuthToken = (expectedState) => {
       setCredentialSnapshot(nextState);
       return nextState;
     });
-  })().then((nextState) => {
-    refreshRequest.to = nextState;
-    refreshRequest.status = 'fulfilled';
-    return nextState;
-  }).catch((error) => {
-    const failure = error instanceof RefreshFailure
-      ? error
-      : new RefreshFailure('刷新登录令牌失败');
-    refreshRequest.error = failure;
-    refreshRequest.status = 'rejected';
-    throw failure;
-  }).finally(() => {
-    if (refreshRequest.status === 'rejected' && refreshInFlight === refreshRequest) {
-      refreshInFlight = null;
-    }
-  });
+  })()
+    .then((nextState) => {
+      refreshRequest.to = nextState;
+      refreshRequest.status = 'fulfilled';
+      return nextState;
+    })
+    .catch((error) => {
+      const failure =
+        error instanceof RefreshFailure ?
+          error :
+          new RefreshFailure('刷新登录令牌失败');
+      refreshRequest.error = failure;
+      refreshRequest.status = 'rejected';
+      throw failure;
+    })
+    .finally(() => {
+      if (
+        refreshRequest.status === 'rejected' &&
+        refreshInFlight === refreshRequest
+      ) {
+        refreshInFlight = null;
+      }
+    });
   refreshInFlight = refreshRequest;
   return refreshRequest;
 };
@@ -546,12 +611,16 @@ const unauthorizedResponse = () => new Response(null, { status: 401 });
 
 const tokenNeedsRefresh = (token, now = Date.now()) => {
   try {
-    const payload = String(token || '').split('.')[1];
-    if (!payload) return false;
+    const [, payload] = String(token || '').split('.');
+    if (!payload) {
+      return false;
+    }
     const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
     const expiresAt = Number(JSON.parse(atob(padded)).exp) * 1000;
-    return Number.isFinite(expiresAt) && expiresAt <= now + TOKEN_REFRESH_SKEW_MS;
+    return (
+      Number.isFinite(expiresAt) && expiresAt <= now + TOKEN_REFRESH_SKEW_MS
+    );
   } catch {
     return false;
   }
@@ -563,19 +632,27 @@ const reconciledCredentialState = (requestState) => {
   // A new login/logout may be committed before this tab receives its storage
   // event. Reject the response at the commit boundary instead of briefly
   // exposing the old account or starting a stale refresh.
-  if (!sameCredentialIdentity(storedState, currentState)) return null;
-  if (sameCredentialState(currentState, requestState)) return currentState;
+  if (!sameCredentialIdentity(storedState, currentState)) {
+    return null;
+  }
+  if (sameCredentialState(currentState, requestState)) {
+    return currentState;
+  }
+  const currentStateIsNewer =
+    requestState.sessionId &&
+    currentState.sessionId === requestState.sessionId &&
+    currentState.tokenVersion > requestState.tokenVersion &&
+    currentState.accessToken;
+  if (currentStateIsNewer) {
+    return currentState;
+  }
   if (
-    requestState.sessionId
-    && currentState.sessionId === requestState.sessionId
-    && currentState.tokenVersion > requestState.tokenVersion
-    && currentState.accessToken
-  ) return currentState;
-  if (
-    refreshInFlight?.status === 'fulfilled'
-    && sameCredentialState(refreshInFlight.from, requestState)
-    && sameCredentialState(refreshInFlight.to, currentState)
-  ) return currentState;
+    refreshInFlight?.status === 'fulfilled' &&
+    sameCredentialState(refreshInFlight.from, requestState) &&
+    sameCredentialState(refreshInFlight.to, currentState)
+  ) {
+    return currentState;
+  }
   return null;
 };
 
@@ -587,20 +664,24 @@ class AuthStateChangedError extends Error {
 }
 
 const guardResponseBody = (response, requestState) => {
-  if (!response.body || !requestState.accessToken || response.status === 0) return response;
+  if (!response.body || !requestState.accessToken || response.status === 0) {
+    return response;
+  }
   const identitySignal = credentialIdentityAbortController.signal;
   let reader = null;
   let finished = false;
 
   const cancelSource = (reason) => {
-    const cancellation = reader
-      ? reader.cancel(reason)
-      : response.body.cancel(reason);
+    const cancellation = reader ?
+      reader.cancel(reason) :
+      response.body.cancel(reason);
     void cancellation.catch(() => undefined);
   };
 
   const rejectStaleBody = (controller) => {
-    if (finished) return;
+    if (finished) {
+      return;
+    }
     finished = true;
     const error = new AuthStateChangedError();
     controller.error(error);
@@ -610,11 +691,17 @@ const guardResponseBody = (response, requestState) => {
   };
 
   const readWithIdentityGuard = () => {
-    if (identitySignal.aborted) return Promise.reject(new AuthStateChangedError());
-    if (!reader) reader = response.body.getReader();
+    if (identitySignal.aborted) {
+      return Promise.reject(new AuthStateChangedError());
+    }
+    if (!reader) {
+      reader = response.body.getReader();
+    }
     return new Promise((resolve, reject) => {
       const onIdentityChange = () => reject(new AuthStateChangedError());
-      identitySignal.addEventListener('abort', onIdentityChange, { once: true });
+      identitySignal.addEventListener('abort', onIdentityChange, {
+        once: true,
+      });
       reader.read().then(
         (chunk) => {
           identitySignal.removeEventListener('abort', onIdentityChange);
@@ -628,41 +715,50 @@ const guardResponseBody = (response, requestState) => {
     });
   };
 
-  const guardedBody = new ReadableStream({
-    async pull(controller) {
-      if (!reconciledCredentialState(requestState)) {
-        rejectStaleBody(controller);
-        return;
-      }
-      try {
-        const chunk = await readWithIdentityGuard();
-        if (finished) return;
+  const guardedBody = new ReadableStream(
+    {
+      async pull(controller) {
         if (!reconciledCredentialState(requestState)) {
           rejectStaleBody(controller);
           return;
         }
-        if (chunk.done) {
+        try {
+          const chunk = await readWithIdentityGuard();
+          if (finished) {
+            return;
+          }
+          if (!reconciledCredentialState(requestState)) {
+            rejectStaleBody(controller);
+            return;
+          }
+          if (chunk.done) {
+            finished = true;
+            controller.close();
+            return;
+          }
+          controller.enqueue(chunk.value);
+        } catch (error) {
+          if (finished) {
+            return;
+          }
+          if (error instanceof AuthStateChangedError) {
+            rejectStaleBody(controller);
+            return;
+          }
           finished = true;
-          controller.close();
-          return;
+          controller.error(error);
         }
-        controller.enqueue(chunk.value);
-      } catch (error) {
-        if (finished) return;
-        if (error instanceof AuthStateChangedError) {
-          rejectStaleBody(controller);
-          return;
-        }
+      },
+      cancel(reason) {
         finished = true;
-        controller.error(error);
-      }
+        if (reader) {
+          return reader.cancel(reason);
+        }
+        return response.body.cancel(reason);
+      },
     },
-    cancel(reason) {
-      finished = true;
-      if (reader) return reader.cancel(reason);
-      return response.body.cancel(reason);
-    },
-  }, { highWaterMark: 0 });
+    { highWaterMark: 0 },
+  );
 
   return new Response(guardedBody, {
     status: response.status,
@@ -672,35 +768,59 @@ const guardResponseBody = (response, requestState) => {
 };
 
 const clearCredentialsIfCurrent = async (expectedState) => {
-  if (!sameCredentialState(getCredentialState(), expectedState)) return false;
+  if (!sameCredentialState(getCredentialState(), expectedState)) {
+    return false;
+  }
   return clearAuthToken(expectedState);
 };
 
-const retryWithCredentialState = async (url, options, workspaceId, retryState) => {
-  if (!sameCredentialState(getCredentialState(), retryState)) return unauthorizedResponse();
-  const response = await doAuthFetch(url, options, workspaceId, retryState.accessToken);
-  return reconciledCredentialState(retryState)
-    ? guardResponseBody(response, retryState)
-    : unauthorizedResponse();
+const retryWithCredentialState = async (
+  url,
+  options,
+  workspaceId,
+  retryState,
+) => {
+  if (!sameCredentialState(getCredentialState(), retryState)) {
+    return unauthorizedResponse();
+  }
+  const response = await doAuthFetch(
+    url,
+    options,
+    workspaceId,
+    retryState.accessToken,
+  );
+  return reconciledCredentialState(retryState) ?
+    guardResponseBody(response, retryState) :
+    unauthorizedResponse();
 };
 
 export const authFetch = async (url, options = {}) => {
   // Both credentials and workspace are captured from this tab's confirmed UI
   // context. Another tab cannot redirect an in-flight write to its account/scope.
   const workspaceId = getCurrentWorkspaceId();
-  const refreshExempt = REFRESH_EXEMPT_PATHS.some((path) => String(url).startsWith(path));
+  const refreshExempt = REFRESH_EXEMPT_PATHS.some((path) =>
+    String(url).startsWith(path),
+  );
   let requestState = { ...getCredentialState() };
 
-  if (!refreshExempt && requestState.refreshToken && tokenNeedsRefresh(requestState.accessToken)) {
+  if (
+    !refreshExempt &&
+    requestState.refreshToken &&
+    tokenNeedsRefresh(requestState.accessToken)
+  ) {
     const proactiveRefresh = refreshAuthToken(requestState);
     try {
       await proactiveRefresh.promise;
       const refreshedState = reconciledCredentialState(requestState);
-      if (!refreshedState) return unauthorizedResponse();
+      if (!refreshedState) {
+        return unauthorizedResponse();
+      }
       requestState = { ...refreshedState };
     } catch (error) {
       const currentState = reconciledCredentialState(requestState);
-      if (!currentState) return unauthorizedResponse();
+      if (!currentState) {
+        return unauthorizedResponse();
+      }
       if (error.permanent) {
         await clearCredentialsIfCurrent(requestState);
         return unauthorizedResponse();
@@ -711,9 +831,16 @@ export const authFetch = async (url, options = {}) => {
     }
   }
 
-  const response = await doAuthFetch(url, options, workspaceId, requestState.accessToken);
+  const response = await doAuthFetch(
+    url,
+    options,
+    workspaceId,
+    requestState.accessToken,
+  );
   const currentState = reconciledCredentialState(requestState);
-  if (!currentState) return unauthorizedResponse();
+  if (!currentState) {
+    return unauthorizedResponse();
+  }
   if (response.status !== 401 || refreshExempt || !requestState.refreshToken) {
     return guardResponseBody(response, requestState);
   }
@@ -733,12 +860,16 @@ export const authFetch = async (url, options = {}) => {
       return unauthorizedResponse();
     }
     const caughtState = reconciledCredentialState(requestState);
-    if (!caughtState) return unauthorizedResponse();
+    if (!caughtState) {
+      return unauthorizedResponse();
+    }
     if (!sameCredentialState(caughtState, requestState)) {
       return retryWithCredentialState(url, options, workspaceId, caughtState);
     }
     return guardResponseBody(response, requestState);
   }
-  if (!retryState) return unauthorizedResponse();
+  if (!retryState) {
+    return unauthorizedResponse();
+  }
   return retryWithCredentialState(url, options, workspaceId, retryState);
 };

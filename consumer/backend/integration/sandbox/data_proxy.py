@@ -13,8 +13,8 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
-
 from utils.logging import get_logger
+
 from .client import JiuwenboxClient
 from .config import SandboxConfig, load_sandbox_config
 from .errors import SandboxUnavailableError, SandboxUnsupportedProviderError
@@ -80,9 +80,7 @@ class DataConnectionSecretManager:
         with self._lock:
             existing_scope = self._run_scope.get(run_key)
             if existing_scope is not None and existing_scope != scope:
-                raise SandboxUnavailableError(
-                    "sandbox run cannot be reused across workspace or ontology"
-                )
+                raise SandboxUnavailableError("sandbox run cannot be reused across workspace or ontology")
             self._run_scope[run_key] = scope
 
         from agent.tools.business_data.resolver import BusinessDataConnectionError
@@ -194,7 +192,8 @@ class DataConnectionSecretManager:
                 )
             except Exception as cleanup_exc:
                 logger.warning(
-                    "Failed to roll back sandbox data proxy after start failure: run_id=%s route=%s connection_id=%s start_error=%s rollback_error=%s",
+                    "Failed to roll back sandbox data proxy after start failure: run_id=%s route=%s connection_id=%s"
+                    " start_error=%s rollback_error=%s",
                     run_id,
                     route_name,
                     connection.id,
@@ -274,9 +273,7 @@ def sandbox_reachable_url(url: str) -> str:
             type=socket.SOCK_STREAM,
         )
     except OSError as exc:
-        raise SandboxUnavailableError(
-            "sandbox network endpoint host could not be resolved"
-        ) from exc
+        raise SandboxUnavailableError("sandbox network endpoint host could not be resolved") from exc
     addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     for family, _type, _protocol, _canonical_name, socket_address in address_info:
         if family not in {socket.AF_INET, socket.AF_INET6} or not socket_address:
@@ -286,9 +283,7 @@ def sandbox_reachable_url(url: str) -> str:
         except ValueError:
             continue
     if not addresses:
-        raise SandboxUnavailableError(
-            "sandbox network endpoint host did not resolve to an IP address"
-        )
+        raise SandboxUnavailableError("sandbox network endpoint host did not resolve to an IP address")
     address = sorted(addresses, key=lambda item: (item.version, item.packed))[0]
     resolved = address.compressed
     address_netloc = "[{}]".format(resolved) if address.version == 6 else resolved
@@ -332,9 +327,9 @@ def _safe_provider_config(
                 endpoint=proxy_url,
                 auth=AuthSpec(type="bearer", token=safe_token) if safe_token else AuthSpec(type="none"),
                 options={
-                "scene": str(config.get("scene") or "").strip(),
-                "timeout_seconds": int(config.get("timeout_seconds") or 600),
-                "max_retries": int(config.get("max_retries") or 3),
+                    "scene": str(config.get("scene") or "").strip(),
+                    "timeout_seconds": int(config.get("timeout_seconds") or 600),
+                    "max_retries": int(config.get("max_retries") or 3),
                 },
             ),
         )
@@ -345,9 +340,7 @@ def _safe_provider_config(
         if requires_auth:
             password = str(config.get("password") or "").strip()
             if not password:
-                raise SandboxUnavailableError(
-                    "MindsDB authentication is enabled but password is not configured"
-                )
+                raise SandboxUnavailableError("MindsDB authentication is enabled but password is not configured")
             _validate_secret_transport(
                 target_endpoint=target_endpoint,
                 secret_value=password,
@@ -361,11 +354,7 @@ def _safe_provider_config(
                 timeout_seconds=int(config.get("timeout_seconds") or 600),
                 skip_cert_verify=bool(config.get("skip_cert_verify", False)),
             )
-        safe_token = (
-            _placeholder_token(connection.id, "mindsdb_auth_token")
-            if auth_token
-            else ""
-        )
+        safe_token = _placeholder_token(connection.id, "mindsdb_auth_token") if auth_token else ""
         return (
             target_endpoint,
             auth_token,
@@ -375,11 +364,11 @@ def _safe_provider_config(
                 endpoint=proxy_url,
                 auth=AuthSpec(type="bearer", token=safe_token) if safe_token else AuthSpec(type="none"),
                 options={
-                "default_database": config.get("default_database") or None,
-                "default_agent_name": config.get("default_agent_name") or "my_agent",
-                "project_name": config.get("project_name") or "mindsdb",
-                "timeout_seconds": int(config.get("timeout_seconds") or 600),
-                "max_retries": int(config.get("max_retries") or 3),
+                    "default_database": config.get("default_database") or None,
+                    "default_agent_name": config.get("default_agent_name") or "my_agent",
+                    "project_name": config.get("project_name") or "mindsdb",
+                    "timeout_seconds": int(config.get("timeout_seconds") or 600),
+                    "max_retries": int(config.get("max_retries") or 3),
                 },
             ),
         )
@@ -411,30 +400,20 @@ def _login_mindsdb(
             verify=not skip_cert_verify,
         )
     except requests.exceptions.RequestException as exc:
-        raise SandboxUnavailableError(
-            "MindsDB authentication request failed"
-        ) from exc
+        raise SandboxUnavailableError("MindsDB authentication request failed") from exc
 
     try:
         if response.status_code != 200:
-            raise SandboxUnavailableError(
-                "MindsDB authentication failed (HTTP {})".format(response.status_code)
-            )
+            raise SandboxUnavailableError("MindsDB authentication failed (HTTP {})".format(response.status_code))
         try:
             payload = response.json()
         except ValueError as exc:
-            raise SandboxUnavailableError(
-                "MindsDB authentication returned invalid JSON"
-            ) from exc
+            raise SandboxUnavailableError("MindsDB authentication returned invalid JSON") from exc
         if not isinstance(payload, dict):
-            raise SandboxUnavailableError(
-                "MindsDB authentication returned an invalid payload"
-            )
+            raise SandboxUnavailableError("MindsDB authentication returned an invalid payload")
         token = str(payload.get("token") or payload.get("access_token") or "").strip()
         if not token:
-            raise SandboxUnavailableError(
-                "MindsDB authentication succeeded without a token"
-            )
+            raise SandboxUnavailableError("MindsDB authentication succeeded without a token")
         return token
     finally:
         response.close()
@@ -466,6 +445,4 @@ def _validate_secret_transport(
         connection.id,
         parsed.hostname or "",
     )
-    raise SandboxUnavailableError(
-        "business data secret injection requires TLS unless plain HTTP is enabled globally"
-    )
+    raise SandboxUnavailableError("business data secret injection requires TLS unless plain HTTP is enabled globally")

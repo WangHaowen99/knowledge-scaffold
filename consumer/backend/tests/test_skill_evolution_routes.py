@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
 from dataclasses import dataclass
-
 
 import api.routes.skill_evolution as se_routes
 from agent.skill_evolution.models import DiffResult, DriftStatus, TaskRecord
 from api.routes.skill_evolution import skill_evolution_router
+from api.testing import TestApplication
 from auth_test_backend import AuthManager
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD
+from fastapi.testclient import TestClient
 
 
 @dataclass
@@ -42,29 +40,47 @@ class _FakeService:
     def list_tasks(self, workspace_id, **kwargs):
         return self._store.list_tasks(workspace_id, **kwargs)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def start(self, **kwargs):
         return TaskRecord(
-            task_id="new1", workspace_id="ws1", ontology_id="onto1", session_id="s",
-            triggered_by="alice", run_id="r", status="submitted", active_version="1.0.0",
-            version_sha="x", created_at="2026-01-01T00:00:00+00:00",
+            task_id="new1",
+            workspace_id="ws1",
+            ontology_id="onto1",
+            session_id="s",
+            triggered_by="alice",
+            run_id="r",
+            status="submitted",
+            active_version="1.0.0",
+            version_sha="x",
+            created_at="2026-01-01T00:00:00+00:00",
             updated_at="2026-01-01T00:00:00+00:00",
         )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compute_diff(self, record):
-        return DiffResult(task_id=record.task_id, ontology_id=record.ontology_id,
-                          change_summary="改动 1 个文件", files=[], is_empty=False)
+        return DiffResult(
+            task_id=record.task_id,
+            ontology_id=record.ontology_id,
+            change_summary="改动 1 个文件",
+            files=[],
+            is_empty=False,
+        )
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def detect_drift(self, record):
         return DriftStatus(drifted=False, reason="clean")
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def approve(self, record, **kwargs):
         record.status = "approved"
         return record
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def reject(self, record, **kwargs):
         record.status = "rejected"
         return record
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def cancel(self, record, **kwargs):
         record.status = "cancelled"
         return record
@@ -77,19 +93,28 @@ class _FakeService:
 
 def _task(task_id="t1", status="completed", triggered_by="alice"):
     return TaskRecord(
-        task_id=task_id, workspace_id="ws1", ontology_id="onto1", ontology_name="测试本体",
-        session_id="s", triggered_by=triggered_by, run_id="r", status=status,
-        active_version="1.0.0", version_sha="x", created_at="2026-01-01T00:00:00+00:00",
-        updated_at="2026-01-01T00:00:00+00:00", change_summary="改动 1 个文件",
+        task_id=task_id,
+        workspace_id="ws1",
+        ontology_id="onto1",
+        ontology_name="测试本体",
+        session_id="s",
+        triggered_by=triggered_by,
+        run_id="r",
+        status=status,
+        active_version="1.0.0",
+        version_sha="x",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        change_summary="改动 1 个文件",
     )
 
 
 def _build_app(tmp_path, monkeypatch, tasks):
     app = TestApplication()
     app.state.services["TESTING"] = True
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    admin = auth_manager.authenticate("admin", "TestBootstrap#2026")
-    admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    admin = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
+    admin = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(skill_evolution_router)
 
@@ -102,6 +127,7 @@ def _build_app(tmp_path, monkeypatch, tasks):
     # /start imports get_request_stores from api.routes; stub it so the
     # route doesn't require a real UserStoreManager.
     import api.routes as app_routes
+
     monkeypatch.setattr(app_routes, "get_request_stores", lambda: (None, object()))
 
     client = TestClient(app)
@@ -112,13 +138,19 @@ def _build_app(tmp_path, monkeypatch, tasks):
     auth_manager.change_password("alice", "UserPass123!", "UserPass456!")
     alice = auth_manager.authenticate("alice", "UserPass456!")
     alice_token = auth_manager.issue_token(alice)
-    return client, {"Authorization": "Bearer {}".format(admin_token)}, {"Authorization": "Bearer {}".format(alice_token)}, fake
+    return (
+        client,
+        {"Authorization": "Bearer {}".format(admin_token)},
+        {"Authorization": "Bearer {}".format(alice_token)},
+        fake,
+    )
 
 
 def test_start_returns_202(tmp_path, monkeypatch):
     client, admin_h, _, _ = _build_app(tmp_path, monkeypatch, [])
-    res = client.post("/agentic/skill-evolution/start",
-                      headers=admin_h, json={"ontology_id": "onto1", "session_id": "s"})
+    res = client.post(
+        "/agentic/skill-evolution/start", headers=admin_h, json={"ontology_id": "onto1", "session_id": "s"}
+    )
     assert res.status_code == 202
     assert res.json()["status"] == "submitted"
 
@@ -155,12 +187,14 @@ def test_non_owner_non_admin_forbidden_on_task(tmp_path, monkeypatch):
 def test_approve_admin_only(tmp_path, monkeypatch):
     client, admin_h, alice_h, _ = _build_app(tmp_path, monkeypatch, [_task()])
     # non-admin → 403
-    res = client.post("/agentic/skill-evolution/tasks/t1/approve",
-                      headers=alice_h, json={"mode": "new_version"})
+    res = client.post("/agentic/skill-evolution/tasks/t1/approve", headers=alice_h, json={"mode": "new_version"})
     assert res.status_code == 403
     # admin → 200
-    res = client.post("/agentic/skill-evolution/tasks/t1/approve",
-                      headers=admin_h, json={"mode": "new_version", "version_name": "evol-1"})
+    res = client.post(
+        "/agentic/skill-evolution/tasks/t1/approve",
+        headers=admin_h,
+        json={"mode": "new_version", "version_name": "evol-1"},
+    )
     assert res.status_code == 200
     assert res.json()["status"] == "approved"
 

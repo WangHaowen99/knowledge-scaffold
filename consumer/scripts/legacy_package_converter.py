@@ -51,6 +51,7 @@ except ImportError:  # pragma: no cover
 #  Data model
 # ===========================================================================
 
+
 @dataclass
 class PackageFormatProfile:
     """Records the detected format of an imported ontology package."""
@@ -58,15 +59,15 @@ class PackageFormatProfile:
     # Signal values
     manifest_kind: str = ""
     has_schema_version: bool = False
-    root_index_file: str = ""          # "index.md" / "ONTOLOGY.md" / ""
+    root_index_file: str = ""  # "index.md" / "ONTOLOGY.md" / ""
     root_index_has_frontmatter: bool = False
-    object_index_file: str = ""        # "objects/index.md" / "objects-list.md" / ""
+    object_index_file: str = ""  # "objects/index.md" / "objects-list.md" / ""
     object_detail_has_frontmatter: bool = False
-    operation_index_file: str = ""     # "operations/index.md" / "operations-list.md" / ""
+    operation_index_file: str = ""  # "operations/index.md" / "operations-list.md" / ""
     has_relations_dir: bool = False
-    relations_list_file: str = ""      # "relations-list.md" / ""
+    relations_list_file: str = ""  # "relations-list.md" / ""
     ontology_subdir: bool = False
-    field_table_header: str = ""       # sample header line for column detection
+    field_table_header: str = ""  # sample header line for column detection
 
     # Derived conversion actions
     conversion_actions: list[str] = field(default_factory=list)
@@ -76,10 +77,10 @@ class PackageFormatProfile:
 class ValidationIssue:
     """A single conformance issue found during validation."""
 
-    level: str           # "error" or "warning"
-    rule: str            # short rule identifier
-    path: str            # file or directory path relevant to the issue
-    message: str         # human-readable description
+    level: str  # "error" or "warning"
+    rule: str  # short rule identifier
+    path: str  # file or directory path relevant to the issue
+    message: str  # human-readable description
 
 
 @dataclass
@@ -87,7 +88,7 @@ class ValidationResult:
     """Aggregate result of validating one package."""
 
     package_root: str
-    is_conformant: bool          # True when zero errors
+    is_conformant: bool  # True when zero errors
     errors: list[ValidationIssue] = field(default_factory=list)
     warnings: list[ValidationIssue] = field(default_factory=list)
 
@@ -131,13 +132,25 @@ _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 # Backend ontology id contract: [A-Za-z0-9._-], must start with alphanumeric.
 _MANIFEST_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
-_PROVIDER_META_FIELDS = frozenset({
-    "source_table", "created_at", "updated_at", "created_by", "updated_by",
-})
+_PROVIDER_META_FIELDS = frozenset(
+    {
+        "source_table",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+    }
+)
 
-_VALID_FIELD_TYPES = frozenset({
-    "string", "number", "boolean", "date", "datetime",
-})
+_VALID_FIELD_TYPES = frozenset(
+    {
+        "string",
+        "number",
+        "boolean",
+        "date",
+        "datetime",
+    }
+)
 
 _NUMERIC_TYPE_ALIASES = frozenset({"float", "int", "integer", "double", "decimal"})
 
@@ -203,11 +216,7 @@ def _parse_frontmatter(path: Path) -> dict:
             key = key.strip()
             value = value.strip()
             if value.startswith("[") and value.endswith("]"):
-                items = [
-                    item.strip().strip("\"'")
-                    for item in value[1:-1].split(",")
-                    if item.strip()
-                ]
+                items = [item.strip().strip("\"'") for item in value[1:-1].split(",") if item.strip()]
                 result[key] = items
             else:
                 result[key] = value.strip("\"'")
@@ -247,7 +256,7 @@ def _strip_frontmatter(text: str) -> tuple[str, dict]:
     if not match:
         return text, {}
     raw = match.group(1)
-    body = text[match.end():]
+    body = text[match.end() :]
     fm: dict = {}
     if yaml is not None:
         try:
@@ -325,6 +334,7 @@ def _save_yaml_file(path: Path, data: dict) -> None:
 #  Content extraction helpers
 # ===========================================================================
 
+
 def _extract_title_from_content(text: str) -> str:
     """Extract a title from the first Markdown heading."""
     for line in text.splitlines():
@@ -376,10 +386,20 @@ def _extract_first_table_header(path: Path) -> str:
 #  Format detection
 # ===========================================================================
 
-KNOWN_MANIFEST_FIELDS = frozenset({
-    "kind", "schema_version", "id", "name", "description",
-    "version", "language", "status", "enabled", "scope",
-})
+KNOWN_MANIFEST_FIELDS = frozenset(
+    {
+        "kind",
+        "schema_version",
+        "id",
+        "name",
+        "description",
+        "version",
+        "language",
+        "status",
+        "enabled",
+        "scope",
+    }
+)
 
 
 def _find_manifest(base: Path) -> Optional[Path]:
@@ -410,9 +430,7 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
 
     if _is_skill_source_package(pkg_root):
         profile = PackageFormatProfile(manifest_kind="skill-source")
-        profile.conversion_actions.append(
-            "source: convert SKILL.md/object/logic layout to v0.1"
-        )
+        profile.conversion_actions.append("source: convert SKILL.md/object/logic layout to v0.1")
         return profile
 
     # The ontology files may live under an ``ontology/`` subdirectory or
@@ -433,20 +451,14 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
     profile.has_schema_version = "schema_version" in manifest
 
     if profile.manifest_kind != "ontology-package":
-        profile.conversion_actions.append(
-            "manifest: fix kind -> ontology-package"
-        )
+        profile.conversion_actions.append("manifest: fix kind -> ontology-package")
     if not profile.has_schema_version:
-        profile.conversion_actions.append(
-            "manifest: add schema_version: 0.1"
-        )
+        profile.conversion_actions.append("manifest: add schema_version: 0.1")
 
     # Preserve unknown manifest fields with x_ prefix.
     extra_fields = sorted(set(manifest.keys()) - KNOWN_MANIFEST_FIELDS)
     if extra_fields:
-        profile.conversion_actions.append(
-            f"manifest: prefix extra fields with x_: {extra_fields}"
-        )
+        profile.conversion_actions.append(f"manifest: prefix extra fields with x_: {extra_fields}")
 
     # -- S3 + S4: root index -----------------------------------------------
     index_md = base / "index.md"
@@ -458,22 +470,14 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
     elif ontology_md.exists():
         profile.root_index_file = "ONTOLOGY.md"
         profile.root_index_has_frontmatter = False
-        profile.conversion_actions.append(
-            "root: rename ONTOLOGY.md -> index.md"
-        )
+        profile.conversion_actions.append("root: rename ONTOLOGY.md -> index.md")
     else:
-        profile.conversion_actions.append(
-            "root: create index.md from manifest description"
-        )
+        profile.conversion_actions.append("root: create index.md from manifest description")
 
     if profile.root_index_file == "index.md" and not profile.root_index_has_frontmatter:
-        profile.conversion_actions.append(
-            "root: add frontmatter (resource: root, key: root, title)"
-        )
+        profile.conversion_actions.append("root: add frontmatter (resource: root, key: root, title)")
     if profile.root_index_file == "ONTOLOGY.md":
-        profile.conversion_actions.append(
-            "root: add frontmatter (resource: root, key: root, title)"
-        )
+        profile.conversion_actions.append("root: add frontmatter (resource: root, key: root, title)")
 
     # -- S5 + S6 + S10: object index, detail, field table ------------------
     obj_index = base / "objects" / "index.md"
@@ -483,16 +487,10 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
         profile.object_index_file = "objects/index.md"
     elif obj_list.exists():
         profile.object_index_file = "objects-list.md"
-        profile.conversion_actions.append(
-            "objects: rename objects-list.md -> objects/index.md"
-        )
-        profile.conversion_actions.append(
-            "objects: add frontmatter (resource: object_index, key: objects)"
-        )
+        profile.conversion_actions.append("objects: rename objects-list.md -> objects/index.md")
+        profile.conversion_actions.append("objects: add frontmatter (resource: object_index, key: objects)")
     else:
-        profile.conversion_actions.append(
-            "objects: create objects/index.md"
-        )
+        profile.conversion_actions.append("objects: create objects/index.md")
 
     # Probe the first object detail file.
     objects_dir = base / "objects"
@@ -506,9 +504,7 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
             profile.object_detail_has_frontmatter = _has_frontmatter(first_obj)
             profile.field_table_header = _extract_first_table_header(first_obj)
             if not profile.object_detail_has_frontmatter:
-                profile.conversion_actions.append(
-                    "objects: add frontmatter to all object detail files"
-                )
+                profile.conversion_actions.append("objects: add frontmatter to all object detail files")
 
     # -- S7: operation index -----------------------------------------------
     op_index = base / "operations" / "index.md"
@@ -518,13 +514,8 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
         profile.operation_index_file = "operations/index.md"
     elif op_list.exists():
         profile.operation_index_file = "operations-list.md"
-        profile.conversion_actions.append(
-            "operations: rename operations-list.md -> operations/index.md"
-        )
-        profile.conversion_actions.append(
-            "operations: add frontmatter "
-            "(resource: operation_index, key: operations)"
-        )
+        profile.conversion_actions.append("operations: rename operations-list.md -> operations/index.md")
+        profile.conversion_actions.append("operations: add frontmatter (resource: operation_index, key: operations)")
 
     # -- S8: relations ------------------------------------------------------
     relations_dir = base / "relations"
@@ -534,20 +525,15 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
         profile.has_relations_dir = True
         profile.relations_list_file = "relations-list.md" if relations_list.exists() else ""
         profile.conversion_actions.append(
-            "relations: remove non-standard relations/ directory "
-            "(downgrade to object details deferred)"
+            "relations: remove non-standard relations/ directory (downgrade to object details deferred)"
         )
     if relations_list.exists():
         profile.relations_list_file = "relations-list.md"
-        profile.conversion_actions.append(
-            "relations: remove non-standard relations-list.md"
-        )
+        profile.conversion_actions.append("relations: remove non-standard relations-list.md")
 
     # -- S9: path -----------------------------------------------------------
     if profile.ontology_subdir:
-        profile.conversion_actions.append(
-            "path: flatten ontology/ subdirectory to package root"
-        )
+        profile.conversion_actions.append("path: flatten ontology/ subdirectory to package root")
 
     return profile
 
@@ -555,6 +541,7 @@ def detect_package_format(pkg_root: Path) -> PackageFormatProfile:
 # ===========================================================================
 #  Conformance validation
 # ===========================================================================
+
 
 def _resolve_base(pkg_root: Path) -> Path:
     """Return the directory that contains manifest.yaml.
@@ -590,10 +577,14 @@ def _check_manifest(base: Path, result: ValidationResult) -> None:
     """Validate manifest.yaml fields."""
     manifest_path = base / "manifest.yaml"
     if not manifest_path.exists():
-        result.errors.append(ValidationIssue(
-            "error", "manifest.exists", str(manifest_path),
-            "manifest.yaml not found",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "manifest.exists",
+                str(manifest_path),
+                "manifest.yaml not found",
+            )
+        )
         return
 
     manifest = _load_yaml_file(manifest_path)
@@ -601,99 +592,145 @@ def _check_manifest(base: Path, result: ValidationResult) -> None:
     # kind
     kind = manifest.get("kind", "")
     if kind != "ontology-package":
-        result.errors.append(ValidationIssue(
-            "error", "manifest.kind", str(manifest_path),
-            f"kind must be 'ontology-package', got '{kind}'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "manifest.kind",
+                str(manifest_path),
+                f"kind must be 'ontology-package', got '{kind}'",
+            )
+        )
 
     # schema_version
     sv = manifest.get("schema_version")
     if sv is None:
-        result.errors.append(ValidationIssue(
-            "error", "manifest.schema_version", str(manifest_path),
-            "schema_version is missing, expected '0.1'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "manifest.schema_version",
+                str(manifest_path),
+                "schema_version is missing, expected '0.1'",
+            )
+        )
     elif str(sv) != "0.1":
-        result.errors.append(ValidationIssue(
-            "error", "manifest.schema_version", str(manifest_path),
-            f"schema_version must be '0.1', got '{sv}'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "manifest.schema_version",
+                str(manifest_path),
+                f"schema_version must be '0.1', got '{sv}'",
+            )
+        )
 
     # required non-empty fields
     for field_name in ("id", "name", "description", "version"):
         value = manifest.get(field_name)
         if value is None or str(value).strip() == "":
-            result.errors.append(ValidationIssue(
-                "error", f"manifest.{field_name}", str(manifest_path),
-                f"{field_name} is missing or empty",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    f"manifest.{field_name}",
+                    str(manifest_path),
+                    f"{field_name} is missing or empty",
+                )
+            )
 
     # id format: only [A-Za-z0-9._-], must start with alphanumeric.
     raw_id = str(manifest.get("id", "")).strip()
     if raw_id and not _MANIFEST_ID_RE.match(raw_id):
         sanitized = re.sub(r"[^A-Za-z0-9._-]", "-", raw_id)
         sanitized = re.sub(r"\A[^A-Za-z0-9]+", "", sanitized) or "package"
-        result.errors.append(ValidationIssue(
-            "error", "manifest.id_format", str(manifest_path),
-            f"id '{raw_id}' 不合法，仅支持字母数字下划线点号短横线，且需字母或数字开头；"
-            f"建议改为 '{sanitized}'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "manifest.id_format",
+                str(manifest_path),
+                f"id '{raw_id}' 不合法，仅支持字母数字下划线点号短横线，且需字母或数字开头；建议改为 '{sanitized}'",
+            )
+        )
 
 
 def _check_root_index(base: Path, result: ValidationResult) -> None:
     """Validate root index.md."""
     index_path = base / "index.md"
     if not index_path.exists():
-        result.errors.append(ValidationIssue(
-            "error", "root_index.exists", str(index_path),
-            "index.md not found at package root",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "root_index.exists",
+                str(index_path),
+                "index.md not found at package root",
+            )
+        )
         return
 
     if not _has_frontmatter(index_path):
-        result.errors.append(ValidationIssue(
-            "error", "root_index.frontmatter", str(index_path),
-            "index.md must have YAML frontmatter",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "root_index.frontmatter",
+                str(index_path),
+                "index.md must have YAML frontmatter",
+            )
+        )
         return
 
     fm = _parse_frontmatter(index_path)
     if fm.get("resource") != "root":
-        result.errors.append(ValidationIssue(
-            "error", "root_index.resource", str(index_path),
-            f"frontmatter resource must be 'root', got '{fm.get('resource')}'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "root_index.resource",
+                str(index_path),
+                f"frontmatter resource must be 'root', got '{fm.get('resource')}'",
+            )
+        )
     if fm.get("key") != "root":
-        result.errors.append(ValidationIssue(
-            "error", "root_index.key", str(index_path),
-            f"frontmatter key must be 'root', got '{fm.get('key')}'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "root_index.key",
+                str(index_path),
+                f"frontmatter key must be 'root', got '{fm.get('key')}'",
+            )
+        )
 
 
 def _check_object_index(base: Path, result: ValidationResult) -> None:
     """Validate objects/index.md."""
     index_path = base / "objects" / "index.md"
     if not index_path.exists():
-        result.errors.append(ValidationIssue(
-            "error", "object_index.exists", str(index_path),
-            "objects/index.md not found",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "object_index.exists",
+                str(index_path),
+                "objects/index.md not found",
+            )
+        )
         return
 
     if not _has_frontmatter(index_path):
-        result.errors.append(ValidationIssue(
-            "error", "object_index.frontmatter", str(index_path),
-            "objects/index.md must have YAML frontmatter",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "object_index.frontmatter",
+                str(index_path),
+                "objects/index.md must have YAML frontmatter",
+            )
+        )
         return
 
     fm = _parse_frontmatter(index_path)
     if fm.get("resource") != "object_index":
-        result.errors.append(ValidationIssue(
-            "error", "object_index.resource", str(index_path),
-            f"frontmatter resource must be 'object_index', "
-            f"got '{fm.get('resource')}'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "object_index.resource",
+                str(index_path),
+                f"frontmatter resource must be 'object_index', got '{fm.get('resource')}'",
+            )
+        )
 
 
 def _check_object_details(base: Path, result: ValidationResult) -> None:
@@ -707,53 +744,73 @@ def _check_object_details(base: Path, result: ValidationResult) -> None:
             continue
 
         if not _has_frontmatter(md_file):
-            result.errors.append(ValidationIssue(
-                "error", "object_detail.frontmatter", str(md_file),
-                f"{md_file.name} must have YAML frontmatter "
-                f"(resource: object, key, title)",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "object_detail.frontmatter",
+                    str(md_file),
+                    f"{md_file.name} must have YAML frontmatter (resource: object, key, title)",
+                )
+            )
             continue
 
         fm = _parse_frontmatter(md_file)
         for required in ("resource", "key", "title"):
             if not fm.get(required):
-                result.errors.append(ValidationIssue(
-                    "error", f"object_detail.{required}", str(md_file),
-                    f"{md_file.name} frontmatter missing required field: "
-                    f"{required}",
-                ))
+                result.errors.append(
+                    ValidationIssue(
+                        "error",
+                        f"object_detail.{required}",
+                        str(md_file),
+                        f"{md_file.name} frontmatter missing required field: {required}",
+                    )
+                )
         if fm.get("resource") and fm.get("resource") != "object":
-            result.errors.append(ValidationIssue(
-                "error", "object_detail.resource", str(md_file),
-                f"{md_file.name} resource must be 'object', "
-                f"got '{fm.get('resource')}'",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "object_detail.resource",
+                    str(md_file),
+                    f"{md_file.name} resource must be 'object', got '{fm.get('resource')}'",
+                )
+            )
 
 
 def _check_operation_index(base: Path, result: ValidationResult) -> None:
     """Validate operations/index.md."""
     index_path = base / "operations" / "index.md"
     if not index_path.exists():
-        result.errors.append(ValidationIssue(
-            "error", "operation_index.exists", str(index_path),
-            "operations/index.md not found",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "operation_index.exists",
+                str(index_path),
+                "operations/index.md not found",
+            )
+        )
         return
 
     if not _has_frontmatter(index_path):
-        result.errors.append(ValidationIssue(
-            "error", "operation_index.frontmatter", str(index_path),
-            "operations/index.md must have YAML frontmatter",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "operation_index.frontmatter",
+                str(index_path),
+                "operations/index.md must have YAML frontmatter",
+            )
+        )
         return
 
     fm = _parse_frontmatter(index_path)
     if fm.get("resource") != "operation_index":
-        result.errors.append(ValidationIssue(
-            "error", "operation_index.resource", str(index_path),
-            f"frontmatter resource must be 'operation_index', "
-            f"got '{fm.get('resource')}'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "operation_index.resource",
+                str(index_path),
+                f"frontmatter resource must be 'operation_index', got '{fm.get('resource')}'",
+            )
+        )
 
 
 def _check_operation_details(base: Path, result: ValidationResult) -> None:
@@ -770,54 +827,71 @@ def _check_operation_details(base: Path, result: ValidationResult) -> None:
             continue
 
         if not _has_frontmatter(md_file):
-            result.errors.append(ValidationIssue(
-                "error", "operation_detail.frontmatter", str(md_file),
-                f"{md_file.name} must have YAML frontmatter "
-                f"(resource: operation, key, title, uses.objects)",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "operation_detail.frontmatter",
+                    str(md_file),
+                    f"{md_file.name} must have YAML frontmatter (resource: operation, key, title, uses.objects)",
+                )
+            )
             continue
 
         fm = _parse_frontmatter(md_file)
         for required in ("resource", "key", "title"):
             if not fm.get(required):
-                result.errors.append(ValidationIssue(
-                    "error", f"operation_detail.{required}", str(md_file),
-                    f"{md_file.name} frontmatter missing required field: "
-                    f"{required}",
-                ))
+                result.errors.append(
+                    ValidationIssue(
+                        "error",
+                        f"operation_detail.{required}",
+                        str(md_file),
+                        f"{md_file.name} frontmatter missing required field: {required}",
+                    )
+                )
         if fm.get("resource") and fm.get("resource") != "operation":
-            result.errors.append(ValidationIssue(
-                "error", "operation_detail.resource", str(md_file),
-                f"{md_file.name} resource must be 'operation', "
-                f"got '{fm.get('resource')}'",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "operation_detail.resource",
+                    str(md_file),
+                    f"{md_file.name} resource must be 'operation', got '{fm.get('resource')}'",
+                )
+            )
 
         # uses.objects presence
         uses = fm.get("uses")
         if not isinstance(uses, dict) or "objects" not in uses:
-            result.errors.append(ValidationIssue(
-                "error", "operation_detail.uses_objects", str(md_file),
-                f"{md_file.name} must declare uses.objects "
-                f"(use empty array [] if no objects)",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "operation_detail.uses_objects",
+                    str(md_file),
+                    f"{md_file.name} must declare uses.objects (use empty array [] if no objects)",
+                )
+            )
         else:
             uses_objects = uses.get("objects", [])
             if not isinstance(uses_objects, list):
-                result.errors.append(ValidationIssue(
-                    "error", "operation_detail.uses_objects_type",
-                    str(md_file),
-                    f"{md_file.name} uses.objects must be a list",
-                ))
+                result.errors.append(
+                    ValidationIssue(
+                        "error",
+                        "operation_detail.uses_objects_type",
+                        str(md_file),
+                        f"{md_file.name} uses.objects must be a list",
+                    )
+                )
             else:
                 # Warning: referenced object keys should exist.
                 for ref_key in uses_objects:
                     if ref_key not in object_keys:
-                        result.warnings.append(ValidationIssue(
-                            "warning", "operation_detail.uses_objects_ref",
-                            str(md_file),
-                            f"{md_file.name} uses.objects references "
-                            f"'{ref_key}' which is not found in objects/",
-                        ))
+                        result.warnings.append(
+                            ValidationIssue(
+                                "warning",
+                                "operation_detail.uses_objects_ref",
+                                str(md_file),
+                                f"{md_file.name} uses.objects references '{ref_key}' which is not found in objects/",
+                            )
+                        )
 
 
 def _check_relations(base: Path, result: ValidationResult) -> None:
@@ -830,17 +904,25 @@ def _check_relations(base: Path, result: ValidationResult) -> None:
     relations_list = base / "relations-list.md"
 
     if relations_dir.is_dir():
-        result.warnings.append(ValidationIssue(
-            "warning", "relations.nonstandard", str(relations_dir),
-            "relations/ directory is not part of the v0.1 ontology-package "
-            "format. Downgrade to object detail tables is deferred.",
-        ))
+        result.warnings.append(
+            ValidationIssue(
+                "warning",
+                "relations.nonstandard",
+                str(relations_dir),
+                "relations/ directory is not part of the v0.1 ontology-package "
+                "format. Downgrade to object detail tables is deferred.",
+            )
+        )
     if relations_list.exists():
-        result.warnings.append(ValidationIssue(
-            "warning", "relations.nonstandard_list", str(relations_list),
-            "relations-list.md is not part of the v0.1 ontology-package "
-            "format. Downgrade to object detail tables is deferred.",
-        ))
+        result.warnings.append(
+            ValidationIssue(
+                "warning",
+                "relations.nonstandard_list",
+                str(relations_list),
+                "relations-list.md is not part of the v0.1 ontology-package "
+                "format. Downgrade to object detail tables is deferred.",
+            )
+        )
 
 
 @dataclass
@@ -864,116 +946,159 @@ def _check_mapping_entry(
     carry valid, consistent mappings.
     """
     if not isinstance(entry, dict):
-        result.errors.append(ValidationIssue(
-            "error", "mappings.entry_structure", str(ctx.mapping_path),
-            f"{ctx.category}.{ctx.resource_key} must be a JSON object.",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "mappings.entry_structure",
+                str(ctx.mapping_path),
+                f"{ctx.category}.{ctx.resource_key} must be a JSON object.",
+            )
+        )
         return
 
     fields = entry.get("fields")
     if not isinstance(fields, dict):
-        result.errors.append(ValidationIssue(
-            "error", "mappings.fields_type", str(ctx.mapping_path),
-            f"{ctx.category}.{ctx.resource_key}.fields must be a JSON object.",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "mappings.fields_type",
+                str(ctx.mapping_path),
+                f"{ctx.category}.{ctx.resource_key}.fields must be a JSON object.",
+            )
+        )
         return
 
     provider_alias = str(entry.get("provider_alias") or "").strip()
     if not provider_alias and not ctx.default_alias:
-        result.errors.append(ValidationIssue(
-            "error", "mappings.provider_alias", str(ctx.mapping_path),
-            f"{ctx.category}.{ctx.resource_key} requires provider_alias or a "
-            f"default_provider_alias.",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "mappings.provider_alias",
+                str(ctx.mapping_path),
+                f"{ctx.category}.{ctx.resource_key} requires provider_alias or a default_provider_alias.",
+            )
+        )
 
     resource = str(entry.get("resource") or "").strip()
     if not resource:
-        result.errors.append(ValidationIssue(
-            "error", "mappings.resource", str(ctx.mapping_path),
-            f"{ctx.category}.{ctx.resource_key}.resource is required.",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "mappings.resource",
+                str(ctx.mapping_path),
+                f"{ctx.category}.{ctx.resource_key}.resource is required.",
+            )
+        )
 
     primary_key = entry.get("primary_key")
     if isinstance(primary_key, list):
         for pk_field in primary_key:
             pk = str(pk_field or "").strip()
             if pk and pk not in fields:
-                result.errors.append(ValidationIssue(
-                    "error", "mappings.primary_key_ref", str(ctx.mapping_path),
-                    f"{ctx.category}.{ctx.resource_key}.primary_key references "
-                    f"'{pk}' which is not in fields.",
-                ))
+                result.errors.append(
+                    ValidationIssue(
+                        "error",
+                        "mappings.primary_key_ref",
+                        str(ctx.mapping_path),
+                        f"{ctx.category}.{ctx.resource_key}.primary_key references '{pk}' which is not in fields.",
+                    )
+                )
 
     for field_key, field_def in fields.items():
         path_prefix = f"{ctx.category}.{ctx.resource_key}.fields.{field_key}"
         if not isinstance(field_def, dict):
-            result.errors.append(ValidationIssue(
-                "error", "mappings.field_structure", str(ctx.mapping_path),
-                f"{path_prefix} must be a JSON object.",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "mappings.field_structure",
+                    str(ctx.mapping_path),
+                    f"{path_prefix} must be a JSON object.",
+                )
+            )
             continue
 
         source = str(field_def.get("source") or "").strip()
         if not source:
-            result.errors.append(ValidationIssue(
-                "error", "mappings.field_source", str(ctx.mapping_path),
-                f"{path_prefix}.source is required.",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "mappings.field_source",
+                    str(ctx.mapping_path),
+                    f"{path_prefix}.source is required.",
+                )
+            )
 
         field_type = field_def.get("type")
         normalized_type = _normalize_field_type(field_type)
         if field_type and normalized_type is None:
-            result.errors.append(ValidationIssue(
-                "error", "mappings.field_type", str(ctx.mapping_path),
-                f"{path_prefix}.type '{field_type}' is not a valid type.",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "mappings.field_type",
+                    str(ctx.mapping_path),
+                    f"{path_prefix}.type '{field_type}' is not a valid type.",
+                )
+            )
 
         for flag in ("readable", "required"):
             value = field_def.get(flag)
             if value is not None and not isinstance(value, bool):
-                result.errors.append(ValidationIssue(
-                    "error", f"mappings.field_{flag}", str(ctx.mapping_path),
-                    f"{path_prefix}.{flag} must be a boolean.",
-                ))
+                result.errors.append(
+                    ValidationIssue(
+                        "error",
+                        f"mappings.field_{flag}",
+                        str(ctx.mapping_path),
+                        f"{path_prefix}.{flag} must be a boolean.",
+                    )
+                )
 
         if field_key in _PROVIDER_META_FIELDS:
-            result.errors.append(ValidationIssue(
-                "error", "mappings.field_metadata", str(ctx.mapping_path),
-                f"{path_prefix} is a provider metadata field and should "
-                f"not be in fields.",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "mappings.field_metadata",
+                    str(ctx.mapping_path),
+                    f"{path_prefix} is a provider metadata field and should not be in fields.",
+                )
+            )
 
     policy = entry.get("policy")
     if isinstance(policy, dict):
         read_only = policy.get("read_only")
         if read_only is not None and not isinstance(read_only, bool):
-            result.errors.append(ValidationIssue(
-                "error", "mappings.policy_read_only", str(ctx.mapping_path),
-                f"{ctx.category}.{ctx.resource_key}.policy.read_only must be a boolean.",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "mappings.policy_read_only",
+                    str(ctx.mapping_path),
+                    f"{ctx.category}.{ctx.resource_key}.policy.read_only must be a boolean.",
+                )
+            )
         max_rows = policy.get("max_rows")
-        max_rows_is_positive_int = (
-            isinstance(max_rows, int)
-            and not isinstance(max_rows, bool)
-            and max_rows > 0
-        )
+        max_rows_is_positive_int = isinstance(max_rows, int) and not isinstance(max_rows, bool) and max_rows > 0
         if max_rows is not None and not max_rows_is_positive_int:
-            result.errors.append(ValidationIssue(
-                "error", "mappings.policy_max_rows", str(ctx.mapping_path),
-                f"{ctx.category}.{ctx.resource_key}.policy.max_rows must be a "
-                f"positive integer.",
-            ))
+            result.errors.append(
+                ValidationIssue(
+                    "error",
+                    "mappings.policy_max_rows",
+                    str(ctx.mapping_path),
+                    f"{ctx.category}.{ctx.resource_key}.policy.max_rows must be a positive integer.",
+                )
+            )
         require_user_filter = policy.get("require_user_filter")
         if isinstance(require_user_filter, list):
             for uf_field in require_user_filter:
                 uf = str(uf_field or "").strip()
                 if uf and uf not in fields:
-                    result.errors.append(ValidationIssue(
-                        "error", "mappings.require_user_filter_ref",
-                        str(ctx.mapping_path),
-                        f"{ctx.category}.{ctx.resource_key}.policy.require_user_filter "
-                        f"references '{uf}' which is not in fields.",
-                    ))
+                    result.errors.append(
+                        ValidationIssue(
+                            "error",
+                            "mappings.require_user_filter_ref",
+                            str(ctx.mapping_path),
+                            f"{ctx.category}.{ctx.resource_key}.policy.require_user_filter "
+                            f"references '{uf}' which is not in fields.",
+                        )
+                    )
 
 
 def _check_mappings(base: Path, result: ValidationResult) -> None:
@@ -985,32 +1110,48 @@ def _check_mappings(base: Path, result: ValidationResult) -> None:
     try:
         mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        result.errors.append(ValidationIssue(
-            "error", "mappings.json", str(mapping_path),
-            f"object-data-mappings.json is not valid JSON: {exc}",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "mappings.json",
+                str(mapping_path),
+                f"object-data-mappings.json is not valid JSON: {exc}",
+            )
+        )
         return
 
     if not isinstance(mapping, dict):
-        result.errors.append(ValidationIssue(
-            "error", "mappings.structure", str(mapping_path),
-            "object-data-mappings.json must contain a JSON object",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "mappings.structure",
+                str(mapping_path),
+                "object-data-mappings.json must contain a JSON object",
+            )
+        )
         return
 
     sv = mapping.get("schema_version")
     if sv != "0.1":
-        result.errors.append(ValidationIssue(
-            "error", "mappings.schema_version", str(mapping_path),
-            f"schema_version must be '0.1', got '{sv}'",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "mappings.schema_version",
+                str(mapping_path),
+                f"schema_version must be '0.1', got '{sv}'",
+            )
+        )
 
     default_alias = str(mapping.get("default_provider_alias") or "").strip()
     if "default_provider_alias" in mapping and not default_alias:
-        result.errors.append(ValidationIssue(
-            "error", "mappings.default_provider_alias", str(mapping_path),
-            "default_provider_alias must be a non-empty string.",
-        ))
+        result.errors.append(
+            ValidationIssue(
+                "error",
+                "mappings.default_provider_alias",
+                str(mapping_path),
+                "default_provider_alias must be a non-empty string.",
+            )
+        )
 
     for category in ("objects", "metrics", "rules"):
         items = mapping.get(category)
@@ -1031,11 +1172,14 @@ def _check_mappings(base: Path, result: ValidationResult) -> None:
     if isinstance(mapping_objects, dict):
         for mkey in mapping_objects:
             if mkey not in object_keys:
-                result.warnings.append(ValidationIssue(
-                    "warning", "mappings.key_consistency", str(mapping_path),
-                    f"mapping object key '{mkey}' has no corresponding "
-                    f"object in objects/",
-                ))
+                result.warnings.append(
+                    ValidationIssue(
+                        "warning",
+                        "mappings.key_consistency",
+                        str(mapping_path),
+                        f"mapping object key '{mkey}' has no corresponding object in objects/",
+                    )
+                )
 
 
 def _check_index_detail_consistency(base: Path, result: ValidationResult) -> None:
@@ -1061,15 +1205,11 @@ def _check_index_detail_consistency(base: Path, result: ValidationResult) -> Non
         # Look for patterns like `objects/Foo.md` or `| Foo |` table rows.
         # We check file links and table cells that look like keys.
         detail_dir = base / subdir
-        actual_files = {
-            f.name for f in detail_dir.glob("*.md") if f.name != "index.md"
-        }
+        actual_files = {f.name for f in detail_dir.glob("*.md") if f.name != "index.md"}
 
         # Simple heuristic: extract all .md references from index text.
         referenced = set()
-        for match in re.finditer(
-            rf"{subdir}/([^\s)|]+\.md)", index_text
-        ):
+        for match in re.finditer(rf"{subdir}/([^\s)|]+\.md)", index_text):
             referenced.add(match.group(1))
 
         # Also extract keys from table rows (first column after |).
@@ -1078,8 +1218,7 @@ def _check_index_detail_consistency(base: Path, result: ValidationResult) -> Non
             if line.startswith("|") and "---" not in line:
                 cells = [c.strip() for c in line.split("|")]
                 cells = [c for c in cells if c]  # remove empties
-                if cells and cells[0] not in ("object key", "operation key",
-                                              "key", "---"):
+                if cells and cells[0] not in ("object key", "operation key", "key", "---"):
                     # This could be a key; check if a file with that
                     # name exists.
                     potential_name = f"{cells[0]}.md"
@@ -1088,12 +1227,14 @@ def _check_index_detail_consistency(base: Path, result: ValidationResult) -> Non
 
         # Check: detail files not in index -> warning
         for fname in actual_files - referenced:
-            result.warnings.append(ValidationIssue(
-                "warning", f"{label}_index.consistency",
-                str(detail_dir / fname),
-                f"{fname} exists but is not referenced in "
-                f"{subdir}/index.md",
-            ))
+            result.warnings.append(
+                ValidationIssue(
+                    "warning",
+                    f"{label}_index.consistency",
+                    str(detail_dir / fname),
+                    f"{fname} exists but is not referenced in {subdir}/index.md",
+                )
+            )
 
 
 def validate_package(pkg_root: Path) -> ValidationResult:
@@ -1131,6 +1272,7 @@ def validate_package(pkg_root: Path) -> ValidationResult:
 # ===========================================================================
 #  Mapping helpers
 # ===========================================================================
+
 
 def _find_field_key_by_source(fields: dict, source: str) -> Optional[str]:
     """Return the field key whose ``source`` equals *source*.
@@ -1172,19 +1314,10 @@ def _strip_empty_key_field_rows(text: str) -> tuple[str, bool]:
         # Table data row: starts with |, not a separator, and the previous
         # line is a table row (header separator or a data row) -- this
         # skips header rows and tables embedded in prose.
-        is_table_data_row = (
-            stripped.startswith("|")
-            and "---" not in stripped
-            and prev.startswith("|")
-        )
+        is_table_data_row = stripped.startswith("|") and "---" not in stripped and prev.startswith("|")
         if is_table_data_row:
             cells = [c.strip() for c in stripped.strip("|").split("|")]
-            is_placeholder_row = (
-                len(cells) >= 2
-                and cells[0]
-                and not cells[1]
-                and not any(cells[2:])
-            )
+            is_placeholder_row = len(cells) >= 2 and cells[0] and not cells[1] and not any(cells[2:])
             # Key (second column) empty, display name filled, rest empty
             if is_placeholder_row:
                 did_strip = True
@@ -1222,9 +1355,7 @@ def _is_skill_source_package(pkg_root: Path) -> bool:
             return False
         if not (pkg_root / "SKILL.md").is_file():
             return False
-        return any(
-            (pkg_root / folder).is_dir() for folder in ("object", "logic")
-        )
+        return any((pkg_root / folder).is_dir() for folder in ("object", "logic"))
     except OSError:
         return False
 
@@ -1290,19 +1421,14 @@ def _extract_markdown_table(section: Sequence[str]) -> list[list[str]]:
         if not header.startswith("|") or not separator.startswith("|"):
             continue
         header_cells = [cell.strip() for cell in header.strip("|").split("|")]
-        separator_cells = [
-            cell.strip() for cell in separator.strip("|").split("|")
-        ]
+        separator_cells = [cell.strip() for cell in separator.strip("|").split("|")]
         if not header_cells or len(header_cells) != len(separator_cells):
             continue
-        if not all(
-            _MARKDOWN_SEPARATOR_CELL_RE.match(cell.replace(" ", ""))
-            for cell in separator_cells
-        ):
+        if not all(_MARKDOWN_SEPARATOR_CELL_RE.match(cell.replace(" ", "")) for cell in separator_cells):
             continue
 
         rows = [header_cells]
-        for row_line in lines[index + 2:]:
+        for row_line in lines[index + 2 :]:
             if not row_line.startswith("|"):
                 break
             rows.append([cell.strip() for cell in row_line.strip("|").split("|")])
@@ -1318,19 +1444,12 @@ def _filter_markdown_table(
     if not table:
         return [list(columns)]
     headers = list(table[0])
-    indexes = {
-        column: headers.index(column)
-        for column in columns
-        if column in headers
-    }
+    indexes = {column: headers.index(column) for column in columns if column in headers}
     result = [list(columns)]
     for row in table[1:]:
-        result.append([
-            row[indexes[column]]
-            if column in indexes and indexes[column] < len(row)
-            else ""
-            for column in columns
-        ])
+        result.append(
+            [row[indexes[column]] if column in indexes and indexes[column] < len(row) else "" for column in columns]
+        )
     return result
 
 
@@ -1377,12 +1496,8 @@ def _render_source_object(
     if text is None:
         text = path.read_text(encoding="utf-8")
     text, _ = _strip_empty_key_field_rows(text)
-    table = _extract_markdown_table(
-        _extract_markdown_section(text, _SOURCE_OBJECT_SECTION_TITLES)
-    )
-    filtered = _filter_markdown_table(
-        table, ("中文名称", "英文名称", "描述", "属性别名")
-    )
+    table = _extract_markdown_table(_extract_markdown_section(text, _SOURCE_OBJECT_SECTION_TITLES))
+    filtered = _filter_markdown_table(table, ("中文名称", "英文名称", "描述", "属性别名"))
     kept_rows: list[list[str]] = []
     missing_key_names: list[str] = []
     for row in filtered[1:]:
@@ -1393,18 +1508,14 @@ def _render_source_object(
         kept_rows.append(row)
     if missing_key_names and errors is not None:
         errors.append(
-            "source: {} contains field rows without an English name: {}".format(
-                path.name, "、".join(missing_key_names)
-            )
+            "source: {} contains field rows without an English name: {}".format(path.name, "、".join(missing_key_names))
         )
     filtered = [filtered[0]] + kept_rows
     claimed_aliases: set[str] = set()
     for row in filtered[1:]:
         row[3] = _sanitize_field_alias_cell(row[3], claimed_aliases)
     body = "# 实体属性清单\n\n{}\n".format(_build_markdown_table(filtered))
-    aliases = _split_source_alias_values(
-        _section_joined_text(text, _SOURCE_OBJECT_ALIAS_TITLES)
-    )
+    aliases = _split_source_alias_values(_section_joined_text(text, _SOURCE_OBJECT_ALIAS_TITLES))
     frontmatter: dict[str, object] = {
         "resource": "object",
         "key": path.stem,
@@ -1417,9 +1528,7 @@ def _render_source_object(
 
 def _source_operation_tag(text: str) -> str:
     """Infer the operation tag from the source logic relation section."""
-    for line in _extract_markdown_section(
-        text, (_SOURCE_OPERATION_LOGIC_RELATION_TITLE,)
-    ):
+    for line in _extract_markdown_section(text, (_SOURCE_OPERATION_LOGIC_RELATION_TITLE,)):
         if "被logic调用" not in line and "被流程使用" not in line:
             continue
         value = ""
@@ -1438,15 +1547,9 @@ def _render_source_operation(path: Path) -> str:
     """Render a source logic document as a v0.1 operation detail file."""
     text = path.read_text(encoding="utf-8")
     tag = _source_operation_tag(text)
-    input_section = _extract_markdown_section(
-        text, (_SOURCE_OPERATION_INPUT_TITLE,)
-    )
-    output_section = _extract_markdown_section(
-        text, (_SOURCE_OPERATION_OUTPUT_TITLE,)
-    )
-    logic_section = _extract_markdown_section(
-        text, (_SOURCE_OPERATION_LOGIC_TITLE,)
-    )
+    input_section = _extract_markdown_section(text, (_SOURCE_OPERATION_INPUT_TITLE,))
+    output_section = _extract_markdown_section(text, (_SOURCE_OPERATION_OUTPUT_TITLE,))
+    logic_section = _extract_markdown_section(text, (_SOURCE_OPERATION_LOGIC_TITLE,))
 
     def render_section(lines: Sequence[str]) -> str:
         return "\n".join(line.rstrip() for line in lines if line.strip()).strip()
@@ -1470,18 +1573,19 @@ def _write_support_index(path: Path, resource: str, key: str, title: str) -> Non
     """Write a minimal v0.1 support directory index."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        _build_frontmatter({
-            "resource": resource,
-            "key": key,
-            "title": title,
-        }) + "\n# {}\n".format(title),
+        _build_frontmatter(
+            {
+                "resource": resource,
+                "key": key,
+                "title": title,
+            }
+        )
+        + "\n# {}\n".format(title),
         encoding="utf-8",
     )
 
 
-_SOURCE_SCRIPT_BOUND_RE = re.compile(
-    r"^\s*#\s*(?:工具流程|关联logic)\s*[：:]\s*(.+?)\s*$"
-)
+_SOURCE_SCRIPT_BOUND_RE = re.compile(r"^\s*#\s*(?:工具流程|关联logic)\s*[：:]\s*(.+?)\s*$")
 
 
 def _source_script_dir(pkg_root: Path) -> Optional[Path]:
@@ -1532,9 +1636,15 @@ def _source_script_key(candidate: str, used: set[str]) -> str:
     return key
 
 
-_SOURCE_COPY_SKIP_DIRS = frozenset({
-    "__pycache__", ".git", ".venv", "venv", "node_modules",
-})
+_SOURCE_COPY_SKIP_DIRS = frozenset(
+    {
+        "__pycache__",
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+    }
+)
 _SOURCE_COPY_SKIP_NAMES = frozenset({".DS_Store", "Thumbs.db", ".gitignore"})
 
 
@@ -1591,34 +1701,42 @@ def _convert_source_scripts(
         key = _source_script_key(payload_file.stem, used_keys)
         descriptor = script_dir / "{}.md".format(key)
         descriptor.write_text(
-            _build_frontmatter({
-                "resource": "script",
-                "key": key,
-                "title": key,
-                "bound_operation": operation_key,
-                "runtime": "python",
-                "entrypoint": relative,
-            })
+            _build_frontmatter(
+                {
+                    "resource": "script",
+                    "key": key,
+                    "title": key,
+                    "bound_operation": operation_key,
+                    "runtime": "python",
+                    "entrypoint": relative,
+                }
+            )
             + "\n# 输入参数\n\n{}\n".format(
-                _build_markdown_table([
-                    ["参数 key", "CLI 参数", "类型", "必填", "是否多值", "说明", "别名", "Action"],
-                ])
+                _build_markdown_table(
+                    [
+                        ["参数 key", "CLI 参数", "类型", "必填", "是否多值", "说明", "别名", "Action"],
+                    ]
+                )
             ),
             encoding="utf-8",
         )
         descriptors.append(descriptor)
         rows.append([key, key, operation_key, relative])
     script_dir.joinpath("index.md").write_text(
-        _build_frontmatter({
-            "resource": "script_index",
-            "key": "scripts",
-            "title": "脚本目录",
-        })
+        _build_frontmatter(
+            {
+                "resource": "script_index",
+                "key": "scripts",
+                "title": "脚本目录",
+            }
+        )
         + "\n# 脚本目录\n\n{}\n".format(
-            _build_markdown_table([
-                ["script key", "标题", "绑定 operation", "入口"],
-                *rows,
-            ])
+            _build_markdown_table(
+                [
+                    ["script key", "标题", "绑定 operation", "入口"],
+                    *rows,
+                ]
+            )
         ),
         encoding="utf-8",
     )
@@ -1653,10 +1771,7 @@ def _convert_skill_source_package(
             result.errors.append(f"source: SKILL.md missing {field_name}")
     ontology_id = str(metadata.get("id") or "").strip()
     if ontology_id and not _MANIFEST_ID_RE.match(ontology_id):
-        result.errors.append(
-            "source: SKILL.md id must contain only letters, digits, "
-            "dots, underscores, or hyphens"
-        )
+        result.errors.append("source: SKILL.md id must contain only letters, digits, dots, underscores, or hyphens")
     if result.errors:
         return result
 
@@ -1672,11 +1787,14 @@ def _convert_skill_source_package(
     output_root.mkdir(parents=True)
     _save_yaml_file(output_root / "manifest.yaml", manifest)
     output_root.joinpath("index.md").write_text(
-        _build_frontmatter({
-            "resource": "root",
-            "key": "root",
-            "title": manifest["name"],
-        }) + "\n# {}\n\n{}\n".format(manifest["name"], manifest["description"]),
+        _build_frontmatter(
+            {
+                "resource": "root",
+                "key": "root",
+                "title": manifest["name"],
+            }
+        )
+        + "\n# {}\n\n{}\n".format(manifest["name"], manifest["description"]),
         encoding="utf-8",
     )
 
@@ -1687,33 +1805,38 @@ def _convert_skill_source_package(
     for source_file in object_files:
         target_file = objects_dir / source_file.name
         if target_file.exists():
-            result.errors.append(
-                f"source: duplicate object filename: {source_file.name}"
-            )
+            result.errors.append(f"source: duplicate object filename: {source_file.name}")
             continue
         text = source_file.read_text(encoding="utf-8")
         target_file.write_text(
             _render_source_object(source_file, text=text, errors=result.errors),
             encoding="utf-8",
         )
-        object_rows.append([
-            source_file.stem,
-            _section_first_text(text, _SOURCE_OBJECT_ENGLISH_TITLES),
-            _section_joined_text(text, _SOURCE_OBJECT_ALIAS_TITLES),
-            _section_first_text(text, _SOURCE_OBJECT_DESC_TITLES),
-            "",
-        ])
+        object_rows.append(
+            [
+                source_file.stem,
+                _section_first_text(text, _SOURCE_OBJECT_ENGLISH_TITLES),
+                _section_joined_text(text, _SOURCE_OBJECT_ALIAS_TITLES),
+                _section_first_text(text, _SOURCE_OBJECT_DESC_TITLES),
+                "",
+            ]
+        )
 
     objects_dir.joinpath("index.md").write_text(
-        _build_frontmatter({
-            "resource": "object_index",
-            "key": "objects",
-            "title": "对象目录",
-        }) + "\n# 实体清单\n\n{}\n".format(
-            _build_markdown_table([
-                ["中文名称", "英文名称", "别名", "业务定义", "领域分类"],
-                *object_rows,
-            ])
+        _build_frontmatter(
+            {
+                "resource": "object_index",
+                "key": "objects",
+                "title": "对象目录",
+            }
+        )
+        + "\n# 实体清单\n\n{}\n".format(
+            _build_markdown_table(
+                [
+                    ["中文名称", "英文名称", "别名", "业务定义", "领域分类"],
+                    *object_rows,
+                ]
+            )
         ),
         encoding="utf-8",
     )
@@ -1726,55 +1849,58 @@ def _convert_skill_source_package(
     for source_file in operation_files:
         target_file = operations_dir / source_file.name
         if target_file.exists():
-            result.errors.append(
-                f"source: duplicate logic filename: {source_file.name}"
-            )
+            result.errors.append(f"source: duplicate logic filename: {source_file.name}")
             continue
-        target_file.write_text(
-            _render_source_operation(source_file), encoding="utf-8"
-        )
+        target_file.write_text(_render_source_operation(source_file), encoding="utf-8")
         text = source_file.read_text(encoding="utf-8")
-        operation_rows.append([
-            source_file.stem,
-            _source_operation_tag(text),
-            _section_first_text(text, (_SOURCE_OPERATION_DESC_TITLE,)),
-            _section_first_text(text, (_SOURCE_OPERATION_TRIGGER_TITLE,)),
-        ])
+        operation_rows.append(
+            [
+                source_file.stem,
+                _source_operation_tag(text),
+                _section_first_text(text, (_SOURCE_OPERATION_DESC_TITLE,)),
+                _section_first_text(text, (_SOURCE_OPERATION_TRIGGER_TITLE,)),
+            ]
+        )
 
     operations_dir.joinpath("index.md").write_text(
-        _build_frontmatter({
-            "resource": "operation_index",
-            "key": "operations",
-            "title": "操作目录",
-        }) + "\n# Operations 逻辑清单\n\n{}\n".format(
-            _build_markdown_table([
-                ["名称", "标签", "业务描述", "触发条件"],
-                *operation_rows,
-            ])
+        _build_frontmatter(
+            {
+                "resource": "operation_index",
+                "key": "operations",
+                "title": "操作目录",
+            }
+        )
+        + "\n# Operations 逻辑清单\n\n{}\n".format(
+            _build_markdown_table(
+                [
+                    ["名称", "标签", "业务描述", "触发条件"],
+                    *operation_rows,
+                ]
+            )
         ),
         encoding="utf-8",
     )
 
-    script_count, script_descriptors = _convert_source_scripts(
-        pkg_root, output_root, logic_keys
-    )
+    script_count, script_descriptors = _convert_source_scripts(pkg_root, output_root, logic_keys)
     asset_count = _convert_source_assets(pkg_root, output_root)
     ignored_files = []
     for path in pkg_root.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
         if path.relative_to(pkg_root).parts[0] in {
-            "object", "logic", "scripts", "action", "asset", "assets", "SKILL.md",
+            "object",
+            "logic",
+            "scripts",
+            "action",
+            "asset",
+            "assets",
+            "SKILL.md",
         }:
             continue
-        ignored_files.append(
-            str(path.relative_to(pkg_root)).replace("\\", "/")
-        )
+        ignored_files.append(str(path.relative_to(pkg_root)).replace("\\", "/"))
     ignored_files.sort()
 
-    _write_support_index(
-        output_root / "rules" / "index.md", "rule_index", "rules", "规则目录"
-    )
+    _write_support_index(output_root / "rules" / "index.md", "rule_index", "rules", "规则目录")
     _write_support_index(
         output_root / "metrics" / "index.md",
         "metric_index",
@@ -1788,20 +1914,23 @@ def _convert_skill_source_package(
             {"schema_version": "0.1", "objects": {}},
             ensure_ascii=False,
             indent=2,
-        ) + "\n",
+        )
+        + "\n",
         encoding="utf-8",
     )
 
-    result.actions_applied.extend([
-        "source: generated manifest.yaml and index.md from SKILL.md",
-        f"source: converted {len(object_rows)} object documents",
-        f"source: converted {len(operation_rows)} logic documents",
-        f"source: copied {script_count} script payload files",
-        f"source: generated {len(script_descriptors)} script descriptors",
-        f"source: copied {asset_count} asset files",
-        "source: uses.objects left empty (logic-object relations are not inferred)",
-        "source: generated rules, metrics, and mappings support files",
-    ])
+    result.actions_applied.extend(
+        [
+            "source: generated manifest.yaml and index.md from SKILL.md",
+            f"source: converted {len(object_rows)} object documents",
+            f"source: converted {len(operation_rows)} logic documents",
+            f"source: copied {script_count} script payload files",
+            f"source: generated {len(script_descriptors)} script descriptors",
+            f"source: copied {asset_count} asset files",
+            "source: uses.objects left empty (logic-object relations are not inferred)",
+            "source: generated rules, metrics, and mappings support files",
+        ]
+    )
     if ignored_files:
         result.actions_applied.append(
             "source: ignored {} file(s) outside converted directories: {}".format(
@@ -1815,6 +1944,7 @@ def _convert_skill_source_package(
 # ===========================================================================
 #  Package converter
 # ===========================================================================
+
 
 class PackageConverter:
     """Applies format conversions to a package directory.
@@ -1846,9 +1976,7 @@ class PackageConverter:
             out_ontology = output_root / "ontology"
             if out_ontology.is_dir():
                 self._flatten_subdir(out_ontology, output_root)
-                self.actions.append(
-                    "path: flattened ontology/ subdirectory to package root"
-                )
+                self.actions.append("path: flattened ontology/ subdirectory to package root")
                 out_base = output_root
 
         self._convert_manifest(out_base)
@@ -1919,9 +2047,7 @@ class PackageConverter:
                 new_key = f"x_{key}"
                 manifest[new_key] = manifest.pop(key)
             changed = True
-            self.actions.append(
-                f"manifest: prefixed extra fields with x_: {extra_keys}"
-            )
+            self.actions.append(f"manifest: prefixed extra fields with x_: {extra_keys}")
 
         if changed:
             _save_yaml_file(manifest_path, manifest)
@@ -1942,9 +2068,7 @@ class PackageConverter:
             desc = manifest.get("description", "")
             body = f"# {title}\n\n{desc}\n"
             fm = {"resource": "root", "key": "root", "title": title}
-            index_path.write_text(
-                _build_frontmatter(fm) + "\n" + body, encoding="utf-8"
-            )
+            index_path.write_text(_build_frontmatter(fm) + "\n" + body, encoding="utf-8")
             self.actions.append("root: created index.md from manifest")
             return
 
@@ -1952,9 +2076,7 @@ class PackageConverter:
         if not text.strip().startswith("---"):
             title = _extract_title_from_content(text) or index_path.stem
             fm = {"resource": "root", "key": "root", "title": title}
-            index_path.write_text(
-                _build_frontmatter(fm) + "\n" + text, encoding="utf-8"
-            )
+            index_path.write_text(_build_frontmatter(fm) + "\n" + text, encoding="utf-8")
             self.actions.append("root: added frontmatter to index.md")
 
     # -- object index ------------------------------------------------------
@@ -1968,9 +2090,7 @@ class PackageConverter:
             objects_dir.mkdir(exist_ok=True)
             dest = objects_dir / "index.md"
             list_path.rename(dest)
-            self.actions.append(
-                "objects: renamed objects-list.md -> objects/index.md"
-            )
+            self.actions.append("objects: renamed objects-list.md -> objects/index.md")
             index_path = dest
 
         if not index_path.exists():
@@ -1979,9 +2099,7 @@ class PackageConverter:
         text = index_path.read_text(encoding="utf-8")
         if not text.strip().startswith("---"):
             fm = {"resource": "object_index", "key": "objects", "title": "\u5bf9\u8c61\u76ee\u5f55"}
-            index_path.write_text(
-                _build_frontmatter(fm) + "\n" + text, encoding="utf-8"
-            )
+            index_path.write_text(_build_frontmatter(fm) + "\n" + text, encoding="utf-8")
             self.actions.append("objects: added frontmatter to objects/index.md")
 
     # -- object details ----------------------------------------------------
@@ -2029,13 +2147,9 @@ class PackageConverter:
                 fm_count += 1
 
         if fm_count > 0:
-            self.actions.append(
-                f"objects: added frontmatter to {fm_count} object detail files"
-            )
+            self.actions.append(f"objects: added frontmatter to {fm_count} object detail files")
         if strip_count > 0:
-            self.actions.append(
-                f"objects: stripped {strip_count} empty-key field rows"
-            )
+            self.actions.append(f"objects: stripped {strip_count} empty-key field rows")
 
     # -- operation index ---------------------------------------------------
 
@@ -2048,16 +2162,11 @@ class PackageConverter:
             ops_dir.mkdir(exist_ok=True)
             dest = ops_dir / "index.md"
             list_path.rename(dest)
-            self.actions.append(
-                "operations: renamed operations-list.md -> operations/index.md"
-            )
+            self.actions.append("operations: renamed operations-list.md -> operations/index.md")
             index_path = dest
         elif index_path.exists() and list_path.exists():
             list_path.unlink()
-            self.actions.append(
-                "operations: removed duplicate operations-list.md "
-                "(operations/index.md already exists)"
-            )
+            self.actions.append("operations: removed duplicate operations-list.md (operations/index.md already exists)")
 
         if not index_path.exists():
             return
@@ -2065,12 +2174,8 @@ class PackageConverter:
         text = index_path.read_text(encoding="utf-8")
         if not text.strip().startswith("---"):
             fm = {"resource": "operation_index", "key": "operations", "title": "\u64cd\u4f5c\u76ee\u5f55"}
-            index_path.write_text(
-                _build_frontmatter(fm) + "\n" + text, encoding="utf-8"
-            )
-            self.actions.append(
-                "operations: added frontmatter to operations/index.md"
-            )
+            index_path.write_text(_build_frontmatter(fm) + "\n" + text, encoding="utf-8")
+            self.actions.append("operations: added frontmatter to operations/index.md")
 
     # -- operation details -------------------------------------------------
 
@@ -2099,15 +2204,11 @@ class PackageConverter:
             if desc:
                 fm_fields["description"] = desc
 
-            md_file.write_text(
-                _build_frontmatter(fm_fields) + "\n" + text, encoding="utf-8"
-            )
+            md_file.write_text(_build_frontmatter(fm_fields) + "\n" + text, encoding="utf-8")
             count += 1
 
         if count > 0:
-            self.actions.append(
-                f"operations: added frontmatter to {count} operation detail files"
-            )
+            self.actions.append(f"operations: added frontmatter to {count} operation detail files")
 
     # -- scripts ----------------------------------------------------------
 
@@ -2125,9 +2226,7 @@ class PackageConverter:
         text = dest.read_text(encoding="utf-8")
         if not text.strip().startswith("---"):
             fm = {"resource": "script_index", "key": "scripts", "title": "\u811a\u672c\u76ee\u5f55"}
-            dest.write_text(
-                _build_frontmatter(fm) + "\n" + text, encoding="utf-8"
-            )
+            dest.write_text(_build_frontmatter(fm) + "\n" + text, encoding="utf-8")
             self.actions.append("scripts: added frontmatter to scripts/index.md")
 
     # -- relations ---------------------------------------------------------
@@ -2140,14 +2239,12 @@ class PackageConverter:
         if relations_dir.is_dir():
             shutil.rmtree(relations_dir)
             self.actions.append(
-                "relations: removed non-standard relations/ directory "
-                "(downgrade to object details deferred)"
+                "relations: removed non-standard relations/ directory (downgrade to object details deferred)"
             )
         if list_path.exists():
             list_path.unlink()
             self.actions.append(
-                "relations: removed non-standard relations-list.md "
-                "(downgrade to object details deferred)"
+                "relations: removed non-standard relations-list.md (downgrade to object details deferred)"
             )
 
     # -- mappings -----------------------------------------------------------
@@ -2161,15 +2258,11 @@ class PackageConverter:
         try:
             mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
-            self.errors.append(
-                f"mappings: failed to read object-data-mappings.json: {exc}"
-            )
+            self.errors.append(f"mappings: failed to read object-data-mappings.json: {exc}")
             return
 
         if not isinstance(mapping, dict):
-            self.errors.append(
-                "mappings: object-data-mappings.json must be a JSON object"
-            )
+            self.errors.append("mappings: object-data-mappings.json must be a JSON object")
             return
 
         changed = False
@@ -2187,14 +2280,10 @@ class PackageConverter:
                 if self._rewrite_primary_key(category, resource_key, entry, fields):
                     changed = True
 
-                if self._strip_metadata_fields(
-                    category, resource_key, entry, fields
-                ):
+                if self._strip_metadata_fields(category, resource_key, entry, fields):
                     changed = True
 
-                if self._normalize_field_types(
-                    category, resource_key, fields
-                ):
+                if self._normalize_field_types(category, resource_key, fields):
                     changed = True
 
         if changed:
@@ -2234,8 +2323,9 @@ class PackageConverter:
             else:
                 new_key_list.append(pk_field)
                 self.errors.append(
-                    "mapping: {}.{}.primary_key '{}' not found in fields "
-                    "or its source".format(category, resource_key, pk)
+                    "mapping: {}.{}.primary_key '{}' not found in fields or its source".format(
+                        category, resource_key, pk
+                    )
                 )
         if rewritten:
             entry["primary_key"] = new_key_list
@@ -2256,8 +2346,9 @@ class PackageConverter:
         for field_key in removed:
             del fields[field_key]
             self.actions.append(
-                "mapping: {}.{}.{} is a provider metadata field; "
-                "removed from fields".format(category, resource_key, field_key)
+                "mapping: {}.{}.{} is a provider metadata field; removed from fields".format(
+                    category, resource_key, field_key
+                )
             )
 
         for ref_key in ("primary_key", "label_fields"):
@@ -2267,9 +2358,7 @@ class PackageConverter:
                 if dangling:
                     entry[ref_key] = [r for r in refs if r not in removed]
                     self.actions.append(
-                        "mapping: {}.{}.{} removed from {}".format(
-                            category, resource_key, ", ".join(dangling), ref_key
-                        )
+                        "mapping: {}.{}.{} removed from {}".format(category, resource_key, ", ".join(dangling), ref_key)
                     )
 
         policy = entry.get("policy")
@@ -2278,12 +2367,9 @@ class PackageConverter:
             if isinstance(user_filter, list):
                 dangling = [r for r in user_filter if r in removed]
                 if dangling:
-                    policy["require_user_filter"] = [
-                        r for r in user_filter if r not in removed
-                    ]
+                    policy["require_user_filter"] = [r for r in user_filter if r not in removed]
                     self.actions.append(
-                        "mapping: {}.{}.{} removed from "
-                        "policy.require_user_filter".format(
+                        "mapping: {}.{}.{} removed from policy.require_user_filter".format(
                             category, resource_key, ", ".join(dangling)
                         )
                     )
@@ -2306,9 +2392,7 @@ class PackageConverter:
                 field_def["type"] = "number"
                 changed = True
                 self.actions.append(
-                    "mapping: {}.{}.fields.{}.type '{}' -> 'number'".format(
-                        category, resource_key, field_key, raw_type
-                    )
+                    "mapping: {}.{}.fields.{}.type '{}' -> 'number'".format(category, resource_key, field_key, raw_type)
                 )
         return changed
 
@@ -2316,6 +2400,7 @@ class PackageConverter:
 # ===========================================================================
 #  Public conversion API
 # ===========================================================================
+
 
 def convert_package(
     pkg_root: Path,
@@ -2458,6 +2543,7 @@ def _zip_directory(src_dir: Path, zip_path: Path) -> None:
 #  Import pipeline
 # ===========================================================================
 
+
 def import_package(
     pkg_root: Path,
     output_dir: Optional[Path] = None,
@@ -2518,9 +2604,7 @@ def import_package(
         result.imported = True
         result.import_path = str(output_dir)
     else:
-        error_msgs = [
-            f"{e.rule}: {e.message}" for e in final.errors
-        ]
+        error_msgs = [f"{e.rule}: {e.message}" for e in final.errors]
         result.errors.extend(error_msgs)
         result.imported = False
 
@@ -2561,8 +2645,7 @@ def import_package_from_zip(
                 if output_dir.exists():
                     if not output_dir.name.endswith("_converted"):
                         raise ValueError(
-                            "Output directory already exists and is not a "
-                            f"converter artifact: {output_dir}"
+                            f"Output directory already exists and is not a converter artifact: {output_dir}"
                         )
                     shutil.rmtree(output_dir)
                 shutil.copytree(Path(result.import_path), output_dir)
@@ -2588,10 +2671,10 @@ def _validation_to_dict(vr: ValidationResult) -> dict:
 #  CLI
 # ===========================================================================
 
+
 def _print_usage() -> None:
     _logger.error(
-        "Usage: python legacy_package_converter.py <package_dir_or_zip> "
-        "[--output-dir <dir>] [--zip-output <zip>]"
+        "Usage: python legacy_package_converter.py <package_dir_or_zip> [--output-dir <dir>] [--zip-output <zip>]"
     )
 
 
@@ -2612,7 +2695,7 @@ def main(argv: list[str]) -> int:
         elif flag == "--zip-output" and rest:
             zip_output = Path(rest.pop(0))
         else:
-            _logger.error(f"Unknown argument: {flag}")
+            _logger.error("Unknown argument: %s", flag)
             _print_usage()
             return 2
 
@@ -2625,9 +2708,7 @@ def main(argv: list[str]) -> int:
                 return 2
             result = import_package(input_path, output_dir)
         else:
-            _logger.error(
-                "知识包转换失败: 输入必须是目录或 .zip 文件: %s", input_path
-            )
+            _logger.error("知识包转换失败: 输入必须是目录或 .zip 文件: %s", input_path)
             return 2
     except (ValueError, OSError, zipfile.BadZipFile, RuntimeError, zlib.error) as exc:
         _logger.error("知识包转换失败: %s", exc)

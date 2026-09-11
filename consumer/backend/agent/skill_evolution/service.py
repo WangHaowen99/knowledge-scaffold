@@ -26,10 +26,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import yaml
-
+from agent.skill_evolution.models import (
+    TERMINAL_STATUSES,
+    DiffFileEntry,
+    DiffResult,
+    DriftStatus,
+    TaskRecord,
+)
+from agent.skill_evolution.store import PendingTaskExists, SkillEvolutionStore
 from config.system_config import load_system_config
-from persistence.execution_store import ExecutionStore
-from utils.logging import get_logger
+from ontology.mutation_lock import ontology_mutation_lock
 from ontology.ontologies import (
     OntologyManifest,
     ensure_ontology_versions,
@@ -37,16 +43,9 @@ from ontology.ontologies import (
     get_ontology_version_dir,
     is_valid_ontology_version,
 )
-from ontology.mutation_lock import ontology_mutation_lock
+from persistence.execution_store import ExecutionStore
+from utils.logging import get_logger
 from workspace.workspaces import get_workspace_ontologies_root
-from agent.skill_evolution.models import (
-    DiffFileEntry,
-    DiffResult,
-    DriftStatus,
-    TERMINAL_STATUSES,
-    TaskRecord,
-)
-from agent.skill_evolution.store import PendingTaskExists, SkillEvolutionStore
 
 logger = get_logger("skill_evolution.service")
 
@@ -56,6 +55,7 @@ _EVOLVED_OPS_RELPREFIX = "operations/"
 
 
 def _utc_now() -> str:
+    """Return the current UTC timestamp without sub-second precision."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
@@ -74,7 +74,8 @@ class SkillEvolverClient:
         self._base_url = (base_url or "").rstrip("/")
         self._timeout = max(5, int(timeout_seconds))
 
-    def _headers(self) -> Dict[str, str]:
+    @staticmethod
+    def _headers() -> Dict[str, str]:
         return {"Accept": "application/json"}
 
     def submit_run(
@@ -83,12 +84,17 @@ class SkillEvolverClient:
         baseline_bytes: bytes,
         request_json: Dict[str, Any],
     ) -> str:
+        """Submit trace and baseline bytes to the configured skill-evolver."""
         if not self._base_url:
             raise RuntimeError("skill-evolver base_url 未配置")
         files = {
             "trace_file": ("trace.json", trace_bytes, "application/json"),
             "baseline_file": ("baseline.zip", baseline_bytes, "application/zip"),
-            "request": ("request.json", json.dumps(request_json, ensure_ascii=False).encode("utf-8"), "application/json"),
+            "request": (
+                "request.json",
+                json.dumps(request_json, ensure_ascii=False).encode("utf-8"),
+                "application/json",
+            ),
         }
         response = requests.post(
             self._base_url + RUNS_PATH,
@@ -97,9 +103,7 @@ class SkillEvolverClient:
             timeout=self._timeout,
         )
         if response.status_code not in (200, 201, 202):
-            raise RuntimeError(
-                "skill-evolver 提交失败 HTTP {}: {}".format(response.status_code, response.text[:300])
-            )
+            raise RuntimeError("skill-evolver 提交失败 HTTP {}: {}".format(response.status_code, response.text[:300]))
         data = response.json() or {}
         run_id = str(data.get("run_id") or "").strip()
         if not run_id:
@@ -107,6 +111,7 @@ class SkillEvolverClient:
         return run_id
 
     def get_run_status(self, run_id: str) -> Dict[str, Any]:
+        """Fetch the current status payload for a skill-evolver run."""
         response = requests.get(
             self._base_url + RUNS_PATH + "/" + run_id,
             headers=self._headers(),
@@ -115,10 +120,13 @@ class SkillEvolverClient:
         if response.status_code == 404:
             return {"status": "failed", "error": "run not found"}
         if not response.ok:
-            raise RuntimeError("skill-evolver 状态查询失败 HTTP {}: {}".format(response.status_code, response.text[:300]))
+            raise RuntimeError(
+                "skill-evolver 状态查询失败 HTTP {}: {}".format(response.status_code, response.text[:300])
+            )
         return response.json() or {}
 
     def download_artifact(self, run_id: str) -> bytes:
+        """Download the evolved artifact for a completed run."""
         response = requests.get(
             self._base_url + RUNS_PATH + "/" + run_id + "/artifact",
             headers=self._headers(),
@@ -126,7 +134,9 @@ class SkillEvolverClient:
             stream=False,
         )
         if not response.ok:
-            raise RuntimeError("skill-evolver 产物下载失败 HTTP {}: {}".format(response.status_code, response.text[:300]))
+            raise RuntimeError(
+                "skill-evolver 产物下载失败 HTTP {}: {}".format(response.status_code, response.text[:300])
+            )
         return response.content
 
 
@@ -198,10 +208,7 @@ def _collect_version_files(version_dir: Path) -> Dict[str, bytes]:
     out: Dict[str, bytes] = {}
     if not version_dir.is_dir():
         return out
-    paths = [
-        p for p in version_dir.rglob("*")
-        if p.is_file() and not p.is_symlink()
-    ]
+    paths = [p for p in version_dir.rglob("*") if p.is_file() and not p.is_symlink()]
     for p in sorted(paths, key=lambda x: x.relative_to(version_dir).as_posix()):
         rel = p.relative_to(version_dir).as_posix()
         if rel == "manifest.yaml":
@@ -254,7 +261,9 @@ def _canonical_revision_manifest(version_dir: Path) -> Optional[bytes]:
 
 def _locate_evolved_root(extract_dir: Path) -> Path:
     """Find the ontology root inside the extracted artifact (has operations/)."""
+
     def has_ops(d: Path) -> bool:
+        """Return whether a directory contains the expected operations index."""
         return (d / "operations" / "index.md").is_file()
 
     if has_ops(extract_dir):
@@ -282,6 +291,7 @@ def _normalize_eol(text: str) -> str:
 
 
 def _line_diff_counts(original: str, evolved: str) -> Tuple[int, int]:
+    """Count added and removed lines in a normalized text diff."""
     diff = list(
         difflib.unified_diff(
             original.splitlines(),
@@ -321,7 +331,8 @@ class SkillEvolutionService:
         return self._store.list_tasks(workspace_id, **filters)
 
     # ----------------------------------------------------------- config/client
-    def _config(self) -> Dict[str, Any]:
+    @staticmethod
+    def _config() -> Dict[str, Any]:
         return load_system_config().get("skill_evolution") or {}
 
     def _client(self) -> SkillEvolverClient:
@@ -334,10 +345,12 @@ class SkillEvolutionService:
         )
 
     def is_enabled(self) -> bool:
+        """Return whether skill evolution is enabled in system configuration."""
         return bool(self._config().get("enabled", False))
 
     # ------------------------------------------------------------- ontology
-    def _resolve_ontology(self, workspace_id: str, ontology_id: str) -> OntologyManifest:
+    @staticmethod
+    def _resolve_ontology(workspace_id: str, ontology_id: str) -> OntologyManifest:
         registry = get_ontology_registry(workspace_id=workspace_id)
         registry.refresh()
         ontology = registry.get_ontology(ontology_id)
@@ -347,7 +360,8 @@ class SkillEvolutionService:
             raise GateError("本体 {} 已禁用".format(ontology_id))
         return ontology
 
-    def _ontology_dir(self, workspace_id: str, ontology_id: str) -> Path:
+    @staticmethod
+    def _ontology_dir(workspace_id: str, ontology_id: str) -> Path:
         return get_workspace_ontologies_root(workspace_id) / ontology_id
 
     @staticmethod
@@ -376,17 +390,19 @@ class SkillEvolutionService:
         install). Per-file deletions *inside* a component are still allowed —
         we can't distinguish an intentional deletion from an omission, and the
         component-level check guards the data-loss case (a whole tree gone)."""
+
         def top_entries(d: Path) -> set:
+            """Return non-excluded top-level entries for a snapshot root."""
             if not d.is_dir():
                 return set()
             return {p.name for p in d.iterdir() if p.name not in skip_names}
+
         missing = sorted(top_entries(reference_dir) - top_entries(evolved_root))
         if missing:
-            raise ValueError(
-                "进化产物不是完整快照，缺少 {}，拒绝落盘以防数据丢失".format(missing)
-            )
+            raise ValueError("进化产物不是完整快照，缺少 {}，拒绝落盘以防数据丢失".format(missing))
 
-    def _compute_version_sha(self, version_dir: Path) -> str:
+    @staticmethod
+    def _compute_version_sha(version_dir: Path) -> str:
         """Whole-version sha: hashes every file under the version dir (same
         scope as the baseline zip and approve's rmtree+copy install). Keeps
         sha-scope == baseline-scope == install-scope so drift catches any
@@ -441,12 +457,15 @@ class SkillEvolutionService:
         if history is None:
             raise GateError("当前会话无执行记录，无法发起进化")
         turns = [
-            t for t in history.get("turns", [])
+            t
+            for t in history.get("turns", [])
             if str(t.get("user_request") or "").strip() and t.get("status") != "running"
         ]
         if len(turns) < MIN_TURNS:
             raise GateError(
-                "当前对话只有 {} 轮已完成提问，至少需要 {} 轮才能发起进化（请等待当前回答完成）".format(len(turns), MIN_TURNS)
+                "当前对话只有 {} 轮已完成提问，至少需要 {} 轮才能发起进化（请等待当前回答完成）".format(
+                    len(turns), MIN_TURNS
+                )
             )
 
         # Gate 3: version alignment (multi-version ontologies only).
@@ -471,9 +490,7 @@ class SkillEvolutionService:
                     if len(distinct) > 1:
                         # Session itself spanned multiple versions (active changed mid-session)
                         raise GateError(
-                            "本会话跨多个本体版本（{}），请新开对话后再发起进化".format(
-                                " → ".join(sorted(distinct))
-                            )
+                            "本会话跨多个本体版本（{}），请新开对话后再发起进化".format(" → ".join(sorted(distinct)))
                         )
                     else:
                         # Session's version ≠ current active (stale after approval/version switch)
@@ -510,7 +527,7 @@ class SkillEvolutionService:
         for m in history.get("session_history") or []:
             if not isinstance(m, dict) or m.get("role") != "assistant":
                 continue
-            for tc in (m.get("tool_calls") or []):
+            for tc in m.get("tool_calls") or []:
                 fn = (tc.get("function") or {}).get("name") or tc.get("name")
                 if fn != "ontology_context":
                     continue
@@ -536,6 +553,7 @@ class SkillEvolutionService:
         triggered_by: str,
         execution_store: ExecutionStore,
     ) -> TaskRecord:
+        """Create a skill-evolution task after validating submit gates."""
         if not self.is_enabled():
             raise GateError("本体进化功能未启用")
 
@@ -549,9 +567,7 @@ class SkillEvolutionService:
         if not target_id:
             target_id = self._infer_ontology_from_trace(history) or ""
             if not target_id:
-                raise GateError(
-                    "无法确定进化目标本体：该会话未选定本体，且 trace 中未明确引用单一本体"
-                )
+                raise GateError("无法确定进化目标本体：该会话未选定本体，且 trace 中未明确引用单一本体")
         ontology = self._resolve_ontology(workspace_id, target_id)
         self._validate_gates(workspace_id, ontology, history, session_id)
 
@@ -566,9 +582,7 @@ class SkillEvolutionService:
             _build_ontology_zip_buffer,
         )
 
-        zip_buffer = _build_ontology_zip_buffer(
-            self._ontology_root(ontology), version_dir, version=active_version
-        )
+        zip_buffer = _build_ontology_zip_buffer(self._ontology_root(ontology), version_dir, version=active_version)
         baseline_bytes = zip_buffer.getvalue()
         if len(baseline_bytes) > ONTOLOGY_MAX_ZIP_BYTES:
             raise GateError("本体基线过大，超过上传上限")
@@ -577,9 +591,7 @@ class SkillEvolutionService:
         # Exclude any in-progress (status="running") turn so a mid-stream click
         # doesn't send a partial turn (user question with no assistant answer).
         trace_history = dict(history)
-        trace_history["turns"] = [
-            t for t in history.get("turns", []) if t.get("status") != "running"
-        ]
+        trace_history["turns"] = [t for t in history.get("turns", []) if t.get("status") != "running"]
         trace_bytes = json.dumps(trace_history, ensure_ascii=False).encode("utf-8")
 
         # max_iterations controls the skill-evolver evolution loop (1-30, server
@@ -602,8 +614,12 @@ class SkillEvolutionService:
         logger.info(
             "skill-evolution trace export: user=%s workspace=%s session=%s ontology=%s "
             "skill_evolver_url=%s trace_bytes=%d",
-            triggered_by, workspace_id, session_id, ontology.id,
-            self._config().get("base_url", ""), len(trace_bytes),
+            triggered_by,
+            workspace_id,
+            session_id,
+            ontology.id,
+            self._config().get("base_url", ""),
+            len(trace_bytes),
         )
 
         # Submit (short-timeout sync; on failure do NOT occupy pending)
@@ -689,6 +705,7 @@ class SkillEvolutionService:
             else:
                 child.unlink(missing_ok=True)
         from api.routes.ontologies import _safe_extract_zip  # lazy import
+
         error = _safe_extract_zip(artifact_bytes, temp_dir)
         if error:
             self._store.clean_temp(record.workspace_id, record.task_id)
@@ -722,6 +739,7 @@ class SkillEvolutionService:
         return record
 
     def fail_task(self, record: TaskRecord, *, stage: str, message: str) -> TaskRecord:
+        """Mark an in-flight task failed and clean its temporary artifacts."""
         # Re-read the latest on-disk state so we never clobber a concurrent
         # terminal decision (approve/reject/cancel) made by a route.
         latest = self._store.get_task(record.workspace_id, record.task_id)
@@ -766,6 +784,7 @@ class SkillEvolutionService:
         return self.compute_diff(record)
 
     def compute_diff(self, record: TaskRecord) -> DiffResult:
+        """Compute the persisted baseline-to-evolved operation diff."""
         baseline_path = self._store.baseline_path(record.workspace_id, record.task_id)
         baseline_files: Dict[str, str] = {}
         if baseline_path.exists():
@@ -828,6 +847,7 @@ class SkillEvolutionService:
 
     # ------------------------------------------------------------------ drift
     def detect_drift(self, record: TaskRecord) -> DriftStatus:
+        """Check whether the submitted ontology changed before approval."""
         try:
             ontology = self._resolve_ontology(record.workspace_id, record.ontology_id)
         except GateError:
@@ -875,6 +895,7 @@ class SkillEvolutionService:
         version_name: Optional[str],
         decided_by: str,
     ) -> TaskRecord:
+        """Approve and install an evolved ontology snapshot."""
         if record.status != "completed":
             raise ValueError("仅待审批任务可执行审批")
         if mode not in ("overwrite", "new_version"):
@@ -938,11 +959,7 @@ class SkillEvolutionService:
                     existed=True,
                     workspace_id=record.workspace_id,
                     mutation_audit={
-                        "operator": (
-                            {"type": "user", "id": decided_by[:128]}
-                            if decided_by
-                            else None
-                        ),
+                        "operator": {"type": "user", "id": decided_by[:128]} if decided_by else None,
                         "request_id": (record.run_id or record.task_id)[:128],
                     },
                     mutation_trigger="admin",
@@ -955,11 +972,7 @@ class SkillEvolutionService:
                     ontology_id=ontology.id,
                     workspace_id=record.workspace_id,
                     mutation_audit={
-                        "operator": (
-                            {"type": "user", "id": decided_by[:128]}
-                            if decided_by
-                            else None
-                        ),
+                        "operator": {"type": "user", "id": decided_by[:128]} if decided_by else None,
                         "request_id": (record.run_id or record.task_id)[:128],
                     },
                     mutation_trigger="admin",
@@ -1000,6 +1013,7 @@ class SkillEvolutionService:
 
     # ----------------------------------------------------------------- reject
     def reject(self, record: TaskRecord, *, decided_by: str) -> TaskRecord:
+        """Reject a completed evolution task and retain its decision history."""
         if record.status != "completed":
             raise ValueError("仅待审批任务可执行拒绝")
         record.status = "rejected"
@@ -1034,6 +1048,7 @@ class SkillEvolutionService:
 
     # ----------------------------------------------------------------- cancel
     def cancel(self, record: TaskRecord, *, decided_by: str) -> TaskRecord:
+        """Cancel an in-flight evolution task and clean temporary artifacts."""
         if record.status not in ("submitted", "running", "downloading"):
             raise ValueError("仅进行中的任务可取消")
         record.status = "cancelled"

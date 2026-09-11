@@ -7,13 +7,12 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
-
 from agent.runtime.contracts import (
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
     RunPreflightSnapshot,
     RunSnapshot,
     RunStatus,
     RuntimeResult,
-    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from agent.runtime.errors import RunConflictError
 from api.protocols.a2a.models import A2ATaskCreateRequest, A2ATaskState
@@ -83,37 +82,37 @@ class _Runtime:
 
 def _service(tmp_path, manager=None, *, preflight_builder=None):
     manager = manager or _Manager()
-    return A2ATaskService(
-        runtime=_Runtime(manager, preflight_builder=preflight_builder),
-        execution_store=ExecutionStore(str(tmp_path / "executions")),
-        username="operator_a",
-        workspace_id="workspace_demo",
-    ), manager
+    return (
+        A2ATaskService(
+            runtime=_Runtime(manager, preflight_builder=preflight_builder),
+            execution_store=ExecutionStore(str(tmp_path / "executions")),
+            username="operator_a",
+            workspace_id="workspace_demo",
+        ),
+        manager,
+    )
 
 
 def test_create_task_keeps_external_id_out_of_canonical_identity(tmp_path):
     service, manager = _service(tmp_path)
 
-    view, snapshot = asyncio.run(service.create_task(
-        A2ATaskCreateRequest(
-            message="synthetic question",
-            session_id="session_demo",
-            task_id="external_task_demo",
+    view, snapshot = asyncio.run(
+        service.create_task(
+            A2ATaskCreateRequest(
+                message="synthetic question",
+                session_id="session_demo",
+                task_id="external_task_demo",
+            )
         )
-    ))
+    )
 
     assert view.id == "external_task_demo"
     assert snapshot.run_id.startswith("agentic-")
     assert snapshot.run_id != view.id
     assert view.metadata["canonical_run_id"] == snapshot.run_id
     assert manager.contexts[0].supports_user_interaction is False
-    assert (
-        manager.contexts[0].concurrency_limit
-        == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
-    )
-    _, turn = service.execution_store.find_turn_by_protocol_id(
-        "a2a", "external_task_demo"
-    )
+    assert manager.contexts[0].concurrency_limit == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+    _, turn = service.execution_store.find_turn_by_protocol_id("a2a", "external_task_demo")
     assert turn["run_id"] == snapshot.run_id
 
 
@@ -232,9 +231,7 @@ def test_create_task_normalizes_operation_pin_for_preflight_and_execution(tmp_pa
         )
     )
 
-    assert calls[0]["user_context"]["requested_operation_key"] == (
-        "synthetic_operation"
-    )
+    assert calls[0]["user_context"]["requested_operation_key"] == ("synthetic_operation")
     assert manager.contexts[0].requested_operation_key == "synthetic_operation"
 
 
@@ -289,13 +286,15 @@ def test_unexpected_awaiting_is_projected_as_interaction_not_supported(tmp_path)
 
 def test_cancel_uses_canonical_run_id(tmp_path):
     service, manager = _service(tmp_path)
-    _view, snapshot = asyncio.run(service.create_task(
-        A2ATaskCreateRequest(
-            message="synthetic question",
-            session_id="session_demo",
-            task_id="external_task_demo",
+    _view, snapshot = asyncio.run(
+        service.create_task(
+            A2ATaskCreateRequest(
+                message="synthetic question",
+                session_id="session_demo",
+                task_id="external_task_demo",
+            )
         )
-    ))
+    )
 
     cancelled = asyncio.run(service.cancel_task("external_task_demo"))
 
