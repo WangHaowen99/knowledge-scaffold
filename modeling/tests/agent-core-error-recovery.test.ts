@@ -98,7 +98,9 @@ test('评测优化失败时把服务端附带的诊断摊开，不只取一句 m
   // 409 里带着 4 条可执行诊断，前端原来只取 cause.message，其余全丢。
   // 融合和 Studio 模块早就在读 error.data，这里是补齐落下的一块。
   const source = readFileSync('frontend/src/workbench/center/EvaluationView.jsx', 'utf8');
-  assert.match(source, /function describeOptimizationFailure\(cause\)/);
+  assert.match(source, /function describeEvaluationFailure\(cause, fallback/);
+  // 诊断面板和优化面板共用同一个解包函数，不留只取 cause.message 的分支
+  assert.doesNotMatch(source, /catch \(cause\) \{\s*\n?\s*setError\(cause\.message\);\s*\n?\s*\} finally \{\s*\n?\s*setBusy\(''\); setLocalTask\(null\)/);
   assert.match(source, /cause\?\.data\?\.diagnoses/);
   assert.match(source, /item\.suggestedAction/);
   assert.match(source, /cause\?\.data\?\.runningStartedAt/);
