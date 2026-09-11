@@ -700,10 +700,16 @@ DOMAIN_FIELD = {
     "required": ["key", "type", "required"],
     "additionalProperties": False,
 }
+# 不暴露 kind：关系类型当前只有 object_relation 一个合法值，服务端本来就会补默认值，
+# create_object 那条路更是直接硬编码、根本不看传入值。把一个只有唯一答案的字段交给模型填，
+# 只会制造错误——实测模型会把推荐接口返回的 belongs_to 抄进 kind，被拒后反复猜、原地打转
+# 数轮，最后整批任务放弃（见 #48）。业务谓词写 label，这才是模型该决定的东西。
 DOMAIN_RELATION = {
     "type": "object",
     "properties": {
-        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING, "description": STRING,
+        "target_id": RESOURCE_ID,
+        "label": {**STRING, "description": "业务谓词，例如「归属于」「适用于」，由你根据证据拟定。"},
+        "description": STRING,
     },
     "required": ["target_id"],
     "additionalProperties": False,
