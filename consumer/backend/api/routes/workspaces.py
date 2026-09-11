@@ -33,11 +33,13 @@ from api.auth.user_deletion import (
     UserDeletionReconciliationError,
 )
 from api.dependencies import (
+    get_runtime_container,
     require_workspace_id,
     require_workspace_path_access,
     require_workspace_path_owner_or_admin,
     run_in_runtime_pool,
 )
+from agent.runtime.errors import WorkspaceBusyError
 from api.exceptions import APIError
 from api.request_parsing import read_optional_json_object
 from api.workspace_acl_service import (
@@ -245,6 +247,7 @@ async def ensure_modeling_shadow_workspace_api(request: Request):
                 auth_manager,
                 workspace_id,
                 owner,
+                enforce_workspace_limit=False,
             )
         except _WORKSPACE_IDENTITY_ERRORS as exc:
             return _workspace_identity_error(exc)
@@ -449,13 +452,27 @@ async def delete_workspace_api(
     ),
 ):
     is_admin = getattr(user, "role", None) == "admin"
+    runtime = get_runtime_container(request)
     try:
-        await run_in_runtime_pool(
-            request,
-            "short_io",
-            delete_workspace,
-            workspace_id,
-            allow_default=not is_admin,
+        async with runtime.manager.workspace_deletion_guard(workspace_id):
+            await run_in_runtime_pool(
+                request,
+                "short_io",
+                delete_workspace,
+                workspace_id,
+                allow_default=not is_admin,
+            )
+    except WorkspaceBusyError as exc:
+        return JSONResponse(
+            {
+                "error": "工作空间存在运行中任务，请等待完成或显式停止后再删除",
+                "error_code": "WORKSPACE_RUN_ACTIVE",
+                "workspace_id": workspace_id,
+                "run_id": exc.run_id,
+                "session_id": exc.session_id,
+                "run_status": exc.status,
+            },
+            status_code=409,
         )
     except KeyError as exc:
         return not_found_response(exc)

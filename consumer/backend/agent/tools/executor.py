@@ -7,6 +7,7 @@ import json
 import threading
 import time
 import weakref
+from builtins import BaseExceptionGroup
 from collections.abc import Sequence
 from contextvars import copy_context
 from dataclasses import dataclass, field
@@ -692,6 +693,13 @@ def _build_business_data_search_event_emitter(
             "type": event_type,
             "content": content,
         }
+        public_summary = str(event.get("public_summary") or "").strip()
+        public_summary_allowed = (
+            event.get("public_summary_allowed") is True and bool(public_summary)
+        )
+        if public_summary_allowed:
+            provider_event["public_summary"] = public_summary
+            provider_event["public_summary_allowed"] = True
         for key, value in {
             "stage": stage,
             "binding_key": binding_key,

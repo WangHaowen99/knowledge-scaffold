@@ -1,4 +1,4 @@
-import { api, authFetch } from './api.js';
+import { api, authFetch, publicApiErrorMessage } from './api.js';
 import { createProjectEventParser } from './project-events.js';
 
 const DEFAULT_RECONNECT_MS = 1_000;
@@ -253,7 +253,7 @@ const abortError = (error) => error?.name === 'AbortError';
 
 async function responseError(response) {
   const data = await response.json().catch(() => ({}));
-  return Object.assign(new Error(data.error || `连接失败（${response.status}）`), {
+  return Object.assign(new Error(publicApiErrorMessage(data, response.status)), {
     status: response.status,
     data,
   });

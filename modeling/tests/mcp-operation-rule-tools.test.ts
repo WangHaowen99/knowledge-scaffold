@@ -19,6 +19,7 @@ const [
   { executeModelingMcpTool, toolDefinitionsFor, toolNamesByToolset },
   { ModelingMcpToolError },
   { ArtifactRepositoryError },
+  { PackageArtifactStoreError },
 ] = await Promise.all([
   import('../src/projects/repo.js'),
   import('../src/artifacts/runtime.js'),
@@ -31,6 +32,7 @@ const [
   import('../src/mcp/toolset.js'),
   import('../src/mcp/tool-error.js'),
   import('../src/artifacts/repository.js'),
+  import('../src/artifacts/package-store.js'),
 ]);
 
 function artifactsWithPlanningConflict(artifacts: ReturnType<typeof getPackageArtifactStore>) {
@@ -42,6 +44,23 @@ function artifactsWithPlanningConflict(artifacts: ReturnType<typeof getPackageAr
             expectedRevision: 'expected-revision',
             actualRevision: 'actual-revision',
           });
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function artifactsWithInvalidPackage(artifacts: ReturnType<typeof getPackageArtifactStore>) {
+  return new Proxy(artifacts, {
+    get(target, property) {
+      if (property === 'readPackageFiles') {
+        return async () => {
+          throw new PackageArtifactStoreError(
+            'invalid_package',
+            'synthetic backend detail\nError: internal stack',
+          );
         };
       }
       const value = Reflect.get(target, property, target);
@@ -758,4 +777,31 @@ test('Operation/Rule MCP 分析期间的 revision 冲突保持 409 可重试语�
       },
     );
   }
+});
+
+test('Operation/Rule MCP 将损坏知识包映射为精炼的 422 工具错误', async () => {
+  const project = createProject({
+    owner: 'invalid_package_operator',
+    name: 'Operation Rule invalid package',
+    runtime: 'agent',
+  });
+  const service = new OperationRuleMcpService(
+    getDb(),
+    artifactsWithInvalidPackage(getPackageArtifactStore()),
+  );
+
+  await assert.rejects(
+    () => service.execute('list_ontology_rules', project, project.owner, {}),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelingMcpToolError);
+      assert.equal(error.code, 'SUBMISSION_BLOCKED');
+      assert.equal(error.statusCode, 422);
+      assert.equal(error.message, '知识包内容不完整，无法执行当前修改');
+      assert.equal(error.details.phase, 'load');
+      assert.equal(error.details.reason_code, 'PACKAGE_INTEGRITY_FAILED');
+      assert.equal(error.details.retryable, false);
+      assert.doesNotMatch(error.message, /synthetic backend|internal stack/iu);
+      return true;
+    },
+  );
 });

@@ -450,15 +450,54 @@ test('turn finished extracts a display message from structured runtime errors', 
       error: {
         error_code: 'MODEL_PROVIDER_ERROR',
         message: '模型服务请求失败',
-        retriable: false,
+        retriable: true,
         source: 'model',
         details: {},
+      },
+      recovery: {
+        action: 'continue',
+        label: '继续执行',
+        message: 'Continue from the preserved context.',
       },
     }, 1),
   );
 
   assert.equal(state.status, 'error');
   assert.equal(state.meta.error, '模型服务请求失败');
+  assert.equal(state.meta.error_code, 'MODEL_PROVIDER_ERROR');
+  assert.equal(state.meta.error_retriable, true);
+  assert.deepEqual(state.meta.recovery, {
+    action: 'continue',
+    label: '继续执行',
+    message: 'Continue from the preserved context.',
+  });
+});
+
+test('interrupted turn preserves both incomplete output and continuation recovery', () => {
+  const recovery = {
+    action: 'continue',
+    label: '继续执行',
+    message: 'Continue the synthetic task from preserved context.',
+  };
+  const state = applyPublicEvent(
+    { streamSegments: [], status: 'running', isLoading: true },
+    publicEvent('turn.finished', {
+      status: 'failed',
+      content: 'synthetic partial answer',
+      error: {
+        error_code: 'RUNTIME_EVENT_BUFFER_FULL',
+        message: 'synthetic event buffer overflow',
+        retriable: true,
+      },
+      recovery,
+    }),
+  );
+
+  assert.equal(state.status, 'error');
+  assert.equal(state.content, 'synthetic partial answer');
+  assert.equal(state.meta.incomplete, true);
+  assert.equal(state.meta.error_retriable, true);
+  assert.deepEqual(state.meta.recovery, recovery);
 });
 
 test('truncated turn preserves partial output and records an incomplete error code', () => {

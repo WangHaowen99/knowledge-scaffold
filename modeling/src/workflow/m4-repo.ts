@@ -30,6 +30,16 @@ export interface OptSuggestion {
   appliedVersion?: string; appliedRevision?: string; createdAt: string;
 }
 
+export class OptimizationSuggestionConflictError extends Error {
+  readonly code = 'OPTIMIZATION_SUGGESTION_CONFLICT';
+  readonly statusCode = 409;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'OptimizationSuggestionConflictError';
+  }
+}
+
 const rowToSug = (r: any): OptSuggestion => ({
   id: r.id, projectId: r.project_id, roundId: r.round_id,
   basedVersion: r.based_version, basedRevisionOid: r.based_revision_oid,
@@ -118,7 +128,9 @@ export function updatePendingSuggestion(input: {
     input.generalizationPlan ?? '', input.validationPlan ?? '',
     input.suggestionId, input.projectId,
   );
-  if (Number(result.changes) !== 1) throw new Error('优化建议不存在或已不再允许编辑');
+  if (Number(result.changes) !== 1) {
+    throw new OptimizationSuggestionConflictError('优化建议不存在或已不再允许编辑');
+  }
   return getSuggestions([input.suggestionId])[0];
 }
 

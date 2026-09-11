@@ -12,7 +12,12 @@ from pathlib import Path
 from urllib.parse import quote
 
 
-from agent.evolution import get_proposal_buffer, reset_operation_patcher, reset_proposal_buffer
+from agent.evolution import (
+    get_proposal_buffer,
+    reset_operation_patcher,
+    reset_proposal_buffer,
+    resolve_operation_md,
+)
 from api.routes.operations import operations_router
 from auth_test_backend import AuthManager
 from workspace.workspaces import create_workspace, get_workspace_paths
@@ -102,6 +107,38 @@ def _write_staged(
         ),
         encoding="utf-8",
     )
+
+
+def test_resolve_operation_md_rejects_path_traversal_segments(monkeypatch, tmp_path):
+    reset_operation_patcher()
+    reset_proposal_buffer()
+    operation_path = _create_workspace_with_operation(
+        tmp_path,
+        monkeypatch,
+        workspace_id="safe-workspace",
+        operation_content="# OP_A\n",
+    )
+
+    assert resolve_operation_md(
+        "example",
+        "OP_A",
+        workspace_id="safe-workspace",
+    ) == operation_path.resolve()
+    assert resolve_operation_md(
+        "../example",
+        "OP_A",
+        workspace_id="safe-workspace",
+    ) is None
+    assert resolve_operation_md(
+        "example",
+        "../OP_A",
+        workspace_id="safe-workspace",
+    ) is None
+    assert resolve_operation_md(
+        "example",
+        "nested/OP_A",
+        workspace_id="safe-workspace",
+    ) is None
 
 
 def test_apply_staged_rejects_when_operation_changed_after_stage(monkeypatch, tmp_path):

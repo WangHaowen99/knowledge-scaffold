@@ -16,6 +16,7 @@ from agent.runtime import (
     RuntimeEvent,
     RuntimeHistoryMessage,
     RuntimeInvocationContext,
+    RuntimeRecoveryAction,
     RuntimeResult,
 )
 from agent.runtime.mock import FixedAsyncAgentRuntime, ListRuntimeEventSink
@@ -496,11 +497,23 @@ def test_runtime_result_enforces_terminal_error_shape():
 
     assert RuntimeResult(status="completed", content="ok").error is None
     assert RuntimeResult(status="failed", error=error).error == error
+    recovery = RuntimeRecoveryAction(message="Continue from the preserved context.")
+    recoverable = RuntimeResult(status="failed", error=error, recovery=recovery)
+    assert recoverable.recovery == recovery
+    assert recoverable.to_dict()["recovery"]["action"] == "continue"
     assert RuntimeResult(status="cancelled", error=error).status == "cancelled"
     with pytest.raises(ValidationError):
         RuntimeResult(status="completed", error=error)
     with pytest.raises(ValidationError):
         RuntimeResult(status="failed")
+    with pytest.raises(ValidationError, match="only valid for failed"):
+        RuntimeResult(status="completed", recovery=recovery)
+    with pytest.raises(ValidationError, match="retriable error"):
+        RuntimeResult(
+            status="failed",
+            error=error.model_copy(update={"retriable": False}),
+            recovery=recovery,
+        )
 
 
 def test_draft_has_no_public_identity_but_public_event_requires_it():
@@ -602,6 +615,7 @@ def test_public_adapter_redacts_secrets_without_redacting_usage_tokens():
             "error": {
                 "error_code": "TOOL_FAILED",
                 "message": "Authorization: Bearer top-secret",
+                "retriable": True,
                 "source": "tool",
                 "details": {
                     "access_token": "secret-token",
@@ -610,6 +624,14 @@ def test_public_adapter_redacts_secrets_without_redacting_usage_tokens():
                     "password_hint": "not a credential field",
                 },
             },
+            "recovery": {
+                "action": "continue",
+                "label": "继续执行",
+                "message": "Continue from the preserved context.",
+            },
+            "history_messages": [
+                {"role": "user", "content": "private model context"}
+            ],
         },
     )
 
@@ -628,6 +650,12 @@ def test_public_adapter_redacts_secrets_without_redacting_usage_tokens():
     assert details["refreshToken"] == "[REDACTED]"
     assert details["password_hint"] == "not a credential field"
     assert "top-secret" not in draft.payload["error"]["message"]
+    assert draft.payload["recovery"] == {
+        "action": "continue",
+        "label": "继续执行",
+        "message": "Continue from the preserved context.",
+    }
+    assert "history_messages" not in draft.payload
     assert draft.payload["omitted"]["sensitive_fields_redacted"] == 3
 
 

@@ -13,13 +13,14 @@ import importlib
 import json
 import logging
 import os
+import sys
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Any, BinaryIO, Callable, Iterator, Optional
+from typing import Any, BinaryIO, Callable, Iterator, Optional, TextIO
 
 try:
     import fcntl
@@ -37,6 +38,26 @@ from config.system_config import ONTO_RUNTIME_ROOT
 MIGRATION_LOCK_FILE = "registered-migrations.lock"
 _PROCESS_LOCK = Lock()
 logger = logging.getLogger(__name__)
+result_logger = logging.getLogger(f"{__name__}.result")
+
+
+def _configure_stream_logger(
+    target: logging.Logger,
+    *,
+    stream: TextIO,
+    level: int,
+) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    target.handlers.clear()
+    target.addHandler(handler)
+    target.setLevel(level)
+    target.propagate = False
+
+
+def _configure_cli_logging() -> None:
+    _configure_stream_logger(logger, stream=sys.stderr, level=logging.WARNING)
+    _configure_stream_logger(result_logger, stream=sys.stdout, level=logging.INFO)
 
 
 class StartupMigrationError(RuntimeError):
@@ -507,6 +528,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    _configure_cli_logging()
     args = _build_parser().parse_args(argv)
     code, report = execute_registered_migrations(
         args.runtime_root,
@@ -518,7 +540,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     if args.report:
         _write_report_atomic(args.report, report)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    result_logger.info(json.dumps(report, ensure_ascii=False, indent=2))
     return code
 
 

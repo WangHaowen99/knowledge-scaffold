@@ -1,5 +1,6 @@
 """Tests for cancelled turn persistence in execution store."""
 
+from datetime import datetime, timezone
 import threading
 
 import persistence.execution_store as execution_store_module
@@ -31,6 +32,8 @@ def test_cancel_turn_marks_cancelled_and_persists_payload(tmp_path):
     assert turn["summary"] == "cancelled after partial progress"
     assert turn["final_output"]["cancel_reason"] == "user_stop"
     assert turn["end_time"] is not None
+    assert datetime.fromisoformat(turn["start_time"]).tzinfo == timezone.utc
+    assert datetime.fromisoformat(turn["end_time"]).tzinfo == timezone.utc
     assert "nodes" not in turn
 
 

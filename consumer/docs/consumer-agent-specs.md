@@ -7,8 +7,8 @@
 | 规格项 | 当前值 | 配置字段 | 行为 |
 | --- | ---: | --- | --- |
 | 用户请求 TPS | 50/s，burst=50 | `ops_config.limits.run_tps` / `AGENT_RUN_TPS` | 单进程全局 token bucket；超限直接返回 HTTP 429 |
-| 同时运行请求数 | 所有用户每 workspace 100 | 共享常量 `USER_WORKSPACE_RUN_CONCURRENCY_LIMIT` | Web 异步/同步、ACP、MCP 与 A2A 使用同一上限；保持现有 FIFO 排队语义，同步入口等待槽位最多 300 秒，超时返回 HTTP 503 |
-| 工作空间数 | 50 个 | `ops_config.limits.workspace_max_count` / `WORKSPACE_MAX_COUNT` | 只限制新增工作空间；不迁移、不删除已有工作空间 |
+| 同时运行请求数 | 普通用户 MCP Progress 流式 Chat 每 workspace 默认 5、可配 1–32；其余入口及管理员 100 | 工作空间 `runtime_config.mcp.stream_user_workspace_concurrency` 与共享常量 `USER_WORKSPACE_RUN_CONCURRENCY_LIMIT` | 平台管理员可在 MCP 接入页调整普通用户流式 Chat 上限；按 `user + workspace` FIFO 排队，同一 `session_id` 仍单飞。Web/ACP/A2A、MCP 普通 JSON Chat 和管理员 MCP 流式 Chat 使用 100；各入口按自身等待超时返回超时错误 |
+| 单用户工作空间数 | 每个 owner 50 个 | `ops_config.limits.workspace_max_count` / `WORKSPACE_MAX_COUNT` | 只限制新增或转入该 owner 的工作空间；成员访问不计入配额；owner=None 的公共空间不计入任何用户；建模影子接口可显式豁免本次创建/绑定校验；不迁移、不删除已有工作空间 |
 | 总本体数 | 每 workspace 10 个 | `ops_config.limits.ontology_max_count_per_workspace` / `ONTOLOGY_MAX_COUNT_PER_WORKSPACE` | 导入新本体时按当前 workspace 下本体目录数量校验；覆盖或新增版本不增加本体数 |
 | 单本体实体数 | 200 个 | `ops_config.limits.ontology_object_max_count` / `ONTOLOGY_OBJECT_MAX_COUNT` | 导入 converted/source 两类包及编辑器新增对象文件时，按最终 `objects/*.md` 数量校验 |
 | 单本体流程数 | 100 个 | `ops_config.limits.ontology_operation_max_count` / `ONTOLOGY_OPERATION_MAX_COUNT` | 导入 converted/source 两类包及编辑器新增流程文件时，按最终 `operations/*.md` 数量校验 |
@@ -50,6 +50,9 @@
 ## 说明
 
 - 当前 TPS 是后端进程内限制，不是跨多进程/多副本的分布式限流。
+- MCP Progress 流式 Chat 的 `用户 + workspace` 并发也是单个后端 Runtime Manager 的进程内上限；多进程或多副本部署如需集群级总上限，应增加共享 admission 协调层。
+- `workspace_max_count` 的配置名为兼容旧部署而保留，语义是单个 owner 的工作空间上限；普通用户、管理员代建和个人默认空间按 `workspace.json.owner` 计数，公共空间不计入任何用户；建模影子接口只豁免当次创建/绑定校验，持久化后仍按其 owner 计数。
+- 该配置不再限制所有用户的工作空间总量；如部署需要平台级总量或磁盘容量保护，应另设独立的全局容量策略，不能把两种口径混用。
 - `direct_execution` 暂不单独拆限流，仍共用全局 TPS 和现有并发槽。
 - `agent_perf` 性能分析日志不跟随普通日志 180 天策略，由各工作空间观测配置中的 `local.retention_days` 独立控制，并保持可直接读取分析。
 - `logging.level` 支持 `DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL` 和 `NOTSET`。字段缺失时使用进程启动级别，启动级别未配置时为 `INFO`。运行时修改建议先写临时文件，再原子替换 `ops_config.json`；读取到无效 JSON 或无效级别时继续使用上一次有效值。

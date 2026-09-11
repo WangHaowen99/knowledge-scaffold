@@ -197,6 +197,30 @@ test('新 Agent 项目不初始化旧任务图', () => {
   assert.equal(getDb().prepare('SELECT project_id FROM ai_construction_graphs WHERE project_id = ?').get(project.id), undefined);
 });
 
+test('Agent diff 找不到 revision 时返回精炼的 404 而不是 500', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Agent diff 错误映射', runtime: 'agent' });
+  const app = appFor(t);
+  const snapshot = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/agent/snapshot`,
+  });
+  assert.equal(snapshot.statusCode, 200, snapshot.body);
+
+  const runId = `run-missing-revision-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const response = await tool(app, project.id, 'diff', { rev_b: 'not-a-revision' }, runId);
+
+  assert.equal(response.statusCode, 404, response.body);
+  assert.deepEqual(response.json(), {
+    code: 'ARTIFACT_REVISION_NOT_FOUND',
+    error: '找不到这个版本',
+    reason: '找不到这个版本',
+    next: ['核对当前候选和修订后重试'],
+    display: { text: '找不到这个版本' },
+  });
+});
+
 test('接管候选工作区时返回与核心校验器同源的生成契约', async (t) => {
   const project = createProject({ owner: 'alice', name: '生成契约注入', runtime: 'agent' });
   const app = appFor(t);

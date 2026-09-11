@@ -147,7 +147,7 @@ export function studioError(error) {
   return {
     code,
     conflict: error?.status === 409 && ['WORKING_REVISION_CHANGED', 'REVISION_CONFLICT'].includes(code),
-    message: error?.data?.reason || error?.message || '知识包 Studio 暂时无法读取',
+    message: error?.message || '知识包 Studio 暂时无法读取',
     expectedRevision: error?.data?.expectedRevision || '',
     actualRevision: error?.data?.actualRevision || '',
     fieldErrors: error?.data?.fieldErrors || {},

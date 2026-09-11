@@ -48,11 +48,11 @@ import {
   type AiConstructionTaskAdjustmentAction,
   type AiConstructionTaskGraphCommand,
 } from '../ai-construction/task-graph.js';
-import { ArtifactRepositoryError } from '../artifacts/repository.js';
+import { mapArtifactHttpError } from '../artifacts/http-error.js';
+import { sendHttpError } from '../http-error.js';
 import { ArtifactRevisionRepo } from '../artifacts/revision-repo.js';
 import {
   getPackageArtifactStore,
-  PackageArtifactStoreError,
 } from '../artifacts/index.js';
 import type { PackageArtifactStore } from '../artifacts/index.js';
 import { getDb } from '../db/index.js';
@@ -166,7 +166,7 @@ function publicRevision(revision: ReturnType<ArtifactRevisionRepo['latest']>) {
 
 function sendStateError(reply: FastifyReply, error: unknown) {
   if (error instanceof ProjectLeaseError) {
-    const status = error.code === 'project_not_found' ? 404
+    const status = error.code === 'project_not_found' || error.code === 'not_found' ? 404
       : error.code === 'busy' || error.code === 'expired' || error.code === 'not_owner' ? 409 : 400;
     return reply.code(status).send({
       error: error.message,
@@ -201,10 +201,13 @@ function sendStateError(reply: FastifyReply, error: unknown) {
       ],
     });
   }
-  if (error instanceof ArtifactRepositoryError) {
-    const status = error.code === 'revision_conflict' ? 409
-      : error.code === 'revision_not_found' || error.code === 'not_initialized' ? 404 : 400;
-    return reply.code(status).send({ error: error.message, code: error.code });
+  const artifactError = mapArtifactHttpError(error);
+  if (artifactError) {
+    if (artifactError.statusCode >= 500) return sendHttpError(reply, error);
+    return reply.code(artifactError.statusCode).send({
+      error: artifactError.message,
+      code: artifactError.code,
+    });
   }
   // 定位不到唯一目标不是「操作失败」，而是需要人工介入；给出可执行的下一步
   if (error instanceof RepairTargetUnresolvedError) {
@@ -255,16 +258,8 @@ function sendStateError(reply: FastifyReply, error: unknown) {
       diagnostic: error.diagnostic,
     });
   }
-  if (error instanceof PackageArtifactStoreError) {
-    const status = error.code === 'project_not_found'
-      || error.code === 'package_not_found'
-      || error.code === 'file_not_found'
-      || error.code === 'revision_has_no_package'
-      ? 404
-      : error.code === 'commit_in_progress' ? 409 : 400;
-    return reply.code(status).send({ error: error.message, code: error.code });
-  }
   if (error instanceof PackageDraftError) {
+    if (error.statusCode >= 500) return sendHttpError(reply, error);
     return reply.code(error.statusCode).send({
       error: error.message,
       code: error.code,
@@ -280,7 +275,7 @@ function sendStateError(reply: FastifyReply, error: unknown) {
   if (error instanceof ScriptDecisionInputError) {
     return reply.code(400).send({ error: error.message, code: error.code });
   }
-  throw error;
+  return sendHttpError(reply, error);
 }
 
 function rekeyFlowchartDiagram(diagram: FlowchartDiagram): FlowchartDiagram {

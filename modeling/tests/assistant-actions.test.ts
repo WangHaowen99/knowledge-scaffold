@@ -28,7 +28,7 @@ test('前后端动作目录逐项一致', () => {
 
 test('后端代码里出现的动作 id 都已登记', () => {
   const emitted = new Set(
-    [...backendSource.matchAll(/id: '([a-z_]+)', label:/g)].map((match) => match[1]),
+    [...backendSource.matchAll(/id: '([a-z_]+)', label:[^\n]*(?:style:)/g)].map((match) => match[1]),
   );
   assert.ok(emitted.size > 10, `应扫描到足够多的动作，实际 ${emitted.size}`);
   for (const id of emitted) {

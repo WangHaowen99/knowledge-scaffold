@@ -501,7 +501,7 @@ export const actions = {
       actions.agentFocus(event.target);
       if (event.target.kind === 'diff') actions.scheduleSnapshotRefresh();
     }
-if (eventType === 'state' && !replaying) {
+    if (eventType === 'state' && !replaying) {
       store.set((state) => ({
         workflow: event,
         progress: null,

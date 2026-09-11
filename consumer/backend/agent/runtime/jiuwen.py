@@ -7,6 +7,7 @@ import copy
 import json
 import threading
 import uuid
+from builtins import BaseExceptionGroup
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from .contracts import (
     RuntimeEventSink,
     RuntimeHistoryMessage,
     RuntimeInvocationContext,
+    RuntimeRecoveryAction,
     RuntimeResult,
 )
 from .events import RuntimeEvent
@@ -40,6 +42,103 @@ _STATE_SNAPSHOT_CALLBACK: ContextVar[Any] = ContextVar(
     "jiuwen_state_snapshot_callback",
     default=None,
 )
+
+_CONTINUE_RECOVERY_ACTION = RuntimeRecoveryAction(
+    message=(
+        "Continue the previous task from where it was interrupted, using the "
+        "preserved context. Do not repeat steps that have already been completed."
+    )
+)
+_HISTORY_MESSAGE_FIELDS = frozenset(
+    {
+        "role",
+        "content",
+        "tool_calls",
+        "tool_call_id",
+        "name",
+        "reasoning_content",
+    }
+)
+
+
+def _validated_history_messages(value: Any) -> list[RuntimeHistoryMessage]:
+    history: list[RuntimeHistoryMessage] = []
+    for item in value or []:
+        try:
+            history.append(RuntimeHistoryMessage.model_validate(item))
+        except ValueError:
+            continue
+    return history
+
+
+def _build_resumable_llm_context(messages: Any) -> list[dict[str, Any]]:
+    """Return the longest provider-valid history prefix after a failed run."""
+    if not isinstance(messages, list):
+        return []
+
+    checkpoint: list[dict[str, Any]] = []
+    pending_tool_call_ids: set[str] = set()
+    pending_start: int | None = None
+
+    for raw_message in messages:
+        if not isinstance(raw_message, Mapping):
+            break
+        candidate = {
+            key: copy.deepcopy(value)
+            for key, value in raw_message.items()
+            if key in _HISTORY_MESSAGE_FIELDS
+        }
+        if candidate.get("content") is None:
+            candidate["content"] = ""
+        try:
+            message = RuntimeHistoryMessage.model_validate(candidate).model_dump(
+                mode="python",
+                exclude_none=True,
+            )
+        except ValueError:
+            break
+
+        role = message["role"]
+        if pending_tool_call_ids:
+            if role != "tool":
+                break
+            tool_call_id = str(message.get("tool_call_id") or "").strip()
+            if tool_call_id not in pending_tool_call_ids:
+                break
+            checkpoint.append(message)
+            pending_tool_call_ids.remove(tool_call_id)
+            if not pending_tool_call_ids:
+                pending_start = None
+            continue
+
+        if role == "tool":
+            break
+
+        checkpoint.append(message)
+        tool_calls = message.get("tool_calls") if role == "assistant" else None
+        if not tool_calls:
+            continue
+        if not isinstance(tool_calls, list):
+            checkpoint.pop()
+            break
+        tool_call_ids = [
+            str(tool_call.get("id") or "").strip()
+            for tool_call in tool_calls
+            if isinstance(tool_call, Mapping)
+        ]
+        if (
+            len(tool_call_ids) != len(tool_calls)
+            or not all(tool_call_ids)
+            or len(set(tool_call_ids)) != len(tool_call_ids)
+        ):
+            checkpoint.pop()
+            break
+        pending_tool_call_ids = set(tool_call_ids)
+        pending_start = len(checkpoint) - 1
+
+    if pending_tool_call_ids and pending_start is not None:
+        return checkpoint[:pending_start]
+    return checkpoint
 
 
 @contextmanager
@@ -254,6 +353,7 @@ class JiuwenAsyncAgentRuntime:
                 )
 
             async def produce() -> None:
+                engine_state: dict[str, Any] | None = None
                 with self._runs_lock:
                     active.producer_started = True
                     cancel_requested = active.cancel_requested
@@ -386,6 +486,21 @@ class JiuwenAsyncAgentRuntime:
                             (ModelOutputTruncatedError, ModelContentFilteredError),
                         ) and exc.partial_output:
                             terminal_payload["content"] = exc.partial_output
+                        if engine_state is not None:
+                            checkpoint = _build_resumable_llm_context(
+                                self._history_from_state(engine_state)
+                            )
+                            if checkpoint:
+                                terminal_payload["history_messages"] = checkpoint
+                            read_documents = engine_state.get("read_documents")
+                            if isinstance(read_documents, Mapping):
+                                terminal_payload["read_documents"] = dict(
+                                    read_documents
+                                )
+                            if checkpoint and error.retriable:
+                                terminal_payload["recovery"] = (
+                                    _CONTINUE_RECOVERY_ACTION.model_dump(mode="json")
+                                )
                         bridge.finish(
                             bridge.turn_finished(
                                 "failed",
@@ -1079,8 +1194,10 @@ class JiuwenAsyncAgentRuntime:
                 status_code = candidate
                 break
         type_names = {type(item).__name__.lower() for item in chain}
-        if any(isinstance(item, (TimeoutError, asyncio.TimeoutError)) for item in chain) or any(
-            "timeout" in name for name in type_names
+        if (
+            status_code in {408, 504}
+            or any(isinstance(item, (TimeoutError, asyncio.TimeoutError)) for item in chain)
+            or any("timeout" in name for name in type_names)
         ):
             return "timeout", status_code
         if status_code == 429 or any("ratelimit" in name or "rate_limit" in name for name in type_names):
@@ -1094,7 +1211,9 @@ class JiuwenAsyncAgentRuntime:
             return "connection", status_code
         if status_code is not None:
             return (
-                "provider_retryable" if status_code >= 500 else "provider",
+                "provider_retryable"
+                if status_code == 409 or 500 <= status_code < 600
+                else "provider",
                 status_code,
             )
         return "internal", None
@@ -1165,13 +1284,15 @@ class JiuwenAsyncAgentRuntime:
         payload = PublicEventAdapter(
             include_trace=include_trace
         ).adapt_runtime_result_payload(event)
+        history = _validated_history_messages(
+            event.payload.get("history_messages")
+        )
+        read_documents = (
+            dict(event.payload["read_documents"])
+            if isinstance(event.payload.get("read_documents"), Mapping)
+            else None
+        )
         if event.status in {"completed", "awaiting_input"}:
-            history: list[Any] = []
-            for item in event.payload.get("history_messages") or []:
-                try:
-                    history.append(RuntimeHistoryMessage.model_validate(item))
-                except ValueError:
-                    continue
             return RuntimeResult(
                 status=event.status,
                 content=payload.get("content"),
@@ -1179,11 +1300,7 @@ class JiuwenAsyncAgentRuntime:
                 usage=payload.get("usage"),
                 trace=payload.get("trace"),
                 history_messages=history,
-                read_documents=(
-                    dict(event.payload["read_documents"])
-                    if isinstance(event.payload.get("read_documents"), Mapping)
-                    else None
-                ),
+                read_documents=read_documents,
                 evolution_recall_records=[
                     dict(item)
                     for item in event.payload.get("evolution_recall_records") or []
@@ -1197,6 +1314,12 @@ class JiuwenAsyncAgentRuntime:
             "source": "runtime",
             "details": {},
         }
+        recovery = None
+        if event.status == "failed" and isinstance(payload.get("recovery"), Mapping):
+            try:
+                recovery = RuntimeRecoveryAction.model_validate(payload["recovery"])
+            except ValueError:
+                recovery = None
         return RuntimeResult(
             status=event.status,
             content=payload.get("content"),
@@ -1204,4 +1327,7 @@ class JiuwenAsyncAgentRuntime:
             usage=payload.get("usage"),
             trace=payload.get("trace"),
             error=RuntimeErrorInfo.model_validate(error_payload),
+            recovery=recovery,
+            history_messages=history,
+            read_documents=read_documents,
         )

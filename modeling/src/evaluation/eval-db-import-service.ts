@@ -51,6 +51,18 @@ export class EvaluationDatabaseImportCapacityError extends Error {
   }
 }
 
+export class EvaluationDatabaseImportRequestError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly statusCode: 400 | 409 | 503,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'EvaluationDatabaseImportRequestError';
+  }
+}
+
 const scheduleBackgroundTask: EvaluationDatabaseImportTaskScheduler = (task) => {
   setImmediate(() => { void task().catch(() => undefined); });
 };
@@ -63,9 +75,22 @@ function loadEvaluationDatabaseTarget(
   if (dataSource?.mode !== 'connection'
     || !dataSource.provider
     || !NL2SQL_PROVIDERS.has(dataSource.provider)) {
-    throw new Error('请先保存并测试 NL2SQL 数据源配置');
+    throw new EvaluationDatabaseImportRequestError(
+      'EVALUATION_DATA_SOURCE_REQUIRED',
+      '请先保存并测试 NL2SQL 数据源配置',
+      409,
+    );
   }
-  return resolveEvaluationDatabaseTarget(dataSource.config.scene, databaseUrl);
+  try {
+    return resolveEvaluationDatabaseTarget(dataSource.config.scene, databaseUrl);
+  } catch (error) {
+    throw new EvaluationDatabaseImportRequestError(
+      'EVAL_DB_ADMIN_UNAVAILABLE',
+      '评测数据库配置暂时不可用，请稍后重试',
+      503,
+      error,
+    );
+  }
 }
 
 function normalizeEvaluationDatabaseImportInput(input: {
@@ -135,7 +160,11 @@ export function startProjectEvaluationDatabaseImport(
 ): { run: EvaluationDatabaseImportRun } {
   assertProjectEvaluationDatabaseImportAvailable(input.projectId);
   if (!input.replaceConfirmed) {
-    throw new Error('请先确认 Excel 中的同名表将替换目标数据库中的现有表');
+    throw new EvaluationDatabaseImportRequestError(
+      'EVALUATION_DATABASE_IMPORT_CONFIRMATION_REQUIRED',
+      '请先确认 Excel 中的同名表将替换目标数据库中的现有表',
+      400,
+    );
   }
 
   const target = loadEvaluationDatabaseTarget(
@@ -143,7 +172,16 @@ export function startProjectEvaluationDatabaseImport(
     input.databaseUrl || dependencies.databaseUrl,
   );
   const upload = normalizeEvaluationDatabaseImportInput(input);
-  validateEvaluationDatabaseExcelUpload(upload.filename, upload.buffer);
+  try {
+    validateEvaluationDatabaseExcelUpload(upload.filename, upload.buffer);
+  } catch (error) {
+    throw new EvaluationDatabaseImportRequestError(
+      'EVALUATION_DATABASE_IMPORT_INVALID',
+      error instanceof Error ? error.message : 'Excel 文件不正确',
+      400,
+      error,
+    );
+  }
   const run = createEvaluationDatabaseImportRun({
     projectId: input.projectId,
     filename: upload.filename,

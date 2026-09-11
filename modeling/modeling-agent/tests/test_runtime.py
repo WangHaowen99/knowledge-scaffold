@@ -109,6 +109,18 @@ async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: flo
     raise AssertionError(f"run {run_id} did not reach {statuses}")
 
 
+class _CapturingScriptedModel(ScriptedModel):
+    def __init__(self, script, **kwargs):
+        super().__init__(script, **kwargs)
+        self.seen_messages = []
+
+    async def stream(self, *args, **kwargs):
+        if args:
+            self.seen_messages.append(args[0])
+        async for chunk in super().stream(*args, **kwargs):
+            yield chunk
+
+
 async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     knowledge = {spec.name for spec in core_tool_specs_for_phase("knowledge")}
     validation = {spec.name for spec in core_tool_specs_for_phase("validation")}
@@ -125,6 +137,7 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert "patch_rule" not in validation
     assert {
         "list_domain_resources", "get_domain_resource", "define_script_contract",
+        "get_product_ledger", "get_schema_semantics",
         "analyze_deterministic_capabilities", "confirm_deterministic_scope",
         "get_script_edit_context", "stage_script_patch", "run_script_test",
         "run_evaluation", "get_evaluation_results", "cancel_evaluation",
@@ -723,6 +736,113 @@ async def test_empty_compact_summary_marks_run_failed_with_visible_retry_path(se
             if event.kind == "model_call" and event.payload.get("actor") == "compact_summary"
         ]
         assert compact_calls[-1].payload["outcome"] == "empty_content"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_scope_confirmation_empty_response_without_artifact_keeps_latest_interaction_and_fails(settings) -> None:
+    question = {
+        "question": "是否保留 optional_route 为可选输入？专家调整：缺失时不得补零或推断，应返回输入不足、值为空并给出可追溯原因。",
+        "kind": "scope_confirmation",
+        "options": [
+            {"label": "保留可选输入", "description": "按专家意见调整", "value": "adjust"},
+            {"label": "本轮不生成", "description": "不生成脚本", "value": "skip"},
+        ],
+        "operation": "demo_operation_batch_parse",
+    }
+    model = ScriptedModel(
+        [[ToolTurn("ask", question)], []],
+        final="",
+    )
+    runtime = service(settings, model, FakeGateway())
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_scope_empty_response",
+            token="token_1",
+            message="开始确定性脚本建模",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting"})
+        interaction = runtime.store.get_interaction(waiting["interactionId"])
+        assert interaction is not None
+
+        await runtime.answer_interaction(
+            project_id="project_scope_empty_response",
+            interaction_id=interaction.id,
+            token="token_2",
+            answer={"value": "adjust", "text": "保留 optional_route 为可选输入"},
+        )
+        finished = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        assert finished["status"] == "failed"
+
+        snapshot = runtime.store.require_run(started["id"]).latest_interaction
+        assert snapshot["interactionId"] == interaction.id
+        assert snapshot["kind"] == "scope_confirmation"
+        assert "optional_route" in snapshot["question"]
+        assert snapshot["answer"]["value"] == "adjust"
+        assert snapshot["actionKey"] == "adjust"
+        assert snapshot["requiresArtifact"] is True
+        assert not any(
+            event.kind == "status" and event.payload.get("status") == "completed"
+            for event in runtime.store.events_after("project_scope_empty_response", 0)
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_compact_summary_carries_latest_interaction_facts_without_old_plan(settings) -> None:
+    model = _CapturingScriptedModel(
+        [[]],
+        final="",
+        content_by_call={0: "已保留专家调整意见，尚未形成新的脚本契约或脚本候选，请从当前交互继续。"},
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_compact_snapshot",
+            project_id="project_compact_snapshot",
+            session_id="project:project_compact_snapshot:run:run_compact_snapshot",
+            status=RUN_RUNNING,
+            prompt="开始确定性脚本建模",
+            token_fingerprint="fingerprint",
+        ))
+        runtime.store.update_run(run.id, latest_interaction={
+            "interactionId": "interaction_latest",
+            "kind": "scope_confirmation",
+            "question": "是否保留 optional_route 为可选输入？",
+            "answer": {"value": "adjust", "text": "保留 optional_route 为可选输入"},
+            "actionKey": "adjust",
+            "continuation": "请基于最新范围调整生成脚本候选",
+            "contractSummary": "demo_operation_batch_parse 脚本契约摘要",
+            "operation": "demo_operation_batch_parse",
+            "requiresArtifact": True,
+            "updatedAt": "2026-09-02T00:00:00+08:00",
+        })
+        live = LiveRun(
+            run_id=run.id,
+            project_id=run.project_id,
+            token="token_1",
+            required_tools=set(),
+        )
+        live.bundle = SimpleNamespace(model=model)
+        output = await runtime._run_compact_summary(  # noqa: SLF001
+            live,
+            runtime.store.require_run(run.id),
+            "empty_content",
+        )
+        assert output
+        assert model.seen_messages
+        content = "".join(
+            str(message.get("content") or "")
+            for message in model.seen_messages[-1]
+        )
+        assert "optional_route" in content
+        assert "保留" in content
+        assert "demo_operation_batch_parse" in content
+        assert "5 项" not in content
+        assert "plan_id" not in content
+        assert "approval_status" not in content
     finally:
         await runtime.shutdown()
 

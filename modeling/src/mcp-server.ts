@@ -8,7 +8,10 @@ import {
   markModelingMcpRuntimeRunning,
   markModelingMcpRuntimeStopped,
 } from './mcp/service.js';
-import { registerProjectMcpTransportRoutes } from './mcp/transport.js';
+import {
+  installMcpHttpErrorHandler,
+  registerProjectMcpTransportRoutes,
+} from './mcp/transport.js';
 
 const HEARTBEAT_MS = 10_000;
 
@@ -19,6 +22,7 @@ export interface ModelingMcpServerHandle {
 export async function startModelingMcpServer(): Promise<ModelingMcpServerHandle> {
   getDb();
   const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
+  installMcpHttpErrorHandler(app);
   app.get('/health', async () => ({ status: 'ok' }));
   registerProjectMcpTransportRoutes(app);
   await app.listen({ port: config.mcp.port, host: config.mcp.host });

@@ -4,6 +4,8 @@ import {
   AiConstructionTaskGraph,
   aiConstructionGraphSourceForProjectKind,
 } from '../ai-construction/task-graph.js';
+import { mapArtifactHttpError } from '../artifacts/http-error.js';
+import { sendHttpError } from '../http-error.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { getDb } from '../db/index.js';
 import { getProject } from '../projects/repo.js';
@@ -42,7 +44,7 @@ function inImmediateTransaction<T>(work: () => T): T {
 
 function sendWorkflowExtraError(reply: FastifyReply, error: unknown) {
   if (error instanceof ProjectLeaseError) {
-    const status = error.code === 'project_not_found' ? 404
+    const status = error.code === 'project_not_found' || error.code === 'not_found' ? 404
       : error.code === 'busy' || error.code === 'expired' || error.code === 'not_owner' ? 409 : 400;
     return reply.code(status).send({ error: error.message, code: error.code });
   }
@@ -54,7 +56,19 @@ function sendWorkflowExtraError(reply: FastifyReply, error: unknown) {
       : error.code === 'INVALID_INPUT' ? 400 : 409;
     return reply.code(status).send({ error: error.message, code: error.code });
   }
-  return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+  const artifactError = mapArtifactHttpError(error);
+  if (artifactError) {
+    if (artifactError.statusCode >= 500) return sendHttpError(reply, error);
+    return reply.code(artifactError.statusCode).send({
+      error: artifactError.message,
+      code: artifactError.code,
+    });
+  }
+  return sendHttpError(reply, error, {
+    code: 'INTERNAL_ERROR',
+    message: '服务暂时不可用，请稍后重试',
+    logMessage: '场景工作流接口执行失败',
+  });
 }
 
 export function registerWorkflowExtraRoutes(app: FastifyInstance): void {
@@ -72,7 +86,7 @@ export function registerWorkflowExtraRoutes(app: FastifyInstance): void {
     try {
       return { progress: progress.get(project.id, stepId) };
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return sendWorkflowExtraError(reply, error);
     }
   });
 
@@ -122,10 +136,7 @@ export function registerWorkflowExtraRoutes(app: FastifyInstance): void {
         return { progress: saved, interactions };
       });
     } catch (error) {
-      if (error instanceof ProjectLeaseError) {
-        return reply.code(error.code === 'busy' ? 409 : 400).send({ error: error.message });
-      }
-      return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+      return sendWorkflowExtraError(reply, error);
     }
   });
 

@@ -176,6 +176,25 @@ test('导入副本改名会同步更新规格、文本 manifest 和原始 manife
   assert.doesNotMatch(imported.files['manifest.yaml'], /导入演示知识包（2）/u);
 });
 
+test('导入副本改名会同步更新规格、文本 manifest 和原始 manifest 字节', () => {
+  const files = renderPackage(demoSpec());
+  files['manifest.yaml'] = `# 保留来源注释\n${files['manifest.yaml']}`;
+  const imported = parsePackageArchive(zipPackage(files, 'import-demo'));
+
+  const renamed = renameImportedPackageArchive(imported, '导入演示知识包（2）');
+
+  assert.equal(renamed.spec.name, '导入演示知识包（2）');
+  assert.match(renamed.files['manifest.yaml'], /^# 保留来源注释$/mu);
+  assert.match(renamed.files['manifest.yaml'], /^name: 导入演示知识包（2）$/mu);
+  assert.equal(
+    new TextDecoder().decode(renamed.rawFiles['manifest.yaml']),
+    renamed.files['manifest.yaml'],
+  );
+  assert.match(renamed.warnings.at(-1) ?? '', /导入演示知识包（2）/u);
+  assert.equal(imported.spec.name, '导入演示知识包');
+  assert.doesNotMatch(imported.files['manifest.yaml'], /导入演示知识包（2）/u);
+});
+
 test('来源 ZIP 缺少 manifest status 时按 draft 兼容导入，但仍拒绝非法状态', () => {
   const files = renderPackage(demoSpec());
   const manifestWithoutStatus = files['manifest.yaml'].replace(/^status:.*\n?/mu, '');

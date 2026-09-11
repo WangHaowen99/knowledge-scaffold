@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
+import { mapArtifactHttpError } from '../artifacts/http-error.js';
+import { sendHttpError } from '../http-error.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { PackageArtifactStoreError } from '../artifacts/package-store.js';
 import { getAuthoringState } from '../authoring/state.js';
@@ -7,6 +9,7 @@ import { canReadProject, canWriteProject, claimAgentRuntime, getProject, project
 import { parsePackageArchive } from '../workflow/package-import.js';
 import {
   getProjectPackageDataSourceSelection,
+  normalizePackageDataSourceSelection,
   saveProjectPackageDataSourceSelection,
 } from '../workflow/package-data-source-selection.js';
 import { AgentCoreError, AgentCoreService } from './core-service.js';
@@ -209,11 +212,20 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     if (!project || !canWriteProject(project.id, request.user!.username)) {
       return reply.code(404).send({ error: '项目不存在' });
     }
+    let requestedType: ReturnType<typeof normalizePackageDataSourceSelection>;
+    try {
+      requestedType = normalizePackageDataSourceSelection((request.body as any)?.dataSourceType);
+    } catch (error) {
+      return reply.code(400).send({
+        code: 'INVALID_INPUT',
+        error: error instanceof Error ? error.message : '知识包数据源类型不正确',
+      });
+    }
     try {
       const before = getProjectPackageDataSourceSelection(project.id).dataSourceType;
       const saved = saveProjectPackageDataSourceSelection(
         project.id,
-        (request.body as any)?.dataSourceType,
+        requestedType,
       );
       const current = await artifacts.current(project.id);
       const currentType = current?.spec.dataSourceType ?? 'neo4j';
@@ -225,7 +237,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
           : '',
       };
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return sendAgentCoreError(reply, error);
     }
   });
 
@@ -286,8 +298,22 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     if (!String(file.filename || '').toLowerCase().endsWith('.zip')) {
       return reply.code(400).send({ error: '来源知识包只支持 .zip' });
     }
+    let buffer: Buffer;
     try {
-      const archive = parsePackageArchive(new Uint8Array(await file.toBuffer()));
+      buffer = await file.toBuffer();
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+    let archive: ReturnType<typeof parsePackageArchive>;
+    try {
+      archive = parsePackageArchive(new Uint8Array(buffer));
+    } catch {
+      return reply.code(400).send({
+        code: 'PACKAGE_SOURCE_INVALID',
+        error: '来源知识包 ZIP 内容不正确，请检查后重试',
+      });
+    }
+    try {
       return reply.code(201).send(service.addWorkbenchPackageSource(
         project,
         request.user!.username,
@@ -295,8 +321,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
         archive,
       ));
     } catch (error) {
-      if (error instanceof AgentCoreError) return sendAgentCoreError(reply, error);
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return sendAgentCoreError(reply, error);
     }
   });
 
@@ -689,6 +714,7 @@ function sendNotModified(
 
 function sendStudioReadError(reply: FastifyReply, error: unknown) {
   if (error instanceof StudioReadError) {
+    if (error.statusCode >= 500) return sendHttpError(reply, error);
     return reply.code(error.statusCode).send({
       code: error.code,
       reason: error.message,
@@ -701,6 +727,7 @@ function sendStudioReadError(reply: FastifyReply, error: unknown) {
 
 function sendStudioError(reply: FastifyReply, error: unknown) {
   if (error instanceof StudioWriteError) {
+    if (error.statusCode >= 500) return sendHttpError(reply, error);
     return reply.code(error.statusCode).send({
       code: error.code,
       reason: error.message,
@@ -713,6 +740,7 @@ function sendStudioError(reply: FastifyReply, error: unknown) {
 
 export function sendAgentCoreError(reply: FastifyReply, error: unknown) {
   if (error instanceof AgentCoreError) {
+    if (error.statusCode >= 500) return sendHttpError(reply, error);
     return reply.code(error.statusCode).send({
       code: error.code,
       reason: error.message,
@@ -721,16 +749,16 @@ export function sendAgentCoreError(reply: FastifyReply, error: unknown) {
       display: { text: error.message },
     });
   }
-  if (error instanceof PackageArtifactStoreError) {
-    const status = error.code === 'invalid_input' ? 400
-      : ['project_not_found', 'package_not_found', 'file_not_found', 'candidate_not_found'].includes(error.code) ? 404
-        : 409;
-    return reply.code(status).send({
-      code: `ARTIFACT_${error.code.toUpperCase()}`,
-      reason: error.message,
+  const artifactError = mapArtifactHttpError(error);
+  if (artifactError) {
+    if (artifactError.statusCode >= 500) return sendHttpError(reply, error);
+    return reply.code(artifactError.statusCode).send({
+      code: `ARTIFACT_${artifactError.code.toUpperCase()}`,
+      error: artifactError.message,
+      reason: artifactError.message,
       next: ['核对当前候选和修订后重试'],
-      display: { text: error.message },
+      display: { text: artifactError.message },
     });
   }
-  throw error;
+  return sendHttpError(reply, error);
 }

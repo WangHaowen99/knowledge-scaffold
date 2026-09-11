@@ -85,6 +85,33 @@ test('conversation model exposes the incomplete-output error code', () => {
   assert.equal(model.turns[0].errorCode, 'MODEL_OUTPUT_TRUNCATED');
 });
 
+test('conversation model retains incomplete output together with recovery metadata', () => {
+  const recovery = {
+    action: 'continue',
+    label: '继续执行',
+    message: 'Continue the synthetic task from preserved context.',
+  };
+  const model = buildConversationViewModel([{
+    id: 'synthetic-interrupted-turn',
+    runId: 'synthetic-run',
+    role: 'assistant',
+    status: 'failed',
+    content: 'synthetic partial answer',
+    meta: {
+      error: 'synthetic event buffer overflow',
+      error_code: 'RUNTIME_EVENT_BUFFER_FULL',
+      incomplete: true,
+      error_retriable: true,
+      recovery,
+    },
+  }]);
+
+  assert.equal(model.turns[0].status, 'error');
+  assert.equal(model.turns[0].content, 'synthetic partial answer');
+  assert.equal(model.turns[0].incomplete, true);
+  assert.deepEqual(model.turns[0].recovery, recovery);
+});
+
 test('system cancellation notice remains a standalone non-turn message', () => {
   const model = buildConversationViewModel([{
     id: 'interaction-cancelled-1',
@@ -256,11 +283,21 @@ test('structured runtime errors render their public message instead of object te
         message: '模型服务请求失败',
         source: 'model',
       },
+      error_code: 'MODEL_PROVIDER_ERROR',
+      error_retriable: true,
+      recovery: {
+        action: 'continue',
+        label: '继续执行',
+        message: 'Continue from the preserved context.',
+      },
     },
   }]).turns[0];
 
   assert.equal(turn.error, '模型服务请求失败');
+  assert.equal(turn.errorPresentation.message, '模型服务暂时不可用，请稍后继续执行。');
   assert.equal(turn.blocks.at(-1).text, '模型服务请求失败');
+  assert.equal(turn.recovery.action, 'continue');
+  assert.equal(turn.recovery.label, '继续执行');
 });
 
 test('web search and generic tools remain distinct renderer kinds', () => {

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
@@ -16,6 +19,56 @@ from llm.provider_adapters import get_provider_adapter
 
 
 logger = get_logger(__name__)
+
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
+_MAX_RETRY_AFTER_SECONDS = 60.0
+
+
+def _is_retryable_status_code(status_code: Any) -> bool:
+    try:
+        normalized = int(status_code)
+    except (TypeError, ValueError):
+        return False
+    return normalized in _RETRYABLE_STATUS_CODES or 500 <= normalized < 600
+
+
+def _retry_delay_seconds(
+    attempt: int,
+    response: Any = None,
+    *,
+    now_utc: Optional[datetime] = None,
+) -> float:
+    """Use a valid Retry-After value or bounded exponential backoff."""
+    fallback = float(min(2 ** max(0, attempt), 8))
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return fallback
+
+    raw_retry_after = str(
+        headers.get("retry-after") or headers.get("Retry-After") or ""
+    ).strip()
+    if not raw_retry_after:
+        return fallback
+
+    try:
+        delay = float(raw_retry_after)
+        if not math.isfinite(delay) or delay < 0:
+            return fallback
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(raw_retry_after)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            current_time = now_utc or datetime.now(timezone.utc)
+            if current_time.tzinfo is None:
+                current_time = current_time.replace(tzinfo=timezone.utc)
+            delay = max(0.0, (retry_at - current_time).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+
+    if delay > _MAX_RETRY_AFTER_SECONDS:
+        return fallback
+    return delay
 
 
 class OpenAIChatTransport:
@@ -103,32 +156,60 @@ class OpenAIChatTransport:
                 json.dumps(payload, ensure_ascii=False, default=str),
             )
 
-        max_retries = self.agent_config.llm_connection_max_retries
-        for attempt in range(max_retries):
+        max_retries = max(0, int(self.agent_config.llm_connection_max_retries))
+        max_attempts = max_retries + 1
+        for attempt in range(max_attempts):
             try:
                 return self._get_openai_client().chat.completions.create(**payload)
             except APIStatusError as exc:
-                logger.error(
-                    "LLM error %d: %s",
-                    exc.status_code,
-                    getattr(exc.response, "text", str(exc)),
-                )
-                raise
-            except (APIConnectionError, APITimeoutError) as exc:
-                if attempt >= max_retries - 1:
-                    logger.error("LLM connection failed after %d attempts: %s", max_retries, exc)
+                if (
+                    not _is_retryable_status_code(exc.status_code)
+                    or attempt >= max_attempts - 1
+                ):
+                    logger.error(
+                        "LLM request failed with status %d after %d attempt(s)",
+                        exc.status_code,
+                        attempt + 1,
+                    )
                     raise
-                backoff = min(2 ** attempt, 8)
+                backoff = _retry_delay_seconds(attempt, exc.response)
                 logger.warning(
-                    "LLM connection error on attempt %d: %s. Retrying in %ds...",
-                    attempt + 1, exc, backoff,
+                    "Retryable LLM status %d on attempt %d/%d; retrying in %.1fs",
+                    exc.status_code,
+                    attempt + 1,
+                    max_attempts,
+                    backoff,
                 )
-                if cancel_event is not None and cancel_event.wait(backoff):
-                    raise WorkflowCancelledError("Workflow cancelled by user")
-                elif cancel_event is None:
-                    threading.Event().wait(backoff)
+                self._wait_before_retry(backoff, cancel_event)
+            except (APIConnectionError, APITimeoutError) as exc:
+                if attempt >= max_attempts - 1:
+                    logger.error(
+                        "LLM connection failed after %d attempt(s): %s",
+                        max_attempts,
+                        type(exc).__name__,
+                    )
+                    raise
+                backoff = _retry_delay_seconds(attempt)
+                logger.warning(
+                    "LLM connection error %s on attempt %d/%d; retrying in %.1fs",
+                    type(exc).__name__,
+                    attempt + 1,
+                    max_attempts,
+                    backoff,
+                )
+                self._wait_before_retry(backoff, cancel_event)
 
         raise RuntimeError("Request failed")
+
+    @staticmethod
+    def _wait_before_retry(
+        delay_seconds: float,
+        cancel_event: Optional[threading.Event],
+    ) -> None:
+        if cancel_event is not None and cancel_event.wait(delay_seconds):
+            raise WorkflowCancelledError("Workflow cancelled by user")
+        if cancel_event is None:
+            threading.Event().wait(delay_seconds)
 
     def _get_openai_client(self) -> Any:
         if self._openai_client is None:

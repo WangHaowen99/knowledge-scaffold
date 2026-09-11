@@ -238,6 +238,10 @@ class RuntimeStore:
             str(row["name"])
             for row in self._db.execute("PRAGMA table_info(project_agent_state)").fetchall()
         }
+        if "recovery_status" not in state_columns:
+            self._db.execute(
+                "ALTER TABLE project_agent_state ADD COLUMN recovery_status TEXT NOT NULL DEFAULT ''"
+            )
         if "round_mode" not in state_columns:
             self._db.execute(
                 "ALTER TABLE project_agent_state ADD COLUMN round_mode TEXT NOT NULL DEFAULT 'initial'"
@@ -249,10 +253,6 @@ class RuntimeStore:
         if "baseline_revision" not in state_columns:
             self._db.execute(
                 "ALTER TABLE project_agent_state ADD COLUMN baseline_revision TEXT NOT NULL DEFAULT ''"
-            )
-        if "recovery_status" not in state_columns:
-            self._db.execute(
-                "ALTER TABLE project_agent_state ADD COLUMN recovery_status TEXT NOT NULL DEFAULT ''"
             )
         timestamp = now_iso()
         terminal = tuple(sorted(TERMINAL_RUN_STATUSES))
@@ -452,7 +452,7 @@ class RuntimeStore:
         )
         self._db.execute(
             """INSERT INTO project_agent_state (
-project_id, state, revision, round_mode, round_id, baseline_revision,
+            project_id, state, revision, round_mode, round_id, baseline_revision,
             run_id, interaction_id, checkpoint_id,
             summary, open_questions_json, error, recovery_status, updated_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -473,10 +473,10 @@ project_id, state, revision, round_mode, round_id, baseline_revision,
         summary: str | None = None,
         open_questions: list[str] | None = None,
         error: str | None = None,
-round_mode: str | None = None,
+        recovery_status: str | None = None,
+        round_mode: str | None = None,
         round_id: str | None = None,
         baseline_revision: str | None = None,
-        recovery_status: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ProjectAgentState:
         _validate_state(next_state)
@@ -502,7 +502,7 @@ round_mode: str | None = None,
         )
         changed = self._db.execute(
             """UPDATE project_agent_state SET
-state = ?, revision = ?, round_mode = ?, round_id = ?, baseline_revision = ?,
+            state = ?, revision = ?, round_mode = ?, round_id = ?, baseline_revision = ?,
             run_id = ?, interaction_id = ?, checkpoint_id = ?,
             summary = ?, open_questions_json = ?, error = ?, recovery_status = ?, updated_at = ?
             WHERE project_id = ? AND revision = ?""",

@@ -26,6 +26,8 @@ from agent.runtime.errors import (
     RunConflictError,
     RunNotFoundError,
     SessionBusyError,
+    WorkspaceBusyError,
+    WorkspaceUnavailableError,
 )
 from agent.runtime.manager import AsyncRunManager
 from agent.runtime.manager import request_fingerprint
@@ -728,6 +730,82 @@ def test_same_session_second_run_is_rejected_without_queueing():
         assert runtime.cancelled == []
 
         await manager.cancel_run("run_admission_first", _scope(), reason="test_cleanup")
+    asyncio.run(run_test())
+
+
+def test_workspace_deletion_guard_rejects_active_run():
+    async def run_test():
+        runtime = _BlockingRuntime()
+        manager = AsyncRunManager(runtime)
+        await manager.create_run(_context("run_workspace_active"), _scope())
+        await asyncio.wait_for(runtime.started.wait(), timeout=1.0)
+
+        with pytest.raises(WorkspaceBusyError) as exc_info:
+            async with manager.workspace_deletion_guard("workspace_demo"):
+                pass
+
+        assert exc_info.value.run_id == "run_workspace_active"
+        assert exc_info.value.session_id == "session_demo"
+        assert exc_info.value.status == "running"
+
+        await manager.cancel_run(
+            "run_workspace_active",
+            _scope(),
+            reason="test_cleanup",
+        )
+        async with manager.workspace_deletion_guard("workspace_demo"):
+            pass
+
+    asyncio.run(run_test())
+
+
+def test_workspace_deletion_guard_rejects_waiting_creation_after_deletion():
+    async def run_test():
+        runtime = _SuccessRuntime()
+        available = {
+            "workspace_demo": True,
+            "workspace_other": True,
+        }
+
+        async def workspace_available(workspace_id: str) -> bool:
+            return available.get(workspace_id, False)
+
+        manager = AsyncRunManager(
+            runtime,
+            workspace_available=workspace_available,
+        )
+
+        async with manager.workspace_deletion_guard("workspace_demo"):
+            creation = asyncio.create_task(
+                manager.create_run(_context("run_after_workspace_guard"), _scope())
+            )
+            other_context = _context("run_other_workspace").model_copy(
+                update={
+                    "session_id": "session_other",
+                    "workspace_id": "workspace_other",
+                }
+            )
+            other_scope = RunScope(
+                "operator_a",
+                "workspace_other",
+                ("agent:run", "agent:read", "agent:cancel", "agent:interact"),
+            )
+            other_snapshot, other_created = await asyncio.wait_for(
+                manager.create_run(other_context, other_scope),
+                timeout=1.0,
+            )
+            await asyncio.sleep(0)
+            assert creation.done() is False
+            assert other_created is True
+            assert other_snapshot.run_id == "run_other_workspace"
+            available["workspace_demo"] = False
+
+        with pytest.raises(WorkspaceUnavailableError) as exc_info:
+            await creation
+
+        assert exc_info.value.workspace_id == "workspace_demo"
+        assert await manager.repository.get("run_after_workspace_guard") is None
+
     asyncio.run(run_test())
 
 
@@ -1769,6 +1847,82 @@ def test_truncated_terminal_projection_persists_partial_output(tmp_path):
             turn["final_output"]["error"]["error_code"]
             == "MODEL_OUTPUT_TRUNCATED"
         )
+
+    asyncio.run(run_test())
+
+
+def test_retriable_failure_persists_resume_history_and_public_action(tmp_path):
+    async def run_test():
+        class _SyntheticOrchestrator:
+            def __init__(self):
+                self.chat_store = ChatStore(str(tmp_path / "chat"))
+                self.execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+            def _get_stores(self, username, workspace_id):
+                assert username == "operator_a"
+                assert workspace_id == "workspace_demo"
+                return self.chat_store, self.execution_store
+
+        class _RecoverableRuntime:
+            async def astream(self, context):
+                yield RuntimeEvent(
+                    event_type="turn.finished",
+                    status="failed",
+                    run_id=context.run_id,
+                    session_id=context.session_id,
+                    turn_id=context.turn_id,
+                    payload={
+                        "status": "failed",
+                        "error": {
+                            "error_code": "MODEL_PROVIDER_ERROR",
+                            "message": "模型服务暂时不可用",
+                            "retriable": True,
+                            "source": "model",
+                            "details": {"http_status": 503},
+                        },
+                        "recovery": {
+                            "action": "continue",
+                            "label": "继续执行",
+                            "message": "Continue from the preserved context.",
+                        },
+                        "history_messages": [
+                            {"role": "user", "content": "synthetic request"},
+                            {"role": "assistant", "content": "synthetic progress"},
+                        ],
+                    },
+                )
+
+            async def cancel(self, run_id, reason):
+                del run_id, reason
+                return True
+
+        orchestrator = _SyntheticOrchestrator()
+        service = AsyncExecutionService(
+            _RecoverableRuntime(),
+            session_adapter=OrchestratorSessionAdapter(lambda: orchestrator),
+        )
+        manager = AsyncRunManager(service)
+        await manager.create_run(_context("run_recoverable_failure"), _scope())
+
+        failed = await _wait_for_status(
+            manager,
+            "run_recoverable_failure",
+            RunStatus.FAILED,
+        )
+        history = orchestrator.execution_store.get_llm_context("session_demo")
+        terminal = [
+            event
+            for event in await manager.repository.list_after(
+                "run_recoverable_failure",
+                0,
+            )
+            if event.event_type == "turn.finished"
+        ][0]
+
+        assert failed.result.recovery.action == "continue"
+        assert [message["role"] for message in history] == ["user", "assistant"]
+        assert terminal.payload["recovery"]["action"] == "continue"
+        assert "history_messages" not in terminal.payload
 
     asyncio.run(run_test())
 

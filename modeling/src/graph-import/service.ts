@@ -35,6 +35,8 @@ import { inferGraphImportColumns } from './value-inference.js';
 import {
   assertGraphImportPlanNotEmpty,
   assertGraphImportWriteResult,
+  GraphImportInputError,
+  GraphImportUpstreamError,
 } from './errors.js';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -138,9 +140,26 @@ async function loadPackage(projectId: string): Promise<{
 }> {
   const packages = getPackageArtifactStore();
   const current = await packages.current(projectId);
-  if (!current) throw new Error('请先生成知识包，再导入图数据');
+  if (!current) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_PACKAGE_REQUIRED',
+      '请先生成知识包，再导入图数据',
+      {},
+      409,
+    );
+  }
   const snapshot = await packages.readPackageFiles(projectId, current.revision.oid);
-  const schema = extractGraphImportSchema(snapshot.spec, snapshot.files);
+  let schema: GraphImportPackageSchema;
+  try {
+    schema = extractGraphImportSchema(snapshot.spec, snapshot.files);
+  } catch (error) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_PACKAGE_INVALID',
+      error instanceof Error ? error.message : '当前知识包缺少可用的图导入映射',
+      {},
+      422,
+    );
+  }
   return {
     version: current.packageVersion,
     revisionOid: snapshot.revision.oid,
@@ -164,9 +183,16 @@ function loadConnection(
 ): Neo4jGraphImportConnection {
   const dataSource = getProjectDataSource(projectId);
   if (dataSource?.mode !== 'connection' || dataSource.provider !== 'neo4j') {
-    throw new Error('请先保存 Neo4j 数据源配置');
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_DATA_SOURCE_REQUIRED',
+      '请先保存 Neo4j 数据源配置',
+      {},
+      409,
+    );
   }
-  if (requirePassword && !password) throw new Error('本次导入的 Neo4j Password 不能为空');
+  if (requirePassword && !password) {
+    throw new GraphImportInputError('GRAPH_IMPORT_INPUT', '本次导入的 Neo4j Password 不能为空');
+  }
   const config = dataSource.config;
   const connection: Neo4jGraphImportConnection = {
     uri: text(config.uri),
@@ -186,36 +212,85 @@ function loadConnection(
     ['Ontology 隔离字段', connection.ontologyProperty],
     ['Ontology 隔离值', connection.ontologyValue],
   ].find(([, value]) => !value);
-  if (missing) throw new Error(`${missing[0]}未配置，请先重新保存 Neo4j 数据源`);
+  if (missing) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_DATA_SOURCE_REQUIRED',
+      `${missing[0]}未配置，请先重新保存 Neo4j 数据源`,
+      {},
+      409,
+    );
+  }
   return connection;
 }
 
 function parseUpload(input: { projectId: string; owner: string; uploadId: string }) {
   const { upload, buffer } = readGraphImportUpload(input);
-  const tables = parseExcel(buffer, {
-    maxRows: MAX_ROWS_PER_SHEET,
-    rejectOverflow: true,
-    includeCellMetadata: true,
-  });
+  let tables: ReturnType<typeof parseExcel>;
+  try {
+    tables = parseExcel(buffer, {
+      maxRows: MAX_ROWS_PER_SHEET,
+      rejectOverflow: true,
+      includeCellMetadata: true,
+    });
+  } catch (error) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_INPUT',
+      error instanceof Error ? error.message : 'Excel 文件内容不正确',
+    );
+  }
   return { upload, tables };
 }
 
+function validateMapping(
+  schema: GraphImportPackageSchema,
+  tables: ReturnType<typeof parseExcel>,
+  mapping: GraphImportMapping,
+): GraphImportValidation {
+  try {
+    return validateGraphImportMapping(schema, tables, mapping);
+  } catch (error) {
+    if (error instanceof GraphImportInputError) throw error;
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_INPUT',
+      error instanceof Error ? error.message : '图导入映射不正确',
+    );
+  }
+}
+
 function mergeGraphImportExcelFiles(files: GraphImportExcelFileInput[]): GraphImportExcelFileInput {
-  if (!files.length) throw new Error('缺少 Excel 文件');
+  if (!files.length) throw new GraphImportInputError('GRAPH_IMPORT_INPUT', '缺少 Excel 文件');
   if (files.length === 1) return files[0];
   const totalSize = files.reduce((sum, file) => sum + file.buffer.byteLength, 0);
-  if (totalSize > MAX_FILE_SIZE) throw new Error('Excel 文件总大小不能超过 50MB');
+  if (totalSize > MAX_FILE_SIZE) {
+    throw new GraphImportInputError('GRAPH_IMPORT_INPUT', 'Excel 文件总大小不能超过 50MB');
+  }
   const workbook = XLSX.utils.book_new();
   const seenSheets = new Map<string, string>();
   for (const file of files) {
-    const parsed = XLSX.read(file.buffer, { type: 'buffer', cellDates: false, cellNF: true, cellText: false });
-    for (const sheetName of parsed.SheetNames) {
-      const previous = seenSheets.get(sheetName);
-      if (previous) {
-        throw new Error(`多个 Excel 中存在重复 Sheet「${sheetName}」：${previous}、${file.filename}`);
+    try {
+      const parsed = XLSX.read(file.buffer, {
+        type: 'buffer',
+        cellDates: false,
+        cellNF: true,
+        cellText: false,
+      });
+      for (const sheetName of parsed.SheetNames) {
+        const previous = seenSheets.get(sheetName);
+        if (previous) {
+          throw new GraphImportInputError(
+            'GRAPH_IMPORT_INPUT',
+            `多个 Excel 中存在重复 Sheet「${sheetName}」：${previous}、${file.filename}`,
+          );
+        }
+        seenSheets.set(sheetName, file.filename);
+        XLSX.utils.book_append_sheet(workbook, parsed.Sheets[sheetName], sheetName);
       }
-      seenSheets.set(sheetName, file.filename);
-      XLSX.utils.book_append_sheet(workbook, parsed.Sheets[sheetName], sheetName);
+    } catch (error) {
+      if (error instanceof GraphImportInputError) throw error;
+      throw new GraphImportInputError(
+        'GRAPH_IMPORT_INPUT',
+        error instanceof Error ? error.message : 'Excel 文件内容不正确',
+      );
     }
   }
   return {
@@ -270,15 +345,25 @@ export async function uploadGraphImportExcel(input: {
     filename: input.filename ?? '',
     buffer: input.buffer ?? Buffer.alloc(0),
   }]);
-  if (merged.buffer.byteLength > MAX_FILE_SIZE) throw new Error('Excel 文件不能超过 50MB');
+  if (merged.buffer.byteLength > MAX_FILE_SIZE) {
+    throw new GraphImportInputError('GRAPH_IMPORT_INPUT', 'Excel 文件不能超过 50MB');
+  }
   const packageContext = await loadPackage(input.projectId);
   loadConnection(input.projectId, '', false);
-  const tables = parseExcel(merged.buffer, {
-    maxRows: MAX_ROWS_PER_SHEET,
-    rejectOverflow: true,
-    includeCellMetadata: true,
-  });
-  if (!tables.length) throw new Error('Excel 中没有可导入的 Sheet');
+  let tables: ReturnType<typeof parseExcel>;
+  try {
+    tables = parseExcel(merged.buffer, {
+      maxRows: MAX_ROWS_PER_SHEET,
+      rejectOverflow: true,
+      includeCellMetadata: true,
+    });
+  } catch (error) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_INPUT',
+      error instanceof Error ? error.message : 'Excel 文件内容不正确',
+    );
+  }
+  if (!tables.length) throw new GraphImportInputError('GRAPH_IMPORT_INPUT', 'Excel 中没有可导入的 Sheet');
   const upload = saveGraphImportUpload({
     projectId: input.projectId,
     owner: input.owner,
@@ -314,7 +399,7 @@ export async function validateGraphImportUpload(input: {
   const packageContext = await loadPackage(input.projectId);
   const { upload, tables } = parseUpload(input);
   assertUploadRevision(upload.packageRevisionOid, packageContext);
-  const plan = validateGraphImportMapping(packageContext.schema, tables, input.mapping);
+  const plan = validateMapping(packageContext.schema, tables, input.mapping);
   assertGraphImportPlanNotEmpty(plan);
   return {
     packageVersion: packageContext.version,
@@ -414,8 +499,16 @@ export async function executeGraphImport(input: {
   let packageContext = await loadPackage(input.projectId);
   const { upload, tables } = parseUpload(input);
   assertUploadRevision(upload.packageRevisionOid, packageContext);
-  const mapping = normalizeGraphImportMapping(input.mapping);
-  const plan = validateGraphImportMapping(packageContext.schema, tables, mapping);
+  let mapping: GraphImportMapping;
+  try {
+    mapping = normalizeGraphImportMapping(input.mapping);
+  } catch (error) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_INPUT',
+      error instanceof Error ? error.message : '图导入映射不正确',
+    );
+  }
+  const plan = validateMapping(packageContext.schema, tables, mapping);
   assertGraphImportPlanNotEmpty(plan);
   const inspectIsolation = dependencies.inspectIsolation ?? inspectGraphIsolation;
   if (input.replaceExisting !== true) {
@@ -423,7 +516,7 @@ export async function executeGraphImport(input: {
     try {
       existing = await inspectIsolation(connection);
     } catch (error) {
-      throw new Error(safeError(error, password));
+      throw new GraphImportUpstreamError(undefined, new Error(safeError(error, password)));
     }
     if (existing.nodeCount || existing.relationshipCount) {
       throw new GraphIsolationDataExistsError(existing);
@@ -497,7 +590,14 @@ export async function cancelGraphImportUpload(input: {
 
 export async function cancelGraphImportRun(projectId: string, runId: string): Promise<GraphImportRun> {
   const active = activeGraphImports.get(projectId);
-  if (!active || active.runId !== runId) throw new Error('该项目当前没有可取消的图数据导入任务');
+  if (!active || active.runId !== runId) {
+    throw new GraphImportInputError(
+      'GRAPH_IMPORT_NOT_RUNNING',
+      '该项目当前没有可取消的图数据导入任务',
+      {},
+      409,
+    );
+  }
   return cancelActiveGraphImport(active, '用户已取消本次图数据导入');
 }
 

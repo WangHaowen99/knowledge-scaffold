@@ -6,6 +6,22 @@ import type { DataDictTable, DocumentRecord } from '../types.js';
 
 export type MaterialChangeKind = 'added' | 'replaced' | 'deleted' | 'format_only';
 
+export type DocumentRepositoryErrorCode =
+  | 'DOCUMENT_INVALID_DIRECTIVES'
+  | 'DOCUMENT_NOT_FOUND'
+  | 'DOCUMENT_REVISION_CONFLICT';
+
+export class DocumentRepositoryError extends Error {
+  constructor(
+    message: string,
+    readonly code: DocumentRepositoryErrorCode,
+    readonly statusCode: 400 | 404 | 409,
+  ) {
+    super(message);
+    this.name = 'DocumentRepositoryError';
+  }
+}
+
 export interface MaterialRevisionChange {
   kind: MaterialChangeKind;
   semanticChanged: boolean;
@@ -241,27 +257,48 @@ export class DocumentRevisionRepo {
     expectedDirectiveRevision?: number;
   }): DocumentRecord {
     const document = this.get(id);
-    if (!document || document.lifecycleStatus !== 'active') throw new Error('资料不存在或已经停用');
+    if (!document || document.lifecycleStatus !== 'active') {
+      throw new DocumentRepositoryError('资料不存在或已经停用', 'DOCUMENT_NOT_FOUND', 404);
+    }
     if ((input.purpose === 'schema' || input.purpose === 'term') && !['excel', 'csv'].includes(document.kind)) {
-      throw new Error(input.purpose === 'term'
-        ? '只有 Excel 或 CSV 表格可以指定为术语表'
-        : '只有 Excel 或 CSV 表格可以指定为数据 Schema');
+      throw new DocumentRepositoryError(
+        input.purpose === 'term'
+          ? '只有 Excel 或 CSV 表格可以指定为术语表'
+          : '只有 Excel 或 CSV 表格可以指定为数据 Schema',
+        'DOCUMENT_INVALID_DIRECTIVES',
+        400,
+      );
     }
     const expected = input.expectedDirectiveRevision ?? document.directiveRevision ?? 0;
     const result = this.db.prepare(`UPDATE documents
       SET purpose = ?, reading_mode = ?, directive_revision = directive_revision + 1
       WHERE id = ? AND lifecycle_status = 'active' AND directive_revision = ?`)
       .run(input.purpose, input.readingMode, id, expected);
-    if (Number(result.changes) !== 1) throw new Error('资料设置已在其他位置更新，请刷新后重试');
+    if (Number(result.changes) !== 1) {
+      const current = this.get(id);
+      if (!current || current.lifecycleStatus !== 'active') {
+        throw new DocumentRepositoryError('资料不存在或已经停用', 'DOCUMENT_NOT_FOUND', 404);
+      }
+      throw new DocumentRepositoryError(
+        '资料设置已在其他位置更新，请刷新后重试',
+        'DOCUMENT_REVISION_CONFLICT',
+        409,
+      );
+    }
     return this.get(id)!;
   }
 
   retire(id: string): MaterialRevisionChange {
     const previous = this.get(id);
-    if (!previous || previous.lifecycleStatus !== 'active') throw new Error('资料修订不存在或已经停用');
+    if (!previous || previous.lifecycleStatus !== 'active') {
+      throw new DocumentRepositoryError('资料修订不存在或已经停用', 'DOCUMENT_NOT_FOUND', 404);
+    }
     const now = nowIso();
-    this.db.prepare(`UPDATE documents SET lifecycle_status = 'deleted', retired_at = ?
+    const result = this.db.prepare(`UPDATE documents SET lifecycle_status = 'deleted', retired_at = ?
       WHERE id = ? AND lifecycle_status = 'active'`).run(now, id);
+    if (Number(result.changes) !== 1) {
+      throw new DocumentRepositoryError('资料修订不存在或已经停用', 'DOCUMENT_NOT_FOUND', 404);
+    }
     return {
       kind: 'deleted', semanticChanged: true,
       sourceKey: previous.sourceKey ?? previous.id,

@@ -8,6 +8,7 @@ import {
   downloadTermTableTemplate,
   exportPackageUrl,
   listMaterialRevisions,
+  publicApiErrorMessage,
   requireOkResponse,
   uploadDocument,
   updateDocumentDirectives,
@@ -186,7 +187,10 @@ export function subscribeAgent(id, { after = 0, onEvent } = {}) {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw Object.assign(new Error(data.error || '助手事件流不可用'), { status: response.status });
+        throw Object.assign(new Error(publicApiErrorMessage(data, response.status)), {
+          status: response.status,
+          data,
+        });
       }
       const reader = response.body?.getReader();
       if (!reader) throw new Error('助手事件流不可用');

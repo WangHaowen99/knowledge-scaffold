@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import hmac
 import inspect
+import json
 import logging
 import os
 import re
@@ -15,12 +16,17 @@ import warnings
 from collections import OrderedDict
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Annotated, Any, Callable, Mapping
+from typing import Annotated, Any, Awaitable, Callable, Mapping, get_type_hints
 from urllib.parse import parse_qs
 
 from pydantic import Field
 
-from .chat_adapter import execute_chat_tool
+try:
+    from fastmcp import Context
+except ImportError:  # pragma: no cover - handled by _load_fastmcp
+    Context = Any  # type: ignore[misc,assignment]
+
+from .chat_adapter import execute_chat_tool_async
 from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config, validate_mcp_runtime_config
 from integration.mcp.scope import (
     MCPRequestScope,
@@ -436,10 +442,36 @@ def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = 
             caller=caller,
         )
 
+    async def _with_scope_async(
+        required_scope: str,
+        caller: Callable[[MCPRequestScope], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        try:
+            scope = _resolve_scope(cfg, required_scope=required_scope)
+        except Exception as exc:
+            from integration.mcp.token_service import MCPTokenAuthError
+
+            if isinstance(exc, MCPTokenAuthError):
+                return auth_error_payload(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "type": "auth_error",
+                    "error_code": "INVALID_MCP_TOKEN",
+                    "detail": str(exc),
+                    "retriable": False,
+                },
+            }
+        return await _invoke_mcp_with_observation_async(
+            scope,
+            required_scope=required_scope,
+            caller=caller,
+        )
+
     if normalized_toolset in {"search", "all"}:
         _register_search_tools(mcp, call_with_scope=_with_scope)
     if normalized_toolset in {"chat", "all"}:
-        _register_chat_tool(mcp, call_with_scope=_with_scope)
+        _register_chat_tool(mcp, call_with_scope=_with_scope_async)
     return mcp
 
 
@@ -452,6 +484,19 @@ def _invoke_mcp_with_observation(
     with bind_otel_traceparent(scope.traceparent, strict=False):
         with _mcp_request_observation(scope, required_scope=required_scope) as span:
             result = caller(scope)
+            _mark_mcp_result_error(span, result)
+            return result
+
+
+async def _invoke_mcp_with_observation_async(
+    scope: MCPRequestScope,
+    *,
+    required_scope: str,
+    caller: Callable[[MCPRequestScope], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    with bind_otel_traceparent(scope.traceparent, strict=False):
+        with _mcp_request_observation(scope, required_scope=required_scope) as span:
+            result = await caller(scope)
             _mark_mcp_result_error(span, result)
             return result
 
@@ -711,16 +756,24 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
         return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_logic_content", {"ontology_id": ontology_id, "entity_instance_ids": entity_instance_ids, "logic_titles": logic_titles or []}, scope=scope))
 
 
-def _register_chat_tool(mcp: Any, *, call_with_scope: Callable[[str, Callable[[MCPRequestScope], dict[str, Any]]], dict[str, Any]]) -> None:
-    @mcp.tool()
-    def chat(  # pylint: disable=huawei-too-many-arguments
+def _register_chat_tool(
+    mcp: Any,
+    *,
+    call_with_scope: Callable[
+        [str, Callable[[MCPRequestScope], Awaitable[dict[str, Any]]]],
+        Awaitable[dict[str, Any]],
+    ],
+) -> None:
+    async def chat(  # pylint: disable=huawei-too-many-arguments
         query: Annotated[str, Field(description="用户问题。")],
+        ctx: Context,
         session_id: Annotated[str, Field(description="可选会话 ID。")] = "",
         model_profile_id: Annotated[str, Field(description="可选模型配置 ID。")] = "",
         arguments: Annotated[dict[str, Any] | None, Field(description="可选结构化参数。")] = None,
         requested_operation_key: Annotated[str, Field(description="可选确定性 Operation key。")] = "",
         include_trace: Annotated[bool, Field(description="是否返回脱敏后的执行 Trace，默认关闭。")] = False,
         selected_ontology_id: Annotated[str, Field(description="可选知识包 ID；首次调用时锁定到会话。")] = "",
+        stream: Annotated[bool, Field(description="是否通过 MCP Progress 实时返回粗粒度运行轨迹，默认关闭。")] = False,
     ) -> dict[str, Any]:
         """与 MetaWise 主 Agent 进行单轮知识问答；需要确定性图数据时优先使用知识检索工具。"""
         args = {
@@ -730,13 +783,48 @@ def _register_chat_tool(mcp: Any, *, call_with_scope: Callable[[str, Callable[[M
             "arguments": arguments or {},
             "requested_operation_key": requested_operation_key,
             "include_trace": include_trace,
+            "stream": stream,
             "context": (
                 {"selected_ontology_id": selected_ontology_id.strip()}
                 if selected_ontology_id.strip()
                 else {}
             ),
         }
-        return call_with_scope("mcp:chat", lambda scope: execute_chat_tool(args, scope=scope))
+        progress_callback = None
+        if stream and _context_progress_token(ctx) is not None:
+            async def report_progress(event: dict[str, Any]) -> None:
+                await ctx.report_progress(
+                    progress=float(event.get("seq") or 0),
+                    total=None,
+                    message=json.dumps(
+                        event,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
+
+            progress_callback = report_progress
+        return await call_with_scope(
+            "mcp:chat",
+            lambda scope: execute_chat_tool_async(
+                args,
+                scope=scope,
+                progress_callback=progress_callback,
+            ),
+        )
+
+    chat.__annotations__ = get_type_hints(chat, include_extras=True)
+    mcp.tool()(chat)
+
+
+def _context_progress_token(ctx: Any) -> str | int | None:
+    request_context = getattr(ctx, "request_context", None)
+    meta = getattr(request_context, "meta", None)
+    if isinstance(meta, Mapping):
+        value = meta.get("progressToken")
+    else:
+        value = getattr(meta, "progressToken", None)
+    return value if isinstance(value, (str, int)) and not isinstance(value, bool) else None
 
 
 def _resolve_scope(cfg: MCPRuntimeConfig, *, required_scope: str) -> MCPRequestScope:

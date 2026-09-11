@@ -104,7 +104,7 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
           const deleted = await deleteChat(deleteId);
           setDeleting(false);
           if (deleted) setDeleteId('');
-          else setDeleteError('删除失败，会话和运行状态已保留，请重试。');
+          else setDeleteError('删除失败；如有任务正在执行，请等待完成或显式停止。会话和运行状态已保留。');
         }}
         onCancel={() => { if (!deleting) setDeleteId(''); }} />
     </div>

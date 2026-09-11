@@ -8,9 +8,23 @@ export class GraphImportInputError extends Error {
     readonly code: string,
     message: string,
     readonly details: Record<string, unknown> = {},
+    readonly statusCode: 400 | 404 | 409 | 422 = 400,
   ) {
     super(message);
     this.name = 'GraphImportInputError';
+  }
+}
+
+export class GraphImportUpstreamError extends Error {
+  readonly code = 'GRAPH_IMPORT_UPSTREAM_UNAVAILABLE';
+  readonly statusCode = 502;
+
+  constructor(
+    message = '图数据服务暂时不可用，请稍后重试',
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'GraphImportUpstreamError';
   }
 }
 
@@ -21,6 +35,7 @@ export class GraphImportNoObjectMappingError extends GraphImportInputError {
       'GRAPH_IMPORT_NO_OBJECT_MAPPING',
       `知识包未生成对象到数据表的运行时映射${objectList ? `：${objectList}` : ''}`,
       { missingObjects },
+      422,
     );
     this.name = 'GraphImportNoObjectMappingError';
   }
@@ -33,6 +48,7 @@ export class GraphImportEmptyPlanError extends GraphImportInputError {
       'GRAPH_IMPORT_EMPTY_PLAN',
       `Excel 图数据导入计划没有可写入实例${reasonText ? `：${reasonText}` : ''}`,
       { reasons },
+      422,
     );
     this.name = 'GraphImportEmptyPlanError';
   }

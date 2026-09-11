@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Info, KeyRound, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Check, Copy, Info, KeyRound, Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
 
 import { authFetch } from '../../../shared/api/auth';
 import { Modal } from '../../../shared/ui/primitives';
 import { copyMcpText } from './clipboard';
 import {
   MCP_SCOPES,
+  MCP_STREAM_USER_CONCURRENCY_DEFAULT,
   acceptsMcpResponse,
   buildMcpClientConfig,
   buildMcpTokenRequest,
@@ -15,6 +16,7 @@ import {
   mcpScopeKey,
   mcpOntologyEligibility,
   normalizeMcpOntologies,
+  normalizeMcpStreamConcurrency,
   normalizeMcpStatus,
   normalizeMcpTokens,
   resolveMcpOntologySelection,
@@ -36,6 +38,7 @@ export default function McpSettingsPanel({
   workspaceName = '',
   authenticated = false,
   canManageTokens = true,
+  canManageConcurrency = false,
   ontologies: sharedOntologies = [],
   ontologiesLoading = false,
   ontologiesError = '',
@@ -58,7 +61,7 @@ export default function McpSettingsPanel({
     [normalizedOntologies, ontologyListReady],
   );
   const [scopeState, setScopeState] = useState(() => createMcpScopeState(scopeKey));
-  const [remoteState, setRemoteState] = useState({ scopeKey: '', status: null, tokens: [] });
+  const [remoteState, setRemoteState] = useState({ scopeKey: '', status: null, tokens: [], concurrency: null });
   const [loadingScope, setLoadingScope] = useState('');
   const [actionState, setActionState] = useState({ scopeKey: '', kind: '', tokenId: '' });
   const [message, setMessage] = useState({ scopeKey: '', type: '', text: '' });
@@ -68,7 +71,7 @@ export default function McpSettingsPanel({
 
   const currentRemote = remoteState.scopeKey === scopeKey
     ? remoteState
-    : { status: null, tokens: [] };
+    : { status: null, tokens: [], concurrency: null };
   const currentMessage = message.scopeKey === scopeKey ? message : { type: '', text: '' };
   const loading = loadingScope === scopeKey;
   const acting = actionState.scopeKey === scopeKey ? actionState : { kind: '', tokenId: '' };
@@ -91,6 +94,13 @@ export default function McpSettingsPanel({
     () => currentRemote.tokens.filter((token) => token.status === 'active').length,
     [currentRemote.tokens],
   );
+  const concurrency = normalizeMcpStreamConcurrency(currentRemote.concurrency || {});
+  const [concurrencyDraft, setConcurrencyDraft] = useState(concurrency.value);
+  const concurrencyReady = currentRemote.scopeKey === scopeKey && currentRemote.concurrency !== null;
+
+  useEffect(() => {
+    if (!concurrencyReady) setConcurrencyDraft(MCP_STREAM_USER_CONCURRENCY_DEFAULT);
+  }, [concurrencyReady, scopeKey]);
 
   const loadData = useCallback(async ({ clearMessage = false } = {}) => {
     if (!workspaceId || !authenticated) return;
@@ -108,24 +118,41 @@ export default function McpSettingsPanel({
       requestSequence,
     });
     try {
-      const [statusResponse, tokensResponse] = await Promise.all([
+      const [statusResponse, tokensResponse, concurrencyResponse] = await Promise.all([
         request('/agentic/mcp/runtime/status', { signal: controller.signal }),
         request('/agentic/mcp/tokens', { signal: controller.signal }),
+        request('/agentic/mcp/runtime/concurrency', { signal: controller.signal }),
       ]);
-      const [statusPayload, tokensPayload] = await Promise.all([
+      const [statusPayload, tokensPayload, concurrencyPayload] = await Promise.all([
         statusResponse.json().catch(() => ({})),
         tokensResponse.json().catch(() => ({})),
+        concurrencyResponse.json().catch(() => ({})),
       ]);
       if (!statusResponse.ok) throw new Error(payloadMessage(statusPayload, '加载 MCP 服务状态失败'));
       if (!tokensResponse.ok) throw new Error(payloadMessage(tokensPayload, '加载 MCP Token 失败'));
+      // Keep the status and token UI usable while an older backend is rolling out.
+      if (!concurrencyResponse.ok && concurrencyResponse.status !== 404) {
+        throw new Error(payloadMessage(concurrencyPayload, '加载 MCP 并发配置失败'));
+      }
       const status = normalizeMcpStatus(statusPayload, workspaceId);
       if (!status.valid) throw new Error(status.error);
       if (!accepted()) return;
+      const concurrencyConfig = concurrencyResponse.ok
+        ? normalizeMcpStreamConcurrency({
+          value: concurrencyPayload.stream_user_workspace_concurrency,
+          min: concurrencyPayload.min,
+          max: concurrencyPayload.max,
+        })
+        : null;
       setRemoteState({
         scopeKey: requestScope,
         status,
         tokens: normalizeMcpTokens(tokensPayload, workspaceId),
+        concurrency: concurrencyConfig,
       });
+      setConcurrencyDraft(
+        concurrencyConfig?.value ?? MCP_STREAM_USER_CONCURRENCY_DEFAULT,
+      );
     } catch (error) {
       if (accepted()) setMessage({ scopeKey: requestScope, type: 'error', text: error.message || '加载 MCP 配置失败' });
     } finally {
@@ -133,6 +160,29 @@ export default function McpSettingsPanel({
       if (loadControllerRef.current === controller) loadControllerRef.current = null;
     }
   }, [authenticated, request, scopeKey, workspaceId]);
+
+  const saveConcurrency = () => performAction('concurrency', async (controller, requestScope) => {
+    const normalized = normalizeMcpStreamConcurrency({ value: Number(concurrencyDraft) });
+    if (normalized.value !== Number(concurrencyDraft)) {
+      throw new Error(`并发数必须是 ${normalized.min}-${normalized.max} 的整数`);
+    }
+    const response = await request('/agentic/mcp/runtime/concurrency', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stream_user_workspace_concurrency: normalized.value }),
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payloadMessage(payload, '保存 MCP 并发配置失败'));
+    if (controller.signal.aborted || scopeRef.current !== requestScope) return;
+    setConcurrencyDraft(normalizeMcpStreamConcurrency({
+      value: payload.stream_user_workspace_concurrency,
+      min: payload.min,
+      max: payload.max,
+    }).value);
+    setMessage({ scopeKey: requestScope, type: 'success', text: 'MCP 并发配置已保存。' });
+    await loadData();
+  }, { available: canManageConcurrency && concurrencyReady });
 
   const retryOntologyList = useCallback(
     () => Promise.resolve().then(() => onRetryOntologies?.()),
@@ -194,8 +244,8 @@ export default function McpSettingsPanel({
     };
   });
 
-  const performAction = async (kind, callback) => {
-    if (!workspaceId || !selfServiceAvailable) return;
+  const performAction = async (kind, callback, { available = selfServiceAvailable } = {}) => {
+    if (!workspaceId || !available) return;
     actionControllerRef.current?.abort();
     const controller = new AbortController();
     const requestScope = scopeKey;
@@ -328,6 +378,22 @@ export default function McpSettingsPanel({
           </article>
         ))}
         {!loading && !services.length && <div className="settings-mcp-empty">暂无 MCP 服务目录。</div>}
+      </section>
+      <section className="card settings-mcp-concurrency">
+        <div><h3>流式 Chat 并发控制</h3><p>控制普通用户在当前工作空间可同时运行的 MCP Progress 流式 Chat 数量，默认 5，范围 1–32。</p></div>
+        <label>普通用户并发数
+          <input
+            type="number"
+            min={concurrency.min}
+            max={concurrency.max}
+            step="1"
+            value={concurrencyDraft}
+            disabled={!canManageConcurrency || !concurrencyReady || Boolean(acting.kind)}
+            onChange={(event) => setConcurrencyDraft(event.target.value)}
+          />
+        </label>
+        {!canManageConcurrency && <div className="settings-mcp-binding-hint">仅平台管理员可修改；当前值为 {concurrency.value}。</div>}
+        {canManageConcurrency && <div className="settings-mcp-actions"><button className="btn btn-p" type="button" disabled={!concurrencyReady || Boolean(acting.kind)} onClick={saveConcurrency}><Save size={14} />{acting.kind === 'concurrency' ? '保存中…' : '保存并发配置'}</button></div>}
       </section>
       <section className="card settings-mcp-create">
         <h3>生成 Token</h3>

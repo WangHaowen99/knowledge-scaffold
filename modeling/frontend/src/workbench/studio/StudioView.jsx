@@ -33,6 +33,7 @@ import {
   getStudioGraph,
   getSchemaSemanticItems,
   getSchemaSemanticSummary,
+  invalidateStudioBootstrap,
   previewStudioDeletions,
   requestStudioReview,
   studioError,
@@ -215,15 +216,15 @@ export default function StudioView({ focus }) {
       if (loadAbortRef.current === controller) loadAbortRef.current = null;
     }
   }, [clearExternalNotice, loadDetail, markRequestFailure, projectId, setExternalNotice, update]);
-
   const reloadStudio = useCallback(() => loadStudio({ cache: 'reload' }), [loadStudio]);
 
   const discardLocalDraftsAndLoadStudio = useCallback(async () => {
     localEditsRef.current = false;
     deferredRefreshRef.current = null;
+    invalidateStudioBootstrap(projectId);
     update({ entryDrafts: {}, details: {} });
     await loadStudio();
-  }, [loadStudio, update]);
+  }, [loadStudio, projectId, update]);
 
   useEffect(() => {
     const dirty = studioHasPendingLocalEdits(session);

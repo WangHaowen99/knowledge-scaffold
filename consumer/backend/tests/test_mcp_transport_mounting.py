@@ -57,6 +57,24 @@ def test_search_tool_schemas_make_ontology_id_optional(tmp_path):
         assert "ontology_id" not in schema.get("required", [])
 
 
+def test_chat_tool_schema_exposes_stream_without_context_parameter(tmp_path):
+    async def load_schema():
+        server = mcp_server.create_mcp_server(
+            _config(tmp_path, "streamable-http"),
+            toolset="chat",
+        )
+        return (await server.get_tools())["chat"].parameters
+
+    schema = asyncio.run(load_schema())
+
+    assert schema["properties"]["stream"] == {
+        "default": False,
+        "description": "是否通过 MCP Progress 实时返回粗粒度运行轨迹，默认关闭。",
+        "type": "boolean",
+    }
+    assert "ctx" not in schema["properties"]
+
+
 def test_mcp_http_root_app_mounts_only_streamable_http_when_transport_is_http(monkeypatch, tmp_path):
     captured_transports: list[str] = []
 
@@ -222,7 +240,29 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
 
     monkeypatch.setattr(mcp_server, "resolve_mcp_scope_from_token", resolve_scope)
 
-    def execute_chat_tool(args, *, scope):
+    async def execute_chat_tool(args, *, scope, progress_callback=None):
+        if args.get("stream") is True:
+            assert progress_callback is not None
+            await progress_callback(
+                {
+                    "schema_version": "1.0",
+                    "seq": 1,
+                    "event": "run.started",
+                    "stage": "request",
+                    "status": "running",
+                    "summary": "已接收请求，开始处理",
+                    "run_id": "run_demo",
+                    "tool": "",
+                    "tool_call_id": "",
+                    "provider": "",
+                    "record_count": None,
+                    "elapsed_ms": None,
+                    "warning_code": "",
+                    "truncated": False,
+                }
+            )
+        else:
+            assert progress_callback is None
         captured_chat_args.append(dict(args))
         return {
             "ok": True,
@@ -230,7 +270,11 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
             "endpoint_id": resolved_endpoint_ids[-1],
         }
 
-    monkeypatch.setattr(mcp_server, "execute_chat_tool", execute_chat_tool)
+    monkeypatch.setattr(
+        mcp_server,
+        "execute_chat_tool_async",
+        execute_chat_tool,
+    )
     app = mcp_server.create_mcp_http_root_app(
         _config(tmp_path, "streamable-http"),
     )
@@ -336,6 +380,48 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                     "endpoint_id"
                 ] == ENDPOINT_ID
 
+                progress_response = await client.post(
+                    endpoint_path,
+                    headers=headers,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "chat",
+                            "arguments": {
+                                "query": "synthetic progress question",
+                                "stream": "true",
+                            },
+                            "_meta": {
+                                "progressToken": "progress_demo",
+                            },
+                        },
+                    },
+                )
+                progress_messages = [
+                    json.loads(line.removeprefix("data: "))
+                    for line in progress_response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                notification_payload = next(
+                    item
+                    for item in progress_messages
+                    if item.get("method") == "notifications/progress"
+                )
+                assert notification_payload["params"]["progressToken"] == (
+                    "progress_demo"
+                )
+                assert json.loads(notification_payload["params"]["message"])[
+                    "event"
+                ] == "run.started"
+                terminal_payload = next(
+                    item for item in progress_messages if item.get("id") == 4
+                )
+                assert terminal_payload["result"]["structuredContent"][
+                    "endpoint_id"
+                ] == ENDPOINT_ID
+
                 terminated = await client.delete(endpoint_path, headers=headers)
                 assert terminated.status_code == 200
             assert mcp_server.get_bound_mcp_endpoint_id() == ""
@@ -354,8 +440,9 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
         loop.close()
         asyncio.set_event_loop(None)
 
-    assert resolved_endpoint_ids == [ENDPOINT_ID]
+    assert resolved_endpoint_ids == [ENDPOINT_ID, ENDPOINT_ID]
     assert captured_chat_args[0]["requested_operation_key"] == "query_exact"
+    assert captured_chat_args[1]["stream"] is True
 
 
 def test_workspace_endpoint_binding_app_validates_and_resets_context():
@@ -789,14 +876,18 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
         )
 
     monkeypatch.setattr(mcp_server, "resolve_mcp_scope_from_token", resolve_scope)
-    monkeypatch.setattr(
-        mcp_server,
-        "execute_chat_tool",
-        lambda _args, *, scope: {
+    async def execute_chat_tool(_args, *, scope, progress_callback=None):
+        assert progress_callback is None
+        return {
             "ok": True,
             "workspace_id": scope.workspace_id,
             "endpoint_id": resolved_endpoint_ids[-1],
-        },
+        }
+
+    monkeypatch.setattr(
+        mcp_server,
+        "execute_chat_tool_async",
+        execute_chat_tool,
     )
     app = mcp_server.create_mcp_http_root_app(_config(tmp_path, "sse"))
 

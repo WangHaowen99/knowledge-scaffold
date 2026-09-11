@@ -243,11 +243,18 @@ def update_workspace_authorized_with_validated_owner(
     user: Any,
     *,
     owner: Any,
+    enforce_workspace_limit: bool = True,
     **fields: Any,
 ) -> dict[str, Any]:
     normalized_owner = normalize_workspace_owner(owner)
     if normalized_owner is None:
-        return update_workspace_authorized(workspace_id, user, owner=None, **fields)
+        return update_workspace_authorized(
+            workspace_id,
+            user,
+            owner=None,
+            enforce_workspace_limit=enforce_workspace_limit,
+            **fields,
+        )
     return _with_validated_identities(
         auth_backend,
         (normalized_owner,),
@@ -256,6 +263,7 @@ def update_workspace_authorized_with_validated_owner(
             workspace_id,
             user,
             owner=normalized_owner,
+            enforce_workspace_limit=enforce_workspace_limit,
             **fields,
         ),
     )
@@ -265,13 +273,23 @@ def update_workspace_owner_with_validation(
     auth_backend: Any,
     workspace_id: str,
     owner: Any,
+    *,
+    enforce_workspace_limit: bool = True,
 ) -> dict[str, Any]:
     normalized_owner = normalize_workspace_owner(owner)
     if normalized_owner is None:
-        return update_workspace(workspace_id, owner=None)
+        return update_workspace(
+            workspace_id,
+            owner=None,
+            enforce_workspace_limit=enforce_workspace_limit,
+        )
     return _with_validated_identities(
         auth_backend,
         (normalized_owner,),
         field="owner",
-        mutation=lambda: update_workspace(workspace_id, owner=normalized_owner),
+        mutation=lambda: update_workspace(
+            workspace_id,
+            owner=normalized_owner,
+            enforce_workspace_limit=enforce_workspace_limit,
+        ),
     )

@@ -256,6 +256,24 @@ class RuntimeErrorInfo(BaseModel):
         return self.model_dump(mode="json")
 
 
+class RuntimeRecoveryAction(BaseModel):
+    """Recovery metadata with separate UI and model-facing text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action: Literal["continue"] = "continue"
+    label: str = Field(
+        default="继续执行",
+        description="User-visible button label; never added to model context.",
+    )
+    message: str = Field(
+        description="Instruction submitted as a new user message to the model.",
+    )
+
+    _validate_label = field_validator("label")(_require_non_empty)
+    _validate_message = field_validator("message")(_require_non_empty)
+
+
 class RuntimeResult(BaseModel):
     """Terminal result returned by ``AsyncAgentRuntime.arun``."""
 
@@ -267,6 +285,7 @@ class RuntimeResult(BaseModel):
     usage: dict[str, Any] | None = None
     trace: dict[str, Any] | None = None
     error: RuntimeErrorInfo | None = None
+    recovery: RuntimeRecoveryAction | None = None
     history_messages: list[RuntimeHistoryMessage] = Field(
         default_factory=list,
         exclude=True,
@@ -283,6 +302,12 @@ class RuntimeResult(BaseModel):
             raise ValueError("completed result must not contain error")
         if self.status == "failed" and self.error is None:
             raise ValueError("failed result requires error")
+        if self.recovery is not None and self.status != "failed":
+            raise ValueError("recovery action is only valid for failed results")
+        if self.recovery is not None and (
+            self.error is None or not self.error.retriable
+        ):
+            raise ValueError("recovery action requires a retriable error")
         return self
 
     def to_dict(self) -> dict[str, Any]:

@@ -24,8 +24,15 @@ from agent.runtime.event_bus import (
     EventSubscriberReservationError,
 )
 from api.protocols.mcp import server as mcp_server
-from api.protocols.mcp.chat_adapter import execute_chat_tool
-from api.protocols.mcp.workflow_bridge import execute_mcp_chat_workflow_async
+from api.protocols.mcp.chat_adapter import (
+    _decode_json_bytes,
+    execute_chat_tool,
+    execute_chat_tool_async,
+)
+from api.protocols.mcp.workflow_bridge import (
+    _emit_mcp_progress,
+    execute_mcp_chat_workflow_async,
+)
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import MCPRequestScope
 from persistence.execution_store import ExecutionStore
@@ -327,6 +334,7 @@ def _execute(
     invalidate_reservation_once=False,
     scope=None,
     runtime_capture=None,
+    progress_capture=None,
 ):
     import api.protocols.mcp.workflow_bridge as module
 
@@ -346,6 +354,10 @@ def _execute(
         )
         if runtime_capture is not None:
             runtime_capture["runtime"] = runtime
+
+        async def capture_progress(event):
+            progress_capture.append(event)
+
         return asyncio.run(
             execute_mcp_chat_workflow_async(
                 runtime=runtime,
@@ -357,6 +369,11 @@ def _execute(
                 queue_wait_seconds=0.01,
                 execution_timeout_seconds=0.01,
                 trace_config=_config(tmp_path / "tokens.json"),
+                progress_sink=(
+                    capture_progress
+                    if progress_capture is not None
+                    else None
+                ),
             )
         )
     finally:
@@ -373,6 +390,29 @@ def test_mcp_awaits_canonical_run_without_sync_bridge(tmp_path):
     assert manager.context.run_id.startswith("agentic-")
     assert manager.context.supports_user_interaction is False
     assert manager.context.traceparent == _scope().traceparent
+
+
+def test_mcp_streams_coarse_progress_without_changing_terminal_result(tmp_path):
+    manager = _Manager()
+    progress = []
+
+    body, status_code = _execute(
+        tmp_path,
+        manager,
+        trace=True,
+        progress_capture=progress,
+    )
+
+    assert status_code == 200
+    assert body["result"]["content"] == "synthetic answer"
+    assert [item["event"] for item in progress] == [
+        "run.started",
+        "ontology.ready",
+        "tool.started",
+        "tool.completed",
+        "run.completed",
+    ]
+    assert all("content_delta" not in item for item in progress)
 
 
 def test_mcp_forwards_explicit_deterministic_operation_and_arguments(tmp_path):
@@ -476,26 +516,109 @@ def test_mcp_chat_tool_exposes_selected_ontology_and_forwards_context(monkeypatc
 
             return decorate
 
-    def fake_execute(arguments, *, scope):
+    async def fake_execute(arguments, *, scope, progress_callback=None):
         captured.update(arguments=arguments, scope=scope)
+        assert progress_callback is None
         return {"ok": True}
 
     scope = _scope()
-    monkeypatch.setattr(mcp_server, "execute_chat_tool", fake_execute)
+    monkeypatch.setattr(mcp_server, "execute_chat_tool_async", fake_execute)
+
+    async def call_with_scope(_required_scope, callback):
+        return await callback(scope)
+
     mcp_server._register_chat_tool(
         _FakeMCP(),
-        call_with_scope=lambda _required_scope, callback: callback(scope),
+        call_with_scope=call_with_scope,
     )
 
-    result = registered["chat"](
-        query="solve synthetic plan",
-        selected_ontology_id="knowledge_package_demo",
+    result = asyncio.run(
+        registered["chat"](
+            query="solve synthetic plan",
+            ctx=SimpleNamespace(request_context=SimpleNamespace(meta=None)),
+            selected_ontology_id="knowledge_package_demo",
+        )
     )
 
     assert result == {"ok": True}
     assert captured["arguments"]["context"] == {
         "selected_ontology_id": "knowledge_package_demo",
     }
+
+
+def test_chat_tool_reports_progress_when_context_has_progress_token(
+    monkeypatch,
+):
+    registered = {}
+    scope = _scope()
+
+    class _FakeMCP:
+        @staticmethod
+        def tool():
+            def decorate(function):
+                registered[function.__name__] = function
+                return function
+
+            return decorate
+
+    async def fake_execute(arguments, *, scope, progress_callback=None):
+        assert arguments["stream"] is True
+        assert progress_callback is not None
+        await progress_callback(
+            {
+                "schema_version": "1.0",
+                "seq": 1,
+                "event": "run.started",
+                "stage": "request",
+                "status": "running",
+                "summary": "已接收请求，开始处理",
+                "run_id": "run_demo",
+                "tool": "",
+                "tool_call_id": "",
+                "provider": "",
+                "record_count": None,
+                "elapsed_ms": None,
+                "warning_code": "",
+                "truncated": False,
+            }
+        )
+        return {"ok": True, "result": {"content": "synthetic answer"}}
+
+    monkeypatch.setattr(
+        mcp_server,
+        "execute_chat_tool_async",
+        fake_execute,
+    )
+
+    async def call_with_scope(_required_scope, callback):
+        return await callback(scope)
+
+    mcp_server._register_chat_tool(
+        _FakeMCP(),
+        call_with_scope=call_with_scope,
+    )
+    progress_calls = []
+
+    class _Context:
+        request_context = SimpleNamespace(
+            meta=SimpleNamespace(progressToken="progress_demo")
+        )
+
+        @staticmethod
+        async def report_progress(progress, total=None, message=None):
+            progress_calls.append((progress, total, message))
+
+    result = asyncio.run(
+        registered["chat"](
+            query="synthetic question",
+            ctx=_Context(),
+            stream=True,
+        )
+    )
+
+    assert result["ok"] is True
+    assert progress_calls[0][0] == 1
+    assert '"event":"run.started"' in progress_calls[0][2]
 
 
 def test_chat_adapter_http_budget_exceeds_backend_execution_budget(
@@ -534,6 +657,190 @@ def test_chat_adapter_http_budget_exceeds_backend_execution_budget(
         "knowledge_package_demo"
     )
     assert captured["timeout"] > 30
+
+
+def test_async_chat_adapter_consumes_internal_progress_stream(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    class _StreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def aiter_lines(self):
+            for line in (
+                "event: progress",
+                'data: {"schema_version":"1.0","seq":1,"event":"run.started"}',
+                "",
+                "event: result",
+                'data: {"status_code":200,"body":{"ok":true,"result":{"content":"synthetic answer"}}}',
+                "",
+            ):
+                yield line
+
+    class _AsyncClient:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, method, url, *, headers, json):
+            captured.update(
+                method=method,
+                url=url,
+                headers=headers,
+                json=json,
+            )
+            return _StreamResponse()
+
+    monkeypatch.setattr(
+        "api.protocols.mcp.chat_adapter.httpx.AsyncClient",
+        _AsyncClient,
+    )
+    progress = []
+
+    async def on_progress(event):
+        progress.append(event)
+
+    result = asyncio.run(
+        execute_chat_tool_async(
+            {"query": "synthetic question", "stream": True},
+            scope=_scope(),
+            progress_callback=on_progress,
+            config=_config(tmp_path / "tokens.json"),
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["content"] == "synthetic answer"
+    assert progress == [
+        {"schema_version": "1.0", "seq": 1, "event": "run.started"}
+    ]
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/agentic/mcp/internal/chat/stream")
+
+
+def test_async_chat_adapter_propagates_progress_cancellation(
+    monkeypatch,
+    tmp_path,
+):
+    class _StreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def aiter_lines(self):
+            for line in (
+                "event: progress",
+                'data: {"schema_version":"1.0","seq":1,"event":"run.started"}',
+                "",
+            ):
+                yield line
+
+    class _AsyncClient:
+        def __init__(self, *, timeout):
+            del timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, method, url, *, headers, json):
+            del method, url, headers, json
+            return _StreamResponse()
+
+    monkeypatch.setattr(
+        "api.protocols.mcp.chat_adapter.httpx.AsyncClient",
+        _AsyncClient,
+    )
+
+    async def cancel_progress(_event):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            execute_chat_tool_async(
+                {"query": "synthetic question", "stream": True},
+                scope=_scope(),
+                progress_callback=cancel_progress,
+                config=_config(tmp_path / "tokens.json"),
+            )
+        )
+
+
+def test_chat_adapter_invalid_utf8_json_returns_none():
+    assert _decode_json_bytes(b"\xff") is None
+
+
+def test_mcp_progress_sink_cancellation_propagates():
+    async def cancel_progress(_event):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_emit_mcp_progress(cancel_progress, {"event": "run.started"}))
+
+
+def test_async_chat_adapter_falls_back_without_progress_callback(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"ok": True, "result": {"content": "synthetic answer"}}
+
+    class _AsyncClient:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, *, headers, json):
+            captured.update(url=url, headers=headers, json=json)
+            return _Response()
+
+    monkeypatch.setattr(
+        "api.protocols.mcp.chat_adapter.httpx.AsyncClient",
+        _AsyncClient,
+    )
+
+    result = asyncio.run(
+        execute_chat_tool_async(
+            {"query": "synthetic question", "stream": True},
+            scope=_scope(),
+            progress_callback=None,
+            config=_config(tmp_path / "tokens.json"),
+        )
+    )
+
+    assert result["ok"] is True
+    assert captured["url"].endswith("/agentic/mcp/internal/chat")
+    assert not captured["url"].endswith("/stream")
 
 
 def test_chat_adapter_injects_bound_ontology(monkeypatch, tmp_path):

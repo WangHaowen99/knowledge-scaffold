@@ -34,6 +34,18 @@ import {
 // 后台执行：startEvaluation 立即返回 roundId，前端轮询 GET round。
 export { shadowWorkspaceId } from './shadow-workspace.js';
 
+export class EvaluationOperationError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly statusCode: 400 | 404 | 409 | 422,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'EvaluationOperationError';
+  }
+}
+
 export function evaluationFinalAnswer(data: any): string {
   const pending = data?.pending_user_interaction;
   if (data?.status === 'awaiting_input' || (pending && typeof pending === 'object')) {
@@ -57,10 +69,18 @@ export function evaluationFinalAnswer(data: any): string {
 export function selectOfficialEvaluationTestcases(testcases: Testcase[]): Testcase[] {
   const official = testcases.filter((testcase) => testcase.source === 'manual');
   if (!official.length) {
-    throw new Error('请先录入用户真实场景用例，知识包派生问题不作为正式评测用例');
+    throw new EvaluationOperationError(
+      'EVALUATION_TESTCASES_REQUIRED',
+      '请先录入用户真实场景用例，知识包派生问题不作为正式评测用例',
+      409,
+    );
   }
   if (official.some((testcase) => !testcase.question.trim())) {
-    throw new Error('存在正式评测用例问题为空，请先修正后再运行评测');
+    throw new EvaluationOperationError(
+      'EVALUATION_TESTCASE_INVALID',
+      '存在正式评测用例问题为空，请先修正后再运行评测',
+      422,
+    );
   }
   return official;
 }
@@ -152,10 +172,19 @@ function assertEvaluationNotCancelled(signal: AbortSignal): void {
 export async function cancelEvaluation(projectId: string, roundId?: string): Promise<repo.EvalRound> {
   const active = activeEvaluations.get(projectId);
   if (!active || (roundId && active.roundId !== roundId)) {
-    throw new Error('该项目当前没有可停止的评测任务');
+    throw new EvaluationOperationError(
+      'EVALUATION_NOT_RUNNING',
+      '该项目当前没有可停止的评测任务',
+      409,
+    );
   }
   const round = repo.getRound(active.roundId);
-  if (!round || round.status !== 'running') throw new Error('该轮评测已经结束');
+  if (!round) {
+    throw new EvaluationOperationError('EVALUATION_NOT_FOUND', '评测轮次不存在', 404);
+  }
+  if (round.status !== 'running') {
+    throw new EvaluationOperationError('EVALUATION_NOT_RUNNING', '该轮评测已经结束', 409);
+  }
   repo.roundLog(active.roundId, '用户从评测页面停止本轮；已保留当前完成结果，可重新启动正式评测');
   repo.finishRound(active.roundId, 'failed');
   active.controller.abort(new Error('本轮评测已由用户停止'));
@@ -194,14 +223,26 @@ export function evaluationWorkspaceForRun(
 ): string {
   if (dataSource.mode !== 'connection') return dataSource.workspaceId;
   if (!dataSource.ontologyId) {
-    throw new Error('数据源配置缺少可用的本体数据源，请返回“数据源配置”重新输入密钥并保存');
+    throw new EvaluationOperationError(
+      'EVALUATION_DATA_SOURCE_REQUIRED',
+      '数据源配置缺少可用的本体数据源，请返回“数据源配置”重新输入密钥并保存',
+      409,
+    );
   }
   if (dataSource.ontologyId !== ontologyId) {
-    throw new Error('本体数据源与当前知识包不匹配，请返回“数据源配置”重新保存');
+    throw new EvaluationOperationError(
+      'EVALUATION_DATA_SOURCE_STALE',
+      '本体数据源与当前知识包不匹配，请返回“数据源配置”重新保存',
+      409,
+    );
   }
   const expectedWorkspaceId = evaluationWorkspaceId(projectId, dataSource);
   if (dataSource.workspaceId !== expectedWorkspaceId) {
-    throw new Error('数据源配置缺少可用的本体数据源，请返回“数据源配置”重新输入密钥并保存');
+    throw new EvaluationOperationError(
+      'EVALUATION_DATA_SOURCE_STALE',
+      '数据源配置缺少可用的本体数据源，请返回“数据源配置”重新输入密钥并保存',
+      409,
+    );
   }
   return expectedWorkspaceId;
 }
@@ -211,13 +252,24 @@ export function startEvaluation(
   dependencies: EvaluationExecutionDependencies = {},
 ): { roundId: string } {
   const { projectId } = opts;
-  if (activeProjects.has(projectId)) throw new Error('该项目已有评测在运行');
+  if (activeProjects.has(projectId)) {
+    throw new EvaluationOperationError('EVALUATION_ALREADY_RUNNING', '该项目已有评测在运行', 409);
+  }
   const latest = opts.packageSnapshot;
   if (!latest) throw new Error('启动评测必须提供知识包快照');
   if (!String(latest.revisionOid ?? '').trim()) throw new Error('知识包快照缺少工件修订');
   // 评测必须能够记录存量脚本的执行契约失败，而不是在轮次创建前整体拦截。
   // 安全检查仍然强制执行；候选接受、导出和发布继续使用严格契约。
-  validateSpecIntegrity(latest.spec, [], undefined, { validateScriptExecutionContract: false });
+  try {
+    validateSpecIntegrity(latest.spec, [], undefined, { validateScriptExecutionContract: false });
+  } catch (error) {
+    throw new EvaluationOperationError(
+      'EVALUATION_PACKAGE_INVALID',
+      error instanceof Error ? error.message : '当前知识包未通过评测前校验',
+      422,
+      error,
+    );
+  }
   const officialTestcases = selectOfficialEvaluationTestcases(repo.listTestcases(projectId));
   const requestedCaseIds = new Set((opts.caseIds ?? []).map((item) => String(item).trim()).filter(Boolean));
   const testcases = requestedCaseIds.size
@@ -226,17 +278,35 @@ export function startEvaluation(
   if (requestedCaseIds.size && testcases.length !== requestedCaseIds.size) {
     const found = new Set(testcases.map((item) => item.id));
     const missing = [...requestedCaseIds].filter((id) => !found.has(id));
-    throw new Error(`定向评测用例不存在或不是人工真实用例：${missing.join('、')}`);
+    throw new EvaluationOperationError(
+      'EVALUATION_TESTCASE_NOT_FOUND',
+      `定向评测用例不存在或不是人工真实用例：${missing.join('、')}`,
+      404,
+    );
   }
   const dataSource = getProjectDataSource(projectId);
-  if (!dataSource) throw new Error('尚未配置数据源，请先完成“数据源配置”步骤');
+  if (!dataSource) {
+    throw new EvaluationOperationError(
+      'EVALUATION_DATA_SOURCE_REQUIRED',
+      '尚未配置数据源，请先完成“数据源配置”步骤',
+      409,
+    );
+  }
   const runningDatabaseImport = getRunningEvaluationDatabaseImportRun(projectId);
   if (runningDatabaseImport) {
-    throw new Error(`评测库数据仍在后台导入（${runningDatabaseImport.filename}），请等待导入完成后再运行评测`);
+    throw new EvaluationOperationError(
+      'EVALUATION_DATABASE_IMPORT_ALREADY_RUNNING',
+      `评测库数据仍在后台导入（${runningDatabaseImport.filename}），请等待导入完成后再运行评测`,
+      409,
+    );
   }
   const workspaceId = evaluationWorkspaceForRun(projectId, dataSource, latest.spec.id);
   if (activeWorkspaces.has(workspaceId)) {
-    throw new Error(`评测工作空间 ${workspaceId} 已有评测在运行`);
+    throw new EvaluationOperationError(
+      'EVALUATION_WORKSPACE_BUSY',
+      `评测工作空间 ${workspaceId} 已有评测在运行`,
+      409,
+    );
   }
 
   const round = repo.createRound(

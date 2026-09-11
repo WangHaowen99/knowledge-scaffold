@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
+import { mapArtifactHttpError } from '../artifacts/http-error.js';
 import {
   backgroundAuthSessions,
   type BackgroundAuthSessionRegistry,
@@ -4236,93 +4237,100 @@ export class AgentCoreService {
     if (!['on_demand', 'full'].includes(readingMode)) {
       throw new AgentCoreError('INVALID_READING_MODE', '阅读方式不正确', ['选择按需读取或全文精读'], 400);
     }
-    try {
-      if (purpose === 'schema' && !(document.tables ?? []).length) {
-        throw new Error('只有包含可识别数据表的资料可以指定为数据 Schema');
-      }
-      if (purpose === 'term') validateTermTables(document.tables ?? [], {
-        dataSourceType: getProjectPackageDataSourceSelection(projectId).dataSourceType,
-      });
-      const currentReview = this.materialPurposeReviews.get(document.id);
-      const effectivePurpose = currentReview?.status === 'confirmed'
-        ? currentReview.confirmedPurpose ?? document.purpose ?? 'auto'
-        : purpose;
-      const updated = updateDocumentDirectives(document.id, {
-        purpose: effectivePurpose as NonNullable<typeof document.purpose>,
-        readingMode: readingMode as NonNullable<typeof document.readingMode>,
-      });
-      const purposeReview = updated.parseStatus === 'parsed'
-        ? this.materialPurposeReviews.suggest(updated, {
-          purpose: purpose as MaterialPurpose,
-          sheets: Array.isArray(args.sheet_purposes) ? args.sheet_purposes : [],
-          suggestedBy: 'agent',
-        })
-        : null;
-      const sheetPurposes = purposeReview?.status === 'confirmed'
-        ? purposeReview.sheetDecisions
-        : purposeReview?.sheetSuggestions ?? [];
-      const purposeBySheet = new Map(sheetPurposes.map((item) => [item.sheet, item]));
-      const reviewedSchemaTables = (updated.tables ?? []).filter((table) => (
-        purposeBySheet.get(table.name)?.semanticRole === 'schema'
-      ));
-      const objectTables = reviewedSchemaTables.filter((table) => (
-        purposeBySheet.get(table.name)?.importDisposition === 'object'
-      ));
-      const currentSchemaTables = schemaTables(this.tables(projectId));
-      return {
-        document: {
-          id: updated.id, filename: updated.filename, kind: updated.kind,
-          purpose: updated.purpose, readingMode: updated.readingMode,
-          directiveRevision: updated.directiveRevision,
-        },
-        ...(purposeReview ? {
-          purposeReview,
-          requiresUserConfirmation: purposeReview.status !== 'confirmed',
-        } : {}),
-        ...(updated.purpose === 'schema' ? {
-          schema: reviewedSchemaTables.map((table) => ({
-            ...schemaTableFact(updated, table),
-            importDisposition: purposeBySheet.get(table.name)?.importDisposition,
-          })),
-          objects: objectTables.map((table) => ({
-            name: table.name,
-            source: { documentId: updated.id, filename: updated.filename, sheet: table.name },
-            attributes: table.fields.map((field) => ({
-              name: field.name,
-              sourceColumn: field.sourceColumn,
-              status: field.name ? 'source_fact' : 'needs_clarification',
-              inferredType: field.inferredType,
-              inferred: true,
-            })),
-          })),
-        } : {}),
-        objectSourcePolicy: currentSchemaTables.length ? {
-          mode: 'schema',
-          schemaTableCount: currentSchemaTables.length,
-          rule: '一张 Schema Sheet 恰好对应一个物理对象；禁止派生对象，字段、binding 和 mapping 由平台同步',
-          requiredTool: 'sync_schema_objects',
-        } : {
-          mode: 'virtual',
-          schemaTableCount: 0,
-          rule: '只允许不绑定物理表的虚拟对象，不生成 mapping',
-        },
-        recommendedPhase: updated.purpose === 'goal'
-          ? 'goal'
-          : ['schema', 'term'].includes(updated.purpose ?? '') ? 'knowledge' : null,
-        display: {
-          text: purposeReview?.status === 'pending'
-            ? `已整理《${updated.filename}》的逐 Sheet 用途建议，等待用户确认`
-            : `已将《${updated.filename}》设为${materialPurposeLabel(updated.purpose)}，${updated.readingMode === 'full' ? '需要全文精读' : '默认按需读取'}`,
-        },
-      };
-    } catch (error) {
+    if (purpose === 'schema' && !(document.tables ?? []).length) {
       throw new AgentCoreError(
         'INVALID_MATERIAL_DIRECTIVE',
-        error instanceof Error ? error.message : '资料设置保存失败',
+        '只有包含可识别数据表的资料可以指定为数据 Schema',
         ['核对资料格式与用途后重试'],
         400,
       );
     }
+    if (purpose === 'term') {
+      // 数据源查询是服务端 I/O，不能和术语表内容校验一起包成 400。
+      const dataSourceType = getProjectPackageDataSourceSelection(projectId).dataSourceType;
+      try {
+        validateTermTables(document.tables ?? [], { dataSourceType });
+      } catch (error) {
+        throw new AgentCoreError(
+          'INVALID_MATERIAL_DIRECTIVE',
+          error instanceof Error ? error.message : '术语表格式不正确',
+          ['核对资料格式与用途后重试'],
+          400,
+        );
+      }
+    }
+    const currentReview = this.materialPurposeReviews.get(document.id);
+    const effectivePurpose = currentReview?.status === 'confirmed'
+      ? currentReview.confirmedPurpose ?? document.purpose ?? 'auto'
+      : purpose;
+    const updated = updateDocumentDirectives(document.id, {
+      purpose: effectivePurpose as NonNullable<typeof document.purpose>,
+      readingMode: readingMode as NonNullable<typeof document.readingMode>,
+    });
+    const purposeReview = updated.parseStatus === 'parsed'
+      ? this.materialPurposeReviews.suggest(updated, {
+        purpose: purpose as MaterialPurpose,
+        sheets: Array.isArray(args.sheet_purposes) ? args.sheet_purposes : [],
+        suggestedBy: 'agent',
+      })
+      : null;
+    const sheetPurposes = purposeReview?.status === 'confirmed'
+      ? purposeReview.sheetDecisions
+      : purposeReview?.sheetSuggestions ?? [];
+    const purposeBySheet = new Map(sheetPurposes.map((item) => [item.sheet, item]));
+    const reviewedSchemaTables = (updated.tables ?? []).filter((table) => (
+      purposeBySheet.get(table.name)?.semanticRole === 'schema'
+    ));
+    const objectTables = reviewedSchemaTables.filter((table) => (
+      purposeBySheet.get(table.name)?.importDisposition === 'object'
+    ));
+    const currentSchemaTables = schemaTables(this.tables(projectId));
+    return {
+      document: {
+        id: updated.id, filename: updated.filename, kind: updated.kind,
+        purpose: updated.purpose, readingMode: updated.readingMode,
+        directiveRevision: updated.directiveRevision,
+      },
+      ...(purposeReview ? {
+        purposeReview,
+        requiresUserConfirmation: purposeReview.status !== 'confirmed',
+      } : {}),
+      ...(updated.purpose === 'schema' ? {
+        schema: reviewedSchemaTables.map((table) => ({
+          ...schemaTableFact(updated, table),
+          importDisposition: purposeBySheet.get(table.name)?.importDisposition,
+        })),
+        objects: objectTables.map((table) => ({
+          name: table.name,
+          source: { documentId: updated.id, filename: updated.filename, sheet: table.name },
+          attributes: table.fields.map((field) => ({
+            name: field.name,
+            sourceColumn: field.sourceColumn,
+            status: field.name ? 'source_fact' : 'needs_clarification',
+            inferredType: field.inferredType,
+            inferred: true,
+          })),
+        })),
+      } : {}),
+      objectSourcePolicy: currentSchemaTables.length ? {
+        mode: 'schema',
+        schemaTableCount: currentSchemaTables.length,
+        rule: '一张 Schema Sheet 恰好对应一个物理对象；禁止派生对象，字段、binding 和 mapping 由平台同步',
+        requiredTool: 'sync_schema_objects',
+      } : {
+        mode: 'virtual',
+        schemaTableCount: 0,
+        rule: '只允许不绑定物理表的虚拟对象，不生成 mapping',
+      },
+      recommendedPhase: updated.purpose === 'goal'
+        ? 'goal'
+        : ['schema', 'term'].includes(updated.purpose ?? '') ? 'knowledge' : null,
+      display: {
+        text: purposeReview?.status === 'pending'
+          ? `已整理《${updated.filename}》的逐 Sheet 用途建议，等待用户确认`
+          : `已将《${updated.filename}》设为${materialPurposeLabel(updated.purpose)}，${updated.readingMode === 'full' ? '需要全文精读' : '默认按需读取'}`,
+      },
+    };
   }
 
   private async readDocumentsFully(context: AgentToolContext, args: Record<string, unknown>) {
@@ -9384,6 +9392,8 @@ function changeSetStatusLabel(status: string): string {
 }
 
 function normalizeDomainAgentError(error: unknown): AgentCoreError {
+  const artifact = normalizeArtifactAgentError(error);
+  if (artifact) return artifact;
   if (error instanceof DomainPatchError) {
     const fingerprint = createHash('sha256')
       .update(`${error.code}\0${error.path}\0${error.message}`)
@@ -9492,6 +9502,8 @@ function objectIdArg(value: unknown): string {
 
 function normalizeStudioAgentError(error: unknown): AgentCoreError {
   if (error instanceof AgentCoreError) return error;
+  const artifact = normalizeArtifactAgentError(error);
+  if (artifact) return artifact;
   if (error instanceof StudioReadError || error instanceof StudioWriteError) {
     return new AgentCoreError(
       error.code,
@@ -9506,6 +9518,54 @@ function normalizeStudioAgentError(error: unknown): AgentCoreError {
     error instanceof Error ? error.message : String(error),
     ['这是服务端内部错误，可以原样重试一次；仍然失败就把当前进展和错误告诉用户，不要绕过失败继续写入'],
     500,
+  );
+}
+
+/**
+ * 工件存储是 Agent 读写链路的底层依赖。这里不能让它穿透成普通 Error：
+ * Agent 的领域/Studio 归一化器会把普通异常当成内部故障并固定返回 500，
+ * 从而丢掉 revision_not_found、revision_conflict 等本来可恢复的业务语义。
+ *
+ * 路由层对直接工件异常使用 ARTIFACT_* 码；Agent 内部也沿用同一公开码，
+ * 这样无论错误在哪一层产生，HTTP、Agent 工具和前端都能使用同一契约。
+ */
+function normalizeArtifactAgentError(error: unknown): AgentCoreError | null {
+  const mapped = mapArtifactHttpError(error);
+  if (!mapped) return null;
+
+  const conflict = mapped.statusCode === 409;
+  const transient = mapped.statusCode >= 500;
+  const next = mapped.statusCode === 404
+    ? ['重新读取当前知识包和 revision 后重试']
+    : conflict
+      ? ['刷新当前知识包状态后再提交']
+      : transient
+        ? ['稍后重新读取当前知识包状态后重试']
+        : ['修正请求内容后重试'];
+  const rawDetails = error && typeof error === 'object' && 'details' in error
+    ? (error as { details?: unknown }).details
+    : undefined;
+  const details = rawDetails && typeof rawDetails === 'object' && !Array.isArray(rawDetails)
+    ? Object.fromEntries(Object.entries(rawDetails).filter(([key, value]) => (
+      typeof key === 'string'
+        && !/(?:authorization|cookie|password|secret|token|api[_-]?key|stack|trace|sql)/iu.test(key)
+        && (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null)
+    )))
+    : {};
+
+  return new AgentCoreError(
+    `ARTIFACT_${mapped.code.toUpperCase()}`,
+    mapped.message,
+    next,
+    mapped.statusCode,
+    {
+      error_class: transient ? 'transient' : conflict ? 'conflict' : 'precondition',
+      retryable: transient || conflict,
+      repairable: !transient,
+      artifact_source: mapped.source,
+      artifact_code: mapped.code,
+      ...details,
+    },
   );
 }
 

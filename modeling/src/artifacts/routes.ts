@@ -13,6 +13,8 @@ import * as m4repo from '../workflow/m4-repo.js';
 import { runFormatChecks } from '../workflow/package-check.js';
 import { assertNoActivePackageDraft, PackageDraftError } from '../workflow/package-draft.js';
 import { ArtifactRepositoryError, type ArtifactFileDiff } from './repository.js';
+import { mapArtifactHttpError } from './http-error.js';
+import { sendHttpError } from '../http-error.js';
 import {
   PackageArtifactStoreError,
   type PackageCandidateRevision,
@@ -47,36 +49,27 @@ function publicRevision(revision: any) {
 
 export function sendArtifactError(reply: FastifyReply, error: unknown) {
   if (error instanceof ProjectLeaseError) {
-    const status = error.code === 'project_not_found' ? 404
+    const status = error.code === 'project_not_found' || error.code === 'not_found' ? 404
       : error.code === 'busy' || error.code === 'expired' || error.code === 'not_owner' ? 409 : 400;
     return reply.code(status).send({ error: error.message, code: error.code });
   }
-  if (error instanceof ArtifactRepositoryError) {
-    const status = error.code === 'revision_conflict' ? 409
-      : error.code === 'revision_not_found' || error.code === 'not_initialized' ? 404 : 400;
-    return reply.code(status).send({ error: error.message, code: error.code });
-  }
-  if (error instanceof PackageArtifactStoreError) {
-    const status = error.code === 'project_not_found'
-      || error.code === 'package_not_found'
-      || error.code === 'file_not_found'
-      || error.code === 'revision_has_no_package'
-      || error.code === 'candidate_not_found'
-      ? 404
-      : error.code === 'commit_in_progress'
-        || error.code === 'candidate_not_pending'
-        || error.code === 'candidate_validation_failed'
-        ? 409 : 400;
-    return reply.code(status).send({ error: error.message, code: error.code });
+  const artifactError = mapArtifactHttpError(error);
+  if (artifactError) {
+    if (artifactError.statusCode >= 500) return sendHttpError(reply, error);
+    return reply.code(artifactError.statusCode).send({
+      error: artifactError.message,
+      code: artifactError.code,
+    });
   }
   if (error instanceof PackageDraftError) {
+    if (error.statusCode >= 500) return sendHttpError(reply, error);
     return reply.code(error.statusCode).send({
       error: error.message,
       code: error.code,
       ...error.details,
     });
   }
-  throw error;
+  return sendHttpError(reply, error);
 }
 
 function decode(value: Uint8Array | undefined): string | null {

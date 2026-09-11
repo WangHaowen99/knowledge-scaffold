@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterator, Protocol
 
-OntologySearchEvent = Dict[str, str]
+OntologySearchEvent = Dict[str, Any]
 
 
 class OntologySearchProvider(Protocol):

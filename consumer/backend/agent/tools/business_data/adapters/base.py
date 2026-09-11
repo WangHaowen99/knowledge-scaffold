@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterator, Protocol
 
-BusinessDataSearchEvent = Dict[str, str]
+BusinessDataSearchEvent = Dict[str, Any]
 
 
 class BusinessDataSearchAdapter(Protocol):

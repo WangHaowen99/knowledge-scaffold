@@ -1454,11 +1454,15 @@ def test_registered_migrations_mount_active_storage_read_write_only_after_stop_c
     assert result.returncode == 0, result.stdout + result.stderr
     runs = [call for call in _docker_calls(log_path) if call[:1] == ["run"]]
     assert len(runs) == 4
-    for index, call in enumerate(runs):
+    for call in runs:
         flattened = " ".join(call)
         assert "consumer-runtime-data:/release/.onto-runtime:rw" in flattened
         assert "consumer-auth-data:/release/.onto-auth:rw" in flattened
-        expected_access = "rw" if index == 2 else "ro"
+        writes_backend = any(
+            value.endswith(("migrate_persistent_storage.py", "migrate_system_config.py"))
+            for value in call
+        )
+        expected_access = "rw" if writes_backend else "ro"
         assert sum(
             value.endswith(f":/release/backend:{expected_access}") for value in call
         ) == 1
