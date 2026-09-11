@@ -31,18 +31,18 @@ const readStorage = (key) => {
   }
 };
 
-const sameCredentialState = (left, right) => Boolean(left && right)
-  && left.accessToken === right.accessToken
-  && left.refreshToken === right.refreshToken
-  && left.sessionId === right.sessionId
-  && left.tokenVersion === right.tokenVersion;
+const sameCredentialState = (left, right) => Boolean(left && right) &&
+  left.accessToken === right.accessToken &&
+  left.refreshToken === right.refreshToken &&
+  left.sessionId === right.sessionId &&
+  left.tokenVersion === right.tokenVersion;
 
-const sameCredentialIdentity = (left, right) => Boolean(left && right)
-  && Boolean(left.accessToken) === Boolean(right.accessToken)
-  && left.sessionId === right.sessionId
-  && (
-    left.sessionId !== 'legacy-session'
-    || left.accessToken === right.accessToken
+const sameCredentialIdentity = (left, right) => Boolean(left && right) &&
+  Boolean(left.accessToken) === Boolean(right.accessToken) &&
+  left.sessionId === right.sessionId &&
+  (
+    left.sessionId !== 'legacy-session' ||
+    left.accessToken === right.accessToken
   );
 
 const createAuthSessionId = () => {
@@ -54,9 +54,9 @@ const AUTH_TAB_ID = createAuthSessionId();
 
 const dispatchAuthEvent = (type) => {
   try {
-    const event = typeof CustomEvent === 'function'
-      ? new CustomEvent(AUTH_EVENT, { detail: { source: AUTH_TAB_ID, type } })
-      : Object.assign(new Event(AUTH_EVENT), { detail: { source: AUTH_TAB_ID, type } });
+    const event = typeof CustomEvent === 'function' ?
+      new CustomEvent(AUTH_EVENT, { detail: { source: AUTH_TAB_ID, type } }) :
+      Object.assign(new Event(AUTH_EVENT), { detail: { source: AUTH_TAB_ID, type } });
     window.dispatchEvent(event);
   } catch {
     // ignore event delivery errors
@@ -73,7 +73,7 @@ const dispatchClearedEvent = () => {
 
 export const broadcastAuthEvent = (type) => {
   dispatchAuthEvent(type);
-  if (typeof BroadcastChannel !== 'function') return;
+  if (typeof BroadcastChannel !== 'function') { return; }
   try {
     const channel = new BroadcastChannel(AUTH_CHANNEL_NAME);
     channel.postMessage({ source: AUTH_TAB_ID, type });
@@ -85,8 +85,8 @@ export const broadcastAuthEvent = (type) => {
 
 export const subscribeAuthEvents = (callback) => {
   const handleWindowEvent = (event) => {
-    const detail = event.detail;
-    if (!detail || detail.source === AUTH_TAB_ID) return;
+    const {detail} = event;
+    if (!detail || detail.source === AUTH_TAB_ID) { return; }
     callback(detail.type);
   };
   window.addEventListener(AUTH_EVENT, handleWindowEvent);
@@ -97,7 +97,7 @@ export const subscribeAuthEvents = (callback) => {
       channel = new BroadcastChannel(AUTH_CHANNEL_NAME);
       channel.onmessage = (event) => {
         const message = event.data;
-        if (message?.source !== AUTH_TAB_ID) callback(message?.type);
+        if (message?.source !== AUTH_TAB_ID) { callback(message?.type); }
       };
     } catch {
       channel = null;
@@ -113,7 +113,7 @@ const removeStoredCredentialState = () => {
   // Remove each historical token key explicitly. Never clear unrelated browser
   // state such as the user's workspace selection.
   window.localStorage.removeItem(AUTH_STATE_STORAGE_KEY);
-  for (const key of LEGACY_AUTH_STORAGE_KEYS) window.localStorage.removeItem(key);
+  for (const key of LEGACY_AUTH_STORAGE_KEYS) { window.localStorage.removeItem(key); }
 };
 
 let fallbackCredentialLockTail = Promise.resolve();
@@ -218,7 +218,7 @@ export const loginWithPassword = async (username, password) => withCredentialLoc
       signal,
     });
     const data = await response.json().catch(() => ({}));
-    if (signal.aborted) throw timeoutError;
+    if (signal.aborted) { throw timeoutError; }
     let committedState = null;
     if (response.ok && data.token) {
       committedState = {
@@ -245,13 +245,13 @@ export const clearAuthToken = async (
 ) => {
   const expected = { ...expectedState };
   const cleared = await withCredentialLock(() => {
-    if (!sameCredentialState(getCredentialState(), expected)) return false;
+    if (!sameCredentialState(getCredentialState(), expected)) { return false; }
     setCredentialSnapshot(emptyCredentialState());
     return true;
   });
   if (cleared) {
     removeStoredCredentialState();
-    if (broadcast) broadcastAuthEvent('logout');
+    if (broadcast) { broadcastAuthEvent('logout'); }
     dispatchClearedEvent();
   }
   return cleared;
@@ -266,7 +266,7 @@ export const logoutAuthSession = async () => {
         credentials: 'same-origin',
         signal,
       }), '登出请求超时');
-      if (!response.ok) revokeError = new Error(`登出吊销失败（${response.status}）`);
+      if (!response.ok) { revokeError = new Error(`登出吊销失败（${response.status}）`); }
     } catch (error) {
       revokeError = error;
     }
@@ -295,22 +295,22 @@ const ensureWorkspaceSnapshot = (username) => {
   if (workspaceSnapshotOwner !== window || workspaceSnapshotUsername !== normalizedUsername) {
     workspaceSnapshotOwner = window;
     workspaceSnapshotUsername = normalizedUsername;
-    workspaceSnapshot = readStorage(workspaceStorageKey(normalizedUsername))
-      || DEFAULT_WORKSPACE_ID;
+    workspaceSnapshot = readStorage(workspaceStorageKey(normalizedUsername)) ||
+      DEFAULT_WORKSPACE_ID;
   }
   return workspaceSnapshot;
 };
 
 export const getCurrentWorkspaceId = (username) => {
-  if (username !== undefined) return ensureWorkspaceSnapshot(username);
-  if (workspaceSnapshotOwner !== window) return ensureWorkspaceSnapshot(null);
+  if (username !== undefined) { return ensureWorkspaceSnapshot(username); }
+  if (workspaceSnapshotOwner !== window) { return ensureWorkspaceSnapshot(null); }
   return workspaceSnapshot;
 };
 
 export const setCurrentWorkspaceId = (workspaceId, username) => {
-  const normalizedUsername = username === undefined && workspaceSnapshotOwner === window
-    ? workspaceSnapshotUsername
-    : normalizeWorkspaceUsername(username);
+  const normalizedUsername = username === undefined && workspaceSnapshotOwner === window ?
+    workspaceSnapshotUsername :
+    normalizeWorkspaceUsername(username);
   workspaceSnapshotOwner = window;
   workspaceSnapshotUsername = normalizedUsername;
   workspaceSnapshot = workspaceId || DEFAULT_WORKSPACE_ID;
@@ -333,7 +333,7 @@ const doAuthFetch = (
   accessToken = null,
 ) => {
   const headers = new Headers(options.headers || {});
-  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+  if (accessToken) { headers.set('Authorization', `Bearer ${accessToken}`); }
   if (workspaceId) {
     // Headers.set only supports ISO-8859-1, so we encode for safety
     headers.set('X-Workspace-Id', encodeURIComponent(workspaceId));
@@ -382,16 +382,16 @@ const refreshAuthToken = (expectedState) => {
         permanent: [400, 401, 403].includes(response.status),
       });
     }
-    if (!data.token) throw new RefreshFailure('刷新响应缺少登录令牌');
+    if (!data.token) { throw new RefreshFailure('刷新响应缺少登录令牌'); }
 
     return withCredentialLock(() => {
       const storedState = getCredentialState();
       if (!sameCredentialState(storedState, expectedState)) {
         if (
-          expectedState.sessionId
-          && storedState.sessionId === expectedState.sessionId
-          && storedState.tokenVersion > expectedState.tokenVersion
-          && storedState.accessToken
+          expectedState.sessionId &&
+          storedState.sessionId === expectedState.sessionId &&
+          storedState.tokenVersion > expectedState.tokenVersion &&
+          storedState.accessToken
         ) {
           setCredentialSnapshot(storedState);
           return storedState;
@@ -412,9 +412,9 @@ const refreshAuthToken = (expectedState) => {
     refreshRequest.status = 'fulfilled';
     return nextState;
   }).catch((error) => {
-    const failure = error instanceof RefreshFailure
-      ? error
-      : new RefreshFailure('刷新登录令牌失败');
+    const failure = error instanceof RefreshFailure ?
+      error :
+      new RefreshFailure('刷新登录令牌失败');
     refreshRequest.error = failure;
     refreshRequest.status = 'rejected';
     throw failure;
@@ -433,8 +433,8 @@ const unauthorizedResponse = () => new Response(null, { status: 401 });
 
 const tokenNeedsRefresh = (token, now = Date.now()) => {
   try {
-    const payload = String(token || '').split('.')[1];
-    if (!payload) return false;
+    const [, payload] = String(token || '').split('.');
+    if (!payload) { return false; }
     const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
     const expiresAt = Number(JSON.parse(atob(padded)).exp) * 1000;
@@ -446,18 +446,18 @@ const tokenNeedsRefresh = (token, now = Date.now()) => {
 
 const reconciledCredentialState = (requestState) => {
   const currentState = getCredentialState();
-  if (sameCredentialState(currentState, requestState)) return currentState;
+  if (sameCredentialState(currentState, requestState)) { return currentState; }
   if (
-    requestState.sessionId
-    && currentState.sessionId === requestState.sessionId
-    && currentState.tokenVersion > requestState.tokenVersion
-    && currentState.accessToken
-  ) return currentState;
+    requestState.sessionId &&
+    currentState.sessionId === requestState.sessionId &&
+    currentState.tokenVersion > requestState.tokenVersion &&
+    currentState.accessToken
+  ) { return currentState; }
   if (
-    refreshInFlight?.status === 'fulfilled'
-    && sameCredentialState(refreshInFlight.from, requestState)
-    && sameCredentialState(refreshInFlight.to, currentState)
-  ) return currentState;
+    refreshInFlight?.status === 'fulfilled' &&
+    sameCredentialState(refreshInFlight.from, requestState) &&
+    sameCredentialState(refreshInFlight.to, currentState)
+  ) { return currentState; }
   return null;
 };
 
@@ -469,20 +469,20 @@ class AuthStateChangedError extends Error {
 }
 
 const guardResponseBody = (response, requestState) => {
-  if (!response.body || !requestState.accessToken || response.status === 0) return response;
+  if (!response.body || !requestState.accessToken || response.status === 0) { return response; }
   const identitySignal = credentialIdentityAbortController.signal;
   let reader = null;
   let finished = false;
 
   const cancelSource = (reason) => {
-    const cancellation = reader
-      ? reader.cancel(reason)
-      : response.body.cancel(reason);
+    const cancellation = reader ?
+      reader.cancel(reason) :
+      response.body.cancel(reason);
     void cancellation.catch(() => undefined);
   };
 
   const rejectStaleBody = (controller) => {
-    if (finished) return;
+    if (finished) { return; }
     finished = true;
     const error = new AuthStateChangedError();
     controller.error(error);
@@ -492,8 +492,8 @@ const guardResponseBody = (response, requestState) => {
   };
 
   const readWithIdentityGuard = () => {
-    if (identitySignal.aborted) return Promise.reject(new AuthStateChangedError());
-    if (!reader) reader = response.body.getReader();
+    if (identitySignal.aborted) { return Promise.reject(new AuthStateChangedError()); }
+    if (!reader) { reader = response.body.getReader(); }
     return new Promise((resolve, reject) => {
       const onIdentityChange = () => reject(new AuthStateChangedError());
       identitySignal.addEventListener('abort', onIdentityChange, { once: true });
@@ -518,7 +518,7 @@ const guardResponseBody = (response, requestState) => {
       }
       try {
         const chunk = await readWithIdentityGuard();
-        if (finished) return;
+        if (finished) { return; }
         if (!reconciledCredentialState(requestState)) {
           rejectStaleBody(controller);
           return;
@@ -530,7 +530,7 @@ const guardResponseBody = (response, requestState) => {
         }
         controller.enqueue(chunk.value);
       } catch (error) {
-        if (finished) return;
+        if (finished) { return; }
         if (error instanceof AuthStateChangedError) {
           rejectStaleBody(controller);
           return;
@@ -541,7 +541,7 @@ const guardResponseBody = (response, requestState) => {
     },
     cancel(reason) {
       finished = true;
-      if (reader) return reader.cancel(reason);
+      if (reader) { return reader.cancel(reason); }
       return response.body.cancel(reason);
     },
   }, { highWaterMark: 0 });
@@ -554,16 +554,16 @@ const guardResponseBody = (response, requestState) => {
 };
 
 const clearCredentialsIfCurrent = async (expectedState) => {
-  if (!sameCredentialState(getCredentialState(), expectedState)) return false;
+  if (!sameCredentialState(getCredentialState(), expectedState)) { return false; }
   return clearAuthToken(expectedState);
 };
 
 const retryWithCredentialState = async (url, options, workspaceId, retryState) => {
-  if (!sameCredentialState(getCredentialState(), retryState)) return unauthorizedResponse();
+  if (!sameCredentialState(getCredentialState(), retryState)) { return unauthorizedResponse(); }
   const response = await doAuthFetch(url, options, workspaceId, retryState.accessToken);
-  return reconciledCredentialState(retryState)
-    ? guardResponseBody(response, retryState)
-    : unauthorizedResponse();
+  return reconciledCredentialState(retryState) ?
+    guardResponseBody(response, retryState) :
+    unauthorizedResponse();
 };
 
 export const authFetch = async (url, options = {}) => {
@@ -574,18 +574,18 @@ export const authFetch = async (url, options = {}) => {
   let requestState = { ...getCredentialState() };
 
   if (
-    !refreshExempt
-    && (!requestState.accessToken || tokenNeedsRefresh(requestState.accessToken))
+    !refreshExempt &&
+    (!requestState.accessToken || tokenNeedsRefresh(requestState.accessToken))
   ) {
     const proactiveRefresh = refreshAuthToken(requestState);
     try {
       await proactiveRefresh.promise;
       const refreshedState = reconciledCredentialState(requestState);
-      if (!refreshedState) return unauthorizedResponse();
+      if (!refreshedState) { return unauthorizedResponse(); }
       requestState = { ...refreshedState };
     } catch (error) {
       const currentState = reconciledCredentialState(requestState);
-      if (!currentState) return unauthorizedResponse();
+      if (!currentState) { return unauthorizedResponse(); }
       if (error.permanent) {
         await clearCredentialsIfCurrent(requestState);
         return unauthorizedResponse();
@@ -598,7 +598,7 @@ export const authFetch = async (url, options = {}) => {
 
   const response = await doAuthFetch(url, options, workspaceId, requestState.accessToken);
   const currentState = reconciledCredentialState(requestState);
-  if (!currentState) return unauthorizedResponse();
+  if (!currentState) { return unauthorizedResponse(); }
   if (response.status !== 401 || refreshExempt) {
     return guardResponseBody(response, requestState);
   }
@@ -618,12 +618,12 @@ export const authFetch = async (url, options = {}) => {
       return unauthorizedResponse();
     }
     const caughtState = reconciledCredentialState(requestState);
-    if (!caughtState) return unauthorizedResponse();
+    if (!caughtState) { return unauthorizedResponse(); }
     if (!sameCredentialState(caughtState, requestState)) {
       return retryWithCredentialState(url, options, workspaceId, caughtState);
     }
     return guardResponseBody(response, requestState);
   }
-  if (!retryState) return unauthorizedResponse();
+  if (!retryState) { return unauthorizedResponse(); }
   return retryWithCredentialState(url, options, workspaceId, retryState);
 };

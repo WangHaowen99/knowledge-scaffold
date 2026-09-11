@@ -333,7 +333,7 @@ test('a stalled login times out and releases the credential lock for logout', as
       loginStarted();
       return new Promise(() => {});
     }
-    if (url === '/auth/logout') return new Response('', { status: 200 });
+    if (url === '/auth/logout') { return new Response('', { status: 200 }); }
     throw new Error(`Unexpected URL: ${url}`);
   };
 
@@ -364,7 +364,7 @@ test('a transient proactive refresh failure keeps a still-valid access token usa
   await setAuthToken(accessToken, 'old-refresh');
   let protectedCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
-    if (url === '/auth/refresh') return new Response('', { status: 503 });
+    if (url === '/auth/refresh') { return new Response('', { status: 503 }); }
     protectedCalls += 1;
     return new Response('', {
       status: new Headers(options.headers).get('Authorization') === `Bearer ${accessToken}` ? 200 : 401,
@@ -385,7 +385,7 @@ test('a proactive refresh network error still attempts the protected request', a
   await setAuthToken(accessToken, 'old-refresh');
   let protectedCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
-    if (url === '/auth/refresh') throw new TypeError('network unavailable');
+    if (url === '/auth/refresh') { throw new TypeError('network unavailable'); }
     protectedCalls += 1;
     return new Response('', {
       status: new Headers(options.headers).get('Authorization') === `Bearer ${accessToken}` ? 200 : 401,
@@ -560,7 +560,7 @@ test('logout during refresh cannot restore stale credentials', async () => {
   const started = new Promise((resolve) => { refreshStarted = resolve; });
 
   globalThis.fetch = async (url) => {
-    if (url !== '/auth/refresh') return new Response('', { status: 401 });
+    if (url !== '/auth/refresh') { return new Response('', { status: 401 }); }
     refreshStarted();
     await refreshReady;
     return new Response(JSON.stringify({ token: 'stale-access', refresh_token: 'stale-refresh' }), {
@@ -588,7 +588,7 @@ test('a new login during refresh cannot be cleared by the stale 401 request', as
   let refreshStarted;
   const started = new Promise((resolve) => { refreshStarted = resolve; });
   globalThis.fetch = async (url) => {
-    if (url === '/protected') return new Response('', { status: 401 });
+    if (url === '/protected') { return new Response('', { status: 401 }); }
     if (url === '/auth/refresh') {
       refreshStarted();
       await refreshReady;
@@ -627,7 +627,7 @@ test('refresh and logout send the HttpOnly cookie without exposing its value to 
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (url === '/protected') return new Response('', { status: 401 });
+    if (url === '/protected') { return new Response('', { status: 401 }); }
     if (url === '/auth/logout') {
       logoutOptions = options;
       return new Response('', { status: 200 });
