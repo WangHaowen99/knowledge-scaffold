@@ -124,14 +124,16 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
     <header className="wb-top">
       {!demo && <a className="btn btn-ghost btn-sm" href="/" title="返回项目列表"><Icon name="arrow" size={12} />项目</a>}
       <span className="goal ellip" title={projectName}>{projectName}</span>
-      <span className="sep">·</span>
-      <span className="k">
-        {demo
-          ? (incr ? '1.2.0 · 已发布' : project.revision)
-          : packageVersion
-            ? `v${String(packageVersion).replace(/^v/i, '')} · ${packageStatusLabel(packageStatus)}`
-            : '准备中'}
-      </span>
+      {/* 版本是个可辨识的标识，独立成带框胶囊；状态是它的说明，跟在后面用弱化文字，
+          原来挤成「v1.0.0-rc.4 · 候选」一串，两者主次不分 */}
+      {demo
+        ? <span className="k">{incr ? '1.2.0 · 已发布' : project.revision}</span>
+        : packageVersion
+          ? <>
+            <code className="wb-top-version">{`v${String(packageVersion).replace(/^v/i, '')}`}</code>
+            <span className="k">{packageStatusLabel(packageStatus)}</span>
+          </>
+          : <span className="k">准备中</span>}
 
       {incr ? (
         <>

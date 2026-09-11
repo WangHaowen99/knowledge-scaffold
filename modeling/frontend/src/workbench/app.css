@@ -16,7 +16,14 @@
   background: var(--c-surface); border-bottom: 1px solid var(--c-line);
   font-size: var(--t-md);
 }
-.wb-top .goal { font-weight: 600; max-width: 300px; }
+.wb-top .goal { font-weight: 600; max-width: 300px; letter-spacing: .01em; }
+.wb-top-version {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 9px;
+  border: 1px solid var(--c-line); border-radius: 6px; background: var(--c-surface-2);
+  color: var(--c-ink-2); font-size: var(--t-sm); font-variant-numeric: tabular-nums;
+  letter-spacing: .01em; white-space: nowrap;
+}
+.wb-top .k { color: var(--c-muted); }
 .wb-top .sep { color: var(--c-line); user-select: none; }
 .wb-pending-pill { cursor: pointer; font-family: inherit; line-height: inherit; }
 .wb-pending-pill:hover:not(:disabled), .wb-pending-pill:focus-visible {
@@ -971,10 +978,12 @@
 .wb-rail-pano:hover, .wb-rail-pano.on { background: var(--c-surface-3); color: var(--c-ink); }
 
 /* 卡住时才允许它抢戏：这是唯一该打断用户的时刻。不用红色——卡住不是出错，是在等人做决定。 */
-.wb-rail.alarm { background: var(--c-wait-bg); border-bottom-color: var(--c-wait-line); }
-.wb-rail.alarm .wb-rail-gate i { background: var(--c-wait-bg); }
+/* 整条换底色会把阶段轨变成一大片色块，阶段名和计数都被压住，而它本来是常驻元素、
+   不是提示条。改成左侧一道竖条 + 原有的琥珀色徽标来传递等待状态，底色保持白。 */
+.wb-rail.alarm { box-shadow: inset 3px 0 0 var(--c-wait); border-bottom-color: var(--c-wait-line); }
+.wb-rail.alarm .wb-rail-gate i { background: var(--c-surface); }
 .wb-rail.alarm .wb-rail-gate.shut i { background: var(--c-wait); }
-.wb-rail.alarm .wb-rail-step .num { background: var(--c-wait-bg); }
+.wb-rail.alarm .wb-rail-step .num { background: var(--c-surface-3); }
 .wb-rail.alarm .wb-rail-step.passed .num { background: var(--c-ok); }
 .wb-rail.alarm .wb-rail-step.current .num { background: var(--c-wait); }
 .wb-rail.alarm .wb-rail-why { background: var(--c-wait); border-color: var(--c-wait); color: #fff; font-weight: 600; padding: 4px 12px; }

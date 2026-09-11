@@ -1878,7 +1878,9 @@ try {
   const capabilityClaim = userFacingText('脚本契约需要读取领域资源，但本会话工具集中没有该读取能力，请确认平台是否开放。');
   const agentHtml = renderToString(<Block block={{ type: 'text', text: leakedText }} />);
   const quotaText = userFacingText("[181001] model call failed: RateLimitError: Error code: 429 - {'code':'insufficient_quota','message':'Allocated quota exceeded'}");
-  if (!html.includes('v1.0.0 · 已发布') || !html.includes('发布交付')) {
+  /* 版本和状态拆成了两个元素（版本是带框胶囊，状态是弱化文字），断言的是两者都在，
+     而不是它们拼成一串——拼法属于版式，不该锁死在测试里。 */
+  if (!html.includes('v1.0.0') || !html.includes('已发布') || !html.includes('发布交付')) {
     throw new Error('主界面没有优先显示语义版本和业务阶段');
   }
   if (/deadbeef|request_release|run-|cp-013|工具事件|工具边界/.test(html)) {
