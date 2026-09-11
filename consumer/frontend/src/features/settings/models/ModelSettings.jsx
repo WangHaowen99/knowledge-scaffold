@@ -411,7 +411,15 @@ function GlobalModelTable({
 }) {
   return (
     <div className="mw-model-table-wrap">
-      <Table>
+      <Table className="mw-model-table">
+        <colgroup>
+          <col className="mw-model-col-identity" />
+          <col className="mw-model-col-endpoint" />
+          <col className="mw-model-col-secret" />
+          <col className="mw-model-col-state" />
+          <col className="mw-model-col-test" />
+          {canEdit && <col className="mw-model-col-actions" />}
+        </colgroup>
         <thead>
           <tr>
             <th>模型</th>
@@ -445,15 +453,15 @@ function GlobalModelTable({
                     {profile.base_url || '未填写接口地址'}
                   </span>
                 </td>
-                <td>
+                <td className="mw-model-status-cell">
                   <SecretStatus profile={profile} />
                 </td>
-                <td>
+                <td className="mw-model-status-cell">
                   <StatusTag status={profile.enabled ? 'enabled' : 'disabled'}>
                     {profile.enabled ? '启用' : '停用'}
                   </StatusTag>
                 </td>
-                <td>
+                <td className="mw-model-status-cell">
                   <ConnectionStatus
                     result={tests[profile.id]}
                     profile={profile}
@@ -1406,7 +1414,15 @@ export function WorkspaceModelSettings({
         />
       ) : (
         <div className="mw-model-table-wrap">
-          <Table>
+          <Table className="mw-model-table">
+            <colgroup>
+              <col className="mw-model-col-identity" />
+              <col className="mw-model-col-endpoint" />
+              <col className="mw-model-col-secret" />
+              <col className="mw-model-col-state" />
+              <col className="mw-model-col-test" />
+              {canEdit && <col className="mw-model-col-actions" />}
+            </colgroup>
             <thead>
               <tr>
                 <th>模型</th>
@@ -1439,17 +1455,17 @@ export function WorkspaceModelSettings({
                         {profile.base_url || '未填写接口地址'}
                       </span>
                     </td>
-                    <td>
+                    <td className="mw-model-status-cell">
                       <SecretStatus profile={profile} />
                     </td>
-                    <td>
+                    <td className="mw-model-status-cell">
                       <StatusTag
                         status={profile.enabled ? 'enabled' : 'disabled'}
                       >
                         {profile.enabled ? '启用' : '停用'}
                       </StatusTag>
                     </td>
-                    <td>
+                    <td className="mw-model-status-cell">
                       <ConnectionStatus
                         result={tests[profile.id]}
                         profile={profile}

@@ -136,6 +136,11 @@ def test_jiuwenbox_control_plane_client_ignores_environment_proxy(monkeypatch):
         client._client.close()
 
 
+def test_jiuwenbox_control_plane_requires_explicit_protocol():
+    with pytest.raises(ValueError, match="explicitly use HTTP or HTTPS"):
+        JiuwenboxClient("localhost:8321")
+
+
 def test_registry_single_flights_same_run_creation(tmp_path):
     registry = RunSandboxRegistry(_sandbox_config())
     create_started = threading.Event()

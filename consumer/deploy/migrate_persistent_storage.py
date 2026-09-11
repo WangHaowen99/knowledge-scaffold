@@ -7,12 +7,14 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import posixpath
 import shutil
 import sys
 import tarfile
 import tempfile
-from pathlib import Path
+import unicodedata
+from pathlib import Path, PurePosixPath
 from typing import Any, TextIO
 
 CANONICAL_PROJECT_ROOT = "/app/.onto-runtime"
@@ -22,6 +24,10 @@ _LEGACY_CHAT_VALUES = {"", "./data/chats", "/app/data/chats"}
 _LEGACY_EXECUTION_VALUES = {"", "./data/executions", "/app/data/executions"}
 _LEGACY_ARCHIVE_NAME = "legacy-backend-data.tar.gz"
 _LEGACY_CONTAINER_WORKDIR = "/app"
+_LEGACY_ARCHIVE_ROOT = "legacy-backend-data"
+_LEGACY_MAX_MEMBERS = 1_000_000
+_LEGACY_MAX_EXPANSION_RATIO = 100
+_COPY_CHUNK_BYTES = 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -203,16 +209,121 @@ def _container_path_to_host(root: Path, container_path: str) -> Path:
     return root / ".onto-runtime" / normalized[len(prefix) :]
 
 
-def _extract_archive(archive_path: Path, destination: Path) -> None:
+def _existing_filesystem_path(path: Path) -> Path:
+    candidate = path.resolve()
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return candidate
+
+
+def _legacy_archive_capacity(paths: tuple[Path, ...]) -> tuple[int, int]:
+    existing_paths = [_existing_filesystem_path(path) for path in paths]
+    max_bytes = min(shutil.disk_usage(path).free // 2 for path in existing_paths)
+    max_members = min(
+        _LEGACY_MAX_MEMBERS,
+        *(os.statvfs(path).f_favail // 2 for path in existing_paths),
+    )
+    if max_bytes <= 0 or max_members <= 0:
+        raise ValueError("insufficient disk space or inodes for legacy storage import")
+    return max_bytes, max_members
+
+
+def _legacy_archive_target(
+    destination_root: Path,
+    raw_name: str,
+    seen: set[str],
+) -> Path:
+    if not raw_name:
+        raise ValueError(f"legacy archive contains an unsafe path: {raw_name}")
+    if raw_name.startswith("/") or "\\" in raw_name or "\x00" in raw_name:
+        raise ValueError(f"legacy archive contains an unsafe path: {raw_name}")
+    path = PurePosixPath(raw_name.rstrip("/"))
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError(f"legacy archive contains an unsafe path: {raw_name}")
+    if not path.parts or path.parts[0] != _LEGACY_ARCHIVE_ROOT:
+        raise ValueError(f"legacy archive contains an unexpected root: {raw_name}")
+    identity = unicodedata.normalize("NFC", "/".join(path.parts)).casefold()
+    if identity in seen:
+        raise ValueError(f"legacy archive contains a duplicate path: {raw_name}")
+    seen.add(identity)
+    return destination_root.joinpath(*path.parts)
+
+
+def _inspect_legacy_archive(
+    archive_path: Path,
+    destination_root: Path,
+    *,
+    max_bytes: int,
+    max_members: int,
+) -> int:
+    archive_bytes = max(archive_path.stat().st_size, 1)
+    total_bytes = 0
+    member_count = 0
+    seen: set[str] = set()
+    with tarfile.TarFile.open(archive_path, "r|gz") as archive:
+        for member in archive:
+            archive.members.clear()
+            member_count += 1
+            if member_count > max_members:
+                raise ValueError("legacy archive contains too many members")
+            _legacy_archive_target(destination_root, member.name, seen)
+            if not (member.isdir() or member.isreg()):
+                raise ValueError(f"legacy archive contains an unsupported entry: {member.name}")
+            if member.isreg():
+                total_bytes += member.size
+                if total_bytes > max_bytes:
+                    raise ValueError("legacy archive exceeds available disk capacity")
+                if total_bytes > archive_bytes * _LEGACY_MAX_EXPANSION_RATIO:
+                    raise ValueError("legacy archive expansion ratio exceeds the limit")
+    return total_bytes
+
+
+def _extract_archive(
+    archive_path: Path,
+    destination: Path,
+    *,
+    capacity_paths: tuple[Path, ...],
+) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     destination_root = destination.resolve()
-    with tarfile.open(archive_path, "r:gz") as archive:
-        for member in archive.getmembers():
-            if member.issym() or member.islnk():
-                raise ValueError(f"legacy archive contains unsupported link: {member.name}")
-            target_path = (destination_root / member.name).resolve()
-            target_path.relative_to(destination_root)
-        archive.extractall(destination_root)
+    max_bytes, max_members = _legacy_archive_capacity((destination_root, *capacity_paths))
+    expected_bytes = _inspect_legacy_archive(
+        archive_path,
+        destination_root,
+        max_bytes=max_bytes,
+        max_members=max_members,
+    )
+
+    actual_bytes = 0
+    seen: set[str] = set()
+    with tarfile.TarFile.open(archive_path, "r|gz") as archive:
+        for member in archive:
+            archive.members.clear()
+            target_path = _legacy_archive_target(destination_root, member.name, seen)
+            if member.isdir():
+                target_path.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isreg():
+                raise ValueError(f"legacy archive contains an unsupported entry: {member.name}")
+            source = archive.extractfile(member)
+            if source is None:
+                raise ValueError(f"legacy archive member cannot be read: {member.name}")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            member_bytes = 0
+            with source, target_path.open("xb") as target:
+                while True:
+                    chunk = source.read(_COPY_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    member_bytes += len(chunk)
+                    actual_bytes += len(chunk)
+                    if member_bytes > member.size or actual_bytes > max_bytes:
+                        raise ValueError("legacy archive actual content exceeds the declared limit")
+                    target.write(chunk)
+            if member_bytes != member.size:
+                raise ValueError(f"legacy archive member size is invalid: {member.name}")
+    if actual_bytes != expected_bytes:
+        raise ValueError("legacy archive expanded size changed during extraction")
 
 
 def _sha256(path: Path) -> str:
@@ -325,7 +436,11 @@ def _import_legacy_container_storage(
     state_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="legacy-storage-import-", dir=str(state_dir)) as temp_dir:
         extracted_root = Path(temp_dir)
-        _extract_archive(archive_path, extracted_root)
+        _extract_archive(
+            archive_path,
+            extracted_root,
+            capacity_paths=(chat_target, execution_target),
+        )
         source_root = extracted_root / "legacy-backend-data"
         report["chat"] = _merge_legacy_tree(
             source_root / "chats",

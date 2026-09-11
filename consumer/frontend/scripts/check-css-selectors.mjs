@@ -56,6 +56,7 @@ const DYNAMIC_CLASS_GROUPS = [
   ['settings-mcp-notice', 'success'],
   ['system-config-feedback', 'error'],
   ['system-config-feedback', 'success'],
+  ['tag', 'tag-draft'],
   ['tag', 'tag-error'],
   ['tr-dot', 'cancelled'],
   ['tr-dot', 'error'],

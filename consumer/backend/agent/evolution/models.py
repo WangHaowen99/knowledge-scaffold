@@ -38,7 +38,7 @@ def compute_fingerprint(
     content: str,
     workspace_id: Optional[str] = None,
 ) -> str:
-    """SHA1 of (kind + ontology + op/entity + normalized content).
+    """SHA-256 of (kind + ontology + op/entity + normalized content).
 
     Same content under different operations should NOT collide.
     """
@@ -51,7 +51,7 @@ def compute_fingerprint(
         _normalize_for_fingerprint(content),
     ]
     raw = "\u0001".join(parts)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @dataclass

@@ -313,9 +313,24 @@ class ProposalBuffer:
 
         op_dir = self.op_dir(ontology_id, operation_key, workspace_id=workspace_id)
         with _file_lock(op_dir):
-            self._append_proposal_record(proposal)
             aggs = self._load_aggregates(ontology_id, operation_key, workspace_id=workspace_id)
             existing = aggs.get(fingerprint)
+            if existing is None:
+                for stored_fingerprint, candidate in aggs.items():
+                    candidate_fingerprint = compute_fingerprint(
+                        kind=candidate.kind,
+                        workspace_id=workspace_id,
+                        ontology_id=ontology_id,
+                        operation_key=operation_key,
+                        entity_key=candidate.entity_key,
+                        content=candidate.canonical_content,
+                    )
+                    if candidate_fingerprint == fingerprint:
+                        fingerprint = stored_fingerprint
+                        proposal.fingerprint = stored_fingerprint
+                        existing = candidate
+                        break
+            self._append_proposal_record(proposal)
             if existing is None:
                 aggs[fingerprint] = Aggregate.seed_from(proposal)
             else:
@@ -480,7 +495,15 @@ class ProposalBuffer:
                 entity_key=old.entity_key,
                 content=new_content,
             )
-            if new_fp == fingerprint:
+            old_content_fp = compute_fingerprint(
+                kind=old.kind,
+                workspace_id=workspace_id,
+                ontology_id=ontology_id,
+                operation_key=operation_key,
+                entity_key=old.entity_key,
+                content=old.canonical_content,
+            )
+            if new_fp == fingerprint or new_fp == old_content_fp:
                 old.canonical_content = new_content
                 old.last_seen = time.time()
                 self._write_aggregates(ontology_id, operation_key, aggs, workspace_id=workspace_id)

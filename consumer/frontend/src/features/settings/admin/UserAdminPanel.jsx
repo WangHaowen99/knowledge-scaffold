@@ -457,12 +457,16 @@ export default function UserAdminPanel({
         </div>
       ) : (
         <div className="settings-admin-table-wrap">
-          <table className="dt settings-admin-table">
+          <table className="dt settings-admin-table settings-user-table">
+            <colgroup>
+              <col className="settings-admin-col-identity" />
+              <col className="settings-admin-col-role" />
+              <col className="settings-admin-col-actions" />
+            </colgroup>
             <thead>
               <tr>
                 <th>用户名</th>
                 <th>角色</th>
-                <th>密码状态</th>
                 <th>
                   <span className="sr-only">操作</span>
                 </th>
@@ -474,8 +478,12 @@ export default function UserAdminPanel({
                 return (
                   <tr key={user.username}>
                     <td>
-                      <strong>{user.username}</strong>
-                      {policy.isSelf && <small>当前账号</small>}
+                      <div className="settings-admin-identity-line">
+                        <strong>{user.username}</strong>
+                        {policy.isSelf && (
+                          <span className="tag tag-off">当前账号</span>
+                        )}
+                      </div>
                     </td>
                     <td>
                       <span
@@ -483,13 +491,6 @@ export default function UserAdminPanel({
                       >
                         {user.role === 'admin' ? '管理员' : '用户'}
                       </span>
-                    </td>
-                    <td>
-                      {user.password_change_required ? (
-                        <span className="tag tag-draft">历史状态已忽略</span>
-                      ) : (
-                        <span className="tag tag-ok">可直接登录</span>
-                      )}
                     </td>
                     <td>
                       <div className="settings-admin-row-actions">
@@ -528,7 +529,7 @@ export default function UserAdminPanel({
               })}
               {!users.length && (
                 <tr>
-                  <td colSpan={4}>
+                  <td colSpan={3}>
                     <div className="settings-admin-state">暂无用户</div>
                   </td>
                 </tr>

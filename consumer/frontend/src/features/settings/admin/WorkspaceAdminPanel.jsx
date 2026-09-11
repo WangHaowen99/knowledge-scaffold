@@ -454,13 +454,18 @@ export default function WorkspaceAdminPanel({
         </div>
       ) : (
         <div className="settings-admin-table-wrap">
-          <table className="dt settings-admin-table">
+          <table className="dt settings-admin-table settings-workspace-table">
+            <colgroup>
+              <col className="settings-admin-col-identity" />
+              <col className="settings-admin-col-owner" />
+              <col className="settings-admin-col-members" />
+              <col className="settings-admin-col-actions" />
+            </colgroup>
             <thead>
               <tr>
                 <th>工作空间</th>
                 <th>所有者</th>
                 <th>成员</th>
-                <th>状态</th>
                 <th>
                   <span className="sr-only">操作</span>
                 </th>
@@ -475,7 +480,15 @@ export default function WorkspaceAdminPanel({
                 return (
                   <tr key={workspace.id}>
                     <td>
-                      <strong>{workspace.name}</strong>
+                      <div className="settings-admin-identity-line">
+                        <strong>{workspace.name}</strong>
+                        <div className="settings-admin-tags">
+                          {isCurrent && <span className="tag tag-ok">当前</span>}
+                          {isDefault && (
+                            <span className="tag tag-lang">默认</span>
+                          )}
+                        </div>
+                      </div>
                       <small>
                         {workspace.id}
                         {workspace.description ?
@@ -485,14 +498,6 @@ export default function WorkspaceAdminPanel({
                     </td>
                     <td>{workspace.owner || '—'}</td>
                     <td>{workspace.members.length}</td>
-                    <td>
-                      <div className="settings-admin-tags">
-                        {isCurrent && <span className="tag tag-ok">当前</span>}
-                        {isDefault && (
-                          <span className="tag tag-lang">默认</span>
-                        )}
-                      </div>
-                    </td>
                     <td>
                       <div className="settings-admin-row-actions">
                         {!isCurrent && (
@@ -548,7 +553,7 @@ export default function WorkspaceAdminPanel({
               })}
               {!paged.items.length && (
                 <tr>
-                  <td colSpan={5}>
+                  <td colSpan={4}>
                     <div className="settings-admin-state">
                       {query ? '没有匹配的工作空间' : '暂无可访问的工作空间'}
                     </div>

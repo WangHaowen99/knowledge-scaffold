@@ -17,11 +17,9 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import io
 import json
 import shutil
 import time
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -171,18 +169,9 @@ def _interpret_status(status_payload: Dict[str, Any]) -> Tuple[str, str]:
 # --------------------------------------------------------------------------- #
 def _read_zip_members(zip_bytes: bytes) -> Dict[str, str]:
     """Read a zip into {relative_path: text_content} for text members."""
-    out: Dict[str, str] = {}
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            try:
-                raw = zf.read(info)
-                text = raw.decode("utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            out[info.filename] = text
-    return out
+    from api.routes.skills import _read_skill_zip_text_members
+
+    return _read_skill_zip_text_members(zip_bytes)
 
 
 def _strip_archive_root(path: str) -> str:
