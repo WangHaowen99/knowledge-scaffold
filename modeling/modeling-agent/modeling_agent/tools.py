@@ -746,7 +746,9 @@ DOMAIN_ACTION_CHANGES = {
         "required": {"type": "boolean"}, "note": STRING, "alias": STRING,
         "condition": STRING, "conclusion": STRING,
         "param": STRING, "field": STRING, "handling": STRING,
-        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING,
+        # 和 DOMAIN_RELATION 同理：关系类型只有唯一合法值且服务端自带默认，不暴露给模型
+        "target_id": RESOURCE_ID,
+        "label": {**STRING, "description": "业务谓词，例如「归属于」「适用于」，由你根据证据拟定。"},
         "description": STRING,
     },
     "additionalProperties": False,

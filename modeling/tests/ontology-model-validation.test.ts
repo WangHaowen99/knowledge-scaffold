@@ -207,9 +207,12 @@ test('关系 kind 不暴露给模型：唯一合法值由服务端补，模型�
      patch_object 那条路服务端也会补默认值。把这样一个字段放进工具 schema，模型会把推荐
      接口返回的 belongs_to 抄进去，被拒后反复猜、原地打转数轮，最后整批任务放弃（见 #48）。 */
   const tools = readFileSync('modeling-agent/modeling_agent/tools.py', 'utf8');
+  /* 不能只查 DOMAIN_RELATION：update_relation 走的是 DOMAIN_ACTION_CHANGES，
+     那里也有一份 kind，只盯一个块会漏（实测就漏了，部署后助手照样撞上）。
+     直接要求全文不再出现裸的 "kind": STRING。 */
+  assert.doesNotMatch(tools, /"kind":\s*STRING/, '关系类型不应以裸字符串暴露给模型');
   const block = tools.slice(tools.indexOf('DOMAIN_RELATION = {'));
   const body = block.slice(0, block.indexOf('}\n') + 1);
-  assert.doesNotMatch(body, /"kind"/, 'DOMAIN_RELATION 不应再把 kind 暴露给模型');
   assert.match(body, /"target_id"/);
   assert.match(body, /业务谓词/, 'label 要说明它承载业务谓词，否则模型仍会找地方塞关系类型');
 
