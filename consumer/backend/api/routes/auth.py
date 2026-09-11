@@ -55,19 +55,26 @@ def _request_origin(request: Request) -> str:
     return f"{_request_scheme(request)}://{host}".rstrip("/").lower()
 
 
+def _is_simple_http_origin(parsed) -> bool:
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    return not any(
+        (
+            parsed.username,
+            parsed.password,
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
 def _same_origin(request: Request) -> bool:
     origin = request.headers.get("origin")
     if not origin:
         return True
     parsed = urlsplit(origin)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or parsed.username
-        or parsed.password
-        or parsed.path
-        or parsed.query
-        or parsed.fragment
-    ):
+    if not _is_simple_http_origin(parsed):
         return False
     return f"{parsed.scheme}://{parsed.netloc}".lower() == _request_origin(request)
 
