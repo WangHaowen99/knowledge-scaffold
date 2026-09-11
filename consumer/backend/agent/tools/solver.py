@@ -455,7 +455,7 @@ def _load_public_capabilities(
     try:
         from ontology.ontology_catalog import get_ontology_manifest
         from solver_coordination.capability_catalog import (
-            load_public_solver_capabilities,
+            SolverContractResolver,
         )
 
         ontology, error = get_ontology_manifest(
@@ -473,11 +473,11 @@ def _load_public_capabilities(
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
         if not isinstance(manifest, Mapping):
             return []
-        catalog = load_public_solver_capabilities(
+        catalog = SolverContractResolver(
             Path(ontology.ontology_dir).resolve(),
             manifest,
             package_revision=package_revision,
-        )
+        ).load_public()
         return [item for item in catalog if isinstance(item, Mapping)]
     except Exception:
         return []

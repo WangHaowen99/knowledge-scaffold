@@ -2347,16 +2347,15 @@ def build_root_payload(
     *,
     ontology: OntologyManifest,
     ontology_dir: Path,
-    include_solver_catalog: bool = True,
+    include_solver_catalog: bool = False,
     include_solver_summary: bool = True,
 ) -> Dict[str, Any]:
     """Build an ontology root payload.
 
-    ``solver_catalog`` remains available by default for legacy internal
-    callers.  Progressive/model-facing callers should set
-    ``include_solver_catalog=False``; they receive the lightweight
-    ``solver_summary`` projection and can resolve the full contract only via
-    the package-bound solver loader.
+    The default is the model-facing progressive projection: ``solver_summary``
+    only.  Legacy/private internal callers that still require the complete
+    schemas must opt in with ``include_solver_catalog=True``; new execution
+    paths should use ``SolverContractResolver`` directly.
     """
     from ontology.operation_execution import protected_operation_keys
 
@@ -2782,12 +2781,23 @@ def _format_solver_summary(catalog: Any) -> List[str]:
         model_id = _compact_inline_text(entry.get("decision_model_id"))
         family = _compact_inline_text(entry.get("problem_family"))
         policy = _compact_inline_text(entry.get("load_policy"))
+        next_action = entry.get("next_action")
         if model_id:
             details.append("decision_model: {}".format(model_id))
         if family:
             details.append("problem_family: {}".format(family))
         if policy:
             details.append("load_policy: {}".format(policy))
+        if isinstance(next_action, dict):
+            resource = _compact_inline_text(next_action.get("resource"))
+            key = _compact_inline_text(next_action.get("key"))
+            if resource and key:
+                details.append(
+                    "next_action: ontology_context(resource={}, key={})".format(
+                        resource,
+                        key,
+                    )
+                )
         lines.append(
             "- {}{}".format(
                 operation_key,

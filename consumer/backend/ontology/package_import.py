@@ -304,9 +304,40 @@ def validate_ontology_revision(root: Path) -> dict[str, Any]:
     )
 
     try:
-        load_solver_capability_catalog(package_root, manifest)
+        solver_records = load_solver_capability_catalog(package_root, manifest)
     except SolverCapabilityCatalogError as exc:
         raise ValueError(str(exc)) from exc
+
+    # The operation-centric layout is an opt-in package contract.  Keep the
+    # historical three-directory layout readable for older revisions, but
+    # enforce the zero-new-directory/index invariants at the same import
+    # boundary that admits a revision into the runtime.
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        validate_solver_package_layout,
+    )
+
+    if any(
+        key in manifest
+        for key in ("solver_layout", "solver_layout_version", "layout_version", "layout")
+    ) or any(
+        isinstance(manifest.get(container), Mapping)
+        and any(
+            key in manifest[container]
+            for key in ("solver_layout", "solver_layout_version", "layout_version", "layout")
+        )
+        for container in ("capabilities", "solver", "solver_capabilities")
+    ):
+        try:
+            layout = validate_solver_package_layout(package_root, manifest)
+        except SolverPackageLayoutError as exc:
+            raise ValueError(str(exc)) from exc
+        expected_solver_keys = {item.operation_key for item in layout.operations}
+        loaded_solver_keys = {item.operation_key for item in solver_records}
+        if loaded_solver_keys != expected_solver_keys:
+            raise ValueError(
+                "Solver package layout and executable catalog are inconsistent"
+            )
     return manifest
 
 
@@ -387,8 +418,10 @@ def build_versioned_install_manifest(
 
 def _reject_symbolic_links(root: Path) -> None:
     for path in root.rglob("*"):
-        if path.is_symlink():
-            raise ValueError("Ontology package contains symbolic links")
+        if path.is_symlink() or (
+            hasattr(path, "is_junction") and path.is_junction()
+        ):
+            raise ValueError("Ontology package contains symbolic links or junctions")
 
 
 def _read_markdown_frontmatter(content: str) -> Optional[Mapping[str, Any]]:

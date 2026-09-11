@@ -198,7 +198,24 @@ def resolve_solver_route_requirement(
     # snapshot may still carry the legacy/full catalog for compatibility; use
     # either representation for routing, while ToolCard construction remains
     # package-bound and schema-aware.
+    explicit_capabilities = _is_catalog_sequence(solver_capabilities)
     solvers = solver_capabilities
+    if explicit_capabilities:
+        # The preflight product is an admitted private surface.  Still bind it
+        # to the exact package identity at this trust boundary; a caller must
+        # not smuggle a capability from another revision into this route.
+        admitted_rows: list[Mapping[str, Any]] = []
+        for row in solver_capabilities or ():
+            if not isinstance(row, Mapping):
+                continue
+            if str(row.get("package_id") or "").strip() != package_id:
+                continue
+            if str(row.get("package_revision") or "").strip() != package_revision:
+                continue
+            admitted_rows.append(row)
+        solvers = tuple(admitted_rows)
+        if not solvers and solver_capabilities:
+            return None
     if not _is_catalog_sequence(solvers) or not solvers:
         # A legacy preflight/root payload may still carry the full catalog;
         # prefer it over the summary because it can construct a strict card.
@@ -259,7 +276,7 @@ def resolve_solver_route_requirement(
         try:
             spec = _build_solver_spec(capability)
         except SolverRouteGuardError:
-            if _is_catalog_sequence(solver_capabilities):
+            if explicit_capabilities:
                 raise
             return None
         if not _has_execution_intent(query) and not _arguments_match_solver_spec(
@@ -461,6 +478,7 @@ def _load_solver_root_payload(
     return build_root_payload(
         ontology=ontology,
         ontology_dir=Path(ontology.ontology_dir).resolve(),
+        include_solver_catalog=True,
     )
 
 

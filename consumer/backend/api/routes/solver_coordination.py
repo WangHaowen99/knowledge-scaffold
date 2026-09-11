@@ -582,7 +582,7 @@ def _create_solver_run_through_coordination_service(
     from agent.tools.solver import build_solver_tool_specs
     from ontology.ontology_catalog import get_ontology_manifest
     from solver_coordination.capability_catalog import (
-        load_public_solver_capabilities,
+        SolverContractResolver,
     )
 
     if not isinstance(payload, dict):
@@ -624,11 +624,11 @@ def _create_solver_run_through_coordination_service(
         manifest = {}
     if not isinstance(manifest, Mapping):
         return _response(error_payload("solver_unavailable"), 503)
-    capabilities = load_public_solver_capabilities(
+    capabilities = SolverContractResolver(
         Path(ontology.ontology_dir).resolve(),
         manifest,
         package_revision=package_revision,
-    )
+    ).load_public()
     if not capabilities:
         return _response(error_payload("solver_unavailable"), 503)
     specs = list(build_solver_tool_specs(capabilities))

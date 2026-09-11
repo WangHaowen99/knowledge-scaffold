@@ -91,7 +91,7 @@ def _default_package_loader(
         resolve_ontology_script_path,
     )
     from solver_coordination.capability_catalog import (
-        load_public_solver_capabilities,
+        SolverContractResolver,
     )
     from ontology.ontologies import (
         build_selected_ontology_preload_context_from_manifest,
@@ -132,14 +132,14 @@ def _default_package_loader(
             except (OSError, UnicodeError, yaml.YAMLError):
                 manifest_data = {}
             if isinstance(manifest_data, Mapping):
-                full_catalog = load_public_solver_capabilities(
+                full_catalog = SolverContractResolver(
                     ontology_dir,
                     manifest_data,
                     package_revision=str(
                         getattr(ontology_manifest, "version", "") or ""
                     ).strip()
                     or None,
-                )
+                ).load_public()
                 solver_capabilities = tuple(
                     entry
                     for entry in full_catalog

@@ -40,10 +40,51 @@ class SolverOperationCapability:
     decision_model_digest: str
     input_schema_digest: str
     result_schema_digest: str
+    fact_snapshot_schema_digest: str = ""
     engine_capabilities: tuple[str, ...] = ()
 
 
 SolverCapability = SolverOperationCapability
+
+
+class SolverContractResolver:
+    """Package-bound resolver for the complete solver contract.
+
+    ``solver_summary`` is deliberately a model-facing discovery projection.
+    This resolver is the explicit private boundary used by ToolCard and
+    compiler paths when they need the input/result schemas.  Keeping the
+    package root and manifest on the resolver makes it harder for a caller to
+    accidentally combine a summary from one revision with a contract from
+    another revision.
+    """
+
+    def __init__(
+        self,
+        package_root: Path,
+        manifest: Mapping[str, Any],
+        *,
+        package_revision: str | None = None,
+    ) -> None:
+        self.package_root = Path(package_root)
+        self.manifest = manifest
+        self.package_revision = package_revision
+
+    def load(self) -> tuple[SolverOperationCapability, ...]:
+        return load_solver_capability_catalog(
+            self.package_root,
+            self.manifest,
+            package_revision=self.package_revision,
+        )
+
+    def load_public(self) -> list[dict[str, Any]]:
+        return public_solver_catalog(self.load())
+
+    def load_operation(self, operation_key: str) -> dict[str, Any] | None:
+        normalized = str(operation_key or "").strip()
+        for item in self.load_public():
+            if str(item.get("operation_key") or "").strip() == normalized:
+                return item
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +99,7 @@ class _CapabilityDraft:
     decision_model_digest: str
     input_schema_digest: str
     result_schema_digest: str
+    fact_snapshot_schema_digest: str
     engine_capabilities: tuple[str, ...]
     package_basis: Mapping[str, Any]
     contract_basis: Mapping[str, Any]
@@ -99,6 +141,22 @@ def load_solver_capability_catalog(
         return ()
     if not isinstance(raw_models, list):
         raise SolverCapabilityCatalogError("capabilities.decision_models must be a list")
+    raw_models = [*raw_models, *_manifest_list(manifest, "decision_models")]
+
+    raw_solver_operations = capabilities.get("solver_operations")
+    if raw_solver_operations is not None and not isinstance(raw_solver_operations, list):
+        raise SolverCapabilityCatalogError("capabilities.solver_operations must be a list")
+    raw_operation_overrides = [
+        *(raw_solver_operations or []),
+        *_manifest_list(manifest, "solver_operations"),
+    ]
+    operation_overrides: list[Mapping[str, Any]] = []
+    for raw_override in raw_operation_overrides:
+        if not isinstance(raw_override, Mapping):
+            continue
+        _validate_declarative_contract(raw_override)
+        if _is_enabled(raw_override.get("enabled", True)):
+            operation_overrides.append(raw_override)
 
     models: dict[str, Mapping[str, Any]] = {}
     for raw_model in raw_models:
@@ -168,11 +226,21 @@ def load_solver_capability_catalog(
                 "Duplicate solver operation key: {}".format(operation_key)
             )
 
-        model = models[model_id]
+        model = _merged_model_declaration(
+            models[model_id],
+            operation_overrides,
+            operation_key=operation_key,
+            model_id=model_id,
+        )
         entry_path = _resolve_declared_file(root, model.get("entry"), "decision model")
         input_path = _resolve_declared_file(root, model.get("input_schema"), "input schema")
         result_path = _resolve_declared_file(root, model.get("result_schema"), "result schema")
-        presentation = model.get("presentation")
+        fact_snapshot = (
+            model.get("fact_snapshot_schema")
+            or model.get("fact_schema")
+            or model.get("fact_snapshot")
+        )
+        presentation = model.get("presentation") or model.get("presentation_path")
 
         model_document = _read_yaml_mapping(entry_path, "decision model")
         _validate_declarative_contract(model_document)
@@ -210,6 +278,19 @@ def load_solver_capability_catalog(
             ) from exc
         input_schema_digest = json_schema_digest(input_schema)
         result_schema_digest = json_schema_digest(result_schema)
+        fact_snapshot_schema_digest = ""
+        if fact_snapshot:
+            fact_snapshot_path = _resolve_declared_file(
+                root,
+                fact_snapshot,
+                "fact snapshot schema",
+            )
+            fact_snapshot_schema = _read_json_mapping(
+                fact_snapshot_path,
+                "fact snapshot schema",
+            )
+            _validate_declarative_contract(fact_snapshot_schema)
+            fact_snapshot_schema_digest = json_schema_digest(fact_snapshot_schema)
         validator_revision = str(
             execution.get("validator_revision")
             or model.get("validator_revision")
@@ -241,6 +322,8 @@ def load_solver_capability_catalog(
             "engine_capabilities": engine_capabilities,
             "policy_digest": policy_digest,
         }
+        if fact_snapshot_schema_digest:
+            package_basis["fact_snapshot_schema_digest"] = fact_snapshot_schema_digest
         contract_basis = {
             **package_basis,
             "operation_key": operation_key,
@@ -258,6 +341,7 @@ def load_solver_capability_catalog(
                 decision_model_digest=decision_model_digest,
                 input_schema_digest=input_schema_digest,
                 result_schema_digest=result_schema_digest,
+                fact_snapshot_schema_digest=fact_snapshot_schema_digest,
                 engine_capabilities=engine_capabilities,
                 package_basis=package_basis,
                 contract_basis=contract_basis,
@@ -301,6 +385,7 @@ def load_solver_capability_catalog(
                 decision_model_digest=draft.decision_model_digest,
                 input_schema_digest=draft.input_schema_digest,
                 result_schema_digest=draft.result_schema_digest,
+                fact_snapshot_schema_digest=draft.fact_snapshot_schema_digest,
                 engine_capabilities=draft.engine_capabilities,
             )
         )
@@ -329,6 +414,7 @@ def public_solver_catalog(
             "decision_model_digest": record.decision_model_digest,
             "input_schema_digest": record.input_schema_digest,
             "result_schema_digest": record.result_schema_digest,
+            "fact_snapshot_schema_digest": record.fact_snapshot_schema_digest,
             "engine_capabilities": list(record.engine_capabilities),
         }
         for record in records
@@ -356,7 +442,6 @@ def public_solver_summary(
             "problem_family": record.problem_family,
             "validator_revision": record.validator_revision,
             "enabled": record.enabled,
-            "contract_digest": record.contract_digest,
             "engine_capabilities": list(record.engine_capabilities),
             "load_policy": "progressive",
             "next_action": {
@@ -397,21 +482,186 @@ def load_solver_summary_catalog(
     *,
     package_revision: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Load only the progressive solver summary from package declarations.
+    """Load a schema-free progressive summary from package declarations.
 
-    This intentionally delegates validation and digest construction to the
-    canonical catalog loader for now, then discards schema documents before
-    returning.  The public contract is therefore stable while package-level
-    validation remains identical to the full execution path; a future lazy
-    reader can replace the internal implementation without changing callers.
+    L0 must not parse or materialize input/result schemas.  We therefore read
+    only operation frontmatter and the manifest's lightweight engine metadata.
+    Digests that require sidecar bytes are intentionally omitted here; the
+    private contract resolver computes them when a ToolCard is admitted.
     """
 
-    records = load_solver_capability_catalog(
-        package_root,
-        manifest,
-        package_revision=package_revision,
+    _validate_declarative_contract(manifest)
+    schema_version = str(manifest.get("schema_version") or "").strip()
+    if schema_version not in SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS:
+        raise SolverCapabilityCatalogError(
+            "Unsupported ontology schema version: {}".format(schema_version or "missing")
+        )
+    if schema_version == "0.1" or not _is_enabled(manifest.get("enabled", True)):
+        return []
+    capabilities = manifest.get("capabilities")
+    if not isinstance(capabilities, Mapping) or not _is_enabled(
+        capabilities.get("enabled", True)
+    ):
+        return []
+    raw_models = capabilities.get("decision_models")
+    if not isinstance(raw_models, list):
+        return []
+    raw_models = [*raw_models, *_manifest_list(manifest, "decision_models")]
+    raw_operation_overrides = [
+        *(capabilities.get("solver_operations") or []),
+        *_manifest_list(manifest, "solver_operations"),
+    ]
+    operation_overrides = [
+        item
+        for item in raw_operation_overrides
+        if isinstance(item, Mapping) and _is_enabled(item.get("enabled", True))
+    ]
+    models: dict[str, Mapping[str, Any]] = {}
+    for raw_model in raw_models:
+        if not isinstance(raw_model, Mapping) or not _is_enabled(raw_model.get("enabled", True)):
+            continue
+        _validate_declarative_contract(raw_model)
+        model_id = str(raw_model.get("id") or "").strip()
+        if model_id:
+            if model_id in models:
+                raise SolverCapabilityCatalogError(
+                    "Duplicate decision model id: {}".format(model_id)
+                )
+            models[model_id] = raw_model
+    root = Path(package_root).resolve(strict=True)
+    package_id = str(manifest.get("id") or "").strip()
+    revision = str(package_revision or manifest.get("version") or "").strip()
+    if not package_id or not revision:
+        raise SolverCapabilityCatalogError("Solver package identity is incomplete")
+    operations_dir = root / "operations"
+    if not operations_dir.is_dir() or operations_dir.is_symlink():
+        return []
+    summaries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for operation_path in sorted(operations_dir.glob("*.md")):
+        if operation_path.name.casefold() == "index.md":
+            continue
+        frontmatter = _read_operation_frontmatter(operation_path)
+        if not isinstance(frontmatter, Mapping) or not _is_enabled(frontmatter.get("enabled", True)):
+            continue
+        if str(frontmatter.get("resource") or "").strip() != "operation":
+            continue
+        execution = frontmatter.get("execution")
+        if not isinstance(execution, Mapping) or str(execution.get("mode") or "").strip() != "solver_workflow":
+            continue
+        if not _is_enabled(execution.get("enabled", True)):
+            continue
+        operation_key = str(frontmatter.get("key") or "").strip()
+        model_id = str(
+            execution.get("decision_model")
+            or execution.get("decision_model_id")
+            or frontmatter.get("decision_model")
+            or frontmatter.get("decision_model_id")
+            or ""
+        ).strip()
+        base_model = models.get(model_id)
+        if not operation_key or not base_model:
+            continue
+        model = _merged_model_declaration(
+            base_model,
+            operation_overrides,
+            operation_key=operation_key,
+            model_id=model_id,
+        )
+        if operation_key in seen:
+            raise SolverCapabilityCatalogError(
+                "Duplicate solver operation key: {}".format(operation_key)
+            )
+        requirements = model.get("engine_requirements")
+        if not isinstance(requirements, Mapping):
+            continue
+        problem_family = str(requirements.get("problem_family") or "").strip()
+        if not problem_family:
+            continue
+        raw_engine_capabilities = requirements.get("capabilities") or []
+        if not isinstance(raw_engine_capabilities, list):
+            raise SolverCapabilityCatalogError("Engine capabilities must be a list")
+        engine_capabilities = sorted(
+            {str(item or "").strip() for item in raw_engine_capabilities if str(item or "").strip()}
+        )
+        seen.add(operation_key)
+        summaries.append(
+            {
+                "package_id": package_id,
+                "package_revision": revision,
+                "operation_key": operation_key,
+                "decision_model_id": model_id,
+                "problem_family": problem_family,
+                "validator_revision": str(
+                    model.get("validator_revision")
+                    or execution.get("validator_revision")
+                    or ""
+                ).strip(),
+                "enabled": True,
+                "engine_capabilities": engine_capabilities,
+                "load_policy": "progressive",
+                "next_action": {"resource": "operation", "key": operation_key},
+            }
+        )
+    return summaries
+
+
+def _manifest_list(manifest: Mapping[str, Any], key: str) -> list[Any]:
+    value = manifest.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise SolverCapabilityCatalogError(f"{key} must be a list")
+    return value
+
+
+def _merged_model_declaration(
+    base_model: Mapping[str, Any],
+    operation_overrides: list[Mapping[str, Any]],
+    *,
+    operation_key: str,
+    model_id: str,
+) -> dict[str, Any]:
+    matches: list[Mapping[str, Any]] = []
+    for item in operation_overrides:
+        declared_operation = str(
+            item.get("operation_key") or item.get("operation") or item.get("key") or ""
+        ).strip()
+        declared_model = str(
+            item.get("decision_model")
+            or item.get("decision_model_id")
+            or item.get("model_id")
+            or ""
+        ).strip()
+        if declared_operation == operation_key or declared_model == model_id:
+            matches.append(item)
+    if len(matches) > 1:
+        raise SolverCapabilityCatalogError(
+            "Solver operation maps to multiple capability declarations: {}".format(
+                operation_key
+            )
+        )
+    model = dict(base_model)
+    if not matches:
+        return model
+    override = dict(matches[0])
+    base_requirements = model.get("engine_requirements")
+    requirements = (
+        dict(base_requirements) if isinstance(base_requirements, Mapping) else {}
     )
-    return public_solver_summary(records)
+    override_requirements = override.pop("engine_requirements", None)
+    if isinstance(override_requirements, Mapping):
+        requirements.update(override_requirements)
+    if str(override.get("problem_family") or "").strip():
+        requirements["problem_family"] = override["problem_family"]
+    if "capabilities" in override:
+        requirements["capabilities"] = override["capabilities"]
+    for field in ("validator_revision", "policy"):
+        if field in override:
+            model[field] = override[field]
+    if requirements:
+        model["engine_requirements"] = requirements
+    return model
 
 
 def load_full_solver_capability_catalog(

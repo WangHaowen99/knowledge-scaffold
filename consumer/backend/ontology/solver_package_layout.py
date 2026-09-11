@@ -24,6 +24,7 @@ import tempfile
 from typing import Any
 
 import yaml
+from jsonschema import Draft202012Validator
 
 
 OPERATION_CENTRIC_LAYOUT = "operation-centric.v1"
@@ -118,10 +119,8 @@ _MARKER_VALUES = frozenset(
         "operation-centric",
         "operation_centric.v1",
         "operation_centric",
+        LEGACY_LAYOUT,
     }
-)
-_RELEASED_VALUES = frozenset(
-    {"released", "published", "immutable", "locked"}
 )
 _OPERATION_KEY_HEADERS = frozenset(
     {
@@ -134,9 +133,21 @@ _OPERATION_KEY_HEADERS = frozenset(
         "操作key",
         "求解 operation",
         "求解operation",
-        "key",
     }
 )
+_SOLVER_MARKER_VALUES = frozenset(
+    {
+        "solver_workflow",
+        "solver-workflow",
+        "solver",
+        "solver operation",
+        "solver_operation",
+        "solver capability",
+        "solver_capability",
+    }
+)
+_SOLVER_INDEX_START = "<!-- solver-capabilities:v1:start -->"
+_SOLVER_INDEX_END = "<!-- solver-capabilities:v1:end -->"
 _FRONTMATTER_RE = re.compile(
     r"^---[ \t]*\r?\n(?P<body>.*?)^---[ \t]*(?:\r?\n|$)",
     re.MULTILINE | re.DOTALL,
@@ -176,8 +187,7 @@ def resolve_solver_sidecar_path(
     """
 
     root = Path(package_root)
-    if not root.is_dir() or root.is_symlink():
-        raise SolverPackageLayoutError("Solver package root is not a regular directory")
+    _ensure_regular_root(root, "Solver")
     raw = str(relative_path or "").strip().replace("\\", "/")
     if not raw:
         raise SolverPackageLayoutError(f"{label.capitalize()} path is missing")
@@ -194,7 +204,7 @@ def resolve_solver_sidecar_path(
     cursor = root
     for part in relative.parts:
         cursor = cursor / part
-        if cursor.is_symlink():
+        if _is_link_like(cursor):
             raise SolverPackageLayoutError(f"{label.capitalize()} path must be contained in the package")
     try:
         resolved = cursor.resolve(strict=must_exist)
@@ -229,12 +239,21 @@ def validate_solver_package_layout(
     """
 
     root = Path(package_root)
-    if not root.is_dir() or root.is_symlink():
-        raise SolverPackageLayoutError("Solver package root is not a regular directory")
+    _ensure_regular_root(root, "Solver")
     if manifest is None:
         manifest = _read_manifest(root)
     if not isinstance(manifest, Mapping):
         raise SolverPackageLayoutError("Solver package manifest must be a mapping")
+
+    # Reuse the package-wide declarative safety policy for all sidecar
+    # manifests/index metadata.  Import lazily to avoid an ontology ↔ layout
+    # module import cycle during package discovery.
+    try:
+        from ontology.ontologies import validate_no_runtime_binding_data
+
+        validate_no_runtime_binding_data(manifest)
+    except ValueError as exc:
+        raise SolverPackageLayoutError(str(exc)) from exc
 
     marker = _layout_marker(manifest)
     if marker and marker not in _MARKER_VALUES:
@@ -303,6 +322,12 @@ def validate_solver_package_layout(
 
         values = declaration.values
         model_id = declaration.model_id or operation.decision_model_id
+        if operation_centric and operation.decision_model_id != model_id:
+            raise SolverPackageLayoutError(
+                "Operation decision model does not match manifest declaration: {}".format(
+                    operation.key
+                )
+            )
         decision_model = _declared_value(
             values,
             "entry",
@@ -349,7 +374,7 @@ def validate_solver_package_layout(
                 continue
             resolved = resolve_solver_sidecar_path(root, value, field)
             relative = resolved.relative_to(root.resolve(strict=True))
-            if operation_centric and relative.parts[0].casefold() != "operations":
+            if operation_centric and relative.parent != Path("operations"):
                 raise SolverPackageLayoutError(
                     f"Operation-centric {field} must be under operations/: {relative.as_posix()}"
                 )
@@ -359,6 +384,7 @@ def validate_solver_package_layout(
                     f"Solver sidecar is shared by multiple operations: {relative.as_posix()}"
                 )
             referenced_sidecars[relative] = operation.key
+            _validate_sidecar_document(resolved, field)
             resolved_paths[field] = relative
 
         result_operations.append(
@@ -405,22 +431,60 @@ def migrate_solver_package_layout(
     target_root: Path | None = None,
     *,
     dry_run: bool = True,
-    allow_in_place: bool = True,
+    allow_in_place: bool = False,
+    require_operation_index: bool = True,
+    target_version: str | None = None,
+) -> SolverPackageMigrationReport:
+    """Run one migration under the same lock used by package authoring."""
+
+    source = Path(source_root)
+    if not source.is_dir() or _is_link_like(source):
+        raise SolverPackageLayoutError("Source package root must be a regular directory")
+    owning_root = (
+        source.parent.parent
+        if source.parent.name.casefold() == "versions"
+        else source
+    )
+    from ontology.mutation_lock import ontology_mutation_lock
+
+    with ontology_mutation_lock(owning_root):
+        return _migrate_solver_package_layout_locked(
+            source,
+            target_root,
+            dry_run=dry_run,
+            allow_in_place=allow_in_place,
+            require_operation_index=require_operation_index,
+            target_version=target_version,
+        )
+
+
+def _migrate_solver_package_layout_locked(
+    source_root: Path,
+    target_root: Path | None = None,
+    *,
+    dry_run: bool = True,
+    allow_in_place: bool = False,
     require_operation_index: bool = True,
     target_version: str | None = None,
 ) -> SolverPackageMigrationReport:
     """Plan or apply migration from the historical three-directory layout.
 
-    Distinct ``target_root`` paths represent a new package revision and leave
-    the source untouched.  In-place migration is supported for drafts only;
-    revisions marked released/published/immutable are always rejected before
-    any write.  Dry-run mode performs all reads and validation but writes
-    neither the target nor the source.
+    Applied migrations create a distinct package revision and leave the
+    source untouched.  An omitted/in-place target is supported only for a
+    dry-run.  Before publishing, the source content is compared with its
+    initial revision so concurrent edits fail closed.
     """
 
     source = Path(source_root)
     target = Path(target_root) if target_root is not None else source
     _ensure_regular_root(source, "Source")
+    source_resolved = source.resolve()
+    target_resolved = target.resolve(strict=False)
+    in_place = source_resolved == target_resolved
+    if not in_place and target_resolved.is_relative_to(source_resolved):
+        raise SolverPackageLayoutError(
+            "Migration target must be outside the source package"
+        )
     manifest = _read_manifest(source)
     if not isinstance(manifest, Mapping):
         raise SolverPackageLayoutError("Source package manifest must be a mapping")
@@ -432,6 +496,10 @@ def migrate_solver_package_layout(
         validate_solver_package_layout(
             source, manifest, require_operation_index=require_operation_index
         )
+        if not in_place:
+            raise SolverPackageLayoutError(
+                "Package already uses operation-centric.v1; use a versioning copy workflow for a distinct target"
+            )
         return SolverPackageMigrationReport(
             source=source.resolve(),
             target=target.resolve(),
@@ -441,14 +509,13 @@ def migrate_solver_package_layout(
     if source_marker and source_marker not in _MARKER_VALUES:
         raise SolverPackageLayoutError(f"Unsupported solver package layout marker: {source_marker}")
 
-    in_place = source.resolve() == target.resolve()
-    if in_place and not allow_in_place:
+    if in_place and not dry_run:
+        raise SolverPackageLayoutError(
+            "Applied solver package migration requires a new target revision"
+        )
+    if in_place and not allow_in_place and target_root is not None:
         raise SolverPackageLayoutError("In-place solver package migration is disabled")
-    if in_place and _is_released_manifest(manifest):
-            raise SolverPackageLayoutError(
-                "released solver package revisions cannot be rewritten in place; provide a new target revision"
-            )
-    if not in_place and target.exists():
+    if not in_place and (target.exists() or target.is_symlink()):
         raise SolverPackageLayoutError("Migration target already exists")
 
     operations = _discover_operations(source)
@@ -468,14 +535,29 @@ def migrate_solver_package_layout(
     moves: list[tuple[Path, Path, str, str]] = []
     updated_manifest = _deep_copy_mapping(manifest)
     updated_manifest["solver_layout"] = OPERATION_CENTRIC_LAYOUT
+    source_version = str(manifest.get("version") or "").strip()
+    if not in_place and target_version is None:
+        raise SolverPackageLayoutError(
+            "A distinct migration target requires target_version"
+        )
     if target_version is not None:
         normalized_target_version = str(target_version).strip()
-        if not normalized_target_version:
-            raise SolverPackageLayoutError("Migration target version must be a non-empty string")
+        if not normalized_target_version or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]*",
+            normalized_target_version,
+        ) is None:
+            raise SolverPackageLayoutError("Migration target version is invalid")
+        if not in_place and normalized_target_version == source_version:
+            raise SolverPackageLayoutError(
+                "A distinct migration target requires a new target_version"
+            )
         updated_manifest["version"] = normalized_target_version
         if "active_version" in updated_manifest:
             updated_manifest["active_version"] = normalized_target_version
+        if "versions" in updated_manifest:
+            updated_manifest["versions"] = [normalized_target_version]
     updated_declarations = _manifest_model_lists(updated_manifest)
+    migrated_model_ids: set[str] = set()
     for operation in operations:
         declaration = declaration_by_operation.get(operation.key)
         if declaration is None:
@@ -486,6 +568,11 @@ def migrate_solver_package_layout(
             raise SolverPackageLayoutError(
                 f"Solver operation has no manifest decision model: {operation.key}"
             )
+        if declaration.model_id in migrated_model_ids:
+            raise SolverPackageLayoutError(
+                "Legacy solver operations sharing one decision model must be split before migration"
+            )
+        migrated_model_ids.add(declaration.model_id)
         values = declaration.values
         source_paths = {
             "entry": _declared_value(values, "entry", "decision_model_entry", "decision_model_path"),
@@ -496,6 +583,17 @@ def migrate_solver_package_layout(
             "result_schema": _declared_value(values, "result_schema", "output_schema", "output"),
             "presentation": _declared_value(values, "presentation", "presentation_path"),
         }
+        if not source_paths["fact_snapshot_schema"]:
+            source_paths["fact_snapshot_schema"] = _fact_snapshot_path_from_model(
+                source,
+                source_paths["entry"],
+            )
+        if not source_paths["fact_snapshot_schema"] and len(operations) == 1:
+            source_paths["fact_snapshot_schema"] = _infer_fact_snapshot_path(
+                source,
+                operation_key=operation.key,
+                decision_model_id=declaration.model_id,
+            )
         required = ("entry", "input_schema", "result_schema")
         if any(not source_paths[field] for field in required):
             raise SolverPackageLayoutError(
@@ -525,6 +623,13 @@ def migrate_solver_package_layout(
             destination = Path(destination_names[field])
             moves.append((source_path, destination, field, operation.key))
             model_values[field if field != "entry" else "entry"] = destination.as_posix()
+        _update_manifest_solver_references(
+            updated_manifest,
+            operation_key=operation.key,
+            decision_model_id=declaration.model_id,
+            destination_names=destination_names,
+            source_paths=source_paths,
+        )
 
     planned = sorted(
         {
@@ -544,15 +649,9 @@ def migrate_solver_package_layout(
     if not removed:
         warnings.append("No legacy solver directories were present; manifest paths will still be normalized")
 
-    if dry_run:
-        return SolverPackageMigrationReport(
-            source=source.resolve(),
-            target=target.resolve(),
-            dry_run=True,
-            planned_files=tuple(planned),
-            removed_paths=tuple(removed),
-            warnings=tuple(warnings),
-        )
+    from ontology.view_cache import build_package_content_revision
+
+    source_content_revision = build_package_content_revision(source)
 
     stage: Path | None = None
     try:
@@ -564,6 +663,17 @@ def migrate_solver_package_layout(
         _copy_tree_without_links(source, stage)
         working = stage
         _apply_moves(working, moves, source_root=source)
+        _rewrite_solver_sidecars(
+            working,
+            source_root=source,
+            moves=moves,
+        )
+        _rewrite_operation_documents(
+            working,
+            operations=operations,
+            source_root=source,
+            moves=moves,
+        )
         _write_solver_indexes(working, [operation.key for operation in operations])
         _write_manifest(working, updated_manifest)
         # Remove only the exact legacy solver directories after all referenced
@@ -574,6 +684,10 @@ def migrate_solver_package_layout(
             _read_manifest(working),
             require_operation_index=require_operation_index,
         )
+        if build_package_content_revision(source) != source_content_revision:
+            raise SolverPackageLayoutError(
+                "Source solver package changed during migration"
+            )
         copied_files = sorted(
             {
                 destination.as_posix()
@@ -581,12 +695,46 @@ def migrate_solver_package_layout(
             }
             | {"manifest.yaml", "index.md", "operations/index.md"}
         )
-        if in_place:
-            _replace_directory_contents(source, working)
-        else:
-            # The target was deliberately not touched until the staged copy
-            # passed the complete layout validator.
+        if dry_run:
+            # The staged tree has gone through the same copy, rewrite,
+            # cleanup, and final validation path as an applied migration.  It
+            # is discarded below, so dry-run never mutates source or target.
+            return SolverPackageMigrationReport(
+                source=source.resolve(),
+                target=target.resolve(),
+                dry_run=True,
+                planned_files=tuple(planned),
+                removed_paths=tuple(removed),
+                warnings=tuple(warnings),
+            )
+        # The target was deliberately not touched until the staged copy
+        # passed validation and the source CAS check.
+        moved_stage = False
+        try:
+            if build_package_content_revision(source) != source_content_revision:
+                raise SolverPackageLayoutError(
+                    "Source solver package changed during migration"
+                )
             os.replace(str(working), str(target))
+            moved_stage = True
+        except OSError:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target_stage = Path(
+                tempfile.mkdtemp(prefix="solver-layout-target-", dir=str(target.parent))
+            )
+            shutil.rmtree(target_stage)
+            try:
+                _copy_tree_without_links(working, target_stage)
+                if build_package_content_revision(source) != source_content_revision:
+                    raise SolverPackageLayoutError(
+                        "Source solver package changed during migration"
+                    )
+                os.replace(str(target_stage), str(target))
+            except (OSError, SolverPackageLayoutError):
+                if target_stage.exists():
+                    shutil.rmtree(target_stage, ignore_errors=True)
+                raise
+        if moved_stage:
             stage = None
         return SolverPackageMigrationReport(
             source=source.resolve(),
@@ -624,6 +772,8 @@ def _layout_marker(manifest: Mapping[str, Any] | None) -> str:
         text = str(candidate or "").strip()
         if text:
             normalized = text.casefold().replace("_", "-")
+            if normalized == LEGACY_LAYOUT:
+                return LEGACY_LAYOUT
             if normalized in {value.casefold().replace("_", "-") for value in _MARKER_VALUES}:
                 return OPERATION_CENTRIC_LAYOUT
             return text
@@ -645,7 +795,7 @@ def _read_manifest(root: Path) -> Mapping[str, Any]:
 
 def _discover_operations(root: Path) -> tuple[_Operation, ...]:
     operations_dir = root / "operations"
-    if not operations_dir.is_dir() or operations_dir.is_symlink():
+    if not operations_dir.is_dir() or _is_link_like(operations_dir):
         return ()
     found: list[_Operation] = []
     seen: set[str] = set()
@@ -830,11 +980,13 @@ def _validate_indexes(
     *,
     require_operation_index: bool,
 ) -> None:
-    root_keys = _index_operation_keys(root / "index.md")
+    root_keys = _index_operation_keys(root / "index.md", expected=expected)
     if root_keys != expected:
         _raise_index_mismatch("Root index", expected, root_keys)
     if require_operation_index:
-        operation_keys = _index_operation_keys(root / "operations" / "index.md")
+        operation_keys = _index_operation_keys(
+            root / "operations" / "index.md", expected=expected
+        )
         if operation_keys != expected:
             _raise_index_mismatch("Operations index", expected, operation_keys)
 
@@ -852,13 +1004,36 @@ def _raise_index_mismatch(label: str, expected: set[str], actual: set[str]) -> N
     )
 
 
-def _index_operation_keys(path: Path) -> set[str]:
+def _index_operation_keys(path: Path, *, expected: set[str] | None = None) -> set[str]:
+    """Extract solver rows without mistaking ordinary package tables for them.
+
+    A knowledge-package index is a shared navigation document: its root index
+    commonly contains object and operation tables, and ``operations/index.md``
+    contains non-solver operations too.  Solver rows therefore need an
+    explicit marker (the generated block), a solver execution/type column, or
+    a sidecar reference.  A generic ``key`` column is deliberately *not*
+    sufficient evidence.
+    """
     if not path.is_file() or path.is_symlink():
         return set()
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return set()
+    start_count = text.count(_SOLVER_INDEX_START)
+    end_count = text.count(_SOLVER_INDEX_END)
+    marked_projection = start_count or end_count
+    if marked_projection:
+        if start_count != 1 or end_count != 1:
+            return {"__invalid_solver_index_markers__"}
+        marker_start = text.find(_SOLVER_INDEX_START)
+        marker_end = text.find(_SOLVER_INDEX_END)
+        if marker_end < marker_start:
+            return {"__invalid_solver_index_markers__"}
+        # Generated solver projection is authoritative for this index.  This
+        # lets ordinary rows remain in the document without entering the
+        # solver consistency check.
+        text = text[marker_start + len(_SOLVER_INDEX_START) : marker_end]
     rows = _markdown_tables(text)
     keys: list[str] = []
     for headers, data_rows in rows:
@@ -872,11 +1047,40 @@ def _index_operation_keys(path: Path) -> set[str]:
         ]
         if not operation_columns:
             continue
+        solver_columns = {
+            index
+            for index, header in enumerate(normalized_headers)
+            if header in {item.casefold() for item in _SOLVER_MARKER_VALUES}
+            or header in {"execution", "execution_mode", "execution mode", "type", "kind"}
+            or "solver" in header
+        }
         column = operation_columns[0]
         for row in data_rows:
             if column < len(row):
-                value = row[column].strip().strip("`")
-                if value and value not in {"-", "—"}:
+                values = [str(cell or "").strip().strip("`") for cell in row]
+                value = values[column]
+                if not value or value in {"-", "—"}:
+                    continue
+                marker_values = {
+                    values[index].casefold()
+                    for index in solver_columns
+                    if index < len(values)
+                }
+                sidecar_row = any(
+                    re.search(
+                        r"(?:\.model\.ya?ml|\.input\.schema\.json|\.result\.schema\.json|\.fact(?:[-_]snapshot)?\.schema\.json|\.presentation\.ya?ml)\b",
+                        cell,
+                        re.IGNORECASE,
+                    )
+                    for cell in values
+                )
+                explicit_solver = bool(marker_values & _SOLVER_MARKER_VALUES)
+                # If an expected set is available, a row that names an
+                # expected operation and carries sidecar columns is also an
+                # unambiguous solver projection (used by hand-authored v1
+                # indexes before migration adds the marker block).
+                expected_sidecar = bool(expected and value in expected and sidecar_row)
+                if explicit_solver or sidecar_row or expected_sidecar:
                     keys.append(value)
     if keys:
         # Preserve duplicate detection by returning a sentinel impossible to
@@ -887,12 +1091,7 @@ def _index_operation_keys(path: Path) -> set[str]:
             result.add("__duplicate_operation_key__")
         return result
 
-    # Compatibility indexes produced by the v0.1 converter were often plain
-    # prose.  Extract conservative operation-looking tokens from those files;
-    # strict operation-centric packages should use a table and therefore hit
-    # the branch above.
-    fallback = re.findall(r"\b[a-z][a-z0-9_]{1,63}\b", text)
-    return set(fallback)
+    return set()
 
 
 def _markdown_tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
@@ -948,6 +1147,52 @@ def _read_frontmatter(path: Path) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
+def _validate_sidecar_document(path: Path, label: str) -> None:
+    """Check sidecar syntax and declarative safety at the package boundary."""
+
+    try:
+        if path.suffix.casefold() == ".json":
+            value = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+        raise SolverPackageLayoutError(f"{label.capitalize()} sidecar is malformed") from exc
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise SolverPackageLayoutError(f"{label.capitalize()} sidecar must be a mapping")
+    if path.suffix.casefold() == ".json":
+        try:
+            _reject_remote_schema_references(value)
+            Draft202012Validator.check_schema(dict(value))
+        except Exception as exc:
+            raise SolverPackageLayoutError(
+                f"{label.capitalize()} sidecar is not a valid local JSON Schema"
+            ) from exc
+    try:
+        from ontology.ontologies import validate_no_runtime_binding_data
+
+        validate_no_runtime_binding_data(value)
+    except ValueError as exc:
+        raise SolverPackageLayoutError(str(exc)) from exc
+
+
+def _reject_remote_schema_references(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if str(key) in {"$ref", "$dynamicRef"}:
+                if not isinstance(item, str) or not item.startswith("#/"):
+                    raise ValueError("Only local JSON Schema references are allowed")
+            if str(key) == "$id" and isinstance(item, str):
+                normalized = item.strip().casefold()
+                if normalized.startswith(("http:", "https:", "//")):
+                    raise ValueError("remote JSON Schema identifiers are not allowed")
+            _reject_remote_schema_references(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _reject_remote_schema_references(item)
+
+
 def _enabled(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -957,11 +1202,19 @@ def _enabled(value: Any) -> bool:
 
 
 def _ensure_regular_root(root: Path, label: str) -> None:
-    if not root.is_dir() or root.is_symlink():
+    if not root.is_dir() or _is_link_like(root):
         raise SolverPackageLayoutError(f"{label} package root must be a regular directory")
     for path in root.rglob("*"):
-        if path.is_symlink():
-            raise SolverPackageLayoutError("Solver package contains symbolic links")
+        if _is_link_like(path):
+            raise SolverPackageLayoutError(
+                "Solver package contains symbolic links or junctions"
+            )
+
+
+def _is_link_like(path: Path) -> bool:
+    return path.is_symlink() or (
+        hasattr(path, "is_junction") and path.is_junction()
+    )
 
 
 def _deep_copy_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -996,6 +1249,137 @@ def _find_mutable_model_values(
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _infer_fact_snapshot_path(
+    root: Path,
+    *,
+    operation_key: str,
+    decision_model_id: str,
+) -> str:
+    """Infer a legacy fact-snapshot sidecar from deterministic file names.
+
+    Older v0.2 packages (including early released revisions) stored the fact
+    snapshot schema in ``schemas/`` but omitted the field from the model
+    declaration.  Only an exact, unambiguous filename match is accepted; no
+    arbitrary file is selected.
+    """
+
+    candidates: list[Path] = []
+    for directory in (root / "schemas", root / "operations"):
+        if not directory.is_dir() or _is_link_like(directory):
+            continue
+        for path in directory.iterdir():
+            if not path.is_file() or _is_link_like(path) or path.suffix.casefold() != ".json":
+                continue
+            stem = path.stem.casefold()
+            if "fact" not in stem or "snapshot" not in stem:
+                continue
+            candidates.append(path)
+    preferred_tokens = set()
+    for raw_token in (operation_key, decision_model_id):
+        normalized = re.sub(r"[^a-z0-9]+", "-", str(raw_token or "").casefold()).strip("-")
+        if normalized:
+            preferred_tokens.add(normalized)
+    preferred = [
+        path
+        for path in candidates
+        if any(
+            token in re.sub(r"[^a-z0-9]+", "-", path.stem.casefold()).strip("-")
+            for token in preferred_tokens
+        )
+    ]
+    if len(preferred) == 1:
+        return preferred[0].relative_to(root).as_posix()
+    return ""
+
+
+def _fact_snapshot_path_from_model(root: Path, model_path: str) -> str:
+    if not model_path:
+        return ""
+    resolved = resolve_solver_sidecar_path(root, model_path, "decision model")
+    model = _read_yaml_mapping_file(resolved, "decision model")
+    return _declared_value(
+        model,
+        "fact_snapshot_schema",
+        "fact_schema",
+        "fact_snapshot",
+    )
+
+
+def _read_yaml_mapping_file(path: Path, label: str) -> Mapping[str, Any]:
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise SolverPackageLayoutError(f"{label.capitalize()} is malformed") from exc
+    if not isinstance(value, Mapping):
+        raise SolverPackageLayoutError(f"{label.capitalize()} must be a mapping")
+    return value
+
+
+def _update_manifest_solver_references(
+    manifest: dict[str, Any],
+    *,
+    operation_key: str,
+    decision_model_id: str,
+    destination_names: Mapping[str, str],
+    source_paths: Mapping[str, str],
+) -> None:
+    """Normalize all known manifest-level solver path references in place."""
+
+    def matches(item: Mapping[str, Any]) -> bool:
+        item_operation = str(
+            item.get("operation_key") or item.get("operation") or ""
+        ).strip()
+        item_model = str(
+            item.get("id") or item.get("model_id") or item.get("decision_model")
+            or item.get("decision_model_id") or ""
+        ).strip()
+        return item_operation == operation_key or (
+            bool(decision_model_id) and item_model == decision_model_id
+        )
+
+    def rewrite(item: dict[str, Any]) -> None:
+        if not matches(item):
+            return
+        item["operation_key"] = operation_key
+        for field, destination in destination_names.items():
+            if field == "entry":
+                item["entry"] = destination
+            elif field == "fact_snapshot_schema" and not source_paths.get(field):
+                continue
+            elif source_paths.get(field):
+                item[field] = destination
+
+    containers: list[Any] = [manifest]
+    capabilities = manifest.get("capabilities")
+    if isinstance(capabilities, Mapping):
+        containers.append(capabilities)
+    for container in containers:
+        if not isinstance(container, Mapping):
+            continue
+        for key in ("decision_models", "solver_operations"):
+            values = container.get(key)
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                if isinstance(item, dict):
+                    rewrite(item)
+
+    # The package-level presentation declaration is another path-bearing
+    # reference used by old packages.  Normalize only when it points at this
+    # operation's legacy presentation (or when it is a mapping with an
+    # explicit operation/model discriminator).
+    presentation = manifest.get("presentation")
+    if isinstance(presentation, dict):
+        if matches(presentation) or not any(
+            key in presentation for key in ("operation_key", "operation", "model_id", "decision_model")
+        ):
+            if source_paths.get("presentation"):
+                presentation["contract"] = destination_names["presentation"]
+    elif isinstance(presentation, str) and source_paths.get("presentation"):
+        if presentation.replace("\\", "/") == source_paths["presentation"]:
+            manifest["presentation"] = destination_names["presentation"]
+
+
 def _apply_moves(
     working_root: Path,
     moves: Iterable[tuple[Path, Path, str, str]],
@@ -1007,14 +1391,14 @@ def _apply_moves(
         # copy from an arbitrary path supplied by a manifest after staging.
         source_relative = source_path.resolve().relative_to(source_root.resolve())
         staged_source = working_root / source_relative
-        if not staged_source.is_file() or staged_source.is_symlink():
+        if not staged_source.is_file() or _is_link_like(staged_source):
             raise SolverPackageLayoutError(
                 f"Solver {field} is missing for operation: {operation_key}"
             )
         destination_path = working_root / destination
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         if destination_path.exists():
-            if destination_path.is_symlink() or not destination_path.is_file():
+            if _is_link_like(destination_path) or not destination_path.is_file():
                 raise SolverPackageLayoutError(
                     f"Migration destination is not a regular file: {destination.as_posix()}"
                 )
@@ -1024,6 +1408,145 @@ def _apply_moves(
                 )
         else:
             shutil.copy2(staged_source, destination_path)
+
+
+def _rewrite_operation_documents(
+    working_root: Path,
+    *,
+    operations: Iterable[_Operation],
+    source_root: Path,
+    moves: Iterable[tuple[Path, Path, str, str]],
+) -> None:
+    """Rewrite operation frontmatter/contract tables to the new sidecars."""
+
+    moves_by_operation: dict[str, list[tuple[Path, Path, str, str]]] = {}
+    for move in moves:
+        moves_by_operation.setdefault(move[3], []).append(move)
+
+    replacements_by_operation: dict[str, dict[str, str]] = {}
+    for operation in operations:
+        destinations = {
+            field: destination.as_posix()
+            for _source_path, destination, field, move_operation_key in moves_by_operation.get(operation.key, [])
+            if move_operation_key == operation.key
+        }
+        replacements: dict[str, str] = {}
+        for field, destination in destinations.items():
+            # ``execution.decision_model`` is the stable model *identity*,
+            # not a filesystem path; update its path only in the contract
+            # table below.  Rewriting it here would make the catalog unable to
+            # resolve the declared model.
+            if field == "input_schema":
+                replacements["input_schema"] = destination
+            elif field == "fact_snapshot_schema":
+                replacements["fact_snapshot_schema"] = destination
+            elif field == "result_schema":
+                replacements["result_schema"] = destination
+            elif field == "presentation":
+                replacements["presentation"] = destination
+        replacements_by_operation[operation.key] = replacements
+
+    for operation in operations:
+        replacements = replacements_by_operation.get(operation.key) or {}
+        if not replacements:
+            continue
+        relative = operation.path.resolve().relative_to(Path(source_root).resolve())
+        path = working_root / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise SolverPackageLayoutError(
+                f"Operation document cannot be read: {operation.key}"
+            ) from exc
+        frontmatter_match = _FRONTMATTER_RE.match(text)
+        if frontmatter_match is None:
+            raise SolverPackageLayoutError(
+                f"Operation document frontmatter is malformed: {operation.key}"
+            )
+        frontmatter_text = frontmatter_match.group("body")
+        body_text = text[frontmatter_match.end() :]
+        for field, destination in replacements.items():
+            pattern = re.compile(
+                rf"(?m)^(?P<prefix>[ \t]*(?:{re.escape(field)}|{re.escape(field.replace('_', '-'))})[ \t]*:[ \t]*)(?P<value>[^\r\n#]+)"
+            )
+            frontmatter_text = pattern.sub(
+                lambda match: match.group("prefix") + destination,
+                frontmatter_text,
+            )
+        text = "---\n" + frontmatter_text.rstrip() + "\n---\n" + body_text.lstrip("\r\n")
+        # In prose, update only exact inline-code tokens.  Broad substring
+        # replacement would corrupt archive/example paths that merely contain
+        # the legacy resource name.
+        for move_source, destination, _field, move_operation_key in moves_by_operation.get(
+            operation.key, []
+        ):
+            old = move_source.relative_to(source_root.resolve()).as_posix()
+            destination_text = destination.as_posix()
+            text = text.replace(f"`{old}`", f"`{destination_text}`")
+        path.write_text(text, encoding="utf-8")
+
+
+def _rewrite_solver_sidecars(
+    working_root: Path,
+    *,
+    source_root: Path,
+    moves: Iterable[tuple[Path, Path, str, str]],
+) -> None:
+    """Rewrite exact legacy path values inside copied YAML sidecars.
+
+    Decision models and presentation contracts often reference the input,
+    fact-snapshot, or result schemas themselves.  After the legacy directories
+    are removed those references must point to the copied ``operations/``
+    sidecars too.  Recursive mapping/list traversal avoids broad text
+    substitution while preserving ordinary strings and comments is not a
+    requirement for machine-owned YAML sidecars.
+    """
+
+    moves_by_operation: dict[str, list[tuple[Path, Path, str, str]]] = {}
+    for move in moves:
+        moves_by_operation.setdefault(move[3], []).append(move)
+    source_root_resolved = source_root.resolve()
+    for operation_moves in moves_by_operation.values():
+        replacements = {
+            source_path.relative_to(source_root_resolved).as_posix(): destination.as_posix()
+            for source_path, destination, _field, _operation_key in operation_moves
+        }
+        yaml_destinations = {
+            destination
+            for _source_path, destination, field, _operation_key in operation_moves
+            if field in {"entry", "presentation"}
+        }
+        for relative in yaml_destinations:
+            path = working_root / relative
+            try:
+                document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                raise SolverPackageLayoutError(
+                    f"Solver sidecar cannot be rewritten: {relative.as_posix()}"
+                ) from exc
+            rewritten = _replace_exact_path_values(document, replacements)
+            if not isinstance(rewritten, Mapping):
+                raise SolverPackageLayoutError(
+                    f"Solver sidecar must be a mapping: {relative.as_posix()}"
+                )
+            path.write_text(
+                yaml.safe_dump(dict(rewritten), allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+
+
+def _replace_exact_path_values(value: Any, replacements: Mapping[str, str]) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _replace_exact_path_values(item, replacements)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_exact_path_values(item, replacements) for item in value]
+    if isinstance(value, str):
+        normalized = value.strip().replace("\\", "/")
+        return replacements.get(normalized, value)
+    return value
 
 
 def _remove_legacy_directories_safely(
@@ -1040,7 +1563,7 @@ def _remove_legacy_directories_safely(
             relative = path.resolve().relative_to(Path(source_root).resolve())
         except ValueError as exc:
             raise SolverPackageLayoutError("Migration source path escaped source package") from exc
-        referenced_relative.add(relative.as_posix().casefold())
+        referenced_relative.add(relative.as_posix())
     for directory_name in sorted(FORBIDDEN_SOLVER_DIRECTORIES):
         directory = working_root / directory_name
         if not directory.exists():
@@ -1048,7 +1571,7 @@ def _remove_legacy_directories_safely(
         for path in directory.rglob("*"):
             if path.is_dir():
                 continue
-            relative = path.relative_to(working_root).as_posix().casefold()
+            relative = path.relative_to(working_root).as_posix()
             if relative not in referenced_relative:
                 raise SolverPackageLayoutError(
                     f"Refusing to remove unreferenced legacy solver file: {path.relative_to(working_root).as_posix()}"
@@ -1077,78 +1600,136 @@ def _write_manifest(root: Path, manifest: Mapping[str, Any]) -> None:
 
 
 def _write_solver_indexes(root: Path, operation_keys: Iterable[str]) -> None:
-    """Write deterministic root and operation index projections.
+    """Upsert a marked solver projection while preserving shared indexes.
 
-    Migration must not preserve prose from a legacy index when it would make
-    the new strict one-to-one contract ambiguous.  The generated projections
-    intentionally stay lightweight; full operation documentation remains in
-    the individual Markdown files.
+    ``index.md`` and ``operations/index.md`` are package-wide navigation
+    documents, not solver-only files.  Replacing either document would erase
+    object and ordinary-operation rows.  A bounded marker block gives the
+    layout validator a precise projection to check and makes a second
+    migration deterministic/idempotent.
     """
 
     keys = sorted({str(key).strip() for key in operation_keys if str(key).strip()})
     root_path = root / "index.md"
-    root_path.write_text(
-        "# Solver capabilities\n\n"
+    _upsert_solver_index_block(
+        root_path,
+        "# Solver capabilities",
         "| capability key | operation key | execution |\n"
         "| --- | --- | --- |\n"
         + "".join(f"| {key} | {key} | solver_workflow |\n" for key in keys),
-        encoding="utf-8",
     )
     operations_path = root / "operations" / "index.md"
     operations_path.parent.mkdir(parents=True, exist_ok=True)
-    operations_path.write_text(
-        "# Operations\n\n"
-        "| operation key | type |\n"
-        "| --- | --- |\n"
-        + "".join(f"| {key} | solver_workflow |\n" for key in keys),
-        encoding="utf-8",
+    _mark_solver_rows_in_operation_index(operations_path, keys)
+
+
+def _mark_solver_rows_in_operation_index(path: Path, operation_keys: list[str]) -> None:
+    """Mark existing operation rows so the first shared table stays canonical."""
+
+    try:
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except (OSError, UnicodeError) as exc:
+        raise SolverPackageLayoutError("Solver operation index cannot be read") from exc
+    lines = existing.splitlines()
+    table_start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if index + 1 < len(lines)
+            and _split_table_row(line) is not None
+            and _is_separator(_split_table_row(lines[index + 1]) or [])
+        ),
+        None,
     )
+    if table_start is None:
+        generated = (
+            (existing.rstrip() + "\n\n" if existing.strip() else "")
+            + "| operation key | execution |\n| --- | --- |\n"
+            + "".join(f"| {key} | solver_workflow |\n" for key in operation_keys)
+        )
+        path.write_text(generated, encoding="utf-8")
+        return
+    headers = _split_table_row(lines[table_start]) or []
+    normalized = [header.strip().casefold() for header in headers]
+    operation_column = next(
+        (
+            index
+            for index, header in enumerate(normalized)
+            if header in {item.casefold() for item in _OPERATION_KEY_HEADERS}
+            or "operation key" in header
+            # Accept the same Chinese headers the reader accepts, or a hand-written
+            # index would parse on read but be rejected on write.
+            or "操作" in header
+        ),
+        None,
+    )
+    if operation_column is None:
+        raise SolverPackageLayoutError(
+            "operations/index.md has no operation key column"
+        )
+    type_column = next(
+        (index for index, header in enumerate(normalized) if header in {"type", "kind", "execution"}),
+        None,
+    )
+    if type_column is None:
+        headers.append("execution")
+        type_column = len(headers) - 1
+        lines[table_start] = "| " + " | ".join(headers) + " |"
+        separator = _split_table_row(lines[table_start + 1]) or []
+        separator.append("---")
+        lines[table_start + 1] = "| " + " | ".join(separator) + " |"
+    found: set[str] = set()
+    row_index = table_start + 2
+    while row_index < len(lines):
+        row = _split_table_row(lines[row_index])
+        if row is None:
+            break
+        while len(row) < len(headers):
+            row.append("")
+        key = row[operation_column].strip().strip("`")
+        if key in operation_keys:
+            row[type_column] = "solver_workflow"
+            found.add(key)
+        lines[row_index] = "| " + " | ".join(row[: len(headers)]) + " |"
+        row_index += 1
+    missing = [key for key in operation_keys if key not in found]
+    if missing:
+        for key in missing:
+            row = [""] * len(headers)
+            row[operation_column] = key
+            row[type_column] = "solver_workflow"
+            lines.insert(row_index, "| " + " | ".join(row) + " |")
+            row_index += 1
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
-def _replace_directory_contents(source: Path, staged: Path) -> None:
-    # Keep the source directory itself stable for callers holding its path.
-    for child in list(source.iterdir()):
-        if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
-    for child in list(staged.iterdir()):
-        destination = source / child.name
-        if child.is_dir() and not child.is_symlink():
-            shutil.copytree(child, destination, symlinks=False)
-        else:
-            shutil.copy2(child, destination)
-
-
-def _is_released_manifest(manifest: Mapping[str, Any]) -> bool:
-    values: list[Any] = [
-        manifest.get("status"),
-        manifest.get("release_status"),
-        manifest.get("state"),
-        manifest.get("lifecycle"),
-    ]
-    lifecycle = manifest.get("lifecycle")
-    if isinstance(lifecycle, Mapping):
-        values.append(lifecycle.get("status"))
-    for value in values:
-        if isinstance(value, Mapping):
-            value = value.get("status")
-        if isinstance(value, bool):
-            if value:
-                return True
-            continue
-        if str(value or "").strip().casefold() in _RELEASED_VALUES:
-            return True
-    for key in ("released", "published", "immutable", "locked"):
-        value = manifest.get(key)
-        if isinstance(value, bool) and value:
-            return True
-    for marker in ("RELEASED", ".released", "release.marker"):
-        if (Path.cwd() / marker).is_file():
-            # Never treat a process cwd marker as package state.  This branch
-            # is intentionally omitted; package status must be manifest-owned.
-            return False
-    return False
+def _upsert_solver_index_block(path: Path, heading: str, table: str) -> None:
+    try:
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except (OSError, UnicodeError) as exc:
+        raise SolverPackageLayoutError("Solver index cannot be read") from exc
+    block = "\n".join(
+        (
+            _SOLVER_INDEX_START,
+            heading,
+            "",
+            table.rstrip(),
+            _SOLVER_INDEX_END,
+        )
+    )
+    start = existing.find(_SOLVER_INDEX_START)
+    end = existing.find(_SOLVER_INDEX_END)
+    if start >= 0 and end >= start:
+        end += len(_SOLVER_INDEX_END)
+        updated = existing[:start].rstrip() + "\n\n" + block + existing[end:]
+    elif start >= 0:
+        raise SolverPackageLayoutError(
+            f"Solver index marker is incomplete: {path.name}"
+        )
+    else:
+        prefix = existing.rstrip()
+        updated = (prefix + "\n\n" if prefix else "") + block
+    path.write_text(updated.rstrip() + "\n", encoding="utf-8")
 
 
 __all__ = [

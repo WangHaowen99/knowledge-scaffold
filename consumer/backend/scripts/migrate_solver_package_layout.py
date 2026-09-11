@@ -1,9 +1,8 @@
 """Migrate an ontology solver package to the operation-centric layout.
 
-The command is dry-run by default.  Pass ``--apply`` only after reviewing the
-JSON plan.  A distinct ``--target`` path is the safest way to create a new
-package revision; in-place writes are refused for released revisions by the
-layout helper.
+The command is dry-run by default. Pass ``--apply`` only after reviewing the
+JSON plan. Applied migrations require a distinct ``--target`` and a new
+``--target-version``; source revisions are never rewritten.
 """
 
 from __future__ import annotations
@@ -12,6 +11,11 @@ import argparse
 import json
 from pathlib import Path
 import sys
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from ontology.solver_package_layout import (
     SolverPackageLayoutError,
@@ -38,14 +42,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target",
         type=Path,
-        help="New package revision directory; omitted means an in-place draft migration",
+        help="New package revision directory; required with --apply",
     )
-    parser.add_argument(
+    execution_mode = parser.add_mutually_exclusive_group()
+    execution_mode.add_argument(
         "--apply",
         action="store_true",
         help="Apply the migration; without this flag only a JSON plan is emitted",
     )
-    parser.add_argument(
+    execution_mode.add_argument(
         "--dry-run",
         action="store_true",
         help="Explicitly request the default dry-run behavior",

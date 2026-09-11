@@ -177,6 +177,67 @@ def test_target_layout_rejects_forbidden_solver_directories(tmp_path):
         validate_solver_package_layout(tmp_path, manifest)
 
 
+def test_target_layout_rejects_operation_model_identity_drift(tmp_path):
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        validate_solver_package_layout,
+    )
+
+    manifest = _write_target_package(tmp_path)
+    operation = tmp_path / "operations" / "solve_route.md"
+    operation.write_text(
+        operation.read_text(encoding="utf-8").replace(
+            "decision_model: route_choice",
+            "decision_model: another_model",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SolverPackageLayoutError, match="decision model"):
+        validate_solver_package_layout(tmp_path, manifest)
+
+
+def test_target_layout_rejects_invalid_json_schema(tmp_path):
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        validate_solver_package_layout,
+    )
+
+    manifest = _write_target_package(tmp_path)
+    (tmp_path / "operations" / "solve_route.input.schema.json").write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {"origin": {"type": "not-a-json-schema-type"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SolverPackageLayoutError, match="valid local JSON Schema"):
+        validate_solver_package_layout(tmp_path, manifest)
+
+
+def test_import_rejects_unknown_solver_layout_marker(tmp_path):
+    from ontology.package_import import validate_ontology_revision
+
+    _write_target_package(tmp_path, marker="operation-centric.v999")
+
+    with pytest.raises(ValueError, match="Unsupported solver package layout"):
+        validate_ontology_revision(tmp_path)
+
+
+def test_operation_centric_layout_is_enforced_at_package_import(tmp_path):
+    from ontology.package_import import validate_ontology_revision
+
+    _write_target_package(tmp_path)
+    validate_ontology_revision(tmp_path)
+
+    (tmp_path / "schemas").mkdir()
+    with pytest.raises(ValueError, match="schemas"):
+        validate_ontology_revision(tmp_path)
+
+
 def test_index_manifest_and_operation_must_be_one_to_one(tmp_path):
     from ontology.solver_package_layout import (
         SolverPackageLayoutError,
@@ -191,6 +252,23 @@ def test_index_manifest_and_operation_must_be_one_to_one(tmp_path):
 
     with pytest.raises(SolverPackageLayoutError, match="index"):
         validate_solver_package_layout(tmp_path, manifest)
+
+
+def test_operation_centric_indexes_must_be_structured_tables(tmp_path):
+    from ontology.package_import import validate_ontology_revision
+
+    _write_target_package(tmp_path)
+    (tmp_path / "index.md").write_text(
+        "See solve_route for details.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "operations" / "index.md").write_text(
+        "See solve_route for details.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="index"):
+        validate_ontology_revision(tmp_path)
 
 
 def test_legacy_layout_remains_readable_without_target_marker(tmp_path):
@@ -231,12 +309,22 @@ def test_migration_dry_run_does_not_write_and_apply_creates_new_layout(tmp_path)
     target = tmp_path / "target"
     _write_legacy_package(source)
 
-    dry_run = migrate_solver_package_layout(source, target, dry_run=True)
+    dry_run = migrate_solver_package_layout(
+        source,
+        target,
+        dry_run=True,
+        target_version="2.2.0",
+    )
     assert dry_run.dry_run is True
     assert not target.exists()
     assert any(item.endswith("operations/solve_route.model.yaml") for item in dry_run.planned_files)
 
-    applied = migrate_solver_package_layout(source, target, dry_run=False)
+    applied = migrate_solver_package_layout(
+        source,
+        target,
+        dry_run=False,
+        target_version="2.2.0",
+    )
     assert applied.dry_run is False
     assert (target / "operations" / "solve_route.model.yaml").is_file()
     assert (target / "operations" / "solve_route.input.schema.json").is_file()
@@ -251,6 +339,118 @@ def test_migration_dry_run_does_not_write_and_apply_creates_new_layout(tmp_path)
     assert source.exists()
 
 
+def test_migration_preserves_shared_indexes_and_rewrites_operation_document(tmp_path):
+    from ontology.solver_package_layout import migrate_solver_package_layout
+
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    _write_legacy_package(source)
+    (source / "index.md").write_text(
+        "# Package\n\n| object key | title |\n| --- | --- |\n| tank | Tank |\n",
+        encoding="utf-8",
+    )
+    (source / "operations" / "index.md").write_text(
+        "# Operations\n\n| operation key | title |\n| --- | --- |\n| ordinary_op | Ordinary |\n",
+        encoding="utf-8",
+    )
+    operation = source / "operations" / "solve_route.md"
+    operation.write_text(
+        operation.read_text(encoding="utf-8")
+        + "\n| 契约 | 包内资源 |\n| --- | --- |\n"
+        "| 输入 | `schemas/input.schema.json` |\n"
+        "| 结果 | `schemas/result.schema.json` |\n",
+        encoding="utf-8",
+    )
+    (source / "decision-models" / "route-choice.yaml").write_text(
+        "kind: decision-model\nid: route_choice\n"
+        "input_schema: schemas/input.schema.json\n"
+        "fact_snapshot_schema: schemas/fact.schema.json\n"
+        "result_schema: schemas/result.schema.json\n",
+        encoding="utf-8",
+    )
+    (source / "presentations" / "result.yaml").write_text(
+        "title: Route result\nsource_schema: schemas/result.schema.json\n",
+        encoding="utf-8",
+    )
+
+    migrate_solver_package_layout(
+        source,
+        target,
+        dry_run=False,
+        target_version="2.2.0",
+    )
+
+    root_index = (target / "index.md").read_text(encoding="utf-8")
+    operations_index = (target / "operations" / "index.md").read_text(encoding="utf-8")
+    operation_text = (target / "operations" / "solve_route.md").read_text(encoding="utf-8")
+    model_text = (target / "operations" / "solve_route.model.yaml").read_text(
+        encoding="utf-8"
+    )
+    presentation_text = (
+        target / "operations" / "solve_route.presentation.yaml"
+    ).read_text(encoding="utf-8")
+    assert "| tank | Tank |" in root_index
+    assert "| ordinary_op | Ordinary |" in operations_index
+    assert "solver-capabilities:v1:start" in root_index
+    assert "operations/solve_route.input.schema.json" in operation_text
+    assert "operations/solve_route.result.schema.json" in operation_text
+    assert "schemas/input.schema.json" not in operation_text
+    assert "schemas/result.schema.json" not in operation_text
+    assert "operations/solve_route.input.schema.json" in model_text
+    assert "operations/solve_route.fact-snapshot.schema.json" in model_text
+    assert "operations/solve_route.result.schema.json" in model_text
+    assert "operations/solve_route.result.schema.json" in presentation_text
+    for legacy_directory in ("decision-models/", "schemas/", "presentations/"):
+        assert legacy_directory not in model_text
+        assert legacy_directory not in presentation_text
+
+
+def test_dry_run_validates_staged_indexes_before_returning(tmp_path):
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        migrate_solver_package_layout,
+    )
+
+    source = tmp_path / "source"
+    _write_legacy_package(source)
+    # An invalid non-UTF-8 index used to be invisible to dry-run planning;
+    # staged validation must reject it before reporting success.
+    (source / "index.md").write_bytes(b"\xff\xfe")
+
+    with pytest.raises(SolverPackageLayoutError, match="Solver index"):
+        migrate_solver_package_layout(
+            source,
+            tmp_path / "target",
+            dry_run=True,
+            target_version="2.2.0",
+        )
+
+
+def test_migration_refuses_unreferenced_case_variant_sidecar(tmp_path):
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        migrate_solver_package_layout,
+    )
+
+    source = tmp_path / "source"
+    _write_legacy_package(source)
+    case_variant = source / "schemas" / "Input.schema.json"
+    if case_variant.exists():
+        pytest.skip("case-variant filenames require a case-sensitive filesystem")
+    case_variant.write_text(
+        json.dumps({"type": "object", "title": "Unrelated case variant"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SolverPackageLayoutError, match="unreferenced"):
+        migrate_solver_package_layout(
+            source,
+            tmp_path / "target",
+            dry_run=True,
+            target_version="2.2.0",
+        )
+
+
 def test_migration_never_rewrites_released_revision_in_place(tmp_path):
     from ontology.solver_package_layout import (
         SolverPackageLayoutError,
@@ -260,8 +460,74 @@ def test_migration_never_rewrites_released_revision_in_place(tmp_path):
     source = tmp_path / "released"
     _write_legacy_package(source, status="released")
 
-    with pytest.raises(SolverPackageLayoutError, match="released"):
+    with pytest.raises(SolverPackageLayoutError, match="new target revision"):
         migrate_solver_package_layout(source, source, dry_run=False)
+
+
+def test_migration_rejects_target_inside_source_package(tmp_path):
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        migrate_solver_package_layout,
+    )
+
+    source = tmp_path / "source"
+    _write_legacy_package(source)
+
+    with pytest.raises(SolverPackageLayoutError, match="outside the source"):
+        migrate_solver_package_layout(
+            source,
+            source / "nested-target",
+            dry_run=False,
+            target_version="2.2.0",
+        )
+
+    assert not (source / "nested-target").exists()
+
+
+def test_migration_rejects_distinct_target_for_already_migrated_package(tmp_path):
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        migrate_solver_package_layout,
+    )
+
+    source = tmp_path / "source"
+    _write_target_package(source)
+
+    with pytest.raises(SolverPackageLayoutError, match="already uses"):
+        migrate_solver_package_layout(
+            source,
+            tmp_path / "new-revision",
+            dry_run=False,
+            target_version="2.2.0",
+        )
+
+    assert not (tmp_path / "new-revision").exists()
+
+
+def test_migration_refuses_in_place_apply_even_for_draft(tmp_path):
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        migrate_solver_package_layout,
+    )
+
+    source = tmp_path / "draft"
+    _write_legacy_package(source)
+
+    with pytest.raises(SolverPackageLayoutError, match="new target revision"):
+        migrate_solver_package_layout(source, source, dry_run=False)
+
+    assert (source / "decision-models").exists()
+
+
+def test_operation_centric_import_boundary_revalidates_layout(tmp_path):
+    from ontology.package_import import validate_ontology_revision
+
+    _write_target_package(tmp_path)
+    assert validate_ontology_revision(tmp_path)["solver_layout"] == "operation-centric.v1"
+
+    (tmp_path / "schemas").mkdir()
+    with pytest.raises(ValueError, match="forbids directory"):
+        validate_ontology_revision(tmp_path)
 
 
 def test_operation_centric_layout_rejects_nested_operation_markdown(tmp_path):
@@ -315,7 +581,7 @@ def test_release_boolean_also_blocks_in_place_migration(tmp_path):
         yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
     )
 
-    with pytest.raises(SolverPackageLayoutError, match="released"):
+    with pytest.raises(SolverPackageLayoutError, match="new target revision"):
         migrate_solver_package_layout(source, source, dry_run=False)
 
 
@@ -326,10 +592,28 @@ def test_cli_accepts_source_option_and_explicit_dry_run(tmp_path, capsys):
     target = tmp_path / "target"
     _write_legacy_package(source)
 
-    assert main(["--source", str(source), "--target", str(target), "--dry-run"]) == 0
+    assert main(
+        [
+            "--source",
+            str(source),
+            "--target",
+            str(target),
+            "--target-version",
+            "2.2.0",
+            "--dry-run",
+        ]
+    ) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["dry_run"] is True
+
+
+def test_cli_rejects_apply_and_dry_run_together(tmp_path):
+    from scripts.migrate_solver_package_layout import build_parser
+
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([str(tmp_path), "--apply", "--dry-run"])
 
 
 def test_migration_rejects_operation_key_that_can_escape_operations_directory(tmp_path):
@@ -349,7 +633,12 @@ def test_migration_rejects_operation_key_that_can_escape_operations_directory(tm
     )
 
     with pytest.raises(SolverPackageLayoutError, match="key"):
-        migrate_solver_package_layout(source, tmp_path / "target", dry_run=True)
+        migrate_solver_package_layout(
+            source,
+            tmp_path / "target",
+            dry_run=True,
+            target_version="2.2.0",
+        )
 
 
 def test_migration_cli_defaults_to_dry_run_and_can_apply(tmp_path, capsys):
@@ -359,12 +648,21 @@ def test_migration_cli_defaults_to_dry_run_and_can_apply(tmp_path, capsys):
     target = tmp_path / "target"
     _write_legacy_package(source)
 
-    assert main([str(source), "--target", str(target)]) == 0
+    assert main([str(source), "--target", str(target), "--target-version", "2.2.0"]) == 0
     dry_run_output = json.loads(capsys.readouterr().out)
     assert dry_run_output["dry_run"] is True
     assert not target.exists()
 
-    assert main([str(source), "--target", str(target), "--apply"]) == 0
+    assert main(
+        [
+            str(source),
+            "--target",
+            str(target),
+            "--target-version",
+            "2.2.0",
+            "--apply",
+        ]
+    ) == 0
     applied_output = json.loads(capsys.readouterr().out)
     assert applied_output["dry_run"] is False
     assert target.is_dir()
