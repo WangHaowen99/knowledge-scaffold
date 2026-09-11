@@ -102,6 +102,12 @@ test('评测优化失败时把服务端附带的诊断摊开，不只取一句 m
   assert.match(source, /cause\?\.data\?\.diagnoses/);
   assert.match(source, /item\.suggestedAction/);
   assert.match(source, /cause\?\.data\?\.runningStartedAt/);
-  // 任务真正启动后才标记运行态，失败不留假状态
-  assert.match(source, /const data = await proposeEvaluationOptimizations\(projectId, round\.round\.id\);\s*\n\s*beginTask\('propose'\)/);
+  // propose/apply 都是同步长任务：运行态要在发请求前点亮（否则界面几分钟只有一个灰按钮），
+  // 但必须在 finally 里落幕，失败路径不留假运行态
+  for (const operation of ['propose', 'apply']) {
+    const scope = source.slice(source.indexOf(`const ${operation} = async () => {`)).split('\n  };')[0];
+    assert.match(scope, /try \{\s*\n\s*beginTask\('/);
+    assert.match(scope, /finally \{ settleTask\(\); setBusy\(''\); \}/);
+    assert.doesNotMatch(scope, /settleTask\(\);\s*\n\s*\} catch/);
+  }
 });

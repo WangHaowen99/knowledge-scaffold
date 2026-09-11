@@ -304,20 +304,21 @@ function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOp
   const reload = async () => { const data = await listEvaluationSuggestions(projectId, round.round.id); onChanged(data.suggestions || []); };
   const beginTask = (operation) => { const task = { operation, startedAt: new Date().toISOString() }; setLocalTask(task); onTaskStarted?.(operation, task); return task; };
   const settleTask = () => { setLocalTask(null); onTaskSettled?.(); };
-  /* 任务是否真的启动了，只有服务端说了算。以前先 beginTask 再发请求，
-     请求被 409 拒掉（33 毫秒）之后本地运行态还挂着，界面显示了六分钟
-     「正在进行中」，而错误消息里那四条可执行的诊断被整个吞掉（见 #41）。 */
+  /* propose 是同步长任务，整轮 Agent 都跑在这个请求里，所以本地运行态必须
+     在发请求之前就点亮，否则界面几分钟里只有一个变灰的按钮。代价是请求被
+     拒掉时必须显式 settleTask —— 以前少了这一步，409（33 毫秒）之后运行态
+     还挂着，界面显示了六分钟「正在进行中」，错误里那四条可执行的诊断也被
+     整个吞掉（见 #41）。 */
   const propose = async () => {
     setBusy('propose'); setError(''); setNotice('');
     try {
-      const data = await proposeEvaluationOptimizations(projectId, round.round.id);
       beginTask('propose');
+      const data = await proposeEvaluationOptimizations(projectId, round.round.id);
       onChanged(mergeOptimizationSuggestions(suggestions, data.suggestions || []));
       await reload();
-      settleTask();
     } catch (cause) {
       setError(describeOptimizationFailure(cause));
-    } finally { setBusy(''); }
+    } finally { settleTask(); setBusy(''); }
   };
   const applyIds = async (ids) => { const data = await applyEvaluationSuggestions(projectId, ids); if (data.status === 'waiting_expert') { const status = await getEvaluationOptimizationStatus(projectId); setReviewTask(status.task); setNotice('Agent 修改未通过确定性校验，请补充约束后让 Agent 重试。'); } else { setReviewTask(null); setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); announceCandidate(data.candidateId); await actions.refreshSnapshot(); } await reload(); };
   const apply = async () => {
@@ -325,11 +326,9 @@ function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOp
     try {
       beginTask('apply');
       await applyIds([...selectedPending]);
-      settleTask();
     } catch (cause) {
       setError(describeOptimizationFailure(cause));
-      settleTask();
-    } finally { setBusy(''); }
+    } finally { settleTask(); setBusy(''); }
   };
   const review = async (action) => { if (!reviewTask?.node?.id) return; setBusy('review'); setError(''); let retrying = false; try { const decision = await reviewEvaluationOptimization(projectId, reviewTask.node.id, action, reviewNote); setReviewNote(''); if (action === 'retry') { retrying = true; beginTask('apply'); await applyIds(decision.suggestionIds); } else { setReviewTask(null); setNotice('已跳过本次未通过校验的建议，正式知识包未发生变化。'); await reload(); } } catch (cause) { setError(cause.message); } finally { setBusy(''); if (retrying) settleTask(); } };
   const reject = async (item) => { if (!window.confirm(`确认忽略“${item.title}”吗？该建议不会进入知识包候选。`)) return; setBusy('reject'); setError(''); try { await rejectEvaluationSuggestions(projectId, [item.id]); setSelected((old) => { const next = new Set(old); next.delete(item.id); return next; }); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
