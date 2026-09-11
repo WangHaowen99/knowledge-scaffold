@@ -27,6 +27,7 @@ import {
   getProgress,
   safeTerminateChangePlan as safeTerminateChangePlanRequest,
   terminateStaleRun as terminateStaleRunRequest,
+  saveFlowchartDraft,
 } from './api.js';
 import { prefetchStudioBootstrap } from '../studio/studio-api.js';
 
@@ -417,6 +418,22 @@ export const actions = {
         }
       });
     }, SNAPSHOT_REFRESH_DEBOUNCE_MS);
+  },
+  /* 流程图编辑先落前端草稿，这里才写盘。走 PUT /package/diagram：服务端带乐观锁
+     （expectedRevision）和草稿冲突拦截，写完重渲染 .mmd 和索引。失败按普通错误提示，
+     草稿留在界面上，用户可以重试或放弃，不静默丢改动。 */
+  async saveFlowDraft(path, draft) {
+    const { projectId, revision } = store.get();
+    if (!projectId || !draft?.edges?.length) return null;
+    try {
+      const result = await saveFlowchartDraft(projectId, path, draft.edges, revision);
+      store.set({ error: '' });
+      actions.scheduleSnapshotRefresh();
+      return result;
+    } catch (error) {
+      store.set({ error: error instanceof Error ? error.message : '流程图保存失败' });
+      return null;
+    }
   },
   refreshCandidateRevisions() {
     store.set((state) => ({

@@ -2377,5 +2377,27 @@ try {
   console.log('✓ 快照刷新合并窗口内到达的事件会补跑，不吞掉最后一份资料');
 } catch (e) { console.log('✗ 快照刷新补跑:', e.message); bad++; }
 
+try {
+  /* 流程图编辑：画布上连线只进前端草稿，落盘必须显式点「保存为候选」并带乐观锁。
+     若直接改正式包，就绕开了整套「修改先成候选、确认后才写入」的约束。 */
+  const view = readFileSync('src/workbench/center/LegacyFlowView.jsx', 'utf8');
+  if (!/nodesDraggable=\{editable\}/.test(view)) throw new Error('编辑态没打开节点拖动');
+  if (!/nodesConnectable=\{editable\}/.test(view)) throw new Error('编辑态没打开连线');
+  if (!/onConnect=\{editable \? handleConnect : undefined\}/.test(view)) throw new Error('非编辑态不应接受连线');
+  if (!/const \[draftEdges, setDraftEdges\] = useState\(\[\]\)/.test(view)) throw new Error('新连线没有单独存草稿');
+
+  const flow = readFileSync('src/workbench/center/FlowView.jsx', 'utf8');
+  if (!/saveFlowDraft\?\.\(path, draft\)/.test(flow)) throw new Error('缺少保存为候选入口');
+  if (!/draft\?\.dirty/.test(flow)) throw new Error('没有草稿时不该出现保存按钮');
+
+  const store = readFileSync('src/workbench/lib/appStore.js', 'utf8');
+  if (!/async saveFlowDraft\(path, draft\)/.test(store)) throw new Error('appStore 缺少 saveFlowDraft');
+  const api = readFileSync('src/workbench/lib/api.js', 'utf8');
+  if (!/expectedRevision/.test(api.slice(api.indexOf('saveFlowchartDraft')))) {
+    throw new Error('流程图落盘没有带乐观锁基线');
+  }
+  console.log('✓ 流程图编辑只出草稿，落盘走乐观锁');
+} catch (e) { console.log('✗ 流程图编辑:', e.message); bad++; }
+
 console.log(bad ? `\n${bad} 处失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);
