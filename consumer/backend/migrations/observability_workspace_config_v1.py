@@ -1000,7 +1000,7 @@ def _apply_config(plan: ConfigPlan) -> StepResult:
         )
 
     try:
-        with system_config_module._CONFIG_LOCK:
+        with system_config_module.system_config_lock():
             latest_bytes = plan.source_path.read_bytes()
             if latest_bytes != plan.source_bytes:
                 raise _ProblemError(

@@ -32,6 +32,10 @@ class _DirectScriptTrace:
         self._finished = False
 
     @property
+    def finished(self) -> bool:
+        return self._finished
+
+    @property
     def span_key(self) -> str:
         return str(self._runtime_trace.tool_span_key or "")
 
@@ -154,7 +158,7 @@ class DirectExecutionRuntimeTrace:
         try:
             yield script_trace
         except Exception as exc:
-            if not script_trace._finished:
+            if not script_trace.finished:
                 script_trace.record_result(
                     output="Direct script execution failed: {}".format(str(exc)),
                     is_error=True,
@@ -164,7 +168,7 @@ class DirectExecutionRuntimeTrace:
                 self.mark_failed()
             raise
         finally:
-            if not script_trace._finished:
+            if not script_trace.finished:
                 script_trace.record_result(
                     output="Direct script execution did not report a result",
                     is_error=True,

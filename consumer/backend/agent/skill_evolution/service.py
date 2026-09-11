@@ -323,6 +323,14 @@ class SkillEvolutionService:
         # without caching each poll re-reads + hashes every operations file.
         self._sha_cache: Dict[Tuple[str, str], Tuple[float, str]] = {}
 
+    def get_task(self, workspace_id: str, task_id: str) -> Optional[TaskRecord]:
+        """Return one task through the service boundary."""
+        return self._store.get_task(workspace_id, task_id)
+
+    def list_tasks(self, workspace_id: str, **filters: Any) -> List[TaskRecord]:
+        """List tasks through the service boundary."""
+        return self._store.list_tasks(workspace_id, **filters)
+
     # ----------------------------------------------------------- config/client
     def _config(self) -> Dict[str, Any]:
         return load_system_config().get("skill_evolution") or {}

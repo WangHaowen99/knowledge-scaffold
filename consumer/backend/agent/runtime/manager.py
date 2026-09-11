@@ -149,6 +149,11 @@ class AsyncRunManager:
         self._workspace_locks: dict[str, _ScopedLockState] = {}
         self._workspace_available = workspace_available
 
+    @property
+    def tracked_run_count(self) -> int:
+        """Return the number of in-memory run coordination entries."""
+        return len(self._entries)
+
     async def create_run(
         self,
         context: RuntimeInvocationContext,
@@ -922,6 +927,10 @@ class AsyncRunManager:
             if snapshot is None or snapshot.status in TERMINAL_RUN_STATUSES:
                 self._entries.pop(run_id, None)
                 self._cancel_futures.pop(run_id, None)
+
+    async def cleanup_finished_run(self, run_id: str) -> None:
+        """Discard terminal in-memory state after in-flight continuations finish."""
+        await self._cleanup_finished_run(run_id)
 
     async def _finish_awaiting_input(
         self,

@@ -152,6 +152,14 @@ class AgenticOrchestrator:
             )
         return self.chat_store, self.execution_store
 
+    def get_stores(
+        self,
+        user_id: Optional[str],
+        workspace_id: Optional[str] = None,
+    ) -> tuple[ChatStore, ExecutionStore]:
+        """Resolve the stores for a user/workspace through the public runtime API."""
+        return self._get_stores(user_id, workspace_id)
+
     def _prune_old_sessions(
         self,
         chat_store: ChatStore,
@@ -181,6 +189,10 @@ class AgenticOrchestrator:
                 exc_info=True,
             )
             return None
+
+    def get_memory_manager(self, user_id: Optional[str]):
+        """Resolve the memory manager for a user without exposing factory internals."""
+        return self._get_memory_manager(user_id)
 
     def _build_protocol_preflight_request(
         self,
@@ -478,6 +490,20 @@ class AgenticOrchestrator:
         except Exception:
             logger.warning("Failed to build memory context", exc_info=True)
             return ""
+
+    def build_memory_context(
+        self,
+        memory_manager: Any,
+        *,
+        query: str,
+        allow_injection: bool,
+    ) -> str:
+        """Build injectable memory context through the public runtime API."""
+        return self._build_memory_context(
+            memory_manager,
+            query=query,
+            allow_injection=allow_injection,
+        )
 
     async def _submit_reflection(
         self,
