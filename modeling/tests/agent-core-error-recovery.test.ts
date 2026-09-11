@@ -80,3 +80,28 @@ test('枚举类提示由实现变量生成，不手写平行清单', () => {
     `这些提示手写了取值清单，请改成从判断用的同一个变量拼出来，例如 \`只支持 \${KINDS.join('、')}\`：\n${offenders.join('\n')}`,
   );
 });
+
+test('长任务防重入是一次拒绝，不能写成状态播报', () => {
+  /* 现场教训：「该操作正在进行中，请稍候」被渲染在错误框里，读起来像进度条，
+     用户对着它等了六分钟，而请求其实 33 毫秒就被拒了（见 #41）。 */
+  const source = readFileSync('src/routes.ts', 'utf8');
+  // 只看真正返回给用户的字符串，注释里引用旧文案不算（它在说明为什么要改）
+  assert.doesNotMatch(source, /error: '该操作正在进行中，请稍候/);
+  assert.match(source, /还没有结束，等它完成后再点这里/);
+  // 必须说清楚「谁」还没结束，并给出起始时间让前端能算等待时长
+  assert.match(source, /const OPERATION_LABELS: Record<string, string>/);
+  assert.match(source, /runningOperation: current\?\.operation \|\| operation/);
+  assert.match(source, /runningStartedAt: current\?\.startedAt \|\| ''/);
+});
+
+test('评测优化失败时把服务端附带的诊断摊开，不只取一句 message', () => {
+  // 409 里带着 4 条可执行诊断，前端原来只取 cause.message，其余全丢。
+  // 融合和 Studio 模块早就在读 error.data，这里是补齐落下的一块。
+  const source = readFileSync('frontend/src/workbench/center/EvaluationView.jsx', 'utf8');
+  assert.match(source, /function describeOptimizationFailure\(cause\)/);
+  assert.match(source, /cause\?\.data\?\.diagnoses/);
+  assert.match(source, /item\.suggestedAction/);
+  assert.match(source, /cause\?\.data\?\.runningStartedAt/);
+  // 任务真正启动后才标记运行态，失败不留假状态
+  assert.match(source, /const data = await proposeEvaluationOptimizations\(projectId, round\.round\.id\);\s*\n\s*beginTask\('propose'\)/);
+});

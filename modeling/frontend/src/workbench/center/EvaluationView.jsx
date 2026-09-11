@@ -304,9 +304,33 @@ function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOp
   const reload = async () => { const data = await listEvaluationSuggestions(projectId, round.round.id); onChanged(data.suggestions || []); };
   const beginTask = (operation) => { const task = { operation, startedAt: new Date().toISOString() }; setLocalTask(task); onTaskStarted?.(operation, task); return task; };
   const settleTask = () => { setLocalTask(null); onTaskSettled?.(); };
-  const propose = async () => { setBusy('propose'); setError(''); beginTask('propose'); try { const data = await proposeEvaluationOptimizations(projectId, round.round.id); onChanged(mergeOptimizationSuggestions(suggestions, data.suggestions || [])); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); settleTask(); } };
+  /* 任务是否真的启动了，只有服务端说了算。以前先 beginTask 再发请求，
+     请求被 409 拒掉（33 毫秒）之后本地运行态还挂着，界面显示了六分钟
+     「正在进行中」，而错误消息里那四条可执行的诊断被整个吞掉（见 #41）。 */
+  const propose = async () => {
+    setBusy('propose'); setError(''); setNotice('');
+    try {
+      const data = await proposeEvaluationOptimizations(projectId, round.round.id);
+      beginTask('propose');
+      onChanged(mergeOptimizationSuggestions(suggestions, data.suggestions || []));
+      await reload();
+      settleTask();
+    } catch (cause) {
+      setError(describeOptimizationFailure(cause));
+    } finally { setBusy(''); }
+  };
   const applyIds = async (ids) => { const data = await applyEvaluationSuggestions(projectId, ids); if (data.status === 'waiting_expert') { const status = await getEvaluationOptimizationStatus(projectId); setReviewTask(status.task); setNotice('Agent 修改未通过确定性校验，请补充约束后让 Agent 重试。'); } else { setReviewTask(null); setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); announceCandidate(data.candidateId); await actions.refreshSnapshot(); } await reload(); };
-  const apply = async () => { setBusy('apply'); setError(''); setNotice(''); beginTask('apply'); try { await applyIds([...selectedPending]); } catch (cause) { setError(cause.message); } finally { setBusy(''); settleTask(); } };
+  const apply = async () => {
+    setBusy('apply'); setError(''); setNotice('');
+    try {
+      beginTask('apply');
+      await applyIds([...selectedPending]);
+      settleTask();
+    } catch (cause) {
+      setError(describeOptimizationFailure(cause));
+      settleTask();
+    } finally { setBusy(''); }
+  };
   const review = async (action) => { if (!reviewTask?.node?.id) return; setBusy('review'); setError(''); let retrying = false; try { const decision = await reviewEvaluationOptimization(projectId, reviewTask.node.id, action, reviewNote); setReviewNote(''); if (action === 'retry') { retrying = true; beginTask('apply'); await applyIds(decision.suggestionIds); } else { setReviewTask(null); setNotice('已跳过本次未通过校验的建议，正式知识包未发生变化。'); await reload(); } } catch (cause) { setError(cause.message); } finally { setBusy(''); if (retrying) settleTask(); } };
   const reject = async (item) => { if (!window.confirm(`确认忽略“${item.title}”吗？该建议不会进入知识包候选。`)) return; setBusy('reject'); setError(''); try { await rejectEvaluationSuggestions(projectId, [item.id]); setSelected((old) => { const next = new Set(old); next.delete(item.id); return next; }); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
   const activeOperation = runningOperation || localTask?.operation || '';
@@ -333,6 +357,26 @@ function SuggestionForm({ title, initial = {}, diagnoses, onCancel, onSave }) {
   const change = (key, next) => setValue((old) => ({ ...old, [key]: next }));
   return <div className="wb-suggestion-form">{title && <b>{title}</b>}<div className="wb-eval-field-grid"><label><span>建议标题</span><input className="input" value={value.title} onChange={(e) => change('title', e.target.value)} /></label><label><span>修改类型</span><select className="input" value={value.kind} onChange={(e) => change('kind', e.target.value)}>{KINDS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label></div><label><span>修改要求</span><textarea className="input" rows="3" value={value.detail} onChange={(e) => change('detail', e.target.value)} /></label><label><span>目标文件或资源 <small>可留空，由 Agent 定位</small></span><input className="input" value={value.target} onChange={(e) => change('target', e.target.value)} /></label><div className="wb-eval-field-grid"><label><span>泛化要求</span><textarea className="input" rows="2" value={value.generalizationPlan} onChange={(e) => change('generalizationPlan', e.target.value)} /></label><label><span>验证计划</span><textarea className="input" rows="2" value={value.validationPlan} onChange={(e) => change('validationPlan', e.target.value)} /></label></div><fieldset><legend>关联失败根因</legend>{diagnoses.map((item) => <label key={item.id}><input type="checkbox" checked={value.diagnosisIds.includes(item.id)} onChange={() => change('diagnosisIds', value.diagnosisIds.includes(item.id) ? value.diagnosisIds.filter((id) => id !== item.id) : [...value.diagnosisIds, item.id])} /> {item.title}</label>)}</fieldset><div className="wb-suggestion-form-actions"><button className="btn btn-sm" onClick={onCancel}>取消</button><button className="btn btn-p btn-sm" disabled={!value.title.trim() || !value.detail.trim() || !value.diagnosisIds.length} onClick={() => onSave(value)}><Save size={14} /> 保存建议</button></div></div>;
 }
+/** 优化接口的 409 里带着为什么不能优化的完整原因，直接吞掉等于让用户对着
+ *  一个没有出口的界面干等。把 error 和随附的诊断摘要一起摊开（见 #41）。 */
+function describeOptimizationFailure(cause) {
+  const message = cause?.message || '优化任务提交失败';
+  // 防重入拒绝会带上正在跑的操作和起始时间：告诉用户还要等谁，而不是让他盯着干等
+  const startedAt = Date.parse(cause?.data?.runningStartedAt || '');
+  if (Number.isFinite(startedAt)) {
+    const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    const elapsed = seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+    return `${message}（已运行 ${elapsed}）`;
+  }
+  const diagnoses = Array.isArray(cause?.data?.diagnoses) ? cause.data.diagnoses : [];
+  if (!diagnoses.length) return message;
+  const blocking = diagnoses.filter((item) => item.blocking);
+  const listed = (blocking.length ? blocking : diagnoses).slice(0, 3)
+    .map((item) => `· ${item.title}${item.suggestedAction ? `\n  处置：${item.suggestedAction}` : ''}`)
+    .join('\n');
+  return `${message}\n${listed}`;
+}
+
 function TimedOperationProgress({ task, title, detail }) {
   const [now, setNow] = useState(Date.now());
   const state = task?.node?.output || task?.output || task || {};

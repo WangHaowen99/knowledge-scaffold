@@ -1378,6 +1378,17 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       });
     });
 
+/** 长任务的业务说法。防重入拒绝时要说清楚「谁还没结束」，
+     *  只说「该操作」用户无从判断该等多久、还是该去别处看看。 */
+    const OPERATION_LABELS: Record<string, string> = {
+      analyze: '资料分析',
+      'package-chat': '知识包对话',
+      diagnose: '失败根因诊断',
+      'optimize-propose': '优化建议生成',
+      'optimize-apply': '知识包候选生成',
+      evaluate: '正式评测',
+    };
+
     // 长任务防重入（同项目同操作并发触发 → 409），并登记操作类型供前端恢复运行状态
     const inFlight = new InFlightOperations();
     const withLock = async (
@@ -1390,7 +1401,17 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return await inFlight.run(key, operation, fn);
       } catch (error) {
         if (error instanceof OperationAlreadyRunningError) {
-          return reply.code(409).send({ error: '该操作正在进行中，请稍候（切换页面不会中断执行）' });
+          /* 这是一次「拒绝」，不是状态播报。原文案「该操作正在进行中，请稍候」
+             被渲染在错误框里读起来像进度条，用户会盯着它干等——现场就出现过
+             对着它等了六分钟，而请求其实在 33 毫秒就被拒了（见 #41）。
+             改成明确的拒绝语气，并带上是哪个操作、跑了多久，让前端能给出等待预期。 */
+          const current = inFlight.status(key);
+          const running = current ? OPERATION_LABELS[current.operation] || current.operation : '上一个任务';
+          return reply.code(409).send({
+            error: `${running}还没有结束，等它完成后再点这里；切换页面不会中断它`,
+            runningOperation: current?.operation || operation,
+            runningStartedAt: current?.startedAt || '',
+          });
         }
         throw error;
       }
