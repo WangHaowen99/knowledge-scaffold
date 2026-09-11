@@ -2341,5 +2341,25 @@ try {
   console.log('✓ 计划批准竞态：状态取权威值、忙时禁用、超时可补发');
 } catch (e) { console.log('✗ 计划批准竞态:', e.message); bad++; }
 
+try {
+  /* Studio 的 pixi Application 是异步 init 的。init 还没返回就切走视图（Studio → 评测），
+     destroy() 会读到还没建好的 renderer，app.canvas 的 getter 直接抛，异常打断 React
+     的卸载提交，目标面板整个渲染不出来。这里用一个只会在被碰到时抛异常的假 app 兜住。 */
+  const clock = { clearTimeout() {}, setTimeout() { return 0; } };
+  const priorWindow = globalThis.window;
+  globalThis.window = { ...priorWindow, ...clock };
+  const { WebGLGraphRuntime } = await import('./studio/webgl/StudioWebGLRuntime.js');
+  const runtime = new WebGLGraphRuntime({});
+  runtime.app = {
+    get canvas() { throw new TypeError("Cannot read properties of undefined (reading 'canvas')"); },
+    get ticker() { throw new TypeError('ticker 未就绪'); },
+    destroy() { throw new Error('renderer 未就绪时不该销毁，应交给 mount 收尾'); },
+  };
+  runtime.destroy();
+  if (runtime.app !== null) throw new Error('destroy 后仍持有 app 引用');
+  globalThis.window = priorWindow;
+  console.log('✓ Studio WebGL init 未完成时卸载不抛异常');
+} catch (e) { console.log('✗ Studio WebGL 卸载竞态:', e.message); bad++; }
+
 console.log(bad ? `\n${bad} 处失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);
