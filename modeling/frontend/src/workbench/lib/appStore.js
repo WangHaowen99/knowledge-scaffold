@@ -144,6 +144,8 @@ const SNAPSHOT_REFRESH_DEBOUNCE_MS = 300;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 let optimisticSequence = 0;
 let snapshotRefreshTimer = null;
+let snapshotRefreshInFlight = false;
+let snapshotRefreshQueued = false;
 let snapshotRefreshOpenPurposeReview = false;
 const optimisticId = (kind) => `optimistic-${kind}-${Date.now()}-${optimisticSequence += 1}`;
 const uploadStatus = (document) => document?.parseStatus === 'pending'
@@ -391,17 +393,28 @@ export const actions = {
       }
     }
   },
-  // 工具完成事件可能成串到达，这里合并成一次快照拉取，并兜住失败——
-  // 直接 void refreshSnapshot() 会让拒绝变成无人处理的 promise rejection，界面停在旧值且毫无提示。
+  /* 工具完成事件可能成串到达，这里合并成一次快照拉取，并兜住失败——
+     直接 void refreshSnapshot() 会让拒绝变成无人处理的 promise rejection，界面停在旧值且毫无提示。
+     只合并、不补跑是不够的：Agent 会并行提交五份资料用途，合并窗口和请求飞行期间到达的事件
+     被整个吞掉，最后一份资料的建议永远到不了界面，批量确认卡停在「分析中」，一键确认全部永久
+     禁用，整条流程从第一个决策点就卡死，只能刷新页面（见 #45）。所以窗口里再来事件必须补一轮。 */
   scheduleSnapshotRefresh(options = {}) {
     if (options.openPurposeReview) snapshotRefreshOpenPurposeReview = true;
-    if (snapshotRefreshTimer) return;
+    if (snapshotRefreshTimer || snapshotRefreshInFlight) { snapshotRefreshQueued = true; return; }
     snapshotRefreshTimer = setTimeout(() => {
       snapshotRefreshTimer = null;
+      snapshotRefreshQueued = false;
+      snapshotRefreshInFlight = true;
       const openPurposeReview = snapshotRefreshOpenPurposeReview;
       snapshotRefreshOpenPurposeReview = false;
       actions.refreshSnapshot({ openPurposeReview }).catch((error) => {
         store.set({ error: error instanceof Error ? error.message : '知识包内容暂时读不到，稍后会自动重试' });
+      }).finally(() => {
+        snapshotRefreshInFlight = false;
+        if (snapshotRefreshQueued) {
+          snapshotRefreshQueued = false;
+          actions.scheduleSnapshotRefresh();
+        }
       });
     }, SNAPSHOT_REFRESH_DEBOUNCE_MS);
   },

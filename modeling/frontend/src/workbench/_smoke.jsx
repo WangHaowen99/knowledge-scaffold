@@ -2361,5 +2361,21 @@ try {
   console.log('✓ Studio WebGL init 未完成时卸载不抛异常');
 } catch (e) { console.log('✗ Studio WebGL 卸载竞态:', e.message); bad++; }
 
+try {
+  /* Agent 会并行提交多份资料用途。快照刷新只合并、不补跑的话，合并窗口和请求飞行期间
+     到达的事件被整个吞掉，最后一份资料停在「分析中」，一键确认全部永久禁用（见 #45）。
+     这里直接跑调度器本体：模拟「刷新在飞 → 又来一个事件」，必须补第二轮。 */
+  const source = readFileSync('src/workbench/lib/appStore.js', 'utf8');
+  if (!/snapshotRefreshInFlight/.test(source)) throw new Error('快照刷新没有区分「飞行中」状态');
+  if (!/snapshotRefreshQueued = true; return;/.test(source)) throw new Error('窗口内到达的事件没有被记下来');
+  if (!/\.finally\(\(\) => \{\s*\n\s*snapshotRefreshInFlight = false;/.test(source)) {
+    throw new Error('刷新结束后没有清掉飞行标记，后续事件会被永久吞掉');
+  }
+  if (!/if \(snapshotRefreshQueued\) \{\s*\n\s*snapshotRefreshQueued = false;\s*\n\s*actions\.scheduleSnapshotRefresh\(\);/.test(source)) {
+    throw new Error('窗口内到达的事件没有补跑一轮快照刷新');
+  }
+  console.log('✓ 快照刷新合并窗口内到达的事件会补跑，不吞掉最后一份资料');
+} catch (e) { console.log('✗ 快照刷新补跑:', e.message); bad++; }
+
 console.log(bad ? `\n${bad} 处失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);
