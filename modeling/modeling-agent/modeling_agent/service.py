@@ -10,9 +10,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any, Callable
 
-from .agent import AgentBundle, build_agent, build_model, list_skills
+from .agent import AgentBundle, build_agent, build_model, list_skills, output_budget_for_phase
 from .core_client import CoreGateway, HttpCoreGateway
 from .errors import AgentRuntimeError
 from .events import EventHub
@@ -120,6 +121,9 @@ def _phase_projection() -> list[dict[str, Any]]:
 
 MAX_AUTONOMOUS_CONTINUATIONS = 8
 MAX_STALLED_CONTINUATIONS = 2
+# 计划仍有必选任务未完成时的停滞上限。取证、核对台账、检索原文都不算“进展”，
+# 但它们是写入前的正常准备，用 2 轮上限会让计划刚起步就被判成本轮完成。
+MAX_STALLED_PLAN_CONTINUATIONS = 5
 MAX_DECISION_CARD_RETRIES = 2
 MAX_VISIBLE_REASONING_CHARS = 12_000
 REASONING_EVENT_BATCH_CHARS = 160
@@ -131,6 +135,9 @@ MODEL_RECOVERY_DELAY_SECONDS = 0.5
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
 EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS = 3.5
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
+    # 切换阶段是明确的前进。不计入的话，「刚进入新阶段、还没来得及产出」
+    # 会和「无事可做」判成同一件事，两轮后直接收工（见 #35）。
+    "transition_project_state",
     "create_change_plan",
     "revise_change_plan",
     "stage_change_set",
@@ -154,6 +161,8 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "patch_operation",
     "patch_metric",
     "sync_schema_objects",
+    "stage_schema_semantic_changes",
+    "confirm_schema_semantics",
     "patch_object_source_binding",
     "delete_domain_resource",
     "confirm_deterministic_scope",
@@ -181,6 +190,27 @@ SCRIPT_ARTIFACT_TOOLS = frozenset({
     "run_script_test",
     "bind_object_sources",
 })
+# 整体确认卡连续未形成时，候选修改仍然是可恢复的中间状态。
+# 该恢复不依赖用户重新描述业务，也不把内部工具参数暴露给用户。
+CONFIRMATION_REVIEW_STRATEGY = "confirmation_review"
+CONFIRMATION_REVIEW_REQUIRED_TOOL = "list_domain_resources"
+
+
+def _confirmation_review_actions() -> list[dict[str, str]]:
+    return [
+        {
+            "id": "retry_from_latest",
+            "label": "重新复核",
+            "description": "重新读取当前内容，继续形成整体确认卡。",
+        },
+        {
+            "id": "keep_current_progress",
+            "label": "保留当前成果，结束本轮",
+            "description": "保留已经形成的候选修改，暂不继续本轮处理。",
+        },
+    ]
+
+
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
@@ -189,6 +219,53 @@ PURPOSE_REVIEW_ALLOWED_TOOLS = frozenset({
     "set_material_directive", "read_file", "list_skill", "focus", "notify",
 })
 PHASE_ORDER = tuple(PHASE_LABELS)
+
+
+class Verdict(Enum):
+    """状态核对的三态结论。
+
+    UNKNOWN 不是 DENY：还没观察到状态时不能当成「确认为否」，
+    否则会把用户真实的诉求吞掉。每条规则自己声明拿不准时偏哪边，
+    依据是「猜错了哪边代价大」。
+    """
+
+    ALLOW = "allow"
+    DENY = "deny"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class RunSituation:
+    """本轮运行的权威状态快照。
+
+    决策一律读这里：要不要继续、必须调用什么工具，都由状态回答，
+    不再靠正则猜用户措辞、也不靠工具名单猜有没有干活。
+    字段只由核心工具结果回填，Python 侧不做二次推导——真相在核心侧，
+    这里重新实现一遍就会产生第二个真相源。
+
+    每个字段都配一个 *_observed 标志：还没观察到时是「拿不准」，
+    不能和「确认为否」混为一谈，否则会吞掉用户的真实诉求。
+    """
+
+    materials_observed: bool = False
+    full_read_materials: tuple[str, ...] = ()
+
+    plan_observed: bool = False
+    plan_remaining: int = 0
+    plan_next_task: str = ""
+
+    # 本轮切换过阶段但新阶段尚无产出。用于区分「刚进新阶段」和「本阶段做完了」。
+    stage_started_without_delivery: bool = False
+
+    # 剩余阻塞项全部要用户在别的界面自己完成。助手再宣告多少遍也推不动，
+    # 继续轮转只会一轮轮重复同一段话（见 #39）。
+    awaiting_user_action: bool = False
+    awaiting_user_reason: str = ""
+
+    def has_full_read_materials(self) -> Verdict:
+        if not self.materials_observed:
+            return Verdict.UNKNOWN
+        return Verdict.ALLOW if self.full_read_materials else Verdict.DENY
 
 
 @dataclass
@@ -212,6 +289,19 @@ class LiveRun:
     release_declined: bool = False
     confirmation_required: bool = False
     autonomous_seed: bool = False
+    # 本轮的权威状态快照。所有「要不要继续」「必须调什么工具」的判断都读它。
+    situation: RunSituation = field(default_factory=RunSituation)
+    # 被状态否决掉的强制工具，对应的说明。必须送进提示词，否则模型只会看到
+    # 「消息里提了某件事却毫无动静」，然后自己反复推敲（见 #1 的原地打转）。
+    intent_notes: list[str] = field(default_factory=list)
+    # 打转检测的痕迹：最近若干次(工具,参数)指纹，以及每轮输出的指纹。
+    # 「没产出」和「卡住」是两件事——今天见过助手逐字重复同一段推理却因为
+    # 期间调过写工具而不被计为停滞，现有机制对真打转完全无感（见 #35 讨论）。
+    recent_tool_calls: list[str] = field(default_factory=list)
+    recent_outputs: list[frozenset[str]] = field(default_factory=list)
+    # 同一工具连续失败：参数每次都变，靠「同参数重复」抓不到，
+    # 但反复撞同一个错误同样是打转（见 #40）。
+    consecutive_tool_failures: tuple[str, int] = ("", 0)
     tool_summaries: list[str] = field(default_factory=list)
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     reasoning_chars_published: int = 0
@@ -224,6 +314,10 @@ class LiveRun:
     technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
     deferred_purpose_continuation: tuple[int, str, str] | None = None
     evaluation_launch_active: bool = False
+    # 最近一次 requiredText 答案的业务约束。它与交互恢复解耦，服务重启后
+    # 可从 RunRecord.latest_interaction 重新装载，避免只依赖框架的 tool result。
+    required_text_constraint: dict[str, Any] | None = None
+    required_text_guard_retries: int = 0
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -288,12 +382,333 @@ def _answer_requires_script_artifact(
     return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(text))
 
 
+def _required_text_constraint(
+    interaction: InteractionRecord,
+    answer: dict[str, Any],
+) -> dict[str, Any] | None:
+    """将 requiredText 答案规范化为可恢复、可审计的业务约束。
+
+    选项卡的 label/value 只是 UI 选择；真正需要交给模型执行的是用户在
+    ``answer.text`` 中填写的原文。恢复卡也会在 payload 中携带同一约束，
+    允许用户选择“按原说明继续”而无需再次复制长文本。
+    """
+    existing = interaction.payload.get("requiredTextConstraint")
+    replacing = str(answer.get("value") or "").strip() == "edit_required_text"
+    if not replacing and isinstance(existing, dict) and str(existing.get("text") or "").strip():
+        inherited = dict(existing)
+    else:
+        option = _required_text_option(interaction.payload, answer)
+        text = str(answer.get("text") or "").strip()
+        if option is None or not text:
+            return None
+        value = str(option.get("value") or option.get("label") or "").strip()
+        inherited = {
+            "required": True,
+            "optionValue": value,
+            "optionLabel": str(option.get("label") or value).strip(),
+            "text": text[:8_000],
+        }
+    text = str(inherited.get("text") or "").strip()
+    if not text:
+        return None
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return {
+        **inherited,
+        "required": True,
+        "question": str(
+            inherited.get("question")
+            or interaction.payload.get("question")
+            or ""
+        )[:4_000],
+        "text": text[:8_000],
+        "textHash": str(inherited.get("textHash") or f"sha256:{digest}"),
+    }
+
+
+def _required_text_constraint_from_snapshot(
+    snapshot: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(snapshot, dict):
+        return None
+    value = snapshot.get("requiredTextConstraint")
+    if isinstance(value, dict) and str(value.get("text") or "").strip():
+        return dict(value)
+    if snapshot.get("requiredText") is not True:
+        return None
+    answer = snapshot.get("answer")
+    text = answer.get("text") if isinstance(answer, dict) else None
+    if not str(text or "").strip():
+        return None
+    normalized = {
+        "required": True,
+        "question": str(snapshot.get("question") or "")[:4_000],
+        "optionValue": str(answer.get("value") or "").strip(),
+        "optionLabel": str(answer.get("displayText") or answer.get("value") or "").strip(),
+        "text": str(text).strip()[:8_000],
+    }
+    digest = hashlib.sha256(normalized["text"].encode("utf-8")).hexdigest()
+    normalized["textHash"] = f"sha256:{digest}"
+    return normalized
+
+
+def _required_text_prompt(constraint: dict[str, Any]) -> str:
+    text = str(constraint.get("text") or "").strip()
+    return (
+        "本轮必须遵守用户在决策卡中填写的补充说明。以下内容是用户原文，"
+        "不得丢弃、改写为模糊要求或用旧计划替代：\n"
+        f"【{text}】\n"
+        "请逐项核对并执行；最终回复必须明确说明每项已满足，或指出具体无法满足的原因。"
+        "如果当前资料或工具不足以满足任一项，必须调用 ask 生成下一张可操作的问题卡，"
+        "不能只在自然语言中写“待专家明确后继续”。"
+    )
+
+
+def _contains_any_token(value: str, tokens: tuple[str, ...] | list[str]) -> bool:
+    for token in tokens:
+        if token in value:
+            return True
+    return False
+
+
+def _contains_all_tokens(value: str, tokens: list[str]) -> bool:
+    for token in tokens:
+        if token not in value:
+            return False
+    return True
+
+
+def _required_text_response_acknowledged(
+    output: str,
+    constraint: dict[str, Any],
+) -> bool:
+    """判断最终正文是否至少明确承接了补充说明。
+
+    这里不要求模型逐字复述长文本，避免把业务说明泄漏到重复摘要中；
+    但必须出现承接/执行类措辞，且不能仅以“缺少资料”结束。
+    """
+    normalized = re.sub(r"\s+", "", str(output or ""))
+    if not normalized:
+        return False
+    if _contains_any_token(normalized, ("无法", "不能", "缺少", "不足以", "未能")):
+        return False
+    if not _contains_any_token(normalized, (
+        "已收到", "已按你的补充", "已按补充说明", "已按要求",
+        "已逐项", "已保留", "不会修改", "不修改知识包", "已核对",
+        "已根据", "已记录", "已采用", "按口述", "无需修改", "无需调整",
+        "保持当前", "补充说明已", "约束已",
+    )):
+        return False
+    # 用户给出两个以上精确数量时，至少要在回执中逐项回显这些数量，
+    # 避免“已按要求”掩盖 201/198/3 等统计没有真正执行。
+    required_numbers: list[str] = []
+    for item in re.findall(
+        r"(?<![A-Za-z0-9])\d+\s*(?:条|项|组|个|份|张|件|条目)",
+        str(constraint.get("text") or ""),
+    ):
+        required_numbers.append(re.sub(r"\D", "", item))
+    if len(required_numbers) >= 2 and not _contains_all_tokens(normalized, required_numbers):
+        return False
+    requirement_text = re.sub(r"\s+", "", str(constraint.get("text") or ""))
+    if "不修改知识包" in requirement_text and not _contains_any_token(
+        normalized,
+        ("不修改知识包", "知识包保持不变", "不改动知识包"),
+    ):
+        return False
+    return True
+
+
+def _required_text_interrupt_acknowledged(
+    result: dict[str, Any],
+    constraint: dict[str, Any],
+) -> bool:
+    interaction = result.get("interaction")
+    if not isinstance(interaction, InteractionRecord):
+        return False
+    if interaction.kind in {"confirmation", "release_confirmation"}:
+        return True
+    question = re.sub(r"\s+", "", str(interaction.payload.get("question") or ""))
+    original = re.sub(r"\s+", "", str(constraint.get("question") or ""))
+    if not question or (original and question == original):
+        return False
+    # 新卡必须明确承接约束或说明还缺什么，不能换一种说法重复原问题。
+    return _contains_any_token(question, (
+        "补充说明", "业务约束", "无法满足", "不能满足", "仍需补充",
+        "缺少", "证据", "具体原因", "按原", "调整补充", "唯一目标",
+        "明确范围", "具体目标",
+    ))
+
+
+def _required_text_interrupt_requires_review(
+    result: dict[str, Any],
+    live: LiveRun,
+    guard_mode: str,
+) -> bool:
+    if result.get("result_type") != "interrupt":
+        return False
+    constraint = live.required_text_constraint
+    if not constraint or guard_mode == "off":
+        return False
+    return not _required_text_interrupt_acknowledged(result, constraint)
+
+
+def _required_text_response_requires_review(
+    result: dict[str, Any],
+    live: LiveRun,
+    guard_mode: str,
+) -> bool:
+    if result.get("result_type") != "success":
+        return False
+    constraint = live.required_text_constraint
+    if not constraint or guard_mode == "off":
+        return False
+    return not _required_text_response_acknowledged(
+        str(result.get("output") or ""),
+        constraint,
+    )
+
+
 def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
     return (
         bool(live.required_material_directives)
         and live.allowed_tools == PURPOSE_REVIEW_ALLOWED_TOOLS
         and not _missing_required_tools(live)
     )
+
+
+_LANGUAGE_REMINDER = (
+    "\n\n【输出语言】本轮的内部推理和用户可见正文都必须使用简体中文。"
+    "不要用英文推理，也不要中英混写整句；工具名、字段名、表名、代码标识符保留原文。"
+)
+
+
+LOOP_TOOL_REPEAT_THRESHOLD = 3
+# 同一工具连续失败多少次算卡住。取 5：正常的自我纠错一两次就该成功。
+LOOP_TOOL_FAILURE_THRESHOLD = 5
+LOOP_OUTPUT_REPEAT_THRESHOLD = 2
+# 归一化后 4-gram 的 Jaccard 相似度阈值：换个说法重复也算打转。
+# 实测同领域但内容不同的相邻输出 ≤0.12，换说法重复 ≥0.25，取中间偏保守值。
+LOOP_OUTPUT_SIMILARITY = 0.22
+LOOP_TRACE_WINDOW = 12
+
+
+def _fingerprint(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _situation_of(live: LiveRun | None) -> RunSituation | None:
+    """还没有活动运行时返回 None，让规则按「拿不准」处理。"""
+    return live.situation if live is not None else None
+
+
+def _record_tool_call(live: LiveRun, name: str, args: Any) -> None:
+    live.recent_tool_calls.append(f"{name}:{_fingerprint(args)}")
+    del live.recent_tool_calls[:-LOOP_TRACE_WINDOW]
+
+
+def _record_tool_outcome(live: LiveRun, name: str, failed: bool) -> None:
+    """同一工具连续失败计数。参数每次都变时「同参数重复」判据完全失效，
+    但连着二十几次撞同一个错误显然是卡住了。"""
+    if not failed:
+        live.consecutive_tool_failures = ("", 0)
+        return
+    previous, count = live.consecutive_tool_failures
+    live.consecutive_tool_failures = (name, count + 1 if previous == name else 1)
+
+
+_LOOP_NOISE = re.compile(r"[\s，。、；：！？…—·「」『』（）()\[\]{}<>\"'`*#\-]+")
+
+
+def _shingles(text: str) -> frozenset[str]:
+    """归一化后的字符 4-gram。用于识别「换个说法再说一遍」——
+    真实的打转极少逐字相同，只比对完全相同的指纹会全部漏掉（见 #39）。"""
+    normalized = _LOOP_NOISE.sub("", str(text or ""))
+    # 太短的输出（「好的」「完成」）没有判别力，不参与判定
+    if len(normalized) < 8:
+        return frozenset()
+    # 短句不足以切出有意义的 4-gram，按整体比对：重复三遍的短句同样是打转
+    if len(normalized) < 12:
+        return frozenset({normalized})
+    return frozenset(normalized[i:i + 4] for i in range(len(normalized) - 3))
+
+
+def _similarity(left: frozenset[str], right: frozenset[str]) -> float:
+    if not left or not right:
+        return 0.0
+    union = len(left | right)
+    return len(left & right) / union if union else 0.0
+
+
+def _record_turn_output(live: LiveRun, output: str) -> None:
+    marks = _shingles(output)
+    if not marks:
+        return
+    live.recent_outputs.append(marks)
+    del live.recent_outputs[:-LOOP_TRACE_WINDOW]
+
+
+def _detect_loop(live: LiveRun) -> str:
+    """识别真正的原地打转，返回原因；不是打转则返回空串。
+
+    与「没产出」区分开：没产出可能只是在取证准备，而同一调用或同一段输出
+    反复出现才是卡住。后者原有机制完全检测不到——只要期间碰巧写过一次，
+    停滞计数就归零，可以一直转下去。
+    """
+    failing_tool, failures = live.consecutive_tool_failures
+    if failures >= LOOP_TOOL_FAILURE_THRESHOLD:
+        return f"{failing_tool} 连续失败 {failures} 次"
+    if live.recent_tool_calls:
+        latest = live.recent_tool_calls[-1]
+        repeats = 0
+        for item in reversed(live.recent_tool_calls):
+            if item != latest:
+                break
+            repeats += 1
+        if repeats >= LOOP_TOOL_REPEAT_THRESHOLD:
+            return f"连续 {repeats} 次以相同参数调用同一工具"
+    if len(live.recent_outputs) > LOOP_OUTPUT_REPEAT_THRESHOLD:
+        latest = live.recent_outputs[-1]
+        near = sum(
+            1 for item in live.recent_outputs[:-1]
+            if _similarity(item, latest) >= LOOP_OUTPUT_SIMILARITY
+        )
+        if near >= LOOP_OUTPUT_REPEAT_THRESHOLD:
+            return f"最近 {near + 1} 轮在重复同样的内容"
+    return ""
+
+
+def _with_intent_notes(live: LiveRun, query: Any) -> Any:
+    """把被状态否决的强制工具说明并进本轮 query，消费一次即清空。
+
+    否决如果静默发生，模型只会看到「消息里提了某件事却毫无动静」，
+    然后在矛盾里反复推敲——这正是 #1 现场那段逐字重复的推理。
+    """
+    if not live.intent_notes:
+        return query
+    notes = "\n".join(f"- {note}" for note in dict.fromkeys(live.intent_notes))
+    live.intent_notes.clear()
+    if not isinstance(query, str):
+        return query
+    return f"{query}\n\n【状态核对】\n{notes}"
+
+
+def _with_language_reminder(query: Any) -> Any:
+    """系统提示词里的语言约束压不住模型的英文思维链先验，
+    在每轮 query 末尾就近提醒一次（见 #4）。非字符串 query 原样返回。"""
+    if not isinstance(query, str) or not query.strip():
+        return query
+    if "【输出语言】" in query:
+        return query
+    return query + _LANGUAGE_REMINDER
+
+
+def _segment_separator(previous_tail: str) -> str:
+    """多轮模型输出会拼进同一条消息；上一段没有自带断句时补一个空行，
+    否则「执行全文精读。」和「全文精读完成」会粘成同一句话（见 #6）。"""
+    if not previous_tail or previous_tail[-1] in "\n \t":
+        return ""
+    return "\n\n"
 
 
 class _ReasoningEmitter:
@@ -305,6 +720,13 @@ class _ReasoningEmitter:
         self._pending = ""
         self._emitted = False
         self._observed = False
+        self._segment_break = False
+        self._tail = ""
+
+    def mark_segment_break(self) -> None:
+        """本轮推理已结束（中间夹了工具调用或正文输出），下一段另起。"""
+        if self._observed:
+            self._segment_break = True
 
     @property
     def seen(self) -> bool:
@@ -313,8 +735,14 @@ class _ReasoningEmitter:
     def feed(self, raw_text: str) -> None:
         if not raw_text or self._live.reasoning_truncated:
             return
+        chunk = self._sanitizer.feed(raw_text)
+        if chunk and self._segment_break:
+            self._pending += _segment_separator(self._pending or self._tail)
+            self._segment_break = False
         self._observed = True
-        self._pending += self._sanitizer.feed(raw_text)
+        self._pending += chunk
+        if chunk:
+            self._tail = chunk[-1:]
         if len(self._pending) >= REASONING_EVENT_BATCH_CHARS or "\n" in self._pending:
             self._flush()
 
@@ -1590,6 +2018,17 @@ class AgentService:
                 str(required_text_option.get("textPrompt") or "请补充具体说明后再提交"),
                 status=400,
             )
+        required_text_constraint = _required_text_constraint(interaction, answer)
+        if (
+            interaction.payload.get("requiredTextConstraint")
+            and str(answer.get("value") or "").strip() == "edit_required_text"
+            and not str(answer.get("text") or "").strip()
+        ):
+            raise AgentRuntimeError(
+                "INTERACTION_TEXT_REQUIRED",
+                "请补充新的业务约束后再提交",
+                status=400,
+            )
         direct_confirmation = (
             interaction.kind == "confirmation"
             and answer.get("action") != "interject"
@@ -1726,9 +2165,32 @@ class AgentService:
         run = self.store.require_run(interaction.run_id)
         self.events.publish(run.project_id, run.id, "interaction", {"id": interaction.id, "status": "answered", "answer": answer})
         self.events.publish(run.project_id, run.id, "message", {"role": "user", "blocks": [{"type": "answer", "interactionId": interaction.id, "answer": answer}]})
+        answer_text = json.dumps(answer, ensure_ascii=False)
+        live_for_answer = self._live.get(interaction.run_id)
         required_tools = _required_tools_for_user_intent(
-            f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}"
+            f"{interaction.payload.get('question') or ''}\n{answer_text}",
+            # 问题文案出自助手，只有专家的回答才代表用户要求全文精读。
+            full_read_text=answer_text,
+            situation=live_for_answer.situation if live_for_answer else None,
         )
+        constraint_prompt = (
+            _required_text_prompt(required_text_constraint)
+            if required_text_constraint else ""
+        )
+        if required_text_constraint:
+            self.events.publish(run.project_id, run.id, "tool", {
+                "name": "required_text_constraint",
+                "phase": "completed",
+                "summary": "补充说明已绑定到恢复任务",
+                "constraintHash": required_text_constraint.get("textHash"),
+            })
+        if required_text_constraint:
+            # 语义守卫需要在恢复时强制读取该工具结果，台账模式为 advisory 时
+            # 仍会形成确定性观测，但不会阻断普通建模流程。
+            if _PRODUCT_LEDGER_INTENT.search(
+                f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}"
+            ):
+                required_tools.add("stage_product_ledger")
         if direct_confirmation:
             approved = answer.get("approved") is True
             prompt = (
@@ -1810,6 +2272,8 @@ class AgentService:
                 "请把答复作为明确约束，从当前项目和同一会话继续主动建模。"
                 "不要重复询问已经回答的问题；下一次确实需要用户决定时再调用 ask 或 request_confirmation。"
             )
+            if constraint_prompt:
+                prompt = f"{prompt}\n\n{constraint_prompt}"
             self._persist_latest_interaction(
                 run,
                 interaction=interaction,
@@ -1824,12 +2288,13 @@ class AgentService:
                 prompt,
                 required_tools=required_tools,
                 autonomous_seed=True,
+                required_text_constraint=required_text_constraint,
             )
         self._persist_latest_interaction(
             run,
             interaction=interaction,
             answer=answer,
-            continuation="",
+            continuation=constraint_prompt,
             action_key=str(answer.get("action") or ""),
             requires_artifact=_answer_requires_script_artifact(interaction, answer),
         )
@@ -1837,6 +2302,7 @@ class AgentService:
             run,
             token,
             {interaction.tool_call_id: answer},
+            steering=constraint_prompt,
             required_tools=required_tools,
             confirmation_required=bool(interaction.payload.get("overallConfirmationRequired")),
             release_declined=(
@@ -1845,6 +2311,7 @@ class AgentService:
                 and (answer.get("approved") is not True or answer.get("coverage_confirmed") is not True)
             ),
             autonomous_seed=True,
+            required_text_constraint=required_text_constraint,
         )
 
     async def steer(
@@ -1866,7 +2333,14 @@ class AgentService:
 
         interaction = self.store.pending_interaction(project_id)
         if interaction and interaction.run_id == run.id:
-            answer = {"action": "interject", "text": message}
+            # 批量确认已经把这批资料的用途落库，挂起的逐份卡问的正是同一件事：
+            # 它是被解决了，不是被插话打断，所以不能再作为「未解决的原问题」恢复。
+            # 但仍要给出真实答案让助手那次在途的 ask 调用返回，否则运行会挂住（见 #36）。
+            resolved_elsewhere = purpose_review_completed
+            answer = {
+                "action": "resolved_elsewhere" if resolved_elsewhere else "interject",
+                "text": message,
+            }
             self.store.answer_interaction(interaction.id, answer)
             self.events.publish(
                 project_id,
@@ -1879,18 +2353,23 @@ class AgentService:
                 interaction=interaction,
                 answer=answer,
                 continuation="",
-                action_key="interject",
+                action_key=str(answer["action"]),
                 requires_artifact=_answer_requires_script_artifact(interaction, answer),
             )
             resumed = await self._resume(
                 run,
                 token,
                 {interaction.tool_call_id: answer},
-                restore_interaction=interaction,
-                required_tools=_required_tools_for_user_intent(message),
+                restore_interaction=None if resolved_elsewhere else interaction,
+                required_tools=_required_tools_for_user_intent(
+                    message, situation=_situation_of(self._live.get(run.id)),
+                ),
                 autonomous_seed=True,
             )
-            return {"mode": "interjection", "run": resumed}
+            return {
+                "mode": "resolved_elsewhere" if resolved_elsewhere else "interjection",
+                "run": resumed,
+            }
 
         if execution == RUN_SUSPENDED:
             steering_id = self.store.queue_steering(project_id, run.id, message)
@@ -1898,7 +2377,9 @@ class AgentService:
                 run,
                 token,
                 message,
-                required_tools=_required_tools_for_user_intent(message),
+                required_tools=_required_tools_for_user_intent(
+                    message, situation=_situation_of(self._live.get(run.id)),
+                ),
                 autonomous_seed=True,
             )
             self.store.mark_steering_delivered(steering_id)
@@ -1915,6 +2396,14 @@ class AgentService:
             raise AgentRuntimeError("RUN_NOT_STEERABLE", "当前运行暂时不能接收插话", status=409)
         if purpose_review_completed and live.allowed_tools == PURPOSE_REVIEW_ALLOWED_TOOLS:
             if live.deferred_purpose_continuation is None:
+                # 批量确认已经把这批资料的用途落库，助手挂起的逐份卡问的是同一件事，
+                # 必须一并结算。否则它会被当成「仍未解决的原问题」自动恢复，
+                # 用户刚一次性确认完又被推回同一张卡（见 #36）。
+                for settled in self.store.settle_interactions_resolved_elsewhere(
+                    run.id, reason="资料用途已通过批量确认完成",
+                ):
+                    live.restore_interaction = None
+                    self.events.publish(project_id, run.id, "interaction", settled.public())
                 steering_id = self.store.queue_steering(project_id, run.id, message)
                 live.deferred_purpose_continuation = (steering_id, token, message)
                 self.events.publish(project_id, run.id, "message", {
@@ -1930,7 +2419,9 @@ class AgentService:
         steering_id = self.store.queue_steering(project_id, run.id, message)
         live.token = token
         live.stable_read_cache.clear()
-        live.required_tools.update(_required_tools_for_user_intent(message))
+        live.required_tools.update(_required_tools_for_user_intent(
+            message, situation=live.situation, notes=live.intent_notes,
+        ))
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
         )
@@ -2040,17 +2531,20 @@ class AgentService:
                 self.store.save_technical_recovery(run.id, normalized_issue, technical)
             required_tools = {str(technical.get("requiredTool") or "").strip()}
             required_tools.discard("")
-            recovery_prompt = (
-                "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
-                "先清除旧参数，重新读取当前建模计划和涉及的资源快照，"
-                "再用新的 mutation_id 生成 Change Set。"
-                "只处理尚未完成的任务，不得原样重放旧参数。"
-                if technical.get("strategy") == "refresh_change_set"
-                else (
-                    "页面请求继续一个仍然有效的系统恢复问题。不要把它当成用户业务发言；"
-                    "立即按已持久化的 required tool 恢复，成功后重新校验候选。"
+            if technical.get("strategy") == CONFIRMATION_REVIEW_STRATEGY:
+                recovery_prompt = self._confirmation_review_prompt(run)
+            else:
+                recovery_prompt = (
+                    "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
+                    "先清除旧参数，重新读取当前建模计划和涉及的资源快照，"
+                    "再用新的 mutation_id 生成 Change Set。"
+                    "只处理尚未完成的任务，不得原样重放旧参数。"
+                    if technical.get("strategy") == "refresh_change_set"
+                    else (
+                        "页面请求继续一个仍然有效的系统恢复问题。不要把它当成用户业务发言；"
+                        "立即按已持久化的 required tool 恢复，成功后重新校验候选。"
+                    )
                 )
-            )
             initial_recoveries = {normalized_issue: technical}
             initial_repair = None
         elif is_validation_issue:
@@ -2272,6 +2766,16 @@ class AgentService:
         arguments: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
+        failed = bool(isinstance(result, dict) and result.get("error"))
+        _record_tool_outcome(live, name, failed)
+        _record_tool_call(live, name, arguments)
+        if failed:
+            # 失败结果不代表状态，不能拿去回填快照
+            return
+        _absorb_plan_progress(live, result)
+        _absorb_reading_modes(live, result)
+        _absorb_stage_delivery(live, name, result)
+        _absorb_awaiting_user(live, result)
         if name == "create_change_plan":
             consume = getattr(self._gateway, "acceptance_fault", None)
             fault: dict[str, Any] = {}
@@ -2514,6 +3018,20 @@ class AgentService:
         self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
         return self._run_public(updated, self.store.project_state(project_id))
 
+    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
+        for event in self.store.unfinished_tool_events(run_id):
+            started = event.payload
+            payload = {
+                "name": str(started.get("name") or ""),
+                "phase": "cancelled",
+                "summary": "运行已停止，当前操作已取消",
+                "toolCallId": str(started.get("toolCallId") or ""),
+            }
+            trace_group_id = str(started.get("traceGroupId") or "")
+            if trace_group_id:
+                payload["traceGroupId"] = trace_group_id
+            self.events.publish(project_id, run_id, "tool", payload)
+
     async def safe_terminate_stale(self, *, project_id: str) -> dict[str, Any]:
         state = self.store.project_state(project_id)
         terminated_run_id = state.run_id
@@ -2559,15 +3077,21 @@ class AgentService:
             key: (value[:4_000] if isinstance(value, str) else value)
             for key, value in dict(answer).items()
         }
+        required_text_constraint = _required_text_constraint(interaction, answer)
         snapshot = {
             "interactionId": interaction.id,
             "kind": interaction.kind,
             "question": question,
             "answer": answer_snapshot,
-            "actionKey": (action_key or str(answer.get("action") or ""))[:200],
+            "actionKey": (
+                action_key
+                or str(answer.get("action") or answer.get("value") or "")
+            )[:200],
             "continuation": str(continuation or "")[:2_000],
             "contractSummary": contract_summary,
             "operation": str(payload.get("operation") or "")[:500],
+            **({"requiredText": True} if required_text_constraint else {}),
+            **({"requiredTextConstraint": required_text_constraint} if required_text_constraint else {}),
             "requiresArtifact": (
                 _interaction_requires_artifact(interaction)
                 if requires_artifact is None
@@ -2584,19 +3108,123 @@ class AgentService:
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
 
-    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
-        for event in self.store.unfinished_tool_events(run_id):
-            started = event.payload
-            payload = {
-                "name": str(started.get("name") or ""),
-                "phase": "cancelled",
-                "summary": "运行已停止，当前操作已取消",
-                "toolCallId": str(started.get("toolCallId") or ""),
-            }
-            trace_group_id = str(started.get("traceGroupId") or "")
-            if trace_group_id:
-                payload["traceGroupId"] = trace_group_id
-            self.events.publish(project_id, run_id, "tool", payload)
+    def _suspend_required_text_review(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        constraint: dict[str, Any],
+    ) -> None:
+        """模型两次都未承接 requiredText 时，落一张可操作复核卡。
+
+        这条出口不修改知识包，也不把“之后再明确”当作完成；用户可以直接
+        让助手按原说明重试，或在卡片中替换补充说明。
+        """
+        interaction_id = f"interaction_{uuid.uuid4().hex}"
+        interaction = InteractionRecord(
+            id=interaction_id,
+            project_id=run.project_id,
+            run_id=run.id,
+            tool_call_id=f"required-text-review:{run.id}",
+            kind="clarification",
+            payload={
+                "question": "助手还没有明确响应这条补充说明，请选择后继续",
+                "options": [
+                    {
+                        "label": "按原补充说明继续",
+                        "description": "重新核对并逐项响应刚才提交的要求",
+                        "value": "retry_required_text",
+                    },
+                    {
+                        "label": "调整补充说明",
+                        "description": "用新的说明替换刚才的约束",
+                        "value": "edit_required_text",
+                        "requiresText": True,
+                        "textPrompt": "请填写新的业务约束",
+                    },
+                ],
+                "allowFreeText": True,
+                "requiredTextConstraint": constraint,
+            },
+        )
+        self.store.create_interaction(interaction)
+        self.store.update_run(run.id, status=RUN_WAITING, result="", error="")
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "interaction", interaction.public())
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_WAITING,
+            "text": "等待你确认补充说明后继续",
+        })
+
+    def _suspend_confirmation_review(self, live: LiveRun, run: RunRecord) -> None:
+        """把未形成确认卡的终态转换为可恢复的用户选择。"""
+        issue_id = f"confirmation-review-{run.id}"
+        snapshot = run.latest_interaction or {}
+        state = self.store.project_state(run.project_id).public()
+        recovery = {
+            "issueId": issue_id,
+            "requiredTool": CONFIRMATION_REVIEW_REQUIRED_TOOL,
+            "strategy": CONFIRMATION_REVIEW_STRATEGY,
+            "actionId": "retry_from_latest",
+            "recoveryActions": _confirmation_review_actions(),
+            "interactionId": str(snapshot.get("interactionId") or ""),
+            "projectPhase": str(state.get("phase") or ""),
+            "toolProfile": run.tool_profile,
+            "attempt": 0,
+            "maxAttempts": 1,
+            "exhausted": True,
+        }
+        live.technical_recoveries[issue_id] = recovery
+        self.store.save_technical_recovery(run.id, issue_id, recovery)
+        self.store.update_run(
+            run.id,
+            status=RUN_SUSPENDED,
+            result="",
+            error="",
+        )
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": "confirmation_review",
+            "phase": "waiting",
+            "summary": "整体复核卡未形成，待确认修改已保留",
+            "code": "CONFIRMATION_CARD_NOT_CREATED",
+            "issueId": issue_id,
+            "issueStatus": "awaiting_user",
+            "problemVisibility": "recovery",
+            "projectPhase": recovery["projectPhase"],
+            "toolProfile": recovery["toolProfile"],
+            "recoveryActions": _confirmation_review_actions(),
+        })
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_SUSPENDED,
+            "text": "整体复核卡未形成，待确认修改已保留，请选择后续处理",
+        })
+
+    @staticmethod
+    def _confirmation_review_prompt(run: RunRecord) -> str:
+        snapshot = run.latest_interaction or {}
+        facts = {
+            "question": str(snapshot.get("question") or ""),
+            "answer": snapshot.get("answer") or {},
+            "continuation": str(snapshot.get("continuation") or ""),
+            "contractSummary": str(snapshot.get("contractSummary") or ""),
+            "operation": str(snapshot.get("operation") or ""),
+        }
+        return (
+            "页面请求重新复核上一轮未形成的整体确认。不要把这当成新的用户业务问题，"
+            "也不要询问用户平台是否开放某项工具能力。先调用 get_project_state 获取最新状态，"
+            "再读取当前领域资源清单和相关资源快照，核对真实候选差异；如果候选完整，"
+            "立即调用 request_confirmation 生成整体确认卡，不能只输出文字。"
+            "只能依据当前项目事实和下面保存的最新交互继续，不得原样重放旧参数。\n"
+            f"最新交互事实：{json.dumps(facts, ensure_ascii=False)}"
+        )
 
     async def _resume(
         self,
@@ -2614,6 +3242,7 @@ class AgentService:
         confirmation_required: bool = False,
         preserve_token_fingerprint: bool = False,
         autonomous_seed: bool = False,
+        required_text_constraint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._execution(run.project_id, run.id) not in {RUN_WAITING, RUN_SUSPENDED}:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
@@ -2633,6 +3262,10 @@ class AgentService:
         self.store.update_run(run.id, **updates)
         self._publish_state(run.project_id, run.id)
         technical_recoveries = self.store.technical_recoveries(run.id)
+        resolved_required_text_constraint = (
+            required_text_constraint
+            or _required_text_constraint_from_snapshot(run.latest_interaction)
+        )
         live = LiveRun(
             run_id=run.id,
             project_id=run.project_id,
@@ -2653,6 +3286,7 @@ class AgentService:
             package_contract=dict(claimed.get("packageContract") or {}),
             validation_repair=self._validation_repair_state(run.id),
             technical_recoveries=technical_recoveries,
+            required_text_constraint=resolved_required_text_constraint,
         )
         if steering:
             await live.steering.put(steering)
@@ -2673,6 +3307,7 @@ class AgentService:
         release_reentry_authorized: bool = False,
         confirmation_required: bool = False,
         autonomous_seed: bool = False,
+        required_text_constraint: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._execution(run.project_id, run.id) not in {RUN_WAITING, RUN_SUSPENDED}:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
@@ -2686,6 +3321,10 @@ class AgentService:
         )
         self._publish_state(run.project_id, run.id)
         technical_recoveries = self.store.technical_recoveries(run.id)
+        resolved_required_text_constraint = (
+            required_text_constraint
+            or _required_text_constraint_from_snapshot(run.latest_interaction)
+        )
         live = LiveRun(
             run_id=run.id,
             project_id=run.project_id,
@@ -2704,6 +3343,7 @@ class AgentService:
             package_contract=dict(claimed.get("packageContract") or {}),
             validation_repair=self._validation_repair_state(run.id),
             technical_recoveries=technical_recoveries,
+            required_text_constraint=resolved_required_text_constraint,
         )
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, prompt))
@@ -2759,10 +3399,19 @@ class AgentService:
 
         run = self.store.require_run(live.run_id)
         try:
+            initial_phase = self.store.project_state(run.project_id).state.partition(":")[0]
+            output_budget = output_budget_for_phase(self.settings, initial_phase)
+            analyst_model = None
+            model_settings = self.settings
+            acceptance_model = False
             if self._model_factory is not None:
                 model = self._model_factory()
             elif len(self.settings.service_token) < 32:
-                model = build_model(self.settings)
+                model = build_model(self.settings, output_tokens=output_budget)
+                analyst_model = build_model(
+                    self.settings,
+                    output_tokens=self.settings.analyst_output_tokens,
+                )
             else:
                 runtime_llm = await self._gateway.model_config(
                     project_id=live.project_id,
@@ -2772,8 +3421,15 @@ class AgentService:
                 if runtime_llm.get("acceptanceDriver") is True:
                     from .acceptance_model import AcceptanceModel
                     model = AcceptanceModel(str(runtime_llm.get("acceptanceScenario") or ""))
+                    acceptance_model = True
                 else:
-                    model = build_model(self.settings.with_runtime_llm(runtime_llm))
+                    runtime_settings = self.settings.with_runtime_llm(runtime_llm)
+                    model_settings = runtime_settings
+                    model = build_model(runtime_settings, output_tokens=output_budget)
+                    analyst_model = build_model(
+                        runtime_settings,
+                        output_tokens=runtime_settings.analyst_output_tokens,
+                    )
             self.store.update_run(run.id, status=RUN_RUNNING)
             self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})
@@ -2784,6 +3440,7 @@ class AgentService:
             confirmation_card_retries = 0
             model_operation_seq = 0
             current_query = query
+            active_phase = initial_phase
             while True:
                 def emit(kind: str, payload: dict[str, Any]) -> None:
                     if kind == "tool":
@@ -2856,10 +3513,22 @@ class AgentService:
                     cancel_event=live.cancel_event,
                     inflight_core_calls=live.inflight_core_calls,
                 )
+                phase = context.phase
+                if phase != active_phase and self._model_factory is None and not acceptance_model:
+                    model = build_model(
+                        model_settings,
+                        output_tokens=output_budget_for_phase(self.settings, phase),
+                    )
+                    analyst_model = build_model(
+                        model_settings,
+                        output_tokens=model_settings.analyst_output_tokens,
+                    )
+                    active_phase = phase
                 live.bundle = build_agent(
                     self.settings,
                     context,
                     model=model,
+                    analyst_model=analyst_model,
                     package_contract=live.package_contract,
                 )
                 boundary = self.events.publish(
@@ -2876,6 +3545,32 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                if _required_text_interrupt_requires_review(
+                    result,
+                    live,
+                    self.settings.required_text_guard_mode,
+                ):
+                    if self.settings.required_text_guard_mode == "observe":
+                        self.events.publish(run.project_id, run.id, "tool", {
+                            "name": "required_text_guard",
+                            "phase": "completed",
+                            "summary": "模型重复了原问题卡（观测模式）",
+                            "constraintHash": live.required_text_constraint.get("textHash"),
+                        })
+                    elif live.required_text_guard_retries < 1:
+                        live.required_text_guard_retries += 1
+                        current_query = _required_text_prompt(live.required_text_constraint)
+                        continue
+                    else:
+                        self._suspend_required_text_review(
+                            live,
+                            run,
+                            live.required_text_constraint,
+                        )
+                        return
+                if context.technical_capability_claimed and result.get("result_type") == "interrupt":
+                    self._suspend_confirmation_review(live, run)
+                    return
                 if context.pending_evaluation is not None:
                     result = await self._ensure_visible_result(live, run, {
                         "result_type": "success",
@@ -2922,6 +3617,19 @@ class AgentService:
                         "text": "等待你批准当前建模计划",
                     })
                     return
+                if result.get("result_type") == "success" and context.technical_capability_claimed:
+                    capability_key = "technical_capability_claimed"
+                    used_capability_retries = live.proof_retries.get(capability_key, 0)
+                    live.required_tools.add(CONFIRMATION_REVIEW_REQUIRED_TOOL)
+                    if used_capability_retries < 2:
+                        live.proof_retries[capability_key] = used_capability_retries + 1
+                        current_query = (
+                            "你刚才把内部工具能力问题转给了用户。不要解释平台状态，也不要询问用户是否开放工具；"
+                            "立即调用 list_domain_resources 读取当前领域资源，再基于真实结果继续完成本轮复核。"
+                        )
+                        continue
+                    self._suspend_confirmation_review(live, run)
+                    return
                 missing_tools = _missing_required_tools(live)
                 if result.get("result_type") == "success" and missing_tools:
                     proof_key = "|".join(sorted(missing_tools))
@@ -2932,11 +3640,40 @@ class AgentService:
                             live, run, Runner, missing_tools,
                         )
                         continue
+                    if any(
+                        recovery.get("strategy") == CONFIRMATION_REVIEW_STRATEGY
+                        for recovery in live.technical_recoveries.values()
+                    ):
+                        self._suspend_confirmation_review(live, run)
+                        return
                     result = {
                         "result_type": "error",
                         "output": "助手没有完成这项明确要求，本轮已停止；已经确认的内容保持不变。",
                         "streamed": False,
                     }
+                if _required_text_response_requires_review(
+                    result,
+                    live,
+                    self.settings.required_text_guard_mode,
+                ):
+                    if self.settings.required_text_guard_mode == "observe":
+                        self.events.publish(run.project_id, run.id, "tool", {
+                            "name": "required_text_guard",
+                            "phase": "completed",
+                            "summary": "补充说明已记录，但模型正文没有明确回执（观测模式）",
+                            "constraintHash": live.required_text_constraint.get("textHash"),
+                        })
+                    elif live.required_text_guard_retries < 1:
+                        live.required_text_guard_retries += 1
+                        current_query = _required_text_prompt(live.required_text_constraint)
+                        continue
+                    else:
+                        self._suspend_required_text_review(
+                            live,
+                            run,
+                            live.required_text_constraint,
+                        )
+                        return
                 if result.get("result_type") == "success" and _purpose_review_suggestions_complete(live):
                     result = await self._ensure_visible_result(live, run, result)
                     self._settle(live, run, result)
@@ -2980,11 +3717,8 @@ class AgentService:
                             "立即发起整体确认；不得替专家批准，也不得只用文字询问。"
                         )
                         continue
-                    result = {
-                        "result_type": "error",
-                        "output": "助手未能形成整体确认，待确认修改仍然保留，请稍后重试复核。",
-                        "streamed": False,
-                    }
+                    self._suspend_confirmation_review(live, run)
+                    return
                 if result.get("result_type") == "interrupt" or live.restore_interaction:
                     self._settle(live, run, result)
                     return
@@ -3006,14 +3740,37 @@ class AgentService:
                 elif autonomous:
                     stalled += 1
 
-                if (
-                    autonomous
-                    and continuations < MAX_AUTONOMOUS_CONTINUATIONS
-                    and stalled < MAX_STALLED_CONTINUATIONS
-                ):
+                # 已批准的计划还有必选任务时放宽停滞上限：只做调研不写入同样是没干活，
+                # 但收尾的判据应该是计划做没做完，而不是模型连着几轮没调用写包工具。
+                # 受控计划只存在于知识建模阶段；资料准备、目标确认、流程建模、
+                # 确定性验证都没有计划，不能因此就用紧上限把它们判成没事可做。
+                stall_budget = (
+                    MAX_STALLED_PLAN_CONTINUATIONS
+                    if (live.situation.plan_remaining or live.situation.stage_started_without_delivery)
+                    else MAX_STALLED_CONTINUATIONS
+                )
+                # 打转和没产出是两回事：没产出可能只是在取证，打转才是真卡住。
+                # 检测到打转直接收尾，不受上面放宽的停滞预算保护。
+                loop_reason = _detect_loop(live)
+                if loop_reason:
+                    logger.warning(
+                        "autonomous loop detected run=%s reason=%s", run.id, loop_reason,
+                    )
+                # 剩下的事只能由用户在别的界面完成时，继续轮转推不动任何进展，
+                # 只会一轮轮重复同一段话。结束本轮，等外部事件把它唤醒。
+                if live.situation.awaiting_user_action:
+                    loop_reason = loop_reason or "剩余事项需要用户在其它界面完成"
+                can_continue_autonomously = autonomous and not loop_reason
+                has_continuation_budget = continuations < MAX_AUTONOMOUS_CONTINUATIONS
+                has_stall_budget = stalled < stall_budget
+                if can_continue_autonomously and has_continuation_budget and has_stall_budget:
                     continuations += 1
-                    current_query = self._autonomous_continuation_prompt(run.project_id)
+                    current_query = self._autonomous_continuation_prompt(
+                        run.project_id, live, stalled=stalled,
+                    )
                     continue
+                if live.situation.plan_remaining:
+                    self._publish_plan_incomplete_activity(live, run, stalled=stalled)
 
                 result = await self._ensure_visible_result(
                     live,
@@ -3105,6 +3862,7 @@ class AgentService:
         *,
         operation_id: str,
     ) -> dict[str, Any]:
+        query = _with_intent_notes(live, _with_language_reminder(query))
         acceptance_fault = await self._consume_acceptance_model_fault(run, live.token)
         acceptance_attempt = 0
         while True:
@@ -3320,16 +4078,60 @@ class AgentService:
             )
         return prompt
 
-    def _autonomous_continuation_prompt(self, project_id: str) -> str:
+    def _autonomous_continuation_prompt(
+        self,
+        project_id: str,
+        live: LiveRun | None = None,
+        *,
+        stalled: int = 0,
+    ) -> str:
         state = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
+        plan_hint = ""
+        if live is not None and live.situation.plan_remaining:
+            next_task = f"，下一项是「{live.situation.plan_next_task}」" if live.situation.plan_next_task else ""
+            plan_hint = (
+                f"\n# 受控建模计划待办\n"
+                f"计划还有 {live.situation.plan_remaining} 项必选任务没有形成候选{next_task}。\n"
+            )
+            if stalled:
+                plan_hint += (
+                    f"你已经连续 {stalled} 轮只做读取和核对、没有写入任何候选。"
+                    "本轮必须对下一项待办发起实际写入（create_*/patch_*/stage_change_set 等）；"
+                    "若确实无法写入，调用 ask 说明具体阻塞点，不要再重复核对现状。\n"
+                )
         return (
             "服务端检测到项目已经取得实质进展，但尚未到达需要专家决定、失败或发布交付的边界。"
             "不要请求用户指示，也不要只描述下一步；立即继续执行能自行完成的下一步，直到调用 ask、"
             "request_confirmation，或确实没有可执行动作。\n\n"
             "# 项目唯一 Agent 状态快照\n"
             f"{state}\n"
+            f"{plan_hint}"
             "先调用 get_project_state 获取最新版本，状态转换只能调用 transition_project_state。"
         )
+
+    def _publish_plan_incomplete_activity(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        *,
+        stalled: int,
+    ) -> None:
+        """计划没做完就收尾时，把待办和空转轮数摆到台面上。
+
+        否则界面只显示“本轮完成”，用户无法区分“真做完了”和“连着几轮没写东西被判停”。
+        """
+        next_task = f"，下一项是「{live.situation.plan_next_task}」" if live.situation.plan_next_task else ""
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": "change_plan_incomplete",
+            "phase": "waiting",
+            "summary": (
+                f"本轮结束时建模计划还有 {live.situation.plan_remaining} 项必选任务没有形成候选{next_task}；"
+                f"已连续 {stalled} 轮没有写入候选。可以直接发消息让助手继续，或说明需要调整的地方。"
+            ),
+            "planRemaining": live.situation.plan_remaining,
+            "planNextTask": live.situation.plan_next_task,
+            "stalledRounds": stalled,
+        })
 
     async def _ensure_visible_result(
         self,
@@ -3423,7 +4225,7 @@ class AgentService:
                 "已完成的处理事实：\n"
                 f"{facts or '- 尚无可归纳的工具结果'}"
                 "\n只依据上述最新交互与本次执行事实归纳；不得引用当前交互之外的旧计划、"
-                "旧任务数量或历史内部标识，不得要求用户补充 plan_id、版本号或 approval_status。"
+                "旧任务数量或历史内部标识，不得要求用户补充计划标识、版本号或批准状态。"
             )[:12_000]
         else:
             prompt = (
@@ -3569,12 +4371,20 @@ class AgentService:
         held_parts: list[str] = []
         model_events = 0
         stream_completed = False
+        # 一次 _run_streaming 里模型可能"输出 → 调工具 → 再输出"多轮，
+        # 这两个标志用来在轮次之间补断句，而不是把所有轮次拍平成一段。
+        output_segment_break = False
 
         def publish_visible(raw_text: str) -> None:
-            nonlocal emitted
+            nonlocal emitted, output_segment_break
             delta = sanitizer.feed(raw_text)
             if not delta:
                 return
+            if output_segment_break:
+                separator = _segment_separator(visible_parts[-1] if visible_parts else "")
+                if separator:
+                    delta = separator + delta
+                output_segment_break = False
             visible_parts.append(delta)
             emitted = True
             self.events.publish(run.project_id, run.id, "message_delta", {
@@ -3592,12 +4402,14 @@ class AgentService:
                 chunk_type = str(getattr(chunk, "type", "") or "")
                 if chunk_type == "llm_reasoning":
                     model_events += 1
+                    output_segment_break = emitted
                     reasoning.feed(_chunk_text(chunk))
                 elif chunk_type == "llm_output":
                     model_events += 1
                     delta = _chunk_text(chunk)
                     if not delta:
                         continue
+                    reasoning.mark_segment_break()
                     output_parts.append(delta)
                     if _missing_required_tools(live):
                         held_parts.append(delta)
@@ -3644,6 +4456,7 @@ class AgentService:
 
         raw_output = "".join(output_parts) or "".join(answer_parts)
         output = "".join(visible_parts) or sanitize_visible_text(raw_output)
+        _record_turn_output(live, output)
         if output and not emitted and not _missing_required_tools(live):
             self.events.publish(run.project_id, run.id, "message_delta", {
                 "messageId": message_id,
@@ -3981,6 +4794,16 @@ _PACKAGE_FUSION_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+# 明确要求逐项对账的产品/规则大清单。只有同时出现数量、逐项、去重、
+# 归并或完整性等信号时才触发产品台账工具，避免影响普通单条规则修改。
+_PRODUCT_LEDGER_INTENT = re.compile(
+    r"(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
+    r"(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)|"
+    r"规则.{0,220}(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
+    r"(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}规则",
+    re.IGNORECASE,
+)
+
 _RELEASE_REENTRY_INTENT = re.compile(
     r"增量|迭代|新版本|补充.{0,8}资料|替换.{0,8}资料|导入.{0,8}(?:知识包|来源包)|"
     r"融合|修改.{0,8}(?:知识|规则|流程|对象|指标|脚本)|修复.{0,8}(?:知识|规则|流程|对象|指标|脚本)|"
@@ -4011,8 +4834,148 @@ def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
 
 
-def _required_tools_for_user_intent(text: str) -> set[str]:
+# 会形成本阶段交付物的工具。阶段切换后重新计数，用来区分
+# 「刚进新阶段还没产出」和「本阶段做完了、确实没事可做」（见 #35）。
+_STAGE_DELIVERY_TOOLS = frozenset(
+    AUTONOMOUS_PROGRESS_TOOLS - {"transition_project_state"}
+)
+
+
+def _absorb_awaiting_user(live: LiveRun, result: Any) -> None:
+    """从门禁结果里回填「只剩用户要自己完成的事情」。
+
+    判据由核心侧结构化下发（GateResult.awaitingUser），不靠在阻塞文案里
+    找关键词——那正是 #1/#24 反复栽过的代理指标。
+    """
+    if not isinstance(result, dict):
+        return
+    if "awaitingUser" not in result:
+        return
+    waiting = result.get("awaitingUser") is True
+    live.situation.awaiting_user_action = waiting
+    if waiting:
+        blockers = result.get("blockers")
+        items = [str(item) for item in blockers if str(item).strip()] if isinstance(blockers, list) else []
+        live.situation.awaiting_user_reason = "；".join(items[:3])
+    else:
+        live.situation.awaiting_user_reason = ""
+
+
+def _absorb_stage_delivery(live: LiveRun, name: str, result: Any) -> None:
+    if name == "transition_project_state":
+        live.situation.stage_started_without_delivery = True
+        return
+    if name in _STAGE_DELIVERY_TOOLS:
+        live.situation.stage_started_without_delivery = False
+
+
+def _absorb_reading_modes(live: LiveRun, result: Any) -> None:
+    """从任何返回资料清单的核心工具结果里回填「哪些资料真的要全文精读」。
+
+    以前是否强制精读只看用户消息里有没有「全文精读」四个字，
+    于是一句由前端代发的续跑文案就能让 9.9MB 文档被整篇灌进上下文（见 #1）。
+    """
+    if not isinstance(result, dict):
+        return
+    documents = result.get("documents")
+    if not isinstance(documents, list) or not documents:
+        return
+    names: list[str] = []
+    for item in documents:
+        if not isinstance(item, dict):
+            return
+        if "readingMode" not in item and "reading_mode" not in item:
+            return
+        mode = str(item.get("readingMode") or item.get("reading_mode") or "").strip()
+        filename = str(item.get("filename") or "").strip()
+        if mode == "full" and filename:
+            names.append(filename)
+    live.situation.full_read_materials = tuple(dict.fromkeys(names))
+    live.situation.materials_observed = True
+
+
+def _absorb_plan_progress(live: LiveRun, result: Any) -> None:
+    """从任何带计划快照的核心工具结果里回填待办进度。
+
+    计划的权威状态在核心侧（TypeScript），Python 侧原本完全看不到它，
+    导致已批准但未做完的计划会在几轮纯调研之后被判定为“本轮完成”。
+    """
+    plan = result.get("plan") if isinstance(result, dict) else None
+    if not isinstance(plan, dict):
+        return
+    remaining = plan.get("remaining_count")
+    if not isinstance(remaining, int) or isinstance(remaining, bool):
+        return
+    live.situation.plan_remaining = max(0, remaining)
+    live.situation.plan_next_task = ""
+    if not live.situation.plan_remaining:
+        return
+    tasks = plan.get("tasks")
+    if not isinstance(tasks, list):
+        return
+    settled = {"accepted", "skipped"}
+    for task in tasks:
+        if not isinstance(task, dict) or not task.get("required"):
+            continue
+        if str(task.get("status") or "") in settled:
+            continue
+        live.situation.plan_next_task = str(task.get("title") or "")
+        return
+
+
+@dataclass(frozen=True)
+class IntentRule:
+    """一条「文本线索 → 强制工具」规则，外加一道状态否决权。
+
+    文本只提供线索，状态拥有否决权：命中关键词只说明「可能要做这件事」，
+    这件事在当前状态下成不成立由 precondition 判断。缺了这一层，
+    一句由前端代发、复述已保存设置的模板文案就能把大文档整篇灌进上下文（见 #1）。
+    """
+
+    name: str
+    requires: frozenset[str]
+    # 拿不准时偏哪边，依据是「猜错了哪边代价大」
+    unknown_default: Verdict = Verdict.ALLOW
+    precondition: Callable[[RunSituation], Verdict] | None = None
+    unmet_note: str = ""
+
+    def verdict(self, situation: RunSituation) -> Verdict:
+        if self.precondition is None:
+            return Verdict.ALLOW
+        result = self.precondition(situation)
+        return self.unknown_default if result is Verdict.UNKNOWN else result
+
+
+_FULL_READ_RULE = IntentRule(
+    name="full_read",
+    requires=frozenset({"set_material_directive", "read_documents_fully"}),
+    # 宁可多读一次，也不能吞掉用户真实的精读诉求
+    unknown_default=Verdict.ALLOW,
+    precondition=lambda situation: situation.has_full_read_materials(),
+    unmet_note=(
+        "你提到了全文精读，但当前没有任何资料被设为全文精读，所有资料都是按需读取。"
+        "如果确实需要整篇读取，请先用 set_material_directive 调整该资料的阅读方式，"
+        "不要直接调用全文精读。"
+    ),
+)
+
+
+def _required_tools_for_user_intent(
+    text: str,
+    *,
+    full_read_text: str | None = None,
+    situation: RunSituation | None = None,
+    notes: list[str] | None = None,
+) -> set[str]:
+    """返回本轮必须执行的工具；被状态否决的规则把说明追加到 notes。
+
+    否决必须留痕：静默撤销会让模型读到「消息里提了精读却没有任何动静」，
+    今天就见过它为此反复推敲、原地打转。把原因递出去它才能自己改对（见 #23 的经验）。
+    """
     value = str(text or "")
+    # 全文精读的判定来源可以与其它意图分开：交互问题文案由助手撰写，
+    # 里面复述已保存设置的「需要全文精读」不是用户诉求，不能据此强制拉起精读（见 #1）。
+    full_read_value = value if full_read_text is None else str(full_read_text or "")
     required: set[str] = set()
     cancel_requested = bool(
         _EVALUATION_CANCEL_INTENT.search(value)
@@ -4024,8 +4987,12 @@ def _required_tools_for_user_intent(text: str) -> set[str]:
         required.add("run_evaluation")
     if _EVALUATION_RESULT_INTENT.search(value):
         required.add("get_evaluation_results")
-    if _FULL_READ_INTENT.search(value):
-        required.update({"set_material_directive", "read_documents_fully"})
+    if _FULL_READ_INTENT.search(full_read_value):
+        if _FULL_READ_RULE.verdict(situation or RunSituation()) is Verdict.DENY:
+            if notes is not None:
+                notes.append(_FULL_READ_RULE.unmet_note)
+        else:
+            required.update(_FULL_READ_RULE.requires)
     elif _MATERIAL_DIRECTIVE_INTENT.search(value):
         required.add("set_material_directive")
     if _document_rule_change_requested(value):
@@ -4034,6 +5001,10 @@ def _required_tools_for_user_intent(text: str) -> set[str]:
         required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
+    if _PRODUCT_LEDGER_INTENT.search(value):
+        # 台账先作为一个确定性工具结果取得；产品台账模式为 advisory 时不阻断，
+        # 切换为 enforce 后由核心门禁阻止正式规则批次继续生成。
+        required.add("stage_product_ledger")
     return required
 
 

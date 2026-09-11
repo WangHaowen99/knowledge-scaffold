@@ -1083,8 +1083,6 @@ class OrchestratorSessionAdapter:
 
     def __init__(self, orchestrator_provider: Callable[[], Any]) -> None:
         self._orchestrator_provider = orchestrator_provider
-        import threading
-
         self._finalize_lock = threading.Lock()
         self._context_lock = threading.Lock()
         self._run_contexts: dict[str, RuntimeInvocationContext] = {}
@@ -1097,7 +1095,10 @@ class OrchestratorSessionAdapter:
 
     def memory_manager(self, context: RuntimeInvocationContext) -> Any:
         orchestrator = self._orchestrator_provider()
-        return orchestrator._get_memory_manager(context.username)
+        resolver = getattr(orchestrator, "get_memory_manager", None)
+        if not callable(resolver):
+            resolver = getattr(orchestrator, "_get_memory_manager", None)
+        return resolver(context.username) if callable(resolver) else None
 
     @contextmanager
     def execution_scope(self, context: RuntimeInvocationContext):
@@ -1552,14 +1553,16 @@ class OrchestratorSessionAdapter:
         from agent.direct_execution import OperationDirectRouter
         from agent.direct_execution.models import RuntimeContext
         from agent.direct_execution.runner import run_direct_script
-        from agent.tools.events import tool_output_artifact_writer_context
+        from agent.tools.events import (
+            tool_output_artifact_writer_context as direct_artifact_writer_context,
+        )
         from config.system_config import load_system_config
 
         dependencies = {
             "OperationDirectRouter": OperationDirectRouter,
             "RuntimeContext": RuntimeContext,
             "run_direct_script": run_direct_script,
-            "tool_output_artifact_writer_context": tool_output_artifact_writer_context,
+            "tool_output_artifact_writer_context": direct_artifact_writer_context,
             "load_system_config": load_system_config,
             "DeterministicExecutionService": DeterministicExecutionService,
             "NotApplicable": NotApplicable,
@@ -1640,7 +1643,12 @@ class OrchestratorSessionAdapter:
 
     def _stores(self, context: RuntimeInvocationContext) -> tuple[Any, Any]:
         orchestrator = self._orchestrator_provider()
-        return orchestrator._get_stores(context.username, context.workspace_id)
+        resolver = getattr(orchestrator, "get_stores", None)
+        if not callable(resolver):
+            resolver = getattr(orchestrator, "_get_stores", None)
+        if not callable(resolver):
+            raise TypeError("orchestrator must provide get_stores")
+        return resolver(context.username, context.workspace_id)
 
     def _prepare_sync_impl(
         self,
@@ -1989,18 +1997,20 @@ class OrchestratorSessionAdapter:
             read_documents = execution_store.get_read_documents_context(
                 context.session_id
             )
+            get_memory_manager = getattr(orchestrator, "get_memory_manager", None)
             memory_manager = (
-                orchestrator._get_memory_manager(context.username)
-                if callable(getattr(orchestrator, "_get_memory_manager", None))
+                get_memory_manager(context.username)
+                if callable(get_memory_manager)
                 else None
             )
+            build_memory_context = getattr(orchestrator, "build_memory_context", None)
             memory_context = (
-                orchestrator._build_memory_context(
+                build_memory_context(
                     memory_manager,
                     query=context.query,
                     allow_injection=True,
                 )
-                if callable(getattr(orchestrator, "_build_memory_context", None))
+                if callable(build_memory_context)
                 else ""
             )
 
@@ -2352,7 +2362,7 @@ class OrchestratorSessionAdapter:
         OperationDirectRouter = dependencies["OperationDirectRouter"]
         RuntimeContext = dependencies["RuntimeContext"]
         run_direct_script = dependencies["run_direct_script"]
-        tool_output_artifact_writer_context = dependencies[
+        direct_artifact_writer_context = dependencies[
             "tool_output_artifact_writer_context"
         ]
         load_system_config = dependencies["load_system_config"]
@@ -2734,7 +2744,7 @@ class OrchestratorSessionAdapter:
                 run_id=context.run_id,
             )
             project_root = str(load_system_config()["storage"]["project_root"])
-            with tool_output_artifact_writer_context(artifact_writer):
+            with direct_artifact_writer_context(artifact_writer):
                 raw_events, direct_result = run_direct_script(
                     decision=decision,
                     runtime_context=runtime_context,

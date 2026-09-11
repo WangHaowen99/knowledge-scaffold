@@ -66,9 +66,9 @@ Front Matter 中的 `scope` 表示本文约束的确定性执行 v2 契约范围
 | 运行时修订证明 | MUST | 应用运行时修订必须绑定行为相关源码、解释器与安装发行包；沙箱修订必须绑定运行契约、架构、依赖和 Runner 代码。执行前后必须验证修订未变化。 |
 | 固定执行环境 | MUST | Consumer Backend 必须注入固定环境、只读知识包、无 Provider 网络权限的能力套接字、超时、输出上限和独立产物目录；Handler 不得获得未声明的环境能力。 |
 | 受限 Python 闭包 | MUST | 构建期必须拒绝随机数、当前时间、动态导入、运行时反射、子进程、进程派生和其他不允许的非确定性 API；确定性代码不得直接导入第三方包，只能导入部署契约明确列出的标准库和公开运行时 SDK 导出。 |
-| Provider 修订绑定 | MUST | `data_access: workspace_provider` 只允许当前支持的只读图数据 Provider，并要求数据修订、访问范围修订、不可变快照声明、隔离声明和完整物理选择器。 |
+| Provider 修订绑定 | MUST | `data_access: workspace_provider` 当前只允许 Neo4j；Consumer Backend 根据连接端点、数据库和运行时 workspace/ontology scope 自动生成修订与摘要，不要求用户维护快照认证字段。 |
 | Provider 凭据保护 | MUST | 凭据必须位于独立认证字段，禁止嵌入 endpoint、query 或 fragment。凭据只由 Consumer Backend 的运行级 Broker 持有，不得进入 Handler 进程的参数、环境、作用域摘要、结果、产物、公开错误或日志。 |
-| Provider 网络收敛 | MUST | Handler 不获得 Provider 网络出口，只能通过运行级 Unix socket 调用允许的只读能力。Broker 必须连接首次校验得到的固定 IP，并以原域名完成 TLS SNI 与证书校验；模型型 Provider、未固定数据修订或可变快照不得用于确定性执行。 |
+| Provider 网络收敛 | MUST | Handler 不获得 Provider 网络出口，只能通过运行级 Unix socket 调用允许的只读能力。Broker 必须连接首次校验得到的固定 IP，并以原域名完成 TLS SNI 与证书校验；模型型 Provider 或未通过自动绑定校验的 Neo4j 数据源不得用于确定性执行。 |
 | 严格 Handler 输出 | MUST | Handler 标准输出必须是单个标准 JSON 对象，不得包含重复 key、NaN 或 Infinity，并且必须满足输出 Schema。 |
 | 有界标准输出 | MUST | Parser stdout 上限为 64 KiB，Handler stdout 上限为 5 MiB，脚本 stderr 上限为 64 KiB。超限必须终止或拒绝执行。 |
 | 有界产物 | MUST | 当前版本最多接受 32 个产物；单文件不超过 10 MiB，总大小不超过 20 MiB，产物树不超过 128 个条目。路径、媒体类型、NFKC 名称唯一性、摘要和敏感值必须全部通过检查。 |
@@ -127,7 +127,7 @@ execution:
 | 输入不足且支持交互 | Schema 缺少必填字段 | Consumer Backend 请求用户补充 | Run 进入等待状态，持久化检查点；恢复时重新验证包、运行时和 Provider 修订，Handler 只执行一次。 |
 | 输入不足且不支持交互 | 当前协议不支持继续交互 | Consumer Backend 校验输入 | 返回稳定缺参失败，不调用 Parser 以外的补全机制，不进入 Agent Loop。 |
 | Parser 解析 | Operation 声明独立 Parser | Consumer Backend 将请求和显式参数传入 Parser | Parser 在独立沙箱中返回结构化参数或待确认问题；显式参数优先，运行时字段不可覆盖。 |
-| 只读快照查询 | Handler 声明 `workspace_provider` 且数据源满足确定性约束 | Consumer Backend 绑定当前 workspace、知识包版本、物理选择器和数据修订，启动运行级 Broker | Handler 只获得不透明能力套接字；Broker 对操作与参数做允许列表校验并连接固定 IP，结果信封只记录无凭据的依赖修订和作用域摘要。 |
+| 只读图查询 | Handler 声明 `workspace_provider` 且 Neo4j 数据源通过自动绑定校验 | Consumer Backend 绑定当前 workspace、知识包版本、数据库和自动生成的修订摘要，启动运行级 Broker | Handler 只获得不透明能力套接字；Broker 对操作与参数做允许列表校验并连接固定 IP，结果信封只记录无凭据的依赖修订和作用域摘要。 |
 | 包执行前被修改 | 锁文件或任一包文件与安装时不一致 | Consumer Backend 验证完整包 | 在 Parser/Handler 启动前返回完整性失败。 |
 | Handler 执行中包或运行时变化 | Handler 已启动，随后包或运行时证明变化 | Consumer Backend 执行后复检 | 当前输出和产物全部失效，返回失败且不形成权威成功。 |
 | 产物超限或含受保护值 | Handler 写入不合规产物 | 产物监控检测到策略违反 | 取消 Handler、释放沙箱、冻结目录并回滚同批产物，返回稳定策略失败。 |
@@ -164,9 +164,9 @@ execution:
 
 #### 5.1.4 Provider 与凭据语义
 
-- 当前确定性数据访问只接受实现中明确支持的图数据 Provider；数据源必须同时声明只读、不可变快照和 workspace/ontology 隔离。
-- `snapshot_selector` 必须等于实际数据库或完整图目标，不能只使用审计标签代替物理选择器。
-- `scope_digest` 绑定 Provider、endpoint、认证类型、非秘密主体标识、选项、数据修订和访问范围修订，但不包含 password 或 token；单纯凭据轮换不应改变业务作用域摘要。
+- 当前确定性数据访问只接受 Neo4j；数据源必须具备可用连接、workspace/ontology 隔离，运行时由后端生成无凭据修订摘要，Broker 负责只读能力边界。
+- 不再从数据源表单读取 `snapshot_selector`、`access_scope_revision` 等手工认证字段；旧配置由启动迁移清理，数据库和 scope 由后端自动绑定。
+- `scope_digest` 绑定 Provider、endpoint、认证类型、非秘密主体标识、选项和运行时 workspace/ontology scope，但不包含 password 或 token；单纯凭据轮换不应改变业务作用域摘要。
 - Provider endpoint 禁止 user-info、敏感 query 参数和 fragment。发现旧格式凭据时必须拒绝并在所有公开输出中脱敏。
 - Consumer Backend 在 Handler 启动前解析并固定 Provider IP。运行级 Broker 保留原域名作为 TLS 身份，只把固定 IP 作为实际连接地址；DNS 失败或两者不一致必须失败关闭。
 - Handler 只获得运行级 Unix socket 路径，不获得连接信封、认证字段或 Provider 网络出口。Broker 只接受已列入契约的只读图操作、参数和结果上限。
@@ -241,7 +241,7 @@ execution:
 - Consumer Orchestrator 必须在 LLM 配置解析前完成只读预检，并坚持“只有 `NotApplicable` 才允许回落”的分支规则。
 - Parser、Handler、Provider、Schema、包锁或运行时证明新增任何能力时，必须同步更新包修订或运行时修订材料。
 - `consumer/deploy` 构建 JiuwenBox 镜像时必须使用版本化运行契约和固定依赖生成证明；Consumer Backend 只能只读消费由 JiuwenBox 启动脚本发布到共享卷的证明。
-- Consumer 的 Provider 配置必须把秘密放在专用认证字段，并提供数据修订、访问范围修订、不可变快照、隔离声明和完整物理选择器。
+- Consumer 的 Provider 配置必须把秘密放在专用认证字段；Neo4j 的确定性绑定由后端根据连接与 scope 自动生成修订摘要，并由 Broker 提供只读能力边界。
 - `consumer/backend` 的 HTTP、A2A、ACP 和 MCP 适配层必须保留 `turn.finished` 的结构化 final output、稳定错误码、等待交互和取消状态；不得只保留展示文本。
 - `consumer/frontend` 必须把确定性信封视为权威结果，展示结构化结果与有效产物引用，不调用模型二次润色。
 - `consumer/sdk` 未来若增加结果类型或便捷方法，必须保留 `structured_result`、`artifacts` 和 `execution`，不得定义另一套确定性业务结果结构。
@@ -263,7 +263,7 @@ execution:
 - `consumer/backend/agent/core/orchestrator.py`：预检、模型解析延迟、结果事件、终态事务、取消和回落。
 - `consumer/backend/persistence/deterministic_terminal.py`：待提交终态和产物日志恢复。
 - `consumer/backend/persistence/execution_store.py` 与 `consumer/backend/agent/runtime/manager.py`：检查点、终态恢复日志、取消优先和不可改写终态。
-- `consumer/backend/agent/tools/business_data/deterministic.py`：只读图 Provider、数据修订、访问范围与物理快照绑定。
+- `consumer/backend/agent/tools/business_data/deterministic.py`：Neo4j 只读 Provider、自动修订摘要、访问范围与运行级 Broker 绑定。
 - `consumer/backend/shared_capabilities/ontology_script_sdk/deterministic_provider.py`：沙箱内无凭据的 Unix socket 能力客户端。
 - `consumer/backend/ontology/directory_replacement.py`：可移植目录发布的持久回滚点和启动恢复。
 - `consumer/backend/agent/tools/business_data/endpoint_security.py`：Provider endpoint 中认证材料、敏感查询参数和 fragment 的拒绝规则。

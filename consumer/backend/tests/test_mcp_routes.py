@@ -34,22 +34,47 @@ def _app():
 
 
 class _AuthBackend:
-    def __init__(self):
+    def __init__(self, *, role="user"):
         self.verify_calls = 0
+        self.role = role
 
     def verify_token(self, token):
         self.verify_calls += 1
-        return AuthUser(username="operator_a", role="user") if token == "valid" else None
+        return AuthUser(username="operator_a", role=self.role) if token == "valid" else None
 
-    @staticmethod
-    def get_user(username):
-        return AuthUser(username=username, role="user")
+    def get_user(self, username):
+        return AuthUser(username=username, role=self.role)
 
 
 def test_internal_chat_path_is_registered():
     paths = {route.path for route in mcp_routes.mcp_router.routes}
     assert MCP_INTERNAL_CHAT_PATH in paths
     assert MCP_INTERNAL_CHAT_STREAM_PATH in paths
+
+
+def test_mcp_concurrency_get_returns_default_and_bounds(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
+    monkeypatch.setattr(mcp_routes, "resolve_workspace_id", lambda _request: "workspace_demo")
+    monkeypatch.setattr(
+        mcp_routes,
+        "get_workspace_runtime_config",
+        lambda _workspace_id: {},
+        raising=False,
+    )
+
+    response = TestClient(app).get(
+        "/agentic/mcp/runtime/concurrency",
+        headers={"Authorization": "Bearer valid"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "stream_user_workspace_concurrency": 5,
+        "default": 5,
+        "min": 1,
+        "max": 32,
+    }
 
 
 def test_runtime_status_uses_workspace_scoped_service_urls(monkeypatch):
@@ -123,6 +148,7 @@ def test_internal_chat_revalidates_scope_and_passes_runtime_store(monkeypatch):
 def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch):
     app = _app()
     app.state.services["AUTH_MANAGER"] = _AuthBackend()
+    captured = {}
     scope = MCPRequestScope(
         username="operator_a",
         workspace_id="workspace_demo",
@@ -145,12 +171,19 @@ def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch)
         ),
     )
     monkeypatch.setattr(
+        mcp_routes,
+        "get_workspace_runtime_config",
+        lambda _workspace_id: {"mcp": {"stream_user_workspace_concurrency": 7}},
+        raising=False,
+    )
+    monkeypatch.setattr(
         routes_module,
         "get_user_stores",
         lambda *_args: (object(), object()),
     )
 
     async def execute(**kwargs):
+        captured.update(kwargs)
         await kwargs["progress_sink"](
             {
                 "schema_version": "1.0",
@@ -203,6 +236,136 @@ def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch)
     assert '"event":"run.started"' in content
     assert "event: result" in content
     assert '"content":"synthetic answer"' in content
+    assert captured["concurrency_limit"] == 7
+
+
+def test_internal_chat_stream_preserves_platform_limit_for_admin(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend(role="admin")
+    captured = {}
+    scope = MCPRequestScope(
+        username="operator_a",
+        workspace_id="workspace_demo",
+        scopes=["mcp:chat"],
+        token="token-placeholder",
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "resolve_mcp_scope_from_token",
+        lambda *_args, **_kwargs: scope,
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "load_mcp_runtime_config",
+        lambda: SimpleNamespace(
+            http_timeout_seconds=30,
+            chat_progress_queue_size=32,
+            chat_progress_heartbeat_seconds=5,
+            chat_progress_max_message_bytes=4096,
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "get_workspace_runtime_config",
+        lambda _workspace_id: {"mcp": {"stream_user_workspace_concurrency": 7}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routes_module,
+        "get_user_stores",
+        lambda *_args: (object(), object()),
+    )
+
+    async def execute(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "result": {"content": "synthetic answer"}}, 200
+
+    monkeypatch.setattr(
+        mcp_routes,
+        "execute_mcp_chat_workflow_async",
+        execute,
+    )
+
+    response = TestClient(app).post(
+        MCP_INTERNAL_CHAT_STREAM_PATH,
+        headers={
+            "Authorization": "Bearer token-placeholder",
+            "X-Workspace-Id": "workspace_demo",
+        },
+        json={"request": "synthetic question", "session_id": "session_admin"},
+    )
+
+    assert response.status_code == 200
+    assert captured["concurrency_limit"] == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+
+
+def test_admin_updates_mcp_stream_concurrency_policy(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend(role="admin")
+    monkeypatch.setattr(mcp_routes, "resolve_workspace_id", lambda _request: "workspace_demo")
+    captured = {}
+
+    def update(workspace_id, patch):
+        captured["workspace_id"] = workspace_id
+        captured["patch"] = patch
+        return {"mcp": {"stream_user_workspace_concurrency": 9}}
+
+    monkeypatch.setattr(
+        mcp_routes,
+        "update_workspace_runtime_config",
+        update,
+        raising=False,
+    )
+
+    response = TestClient(app).patch(
+        "/agentic/mcp/runtime/concurrency",
+        headers={"Authorization": "Bearer valid"},
+        json={"stream_user_workspace_concurrency": 9},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "workspace_id": "workspace_demo",
+        "patch": {"mcp": {"stream_user_workspace_concurrency": 9}},
+    }
+    assert response.json()["stream_user_workspace_concurrency"] == 9
+
+
+def test_admin_update_rejects_mcp_stream_concurrency_outside_supported_range(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend(role="admin")
+    monkeypatch.setattr(mcp_routes, "resolve_workspace_id", lambda _request: "workspace_demo")
+    update_calls = []
+    monkeypatch.setattr(
+        mcp_routes,
+        "update_workspace_runtime_config",
+        lambda *args: update_calls.append(args),
+        raising=False,
+    )
+
+    for invalid in (0, 33, True, 1.5, "5"):
+        response = TestClient(app).patch(
+            "/agentic/mcp/runtime/concurrency",
+            headers={"Authorization": "Bearer valid"},
+            json={"stream_user_workspace_concurrency": invalid},
+        )
+        assert response.status_code == 400
+
+    assert update_calls == []
+
+
+def test_non_admin_cannot_update_mcp_stream_concurrency_policy(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend(role="user")
+    monkeypatch.setattr(mcp_routes, "resolve_workspace_id", lambda _request: "workspace_demo")
+
+    response = TestClient(app).patch(
+        "/agentic/mcp/runtime/concurrency",
+        headers={"Authorization": "Bearer valid"},
+        json={"stream_user_workspace_concurrency": 9},
+    )
+
+    assert response.status_code == 403
 
 
 def test_internal_chat_rejects_workspace_scope_mismatch(monkeypatch):

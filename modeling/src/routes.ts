@@ -51,6 +51,7 @@ import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { parsePackageArchive, renameImportedPackageArchive } from './workflow/package-import.js';
 import { publicKnowledgePackageFiles } from './workflow/package-file-scope.js';
+import { updateManifestPlatformMetadata } from './workflow/package-contract.js';
 import { normalizeFlowchartDocument } from './flowchart/document.js';
 import { renderDiagramFiles } from './flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
@@ -122,8 +123,8 @@ import {
   selectEvaluationDatabaseUrlOverride,
 } from './evaluation/evaluation-database-target.js';
 import {
-  validateEvaluationDatabaseExcelContents,
-  validateEvaluationDatabaseExcelUpload,
+  validateEvaluationDatabaseExcelFilesContents,
+  type EvaluationDatabaseExcelFileInput,
 } from './evaluation/eval-db.js';
 import { shadowWorkspaceId } from './evaluation/shadow-workspace.js';
 import {
@@ -179,7 +180,7 @@ import {
   LlmDefaultSyncError,
   syncUserLlmToPlatformDefault,
 } from './settings/llm-default-sync.js';
-import { testConsumerConnectivity } from './consumer/client.js';
+import { modelingServiceFetch, testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { AnalysisResult, DataDictTable } from './types.js';
 import type { DocumentRecord } from './types.js';
@@ -412,21 +413,17 @@ class RequestConflictError extends Error {
 }
 
 async function readEvaluationDatabaseUpload(req: any): Promise<{
-  filename: string;
-  buffer: Buffer;
+  files: EvaluationDatabaseExcelFileInput[];
   replaceConfirmed: boolean;
   databaseUrl?: string;
 }> {
-  let filename = '';
-  let buffer: Buffer | undefined;
+  const files: EvaluationDatabaseExcelFileInput[] = [];
   let replaceConfirmed = false;
   let databaseUrlMode = '';
   let customDatabaseUrl = '';
   for await (const part of req.parts()) {
     if (part.type === 'file') {
-      if (buffer) throw new RequestInputError('一次只能上传一个 Excel 文件');
-      filename = part.filename;
-      buffer = await part.toBuffer();
+      files.push({ filename: part.filename, buffer: await part.toBuffer() });
     } else if (part.fieldname === 'replace_confirmation') {
       replaceConfirmed = String(part.value ?? '') === 'replace_same_name_tables';
     } else if (part.fieldname === 'database_url_mode') {
@@ -435,7 +432,7 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
       customDatabaseUrl = String(part.value ?? '');
     }
   }
-  if (!buffer) throw new RequestInputError('缺少 Excel 文件');
+  if (!files.length) throw new RequestInputError('缺少 Excel 文件');
   let databaseUrl: string | undefined;
   try {
     databaseUrl = selectEvaluationDatabaseUrlOverride(databaseUrlMode, customDatabaseUrl);
@@ -444,33 +441,30 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
     throw new RequestInputError(error instanceof Error ? error.message : '数据库连接 URL 不正确');
   }
   return {
-    filename,
-    buffer,
+    files,
     replaceConfirmed,
     databaseUrl,
   };
 }
 
 async function readQuickEvaluationDatabaseUpload(req: any): Promise<{
-  filename: string;
-  buffer: Buffer;
+  files: EvaluationDatabaseExcelFileInput[];
 }> {
-  let upload: { filename: string; buffer: Buffer } | undefined;
+  const files: EvaluationDatabaseExcelFileInput[] = [];
   for await (const part of req.parts()) {
     if (part.type !== 'file') continue;
-    if (upload) throw new RequestInputError('一次只能上传一个 Excel 文件');
-    upload = { filename: part.filename, buffer: await part.toBuffer() };
+    files.push({ filename: part.filename, buffer: await part.toBuffer() });
   }
-  if (!upload) throw new RequestInputError('缺少 Excel 文件');
+  if (!files.length) throw new RequestInputError('缺少 Excel 文件');
   try {
-    validateEvaluationDatabaseExcelContents(upload.filename, upload.buffer);
+    validateEvaluationDatabaseExcelFilesContents(files);
   } catch (error) {
     throw new RequestInputError(
       error instanceof Error ? error.message : 'Excel 文件内容不正确',
       'EVALUATION_DATABASE_IMPORT_INVALID',
     );
   }
-  return upload;
+  return { files };
 }
 
 function isAgentWorkflowFactRequest(req: FastifyRequest): boolean {
@@ -1562,6 +1556,17 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       });
     });
 
+/** 长任务的业务说法。防重入拒绝时要说清楚「谁还没结束」，
+     *  只说「该操作」用户无从判断该等多久、还是该去别处看看。 */
+    const OPERATION_LABELS: Record<string, string> = {
+      analyze: '资料分析',
+      'package-chat': '知识包对话',
+      diagnose: '失败根因诊断',
+      'optimize-propose': '优化建议生成',
+      'optimize-apply': '知识包候选生成',
+      evaluate: '正式评测',
+    };
+
     // 长任务防重入（同项目同操作并发触发 → 409），并登记操作类型供前端恢复运行状态
     const inFlight = new InFlightOperations();
     const withLock = async (
@@ -1574,7 +1579,17 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return await inFlight.run(key, operation, fn);
       } catch (error) {
         if (error instanceof OperationAlreadyRunningError) {
-          return reply.code(409).send({ error: '该操作正在进行中，请稍候（切换页面不会中断执行）' });
+          /* 这是一次「拒绝」，不是状态播报。原文案「该操作正在进行中，请稍候」
+             被渲染在错误框里读起来像进度条，用户会盯着它干等——现场就出现过
+             对着它等了六分钟，而请求其实在 33 毫秒就被拒了（见 #41）。
+             改成明确的拒绝语气，并带上是哪个操作、跑了多久，让前端能给出等待预期。 */
+          const current = inFlight.status(key);
+          const running = current ? OPERATION_LABELS[current.operation] || current.operation : '上一个任务';
+          return reply.code(409).send({
+            error: `${running}还没有结束，等它完成后再点这里；切换页面不会中断它`,
+            runningOperation: current?.operation || operation,
+            runningStartedAt: current?.startedAt || '',
+          });
         }
         throw error;
       }
@@ -2497,14 +2512,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
               error: '请先确认 Excel 中的同名表将替换目标数据库中的现有表',
             });
           }
-          try {
-            validateEvaluationDatabaseExcelUpload(upload.filename, upload.buffer);
-          } catch (error) {
-            return reply.code(400).send({
-              code: 'EVALUATION_DATABASE_IMPORT_INVALID',
-              error: error instanceof Error ? error.message : 'Excel 文件不正确',
-            });
-          }
           const result = startProjectEvaluationDatabaseImport({
             projectId: c.p.id,
             ...upload,
@@ -2617,13 +2624,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (blocked) return blocked;
       return withLock(`${c.p.id}:graph-upload`, reply, async () => {
         try {
-          const file = await (req as any).file();
-          if (!file) return reply.code(400).send({ error: '缺少 Excel 文件' });
+          const files: Array<{ filename: string; buffer: Buffer }> = [];
+          for await (const part of (req as any).parts()) {
+            if (part.type !== 'file') continue;
+            files.push({ filename: part.filename, buffer: await part.toBuffer() });
+          }
+          if (!files.length) return reply.code(400).send({ error: '缺少 Excel 文件' });
           const upload = await uploadGraphImportExcel({
             projectId: c.p.id,
             owner: req.user!.username,
-            filename: file.filename,
-            buffer: await file.toBuffer(),
+            files,
           });
           return reply.code(201).send({ upload });
         } catch (error) {
@@ -2980,6 +2990,32 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         if (round.status === 'done' && !failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需诊断' });
         const analyzeNode = latestNodeOf(listNodes(c.p.id), 'analyze', ['done', 'stale']);
         const qualityGaps = ((analyzeNode?.output as any)?.quality?.gaps ?? []) as any[];
+        const projectDataSource = getProjectDataSource(c.p.id);
+        const runtimeDataSearch = projectDataSource?.mode === 'connection'
+          && projectDataSource.ontologyId === version.spec.id
+          && config.modelingServiceToken.length >= 32
+          ? async ({ entity, query }: { entity: string; query: string }): Promise<string> => {
+            const response = await modelingServiceFetch(
+              '/agentic/internal/modeling/business-data/search',
+              {
+                method: 'POST',
+                workspaceId: projectDataSource.workspaceId,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  ontology_id: version.spec.id,
+                  ontology_version: version.spec.version,
+                  entity,
+                  query,
+                }),
+              },
+            );
+            const data = await response.json().catch(() => ({})) as any;
+            if (!response.ok) {
+              throw new Error(String(data.error ?? data.detail ?? `Consumer 返回 ${response.status}`));
+            }
+            return String(data.result ?? '');
+          }
+          : undefined;
         try {
           const report = await diagnoseEvaluationFailures({
             projectId: c.p.id,
@@ -2989,6 +3025,14 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             traces: m3repo.listResultTraces(round.id),
             tables: c.ctx.tables,
             documents: c.ctx.documents,
+            runtimeDataSource: projectDataSource
+              ? {
+                mode: projectDataSource.mode,
+                provider: projectDataSource.provider,
+                available: Boolean(runtimeDataSearch),
+              }
+              : undefined,
+            runtimeDataSearch,
             roundFailure: round.status === 'failed' ? round.log : undefined,
           }, buildTaskLlm({ maxTokensCap: 12_000 }));
           const diagnoses = diagnosisRepo.replaceFailureDiagnoses(
@@ -3237,7 +3281,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         try {
           const ruleFindings = runRuleChecks(pv.spec, c.ctx.tables, packageIntentQuestions(pv.spec));
           const raw = await proposeOptimizations(
-            c.p, pv.spec, optimizableFailures, undefined, ruleFindings, diagnoses,
+            c.p, pv.spec, optimizableFailures, undefined, ruleFindings, eligibleDiagnoses,
           );
           const seen = new Set(m4repo.listSuggestions(c.p.id, round.id)
             .filter((item) => item.status !== 'rejected')
@@ -3611,6 +3655,49 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             });
           }
           const version = promoteReleaseCandidate(current.packageVersion);
+          const releasedSpec = { ...current.spec, version, status: 'released' as const };
+          const [deliverySnapshot, deliveryArchive] = await Promise.all([
+            packageArtifacts.readPackageFiles(c.p.id, current.revision.oid),
+            packageArtifacts.readPackageArchiveFiles(c.p.id, current.revision.oid),
+          ]);
+          const deliveryFiles = publicKnowledgePackageFiles(deliverySnapshot.files);
+          let deliveryFailure = '';
+          try {
+            if (deliveryFiles['manifest.yaml'] !== undefined) {
+              deliveryFiles['manifest.yaml'] = updateManifestPlatformMetadata(
+                deliveryFiles['manifest.yaml'],
+                releasedSpec,
+              );
+            }
+          } catch (error) {
+            deliveryFailure = error instanceof Error ? error.message : '交付包 manifest 无法更新';
+          }
+          const deliveryErrors = deliveryFailure
+            ? []
+            : runFormatChecks(releasedSpec, deliveryFiles).filter((finding) => finding.severity === '错误');
+          if (!deliveryFailure && !deliveryErrors.length) {
+            try {
+              const archiveFiles = publicKnowledgePackageFiles(deliveryArchive.files);
+              if (deliveryFiles['manifest.yaml'] !== undefined) {
+                archiveFiles['manifest.yaml'] = new TextEncoder().encode(deliveryFiles['manifest.yaml']);
+              }
+              zipPackage(archiveFiles);
+            } catch (error) {
+              deliveryFailure = error instanceof Error ? error.message : '交付包无法生成 ZIP';
+            }
+          }
+          if (deliveryFailure || deliveryErrors.length) {
+            const detail = deliveryFailure
+              || `${deliveryErrors.length} 个公开包格式错误`;
+            return reply.code(409).send({
+              error: '发布条件未满足',
+              gates: [
+                ...readiness.gates,
+                { id: 'delivery', label: '交付包', passed: false, detail },
+              ],
+              findings: deliveryErrors,
+            });
+          }
           const action = {
             cause: 'release',
             summary: `发布 ${version}`,

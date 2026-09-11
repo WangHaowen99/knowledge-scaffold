@@ -486,6 +486,7 @@ export async function generatePackage(
           projectId: project.id, runId: authoringRun.id, planHash, phase,
           batchKind: 'object', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: checkpoint.issues,
           attemptCount: checkpoint.attemptCount,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push(checkpointNotice(skipped));
@@ -595,6 +596,7 @@ export async function generatePackage(
         const failedCheckpoint = checkpointStore.saveFailed({
           projectId: project.id, runId: authoringRun.id, planHash, failure, dependencyHash: unit.dependencyHash,
           attemptCount: priorAttemptCount + 3,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
@@ -602,6 +604,7 @@ export async function generatePackage(
           projectId: project.id, runId: authoringRun.id, planHash, phase,
           batchKind: 'object', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: failure.issues,
           attemptCount: priorAttemptCount + 3,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push({ ...failure, decision: 'expert_skipped' });
@@ -618,6 +621,7 @@ export async function generatePackage(
         batchKind: 'object', batchIndex: index + 1, dependencyHash: unit.dependencyHash,
         output: { objects: acceptedObjects },
         attemptCount: priorAttemptCount + acceptedAttempt,
+        unitId: unit.unitId, targetIds: unit.targetIds,
       });
       checkpoints.set(phase, completedCheckpoint);
       trace({
@@ -672,6 +676,7 @@ export async function generatePackage(
           projectId: project.id, runId: authoringRun.id, planHash, phase,
           batchKind: 'knowledge', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: checkpoint.issues,
           attemptCount: checkpoint.attemptCount,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push(checkpointNotice(skipped));
@@ -806,6 +811,7 @@ export async function generatePackage(
         const failedCheckpoint = checkpointStore.saveFailed({
           projectId: project.id, runId: authoringRun.id, planHash, failure, dependencyHash: unit.dependencyHash,
           attemptCount: priorAttemptCount + 3,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
@@ -813,6 +819,7 @@ export async function generatePackage(
           projectId: project.id, runId: authoringRun.id, planHash, phase,
           batchKind: 'knowledge', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: failure.issues,
           attemptCount: priorAttemptCount + 3,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push({ ...failure, decision: 'expert_skipped' });
@@ -828,6 +835,7 @@ export async function generatePackage(
         batchKind: 'knowledge', batchIndex: index + 1, dependencyHash: unit.dependencyHash,
         output: { rules: acceptedRules, metrics: acceptedMetrics, dispositions: acceptedDispositions },
         attemptCount: priorAttemptCount + acceptedAttempt,
+        unitId: unit.unitId, targetIds: unit.targetIds,
       });
       checkpoints.set(phase, completedCheckpoint);
       trace({
@@ -885,6 +893,7 @@ export async function generatePackage(
           projectId: project.id, runId: authoringRun.id, planHash, phase,
           batchKind: 'operation', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: checkpoint.issues,
           attemptCount: checkpoint.attemptCount,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push(checkpointNotice(skipped));
@@ -1005,6 +1014,7 @@ export async function generatePackage(
         const failedCheckpoint = checkpointStore.saveFailed({
           projectId: project.id, runId: authoringRun.id, planHash, failure, dependencyHash: unit.dependencyHash,
           attemptCount: priorAttemptCount + 3,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
@@ -1012,6 +1022,7 @@ export async function generatePackage(
           projectId: project.id, runId: authoringRun.id, planHash, phase,
           batchKind: 'operation', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: failure.issues,
           attemptCount: priorAttemptCount + 3,
+          unitId: unit.unitId, targetIds: unit.targetIds,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push({ ...failure, decision: 'expert_skipped' });
@@ -1028,6 +1039,7 @@ export async function generatePackage(
         batchKind: 'operation', batchIndex: index + 1, dependencyHash: unit.dependencyHash,
         output: { operations: acceptedOperations },
         attemptCount: priorAttemptCount + acceptedAttempt,
+        unitId: unit.unitId, targetIds: unit.targetIds,
       });
       checkpoints.set(phase, completedCheckpoint);
       trace({

@@ -1,10 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { decodeLegacyArchiveName } from './legacyArchiveFilename.js';
 
 import {
   buildPackageFileTree,
-  directoryPathsForFile,
   listDirectoryPaths,
 } from './packageFileTree.js';
+import {
+  directoryLabel,
+  displayDirectoryPathsForFile,
+  presentPackageFileTree,
+} from './packageFileTreePresentation.js';
 
 function FileNode({ node, selectedPath, onSelect, draftPaths, editablePaths, level }) {
   const active = node.path === selectedPath;
@@ -30,7 +35,9 @@ function FileNode({ node, selectedPath, onSelect, draftPaths, editablePaths, lev
 
 function DirectoryNode({ node, expanded, selectedPath, onToggle, onSelect, draftPaths, editablePaths, level }) {
   const open = expanded.has(node.path);
-  const containsActive = selectedPath?.startsWith(`${node.path}/`);
+  const name = decodeLegacyArchiveName(node.name);
+  const label = directoryLabel(name);
+  const containsActive = displayDirectoryPathsForFile(selectedPath).includes(node.path);
   return (
     <div className="rv-tree-directory">
       <button type="button" className={`rv-tree-dir${containsActive ? ' contains-active' : ''}`}
@@ -38,7 +45,10 @@ function DirectoryNode({ node, expanded, selectedPath, onToggle, onSelect, draft
         title={`${open ? '收起' : '展开'} ${node.path}`} onClick={() => onToggle(node.path)}>
         <span className={`rv-chevron${open ? ' open' : ''}`} aria-hidden="true">›</span>
         <span className="rv-folder-mark" aria-hidden="true" />
-        <span className="rv-dir-name">{node.name}</span>
+        <span className="rv-dir-name">
+          <span className="rv-dir-name-en">{name}</span>
+          {label && <> <span className="rv-dir-name-zh">{label}</span></>}
+        </span>
         {!!node.modifiedCount && <span className="rv-dir-modified" title={`${node.modifiedCount} 个文件已修订`} />}
         <span className="rv-dir-count">{node.fileCount}</span>
       </button>
@@ -76,17 +86,17 @@ export default function PackageFileTree({
   onDownload,
 }) {
   const tree = useMemo(
-    () => buildPackageFileTree(files, binaryPaths, overriddenPaths),
+    () => presentPackageFileTree(buildPackageFileTree(files, binaryPaths, overriddenPaths)),
     [files, binaryPaths, overriddenPaths],
   );
   const allDirectories = useMemo(() => listDirectoryPaths(tree), [tree]);
   const directoryKey = allDirectories.join('|');
-  const [expanded, setExpanded] = useState(() => new Set(directoryPathsForFile(selectedPath)));
+  const [expanded, setExpanded] = useState(() => new Set(displayDirectoryPathsForFile(selectedPath)));
   const scrollRef = useRef(null);
 
   useEffect(() => {
     const valid = new Set(allDirectories);
-    const ancestors = directoryPathsForFile(selectedPath);
+    const ancestors = displayDirectoryPathsForFile(selectedPath);
     setExpanded((current) => new Set([
       ...[...current].filter((path) => valid.has(path)),
       ...ancestors,

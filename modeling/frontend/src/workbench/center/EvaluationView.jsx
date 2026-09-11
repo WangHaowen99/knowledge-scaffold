@@ -18,6 +18,10 @@ const TABS = [
   ['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果'],
   ['diagnose', '失败诊断'], ['optimize', '优化建议'],
 ];
+/* 诊断与优化两个 tab 始终可点：它们的前置是「选中一个已结束的轮次」，
+   而这个前置由下方空态引导用户去运行结果页完成。若按 terminalRound 禁用，
+   未打开轮次时两个 tab 都会禁用，反而没有任何入口。 */
+const FOCUS_VIEWS = new Set(['runs', 'diagnose', 'optimize']);
 const STATUS = { running: ['运行中', 'wait'], done: ['已完成', 'ok'], failed: ['运行失败', 'stale'] };
 const KINDS = [
   ['modify_rule', '修改业务规则'], ['add_rule', '新增业务规则'], ['modify_operation', '修改操作'],
@@ -27,9 +31,9 @@ const KINDS = [
 ];
 
 export function evaluationFocusRequest(focus) {
-  if (focus?.kind !== 'evaluation' || focus.view !== 'runs') return null;
+  if (focus?.kind !== 'evaluation' || !FOCUS_VIEWS.has(focus.view)) return null;
   return {
-    view: 'runs',
+    view: focus.view,
     roundId: typeof focus.roundId === 'string' ? focus.roundId.trim() : '',
   };
 }
@@ -68,7 +72,7 @@ export default function EvaluationView({ focus }) {
     const focusKey = `${projectId || ''}:${requestedFocus.view}:${requestedFocus.roundId}`;
     if (handledFocus.current === focusKey) return;
     handledFocus.current = focusKey;
-    setTab('runs');
+    setTab(requestedFocus.view);
     void loadFacts();
     if (requestedFocus.roundId) void openRound(requestedFocus.roundId);
   }, [loadFacts, openRound, projectId, requestedFocus?.roundId, requestedFocus?.view]);
@@ -245,12 +249,12 @@ function DiagnosisPanel({ projectId, round, diagnoses, runningTask, onTaskStarte
       const data = await diagnoseEvaluation(projectId, round?.round?.id);
       onChanged(data.diagnoses || []);
     } catch (cause) {
-      setError(cause.message);
+      setError(describeEvaluationFailure(cause, '诊断任务提交失败'));
     } finally {
       setBusy(''); setLocalTask(null); onTaskSettled?.();
     }
   };
-  const confirm = async () => { setBusy('confirm'); setError(''); try { const data = await confirmEvaluationDiagnoses(projectId, round.round.id, [...selected]); onChanged(data.diagnoses || []); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
+  const confirm = async () => { setBusy('confirm'); setError(''); try { const data = await confirmEvaluationDiagnoses(projectId, round.round.id, [...selected]); onChanged(data.diagnoses || []); } catch (cause) { setError(describeEvaluationFailure(cause, '确认修复范围失败')); } finally { setBusy(''); } };
   if (!round || !['done', 'failed'].includes(round.round.status)) return <div className="wb-eval-empty">请先选择一个已完成的评测轮次 <button className="btn btn-sm" onClick={onGoRuns}>查看结果</button></div>;
   return <section className="wb-eval-section wide"><StageHeader icon={Search} title="失败根因诊断" detail={`Agent 将读取 ${failedCount} 条失败用例、判定理由和执行 trace，不直接修改知识包。`} action={<button className="btn btn-p" disabled={Boolean(busy) || diagnosing || !failedCount} onClick={() => void diagnose()}>{diagnosing ? <LoaderCircle className="wb-spin" size={14} /> : <Bot size={14} />}{diagnosing ? '诊断中…' : diagnoses.length ? '重新诊断' : '开始诊断'}</button>} />
     {diagnosing && <DiagnosisProgress task={diagnosisTask} />}
@@ -300,9 +304,32 @@ function OptimizationPanel({ projectId, round, diagnoses, suggestions, runningOp
   const reload = async () => { const data = await listEvaluationSuggestions(projectId, round.round.id); onChanged(data.suggestions || []); };
   const beginTask = (operation) => { const task = { operation, startedAt: new Date().toISOString() }; setLocalTask(task); onTaskStarted?.(operation, task); return task; };
   const settleTask = () => { setLocalTask(null); onTaskSettled?.(); };
-  const propose = async () => { setBusy('propose'); setError(''); beginTask('propose'); try { const data = await proposeEvaluationOptimizations(projectId, round.round.id); onChanged(mergeOptimizationSuggestions(suggestions, data.suggestions || [])); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); settleTask(); } };
+  /* propose 是同步长任务，整轮 Agent 都跑在这个请求里，所以本地运行态必须
+     在发请求之前就点亮，否则界面几分钟里只有一个变灰的按钮。代价是请求被
+     拒掉时必须显式 settleTask —— 以前少了这一步，409（33 毫秒）之后运行态
+     还挂着，界面显示了六分钟「正在进行中」，错误里那四条可执行的诊断也被
+     整个吞掉（见 #41）。 */
+  const propose = async () => {
+    setBusy('propose'); setError(''); setNotice('');
+    try {
+      beginTask('propose');
+      const data = await proposeEvaluationOptimizations(projectId, round.round.id);
+      onChanged(mergeOptimizationSuggestions(suggestions, data.suggestions || []));
+      await reload();
+    } catch (cause) {
+      setError(describeEvaluationFailure(cause, '优化任务提交失败'));
+    } finally { settleTask(); setBusy(''); }
+  };
   const applyIds = async (ids) => { const data = await applyEvaluationSuggestions(projectId, ids); if (data.status === 'waiting_expert') { const status = await getEvaluationOptimizationStatus(projectId); setReviewTask(status.task); setNotice('Agent 修改未通过确定性校验，请补充约束后让 Agent 重试。'); } else { setReviewTask(null); setNotice('优化候选已生成。请在右侧确认区审核，通过后才会写入正式知识包。'); announceCandidate(data.candidateId); await actions.refreshSnapshot(); } await reload(); };
-  const apply = async () => { setBusy('apply'); setError(''); setNotice(''); beginTask('apply'); try { await applyIds([...selectedPending]); } catch (cause) { setError(cause.message); } finally { setBusy(''); settleTask(); } };
+  const apply = async () => {
+    setBusy('apply'); setError(''); setNotice('');
+    try {
+      beginTask('apply');
+      await applyIds([...selectedPending]);
+    } catch (cause) {
+      setError(describeEvaluationFailure(cause, '优化任务提交失败'));
+    } finally { settleTask(); setBusy(''); }
+  };
   const review = async (action) => { if (!reviewTask?.node?.id) return; setBusy('review'); setError(''); let retrying = false; try { const decision = await reviewEvaluationOptimization(projectId, reviewTask.node.id, action, reviewNote); setReviewNote(''); if (action === 'retry') { retrying = true; beginTask('apply'); await applyIds(decision.suggestionIds); } else { setReviewTask(null); setNotice('已跳过本次未通过校验的建议，正式知识包未发生变化。'); await reload(); } } catch (cause) { setError(cause.message); } finally { setBusy(''); if (retrying) settleTask(); } };
   const reject = async (item) => { if (!window.confirm(`确认忽略“${item.title}”吗？该建议不会进入知识包候选。`)) return; setBusy('reject'); setError(''); try { await rejectEvaluationSuggestions(projectId, [item.id]); setSelected((old) => { const next = new Set(old); next.delete(item.id); return next; }); await reload(); } catch (cause) { setError(cause.message); } finally { setBusy(''); } };
   const activeOperation = runningOperation || localTask?.operation || '';
@@ -329,6 +356,26 @@ function SuggestionForm({ title, initial = {}, diagnoses, onCancel, onSave }) {
   const change = (key, next) => setValue((old) => ({ ...old, [key]: next }));
   return <div className="wb-suggestion-form">{title && <b>{title}</b>}<div className="wb-eval-field-grid"><label><span>建议标题</span><input className="input" value={value.title} onChange={(e) => change('title', e.target.value)} /></label><label><span>修改类型</span><select className="input" value={value.kind} onChange={(e) => change('kind', e.target.value)}>{KINDS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label></div><label><span>修改要求</span><textarea className="input" rows="3" value={value.detail} onChange={(e) => change('detail', e.target.value)} /></label><label><span>目标文件或资源 <small>可留空，由 Agent 定位</small></span><input className="input" value={value.target} onChange={(e) => change('target', e.target.value)} /></label><div className="wb-eval-field-grid"><label><span>泛化要求</span><textarea className="input" rows="2" value={value.generalizationPlan} onChange={(e) => change('generalizationPlan', e.target.value)} /></label><label><span>验证计划</span><textarea className="input" rows="2" value={value.validationPlan} onChange={(e) => change('validationPlan', e.target.value)} /></label></div><fieldset><legend>关联失败根因</legend>{diagnoses.map((item) => <label key={item.id}><input type="checkbox" checked={value.diagnosisIds.includes(item.id)} onChange={() => change('diagnosisIds', value.diagnosisIds.includes(item.id) ? value.diagnosisIds.filter((id) => id !== item.id) : [...value.diagnosisIds, item.id])} /> {item.title}</label>)}</fieldset><div className="wb-suggestion-form-actions"><button className="btn btn-sm" onClick={onCancel}>取消</button><button className="btn btn-p btn-sm" disabled={!value.title.trim() || !value.detail.trim() || !value.diagnosisIds.length} onClick={() => onSave(value)}><Save size={14} /> 保存建议</button></div></div>;
 }
+/** 优化接口的 409 里带着为什么不能优化的完整原因，直接吞掉等于让用户对着
+ *  一个没有出口的界面干等。把 error 和随附的诊断摘要一起摊开（见 #41）。 */
+function describeEvaluationFailure(cause, fallback = '评测任务提交失败') {
+  const message = cause?.message || fallback;
+  // 防重入拒绝会带上正在跑的操作和起始时间：告诉用户还要等谁，而不是让他盯着干等
+  const startedAt = Date.parse(cause?.data?.runningStartedAt || '');
+  if (Number.isFinite(startedAt)) {
+    const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    const elapsed = seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+    return `${message}（已运行 ${elapsed}）`;
+  }
+  const diagnoses = Array.isArray(cause?.data?.diagnoses) ? cause.data.diagnoses : [];
+  if (!diagnoses.length) return message;
+  const blocking = diagnoses.filter((item) => item.blocking);
+  const listed = (blocking.length ? blocking : diagnoses).slice(0, 3)
+    .map((item) => `· ${item.title}${item.suggestedAction ? `\n  处置：${item.suggestedAction}` : ''}`)
+    .join('\n');
+  return `${message}\n${listed}`;
+}
+
 function TimedOperationProgress({ task, title, detail }) {
   const [now, setNow] = useState(Date.now());
   const state = task?.node?.output || task?.output || task || {};

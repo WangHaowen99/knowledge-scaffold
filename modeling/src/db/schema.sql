@@ -224,6 +224,38 @@ CREATE INDEX IF NOT EXISTS idx_documents_source_history
 CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_active_source
   ON documents(project_id, source_key) WHERE lifecycle_status = 'active';
 
+-- 产品/规则大清单的逐项对账台账。它独立于知识包候选文件，先以 advisory
+-- 方式记录确定性校验结果，部署切换 enforce 后才参与批量生成门禁。
+CREATE TABLE IF NOT EXISTS product_ledger_snapshots (
+  project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_revision  TEXT NOT NULL,
+  scope            TEXT NOT NULL,
+  required         INTEGER NOT NULL DEFAULT 0 CHECK (required IN (0, 1)),
+  ledger_json      TEXT NOT NULL,
+  validation_json  TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, source_revision)
+);
+CREATE INDEX IF NOT EXISTS idx_product_ledger_project
+  ON product_ledger_snapshots(project_id, updated_at DESC);
+
+-- v2 台账按范围和真实依赖指纹保存历史；ruleRefs 可被多个条目共享。
+CREATE TABLE IF NOT EXISTS product_ledger_v2_snapshots (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  scope               TEXT NOT NULL,
+  dependency_fingerprint TEXT NOT NULL,
+  source_revision     TEXT NOT NULL,
+  required            INTEGER NOT NULL DEFAULT 0 CHECK (required IN (0, 1)),
+  ledger_json         TEXT NOT NULL,
+  validation_json     TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  PRIMARY KEY (project_id, scope, dependency_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_product_ledger_v2_project
+  ON product_ledger_v2_snapshots(project_id, scope, updated_at DESC);
+
 -- 资料用途建议与用户确认分离；表格额外保存逐 Sheet 处置。审查绑定不可变资料修订。
 CREATE TABLE IF NOT EXISTS material_purpose_reviews (
   document_id             TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
@@ -811,6 +843,36 @@ CREATE TABLE IF NOT EXISTS agent_structured_mutation_receipts (
   response_json TEXT NOT NULL,
   created_at    TEXT NOT NULL,
   PRIMARY KEY (project_id, mutation_id)
+);
+
+-- 结构化建模目标草稿：按项目/run/draft 持久化分段，支持服务重启后继续提交。
+CREATE TABLE IF NOT EXISTS agent_goal_drafts (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id        TEXT NOT NULL,
+  draft_id      TEXT NOT NULL,
+  group_id      TEXT NOT NULL,
+  base_revision TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft', 'finalized', 'abandoned')),
+  sections_json TEXT NOT NULL DEFAULT '{}',
+  section_revisions_json TEXT NOT NULL DEFAULT '{}',
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (project_id, run_id, draft_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_goal_drafts_project
+  ON agent_goal_drafts(project_id, updated_at DESC);
+
+-- 兼容旧版本的可选关系推荐进度结构；当前版本不以它作为建模门禁，也不要求写入。
+CREATE TABLE IF NOT EXISTS agent_schema_relation_suggestions (
+  project_id              TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  semantic_fingerprint    TEXT NOT NULL,
+  status                  TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending', 'completed')),
+  schema_input_hash       TEXT NOT NULL DEFAULT '',
+  total_candidate_count   INTEGER NOT NULL DEFAULT 0 CHECK (total_candidate_count >= 0),
+  returned_candidate_count INTEGER NOT NULL DEFAULT 0 CHECK (returned_candidate_count >= 0),
+  completed_at            TEXT,
+  updated_at              TEXT NOT NULL
 );
 
 -- artifact candidate 的 groups_json 保持通用格式；工作台所需的分诊层级与影响提示
@@ -1447,6 +1509,22 @@ CREATE TABLE IF NOT EXISTS material_analysis_document_summaries (
 );
 CREATE INDEX IF NOT EXISTS idx_material_analysis_document_summaries_status
   ON material_analysis_document_summaries(run_id, status, document_key);
+
+-- 表结构摘要缓存。只保存字段统计和有限样例，不保存业务数据行；资料版本、用途版本或摘要算法变化时自然失效。
+CREATE TABLE IF NOT EXISTS schema_profile_cache (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  document_id         TEXT NOT NULL,
+  content_hash        TEXT NOT NULL,
+  sheet_name          TEXT NOT NULL,
+  purpose_revision    TEXT NOT NULL,
+  analysis_version    TEXT NOT NULL,
+  profile_json        TEXT NOT NULL,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  PRIMARY KEY (project_id, document_id, content_hash, sheet_name, purpose_revision, analysis_version)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_profile_cache_current
+  ON schema_profile_cache(project_id, document_id, sheet_name, updated_at DESC);
 
 -- 长任务登记表：同项目同操作只能跑一份。原先是进程内 Map，起两个实例后去重会失效，
 -- 界面也读不到跑在另一个实例上的任务。带 TTL 并在运行期间续期；启动时统一清空，

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,13 +17,14 @@ const [
   { createProject, getProject },
   { getPackageArtifactStore },
   { getDb },
-  { getDocument, insertDocumentRevision },
+  { getDocument, insertDocument, insertDocumentRevision },
   { MaterialPurposeReviewStore, findMaterialPurposeReviewProblems },
   { requireAuth },
   { storePackageMergeSource },
   { renderPackage },
   { parseExcel },
   { config },
+  { normalizePlanTargetKey },
 ] = await Promise.all([
   import('../src/agent/core-routes.js'),
   import('../src/projects/repo.js'),
@@ -36,6 +37,7 @@ const [
   import('../src/workflow/package-render.js'),
   import('../src/documents/parser.js'),
   import('../src/config.js'),
+  import('../src/agent/change-control.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -233,7 +235,7 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
 
   assert.equal(claimed.statusCode, 200, claimed.body);
   const contract = claimed.json().packageContract;
-  assert.equal(contract.validatorVersion, 'package-contract-v6');
+  assert.equal(contract.validatorVersion, 'package-contract-v7');
   assert.equal(contract.validators.goalEvidence, 'goal-evidence-v2');
   assert.equal(contract.validators.diagramEvidence, 'diagram-evidence-v2');
   assert.equal(contract.confirmation.repairRoundBoundary, 'model_call');
@@ -445,6 +447,75 @@ test('阶段轨进度端点一次给出全部门禁，且没有工作区时如�
   assert.equal(single.statusCode, 200, single.body);
   assert.equal(single.json().pass, byId.get('process_confirmed').pass);
   assert.deepEqual(single.json().blockers, byId.get('process_confirmed').blockers);
+});
+
+test('产品清单台账在 advisory 模式下可持久化并确定性复核', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品清单台账观测', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+
+  const staged = await tool(app, project.id, 'stage_product_ledger', {
+    schemaVersion: 'product-ledger-v1',
+    sourceRevision: claimed.json().baseRevision,
+    scope: 'product_catalog',
+    rawCount: 3,
+    canonicalCount: 2,
+    mergedGroupCount: 1,
+    entries: [
+      {
+        canonicalItemId: 'product-a', ruleId: 'rule-a', sourceRecordIds: ['source-a'],
+        sourceLocator: 'manual#item-a', evidenceStatus: 'complete', processingStatus: 'ready',
+      },
+      {
+        canonicalItemId: 'product-b', ruleId: 'rule-b', sourceRecordIds: ['source-b', 'source-c'],
+        sourceLocator: 'manual#item-b', mergeGroupId: 'merge-1', evidenceStatus: 'complete',
+        processingStatus: 'ready',
+      },
+    ],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().validation.pass, true);
+  assert.equal(staged.json().counts.raw, 3);
+  assert.equal(staged.json().counts.canonical, 2);
+
+  const read = await tool(app, project.id, 'get_product_ledger', {}, runId);
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal(read.json().available, true);
+  assert.equal(read.json().validation.pass, true);
+
+  const gate = await tool(app, project.id, 'gate_status', {
+    gate: 'product_ledger_verified',
+  }, runId);
+  assert.equal(gate.statusCode, 200, gate.body);
+  assert.equal(gate.json().pass, true);
+});
+
+test('enforce 模式下产品台账未通过会阻断规则 Change Set', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品台账规则门禁', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const previousMode = config.productLedger.mode;
+  t.after(() => { config.productLedger.mode = previousMode; });
+  config.productLedger.mode = 'advisory';
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const staged = await tool(app, project.id, 'stage_product_ledger', {
+    scope: 'product_catalog', rawCount: 2, canonicalCount: 1, mergedGroupCount: 1, entries: [],
+  }, runId);
+  assert.equal(staged.statusCode, 200, staged.body);
+  assert.equal(staged.json().validation.pass, false);
+
+  config.productLedger.mode = 'enforce';
+  const blocked = await tool(app, project.id, 'stage_change_set', {
+    plan_id: 'plan-product-ledger', expected_revision: 'revision-synthetic',
+    mutation_id: 'product-ledger-block-1',
+    actions: [{ task_id: 'task-rule', tool: 'create_rule', arguments: {} }],
+  }, runId);
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().code, 'PRODUCT_LEDGER_GATE_BLOCKED');
+  assert.equal(blocked.json().gate, 'product_ledger_verified');
 });
 
 test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
@@ -919,6 +990,7 @@ test('删除尚未确认的新增文件会撤销候选写入和变更组', async
   }, runId);
   assert.equal(preflight.statusCode, 409, preflight.body);
   assert.equal(preflight.json().code, 'NO_CANDIDATE');
+  assert.equal(preflight.json().retryable, false);
 });
 
 test('物理对象 mapping 是编译产物，Agent 不能按路径删除', async (t) => {
@@ -2545,7 +2617,9 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
   }, runId);
   assert.equal(planResponse.statusCode, 200, planResponse.body);
   const plan = planResponse.json().plan;
-  assert.deepEqual(plan.tasks[0].allowed_tools, ['sync_schema_objects']);
+  assert.deepEqual(plan.tasks[0].allowed_tools, [
+    'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
+  ]);
   const approved = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
@@ -2568,7 +2642,8 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
     summary: '按已确认用途同步 records 对象',
     change_groups: [{ id: 'schema_objects', tier: 'structural', title: 'Schema 对象同步' }],
   }, runId);
-  assert.equal(ready.statusCode, 200, ready.body);
+  assert.equal(ready.statusCode, 422, ready.body);
+  assert.equal(ready.json().code, 'CANDIDATE_SCHEMA_SEMANTICS_INVALID');
 });
 
 test('对象领域工具原子生成跨 Sheet 主表与扩展表映射', async (t) => {
@@ -2688,6 +2763,58 @@ test('同名 Sheet 必须用资料 ID 稳定寻址', async (t) => {
   }, `run-${project.id}`);
   assert.equal(exact.statusCode, 200, exact.body);
   assert.equal(exact.json().table.fields[0].name, '一号字段');
+});
+
+test('Schema 结构摘要一次返回字段统计且不搬运业务行', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Schema 结构摘要' });
+  const app = appFor(t);
+  insertDocumentRevision({
+    projectId: project.id, filename: '合成结构.xlsx', kind: 'excel', parseStatus: 'parsed',
+    tables: [{ name: '设备', rowCount: 10_000, fields: [
+      {
+        name: '设备编码', sourceColumn: 'A', inferredType: 'string', sampleValues: ['P-1', 'P-2', 'P-3', 'P-4'],
+        distinctRatio: 1, nonEmptyRatio: 0.99, note: '唯一设备编号', primaryKey: true,
+      },
+      { name: '温度', sourceColumn: 'B', inferredType: 'number', sampleValues: ['350', '351'], distinctRatio: 0.2, nonEmptyRatio: 0.8 },
+    ], rows: Array.from({ length: 10_000 }, (_, index) => [`P-${index + 1}`, String(350 + index % 2)]) }] as any,
+  });
+
+  const response = await tool(app, project.id, 'get_schema_overview', {}, `run-schema-overview-${project.id}`);
+  assert.equal(response.statusCode, 200, response.body);
+  const payload = response.json();
+  assert.equal(payload.tableCount, 1);
+  assert.equal(payload.tables[0].rowCount, 10_000);
+  assert.equal(payload.tables[0].fields[0].nonEmptyRatio, 0.99);
+  assert.equal(payload.tables[0].fields[0].primaryKey, true);
+  assert.equal(payload.tables[0].fields[0].sampleValues.length, 3);
+  assert.equal('rows' in payload.tables[0], false);
+  assert.ok(JSON.stringify(payload).length < 2_000);
+});
+
+test('Schema 结构摘要命中持久化缓存并在资料版本变化后失效', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Schema 缓存验收' });
+  const app = appFor(t);
+  const first = insertDocumentRevision({
+    projectId: project.id, filename: '缓存表.xlsx', kind: 'excel', parseStatus: 'parsed',
+    tables: [{ name: '设备', rowCount: 2, fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1, nonEmptyRatio: 1 }], rows: [['1'], ['2']] }],
+  }).document;
+  const runId = `run-cache-${project.id}`;
+  const cold = await tool(app, project.id, 'get_schema_overview', {}, runId);
+  assert.equal(cold.statusCode, 200, cold.body);
+  assert.equal(cold.json().cacheHits, 0);
+  const hot = await tool(app, project.id, 'get_schema_overview', {}, runId);
+  assert.equal(hot.statusCode, 200, hot.body);
+  assert.equal(hot.json().cacheHits, 1);
+  assert.equal(hot.json().tables[0].cacheHit, true);
+  const second = insertDocumentRevision({
+    projectId: project.id, filename: '缓存表.xlsx', kind: 'excel', parseStatus: 'parsed',
+    tables: [{ name: '设备', rowCount: 3, fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1, nonEmptyRatio: 1 }], rows: [['1'], ['2'], ['3']] }],
+  }).document;
+  assert.notEqual(second.contentHash, first.contentHash);
+  const changed = await tool(app, project.id, 'get_schema_overview', {}, runId);
+  assert.equal(changed.statusCode, 200, changed.body);
+  assert.equal(changed.json().cacheHits, 0);
+  assert.equal(changed.json().tables[0].rowCount, 3);
 });
 
 test('表格全文精读从原文件覆盖超过普通解析上限的全部行', async (t) => {
@@ -2978,7 +3105,7 @@ test('平台保留 manifest 管理字段，底层预检仍把详细错误返回�
   assert.equal(receipt.candidateRevision, accepted.json().candidate_revision);
   assert.equal(receipt.baseRevision, current.revision.oid);
   assert.match(receipt.candidateHash, /^sha256:[a-f0-9]{64}$/u);
-  assert.equal(receipt.validatorVersion, 'package-contract-v6');
+  assert.equal(receipt.validatorVersion, 'package-contract-v7');
 });
 
 test('最终确认会校验用户实际选中的变更组快照', async (t) => {
@@ -3657,6 +3784,8 @@ test('Agent 内部数据源状态只返回脱敏摘要', async (t) => {
     configured: true,
     mode: 'connection',
     provider: 'neo4j',
+    providerMeaning: 'project_evaluation_data_source_type',
+    mappingAliasNote: 'mappings/object-data-mappings.json 中的 default_provider_alias/provider_alias 是知识包内部逻辑数据源别名，不是项目评测数据源 provider',
     workspaceLinked: true,
     ontologyLinked: true,
     neo4j: {
@@ -4041,4 +4170,232 @@ test('正式发布绑定当前全量评测并要求项目负责人确认覆盖�
   const restoredGate = await tool(app, project.id, 'gate_status', { gate: 'releasable' }, restoredRunId);
   assert.equal(restoredGate.statusCode, 200, restoredGate.body);
   assert.equal(restoredGate.json().pass, true);
+});
+
+test('Schema 语义摘要路由返回分页问题而不暴露样例值', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成 Schema 语义路由', runtime: 'agent' });
+  const app = appFor(t);
+  insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_schema.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    purpose: 'schema',
+    tables: [{
+      name: 'synthetic_customer',
+      rowCount: 1,
+      fields: [{
+        name: 'customer_id', inferredType: 'string', sampleValues: ['record_0001'], distinctRatio: 1,
+      }],
+    }],
+  });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: `schema-semantic-route-${project.id}`,
+    name: '合成 Schema 语义路由',
+    description: '合成测试包',
+  });
+  const summary = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/schema-semantics/summary`,
+  });
+  assert.equal(summary.statusCode, 200, summary.body);
+  assert.equal(summary.json().summary.available, true);
+  const items = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/schema-semantics/items?level=error&offset=0&limit=10`,
+  });
+  assert.equal(items.statusCode, 200, items.body);
+  assert.equal(items.json().offset, 0);
+  assert.ok(Array.isArray(items.json().items));
+  assert.ok(items.json().items.every((item: any) => !('sampleValues' in item)));
+});
+
+test('资料检索合并重复位置并限制单次回执大小', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成资料检索边界', runtime: 'agent' });
+  const app = appFor(t);
+  insertDocument({
+    projectId: project.id,
+    filename: 'synthetic_material.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: Array.from({ length: 20 }, (_, index) => `客户营销规则${index}：客户需要按区域和行业筛选。`).join('\n'),
+  });
+  const runId = `run-search-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const response = await tool(app, project.id, 'search_documents', { query: '客户 营销' }, runId);
+  assert.equal(response.statusCode, 200, response.body);
+  const payload = response.json();
+  assert.ok(payload.hits.length <= 8);
+  assert.equal(new Set(payload.hits.map((hit: any) => `${hit.filename}:${hit.offset}`)).size, payload.hits.length);
+  assert.ok(payload.hits.every((hit: any) => Array.isArray(hit.terms) && hit.terms.length >= 1));
+  assert.equal(payload.truncated, true);
+});
+
+test('建模目标按结构化分段提交并由核心最终组装', async (t) => {
+  const project = createProject({ owner: 'alice', name: '合成结构化目标草稿', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-goal-draft-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const currentFile = await tool(app, project.id, 'read_file', { path: 'manifest.yaml' }, runId);
+  assert.equal(currentFile.statusCode, 200, currentFile.body);
+  const baseRevision = String(currentFile.json().working_revision ?? currentFile.json().revision ?? '');
+  assert.ok(baseRevision);
+  const begun = await tool(app, project.id, 'begin_goal_draft', {
+    draft_id: 'goal-demo', change_group: 'goal_draft', base_revision: baseRevision, request_id: 'goal-begin-1',
+  }, runId);
+  assert.equal(begun.statusCode, 200, begun.body);
+  for (const [section, summary] of [
+    ['objective', '识别营销机会'],
+    ['scope', '覆盖企业客户营销场景'],
+    ['constraints', '必须保留人工确认'],
+    ['outputs', '输出可追溯的营销建议'],
+  ] as const) {
+    const response = await tool(app, project.id, 'put_goal_section', {
+      draft_id: 'goal-demo', section,
+      base_revision: baseRevision, request_id: `goal-section-${section}`,
+      data: section === 'objective'
+        ? { problem: summary, target_users: '合成用户', success_criteria: '可追溯', evidence: ['user-decision:synthetic'] }
+        : section === 'scope'
+          ? { included: [summary], excluded: [], evidence: ['user-decision:synthetic'] }
+          : { items: [summary], evidence: ['user-decision:synthetic'] },
+    }, runId);
+    assert.equal(response.statusCode, 200, response.body);
+  }
+  const finalized = await tool(app, project.id, 'finalize_goal_draft', { draft_id: 'goal-demo', base_revision: baseRevision, request_id: 'goal-finalize-1' }, runId);
+  assert.equal(finalized.statusCode, 200, finalized.body);
+  const goal = await tool(app, project.id, 'read_file', { path: '.modeling/goal.md' }, runId);
+  assert.equal(goal.statusCode, 200, goal.body);
+  assert.match(goal.json().content, /## 目标/u);
+  assert.match(goal.json().content, /## 范围/u);
+  assert.match(goal.json().content, /识别营销机会/u);
+});
+
+test('create_* 动作省略 key 时按计划补齐，写错 key 则报错并给出计划登记的目标', async (t) => {
+  const project = createProject({ owner: 'alice', name: '计划目标标识对齐', runtime: 'agent' });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: 'plan-target-package',
+    name: '计划目标标识对齐',
+    description: '验证 create_* 动作与计划目标标识的对齐方式。',
+  });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'rule' }, runId);
+  assert.equal(listed.statusCode, 200, listed.body);
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '登记一条融资规则',
+    mode: 'generation',
+    expected_revision: listed.json().working_revision,
+    tasks: [{
+      client_key: 'procurement-rule',
+      title: '政府采购订单融资规则',
+      resource_kind: 'rule',
+      target_key: 'government-procurement-order-financing',
+      allowed_tools: ['create_rule'],
+      acceptance: '写入融资比例与金额阈值',
+    }],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  const approved = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
+    payload: { approved: true },
+  });
+  assert.equal(approved.statusCode, 200, approved.body);
+
+  // 模型写了另一个 key：仍然拒绝，但必须把计划登记的目标交回去，让模型能自行改正。
+  const mismatched = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'plan-target-mismatch',
+    actions: [{
+      task_id: plan.tasks[0].id,
+      tool: 'create_rule',
+      arguments: { key: 'gov-procurement-financing' },
+    }],
+  }, runId);
+  assert.equal(mismatched.statusCode, 409, mismatched.body);
+  assert.equal(mismatched.json().code, 'CHANGE_SET_OUT_OF_SCOPE');
+  assert.equal(mismatched.json().expected_target, 'government-procurement-order-financing');
+  assert.ok(
+    mismatched.json().next.some((step: string) => step.includes('government-procurement-order-financing')),
+    `恢复提示没有给出计划登记的目标：${mismatched.body}`,
+  );
+
+  // 省略 key：按计划补齐，不再要求模型跨轮次复述自己写下的字符串。
+  const omitted = await tool(app, project.id, 'stage_change_set', {
+    plan_id: plan.id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'plan-target-filled',
+    actions: [{
+      task_id: plan.tasks[0].id,
+      tool: 'create_rule',
+      arguments: {},
+    }],
+  }, runId);
+  assert.notEqual(omitted.json().code, 'CHANGE_SET_OUT_OF_SCOPE', omitted.body);
+});
+
+test('计划 target_key 剥掉资源类型前缀，避免生成带冒号的文件名', () => {
+  // 模型常把 resource_id 的 `<kind>:<key>` 写法搬进计划的 target_key；
+  // 不归一化就会落成 rules/rule:xxx.md（Windows 上非法）。
+  assert.equal(normalizePlanTargetKey('rule', 'rule:marketing-decision-ipo'), 'marketing-decision-ipo');
+  assert.equal(normalizePlanTargetKey('metric', 'metric:customer-relationship-rating'), 'customer-relationship-rating');
+  assert.equal(normalizePlanTargetKey('operation', 'OPERATION:customer-intelligence-query'), 'customer-intelligence-query');
+  // 裸 key 原样保留
+  assert.equal(normalizePlanTargetKey('rule', 'marketing-decision-ipo'), 'marketing-decision-ipo');
+  // 不同类型的前缀不误剥
+  assert.equal(normalizePlanTargetKey('rule', 'metric:customer-relationship-rating'), 'metric:customer-relationship-rating');
+  // 只有前缀时保留原值，不产生空 key
+  assert.equal(normalizePlanTargetKey('rule', 'rule:'), 'rule:');
+});
+
+test('长任务进度文案不把「单步耗时长」说成「没有进度」', () => {
+  // 一个分块或一次汇总本身就可能跑好几分钟，期间 run.updated_at 不动是正常的。
+  // 判据必须区分「还有在途工作」和「真的停了」，否则进度条在走、文案却报停滞。
+  const source = readFileSync('src/agent/core-service.ts', 'utf8');
+  assert.match(source, /const working = chunks\.some\(\(chunk\) => chunk\.status === 'running'\)/);
+  assert.match(source, /run\.stage === 'document_reduce'/);
+  assert.match(source, /idleMs > \(working \? 300_000 : 120_000\)/);
+  assert.match(source, /working \? '这一步耗时较长，仍在处理' : '较久没有新进度'/);
+  assert.doesNotMatch(source, /较久未收到新进度/);
+});
+
+test('目标分段校验失败时说明其它分段不受影响，且点破锚点不能带空格', () => {
+  // 分段各自独立存储，一段失败不该让助手把 5 段全重交一遍。
+  const source = readFileSync('src/agent/core-service.ts', 'utf8');
+  assert.match(source, /function goalSectionRetryHint\(sectionsJson: unknown, section: string\): string/);
+  assert.match(source, /已保存的分段（\$\{saved\.join\('、'\)\}）不受影响，只需重新提交 \$\{section\} 这一段/);
+  assert.match(source, /只重新提交 \$\{section\} 这一段即可，其它分段不受影响/);
+  // 六个分段级校验错误都要带上这条提示
+  for (const code of [
+    'GOAL_SECTION_UNKNOWN_FIELD', 'GOAL_SECTION_TOO_LONG', 'GOAL_SECTION_TOO_LARGE',
+    'GOAL_SECTION_EMPTY', 'GOAL_SECTION_EVIDENCE_REQUIRED', 'GOAL_SECTION_EVIDENCE_INVALID',
+  ]) {
+    const index = source.indexOf(code);
+    assert.ok(index > 0, `缺少 ${code}`);
+    assert.match(source.slice(index, index + 900), /goalSectionRetryHint\(row\.sections_json, section\)/, code);
+  }
+  // 证据格式错误要点破真正的坑：锚点里不能有空格
+  assert.match(source, /锚点内不能出现空格，也不要在锚点后追加中文说明/);
+});
+
+test('表头第二行的中文名直接种进 cnName，不再全量触发语义阻断', () => {
+  // 国网汇总表 9 个 Sheet、361 个字段的中文名都写在第二行；解析器已识别为
+  // 注释行，但 cnName 回退到技术名，导致 361 项语义阻断，再让模型把文件里
+  // 已有的名字逐个重新生成一遍。
+  const source = readFileSync('src/workflow/schema-manifest.ts', 'utf8');
+  assert.match(source, /function fieldNameFromNote\(note: unknown\): string/);
+  assert.match(source, /cnName: semantic\?\.businessName \|\| noteName \|\| field\.name/);
+  // 采纳为名称后不再重复写进 note
+  assert.match(source, /const usedNoteAsName = !semantic\?\.businessName && Boolean\(noteName\)/);
+  // 只认「像名称」的注释：短、无句读、含中文
+  assert.match(source, /value\.length > 20/);
+  assert.match(source, /\[。；;，,：:！!？\?\\n\]/u);
+  assert.match(source, /\\u4e00-\\u9fff/);
 });

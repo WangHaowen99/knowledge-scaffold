@@ -36,6 +36,7 @@ import {
   type StudioElement,
   type StudioKind,
 } from './studio-read-service.js';
+import { COMPILED_RESOURCES_GROUP } from './candidate-change-scope.js';
 
 const WORKSPACE_LEASE_MS = 30 * 60 * 1000;
 const MAX_BATCH_ACTIONS = 100;
@@ -46,7 +47,6 @@ const MUTATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const KINDS = new Set<StudioKind>(['object', 'operation', 'rule', 'metric']);
 const STUDIO_CHANGE_REASON = '由知识包 Studio 形成的待确认修改';
 const INTERNAL_SPEC_CHANGE_PATH = '.modeling/__compiled-package-spec.json';
-const COMPILED_RESOURCES_GROUP = 'compiled_resources';
 const STUDIO_SPEC_SOURCE_PATH = /^(?:manifest\.yaml|mappings\/object-data-mappings\.json|objects\/.*\.md|operations\/.*\.md|rules\/.*\.md|metrics\/.*\.md|scripts\/)/u;
 
 interface WorkspaceRow {

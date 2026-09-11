@@ -38,6 +38,13 @@ export const config = {
   port: Number(env('PORT', '5100')),
   dataDir: resolve(env('DATA_DIR', './data')),
   acceptanceMode: booleanEnv('MODELING_ACCEPTANCE_MODE', false),
+  productLedger: {
+    // 分阶段上线：advisory 只记录并展示校验结果；enforce 仅在明确要求
+    // 产品大清单且已提交台账后阻断后续批量生成；off 保留旧行为。
+    mode: ((value: string): 'off' | 'advisory' | 'enforce' => (
+      value === 'off' || value === 'enforce' ? value : 'advisory'
+    ))(env('MODELING_PRODUCT_LEDGER_MODE', 'advisory').trim().toLowerCase()),
+  },
 
   llm: {
     baseUrl: env('MODELING_LLM_BASE_URL'),

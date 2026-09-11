@@ -19,6 +19,8 @@ export interface GenerationBatchCheckpoint {
   phase: string;
   batchKind: GenerationBatchKind;
   batchIndex: number;
+  unitId: string;
+  targetIds: string[];
   dependencyHash: string;
   status: GenerationBatchCheckpointStatus;
   output: GenerationBatchOutput;
@@ -35,6 +37,8 @@ interface CheckpointRow {
   phase: string;
   batch_kind: GenerationBatchKind;
   batch_index: number;
+  unit_id?: string;
+  target_ids_json?: string;
   dependency_hash: string;
   status: GenerationBatchCheckpointStatus;
   output_json: string;
@@ -85,6 +89,8 @@ function fromRow(row: CheckpointRow): GenerationBatchCheckpoint {
     phase: row.phase,
     batchKind: row.batch_kind,
     batchIndex: row.batch_index,
+    unitId: row.unit_id || `${row.batch_kind}-batch-${row.batch_index}`,
+    targetIds: (() => { try { return JSON.parse(row.target_ids_json || '[]') as string[]; } catch { return []; } })(),
     dependencyHash: row.dependency_hash ?? '',
     status: row.status,
     output,
@@ -148,6 +154,8 @@ export class GenerationCheckpointStore {
         output: decodeObject(row.output_json),
         issues: decodeIssues(row.issues_json),
         attemptCount: Number(row.attempt_count),
+        unitId: row.unit_id,
+        targetIds: (() => { try { return JSON.parse(row.target_ids_json || '[]') as string[]; } catch { return []; } })(),
       });
     }
   }
@@ -178,11 +186,13 @@ export class GenerationCheckpointStore {
     phase: string;
     batchKind: GenerationBatchKind;
     batchIndex: number;
+    unitId?: string;
+    targetIds?: string[];
     dependencyHash?: string;
     output: GenerationBatchOutput;
     attemptCount: number;
   }): GenerationBatchCheckpoint {
-    return this.upsert({ ...input, status: 'completed', issues: [] });
+    return this.upsert({ ...input, status: 'completed', issues: [], unitId: input.unitId, targetIds: input.targetIds });
   }
 
   saveFailed(input: {
@@ -191,6 +201,8 @@ export class GenerationCheckpointStore {
     planHash: string;
     failure: GenerationGateFailure;
     dependencyHash?: string;
+    unitId?: string;
+    targetIds?: string[];
     attemptCount: number;
   }): GenerationBatchCheckpoint {
     return this.upsert({
@@ -205,6 +217,8 @@ export class GenerationCheckpointStore {
       output: {},
       issues: input.failure.issues,
       attemptCount: input.attemptCount,
+      unitId: input.unitId,
+      targetIds: input.targetIds,
     });
   }
 
@@ -216,6 +230,8 @@ export class GenerationCheckpointStore {
     batchKind: GenerationBatchKind;
     batchIndex: number;
     dependencyHash?: string;
+    unitId?: string;
+    targetIds?: string[];
     issues?: string[];
     attemptCount?: number;
   }): GenerationBatchCheckpoint {
@@ -225,6 +241,8 @@ export class GenerationCheckpointStore {
       output: {},
       issues: input.issues ?? [],
       attemptCount: input.attemptCount ?? 0,
+      unitId: input.unitId,
+      targetIds: input.targetIds,
     });
   }
 
@@ -240,6 +258,8 @@ export class GenerationCheckpointStore {
     output: GenerationBatchOutput;
     issues: string[];
     attemptCount: number;
+    unitId?: string;
+    targetIds?: string[];
   }): GenerationBatchCheckpoint {
     const dependencyHash = input.dependencyHash ?? '';
     const existing = this.db.prepare(`SELECT plan_hash, dependency_hash FROM generation_batch_checkpoints
@@ -251,8 +271,8 @@ export class GenerationCheckpointStore {
     const at = nowIso();
     this.db.prepare(`INSERT INTO generation_batch_checkpoints (
         project_id, run_id, plan_hash, phase, batch_kind, batch_index,
-        dependency_hash, status, output_json, issues_json, attempt_count, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        dependency_hash, status, output_json, issues_json, attempt_count, unit_id, target_ids_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id, phase) DO UPDATE SET
         status = excluded.status,
         plan_hash = excluded.plan_hash,
@@ -260,6 +280,8 @@ export class GenerationCheckpointStore {
         output_json = excluded.output_json,
         issues_json = excluded.issues_json,
         attempt_count = excluded.attempt_count,
+        unit_id = excluded.unit_id,
+        target_ids_json = excluded.target_ids_json,
         updated_at = excluded.updated_at`)
       .run(
         input.projectId,
@@ -273,6 +295,8 @@ export class GenerationCheckpointStore {
         JSON.stringify(input.output),
         JSON.stringify(input.issues),
         input.attemptCount,
+        input.unitId ?? `${input.batchKind}-batch-${input.batchIndex}`,
+        JSON.stringify(input.targetIds ?? []),
         at,
         at,
       );

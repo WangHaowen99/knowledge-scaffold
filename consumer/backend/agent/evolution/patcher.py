@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from llm import LLMPurpose, get_llm_router
 from utils.logging import get_logger
 from ontology.mutation_lock import ontology_mutation_lock
-from ontology.ontologies import get_ontology_version_dir
+from ontology.ontologies import ONTOLOGY_ID_PATTERN, get_ontology_version_dir
 from ontology.operation_execution import is_deterministic_package_locked
 from workspace.workspaces import get_workspace_paths, get_workspaces_root
 from agent.evolution.buffer import ProposalBuffer
@@ -558,7 +558,7 @@ class OperationPatcher:
         if cooldown <= 0:
             return False
         del op_path
-        applied_dir = self._buffer._applied_dir(  # noqa: SLF001
+        applied_dir = self._buffer.applied_dir(
             ontology_id,
             operation_key,
             workspace_id=workspace_id,
@@ -690,6 +690,51 @@ class OperationPatcher:
 # -----------------------------------------------------------------------------
 
 
+def _is_safe_operation_segment(value: str) -> bool:
+    """Return whether an operation key can safely be used as one filename part."""
+
+    normalized = str(value or "").strip()
+    if not normalized or normalized in {".", ".."}:
+        return False
+    if "\x00" in normalized or "/" in normalized or "\\" in normalized:
+        return False
+    return Path(normalized).name == normalized
+
+
+def _resolve_operation_candidate(
+    ontology_root: Path,
+    ontology_id: str,
+    operation_key: str,
+) -> Optional[Path]:
+    """Resolve an operation path while keeping it below the ontology root."""
+
+    if not ONTOLOGY_ID_PATTERN.fullmatch(str(ontology_id or "").strip()):
+        return None
+    if not _is_safe_operation_segment(operation_key):
+        return None
+    resolved_root = ontology_root.resolve()
+    ontology_dir = (resolved_root / ontology_id).resolve()
+    try:
+        ontology_dir.relative_to(resolved_root)
+    except ValueError:
+        return None
+    try:
+        version_dir = get_ontology_version_dir(ontology_dir, create=False) or ontology_dir
+    except Exception:
+        version_dir = ontology_dir
+    operations_dir = (version_dir / "operations").resolve()
+    try:
+        operations_dir.relative_to(ontology_dir.resolve())
+    except ValueError:
+        return None
+    candidate = (operations_dir / f"{operation_key}.md").resolve()
+    try:
+        candidate.relative_to(operations_dir)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
 def resolve_operation_md(
     ontology_id: str,
     operation_key: str,
@@ -705,27 +750,21 @@ def resolve_operation_md(
     if not ontology_id or not operation_key:
         return None
     if workspace_id:
-        ontology_dir = get_workspace_paths(workspace_id).ontologies_dir / ontology_id
-        try:
-            version_dir = get_ontology_version_dir(ontology_dir, create=False) or ontology_dir
-        except Exception:
-            version_dir = ontology_dir
-        candidate = version_dir / "operations" / "{}.md".format(operation_key)
-        return candidate.resolve() if candidate.exists() else None
-    root = get_workspaces_root()
+        ontology_root = get_workspace_paths(workspace_id).ontologies_dir
+        return _resolve_operation_candidate(ontology_root, ontology_id, operation_key)
+    root = get_workspaces_root().resolve()
     if not root.exists():
         return None
     for ws_dir in root.iterdir():
         if not ws_dir.is_dir():
             continue
-        ontology_dir = ws_dir / "ontologies" / ontology_id
-        try:
-            version_dir = get_ontology_version_dir(ontology_dir, create=False) or ontology_dir
-        except Exception:
-            version_dir = ontology_dir
-        candidate = version_dir / "operations" / "{}.md".format(operation_key)
-        if candidate.exists():
-            return candidate.resolve()
+        candidate = _resolve_operation_candidate(
+            ws_dir / "ontologies",
+            ontology_id,
+            operation_key,
+        )
+        if candidate is not None:
+            return candidate
     return None
 
 

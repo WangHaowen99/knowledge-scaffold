@@ -5,12 +5,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, TextIO, Tuple, Union
 from urllib.parse import urlparse
+
+
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -629,6 +643,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_cli_logging(sys.stdout)
     args = _build_parser().parse_args(argv)
     report = validate_config(
         args.env_file,
@@ -642,7 +657,7 @@ def main(argv: list[str] | None = None) -> int:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(rendered, encoding="utf-8")
         args.report.chmod(0o600)
-    print(rendered, end="")
+    logger.info(rendered.rstrip("\n"))
     return 0 if report["ok"] else 2
 
 

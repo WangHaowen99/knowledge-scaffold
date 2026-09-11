@@ -35,6 +35,7 @@ MAIN_REF_FIELD = "default_main_profile_ref"
 TASK_REF_FIELD = "default_task_profile_ref"
 PROFILES_FIELD = "profiles"
 LEGACY_TASK_PROFILE_ID = "legacy-task-llm"
+LLM_MAX_TOKENS_ENV = "LLM_MAX_TOKENS"
 LEGACY_MAIN_PROFILE_ID = "default"
 
 PROFILE_SECRET_CONTEXT = "llm_profiles.profiles.api_key"
@@ -236,6 +237,19 @@ def _coerce_float(value: Any) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise TypeError("number field has invalid type")
     return float(value)
+
+
+def _legacy_main_max_tokens_default() -> int:
+    """Preserve an explicit environment override while materializing legacy llm."""
+
+    raw_value = str(os.getenv(LLM_MAX_TOKENS_ENV) or "").strip()
+    if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in "'\"":
+        raw_value = raw_value[1:-1].strip()
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return int(PROFILE_DEFAULTS["max_tokens"])
+    return value if value > 0 else int(PROFILE_DEFAULTS["max_tokens"])
 
 
 def _normalize_profile_id(value: Any) -> str:
@@ -684,11 +698,18 @@ def plan_model_document(
         return DocumentPlan(target, False, counts, problems)
 
     if legacy_present and not profiles:
+        main_defaults = dict(PROFILE_DEFAULTS)
+        if "max_tokens" not in llm_section:
+            # A pre-profile document omitted this field intentionally; the
+            # old resolver consulted LLM_MAX_TOKENS before its built-in
+            # default. Preserve that precedence in the materialized profile.
+            main_defaults["max_tokens"] = _legacy_main_max_tokens_default()
         main_semantics, main_problem = _normalize_model_semantics(
             llm_section,
             secret_context=LEGACY_MAIN_SECRET_CONTEXT,
             runtime_root=runtime_root,
             object_id=object_id,
+            defaults=main_defaults,
         )
         if main_problem:
             problems.append(main_problem)
@@ -700,6 +721,7 @@ def plan_model_document(
                 source_context=LEGACY_MAIN_SECRET_CONTEXT,
                 runtime_root=runtime_root,
                 object_id=object_id,
+                defaults=main_defaults,
             )
             if problem:
                 problems.append(problem)
@@ -1183,6 +1205,15 @@ def _load_marker(
         return None, _problem("SYSTEM_CONFIG_MIGRATION_MARKER_INVALID", object_id, "迁移 marker 无效")
     if marker.get("migration_id") != migration_id or marker.get("status") != "completed":
         return None, _problem("SYSTEM_CONFIG_MIGRATION_MARKER_INVALID", object_id, "迁移 marker 无效")
+    recovery_paths = marker.get("manual_recovery_backups", [])
+    if not isinstance(recovery_paths, list) or any(
+        not isinstance(path, str) or not path.strip() for path in recovery_paths
+    ):
+        return None, _problem(
+            "SYSTEM_CONFIG_MIGRATION_MARKER_INVALID",
+            object_id,
+            "migration marker recovery paths are invalid",
+        )
     return marker, None
 
 
@@ -1198,6 +1229,18 @@ def _discover_backups(path: Path, backup_suffix: str) -> list[Path]:
                 continue
         candidates.append(candidate)
     return candidates
+
+
+def _merge_backup_paths(*groups: list[Path]) -> list[Path]:
+    """Return recovery paths in stable order without dropping prior backups."""
+
+    merged: list[Path] = []
+    for group in groups:
+        for path in group:
+            candidate = Path(path)
+            if candidate not in merged:
+                merged.append(candidate)
+    return merged
 
 
 def _write_marker(
@@ -1354,6 +1397,16 @@ def execute_document_migration(
 
     planned_backup = _backup_base(loaded.path, backup_suffix)
     planned_backup_paths = [planned_backup] if plan.changed else []
+    marker_backup_paths = [
+        Path(path)
+        for path in (marker or {}).get("manual_recovery_backups", [])
+        if isinstance(path, str) and path.strip()
+    ]
+    discovered_backup_paths = _discover_backups(loaded.path, backup_suffix)
+    recovery_backup_paths = _merge_backup_paths(
+        marker_backup_paths,
+        discovered_backup_paths,
+    )
     if plan.problems:
         return _render_report(
             migration_id,
@@ -1382,7 +1435,7 @@ def execute_document_migration(
         )
 
     if not plan.changed:
-        existing_backups = _discover_backups(loaded.path, backup_suffix)
+        existing_backups = recovery_backup_paths
         if marker is None and existing_backups:
             try:
                 for backup in existing_backups:
@@ -1432,13 +1485,15 @@ def execute_document_migration(
             status="already-applied" if marker else "noop",
             counts=plan.counts,
             problems=[],
-            backup_paths=[Path(path) for path in (marker or {}).get("manual_recovery_backups", [])],
+            backup_paths=recovery_backup_paths,
             planned_backup_paths=[],
             from_version=from_version,
             to_version=to_version,
         )
 
-    backup_paths: list[Path] = []
+    # Keep every previously verified recovery path when a completed migration
+    # is intentionally re-applied after an operator changes the target.
+    backup_paths: list[Path] = list(recovery_backup_paths)
 
     def apply_failure(
         code: str,
@@ -1466,7 +1521,8 @@ def execute_document_migration(
             loaded.raw_bytes,
             planned_backup,
         )
-        backup_paths.append(backup_path)
+        if backup_path not in backup_paths:
+            backup_paths.append(backup_path)
         if _read_regular_file_bytes(loaded.path) != loaded.raw_bytes:
             raise _SourceChangedError("source changed after precheck")
     except _SourceChangedError as exc:

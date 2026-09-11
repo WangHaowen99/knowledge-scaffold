@@ -15,6 +15,7 @@ from agent.runtime.contracts import USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
 from api.auth.auth import (
     AuthUser,
     get_auth_manager,
+    require_admin_user,
     require_authenticated_user,
 )
 from api.request_parsing import read_json_object
@@ -44,13 +45,35 @@ from integration.mcp.token_service import (
 from workspace.workspaces import (
     WorkspaceMCPEndpointError,
     get_workspace_mcp_endpoint_id,
+    get_workspace_runtime_config,
     resolve_workspace_id,
+    update_workspace_runtime_config,
     workspace_scope,
 )
 
 
 mcp_router = APIRouter(prefix=MCP_API_PREFIX)
 _MCPChatAuthorization = tuple[MCPRequestScope, Any] | JSONResponse
+MCP_STREAM_USER_WORKSPACE_CONCURRENCY_DEFAULT = 5
+MCP_STREAM_USER_WORKSPACE_CONCURRENCY_MAX = 32
+
+
+def _mcp_stream_user_workspace_concurrency(workspace_id: str) -> int:
+    runtime_config = get_workspace_runtime_config(workspace_id)
+    mcp_config = runtime_config.get("mcp")
+    if not isinstance(mcp_config, dict):
+        return MCP_STREAM_USER_WORKSPACE_CONCURRENCY_DEFAULT
+    value = mcp_config.get(
+        "stream_user_workspace_concurrency",
+        MCP_STREAM_USER_WORKSPACE_CONCURRENCY_DEFAULT,
+    )
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= MCP_STREAM_USER_WORKSPACE_CONCURRENCY_MAX
+    ):
+        return MCP_STREAM_USER_WORKSPACE_CONCURRENCY_DEFAULT
+    return value
 
 
 def _runtime(request: Request):
@@ -116,6 +139,80 @@ async def mcp_runtime_status(
     workspace_id: str = Depends(_resolve_authenticated_workspace),
 ):
     return await _short_io(request, _load_mcp_runtime_status, workspace_id)
+
+
+@mcp_router.get(
+    "/runtime/concurrency",
+    dependencies=[Depends(require_authenticated_user)],
+)
+async def get_mcp_concurrency_api(
+    request: Request,
+    workspace_id: str = Depends(_resolve_authenticated_workspace),
+):
+    value = await _short_io(
+        request,
+        _mcp_stream_user_workspace_concurrency,
+        workspace_id,
+    )
+    return {
+        "stream_user_workspace_concurrency": value,
+        "default": MCP_STREAM_USER_WORKSPACE_CONCURRENCY_DEFAULT,
+        "min": 1,
+        "max": MCP_STREAM_USER_WORKSPACE_CONCURRENCY_MAX,
+    }
+
+
+def _update_mcp_concurrency(
+    workspace_id: str,
+    value: Any,
+) -> dict[str, int]:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= MCP_STREAM_USER_WORKSPACE_CONCURRENCY_MAX
+    ):
+        raise ValueError(
+            "stream_user_workspace_concurrency must be an integer between 1 and 32"
+        )
+    updated = update_workspace_runtime_config(
+        workspace_id,
+        {"mcp": {"stream_user_workspace_concurrency": value}},
+    )
+    return {
+        "stream_user_workspace_concurrency": int(
+            updated["mcp"]["stream_user_workspace_concurrency"]
+        ),
+        "default": MCP_STREAM_USER_WORKSPACE_CONCURRENCY_DEFAULT,
+        "min": 1,
+        "max": MCP_STREAM_USER_WORKSPACE_CONCURRENCY_MAX,
+    }
+
+
+@mcp_router.patch(
+    "/runtime/concurrency",
+    dependencies=[Depends(require_admin_user)],
+)
+async def update_mcp_concurrency_api(
+    request: Request,
+    workspace_id: str = Depends(_resolve_authenticated_workspace),
+):
+    payload = await read_json_object(request)
+    if "stream_user_workspace_concurrency" not in payload:
+        return JSONResponse(
+            {"detail": "stream_user_workspace_concurrency is required"},
+            status_code=400,
+        )
+    try:
+        return await _short_io(
+            request,
+            _update_mcp_concurrency,
+            workspace_id,
+            payload["stream_user_workspace_concurrency"],
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
 def _list_tokens(*, username: str, workspace_id: str) -> list[dict[str, Any]]:
@@ -342,6 +439,11 @@ async def stream_internal_mcp_chat(
         scope.username,
         scope.workspace_id,
     )
+    ordinary_limit = await _short_io(
+        request,
+        _mcp_stream_user_workspace_concurrency,
+        scope.workspace_id,
+    )
     queue_size = int(getattr(cfg, "chat_progress_queue_size", 128))
     heartbeat_seconds = int(
         getattr(cfg, "chat_progress_heartbeat_seconds", 15)
@@ -383,7 +485,11 @@ async def stream_internal_mcp_chat(
                 execution_store=execution_store,
                 scope=scope,
                 payload=payload,
-                concurrency_limit=100 if str(user.role or "") == "admin" else 1,
+                concurrency_limit=(
+                    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
+                    if str(user.role or "") == "admin"
+                    else ordinary_limit
+                ),
                 queue_wait_seconds=min(
                     30,
                     max(1, int(cfg.http_timeout_seconds)),

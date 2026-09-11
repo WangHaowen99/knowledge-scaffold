@@ -4,10 +4,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import sys
 from pathlib import Path
+from typing import TextIO
 
 from .mapping import build_file_mapping
 from .pipeline import run
+
+
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def _build_cli_parser() -> argparse.ArgumentParser:
@@ -33,6 +48,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    _configure_cli_logging(sys.stdout)
     parser = _build_cli_parser()
     args = parser.parse_args()
 
@@ -47,7 +63,7 @@ def main() -> None:
         target_root=target_root,
         write_mapping_json=bool(args.write_mapping_json),
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    logger.info(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 __all__ = [

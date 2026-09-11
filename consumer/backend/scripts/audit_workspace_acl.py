@@ -8,13 +8,35 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TextIO
 
 
 _RECONCILIATION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+logger = logging.getLogger(__name__)
+result_logger = logging.getLogger(f"{__name__}.result")
+
+
+def _configure_stream_logger(
+    target: logging.Logger,
+    *,
+    stream: TextIO,
+    level: int,
+) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    target.handlers.clear()
+    target.addHandler(handler)
+    target.setLevel(level)
+    target.propagate = False
+
+
+def _configure_cli_logging() -> None:
+    _configure_stream_logger(logger, stream=sys.stderr, level=logging.ERROR)
+    _configure_stream_logger(result_logger, stream=sys.stdout, level=logging.INFO)
 
 
 def _load_json(path: Path) -> Any:
@@ -292,18 +314,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_cli_logging()
     args = _build_parser().parse_args(argv)
     try:
         report = audit_workspace_acl(args.auth_users_file, args.workspaces_root)
     except ValueError as exc:
-        print(json.dumps({"clean": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        rendered_error = json.dumps(
+            {"clean": False, "error": str(exc)},
+            ensure_ascii=False,
+        )
+        logger.error(rendered_error)
         return 1
 
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
-    print(rendered, end="")
+    result_logger.info(rendered.rstrip("\n"))
     return 0 if report["clean"] else 2
 
 

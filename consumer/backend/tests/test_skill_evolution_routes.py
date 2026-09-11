@@ -36,6 +36,12 @@ class _FakeService:
     def __init__(self, tasks):
         self._store = _FakeStore(tasks)
 
+    def get_task(self, workspace_id, task_id):
+        return self._store.get_task(workspace_id, task_id)
+
+    def list_tasks(self, workspace_id, **kwargs):
+        return self._store.list_tasks(workspace_id, **kwargs)
+
     def start(self, **kwargs):
         return TaskRecord(
             task_id="new1", workspace_id="ws1", ontology_id="onto1", session_id="s",

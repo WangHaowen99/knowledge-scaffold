@@ -554,6 +554,7 @@ const normalizeMessage = (message, index, occurrences) => {
     errorCode,
     errorPresentation,
     recovery,
+    incomplete: Boolean(message?.meta?.incomplete),
     cancelReason,
     startedAt,
     endedAt,

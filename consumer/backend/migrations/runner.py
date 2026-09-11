@@ -13,13 +13,14 @@ import importlib
 import json
 import logging
 import os
+import sys
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Any, BinaryIO, Callable, Iterator, Optional
+from typing import Any, BinaryIO, Callable, Iterator, Optional, TextIO
 
 try:
     import fcntl
@@ -37,6 +38,26 @@ from config.system_config import ONTO_RUNTIME_ROOT
 MIGRATION_LOCK_FILE = "registered-migrations.lock"
 _PROCESS_LOCK = Lock()
 logger = logging.getLogger(__name__)
+result_logger = logging.getLogger(f"{__name__}.result")
+
+
+def _configure_stream_logger(
+    target: logging.Logger,
+    *,
+    stream: TextIO,
+    level: int,
+) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    target.handlers.clear()
+    target.addHandler(handler)
+    target.setLevel(level)
+    target.propagate = False
+
+
+def _configure_cli_logging() -> None:
+    _configure_stream_logger(logger, stream=sys.stderr, level=logging.WARNING)
+    _configure_stream_logger(result_logger, stream=sys.stdout, level=logging.INFO)
 
 
 class StartupMigrationError(RuntimeError):
@@ -101,11 +122,37 @@ REGISTERED_MIGRATIONS = (
         failure_policy=MigrationFailurePolicy.NON_BLOCKING,
     ),
     RegisteredMigration(
+        migration_id="system-config-model-profile-output-budget-env-v1",
+        module="migrations.system_config_model_profile_output_budget_env_v1",
+        phase=MigrationPhase.STARTUP,
+        # Direct process environments may still carry a historical template
+        # default even when no persisted system config exists. This must run
+        # before legacy profile materialization so custom env values retain
+        # their precedence.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
         migration_id="system-config-model-profiles-v1",
         module="migrations.system_config_model_profiles_v1",
         phase=MigrationPhase.STARTUP,
         # Strict runtime reads reject task_llm, legacy default ids, dangling
         # refs, and conflicting profiles; startup is unsafe until conversion.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
+        migration_id="system-config-model-profile-output-budget-v1",
+        module="migrations.system_config_model_profile_output_budget_v1",
+        phase=MigrationPhase.STARTUP,
+        # Existing profiles can retain the old 4096-token default after an
+        # image upgrade; migrate that value before runtime services resolve it.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
+        migration_id="workspace-model-profile-output-budget-v1",
+        module="migrations.workspace_model_profile_output_budget_v1",
+        phase=MigrationPhase.STARTUP,
+        # Workspace-private profiles can take precedence over global profiles
+        # during resolution, so their historical budgets must be migrated too.
         failure_policy=MigrationFailurePolicy.BLOCKING,
     ),
     RegisteredMigration(
@@ -481,6 +528,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    _configure_cli_logging()
     args = _build_parser().parse_args(argv)
     code, report = execute_registered_migrations(
         args.runtime_root,
@@ -492,7 +540,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     if args.report:
         _write_report_atomic(args.report, report)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    result_logger.info(json.dumps(report, ensure_ascii=False, indent=2))
     return code
 
 

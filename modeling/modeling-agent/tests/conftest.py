@@ -56,6 +56,7 @@ class ScriptedModel(Model):
         self.content_by_call = content_by_call or {}
         self.reasoning_by_call = reasoning_by_call or {}
         self.calls = 0
+        self.stream_inputs: list[Any] = []
 
     def _next(self) -> AssistantMessage:
         index = self.calls
@@ -83,6 +84,7 @@ class ScriptedModel(Model):
         return self._next()
 
     async def stream(self, *_args: Any, **_kwargs: Any):  # type: ignore[override]
+        self.stream_inputs.append(_args[0] if _args else _kwargs)
         response = self._next()
         reasoning = str(response.reasoning_content or "")
         for index in range(0, len(reasoning), 4):

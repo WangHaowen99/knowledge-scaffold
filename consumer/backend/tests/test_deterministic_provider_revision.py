@@ -10,6 +10,16 @@ from agent.tools.business_data.deterministic import (
 from integration.sandbox.errors import SandboxUnavailableError
 
 
+LEGACY_FIELDS = {
+    "data_revision",
+    "snapshot_selector",
+    "access_scope_revision",
+    "deterministic_read_only",
+    "deterministic_snapshot_immutable",
+    "deterministic_scope_isolated",
+}
+
+
 @pytest.fixture(autouse=True)
 def _pin_synthetic_provider_endpoint(monkeypatch):
     from agent.tools.business_data import deterministic as module
@@ -24,80 +34,116 @@ def _pin_synthetic_provider_endpoint(monkeypatch):
 
 def _source(provider="neo4j", **overrides):
     config = {
-        "uri": "bolt://snapshot.example.com:7687",
-        "database": "snapshot_20260808",
+        "uri": "bolt://neo4j.example.invalid:7687",
+        "database": "neo4j",
         "username": "reader",
-        "password": "secret-password",
-        "data_revision": "2026-08-08",
-        "snapshot_selector": "snapshot_20260808",
-        "access_scope_revision": "reader-scope-v1",
-        "deterministic_read_only": True,
-        "deterministic_snapshot_immutable": True,
-        "deterministic_scope_isolated": True,
+        "password": "synthetic-password",
+        "workspace_property": "d2o_workspace_id",
+        "workspace_value": "workspace-a",
+        "ontology_property": "d2o_ontology_id",
+        "ontology_value": "ontology-a",
         **overrides,
     }
     return SimpleNamespace(provider=provider, config=config)
 
 
-def test_neo4j_snapshot_binding_is_revision_pinned_and_scope_digest_is_secret_free(
-    monkeypatch,
-):
-    from agent.tools.business_data import deterministic as module
-
-    monkeypatch.setattr(module, "resolve_business_data_source", lambda **_kwargs: _source())
-
-    binding = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-
-    assert binding.provider == "neo4j"
-    assert binding.data_revision == "2026-08-08"
-    assert binding.network_endpoint == "bolt://192.0.2.24:7687"
-    assert binding.scope_digest.startswith("sha256:")
-    assert "secret-password" not in binding.scope_digest
-    assert binding.effective_connection.options["workspace_id"] == "workspace-a"
-    assert binding.effective_connection.options["ontology_id"] == "ontology-a"
-    assert binding.effective_connection.options["ontology_version"] == "1.0.0"
-    assert binding.effective_connection.options["snapshot_selector"] == "snapshot_20260808"
-    assert binding.effective_connection.auth.username == "reader"
-    assert binding.effective_connection.auth.password == "secret-password"
-    assert "password" not in binding.effective_connection.options
-
-
-@pytest.mark.parametrize(
-    "source,code",
-    [
-        (_source(provider="dataagent"), "provider_not_deterministic"),
-        (_source(data_revision=""), "dependency_revision_missing"),
-        (_source(access_scope_revision=""), "provider_scope_invalid"),
-        (_source(deterministic_read_only=False), "provider_not_deterministic"),
-        (_source(deterministic_snapshot_immutable=False), "provider_snapshot_unverified"),
-        (_source(deterministic_scope_isolated=False), "provider_scope_invalid"),
-        (_source(snapshot_selector="current"), "provider_scope_invalid"),
-    ],
-)
-def test_ineligible_or_unpinned_provider_fails_closed(monkeypatch, source, code):
+def _resolve(monkeypatch, source=None, **kwargs):
     from agent.tools.business_data import deterministic as module
 
     monkeypatch.setattr(
         module,
         "resolve_business_data_source",
-        lambda **_kwargs: source,
+        lambda **_kwargs: source or _source(),
+    )
+    return resolve_deterministic_provider_binding(
+        workspace_id=kwargs.pop("workspace_id", "workspace-a"),
+        ontology_id=kwargs.pop("ontology_id", "ontology-a"),
+        ontology_version=kwargs.pop("ontology_version", "1.0.0"),
+        **kwargs,
     )
 
+
+def test_neo4j_binding_derives_revision_and_scope_without_manual_fields(monkeypatch):
+    binding = _resolve(monkeypatch)
+
+    assert binding.provider == "neo4j"
+    assert binding.data_revision.startswith("sha256:")
+    assert binding.scope_digest.startswith("sha256:")
+    assert binding.network_endpoint == "bolt://192.0.2.24:7687"
+    assert binding.effective_connection.options["database"] == "neo4j"
+    assert binding.effective_connection.options["workspace_value"] == "workspace-a"
+    assert binding.effective_connection.options["ontology_value"] == "ontology-a"
+    assert not LEGACY_FIELDS.intersection(binding.effective_connection.options)
+    assert "synthetic-password" not in binding.scope_digest
+
+
+def test_binding_revision_tracks_physical_database_and_scope(monkeypatch):
+    from agent.tools.business_data import deterministic as module
+
+    active = _source()
+    monkeypatch.setattr(module, "resolve_business_data_source", lambda **_: active)
+    first = resolve_deterministic_provider_binding(
+        workspace_id="workspace-a", ontology_id="ontology-a", ontology_version="1.0.0"
+    )
+
+    active = _source(
+        database="neo4j_snapshot_20260904",
+        workspace_value="workspace-b",
+    )
+    second = resolve_deterministic_provider_binding(
+        workspace_id="workspace-a", ontology_id="ontology-a", ontology_version="1.0.0"
+    )
+
+    assert first.data_revision != second.data_revision
+    assert first.scope_digest != second.scope_digest
+
+
+def test_binding_uses_runtime_scope_when_optional_values_are_empty(monkeypatch):
+    binding = _resolve(
+        monkeypatch,
+        _source(workspace_value="", ontology_value=""),
+    )
+
+    assert binding.effective_connection.options["workspace_value"] == "workspace-a"
+    assert binding.effective_connection.options["ontology_value"] == "ontology-a"
+
+
+def test_binding_rejects_disabled_ontology_isolation(monkeypatch):
     with pytest.raises(DeterministicProviderError) as exc:
-        resolve_deterministic_provider_binding(
-            workspace_id="workspace-a",
-            ontology_id="ontology-a",
-            ontology_version="1.0.0",
-        )
+        _resolve(monkeypatch, _source(ontology_property="", ontology_value=""))
 
-    assert exc.value.code == code
+    assert exc.value.code == "provider_scope_invalid"
 
 
-def test_provider_requires_workspace_before_resolution(monkeypatch):
+def test_legacy_attestation_values_do_not_control_automatic_binding(monkeypatch):
+    first = _resolve(monkeypatch, _source())
+    second = _resolve(
+        monkeypatch,
+        _source(
+            data_revision="operator-value",
+            snapshot_selector="wrong-database",
+            access_scope_revision="operator-scope",
+            deterministic_read_only=False,
+            deterministic_snapshot_immutable=False,
+            deterministic_scope_isolated=False,
+        ),
+    )
+
+    assert first.data_revision == second.data_revision
+    assert first.scope_digest == second.scope_digest
+
+
+@pytest.mark.parametrize("provider", ["hugegraph", "dataagent"])
+def test_only_neo4j_is_eligible_for_automatic_deterministic_binding(monkeypatch, provider):
+    source = _source(provider=provider)
+
+    with pytest.raises(DeterministicProviderError) as exc:
+        _resolve(monkeypatch, source)
+
+    assert exc.value.code == "provider_not_deterministic"
+
+
+def test_provider_requires_workspace_and_ontology_before_resolution(monkeypatch):
     from agent.tools.business_data import deterministic as module
 
     monkeypatch.setattr(
@@ -119,7 +165,7 @@ def test_provider_requires_workspace_before_resolution(monkeypatch):
 def test_provider_endpoint_resolution_failure_is_closed_before_execution(monkeypatch):
     from agent.tools.business_data import deterministic as module
 
-    monkeypatch.setattr(module, "resolve_business_data_source", lambda **_kwargs: _source())
+    monkeypatch.setattr(module, "resolve_business_data_source", lambda **_: _source())
     monkeypatch.setattr(
         module,
         "sandbox_reachable_url",
@@ -138,255 +184,28 @@ def test_provider_endpoint_resolution_failure_is_closed_before_execution(monkeyp
     assert exc.value.code == "provider_endpoint_unresolved"
 
 
-def test_provider_endpoint_change_changes_scope_digest(monkeypatch):
-    from agent.tools.business_data import deterministic as module
-
-    active_source = _source()
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: active_source,
-    )
-    first = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-    active_source = _source(uri="bolt://other-snapshot.example.com:7687")
-    second = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-
-    assert first.data_revision == second.data_revision
-    assert first.scope_digest != second.scope_digest
-
-
-def test_provider_resolved_ip_change_changes_scope_digest(monkeypatch):
-    from agent.tools.business_data import deterministic as module
-
-    active_ip = "192.0.2.24"
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: _source(),
-    )
-
-    def pin(endpoint):
-        parsed = urlsplit(endpoint)
-        return parsed._replace(netloc="{}:7687".format(active_ip)).geturl()
-
-    monkeypatch.setattr(module, "sandbox_reachable_url", pin)
-    first = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-    active_ip = "192.0.2.25"
-    second = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-
-    assert first.data_revision == second.data_revision
-    assert first.scope_digest != second.scope_digest
-
-
-def test_provider_access_scope_change_changes_scope_digest(monkeypatch):
-    from agent.tools.business_data import deterministic as module
-
-    active_source = _source(access_scope_revision="reader-scope-v1")
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: active_source,
-    )
-    first = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-    active_source = _source(access_scope_revision="reader-scope-v2")
-    second = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-
-    assert first.scope_digest != second.scope_digest
-
-
-def test_provider_username_change_changes_scope_digest_without_exposing_username(
-    monkeypatch,
-):
-    from agent.tools.business_data import deterministic as module
-
-    active_source = _source(username="reader-a")
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: active_source,
-    )
-    first = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-    active_source = _source(username="reader-b")
-    second = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-
-    assert first.scope_digest != second.scope_digest
-    assert "reader-a" not in first.scope_digest
-    assert "reader-b" not in second.scope_digest
-
-
-def test_provider_secret_rotation_does_not_change_scope_digest(monkeypatch):
-    from agent.tools.business_data import deterministic as module
-
-    active_source = _source(password="synthetic-password-before")
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: active_source,
-    )
-    first = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-    active_source = _source(password="synthetic-password-after")
-    second = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-
-    assert first.scope_digest == second.scope_digest
-
-
 @pytest.mark.parametrize("field", ["password", "token"])
 def test_deterministic_provider_rejects_short_credentials(monkeypatch, field):
-    from agent.tools.business_data import deterministic as module
-
     overrides = {"username": "" if field == "token" else "reader", field: "short"}
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: _source(**overrides),
-    )
 
     with pytest.raises(DeterministicProviderError) as exc:
-        resolve_deterministic_provider_binding(
-            workspace_id="workspace-a",
-            ontology_id="ontology-a",
-            ontology_version="1.0.0",
-        )
+        _resolve(monkeypatch, _source(**overrides))
 
     assert exc.value.code == "provider_credentials_unsafe"
     assert "short" not in str(exc.value)
 
 
-def test_hugegraph_graph_space_is_part_of_selector_and_scope_digest(monkeypatch):
-    from agent.tools.business_data import deterministic as module
-
-    active_source = _source(
-        provider="hugegraph",
-        url="https://snapshot.example.com",
-        graph="hugegraph",
-        graph_space="space-a",
-        snapshot_selector="space-a/hugegraph",
-    )
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: active_source,
-    )
-    first = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-    active_source = _source(
-        provider="hugegraph",
-        url="https://snapshot.example.com",
-        graph="hugegraph",
-        graph_space="space-b",
-        snapshot_selector="space-b/hugegraph",
-    )
-    second = resolve_deterministic_provider_binding(
-        workspace_id="workspace-a",
-        ontology_id="ontology-a",
-        ontology_version="1.0.0",
-    )
-
-    assert first.scope_digest != second.scope_digest
-    assert first.effective_connection.options["physical_target"] == "space-a/hugegraph"
-    assert second.effective_connection.options["physical_target"] == "space-b/hugegraph"
-
-
-def test_hugegraph_selector_cannot_omit_graph_space(monkeypatch):
-    from agent.tools.business_data import deterministic as module
-
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: _source(
-            provider="hugegraph",
-            url="https://snapshot.example.com",
-            graph="hugegraph",
-            graph_space="space-a",
-            snapshot_selector="hugegraph",
-        ),
-    )
-
-    with pytest.raises(DeterministicProviderError) as exc:
-        resolve_deterministic_provider_binding(
-            workspace_id="workspace-a",
-            ontology_id="ontology-a",
-            ontology_version="1.0.0",
-        )
-
-    assert exc.value.code == "provider_scope_invalid"
-
-
 @pytest.mark.parametrize(
-    "source",
+    "uri",
     [
-        _source(uri="bolt://embedded:uri-secret@snapshot.example.com:7687"),
-        _source(
-            provider="hugegraph",
-            url="https://embedded:uri-secret@snapshot.example.com",
-            graph="hugegraph",
-            snapshot_selector="hugegraph",
-        ),
-        _source(uri="bolt://snapshot.example.com:7687?access_token=query-secret"),
-        _source(uri="bolt://snapshot.example.com:7687#fragment-secret"),
+        "bolt://embedded:uri-secret@neo4j.example.invalid:7687",
+        "bolt://neo4j.example.invalid:7687?access_token=query-secret",
+        "bolt://neo4j.example.invalid:7687#fragment-secret",
     ],
 )
-def test_deterministic_provider_rejects_credentials_embedded_in_endpoint(
-    monkeypatch,
-    source,
-):
-    from agent.tools.business_data import deterministic as module
-
-    monkeypatch.setattr(
-        module,
-        "resolve_business_data_source",
-        lambda **_kwargs: source,
-    )
-
+def test_deterministic_provider_rejects_credentials_embedded_in_uri(monkeypatch, uri):
     with pytest.raises(DeterministicProviderError) as exc:
-        resolve_deterministic_provider_binding(
-            workspace_id="workspace-a",
-            ontology_id="ontology-a",
-            ontology_version="1.0.0",
-        )
+        _resolve(monkeypatch, _source(uri=uri))
 
     assert exc.value.code == "provider_scope_invalid"
     assert "secret" not in str(exc.value)

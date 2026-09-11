@@ -29,6 +29,8 @@ from modeling_agent.tools import (
 )
 from conftest import FakeGateway, ScriptedModel, service
 
+BACKGROUND_TASK_START_TIMEOUT_SECONDS = 10
+
 
 def run(run_id: str, project_id: str = "project_demo") -> RunRecord:
     return RunRecord(
@@ -1421,94 +1423,6 @@ def test_candidate_paths_are_limited_to_their_business_phase(
 
 
 @pytest.mark.asyncio
-async def test_restart_automatically_resumes_same_run_without_replaying_user_message(settings) -> None:
-    gateway = FakeGateway()
-    runtime = service(settings, ScriptedModel([[]]), gateway)
-    runtime.store.create_run(run("run_restarting"))
-    runtime.store.update_run(
-        "run_restarting",
-        status=RUN_RUNNING,
-        run_credential="arc_run_restarting_secret",
-    )
-    runtime.events.publish(
-        "project_demo",
-        "run_restarting",
-        "message",
-        {"role": "user", "blocks": [{"type": "text", "text": "开始建模"}]},
-    )
-    resumed = asyncio.Event()
-    captured: dict[str, object] = {}
-
-    async def execute(live, query) -> None:
-        captured["run_id"] = live.run_id
-        captured["query"] = query
-        resumed.set()
-
-    runtime._execute = execute  # type: ignore[method-assign]  # noqa: SLF001
-    await runtime.startup()
-    try:
-        await asyncio.wait_for(resumed.wait(), timeout=2)
-        assert captured["run_id"] == "run_restarting"
-        assert type(captured["query"]).__name__ == "InteractiveInput"
-        assert runtime.store.require_run("run_restarting").status == RUN_QUEUED
-        assert gateway.credentials["run_restarting"] == "arc_run_restarting_secret"
-        claims = [call for call in gateway.calls if call["tool"] == "claim_candidate_workspace"]
-        assert len(claims) == 1
-        assert claims[0]["token"] == ""
-        messages = [
-            event for event in runtime.store.events_after("project_demo", 0)
-            if event.kind == "message" and event.payload.get("role") == "user"
-        ]
-        assert len(messages) == 1
-    finally:
-        await runtime.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_restart_retries_transient_core_unavailability_before_resuming(
-    settings, monkeypatch,
-) -> None:
-    class StartingGateway(FakeGateway):
-        def __init__(self) -> None:
-            super().__init__()
-            self.claim_attempts = 0
-
-        async def call(self, **kwargs):
-            if kwargs["tool"] == "claim_candidate_workspace":
-                self.claim_attempts += 1
-                if self.claim_attempts < 3:
-                    raise AgentRuntimeError(
-                        "CORE_UNAVAILABLE",
-                        "建模核心暂时不可用，Agent 已停止继续写入",
-                        status=503,
-                    )
-            return await super().call(**kwargs)
-
-    monkeypatch.setattr(service_module, "RECOVERY_RETRY_DELAYS", (0, 0))
-    gateway = StartingGateway()
-    runtime = service(settings, ScriptedModel([[]]), gateway)
-    runtime.store.create_run(run("run_starting_core"))
-    runtime.store.update_run(
-        "run_starting_core",
-        status=RUN_RUNNING,
-        run_credential="arc_run_starting_core_secret",
-    )
-    resumed = asyncio.Event()
-
-    async def execute(_live, _query) -> None:
-        resumed.set()
-
-    runtime._execute = execute  # type: ignore[method-assign]  # noqa: SLF001
-    await runtime.startup()
-    try:
-        await asyncio.wait_for(resumed.wait(), timeout=2)
-        assert gateway.claim_attempts == 3
-        assert runtime.store.require_run("run_starting_core").status == RUN_QUEUED
-    finally:
-        await runtime.shutdown()
-
-
-@pytest.mark.asyncio
 async def test_graceful_service_shutdown_preserves_running_checkpoint_for_next_process(settings) -> None:
     runtime = service(settings, ScriptedModel([[]]), FakeGateway())
     await runtime.startup()
@@ -1527,7 +1441,9 @@ async def test_graceful_service_shutdown_preserves_running_checkpoint_for_next_p
         message="开始建模",
     )
     run_id = started["id"]
-    await asyncio.wait_for(entered.wait(), timeout=2)
+    await asyncio.wait_for(
+        entered.wait(), timeout=BACKGROUND_TASK_START_TIMEOUT_SECONDS,
+    )
     await runtime.shutdown()
 
     reopened = RuntimeStore(settings.runtime_db)

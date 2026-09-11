@@ -168,7 +168,7 @@ class ProposalBuffer:
     ) -> Path:
         return self.op_dir(ontology_id, operation_key, workspace_id=workspace_id) / "proposals.jsonl"
 
-    def _applied_dir(
+    def applied_dir(
         self,
         ontology_id: str,
         operation_key: Optional[str],
@@ -572,7 +572,7 @@ class ProposalBuffer:
         fps = list(fingerprints or [])
         if not fps:
             return
-        applied_dir = self._applied_dir(ontology_id, operation_key, workspace_id=workspace_id)
+        applied_dir = self.applied_dir(ontology_id, operation_key, workspace_id=workspace_id)
         applied_dir.mkdir(parents=True, exist_ok=True)
         with _file_lock(self.op_dir(ontology_id, operation_key, workspace_id=workspace_id)):
             aggs = self._load_aggregates(ontology_id, operation_key, workspace_id=workspace_id)

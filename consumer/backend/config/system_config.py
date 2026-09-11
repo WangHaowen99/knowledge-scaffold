@@ -84,6 +84,13 @@ _CONFIG_SNAPSHOT_MANAGER_LOCK = RLock()
 _CONFIG_SNAPSHOT_MANAGER: ConfigSnapshotManager | None = None
 _SYSTEM_CONFIG_PROCESS_GENERATION = 0
 
+
+@contextmanager
+def system_config_lock() -> Iterator[None]:
+    """Serialize direct system-config reads and writes across components."""
+    with _CONFIG_LOCK:
+        yield
+
 PERF_CONFIG_SNAPSHOT_ENABLED_ENV = "PERF_CONFIG_SNAPSHOT_ENABLED"
 CONFIG_SNAPSHOT_CHECK_INTERVAL_SECONDS = 1.5
 _TRANSIENT_CONFIG_ERRNOS = {errno.EAGAIN, errno.EBUSY, errno.EINTR}
@@ -1304,10 +1311,21 @@ def get_system_config_generation() -> int:
         return _record_system_config_generation(manager)
 
 
-def invalidate_system_config_snapshot() -> int:
+def invalidate_system_config_snapshot(*, refresh_environment: bool = False) -> int:
+    """Invalidate the published config snapshot.
+
+    ``refresh_environment`` is used by startup compatibility migrations that
+    pin a process environment value.  The snapshot manager normally captures
+    a private copy of ``os.environ`` at construction time, so invalidating its
+    value alone would otherwise continue to serve the pre-migration value.
+    """
+
     with _CONFIG_PUBLICATION_LOCK:
         manager = _get_system_config_snapshot_manager()
-        manager.invalidate()
+        if refresh_environment:
+            manager.refresh_environment()
+        else:
+            manager.invalidate()
         return _record_system_config_generation(manager)
 
 
@@ -1420,8 +1438,13 @@ def get_public_system_config_snapshot() -> dict[str, Any]:
     """Return public config with opaque concurrency metadata from one snapshot."""
 
     with _CONFIG_PUBLICATION_LOCK:
-        config = load_system_config()
-        generation = get_system_config_generation()
+        if _config_snapshot_enabled():
+            manager = _get_system_config_snapshot_manager()
+            config, generation = manager.load_with_generation()
+            _record_system_config_generation(manager)
+        else:
+            config = load_system_config()
+            generation = get_system_config_generation()
         return {
             "config": {
                 section: _public_section(section, config)

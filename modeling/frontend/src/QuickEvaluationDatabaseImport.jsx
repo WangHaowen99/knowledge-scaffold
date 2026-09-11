@@ -36,11 +36,11 @@ export default function QuickEvaluationDatabaseImport({ projectId, onConfigured,
     return () => window.clearInterval(timer);
   }, [projectId, run?.id, run?.status]);
 
-  const select = async (file) => {
-    if (!file) return;
+  const select = async (files) => {
+    if (!files.length) return;
     setBusy(true); setError('');
     try {
-      const response = await quickImportEvaluationDatabase(projectId, file);
+      const response = await quickImportEvaluationDatabase(projectId, files);
       if (contextRef.current !== projectId) return;
       setRun(response.run);
       onConfigured?.(response.dataSource);
@@ -60,8 +60,8 @@ export default function QuickEvaluationDatabaseImport({ projectId, onConfigured,
     <label className={`btn btn-p ${busy || running || loading ? 'disabled' : ''}`}>
       {busy || running ? <LoaderCircle className="wb-spin" size={15} /> : <Upload size={15} />}
       {busy ? '正在提交…' : running ? '后台导入中…' : '选择 Excel 并导入'}
-      <input ref={inputRef} hidden type="file" accept=".xlsx,.xls" disabled={busy || running || loading}
-        onChange={(event) => void select(event.target.files?.[0])} />
+      <input ref={inputRef} hidden type="file" accept=".xlsx,.xls" multiple disabled={busy || running || loading}
+        onChange={(event) => void select(Array.from(event.target.files || []))} />
     </label>
     {error && <div className="lerr edi-quick-status">{error}</div>}
     {run?.status === 'running' && <div className="gi-message edi-quick-status">{run.filename} 正在后台导入，刷新或切换页面不会中断。</div>}

@@ -460,11 +460,26 @@ def test_missing_flock_fails_before_docker_with_clear_error(tmp_path):
     bundle_root, deploy_root, env, _, docker_calls = _prepare_storage_mode_bundle(
         tmp_path
     )
-    (tmp_path / "bin" / "flock").unlink()
+    bash_executable = shutil.which(TEST_BASH) or TEST_BASH
+    fake_bin = tmp_path / "bin"
+    (fake_bin / "flock").unlink()
+    if os.name != "nt":
+        fake_dirname = fake_bin / "dirname"
+        fake_dirname.write_text(
+            "#!/bin/sh\n"
+            "path=\"$1\"\n"
+            "case \"$path\" in\n"
+            "  */*) printf '%s\\n' \"${path%/*}\" ;;\n"
+            "  *) printf '.\\n' ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_dirname.chmod(0o755)
+        env["PATH"] = str(fake_bin)
 
     result = subprocess.run(
         [
-            TEST_BASH,
+            bash_executable,
             "-c",
             f'source "{(deploy_root / "common.sh").as_posix()}"; docker info',
         ],
@@ -1314,6 +1329,30 @@ def test_deploy_allows_empty_persistent_directories_for_first_install(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_deploy_allows_backend_env_only_for_first_install(tmp_path):
+    deploy_root = tmp_path / "deploy"
+    deploy_root.mkdir()
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / ".env").write_text("LLM_MAX_TOKENS=4096\n", encoding="utf-8")
+    shutil.copyfile(DEPLOY_ROOT / "common.sh", deploy_root / "common.sh")
+
+    result = subprocess.run(
+        [
+            TEST_BASH,
+            "-c",
+            f'source "{(deploy_root / "common.sh").as_posix()}"; '
+            "load_state; assert_no_existing_install_for_install",
+        ],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_release_dispatcher_routes_staged_package_to_existing_install_upgrade():
     deploy_script = (REPOSITORY_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
 
@@ -1930,13 +1969,25 @@ def test_system_config_migrations_are_ordered_only_in_shared_runner():
     runner_text = (BACKEND_ROOT / "migrations" / "runner.py").read_text(encoding="utf-8")
     forbidden_values = (
         "system-config-model-profiles-v1",
+        "system-config-model-profile-output-budget-env-v1",
+        "system-config-model-profile-output-budget-v1",
+        "workspace-model-profile-output-budget-v1",
         "system-config-secret-encryption-v1",
         "system_config_model_profiles_v1",
+        "system_config_model_profile_output_budget_env_v1",
+        "system_config_model_profile_output_budget_v1",
+        "workspace_model_profile_output_budget_v1",
         "system_config_secret_encryption_v1",
     )
 
     assert app_text.count("run_startup_migrations()") == 1
-    assert runner_text.index("system-config-model-profiles-v1") < runner_text.index(
+    assert runner_text.index("system-config-model-profile-output-budget-env-v1") < runner_text.index(
+        "system-config-model-profiles-v1"
+    ) < runner_text.index(
+        "system-config-model-profile-output-budget-v1"
+    ) < runner_text.index(
+        "workspace-model-profile-output-budget-v1"
+    ) < runner_text.index(
         "system-config-secret-encryption-v1"
     )
     for script_name in ("deploy.sh", "migrate.sh", "preflight.sh", "backup.sh"):

@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import posixpath
 import shutil
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 
 CANONICAL_PROJECT_ROOT = "/app/.onto-runtime"
@@ -21,6 +23,16 @@ _LEGACY_CHAT_VALUES = {"", "./data/chats", "/app/data/chats"}
 _LEGACY_EXECUTION_VALUES = {"", "./data/executions", "/app/data/executions"}
 _LEGACY_ARCHIVE_NAME = "legacy-backend-data.tar.gz"
 _LEGACY_CONTAINER_WORKDIR = "/app"
+logger = logging.getLogger(__name__)
+
+
+def _configure_cli_logging(stream: TextIO) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -393,6 +405,7 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_cli_logging(sys.stdout)
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--report", type=Path)
@@ -403,8 +416,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.print_legacy_export_paths:
         resolved = resolve_legacy_container_storage_paths(args.root)
-        print("CHAT_STORAGE_DIR={}".format(resolved["chat_storage_dir"]))
-        print("EXECUTION_STORAGE_DIR={}".format(resolved["execution_storage_dir"]))
+        logger.info("CHAT_STORAGE_DIR={}".format(resolved["chat_storage_dir"]))
+        logger.info("EXECUTION_STORAGE_DIR={}".format(resolved["execution_storage_dir"]))
         return 0
     if args.report is None:
         raise SystemExit("--report is required unless --print-legacy-export-paths is used")

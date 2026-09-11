@@ -140,13 +140,20 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
     EXISTING_INSTALL=false
     for marker in \
         "${INSTALL_DIR}/VERSION" \
-        "${INSTALL_DIR}/deploy/state/current.env" \
-        "${INSTALL_DIR}/backend/.env"; do
+        "${INSTALL_DIR}/deploy/state/current.env"; do
         if [ -e "${marker}" ]; then
             EXISTING_INSTALL=true
             break
         fi
     done
+    if [ "${EXISTING_INSTALL}" = false ]; then
+        for marker in "${INSTALL_DIR}/.onto-runtime" "${INSTALL_DIR}/.onto-auth"; do
+            if [ -d "${marker}" ] && find "${marker}" -mindepth 1 \( -type f -o -type l \) -print -quit | grep -q .; then
+                EXISTING_INSTALL=true
+                break
+            fi
+        done
+    fi
     if [ "${EXISTING_INSTALL}" = true ]; then
         [ -f "${SCRIPT_DIR}/upgrade.sh" ] \
             || die "Existing installation detected but upgrade.sh is missing"

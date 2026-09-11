@@ -1431,6 +1431,7 @@ def test_registered_migrations_mount_active_volumes_in_one_shot_containers(tmp_p
         flattened = " ".join(call)
         assert "consumer-runtime-data:/release/.onto-runtime:ro" in flattened
         assert "consumer-auth-data:/release/.onto-auth:ro" in flattened
+        assert sum(value.endswith(":/release/backend:ro") for value in call) == 1
         assert ":/deploy-tools:ro" in flattened
     assert any(any(value.endswith("migrate_auth_workspace.py") for value in call) for call in runs)
     assert any(any(value.endswith("migrate_persistent_storage.py") for value in call) for call in runs)
@@ -1457,6 +1458,14 @@ def test_registered_migrations_mount_active_storage_read_write_only_after_stop_c
         flattened = " ".join(call)
         assert "consumer-runtime-data:/release/.onto-runtime:rw" in flattened
         assert "consumer-auth-data:/release/.onto-auth:rw" in flattened
+        writes_backend = any(
+            value.endswith(("migrate_persistent_storage.py", "migrate_system_config.py"))
+            for value in call
+        )
+        expected_access = "rw" if writes_backend else "ro"
+        assert sum(
+            value.endswith(f":/release/backend:{expected_access}") for value in call
+        ) == 1
 
 
 def test_release_state_write_preserves_versioned_active_volume_pointer(tmp_path):

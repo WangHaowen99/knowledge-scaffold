@@ -109,9 +109,40 @@ MIGRATION_DOCKER_ARGS=(
     -v "${REPORT_HOST_DIR}:/migration-reports:rw"
     -v "${BACKUP_ROOT}:/migration-backups:rw"
 )
+# The persistent-storage and system-config utilities use same-directory
+# temporary files for atomic replacements in backend/. A single-file bind
+# mount cannot replace its mount point, so give only those two invocations a
+# writable backend directory during apply. Dry-run and the other migrations
+# keep the release source read-only.
+STORAGE_MIGRATION_DOCKER_ARGS=("${MIGRATION_DOCKER_ARGS[@]}")
+STORAGE_BACKEND_MOUNT_REPLACED=false
+for index in "${!STORAGE_MIGRATION_DOCKER_ARGS[@]}"; do
+    if [ "${STORAGE_MIGRATION_DOCKER_ARGS[$index]}" = "${BUNDLE_ROOT}/backend:/release/backend:ro" ]; then
+        STORAGE_MIGRATION_DOCKER_ARGS[$index]="${BUNDLE_ROOT}/backend:/release/backend:${DATA_ACCESS}"
+        STORAGE_BACKEND_MOUNT_REPLACED=true
+        break
+    fi
+done
+if [ "${STORAGE_BACKEND_MOUNT_REPLACED}" != true ]; then
+    die "Persistent-storage migration backend mount was not found"
+fi
+SYSTEM_CONFIG_DOCKER_ARGS=("${MIGRATION_DOCKER_ARGS[@]}")
+SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED=false
+for index in "${!SYSTEM_CONFIG_DOCKER_ARGS[@]}"; do
+    if [ "${SYSTEM_CONFIG_DOCKER_ARGS[$index]}" = "${BUNDLE_ROOT}/backend:/release/backend:ro" ]; then
+        SYSTEM_CONFIG_DOCKER_ARGS[$index]="${BUNDLE_ROOT}/backend:/release/backend:${DATA_ACCESS}"
+        SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED=true
+        break
+    fi
+done
+if [ "${SYSTEM_CONFIG_BACKEND_MOUNT_REPLACED}" != true ]; then
+    die "System-config migration backend mount was not found"
+fi
 if [ -n "${LEGACY_BACKUP_DIR}" ]; then
     require_dir "${LEGACY_BACKUP_DIR}"
     MIGRATION_DOCKER_ARGS+=(-v "${LEGACY_BACKUP_DIR}:/legacy-backup:ro")
+    STORAGE_MIGRATION_DOCKER_ARGS+=(-v "${LEGACY_BACKUP_DIR}:/legacy-backup:ro")
+    SYSTEM_CONFIG_DOCKER_ARGS+=(-v "${LEGACY_BACKUP_DIR}:/legacy-backup:ro")
 fi
 
 AUTH_ARGS=(
@@ -129,6 +160,7 @@ STORAGE_ARGS=(
 SYSTEM_CONFIG_ARGS=(
     --root /release
     --report "/migration-reports/$(basename "${SYSTEM_CONFIG_REPORT}")"
+    --backup-root /migration-backups/system-config
 )
 BACKEND_MIGRATION_ARGS=(
     --runtime-root /release/.onto-runtime
@@ -152,9 +184,9 @@ fi
 # Every registered migration sees the same active bind/volume data roots.
 docker run "${MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
     python /deploy-tools/migrate_auth_workspace.py "${AUTH_ARGS[@]}"
-docker run "${MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
+docker run "${STORAGE_MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
     python /deploy-tools/migrate_persistent_storage.py "${STORAGE_ARGS[@]}"
-docker run "${MIGRATION_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
+docker run "${SYSTEM_CONFIG_DOCKER_ARGS[@]}" "${BACKEND_IMAGE}" \
     python /deploy-tools/migrate_system_config.py "${SYSTEM_CONFIG_ARGS[@]}"
 docker run "${MIGRATION_DOCKER_ARGS[@]}" \
     --env-file "${BUNDLE_ROOT}/backend/.env" \

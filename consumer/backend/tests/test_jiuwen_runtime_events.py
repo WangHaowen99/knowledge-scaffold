@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import unittest
+from builtins import ExceptionGroup
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -197,6 +198,30 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(error.error_code, "MODEL_CONNECTION_ERROR")
                 self.assertEqual(error.source, "model")
                 self.assertTrue(error.retriable)
+
+    def test_coalescing_key_is_named_and_hashable(self):
+        from agent.runtime.jiuwen_events import JiuwenRuntimeEventBridge
+
+        event = RuntimeEvent(
+            event_type="token.delta",
+            status="running",
+            run_id="run-coalescing-key",
+            payload={"channel": "content", "iteration": 2, "call_index": 3},
+            source={"node": "node-a", "component": "component-a"},
+            span_key="span-key",
+            parent_key="parent-key",
+            trace_id="trace-id",
+            span_id="span-id",
+            parent_span_id="parent-span-id",
+        )
+
+        key = JiuwenRuntimeEventBridge._coalescing_key(event)
+
+        self.assertIsNotNone(key)
+        self.assertIsInstance(key, tuple)
+        self.assertEqual(key.event_type, "token.delta")
+        self.assertEqual(key.channel, "content")
+        self.assertEqual(len({key, key}), 1)
 
     def test_resumable_context_trims_incomplete_tool_call_suffix(self):
         messages = [
@@ -1222,6 +1247,167 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             "RUNTIME_EVENT_BUFFER_FULL",
         )
         self.assertIsNone(closed)
+
+    async def test_high_frequency_deltas_are_coalesced_without_losing_critical_events(self):
+        from agent.runtime.jiuwen_events import JiuwenRuntimeEventBridge
+
+        bridge = JiuwenRuntimeEventBridge(
+            _context("run-coalesced-deltas"),
+            max_buffer_size=3,
+        )
+        expected_text = "".join(str(index % 10) for index in range(5000))
+        producer_errors = []
+
+        def burst() -> None:
+            try:
+                for index in range(5000):
+                    bridge.token_callback(
+                        "content",
+                        str(index % 10),
+                        {"iteration": 1, "call_index": 1},
+                    )
+                bridge.protocol_event(
+                    "tool.finished",
+                    {
+                        "tool_name": "lookup",
+                        "tool_call_id": "tool-01",
+                        "status": "completed",
+                        "output_preview": "result",
+                    },
+                )
+            except BaseException as exc:  # pragma: no cover - regression signal
+                producer_errors.append(exc)
+
+        worker = threading.Thread(target=burst)
+        worker.start()
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+
+        bridge.finish(
+            bridge.turn_finished(
+                "completed",
+                {"final_output": expected_text},
+            )
+        )
+        bridge.close()
+
+        events = []
+        while True:
+            event = await asyncio.wait_for(bridge.get(), timeout=2)
+            if event is None:
+                break
+            events.append(event)
+
+        self.assertEqual(producer_errors, [])
+        token_events = [event for event in events if event.event_type == "token.delta"]
+        self.assertEqual(len(token_events), 2)
+        self.assertEqual(
+            "".join(event.payload["text"] for event in token_events),
+            expected_text,
+        )
+        public_token_events = [
+            PublicEventAdapter().adapt(event)
+            for event in token_events
+        ]
+        self.assertEqual(
+            "".join(
+                draft.payload["text"]
+                for draft in public_token_events
+                if draft is not None
+            ),
+            expected_text,
+        )
+        self.assertEqual(
+            sum(event.event_type == "tool.finished" for event in events),
+            1,
+        )
+        self.assertEqual(events[-1].event_type, "turn.finished")
+        self.assertEqual(events[-1].status, "completed")
+
+    async def test_dense_deltas_preserve_runtime_error_terminal(self):
+        class DenseFailingEngine:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            async def arun(self, state, **kwargs):
+                token_callback = kwargs["token_callback"]
+                for index in range(5000):
+                    token_callback(
+                        "content",
+                        str(index % 10),
+                        {"iteration": 1, "call_index": 1},
+                    )
+                raise ValueError("synthetic runtime failure")
+
+        runtime = JiuwenAsyncAgentRuntime(
+            agent_config=SimpleNamespace(),
+            engine_factory=DenseFailingEngine,
+            max_event_buffer_size=3,
+        )
+        events = [
+            event
+            async for event in runtime.astream(_context("run-dense-error"))
+        ]
+
+        token_events = [event for event in events if event.event_type == "token.delta"]
+        self.assertEqual(len(token_events), 2)
+        self.assertEqual(
+            len("".join(event.payload["text"] for event in token_events)),
+            5000,
+        )
+        terminal = events[-1]
+        self.assertEqual(terminal.event_type, "turn.finished")
+        self.assertEqual(terminal.status, "failed")
+        self.assertEqual(terminal.payload["error"]["error_code"], "INTERNAL_ERROR")
+
+    async def test_delta_coalescing_keeps_intervening_protocol_event_order(self):
+        from agent.runtime.jiuwen_events import JiuwenRuntimeEventBridge
+
+        bridge = JiuwenRuntimeEventBridge(
+            _context("run-coalesced-order"),
+            max_buffer_size=4,
+        )
+        bridge.token_callback(
+            "content",
+            "before",
+            {"iteration": 1, "call_index": 1},
+        )
+        bridge.protocol_event(
+            "tool.progress",
+            {
+                "tool_name": "lookup",
+                "tool_call_id": "tool-01",
+                "message": "middle",
+            },
+        )
+        bridge.token_callback(
+            "content",
+            "after",
+            {"iteration": 1, "call_index": 1},
+        )
+        bridge.finish(bridge.turn_finished("completed", {"final_output": "beforeafter"}))
+        bridge.close()
+
+        events = []
+        while True:
+            event = await asyncio.wait_for(bridge.get(), timeout=2)
+            if event is None:
+                break
+            events.append(event)
+
+        relevant = [
+            (event.event_type, event.payload.get("text"))
+            for event in events
+            if event.event_type in {"token.delta", "tool.progress"}
+        ]
+        self.assertEqual(
+            relevant,
+            [
+                ("token.delta", "before"),
+                ("tool.progress", None),
+                ("token.delta", "after"),
+            ],
+        )
 
     async def test_closing_stream_cancels_and_cleans_producer(self):
         started = asyncio.Event()

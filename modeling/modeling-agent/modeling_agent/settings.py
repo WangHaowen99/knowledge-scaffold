@@ -38,9 +38,18 @@ class Settings:
     llm_extra_body_json: str = "{}"
     llm_first_chunk_timeout_seconds: float = 120.0
     llm_idle_timeout_seconds: float = 60.0
+    leader_output_tokens: int = 8_192
+    analyst_output_tokens: int = 8_192
+    script_output_tokens: int = 8_192
+    # 目标和流程需要生成完整的结构化候选，不能复用短摘要预算。
+    goal_output_tokens: int = 8_192
+    summary_output_tokens: int = 1_024
     context_max_messages: int = 64
     context_window_messages: int = 48
     context_window_rounds: int = 10
+    # requiredText 语义守卫支持分阶段上线：off 仅保留兼容行为，observe
+    # 记录约束但不阻断，enforce 在模型未确认约束时重新提示并生成可操作卡片。
+    required_text_guard_mode: str = "enforce"
 
     @property
     def runtime_db(self) -> Path:
@@ -77,9 +86,19 @@ class Settings:
             llm_idle_timeout_seconds=_number(
                 "MODELING_LLM_IDLE_TIMEOUT_SECONDS", 60.0, 10.0, 300.0,
             ),
+            leader_output_tokens=_integer("MODELING_LEADER_OUTPUT_TOKENS", 8_192, 1_024, 32_768),
+            analyst_output_tokens=_integer("MODELING_ANALYST_OUTPUT_TOKENS", 8_192, 2_048, 16_384),
+            script_output_tokens=_integer("MODELING_SCRIPT_OUTPUT_TOKENS", 8_192, 2_048, 32_768),
+            goal_output_tokens=_integer("MODELING_GOAL_OUTPUT_TOKENS", 8_192, 2_048, 16_384),
+            summary_output_tokens=_integer("MODELING_SUMMARY_OUTPUT_TOKENS", 1_024, 512, 4_096),
             context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 200),
             context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 160),
             context_window_rounds=_integer("MODELING_CONTEXT_WINDOW_ROUNDS", 10, 4, 30),
+            required_text_guard_mode=(
+                os.getenv("MODELING_REQUIRED_TEXT_GUARD_MODE", "enforce").strip().lower()
+                if os.getenv("MODELING_REQUIRED_TEXT_GUARD_MODE", "enforce").strip().lower()
+                in {"off", "observe", "enforce"} else "enforce"
+            ),
         )
 
     def with_runtime_llm(self, config: dict[str, object]) -> "Settings":
@@ -119,4 +138,5 @@ class Settings:
                 "windowRounds": self.context_window_rounds,
                 "reloadArchivedHistory": False,
             },
+            "requiredTextGuardMode": self.required_text_guard_mode,
         }

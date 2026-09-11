@@ -27,6 +27,7 @@ from .job_store import (
     TERMINAL_ATTEMPT_STATUSES,
     TERMINAL_JOB_STATUSES,
     JobStoreConflict,
+    JobStoreError,
     LeaseConflict,
     OptimisticLockError,
     SolverJobStore,
@@ -1361,6 +1362,20 @@ class DurableJobOrchestrator:
                         logger.debug(
                             "Cancellation lease was already released or superseded"
                         )
+
+    def finish_cancellation(
+        self,
+        job: Mapping[str, Any],
+        *,
+        workspace_id: str,
+        owner_id: str,
+    ) -> dict[str, Any]:
+        """Complete a previously reserved cancellation through the public API."""
+        return self._finish_cancellation(
+            job,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+        )
 
     def recover_once(
         self, *, workspace_id: str, owner_id: str
