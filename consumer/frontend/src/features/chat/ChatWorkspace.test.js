@@ -273,7 +273,7 @@ test('solver candidate results use the full message width without wrapping rows'
   );
   assert.match(
     solverCssSource,
-    /\.mwr \.solver-route-batches\s*\{[^}]*white-space:\s*nowrap/,
+    /\.mwr \.solver-candidate-metrics dd\s*\{[^}]*white-space:\s*nowrap/,
   );
   assert.match(
     solverCssSource,

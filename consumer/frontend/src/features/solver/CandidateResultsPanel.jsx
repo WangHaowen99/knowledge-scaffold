@@ -9,79 +9,69 @@ import './solver.css';
 
 const cleanText = (value) => String(value ?? '').trim();
 
-const batchLabel = (itemId) => {
-  const text = cleanText(itemId);
-  const match = text.match(/(?:^|[_-])0*(\d+)$/u);
-  return match ? String(Number(match[1])) : text;
+// Artifact metrics are integers the solver multiplied by its own metric scale, so
+// the business number is value / scale shown to as many decimals as the scale holds.
+const metricText = (value, descriptor) => {
+  const fractionDigits = Math.max(0, Math.round(Math.log10(descriptor.scale)));
+  const amount = (value / descriptor.scale).toLocaleString('zh-CN', {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  });
+  // Percentages read wrong with a separator; every other unit is a noun.
+  return descriptor.unit === '%' ? `${amount}%` : `${amount} ${descriptor.unit}`;
 };
 
-const batchList = (itemIds) => (
-  itemIds.length > 0 ? itemIds.map(batchLabel).join('、') : '无'
-);
-
-const technicalValue = (value) => {
-  if (value == null || value === '') return '—';
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
-  }
-  try { return JSON.stringify(value); } catch { return '—'; }
-};
-
-function TechnicalDetails({ row }) {
-  const metrics = Object.entries(row.metrics).sort(([left], [right]) => left.localeCompare(right));
-  return (
-    <details className="solver-candidate-technical">
-      <summary>技术详情</summary>
-      <dl>
-        <div><dt>候选 ID</dt><dd><code>{row.candidateId}</code></dd></div>
-        <div><dt>校验状态</dt><dd>{row.validationStatus}</dd></div>
-        {metrics.map(([key, value]) => (
-          <div key={key}><dt>{key}</dt><dd><code>{technicalValue(value)}</code></dd></div>
-        ))}
-        {row.rejectionReasons.length > 0 && (
-          <div><dt>拒绝原因</dt><dd>{row.rejectionReasons.join('、')}</dd></div>
-        )}
-      </dl>
-    </details>
-  );
-}
+// The winner leads so the first row read is the baseline every other row is compared
+// against; the rest keep the combination order the artifact already guarantees.
+const comparisonOrder = (rows) => [
+  ...rows.filter((row) => row.selected),
+  ...rows.filter((row) => !row.selected),
+];
 
 export function CandidateResultsTable({ normalized }) {
-  const option0 = normalized.optionLabels.OPTION_0;
-  const option1 = normalized.optionLabels.OPTION_1;
+  const metrics = normalized.metricDisplay;
+  const metricHeading = metrics.map((descriptor) => descriptor.label).join(' / ');
   return (
     <div className="solver-candidate-table-wrap">
       <table className="solver-candidate-table" aria-label={`候选方案，共 ${normalized.candidateCount} 种`}>
         <colgroup>
           <col className="solver-candidate-col-number" />
-          <col className="solver-candidate-col-route" />
-          <col className="solver-candidate-col-route" />
+          {metrics.length > 0 && <col className="solver-candidate-col-metrics" />}
           <col className="solver-candidate-col-sequence" />
         </colgroup>
         <thead>
           <tr>
             <th scope="col">组合</th>
-            <th scope="col"><span className="solver-route-swatch is-option-0" />{option0}批次</th>
-            <th scope="col"><span className="solver-route-swatch is-option-1" />{option1}批次</th>
+            {metrics.length > 0 && <th scope="col">{metricHeading}</th>}
             <th scope="col">1—{normalized.itemIds.length} 批路线序列</th>
           </tr>
         </thead>
         <tbody>
-          {normalized.rows.map((row) => (
+          {comparisonOrder(normalized.rows).map((row) => (
             <tr className={`solver-candidate-row${row.selected ? ' is-selected' : ''}`}
               key={row.candidateId} data-combination-no={row.combinationNo}
               data-selected={row.selected ? 'true' : 'false'}>
               <td>
                 <span className="solver-combination-number">{row.combinationNo}</span>
                 {row.selected && <span className="solver-winner-label"><Trophy size={11} />最优方案</span>}
-                <TechnicalDetails row={row} />
+                {!row.eligible && <span className="solver-infeasible-label"><ShieldAlert size={11} />不可行</span>}
               </td>
-              <td className="solver-route-batches is-option-0">
-                {batchList(row.optionItemIds.OPTION_0)}
-              </td>
-              <td className="solver-route-batches is-option-1">
-                {batchList(row.optionItemIds.OPTION_1)}
-              </td>
+              {metrics.length > 0 && (
+                <td>
+                  <dl className="solver-candidate-metrics">
+                    {metrics.map((descriptor) => {
+                      const value = row.metrics[descriptor.key];
+                      const adverse = descriptor.sense === 'maximize' ? value < 0 : value > 0;
+                      return (
+                        <div className={adverse ? 'is-adverse' : undefined} key={descriptor.key}>
+                          <dt>{descriptor.label}</dt>
+                          <dd>{metricText(value, descriptor)}</dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </td>
+              )}
               <td>
                 <div className="solver-route-sequence">
                   {row.assignment.map((option, index) => (
@@ -173,7 +163,7 @@ export default function CandidateResultsPanel({ result }) {
     <div className={`solver-candidate-results state-${state.kind}`}>
       <header className="solver-candidate-heading">
         <span><ListChecks size={15} />全部候选方案</span>
-        {state.data && <small>{state.data.candidateCount} 种 · 按组合号排序</small>}
+        {state.data && <small>{state.data.candidateCount} 种 · 最优方案置顶</small>}
       </header>
       {state.kind === 'loading' && (
         <div className="solver-candidate-state" role="status">

@@ -59,8 +59,6 @@ test('candidate results use business combination order and preserve technical ra
   const winner = normalized.rows.find((row) => row.selected);
   assert.equal(winner.combinationNo, 10);
   assert.equal(winner.metrics.candidate_rank, 5);
-  assert.deepEqual(winner.optionItemIds.OPTION_0, ['batch_1', 'batch_2', 'batch_3', 'batch_4']);
-  assert.deepEqual(winner.optionItemIds.OPTION_1, ['batch_5', 'batch_6', 'batch_7', 'batch_8', 'batch_9']);
   assert.deepEqual(winner.sequenceLabels, [
     '柴油加氢', '柴油加氢', '柴油加氢', '柴油加氢',
     '蜡油加氢', '蜡油加氢', '蜡油加氢', '蜡油加氢', '蜡油加氢',
@@ -75,6 +73,64 @@ test('candidate results reject incomplete numbering and winner drift', () => {
   const winnerDrift = artifact();
   winnerDrift.candidates.find((row) => row.selected).selected = false;
   assert.throws(() => normalizeCandidateResults(winnerDrift), /selected candidate/i);
+});
+
+const described = () => {
+  const payload = artifact();
+  // Scaled integers, as the solver stores them: the descriptors below divide by
+  // 100. Values are synthetic round numbers, only their shape matters here.
+  payload.candidates.forEach((candidate, index) => {
+    candidate.metrics.primary_score = 900000 - index * 1000;
+    candidate.metrics.safety_margin = index === 0 ? -500 : 250;
+  });
+  payload.metric_display = [
+    { key: 'primary_score', label: '利润', unit: '元', scale: 100, sense: 'maximize' },
+    { key: 'safety_margin', label: '最小余量', unit: '%', scale: 100, sense: 'maximize' },
+  ];
+  return payload;
+};
+
+test('candidate results carry the scale and unit needed to compare solver metrics', () => {
+  const normalized = normalizeCandidateResults(described());
+
+  assert.deepEqual(normalized.metricDisplay.map((descriptor) => descriptor.key), [
+    'primary_score', 'safety_margin',
+  ]);
+  assert.deepEqual(normalized.metricDisplay[0], {
+    key: 'primary_score', label: '利润', unit: '元', scale: 100, sense: 'maximize',
+  });
+});
+
+test('candidate results stay valid when the artifact describes no metrics', () => {
+  const normalized = normalizeCandidateResults(artifact());
+
+  assert.deepEqual(normalized.metricDisplay, []);
+});
+
+test('candidate results reject metric descriptors that cannot be rendered', () => {
+  const badScale = described();
+  badScale.metric_display[0].scale = 0;
+  assert.throws(() => normalizeCandidateResults(badScale), /metric display scale/i);
+
+  const badSense = described();
+  badSense.metric_display[0].sense = 'unknown';
+  assert.throws(() => normalizeCandidateResults(badSense), /metric display sense/i);
+
+  const duplicated = described();
+  duplicated.metric_display[1].key = 'primary_score';
+  assert.throws(() => normalizeCandidateResults(duplicated), /metric display keys/i);
+
+  const absent = described();
+  absent.metric_display[0].key = 'absent_metric';
+  assert.throws(() => normalizeCandidateResults(absent), /metric display value/i);
+
+  const unknownField = described();
+  unknownField.metric_display[0].precision = 2;
+  assert.throws(() => normalizeCandidateResults(unknownField), /metric display fields/i);
+
+  const unknownTopLevel = described();
+  unknownTopLevel.metric_scale = 100;
+  assert.throws(() => normalizeCandidateResults(unknownTopLevel), /artifact fields/i);
 });
 
 test('candidate results reject unknown options and duplicate technical ranks', () => {

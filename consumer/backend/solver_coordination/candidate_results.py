@@ -27,6 +27,18 @@ _OPTIONS = ("OPTION_0", "OPTION_1")
 _SWITCH_ID_RE = re.compile(
     r"^(OPTION_[01])_TO_(OPTION_[01])_K(?P<switch>[0-9]{4})$"
 )
+_DOMAIN_PROFILE_ID = "refinery_route.v1"
+_METRIC_DISPLAY_FIELDS = {"key", "label", "unit", "scale", "sense"}
+_METRIC_SENSES = {"maximize", "minimize"}
+# The refinery route fact worker reports profit in CNY and the tightest capacity
+# headroom in percentage points; the ordered binary route profile then stores both
+# as integers multiplied by domain_evaluation.metric_scale. Presentation needs the
+# scale and the unit to turn those integers back into business numbers, so the
+# artifact carries them instead of letting each reader rediscover the convention.
+_REFINERY_ROUTE_METRIC_DISPLAY = (
+    ("primary_score", "利润", "元", "maximize"),
+    ("safety_margin", "最小余量", "%", "maximize"),
+)
 _FIELDS = {
     "schema_version",
     "problem_digest",
@@ -38,7 +50,11 @@ _FIELDS = {
     "candidate_count",
     "selected_candidate_id",
     "candidates",
+    "metric_display",
 }
+# Artifacts persisted before metric display existed omit the field entirely; they
+# must keep loading, and to_dict must keep reproducing their stored digest.
+_REQUIRED_FIELDS = _FIELDS - {"metric_display"}
 _CANDIDATE_FIELDS = {
     "combination_no",
     "candidate_id",
@@ -63,6 +79,7 @@ class CandidateResultsArtifact:
     selected_candidate_id: str | None
     candidates: tuple[Mapping[str, Any], ...]
     schema_version: str = CANDIDATE_RESULTS_SCHEMA_VERSION
+    metric_display: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema_version != CANDIDATE_RESULTS_SCHEMA_VERSION:
@@ -109,7 +126,41 @@ class CandidateResultsArtifact:
         if selected_id is not None:
             selected_id = _required_text(selected_id, "selected_candidate_id")
         object.__setattr__(self, "selected_candidate_id", selected_id)
+        object.__setattr__(
+            self, "metric_display", _freeze_array(self.metric_display, "metric_display")
+        )
         self._validate_candidates()
+        self._validate_metric_display()
+
+    def _validate_metric_display(self) -> None:
+        keys: list[str] = []
+        for descriptor in self.metric_display:
+            if (
+                not isinstance(descriptor, Mapping)
+                or set(descriptor) != _METRIC_DISPLAY_FIELDS
+            ):
+                raise SolverContractError("candidate metric display fields are invalid")
+            key = _required_text(descriptor.get("key"), "metric_display.key")
+            _required_text(descriptor.get("label"), "metric_display.label")
+            _required_text(descriptor.get("unit"), "metric_display.unit")
+            scale = descriptor.get("scale")
+            if isinstance(scale, bool) or not isinstance(scale, int) or scale < 1:
+                raise SolverContractError("candidate metric display scale is invalid")
+            if descriptor.get("sense") not in _METRIC_SENSES:
+                raise SolverContractError("candidate metric display sense is invalid")
+            keys.append(key)
+        if len(set(keys)) != len(keys):
+            raise SolverContractError("candidate metric display keys are duplicated")
+        # A described metric that some candidate lacks would render as a blank cell,
+        # so require every row to carry an integer for it.
+        for candidate in self.candidates:
+            metrics = candidate["metrics"]
+            for key in keys:
+                value = metrics.get(key)
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise SolverContractError(
+                        "candidate metric display value is missing"
+                    )
 
     def _validate_candidates(self) -> None:
         numbers: list[int] = []
@@ -183,7 +234,7 @@ class CandidateResultsArtifact:
         return sha256_digest(self.to_dict())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "problem_digest": self.problem_digest,
             "candidate_source_kind": self.candidate_source_kind,
@@ -195,15 +246,22 @@ class CandidateResultsArtifact:
             "selected_candidate_id": self.selected_candidate_id,
             "candidates": _thaw_json(self.candidates),
         }
+        if self.metric_display:
+            payload["metric_display"] = _thaw_json(self.metric_display)
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "CandidateResultsArtifact":
-        if not isinstance(payload, Mapping) or set(payload) != _FIELDS:
+        if not isinstance(payload, Mapping) or not _REQUIRED_FIELDS <= set(payload) <= _FIELDS:
             raise SolverContractError("candidate results artifact fields are invalid")
         raw_candidates = payload.get("candidates")
         if not isinstance(raw_candidates, (list, tuple)):
             raise SolverContractError("candidate results candidates are invalid")
+        raw_display = payload.get("metric_display", ())
+        if not isinstance(raw_display, (list, tuple)):
+            raise SolverContractError("candidate metric display is invalid")
         return cls(
+            metric_display=tuple(raw_display),
             schema_version=payload.get("schema_version"),
             problem_digest=payload.get("problem_digest"),
             candidate_source_kind=payload.get("candidate_source_kind"),
@@ -331,6 +389,20 @@ def build_candidate_results(
         candidate_count=count,
         selected_candidate_id=selected_id,
         candidates=tuple(rows),
+        metric_display=_metric_display(problem),
+    )
+
+
+def _metric_display(problem: ProblemIR) -> tuple[Mapping[str, Any], ...]:
+    context = problem.parameters.get("domain_evaluation")
+    if not isinstance(context, Mapping) or context.get("profile_id") != _DOMAIN_PROFILE_ID:
+        return ()
+    scale = context.get("metric_scale")
+    if isinstance(scale, bool) or not isinstance(scale, int) or scale < 1:
+        raise SolverContractError("candidate metric display scale is invalid")
+    return tuple(
+        {"key": key, "label": label, "unit": unit, "scale": scale, "sense": sense}
+        for key, label, unit, sense in _REFINERY_ROUTE_METRIC_DISPLAY
     )
 
 

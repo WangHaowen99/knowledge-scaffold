@@ -14,7 +14,7 @@ const MAX_VALUE_VARIANTS = 256;
 // CSS class look reachable.
 const DYNAMIC_CLASSES = new Set([
   'hit-history', 'hit-live', 'hit-recent',
-  'is-forbidden', 'is-success', 'is-warning',
+  'is-forbidden', 'is-option-0', 'is-option-1', 'is-success', 'is-warning',
   'status-awaiting', 'status-cancelled', 'status-completed', 'status-error',
   'status-failed', 'status-finished', 'status-queued', 'status-running', 'status-success',
   'tone-success',
