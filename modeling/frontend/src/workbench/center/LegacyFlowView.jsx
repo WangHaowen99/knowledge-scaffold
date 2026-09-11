@@ -173,21 +173,16 @@ function Canvas({ graph, focusNode, controller, onZoom, editable = false, onDraf
     setReady(true);
   }, [initialized, sizes, graph, setNodes, instance]);
 
-  /* 只按宽度贴合会让纵向长图溢出画布：十几个节点竖排时，宽度铺满的缩放比必然让底部几节
-     跑到可视区外，首屏看不到流程的结尾。高度也参与取小，两个方向都装得下再居中。 */
+  /* 默认按宽度贴合，纵向可滚动——十几个节点竖排时若强行把高度也装进视口，缩放会掉到
+     三成以下，节点文字直接糊成一团。看全图是「查看全图」按钮的事，默认视图优先保证可读。
+     下限抬到 0.45：再小就读不出字了，宁可让用户滚动。 */
   const fitWidth = useCallback(() => {
     const bounds = instance.getNodesBounds(instance.getNodes());
     if (!bounds.width || !box.current) return;
     const width = box.current.clientWidth;
-    const height = box.current.clientHeight;
-    const byWidth = (width - 64) / bounds.width;
-    const byHeight = bounds.height > 0 ? (height - 64) / bounds.height : byWidth;
-    const zoom = Math.max(0.1, Math.min(1, Math.min(byWidth, byHeight)));
-    void instance.setViewport({
-      x: (width - bounds.width * zoom) / 2 - bounds.x * zoom,
-      y: Math.max(32, (height - bounds.height * zoom) / 2) - bounds.y * zoom,
-      zoom,
-    });
+    const zoom = Math.max(0.45, Math.min(1, (width - 64) / bounds.width));
+    void instance.setViewport({ x: (width - bounds.width * zoom) / 2 - bounds.x * zoom,
+      y: 32 - bounds.y * zoom, zoom });
   }, [instance]);
 
   useEffect(() => {
