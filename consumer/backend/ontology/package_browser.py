@@ -234,23 +234,16 @@ def _normalize_relative_parts(
 ) -> tuple[str, ...]:
     raw = str(raw_path or "").strip()
     normalized = raw.replace("\\", "/")
-    if (
-        not normalized
-        or normalized.startswith("/")
-        or _WINDOWS_DRIVE_PATTERN.match(normalized)
-        or "\x00" in normalized
-    ):
+    has_invalid_prefix = normalized.startswith("/") or bool(_WINDOWS_DRIVE_PATTERN.match(normalized))
+    if not normalized or has_invalid_prefix or "\x00" in normalized:
         raise PackageBrowserError("invalid_path", "Invalid file path")
 
     parts = tuple(normalized.split("/"))
     for index, part in enumerate(parts):
         is_final_part = index == len(parts) - 1
-        if (
-            not part
-            or part in {".", ".."}
-            or (part.startswith(".") and not (allow_hidden_file and is_final_part))
-            or part.lower() in EXCLUDED_DIRECTORY_NAMES
-        ):
+        is_hidden_disallowed = part.startswith(".") and not (allow_hidden_file and is_final_part)
+        is_excluded_directory = part.lower() in EXCLUDED_DIRECTORY_NAMES
+        if any((not part, part in {".", ".."}, is_hidden_disallowed, is_excluded_directory)):
             raise PackageBrowserError("invalid_path", "Invalid file path")
     return parts
 

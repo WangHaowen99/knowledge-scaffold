@@ -766,7 +766,7 @@ def get_workspace_mcp_endpoint_id(workspace_id: str) -> str:
             payload = _read_workspace_metadata_raw(paths.metadata_path)
             _validate_workspace_metadata_identity(resolved_workspace_id, payload)
             endpoint_id = validate_mcp_endpoint_id(payload.get("mcp_endpoint_id"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             raise WorkspaceMCPEndpointError(
                 "WORKSPACE_MCP_ENDPOINT_INVALID",
                 "工作空间 {} 的 mcp_endpoint_id 无效: {}".format(
@@ -1361,7 +1361,8 @@ def _list_workspaces_authoritative() -> List[Dict[str, Any]]:
             items.append(_workspace_to_public(payload, default_workspace_id=default_workspace_id))
         except WorkspacePathError:
             raise
-        except Exception:
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.warning("Skipping invalid workspace metadata at %s: %s", metadata_path, exc)
             continue
 
     items.sort(key=lambda item: (0 if item.get("is_default") else 1, item["name"].lower(), item["id"]))

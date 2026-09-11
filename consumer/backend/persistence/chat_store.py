@@ -1146,14 +1146,15 @@ class _AppendOnlyChatStore:
                 normalized_session_id,
                 normalized_run_id,
             )
-            if (
-                usage["run_count"] >= self._tool_output_limits.max_run_count
-                or usage["run_bytes"] + projected_size
-                > self._tool_output_limits.max_run_bytes
-                or usage["session_count"] >= self._tool_output_limits.max_session_count
-                or usage["session_bytes"] + projected_size
-                > self._tool_output_limits.max_session_bytes
-            ):
+            run_limit_reached = usage["run_count"] >= self._tool_output_limits.max_run_count
+            run_bytes_exceeded = (
+                usage["run_bytes"] + projected_size > self._tool_output_limits.max_run_bytes
+            )
+            session_limit_reached = usage["session_count"] >= self._tool_output_limits.max_session_count
+            session_bytes_exceeded = (
+                usage["session_bytes"] + projected_size > self._tool_output_limits.max_session_bytes
+            )
+            if any((run_limit_reached, run_bytes_exceeded, session_limit_reached, session_bytes_exceeded)):
                 logger.warning(
                     "Skipped tool output artifact above run/session quota session=%s run=%s",
                     normalized_session_id,

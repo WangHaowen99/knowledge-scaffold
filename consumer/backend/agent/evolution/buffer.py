@@ -94,8 +94,8 @@ def _file_lock(op_dir: Path):
         if fp is not None:
             try:
                 fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("proposal lock release failed: %s", exc, exc_info=True)
             fp.close()
         tlock.release()
 

@@ -716,7 +716,7 @@ def _run_with_live_logging(
 
     try:
         proc.wait(timeout=max(1, int(timeout_seconds)))
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         proc.kill()
         t_out.join(timeout=5)
         t_err.join(timeout=5)
@@ -725,7 +725,7 @@ def _run_with_live_logging(
             timeout=timeout_seconds,
             output="".join(stdout_lines),
             stderr="".join(stderr_lines),
-        )
+        ) from exc
 
     t_out.join(timeout=10)
     t_err.join(timeout=10)

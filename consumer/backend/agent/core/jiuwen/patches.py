@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import logging
 from typing import Any, Optional
 
 from .common import coerce_optional_int, read_field
+
+logger = logging.getLogger("jiuwen.patches")
 
 
 def patch_jiuwen_openai_reasoning_alias(openai_client_module: Any) -> None:
@@ -136,12 +139,13 @@ def _copy_or_set_jiuwen_field(target: Any, field_name: str, value: Any) -> Any:
     if callable(model_copy):
         try:
             return model_copy(update={field_name: value})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Jiuwen model copy failed for field %s: %s", field_name, exc, exc_info=True)
     try:
         setattr(target, field_name, value)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Jiuwen field assignment failed for %s: %s", field_name, exc, exc_info=True)
+        return target
     return target
 
 
@@ -161,7 +165,8 @@ def _read_jiuwen_usage_field(payload: Any, name: str, default: Optional[Any] = N
     if callable(model_dump):
         try:
             dumped = model_dump()
-        except Exception:
+        except Exception as exc:
+            logger.debug("Jiuwen model dump failed while reading %s: %s", name, exc, exc_info=True)
             dumped = None
         if isinstance(dumped, Mapping) and name in dumped:
             return dumped.get(name)

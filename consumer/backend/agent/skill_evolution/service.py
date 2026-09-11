@@ -612,7 +612,7 @@ class SkillEvolutionService:
             run_id = client.submit_run(trace_bytes, baseline_bytes, request_json)
         except Exception as exc:
             logger.warning("skill-evolution submit failed: %s", exc)
-            raise GateError("提交进化失败：{}".format(str(exc)[:200]))
+            raise GateError("提交进化失败：{}".format(str(exc)[:200])) from exc
 
         # Deterministic task_id from run_id (Python's str hash is randomized per
         # process via PYTHONHASHSEED — unsuitable for an identifier).
@@ -643,7 +643,7 @@ class SkillEvolutionService:
         try:
             self._store.create_task_if_no_pending(record)
         except PendingTaskExists as exc:
-            raise GateError(str(exc))
+            raise GateError(str(exc)) from exc
         return record
 
     # ------------------------------------------------------------- worker poll

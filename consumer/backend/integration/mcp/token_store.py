@@ -69,12 +69,13 @@ class MCPTokenStore:
         revoked = False
         with self._locked_document(mutating=True) as document:
             for item in document["tokens"]:
-                if (
-                    item.get("token_id") == token_id
-                    and item.get("username") == username
+                matches_token = item.get("token_id") == token_id
+                matches_owner = (
+                    item.get("username") == username
                     and item.get("workspace_id") == workspace_id
-                    and item.get("status") != "revoked"
-                ):
+                )
+                is_active = item.get("status") != "revoked"
+                if matches_token and matches_owner and is_active:
                     item["status"] = "revoked"
                     item["revoked_at"] = now
                     revoked = True

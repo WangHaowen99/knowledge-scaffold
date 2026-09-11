@@ -103,8 +103,8 @@ def ensure_user_personal_workspace(
             except ValueError as exc:
                 try:
                     personal_workspace = get_workspace(workspace_id)
-                except KeyError:
-                    raise exc
+                except KeyError as lookup_exc:
+                    raise ValueError(str(exc)) from lookup_exc
                 if personal_workspace.get("owner") == username:
                     break
                 if attempt == 8:
@@ -162,12 +162,13 @@ def _load_auth_usernames(auth_backend: Any) -> set[str]:
         if not isinstance(entry, dict):
             raise WorkspaceIdentityDirectoryUnavailableError()
         username = entry.get("username")
-        if (
+        invalid_username = (
             not isinstance(username, str)
             or not username
             or username != username.strip()
             or username in usernames
-        ):
+        )
+        if invalid_username:
             raise WorkspaceIdentityDirectoryUnavailableError()
         usernames.add(username)
     return usernames

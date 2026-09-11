@@ -313,7 +313,7 @@ async def _run_late_event_gate(
             )
         except EventPublishRejectedError as exc:
             if exc.duplicate_terminal:
-                raise RuntimeError("late non-terminal was classified as duplicate terminal")
+                raise RuntimeError("late non-terminal was classified as duplicate terminal") from exc
             rejected += 1
     after_writes = sum(
         snapshot.last_seq

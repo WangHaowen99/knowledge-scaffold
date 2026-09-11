@@ -102,7 +102,7 @@ def _connect(uri: str, username: str, password: str) -> Any:
     try:
         from neo4j import GraphDatabase
     except ImportError as exc:
-        raise SystemExit("neo4j driver is not installed; install backend/requirements.txt first") from exc
+        raise RuntimeError("neo4j driver is not installed; install backend/requirements.txt first") from exc
     return GraphDatabase.driver(uri, auth=(username, password))
 
 

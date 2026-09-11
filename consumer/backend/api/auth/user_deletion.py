@@ -621,22 +621,38 @@ def _read_reconciliation_document() -> dict[str, Any]:
             )
         record_id = item.get("id")
         username = item.get("username")
-        if (
-            not isinstance(record_id, str)
-            or not _OPERATION_ID_PATTERN.fullmatch(record_id)
-            or record_id in seen_ids
-            or not isinstance(username, str)
-            or not username
-            or username != normalize_username(username)
-            or username in seen_usernames
-            or not isinstance(item.get("status"), str)
-            or not item.get("status")
-            or not isinstance(item.get("identity_deleted"), bool)
-            or not isinstance(item.get("attempts"), int)
-            or int(item.get("attempts")) < 1
-            or not isinstance(item.get("completed_steps"), list)
-            or not isinstance(item.get("errors"), dict)
-        ):
+        valid_record_id = (
+            isinstance(record_id, str)
+            and bool(_OPERATION_ID_PATTERN.fullmatch(record_id))
+            and record_id not in seen_ids
+        )
+        valid_username = (
+            isinstance(username, str)
+            and bool(username)
+            and username == normalize_username(username)
+            and username not in seen_usernames
+        )
+        valid_status = isinstance(item.get("status"), str) and bool(item.get("status"))
+        valid_attempts = (
+            isinstance(item.get("attempts"), int)
+            and int(item.get("attempts")) >= 1
+        )
+        valid_identity_deleted = isinstance(item.get("identity_deleted"), bool)
+        valid_collections = (
+            isinstance(item.get("completed_steps"), list)
+            and isinstance(item.get("errors"), dict)
+        )
+        valid_record = all(
+            (
+                valid_record_id,
+                valid_username,
+                valid_status,
+                valid_attempts,
+                valid_identity_deleted,
+                valid_collections,
+            )
+        )
+        if not valid_record:
             raise UserDeletionReconciliationError(
                 "user deletion reconciliation 记录字段无效"
             )
