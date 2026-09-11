@@ -381,39 +381,48 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
     login = client.post("/auth/login", json={"username": "admin", "password": BOOTSTRAP_ADMIN_PASSWORD})
     assert login.status_code == 200
     data = login.json()
-    # 冻结契约 {token, user} 之上的加法扩展
-    assert set(data.keys()) == {"token", "user", "refresh_token", "expires_in"}
+    # access token remains in the response; refresh token is HttpOnly cookie only.
+    assert set(data.keys()) == {"token", "user", "expires_in"}
     assert data["user"] == {
         "username": "admin",
         "role": "admin",
         "password_change_required": False,
     }
     assert data["expires_in"] == 60
+    set_cookie = login.headers["set-cookie"]
+    assert "onto_refresh_token=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert " Secure" not in set_cookie
 
     # 拿到的 access token 能直接访问受保护接口。
     me = client.get("/auth/me", headers={"Authorization": f"Bearer {data['token']}"})
     assert me.status_code == 200
     assert me.json()["user"]["username"] == "admin"
 
-    refreshed = client.post("/auth/refresh", json={"refresh_token": data["refresh_token"]})
+    refreshed = client.post("/auth/refresh")
     assert refreshed.status_code == 200
     refreshed_data = refreshed.json()
-    assert set(refreshed_data.keys()) == {"token", "refresh_token", "expires_in"}
-    me2 = client.get("/auth/me", headers={"Authorization": f"Bearer {refreshed_data['token']}"})
+    assert set(refreshed_data.keys()) == {"token", "expires_in"}
+    me2 = client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {refreshed_data['token']}"}
+    )
     assert me2.status_code == 200
 
-    logout = client.post("/auth/logout", json={"refresh_token": refreshed_data["refresh_token"]})
+    logout = client.post("/auth/logout")
     assert logout.status_code == 200
     assert logout.json() == {"success": True}
-    revoked = client.post("/auth/refresh", json={"refresh_token": refreshed_data["refresh_token"]})
+    revoked = client.post("/auth/refresh")
     assert revoked.status_code == 401
     assert revoked.json() == {"error": "Unauthorized"}
 
-    missing_logout_token = client.post("/auth/logout", json={})
-    assert missing_logout_token.status_code == 400
+    missing_logout_token = client.post("/auth/logout")
+    assert missing_logout_token.status_code == 200
 
     # 上游拒绝（无效 refresh）→ 401，前端据此登出
-    rejected = client.post("/auth/refresh", json={"refresh_token": API_KEY})
+    rejected = client.post(
+        "/auth/refresh", headers={"Cookie": "onto_refresh_token=invalid-refresh"}
+    )
     assert rejected.status_code == 401
     assert rejected.json() == {"error": "Unauthorized"}
 
@@ -426,11 +435,44 @@ def test_login_wrong_password_remote_mode_contract(auth_server):
     assert response.json() == {"error": "Invalid credentials"}
 
 
+def test_refresh_cookie_uses_forwarded_browser_scheme_and_rejects_cross_origin(auth_server):
+    backend = RemoteAuthBackend(auth_server.base_url, admin_token=ADMIN_API_TOKEN)
+    client = TestClient(_build_consumer_app(backend))
+
+    secure_login = client.post(
+        "/auth/login",
+        json={"username": "admin", "password": BOOTSTRAP_ADMIN_PASSWORD},
+        headers={"X-Forwarded-Proto": "https"},
+    )
+    assert secure_login.status_code == 200
+    assert " Secure" in secure_login.headers["set-cookie"]
+
+    forwarded_origin_login = client.post(
+        "/auth/login",
+        json={"username": "admin", "password": BOOTSTRAP_ADMIN_PASSWORD},
+        headers={
+            "Origin": "http://localhost:6600",
+            "Host": "127.0.0.1:5055",
+            "X-Forwarded-Host": "localhost:6600",
+            "X-Forwarded-Proto": "http",
+        },
+    )
+    assert forwarded_origin_login.status_code == 200
+    assert " Secure" not in forwarded_origin_login.headers["set-cookie"]
+
+    rejected = client.post(
+        "/auth/refresh",
+        headers={"Origin": "https://example.com"},
+    )
+    assert rejected.status_code == 403
+    assert rejected.json() == {"error": "跨站认证请求被拒绝"}
+
+
 def test_refresh_route_backend_without_refresh_returns_503(tmp_path):
     # 后端未实现 refresh_tokens（如 AuthManager 契约测试后端）时，/auth/refresh 返回 503
     backend_without_refresh = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
     client = TestClient(_build_consumer_app(backend_without_refresh))
-    response = client.post("/auth/refresh", json={"refresh_token": API_KEY})
+    response = client.post("/auth/refresh")
     assert response.status_code == 503
     assert response.json() == {"error": "当前认证模式不支持刷新"}
 
