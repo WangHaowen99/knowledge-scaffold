@@ -43,12 +43,16 @@ def verified_package_execution(
         return
     root = Path(package_root)
     staging_parent = get_workspaces_root().resolve().parent / ".ontology-run-staging"
+    if not run_id or not workspace_id or not ontology_id:
+        raise SandboxUnavailableError("verified package staging boundary is invalid")
     if (
-        not run_id or not workspace_id or not ontology_id
-        or root.name != "ontology"
+        root.name != "ontology"
         or not root.parent.name.startswith("run-")
         or root.parent.parent != staging_parent
-        or any(path.is_symlink() for path in (root, root.parent, staging_parent))
+    ):
+        raise SandboxUnavailableError("verified package staging boundary is invalid")
+    if (
+        any(path.is_symlink() for path in (root, root.parent, staging_parent))
         or not root.is_dir()
     ):
         raise SandboxUnavailableError("verified package staging boundary is invalid")
@@ -71,10 +75,13 @@ def current_verified_package_execution(
     run_id: str, ontology_dir: Path | None,
 ) -> VerifiedPackageExecution | None:
     scope = _VERIFIED_PACKAGE.get()
-    if scope is not None and (
+    if scope is None:
+        return None
+    if (
         workspace_id != scope.workspace_id or ontology_id != scope.ontology_id
-        or run_id != scope.parent_run_id or ontology_dir is None
-        or Path(ontology_dir).resolve() != scope.package_root
+        or run_id != scope.parent_run_id
     ):
+        raise SandboxUnavailableError("verified package execution scope mismatch")
+    if ontology_dir is None or Path(ontology_dir).resolve() != scope.package_root:
         raise SandboxUnavailableError("verified package execution scope mismatch")
     return scope

@@ -1,5 +1,6 @@
 """Synthetic checks for the verified package handoff and its mount boundary."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -84,6 +85,7 @@ def test_unscoped_staging_path_still_cannot_escape_workspace(staged_package):
 @pytest.mark.parametrize("field,value", [
     ("workspace_id", "workspace_other"), ("ontology_id", "knowledge_package_other"),
     ("run_id", "run_other"), ("ontology_dir", None),
+    ("ontology_dir", Path("knowledge_package_other")),
 ])
 def test_verified_copy_cannot_cross_execution_scope(staged_package, field, value):
     with _scope(staged_package):
@@ -120,8 +122,11 @@ def test_failed_exec_releases_companion_and_clears_scope(staged_package):
     assert revisions._VERIFIED_PACKAGE.get() is None
 
 
-def test_handoff_rejects_a_symlink_to_another_staging_directory(staged_package):
+@pytest.mark.parametrize("parent_depth", [0, 1, 2])
+def test_handoff_rejects_a_symlink_to_another_staging_directory(staged_package, parent_depth):
     root = staged_package.root
+    for _ in range(parent_depth):
+        root = root.parent
     renamed = root.with_name("other")
     root.rename(renamed)
     root.symlink_to(renamed, target_is_directory=True)
@@ -129,3 +134,35 @@ def test_handoff_rejects_a_symlink_to_another_staging_directory(staged_package):
         with _scope(staged_package):
             pytest.fail("unsafe scope admitted")
     assert staged_package.calls == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_id", None), ("run_id", ""), ("workspace_id", ""), ("ontology_id", ""),
+])
+def test_handoff_rejects_missing_execution_identity(staged_package, field, value):
+    kwargs = dict(
+        workspace_id="workspace_demo", ontology_id="knowledge_package_demo", run_id="run_demo",
+    )
+    kwargs[field] = value
+    with pytest.raises(SandboxUnavailableError, match="staging boundary"):
+        with revisions.verified_package_execution(staged_package.root, **kwargs):
+            pytest.fail("incomplete scope admitted")
+    assert staged_package.calls == []
+    assert revisions._VERIFIED_PACKAGE.get() is None
+
+
+@pytest.mark.parametrize("relative_path,create", [
+    (".ontology-run-staging/run-demo/other", True),
+    (".ontology-run-staging/other/ontology", True),
+    ("other/run-demo/ontology", True),
+    (".ontology-run-staging/run-missing/ontology", False),
+])
+def test_handoff_rejects_invalid_staging_paths(staged_package, relative_path, create):
+    staged_package.root = staged_package.root.parents[2] / relative_path
+    if create:
+        staged_package.root.mkdir(parents=True)
+    with pytest.raises(SandboxUnavailableError, match="staging boundary"):
+        with _scope(staged_package):
+            pytest.fail("unsafe scope admitted")
+    assert staged_package.calls == []
+    assert revisions._VERIFIED_PACKAGE.get() is None
