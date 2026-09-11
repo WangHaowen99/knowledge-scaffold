@@ -71,14 +71,46 @@
 }
 
 .settings-admin-table-wrap {
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
   border: 1px solid var(--line, #e1e4ea);
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 .settings-admin-table {
-  min-width: 720px;
   margin: 0;
+  table-layout: fixed;
+  background: var(--surface-card, #fff);
+}
+
+.settings-workspace-table {
+  min-width: 720px;
+}
+
+.settings-user-table {
+  min-width: 640px;
+}
+
+.settings-workspace-table .settings-admin-col-identity { width: 260px; }
+.settings-workspace-table .settings-admin-col-owner { width: 130px; }
+.settings-workspace-table .settings-admin-col-members { width: 70px; }
+.settings-workspace-table .settings-admin-col-actions { width: 260px; }
+.settings-user-table .settings-admin-col-identity { width: auto; }
+.settings-user-table .settings-admin-col-role { width: 116px; }
+.settings-user-table .settings-admin-col-actions { width: 224px; }
+
+.settings-admin-table th {
+  background: var(--surface-subtle, #f7f8fa);
+}
+
+.settings-admin-table td {
+  height: 58px;
+  vertical-align: middle;
+}
+
+.settings-admin-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 .settings-admin-table td:first-child strong,
@@ -87,11 +119,29 @@
 }
 
 .settings-admin-table td:first-child small {
-  max-width: 380px;
+  max-width: 100%;
   margin-top: 4px;
   overflow: hidden;
   color: var(--ink2, #667085);
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-admin-identity-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.settings-admin-identity-line strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-admin-identity-line .tag,
+.settings-admin-tags .tag {
+  flex: none;
   white-space: nowrap;
 }
 
@@ -102,6 +152,8 @@
 
 .settings-admin-table td:last-child .settings-admin-row-actions {
   justify-content: flex-end;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .settings-admin-state {

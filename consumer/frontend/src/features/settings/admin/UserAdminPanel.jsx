@@ -254,16 +254,25 @@ export default function UserAdminPanel({ currentUser, canManage = true, request 
 
       {loading ? <div className="settings-admin-state" role="status">正在加载用户…</div> : (
         <div className="settings-admin-table-wrap">
-          <table className="dt settings-admin-table">
-            <thead><tr><th>用户名</th><th>角色</th><th>密码状态</th><th><span className="sr-only">操作</span></th></tr></thead>
+          <table className="dt settings-admin-table settings-user-table">
+            <colgroup>
+              <col className="settings-admin-col-identity" />
+              <col className="settings-admin-col-role" />
+              <col className="settings-admin-col-actions" />
+            </colgroup>
+            <thead><tr><th>用户名</th><th>角色</th><th><span className="sr-only">操作</span></th></tr></thead>
             <tbody>
               {users.map((user) => {
                 const policy = userActionPolicy(currentUser, user);
                 return (
                   <tr key={user.username}>
-                    <td><strong>{user.username}</strong>{policy.isSelf && <small>当前账号</small>}</td>
+                    <td>
+                      <div className="settings-admin-identity-line">
+                        <strong>{user.username}</strong>
+                        {policy.isSelf && <span className="tag tag-off">当前账号</span>}
+                      </div>
+                    </td>
                     <td><span className={`tag ${user.role === 'admin' ? 'tag-lang' : 'tag-off'}`}>{user.role === 'admin' ? '管理员' : '用户'}</span></td>
-                    <td>{user.password_change_required ? <span className="tag tag-draft">历史状态已忽略</span> : <span className="tag tag-ok">可直接登录</span>}</td>
                     <td>
                       <div className="settings-admin-row-actions">
                         <button className="btn btn-sm" type="button" disabled={busy || !policy.canResetPassword}
@@ -277,7 +286,7 @@ export default function UserAdminPanel({ currentUser, canManage = true, request 
                   </tr>
                 );
               })}
-              {!users.length && <tr><td colSpan={4}><div className="settings-admin-state">暂无用户</div></td></tr>}
+              {!users.length && <tr><td colSpan={3}><div className="settings-admin-state">暂无用户</div></td></tr>}
             </tbody>
           </table>
         </div>
