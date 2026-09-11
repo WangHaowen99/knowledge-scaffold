@@ -4,7 +4,7 @@ import type { DataDictTable, PackageSpec, SpecField, SpecObject, SpecRelation } 
 import { tableSourceFor } from './source-references.js';
 
 export type ObjectRelationSuggestionConfidence = 'high' | 'medium' | 'low';
-export type ObjectRelationSuggestionMatchMode = 'field_match' | 'same_row';
+export type ObjectRelationSuggestionMatchMode = 'field_match' | 'same_row' | 'shared_key';
 export type PreviousObjectRelationStatus = 'previous' | 'discarded' | 'needs_review';
 
 export interface PreviousObjectRelation {
@@ -98,13 +98,16 @@ export function suggestObjectRelations(
     if (!relation) return;
     const existingKey = relationKey(draft.sourceObject, draft.targetObject, relation);
     if (existing.has(existingKey)) return;
+    /* 指纹不含 matchMode：同一条关系可能被多个生成器各发现一次（共享键列和字段名匹配
+       经常指向同一对字段）。把发现方式算进身份，会让同一条关系出现两个候选，专家看到
+       重复项；而且两者评分随行数据此消彼长时，排序会无谓地翻转，指纹跟着变，之前的
+       「已拒绝」记录就失效了。身份只由关系本身决定，发现方式只影响评分。 */
     const candidateFingerprint = candidateHash({
       sourceObject: draft.sourceObject,
       targetObject: draft.targetObject,
       relation,
       sourceField: draft.sourceField ?? '',
       targetField: draft.targetField ?? '',
-      matchMode: draft.matchMode ?? '',
     });
     if (rejected.has(candidateFingerprint)) return;
     const candidate: ObjectRelationSuggestion = { ...draft, relation, candidateFingerprint };
@@ -132,6 +135,7 @@ export function suggestObjectRelations(
     });
   }
 
+  addSharedKeyCandidates(contexts, addDraft);
   for (const source of contexts) {
     for (const target of contexts) {
       if (source.object.key === target.object.key) continue;
@@ -176,6 +180,81 @@ export function collectPreviousObjectRelations(
     ...(relation.evidence?.length ? { evidence: safeEvidence(relation.evidence) } : {}),
     status: nextKeys.has(object.key) && nextKeys.has(relation.target) ? 'previous' : 'discarded',
   } satisfies PreviousObjectRelation)));
+}
+
+/* 星型 schema：多张表共享同一个键列，这是最强的关联证据，而且只看数据事实——
+   不依赖任何命名习惯。逐对的字段名猜测在中文对象名上必然落空：词干取自英文 key
+   （application_no → "application"），而对象叫《业务受理》；就算改用中文名，判据是
+   「对象名以词干结尾」，可中文命名是「计量点 + 方案」，关键词在前、后面缀「方案」，
+   照样不中。再叠加一层：共享键在星型结构里既是本表主键又是指向主表的外键，
+   而字段匹配那条遇到本表主键直接跳过，最明显的线索被两道关卡一前一后挡死（见 #47）。 */
+function addSharedKeyCandidates(
+  contexts: ObjectContext[],
+  addDraft: (draft: CandidateDraft) => void,
+): void {
+  const byColumn = new Map<string, KeyHolder[]>();
+  for (const context of contexts) {
+    for (const field of context.object.fields ?? []) {
+      if (!isKeyLikeField(context.object, field)) continue;
+      const label = String(field.sourceColumn || field.key).trim();
+      const column = normalized(label);
+      if (!column) continue;
+      const holders = byColumn.get(column) ?? [];
+      holders.push({ context, field, label });
+      byColumn.set(column, holders);
+    }
+  }
+  for (const [column, holders] of byColumn) {
+    if (holders.length < 2) continue;
+    const ranked = [...holders].sort(compareKeyHolders);
+    const hub = ranked[0];
+    const hubUnique = keyUniqueRatio(hub);
+    // 唯一性并列时不假装知道谁是主表，降级为 medium 并把并列写进 reason，由专家改指向
+    const tied = ranked.filter((item) => Math.abs(keyUniqueRatio(item) - hubUnique) < 0.02).length > 1;
+    for (const holder of ranked.slice(1)) {
+      const stats = fieldMatchStats(holder.context, holder.field, hub.context, hub.field);
+      const oneToOne = keyUniqueRatio(holder) >= 0.95;
+      addDraft({
+        sourceObject: holder.context.object.key,
+        targetObject: hub.context.object.key,
+        relation: 'belongs_to',
+        note: `${holder.context.object.key} 和 ${hub.context.object.key} 共用键列 ${hub.label}，`
+          + `${oneToOne ? '一行对一行' : '多行对一行'}。`,
+        confidence: hubUnique >= 0.95 && !tied ? 'high' : 'medium',
+        reason: [
+          `Objects share key column ${hub.label}.`,
+          `hubUniqueRatio=${formatRatio(hubUnique)}`,
+          `sourceUniqueRatio=${formatRatio(keyUniqueRatio(holder))}`,
+          `joinHitRatio=${formatRatio(stats.joinHitRatio)}`,
+          `sampleSize=${stats.sampleSize}`,
+          ...(tied ? [`Several objects are equally unique on ${hub.label}; hub choice needs expert review.`] : []),
+        ].join('; '),
+        sourceField: holder.field.key,
+        targetField: hub.field.key,
+        matchMode: 'shared_key',
+        score: hubUnique >= 0.95 && !tied ? 94 : 86,
+      });
+    }
+  }
+}
+
+/** 声明为主键，或名字带 id/no/编号 这类标识后缀，才算键列——避免把 business_type 之类拉进来 */
+function isKeyLikeField(object: SpecObject, field: SpecField): boolean {
+  if (isPrimaryField(object, field)) return true;
+  return fieldNameTokens(field).some((token) => idStem(token).length >= 2);
+}
+
+interface KeyHolder { context: ObjectContext; field: SpecField; label: string }
+
+function keyUniqueRatio(holder: KeyHolder): number {
+  const profile = holder.context.table ? tableFieldProfile(holder.context.table, holder.field) : undefined;
+  return profile?.uniqueRatio ?? (isPrimaryField(holder.context.object, holder.field) ? 1 : 0);
+}
+
+function compareKeyHolders(left: KeyHolder, right: KeyHolder): number {
+  return keyUniqueRatio(right) - keyUniqueRatio(left)
+    || (right.context.table?.rowCount ?? 0) - (left.context.table?.rowCount ?? 0)
+    || left.context.object.key.localeCompare(right.context.object.key);
 }
 
 function addFieldMatchCandidates(
