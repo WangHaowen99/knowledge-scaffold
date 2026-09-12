@@ -2322,7 +2322,20 @@ class OrchestratorSessionAdapter:
                             pinned_ontology_manifest = SimpleNamespace(**staged_manifest)
                         except (OSError, TypeError, ValueError) as exc:
                             raise OntologyPackageRevisionError("admitted ontology manifest paths are unsafe") from exc
-                        outcome = execute_deterministic(pinned_ontology_manifest)
+                        from integration.sandbox.errors import SandboxError
+                        from integration.sandbox.package_revision import admitted_package_revision
+
+                        try:
+                            with admitted_package_revision(
+                                staged_ontology_dir, workspace_id=context.workspace_id,
+                                ontology_id=selected_ontology_id, run_id=context.run_id,
+                            ):
+                                outcome = execute_deterministic(pinned_ontology_manifest)
+                        except SandboxError:
+                            outcome = Failed(
+                                "deterministic_isolation_unavailable",
+                                "The admitted package could not be isolated safely.",
+                            )
                     except OntologyPackageRevisionError:
                         outcome = Failed(
                             "ontology_revision_changed",

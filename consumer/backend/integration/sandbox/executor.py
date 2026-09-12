@@ -134,7 +134,10 @@ class SandboxScriptExecutor:
             run_id=run_id, ontology_dir=ontology_dir,
         )
         if verified_package is not None:
-            if read_only_paths or writable_paths:
+            if (
+                tuple(read_only_paths) != verified_package.read_only_paths
+                or tuple(writable_paths) != verified_package.writable_paths
+            ):
                 raise SandboxUnavailableError("verified package cannot add filesystem mounts")
             workspace_root = verified_package.package_root
             run_id = verified_package.sandbox_run_id
@@ -195,6 +198,11 @@ class SandboxScriptExecutor:
                     "sandbox read-only path must be a regular directory"
                 )
             resolved_read_only_paths.append(path.resolve())
+        if verified_package is not None and (
+            tuple(resolved_read_only_paths) != verified_package.read_only_paths
+            or tuple(resolved_writable_paths) != verified_package.writable_paths
+        ):
+            raise SandboxUnavailableError("verified package filesystem mounts changed")
         if restrict_filesystem_to_ontology and resolved_ontology_dir is not None:
             resolved_read_only_paths.insert(0, resolved_ontology_dir)
         else:

@@ -103,22 +103,22 @@ Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runti
 
 ## 测试
 
-推荐在 `backend/` 目录下执行：
+完整后端测试还会调用独立认证和 Solver 服务。先在测试虚拟环境执行 `python -m pip install -r requirements-test.txt`，安装已有服务的测试依赖。测试夹具为 MCP 等认证边界提供独立的合成配置，不依赖真实凭据。
+
+建议从干净 Git 检出执行全量测试，虚拟环境放在代码树之外，避免本地 `.env`、运行数据或第三方依赖目录影响测试收集和静态检查。
+
+以下示例在 `backend/` 目录下创建独立测试环境并执行：
 
 ```bash
-PYTHONPATH=. venv/bin/pytest tests
-```
-
-也可以使用 Python 模块方式：
-
-```bash
-PYTHONPATH=. venv/bin/python -m pytest tests
+python -m venv /tmp/knowledge-consumer-tests
+/tmp/knowledge-consumer-tests/bin/python -m pip install -r requirements-test.txt
+PYTHONPATH=. /tmp/knowledge-consumer-tests/bin/python -m pytest tests
 ```
 
 如果从 `consumer/` 目录运行，可使用：
 
 ```bash
-PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
+PYTHONPATH=backend /tmp/knowledge-consumer-tests/bin/python -m pytest backend/tests
 ```
 
 ## 配置

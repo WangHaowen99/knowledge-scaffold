@@ -50,6 +50,8 @@ from agent.tools.business_data.deterministic import (
 )
 from agent.tools.business_data.endpoint_security import endpoint_secret_values
 from agent.tools.execute_script import handle_execute_script_path
+from integration.sandbox.errors import SandboxError
+from integration.sandbox.package_revision import verified_deterministic_execution
 from integration.sandbox.registry import (
     register_run_sandbox_companion,
     release_run_sandbox,
@@ -1401,7 +1403,7 @@ class DeterministicExecutionService:
             relative = script_path.relative_to(project_root.resolve()).as_posix()
         except ValueError:
             return "Error: Deterministic script is outside the configured project root."
-        return handle_execute_script_path(
+        execution_kwargs = dict(
             script_path=relative,
             args=cli_args,
             base_path=project_root,
@@ -1429,7 +1431,18 @@ class DeterministicExecutionService:
             file_size_limit_bytes=file_size_limit_bytes,
             sandbox_required=True,
             sandbox_restrict_filesystem_to_ontology=True,
-        ).strip()
+        )
+        try:
+            with verified_deterministic_execution(
+                ontology_dir, workspace_id=request.runtime_context.workspace_id,
+                ontology_id=request.runtime_context.selected_ontology_id,
+                run_id=request.runtime_context.run_id, sandbox_run_id=sandbox_run_id,
+                read_only_paths=tuple(sandbox_read_only_paths or ()),
+                writable_paths=tuple(sandbox_writable_paths or ()),
+            ):
+                return handle_execute_script_path(**execution_kwargs).strip()
+        except (SandboxError, OSError):
+            return "Error: Sandbox unavailable for admitted deterministic execution."
 
     @staticmethod
     def _fixed_environment(

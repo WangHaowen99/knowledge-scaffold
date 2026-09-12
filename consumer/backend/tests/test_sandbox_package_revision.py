@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -165,4 +166,160 @@ def test_handoff_rejects_invalid_staging_paths(staged_package, relative_path, cr
         with _scope(staged_package):
             pytest.fail("unsafe scope admitted")
     assert staged_package.calls == []
+    assert revisions._VERIFIED_PACKAGE.get() is None
+
+
+def _admission(fixture):
+    return revisions.admitted_package_revision(
+        fixture.root, workspace_id="workspace_demo", ontology_id="knowledge_package_demo", run_id="run_demo",
+    )
+
+
+def _deterministic_scope(fixture, **overrides):
+    kwargs = dict(
+        package_root=fixture.root, workspace_id="workspace_demo",
+        ontology_id="knowledge_package_demo", run_id="run_demo",
+    )
+    kwargs.update(overrides)
+    return revisions.verified_deterministic_execution(**kwargs)
+
+
+@pytest.fixture
+def artifact_directory(tmp_path):
+    root = tmp_path / "deterministic-artifact-staging-synthetic" / ("run-" + "a" * 64)
+    root.mkdir(parents=True)
+    return root
+
+
+@pytest.mark.parametrize("broker", [False, True])
+def test_admitted_parser_and_handler_have_separate_bounded_mounts(staged_package, artifact_directory, broker):
+    fixture = staged_package
+    read_only = (artifact_directory.parent,) if broker else ()
+    with _admission(fixture):
+        with _deterministic_scope(fixture, sandbox_run_id="parser_demo"):
+            fixture.executor.run_script(**{**fixture.kwargs, "run_id": "parser_demo"})
+        assert fixture.calls[-1][0] == "release"
+        with _deterministic_scope(fixture, read_only_paths=read_only, writable_paths=(artifact_directory,)):
+            fixture.executor.run_script(**{
+                **fixture.kwargs, "read_only_paths": read_only, "writable_paths": (artifact_directory,),
+            })
+        assert fixture.calls[-1][0] == "release"
+    contexts = [value for kind, value in fixture.calls if kind == "policy"]
+    parser, handler = contexts
+    assert parser.run_id != handler.run_id
+    assert parser.read_only_paths == (fixture.root,)
+    assert parser.writable_paths == ()
+    assert handler.read_only_paths == (fixture.root, *read_only)
+    assert handler.writable_paths == (artifact_directory,)
+    assert all(value[0] == "run_demo" for kind, value in fixture.calls if kind == "register")
+    assert revisions._ADMITTED_PACKAGE.get() is None
+    assert revisions._VERIFIED_PACKAGE.get() is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("workspace_id", "workspace_other"), ("ontology_id", "knowledge_package_other"),
+    ("run_id", "run_other"), ("package_root", Path("/synthetic-other-package")),
+])
+def test_deterministic_execution_cannot_reuse_another_admission(staged_package, field, value):
+    with _admission(staged_package):
+        with pytest.raises(SandboxUnavailableError, match="admission scope mismatch"):
+            with _deterministic_scope(staged_package, **{field: value}):
+                pytest.fail("mismatched admission accepted")
+    assert staged_package.calls == []
+
+
+@pytest.mark.parametrize("invalid_mount", ["workspace", "package", "parent", "extra", "reader", "symlink"])
+def test_deterministic_mounts_cannot_expand_package_or_artifact_access(
+    staged_package, artifact_directory, invalid_mount,
+):
+    writable = (artifact_directory,)
+    read_only = ()
+    if invalid_mount == "workspace":
+        writable = (staged_package.workspace,)
+    elif invalid_mount == "package":
+        writable = (staged_package.root,)
+    elif invalid_mount == "parent":
+        writable = (artifact_directory.parent,)
+    elif invalid_mount == "extra":
+        writable = (artifact_directory, staged_package.workspace)
+    elif invalid_mount == "reader":
+        read_only = (staged_package.workspace,)
+    else:
+        artifact_directory.rmdir()
+        artifact_directory.symlink_to(staged_package.workspace, target_is_directory=True)
+    with _admission(staged_package):
+        with pytest.raises(SandboxUnavailableError, match="artifact mounts are invalid"):
+            with _deterministic_scope(staged_package, writable_paths=writable, read_only_paths=read_only):
+                pytest.fail("unbounded mounts accepted")
+    assert staged_package.calls == []
+
+
+def test_executor_rejects_mount_changes_after_deterministic_binding(staged_package, artifact_directory):
+    with _admission(staged_package):
+        with _deterministic_scope(staged_package, writable_paths=(artifact_directory,)):
+            with pytest.raises(SandboxUnavailableError, match="cannot add filesystem mounts"):
+                staged_package.executor.run_script(**{
+                    **staged_package.kwargs, "writable_paths": (staged_package.workspace,),
+                })
+    assert not any(kind == "policy" for kind, _value in staged_package.calls)
+
+
+def test_cleanup_failure_rejects_deterministic_output_and_restores_scope(
+    staged_package, monkeypatch,
+):
+    def fail_release(*_args, **_kwargs):
+        raise RuntimeError("synthetic release failure")
+
+    monkeypatch.setattr(revisions, "release_run_sandbox", fail_release)
+    with _admission(staged_package):
+        with pytest.raises(SandboxUnavailableError, match="sandbox cleanup failed"):
+            with _deterministic_scope(staged_package):
+                staged_package.executor.run_script(**staged_package.kwargs)
+        assert revisions._VERIFIED_PACKAGE.get() is None
+    assert revisions._ADMITTED_PACKAGE.get() is None
+
+
+@pytest.mark.parametrize("parser", [False, True])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_deterministic_script_boundary_uses_admitted_copy_and_finishes_cleanup(
+    staged_package, artifact_directory, monkeypatch, parser, cleanup_fails,
+):
+    from agent.direct_execution.service import DeterministicExecutionService
+    import agent.tools.execute_script as scripts
+
+    fixture = staged_package
+    monkeypatch.setattr(scripts, "load_sandbox_config", lambda: fixture.executor._config)
+    monkeypatch.setattr(scripts, "SandboxScriptExecutor", lambda: fixture.executor)
+    monkeypatch.setattr(executor_module, "sandbox_runtime_revision", lambda: "synthetic_revision")
+
+    def sandbox_exec(_sandbox_id, command, **_kwargs):
+        stdout = "synthetic_revision" if "-c" in command else json.dumps({"value": "synthetic_value"})
+        return SimpleNamespace(exit_code=0, stdout=stdout, stderr="")
+
+    def failed_release(*_args, **_kwargs):
+        raise RuntimeError("synthetic release failure")
+
+    fixture.registry.exec_in_sandbox = sandbox_exec
+    if cleanup_fails:
+        monkeypatch.setattr(revisions, "release_run_sandbox", failed_release)
+    request = SimpleNamespace(runtime_context=SimpleNamespace(
+        workspace_id="workspace_demo", selected_ontology_id="knowledge_package_demo",
+        run_id="run_demo", session_id="session_demo", turn_id=1,
+    ))
+    with _admission(fixture):
+        result = DeterministicExecutionService._run_script(
+            script_relative="scripts/run.py", cli_args=[], ontology_dir=fixture.root,
+            project_root=fixture.kwargs["project_root"], request=request, timeout_seconds=5,
+            env_overrides={"DETERMINISTIC_EXECUTION": "1"},
+            caller="deterministic_parser" if parser else "deterministic_service", stdout_limit_bytes=1024,
+            sandbox_run_id="parser_demo" if parser else None,
+            sandbox_writable_paths=[] if parser else [artifact_directory],
+        )
+    if cleanup_fails:
+        assert result.startswith("Error: Sandbox unavailable")
+    else:
+        assert json.loads(result) == {"value": "synthetic_value"}
+        assert fixture.calls[-1][0] == "release"
+    assert any(kind == "policy" for kind, _value in fixture.calls)
+    assert revisions._ADMITTED_PACKAGE.get() is None
     assert revisions._VERIFIED_PACKAGE.get() is None

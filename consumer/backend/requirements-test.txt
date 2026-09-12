@@ -1,0 +1,5 @@
+# Full backend tests also exercise the standalone auth and Solver services.
+-r requirements.txt
+-r ../../auth-server/requirements.txt
+-r ../../solvers/ortools/requirements.txt
+pytest-subtests

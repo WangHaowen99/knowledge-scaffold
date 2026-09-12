@@ -457,6 +457,14 @@ def run_startup_migrations(runtime_root: Optional[Path] = None) -> dict[str, Any
     if code != 0 or not report.get("ok", False):
         detail = "；".join(str(item) for item in report.get("errors", []) if str(item).strip())
         raise StartupMigrationError("启动迁移失败{}".format("：{}".format(detail) if detail else ""))
+    # Earlier startup migrations may have populated a snapshot before a later
+    # migration replaced its document. Publish the final file/environment now.
+    from config.system_config import invalidate_system_config_snapshot
+
+    try:
+        invalidate_system_config_snapshot(refresh_environment=True)
+    except Exception as exc:
+        raise StartupMigrationError("启动迁移后系统配置快照刷新失败") from exc
     for warning in report.get("warnings", []):
         logger.warning("Non-blocking startup migration warning: %s", warning)
     return report

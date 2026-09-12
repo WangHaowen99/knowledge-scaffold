@@ -110,8 +110,10 @@ def test_declared_generated_identifier_runs_through_actual_tool(bound_script, de
 
 @pytest.mark.parametrize("record, code, path", [
     ({"calculation_result_id": "synthetic_result_0001"}, "invalid_generated_identifier", "calculation_result_id"),
-    ({"calculation_result_id": SYNTHETIC_UUID.replace("-", " ")}, "invalid_generated_identifier", "calculation_result_id"),
-    ({"calculation_result_id": "00000000-0000-1000-8000-000000000001"}, "invalid_generated_identifier", "calculation_result_id"),
+    ({"calculation_result_id": SYNTHETIC_UUID.replace("-", " ")},
+     "invalid_generated_identifier", "calculation_result_id"),
+    ({"calculation_result_id": "00000000-0000-1000-8000-000000000001"},
+     "invalid_generated_identifier", "calculation_result_id"),
     ({"device_id": SYNTHETIC_UUID}, "ungrounded_identity", "device_id"),
     ({"other_result_id": SYNTHETIC_UUID}, "ungrounded_identity", "other_result_id"),
     ({"calculation_result_id": SYNTHETIC_UUID, "device_id": "device_other"}, "ungrounded_identity", "device_id"),
@@ -171,7 +173,9 @@ def test_failed_tool_payload_never_supplies_identity_evidence(bound_script, fail
     assert bound_script.executions == []
 
 
-@pytest.mark.parametrize("source", ["uncorrelated", "assistant", "previous_turn", "other_package", "wrong_call", "no_user"])
+@pytest.mark.parametrize("source", [
+    "uncorrelated", "assistant", "previous_turn", "other_package", "wrong_call", "no_user",
+])
 def test_untrusted_or_out_of_scope_results_do_not_supply_evidence(bound_script, source):
     record = {"device_id": "device_synthetic_0001"}
     messages = _script_messages(record)
@@ -374,7 +378,9 @@ def test_public_validation_details_drop_arbitrary_text_and_invalid_paths():
     error = safe_script_argument_error({
         "code": "SCRIPT_ARGUMENT_VALIDATION_FAILED",
         "message": "synthetic_private_marker", "stderr": "synthetic_private_marker",
-        "issues": [{"code": "ungrounded_identity", "path": "arguments.user@example.com", "value": "synthetic_private_marker"}],
+        "issues": [{
+            "code": "ungrounded_identity", "path": "arguments.user@example.com", "value": "synthetic_private_marker",
+        }],
     })
     assert error["issues"] == [{"code": "ungrounded_identity", "path": "arguments"}]
     assert "synthetic_private_marker" not in json.dumps(error)
