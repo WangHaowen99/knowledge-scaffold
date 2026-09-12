@@ -50,7 +50,10 @@ def _verified_package_root(package_root: Path) -> Path:
         root.name != "ontology"
         or not root.parent.name.startswith("run-")
         or root.parent.parent != staging_parent
-        or any(path.is_symlink() for path in (root, root.parent, staging_parent))
+    ):
+        raise SandboxUnavailableError("verified package staging boundary is invalid")
+    if (
+        any(path.is_symlink() for path in (root, root.parent, staging_parent))
         or not root.is_dir()
     ):
         raise SandboxUnavailableError("verified package staging boundary is invalid")
@@ -126,14 +129,16 @@ def _deterministic_mounts(
     if (
         not re.fullmatch(r"run-[0-9a-f]{64}", artifact.name)
         or not artifact.parent.name.startswith("deterministic-artifact-staging-")
-        or (read_only and read_only != (artifact.parent,))
     ):
+        raise SandboxUnavailableError("verified package artifact mounts are invalid")
+    if read_only and read_only != (artifact.parent,):
         raise SandboxUnavailableError("verified package artifact mounts are invalid")
     for path in (artifact.parent, artifact):
         if (
             not path.is_absolute() or path.resolve(strict=True) != path or not path.is_dir()
-            or path.is_relative_to(package_root) or package_root.is_relative_to(path)
         ):
+            raise SandboxUnavailableError("verified package artifact mounts are invalid")
+        if path.is_relative_to(package_root) or package_root.is_relative_to(path):
             raise SandboxUnavailableError("verified package artifact mounts are invalid")
     return read_only, writable
 
@@ -151,8 +156,10 @@ def verified_deterministic_execution(
         return
     if (
         workspace_id != scope.workspace_id or ontology_id != scope.ontology_id
-        or run_id != scope.run_id or Path(package_root).resolve() != scope.package_root
+        or run_id != scope.run_id
     ):
+        raise SandboxUnavailableError("verified package admission scope mismatch")
+    if Path(package_root).resolve() != scope.package_root:
         raise SandboxUnavailableError("verified package admission scope mismatch")
     read_only, writable = _deterministic_mounts(scope.package_root, read_only_paths, writable_paths)
     with verified_package_execution(
