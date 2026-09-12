@@ -299,7 +299,8 @@ def _sample_loop(profile: _RunStackProfile) -> None:
 
 def _sample_profile(profile: _RunStackProfile) -> None:
     now_ns = time.perf_counter_ns()
-    frames_by_thread = sys._current_frames()
+    current_frames = getattr(sys, "_current_frames", None)
+    frames_by_thread = current_frames() if callable(current_frames) else {}
     with profile.lock:
         thread_profiles = [
             thread_profile
@@ -545,13 +546,11 @@ def _load_session_document(path: Path, session_id: str) -> dict[str, Any]:
     if path.exists():
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
-            if (
-                isinstance(document, dict)
-                and document.get("$schema") == SPEEDSCOPE_SCHEMA
-                and isinstance(document.get("profiles"), list)
-                and isinstance(document.get("shared"), dict)
-                and isinstance(document["shared"].get("frames"), list)
-            ):
+            has_valid_schema = isinstance(document, dict) and document.get("$schema") == SPEEDSCOPE_SCHEMA
+            has_valid_profiles = isinstance(document, dict) and isinstance(document.get("profiles"), list)
+            shared = document.get("shared") if isinstance(document, dict) else None
+            has_valid_frames = isinstance(shared, dict) and isinstance(shared.get("frames"), list)
+            if has_valid_schema and has_valid_profiles and has_valid_frames:
                 return document
         except (OSError, json.JSONDecodeError):
             logger.warning("Ignoring unreadable Speedscope session trace %s", path, exc_info=True)

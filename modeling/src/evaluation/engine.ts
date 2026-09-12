@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { consumerFetch } from '../consumer/client.js';
 import { zipPackage } from '../workflow/export.js';
+import { publicKnowledgePackageFiles } from '../workflow/package-file-scope.js';
 import { judge, type Verdict } from './judge.js';
 import * as repo from '../workflow/m3-repo.js';
 import { getProjectDataSource, type ProjectDataSource } from './data-source-repo.js';
@@ -415,7 +416,7 @@ async function runRound(
   // 3. 导入知识包（已存在则覆盖激活版本；人工修订的文件以修订稿为准）
   repo.roundPhase(roundId, 'package');
   const files = { ...latest.files };
-  const zip = zipPackage(files);
+  const zip = zipPackage(publicKnowledgePackageFiles(files));
   const importResult = await importPackageZip({
     token: await auth.getAccessToken(),
     workspaceId: ws,

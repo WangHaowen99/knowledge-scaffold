@@ -149,7 +149,7 @@ export function suggestObjectRelations(
     .sort(compareCandidates);
 
   const totalCandidateCount = candidates.length;
-  const offset = cursorOffset(input.cursor, schemaInputHash);
+  const offset = objectRelationSuggestionCursorOffset(input.cursor, schemaInputHash) ?? 0;
   candidates = candidates.slice(offset, offset + limit);
   const nextOffset = offset + candidates.length;
   const hasMore = nextOffset < totalCandidateCount;
@@ -561,18 +561,21 @@ function clampInteger(value: unknown, fallback: number, min: number, max: number
   return Math.min(max, Math.max(min, parsed));
 }
 
-function cursorOffset(cursor: unknown, schemaInputHash: string): number {
+export function objectRelationSuggestionCursorOffset(
+  cursor: unknown,
+  schemaInputHash: string,
+): number | null {
   if (typeof cursor !== 'string' || !cursor.trim()) return 0;
   try {
     const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
       schemaInputHash?: unknown;
       offset?: unknown;
     };
-    if (parsed.schemaInputHash !== schemaInputHash) return 0;
+    if (parsed.schemaInputHash !== schemaInputHash) return null;
     const offset = Number(parsed.offset);
-    return Number.isSafeInteger(offset) && offset > 0 ? offset : 0;
+    return Number.isSafeInteger(offset) && offset > 0 ? offset : null;
   } catch {
-    return 0;
+    return null;
   }
 }
 

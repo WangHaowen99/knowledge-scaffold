@@ -59,35 +59,26 @@ def _get_script_catalog(
     if error or ontology is None:
         return None, error or "Ontology not found"
 
-    manifest_id = str(
-        ontology.get("id") if isinstance(ontology, Mapping) else getattr(ontology, "id", "")
-    ).strip()
+    manifest_id = str(ontology.get("id") if isinstance(ontology, Mapping) else getattr(ontology, "id", "")).strip()
     manifest_version = str(
-        ontology.get("version")
-        if isinstance(ontology, Mapping)
-        else getattr(ontology, "version", "")
+        ontology.get("version") if isinstance(ontology, Mapping) else getattr(ontology, "version", "")
     ).strip()
     if manifest_id != str(ontology_id or "").strip() or (
-        str(ontology_version or "").strip()
-        and manifest_version != str(ontology_version).strip()
+        str(ontology_version or "").strip() and manifest_version != str(ontology_version).strip()
     ):
         return None, "Pinned ontology manifest does not match the requested ontology"
 
     raw_ontology_dir = (
-        ontology.get("ontology_dir")
-        if isinstance(ontology, Mapping)
-        else getattr(ontology, "ontology_dir", None)
+        ontology.get("ontology_dir") if isinstance(ontology, Mapping) else getattr(ontology, "ontology_dir", None)
     )
     if not str(raw_ontology_dir or "").strip():
         return None, "Pinned ontology manifest has no ontology directory"
     ontology_dir = Path(str(raw_ontology_dir or "")).resolve()
-    catalog = [
-        entry
-        for entry in load_script_catalog(ontology_dir)
-        if entry.get("_is_bound_operation")
-        and not entry.get("_is_deterministic_handler")
-        and str(entry.get("operation_key") or entry.get("script_key") or "").strip()
-    ]
+    catalog = []
+    for entry in load_script_catalog(ontology_dir):
+        operation_key = str(entry.get("operation_key") or entry.get("script_key") or "").strip()
+        if entry.get("_is_bound_operation") and not entry.get("_is_deterministic_handler") and operation_key:
+            catalog.append(entry)
     if not catalog:
         return None, "No script catalog found for ontology '{}'".format(ontology_id)
     return catalog, None
@@ -245,7 +236,13 @@ def find_best_script_operation(
             user_request=user_request,
         )
 
-        if best_key is None or score > best_score or (score == best_score and len(op_key) > len(best_key)):
+        is_better_score = score > best_score
+        is_longer_tie = (
+            score == best_score
+            and best_key is not None
+            and len(op_key) > len(best_key)
+        )
+        if best_key is None or is_better_score or is_longer_tie:
             best_score = score
             best_entry = entry
             best_key = op_key
@@ -312,7 +309,7 @@ def llm_match_operation(
         "你是一个操作匹配助手。从以下操作列表中选出最匹配用户请求的一个。\n\n"
         "用户请求：{}\n\n"
         "可用操作：\n{}\n\n"
-        "只返回 JSON，格式：{{\"operation_key\": \"操作名\", \"confidence\": 0.95}}\n"
+        '只返回 JSON，格式：{{"operation_key": "操作名", "confidence": 0.95}}\n'
         "confidence 范围 0-1，低于 0.5 表示不匹配。"
     ).format(user_request, "\n".join(op_lines))
 

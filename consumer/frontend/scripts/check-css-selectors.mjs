@@ -1,3 +1,5 @@
+/* eslint-disable no-console -- This CLI reports architecture diagnostics through stdout and stderr. */
+
 import { readFileSync, readdirSync } from 'node:fs';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,10 +15,21 @@ const MAX_VALUE_VARIANTS = 256;
 // list explicit: an arbitrary string elsewhere in the application must not make a
 // CSS class look reachable.
 const DYNAMIC_CLASSES = new Set([
-  'hit-history', 'hit-live', 'hit-recent',
-  'is-forbidden', 'is-success', 'is-warning',
-  'status-awaiting', 'status-cancelled', 'status-completed', 'status-error',
-  'status-failed', 'status-finished', 'status-queued', 'status-running', 'status-success',
+  'hit-history',
+  'hit-live',
+  'hit-recent',
+  'is-forbidden',
+  'is-success',
+  'is-warning',
+  'status-awaiting',
+  'status-cancelled',
+  'status-completed',
+  'status-error',
+  'status-failed',
+  'status-finished',
+  'status-queued',
+  'status-running',
+  'status-success',
   'tone-success',
 ]);
 
@@ -43,6 +56,7 @@ const DYNAMIC_CLASS_GROUPS = [
   ['settings-mcp-notice', 'success'],
   ['system-config-feedback', 'error'],
   ['system-config-feedback', 'success'],
+  ['tag', 'tag-draft'],
   ['tag', 'tag-error'],
   ['tr-dot', 'cancelled'],
   ['tr-dot', 'error'],
@@ -52,26 +66,40 @@ const DYNAMIC_CLASS_GROUPS = [
   ['ui-toast', 'info'],
 ];
 
-const walk = (directory) => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-  const absolutePath = join(directory, entry.name);
-  return entry.isDirectory() ? walk(absolutePath) : [absolutePath];
-});
+const walk = (directory) =>
+  readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const absolutePath = join(directory, entry.name);
+    return entry.isDirectory() ? walk(absolutePath) : [absolutePath];
+  });
 
-const toSourcePath = (absolutePath) => relative(sourceDir, absolutePath).split(sep).join('/');
+const toSourcePath = (absolutePath) =>
+  relative(sourceDir, absolutePath).split(sep).join('/');
 const files = walk(sourceDir);
-const codeFiles = files.filter((file) => ['.js', '.jsx'].includes(extname(file)) && !TEST_FILE_PATTERN.test(file));
+const codeFiles = files.filter(
+  (file) =>
+    ['.js', '.jsx'].includes(extname(file)) && !TEST_FILE_PATTERN.test(file),
+);
 const classGroups = new Map();
 
-const classTokens = (value) => value.split(/\s+/).filter((token) => CLASS_TOKEN_PATTERN.test(token));
+const classTokens = (value) =>
+  value.split(/\s+/).filter((token) => CLASS_TOKEN_PATTERN.test(token));
 const addClassGroup = (tokens, origin) => {
-  const normalized = [...new Set(tokens.filter((token) => CLASS_TOKEN_PATTERN.test(token)))].sort();
-  if (!normalized.length) return;
+  const normalized = [
+    ...new Set(tokens.filter((token) => CLASS_TOKEN_PATTERN.test(token))),
+  ].sort();
+  if (!normalized.length) {
+    return;
+  }
   const key = normalized.join(' ');
-  if (!classGroups.has(key)) classGroups.set(key, { tokens: new Set(normalized), origins: new Set() });
+  if (!classGroups.has(key)) {
+    classGroups.set(key, { tokens: new Set(normalized), origins: new Set() });
+  }
   classGroups.get(key).origins.add(origin);
 };
 
-for (const group of DYNAMIC_CLASS_GROUPS) addClassGroup(group, 'dynamic class allowlist');
+for (const group of DYNAMIC_CLASS_GROUPS) {
+  addClassGroup(group, 'dynamic class allowlist');
+}
 
 function skipQuoted(source, start) {
   const quote = source[start];
@@ -103,7 +131,7 @@ function findMatching(source, start, open = '{', close = '}') {
   let index = start + 1;
   while (index < source.length) {
     const char = source[index];
-    if (char === '\'' || char === '"') {
+    if (char === "'" || char === '"') {
       index = skipQuoted(source, index);
       continue;
     }
@@ -119,10 +147,14 @@ function findMatching(source, start, open = '{', close = '}') {
       index = skipBlockComment(source, index);
       continue;
     }
-    if (char === open) depth += 1;
+    if (char === open) {
+      depth += 1;
+    }
     if (char === close) {
       depth -= 1;
-      if (depth === 0) return index;
+      if (depth === 0) {
+        return index;
+      }
     }
     index += 1;
   }
@@ -136,10 +168,14 @@ function skipTemplate(source, start) {
       index += 2;
       continue;
     }
-    if (source[index] === '`') return index + 1;
+    if (source[index] === '`') {
+      return index + 1;
+    }
     if (source[index] === '$' && source[index + 1] === '{') {
       const end = findMatching(source, index + 1);
-      if (end === -1) return source.length;
+      if (end === -1) {
+        return source.length;
+      }
       index = end + 1;
       continue;
     }
@@ -152,7 +188,9 @@ const stripOuterParentheses = (input) => {
   let value = input.trim();
   while (value.startsWith('(')) {
     const end = findMatching(value, 0, '(', ')');
-    if (end !== value.length - 1) break;
+    if (end !== value.length - 1) {
+      break;
+    }
     value = value.slice(1, -1).trim();
   }
   return value;
@@ -165,7 +203,7 @@ function forEachTopLevel(source, visit) {
   let index = 0;
   while (index < source.length) {
     const char = source[index];
-    if (char === '\'' || char === '"') {
+    if (char === "'" || char === '"') {
       index = skipQuoted(source, index);
       continue;
     }
@@ -181,13 +219,27 @@ function forEachTopLevel(source, visit) {
       index = skipBlockComment(source, index);
       continue;
     }
-    if (char === '(') parentheses += 1;
-    else if (char === ')') parentheses -= 1;
-    else if (char === '[') brackets += 1;
-    else if (char === ']') brackets -= 1;
-    else if (char === '{') braces += 1;
-    else if (char === '}') braces -= 1;
-    if (parentheses === 0 && brackets === 0 && braces === 0 && visit(index) === false) return;
+    if (char === '(') {
+      parentheses += 1;
+    } else if (char === ')') {
+      parentheses -= 1;
+    } else if (char === '[') {
+      brackets += 1;
+    } else if (char === ']') {
+      brackets -= 1;
+    } else if (char === '{') {
+      braces += 1;
+    } else if (char === '}') {
+      braces -= 1;
+    }
+    const shouldStop =
+      parentheses === 0 &&
+      brackets === 0 &&
+      braces === 0 &&
+      visit(index) === false;
+    if (shouldStop) {
+      return;
+    }
     index += 1;
   }
 }
@@ -197,12 +249,21 @@ function findTernary(source) {
   let nested = 0;
   let colon = -1;
   forEachTopLevel(source, (index) => {
-    if (source[index] === '?' && source[index + 1] !== '?' && source[index + 1] !== '.' && source[index - 1] !== '?') {
-      if (question === -1) question = index;
-      else nested += 1;
+    const isConditionalQuestion =
+      source[index] === '?' &&
+      source[index + 1] !== '?' &&
+      source[index + 1] !== '.' &&
+      source[index - 1] !== '?';
+    if (isConditionalQuestion) {
+      if (question === -1) {
+        question = index;
+      } else {
+        nested += 1;
+      }
     } else if (question !== -1 && source[index] === ':') {
-      if (nested > 0) nested -= 1;
-      else {
+      if (nested > 0) {
+        nested -= 1;
+      } else {
         colon = index;
         return false;
       }
@@ -215,32 +276,44 @@ function findTernary(source) {
 function findTopLevelOperator(source, operators) {
   let found = null;
   forEachTopLevel(source, (index) => {
-    const operator = operators.find((candidate) => source.startsWith(candidate, index));
-    if (!operator) return true;
+    const operator = operators.find((candidate) =>
+      source.startsWith(candidate, index),
+    );
+    if (!operator) {
+      return true;
+    }
     found = { index, operator };
     return false;
   });
   return found;
 }
 
-const uniqueValues = (values) => [...new Set(values)].slice(0, MAX_VALUE_VARIANTS);
+const uniqueValues = (values) =>
+  [...new Set(values)].slice(0, MAX_VALUE_VARIANTS);
 
 const combineValues = (leftValues, rightValues, separator = '') => {
   const combined = [];
   for (const left of leftValues) {
     for (const right of rightValues) {
       combined.push(`${left}${separator}${right}`);
-      if (combined.length >= MAX_VALUE_VARIANTS) return uniqueValues(combined);
+      if (combined.length >= MAX_VALUE_VARIANTS) {
+        return uniqueValues(combined);
+      }
     }
   }
   return uniqueValues(combined);
 };
 
-const decodeQuoted = (literal) => literal.slice(1, -1).replace(/\\(['"`\\])/g, '$1');
+const decodeQuoted = (literal) =>
+  literal
+    .slice(1, -1)
+    .replace(/\\(?<escapedQuote>['"`\\])/g, '$<escapedQuote>');
 
 function evaluateTemplate(source) {
   const end = skipTemplate(source, 0);
-  if (end !== source.length) return [UNKNOWN_VALUE];
+  if (end !== source.length) {
+    return [UNKNOWN_VALUE];
+  }
   let values = [''];
   let segmentStart = 1;
   let index = 1;
@@ -250,11 +323,17 @@ function evaluateTemplate(source) {
       continue;
     }
     if (source[index] === '$' && source[index + 1] === '{') {
-      const literalSegment = source.slice(segmentStart, index).replace(/\\`/g, '`');
+      const literalSegment = source
+        .slice(segmentStart, index)
+        .replace(/\\`/g, '`');
       values = values.map((value) => `${value}${literalSegment}`);
       const expressionEnd = findMatching(source, index + 1);
-      if (expressionEnd === -1) return [UNKNOWN_VALUE];
-      const expressionValues = evaluateClassValues(source.slice(index + 2, expressionEnd));
+      if (expressionEnd === -1) {
+        return [UNKNOWN_VALUE];
+      }
+      const expressionValues = evaluateClassValues(
+        source.slice(index + 2, expressionEnd),
+      );
       values = combineValues(values, expressionValues);
       index = expressionEnd + 1;
       segmentStart = index;
@@ -269,7 +348,9 @@ function evaluateTemplate(source) {
 function splitArguments(source) {
   const boundaries = [];
   forEachTopLevel(source, (index) => {
-    if (source[index] === ',') boundaries.push(index);
+    if (source[index] === ',') {
+      boundaries.push(index);
+    }
     return true;
   });
   const parts = [];
@@ -285,12 +366,19 @@ function splitArguments(source) {
 function evaluateClassValues(input) {
   let source = stripOuterParentheses(input);
   source = source.replace(/\.trim\(\)\s*$/, '').trim();
-  if (!source) return [''];
+  if (!source) {
+    return [''];
+  }
 
-  if ((source[0] === '\'' || source[0] === '"') && skipQuoted(source, 0) === source.length) {
+  if (
+    (source[0] === "'" || source[0] === '"') &&
+    skipQuoted(source, 0) === source.length
+  ) {
     return [decodeQuoted(source)];
   }
-  if (source[0] === '`') return evaluateTemplate(source);
+  if (source[0] === '`') {
+    return evaluateTemplate(source);
+  }
 
   const ternary = findTernary(source);
   if (ternary) {
@@ -304,12 +392,19 @@ function evaluateClassValues(input) {
   if (fallback) {
     return uniqueValues([
       ...evaluateClassValues(source.slice(0, fallback.index)),
-      ...evaluateClassValues(source.slice(fallback.index + fallback.operator.length)),
+      ...evaluateClassValues(
+        source.slice(fallback.index + fallback.operator.length),
+      ),
     ]);
   }
 
   const conditional = findTopLevelOperator(source, ['&&']);
-  if (conditional) return uniqueValues(['', ...evaluateClassValues(source.slice(conditional.index + 2))]);
+  if (conditional) {
+    return uniqueValues([
+      '',
+      ...evaluateClassValues(source.slice(conditional.index + 2)),
+    ]);
+  }
 
   const concatenation = findTopLevelOperator(source, ['+']);
   if (concatenation) {
@@ -325,7 +420,9 @@ function evaluateClassValues(input) {
     const closing = findMatching(source, opening, '(', ')');
     if (closing === source.length - 1) {
       let values = [''];
-      for (const argument of splitArguments(source.slice(opening + 1, closing))) {
+      for (const argument of splitArguments(
+        source.slice(opening + 1, closing),
+      )) {
         values = combineValues(values, evaluateClassValues(argument), ' ');
       }
       return values;
@@ -342,7 +439,9 @@ function addClassValue(value, origin) {
   let variants = [[]];
   for (const rawToken of rawTokens) {
     if (!rawToken.includes(UNKNOWN_VALUE)) {
-      if (!CLASS_TOKEN_PATTERN.test(rawToken)) continue;
+      if (!CLASS_TOKEN_PATTERN.test(rawToken)) {
+        continue;
+      }
       variants = variants.map((tokens) => [...tokens, rawToken]);
       continue;
     }
@@ -350,14 +449,24 @@ function addClassValue(value, origin) {
     // A prefixed/suffixed dynamic class (for example status-${status}) can be
     // matched safely against the explicit allowlist. A bare interpolation is
     // deliberately ignored and must be listed in DYNAMIC_CLASS_GROUPS.
-    if (rawToken === UNKNOWN_VALUE) continue;
-    const pattern = new RegExp(`^${rawToken.split(UNKNOWN_VALUE).map(escapeRegExp).join('.+')}$`);
-    const matches = [...DYNAMIC_CLASSES].filter((className) => pattern.test(className));
+    if (rawToken === UNKNOWN_VALUE) {
+      continue;
+    }
+    const pattern = new RegExp(
+      `^${rawToken.split(UNKNOWN_VALUE).map(escapeRegExp).join('.+')}$`,
+    );
+    const matches = [...DYNAMIC_CLASSES].filter((className) =>
+      pattern.test(className),
+    );
     if (matches.length) {
-      variants = variants.flatMap((tokens) => matches.map((className) => [...tokens, className]));
+      variants = variants.flatMap((tokens) =>
+        matches.map((className) => [...tokens, className]),
+      );
     }
   }
-  for (const tokens of variants) addClassGroup(tokens, origin);
+  for (const tokens of variants) {
+    addClassGroup(tokens, origin);
+  }
 }
 
 function collectClassNameAttributes(source, origin) {
@@ -366,16 +475,22 @@ function collectClassNameAttributes(source, origin) {
   while ((match = attribute.exec(source)) !== null) {
     const start = match.index + match[0].length;
     const first = source[start];
-    if (first === '\'' || first === '"') {
+    if (first === "'" || first === '"') {
       const end = skipQuoted(source, start);
       addClassValue(decodeQuoted(source.slice(start, end)), origin);
       attribute.lastIndex = end;
       continue;
     }
-    if (first !== '{') continue;
+    if (first !== '{') {
+      continue;
+    }
     const end = findMatching(source, start);
-    if (end === -1) continue;
-    for (const value of evaluateClassValues(source.slice(start + 1, end))) addClassValue(value, origin);
+    if (end === -1) {
+      continue;
+    }
+    for (const value of evaluateClassValues(source.slice(start + 1, end))) {
+      addClassValue(value, origin);
+    }
     attribute.lastIndex = end + 1;
   }
 }
@@ -385,9 +500,15 @@ function collectClassNameProperties(source, origin) {
   let match;
   while ((match = property.exec(source)) !== null) {
     const start = match.index + match[0].length;
-    if (!['\'', '"', '`'].includes(source[start])) continue;
-    const end = source[start] === '`' ? skipTemplate(source, start) : skipQuoted(source, start);
-    for (const value of evaluateClassValues(source.slice(start, end))) addClassValue(value, origin);
+    if (!["'", '"', '`'].includes(source[start])) {
+      continue;
+    }
+    const end = source[start] === '`' ?
+      skipTemplate(source, start) :
+      skipQuoted(source, start);
+    for (const value of evaluateClassValues(source.slice(start, end))) {
+      addClassValue(value, origin);
+    }
     property.lastIndex = end;
   }
 }
@@ -401,40 +522,70 @@ for (const file of codeFiles) {
 
 const usedClasses = new Set(DYNAMIC_CLASSES);
 for (const { tokens } of classGroups.values()) {
-  for (const token of tokens) usedClasses.add(token);
+  for (const token of tokens) {
+    usedClasses.add(token);
+  }
 }
 
 const unusedByFile = new Map();
 const unusedCompoundsByFile = new Map();
-const COMPOUND_CLASS_PATTERN = /\.([_a-zA-Z][\w-]*(?:\.[_a-zA-Z][\w-]*)+)/g;
+const COMPOUND_CLASS_PATTERN =
+  /\.(?<compound>[_a-zA-Z][\w-]*(?:\.[_a-zA-Z][\w-]*)+)/g;
 
 for (const file of files.filter((candidate) => extname(candidate) === '.css')) {
   const css = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  const selectorSource = [...css.matchAll(/([^{}]+)\{/g)]
-    .map((match) => match[1].trim())
+  const selectorSource = [...css.matchAll(/(?<selector>[^{}]+)\{/g)]
+    .map((match) => match.groups.selector.trim())
     .filter((prelude) => prelude && !prelude.startsWith('@'))
     .join('\n');
-  const classes = [...new Set([...selectorSource.matchAll(/\.([_a-zA-Z][\w-]*)/g)].map((match) => match[1]))];
+  const classes = [
+    ...new Set(
+      [...selectorSource.matchAll(/\.(?<className>[_a-zA-Z][\w-]*)/g)].map(
+        (match) => match.groups.className,
+      ),
+    ),
+  ];
   const unused = classes.filter((className) => !usedClasses.has(className));
-  if (unused.length) unusedByFile.set(toSourcePath(file), unused.sort());
+  if (unused.length) {
+    unusedByFile.set(toSourcePath(file), unused.sort());
+  }
 
-  const compounds = [...new Set([...selectorSource.matchAll(COMPOUND_CLASS_PATTERN)].map((match) => `.${match[1]}`))];
+  const compounds = [
+    ...new Set(
+      [...selectorSource.matchAll(COMPOUND_CLASS_PATTERN)].map(
+        (match) => `.${match.groups.compound}`,
+      ),
+    ),
+  ];
   const unusedCompounds = compounds.filter((compound) => {
     const tokens = compound.slice(1).split('.');
-    return ![...classGroups.values()].some((group) => tokens.every((token) => group.tokens.has(token)));
+    return ![...classGroups.values()].some((group) =>
+      tokens.every((token) => group.tokens.has(token)),
+    );
   });
-  if (unusedCompounds.length) unusedCompoundsByFile.set(toSourcePath(file), unusedCompounds.sort());
+  if (unusedCompounds.length) {
+    unusedCompoundsByFile.set(toSourcePath(file), unusedCompounds.sort());
+  }
 }
 
 if (unusedByFile.size || unusedCompoundsByFile.size) {
   console.error('Potentially orphaned CSS classes or compound selectors:');
   for (const [file, classes] of unusedByFile) {
-    console.error(`  - ${file} (classes): ${classes.map((className) => `.${className}`).join(', ')}`);
+    console.error(
+      `  - ${file} (classes): ${classes.map((className) => `.${className}`).join(', ')}`,
+    );
   }
   for (const [file, compounds] of unusedCompoundsByFile) {
-    console.error(`  - ${file} (compound selectors never emitted together): ${compounds.join(', ')}`);
+    console.error(
+      `  - ${file} (compound selectors never emitted together): ${compounds.join(', ')}`,
+    );
   }
   process.exitCode = 1;
 } else {
-  console.log(`CSS classes and compound selectors: ${files.filter((file) => extname(file) === '.css').length} stylesheets checked`);
+  const stylesheetCount = files.filter(
+    (file) => extname(file) === '.css',
+  ).length;
+  console.log(
+    `CSS classes and compound selectors: ${stylesheetCount} stylesheets checked`,
+  );
 }

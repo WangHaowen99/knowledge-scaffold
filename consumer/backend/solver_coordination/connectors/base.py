@@ -11,16 +11,16 @@ from solver_coordination.contracts import ProblemIR, SolverResult
 
 @runtime_checkable
 class SolverConnector(Protocol):
-    def capabilities(
-        self, *, binding: Mapping[str, Any] | None = None
-    ) -> Mapping[str, Any]: ...
+    def capabilities(self, *, binding: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+        return ...
 
     def assert_binding_capabilities(
         self,
         binding: Mapping[str, Any],
         *,
         required_capabilities: Sequence[str] = (),
-    ) -> None: ...
+    ) -> None:
+        return ...
 
     def submit(
         self,
@@ -31,19 +31,17 @@ class SolverConnector(Protocol):
         deadline: datetime,
         result_quality: str = "optimal",
         traceparent: str | None = None,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        return ...
 
-    def poll(
-        self, *, binding: Mapping[str, Any], job_id: str
-    ) -> Mapping[str, Any]: ...
+    def poll(self, *, binding: Mapping[str, Any], job_id: str) -> Mapping[str, Any]:
+        return ...
 
-    def cancel(
-        self, *, binding: Mapping[str, Any], job_id: str
-    ) -> Mapping[str, Any]: ...
+    def cancel(self, *, binding: Mapping[str, Any], job_id: str) -> Mapping[str, Any]:
+        return ...
 
-    def result(
-        self, *, binding: Mapping[str, Any], job_id: str
-    ) -> SolverResult: ...
+    def result(self, *, binding: Mapping[str, Any], job_id: str) -> SolverResult:
+        return ...
 
 
 __all__ = ["SolverConnector"]

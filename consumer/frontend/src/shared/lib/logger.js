@@ -1,3 +1,5 @@
+/* eslint-disable no-console -- The central logger owns the development console fallback. */
+
 /**
  * Logging utility with log levels and structured output.
  * Set LOG_LEVEL via environment variable VITE_LOG_LEVEL (debug|info|warn|error)

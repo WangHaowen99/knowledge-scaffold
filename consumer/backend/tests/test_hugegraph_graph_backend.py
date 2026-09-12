@@ -6,10 +6,10 @@ import json
 
 import pytest
 import requests
-
 from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
 from agent.tools.business_data.providers.graph.backends.hugegraph import HugeGraphBackend
 from agent.tools.business_data.providers.graph.models import GraphScope
+from backend_synthetic_credentials import synthetic_invalid_password, synthetic_secret
 
 
 def _scope():
@@ -74,6 +74,7 @@ class _FakeResponse:
     def __init__(self, payload):
         self._payload = payload
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def raise_for_status(self):
         return None
 
@@ -94,12 +95,14 @@ def _install_hugegraph_http(
             {
                 "TargetItemCode": "M-001",
                 "MaterialCost": 450,
-                "logic_blocks": json.dumps([
-                    {"title": "推荐规则", "content": "命中后推荐"}
-                ], ensure_ascii=False),
+                "logic_blocks": json.dumps([{"title": "推荐规则", "content": "命中后推荐"}], ensure_ascii=False),
             },
         ),
-        _vertex("v-e1", "SourceItemVersion", {"SourceItemVersionID": "VERSION0001", "SourceItemCode": "101000-001", "SourceItemVersion": "A"}),
+        _vertex(
+            "v-e1",
+            "SourceItemVersion",
+            {"SourceItemVersionID": "VERSION0001", "SourceItemCode": "101000-001", "SourceItemVersion": "A"},
+        ),
         _vertex("v-other", "TargetItem", {"TargetItemCode": "M-999"}, workspace="workspace-b"),
     ]
     if include_other_ontology:
@@ -116,14 +119,20 @@ def _install_hugegraph_http(
         _edge("e-other", "v-other", "v-m1", "PROCESS_TO", workspace="workspace-b"),
     ]
     if include_competing_path:
-        vertices.extend([
-            _vertex("v-m2", "TargetItem", {"TargetItemCode": "M-002", "MaterialCost": 300}),
-            _vertex("v-e2", "SourceItemVersion", {"SourceItemVersionID": "VERSION0002", "SourceItemCode": "101001-001", "SourceItemVersion": "A"}),
-        ])
+        vertices.extend(
+            [
+                _vertex("v-m2", "TargetItem", {"TargetItemCode": "M-002", "MaterialCost": 300}),
+                _vertex(
+                    "v-e2",
+                    "SourceItemVersion",
+                    {"SourceItemVersionID": "VERSION0002", "SourceItemCode": "101001-001", "SourceItemVersion": "A"},
+                ),
+            ]
+        )
         edges.append(_edge("e-rel-2", "v-e2", "v-m2", "PROCESS_TO", {"Qty": 1}))
     calls = []
 
-    def fake_request(
+    def fake_request(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         method,
         url,
         params=None,
@@ -132,14 +141,16 @@ def _install_hugegraph_http(
         auth=None,
         **_request_kwargs,
     ):
-        calls.append({
-            "method": method,
-            "url": url,
-            "params": params,
-            "timeout": timeout,
-            "headers": headers,
-            "auth": auth,
-        })
+        calls.append(
+            {
+                "method": method,
+                "url": url,
+                "params": params,
+                "timeout": timeout,
+                "headers": headers,
+                "auth": auth,
+            }
+        )
         if url.endswith("/schema"):
             return _FakeResponse({"schema": {}})
         if url.endswith("/graph/vertices"):
@@ -154,10 +165,12 @@ def _install_hugegraph_http(
 
 def test_hugegraph_property_filter_can_disable_ontology_scope(monkeypatch):
     _install_hugegraph_http(monkeypatch, include_other_ontology=True)
-    backend = HugeGraphBackend({
-        "url": "http://hugegraph.test",
-        "graph": "demo",
-    })
+    backend = HugeGraphBackend(
+        {
+            "url": "http://service.example.net",
+            "graph": "demo",
+        }
+    )
     scope = GraphScope(
         workspace_property="d2o_workspace_id",
         workspace_value="workspace-a",
@@ -175,22 +188,21 @@ def test_hugegraph_property_filter_can_disable_ontology_scope(monkeypatch):
         scope=scope,
     )
 
-    assert [
-        record["properties"]["TargetItemCode"]
-        for record in result.records
-    ] == ["M-001", "M-002"]
+    assert [record["properties"]["TargetItemCode"] for record in result.records] == ["M-001", "M-002"]
 
 
 def test_hugegraph_backend_executes_schema_property_count_aggregate_sorted_and_detail(monkeypatch):
     calls = _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({
-        "url": "http://hugegraph.test",
-        "graph": "demo",
-        "graph_space": "DEFAULT",
-        "username": "user",
-        "password": "secret",
-        "token": "token",
-    })
+    backend = HugeGraphBackend(
+        {
+            "url": "http://service.example.net",
+            "graph": "demo",
+            "graph_space": "DEFAULT",
+            "username": "user",
+            "password": synthetic_invalid_password("hugegraph_graph_backend-credential-02"),
+            "token": synthetic_secret("hugegraph_graph_backend-credential-03"),
+        }
+    )
 
     backend.verify_connectivity()
     nodes_schema = backend.get_nodes_schema(scope=_scope())
@@ -264,14 +276,16 @@ def test_hugegraph_backend_executes_schema_property_count_aggregate_sorted_and_d
     assert sorted_result.records[0]["properties"] == {"TargetItemCode": "M-001"}
     assert detail["found"] is True
     assert detail["properties"]["TargetItemCode"] == "M-001"
-    assert calls[0]["url"] == "http://hugegraph.test/graphspaces/DEFAULT/graphs/demo/schema"
-    assert calls[0]["headers"] == {"Authorization": "Bearer token"}
-    assert calls[0]["auth"] == ("user", "secret")
+    assert calls[0]["url"] == "http://service.example.net/graphspaces/DEFAULT/graphs/demo/schema"
+    assert calls[0]["headers"] == {
+        "Authorization": f"Bearer {synthetic_secret('hugegraph_graph_backend-credential-03')}"
+    }
+    assert calls[0]["auth"] == ("user", synthetic_invalid_password("hugegraph_graph_backend-credential-02"))
 
 
 def test_hugegraph_property_filter_supports_workspace_only_scope(monkeypatch):
     _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({"url": "http://hugegraph.test", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
 
     result = backend.property_filter(
         element_class="TargetItem",
@@ -289,13 +303,15 @@ def test_hugegraph_property_filter_supports_workspace_only_scope(monkeypatch):
 
 def test_hugegraph_uses_separate_connection_and_query_timeouts(monkeypatch):
     calls = _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({
-        "url": "http://hugegraph.test",
-        "graph": "demo",
-        "timeout_seconds": 120,
-        "graph_query_timeout_seconds": 30,
-        "graph_connect_timeout_seconds": 10,
-    })
+    backend = HugeGraphBackend(
+        {
+            "url": "http://service.example.net",
+            "graph": "demo",
+            "timeout_seconds": 120,
+            "graph_query_timeout_seconds": 30,
+            "graph_connect_timeout_seconds": 10,
+        }
+    )
 
     backend.verify_connectivity()
 
@@ -309,17 +325,21 @@ def test_hugegraph_uses_pinned_ip_with_original_tls_identity(monkeypatch):
         text = "{}"
         status_code = 200
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {}
 
-    backend = HugeGraphBackend({
-        "url": "https://snapshot.example.com:8443",
-        "resolved_url": "https://192.0.2.24:8443",
-        "graph": "graph_demo",
-    })
+    backend = HugeGraphBackend(
+        {
+            "url": "https://snapshot.example.com:8443",
+            "resolved_url": "https://192.0.2.24:8443",
+            "graph": "graph_demo",
+        }
+    )
     monkeypatch.setattr(
         backend._pinned_session,
         "request",
@@ -328,26 +348,23 @@ def test_hugegraph_uses_pinned_ip_with_original_tls_identity(monkeypatch):
 
     backend.verify_connectivity()
 
-    assert captured["url"].startswith(
-        "https://192.0.2.24:8443/graphs/graph_demo/"
-    )
+    assert captured["url"].startswith("https://192.0.2.24:8443/graphs/graph_demo/")
     assert captured["headers"]["Host"] == "snapshot.example.com:8443"
     assert captured["allow_redirects"] is False
     assert backend._pinned_session.trust_env is False
-    assert (
-        backend._pinned_session.adapters["https://"]._server_hostname
-        == "snapshot.example.com"
-    )
+    assert backend._pinned_session.adapters["https://"]._server_hostname == "snapshot.example.com"
     backend.close()
 
 
 def test_hugegraph_legacy_timeout_does_not_override_default_query_timeout(monkeypatch):
     calls = _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({
-        "url": "http://hugegraph.test",
-        "graph": "demo",
-        "timeout_seconds": 60,
-    })
+    backend = HugeGraphBackend(
+        {
+            "url": "http://service.example.net",
+            "graph": "demo",
+            "timeout_seconds": 60,
+        }
+    )
 
     backend.verify_connectivity()
 
@@ -362,11 +379,13 @@ def test_hugegraph_timeout_is_retried_at_most_once(monkeypatch):
         raise requests.exceptions.Timeout("read timed out")
 
     monkeypatch.setattr("requests.request", timeout_request)
-    backend = HugeGraphBackend({
-        "url": "http://hugegraph.test",
-        "graph": "demo",
-        "max_retries": 5,
-    })
+    backend = HugeGraphBackend(
+        {
+            "url": "http://service.example.net",
+            "graph": "demo",
+            "max_retries": 5,
+        }
+    )
 
     with pytest.raises(GraphBackendTimeoutError):
         backend.verify_connectivity()
@@ -377,10 +396,14 @@ def test_hugegraph_timeout_is_retried_at_most_once(monkeypatch):
 
 def test_hugegraph_backend_pattern_search_forces_scope(monkeypatch):
     _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({"url": "http://hugegraph.test", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
 
     result = backend.pattern_search(
-        path_pattern=[["SourceItemVersion", {"SourceItemVersionID": "VERSION0001"}], ["PROCESS_TO", "->"], ["TargetItem"]],
+        path_pattern=[
+            ["SourceItemVersion", {"SourceItemVersionID": "VERSION0001"}],
+            ["PROCESS_TO", "->"],
+            ["TargetItem"],
+        ],
         return_vars=["a", "r1", "b"],
         limit=10,
         scope=_scope(),
@@ -395,7 +418,7 @@ def test_hugegraph_backend_pattern_search_forces_scope(monkeypatch):
 
 def test_hugegraph_backend_pattern_search_treats_filters_as_props(monkeypatch):
     _install_hugegraph_http(monkeypatch, include_competing_path=True)
-    backend = HugeGraphBackend({"url": "http://hugegraph.test", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
 
     result = backend.pattern_search(
         path_pattern=[
@@ -419,7 +442,7 @@ def test_hugegraph_backend_pattern_search_treats_filters_as_props(monkeypatch):
 
 def test_hugegraph_backend_pattern_search_projects_return_vars_and_properties(monkeypatch):
     _install_hugegraph_http(monkeypatch, include_competing_path=True)
-    backend = HugeGraphBackend({"url": "http://hugegraph.test", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
 
     result = backend.pattern_search(
         path_pattern=[
@@ -448,7 +471,7 @@ def test_hugegraph_backend_pattern_search_projects_return_vars_and_properties(mo
 
 def test_hugegraph_backend_runs_extra_mcp_graph_tools(monkeypatch):
     _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({"url": "http://hugegraph.test", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
 
     hop = backend.hop_search(
         entity_instance_id="v-e1",
@@ -476,9 +499,7 @@ def test_hugegraph_backend_runs_extra_mcp_graph_tools(monkeypatch):
     assert hop.records[0]["edge_count"] == 1
     assert shortest.total == 1
     assert shortest.records[0]["relationships"][0]["relation_type"] == "PROCESS_TO"
-    assert titles.records == [
-        {"entity_instance_id": "v-m1", "entity_type": "TargetItem", "logic_title": "推荐规则"}
-    ]
+    assert titles.records == [{"entity_instance_id": "v-m1", "entity_type": "TargetItem", "logic_title": "推荐规则"}]
     assert content.records == [
         {
             "entity_instance_id": "v-m1",

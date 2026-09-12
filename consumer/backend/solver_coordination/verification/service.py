@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from utils.atomic_files import staged_bytes
 
+from ..canonical import canonical_json_bytes, sha256_digest
 from ..contracts import (
     FactSnapshot,
     NormalizedInput,
@@ -19,14 +20,12 @@ from ..contracts import (
     SolverResult,
     VerificationResult,
 )
-from ..canonical import canonical_json_bytes, sha256_digest
 from ..errors import (
     ArtifactPersistError,
     VerificationDivergenceError,
     VerificationRuntimeFailure,
 )
 from ..ports import IndependentVerifier
-
 
 _ARTIFACT_TYPE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _ARTIFACT_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -69,9 +68,7 @@ class ContentAddressedSolverArtifactStore:
             }
             encoded = canonical_json_bytes(envelope)
         except (TypeError, ValueError) as exc:
-            raise SolverArtifactStoreError(
-                "solver artifact is not canonical JSON"
-            ) from exc
+            raise SolverArtifactStoreError("solver artifact is not canonical JSON") from exc
 
         directory = self.root / kind
         target = directory / "{}.json".format(digest_hex)
@@ -91,9 +88,7 @@ class ContentAddressedSolverArtifactStore:
                     self._verify_file(target, expected=envelope)
                     self._fsync_directory(directory)
         except OSError as exc:
-            raise SolverArtifactStoreError(
-                "failed to persist solver artifact"
-            ) from exc
+            raise SolverArtifactStoreError("failed to persist solver artifact") from exc
         return {
             "artifact_ref": reference,
             "artifact_digest": digest,
@@ -154,13 +149,9 @@ class ContentAddressedSolverArtifactStore:
         try:
             actual = cls._read_file(path)
         except (OSError, ValueError) as exc:
-            raise SolverArtifactStoreError(
-                "solver artifact persisted content is invalid"
-            ) from exc
+            raise SolverArtifactStoreError("solver artifact persisted content is invalid") from exc
         if actual != dict(expected):
-            raise SolverArtifactStoreError(
-                "solver artifact digest is bound to different content"
-            )
+            raise SolverArtifactStoreError("solver artifact digest is bound to different content")
 
     @staticmethod
     def _fsync_directory(directory: Path) -> None:
@@ -202,9 +193,7 @@ class IndependentVerificationService:
         if not isinstance(solver_result, SolverResult):
             raise VerificationRuntimeFailure("solver result is invalid")
         if solver_result.problem_id != problem.problem_id:
-            raise VerificationDivergenceError(
-                "solver result does not match the compiled problem"
-            )
+            raise VerificationDivergenceError("solver result does not match the compiled problem")
 
         try:
             verification = self.verifier.verify(
@@ -215,20 +204,12 @@ class IndependentVerificationService:
                 solver_result=solver_result,
             )
         except Exception as exc:
-            if isinstance(
-                exc, (VerificationDivergenceError, VerificationRuntimeFailure)
-            ):
+            if isinstance(exc, (VerificationDivergenceError, VerificationRuntimeFailure)):
                 raise
-            raise VerificationRuntimeFailure(
-                "independent verifier execution failed"
-            ) from exc
+            raise VerificationRuntimeFailure("independent verifier execution failed") from exc
 
         if not isinstance(verification, VerificationResult):
-            raise VerificationRuntimeFailure(
-                "independent verifier returned an invalid contract"
-            )
+            raise VerificationRuntimeFailure("independent verifier returned an invalid contract")
         if verification.problem_id != problem.problem_id:
-            raise VerificationDivergenceError(
-                "verification result does not match the compiled problem"
-            )
+            raise VerificationDivergenceError("verification result does not match the compiled problem")
         return verification

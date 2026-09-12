@@ -17,13 +17,17 @@ def test_script_parameter_default_round_trips_into_execution_catalog():
     parameters = _parse_script_parameters_from_markdown(markdown)
     assert parameters[1]["default"] == "standard"
 
-    public = public_script_catalog([{
-        "operation_key": "process_records",
-        "script_key": "process_records",
-        "title": "处理记录",
-        "parameters": parameters,
-        "_is_bound_operation": True,
-    }])
+    public = public_script_catalog(
+        [
+            {
+                "operation_key": "process_records",
+                "script_key": "process_records",
+                "title": "处理记录",
+                "parameters": parameters,
+                "_is_bound_operation": True,
+            }
+        ]
+    )
     assert public[0]["parameters"][1]["default"] == "standard"
     assert "default=standard" in "\n".join(_format_script_catalog(public))
 

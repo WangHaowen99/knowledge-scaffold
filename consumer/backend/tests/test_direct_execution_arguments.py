@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
 import json
 from types import SimpleNamespace
 
 import agent.direct_execution.router as direct_router_module
 import agent.direct_execution.runner as direct_runner_module
-from agent.tools.business_data.resolver import BusinessDataConnectionError
+import pytest
 from agent.direct_execution.arguments import (
     build_direct_cli_args,
     extract_business_placeholder_keys,
@@ -18,6 +17,7 @@ from agent.direct_execution.arguments import (
 )
 from agent.direct_execution.models import RouteDecision, RuntimeContext
 from agent.direct_execution.router import OperationDirectRouter
+from agent.tools.business_data.resolver import BusinessDataConnectionError
 from agent.tools.script_parameters import is_runtime_parameter, runtime_parameter_field
 
 
@@ -33,9 +33,7 @@ def test_extract_runtime_argument_keys_covers_structured_and_legacy_aliases():
             {"name": "payload", "flag": "--payload"},
         ]
     )
-    legacy = extract_runtime_argument_keys(
-        script_args=["--run-id", "<runtime.run_id>", "--payload", "<payload>"]
-    )
+    legacy = extract_runtime_argument_keys(script_args=["--run-id", "<runtime.run_id>", "--payload", "<payload>"])
 
     assert {"session_id", "session-id", "--session-id", "session"}.issubset(structured)
     assert {"run_id", "run-id", "--run-id"}.issubset(legacy)
@@ -204,9 +202,7 @@ def test_direct_object_and_array_parameters_are_json_encoded():
 
 
 def test_deterministic_structured_parameters_use_canonical_json_without_changing_legacy_default():
-    parameters = [
-        {"name": "payload", "flag": "--payload", "required": True, "type": "object"}
-    ]
+    parameters = [{"name": "payload", "flag": "--payload", "required": True, "type": "object"}]
     left = {"payload": {"b": 2, "a": {"d": 4, "c": 3}}}
     right = {"payload": {"a": {"c": 3, "d": 4}, "b": 2}}
 
@@ -230,10 +226,14 @@ def test_deterministic_structured_parameters_use_canonical_json_without_changing
     )
 
     assert legacy_left != legacy_right
-    assert deterministic_left == deterministic_right == [
-        "--payload",
-        '{"a":{"c":3,"d":4},"b":2}',
-    ]
+    assert (
+        deterministic_left
+        == deterministic_right
+        == [
+            "--payload",
+            '{"a":{"c":3,"d":4},"b":2}',
+        ]
+    )
     assert (missing_left, error_left) == ([], None)
     assert (missing_right, error_right) == ([], None)
 
@@ -278,9 +278,7 @@ def test_structured_runtime_requirement_is_checked_with_canonical_context_field(
     )
 
     assert extract_runtime_requirements(
-        script_parameters=[
-            {"name": "session_id", "flag": "--session-id", "required": True}
-        ]
+        script_parameters=[{"name": "session_id", "flag": "--session-id", "required": True}]
     ) == ["session_id"]
     assert router._check_runtime_requirements(["session_id"], context) == ["session_id"]
 
@@ -330,16 +328,19 @@ def test_direct_legacy_runtime_parameter_cannot_be_overridden_by_duplicate_user_
 
 
 def test_optional_runtime_parameter_is_not_a_direct_routing_requirement():
-    assert extract_runtime_requirements(
-        script_parameters=[
-            {
-                "name": "workspace_id",
-                "flag": "--workspace-id",
-                "required": False,
-                "runtime": True,
-            }
-        ]
-    ) == []
+    assert (
+        extract_runtime_requirements(
+            script_parameters=[
+                {
+                    "name": "workspace_id",
+                    "flag": "--workspace-id",
+                    "required": False,
+                    "runtime": True,
+                }
+            ]
+        )
+        == []
+    )
 
 
 def test_structured_business_key_extraction_preserves_all_supported_aliases():
@@ -526,9 +527,7 @@ def test_direct_router_keeps_alias_argument(monkeypatch):
         "find_best_script_operation",
         lambda **kwargs: (script_entry, "run_batch", 1.0),
     )
-    router = OperationDirectRouter(
-        SimpleNamespace(enabled=True, selected_ontology_only=True, confidence_threshold=0.8)
-    )
+    router = OperationDirectRouter(SimpleNamespace(enabled=True, selected_ontology_only=True, confidence_threshold=0.8))
 
     decision = router.route(
         user_request="run_batch",
@@ -558,9 +557,7 @@ def test_direct_router_forwards_pinned_manifest_to_matcher(monkeypatch):
         "find_best_script_operation",
         lambda **kwargs: observed.append(kwargs) or (None, None, 0.0),
     )
-    router = OperationDirectRouter(
-        SimpleNamespace(enabled=True, selected_ontology_only=True, confidence_threshold=0.8)
-    )
+    router = OperationDirectRouter(SimpleNamespace(enabled=True, selected_ontology_only=True, confidence_threshold=0.8))
 
     decision = router.route(
         user_request="run",
@@ -658,9 +655,7 @@ def test_direct_router_allows_missing_optional_runtime_context(monkeypatch):
         "find_best_script_operation",
         lambda **kwargs: (script_entry, "run_optional", 1.0),
     )
-    router = OperationDirectRouter(
-        SimpleNamespace(enabled=True, selected_ontology_only=True, confidence_threshold=0.8)
-    )
+    router = OperationDirectRouter(SimpleNamespace(enabled=True, selected_ontology_only=True, confidence_threshold=0.8))
 
     decision = router.route(
         user_request="run_optional",
@@ -730,9 +725,7 @@ def test_direct_runner_rejects_script_outside_current_ontology_scripts(
     assert executed == []
     assert [event["data"]["type"] for event in events] == ["tool.finished"]
     runtime_tools = [
-        event
-        for event in observer.events
-        if event.type in {"tool_batch.started", "tool.started", "tool.finished"}
+        event for event in observer.events if event.type in {"tool_batch.started", "tool.started", "tool.finished"}
     ]
     assert [event.type for event in runtime_tools] == ["tool.finished"]
     assert runtime_tools[0].payload["status"] == "error"
@@ -762,9 +755,7 @@ def test_direct_runner_redacts_unexpected_exception_from_result_and_events(
     monkeypatch.setattr(
         direct_runner_module,
         "handle_execute_script_path",
-        lambda **kwargs: (_ for _ in ()).throw(
-            RuntimeError("ACCESS_TOKEN=direct-runner-secret")
-        ),
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("ACCESS_TOKEN=direct-runner-secret")),
     )
     decision = RouteDecision(
         route="direct_script",
@@ -866,9 +857,7 @@ def test_direct_runner_fails_before_required_business_data_script(
     monkeypatch.setattr(
         direct_runner_module,
         "_build_script_env_overrides",
-        lambda **kwargs: (_ for _ in ()).throw(
-            BusinessDataConnectionError("synthetic unavailable")
-        ),
+        lambda **kwargs: (_ for _ in ()).throw(BusinessDataConnectionError("synthetic unavailable")),
     )
     executed = []
     monkeypatch.setattr(
@@ -905,8 +894,7 @@ def test_direct_runner_fails_before_required_business_data_script(
     assert result.status == "error"
     assert result.error == "BUSINESS_DATA_CONNECTION_UNAVAILABLE"
     assert result.output == (
-        "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] "
-        "Required business data connection is unavailable."
+        "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] " "Required business data connection is unavailable."
     )
     assert executed == []
 
@@ -1011,11 +999,7 @@ def test_direct_runner_env_failure_preserves_tool_started_and_span_identity(
         project_root=project_root,
     )
 
-    sse_tools = [
-        event["data"]
-        for event in events
-        if event["data"]["type"] in {"tool.started", "tool.finished"}
-    ]
+    sse_tools = [event["data"] for event in events if event["data"]["type"] in {"tool.started", "tool.finished"}]
     runtime_tools = [
         event
         for event in observer.events

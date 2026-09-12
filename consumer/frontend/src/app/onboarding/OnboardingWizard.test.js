@@ -19,7 +19,9 @@ const {
   resolveHasNoWorkspace,
   trapWizardTab,
 } = await vite.ssrLoadModule('/src/app/onboarding/OnboardingWizard.jsx');
-const { AuthCtx } = await vite.ssrLoadModule('/src/features/auth/useAuthContext.js');
+const { AuthCtx } = await vite.ssrLoadModule(
+  '/src/features/auth/useAuthContext.js',
+);
 
 after(async () => {
   await vite.close();
@@ -31,8 +33,12 @@ function createKeyboardEvent(key, shiftKey = false) {
     shiftKey,
     defaultPrevented: false,
     propagationStopped: false,
-    preventDefault() { this.defaultPrevented = true; },
-    stopPropagation() { this.propagationStopped = true; },
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+    stopPropagation() {
+      this.propagationStopped = true;
+    },
   };
 }
 
@@ -50,13 +56,45 @@ function createFocusable(documentRef, name, style = {}) {
 }
 
 test('workspace-empty onboarding requires a completed successful empty list', () => {
-  const state = { workspacesLoaded: false, workspacesLoading: false, workspacesError: '', workspaces: [] };
+  const state = {
+    workspacesLoaded: false,
+    workspacesLoading: false,
+    workspacesError: '',
+    workspaces: [],
+  };
   assert.equal(resolveHasNoWorkspace(undefined, state), false);
-  assert.equal(resolveHasNoWorkspace(undefined, { ...state, workspacesLoaded: true, workspacesLoading: true }), false);
-  assert.equal(resolveHasNoWorkspace(undefined, { ...state, workspacesLoaded: true, workspacesError: '加载失败' }), false);
-  assert.equal(resolveHasNoWorkspace(undefined, { ...state, workspacesLoaded: true, workspaces: [{ id: 'ws-a' }] }), false);
-  assert.equal(resolveHasNoWorkspace(undefined, { ...state, workspacesLoaded: true }), true);
-  assert.equal(resolveHasNoWorkspace(false, { ...state, workspacesLoaded: true }), false);
+  assert.equal(
+    resolveHasNoWorkspace(undefined, {
+      ...state,
+      workspacesLoaded: true,
+      workspacesLoading: true,
+    }),
+    false,
+  );
+  assert.equal(
+    resolveHasNoWorkspace(undefined, {
+      ...state,
+      workspacesLoaded: true,
+      workspacesError: '加载失败',
+    }),
+    false,
+  );
+  assert.equal(
+    resolveHasNoWorkspace(undefined, {
+      ...state,
+      workspacesLoaded: true,
+      workspaces: [{ id: 'ws-a' }],
+    }),
+    false,
+  );
+  assert.equal(
+    resolveHasNoWorkspace(undefined, { ...state, workspacesLoaded: true }),
+    true,
+  );
+  assert.equal(
+    resolveHasNoWorkspace(false, { ...state, workspacesLoaded: true }),
+    false,
+  );
   assert.equal(resolveHasNoWorkspace(true, state), true);
 });
 
@@ -83,7 +121,7 @@ test('wizard dialog exposes modal and labelled semantics', () => {
   assert.match(markup, /role="dialog"/);
   assert.match(markup, /aria-modal="true"/);
   assert.match(markup, /tabindex="-1"/);
-  const labelledBy = markup.match(/aria-labelledby="([^"]+)"/)?.[1];
+  const labelledBy = markup.match(/aria-labelledby="(?<id>[^"]+)"/)?.groups.id;
   assert.ok(labelledBy);
   assert.ok(markup.includes(`id="${labelledBy}"`));
 });
@@ -94,10 +132,14 @@ test('wizard focus activates inside the dialog, Escape dismisses, and cleanup re
     activeElement: null,
     body: {},
     addEventListener(type, handler) {
-      if (type === 'keydown') keydownHandler = handler;
+      if (type === 'keydown') {
+        keydownHandler = handler;
+      }
     },
     removeEventListener(type, handler) {
-      if (type === 'keydown' && keydownHandler === handler) keydownHandler = null;
+      if (type === 'keydown' && keydownHandler === handler) {
+        keydownHandler = null;
+      }
     },
   };
   const previous = createFocusable(documentRef, 'previous');
@@ -111,10 +153,16 @@ test('wizard focus activates inside the dialog, Escape dismisses, and cleanup re
   card.contains = (element) => items.includes(element);
   let dismissed = 0;
 
-  const cleanup = activateWizardFocus(card, () => { dismissed += 1; }, {
-    documentRef,
-    resolveStyle: (element) => element.style,
-  });
+  const cleanup = activateWizardFocus(
+    card,
+    () => {
+      dismissed += 1;
+    },
+    {
+      documentRef,
+      resolveStyle: (element) => element.style,
+    },
+  );
 
   assert.equal(documentRef.activeElement, first);
   assert.equal(first.focusCount, 1);
@@ -143,26 +191,38 @@ test('Tab and Shift+Tab stay inside the wizard dialog', () => {
 
   documentRef.activeElement = last;
   const forward = createKeyboardEvent('Tab');
-  assert.equal(trapWizardTab(forward, card, documentRef.activeElement, resolveStyle), true);
+  assert.equal(
+    trapWizardTab(forward, card, documentRef.activeElement, resolveStyle),
+    true,
+  );
   assert.equal(documentRef.activeElement, first);
   assert.equal(forward.defaultPrevented, true);
   assert.equal(forward.propagationStopped, true);
 
   const backward = createKeyboardEvent('Tab', true);
-  assert.equal(trapWizardTab(backward, card, documentRef.activeElement, resolveStyle), true);
+  assert.equal(
+    trapWizardTab(backward, card, documentRef.activeElement, resolveStyle),
+    true,
+  );
   assert.equal(documentRef.activeElement, last);
   assert.equal(backward.defaultPrevented, true);
 
   documentRef.activeElement = middle;
   const internal = createKeyboardEvent('Tab');
-  assert.equal(trapWizardTab(internal, card, documentRef.activeElement, resolveStyle), false);
+  assert.equal(
+    trapWizardTab(internal, card, documentRef.activeElement, resolveStyle),
+    false,
+  );
   assert.equal(internal.defaultPrevented, false);
   assert.equal(internal.propagationStopped, true);
 
   const outside = createFocusable(documentRef, 'outside');
   documentRef.activeElement = outside;
   const reenter = createKeyboardEvent('Tab', true);
-  assert.equal(trapWizardTab(reenter, card, documentRef.activeElement, resolveStyle), true);
+  assert.equal(
+    trapWizardTab(reenter, card, documentRef.activeElement, resolveStyle),
+    true,
+  );
   assert.equal(documentRef.activeElement, last);
 });
 

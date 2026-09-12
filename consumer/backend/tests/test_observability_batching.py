@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import inspect
 import json
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 
 from integration.observability import RuntimeEvent, RuntimeEventType
@@ -88,21 +88,18 @@ def test_batch_span_processor_validates_operational_overrides(monkeypatch, caplo
         "schedule_delay_millis": 5000,
         "export_timeout_millis": 5000,
     }
-    assert all(
-        name in caplog.text
-        for name in (
-            "OTEL_BSP_MAX_QUEUE_SIZE",
-            "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
-            "OTEL_BSP_SCHEDULE_DELAY",
-            "OTEL_BSP_EXPORT_TIMEOUT",
-        )
+    option_names = (
+        "OTEL_BSP_MAX_QUEUE_SIZE",
+        "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
+        "OTEL_BSP_SCHEDULE_DELAY",
+        "OTEL_BSP_EXPORT_TIMEOUT",
     )
+    assert all(name in caplog.text for name in option_names)
 
 
 def test_batch_span_processor_factory_builds_a_real_bounded_processor(monkeypatch):
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExportResult, SpanExporter
-
     from integration.observability import otel
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 
     for name in (
         "OTEL_BSP_MAX_QUEUE_SIZE",
@@ -131,10 +128,9 @@ def test_batch_span_processor_factory_builds_a_real_bounded_processor(monkeypatc
 
 
 def test_batch_span_processor_shutdown_is_bounded_for_blocking_exporter():
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SpanExportResult, SpanExporter
-
     from integration.observability import otel
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
     entered = threading.Event()
     release = threading.Event()
@@ -194,10 +190,7 @@ def test_indexed_local_store_append_many_uses_one_file_lock(tmp_path, monkeypatc
     assert lock_entries == 1
     data_paths = list(tmp_path.glob("otel_trace-*.log"))
     assert len(data_paths) == 1
-    assert [
-        json.loads(line)
-        for line in data_paths[0].read_text(encoding="utf-8").splitlines()
-    ] == records
+    assert [json.loads(line) for line in data_paths[0].read_text(encoding="utf-8").splitlines()] == records
     assert len(local_storage.read_or_rebuild_index(data_paths[0])) == 3
 
 
@@ -241,10 +234,12 @@ def test_workspace_fanout_prefers_batch_and_isolates_exporter_failures():
     events = [_event(1), _event(2)]
 
     class FailingBatchExporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export_batch(self, batch):
             list(batch)
             raise RuntimeError("synthetic batch failure")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             raise AssertionError(f"batch path was not used for {event.run_id}")
 
@@ -268,9 +263,7 @@ def test_workspace_fanout_prefers_batch_and_isolates_exporter_failures():
 
     batch_exporter = BatchExporter()
     legacy_exporter = LegacyExporter()
-    fanout = _WorkspaceExporterFanout(
-        [FailingBatchExporter(), batch_exporter, legacy_exporter]
-    )
+    fanout = _WorkspaceExporterFanout([FailingBatchExporter(), batch_exporter, legacy_exporter])
 
     outcome = fanout.export_batch(iter(events))
 
@@ -302,9 +295,11 @@ def test_bus_prefers_export_batch_and_reports_deterministic_queue_stats():
         def export(self, event):
             self.single_events.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -338,11 +333,13 @@ def test_bus_marks_partially_failed_fanout_batch_as_failed():
     completed = threading.Event()
 
     class FailingExporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export_batch(self, batch):
             list(batch)
             raise RuntimeError("synthetic exporter failure")
 
     class SuccessfulExporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export_batch(self, batch):
             list(batch)
 
@@ -375,9 +372,11 @@ def test_bus_batch_fallback_isolates_individual_export_failures():
                 raise RuntimeError("synthetic event failure")
             self.events.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -412,9 +411,11 @@ def test_bus_drop_and_shutdown_drain_timeout_stats_are_deterministic():
             assert release.wait(timeout=2.0)
             self.events.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -468,12 +469,15 @@ def test_gauge_single_flight_keeps_emit_bounded_and_converges_after_perturbation
         depth_values.append(int(value))
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -530,12 +534,15 @@ def test_batch_metric_labels_are_low_cardinality(monkeypatch):
             recorded.append((self.name, value, dict(attributes)))
 
     class Meter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_counter(self, name, **_kwargs):
             return Instrument(name, "counter")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_histogram(self, name, **_kwargs):
             return Instrument(name, "histogram")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def create_gauge(self, name, **_kwargs):
             return Instrument(name, "gauge")
 
@@ -646,18 +653,14 @@ def test_batch_metrics_share_one_provider_and_reader_per_router():
         recorders = [
             recorder
             for key, recorder in otel._batch_metric_recorders.items()
-            if key == router.router_id
-            or (isinstance(key, tuple) and key[0] == router.router_id)
+            if key == router.router_id or (isinstance(key, tuple) and key[0] == router.router_id)
         ]
         assert len(recorders) == 1
         assert len({id(recorder._provider) for recorder in recorders}) == 1
         assert len({id(recorder._reader) for recorder in recorders}) == 1
         recorder = recorders[0]
         assert len(recorder._workspace_by_scope) == 50
-        assert all(
-            workspace_id not in scope_name
-            for scope_name, workspace_id in recorder._workspace_by_scope.items()
-        )
+        assert all(workspace_id not in scope_name for scope_name, workspace_id in recorder._workspace_by_scope.items())
     finally:
         otel.shutdown_runtime_metrics(router.router_id)
         router.close()
@@ -694,6 +697,7 @@ def test_router_metric_recorders_propagate_provider_shutdown_failure():
     from integration.observability import otel
 
     class Provider:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def shutdown(self, *, timeout_millis):
             assert timeout_millis == 50
             return False
@@ -735,9 +739,7 @@ def test_metric_shutdown_retains_blocked_reader_until_retry(monkeypatch):
         router.router_id,
         timeout_millis=50,
     )
-    retained_after_timeout = (
-        otel._batch_metric_recorders.get(router.router_id) is recorder
-    )
+    retained_after_timeout = otel._batch_metric_recorders.get(router.router_id) is recorder
     alive_after_timeout = reader_thread is not None and reader_thread.is_alive()
 
     release.set()
@@ -790,8 +792,8 @@ def test_metric_shutdown_retries_only_recorders_that_failed(monkeypatch):
 
 def test_workspace_router_close_drains_bus_before_metric_shutdown(monkeypatch):
     from integration.observability import otel
-    from integration.observability.bus import ObservabilityBus
     from integration.observability import workspace_router as workspace_router_module
+    from integration.observability.bus import ObservabilityBus
     from integration.observability.workspace_router import (
         WorkspaceObservabilityRouter,
         resolve_workspace_router,
@@ -824,12 +826,15 @@ def test_workspace_router_close_drains_bus_before_metric_shutdown(monkeypatch):
     class Exporter:
         metric_name = "local"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -898,9 +903,7 @@ def test_repeated_observer_reset_does_not_accumulate_metric_readers(monkeypatch)
 
     monkeypatch.setattr(provider_module, "_observer", None)
     baseline_reader_threads = {
-        id(thread)
-        for thread in threading.enumerate()
-        if thread.name == "OtelPeriodicExportingMetricReader"
+        id(thread) for thread in threading.enumerate() if thread.name == "OtelPeriodicExportingMetricReader"
     }
 
     for index in range(3):
@@ -927,9 +930,7 @@ def test_repeated_observer_reset_does_not_accumulate_metric_readers(monkeypatch)
         assert reader_thread is None or not reader_thread.is_alive()
 
     remaining_reader_threads = {
-        id(thread)
-        for thread in threading.enumerate()
-        if thread.name == "OtelPeriodicExportingMetricReader"
+        id(thread) for thread in threading.enumerate() if thread.name == "OtelPeriodicExportingMetricReader"
     }
     assert remaining_reader_threads == baseline_reader_threads
 
@@ -988,10 +989,13 @@ def test_workspace_router_failed_metric_shutdown_is_retryable_without_recreation
 
     assert resolve_workspace_router(router.router_id) is router
     assert router.accepts_new_metric_recorders is False
-    assert otel._get_batch_metric_instruments(
-        router_id=router.router_id,
-        workspace_id="workspace_synthetic_shutdown_retry",
-    ) == {}
+    assert (
+        otel._get_batch_metric_instruments(
+            router_id=router.router_id,
+            workspace_id="workspace_synthetic_shutdown_retry",
+        )
+        == {}
+    )
     assert router.router_id not in otel._batch_metric_recorders
 
     assert router.close(timeout=1.0) is True
@@ -1056,28 +1060,34 @@ def test_provider_shutdown_shares_one_deadline_across_retry_queue(monkeypatch):
     assert observed_timeouts[1] < 0.04
 
 
-
 def test_workspace_router_close_preserves_buffered_span_flush(monkeypatch):
-    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability import workspace_router as workspace_router_module
+    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability.workspace_router import WorkspaceObservabilityRouter
 
     exported: list[RuntimeEvent] = []
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
     router = WorkspaceObservabilityRouter()
     run_id = "run_synthetic_close_flush"
     workspace_id = "workspace_synthetic_close_flush"
-    router._build_exporter = lambda _workspace_id: Exporter()
+
+    def build_exporter(_workspace_id):
+        return Exporter()
+
+    router._build_exporter = build_exporter
     router._run_workspaces[run_id] = workspace_id
     router._pending_spans_by_run[run_id] = [
         OTelSpanSnapshot(
@@ -1195,8 +1205,8 @@ def test_workspace_router_pending_span_saturation_exports_bounded_metrics(
 def test_workspace_router_close_preserves_span_arriving_during_force_flush(
     monkeypatch,
 ):
-    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability import workspace_router as workspace_router_module
+    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability.workspace_router import (
         WorkspaceObservabilityRouter,
         resolve_workspace_router,
@@ -1222,17 +1232,24 @@ def test_workspace_router_close_preserves_span_arriving_during_force_flush(
     )
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
     router = WorkspaceObservabilityRouter()
-    router._build_exporter = lambda _workspace_id: Exporter()
+
+    def build_exporter(_workspace_id):
+        return Exporter()
+
+    router._build_exporter = build_exporter
 
     def flush_with_first_span(*_args, **_kwargs):
         router.export_otel_span(span)
@@ -1259,8 +1276,8 @@ def test_workspace_router_close_preserves_span_arriving_during_force_flush(
 def test_workspace_router_close_budget_is_not_blocked_by_runtime_consumer(
     monkeypatch,
 ):
-    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability import workspace_router as workspace_router_module
+    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability.workspace_router import (
         WorkspaceObservabilityRouter,
         register_run_runtime_event_consumer,
@@ -1275,12 +1292,15 @@ def test_workspace_router_close_budget_is_not_blocked_by_runtime_consumer(
     workspace_id = "workspace_synthetic_blocked_close_consumer"
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -1290,7 +1310,11 @@ def test_workspace_router_close_budget_is_not_blocked_by_runtime_consumer(
         assert release.wait(timeout=2.0)
 
     router = WorkspaceObservabilityRouter()
-    router._build_exporter = lambda _workspace_id: Exporter()
+
+    def build_exporter(_workspace_id):
+        return Exporter()
+
+    router._build_exporter = build_exporter
     router._run_workspaces[run_id] = workspace_id
     router._pending_spans_by_run[run_id] = [
         OTelSpanSnapshot(
@@ -1394,6 +1418,7 @@ def test_observability_bus_exporter_close_failure_is_retryable():
         def __init__(self):
             self.close_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
@@ -1418,9 +1443,11 @@ def test_observability_bus_close_retry_does_not_wait_on_blocked_exporter_close()
     release = threading.Event()
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             entered.set()
             assert release.wait(timeout=2.0)
@@ -1458,6 +1485,7 @@ def test_observability_bus_failed_close_retry_stays_within_budget():
         def __init__(self):
             self.close_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
@@ -1515,8 +1543,8 @@ def test_workspace_exporter_fanout_retries_only_failed_child_close():
 
 
 def test_workspace_router_retains_bus_when_exporter_close_fails(monkeypatch):
-    from integration.observability.bus import ObservabilityBus
     from integration.observability import workspace_router as workspace_router_module
+    from integration.observability.bus import ObservabilityBus
     from integration.observability.workspace_router import (
         WorkspaceObservabilityRouter,
         resolve_workspace_router,
@@ -1529,6 +1557,7 @@ def test_workspace_router_retains_bus_when_exporter_close_fails(monkeypatch):
         def __init__(self):
             self.close_calls = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             return None
 
@@ -1541,12 +1570,8 @@ def test_workspace_router_retains_bus_when_exporter_close_fails(monkeypatch):
     bus = ObservabilityBus(exporter, metric_recorder=lambda *_args, **_kwargs: None)
     router = WorkspaceObservabilityRouter()
     router._observers_by_workspace[workspace_id] = bus
-    monkeypatch.setattr(
-        workspace_router_module, "force_flush_open_telemetry", lambda **_kwargs: True
-    )
-    monkeypatch.setattr(
-        workspace_router_module, "force_flush_runtime_metrics", lambda *_args, **_kwargs: True
-    )
+    monkeypatch.setattr(workspace_router_module, "force_flush_open_telemetry", lambda **_kwargs: True)
+    monkeypatch.setattr(workspace_router_module, "force_flush_runtime_metrics", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         workspace_router_module,
         "shutdown_runtime_metrics",
@@ -1567,8 +1592,8 @@ def test_workspace_router_retains_bus_when_exporter_close_fails(monkeypatch):
 
 
 def test_workspace_router_force_flush_failure_retains_late_span_for_retry(monkeypatch):
-    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability import workspace_router as workspace_router_module
+    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability.workspace_router import (
         WorkspaceObservabilityRouter,
         resolve_workspace_router,
@@ -1594,14 +1619,20 @@ def test_workspace_router_force_flush_failure_retains_late_span_for_retry(monkey
     )
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
     router = WorkspaceObservabilityRouter()
-    router._build_exporter = lambda _workspace_id: Exporter()
+
+    def build_exporter(_workspace_id):
+        return Exporter()
+
+    router._build_exporter = build_exporter
     flush_results = [False, True]
 
     def flush_trace(**_kwargs):
@@ -1610,12 +1641,8 @@ def test_workspace_router_force_flush_failure_retains_late_span_for_retry(monkey
         return flush_results.pop(0)
 
     monkeypatch.setattr(workspace_router_module, "force_flush_open_telemetry", flush_trace)
-    monkeypatch.setattr(
-        workspace_router_module, "force_flush_runtime_metrics", lambda *_args, **_kwargs: True
-    )
-    monkeypatch.setattr(
-        workspace_router_module, "shutdown_runtime_metrics", lambda *_args, **_kwargs: True
-    )
+    monkeypatch.setattr(workspace_router_module, "force_flush_runtime_metrics", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(workspace_router_module, "shutdown_runtime_metrics", lambda *_args, **_kwargs: True)
 
     router.close(timeout=1.0)
 
@@ -1648,13 +1675,9 @@ def test_workspace_router_force_flush_exception_keeps_drain_gate_open(monkeypatc
             raise RuntimeError("synthetic metric flush failure")
         return True
 
-    monkeypatch.setattr(
-        workspace_router_module, "force_flush_open_telemetry", lambda **_kwargs: True
-    )
+    monkeypatch.setattr(workspace_router_module, "force_flush_open_telemetry", lambda **_kwargs: True)
     monkeypatch.setattr(workspace_router_module, "force_flush_runtime_metrics", flush_metrics)
-    monkeypatch.setattr(
-        workspace_router_module, "shutdown_runtime_metrics", lambda *_args, **_kwargs: True
-    )
+    monkeypatch.setattr(workspace_router_module, "shutdown_runtime_metrics", lambda *_args, **_kwargs: True)
 
     router.close(timeout=1.0)
 
@@ -1670,8 +1693,8 @@ def test_workspace_router_force_flush_exception_keeps_drain_gate_open(monkeypatc
 def test_workspace_router_materializes_first_no_run_span_only_during_close_drain(
     monkeypatch,
 ):
-    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability import workspace_router as workspace_router_module
+    from integration.observability.otel_data import OTelSpanSnapshot
     from integration.observability.workspace_router import WorkspaceObservabilityRouter
 
     exported = []
@@ -1690,9 +1713,11 @@ def test_workspace_router_materializes_first_no_run_span_only_during_close_drain
     )
 
     class Exporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             exported.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             return None
 
@@ -1710,12 +1735,8 @@ def test_workspace_router_materializes_first_no_run_span_only_during_close_drain
         return True
 
     monkeypatch.setattr(workspace_router_module, "force_flush_open_telemetry", flush_trace)
-    monkeypatch.setattr(
-        workspace_router_module, "force_flush_runtime_metrics", lambda *_args, **_kwargs: True
-    )
-    monkeypatch.setattr(
-        workspace_router_module, "shutdown_runtime_metrics", lambda *_args, **_kwargs: True
-    )
+    monkeypatch.setattr(workspace_router_module, "force_flush_runtime_metrics", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(workspace_router_module, "shutdown_runtime_metrics", lambda *_args, **_kwargs: True)
 
     router.close(timeout=1.0)
     router.export_otel_span(span)

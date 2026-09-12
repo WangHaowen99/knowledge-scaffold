@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal, localcontext
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.contracts import (
     AuthoritativeResult,
     FactSnapshot,
@@ -39,9 +39,7 @@ def _input(values: dict[str, object] | None = None) -> NormalizedInput:
     return NormalizedInput(
         operation_key="solve_synthetic_route",
         values=values or {"count": 3, "mode": "safe"},
-        source_evidence=(
-            {"kind": "user_statement", "ref": "evidence-synthetic-1"},
-        ),
+        source_evidence=({"kind": "user_statement", "ref": "evidence-synthetic-1"},),
         normalization={
             "unit_conversions": (),
             "precision": "declared-by-schema",
@@ -169,7 +167,7 @@ def test_backend_identity_cannot_enter_model_input():
         NormalizedInput(
             operation_key="solve_synthetic_route",
             values={"count": 3},
-            normalization={"apiKey": "credential-synthetic"},
+            normalization={"apiKey": synthetic_secret("solver_input_binding-credential-01")},
         )
 
 
@@ -181,9 +179,7 @@ def test_number_values_have_one_decimal_wire_form():
         "additionalProperties": False,
     }
     bound = [
-        SolverInputBinder().bind(
-            operation_key="solve_synthetic_route", schema=schema, values={"ratio": value}
-        )
+        SolverInputBinder().bind(operation_key="solve_synthetic_route", schema=schema, values={"ratio": value})
         for value in (3, 3.0)
     ]
     assert all(item.status == "bound" for item in bound)
@@ -215,9 +211,7 @@ def test_number_precision_and_exponent_limits_fail_as_structured_input_errors(va
         "required": ["ratio"],
         "additionalProperties": False,
     }
-    result = SolverInputBinder().bind(
-        operation_key="solve_synthetic_route", schema=schema, values={"ratio": value}
-    )
+    result = SolverInputBinder().bind(operation_key="solve_synthetic_route", schema=schema, values={"ratio": value})
     assert result.status == "invalid_input"
     assert result.errors[0]["code"] == "precision"
 
@@ -459,7 +453,7 @@ def test_fact_snapshot_rejects_provider_credential_and_endpoint_bindings(binding
             package_revision="package-revision-synthetic",
             normalized_input=_input(),
             facts=[{"name": "capacity", "value": "12"}],
-            bindings={binding_key: "credential-synthetic"},
+            bindings={binding_key: synthetic_secret("solver_input_binding-credential-01")},
             as_of="2026-01-01T00:00:00Z",
             run_id="run-synthetic",
             required_facts=("capacity",),
@@ -618,7 +612,7 @@ def test_central_policy_rejects_semantic_credential_field_variants():
     with pytest.raises(SolverContractError, match="runtime identity|credential"):
         NormalizedInput(
             operation_key="solve_synthetic_route",
-            values={"request": {"api_secret": "synthetic-placeholder"}},
+            values={"request": {"api_secret": synthetic_secret("solver_input_binding-credential-02")}},
         )
 
 
@@ -653,9 +647,7 @@ def test_central_policy_does_not_reject_business_fields_by_substring():
         ([{"name": "capacity", "value": "12"}], ({"tenant_id": "synthetic"},)),
     ],
 )
-def test_fact_snapshot_rejects_identity_or_credentials_in_facts_and_evidence(
-    facts, source_evidence
-):
+def test_fact_snapshot_rejects_identity_or_credentials_in_facts_and_evidence(facts, source_evidence):
     with pytest.raises(FactSnapshotInvalidError, match="runtime identity|credential"):
         FactSnapshotBuilder().build(
             workspace_id="workspace-synthetic",
@@ -733,7 +725,7 @@ def test_solver_result_rejects_identity_or_credentials_in_external_payloads(
         "diagnostics": (),
         "engine": {"name": "synthetic-engine", "version": "1"},
     }
-    forbidden = {"nested": {"session_token": "credential-synthetic"}}
+    forbidden = {"nested": {"session_token": synthetic_secret("solver_input_binding-credential-01")}}
     kwargs[payload_field] = (forbidden,) if payload_field == "diagnostics" else forbidden
 
     with pytest.raises(SolverContractError, match="runtime identity|credential"):
@@ -742,9 +734,7 @@ def test_solver_result_rejects_identity_or_credentials_in_external_payloads(
 
 @pytest.mark.parametrize("field_name", ["apiSecret", "APISecret", "oauth-token"])
 @pytest.mark.parametrize("payload_field", ["diagnostics", "engine"])
-def test_solver_result_fails_closed_for_semantic_credential_metadata(
-    field_name, payload_field
-):
+def test_solver_result_fails_closed_for_semantic_credential_metadata(field_name, payload_field):
     kwargs = {
         "problem_id": "sha256:problem-synthetic",
         "status": "optimal",
@@ -753,7 +743,7 @@ def test_solver_result_fails_closed_for_semantic_credential_metadata(
         "diagnostics": (),
         "engine": {"name": "synthetic-engine", "version": "1"},
     }
-    payload = {"metadata": {field_name: "synthetic-placeholder"}}
+    payload = {"metadata": {field_name: synthetic_secret("solver_input_binding-credential-02")}}
     kwargs[payload_field] = (payload,) if payload_field == "diagnostics" else payload
 
     with pytest.raises(SolverContractError, match="runtime identity|credential"):
@@ -773,9 +763,7 @@ def test_verification_result_rejects_identity_or_credentials_in_external_payload
         "diagnostics": (),
         "evidence": (),
     }
-    kwargs[payload_field] = (
-        {"nested": {"organization_id": "identity-synthetic"}},
-    )
+    kwargs[payload_field] = ({"nested": {"organization_id": "identity-synthetic"}},)
 
     with pytest.raises(SolverContractError, match="runtime identity|credential"):
         VerificationResult(**kwargs)
@@ -792,7 +780,7 @@ def test_verification_evidence_fails_closed_for_semantic_identity_and_credential
             feasibility="feasible",
             optimality="not_proven",
             proof_kind="constraint_recalculation",
-            evidence=({"metadata": {field_name: "synthetic-placeholder"}},),
+            evidence=({"metadata": {field_name: synthetic_secret("solver_input_binding-credential-02")}},),
         )
 
 
@@ -806,7 +794,7 @@ def test_authoritative_result_rejects_identity_or_credentials_in_summary():
             optimality="proven_optimal",
             proof_kind="exhaustive",
             authoritative=True,
-            summary={"assignment": {"secret_key": "credential-synthetic"}},
+            summary={"assignment": {"secret_key": synthetic_secret("solver_input_binding-credential-01")}},
             result_artifact_ref="artifact://result-synthetic",
             verification_evidence_ref="artifact://evidence-synthetic",
             knowledge_revision_id="revision-synthetic",
@@ -828,7 +816,7 @@ def test_authoritative_summary_fails_closed_for_semantic_identity_and_credential
             optimality="not_proven",
             proof_kind="constraint_recalculation",
             authoritative=True,
-            summary={"assignment": {field_name: "synthetic-placeholder"}},
+            summary={"assignment": {field_name: synthetic_secret("solver_input_binding-credential-02")}},
             result_artifact_ref="artifact://result-synthetic",
             verification_evidence_ref="artifact://evidence-synthetic",
             knowledge_revision_id="revision-synthetic",
@@ -849,9 +837,7 @@ def test_authoritative_summary_fails_closed_for_semantic_identity_and_credential
         ("completed", "infeasible", "not_applicable", "constraint_recalculation"),
     ],
 )
-def test_authoritative_result_rejects_inconsistent_status_semantics(
-    status, feasibility, optimality, proof_kind
-):
+def test_authoritative_result_rejects_inconsistent_status_semantics(status, feasibility, optimality, proof_kind):
     with pytest.raises(SolverContractError, match="status|feasibility|optimality|proof"):
         AuthoritativeResult(
             run_id="run-synthetic",

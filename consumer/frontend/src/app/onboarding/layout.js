@@ -15,13 +15,21 @@ export const getOnboardingTipStyle = (rect, viewport, cardHeight) => {
   const gap = 14;
   const width = Math.min(420, Math.max(280, viewportWidth - margin * 2));
   const measuredHeight = Math.max(0, Number(cardHeight) || 230);
-  const height = Math.min(measuredHeight, Math.max(0, viewportHeight - margin * 2));
+  const height = Math.min(
+    measuredHeight,
+    Math.max(0, viewportHeight - margin * 2),
+  );
   const below = rect.y + rect.h + gap;
-  const preferredTop = below + height <= viewportHeight - margin
-    ? below
-    : rect.y - height - gap;
-  const top = Math.max(margin, Math.min(preferredTop, viewportHeight - height - margin));
-  const left = Math.max(margin, Math.min(rect.x, viewportWidth - width - margin));
+  const preferredTop =
+    below + height <= viewportHeight - margin ? below : rect.y - height - gap;
+  const top = Math.max(
+    margin,
+    Math.min(preferredTop, viewportHeight - height - margin),
+  );
+  const left = Math.max(
+    margin,
+    Math.min(rect.x, viewportWidth - width - margin),
+  );
   return {
     position: 'fixed',
     left,

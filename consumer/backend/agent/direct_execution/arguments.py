@@ -16,16 +16,16 @@ import json
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
-from utils.logging import get_logger
 from agent.direct_execution.models import RuntimeContext
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
     is_runtime_parameter,
-    runtime_reserved_parameter_field,
     runtime_parameter_field,
+    runtime_reserved_parameter_field,
     script_parameter_argument_keys,
 )
 from ontology.operation_execution import canonical_json_bytes
+from utils.logging import get_logger
 
 logger = get_logger("direct_execution.arguments")
 
@@ -46,6 +46,7 @@ _RUNTIME_KEY_TO_CTX_FIELD: Dict[str, str] = {
     "ontology_version": "selected_ontology_version",
     "selected_version": "selected_ontology_version",
 }
+
 
 def _canonical_runtime_key(key: str) -> str:
     return str(key or "").strip().replace("-", "_")
@@ -118,9 +119,7 @@ def extract_runtime_requirements(
             if not bool(param.get("required", True)) or not is_runtime_parameter(param):
                 continue
             field = runtime_parameter_field(param)
-            requirements.append(
-                field or "unsupported_runtime:{}".format(_parameter_name(param) or "<unnamed>")
-            )
+            requirements.append(field or "unsupported_runtime:{}".format(_parameter_name(param) or "<unnamed>"))
         return requirements
 
     # Legacy flat format
@@ -152,11 +151,7 @@ def extract_runtime_argument_keys(
                 keys.update(script_parameter_argument_keys(parameter))
                 runtime_field = runtime_parameter_field(parameter)
                 if runtime_field:
-                    keys.update(
-                        _runtime_placeholder_argument_keys(
-                            "<runtime.{}>".format(runtime_field)
-                        )
-                    )
+                    keys.update(_runtime_placeholder_argument_keys("<runtime.{}>".format(runtime_field)))
         return keys
 
     keys: Set[str] = set()
@@ -621,10 +616,13 @@ def _convert_parameter_value(
     if param_type == "string" and isinstance(value, (list, tuple, set, dict)):
         serializable = list(value) if isinstance(value, (tuple, set)) else value
         try:
-            return _serialize_json_cli_value(
-                serializable,
-                canonicalize=canonicalize_structured,
-            ), None
+            return (
+                _serialize_json_cli_value(
+                    serializable,
+                    canonicalize=canonicalize_structured,
+                ),
+                None,
+            )
         except (TypeError, ValueError):
             return None, "expected string or JSON-serializable structured value"
     if param_type in {"array", "list"} or param_type.endswith("[]"):
@@ -639,10 +637,13 @@ def _convert_parameter_value(
         if not isinstance(parsed, list):
             return None, "expected array"
         try:
-            return _serialize_json_cli_value(
-                parsed,
-                canonicalize=canonicalize_structured,
-            ), None
+            return (
+                _serialize_json_cli_value(
+                    parsed,
+                    canonicalize=canonicalize_structured,
+                ),
+                None,
+            )
         except (TypeError, ValueError):
             return None, "expected array"
     if param_type in {"object", "dict"}:
@@ -655,10 +656,13 @@ def _convert_parameter_value(
         if not isinstance(parsed, dict):
             return None, "expected object"
         try:
-            return _serialize_json_cli_value(
-                parsed,
-                canonicalize=canonicalize_structured,
-            ), None
+            return (
+                _serialize_json_cli_value(
+                    parsed,
+                    canonicalize=canonicalize_structured,
+                ),
+                None,
+            )
         except (TypeError, ValueError):
             return None, "expected object"
     if param_type == "json":
@@ -669,10 +673,13 @@ def _convert_parameter_value(
             except json.JSONDecodeError:
                 return None, "expected JSON"
         try:
-            return _serialize_json_cli_value(
-                parsed,
-                canonicalize=canonicalize_structured,
-            ), None
+            return (
+                _serialize_json_cli_value(
+                    parsed,
+                    canonicalize=canonicalize_structured,
+                ),
+                None,
+            )
         except (TypeError, ValueError):
             return None, "expected JSON"
     if param_type in ("int", "integer"):

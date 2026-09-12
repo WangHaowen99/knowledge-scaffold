@@ -1,15 +1,24 @@
 import { SectionCard } from '../../../shared/ui/primitives';
-import { formatSystemConfigTestTime, SYSTEM_CONFIG_SECTION_LABELS } from './model';
+import {
+  formatSystemConfigTestTime,
+  SYSTEM_CONFIG_SECTION_LABELS,
+} from './model';
 import { useSystemConfigModule } from './useSystemConfigModule';
 import './systemConfig.css';
 
 export function SystemConfigModuleStatus({ controller }) {
   const { error, success, testStatus } = controller;
-  if (!error && !success && !testStatus?.tested_at) return null;
+  if (!error && !success && !testStatus?.tested_at) {
+    return null;
+  }
   const tone = error ? 'error' : 'success';
   const message = error || success || testStatus?.message;
   return (
-    <div className={`system-config-feedback ${tone}`} role={error ? 'alert' : 'status'} aria-live="polite">
+    <div
+      className={`system-config-feedback ${tone}`}
+      role={error ? 'alert' : 'status'}
+      aria-live="polite"
+    >
       <span>{message}</span>
       {testStatus?.tested_at && (
         <time dateTime={testStatus.tested_at}>
@@ -29,6 +38,7 @@ export function SystemConfigReadOnlyNotice() {
   );
 }
 
+// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export default function SystemConfigModule({
   section,
   initialData = {},
@@ -51,11 +61,16 @@ export default function SystemConfigModule({
     onSaved,
     prepareData,
   });
-  const content = typeof children === 'function' ? children(controller) : children;
+  const content =
+    typeof children === 'function' ? children(controller) : children;
   const busy = Boolean(controller.busyAction);
 
   return (
-    <SectionCard title={title} description={description} className={`system-config-module ${className}`.trim()}>
+    <SectionCard
+      title={title}
+      description={description}
+      className={`system-config-module ${className}`.trim()}
+    >
       {!canEdit && <SystemConfigReadOnlyNotice />}
       {content}
       <SystemConfigModuleStatus controller={controller} />
@@ -65,19 +80,30 @@ export default function SystemConfigModule({
         </span>
         <div>
           {showTest && (
-            <button type="button" className="btn" disabled={!canEdit || busy}
-              onClick={() => controller.testConnection()}>
+            <button
+              type="button"
+              className="btn"
+              disabled={!canEdit || busy}
+              onClick={() => controller.testConnection()}
+            >
               {controller.busyAction === 'test' ? '测试中…' : '测试'}
             </button>
           )}
-          <button type="button" className="btn" disabled={!canEdit || busy || !controller.isDirty}
-            onClick={controller.resetDraft}>
+          <button
+            type="button"
+            className="btn"
+            disabled={!canEdit || busy || !controller.isDirty}
+            onClick={controller.resetDraft}
+          >
             重置
           </button>
           {showSave && (
-            <button type="button" className="btn btn-p"
+            <button
+              type="button"
+              className="btn btn-p"
               disabled={!canEdit || busy || !controller.isDirty}
-              onClick={() => controller.save()}>
+              onClick={() => controller.save()}
+            >
               {controller.busyAction === 'save' ? '保存中…' : '保存修改'}
             </button>
           )}

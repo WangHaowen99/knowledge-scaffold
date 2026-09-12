@@ -23,9 +23,11 @@ class _ProviderBackend:
     def __init__(self):
         self.closed = False
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def get_nodes_schema(self, *, scope, element_types=None):
         return {"labels": ["TargetItem"]}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def get_edges_schema(self, *, scope, relation_types=None):
         return {"relationship_types": []}
 
@@ -80,21 +82,25 @@ def test_graph_search_provider_yields_standard_events_and_closes_backend():
 def test_graph_plan_public_summary_only_describes_query_method():
     assert _graph_plan_public_summary({}) == "正在规划图数据查询"
     assert (
-        _graph_plan_public_summary({
-            "mapping_intent": {
-                "prefer_tool": "property_filter",
-                "private_filter": "synthetic private condition",
+        _graph_plan_public_summary(
+            {
+                "mapping_intent": {
+                    "prefer_tool": "property_filter",
+                    "private_filter": "synthetic private condition",
+                }
             }
-        })
+        )
         == "准备按属性条件查询"
     )
     assert (
-        _graph_plan_public_summary({
-            "mapping_intent": {
-                "prefer_tool": "pattern_search",
-                "private_entity": "SyntheticPrivateEntity",
+        _graph_plan_public_summary(
+            {
+                "mapping_intent": {
+                    "prefer_tool": "pattern_search",
+                    "private_entity": "SyntheticPrivateEntity",
+                }
             }
-        })
+        )
         == "准备查询实体关联关系"
     )
 
@@ -107,11 +113,9 @@ def test_neo4j_provider_wrapper_binds_scoped_config(monkeypatch):
         lambda config: captured.append(config) or _ProviderBackend(),
     )
 
-    provider = neo4j_module.Neo4jGraphSearchProvider({
-        "ontology_search": {
-            "neo4j": {"workspace_id": "workspace-a", "ontology_id": "ontology-a"}
-        }
-    })
+    provider = neo4j_module.Neo4jGraphSearchProvider(
+        {"ontology_search": {"neo4j": {"workspace_id": "workspace-a", "ontology_id": "ontology-a"}}}
+    )
 
     assert provider.name == "neo4j"
     assert captured == [{"workspace_id": "workspace-a", "ontology_id": "ontology-a"}]
@@ -126,11 +130,9 @@ def test_hugegraph_provider_wrapper_binds_scoped_config(monkeypatch):
         lambda config: captured.append(config) or _ProviderBackend(),
     )
 
-    provider = hugegraph_module.HugeGraphSearchProvider({
-        "ontology_search": {
-            "hugegraph": {"workspace_id": "workspace-a", "ontology_id": "ontology-a"}
-        }
-    })
+    provider = hugegraph_module.HugeGraphSearchProvider(
+        {"ontology_search": {"hugegraph": {"workspace_id": "workspace-a", "ontology_id": "ontology-a"}}}
+    )
 
     assert provider.name == "hugegraph"
     assert captured == [{"workspace_id": "workspace-a", "ontology_id": "ontology-a"}]

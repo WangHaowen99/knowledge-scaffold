@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-
 from agent.tools.business_data.providers.graph.models import (
     GraphBackendResult,
     GraphEntityMapping,
@@ -17,8 +16,8 @@ from agent.tools.business_data.providers.graph.tools import (
     GraphToolInputError,
     aggregate_search,
     count_search,
-    get_element_info,
     get_edges_schema,
+    get_element_info,
     get_nodes_schema,
     get_object_types,
     get_relation_types,
@@ -41,7 +40,18 @@ class _ToolBackend:
         return {"relationship_types": ["D2O_RELATION"]}
 
     def property_filter(self, *, element_class, element_type, filter_dict, return_properties, limit, offset, scope):
-        self.calls.append(("property_filter", element_class, element_type, filter_dict, return_properties, limit, offset, scope.workspace_value))
+        self.calls.append(
+            (
+                "property_filter",
+                element_class,
+                element_type,
+                filter_dict,
+                return_properties,
+                limit,
+                offset,
+                scope.workspace_value,
+            )
+        )
         return GraphBackendResult(records=[{"ok": True}], total=1)
 
     def count_search(self, *, element_class, element_type, filter_dict, scope):
@@ -49,15 +59,34 @@ class _ToolBackend:
         return GraphBackendResult(total=1)
 
     def aggregate_search(self, *, element_class, element_type, target_property, agg, filter_dict, scope):
-        self.calls.append(("aggregate_search", element_class, element_type, target_property, agg, filter_dict, scope.workspace_value))
+        self.calls.append(
+            ("aggregate_search", element_class, element_type, target_property, agg, filter_dict, scope.workspace_value)
+        )
         return GraphBackendResult(records=[{"value": 1}], total=1)
 
-    def sorted_search(self, *, element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope):
-        self.calls.append(("sorted_search", element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope.workspace_value))
+    def sorted_search(
+        self, *, element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope
+    ):
+        self.calls.append(
+            (
+                "sorted_search",
+                element_class,
+                element_type,
+                filter_dict,
+                return_properties,
+                sort_by,
+                ascending,
+                limit,
+                offset,
+                scope.workspace_value,
+            )
+        )
         return GraphBackendResult(records=[{"ok": True}], total=1)
 
     def pattern_search(self, *, path_pattern, return_vars, limit, scope, return_properties=None):
-        self.calls.append(("pattern_search", path_pattern, return_vars, return_properties, limit, scope.workspace_value))
+        self.calls.append(
+            ("pattern_search", path_pattern, return_vars, return_properties, limit, scope.workspace_value)
+        )
         return GraphBackendResult(records=[])
 
     def hop_search(self, *, entity_instance_id, hop_num, accurate_flag, scope):
@@ -76,7 +105,18 @@ class _ToolBackend:
         )
 
     def shortest_path_search(self, *, start_label, start_props, end_label, end_props, max_depth, directed, scope):
-        self.calls.append(("shortest_path", start_label, start_props, end_label, end_props, max_depth, directed, scope.workspace_value))
+        self.calls.append(
+            (
+                "shortest_path",
+                start_label,
+                start_props,
+                end_label,
+                end_props,
+                max_depth,
+                directed,
+                scope.workspace_value,
+            )
+        )
         return GraphBackendResult(
             records=[{"nodes": [{"labels": [start_label]}, {"labels": [end_label]}], "edges": [], "relationships": []}],
             total=1,
@@ -84,7 +124,12 @@ class _ToolBackend:
 
     def list_logic_titles(self, *, entity_type="", scope):
         self.calls.append(("list_logic_titles", entity_type, scope.workspace_value))
-        return GraphBackendResult(records=[{"entity_instance_id": "node-logic", "entity_type": entity_type or "Product", "logic_title": "推荐规则"}], total=1)
+        return GraphBackendResult(
+            records=[
+                {"entity_instance_id": "node-logic", "entity_type": entity_type or "Product", "logic_title": "推荐规则"}
+            ],
+            total=1,
+        )
 
     def get_logic_content(self, *, entity_instance_ids, logic_titles=None, scope):
         self.calls.append(("get_logic_content", entity_instance_ids, logic_titles, scope.workspace_value))
@@ -104,19 +149,42 @@ class _ToolBackend:
         self.calls.append(("get_element_info", element_instance_id, element_class, element_type, scope.workspace_value))
         return {"found": True, "element_id": element_instance_id}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self):
         return None
 
 
 class _BackendInputErrorBackend(_ToolBackend):
     def property_filter(self, *, element_class, element_type, filter_dict, return_properties, limit, offset, scope):
-        self.calls.append(("property_filter", element_class, element_type, filter_dict, return_properties, limit, offset, scope.workspace_value))
+        self.calls.append(
+            (
+                "property_filter",
+                element_class,
+                element_type,
+                filter_dict,
+                return_properties,
+                limit,
+                offset,
+                scope.workspace_value,
+            )
+        )
         raise ValueError("filter_dict.SourceItemDesc 包含不支持的操作符: '$contains'")
 
 
 class _FallbackSampleBackend(_ToolBackend):
     def property_filter(self, *, element_class, element_type, filter_dict, return_properties, limit, offset, scope):
-        self.calls.append(("property_filter", element_class, element_type, filter_dict, return_properties, limit, offset, scope.workspace_value))
+        self.calls.append(
+            (
+                "property_filter",
+                element_class,
+                element_type,
+                filter_dict,
+                return_properties,
+                limit,
+                offset,
+                scope.workspace_value,
+            )
+        )
         if filter_dict:
             return GraphBackendResult(records=[], total=0)
         records = [{"properties": {"TargetItemCode": "S{:03d}".format(index)}} for index in range(1, 11)]
@@ -162,13 +230,16 @@ def test_internal_graph_tool_adapters_delegate_to_backend():
         offset=0,
         scope=scope,
     ).records
-    assert count_search(
-        backend=backend,
-        element_class="TargetItem",
-        element_type="NODE",
-        filter_dict={},
-        scope=scope,
-    ).total == 1
+    assert (
+        count_search(
+            backend=backend,
+            element_class="TargetItem",
+            element_type="NODE",
+            filter_dict={},
+            scope=scope,
+        ).total
+        == 1
+    )
     assert aggregate_search(
         backend=backend,
         element_class="TargetItem",
@@ -190,14 +261,17 @@ def test_internal_graph_tool_adapters_delegate_to_backend():
         offset=0,
         scope=scope,
     ).records == [{"ok": True}]
-    assert pattern_search(
-        backend=backend,
-        path_pattern=[["TargetItem"], ["D2O_RELATION", "->"], ["SourceItem"]],
-        return_vars=None,
-        return_properties={"a": ["TargetItemCode"]},
-        limit=100,
-        scope=scope,
-    ).records == []
+    assert (
+        pattern_search(
+            backend=backend,
+            path_pattern=[["TargetItem"], ["D2O_RELATION", "->"], ["SourceItem"]],
+            return_vars=None,
+            return_properties={"a": ["TargetItemCode"]},
+            limit=100,
+            scope=scope,
+        ).records
+        == []
+    )
     assert get_element_info(backend=backend, element_instance_id="node-1", scope=scope) == {
         "found": True,
         "element_id": "node-1",
@@ -212,7 +286,14 @@ def test_internal_graph_tool_adapters_delegate_to_backend():
         ("count_search", "TargetItem", "NODE", {}, "workspace-a"),
         ("aggregate_search", "TargetItem", "NODE", "Weight", "SUM", {}, "workspace-a"),
         ("sorted_search", "TargetItem", "NODE", {}, ["TargetItemCode"], ["TargetItemCode"], True, 10, 0, "workspace-a"),
-        ("pattern_search", [["TargetItem"], ["D2O_RELATION", "->"], ["SourceItem"]], None, {"a": ["TargetItemCode"]}, 100, "workspace-a"),
+        (
+            "pattern_search",
+            [["TargetItem"], ["D2O_RELATION", "->"], ["SourceItem"]],
+            None,
+            {"a": ["TargetItemCode"]},
+            100,
+            "workspace-a",
+        ),
         ("get_element_info", "node-1", "", "", "workspace-a"),
     ]
 

@@ -1,26 +1,28 @@
 import json
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
 import pytest
-
-from api.routes.workspaces import workspaces_router
 from api.auth.auth import AuthManager
+from api.routes.workspaces import workspaces_router
+from api.testing import TestApplication
+from backend_synthetic_credentials import (
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    ENCRYPTION_KEY,
+    synthetic_secret,
+)
+from fastapi.testclient import TestClient
 from system_config_migration_helpers import apply_test_system_config_migrations
 
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+SECRET_TEST_KEY = ENCRYPTION_KEY
 
 
 def _build_workspace_routes_client(tmp_path):
     app = TestApplication()
     app.state.services["TESTING"] = True
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
-    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(workspaces_router)
     client = TestClient(app)
@@ -55,18 +57,18 @@ def _write_global_profiles(runtime_root, monkeypatch):
                             "id": "fast",
                             "name": "Fast Global",
                             "provider": "openai_compatible",
-                            "base_url": "https://fast.example/v1",
+                            "base_url": "https://fast.example.net/v1",
                             "model": "fast-model",
-                            "api_key": "fast-secret",
+                            "api_key": synthetic_secret("workspace_llm_profiles-credential-02"),
                             "enabled": True,
                         },
                         {
                             "id": "accurate",
                             "name": "Accurate Global",
                             "provider": "deepseek",
-                            "base_url": "https://accurate.example/v1",
+                            "base_url": "https://accurate.example.net/v1",
                             "model": "accurate-model",
-                            "api_key": "accurate-secret",
+                            "api_key": synthetic_secret("workspace_llm_profiles-credential-01"),
                             "enabled": True,
                         },
                     ],
@@ -127,9 +129,9 @@ def test_workspace_private_profiles_encrypt_and_publicize_secrets(tmp_path, monk
                     "id": "private",
                     "name": "Private Model",
                     "provider": "openai_compatible",
-                    "base_url": "https://private.example/v1",
+                    "base_url": "https://private.example.net/v1",
                     "model": "private-model",
-                    "api_key": "private-secret",
+                    "api_key": synthetic_secret("workspace_llm_profiles-credential-05"),
                     "enabled": True,
                 }
             ]
@@ -139,11 +141,11 @@ def test_workspace_private_profiles_encrypt_and_publicize_secrets(tmp_path, monk
     raw_path = workspaces_module.get_workspace_paths("alpha").workspace_dir / "llm_profiles.json"
     raw_text = raw_path.read_text(encoding="utf-8")
     raw = json.loads(raw_text)
-    assert "private-secret" not in raw_text
+    assert synthetic_secret("workspace_llm_profiles-credential-05") not in raw_text
     assert raw["profiles"][0]["api_key"].startswith("enc:v1:")
 
     private_config = load_workspace_llm_profiles("alpha")
-    assert private_config["profiles"][0]["api_key"] == "private-secret"
+    assert private_config["profiles"][0]["api_key"] == synthetic_secret("workspace_llm_profiles-credential-05")
 
     public_profiles = get_public_workspace_llm_profiles("alpha")
     assert public_profiles == [
@@ -154,7 +156,7 @@ def test_workspace_private_profiles_encrypt_and_publicize_secrets(tmp_path, monk
             "model": "private-model",
             "enabled": True,
             "has_api_key": True,
-            "base_url": "https://private.example/v1",
+            "base_url": "https://private.example.net/v1",
             "timeout": 600,
             "max_tokens": 32768,
             "temperature": 0.7,
@@ -178,9 +180,9 @@ def test_workspace_private_profiles_reject_colon_ids_on_save(tmp_path, monkeypat
                         "id": "vendor:model",
                         "name": "Private Model",
                         "provider": "openai_compatible",
-                        "base_url": "https://private.example/v1",
+                        "base_url": "https://private.example.net/v1",
                         "model": "private-model",
-                        "api_key": "private-secret",
+                        "api_key": synthetic_secret("workspace_llm_profiles-credential-05"),
                     }
                 ]
             },
@@ -200,16 +202,16 @@ def test_workspace_private_profiles_generate_missing_ids_on_save(tmp_path, monke
                 {
                     "name": "Private A",
                     "provider": "openai_compatible",
-                    "base_url": "https://private-a.example/v1",
+                    "base_url": "https://private-a.example.net/v1",
                     "model": "private-a-model",
-                    "api_key": "private-a-secret",
+                    "api_key": synthetic_secret("workspace_llm_profiles-credential-03"),
                 },
                 {
                     "name": "Private B",
                     "provider": "deepseek",
-                    "base_url": "https://private-b.example/v1",
+                    "base_url": "https://private-b.example.net/v1",
                     "model": "private-b-model",
-                    "api_key": "private-b-secret",
+                    "api_key": synthetic_secret("workspace_llm_profiles-credential-04"),
                 },
             ]
         },
@@ -274,9 +276,9 @@ def test_effective_profiles_merge_global_and_workspace_private(tmp_path, monkeyp
                     "id": "private-a",
                     "name": "Private A",
                     "provider": "openai_compatible",
-                    "base_url": "https://private-a.example/v1",
+                    "base_url": "https://private-a.example.net/v1",
                     "model": "private-a-model",
-                    "api_key": "private-a-secret",
+                    "api_key": synthetic_secret("workspace_llm_profiles-credential-03"),
                     "enabled": True,
                 }
             ]
@@ -290,9 +292,9 @@ def test_effective_profiles_merge_global_and_workspace_private(tmp_path, monkeyp
                     "id": "private-b",
                     "name": "Private B",
                     "provider": "openai_compatible",
-                    "base_url": "https://private-b.example/v1",
+                    "base_url": "https://private-b.example.net/v1",
                     "model": "private-b-model",
-                    "api_key": "private-b-secret",
+                    "api_key": synthetic_secret("workspace_llm_profiles-credential-04"),
                     "enabled": True,
                 }
             ]
@@ -324,7 +326,7 @@ def test_effective_profiles_merge_global_and_workspace_private(tmp_path, monkeyp
     assert private_config["id"] == "workspace:private-a"
     assert private_config["profile_id"] == "private-a"
     assert private_config["model"] == "private-a-model"
-    assert private_config["api_key"] == "private-a-secret"
+    assert private_config["api_key"] == synthetic_secret("workspace_llm_profiles-credential-03")
 
     legacy_global = resolve_effective_llm_profile_config("fast", workspace_id="alpha")
     assert legacy_global["id"] == "global:fast"
@@ -352,9 +354,9 @@ def test_workspace_llm_profiles_routes_manage_private_profiles(tmp_path, monkeyp
                     "id": "private",
                     "name": "Private Model",
                     "provider": "openai_compatible",
-                    "base_url": "https://private.example/v1",
+                    "base_url": "https://private.example.net/v1",
                     "model": "private-model",
-                    "api_key": "private-secret",
+                    "api_key": synthetic_secret("workspace_llm_profiles-credential-05"),
                     "enabled": True,
                 }
             ]
@@ -376,6 +378,7 @@ def test_workspace_llm_profiles_test_route_uses_workspace_private_payload(tmp_pa
     calls = []
 
     class _FakeResponse:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
@@ -403,9 +406,9 @@ def test_workspace_llm_profiles_test_route_uses_workspace_private_payload(tmp_pa
                     "id": "private",
                     "name": "Private Model",
                     "provider": "openai_compatible",
-                    "base_url": "https://private.example/v1",
+                    "base_url": "https://private.example.net/v1",
                     "model": "private-model",
-                    "api_key": "private-secret",
+                    "api_key": synthetic_secret("workspace_llm_profiles-credential-05"),
                     "enabled": True,
                 }
             ],
@@ -416,10 +419,10 @@ def test_workspace_llm_profiles_test_route_uses_workspace_private_payload(tmp_pa
     assert response.json()["success"] is True
     assert calls == [
         {
-            "url": "https://private.example/v1/chat/completions",
+            "url": "https://private.example.net/v1/chat/completions",
             "headers": {
                 "Content-Type": "application/json",
-                "Authorization": "Bearer private-secret",
+                "Authorization": f"Bearer {synthetic_secret('workspace_llm_profiles-credential-05')}",
             },
             "json": {
                 "model": "private-model",

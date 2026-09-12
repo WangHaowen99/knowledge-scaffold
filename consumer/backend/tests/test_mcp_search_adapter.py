@@ -81,7 +81,8 @@ def test_bound_search_uses_token_ontology_when_argument_is_omitted(monkeypatch):
     )
     monkeypatch.setattr(
         "api.protocols.mcp.search_adapter._build_runtime",
-        lambda **kwargs: captured.update(runtime=kwargs) or SimpleNamespace(
+        lambda **kwargs: captured.update(runtime=kwargs)
+        or SimpleNamespace(
             provider="neo4j",
             close=lambda: None,
         ),

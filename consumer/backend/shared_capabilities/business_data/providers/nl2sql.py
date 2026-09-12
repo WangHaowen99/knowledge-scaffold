@@ -38,9 +38,7 @@ class NL2SQLProvider:
     def probe(self, timeout_seconds: float | None = None) -> ProviderResult:
         body: dict[str, Any] = {"sql": "SELECT 1"}
         self._append_scene(body)
-        result = self._post(
-            "/api/v1/sql", body, timeout_override=timeout_seconds or 10
-        )
+        result = self._post("/api/v1/sql", body, timeout_override=timeout_seconds or 10)
         if result.success:
             return ProviderResult(success=True, message="NL2SQL HTTP 服务连接正常")
         return result
@@ -79,8 +77,7 @@ class NL2SQLProvider:
                 self.connection.endpoint + path,
                 headers=self._headers(),
                 json=body,
-                timeout=timeout_override
-                or float(self.connection.options.get("timeout_seconds", 600)),
+                timeout=timeout_override or float(self.connection.options.get("timeout_seconds", 600)),
             )
         except requests.exceptions.RequestException:
             return ProviderResult(success=False, error="Connection failed", metadata={"error_code": "transport_error"})
@@ -95,25 +92,31 @@ class NL2SQLProvider:
         except (ValueError, TypeError):
             return ProviderResult(success=False, error="Invalid JSON response", metadata={"error_code": "invalid_json"})
         if not isinstance(payload, dict):
-            return ProviderResult(success=False, error="Invalid response payload", metadata={"error_code": "invalid_payload"})
+            return ProviderResult(
+                success=False, error="Invalid response payload", metadata={"error_code": "invalid_payload"}
+            )
         success = bool(payload.get("success", False))
         row_count = int(payload.get("row_count") or 0)
-        metadata = {
-            key: value
-            for key, value in payload.items()
-            if key not in {"success", "data", "message", "error"}
-        }
+        metadata = {key: value for key, value in payload.items() if key not in {"success", "data", "message", "error"}}
         if "row_count" in payload:
             metadata["row_count"] = row_count
         if success:
-            message = str(payload.get("message") or ("查询成功，返回 {} 行数据".format(row_count) if row_count else "查询成功，无数据返回"))
+            message = str(
+                payload.get("message")
+                or ("查询成功，返回 {} 行数据".format(row_count) if row_count else "查询成功，无数据返回")
+            )
             return ProviderResult(success=True, data=payload.get("data"), message=message, metadata=metadata)
-        return ProviderResult(success=False, data=payload.get("data"), error=sanitize_public_text(
-            payload.get("error") or payload.get("message") or "未知错误",
-            self.connection.endpoint,
-            self.connection.auth.token,
-            self.connection.auth.password,
-        ), metadata=metadata)
+        return ProviderResult(
+            success=False,
+            data=payload.get("data"),
+            error=sanitize_public_text(
+                payload.get("error") or payload.get("message") or "未知错误",
+                self.connection.endpoint,
+                self.connection.auth.token,
+                self.connection.auth.password,
+            ),
+            metadata=metadata,
+        )
 
     def _required_contract_error(self) -> str:
         token = str(self.connection.auth.token or "").strip()

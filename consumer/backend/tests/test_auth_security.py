@@ -1,19 +1,20 @@
 import json
 
-from fastapi import APIRouter, Depends
-
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
 import pytest
-
-from auth_test_backend import AuthManager
 from api.auth.auth import AuthUser, require_authenticated_user
 from api.routes.auth import auth_router
-
-
-STRONG_PASSWORD = "Abc123!@"
+from api.testing import TestApplication
+from auth_test_backend import AuthManager
+from backend_synthetic_credentials import (
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    INVALID_PASSWORD,
+    STRONG_PASSWORD,
+    STRONG_PASSWORD_2,
+    STRONG_PASSWORD_3,
+)
+from fastapi import APIRouter, Depends
+from fastapi.testclient import TestClient
 
 
 def _build_auth_app(auth_manager):
@@ -26,20 +27,20 @@ def _build_auth_app(auth_manager):
 def test_bootstrap_requires_explicit_strong_password(tmp_path, monkeypatch):
     monkeypatch.delenv("AUTH_BOOTSTRAP_ADMIN_PASSWORD")
     with pytest.raises(RuntimeError, match="AUTH_BOOTSTRAP_ADMIN_PASSWORD"):
-        AuthManager(str(tmp_path / "users.json"), "test-secret")
+        AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
 
     with pytest.raises(ValueError, match="密码复杂度"):
         AuthManager(
             str(tmp_path / "weak-users.json"),
-            "test-secret",
-            bootstrap_admin_password="admin123",
+            AUTH_SIGNING_SECRET,
+            bootstrap_admin_password=INVALID_PASSWORD,
         )
 
 
 def test_default_admin_can_login_without_password_change(tmp_path):
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
 
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
 
     assert user is not None
     assert user.password_change_required is False
@@ -47,12 +48,12 @@ def test_default_admin_can_login_without_password_change(tmp_path):
 
 
 def test_user_creation_requires_complex_password(tmp_path):
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
 
     with pytest.raises(ValueError, match="密码复杂度"):
-        auth_manager.create_user("operator", "secret")
+        auth_manager.create_user("operator", INVALID_PASSWORD)
     with pytest.raises(ValueError, match="密码复杂度"):
-        auth_manager.create_user("operator", "Abc12!@")
+        auth_manager.create_user("operator", INVALID_PASSWORD)
 
     user = auth_manager.create_user("operator", STRONG_PASSWORD)
 
@@ -60,16 +61,16 @@ def test_user_creation_requires_complex_password(tmp_path):
 
 
 def test_change_password_invalidates_old_token(tmp_path):
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     old_token = auth_manager.issue_token(user)
 
-    changed = auth_manager.change_password("admin", "TestBootstrap#2026", "NewStrongPass123!")
+    changed = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, STRONG_PASSWORD_2)
 
     assert changed.password_change_required is False
     assert auth_manager.verify_token(old_token) is None
-    assert auth_manager.authenticate("admin", "TestBootstrap#2026") is None
-    assert auth_manager.authenticate("admin", "NewStrongPass123!").password_change_required is False
+    assert auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD) is None
+    assert auth_manager.authenticate("admin", STRONG_PASSWORD_2).password_change_required is False
 
 
 def test_legacy_plaintext_password_is_migrated_without_forced_change(tmp_path):
@@ -80,7 +81,7 @@ def test_legacy_plaintext_password_is_migrated_without_forced_change(tmp_path):
                 "users": [
                     {
                         "username": "legacy",
-                        "password": "legacy-pass",
+                        "password": STRONG_PASSWORD,
                         "role": "user",
                     }
                 ]
@@ -88,9 +89,9 @@ def test_legacy_plaintext_password_is_migrated_without_forced_change(tmp_path):
         ),
         encoding="utf-8",
     )
-    auth_manager = AuthManager(str(users_file), "test-secret")
+    auth_manager = AuthManager(str(users_file), AUTH_SIGNING_SECRET)
 
-    user = auth_manager.authenticate("legacy", "legacy-pass")
+    user = auth_manager.authenticate("legacy", STRONG_PASSWORD)
     payload = json.loads(users_file.read_text(encoding="utf-8"))
     record = payload["users"][0]
 
@@ -103,8 +104,8 @@ def test_legacy_plaintext_password_is_migrated_without_forced_change(tmp_path):
 
 
 def test_require_auth_allows_regular_routes_without_password_change(tmp_path):
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     token = auth_manager.issue_token(user)
 
     app = TestApplication()
@@ -136,8 +137,8 @@ def test_require_auth_allows_regular_routes_without_password_change(tmp_path):
 
 
 def test_change_password_route_requires_relogin_after_success(tmp_path):
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     token = auth_manager.issue_token(user)
 
     app = _build_auth_app(auth_manager)
@@ -156,7 +157,7 @@ def test_change_password_route_requires_relogin_after_success(tmp_path):
     response = client.put(
         "/auth/change-password",
         headers=headers,
-        json={"old_password": "TestBootstrap#2026", "new_password": "NewStrongPass123!"},
+        json={"old_password": BOOTSTRAP_ADMIN_PASSWORD, "new_password": STRONG_PASSWORD_2},
     )
     protected_response = client.get("/protected", headers=headers)
 
@@ -167,9 +168,9 @@ def test_change_password_route_requires_relogin_after_success(tmp_path):
 
 
 def test_admin_self_password_reset_route_is_rejected(tmp_path):
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    auth_manager.change_password("admin", "TestBootstrap#2026", "InitialStrongPass123!")
-    user = auth_manager.authenticate("admin", "InitialStrongPass123!")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, STRONG_PASSWORD_2)
+    user = auth_manager.authenticate("admin", STRONG_PASSWORD_2)
     token = auth_manager.issue_token(user)
 
     app = _build_auth_app(auth_manager)
@@ -180,11 +181,11 @@ def test_admin_self_password_reset_route_is_rejected(tmp_path):
     response = client.put(
         "/auth/users/admin",
         headers=headers,
-        json={"password": "ResetStrongPass123!"},
+        json={"password": STRONG_PASSWORD_3},
     )
 
     assert response.status_code == 400
     assert "不能通过用户管理重置当前登录用户密码" in response.json()["error"]
     assert auth_manager.verify_token(token) is not None
-    assert auth_manager.authenticate("admin", "ResetStrongPass123!") is None
-    assert auth_manager.authenticate("admin", "InitialStrongPass123!") is not None
+    assert auth_manager.authenticate("admin", STRONG_PASSWORD_3) is None
+    assert auth_manager.authenticate("admin", STRONG_PASSWORD_2) is not None

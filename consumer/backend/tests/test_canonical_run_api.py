@@ -9,37 +9,35 @@ exactly once.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
 import importlib.util
-from pathlib import Path
 import sys
 import threading
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
-from starlette.requests import Request
-
 from agent.runtime.contracts import (
+    TERMINAL_RUN_STATUSES,
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
     PublicEventDraft,
     RunPreflightSnapshot,
-    RuntimeErrorInfo,
-    RuntimeResult,
     RunScope,
     RunSnapshot,
     RunStatus,
+    RuntimeErrorInfo,
     RuntimeInvocationContext,
-    TERMINAL_RUN_STATUSES,
-    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
+    RuntimeResult,
 )
 from agent.runtime.errors import SessionBusyError
 from agent.runtime.event_bus import AsyncEventBus
 from agent.runtime.runtime import RuntimeState
 from agent.runtime.store import InMemoryRunRepository, utc_now_iso
 from api.auth.auth import AuthUser
+from fastapi import FastAPI
 from persistence.execution_store import ExecutionStore
-
+from starlette.requests import Request
 
 # Load the focused router without importing the aggregate ``api.routes``
 # package.  During the staged ASGI migration, an unrelated router can be
@@ -135,9 +133,7 @@ class _CountingManager:
         stored, created = await self.repository.create(snapshot)
         if created:
             self.started_contexts.append(context)
-            self._active_by_session[
-                (scope.username, scope.workspace_id, context.session_id)
-            ] = context.run_id
+            self._active_by_session[(scope.username, scope.workspace_id, context.session_id)] = context.run_id
             if self.completion_result is not None:
                 for event_type, status, payload in self.completion_events:
                     await self.event_bus.publish(
@@ -211,11 +207,7 @@ class _CountingManager:
                 status=status,
                 result=result,
                 error=result.error,
-                pending_interaction=(
-                    dict(pending_interaction)
-                    if pending_interaction is not None
-                    else None
-                ),
+                pending_interaction=(dict(pending_interaction) if pending_interaction is not None else None),
                 cancel_reason=cancel_reason,
                 updated_at=utc_now_iso(),
             )
@@ -322,12 +314,8 @@ def _install_harness(monkeypatch, tmp_path) -> tuple[FastAPI, _Harness]:
     async def workspace_override() -> str:
         return _WORKSPACE_ID
 
-    app.dependency_overrides[
-        workflows.require_authenticated_user
-    ] = authenticated_user_override
-    app.dependency_overrides[
-        workflows.require_workspace_id
-    ] = workspace_override
+    app.dependency_overrides[workflows.require_authenticated_user] = authenticated_user_override
+    app.dependency_overrides[workflows.require_workspace_id] = workspace_override
     return app, harness
 
 
@@ -419,14 +407,8 @@ def test_post_run_allocates_server_ids_and_exact_retry_starts_one_task(
             assert created["turn_id"] != 9001
             assert created["session_id"] == "session_api_contract"
             assert created["status"] == "queued"
-            assert (
-                harness.manager.started_contexts[0].requested_operation_key
-                == "operation_demo"
-            )
-            assert (
-                harness.manager.started_contexts[0].concurrency_limit
-                == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
-            )
+            assert harness.manager.started_contexts[0].requested_operation_key == "operation_demo"
+            assert harness.manager.started_contexts[0].concurrency_limit == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
             assert created["links"] == {
                 "self": "/agentic/runs/{}".format(created["run_id"]),
                 "events": "/agentic/runs/{}/events".format(created["run_id"]),
@@ -445,9 +427,7 @@ def test_post_run_allocates_server_ids_and_exact_retry_starts_one_task(
             assert retried["run_id"] == created["run_id"]
             assert retried["turn_id"] == created["turn_id"]
             assert harness.manager.task_start_count == 1
-            history = harness.execution_store.get_session_history(
-                "session_api_contract"
-            )
+            history = harness.execution_store.get_session_history("session_api_contract")
             assert len(history["turns"]) == 1
 
     asyncio.run(scenario())
@@ -579,13 +559,9 @@ def test_sync_run_waits_for_terminal_and_returns_legacy_trace(monkeypatch, tmp_p
         assert context.requested_operation_key == "operation_demo"
         assert context.concurrency_limit == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
         assert context.timeout_seconds is None
-        history = harness.execution_store.get_session_history(
-            "session_sync_contract"
-        )
+        history = harness.execution_store.get_session_history("session_sync_contract")
         assert len(history["turns"]) == 1
-        assert history["turns"][0]["protocol_metadata"] == {
-            "protocol": "agentic_sync"
-        }
+        assert history["turns"][0]["protocol_metadata"] == {"protocol": "agentic_sync"}
         assert harness.manager.event_bus.active_subscriber_count == 0
         assert harness.manager.event_bus.reserved_subscriber_count == 0
 
@@ -697,10 +673,7 @@ def test_post_run_rejects_idempotency_conflict_and_same_session_busy(
                 headers=_headers("conflict-request-key"),
             )
             assert operation_conflict.status_code == 409, operation_conflict.text
-            assert (
-                operation_conflict.json()["error"]["error_code"]
-                == "IDEMPOTENCY_CONFLICT"
-            )
+            assert operation_conflict.json()["error"]["error_code"] == "IDEMPOTENCY_CONFLICT"
 
             conflict = await client.post(
                 "/agentic/runs",
@@ -719,9 +692,7 @@ def test_post_run_rejects_idempotency_conflict_and_same_session_busy(
             assert busy.json()["error"]["error_code"] == "SESSION_BUSY"
             assert busy.json()["run_id"] == first_run_id
             assert harness.manager.task_start_count == 1
-            history = harness.execution_store.get_session_history(
-                "session_api_contract"
-            )
+            history = harness.execution_store.get_session_history("session_api_contract")
             assert len(history["turns"]) == 1
 
     asyncio.run(scenario())
@@ -738,9 +709,7 @@ def test_same_session_concurrent_admission_accepts_exactly_one(
                 *(
                     client.post(
                         "/agentic/runs",
-                        json=_ordinary_payload(
-                            request=f"Synthetic concurrent input {index}"
-                        ),
+                        json=_ordinary_payload(request=f"Synthetic concurrent input {index}"),
                         headers=_headers(f"same-session-key-{index}"),
                     )
                     for index in range(20)
@@ -751,17 +720,10 @@ def test_same_session_concurrent_admission_accepts_exactly_one(
         rejected = [response for response in responses if response.status_code == 409]
         assert len(accepted) == 1
         assert len(rejected) == 19
-        assert all(
-            response.json()["error"]["error_code"] == "SESSION_BUSY"
-            for response in rejected
-        )
-        assert {
-            response.json()["run_id"] for response in rejected
-        } == {accepted[0].json()["run_id"]}
+        assert all(response.json()["error"]["error_code"] == "SESSION_BUSY" for response in rejected)
+        assert {response.json()["run_id"] for response in rejected} == {accepted[0].json()["run_id"]}
         assert harness.manager.task_start_count == 1
-        history = harness.execution_store.get_session_history(
-            "session_api_contract"
-        )
+        history = harness.execution_store.get_session_history("session_api_contract")
         assert len(history["turns"]) == 1
 
     asyncio.run(scenario())
@@ -857,15 +819,10 @@ def test_hitl_answer_creates_new_run_and_exact_repeat_reuses_it(
                 headers=_headers("hitl-conflicting-answer-key"),
             )
             assert conflicting.status_code == 409, conflicting.text
-            assert (
-                conflicting.json()["error"]["error_code"]
-                == "INTERACTION_ALREADY_CONSUMED"
-            )
+            assert conflicting.json()["error"]["error_code"] == "INTERACTION_ALREADY_CONSUMED"
             assert conflicting.json()["run_id"] == answer_run["run_id"]
 
-        history = harness.execution_store.get_session_history(
-            "session_hitl_api"
-        )
+        history = harness.execution_store.get_session_history("session_hitl_api")
         assert len(history["turns"]) == 2
         persisted_original, persisted_answer = history["turns"]
         assert persisted_original["run_id"] == original["run_id"]

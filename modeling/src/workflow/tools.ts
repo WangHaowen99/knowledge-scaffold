@@ -22,11 +22,16 @@ export interface ToolContext {
   documents: ReadableDocument[];
   /** 全部上传资料；documents 仅包含可读取正文的资料。 */
   materials?: MaterialInventoryItem[];
+  /** 查询评测运行时绑定的数据源；仅在失败诊断等只读场景按需启用。 */
+  runtimeDataSearch?: (input: { entity: string; query: string }) => Promise<string>;
+  /** 连接型数据源即使暂时不可查询，也不能暴露上传样例行作为总量证据。 */
+  runtimeDataSourceMode?: 'connection' | 'none';
   captured: Record<string, unknown>;
 }
 
 export function buildTools(ctx: ToolContext) {
   const sourceCatalog = createSourceCatalog(ctx.tables);
+  const hasRuntimeSource = ctx.runtimeDataSourceMode === 'connection' || Boolean(ctx.runtimeDataSearch);
   const availableTables = ctx.tables.map((table) => table.name.trim() || table.name);
   const resolveTable = (reference: string): { table?: DataDictTable; error?: string } => {
     const resolution = sourceCatalog.resolveTable(reference);
@@ -51,8 +56,9 @@ export function buildTools(ctx: ToolContext) {
     description: '列出已解析的所有数据库表及其字段概览',
     parameters: Type.Object({}),
     async execute() {
+      const scope = hasRuntimeSource ? '（上传表格结构/样例，非评测运行时总量）' : '';
       const summary = ctx.tables.map(
-        (t) => `${t.name}（${t.rowCount} 行）: ${t.fields.map((f) => f.name).join(', ')}`,
+        (t) => `${t.name}${scope}${hasRuntimeSource ? '' : `（${t.rowCount} 行）`}: ${t.fields.map((f) => f.name).join(', ')}`,
       ).join('\n');
       return { content: [{ type: 'text' as const, text: summary || '（无数据表）' }], details: { count: ctx.tables.length } };
     },
@@ -67,10 +73,35 @@ export function buildTools(ctx: ToolContext) {
       const resolved = resolveTable(params.table);
       if (!resolved.table) return text(resolved.error ?? `未找到表 ${params.table}`);
       const t = resolved.table;
+      const sampleLabel = hasRuntimeSource ? '上传样例' : '样例';
       const lines = t.fields.map(
-        (f) => `- ${f.name}${f.note ? `（${f.note}）` : ''} | ${f.inferredType} | 唯一比 ${f.distinctRatio.toFixed(2)} | 样例: ${f.sampleValues.join('/')}`,
+        (f) => `- ${f.name}${f.note ? `（${f.note}）` : ''} | ${f.inferredType} | 唯一比 ${f.distinctRatio.toFixed(2)} | ${sampleLabel}: ${f.sampleValues.join('/')}`,
       );
       return { content: [{ type: 'text' as const, text: lines.join('\n') }], details: { fields: t.fields } };
+    },
+  };
+
+  const schemaOverview = {
+    name: 'get_schema_overview',
+    label: '查看表结构摘要',
+    description: '一次返回所有上传表的结构统计和少量字段样例，不返回业务数据行。',
+    parameters: Type.Object({}),
+    async execute() {
+      const tables = ctx.tables.map((table) => ({
+        name: table.name,
+        rowCount: table.rowCount,
+        fieldCount: table.fields.length,
+        fields: table.fields.map((field) => ({
+          name: field.name,
+          inferredType: field.inferredType,
+          ...(field.note ? { note: field.note } : {}),
+          ...(field.sourceColumn ? { sourceColumn: field.sourceColumn } : {}),
+          ...(typeof field.nonEmptyRatio === 'number' ? { nonEmptyRatio: field.nonEmptyRatio } : {}),
+          distinctRatio: field.distinctRatio,
+          sampleValues: field.sampleValues.slice(0, 3),
+        })),
+      }));
+      return text(JSON.stringify({ tables, tableCount: tables.length }));
     },
   };
 
@@ -97,12 +128,34 @@ export function buildTools(ctx: ToolContext) {
       const nextOffset = offset + rows.length < total ? offset + rows.length : null;
       return text(JSON.stringify({
         table: table.name,
+        ...(hasRuntimeSource ? { scope: 'uploaded_sample' } : {}),
         columns: table.fields.map((field) => field.name),
         rows,
         page: { offset, limit, returned: rows.length, total, nextOffset },
       }));
     },
   };
+
+  const runtimeBusinessDataSearch = ctx.runtimeDataSearch ? {
+    name: 'business_data_search',
+    label: '查询评测运行时数据',
+    description: '查询本轮评测实际绑定的数据源。该数据源是运行时事实源，优先于上传表格中的结构和示例行；只有查询返回明确结果时才能据此判断记录是否存在。',
+    parameters: Type.Object({
+      entity: Type.String(),
+      query: Type.String(),
+    }),
+    async execute(_id: string, params: { entity: string; query: string }) {
+      const entity = String(params?.entity ?? '').trim();
+      const query = String(params?.query ?? '').trim();
+      if (!entity) return text('运行时数据查询失败：entity 不能为空');
+      if (!query) return text('运行时数据查询失败：query 不能为空');
+      try {
+        return text(await ctx.runtimeDataSearch!({ entity, query }));
+      } catch (error) {
+        return text(`运行时数据查询失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  } : null;
 
   // 标题行启发式：编号/章节样式的短行（长文档大纲用）
   const isHeading = (line: string) => {
@@ -208,7 +261,16 @@ export function buildTools(ctx: ToolContext) {
     },
   };
 
-  return [listTables, describeTable, readTableRows, listDocuments, readDocument, searchDocuments];
+  return [
+    listTables,
+    schemaOverview,
+    describeTable,
+    ...(hasRuntimeSource ? [] : [readTableRows]),
+    ...(runtimeBusinessDataSearch ? [runtimeBusinessDataSearch] : []),
+    listDocuments,
+    readDocument,
+    searchDocuments,
+  ];
 }
 
 /**

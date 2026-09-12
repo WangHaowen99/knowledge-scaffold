@@ -32,13 +32,13 @@ from agent.runtime.contracts import (
 )
 from agent.runtime.events import RuntimeEvent
 from agent.runtime_fields import deterministic_business_arguments
-from utils.logging import get_logger
 
 try:
     from agent.tools.events import tool_output_artifact_writer_context
 except ImportError:  # pragma: no cover - minimal runtime-only installations.
     tool_output_artifact_writer_context = None
 
+from utils.logging import get_logger
 
 logger = get_logger("runtime.service")
 
@@ -95,10 +95,7 @@ def _preflight_profile_matches(
         return False
     try:
         expected = model_profile_ref_to_dict(profile_ref)
-        actual = model_profile_ref_to_dict(
-            snapshot_profile.get("model_profile_ref")
-            or snapshot_profile.get("id")
-        )
+        actual = model_profile_ref_to_dict(snapshot_profile.get("model_profile_ref") or snapshot_profile.get("id"))
     except (TypeError, ValueError):
         return False
     return expected is not None and actual == expected
@@ -141,9 +138,7 @@ def _waiting_solver_checkpoint_from_state(
             if tool_result_index is not None:
                 for index in range(tool_result_index + 1, len(messages)):
                     later_message = messages[index]
-                    if later_message.get("role") == "assistant" and not later_message.get(
-                        "tool_calls"
-                    ):
+                    if later_message.get("role") == "assistant" and not later_message.get("tool_calls"):
                         return None
             continuation_state: dict[str, Any] = {}
             for key in _SOLVER_CONTINUATION_STATE_FIELDS:
@@ -151,9 +146,7 @@ def _waiting_solver_checkpoint_from_state(
                     continuation_state[key] = copy.deepcopy(state.get(key))
             return {
                 "schema_version": "agent.solver-checkpoint.v1",
-                "stage": (
-                    "waiting_solver" if tool_result_index is None else "react"
-                ),
+                "stage": "waiting_solver" if tool_result_index is None else "react",
                 "tool_call": {
                     "id": tool_call_id,
                     "name": str(function.get("name") or "").strip(),
@@ -285,9 +278,7 @@ def _build_deterministic_artifact_writer(
         normalized = [str(name or "").strip() for name in names]
         if not normalized:
             return
-        if any(not name for name in normalized) or len(set(normalized)) != len(
-            normalized
-        ):
+        if any(not name for name in normalized) or len(set(normalized)) != len(normalized):
             raise ValueError("deterministic artifact names are invalid")
         with lock:
             if closed:
@@ -315,23 +306,16 @@ def _build_deterministic_artifact_writer(
                 tool_call_id="deterministic:{}".format(name),
                 output=output,
                 content_type=media_type,
-                **(
-                    {"output_ref": reserved_ref}
-                    if journal_enabled and reserved_ref
-                    else {}
-                ),
+                **({"output_ref": reserved_ref} if journal_enabled and reserved_ref else {}),
             )
             if isinstance(stored, Mapping):
                 output_ref = str(stored.get("output_ref") or "").strip()
                 if output_ref:
                     output_refs.add(output_ref)
             if journal_enabled and (
-                not isinstance(stored, Mapping)
-                or str(stored.get("output_ref") or "").strip() != reserved_ref
+                not isinstance(stored, Mapping) or str(stored.get("output_ref") or "").strip() != reserved_ref
             ):
-                raise RuntimeError(
-                    "deterministic artifact store changed its reserved output_ref"
-                )
+                raise RuntimeError("deterministic artifact store changed its reserved output_ref")
             return stored
 
     def rollback(refs=()) -> None:
@@ -349,12 +333,14 @@ def _build_deterministic_artifact_writer(
                         failed_refs.add(output_ref)
                     continue
                 try:
-                    deleted = bool(delete_tool_output(
-                        session_id=session_id,
-                        run_id=run_id,
-                        output_ref=output_ref,
-                        missing_ok=True,
-                    ))
+                    deleted = bool(
+                        delete_tool_output(
+                            session_id=session_id,
+                            run_id=run_id,
+                            output_ref=output_ref,
+                            missing_ok=True,
+                        )
+                    )
                 except Exception:
                     deleted = False
                     logger.warning(
@@ -388,10 +374,7 @@ def _history_with_turn(
     context: RuntimeInvocationContext,
     content: str,
 ) -> list[dict[str, Any]]:
-    history = [
-        item.model_dump(mode="python", exclude_none=True)
-        for item in context.history_messages
-    ]
+    history = [item.model_dump(mode="python", exclude_none=True) for item in context.history_messages]
     history.append({"role": "user", "content": context.query})
     if content:
         history.append({"role": "assistant", "content": content})
@@ -416,13 +399,8 @@ def _deterministic_final_output(envelope: Mapping[str, Any]) -> dict[str, Any]:
 
 def _is_deterministic_result(result: RuntimeResult) -> bool:
     structured = result.structured_content
-    execution = (
-        structured.get("execution") if isinstance(structured, Mapping) else None
-    )
-    return bool(
-        isinstance(execution, Mapping)
-        and str(execution.get("type") or "") == "deterministic"
-    )
+    execution = structured.get("execution") if isinstance(structured, Mapping) else None
+    return bool(isinstance(execution, Mapping) and str(execution.get("type") or "") == "deterministic")
 
 
 def _direct_terminal_event(
@@ -475,9 +453,7 @@ def _solver_runtime_event(
         turn_id=context.turn_id,
         source={
             "node": "solver_recovery",
-            "component": (
-                "tool" if event_type.startswith("tool.") else "solver"
-            ),
+            "component": "tool" if event_type.startswith("tool.") else "solver",
         },
         payload=dict(payload or {}),
     )
@@ -512,9 +488,7 @@ def _solver_terminal_event(
         error = None
     else:
         status = "failed"
-        code = str(
-            public_result.get("code") or "solver_result_rejected"
-        ).strip()
+        code = str(public_result.get("code") or "solver_result_rejected").strip()
         error = RuntimeErrorInfo(
             error_code=code,
             message=content or "The Solver result was not authoritative.",
@@ -559,8 +533,8 @@ def _runtime_event_from_legacy(
         return None
     payload = dict(data.get("payload") or {})
     raw_status = str(payload.get("status") or "").strip().lower()
-    status = "running" if event_type == "tool.started" else (
-        "failed" if raw_status in {"error", "failed"} else "completed"
+    status = (
+        "running" if event_type == "tool.started" else ("failed" if raw_status in {"error", "failed"} else "completed")
     )
     return RuntimeEvent(
         event_type=event_type,
@@ -688,9 +662,7 @@ def _result_from_terminal(
         except ValueError:
             continue
     read_documents = (
-        dict(event.payload["read_documents"])
-        if isinstance(event.payload.get("read_documents"), Mapping)
-        else None
+        dict(event.payload["read_documents"]) if isinstance(event.payload.get("read_documents"), Mapping) else None
     )
     if status in {"completed", "awaiting_input"}:
         return RuntimeResult(
@@ -702,9 +674,7 @@ def _result_from_terminal(
             history_messages=history,
             read_documents=read_documents,
             evolution_recall_records=[
-                dict(item)
-                for item in event.payload.get("evolution_recall_records") or []
-                if isinstance(item, Mapping)
+                dict(item) for item in event.payload.get("evolution_recall_records") or [] if isinstance(item, Mapping)
             ],
         )
     recovery = None
@@ -717,15 +687,9 @@ def _result_from_terminal(
         status=status,
         content=(str(payload.get("content")) if payload.get("content") is not None else None),
         structured_content=(
-            payload.get("structured_content")
-            if isinstance(payload.get("structured_content"), (dict, list))
-            else None
+            payload.get("structured_content") if isinstance(payload.get("structured_content"), (dict, list)) else None
         ),
-        error=(
-            _error_from_payload(payload.get("error"))
-            if status == "failed"
-            else None
-        ),
+        error=(_error_from_payload(payload.get("error")) if status == "failed" else None),
         recovery=recovery,
         history_messages=history,
         read_documents=read_documents,
@@ -835,9 +799,7 @@ class AsyncExecutionService:
         adapter = PublicEventAdapter(include_trace=context.include_trace)
         resumed_solver_events = None
         if self.session_adapter is not None:
-            resumed_solver_events = await self.session_adapter.try_resume_solver(
-                context
-            )
+            resumed_solver_events = await self.session_adapter.try_resume_solver(context)
         if resumed_solver_events is not None:
             return await self._consume_events(
                 context,
@@ -847,9 +809,7 @@ class AsyncExecutionService:
             )
         direct_events = None
         arguments = dict(context.arguments or {})
-        selected_ontology_id = str(
-            arguments.get("selected_ontology_id") or ""
-        ).strip()
+        selected_ontology_id = str(arguments.get("selected_ontology_id") or "").strip()
         if self.session_adapter is not None and selected_ontology_id:
             direct_events = await self.session_adapter.try_direct_execute(context)
         if direct_events is not None:
@@ -861,9 +821,7 @@ class AsyncExecutionService:
             )
 
         execution_scope = (
-            self.session_adapter.execution_scope(context)
-            if self.session_adapter is not None
-            else nullcontext()
+            self.session_adapter.execution_scope(context) if self.session_adapter is not None else nullcontext()
         )
         with execution_scope:
             return await self._execute_runtime(context, sink, adapter)
@@ -1035,10 +993,7 @@ class AsyncExecutionService:
         context: RuntimeInvocationContext,
         result: RuntimeResult,
     ) -> RuntimeResult:
-        if (
-            result.status == "awaiting_input"
-            and not context.supports_user_interaction
-        ):
+        if result.status == "awaiting_input" and not context.supports_user_interaction:
             result = result.model_copy(
                 update={
                     "status": "failed",
@@ -1084,21 +1039,20 @@ class OrchestratorSessionAdapter:
 
     def __init__(self, orchestrator_provider: Callable[[], Any]) -> None:
         self._orchestrator_provider = orchestrator_provider
-        import threading
-
         self._finalize_lock = threading.Lock()
         self._context_lock = threading.Lock()
         self._run_contexts: dict[str, RuntimeInvocationContext] = {}
         # A turn is allocated before the remaining session projections are
         # written. Keep that allocation visible to the prepare wrapper so a
         # later prepare failure can compensate it by run_id.
-        self._pending_prepare_turns: dict[
-            str, tuple[RuntimeInvocationContext, int]
-        ] = {}
+        self._pending_prepare_turns: dict[str, tuple[RuntimeInvocationContext, int]] = {}
 
     def memory_manager(self, context: RuntimeInvocationContext) -> Any:
         orchestrator = self._orchestrator_provider()
-        return orchestrator._get_memory_manager(context.username)
+        resolver = getattr(orchestrator, "get_memory_manager", None)
+        if not callable(resolver):
+            resolver = getattr(orchestrator, "_get_memory_manager", None)
+        return resolver(context.username) if callable(resolver) else None
 
     @contextmanager
     def execution_scope(self, context: RuntimeInvocationContext):
@@ -1149,11 +1103,7 @@ class OrchestratorSessionAdapter:
         checkpoint = _waiting_solver_checkpoint_from_state(state)
         if checkpoint is not None:
             checkpoint_state = checkpoint.get("state")
-            checkpoint_state = (
-                checkpoint_state
-                if isinstance(checkpoint_state, Mapping)
-                else {}
-            )
+            checkpoint_state = checkpoint_state if isinstance(checkpoint_state, Mapping) else {}
             identity = (
                 str(checkpoint_state.get("run_id") or ""),
                 str(checkpoint_state.get("session_id") or ""),
@@ -1241,9 +1191,7 @@ class OrchestratorSessionAdapter:
             raise ValueError("waiting Solver ToolCall is invalid")
 
         inbox = record.get("tool_result_inbox")
-        if isinstance(inbox, Mapping) and str(
-            inbox.get("tool_call_id") or ""
-        ).strip() != expected_tool_call_id:
+        if isinstance(inbox, Mapping) and str(inbox.get("tool_call_id") or "").strip() != expected_tool_call_id:
             execution_store.save_waiting_solver_checkpoint(
                 context.session_id,
                 run_id=context.run_id,
@@ -1281,17 +1229,11 @@ class OrchestratorSessionAdapter:
                 card_name=tool_name,
                 progress_callback=record_progress,
             )
-            recovery_state = (
-                str(recovered.get("state") or "").strip()
-                if isinstance(recovered, Mapping)
-                else ""
-            )
+            recovery_state = str(recovered.get("state") or "").strip() if isinstance(recovered, Mapping) else ""
             if recovery_state == "pending":
                 raise RuntimeError("waiting Solver ToolResult is not ready")
             if recovery_state == "conflict":
-                raise RuntimeError(
-                    "waiting Solver ToolCall identity is inconsistent"
-                )
+                raise RuntimeError("waiting Solver ToolCall identity is inconsistent")
             if recovery_state == "missing" or not isinstance(recovered, Mapping):
                 recovered = dispatch_solver_checkpoint_tool(
                     workspace_id=context.workspace_id,
@@ -1360,8 +1302,7 @@ class OrchestratorSessionAdapter:
             }
         )
         if authoritative_payload.get("authoritative") is True and not any(
-            event.event_type == "solver.result.authoritative"
-            for event in events
+            event.event_type == "solver.result.authoritative" for event in events
         ):
             events.append(
                 _solver_runtime_event(
@@ -1454,8 +1395,7 @@ class OrchestratorSessionAdapter:
                 get_active_run = getattr(chat_store, "get_active_run", None)
                 clear_active_run = getattr(chat_store, "clear_active_run", None)
                 if callable(clear_active_run) and (
-                    not callable(get_active_run)
-                    or get_active_run(context.session_id) in {None, "", context.run_id}
+                    not callable(get_active_run) or get_active_run(context.session_id) in {None, "", context.run_id}
                 ):
                     clear_active_run(context.session_id)
         except Exception:
@@ -1511,22 +1451,15 @@ class OrchestratorSessionAdapter:
         if not callable(submit):
             return
         arguments = dict(context.arguments or {})
-        ontology_id = str(
-            arguments.get("selected_ontology_id") or ""
-        ).strip()
+        ontology_id = str(arguments.get("selected_ontology_id") or "").strip()
         if not ontology_id:
             return
         history_source = result.history_messages or context.history_messages
-        messages = [
-            message.model_dump(mode="python", exclude_none=True)
-            for message in history_source
-        ]
+        messages = [message.model_dump(mode="python", exclude_none=True) for message in history_source]
         if not result.history_messages:
             messages.append({"role": "user", "content": context.query})
             if result.content:
-                messages.append(
-                    {"role": "assistant", "content": result.content}
-                )
+                messages.append({"role": "assistant", "content": result.content})
         await submit(
             run_id=context.run_id,
             session_id=context.session_id,
@@ -1553,14 +1486,16 @@ class OrchestratorSessionAdapter:
         from agent.direct_execution import OperationDirectRouter
         from agent.direct_execution.models import RuntimeContext
         from agent.direct_execution.runner import run_direct_script
-        from agent.tools.events import tool_output_artifact_writer_context
+        from agent.tools.events import (
+            tool_output_artifact_writer_context as direct_artifact_writer_context,
+        )
         from config.system_config import load_system_config
 
         dependencies = {
             "OperationDirectRouter": OperationDirectRouter,
             "RuntimeContext": RuntimeContext,
             "run_direct_script": run_direct_script,
-            "tool_output_artifact_writer_context": tool_output_artifact_writer_context,
+            "tool_output_artifact_writer_context": direct_artifact_writer_context,
             "load_system_config": load_system_config,
             "DeterministicExecutionService": DeterministicExecutionService,
             "NotApplicable": NotApplicable,
@@ -1641,7 +1576,12 @@ class OrchestratorSessionAdapter:
 
     def _stores(self, context: RuntimeInvocationContext) -> tuple[Any, Any]:
         orchestrator = self._orchestrator_provider()
-        return orchestrator._get_stores(context.username, context.workspace_id)
+        resolver = getattr(orchestrator, "get_stores", None)
+        if not callable(resolver):
+            resolver = getattr(orchestrator, "_get_stores", None)
+        if not callable(resolver):
+            raise TypeError("orchestrator must provide get_stores")
+        return resolver(context.username, context.workspace_id)
 
     def _prepare_sync_impl(
         self,
@@ -1670,9 +1610,7 @@ class OrchestratorSessionAdapter:
                 run_id=context.run_id,
             )
             if existing_turn is not None:
-                allocated_context = context.model_copy(
-                    update={"turn_id": int(existing_turn["turn_id"])}
-                )
+                allocated_context = context.model_copy(update={"turn_id": int(existing_turn["turn_id"])})
                 with self._context_lock:
                     self._pending_prepare_turns[context.run_id] = (
                         allocated_context,
@@ -1684,11 +1622,7 @@ class OrchestratorSessionAdapter:
             if locked_agent_mode not in valid_agent_modes:
                 locked_agent_mode = ""
             if locked_agent_mode and context.agent_mode != locked_agent_mode:
-                raise ValueError(
-                    "agent_mode is locked for this session: {}".format(
-                        locked_agent_mode
-                    )
-                )
+                raise ValueError("agent_mode is locked for this session: {}".format(locked_agent_mode))
             effective_agent_mode = locked_agent_mode or context.agent_mode
             effective_llm_mode = _normalize_llm_request_mode(
                 session_metadata.get("llm_request_mode"),
@@ -1696,57 +1630,32 @@ class OrchestratorSessionAdapter:
             )
 
             arguments = dict(context.arguments or {})
-            requested_ontology_id = str(
-                arguments.get("selected_ontology_id") or ""
-            ).strip()
+            requested_ontology_id = str(arguments.get("selected_ontology_id") or "").strip()
             requested_ontology_version = str(
-                arguments.get("selected_ontology_version")
-                or arguments.get("selected_version")
-                or ""
+                arguments.get("selected_ontology_version") or arguments.get("selected_version") or ""
             ).strip()
-            locked_ontology_id = str(
-                session_metadata.get("selected_ontology_id") or ""
-            ).strip()
+            locked_ontology_id = str(session_metadata.get("selected_ontology_id") or "").strip()
             locked_ontology_version = str(
-                session_metadata.get("selected_ontology_version")
-                or session_metadata.get("selected_version")
-                or ""
+                session_metadata.get("selected_ontology_version") or session_metadata.get("selected_version") or ""
             ).strip()
-            if (
-                locked_ontology_id
-                and requested_ontology_id
-                and requested_ontology_id != locked_ontology_id
-            ):
-                raise ValueError(
-                    "selected_ontology_id is locked for this session: {}".format(
-                        locked_ontology_id
-                    )
-                )
+            if locked_ontology_id and requested_ontology_id and requested_ontology_id != locked_ontology_id:
+                raise ValueError("selected_ontology_id is locked for this session: {}".format(locked_ontology_id))
             if (
                 locked_ontology_version
                 and requested_ontology_version
                 and requested_ontology_version != locked_ontology_version
             ):
                 raise ValueError(
-                    "selected_ontology_version is locked for this session: {}".format(
-                        locked_ontology_version
-                    )
+                    "selected_ontology_version is locked for this session: {}".format(locked_ontology_version)
                 )
             if requested_ontology_id and prior_turn_count > 0 and not locked_ontology_id:
-                raise ValueError(
-                    "selected_ontology_id can only be set before the first user turn"
-                )
+                raise ValueError("selected_ontology_id can only be set before the first user turn")
 
             selected_ontology = None
             selected_ontology_id = locked_ontology_id or requested_ontology_id
-            selected_ontology_version = (
-                locked_ontology_version or requested_ontology_version
-            )
+            selected_ontology_version = locked_ontology_version or requested_ontology_version
             preflight = context.preflight_snapshot
-            preflight_workspace_matches = bool(
-                preflight is not None
-                and preflight.workspace_id == context.workspace_id
-            )
+            preflight_workspace_matches = bool(preflight is not None and preflight.workspace_id == context.workspace_id)
             if selected_ontology_id:
                 from ontology.ontologies import (
                     get_ontology_registry,
@@ -1759,20 +1668,13 @@ class OrchestratorSessionAdapter:
                     and preflight is not None
                     and preflight.ontology_manifest is not None
                     and preflight.ontology_id == selected_ontology_id
-                    and (
-                        not selected_ontology_version
-                        or preflight.ontology_version == selected_ontology_version
-                    )
+                    and (not selected_ontology_version or preflight.ontology_version == selected_ontology_version)
                     else None
                 )
                 if preflight_manifest is not None:
                     selected_ontology = SimpleNamespace(**preflight_manifest)
                     if not bool(getattr(selected_ontology, "enabled", True)):
-                        raise ValueError(
-                            "Disabled selected_ontology_id: {}".format(
-                                selected_ontology_id
-                            )
-                        )
+                        raise ValueError("Disabled selected_ontology_id: {}".format(selected_ontology_id))
                 elif locked_ontology_id:
                     selected_ontology = get_runtime_ontology_manifest(
                         locked_ontology_id,
@@ -1780,11 +1682,7 @@ class OrchestratorSessionAdapter:
                         workspace_id=context.workspace_id,
                     )
                     if selected_ontology is None:
-                        raise ValueError(
-                            "Locked selected ontology is unavailable: {}".format(
-                                locked_ontology_id
-                            )
-                        )
+                        raise ValueError("Locked selected ontology is unavailable: {}".format(locked_ontology_id))
                 elif requested_ontology_version:
                     selected_ontology = get_runtime_ontology_manifest(
                         selected_ontology_id,
@@ -1799,42 +1697,31 @@ class OrchestratorSessionAdapter:
                             )
                         )
                     if not selected_ontology.enabled:
-                        raise ValueError(
-                            "Disabled selected_ontology_id: {}".format(
-                                selected_ontology_id
-                            )
-                        )
+                        raise ValueError("Disabled selected_ontology_id: {}".format(selected_ontology_id))
                 else:
                     registry = get_ontology_registry(workspace_id=context.workspace_id)
                     selected_ontology = registry.get_ontology(selected_ontology_id)
                     if selected_ontology is None:
-                        raise ValueError(
-                            "Invalid selected_ontology_id: {}".format(
-                                selected_ontology_id
-                            )
-                        )
+                        raise ValueError("Invalid selected_ontology_id: {}".format(selected_ontology_id))
                     if not selected_ontology.enabled:
-                        raise ValueError(
-                            "Disabled selected_ontology_id: {}".format(
-                                selected_ontology_id
-                            )
+                        raise ValueError("Disabled selected_ontology_id: {}".format(selected_ontology_id))
+                    selected_ontology = (
+                        get_runtime_ontology_manifest(
+                            selected_ontology.id,
+                            version=(
+                                str(
+                                    getattr(selected_ontology, "active_version", "")
+                                    or getattr(selected_ontology, "version", "")
+                                    or ""
+                                ).strip()
+                                or None
+                            ),
+                            workspace_id=context.workspace_id,
                         )
-                    selected_ontology = get_runtime_ontology_manifest(
-                        selected_ontology.id,
-                        version=(
-                            str(
-                                getattr(selected_ontology, "active_version", "")
-                                or getattr(selected_ontology, "version", "")
-                                or ""
-                            ).strip()
-                            or None
-                        ),
-                        workspace_id=context.workspace_id,
-                    ) or selected_ontology
+                        or selected_ontology
+                    )
                 selected_ontology_id = str(selected_ontology.id)
-                selected_ontology_version = str(
-                    getattr(selected_ontology, "version", "") or ""
-                ).strip()
+                selected_ontology_version = str(getattr(selected_ontology, "version", "") or "").strip()
                 arguments["selected_ontology_id"] = selected_ontology_id
                 if selected_ontology_version:
                     arguments["selected_ontology_version"] = selected_ontology_version
@@ -1848,19 +1735,11 @@ class OrchestratorSessionAdapter:
             )
 
             requested_profile = context.model_profile_id
-            stored_profile = str(
-                session_metadata.get("model_profile_id") or ""
-            ).strip()
+            stored_profile = str(session_metadata.get("model_profile_id") or "").strip()
             profile_ref = requested_profile or stored_profile or None
-            interaction_response = (
-                dict(context.interaction_response)
-                if context.interaction_response
-                else None
-            )
+            interaction_response = dict(context.interaction_response) if context.interaction_response else None
             deterministic_candidate = (
-                bool(preflight.deterministic_candidate)
-                if preflight_matches and preflight is not None
-                else False
+                bool(preflight.deterministic_candidate) if preflight_matches and preflight is not None else False
             )
             if selected_ontology_id and not preflight_matches:
                 from agent.direct_execution.contracts import (
@@ -1872,46 +1751,32 @@ class OrchestratorSessionAdapter:
                 )
 
                 checkpoint = (
-                    execution_store.get_pending_deterministic_checkpoint(
-                        context.session_id
-                    )
+                    execution_store.get_pending_deterministic_checkpoint(context.session_id)
                     if interaction_response
                     else None
                 )
-                deterministic_candidate = (
-                    DeterministicExecutionService().is_potentially_applicable(
-                        DeterministicRequest(
-                            user_request=context.query,
-                            context={
-                                "agent_mode": effective_agent_mode,
-                                "llm_request_mode": effective_llm_mode,
-                                "requested_operation_key": (
-                                    context.requested_operation_key
-                                ),
-                                "supports_user_interaction": (
-                                    context.supports_user_interaction
-                                ),
-                                **arguments,
-                            },
-                            arguments=deterministic_business_arguments(arguments),
-                            runtime_context=RuntimeContext(
-                                session_id=context.session_id,
-                                run_id=context.run_id,
-                                turn_id=(
-                                    int(existing_turn["turn_id"])
-                                    if existing_turn is not None
-                                    else turn_count + 1
-                                ),
-                                user_id=context.username,
-                                workspace_id=context.workspace_id,
-                                selected_ontology_id=selected_ontology_id,
-                                selected_ontology_version=(
-                                    selected_ontology_version or None
-                                ),
-                            ),
-                            checkpoint=checkpoint,
-                            interaction_response=interaction_response,
-                        )
+                deterministic_candidate = DeterministicExecutionService().is_potentially_applicable(
+                    DeterministicRequest(
+                        user_request=context.query,
+                        context={
+                            "agent_mode": effective_agent_mode,
+                            "llm_request_mode": effective_llm_mode,
+                            "requested_operation_key": context.requested_operation_key,
+                            "supports_user_interaction": context.supports_user_interaction,
+                            **arguments,
+                        },
+                        arguments=deterministic_business_arguments(arguments),
+                        runtime_context=RuntimeContext(
+                            session_id=context.session_id,
+                            run_id=context.run_id,
+                            turn_id=(int(existing_turn["turn_id"]) if existing_turn is not None else turn_count + 1),
+                            user_id=context.username,
+                            workspace_id=context.workspace_id,
+                            selected_ontology_id=selected_ontology_id,
+                            selected_ontology_version=(selected_ontology_version or None),
+                        ),
+                        checkpoint=checkpoint,
+                        interaction_response=interaction_response,
                     )
                 )
             selected_profile = None
@@ -1939,10 +1804,7 @@ class OrchestratorSessionAdapter:
                 else (requested_profile or stored_profile or None)
             )
             effective_profile_ref = (
-                model_profile_ref_to_dict(
-                    selected_profile.get("model_profile_ref")
-                    or effective_profile_id
-                )
+                model_profile_ref_to_dict(selected_profile.get("model_profile_ref") or effective_profile_id)
                 if isinstance(selected_profile, Mapping) and effective_profile_id
                 else None
             )
@@ -1984,24 +1846,18 @@ class OrchestratorSessionAdapter:
             else:
                 chat_store.merge_session_metadata(context.session_id, metadata)
 
-            history = _runtime_history(
-                execution_store.get_llm_context(context.session_id) or []
-            )
-            read_documents = execution_store.get_read_documents_context(
-                context.session_id
-            )
-            memory_manager = (
-                orchestrator._get_memory_manager(context.username)
-                if callable(getattr(orchestrator, "_get_memory_manager", None))
-                else None
-            )
+            history = _runtime_history(execution_store.get_llm_context(context.session_id) or [])
+            read_documents = execution_store.get_read_documents_context(context.session_id)
+            get_memory_manager = getattr(orchestrator, "get_memory_manager", None)
+            memory_manager = get_memory_manager(context.username) if callable(get_memory_manager) else None
+            build_memory_context = getattr(orchestrator, "build_memory_context", None)
             memory_context = (
-                orchestrator._build_memory_context(
+                build_memory_context(
                     memory_manager,
                     query=context.query,
                     allow_injection=True,
                 )
-                if callable(getattr(orchestrator, "_build_memory_context", None))
+                if callable(build_memory_context)
                 else ""
             )
 
@@ -2024,9 +1880,7 @@ class OrchestratorSessionAdapter:
                 turn_id = int(existing_turn["turn_id"])
                 started_turn = existing_turn
             interaction_cancellation = (
-                started_turn.get("prior_interaction_cancellation")
-                if isinstance(started_turn, Mapping)
-                else None
+                started_turn.get("prior_interaction_cancellation") if isinstance(started_turn, Mapping) else None
             )
 
             set_active_run = getattr(chat_store, "set_active_run", None)
@@ -2035,26 +1889,10 @@ class OrchestratorSessionAdapter:
             message_metadata = {
                 "run_id": context.run_id,
                 "turn_id": turn_id,
-                **(
-                    {"model_profile_id": effective_profile_id}
-                    if effective_profile_id
-                    else {}
-                ),
-                **(
-                    {"model_profile_ref": effective_profile_ref}
-                    if effective_profile_ref
-                    else {}
-                ),
-                **(
-                    {"model_provider": model_provider}
-                    if model_provider
-                    else {}
-                ),
-                **(
-                    {"interaction_response": interaction_response}
-                    if interaction_response is not None
-                    else {}
-                ),
+                **({"model_profile_id": effective_profile_id} if effective_profile_id else {}),
+                **({"model_profile_ref": effective_profile_ref} if effective_profile_ref else {}),
+                **({"model_provider": model_provider} if model_provider else {}),
+                **({"interaction_response": interaction_response} if interaction_response is not None else {}),
             }
             if selected_ontology is not None and turn_id == 1:
                 message_metadata.update(
@@ -2091,16 +1929,10 @@ class OrchestratorSessionAdapter:
                     "arguments": arguments or None,
                     "history_messages": history,
                     "memory_context": memory_context or None,
-                    "read_documents": (
-                        dict(read_documents)
-                        if isinstance(read_documents, Mapping)
-                        else None
-                    ),
+                    "read_documents": dict(read_documents) if isinstance(read_documents, Mapping) else None,
                     "interaction_response": interaction_response,
                     "interaction_cancellation": (
-                        dict(interaction_cancellation)
-                        if isinstance(interaction_cancellation, Mapping)
-                        else None
+                        dict(interaction_cancellation) if isinstance(interaction_cancellation, Mapping) else None
                     ),
                 }
             )
@@ -2136,9 +1968,7 @@ class OrchestratorSessionAdapter:
                     get_active_run = getattr(chat_store, "get_active_run", None)
                     clear_active_run = getattr(chat_store, "clear_active_run", None)
                     if callable(clear_active_run) and (
-                        not callable(get_active_run)
-                        or get_active_run(context.session_id)
-                        in {None, "", context.run_id}
+                        not callable(get_active_run) or get_active_run(context.session_id) in {None, "", context.run_id}
                     ):
                         clear_active_run(context.session_id)
                 except Exception:
@@ -2186,11 +2016,7 @@ class OrchestratorSessionAdapter:
 
         with _workspace_context(context.workspace_id):
             summary = None
-            if (
-                result.status == "completed"
-                and content
-                and parse_execution_summary is not None
-            ):
+            if result.status == "completed" and content and parse_execution_summary is not None:
                 try:
                     parsed_summary = parse_execution_summary(content)
                     if parsed_summary:
@@ -2245,11 +2071,7 @@ class OrchestratorSessionAdapter:
                         "error": result.error.model_dump(mode="json"),
                     }
                 else:
-                    failure_output = (
-                        result.error.message
-                        if result.error is not None
-                        else "运行失败"
-                    )
+                    failure_output = result.error.message if result.error is not None else "运行失败"
                 execution_store.fail_turn(
                     context.session_id,
                     context.turn_id,
@@ -2264,10 +2086,7 @@ class OrchestratorSessionAdapter:
 
             try:
                 history_source = result.history_messages or context.history_messages
-                history = [
-                    message.model_dump(mode="python", exclude_none=True)
-                    for message in history_source
-                ]
+                history = [message.model_dump(mode="python", exclude_none=True) for message in history_source]
                 if not result.history_messages:
                     history.append({"role": "user", "content": context.query})
                     if content:
@@ -2315,13 +2134,7 @@ class OrchestratorSessionAdapter:
                         None,
                     )
                     if callable(record_outcomes) and result.status == "completed":
-                        record_outcomes(
-                            {
-                                "evolution_recall_records": (
-                                    result.evolution_recall_records
-                                )
-                            }
-                        )
+                        record_outcomes({"evolution_recall_records": result.evolution_recall_records})
             except Exception:
                 self._log_terminal_projection_failure(context.run_id, "evolution")
 
@@ -2329,8 +2142,7 @@ class OrchestratorSessionAdapter:
                 get_active_run = getattr(chat_store, "get_active_run", None)
                 clear_active_run = getattr(chat_store, "clear_active_run", None)
                 if callable(clear_active_run) and (
-                    not callable(get_active_run)
-                    or get_active_run(context.session_id) in {None, "", context.run_id}
+                    not callable(get_active_run) or get_active_run(context.session_id) in {None, "", context.run_id}
                 ):
                     clear_active_run(context.session_id)
             except Exception:
@@ -2350,31 +2162,23 @@ class OrchestratorSessionAdapter:
         context: RuntimeInvocationContext,
         dependencies: Mapping[str, Any],
     ) -> list[RuntimeEvent] | None:
-        OperationDirectRouter = dependencies["OperationDirectRouter"]
-        RuntimeContext = dependencies["RuntimeContext"]
+        operation_direct_router_class = dependencies["OperationDirectRouter"]
+        runtime_context_class = dependencies["RuntimeContext"]
         run_direct_script = dependencies["run_direct_script"]
-        tool_output_artifact_writer_context = dependencies[
-            "tool_output_artifact_writer_context"
-        ]
+        direct_artifact_writer_context = dependencies["tool_output_artifact_writer_context"]
         load_system_config = dependencies["load_system_config"]
-        DeterministicExecutionService = dependencies.get(
-            "DeterministicExecutionService"
-        )
-        NotApplicable = dependencies.get("NotApplicable")
+        deterministic_execution_service_class = dependencies.get("DeterministicExecutionService")
+        not_applicable_class = dependencies.get("NotApplicable")
 
         orchestrator = self._orchestrator_provider()
         agent_config = getattr(orchestrator, "agent_config", None)
         direct_config = getattr(agent_config, "direct_execution", None)
         arguments = dict(context.arguments or {})
-        selected_ontology_id = str(
-            arguments.get("selected_ontology_id") or ""
-        ).strip()
+        selected_ontology_id = str(arguments.get("selected_ontology_id") or "").strip()
         selected_ontology_version = str(
-            arguments.get("selected_ontology_version")
-            or arguments.get("selected_version")
-            or ""
+            arguments.get("selected_ontology_version") or arguments.get("selected_version") or ""
         ).strip()
-        runtime_context = RuntimeContext(
+        runtime_context = runtime_context_class(
             session_id=context.session_id,
             run_id=context.run_id,
             turn_id=context.turn_id,
@@ -2386,9 +2190,7 @@ class OrchestratorSessionAdapter:
         with _workspace_context(context.workspace_id), ExitStack() as package_stack:
             chat_store, execution_store = self._stores(context)
             checkpoint = (
-                execution_store.get_pending_deterministic_checkpoint(
-                    context.session_id
-                )
+                execution_store.get_pending_deterministic_checkpoint(context.session_id)
                 if context.interaction_response
                 else None
             )
@@ -2406,19 +2208,13 @@ class OrchestratorSessionAdapter:
                     "llm_request_mode": context.llm_request_mode,
                     "model_profile_id": context.model_profile_id,
                     "requested_operation_key": context.requested_operation_key,
-                    "supports_user_interaction": (
-                        context.supports_user_interaction
-                    ),
+                    "supports_user_interaction": context.supports_user_interaction,
                     **arguments,
                 },
                 arguments=deterministic_business_arguments(arguments),
                 runtime_context=runtime_context,
                 checkpoint=checkpoint,
-                interaction_response=(
-                    dict(context.interaction_response)
-                    if context.interaction_response
-                    else None
-                ),
+                interaction_response=(dict(context.interaction_response) if context.interaction_response else None),
             )
             artifact_writer = _build_deterministic_artifact_writer(
                 chat_store,
@@ -2432,16 +2228,9 @@ class OrchestratorSessionAdapter:
             outcome = None
             pinned_ontology_manifest = None
             preflight = context.preflight_snapshot
-            deterministic_available = (
-                DeterministicExecutionService is not None
-                and agent_config is not None
-            )
+            deterministic_available = deterministic_execution_service_class is not None and agent_config is not None
             system_config = load_system_config() if deterministic_available else None
-            project_root = (
-                Path(str(system_config["storage"]["project_root"]))
-                if system_config is not None
-                else None
-            )
+            project_root = Path(str(system_config["storage"]["project_root"])) if system_config is not None else None
 
             def execute_deterministic(ontology_manifest: Any = None) -> Any:
                 if not deterministic_available or project_root is None:
@@ -2461,7 +2250,7 @@ class OrchestratorSessionAdapter:
                 }
                 if ontology_manifest is not None:
                     execute_kwargs["ontology_manifest"] = ontology_manifest
-                return DeterministicExecutionService().execute(
+                return deterministic_execution_service_class().execute(
                     request,
                     **execute_kwargs,
                 )
@@ -2494,16 +2283,17 @@ class OrchestratorSessionAdapter:
                         stage_verified_package_revision,
                     )
 
-                    source_ontology_dir = Path(
-                        os.path.abspath(str(manifest["ontology_dir"]))
-                    )
+                    source_ontology_dir = Path(os.path.abspath(str(manifest["ontology_dir"])))
 
                     def mutation_revision_matches() -> bool:
                         try:
-                            return get_ontology_mutation_revision(
-                                context.workspace_id,
-                                selected_ontology_id,
-                            ) == preflight.mutation_revision
+                            return (
+                                get_ontology_mutation_revision(
+                                    context.workspace_id,
+                                    selected_ontology_id,
+                                )
+                                == preflight.mutation_revision
+                            )
                         except Exception:
                             return False
 
@@ -2515,39 +2305,23 @@ class OrchestratorSessionAdapter:
                         staged_ontology_dir = package_stack.enter_context(
                             stage_verified_package_revision(
                                 source_root=source_ontology_dir,
-                                expected_content_revision=(
-                                    preflight.ontology_content_revision
-                                ),
+                                expected_content_revision=(preflight.ontology_content_revision),
                                 staging_root=staging_boundary,
                                 revision_guard=mutation_revision_matches,
                             )
                         )
                         try:
                             staged_manifest = dict(manifest)
-                            staged_manifest["ontology_dir"] = str(
-                                staged_ontology_dir
-                            )
+                            staged_manifest["ontology_dir"] = str(staged_ontology_dir)
                             for path_field in ("manifest_path", "index_path"):
-                                raw_path = str(
-                                    staged_manifest.get(path_field) or ""
-                                ).strip()
+                                raw_path = str(staged_manifest.get(path_field) or "").strip()
                                 if not raw_path:
                                     continue
-                                relative_path = (
-                                    Path(raw_path)
-                                    .resolve()
-                                    .relative_to(source_ontology_dir.resolve())
-                                )
-                                staged_manifest[path_field] = str(
-                                    staged_ontology_dir / relative_path
-                                )
-                            pinned_ontology_manifest = SimpleNamespace(
-                                **staged_manifest
-                            )
+                                relative_path = Path(raw_path).resolve().relative_to(source_ontology_dir.resolve())
+                                staged_manifest[path_field] = str(staged_ontology_dir / relative_path)
+                            pinned_ontology_manifest = SimpleNamespace(**staged_manifest)
                         except (OSError, TypeError, ValueError) as exc:
-                            raise OntologyPackageRevisionError(
-                                "admitted ontology manifest paths are unsafe"
-                            ) from exc
+                            raise OntologyPackageRevisionError("admitted ontology manifest paths are unsafe") from exc
                         outcome = execute_deterministic(pinned_ontology_manifest)
                     except OntologyPackageRevisionError:
                         outcome = Failed(
@@ -2556,7 +2330,7 @@ class OrchestratorSessionAdapter:
                         )
             elif outcome is None:
                 outcome = execute_deterministic()
-            if outcome is not None and not isinstance(outcome, NotApplicable):
+            if outcome is not None and not isinstance(outcome, not_applicable_class):
                 events = [
                     RuntimeEvent(
                         event_type="turn.started",
@@ -2605,9 +2379,7 @@ class OrchestratorSessionAdapter:
                                 "tool_call_id": "deterministic",
                                 "status": "completed",
                                 "elapsed_ms": outcome.elapsed_ms,
-                                "output_projection": envelope.get(
-                                    "structured_result"
-                                ),
+                                "output_projection": envelope.get("structured_result"),
                             },
                         )
                     )
@@ -2682,11 +2454,9 @@ class OrchestratorSessionAdapter:
 
             if context.interaction_response:
                 return None
-            if direct_config is None or not bool(
-                getattr(direct_config, "enabled", False)
-            ):
+            if direct_config is None or not bool(getattr(direct_config, "enabled", False)):
                 return None
-            decision = OperationDirectRouter(config=direct_config).route(
+            decision = operation_direct_router_class(config=direct_config).route(
                 user_request=context.query,
                 context={
                     "agent_mode": context.agent_mode,
@@ -2713,13 +2483,10 @@ class OrchestratorSessionAdapter:
                 )
             ]
             if decision.route == "missing_args":
-                missing = "\n".join(
-                    "- {}".format(item)
-                    for item in decision.missing_business_arguments
+                missing = "\n".join("- {}".format(item) for item in decision.missing_business_arguments)
+                content = ("当前 {} 流程需要以下参数：\n{}\n\n请补充后我再执行。").format(
+                    str(decision.operation_key or ""), missing
                 )
-                content = (
-                    "当前 {} 流程需要以下参数：\n{}\n\n请补充后我再执行。"
-                ).format(str(decision.operation_key or ""), missing)
                 events.append(
                     _direct_terminal_event(
                         context,
@@ -2735,7 +2502,7 @@ class OrchestratorSessionAdapter:
                 run_id=context.run_id,
             )
             project_root = str(load_system_config()["storage"]["project_root"])
-            with tool_output_artifact_writer_context(artifact_writer):
+            with direct_artifact_writer_context(artifact_writer):
                 raw_events, direct_result = run_direct_script(
                     decision=decision,
                     runtime_context=runtime_context,
@@ -2754,9 +2521,7 @@ class OrchestratorSessionAdapter:
                         status="failed",
                         content=direct_result.output,
                         error=RuntimeErrorInfo(
-                            error_code=str(
-                                direct_result.error or "DIRECT_EXECUTION_FAILED"
-                            ).upper(),
+                            error_code=str(direct_result.error or "DIRECT_EXECUTION_FAILED").upper(),
                             message="直接执行失败",
                             retriable=False,
                             source="tool",
@@ -2781,19 +2546,15 @@ class OrchestratorSessionAdapter:
         chat_store, execution_store = self._stores(context)
         envelope = _chat_event_envelope(event)
         terminal_output = event.payload.get("structured_content")
-        deterministic_execution = (
-            terminal_output.get("execution")
-            if isinstance(terminal_output, Mapping)
-            else None
+        deterministic_execution = terminal_output.get("execution") if isinstance(terminal_output, Mapping) else None
+        deterministic_source = str((event.source or {}).get("node") or "") == "deterministic_execution"
+        deterministic_payload = (
+            isinstance(
+                deterministic_execution,
+                Mapping,
+            )
+            and deterministic_execution.get("type") == "deterministic"
         )
-        deterministic_source = (
-            str((event.source or {}).get("node") or "")
-            == "deterministic_execution"
-        )
-        deterministic_payload = isinstance(
-            deterministic_execution,
-            Mapping,
-        ) and deterministic_execution.get("type") == "deterministic"
         deterministic_terminal = deterministic_source or deterministic_payload
         is_terminal_event = event.event_type == "turn.finished"
         if is_terminal_event and deterministic_terminal:
@@ -2827,9 +2588,7 @@ class OrchestratorSessionAdapter:
                 turn_id=context.turn_id,
                 status=status,
                 final_output=final_output,
-                llm_context=(
-                    execution_store.get_llm_context(context.session_id) or []
-                ),
+                llm_context=(execution_store.get_llm_context(context.session_id) or []),
                 events=[envelope],
                 deterministic_checkpoint=(
                     dict(terminal_output["deterministic_checkpoint"])
@@ -2877,9 +2636,7 @@ class OrchestratorSessionAdapter:
                 elif raw_output is not None:
                     final_output = {"text": str(raw_output)}
                 elif event.status == "cancelled":
-                    final_output = {
-                        "cancel_reason": event.payload.get("cancel_reason")
-                    }
+                    final_output = {"cancel_reason": event.payload.get("cancel_reason")}
                 elif event.status == "failed":
                     final_output = {
                         "error": (
@@ -2890,16 +2647,8 @@ class OrchestratorSessionAdapter:
                     }
                 else:
                     final_output = {"status": status}
-                if (
-                    event.status == "failed"
-                    and event.payload.get("content") is not None
-                    and raw_error is not None
-                ):
-                    final_output["error"] = (
-                        dict(raw_error)
-                        if isinstance(raw_error, Mapping)
-                        else str(raw_error)
-                    )
+                if event.status == "failed" and event.payload.get("content") is not None and raw_error is not None:
+                    final_output["error"] = dict(raw_error) if isinstance(raw_error, Mapping) else str(raw_error)
                 error_code = (
                     str(raw_error.get("error_code") or "").strip()
                     if isinstance(raw_error, Mapping)
@@ -2935,10 +2684,7 @@ def pending_interaction_from_draft(
         if not isinstance(interaction, Mapping):
             interaction = payload
         interaction_id = str(
-            payload.get("interaction_id")
-            or interaction.get("interaction_id")
-            or interaction.get("id")
-            or ""
+            payload.get("interaction_id") or interaction.get("interaction_id") or interaction.get("id") or ""
         ).strip()
         if not interaction_id:
             return None
@@ -2953,9 +2699,7 @@ def pending_interaction_from_draft(
                 or interaction.get("prompt")
                 or ""
             ),
-            "options": (
-                list(options_value) if isinstance(options_value, list) else []
-            ),
+            "options": list(options_value) if isinstance(options_value, list) else [],
         }
     if draft.event_type != "turn.finished" or draft.status != "awaiting_input":
         return None

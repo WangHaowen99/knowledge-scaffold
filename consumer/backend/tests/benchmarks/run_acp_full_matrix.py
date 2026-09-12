@@ -89,6 +89,7 @@ def _ensure_session():
     if not AUTH_USERNAME or not AUTH_PASSWORD:
         raise RuntimeError("AUTH_USERNAME and AUTH_PASSWORD must be set for ACP matrix login")
     import requests
+
     _session = requests.Session()
     resp = _session.post(
         f"{BASE_URL}/auth/login",
@@ -97,10 +98,12 @@ def _ensure_session():
     )
     resp.raise_for_status()
     _token = resp.json()["token"]
-    _session.headers.update({
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {_token}",
-    })
+    _session.headers.update(
+        {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_token}",
+        }
+    )
     return _session
 
 
@@ -131,47 +134,38 @@ def _get_runtime_config() -> dict:
 SCENARIOS: list[tuple[str, str, str, str, bool, str, str, str]] = [
     # ── T1: Agentic 基线 ──
     ("T1", "Agentic基线", "agentic", "", False, "", "", "zh"),
-
     # ── T2: ACP 基线 × 3 子模式 ──
     ("T2a", "ACP基线-execute_stream", "acp", "execute_stream", False, "", "", "zh"),
     ("T2b", "ACP基线-stream", "acp", "stream", False, "", "", "zh"),
     ("T2c", "ACP基线-execute", "acp", "execute", False, "", "", "zh"),
-
     # ── T3: ACP + 中文 × 3 ──
     ("T3a", "ACP+中文-execute_stream", "acp", "execute_stream", True, "zh", "", "zh"),
     ("T3b", "ACP+中文-stream", "acp", "stream", True, "zh", "", "zh"),
     ("T3c", "ACP+中文-execute", "acp", "execute", True, "zh", "", "zh"),
-
     # ── T4: ACP + 英文 × 3 ──
     ("T4a", "ACP+英文-execute_stream", "acp", "execute_stream", True, "en", "", "en"),
     ("T4b", "ACP+英文-stream", "acp", "stream", True, "en", "", "en"),
     ("T4c", "ACP+英文-execute", "acp", "execute", True, "en", "", "en"),
-
     # ── T5: ACP + 日文 × 3 ──
     ("T5a", "ACP+日文-execute_stream", "acp", "execute_stream", True, "ja", "", "ja"),
     ("T5b", "ACP+日文-stream", "acp", "stream", True, "ja", "", "ja"),
     ("T5c", "ACP+日文-execute", "acp", "execute", True, "ja", "", "ja"),
-
     # ── T6: ACP + 韩文 × 3 ──
     ("T6a", "ACP+韩文-execute_stream", "acp", "execute_stream", True, "ko", "", "ko"),
     ("T6b", "ACP+韩文-stream", "acp", "stream", True, "ko", "", "ko"),
     ("T6c", "ACP+韩文-execute", "acp", "execute", True, "ko", "", "ko"),
-
     # ── T7: 抑制工具名 × 3 ──
     ("T7a", "抑制工具名-execute_stream", "acp", "execute_stream", False, "", "business_data_search", "zh"),
     ("T7b", "抑制工具名-stream", "acp", "stream", False, "", "business_data_search", "zh"),
     ("T7c", "抑制工具名-execute", "acp", "execute", False, "", "business_data_search", "zh"),
-
     # ── T8: 抑制操作名 × 3 ──
     ("T8a", "抑制操作名-execute_stream", "acp", "execute_stream", False, "", "故障历史", "zh"),
     ("T8b", "抑制操作名-stream", "acp", "stream", False, "", "故障历史", "zh"),
     ("T8c", "抑制操作名-execute", "acp", "execute", False, "", "故障历史", "zh"),
-
     # ── T9: 抑制多个 × 3 ──
     ("T9a", "抑制多个-execute_stream", "acp", "execute_stream", False, "", "business_data_search,故障历史", "zh"),
     ("T9b", "抑制多个-stream", "acp", "stream", False, "", "business_data_search,故障历史", "zh"),
     ("T9c", "抑制多个-execute", "acp", "execute", False, "", "business_data_search,故障历史", "zh"),
-
     # ── T10: 语言 + 抑制 × 3 ──
     ("T10a", "语言+抑制-execute_stream", "acp", "execute_stream", True, "en", "故障历史", "en"),
     ("T10b", "语言+抑制-stream", "acp", "stream", True, "en", "故障历史", "en"),
@@ -235,8 +229,9 @@ def _run_single_scenario(scenario: tuple, result_dir: str) -> dict:
     logger.info(f"  >>> {label}")
     if api_mode == "acp":
         le = "ON" if lang_enabled else "OFF"
-        logger.info(f"      模式: ACP/{submode} | 语言跟随: {le} | "
-              f"ACP_LANG={acp_lang or '-'} | 抑制: {suppress or '-'}")
+        logger.info(
+            f"      模式: ACP/{submode} | 语言跟随: {le} | ACP_LANG={acp_lang or '-'} | 抑制: {suppress or '-'}"
+        )
     else:
         logger.info(f"      模式: Agentic")
     logger.info(f"{'='*80}\n")
@@ -334,13 +329,15 @@ def _parse_result(text: str, sid: str, name: str, wall_seconds: float) -> dict:
         result["success_rate"] = float(m.group(3))
     ci_match = re.search(
         r"--- 6、中文混入检测.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if ci_match:
         result["chinese_intrusion"] = ci_match.group(1).strip()
     as_match = re.search(
         r"ACP 输出过滤验证.*?\n(.*?)(?=\n---|\n={10,}|$)",
-        text, re.DOTALL,
+        text,
+        re.DOTALL,
     )
     if as_match:
         result["acp_suppress_check"] = as_match.group(1).strip()
@@ -352,7 +349,9 @@ def _print_result_summary(r: dict):
     avg = f"{r['avg_seconds']:.2f}s" if r.get("avg_seconds") is not None else "N/A"
     qs = r.get("total_questions", "?")
     runs = r.get("total_runs", "?")
-    logger.info(f"\n    📊 [{r['sid']}] {r['name']}: {qs}题×{runs}次 | 平均{avg} | 成功率{sr} | 耗时{r['wall_seconds']:.0f}s")
+    logger.info(
+        f"\n    📊 [{r['sid']}] {r['name']}: {qs}题×{runs}次 | 平均{avg} | 成功率{sr} | 耗时{r['wall_seconds']:.0f}s"
+    )
     if r.get("chinese_intrusion"):
         for line in r["chinese_intrusion"].split("\n")[:3]:
             logger.info(f"         {line.strip()}")
@@ -446,10 +445,12 @@ def _run_acp_structural_check(group_flag: str, sid: str, name: str, result_dir: 
         result["avg_seconds"] = round(wall_seconds / total, 2) if total > 0 else None
 
     status_icon = "✅" if (result.get("success_rate") or 0) >= 100 else "⚠️"
-    logger.info(f"\n    {status_icon} [{sid}] {name}: "
-          f"{result.get('total_questions', '?')}用例 | "
-          f"成功率{result.get('success_rate', 'N/A')}% | "
-          f"耗时{result['wall_seconds']:.0f}s")
+    logger.info(
+        f"\n    {status_icon} [{sid}] {name}: "
+        f"{result.get('total_questions', '?')}用例 | "
+        f"成功率{result.get('success_rate', 'N/A')}% | "
+        f"耗时{result['wall_seconds']:.0f}s"
+    )
 
     return result
 
@@ -499,8 +500,10 @@ def _generate_summary_report(all_results: list[dict], run_dir: str, total_wall: 
         suppress = nr[6] or "-" if nr else "-"
         avg = f"{r['avg_seconds']:.2f}s" if r.get("avg_seconds") is not None else "N/A"
         sr = f"{r['success_rate']:.1f}%" if r.get("success_rate") is not None else "N/A"
-        a(f"| {sid} | {r['name']} | {mode} | {lang_f} | {lang} | {suppress} | "
-          f"{r.get('total_questions','?')} | {r.get('total_runs','?')} | {avg} | {sr} |")
+        a(
+            f"| {sid} | {r['name']} | {mode} | {lang_f} | {lang} | {suppress} | "
+            f"{r.get('total_questions','?')} | {r.get('total_runs','?')} | {avg} | {sr} |"
+        )
     a(f"")
 
     # 失败场景（benchmark 场景）
@@ -620,10 +623,10 @@ def main():
     parser = argparse.ArgumentParser(description="ACP 全场景自动测试矩阵")
     parser.add_argument("--quick", action="store_true", help="快捷模式 (EVAL_SAMPLE_SIZE=1)")
     parser.add_argument("--list", action="store_true", help="仅列出场景")
-    parser.add_argument("--ids", type=str, default="",
-                        help="仅运行指定benchmark场景ID，逗号分隔，不执行结构测试 (如 T1,T2a,T2b)")
-    parser.add_argument("--skip-agentic", action="store_true",
-                        help="跳过 T1 Agentic 基线")
+    parser.add_argument(
+        "--ids", type=str, default="", help="仅运行指定benchmark场景ID，逗号分隔，不执行结构测试 (如 T1,T2a,T2b)"
+    )
+    parser.add_argument("--skip-agentic", action="store_true", help="跳过 T1 Agentic 基线")
     args = parser.parse_args()
 
     if args.quick:
@@ -653,8 +656,10 @@ def main():
     # 保存原始 runtime_config
     logger.info(f"\n保存原始 runtime_config ...")
     original_config = _get_runtime_config()
-    logger.info(f"  原始配置: lang={original_config.get('lang', {})}, "
-          f"suppress='{original_config.get('acp_suppress_script_patterns', '')}'")
+    logger.info(
+        f"  原始配置: lang={original_config.get('lang', {})}, "
+        f"suppress='{original_config.get('acp_suppress_script_patterns', '')}'"
+    )
 
     all_results: list[dict] = []
     total_start = time.perf_counter()
@@ -693,9 +698,11 @@ def main():
             if remaining > 0 and bench_done > 0:
                 avg_per = elapsed / bench_done
                 eta = remaining * avg_per
-                logger.info(f"\n  📊 进度: {bench_done}/{bench_total} | "
-                      f"已用: {_fmt_duration(elapsed)} | "
-                      f"预计剩余: {_fmt_duration(eta)}\n")
+                logger.info(
+                    f"\n  📊 进度: {bench_done}/{bench_total} | "
+                    f"已用: {_fmt_duration(elapsed)} | "
+                    f"预计剩余: {_fmt_duration(eta)}\n"
+                )
 
     except KeyboardInterrupt:
         total_expected = len(scenarios) + structural_offset + (1 if run_structural else 0)

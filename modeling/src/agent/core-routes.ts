@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { mapArtifactHttpError } from '../artifacts/http-error.js';
 import { sendHttpError } from '../http-error.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
+import { PackageArtifactStoreError } from '../artifacts/package-store.js';
 import { getAuthoringState } from '../authoring/state.js';
 import { canReadProject, canWriteProject, claimAgentRuntime, getProject, projectMemberRole } from '../projects/repo.js';
 import { parsePackageArchive } from '../workflow/package-import.js';
@@ -22,6 +23,7 @@ import {
 import { StudioOperationFlowService } from './studio-operation-flow-service.js';
 import { StudioReviewService } from './studio-review-service.js';
 import { StudioWriteError, StudioWriteService } from './studio-write-service.js';
+import { getPerformanceEvents, getPerformanceRun, listPerformanceRuns } from '../workflow/performance-stats.js';
 import {
   acceptanceAgentToolAfter,
   acceptanceAgentToolBefore,
@@ -64,6 +66,37 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
   };
 
+  app.get('/api/projects/:id/agent/performance/runs', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    const rawLimit = Number((request.query as any)?.limit ?? 20);
+    return { runs: listPerformanceRuns(project.id, Number.isFinite(rawLimit) ? rawLimit : 20) };
+  });
+
+  app.get('/api/projects/:id/agent/performance/runs/:runId', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    const runId = String((request.params as any).runId ?? '');
+    const run = getPerformanceRun(project.id, runId);
+    if (!run) return reply.code(404).send({ error: '性能运行记录不存在' });
+    return run;
+  });
+
+  app.get('/api/projects/:id/agent/performance/runs/:runId/timeline', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    const runId = String((request.params as any).runId ?? '');
+    const events = getPerformanceEvents(project.id, runId);
+    if (!events) return reply.code(404).send({ error: '性能运行记录不存在' });
+    return { runId, events };
+  });
+
   app.get('/api/projects/:id/agent/snapshot', async (request, reply) => {
     let project = getProject(String((request.params as any).id ?? ''));
     if (!project || !canReadProject(project.id, request.user!.username)) {
@@ -84,6 +117,35 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       return await service.workbenchProgress(project);
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/schema-semantics/summary', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      const result = await service.workbenchSchemaSemantics(project, request.user!.username, { limit: 1 });
+      return { working_revision: result.working_revision, summary: result.summary };
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/schema-semantics/items', async (request, reply) => {
+    const project = getProject(String((request.params as any).id ?? ''));
+    if (!project || !canReadProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ error: '项目不存在' });
+    }
+    try {
+      return await service.workbenchSchemaSemantics(
+        project,
+        request.user!.username,
+        (request.query ?? {}) as Record<string, unknown>,
+      );
     } catch (error) {
       return sendAgentCoreError(reply, error);
     }
@@ -494,7 +556,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
           request.log.warn({ err: error, projectId: project.id }, 'Studio revision 刷新事件发送失败');
         }
       }
-      return reply.code(response.applied ? 200 : 202).send(response);
+      return reply.code(response.mode === 'agent' ? 202 : 200).send(response);
     } catch (error) {
       return sendStudioError(reply, error);
     }

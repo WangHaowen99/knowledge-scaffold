@@ -4,14 +4,10 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
-
 from solver_coordination.errors import SolverResultRejectedError
 from solver_coordination.result_schema import SolverAssignmentSchemaValidator
 
-
-ASSIGNMENT_REJECTED_DETAIL = (
-    "solver assignment does not match the locked result schema"
-)
+ASSIGNMENT_REJECTED_DETAIL = "solver assignment does not match the locked result schema"
 SCHEMA_REJECTED_DETAIL = "locked solver result schema is invalid"
 
 
@@ -88,17 +84,15 @@ def test_validator_rejects_more_than_65_total_properties():
 
 
 def test_validator_rejects_a_non_object_assignment():
-    _assert_assignment_rejected(
-        ["OPTION_0_TO_OPTION_1_K0004", "OPTION_0"]
-    )
+    _assert_assignment_rejected(["OPTION_0_TO_OPTION_1_K0004", "OPTION_0"])
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("$ref", "#"),
-        ("$dynamicRef", "https://solver.example.test/assignment.schema.json"),
-        ("$id", "https://solver.example.test/assignment.schema.json"),
+        ("$dynamicRef", "https://solver.example.net/assignment.schema.json"),
+        ("$id", "https://solver.example.net/assignment.schema.json"),
     ],
 )
 def test_validator_rejects_reference_bearing_or_remote_schemas(field, value):

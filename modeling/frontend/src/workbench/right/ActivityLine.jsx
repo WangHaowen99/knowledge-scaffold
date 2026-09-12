@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { store, actions } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
-import { elapsedText } from '../lib/mock/stream.js';
 import Icon from '../ui/Icon.jsx';
 import { userFacingText } from '../lib/userFacingText.js';
 
@@ -80,7 +79,7 @@ export function visibleRunActivity({ activity, run, interaction, streaming, trac
 }
 
 /* 三级递进的第一级。不进历史，任务结束后折叠成一条正常消息。
-   两条硬要求：说人话（用 display 文案，不显示工具名）、带耗时。 */
+   展示当前动作和真实进度，不显示累计运行时长。 */
 export default function ActivityLine() {
   const activity = useStore(store, selAct);
   const open = useStore(store, selOpen);
@@ -91,15 +90,6 @@ export default function ActivityLine() {
   const act = useMemo(() => visibleRunActivity({ activity, run, interaction, streaming, trace }), [
     activity, interaction, run, streaming, trace,
   ]);
-  const [, tick] = useState(0);
-
-  // 只在有活动时起秒表，空闲时不跑定时器
-  useEffect(() => {
-    if (!act) return undefined;
-    const t = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [act]);
-
   if (!act) return null;
   const progress = Array.isArray(act.progress)
     ? { current: act.progress[0], total: act.progress[1] }
@@ -108,20 +98,7 @@ export default function ActivityLine() {
   const total = Number(progress.total) || 0;
   const rawPercent = Number(progress.percent);
   const percent = Number.isFinite(rawPercent) ? Math.max(0, Math.min(100, rawPercent)) : undefined;
-  const reportedElapsed = Number(progress.elapsedSeconds);
-  const hasReportedElapsed = progress.elapsedSeconds !== undefined && progress.elapsedSeconds !== null
-    && Number.isFinite(reportedElapsed) && reportedElapsed >= 0;
-  const startedAt = Number(act.startedAt);
-  const hasStartedAt = Number.isFinite(startedAt) && startedAt > 0 && startedAt <= Date.now();
-  const elapsedSeconds = hasReportedElapsed || hasStartedAt
-    ? Math.max(
-      hasReportedElapsed ? reportedElapsed : 0,
-      hasStartedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0,
-    )
-    : null;
-  const detail = act.detail || ((elapsedSeconds ?? 0) >= 120
-    ? '这一步等待时间较长，你可以继续输入或停止任务'
-    : (elapsedSeconds ?? 0) >= 30 ? '仍在等待下一项进度，你可以继续输入或离开页面' : '正在处理当前步骤');
+  const detail = act.detail || '正在等待下一项进度，你可以继续输入或停止任务';
   const progressText = total > 0
     ? `${current}/${total} ${progress.unit || '项'}`
     : percent !== undefined ? `${Math.round(percent)}%` : '';
@@ -138,7 +115,6 @@ export default function ActivityLine() {
         <span className="tx">
           {activityText}
         </span>
-        {elapsedSeconds !== null && <span className="el">{elapsedText(Date.now() - elapsedSeconds * 1000, Date.now())}</span>}
         <Icon name={open ? 'chevronUp' : 'chevron'} size={13} style={{ color: 'var(--c-muted)' }} />
       </button>
       <div className="wb-act-status">

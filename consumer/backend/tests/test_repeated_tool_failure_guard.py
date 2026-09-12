@@ -7,19 +7,17 @@ import importlib
 from types import SimpleNamespace
 
 import pytest
-
 from agent import exceptions as agent_exceptions
-from agent.core.jiuwen_engine import JiuwenReactLoopEngine, _JiuwenTerminalForceFinishBridge
 from agent.core.jiuwen.tools import (
     ConsecutiveToolFailureGuard,
     CurrentRuntimeToolAdapter,
     register_current_runtime_tools,
 )
+from agent.core.jiuwen_engine import JiuwenReactLoopEngine, _JiuwenTerminalForceFinishBridge
 from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.tools.base import ToolBatchResult, ToolInvocation
 from config.settings import AgentConfig
 from integration.observability import RuntimeEventType, RuntimeStatus
-
 
 _REAL_IMPORT_MODULE = importlib.import_module
 
@@ -438,6 +436,7 @@ def test_adapter_keeps_legacy_failure_guard_record_signature():
     recorded = []
 
     class LegacyFailureGuard:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def record(self, tool_call, batch_result):
             recorded.append((tool_call, batch_result))
 
@@ -481,10 +480,7 @@ def test_stall_error_does_not_expose_raw_script_output():
 
     assert "super-secret" not in raised.value.message
     assert "postgres://internal" not in raised.value.message
-    assert (
-        JiuwenAsyncAgentRuntime._runtime_error(raised.value).message
-        == raised.value.message
-    )
+    assert JiuwenAsyncAgentRuntime._runtime_error(raised.value).message == raised.value.message
 
 
 @pytest.mark.parametrize(
@@ -529,12 +525,14 @@ def test_registered_adapters_share_success_resets_across_tools():
             self.card = card
 
     class FakeResourceManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
             created["tools"] = {item.card.name: item for item in tools}
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["cards"] = cards
 
@@ -547,9 +545,7 @@ def test_registered_adapters_share_success_resets_across_tools():
             Tool=FakeTool,
             ToolCard=FakeToolCard,
         ),
-        "openjiuwen.core.runner": SimpleNamespace(
-            Runner=SimpleNamespace(resource_mgr=FakeResourceManager())
-        ),
+        "openjiuwen.core.runner": SimpleNamespace(Runner=SimpleNamespace(resource_mgr=FakeResourceManager())),
     }
 
     def fake_executor(tool_calls, context):
@@ -589,9 +585,7 @@ def test_registered_adapters_share_success_resets_across_tools():
     args = {"operation_key": "split_material", "arguments": {}}
 
     assert asyncio.run(created["tools"]["execute_script"].invoke(args)).startswith("Error:")
-    assert asyncio.run(created["tools"]["business_data_search"].invoke({"query": "reset"})) == (
-        '{"success": true}'
-    )
+    assert asyncio.run(created["tools"]["business_data_search"].invoke({"query": "reset"})) == '{"success": true}'
     assert asyncio.run(created["tools"]["execute_script"].invoke(args)).startswith("Error:")
 
 
@@ -632,9 +626,7 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
 
     class FakeToolCallbackContext:
         def __init__(self, *, tool_call_id, exception):
-            self.inputs = SimpleNamespace(
-                tool_call=SimpleNamespace(id=tool_call_id, name="execute_script")
-            )
+            self.inputs = SimpleNamespace(tool_call=SimpleNamespace(id=tool_call_id, name="execute_script"))
             self.exception = exception
             self.force_finish_result = None
 
@@ -653,15 +645,18 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
             self.card = card
 
     class FakeResourceManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
             created["tools"] = {item.card.name: item for item in tools}
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def remove_tool(self, tool_id, tag=None, skip_if_tag_not_exists=True):
             del tool_id, tag, skip_if_tag_not_exists
 
     class FakeAbilityManager:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def add(self, cards):
             created["cards"] = cards
 
@@ -682,9 +677,7 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
                 "arguments": {},
             }
             await tool.invoke(arguments)
-            model_callback = self.agent_callback_manager.callbacks[
-                FakeAgentCallbackEvent.BEFORE_MODEL_CALL
-            ]
+            model_callback = self.agent_callback_manager.callbacks[FakeAgentCallbackEvent.BEFORE_MODEL_CALL]
             model_context = SimpleNamespace(
                 agent=self,
                 inputs=SimpleNamespace(messages=[], tools=[]),
@@ -695,9 +688,7 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
             try:
                 await tool.invoke(arguments)
             except agent_exceptions.AgentLoopStalledError as exc:
-                callback = self.agent_callback_manager.callbacks[
-                    FakeAgentCallbackEvent.AFTER_TOOL_CALL
-                ]
+                callback = self.agent_callback_manager.callbacks[FakeAgentCallbackEvent.AFTER_TOOL_CALL]
                 callback_context = FakeToolCallbackContext(
                     tool_call_id=created["last_tool_call_id"],
                     exception=exc,
@@ -728,9 +719,7 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
                 Tool=FakeTool,
                 ToolCard=FakeToolCard,
             ),
-            "openjiuwen.core.runner": SimpleNamespace(
-                Runner=SimpleNamespace(resource_mgr=resource_manager)
-            ),
+            "openjiuwen.core.runner": SimpleNamespace(Runner=SimpleNamespace(resource_mgr=resource_manager)),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
@@ -812,14 +801,8 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
 
     assert fake_agent.force_finish_results
     assert fake_agent.force_finish_results[-1]["result_type"] == "error"
-    assert fake_agent.force_finish_results[-1]["output"] == (
-        agent_exceptions.AgentLoopStalledError.PUBLIC_MESSAGE
-    )
+    assert fake_agent.force_finish_results[-1]["output"] == (agent_exceptions.AgentLoopStalledError.PUBLIC_MESSAGE)
     assert "force-finish-secret" not in str(fake_agent.force_finish_results[-1])
     assert "final_output" not in state
-    loop_finished = [
-        event
-        for event in observer.events
-        if event.type == RuntimeEventType.AGENT_LOOP_FINISHED
-    ]
+    loop_finished = [event for event in observer.events if event.type == RuntimeEventType.AGENT_LOOP_FINISHED]
     assert loop_finished[-1].payload["status"] == RuntimeStatus.ERROR

@@ -72,7 +72,7 @@ class FileSystemMemoryManager:
         app_session_id = None
 
         dedupe_content = normalize_for_dedupe(normalized_content)
-        fingerprint = hashlib.sha1(
+        fingerprint = hashlib.sha256(
             "||".join(
                 [
                     normalized_type,
@@ -82,7 +82,7 @@ class FileSystemMemoryManager:
                     dedupe_content,
                 ]
             ).encode("utf-8")
-        ).hexdigest()[:16]
+        ).hexdigest()
         note_dir = self._resolve_storage_dir(
             memory_type=normalized_type,
             scope=normalized_scope,
@@ -93,6 +93,18 @@ class FileSystemMemoryManager:
         note_path = note_dir / "{}-{}.md".format(normalized_type, fingerprint)
 
         with self._lock:
+            matching_path = self._find_matching_note_path(
+                note_dir,
+                memory_type=normalized_type,
+                scope=normalized_scope,
+                dedupe_content=dedupe_content,
+                preferred_path=note_path,
+            )
+            if matching_path is not None:
+                note_path = matching_path
+                prefix = "{}-".format(normalized_type)
+                if note_path.stem.startswith(prefix):
+                    fingerprint = note_path.stem[len(prefix):]
             merged = False
             existing_hit_count = 0
             now = utc_now_iso()
@@ -336,6 +348,31 @@ class FileSystemMemoryManager:
                 if path.is_file()
             ]
         )
+
+    @staticmethod
+    def _find_matching_note_path(
+        note_dir: Path,
+        *,
+        memory_type: str,
+        scope: str,
+        dedupe_content: str,
+        preferred_path: Path,
+    ) -> Optional[Path]:
+        candidates = [preferred_path] if preferred_path.is_file() else []
+        candidates.extend(
+            path for path in sorted(note_dir.glob("*.md")) if path != preferred_path
+        )
+        for candidate in candidates:
+            metadata, body = parse_frontmatter(candidate.read_text(encoding="utf-8"))
+            candidate_type = str(metadata.get("memory_type") or "").strip().lower()
+            candidate_scope = str(metadata.get("scope") or "user").strip().lower() or "user"
+            if (
+                candidate_type == memory_type
+                and candidate_scope == scope
+                and normalize_for_dedupe(body) == dedupe_content
+            ):
+                return candidate
+        return None
 
     def _rebuild_index(self) -> None:
         grouped: Dict[str, List[str]] = {}

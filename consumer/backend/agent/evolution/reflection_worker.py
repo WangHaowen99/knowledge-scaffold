@@ -21,14 +21,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
-
-from llm import LLMPurpose, get_llm_router
-from utils.logging import get_logger
 from agent.evolution.proposal_writer import append_operation_proposal_with_relations
 from agent.evolution.registry import get_proposal_buffer
 from agent.runtime.async_utils import run_sync_compat
 from agent.runtime.supervisor import RunTaskSupervisor
+from llm import LLMPurpose, get_llm_router
+from pydantic import BaseModel, Field
+from utils.logging import get_logger
 
 logger = get_logger("evolution.reflection")
 
@@ -140,7 +139,7 @@ def collect_tool_events(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 call_id = str(call.get("id") or "").strip()
                 if not call_id:
                     continue
-                fn = (call.get("function") or {})
+                fn = call.get("function") or {}
                 args_raw = fn.get("arguments")
                 if isinstance(args_raw, (dict, list)):
                     try:
@@ -467,7 +466,8 @@ class ReflectionWorker:
             )
             return {"outcome": "skipped_task_llm_not_configured", "written": 0}
         logger.debug(
-            "reflection preparing prompt run=%s session=%s turn=%s ontology=%s operation_hint=%s tool_events=%s has_summary=%s final_output_chars=%s feedback=%s",
+            "reflection preparing prompt run=%s session=%s turn=%s ontology=%s operation_hint=%s tool_events=%s"
+            " has_summary=%s final_output_chars=%s feedback=%s",
             snapshot.run_id,
             snapshot.session_id,
             snapshot.turn_id,
@@ -489,11 +489,7 @@ class ReflectionWorker:
                     duration_ms=snapshot.duration_ms,
                     ontology_id=snapshot.ontology_id or "(none)",
                     operation_hint=snapshot.operation_hint or "(none)",
-                    feedback=(
-                        json.dumps(snapshot.feedback, ensure_ascii=False)
-                        if snapshot.feedback
-                        else "(none)"
-                    ),
+                    feedback=(json.dumps(snapshot.feedback, ensure_ascii=False) if snapshot.feedback else "(none)"),
                     user_request=snapshot.user_request or "(empty)",
                     execution_summary=_format_execution_summary(snapshot.execution_summary),
                     final_output=snapshot.final_output or "(empty)",
@@ -537,7 +533,8 @@ class ReflectionWorker:
             return {"outcome": "skipped_no_structured_output", "written": 0}
 
         logger.debug(
-            "reflection output parsed run=%s operation=%s compliance=%.2f efficiency=%.2f procedure=%s pitfalls=%s schemas=%s",
+            "reflection output parsed run=%s operation=%s compliance=%.2f efficiency=%.2f procedure=%s pitfalls=%s"
+            " schemas=%s",
             snapshot.run_id,
             output.operation_executed,
             output.compliance_score,
@@ -618,8 +615,8 @@ class ReflectionWorker:
         )
         return written
 
+    @staticmethod
     def _safe_store(
-        self,
         snapshot: ReflectionSnapshot,
         *,
         content: str,

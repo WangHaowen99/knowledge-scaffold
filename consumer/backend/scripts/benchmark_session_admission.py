@@ -10,18 +10,13 @@ import logging
 import math
 import os
 from pathlib import Path
-import sys
 import tempfile
 import time
 from types import SimpleNamespace
 from typing import Any, Callable
 from unittest.mock import patch
 
-
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.append(str(BACKEND_ROOT))
-
 result_logger = logging.getLogger(f"{__name__}.result")
 
 
@@ -111,14 +106,10 @@ def evaluate_thresholds(report: dict[str, Any]) -> list[dict[str, Any]]:
     # One before/after pair builds the immutable product. Source revision
     # observation is TTL-throttled in production, so longer benchmark windows
     # may legitimately perform one additional check per 25 admissions.
-    signature_traversal_limit = (
-        counters["preflight_package_loads"] * 2
-        + max(1, math.ceil(counters["preflight_requests"] / 25))
+    signature_traversal_limit = counters["preflight_package_loads"] * 2 + max(
+        1, math.ceil(counters["preflight_requests"] / 25)
     )
-    if (
-        counters["preflight_source_signature_traversals"]
-        > signature_traversal_limit
-    ):
+    if counters["preflight_source_signature_traversals"] > signature_traversal_limit:
         violations.append(
             {
                 "code": "preflight_source_signature_traversal_repeated",
@@ -216,6 +207,7 @@ def _write_synthetic_ontology(root: Path) -> Path:
 
 
 class _AdmissionOnlyTask:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def add_done_callback(self, _callback) -> None:
         return None
 
@@ -349,9 +341,7 @@ def run_benchmark(
         admitted_turns = [0]
         manifest_loader = ontologies_module.get_runtime_ontology_manifest
         root_payload_loader = ontology_catalog.build_root_payload
-        source_signature_loader = (
-            ontology_view_cache.build_package_revision_source_signature
-        )
+        source_signature_loader = ontology_view_cache.build_package_revision_source_signature
         durable_turn_create = execution_store.create_turn_for_run
 
         def load_manifest(*args, **kwargs):
@@ -456,7 +446,7 @@ def run_benchmark(
                         (
                             b"idempotency-key",
                             f"synthetic-admission-{index:05d}".encode("ascii"),
-                        )
+                        ),
                     ],
                     "client": ("127.0.0.1", 1),
                     "server": ("127.0.0.1", 5055),
@@ -474,9 +464,7 @@ def run_benchmark(
                 )
             )
             if response.status_code != 202:
-                raise RuntimeError(
-                    f"synthetic run admission failed: {response.status_code}"
-                )
+                raise RuntimeError(f"synthetic run admission failed: {response.status_code}")
             return response
 
         with (
@@ -551,9 +539,7 @@ def run_benchmark(
                 "preflight_fact_checks": preflight_fact_checks[0],
                 "preflight_manifest_reads": manifest_reads[0],
                 "preflight_root_payload_loads": root_payload_loads[0],
-                "preflight_source_signature_traversals": (
-                    source_signature_traversals[0]
-                ),
+                "preflight_source_signature_traversals": source_signature_traversals[0],
                 "manager_create_calls": manager_create_calls[0],
                 "admitted_turns": admitted_turns[0],
             },

@@ -25,6 +25,7 @@ import {
   parsePackageManifest,
 } from './package-contract.js';
 import { packageMappingResource } from './package-data-source.js';
+import { publicKnowledgePackageFiles } from './package-file-scope.js';
 import { validateMermaidSource } from './mermaid-source-contract.js';
 import {
   sourceRefsFor,
@@ -367,7 +368,8 @@ function tableFirstColumn(md: string): string[] {
   return keys;
 }
 
-export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFinding[] {
+export function runFormatChecks(spec: PackageSpec, inputFiles: PackageFiles): CheckFinding[] {
+  const files = publicKnowledgePackageFiles(inputFiles);
   const out: CheckFinding[] = [];
   const add = (
     severity: Severity,

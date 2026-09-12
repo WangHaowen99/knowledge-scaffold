@@ -45,13 +45,8 @@ def validate_authoritative_verification(
         raise SolverResultRejectedError("solver result is invalid")
     if not isinstance(verification, VerificationResult):
         raise SolverResultRejectedError("verification result is invalid")
-    if (
-        solver_result.problem_id != problem.problem_id
-        or verification.problem_id != problem.problem_id
-    ):
-        raise VerificationDivergenceError(
-            "result identities do not match the compiled problem"
-        )
+    if solver_result.problem_id != problem.problem_id or verification.problem_id != problem.problem_id:
+        raise VerificationDivergenceError("result identities do not match the compiled problem")
 
     if verification.status == "unproven" and verification.feasibility == "not_found":
         raise SolverResultRejectedError(
@@ -63,27 +58,16 @@ def validate_authoritative_verification(
     if verification.feasibility not in {"feasible", "infeasible"}:
         raise SolverResultRejectedError("verification feasibility is not authoritative")
     if verification.feasibility == "infeasible":
-        if (
-            solver_result.status != "infeasible"
-            or solver_result.assignment
-            or solver_result.objective_values
-        ):
-            raise SolverResultRejectedError(
-                "solver and verification feasibility claims diverge"
-            )
+        if solver_result.status != "infeasible" or solver_result.assignment or solver_result.objective_values:
+            raise SolverResultRejectedError("solver and verification feasibility claims diverge")
     elif solver_result.status not in {"optimal", "feasible"}:
-        raise SolverResultRejectedError(
-            "solver and verification feasibility claims diverge"
-        )
+        raise SolverResultRejectedError("solver and verification feasibility claims diverge")
     if verification.feasibility == "feasible" and verification.optimality not in {
         "not_proven",
         "proven_optimal",
     }:
         raise SolverResultRejectedError("verification optimality is inconsistent")
-    if (
-        verification.feasibility == "infeasible"
-        and verification.optimality != "not_applicable"
-    ):
+    if verification.feasibility == "infeasible" and verification.optimality != "not_applicable":
         raise SolverResultRejectedError("infeasibility optimality is inconsistent")
     try:
         _assert_authoritative_proof_strength(
@@ -92,15 +76,14 @@ def validate_authoritative_verification(
             proof_kind=verification.proof_kind,
         )
     except ValueError as exc:
-        raise SolverResultRejectedError(
-            "verification proof is insufficient for the claimed authority"
-        ) from exc
+        raise SolverResultRejectedError("verification proof is insufficient for the claimed authority") from exc
 
 
 @dataclass(frozen=True)
 class AuthoritativeResultProjector:
     """Publish only verifier-backed semantics and compact public-safe fields."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def project(
         self,
         *,
@@ -121,15 +104,9 @@ class AuthoritativeResultProjector:
         if evidence_persisted is not True:
             raise ArtifactPersistError("verification evidence is not durable")
         result_ref = _required_reference(result_artifact_ref, "result_artifact_ref")
-        evidence_ref = _required_reference(
-            verification_evidence_ref, "verification_evidence_ref"
-        )
-        if (candidate_results_artifact_ref is None) != (
-            candidate_results_artifact_digest is None
-        ):
-            raise ArtifactPersistError(
-                "candidate results artifact reference and digest must be provided together"
-            )
+        evidence_ref = _required_reference(verification_evidence_ref, "verification_evidence_ref")
+        if (candidate_results_artifact_ref is None) != (candidate_results_artifact_digest is None):
+            raise ArtifactPersistError("candidate results artifact reference and digest must be provided together")
         candidate_ref = (
             _required_reference(
                 candidate_results_artifact_ref,
@@ -164,13 +141,9 @@ class AuthoritativeResultProjector:
                 raise SolverResultRejectedError("published summary is invalid")
             try:
                 published_summary = _freeze_object(dict(summary), "summary")
-                _assert_model_payload_is_platform_neutral(
-                    published_summary, "summary"
-                )
+                _assert_model_payload_is_platform_neutral(published_summary, "summary")
             except Exception as exc:
-                raise SolverResultRejectedError(
-                    "published summary is not platform neutral"
-                ) from exc
+                raise SolverResultRejectedError("published summary is not platform neutral") from exc
         return AuthoritativeResult(
             run_id=run_id,
             job_id=job_id,

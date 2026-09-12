@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from fastapi import APIRouter, Depends, Request
@@ -35,6 +35,69 @@ auth_router = APIRouter(prefix="/auth")
 
 # 连接 3s / 读取 10s
 _REGISTER_PROXY_TIMEOUT = (3, 10)
+REFRESH_COOKIE_NAME = "onto_refresh_token"
+
+
+def _first_forwarded_value(request: Request, name: str) -> str:
+    value = request.headers.get(name, "")
+    return value.split(",", 1)[0].strip()
+
+
+def _request_scheme(request: Request) -> str:
+    # The frontend reverse proxy overwrites this header with the browser-facing
+    # scheme. Backend deployments must keep this header within that trusted hop.
+    forwarded = _first_forwarded_value(request, "x-forwarded-proto").lower()
+    return forwarded if forwarded in {"http", "https"} else request.url.scheme.lower()
+
+
+def _request_origin(request: Request) -> str:
+    host = _first_forwarded_value(request, "x-forwarded-host") or request.headers.get("host", "")
+    return f"{_request_scheme(request)}://{host}".rstrip("/").lower()
+
+
+def _is_simple_http_origin(parsed) -> bool:
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    return not any(
+        (
+            parsed.username,
+            parsed.password,
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def _same_origin(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    parsed = urlsplit(origin)
+    if not _is_simple_http_origin(parsed):
+        return False
+    return f"{parsed.scheme}://{parsed.netloc}".lower() == _request_origin(request)
+
+
+def _origin_error(request: Request):
+    if _same_origin(request):
+        return None
+    return JSONResponse({"error": "跨站认证请求被拒绝"}, status_code=403)
+
+
+def _secure_cookie(request: Request) -> bool:
+    return _request_scheme(request) == "https"
+
+
+def _set_refresh_cookie(response: JSONResponse, request: Request, token: str) -> None:
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=_secure_cookie(request),
+        samesite="lax",
+        path="/auth",
+    )
 
 
 def _auth_server_url(request: Request) -> str:
@@ -135,6 +198,9 @@ async def register(request: Request):
 
 @auth_router.post("/login")
 async def login(request: Request):
+    rejected = _origin_error(request)
+    if rejected:
+        return rejected
     data = await read_json_object(request)
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
@@ -154,12 +220,12 @@ async def login(request: Request):
     if not result:
         return JSONResponse({"error": "Invalid credentials"}, status_code=401)
     payload = {"token": result.access_token, "user": result.user.to_public_dict()}
-    # Remote 模式在冻结契约 {token, user} 上追加 refresh 字段；测试后端保持旧形状。
-    if result.refresh_token is not None:
-        payload["refresh_token"] = result.refresh_token
     if result.expires_in is not None:
         payload["expires_in"] = result.expires_in
-    return payload
+    response = JSONResponse(payload)
+    if result.refresh_token is not None:
+        _set_refresh_cookie(response, request, result.refresh_token)
+    return response
 
 
 @auth_router.post("/refresh")
@@ -171,8 +237,12 @@ async def refresh(request: Request):
             {"error": "当前认证模式不支持刷新"},
             status_code=503,
         )
-    data = await read_optional_json_object(request)
-    refresh_token = str(data.get("refresh_token", "")).strip()
+    rejected = _origin_error(request)
+    if rejected:
+        return rejected
+    refresh_token = str(request.cookies.get(REFRESH_COOKIE_NAME, "")).strip()
+    if not refresh_token:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
     try:
         tokens = await run_in_runtime_pool(
             request,
@@ -185,11 +255,12 @@ async def refresh(request: Request):
     if not tokens:
         # 上游拒绝（过期/已吊销）→ 401，前端据此登出
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    return {
+    response = JSONResponse({
         "token": tokens["access_token"],
-        "refresh_token": tokens["refresh_token"],
         "expires_in": tokens["expires_in"],
-    }
+    })
+    _set_refresh_cookie(response, request, tokens["refresh_token"])
+    return response
 
 
 @auth_router.post("/logout")
@@ -201,10 +272,14 @@ async def logout(request: Request):
             {"error": "当前认证模式不支持登出吊销"},
             status_code=503,
         )
-    data = await read_optional_json_object(request)
-    refresh_token = str(data.get("refresh_token", "")).strip()
+    rejected = _origin_error(request)
+    if rejected:
+        return rejected
+    refresh_token = str(request.cookies.get(REFRESH_COOKIE_NAME, "")).strip()
     if not refresh_token:
-        return JSONResponse({"error": "refresh_token 不能为空"}, status_code=400)
+        response = JSONResponse({"success": True})
+        response.delete_cookie(REFRESH_COOKIE_NAME, path="/auth")
+        return response
     try:
         await run_in_runtime_pool(
             request,
@@ -214,7 +289,9 @@ async def logout(request: Request):
         )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=503)
-    return {"success": True}
+    response = JSONResponse({"success": True})
+    response.delete_cookie(REFRESH_COOKIE_NAME, path="/auth")
+    return response
 
 
 @auth_router.get("/me")

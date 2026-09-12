@@ -10,7 +10,6 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from agent.tools.base import ToolContext, ToolOutcome
 
-
 INTERACTION_TYPES = {"input", "single_choice", "approval"}
 
 
@@ -92,6 +91,7 @@ class RequestUserInteractionTool:
         self.schema = REQUEST_USER_INTERACTION_TOOL_SCHEMA
         self.allowed_callers = {"main"}
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
@@ -154,9 +154,7 @@ class RequestUserInteractionTool:
         )
 
 
-def _reject_optional_solver_interaction(
-    args: Mapping[str, Any], *, context: ToolContext
-) -> Optional[ToolOutcome]:
+def _reject_optional_solver_interaction(args: Mapping[str, Any], *, context: ToolContext) -> Optional[ToolOutcome]:
     interaction_type = str(args.get("type") or "").strip().lower()
     if interaction_type not in {"input", "single_choice"}:
         return None
@@ -167,9 +165,7 @@ def _reject_optional_solver_interaction(
         specs = tuple(
             get_solver_tool_specs_for_context(
                 selected_ontology_id=getattr(context, "selected_ontology_id", None),
-                selected_ontology_version=getattr(
-                    context, "selected_ontology_version", None
-                ),
+                selected_ontology_version=getattr(context, "selected_ontology_version", None),
                 workspace_id=getattr(context, "workspace_id", None),
             )
         )
@@ -232,11 +228,7 @@ def _reject_optional_solver_interaction(
 def _requested_field_names(value: Any) -> set[str]:
     if not isinstance(value, list):
         return set()
-    return {
-        str(item or "").strip()
-        for item in value
-        if isinstance(item, str) and str(item or "").strip()
-    }
+    return {str(item or "").strip() for item in value if isinstance(item, str) and str(item or "").strip()}
 
 
 def _requested_field_matches(path: str, requested_fields: set[str]) -> bool:
@@ -250,17 +242,11 @@ def _requested_field_matches(path: str, requested_fields: set[str]) -> bool:
     )
 
 
-def _schema_fields(
-    schema: Mapping[str, Any], *, prefix: str = ""
-) -> Iterable[tuple[str, bool, Mapping[str, Any]]]:
+def _schema_fields(schema: Mapping[str, Any], *, prefix: str = "") -> Iterable[tuple[str, bool, Mapping[str, Any]]]:
     properties = schema.get("properties")
     if not isinstance(properties, Mapping):
         return
-    required_names = {
-        str(name)
-        for name in schema.get("required", [])
-        if isinstance(name, str)
-    }
+    required_names = {str(name) for name in schema.get("required", []) if isinstance(name, str)}
     for raw_name, raw_field_schema in properties.items():
         if not isinstance(raw_name, str) or not isinstance(raw_field_schema, Mapping):
             continue
@@ -281,18 +267,13 @@ def _interaction_search_text(args: Mapping[str, Any]) -> str:
     if isinstance(options, list):
         for option in options:
             if isinstance(option, Mapping):
-                values.extend(
-                    str(option.get(key) or "")
-                    for key in ("id", "label", "value", "description")
-                )
+                values.extend(str(option.get(key) or "") for key in ("id", "label", "value", "description"))
             else:
                 values.append(str(option or ""))
     return "\n".join(values).casefold()
 
 
-def _field_signals_match(
-    path: str, field_schema: Mapping[str, Any], interaction_text: str
-) -> bool:
+def _field_signals_match(path: str, field_schema: Mapping[str, Any], interaction_text: str) -> bool:
     signals = {
         path,
         path.rsplit(".", 1)[-1].replace("[]", ""),
@@ -304,9 +285,7 @@ def _field_signals_match(
     enum_values = field_schema.get("enum")
     if isinstance(enum_values, list):
         signals.update(
-            str(value).strip()
-            for value in enum_values
-            if isinstance(value, str) and len(value.strip()) >= 2
+            str(value).strip() for value in enum_values if isinstance(value, str) and len(value.strip()) >= 2
         )
     return any(signal.casefold() in interaction_text for signal in signals if signal)
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from auth_server import config as config_module
 from auth_server.config import DEFAULT_ISSUER, AuthServerConfig
-
+from auth_server_synthetic_credentials import ADMIN_TOKEN, BOOTSTRAP_ADMIN_PASSWORD
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -15,9 +15,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 def test_from_env_loads_project_dotenv(tmp_path, monkeypatch):
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
-        "AUTH_SERVER_ISSUER=http://127.0.0.1:5056\n"
-        "AUTH_SERVER_ADMIN_TOKEN=dotenv-admin-token\n"
-        "AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026\n",
+        (
+            "AUTH_SERVER_ISSUER=http://127.0.0.1:5056\n"
+            f"AUTH_SERVER_ADMIN_TOKEN={ADMIN_TOKEN}\n"
+            f"AUTH_BOOTSTRAP_ADMIN_PASSWORD={BOOTSTRAP_ADMIN_PASSWORD}\n"
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(config_module, "_DOTENV_PATH", dotenv_path)
@@ -28,21 +30,19 @@ def test_from_env_loads_project_dotenv(tmp_path, monkeypatch):
     config = AuthServerConfig.from_env()
 
     assert config.issuer == "http://127.0.0.1:5056"
-    assert config.admin_token == "dotenv-admin-token"
-    assert config.bootstrap_admin_password == "TestBootstrap#2026"
+    assert config.admin_token == ADMIN_TOKEN
+    assert config.bootstrap_admin_password == BOOTSTRAP_ADMIN_PASSWORD
 
 
 def test_existing_environment_takes_precedence_over_dotenv(tmp_path, monkeypatch):
     dotenv_path = tmp_path / ".env"
-    dotenv_path.write_text(
-        "AUTH_SERVER_ISSUER=http://dotenv.example:5056\n", encoding="utf-8"
-    )
+    dotenv_path.write_text("AUTH_SERVER_ISSUER=https://service.example.net\n", encoding="utf-8")
     monkeypatch.setattr(config_module, "_DOTENV_PATH", dotenv_path)
-    monkeypatch.setenv("AUTH_SERVER_ISSUER", "http://external.example:5056")
+    monkeypatch.setenv("AUTH_SERVER_ISSUER", "https://external.example.net")
 
     config = AuthServerConfig.from_env()
 
-    assert config.issuer == "http://external.example:5056"
+    assert config.issuer == "https://external.example.net"
 
 
 def test_missing_dotenv_keeps_defaults(tmp_path, monkeypatch):
@@ -56,9 +56,7 @@ def test_missing_dotenv_keeps_defaults(tmp_path, monkeypatch):
 
 def test_missing_python_dotenv_is_ignored(tmp_path, monkeypatch):
     dotenv_path = tmp_path / ".env"
-    dotenv_path.write_text(
-        "AUTH_SERVER_ISSUER=http://dotenv.example:5056\n", encoding="utf-8"
-    )
+    dotenv_path.write_text("AUTH_SERVER_ISSUER=https://service.example.net\n", encoding="utf-8")
     monkeypatch.setattr(config_module, "_DOTENV_PATH", dotenv_path)
     monkeypatch.delenv("AUTH_SERVER_ISSUER", raising=False)
     original_import = builtins.__import__
@@ -81,11 +79,9 @@ def test_custom_environment_does_not_load_dotenv(monkeypatch):
 
     monkeypatch.setattr(config_module, "_load_local_dotenv", fail_if_called)
 
-    config = AuthServerConfig.from_env(
-        {"AUTH_SERVER_ISSUER": "http://custom.example:5056"}
-    )
+    config = AuthServerConfig.from_env({"AUTH_SERVER_ISSUER": "https://custom.example.net"})
 
-    assert config.issuer == "http://custom.example:5056"
+    assert config.issuer == "https://custom.example.net"
 
 
 def test_all_compose_variants_enable_registration_by_default():

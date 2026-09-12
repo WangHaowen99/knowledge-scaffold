@@ -35,6 +35,8 @@ import sys
 import time
 import uuid
 import requests
+
+from backend_synthetic_credentials import synthetic_secret
 from datetime import datetime, timezone
 from typing import Any
 from dataclasses import dataclass, field
@@ -96,11 +98,13 @@ class TestResult:
     assertions: list[dict] = field(default_factory=list)
 
     def check(self, desc: str, condition: bool, detail: str = ""):
-        self.assertions.append({
-            "desc": desc,
-            "passed": condition,
-            "detail": detail,
-        })
+        self.assertions.append(
+            {
+                "desc": desc,
+                "passed": condition,
+                "detail": detail,
+            }
+        )
         if not condition and self.status != FAIL:
             self.status = FAIL
             self.detail = detail or desc
@@ -153,9 +157,7 @@ class ACPTestRunner:
 
     def _create_run(self, message: str, lang: str | None = None, session_id: str | None = None) -> dict | None:
         payload: dict[str, Any] = {
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": message}]}
-            ],
+            "messages": [{"role": "user", "parts": [{"type": "text", "content": message}]}],
             "context": {"session_id": session_id or f"test_{uuid.uuid4().hex[:6]}"},
         }
         if lang:
@@ -390,9 +392,7 @@ class ACPTestRunner:
     def test_execute_stream(self) -> TestResult:
         r = TestResult("POST /acp/runs/execute_stream — 快捷流式执行", "api")
         payload: dict[str, Any] = {
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "请介绍一下你的功能"}]}
-            ],
+            "messages": [{"role": "user", "parts": [{"type": "text", "content": "请介绍一下你的功能"}]}],
             "context": {"session_id": f"test_{uuid.uuid4().hex[:6]}"},
         }
         t0 = time.perf_counter()
@@ -471,11 +471,14 @@ class ACPTestRunner:
             r.detail = "ACP 认证未开启（authentication.type = none），跳过"
             return r
         saved = self.token
-        self.token = "invalid_token_xxx"
+        self.token = synthetic_secret("acp_full-credential-01")
         t0 = time.perf_counter()
-        resp = self._acp_post("/acp/runs", data={
-            "messages": [{"role": "user", "parts": [{"type": "text", "content": "test"}]}],
-        })
+        resp = self._acp_post(
+            "/acp/runs",
+            data={
+                "messages": [{"role": "user", "parts": [{"type": "text", "content": "test"}]}],
+            },
+        )
         r.duration_ms = int((time.perf_counter() - t0) * 1000)
         self.token = saved
         r.check("HTTP 401", resp.status_code == 401, f"got {resp.status_code}")
@@ -519,10 +522,13 @@ class ACPTestRunner:
     def test_create_run_no_message(self) -> TestResult:
         r = TestResult("400 — 创建运行时消息为空", "error")
         t0 = time.perf_counter()
-        resp = self._acp_post("/acp/runs", data={
-            "messages": [],
-            "context": {},
-        })
+        resp = self._acp_post(
+            "/acp/runs",
+            data={
+                "messages": [],
+                "context": {},
+            },
+        )
         r.duration_ms = int((time.perf_counter() - t0) * 1000)
         r.check("HTTP 400", resp.status_code == 400, f"got {resp.status_code}")
         if r.status != FAIL:
@@ -543,11 +549,14 @@ class ACPTestRunner:
         r = TestResult("404 — await 不存在的 run_id", "error")
         fake_id = "run_nonexistent_await"
         t0 = time.perf_counter()
-        resp = self._acp_post(f"/acp/runs/{fake_id}/await", data={
-            "run_id": fake_id,
-            "await_id": "await_test",
-            "response": {"role": "user", "parts": [{"type": "text", "content": "test"}]},
-        })
+        resp = self._acp_post(
+            f"/acp/runs/{fake_id}/await",
+            data={
+                "run_id": fake_id,
+                "await_id": "await_test",
+                "response": {"role": "user", "parts": [{"type": "text", "content": "test"}]},
+            },
+        )
         r.duration_ms = int((time.perf_counter() - t0) * 1000)
         r.check("HTTP 404", resp.status_code == 404, f"got {resp.status_code}")
         if r.status != FAIL:
@@ -563,14 +572,21 @@ class ACPTestRunner:
             return r
         run_id = run_data["run_id"]
         t0 = time.perf_counter()
-        resp = self._acp_post(f"/acp/runs/{run_id}/await", data={
-            "run_id": run_id,
-            "await_id": "await_test",
-            "response": {"role": "user", "parts": [{"type": "text", "content": "test"}]},
-        })
+        resp = self._acp_post(
+            f"/acp/runs/{run_id}/await",
+            data={
+                "run_id": run_id,
+                "await_id": "await_test",
+                "response": {"role": "user", "parts": [{"type": "text", "content": "test"}]},
+            },
+        )
         r.duration_ms = int((time.perf_counter() - t0) * 1000)
         r.check("HTTP 400", resp.status_code == 400, f"got {resp.status_code}")
-        r.check("错误信息含 not in awaiting", "not in awaiting" in resp.json().get("detail", ""), resp.json().get("detail", ""))
+        r.check(
+            "错误信息含 not in awaiting",
+            "not in awaiting" in resp.json().get("detail", ""),
+            resp.json().get("detail", ""),
+        )
         if r.status != FAIL:
             r.status = PASS
         return r
@@ -656,9 +672,7 @@ class ACPTestRunner:
         self._set_lang_enabled(True, default_lang="zh")
         time.sleep(0.3)
         payload: dict[str, Any] = {
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": message}]}
-            ],
+            "messages": [{"role": "user", "parts": [{"type": "text", "content": message}]}],
             "context": {"session_id": f"lang_test_{lang}_{uuid.uuid4().hex[:4]}"},
             "lang": lang,
         }
@@ -686,7 +700,9 @@ class ACPTestRunner:
         return self._run_lang_test("zh", "设备编号XX，发动机动力不足，请求故障诊断")
 
     def test_lang_en(self) -> TestResult:
-        return self._run_lang_test("en", "The equipment number is XX, the engine lacks power, please diagnose the fault")
+        return self._run_lang_test(
+            "en", "The equipment number is XX, the engine lacks power, please diagnose the fault"
+        )
 
     def test_lang_ja(self) -> TestResult:
         return self._run_lang_test("ja", "設備番号XX、エンジン出力不足、故障診断をお願いします")
@@ -699,9 +715,7 @@ class ACPTestRunner:
         self._set_lang_enabled(False)
         time.sleep(0.3)
         payload: dict[str, Any] = {
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "设备编号XX，发动机动力不足"}]}
-            ],
+            "messages": [{"role": "user", "parts": [{"type": "text", "content": "设备编号XX，发动机动力不足"}]}],
             "context": {"session_id": f"lang_disabled_{uuid.uuid4().hex[:4]}"},
             "lang": "ja",
         }
@@ -721,7 +735,10 @@ class ACPTestRunner:
         time.sleep(0.3)
         payload: dict[str, Any] = {
             "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "Please check the fault history for equipment XX"}]}
+                {
+                    "role": "user",
+                    "parts": [{"type": "text", "content": "Please check the fault history for equipment XX"}],
+                }
             ],
             "context": {"session_id": f"lang_auto_{uuid.uuid4().hex[:4]}"},
         }
@@ -798,9 +815,7 @@ class ACPTestRunner:
         self._set_suppress_patterns(patterns)
         time.sleep(0.3)
         payload: dict[str, Any] = {
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": message}]}
-            ],
+            "messages": [{"role": "user", "parts": [{"type": "text", "content": message}]}],
             "context": {"session_id": f"suppress_{uuid.uuid4().hex[:4]}"},
         }
         t0 = time.perf_counter()
@@ -892,9 +907,7 @@ class ACPTestRunner:
         r = TestResult("完整流程: create → execute_stream → 端到端", "flow")
         t0 = time.perf_counter()
         payload: dict[str, Any] = {
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "请查询设备编号XX的故障历史"}]}
-            ],
+            "messages": [{"role": "user", "parts": [{"type": "text", "content": "请查询设备编号XX的故障历史"}]}],
             "context": {"session_id": f"flow_{uuid.uuid4().hex[:4]}"},
         }
         resp = self._acp_post("/acp/runs/execute_stream", data=payload, stream=True)
@@ -907,7 +920,9 @@ class ACPTestRunner:
         r.check("含 answer", "answer" in event_types, f"事件: {set(event_types)}")
         r.check("含 run.completed", "run.completed" in event_types, f"事件: {set(event_types)}")
 
-        answer_texts = [e["data"]["text"] for e in events if e.get("event") == "answer" and e.get("data", {}).get("text")]
+        answer_texts = [
+            e["data"]["text"] for e in events if e.get("event") == "answer" and e.get("data", {}).get("text")
+        ]
         full_answer = "".join(answer_texts)
         r.check("完整回复 > 20 字符", len(full_answer) > 20, f"仅 {len(full_answer)} 字符")
 
@@ -926,7 +941,9 @@ class ACPTestRunner:
 
         resp_status = self._acp_get(f"/acp/runs/{run_id}")
         r.check("状态查询 200", resp_status.status_code == 200, f"got {resp_status.status_code}")
-        r.check("初始状态 pending", resp_status.json().get("status") == "pending", f"got {resp_status.json().get('status')}")
+        r.check(
+            "初始状态 pending", resp_status.json().get("status") == "pending", f"got {resp_status.json().get('status')}"
+        )
 
         t0 = time.perf_counter()
         resp_stream = self._acp_post(f"/acp/runs/{run_id}/stream", stream=True)
@@ -986,7 +1003,11 @@ class ACPTestRunner:
         r.check("cancel 200", resp_cancel.status_code == 200, f"got {resp_cancel.status_code}")
 
         resp_query = self._acp_get(f"/acp/runs/{run_id}")
-        r.check("查询状态 cancelled", resp_query.json().get("status") == "cancelled", f"got {resp_query.json().get('status')}")
+        r.check(
+            "查询状态 cancelled",
+            resp_query.json().get("status") == "cancelled",
+            f"got {resp_query.json().get('status')}",
+        )
 
         if r.status != FAIL:
             r.status = PASS
@@ -1021,7 +1042,10 @@ class ACPTestRunner:
         time.sleep(0.3)
         payload: dict[str, Any] = {
             "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "Equipment XX, engine power insufficient, please diagnose"}]}
+                {
+                    "role": "user",
+                    "parts": [{"type": "text", "content": "Equipment XX, engine power insufficient, please diagnose"}],
+                }
             ],
             "context": {"session_id": f"combo_{uuid.uuid4().hex[:4]}"},
             "lang": "en",
@@ -1082,15 +1106,17 @@ class ACPTestRunner:
         r.duration_ms = int((time.perf_counter() - t0) * 1000)
         data = resp.json()
         r.check("execute 200", resp.status_code == 200, f"got {resp.status_code}")
-        r.check("返回 run_id 与创建时一致", data.get("run_id") == acp_run_id,
-                f"创建={acp_run_id}, 返回={data.get('run_id')}")
+        r.check(
+            "返回 run_id 与创建时一致",
+            data.get("run_id") == acp_run_id,
+            f"创建={acp_run_id}, 返回={data.get('run_id')}",
+        )
         r.check("status = completed", data.get("status") == "completed", f"got {data.get('status')}")
         r.check("有 agent 消息", len(data.get("messages", [])) > 0, "无消息")
 
         resp2 = self._acp_get(f"/acp/runs/{acp_run_id}")
         query_data = resp2.json()
-        r.check("查询 run_id 一致", query_data.get("run_id") == acp_run_id,
-                f"查询={query_data.get('run_id')}")
+        r.check("查询 run_id 一致", query_data.get("run_id") == acp_run_id, f"查询={query_data.get('run_id')}")
 
         if r.status != FAIL:
             r.status = PASS
@@ -1117,18 +1143,17 @@ class ACPTestRunner:
             d = e.get("data", {})
             if d.get("run_id"):
                 sse_run_ids.add(d["run_id"])
-        r.check("SSE 中 run_id 一致", sse_run_ids == {acp_run_id},
-                f"SSE run_ids={sse_run_ids}, ACP run_id={acp_run_id}")
+        r.check(
+            "SSE 中 run_id 一致", sse_run_ids == {acp_run_id}, f"SSE run_ids={sse_run_ids}, ACP run_id={acp_run_id}"
+        )
 
         has_completed = any(e.get("event") == "run.completed" for e in events)
         r.check("含 run.completed", has_completed, f"事件: {set(e.get('event','') for e in events)}")
 
         resp2 = self._acp_get(f"/acp/runs/{acp_run_id}")
         query_data = resp2.json()
-        r.check("查询 run_id 一致", query_data.get("run_id") == acp_run_id,
-                f"查询={query_data.get('run_id')}")
-        r.check("最终状态 completed", query_data.get("status") == "completed",
-                f"got {query_data.get('status')}")
+        r.check("查询 run_id 一致", query_data.get("run_id") == acp_run_id, f"查询={query_data.get('run_id')}")
+        r.check("最终状态 completed", query_data.get("status") == "completed", f"got {query_data.get('status')}")
 
         if r.status != FAIL:
             r.status = PASS
@@ -1301,10 +1326,12 @@ def main():
     logger.info(f"\n    {'─' * 50}")
 
     logger.info(f"\n  [3/3] 恢复运行时配置...")
-    runner._set_runtime_config({
-        "lang": original_lang,
-        "acp_suppress_script_patterns": original_suppress,
-    })
+    runner._set_runtime_config(
+        {
+            "lang": original_lang,
+            "acp_suppress_script_patterns": original_suppress,
+        }
+    )
     logger.info("  ✓ 配置已恢复\n")
 
     passed = sum(1 for r in runner.results if r.status == PASS)

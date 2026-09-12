@@ -28,12 +28,11 @@ except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None  # type: ignore[assignment]
 
 if os.name == "nt":
-    import msvcrt
+    import msvcrt as _MSVCRT
 else:
-    msvcrt = None
+    _MSVCRT = None
 
 from config.system_config import ONTO_RUNTIME_ROOT
-
 
 MIGRATION_LOCK_FILE = "registered-migrations.lock"
 _PROCESS_LOCK = Lock()
@@ -122,11 +121,37 @@ REGISTERED_MIGRATIONS = (
         failure_policy=MigrationFailurePolicy.NON_BLOCKING,
     ),
     RegisteredMigration(
+        migration_id="system-config-model-profile-output-budget-env-v1",
+        module="migrations.system_config_model_profile_output_budget_env_v1",
+        phase=MigrationPhase.STARTUP,
+        # Direct process environments may still carry a historical template
+        # default even when no persisted system config exists. This must run
+        # before legacy profile materialization so custom env values retain
+        # their precedence.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
         migration_id="system-config-model-profiles-v1",
         module="migrations.system_config_model_profiles_v1",
         phase=MigrationPhase.STARTUP,
         # Strict runtime reads reject task_llm, legacy default ids, dangling
         # refs, and conflicting profiles; startup is unsafe until conversion.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
+        migration_id="system-config-model-profile-output-budget-v1",
+        module="migrations.system_config_model_profile_output_budget_v1",
+        phase=MigrationPhase.STARTUP,
+        # Existing profiles can retain the old 4096-token default after an
+        # image upgrade; migrate that value before runtime services resolve it.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
+        migration_id="workspace-model-profile-output-budget-v1",
+        module="migrations.workspace_model_profile_output_budget_v1",
+        phase=MigrationPhase.STARTUP,
+        # Workspace-private profiles can take precedence over global profiles
+        # during resolution, so their historical budgets must be migrated too.
         failure_policy=MigrationFailurePolicy.BLOCKING,
     ),
     RegisteredMigration(
@@ -182,7 +207,7 @@ def _lock_process_file(lock_file: BinaryIO) -> None:
     if fcntl is not None:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         return
-    if msvcrt is None:
+    if _MSVCRT is None:
         return
     # msvcrt.locking locks a byte range at the current position and raises on
     # an empty file, so materialize one byte first. LK_LOCK retries for up to
@@ -193,17 +218,17 @@ def _lock_process_file(lock_file: BinaryIO) -> None:
         lock_file.write(b"\0")
         lock_file.flush()
     lock_file.seek(0)
-    msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+    _MSVCRT.locking(lock_file.fileno(), _MSVCRT.LK_LOCK, 1)
 
 
 def _unlock_process_file(lock_file: BinaryIO) -> None:
     if fcntl is not None:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         return
-    if msvcrt is None:
+    if _MSVCRT is None:
         return
     lock_file.seek(0)
-    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+    _MSVCRT.locking(lock_file.fileno(), _MSVCRT.LK_UNLCK, 1)
 
 
 def _report_error_codes(report: dict[str, Any]) -> list[str]:
@@ -306,15 +331,8 @@ def _execute_registered_migrations(
             code = 2
             report = _normalize_migration_report(migration, report, code=code)
         reports.append(report)
-        report_warnings = [
-            str(item).strip()
-            for item in (report.get("warnings") or [])
-            if str(item).strip()
-        ]
-        warnings.extend(
-            "{}：{}".format(migration.migration_id, item)
-            for item in report_warnings
-        )
+        report_warnings = [str(item).strip() for item in (report.get("warnings") or []) if str(item).strip()]
+        warnings.extend("{}：{}".format(migration.migration_id, item) for item in report_warnings)
         if code == 0 and report.get("ok", False):
             continue
 
@@ -396,22 +414,18 @@ def execute_registered_migrations(
         errors = ["无法获取或执行迁移锁（{}）".format(type(exc).__name__)]
         warnings = []
 
-    error_codes = sorted(
-        {
-            code
-            for migration_report in reports
-            for code in _report_error_codes(migration_report)
-            if code
-        }
-    )
-    failed_object_ids = sorted(
-        {
-            str(object_id)
-            for migration_report in reports
-            for object_id in (migration_report.get("failed_object_ids") or [])
-            if str(object_id).strip()
-        }
-    )
+    error_code_values = set()
+    failed_object_id_values = set()
+    for migration_report in reports:
+        for code in _report_error_codes(migration_report):
+            if code:
+                error_code_values.add(code)
+        for object_id in migration_report.get("failed_object_ids") or []:
+            normalized_object_id = str(object_id)
+            if normalized_object_id.strip():
+                failed_object_id_values.add(normalized_object_id)
+    error_codes = sorted(error_code_values)
+    failed_object_ids = sorted(failed_object_id_values)
     if errors and not error_codes:
         error_codes = ["MIGRATION_LOCK_FAILED"]
 
@@ -442,9 +456,7 @@ def run_startup_migrations(runtime_root: Optional[Path] = None) -> dict[str, Any
     )
     if code != 0 or not report.get("ok", False):
         detail = "；".join(str(item) for item in report.get("errors", []) if str(item).strip())
-        raise StartupMigrationError(
-            "启动迁移失败{}".format("：{}".format(detail) if detail else "")
-        )
+        raise StartupMigrationError("启动迁移失败{}".format("：{}".format(detail) if detail else ""))
     for warning in report.get("warnings", []):
         logger.warning("Non-blocking startup migration warning: %s", warning)
     return report

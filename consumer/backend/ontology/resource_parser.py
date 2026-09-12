@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
 import re
 import threading
 import unicodedata
+from collections import OrderedDict
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Optional
 
 import yaml
-
 from ontology.hash_contract import field_s, hash_frames, normalize_relative_path
 from ontology.resource_types import (
     ParsedResource,
@@ -20,7 +19,6 @@ from ontology.resource_types import (
     ResourceSection,
     ResourceSource,
 )
-
 
 PARSER_VERSION = "resource-parser/1"
 RESOURCE_TYPES = {"root", "operation", "object", "rule", "metric", "script", "asset"}
@@ -40,14 +38,13 @@ _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 _WIKI_LINK_RE = re.compile(
     r"\[\[(?P<resource>[a-z]+)[:/](?P<key>[^\]|#]+)(?:#(?P<anchor>[^\]|]+))?(?:\|(?P<relation>[a-z_]+))?\]\]"
 )
-_ONTOLOGY_LINK_RE = re.compile(
-    r"\[[^\]]*\]\(ontology://(?P<resource>[a-z]+)/(?P<key>[^)#]+)(?:#(?P<anchor>[^)]+))?\)"
-)
+_ONTOLOGY_LINK_RE = re.compile(r"\[[^\]]*\]\(ontology://(?P<resource>[a-z]+)/(?P<key>[^)#]+)(?:#(?P<anchor>[^)]+))?\)")
 
 
 class ResourceParser:
     """Parse one already-authorized UTF-8 ontology resource."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def parse(self, source: ResourceSource) -> ParsedResource:
         resource = str(source.resource or "").strip()
         if resource not in RESOURCE_TYPES:
@@ -196,7 +193,9 @@ def _collect_headings(body: str, body_start_line: int) -> list[dict[str, Any]]:
             path_by_level.pop(stale_level, None)
         path_by_level[level] = title
         path = tuple(path_by_level[key] for key in sorted(path_by_level) if key <= level)
-        headings.append({"index": offset, "line": body_start_line + offset, "level": level, "title": title, "path": path})
+        headings.append(
+            {"index": offset, "line": body_start_line + offset, "level": level, "title": title, "path": path}
+        )
     return headings
 
 
@@ -260,7 +259,9 @@ def _build_sections(
     warnings: list[ParserWarning] = []
     h1s = [heading for heading in headings if heading["level"] == 1]
     if len(h1s) > 1:
-        warnings.extend(ParserWarning(code="MULTIPLE_H1", start_line=item["line"], end_line=item["line"]) for item in h1s[1:])
+        warnings.extend(
+            ParserWarning(code="MULTIPLE_H1", start_line=item["line"], end_line=item["line"]) for item in h1s[1:]
+        )
     section_headings = [heading for heading in headings if 2 <= heading["level"] <= 6]
     ranges: list[tuple[Optional[dict[str, Any]], int, int]] = []
     preamble_start = h1s[0]["index"] + 1 if h1s else 0
@@ -283,7 +284,13 @@ def _build_sections(
         anchor_counts[base_anchor] = anchor_counts.get(base_anchor, 0) + 1
         anchor = base_anchor if anchor_counts[base_anchor] == 1 else f"{base_anchor}~{anchor_counts[base_anchor]}"
         if anchor != base_anchor:
-            warnings.append(ParserWarning(code="DUPLICATE_ANCHOR_RENAMED", start_line=body_start_line + start, end_line=body_start_line + start))
+            warnings.append(
+                ParserWarning(
+                    code="DUPLICATE_ANCHOR_RENAMED",
+                    start_line=body_start_line + start,
+                    end_line=body_start_line + start,
+                )
+            )
         start_line = body_start_line + start
         tables, table_warnings = _parse_tables(raw_text, start_line)
         warnings.extend(table_warnings)
@@ -325,7 +332,10 @@ def _encode_anchor_part(value: str) -> str:
 
 
 def _normalize_section_text(text: str) -> str:
-    lines = [unicodedata.normalize("NFC", line).rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    lines = [
+        unicodedata.normalize("NFC", line).rstrip()
+        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ]
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:
@@ -356,7 +366,9 @@ def _parse_tables(text: str, start_line: int) -> tuple[list[ParsedTable], list[P
         block = lines[index:end]
         parsed = _parse_table_block(block, start_line + index)
         if parsed is None:
-            warnings.append(ParserWarning(code="TABLE_MALFORMED", start_line=start_line + index, end_line=start_line + end - 1))
+            warnings.append(
+                ParserWarning(code="TABLE_MALFORMED", start_line=start_line + index, end_line=start_line + end - 1)
+            )
         else:
             tables.append(parsed)
         index = end
@@ -370,7 +382,9 @@ def _parse_table_block(lines: list[str], start_line: int) -> Optional[ParsedTabl
     separators = _table_cells(lines[1])
     if not headers or len(headers) != len(set(headers)) or any(not header for header in headers):
         return None
-    if len(separators) != len(headers) or not all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in separators):
+    if len(separators) != len(headers) or not all(
+        re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in separators
+    ):
         return None
     rows: list[dict[str, str]] = []
     for line in lines[2:]:
@@ -397,9 +411,15 @@ def _parse_links(text: str, start_line: int) -> tuple[list[ResourceLink], list[P
                 key = match.group("key").strip()
                 relation = (match.groupdict().get("relation") or "references").strip()
                 if resource not in RESOURCE_TYPES - {"root", "asset"} or not key or relation not in LINK_RELATIONS:
-                    warnings.append(ParserWarning(code="LINK_UNRESOLVED", start_line=start_line + offset, end_line=start_line + offset))
+                    warnings.append(
+                        ParserWarning(
+                            code="LINK_UNRESOLVED", start_line=start_line + offset, end_line=start_line + offset
+                        )
+                    )
                     continue
-                links.append(ResourceLink(resource, key, relation, match.groupdict().get("anchor"), start_line + offset))
+                links.append(
+                    ResourceLink(resource, key, relation, match.groupdict().get("anchor"), start_line + offset)
+                )
     return list(_deduplicate_links(links)), warnings
 
 

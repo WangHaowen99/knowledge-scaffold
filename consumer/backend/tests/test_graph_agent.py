@@ -5,26 +5,24 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from types import SimpleNamespace
 import uuid
+from types import SimpleNamespace
 
 import pytest
-from openjiuwen.core.foundation.llm import ToolCall
-from openjiuwen.core.session.agent import create_agent_session
-from openjiuwen.core.single_agent.ability_manager import AbilityManager
-from openjiuwen.core.single_agent.schema.agent_card import AgentCard
-
+from agent.tools.base import ToolInvocation
 from agent.tools.business_data.providers.graph.agent import (
+    _GRAPH_TOOL_SCHEMAS,
     GraphAgentError,
     GraphAgentTimeoutError,
-    _GRAPH_TOOL_SCHEMAS,
     _build_agent_input,
     _graph_agent_timeout_seconds,
 )
 from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
 from agent.tools.business_data.providers.graph.jiuwen_agent import (
     GraphJiuwenToolAdapter,
-    JiuwenGraphQueryAgent as NativeJiuwenGraphQueryAgent,
+)
+from agent.tools.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent as NativeJiuwenGraphQueryAgent
+from agent.tools.business_data.providers.graph.jiuwen_agent import (
     _resolve_graph_jiuwen_llm_config,
     register_graph_runtime_tools,
 )
@@ -35,16 +33,17 @@ from agent.tools.business_data.providers.graph.models import (
     GraphSearchRuntimeContext,
 )
 from agent.tools.business_data.providers.graph.tools.executor import GraphToolExecutor
-from agent.tools.base import ToolInvocation
 from agent.tools.registry import get_tool_spec
+from openjiuwen.core.foundation.llm import ToolCall
+from openjiuwen.core.session.agent import create_agent_session
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
+from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
 
 class JiuwenGraphQueryAgent(NativeJiuwenGraphQueryAgent):
     """Test harness that drives the production native-async entry."""
 
     def run(self, **kwargs):
-        import asyncio
-
         return asyncio.run(self.arun(**kwargs))
 
 
@@ -54,14 +53,28 @@ class _Backend:
 
     def get_nodes_schema(self, *, scope, element_types=None):
         self.calls.append(("get_nodes_schema", scope.workspace_value, element_types))
-        return {"labels": ["CHANGE_ORDER_affected_obj"], "schema": {"CHANGE_ORDER_affected_obj": {"CHANGE_ORDER_ID": "STRING"}}}
+        return {
+            "labels": ["CHANGE_ORDER_affected_obj"],
+            "schema": {"CHANGE_ORDER_affected_obj": {"CHANGE_ORDER_ID": "STRING"}},
+        }
 
     def get_edges_schema(self, *, scope, relation_types=None):
         self.calls.append(("get_edges_schema", scope.workspace_value, relation_types))
         return {"relationship_types": ["D2O_RELATION"]}
 
     def property_filter(self, *, element_class, element_type, filter_dict, return_properties, limit, offset, scope):
-        self.calls.append(("property_filter", element_class, element_type, filter_dict, return_properties, limit, offset, scope.workspace_value))
+        self.calls.append(
+            (
+                "property_filter",
+                element_class,
+                element_type,
+                filter_dict,
+                return_properties,
+                limit,
+                offset,
+                scope.workspace_value,
+            )
+        )
         return GraphBackendResult(records=[{"properties": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}}], total=1)
 
     def count_search(self, *, element_class, element_type, filter_dict, scope):
@@ -69,20 +82,43 @@ class _Backend:
         return GraphBackendResult(total=1)
 
     def aggregate_search(self, *, element_class, element_type, target_property, agg, filter_dict, scope):
-        self.calls.append(("aggregate_search", element_class, element_type, target_property, agg, filter_dict, scope.workspace_value))
+        self.calls.append(
+            ("aggregate_search", element_class, element_type, target_property, agg, filter_dict, scope.workspace_value)
+        )
         return GraphBackendResult(records=[{"value": 1, "agg": agg}], total=1)
 
-    def sorted_search(self, *, element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope):
-        self.calls.append(("sorted_search", element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope.workspace_value))
+    def sorted_search(
+        self, *, element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope
+    ):
+        self.calls.append(
+            (
+                "sorted_search",
+                element_class,
+                element_type,
+                filter_dict,
+                return_properties,
+                sort_by,
+                ascending,
+                limit,
+                offset,
+                scope.workspace_value,
+            )
+        )
         return GraphBackendResult(records=[{"properties": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}}], total=1)
 
     def pattern_search(self, *, path_pattern, return_vars, limit, scope, return_properties=None):
-        self.calls.append(("pattern_search", path_pattern, return_vars, return_properties, limit, scope.workspace_value))
+        self.calls.append(
+            ("pattern_search", path_pattern, return_vars, return_properties, limit, scope.workspace_value)
+        )
         return GraphBackendResult(
             records=[
                 {
                     "nodes": [
-                        {"element_id": "v-e1", "labels": ["SourceItemVersion"], "properties": {"SourceItemCode": "101000-001"}},
+                        {
+                            "element_id": "v-e1",
+                            "labels": ["SourceItemVersion"],
+                            "properties": {"SourceItemCode": "101000-001"},
+                        },
                         {"element_id": "v-m1", "labels": ["TargetItem"], "properties": {"TargetItemCode": "A001"}},
                     ],
                     "relationships": [
@@ -100,14 +136,40 @@ class _Backend:
 
 class _DuplicateTargetItemBackend(_Backend):
     def property_filter(self, *, element_class, element_type, filter_dict, return_properties, limit, offset, scope):
-        self.calls.append(("property_filter", element_class, element_type, filter_dict, return_properties, limit, offset, scope.workspace_value))
+        self.calls.append(
+            (
+                "property_filter",
+                element_class,
+                element_type,
+                filter_dict,
+                return_properties,
+                limit,
+                offset,
+                scope.workspace_value,
+            )
+        )
         return GraphBackendResult(
             records=[{"element_id": "m-part-a001", "properties": {"TargetItemCode": "A001"}}],
             total=1,
         )
 
-    def sorted_search(self, *, element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope):
-        self.calls.append(("sorted_search", element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope.workspace_value))
+    def sorted_search(
+        self, *, element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope
+    ):
+        self.calls.append(
+            (
+                "sorted_search",
+                element_class,
+                element_type,
+                filter_dict,
+                return_properties,
+                sort_by,
+                ascending,
+                limit,
+                offset,
+                scope.workspace_value,
+            )
+        )
         return GraphBackendResult(
             records=[{"element_id": "m-part-a001", "properties": {"TargetItemCode": "A001"}}],
             total=1,
@@ -128,7 +190,7 @@ def _context():
         ontology_id="demo-ontology",
         workspace_root="/missing",
         entity="CHANGE_ORDER受影响对象",
-        query="查询CHANGE_ORDER受影响对象中CHANGE_ORDER编码为\"CHANGE_ORDER-001\"的所有记录",
+        query='查询CHANGE_ORDER受影响对象中CHANGE_ORDER编码为"CHANGE_ORDER-001"的所有记录',
         timeout_seconds=60,
         max_result_rows=100,
         scope=GraphScope(
@@ -145,14 +207,7 @@ def _context():
 def test_agent_input_reads_object_definition_from_canonical_filename(tmp_path):
     object_dir = tmp_path / "ontologies" / "demo-ontology" / "objects"
     object_dir.mkdir(parents=True)
-    object_content = (
-        "---\n"
-        "resource: object\n"
-        "key: 正式对象\n"
-        "canonical_key: formal-object\n"
-        "---\n\n"
-        "# 正式对象定义\n"
-    )
+    object_content = "---\nresource: object\nkey: 正式对象\ncanonical_key: formal-object\n---\n\n# 正式对象定义\n"
     (object_dir / "formal-object.md").write_text(object_content, encoding="utf-8")
     context = GraphSearchRuntimeContext(
         provider="neo4j",
@@ -208,13 +263,21 @@ def _record_context():
             ontology_property="d2o_ontology_id",
             ontology_value="demo-ontology",
         ),
-        mapping=GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"),
+        mapping=GraphEntityMapping(
+            entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"
+        ),
         provider_config={},
         schema_context={
             "source": "provider_preload",
             "nodes_schema": {
                 "labels": ["SourceItem_TargetItem"],
-                "schema": {"SourceItem_TargetItem": {"SourceItemCode": "STRING", "TargetItemCode": "STRING", "SourceItemVersion": "STRING"}},
+                "schema": {
+                    "SourceItem_TargetItem": {
+                        "SourceItemCode": "STRING",
+                        "TargetItemCode": "STRING",
+                        "SourceItemVersion": "STRING",
+                    }
+                },
             },
             "edges_schema": {
                 "relationship_types": ["D2O_RELATION"],
@@ -291,7 +354,16 @@ def test_jiuwen_graph_query_agent_executes_private_graph_tool_adapter():
     ]
     assert len(invocations) == 1
     assert backend.calls == [
-        ("property_filter", "CHANGE_ORDER_affected_obj", "NODE", {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}, ["CHANGE_ORDER_ID"], 20, 0, "workspace-a")
+        (
+            "property_filter",
+            "CHANGE_ORDER_affected_obj",
+            "NODE",
+            {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"},
+            ["CHANGE_ORDER_ID"],
+            20,
+            0,
+            "workspace-a",
+        )
     ]
 
 
@@ -318,7 +390,9 @@ def test_jiuwen_graph_query_agent_retries_when_model_does_not_call_tool():
         )
 
     context = _context()
-    mapping = GraphEntityMapping(entity="CHANGE_ORDER受影响对象", kind="node", source="test", label="CHANGE_ORDER_affected_obj")
+    mapping = GraphEntityMapping(
+        entity="CHANGE_ORDER受影响对象", kind="node", source="test", label="CHANGE_ORDER_affected_obj"
+    )
     backend = _Backend()
 
     result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
@@ -385,7 +459,9 @@ def test_jiuwen_graph_query_agent_retries_pattern_search_for_path_intent():
             ontology_property="d2o_ontology_id",
             ontology_value="demo-ontology",
         ),
-        mapping=GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"),
+        mapping=GraphEntityMapping(
+            entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"
+        ),
         provider_config={},
         schema_context={
             "source": "provider_preload",
@@ -413,7 +489,9 @@ def test_jiuwen_graph_query_agent_retries_pattern_search_for_path_intent():
             "disable_schema_tools": True,
         },
     )
-    mapping = GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem")
+    mapping = GraphEntityMapping(
+        entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"
+    )
     backend = _Backend()
 
     result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
@@ -460,7 +538,9 @@ def test_jiuwen_graph_query_agent_skips_pattern_search_after_sufficient_record_h
         return skipped_payload
 
     context = _record_context()
-    mapping = GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem")
+    mapping = GraphEntityMapping(
+        entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"
+    )
     backend = _DuplicateTargetItemBackend()
     result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
         context=context,
@@ -516,7 +596,9 @@ def test_jiuwen_graph_query_agent_uses_isolated_conversation_for_each_run():
         return []
 
     context = _context()
-    mapping = GraphEntityMapping(entity="CHANGE_ORDER受影响对象", kind="node", source="test", label="CHANGE_ORDER_affected_obj")
+    mapping = GraphEntityMapping(
+        entity="CHANGE_ORDER受影响对象", kind="node", source="test", label="CHANGE_ORDER_affected_obj"
+    )
 
     for _ in range(2):
         JiuwenGraphQueryAgent(
@@ -532,7 +614,9 @@ def test_jiuwen_graph_query_agent_uses_isolated_conversation_for_each_run():
     conversation_ids = [agent.inputs[0]["conversation_id"] for agent in created_agents]
     assert len(set(invocation_ids)) == 2
     assert len(set(conversation_ids)) == 2
-    assert all(invocation_id in conversation_id for invocation_id, conversation_id in zip(invocation_ids, conversation_ids))
+    assert all(
+        invocation_id in conversation_id for invocation_id, conversation_id in zip(invocation_ids, conversation_ids)
+    )
 
 
 def test_jiuwen_graph_query_agent_skips_duplicate_property_filter_after_hit():
@@ -756,14 +840,20 @@ def test_jiuwen_graph_query_agent_timeout_raises_structured_error():
 
 
 def test_graph_agent_default_timeout_is_independent_from_query_timeout():
-    assert _graph_agent_timeout_seconds(
-        provider_config={},
-        outer_timeout_seconds=30,
-    ) == 120.0
-    assert _graph_agent_timeout_seconds(
-        provider_config={"graph_agent_timeout_seconds": 90},
-        outer_timeout_seconds=30,
-    ) == 90.0
+    assert (
+        _graph_agent_timeout_seconds(
+            provider_config={},
+            outer_timeout_seconds=30,
+        )
+        == 120.0
+    )
+    assert (
+        _graph_agent_timeout_seconds(
+            provider_config={"graph_agent_timeout_seconds": 90},
+            outer_timeout_seconds=30,
+        )
+        == 90.0
+    )
 
 
 def test_graph_agent_timeout_is_not_retryable():
@@ -820,17 +910,19 @@ def test_jiuwen_graph_query_agent_preserves_backend_timeout_from_private_tool():
                     id="graph-timeout-call",
                     type="function",
                     name="property_filter",
-                    arguments=json.dumps({
-                        "queries": [
-                            {
-                                "element_class": "TargetItem",
-                            "element_type": "NODE",
-                            "filter_dict": {},
-                            "return_properties": ["TargetItemCode"],
-                                "limit": 20,
-                            }
-                        ]
-                    }),
+                    arguments=json.dumps(
+                        {
+                            "queries": [
+                                {
+                                    "element_class": "TargetItem",
+                                    "element_type": "NODE",
+                                    "filter_dict": {},
+                                    "return_properties": ["TargetItemCode"],
+                                    "limit": 20,
+                                }
+                            ]
+                        }
+                    ),
                 ),
                 self.session,
             )
@@ -899,14 +991,16 @@ def test_graph_agent_reuses_current_jiuwen_workspace_profile_resolution(monkeypa
         workspace_id="workspace-a",
     )
 
-    assert calls == [(
-        {
-            "workspace_id": "workspace-a",
-            "user_context": {"model_profile_id": "workspace:graph"},
-        },
-        "subagent",
-        None,
-    )]
+    assert calls == [
+        (
+            {
+                "workspace_id": "workspace-a",
+                "user_context": {"model_profile_id": "workspace:graph"},
+            },
+            "subagent",
+            None,
+        )
+    ]
     assert config.model == "graph-model"
     assert config.max_tokens == 1200
     assert config.temperature == 0.1
@@ -920,6 +1014,7 @@ def test_graph_agent_inherits_router_output_limit(monkeypatch):
             limits=SimpleNamespace(model_output_token_limit=900),
         )
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             calls.append((purpose, profile_id, workspace_id))
             return SimpleNamespace(
@@ -951,6 +1046,7 @@ def test_graph_agent_inherits_router_output_limit(monkeypatch):
 
 def test_graph_agent_accepts_router_without_agent_config(monkeypatch):
     class FakeRouter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             del purpose, profile_id, workspace_id
             return SimpleNamespace(
@@ -1097,12 +1193,13 @@ def test_graph_agent_trace_bridge_sliding_window_applied_is_false():
 
     # Verify the trace bridge init signature includes sliding_window_applied
     from agent.core.jiuwen.trace import JiuwenModelTraceBridge
+
     source = inspect.getsource(JiuwenModelTraceBridge.__init__)
-    assert 'sliding_window_applied' in source
+    assert "sliding_window_applied" in source
 
     # Verify the graph agent native async invocation disables sliding windows.
     agent_source = inspect.getsource(JiuwenGraphQueryAgent._ainvoke_once)
-    assert 'sliding_window_applied=False' in agent_source
+    assert "sliding_window_applied=False" in agent_source
 
 
 def test_graph_agent_iteration_limit_does_not_return_partial_tool_results():

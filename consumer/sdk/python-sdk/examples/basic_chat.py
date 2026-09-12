@@ -4,7 +4,6 @@ from typing import TextIO
 
 from onto_agent_sdk import OntoAgentClient
 
-
 logger = logging.getLogger(__name__)
 
 

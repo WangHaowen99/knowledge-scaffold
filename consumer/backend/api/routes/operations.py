@@ -72,14 +72,17 @@ operations_router = APIRouter(prefix="/agentic/operations")
 
 
 def _aggregate_to_dict(agg) -> Dict[str, Any]:
+    """Serialize one proposal aggregate for the operations API."""
     return agg.to_dict()
 
 
 def _proposal_to_dict(proposal) -> Dict[str, Any]:
+    """Serialize one proposal record for the operations API."""
     return proposal.to_dict()
 
 
 def _read_meta(meta_path: Path) -> Dict[str, Any]:
+    """Read staged-operation metadata, returning an empty object on failure."""
     if not meta_path.exists():
         return {}
     try:
@@ -89,10 +92,12 @@ def _read_meta(meta_path: Path) -> Dict[str, Any]:
 
 
 def _sha256_text(text: str) -> str:
+    """Return the SHA-256 digest of UTF-8 encoded text."""
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
 def _parse_statuses(request: Request, default: set) -> set:
+    """Parse the optional comma-separated status filter from a request."""
     raw_filter = (request.query_params.get("status") or "").strip()
     if raw_filter.lower() == "all":
         return {"pending", "promoted", "rejected", "applied"}
@@ -108,6 +113,7 @@ def _operation_summary(
     operation_key: str,
     aggregates: List[Any],
 ) -> Dict[str, Any]:
+    """Aggregate proposal counts and timing metadata for one operation."""
     status_counts: Dict[str, int] = {}
     kind_counts: Dict[str, int] = {}
     source_counts: Dict[str, int] = {}
@@ -330,6 +336,7 @@ def endorse_proposal(
     fingerprint: str,
     workspace_id: str = Depends(require_workspace_id),
 ):
+    """Record an endorsement for one operation-evolution proposal."""
     buf = get_proposal_buffer()
     buf.endorse(
         ontology_id,
@@ -349,6 +356,7 @@ def reject_proposal(
     fingerprint: str,
     workspace_id: str = Depends(require_workspace_id),
 ):
+    """Reject one operation-evolution proposal."""
     buf = get_proposal_buffer()
     buf.reject(
         ontology_id,
@@ -369,6 +377,7 @@ async def edit_proposal(
     request: Request,
     workspace_id: str = Depends(require_workspace_id),
 ):
+    """Replace a proposal's canonical content after validating the request."""
     data = await read_optional_json_object(request)
     new_content = str(data.get("content") or "").strip()
     if len(new_content) < 4:
@@ -560,11 +569,13 @@ def apply_staged(
         precondition = _file_content_precondition(op_path, current_bytes)
 
         def commit() -> None:
+            """Archive the original operation and commit the staged version."""
             nonlocal archived_to
             archived_to = _archive_original(op_path)
             file_commit()
 
         def rollback() -> None:
+            """Restore the original operation and remove its archive."""
             file_rollback()
             if archived_to is not None:
                 archived_to.unlink(missing_ok=True)
@@ -662,6 +673,7 @@ def _reject_staged(
     workspace_id: str,
     reject_proposals: bool,
 ):
+    """Build the response that rejects a staged operation patch."""
     paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
     if paths is None:
         return JSONResponse(

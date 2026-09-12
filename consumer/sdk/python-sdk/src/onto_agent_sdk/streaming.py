@@ -23,7 +23,9 @@ def iter_sse_events(response: requests.Response) -> Iterator[SseEvent]:
 
     def emit_current() -> Optional[SseEvent]:
         nonlocal event_name, event_id, retry, data_lines
-        if not data_lines and event_name == "message" and event_id is None and retry is None:
+        has_no_event_data = not data_lines and event_name == "message"
+        has_no_event_metadata = event_id is None and retry is None
+        if has_no_event_data and has_no_event_metadata:
             return None
 
         data = "\n".join(data_lines)

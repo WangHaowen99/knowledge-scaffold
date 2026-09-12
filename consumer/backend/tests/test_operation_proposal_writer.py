@@ -47,6 +47,7 @@ class _Buffer:
 
 def _mock_relation(monkeypatch, decisions):
     class _Router:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def call(self, **kwargs):
             assert kwargs["request_label"] == "memory_relation_operation"
             return SimpleNamespace(content=json.dumps({"decisions": decisions}))

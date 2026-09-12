@@ -6,8 +6,6 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
-
 from agent.runtime.contracts import (
     PublicEvent,
     RunSnapshot,
@@ -17,6 +15,7 @@ from agent.runtime.contracts import (
 from api.auth.auth import AuthUser
 from api.protocols.acp import server as acp_server
 from api.testing import TestApplication
+from fastapi.testclient import TestClient
 from persistence.execution_store import ExecutionStore
 
 
@@ -101,6 +100,14 @@ class _EventHub:
 
 
 def _app(store, manager):
+    user = AuthUser(username="operator_a", role="user")
+
+    def principal_override():
+        return user
+
+    def workspace_id_override():
+        return "workspace_demo"
+
     app = TestApplication()
     app.state.runtime_container = SimpleNamespace(
         manager=manager,
@@ -108,9 +115,8 @@ def _app(store, manager):
         event_hub=_EventHub(manager),
     )
     app.include_router(acp_server.acp_router)
-    user = AuthUser(username="operator_a", role="user")
-    app.dependency_overrides[acp_server._acp_principal] = lambda: user
-    app.dependency_overrides[acp_server._acp_workspace_id] = lambda: "workspace_demo"
+    app.dependency_overrides[acp_server._acp_principal] = principal_override
+    app.dependency_overrides[acp_server._acp_workspace_id] = workspace_id_override
     return app
 
 
@@ -126,9 +132,7 @@ def test_acp_create_uses_server_generated_canonical_run(monkeypatch, tmp_path):
     response = TestClient(_app(store, manager)).post(
         "/acp/runs",
         json={
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "synthetic question"}]}
-            ],
+            "messages": [{"role": "user", "parts": [{"type": "text", "content": "synthetic question"}]}],
             "context": {"session_id": "session_demo"},
         },
     )
@@ -154,9 +158,7 @@ def test_acp_await_creates_new_run_and_keeps_external_id(monkeypatch, tmp_path):
     created = client.post(
         "/acp/runs",
         json={
-            "messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "synthetic question"}]}
-            ],
+            "messages": [{"role": "user", "parts": [{"type": "text", "content": "synthetic question"}]}],
             "context": {"session_id": "session_demo"},
         },
     ).json()

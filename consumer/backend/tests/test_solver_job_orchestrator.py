@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import threading
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.contracts import ProblemIR, SolverResult
 from solver_coordination.job_orchestrator import DurableJobOrchestrator
 from solver_coordination.job_store import JobStoreConflict, LeaseConflict, SolverJobStore
-
 
 WORKSPACE_ID = "workspace_synthetic"
 OWNER_ID = "owner_synthetic"
@@ -47,6 +46,7 @@ class _DurableFakeBackend:
         self.raise_after_accept_once = False
         self.cancel_observer = None
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def capabilities(self):
         return {"problem_families": ["synthetic_choice.v1"]}
 
@@ -111,7 +111,7 @@ def _orchestrator(tmp_path, backend=None, *, clock=None):
         DurableJobOrchestrator(
             store=store,
             backend=selected_backend,
-            idempotency_secret=b"synthetic-platform-secret",
+            idempotency_secret=synthetic_secret("solver_job_orchestrator-credential-01").encode("utf-8"),
             binding_revision_id=BINDING_REVISION,
             lease_owner="worker_synthetic",
             clock=clock,
@@ -153,13 +153,16 @@ def test_submit_persists_link_before_backend_and_replay_reuses_attempt(tmp_path)
     orchestrator, store, backend = _orchestrator(tmp_path)
 
     def assert_link_already_exists():
-        assert store.get_run_link(
-            workspace_id=WORKSPACE_ID,
-            owner_id=OWNER_ID,
-            run_id="run_synthetic_a",
-            turn_id="turn_synthetic_a",
-            tool_call_id="tool_call_synthetic_a",
-        ) is not None
+        assert (
+            store.get_run_link(
+                workspace_id=WORKSPACE_ID,
+                owner_id=OWNER_ID,
+                run_id="run_synthetic_a",
+                turn_id="turn_synthetic_a",
+                tool_call_id="tool_call_synthetic_a",
+            )
+            is not None
+        )
 
     original_submit = backend.submit
 
@@ -174,9 +177,7 @@ def test_submit_persists_link_before_backend_and_replay_reuses_attempt(tmp_path)
     assert first["job_id"] == replay["job_id"]
     assert first["attempt_id"] == replay["attempt_id"]
     assert len(backend.submit_calls) == 1
-    attempt = store.get_attempt(
-        first["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    attempt = store.get_attempt(first["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert attempt["backend_idempotency_key"].startswith("hmac-sha256:")
     assert first["attempt_id"] not in attempt["backend_idempotency_key"]
 
@@ -264,16 +265,12 @@ def test_poll_does_not_submit_a_job_while_inputs_are_freezing(tmp_path):
     orchestrator, store, backend = _orchestrator(tmp_path)
     started = _start(orchestrator, run_suffix="poll_freeze", defer_submit=True)
 
-    observed = orchestrator.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    observed = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
 
     assert observed["status"] == "created"
     assert observed["phase"] == "freeze_inputs"
     assert backend.submit_calls == []
-    assert store.list_artifacts(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    ) == ()
+    assert store.list_artifacts(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID) == ()
 
 
 def test_same_tool_call_replay_compares_normalized_deadline(tmp_path):
@@ -287,9 +284,7 @@ def test_same_tool_call_replay_compares_normalized_deadline(tmp_path):
     equivalent = _start(
         orchestrator,
         run_suffix="deadline_identity",
-        deadline_at=datetime(
-            2099, 1, 1, 8, tzinfo=timezone(timedelta(hours=8))
-        ),
+        deadline_at=datetime(2099, 1, 1, 8, tzinfo=timezone(timedelta(hours=8))),
     )
     assert equivalent["job_id"] == first["job_id"]
 
@@ -314,7 +309,7 @@ def test_same_tool_call_replay_rejects_a_different_binding_revision(tmp_path):
     other_orchestrator = DurableJobOrchestrator(
         store=store,
         backend=backend,
-        idempotency_secret=b"synthetic-platform-secret",
+        idempotency_secret=synthetic_secret("solver_job_orchestrator-credential-01").encode("utf-8"),
         binding_revision_id=other_binding,
         lease_owner="worker_other_binding",
     )
@@ -347,12 +342,14 @@ def test_one_generic_orchestrator_accepts_distinct_bindings_for_distinct_runs(tm
     )
 
     assert first["job_id"] != second["job_id"]
-    assert store.get_job(
-        first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["binding_revision_id"] == BINDING_REVISION
-    assert store.get_job(
-        second["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["binding_revision_id"] == other_binding
+    assert (
+        store.get_job(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["binding_revision_id"]
+        == BINDING_REVISION
+    )
+    assert (
+        store.get_job(second["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["binding_revision_id"]
+        == other_binding
+    )
 
 
 def test_orchestrator_passes_each_jobs_frozen_binding_to_one_backend(tmp_path):
@@ -384,12 +381,14 @@ def test_orchestrator_passes_each_jobs_frozen_binding_to_one_backend(tmp_path):
         binding_revision_id=other_binding,
     )
 
-    assert store.get_job(
-        first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["binding_revision_id"] == BINDING_REVISION
-    assert store.get_job(
-        second["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["binding_revision_id"] == other_binding
+    assert (
+        store.get_job(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["binding_revision_id"]
+        == BINDING_REVISION
+    )
+    assert (
+        store.get_job(second["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["binding_revision_id"]
+        == other_binding
+    )
     assert backend.bindings == [
         {"backend": "synthetic"},
         other_configuration,
@@ -397,32 +396,22 @@ def test_orchestrator_passes_each_jobs_frozen_binding_to_one_backend(tmp_path):
 
 
 def test_attempt_lost_fails_the_attempt_without_publishing_solver_result(tmp_path):
-    orchestrator, store, _backend = _orchestrator(
-        tmp_path, backend=_AttemptLostBackend()
-    )
+    orchestrator, store, _backend = _orchestrator(tmp_path, backend=_AttemptLostBackend())
     started = _start(orchestrator, run_suffix="attempt-lost")
 
-    outcome = orchestrator.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    outcome = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
 
     assert outcome["status"] == "failed"
     assert outcome["error_code"] == "attempt_lost"
-    attempt = store.get_attempt(
-        started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    attempt = store.get_attempt(started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert attempt["status"] == "failed"
     assert attempt["result"] is None
 
 
 def test_attempt_lost_can_be_explicitly_retried_as_a_new_attempt(tmp_path):
-    orchestrator, store, backend = _orchestrator(
-        tmp_path, backend=_AttemptLostBackend()
-    )
+    orchestrator, store, backend = _orchestrator(tmp_path, backend=_AttemptLostBackend())
     started = _start(orchestrator, run_suffix="attempt-lost-retry")
-    failed = orchestrator.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    failed = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert failed["error_code"] == "attempt_lost"
 
     retried = orchestrator.retry(
@@ -434,9 +423,7 @@ def test_attempt_lost_can_be_explicitly_retried_as_a_new_attempt(tmp_path):
 
     assert retried["job_id"] == started["job_id"]
     assert retried["attempt_id"] != started["attempt_id"]
-    attempts = store.list_attempts(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    attempts = store.list_attempts(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert [attempt["attempt_number"] for attempt in attempts] == [1, 2]
 
 
@@ -451,9 +438,10 @@ def test_post_timeout_replay_uses_same_backend_idempotency_key(tmp_path):
     assert replayed["status"] == "waiting_solver"
     assert backend.submit_calls[0] == backend.submit_calls[1]
     assert len(backend.entries) == 1
-    assert store.get_attempt(
-        replayed["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["backend_job_id"] == replayed["backend_job_id"]
+    assert (
+        store.get_attempt(replayed["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["backend_job_id"]
+        == replayed["backend_job_id"]
+    )
 
 
 def test_concurrent_subscribers_converge_across_repeated_start_races(tmp_path):
@@ -461,7 +449,7 @@ def test_concurrent_subscribers_converge_across_repeated_start_races(tmp_path):
     second_orchestrator = DurableJobOrchestrator(
         store=store,
         backend=backend,
-        idempotency_secret=b"synthetic-platform-secret",
+        idempotency_secret=synthetic_secret("solver_job_orchestrator-credential-01").encode("utf-8"),
         binding_revision_id=BINDING_REVISION,
         lease_owner="worker_synthetic_b",
     )
@@ -469,25 +457,28 @@ def test_concurrent_subscribers_converge_across_repeated_start_races(tmp_path):
     for index, marker in enumerate(markers):
         start_barrier = threading.Barrier(2)
 
-        def launch(orchestrator, suffix):
-            start_barrier.wait(timeout=3)
+        def launch(
+            orchestrator,
+            suffix,
+            *,
+            run_index=index,
+            marker_value=marker,
+            barrier=start_barrier,
+        ):
+            barrier.wait(timeout=3)
             return _start(
                 orchestrator,
-                run_suffix="concurrent_{}_{}".format(index, suffix),
-                attempt_id="attempt_synthetic_concurrent_{}_{}".format(
-                    index, suffix
-                ),
-                problem_marker=marker,
+                run_suffix="concurrent_{}_{}".format(run_index, suffix),
+                attempt_id="attempt_synthetic_concurrent_{}_{}".format(run_index, suffix),
+                problem_marker=marker_value,
             )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(launch, orchestrator, suffix)
-                for orchestrator, suffix in (
-                    (first_orchestrator, "a"),
-                    (second_orchestrator, "b"),
-                )
-            ]
+            launch_inputs = (
+                (first_orchestrator, "a"),
+                (second_orchestrator, "b"),
+            )
+            futures = [executor.submit(launch, orchestrator, suffix) for orchestrator, suffix in launch_inputs]
             outcomes = [future.result() for future in futures]
         assert outcomes[0]["job_id"] != outcomes[1]["job_id"]
         assert outcomes[0]["attempt_id"] != outcomes[1]["attempt_id"]
@@ -507,9 +498,7 @@ def test_retry_requires_a_retryable_terminal_failure(tmp_path):
         )
 
     backend._entry_by_job_id(first["backend_job_id"]).status = "failed"
-    failed = orchestrator.poll_once(
-        first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    failed = orchestrator.poll_once(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert failed["status"] == "failed"
     retried = orchestrator.retry(
         first["job_id"],
@@ -520,9 +509,7 @@ def test_retry_requires_a_retryable_terminal_failure(tmp_path):
 
     assert retried["job_id"] == first["job_id"]
     assert retried["attempt_id"] != first["attempt_id"]
-    attempts = store.list_attempts(
-        first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    attempts = store.list_attempts(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert [attempt["attempt_number"] for attempt in attempts] == [1, 2]
     assert backend.submit_calls[0] != backend.submit_calls[1]
     link = store.get_run_link(
@@ -537,9 +524,7 @@ def test_retry_requires_a_retryable_terminal_failure(tmp_path):
     assert replay["attempt_id"] == retried["attempt_id"]
 
     backend._entry_by_job_id(retried["backend_job_id"]).status = "failed"
-    orchestrator.poll_once(
-        first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    orchestrator.poll_once(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     with pytest.raises(JobStoreConflict, match="attempt|max"):
         orchestrator.retry(
             first["job_id"],
@@ -552,9 +537,7 @@ def test_retry_requires_a_retryable_terminal_failure(tmp_path):
 def test_retry_supersedes_and_cancels_an_old_active_attempt(tmp_path):
     orchestrator, store, backend = _orchestrator(tmp_path)
     first = _start(orchestrator)
-    current = store.get_job(
-        first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    current = store.get_job(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     store.update_job(
         first["job_id"],
         workspace_id=WORKSPACE_ID,
@@ -573,9 +556,7 @@ def test_retry_supersedes_and_cancels_an_old_active_attempt(tmp_path):
     )
     assert retried["attempt_id"] == "attempt_synthetic_002"
     assert first["backend_job_id"] in backend.cancel_calls
-    assert store.get_attempt(
-        first["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["status"] == "failed"
+    assert store.get_attempt(first["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"] == "failed"
 
 
 def test_retry_rejects_nonretryable_terminal_error(tmp_path):
@@ -588,9 +569,7 @@ def test_retry_rejects_nonretryable_terminal_error(tmp_path):
         status="failed",
         error_code="model_compile_failed",
     )
-    current = store.get_job(
-        first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    current = store.get_job(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     store.update_job(
         first["job_id"],
         workspace_id=WORKSPACE_ID,
@@ -625,12 +604,8 @@ def test_cancelling_one_run_does_not_cancel_another_run_backend_job(tmp_path):
     )
     assert cancelled_first["last_subscriber"] is True
     assert len(backend.cancel_calls) == 1
-    assert store.get_job(
-        first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["status"] == "cancelled"
-    assert store.get_job(
-        second["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["status"] == "waiting_solver"
+    assert store.get_job(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"] == "cancelled"
+    assert store.get_job(second["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"] == "waiting_solver"
 
 
 def test_replay_of_uncertain_submit_recovers_backend_identity_before_cancellation(
@@ -640,9 +615,7 @@ def test_replay_of_uncertain_submit_recovers_backend_identity_before_cancellatio
     backend.raise_after_accept_once = True
     started = _start(orchestrator, run_suffix="cancelling_replay")
     assert started["backend_job_id"] is None
-    reservation = store.cancel_subscription(
-        started["subscription_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    reservation = store.cancel_subscription(started["subscription_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert reservation["cancel_reserved"] is True
     submit_count = len(backend.submit_calls)
 
@@ -650,17 +623,13 @@ def test_replay_of_uncertain_submit_recovers_backend_identity_before_cancellatio
     assert replay["status"] == "cancelled"
     assert len(backend.submit_calls) == submit_count + 1
     assert backend.cancel_calls == ["backend_1"]
-    attempt = store.get_attempt(
-        started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    attempt = store.get_attempt(started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert attempt["status"] == "cancelled"
 
 
 def test_cancelling_before_first_submit_does_not_create_backend_job(tmp_path):
     orchestrator, store, backend = _orchestrator(tmp_path)
-    started = _start(
-        orchestrator, run_suffix="cancel_before_submit", defer_submit=True
-    )
+    started = _start(orchestrator, run_suffix="cancel_before_submit", defer_submit=True)
 
     cancellation = orchestrator.cancel_subscription(
         started["subscription_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
@@ -669,18 +638,16 @@ def test_cancelling_before_first_submit_does_not_create_backend_job(tmp_path):
     assert cancellation["job_status"] == "cancelled"
     assert backend.submit_calls == []
     assert backend.cancel_calls == []
-    assert store.get_attempt(
-        started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["status"] == "cancelled"
+    assert (
+        store.get_attempt(started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"] == "cancelled"
+    )
 
 
 def test_cancellation_waits_for_an_inflight_retry_submit(tmp_path):
     orchestrator, store, backend = _orchestrator(tmp_path)
     started = _start(orchestrator, run_suffix="cancel_inflight_retry")
     backend._entry_by_job_id(started["backend_job_id"]).status = "unsupported"
-    failed = orchestrator.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    failed = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert failed["status"] == "failed"
 
     entered = threading.Event()
@@ -715,9 +682,7 @@ def test_cancellation_waits_for_an_inflight_retry_submit(tmp_path):
     assert outcome["status"] == "cancelled"
     assert len(backend.submit_calls) == 2
     assert backend.cancel_calls == ["backend_2"]
-    assert store.get_job(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["status"] == "cancelled"
+    assert store.get_job(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"] == "cancelled"
 
 
 def test_submit_waits_for_backend_thread_before_releasing_failed_renewal(tmp_path):
@@ -743,9 +708,7 @@ def test_submit_waits_for_backend_thread_before_releasing_failed_renewal(tmp_pat
     backend.submit = _blocked_first_submit
     store.renew_job_lease = _failed_renewal
     with ThreadPoolExecutor(max_workers=1) as executor:
-        foreground = executor.submit(
-            _start, orchestrator, run_suffix="renewal_failure"
-        )
+        foreground = executor.submit(_start, orchestrator, run_suffix="renewal_failure")
         assert entered.wait(5)
         assert renewal_failed.wait(5)
         assert not foreground.done()
@@ -757,18 +720,14 @@ def test_submit_waits_for_backend_thread_before_releasing_failed_renewal(tmp_pat
             tool_call_id="tool_call_synthetic_renewal_failure",
         )
         with pytest.raises(LeaseConflict):
-            orchestrator.poll_once(
-                link["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-            )
+            orchestrator.poll_once(link["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
         assert len(submit_invocations) == 1
         store.renew_job_lease = original_renew
         release.set()
         with pytest.raises(RuntimeError, match="synthetic lease storage failure"):
             foreground.result(timeout=5)
 
-    recovered = orchestrator.poll_once(
-        link["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    recovered = orchestrator.poll_once(link["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert recovered["status"] == "waiting_solver"
     assert submit_invocations[0] == submit_invocations[1]
     assert len(backend.entries) == 1
@@ -781,22 +740,19 @@ def test_timeout_cancels_backend_before_terminalization_and_late_poll_is_ignored
     started = _start(orchestrator, deadline_at=now + timedelta(seconds=1))
     observed_statuses: list[str] = []
 
-    backend.cancel_observer = lambda: observed_statuses.append(
-        store.get_job(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)[
-            "status"
-        ]
-    )
+    def observe_cancelled_status():
+        observed_statuses.append(
+            store.get_job(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"]
+        )
+
+    backend.cancel_observer = observe_cancelled_status
     clock_value[0] = now + timedelta(seconds=2)
-    timed_out = orchestrator.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    timed_out = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert observed_statuses == ["waiting_solver"]
     assert timed_out["status"] == "timed_out"
 
     backend._entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
-    late = orchestrator.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    late = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert late["status"] == "timed_out"
 
 
@@ -808,23 +764,17 @@ def test_new_orchestrator_reconstructs_running_and_completed_backend_job(tmp_pat
     recovered = DurableJobOrchestrator(
         store=reopened_store,
         backend=backend,
-        idempotency_secret=b"synthetic-platform-secret",
+        idempotency_secret=synthetic_secret("solver_job_orchestrator-credential-01").encode("utf-8"),
         binding_revision_id=BINDING_REVISION,
         lease_owner="worker_recovered",
     )
-    running = recovered.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    running = recovered.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert running["status"] == "waiting_solver"
 
     backend._entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
-    completed = recovered.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    completed = recovered.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert completed["status"] == "solver_completed"
-    restored_attempt = reopened_store.get_attempt(
-        started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    restored_attempt = reopened_store.get_attempt(started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert restored_attempt["result"]["status"] == "optimal"
 
 
@@ -832,9 +782,7 @@ def test_cancelling_after_backend_completion_does_not_mutate_completed_attempt(t
     orchestrator, store, backend = _orchestrator(tmp_path)
     started = _start(orchestrator)
     backend._entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
-    completed = orchestrator.poll_once(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    completed = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert completed["status"] == "solver_completed"
 
     cancellation = orchestrator.cancel_subscription(
@@ -842,9 +790,7 @@ def test_cancelling_after_backend_completion_does_not_mutate_completed_attempt(t
     )
     assert cancellation["job_status"] == "cancelled"
     assert backend.cancel_calls == []
-    attempt = store.get_attempt(
-        started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    attempt = store.get_attempt(started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert attempt["status"] == "completed"
 
 
@@ -856,7 +802,7 @@ def test_recovery_scan_polls_persisted_nonterminal_jobs(tmp_path):
     recovered = DurableJobOrchestrator(
         store=SolverJobStore(store.database_path),
         backend=backend,
-        idempotency_secret=b"synthetic-platform-secret",
+        idempotency_secret=synthetic_secret("solver_job_orchestrator-credential-01").encode("utf-8"),
         binding_revision_id=BINDING_REVISION,
         lease_owner="worker_recovered",
     )
@@ -886,7 +832,7 @@ def test_generic_recovery_scans_all_frozen_bindings_and_one_bad_job_does_not_blo
     other_orchestrator = DurableJobOrchestrator(
         store=store,
         backend=backend,
-        idempotency_secret=b"synthetic-platform-secret",
+        idempotency_secret=synthetic_secret("solver_job_orchestrator-credential-01").encode("utf-8"),
         binding_revision_id=other_binding,
         lease_owner="worker_other_binding",
     )
@@ -902,7 +848,7 @@ def test_generic_recovery_scans_all_frozen_bindings_and_one_bad_job_does_not_blo
     recovered = DurableJobOrchestrator(
         store=SolverJobStore(store.database_path),
         backend=backend,
-        idempotency_secret=b"synthetic-platform-secret",
+        idempotency_secret=synthetic_secret("solver_job_orchestrator-credential-01").encode("utf-8"),
         binding_revision_id=BINDING_REVISION,
         lease_owner="worker_recovered",
     )
@@ -915,9 +861,7 @@ def test_generic_recovery_scans_all_frozen_bindings_and_one_bad_job_does_not_blo
     }
     assert other["backend_job_id"] in backend.poll_calls
     assert second["backend_job_id"] in backend.poll_calls
-    assert next(
-        outcome for outcome in outcomes if outcome["job_id"] == first["job_id"]
-    )["status"] == "waiting_solver"
+    assert next(outcome for outcome in outcomes if outcome["job_id"] == first["job_id"])["status"] == "waiting_solver"
 
 
 def test_recovery_failure_cannot_finalize_with_a_stale_fencing_token(tmp_path):
@@ -926,9 +870,7 @@ def test_recovery_failure_cannot_finalize_with_a_stale_fencing_token(tmp_path):
 
     def replace_worker_lease(_backend_job_id):
         backend.poll_hook = None
-        current = store.get_job(
-            started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-        )
+        current = store.get_job(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
         store.claim_job(
             started["job_id"],
             workspace_id=WORKSPACE_ID,
@@ -939,10 +881,6 @@ def test_recovery_failure_cannot_finalize_with_a_stale_fencing_token(tmp_path):
         raise RuntimeError("synthetic stale worker failure")
 
     backend.poll_hook = replace_worker_lease
-    outcomes = orchestrator.recover_once(
-        workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )
+    outcomes = orchestrator.recover_once(workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert outcomes == ()
-    assert store.get_job(
-        started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID
-    )["status"] == "waiting_solver"
+    assert store.get_job(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)["status"] == "waiting_solver"

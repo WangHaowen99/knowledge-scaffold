@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional
 from ontology.ontologies import SELECTED_ONTOLOGY_CONTEXT_START
 
 _UTC8 = timezone(timedelta(hours=8))
-CURRENT_DATE_REMINDER_START = "<system-reminder>\nAs you answer the user's questions, you can use the following context:"
+CURRENT_DATE_REMINDER_START = (
+    "<system-reminder>\nAs you answer the user's questions, you can use the following context:"
+)
 CURRENT_DATE_REMINDER_END = "</system-reminder>"
 
 
@@ -51,9 +53,7 @@ def append_current_date_reminder_to_latest_user_message(
 
 
 def append_current_date_reminder_to_text(text: str) -> str:
-    messages = append_current_date_reminder_to_latest_user_message(
-        [{"role": "user", "content": str(text or "")}]
-    )
+    messages = append_current_date_reminder_to_latest_user_message([{"role": "user", "content": str(text or "")}])
     if not messages:
         return str(text or "")
     content = messages[-1].get("content")
@@ -69,7 +69,7 @@ def strip_current_date_reminder(content: str) -> str:
         return content
     return "{}{}".format(
         content[:start],
-        content[end + len(CURRENT_DATE_REMINDER_END):],
+        content[end + len(CURRENT_DATE_REMINDER_END) :],
     )
 
 
@@ -80,10 +80,7 @@ def inject_selected_ontology_context_into_user_message(
     filtered = [
         strip_selected_ontology_context_from_user_message(dict(message))
         for message in messages
-        if not (
-            message.get("role") == "system"
-            and is_selected_ontology_context(str(message.get("content") or ""))
-        )
+        if not (message.get("role") == "system" and is_selected_ontology_context(str(message.get("content") or "")))
     ]
     if not selected_ontology_context:
         return filtered

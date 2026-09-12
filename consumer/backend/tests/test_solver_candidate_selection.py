@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.contracts import ProblemIR, SolverContractError
 from solver_coordination.problem_families.candidate_selection import (
     CandidateSelectionAdapter,
@@ -121,63 +121,43 @@ Mutation = Callable[[dict[str, Any]], None]
 
 
 def _duplicate_candidate_id(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][1][
-        "candidate_id"
-    ] = "CANDIDATE_SYNTHETIC_0000"
+    payload["parameters"]["candidate_selection"]["candidates"][1]["candidate_id"] = "CANDIDATE_SYNTHETIC_0000"
 
 
 def _blank_candidate_id(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][0][
-        "candidate_id"
-    ] = "   "
+    payload["parameters"]["candidate_selection"]["candidates"][0]["candidate_id"] = "   "
 
 
 def _missing_objective_metric(payload: dict[str, Any]) -> None:
-    del payload["parameters"]["candidate_selection"]["candidates"][0][
-        "metrics"
-    ]["primary_score"]
+    del payload["parameters"]["candidate_selection"]["candidates"][0]["metrics"]["primary_score"]
 
 
 def _boolean_metric(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][0]["metrics"][
-        "primary_score"
-    ] = True
+    payload["parameters"]["candidate_selection"]["candidates"][0]["metrics"]["primary_score"] = True
 
 
 def _overflow_metric(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][0]["metrics"][
-        "primary_score"
-    ] = 2**63
+    payload["parameters"]["candidate_selection"]["candidates"][0]["metrics"]["primary_score"] = 2**63
 
 
 def _rank_not_equal_to_position(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][1]["metrics"][
-        "candidate_rank"
-    ] = 0
+    payload["parameters"]["candidate_selection"]["candidates"][1]["metrics"]["candidate_rank"] = 0
 
 
 def _different_assignment_keys(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][1][
-        "assignment"
-    ] = {"item_0002": "OPTION_1"}
+    payload["parameters"]["candidate_selection"]["candidates"][1]["assignment"] = {"item_0002": "OPTION_1"}
 
 
 def _reserved_assignment_key(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][0][
-        "assignment"
-    ]["candidate_id"] = "COLLISION"
+    payload["parameters"]["candidate_selection"]["candidates"][0]["assignment"]["candidate_id"] = "COLLISION"
 
 
 def _non_boolean_eligible(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][0][
-        "eligible"
-    ] = 1
+    payload["parameters"]["candidate_selection"]["candidates"][0]["eligible"] = 1
 
 
 def _unknown_candidate_field(payload: dict[str, Any]) -> None:
-    payload["parameters"]["candidate_selection"]["candidates"][0][
-        "unexpected"
-    ] = "unsupported"
+    payload["parameters"]["candidate_selection"]["candidates"][0]["unexpected"] = "unsupported"
 
 
 def _unknown_objective_field(payload: dict[str, Any]) -> None:
@@ -251,9 +231,7 @@ def test_candidate_selection_contract_rejects_invalid_candidate_count(
     candidate_count: Any,
 ):
     payload = _problem_payload()
-    payload["parameters"]["candidate_selection"][
-        "candidate_count"
-    ] = candidate_count
+    payload["parameters"]["candidate_selection"]["candidate_count"] = candidate_count
 
     with pytest.raises(SolverContractError, match="candidate_count"):
         parse_candidate_selection(payload)
@@ -283,9 +261,7 @@ def test_candidate_selection_contract_rejects_missing_candidate_selection_sectio
 def test_candidate_selection_contract_rejects_non_mapping_assignment_and_metrics():
     for field_name in ("assignment", "metrics"):
         payload = _problem_payload()
-        payload["parameters"]["candidate_selection"]["candidates"][0][
-            field_name
-        ] = []
+        payload["parameters"]["candidate_selection"]["candidates"][0][field_name] = []
 
         with pytest.raises(SolverContractError, match=field_name):
             parse_candidate_selection(payload)
@@ -307,12 +283,12 @@ def test_candidate_selection_contract_rejects_non_array_candidates_and_objective
 
 def test_candidate_selection_components_preserve_platform_neutral_payload_rules():
     components = _components()
-    components["parameters"]["candidate_selection"]["candidates"][0][
-        "assignment"
-    ] = {"auth_token": "not-a-credential"}
-    components["parameters"]["candidate_selection"]["candidates"][1][
-        "assignment"
-    ] = {"auth_token": "not-a-credential"}
+    components["parameters"]["candidate_selection"]["candidates"][0]["assignment"] = {
+        "auth_token": synthetic_secret("solver_candidate_selection-credential-01")
+    }
+    components["parameters"]["candidate_selection"]["candidates"][1]["assignment"] = {
+        "auth_token": synthetic_secret("solver_candidate_selection-credential-01")
+    }
 
     with pytest.raises(SolverContractError, match="credential"):
         validate_candidate_selection_components(components)
@@ -373,18 +349,12 @@ def test_candidate_selection_adapter_delegates_to_the_injected_profile_compiler(
 
 def test_candidate_selection_adapter_validates_compiled_components_before_returning():
     compiled = _components()
-    compiled["parameters"]["candidate_selection"]["candidates"][0]["metrics"][
-        "candidate_rank"
-    ] = 1
-    registry = _ProfileRegistry(
-        _Registration(compiler=_ProfileCompiler(compiled))
-    )
+    compiled["parameters"]["candidate_selection"]["candidates"][0]["metrics"]["candidate_rank"] = 1
+    registry = _ProfileRegistry(_Registration(compiler=_ProfileCompiler(compiled)))
 
     with pytest.raises(SolverContractError, match="candidate_rank"):
         CandidateSelectionAdapter(registry).compile_problem(
-            capability={
-                "decision_model": {"profile_id": "profile_synthetic.v1"}
-            },
+            capability={"decision_model": {"profile_id": "profile_synthetic.v1"}},
             normalized_input=object(),
             fact_snapshot=object(),
         )

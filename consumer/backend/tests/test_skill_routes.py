@@ -1,28 +1,30 @@
 """Tests for skill routes against the onto-runtime layout."""
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
-
 from api.routes.skills import skills_router
+from api.testing import TestApplication
 from auth_test_backend import AuthManager
+from backend_synthetic_credentials import (
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    STRONG_PASSWORD,
+)
+from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 def _build_test_client(
     tmp_path,
     username: str = "admin",
-    password: str = "TestBootstrap#2026",
+    password: str = BOOTSTRAP_ADMIN_PASSWORD,
 ):
     app = TestApplication()
     app.state.services["TESTING"] = True
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
     user = auth_manager.authenticate(username, password)
     assert user is not None
     if user.password_change_required:
-        user = auth_manager.change_password(username, password, "RootStrong123!")
+        user = auth_manager.change_password(username, password, STRONG_PASSWORD)
 
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(skills_router)
@@ -47,13 +49,7 @@ def test_list_skills_uses_onto_runtime_root_from_env(tmp_path, monkeypatch):
     skill_dir = workspace_paths.skills_dir / "demo-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        (
-            "---\n"
-            "name: demo-skill\n"
-            "description: Demo reusable skill\n"
-            "---\n\n"
-            "# Demo Skill\n"
-        ),
+        ("---\n" "name: demo-skill\n" "description: Demo reusable skill\n" "---\n\n" "# Demo Skill\n"),
         encoding="utf-8",
     )
 
@@ -111,17 +107,11 @@ def test_delete_skill_rejects_traversal_name_without_deleting_workspace(tmp_path
     skill_dir = workspace_paths.skills_dir / "demo-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        (
-            "---\n"
-            "name: demo-skill\n"
-            "description: Demo reusable skill\n"
-            "---\n\n"
-            "# Demo Skill\n"
-        ),
+        ("---\n" "name: demo-skill\n" "description: Demo reusable skill\n" "---\n\n" "# Demo Skill\n"),
         encoding="utf-8",
     )
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
+    client, headers = _build_test_client(tmp_path, username="admin", password=BOOTSTRAP_ADMIN_PASSWORD)
     response = client.delete("/agentic/skills/%2E%2E", headers=headers)
 
     assert response.status_code == 400

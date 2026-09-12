@@ -8,7 +8,6 @@ from utils.read_docs import (
     normalize_read_documents_registry,
 )
 
-
 EPOCH = "a" * 64
 
 

@@ -4,23 +4,24 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from agent.tools.business_data.resolver import BusinessDataConnectionError, resolve_business_data_source
 from agent.tools.business_data.providers.graph.backends.hugegraph import HugeGraphBackend
 from agent.tools.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
 from agent.tools.business_data.providers.graph.mapping import GraphMappingResolver
 from agent.tools.business_data.providers.graph.models import GraphEntityMapping, GraphSearchRuntimeContext
 from agent.tools.business_data.providers.graph.scope import GraphScopeError, build_graph_scope
 from agent.tools.business_data.providers.graph.tools.executor import GraphToolExecutor, GraphToolInputError
-from ontology.ontology_catalog import get_ontology_manifest
-from workspace.workspaces import get_workspace, get_workspace_paths, workspace_scope
-from .schemas import error_result
-from integration.mcp.scope import MCPRequestScope
+from agent.tools.business_data.resolver import BusinessDataConnectionError, resolve_business_data_source
 from integration.mcp.ontology_binding import (
     MCPOntologyBindingError,
     resolve_effective_ontology_id,
     validate_runtime_ontology_availability,
 )
-from .tool_contracts import SEARCH_TOOL_NAMES, list_search_tools, normalize_search_tool_args, ToolInputIssue
+from integration.mcp.scope import MCPRequestScope
+from ontology.ontology_catalog import get_ontology_manifest
+from workspace.workspaces import get_workspace, get_workspace_paths, workspace_scope
+
+from .schemas import error_result
+from .tool_contracts import SEARCH_TOOL_NAMES, ToolInputIssue, list_search_tools, normalize_search_tool_args
 
 UNSUPPORTED_TOOLS: set[str] = set()
 
@@ -160,9 +161,7 @@ def _build_runtime(*, scope: MCPRequestScope, ontology_id: str, entity: str, que
             str(ontology_error or "Ontology '{}' not found".format(ontology_id)).replace("Error: ", "")
         )
     ontology_version = str(
-        getattr(ontology_manifest, "version", "")
-        or getattr(ontology_manifest, "active_version", "")
-        or ""
+        getattr(ontology_manifest, "version", "") or getattr(ontology_manifest, "active_version", "") or ""
     ).strip()
     provider = str(connection.provider or "").strip().lower()
     if provider not in {"neo4j", "hugegraph"}:
@@ -273,11 +272,7 @@ def _public_tool_payload(execution, *, scope: MCPRequestScope, provider: str, on
         "get_nodes_schema": {"get_object_types"},
         "get_edges_schema": {"get_relation_types"},
     }
-    public_tool_name = (
-        alias
-        if alias in allowed_aliases.get(internal_tool_name, set())
-        else internal_tool_name
-    )
+    public_tool_name = alias if alias in allowed_aliases.get(internal_tool_name, set()) else internal_tool_name
     response = {
         "ok": bool(payload.get("success", True)),
         "result": result,
@@ -297,9 +292,7 @@ def _public_tool_payload(execution, *, scope: MCPRequestScope, provider: str, on
     backend_result = execution.backend_result
     if backend_result is not None:
         response["record_count"] = (
-            backend_result.total
-            if backend_result.total is not None
-            else len(backend_result.records or [])
+            backend_result.total if backend_result.total is not None else len(backend_result.records or [])
         )
         response["truncated"] = bool(backend_result.truncated)
     return response

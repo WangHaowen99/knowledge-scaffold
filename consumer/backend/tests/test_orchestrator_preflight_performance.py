@@ -57,15 +57,13 @@ def test_protocol_preflight_uses_summary_metadata_and_turn_count_without_history
         ),
     )
 
-    request, ontology_id, version, profile_id = (
-        orchestrator._build_protocol_preflight_request(
-            user_request="run operation",
-            user_context={},
-            arguments={},
-            session_id="session-preflight",
-            user_id="operator-a",
-            workspace_id="workspace-a",
-        )
+    request, ontology_id, version, profile_id = orchestrator._build_protocol_preflight_request(
+        user_request="run operation",
+        user_context={},
+        arguments={},
+        session_id="session-preflight",
+        user_id="operator-a",
+        workspace_id="workspace-a",
     )
 
     assert request is not None

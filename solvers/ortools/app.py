@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hmac
 import re
-from typing import Any, Mapping
 import uuid
+from typing import Any, Mapping
 
 from flask import Flask, Response, jsonify, request
 from flask.sessions import NullSession, SessionInterface
@@ -27,7 +27,6 @@ from .service import (
 )
 from .store import AttemptRecord
 
-
 _IDEMPOTENCY_RE = re.compile(r"^[\x21-\x7e]{16,256}$")
 _PREFER_RE = re.compile(r"^wait=([0-9]{1,8})$")
 
@@ -35,7 +34,7 @@ _PREFER_RE = re.compile(r"^wait=([0-9]{1,8})$")
 class BearerOnlySessionInterface(SessionInterface):
     """Disable cookie-backed sessions for the bearer-only solver API."""
 
-    def open_session(self, app: Flask, request: Any) -> NullSession:
+    def open_session(self, app: Flask, request_obj: Any) -> NullSession:
         return NullSession()
 
     def save_session(
@@ -155,7 +154,13 @@ def create_app(config: OrToolsSolverConfig | None = None) -> Flask:
     def submit() -> tuple[Response, int]:
         idempotency_key = request.headers.get("Idempotency-Key", "")
         if _IDEMPOTENCY_RE.fullmatch(idempotency_key) is None:
-            return _error(status=400, code="IDEMPOTENCY_KEY_REQUIRED", category="validation", message="A valid Idempotency-Key header is required", retryable=False)
+            return _error(
+                status=400,
+                code="IDEMPOTENCY_KEY_REQUIRED",
+                category="validation",
+                message="A valid Idempotency-Key header is required",
+                retryable=False,
+            )
         try:
             traceparent = request.headers.get("traceparent")
             if traceparent is not None:
@@ -164,19 +169,47 @@ def create_app(config: OrToolsSolverConfig | None = None) -> Flask:
             document = _strict_submit(config)
             record, _ = service.submit(idempotency_key=idempotency_key, document=document)
         except (ContractValidationError, UnicodeError):
-            return _error(status=400, code="CONTRACT_INVALID", category="validation", message="Submit request does not satisfy ortools.solver.v1", retryable=False)
+            return _error(
+                status=400,
+                code="CONTRACT_INVALID",
+                category="validation",
+                message="Submit request does not satisfy ortools.solver.v1",
+                retryable=False,
+            )
         except LimitExceeded:
-            return _error(status=400, code="LIMIT_EXCEEDED", category="capacity", message="Submit request exceeds solver limits", retryable=False)
+            return _error(
+                status=400,
+                code="LIMIT_EXCEEDED",
+                category="capacity",
+                message="Submit request exceeds solver limits",
+                retryable=False,
+            )
         except IdempotencyConflict:
-            return _error(status=409, code="IDEMPOTENCY_CONFLICT", category="validation", message="Idempotency key was already used for another request", retryable=False)
+            return _error(
+                status=409,
+                code="IDEMPOTENCY_CONFLICT",
+                category="validation",
+                message="Idempotency key was already used for another request",
+                retryable=False,
+            )
         except CapacityUnavailable:
-            response, status = _error(status=429, code="CAPACITY_UNAVAILABLE", category="capacity", message="Solver concurrency limit is reached", retryable=True)
+            response, status = _error(
+                status=429,
+                code="CAPACITY_UNAVAILABLE",
+                category="capacity",
+                message="Solver concurrency limit is reached",
+                retryable=True,
+            )
             response.headers["Retry-After"] = "1"
             return response, status
         if wait_ms:
             import time
+
             deadline = time.monotonic() + wait_ms / 1000.0
-            while record.status not in {"completed", "failed", "cancelled", "attempt_lost"} and time.monotonic() < deadline:
+            while (
+                record.status not in {"completed", "failed", "cancelled", "attempt_lost"}
+                and time.monotonic() < deadline
+            ):
                 time.sleep(0.01)
                 refreshed = service.get(record.job_id)
                 if refreshed is None:
@@ -190,7 +223,13 @@ def create_app(config: OrToolsSolverConfig | None = None) -> Flask:
     def get_job(job_id: str):
         record = service.get(job_id)
         if record is None:
-            return _error(status=404, code="JOB_NOT_FOUND", category="result", message="Job does not exist or has expired", retryable=False)
+            return _error(
+                status=404,
+                code="JOB_NOT_FOUND",
+                category="result",
+                message="Job does not exist or has expired",
+                retryable=False,
+            )
         payload = _job(record)
         validate_document("job", payload)
         return jsonify(payload)
@@ -199,9 +238,21 @@ def create_app(config: OrToolsSolverConfig | None = None) -> Flask:
     def get_result(job_id: str):
         record = service.get(job_id)
         if record is None:
-            return _error(status=404, code="JOB_NOT_FOUND", category="result", message="Job does not exist or has expired", retryable=False)
+            return _error(
+                status=404,
+                code="JOB_NOT_FOUND",
+                category="result",
+                message="Job does not exist or has expired",
+                retryable=False,
+            )
         if record.status != "completed" or record.result is None:
-            return _error(status=409, code="RESULT_NOT_AVAILABLE", category="result", message="Solve result is not available", retryable=record.status in {"accepted", "running"})
+            return _error(
+                status=409,
+                code="RESULT_NOT_AVAILABLE",
+                category="result",
+                message="Solve result is not available",
+                retryable=record.status in {"accepted", "running"},
+            )
         validate_document("result", record.result)
         return jsonify(record.result)
 
@@ -209,14 +260,26 @@ def create_app(config: OrToolsSolverConfig | None = None) -> Flask:
     def cancel_job(job_id: str):
         record = service.cancel(job_id)
         if record is None:
-            return _error(status=404, code="JOB_NOT_FOUND", category="result", message="Job does not exist or has expired", retryable=False)
+            return _error(
+                status=404,
+                code="JOB_NOT_FOUND",
+                category="result",
+                message="Job does not exist or has expired",
+                retryable=False,
+            )
         payload = _job(record)
         validate_document("job", payload)
         return jsonify(payload)
 
     @app.errorhandler(413)
     def payload_too_large(_: BaseException):
-        return _error(status=413, code="PAYLOAD_TOO_LARGE", category="capacity", message="Request payload exceeds solver limits", retryable=False)
+        return _error(
+            status=413,
+            code="PAYLOAD_TOO_LARGE",
+            category="capacity",
+            message="Request payload exceeds solver limits",
+            retryable=False,
+        )
 
     return app
 

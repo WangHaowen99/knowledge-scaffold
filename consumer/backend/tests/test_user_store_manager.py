@@ -4,11 +4,10 @@ import time
 from types import SimpleNamespace
 
 import pytest
-
 import workspace.user_store_manager as user_store_manager_module
+from utils.streaming import build_agent_event
 from workspace.user_store_manager import SessionPruneResult, UserStoreManager
 from workspace.workspaces import create_workspace
-from utils.streaming import build_agent_event
 
 
 def _set_session_updated_at(storage_dir, session_id, updated_at):
@@ -51,14 +50,7 @@ def test_user_store_manager_prunes_old_sessions_and_execution_records(tmp_path, 
             "done",
         )
         _set_session_updated_at(
-            tmp_path
-            / ".onto-runtime"
-            / "workspaces"
-            / "demo"
-            / "runtime"
-            / "users"
-            / "alice"
-            / "chats",
+            tmp_path / ".onto-runtime" / "workspaces" / "demo" / "runtime" / "users" / "alice" / "chats",
             session_id,
             "2026-05-{:02d}T00:00:00+00:00".format(index + 1),
         )
@@ -79,16 +71,7 @@ def test_indexed_prune_skips_session_with_admission_reservation(tmp_path, monkey
     chat_store = manager.get_chat_store("alice", "lease")
     execution_store = manager.get_execution_store("alice", "lease")
     summary_index = manager.get_session_summary_index("alice", "lease")
-    storage_dir = (
-        tmp_path
-        / ".onto-runtime"
-        / "workspaces"
-        / "lease"
-        / "runtime"
-        / "users"
-        / "alice"
-        / "chats"
-    )
+    storage_dir = tmp_path / ".onto-runtime" / "workspaces" / "lease" / "runtime" / "users" / "alice" / "chats"
     chat_store.create_session(session_id="old", title="old")
     _set_session_updated_at(
         storage_dir,
@@ -232,9 +215,7 @@ def test_slow_index_initialization_for_one_user_does_not_hold_manager_global_loc
     bob.start()
     try:
         bob.join(timeout=0.25)
-        assert bob.is_alive() is False, (
-            "one user's index rebuild held the manager-wide store lock"
-        )
+        assert bob.is_alive() is False, "one user's index rebuild held the manager-wide store lock"
     finally:
         release_alice_loader.set()
         alice.join(timeout=1.0)
@@ -264,6 +245,7 @@ def test_store_initialization_does_not_load_or_rebuild_a_cold_summary_index(
             revision_reads.append(True)
             raise OSError("synthetic cold rebuild")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def mark_degraded(self, _reason):
             return None
 
@@ -519,16 +501,7 @@ def test_indexed_prune_does_not_delete_session_updated_after_candidate_selection
     manager = UserStoreManager("", "")
     chat_store = manager.get_chat_store("alice", "prune-cas")
     index = manager.get_session_summary_index("alice", "prune-cas")
-    storage_dir = (
-        tmp_path
-        / ".onto-runtime"
-        / "workspaces"
-        / "prune-cas"
-        / "runtime"
-        / "users"
-        / "alice"
-        / "chats"
-    )
+    storage_dir = tmp_path / ".onto-runtime" / "workspaces" / "prune-cas" / "runtime" / "users" / "alice" / "chats"
     for offset, session_id in enumerate(("oldest", "middle", "newest"), start=1):
         chat_store.create_session(session_id=session_id, title=session_id)
         _set_session_updated_at(
@@ -579,9 +552,11 @@ def test_recovery_discovery_defers_unready_index_and_continues_other_users(
         def __init__(self, name):
             self.name = name
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def is_symlink(self):
             return False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def is_dir(self, *, follow_symlinks):
             assert follow_symlinks is False
             return True
@@ -593,6 +568,7 @@ def test_recovery_discovery_defers_unready_index_and_continues_other_users(
         def __enter__(self):
             return self
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def __exit__(self, *_args):
             return False
 
@@ -651,11 +627,7 @@ def test_recovery_discovery_defers_unready_index_and_continues_other_users(
         ),
     )
 
-    targets = [
-        target
-        for target in manager._iter_recovery_targets()
-        if isinstance(target, tuple)
-    ]
+    targets = [target for target in manager._iter_recovery_targets() if isinstance(target, tuple)]
 
     assert targets == [
         ("workspace", "bob", "bob-session"),
@@ -678,9 +650,7 @@ def test_cold_prune_schedules_rebuild_without_loading_history_on_caller(
     monkeypatch.setattr(
         index,
         "prune_candidates",
-        lambda **_options: (_ for _ in ()).throw(
-            AssertionError("cold prune must not scan session history")
-        ),
+        lambda **_options: (_ for _ in ()).throw(AssertionError("cold prune must not scan session history")),
     )
 
     result = manager.prune_sessions_batch(
@@ -928,8 +898,8 @@ def test_recovery_discovery_worker_propagates_errors_and_shuts_down(tmp_path, mo
     manager = UserStoreManager("", "")
 
     def broken_catalog_scan():
+        yield from ()
         raise RuntimeError("synthetic discovery failure")
-        yield  # pragma: no cover
 
     monkeypatch.setattr(manager, "_iter_recovery_targets", broken_catalog_scan)
 
@@ -949,16 +919,7 @@ def test_prune_batch_reports_more_work_when_authoritative_recheck_skips_candidat
     create_workspace("Prune State", workspace_id="prune-state", set_as_default=True)
     manager = UserStoreManager("", "")
     chat_store = manager.get_chat_store("alice", "prune-state")
-    storage_dir = (
-        tmp_path
-        / ".onto-runtime"
-        / "workspaces"
-        / "prune-state"
-        / "runtime"
-        / "users"
-        / "alice"
-        / "chats"
-    )
+    storage_dir = tmp_path / ".onto-runtime" / "workspaces" / "prune-state" / "runtime" / "users" / "alice" / "chats"
     for index in range(3):
         session_id = f"stale-{index}"
         chat_store.create_session(session_id=session_id, title=f"Stale {index}")

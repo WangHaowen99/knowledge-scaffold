@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
 import logging
 import os
 import re
-from pathlib import Path
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from solver_coordination.contracts import ProblemIR, SolverResult
@@ -21,9 +21,8 @@ from .errors import (
     ConnectorContractError,
     ConnectorResultError,
 )
-from .http_transport import HttpSolverTransport
 from .helpers import capability_fingerprint
-
+from .http_transport import HttpSolverTransport
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +35,9 @@ _BUILD_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 _INTERNAL_FAMILY = "binary_ordered_route.v1"
 _SUPPORTED_INTERNAL_FAMILIES = {"candidate_selection.v1", _INTERNAL_FAMILY}
 DOMAIN_EVALUATION_CAPABILITY = "domain_candidate_evaluation"
-ORTOOLS_CONNECTOR_CODE_BUILD = "sha256:" + hashlib.sha256(
-    b"consumer-ortools-connector-adapter:ortools.solver.v1"
-).hexdigest()
+ORTOOLS_CONNECTOR_CODE_BUILD = (
+    "sha256:" + hashlib.sha256(b"consumer-ortools-connector-adapter:ortools.solver.v1").hexdigest()
+)
 
 
 def _text(value: Any, field: str, pattern: re.Pattern[str] | None = None) -> str:
@@ -80,9 +79,7 @@ def _service_validator() -> Any:
 
         return module
     except ImportError:
-        logger.debug(
-            "Installed OR-Tools contract module is unavailable; trying artifact paths"
-        )
+        logger.debug("Installed OR-Tools contract module is unavailable; trying artifact paths")
     candidates: list[Path] = []
     configured = os.environ.get("SOLVER_CONTRACT_ROOT")
     if configured:
@@ -95,9 +92,7 @@ def _service_validator() -> Any:
     for path in candidates:
         if not path.is_file():
             continue
-        spec = importlib.util.spec_from_file_location(
-            "solver_service_ortools_contract_validation", path
-        )
+        spec = importlib.util.spec_from_file_location("solver_service_ortools_contract_validation", path)
         if spec is None or spec.loader is None:
             continue
         module = importlib.util.module_from_spec(spec)
@@ -122,9 +117,7 @@ def _connector_build(service_capabilities: Mapping[str, Any]) -> str:
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(
-        ORTOOLS_CONNECTOR_CODE_BUILD.encode("ascii") + b"\0" + canonical
-    ).hexdigest()
+    return "sha256:" + hashlib.sha256(ORTOOLS_CONNECTOR_CODE_BUILD.encode("ascii") + b"\0" + canonical).hexdigest()
 
 
 def _problem_data(problem: ProblemIR) -> dict[str, Any]:
@@ -152,10 +145,7 @@ def _remaining_ms(deadline: datetime) -> int:
         raise ConnectorContractError("deadline must be timezone-aware")
     return max(
         1,
-        int(
-            (deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
-            * 1000
-        ),
+        int((deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds() * 1000),
     )
 
 
@@ -165,9 +155,7 @@ class OrToolsConnector:
     connector_type = "ortools"
 
     def __init__(self, *, transport: HttpSolverTransport) -> None:
-        if not isinstance(transport, HttpSolverTransport) and not callable(
-            getattr(transport, "request", None)
-        ):
+        if not isinstance(transport, HttpSolverTransport) and not callable(getattr(transport, "request", None)):
             raise TypeError("transport must implement request")
         self.transport = transport
         self._job_context: dict[str, dict[str, str]] = {}
@@ -212,9 +200,7 @@ class OrToolsConnector:
             }
         payload = _strict_document(
             "capabilities",
-            self.transport.request(
-                method="GET", binding=binding, path="/api/v1/capabilities"
-            ),
+            self.transport.request(method="GET", binding=binding, path="/api/v1/capabilities"),
         )
         service = payload["service"]
         engine = payload["engine"]
@@ -282,11 +268,7 @@ class OrToolsConnector:
         family = _supported_family(capabilities.get("problem_families", ()))
         if not isinstance(family, Mapping):
             return set()
-        return {
-            feature
-            for feature in family.get("features", ())
-            if isinstance(feature, str) and feature
-        }
+        return {feature for feature in family.get("features", ()) if isinstance(feature, str) and feature}
 
     def assert_binding_capabilities(
         self,
@@ -303,15 +285,11 @@ class OrToolsConnector:
         missing = set(required_capabilities) - self._family_features(live)
         if missing:
             raise ConnectorContractError(
-                "Connector does not support required capabilities: {}".format(
-                    ", ".join(sorted(missing))
-                )
+                "Connector does not support required capabilities: {}".format(", ".join(sorted(missing)))
             )
         self._validated_capability_bindings.add(self._binding_key(binding))
 
-    def _assert_problem_capabilities(
-        self, *, binding: Mapping[str, Any], problem: ProblemIR
-    ) -> None:
+    def _assert_problem_capabilities(self, *, binding: Mapping[str, Any], problem: ProblemIR) -> None:
         parameters = problem.parameters
         if not isinstance(parameters, Mapping) or "domain_evaluation" not in parameters:
             return
@@ -325,9 +303,7 @@ class OrToolsConnector:
         live = self._capabilities_by_binding.get(key, {})
         if DOMAIN_EVALUATION_CAPABILITY not in self._family_features(live):
             raise ConnectorContractError(
-                "Connector does not support required capabilities: {}".format(
-                    DOMAIN_EVALUATION_CAPABILITY
-                )
+                "Connector does not support required capabilities: {}".format(DOMAIN_EVALUATION_CAPABILITY)
             )
 
     def submit(
@@ -344,7 +320,11 @@ class OrToolsConnector:
             raise ConnectorContractError("result quality is invalid")
         self._assert_problem_capabilities(binding=binding, problem=problem)
         allowed = binding.get("allowed_families")
-        if not isinstance(allowed, Mapping) or PROBLEM_TYPE not in allowed or PROBLEM_VERSION not in allowed[PROBLEM_TYPE]:
+        if (
+            not isinstance(allowed, Mapping)
+            or PROBLEM_TYPE not in allowed
+            or PROBLEM_VERSION not in allowed[PROBLEM_TYPE]
+        ):
             raise ConnectorContractError("problem family is not allowed by the binding")
         request_id = _request_id(idempotency_key)
         raw_limits = binding.get("neutral_limits")
@@ -393,9 +373,8 @@ class OrToolsConnector:
         if frozen is None:
             self._binding_by_job[job_id] = dict(binding)
             return
-        if (
-            frozen.get("endpoint") != binding.get("endpoint")
-            or frozen.get("capability_fingerprint") != binding.get("capability_fingerprint")
+        if frozen.get("endpoint") != binding.get("endpoint") or frozen.get("capability_fingerprint") != binding.get(
+            "capability_fingerprint"
         ):
             raise ConnectorContractError("Connector binding changed for an existing job")
 
@@ -403,19 +382,19 @@ class OrToolsConnector:
         _text(job_id, "job_id", _JOB_RE)
         self._assert_frozen_binding(binding=binding, job_id=job_id)
         context = self._job_context.get(job_id)
-        payload = self.transport.request(
-            method="GET", binding=binding, path=f"/api/v1/jobs/{job_id}"
+        payload = self.transport.request(method="GET", binding=binding, path=f"/api/v1/jobs/{job_id}")
+        return self._job(
+            _strict_document("job", payload), expected_request_id=context["request_id"] if context else None
         )
-        return self._job(_strict_document("job", payload), expected_request_id=context["request_id"] if context else None)
 
     def cancel(self, *, binding: Mapping[str, Any], job_id: str) -> Mapping[str, Any]:
         _text(job_id, "job_id", _JOB_RE)
         self._assert_frozen_binding(binding=binding, job_id=job_id)
         context = self._job_context.get(job_id)
-        payload = self.transport.request(
-            method="DELETE", binding=binding, path=f"/api/v1/jobs/{job_id}"
+        payload = self.transport.request(method="DELETE", binding=binding, path=f"/api/v1/jobs/{job_id}")
+        return self._job(
+            _strict_document("job", payload), expected_request_id=context["request_id"] if context else None
         )
-        return self._job(_strict_document("job", payload), expected_request_id=context["request_id"] if context else None)
 
     def result(self, *, binding: Mapping[str, Any], job_id: str) -> SolverResult:
         _text(job_id, "job_id", _JOB_RE)
@@ -423,9 +402,7 @@ class OrToolsConnector:
         context = self._job_context.get(job_id)
         if context is None:
             raise ConnectorResultError("connector job context is unavailable")
-        payload = self.transport.request(
-            method="GET", binding=binding, path=f"/api/v1/jobs/{job_id}/result"
-        )
+        payload = self.transport.request(method="GET", binding=binding, path=f"/api/v1/jobs/{job_id}/result")
         try:
             payload = dict(_strict_document("result", payload))
             if payload["job_id"] != job_id:
@@ -462,9 +439,7 @@ class OrToolsConnector:
                 raise
             raise ConnectorResultError() from exc
 
-    def restore_job_context(
-        self, *, job_id: str, idempotency_key: str, problem_id: str
-    ) -> None:
+    def restore_job_context(self, *, job_id: str, idempotency_key: str, problem_id: str) -> None:
         if job_id not in self._job_context:
             self._job_context[job_id] = {
                 "request_id": _request_id(idempotency_key),

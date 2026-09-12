@@ -19,7 +19,6 @@ from ontology.hash_contract import (
     value_s,
 )
 
-
 INDEX_SCHEMA_VERSION = "2"
 CHUNKER_VERSION = "evidence-chunker/1"
 CHUNK_NORMALIZATION_VERSION = "chunk-text/1"
@@ -103,7 +102,11 @@ def build_index_generation(
     parser_version: str,
     semantic_profile_digest: Optional[str] = None,
 ) -> str:
-    semantic_field = field_h("semantic_profile_digest", semantic_profile_digest) if semantic_profile_digest else field_n("semantic_profile_digest")
+    semantic_field = (
+        field_h("semantic_profile_digest", semantic_profile_digest)
+        if semantic_profile_digest
+        else field_n("semantic_profile_digest")
+    )
     return hash_frames(
         "index_generation/v1",
         [
@@ -119,7 +122,10 @@ def build_index_generation(
 
 
 def normalize_chunk_text(text: str) -> str:
-    lines = [unicodedata.normalize("NFC", line).rstrip() for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    lines = [
+        unicodedata.normalize("NFC", line).rstrip()
+        for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ]
     result: list[str] = []
     blank = False
     for line in lines:

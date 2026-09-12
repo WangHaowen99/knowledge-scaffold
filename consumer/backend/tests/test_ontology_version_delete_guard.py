@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
 import yaml
-
 from api.auth.auth import AuthManager
 from api.routes.ontologies import ontologies_router
 from api.testing import TestApplication
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD
+from fastapi.testclient import TestClient
 from persistence.chat_store import ChatStore
 from workspace.workspaces import create_workspace, get_workspace_paths
 
@@ -16,11 +16,11 @@ def _build_test_client(tmp_path):
     app = TestApplication()
     app.state.services["TESTING"] = True
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
     if user.password_change_required:
-        user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+        user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
 
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(ontologies_router)

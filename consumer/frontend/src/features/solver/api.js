@@ -3,7 +3,9 @@ import { authFetch } from '../../shared/api/auth.js';
 const cleanText = (value) => String(value ?? '').trim();
 
 const networkError = (fallbackMessage, cause) => {
-  const error = new Error(`${fallbackMessage}：网络异常或后端服务不可用`, { cause });
+  const error = new Error(`${fallbackMessage}：网络异常或后端服务不可用`, {
+    cause,
+  });
   error.status = 0;
   error.code = 'network_error';
   error.retryable = true;
@@ -20,14 +22,18 @@ export async function requestSolverJson(
   try {
     response = await request(url, options);
   } catch (cause) {
-    if (cause?.name === 'AbortError') throw cause;
+    if (cause?.name === 'AbortError') {
+      throw cause;
+    }
     throw networkError(fallbackMessage, cause);
   }
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(
-      payload.error || payload.detail || `${fallbackMessage}（HTTP ${response.status}）`,
+      payload.error ||
+        payload.detail ||
+        `${fallbackMessage}（HTTP ${response.status}）`,
     );
     error.status = response.status;
     error.code = cleanText(payload.code);
@@ -44,7 +50,10 @@ const jsonOptions = (body, { signal, headers = {} } = {}) => ({
   signal,
 });
 
-export function createCandidateSet(payload, { request = authFetch, signal } = {}) {
+export function createCandidateSet(
+  payload,
+  { request = authFetch, signal } = {},
+) {
   return requestSolverJson(
     request,
     '/api/solver/runs',
@@ -59,7 +68,9 @@ export function createValidationRun(
   { request = authFetch, signal } = {},
 ) {
   const normalizedKey = cleanText(idempotencyKey);
-  if (!normalizedKey) return Promise.reject(new Error('缺少校验请求幂等键'));
+  if (!normalizedKey) {
+    return Promise.reject(new Error('缺少校验请求幂等键'));
+  }
   return requestSolverJson(
     request,
     '/api/solver/validations',
@@ -73,7 +84,9 @@ export function createValidationRun(
 
 export function getSolverRun(runId, { request = authFetch, signal } = {}) {
   const normalizedRunId = cleanText(runId);
-  if (!normalizedRunId) return Promise.reject(new Error('缺少求解运行标识'));
+  if (!normalizedRunId) {
+    return Promise.reject(new Error('缺少求解运行标识'));
+  }
   return requestSolverJson(
     request,
     `/api/solver/runs/${encodeURIComponent(normalizedRunId)}`,
@@ -87,7 +100,9 @@ export function getSolverHistory(
   { request = authFetch, signal } = {},
 ) {
   const params = new URLSearchParams();
-  if (cleanText(cursor)) params.set('cursor', cleanText(cursor));
+  if (cleanText(cursor)) {
+    params.set('cursor', cleanText(cursor));
+  }
   params.set('limit', String(Math.min(100, Math.max(1, Number(limit) || 50))));
   return requestSolverJson(
     request,
@@ -99,7 +114,9 @@ export function getSolverHistory(
 
 export function getSolverEvidence(jobId, { request = authFetch, signal } = {}) {
   const normalizedJobId = cleanText(jobId);
-  if (!normalizedJobId) return Promise.reject(new Error('缺少求解 Job 标识'));
+  if (!normalizedJobId) {
+    return Promise.reject(new Error('缺少求解 Job 标识'));
+  }
   return requestSolverJson(
     request,
     `/api/solver/history/${encodeURIComponent(normalizedJobId)}/evidence`,
@@ -108,9 +125,14 @@ export function getSolverEvidence(jobId, { request = authFetch, signal } = {}) {
   );
 }
 
-export function getSolverCandidateResults(jobId, { request = authFetch, signal } = {}) {
+export function getSolverCandidateResults(
+  jobId,
+  { request = authFetch, signal } = {},
+) {
   const normalizedJobId = cleanText(jobId);
-  if (!normalizedJobId) return Promise.reject(new Error('缺少求解 Job 标识'));
+  if (!normalizedJobId) {
+    return Promise.reject(new Error('缺少求解 Job 标识'));
+  }
   return requestSolverJson(
     request,
     `/api/solver/history/${encodeURIComponent(normalizedJobId)}/candidate-results`,

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
 from types import SimpleNamespace
 
 import agent.tools.execute_script as execute_script_module
+import pytest
 from agent.tools.execute_script import _build_cli_args_from_parameters
 
 

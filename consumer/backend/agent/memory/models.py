@@ -12,6 +12,7 @@ MEMORY_TYPE_TO_DIR = {
 
 MEMORY_SCOPE_VALUES = {"user"}
 
+
 @dataclass
 class MemoryStoreResult:
     stored: bool
@@ -100,9 +101,7 @@ def normalize_memory_type(value: Optional[str]) -> str:
 def normalize_memory_scope(value: Optional[str]) -> str:
     normalized = str(value or "user").strip().lower()
     if normalized not in MEMORY_SCOPE_VALUES:
-        raise ValueError(
-            "Unsupported scope '{}'. Expected one of: user.".format(value)
-        )
+        raise ValueError("Unsupported scope '{}'. Expected one of: user.".format(value))
     return normalized
 
 

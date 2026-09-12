@@ -9,7 +9,6 @@ from agent.tools.execute_script import (
     _validate_structured_arguments_against_request,
 )
 
-
 PARAMETERS = [
     {
         "name": "batches",
@@ -167,10 +166,7 @@ def test_structured_collection_rejects_values_paired_from_different_request_item
 
 
 def test_serialized_json_object_enters_collection_consistency_validation():
-    request = (
-        "Record 1: sample-a, quantity 12.5, category red;\n"
-        "Record 2: sample-b, quantity 7.25, category blue."
-    )
+    request = "Record 1: sample-a, quantity 12.5, category red;\n" "Record 2: sample-b, quantity 7.25, category blue."
     arguments = {
         "payload_json": json.dumps(
             {
@@ -210,17 +206,16 @@ def test_structured_identity_value_must_be_grounded_in_current_request():
 
 
 def test_structured_identity_value_can_come_from_current_business_tool_evidence():
-    arguments = {
-        "payload_json": json.dumps(
-            {"unit_id": "derived-unit-02", "batches": [{"batch_no": "generated-1"}]}
-        )
-    }
+    arguments = {"payload_json": json.dumps({"unit_id": "derived-unit-02", "batches": [{"batch_no": "generated-1"}]})}
 
-    assert _validate_structured_arguments_against_request(
-        arguments,
-        "Run the selected plan.",
-        trusted_tool_evidence='{"unit_id":"derived-unit-02"}',
-    ) == []
+    assert (
+        _validate_structured_arguments_against_request(
+            arguments,
+            "Run the selected plan.",
+            trusted_tool_evidence='{"unit_id":"derived-unit-02"}',
+        )
+        == []
+    )
 
 
 def test_structured_collection_rejects_when_most_items_use_the_wrong_field_value():
@@ -319,7 +314,10 @@ def test_structured_collection_does_not_reject_derived_items_without_request_evi
         ],
     }
 
-    assert _validate_structured_arguments_against_request(
-        arguments,
-        "Summarize the selected records.",
-    ) == []
+    assert (
+        _validate_structured_arguments_against_request(
+            arguments,
+            "Summarize the selected records.",
+        )
+        == []
+    )

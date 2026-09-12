@@ -1,5 +1,5 @@
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.connectors.helpers import (
     capability_fingerprint,
     idempotency_key,
@@ -9,7 +9,7 @@ from solver_coordination.connectors.helpers import (
 
 def test_idempotency_key_is_opaque_and_stable():
     arguments = {
-        "secret": b"synthetic-idempotency-secret",
+        "secret": synthetic_secret("solver_connector_helpers-credential-01").encode("utf-8"),
         "binding_revision_id": "binding-synthetic",
         "run_id": "run-synthetic",
         "attempt_id": "attempt-synthetic",
@@ -24,9 +24,7 @@ def test_idempotency_key_is_opaque_and_stable():
 
 
 def test_capability_fingerprint_is_canonical_without_a_legacy_dto():
-    first = capability_fingerprint(
-        {"service": {"build": "sha256:" + "1" * 64}, "api_versions": ["ortools.solver.v1"]}
-    )
+    first = capability_fingerprint({"service": {"build": "sha256:" + "1" * 64}, "api_versions": ["ortools.solver.v1"]})
     reordered = capability_fingerprint(
         {"api_versions": ["ortools.solver.v1"], "service": {"build": "sha256:" + "1" * 64}}
     )

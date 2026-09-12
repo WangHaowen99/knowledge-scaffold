@@ -7,10 +7,9 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
+from agent.tools.business_data_search import BusinessDataSearchTool as NativeBusinessDataSearchTool
 from agent.tools.business_data_search import (
-    BusinessDataSearchTool as NativeBusinessDataSearchTool,
     handle_business_data_search,
 )
 from ontology.ontology_catalog import (
@@ -89,8 +88,7 @@ def _write_object_alias_package(tmp_path, *, ambiguous=False):
     if ambiguous:
         rows.append("| 备选对象 | 备选物料 | 制造件 |")
     (objects_dir / "index.md").write_text(
-        "| object key | title | alias |\n"
-        "| --- | --- | --- |\n{}\n".format("\n".join(rows)),
+        "| object key | title | alias |\n| --- | --- | --- |\n{}\n".format("\n".join(rows)),
         encoding="utf-8",
     )
     (objects_dir / "formal_object.md").write_text(
@@ -143,10 +141,10 @@ def test_non_retryable_graph_timeout_stops_the_main_agent_tool_loop(monkeypatch)
             resolution=SimpleNamespace(object_key="refinery_unit"),
         ),
     )
+
     async def fake_handle_business_data_search_async(**_kwargs):
         return (
-            '{"success":false,"engine":"graph_search_runtime",'
-            '"error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}'
+            '{"success":false,"engine":"graph_search_runtime","error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}'
         )
 
     monkeypatch.setattr(
@@ -338,9 +336,7 @@ def test_business_data_search_tool_normalizes_alias_before_provider(tmp_path, mo
     assert outcome.content == "查询结果"
     assert captured["entity"] == "正式对象"
     assert captured["query"] == "查询制造件"
-    assert outcome.state_updates["object_context_usage"] == [
-        {"entity_name": "正式对象", "iteration": 2}
-    ]
+    assert outcome.state_updates["object_context_usage"] == [{"entity_name": "正式对象", "iteration": 2}]
 
 
 def test_business_data_search_tool_passes_matched_field_aliases_internally(
@@ -451,9 +447,7 @@ def test_business_data_search_tool_allows_exact_mapping_only_legacy_entity(
 
     assert outcome.content == "查询结果"
     assert captured["request"].entity == "legacy_entity"
-    assert outcome.state_updates["object_context_usage"] == [
-        {"entity_name": "legacy_entity", "iteration": 2}
-    ]
+    assert outcome.state_updates["object_context_usage"] == [{"entity_name": "legacy_entity", "iteration": 2}]
 
 
 def test_business_data_search_tool_rejects_non_exact_mapping_only_entity(
@@ -519,6 +513,7 @@ def test_business_data_search_tool_allows_graph_schema_only_entity(
             None,
         ),
     )
+
     def fake_resolve_business_data_source(**kwargs):
         captured["resolve_count"] += 1
         return ResolvedBusinessDataSource(
@@ -644,9 +639,7 @@ def test_business_data_search_tool_stops_on_object_catalog_read_error(
     )
 
     assert source_called is False
-    assert outcome.content == (
-        "Error: Failed to decode objects/index.md as UTF-8."
-    )
+    assert outcome.content == "Error: Failed to decode objects/index.md as UTF-8."
     assert "object_context_usage" not in outcome.state_updates
 
 
@@ -691,9 +684,7 @@ def test_business_data_search_tool_rejects_invalid_utf8_mapping_before_provider(
     )
 
     assert source_called is False
-    assert outcome.content == (
-        "Error: Failed to decode mappings/object-data-mappings.json as UTF-8."
-    )
+    assert outcome.content == "Error: Failed to decode mappings/object-data-mappings.json as UTF-8."
     assert "object_context_usage" not in outcome.state_updates
 
 

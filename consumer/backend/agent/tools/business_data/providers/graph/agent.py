@@ -3,67 +3,67 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any, Mapping
 
-from ontology.ontology_catalog import resolve_object_reference
 from ontology.ontologies import get_ontology_version_dir
+from ontology.ontology_catalog import resolve_object_reference
+
 from .models import GraphAgentResult, GraphBackendResult, GraphEntityMapping, GraphSearchRuntimeContext
 from .timeouts import resolve_graph_agent_timeout_seconds
 from .tools.executor import GraphToolExecution
 
-
-GRAPH_AGENT_SYSTEM_PROMPT = """你是 business_data_search Provider 内部的图查询 Agent。
-你的任务不是直接面向用户聊天，而是通过内部图工具检索实例数据，并返回可靠的结构化工具结果。
-
-必须遵守：
-1. 基于 ontology_id、entity、query 理解查询目标。
-2. 优先使用输入中的 object_definition、business_context、mapping、schema_context；schema_context 已由 Provider 按 entity 预取。
-3. 字段、关系和业务口径必须以本体包对象定义、Operation/Rule/Script 上下文、mapping 和 schema_context 为准。
-4. 当 schema_context 已包含所需节点/关系 schema 时，不要再调用 get_nodes_schema 或 get_edges_schema。
-5. object-data-mappings.json 只提供 object 到 resource/fields 的标准映射；不要假设 mapping 中存在 path_pattern。
-6. 关系/路径型问题（如“关联、影响、对应、父子项、BOM、变更前/后版本、从 A 找 B”）优先基于 schema_context.edges_schema.relation_triples 推导 pattern_search。
-7. pattern_search 的节点 label、关系 type、过滤字段、return_properties 必须来自 schema_context.nodes_schema / edges_schema / relation_triples；不确定时先查记录资源，再用 schema_context 继续尝试路径检索。
-8. 属性过滤前先确认节点或关系字段；优先从 mapping.property_map、mapping.return_properties 和 schema_context 确认。
-9. 不要编造未检索到的数据。
-10. 不要要求用户提供 Neo4J/HugeGraph 连接信息。
-11. 不要暴露 workspace_id、密码、token。
-12. 不要输出 Cypher、Gremlin、SQL 或数据库连接信息。
-13. return_properties 必须列出明确字段名，不能使用 "*"、"all" 或其它通配符；不确定字段时优先参考 schema_context/mapping。
-14. 结构化 filter_dict 操作符使用 eq/ne/gt/gte/lt/lte/contains/starts_with/ends_with/in/not_in/is_null，不要使用 Mongo 风格 "$contains"。
-15. filter_dict 顶层 key 必须是 schema 中存在的字段名，不能使用 "$or"、"$and" 等 Mongo 风格逻辑操作符；“编码或名称”等 OR 查询必须拆成 queries 数组里的多个子查询。
-16. 示例：查询编码或名称包含 A001 时，应生成两个 queries 子项，分别使用 {"ObjectCode":{"contains":"A001"}} 和 {"ObjectName":{"contains":"A001"}}。
-17. 同一字段同一值不要同时使用 eq 和 contains/starts_with/ends_with 重复查询；精确 eq 已命中时，不要再追加模糊兜底查询。
-18. 同一个 element_class/element_type/filter_dict/return_properties 查询不要重复调用。
-19. 需要追加更窄过滤条件时可以继续查询，但最终事实以 Provider 去重后的工具结果为准。
-20. 当 schema_context.mapping_intent.prefer_tool 为 property_filter，且 property_filter/sorted_search 返回 success=true、sufficient_for_query=true 时，立即结束本次内部图检索，不要再追加 pattern_search。
-21. “关系记录/工艺关系记录/受影响对象记录/表记录”的查询不等同于图路径查询；如果用户只要求记录字段、编号、列表或表信息，property_filter 命中后即视为充分。
-
-路径检索策略：
-- schema_context.query_analysis.path_intent 为 true 且 schema_context.mapping_intent.pattern_search_required 为 true 时，应至少尝试一次 pattern_search，除非 schema_context 中完全没有可用 relation_triples。
-- 若 object mapping 的 resource 是关系记录节点（例如名称含“关系”“映射”“受影响”“结构”“清单”等），用户只查询“记录/字段/编号/表信息”时应使用 property_filter；只有问题明确需要关联对象详情、上下游对象、从 A 找 B 的对象属性时，才继续 pattern_search。
-- 构造 path_pattern 时使用 relation_triples 的 source_label、relation_type、target_label；物理关系 type 通常来自 edges_schema.relationship_types 或 relation_triples.physical_relation_type/type。
-- 对 D2O_RELATION 这类通用物理边，业务关系名通常在边属性 relation_type 中；可在边段 props/filters 中约束 relation_type。
-
-可用内部工具以本次输入 allowed_tools 和实际 tools 列表为准；schema 工具只在 Provider 未预取到 schema 时提供。可能的内部工具包括：
-- get_object_types
-- get_relation_types
-- get_nodes_schema
-- get_edges_schema
-- property_filter
-- pattern_search
-- count_search
-- aggregate_search
-- sorted_search
-- get_element_info
-- hop_search
-- shortest_path
-- list_logic_titles
-- get_logic_content
-
-当已经获得足够的工具结果时，输出简短 JSON object 作为结束说明。最终 provider 返回的数据以工具结果为准。
-"""
+GRAPH_AGENT_SYSTEM_PROMPT = (
+    "你是 business_data_search Provider 内部的图查询 Agent。\n"
+    "你的任务不是直接面向用户聊天，而是通过内部图工具检索实例数据，并返回可靠的结构化工具结果。\n\n必须遵守：\n1. 基于"
+    " ontology_id、entity、query "
+    "理解查询目标。\n2. 优先使用输入中的 object_definition、business_context、mapping、schema_context；schema_context "
+    "已由 Provider 按 entity 预取。\n3. 字段、关系和业务口径必须以本体包对象定义、Operation/Rule/Script 上下文、"
+    "mapping 和 "
+    "schema_context 为准。\n4. 当 schema_context 已包含所需节点/关系 schema 时，不要再调用 get_nodes_schema 或 "
+    "get_edges_schema。\n5. object-data-mappings.json 只提供 object 到 resource/fields 的标准映射；不要假设 "
+    "mapping 中存在 path_pattern。\n6. 关系/路径型问题（如“关联、影响、对应、父子项、BOM、变更前/后版本、从 A 找"
+    " B”）优先基于 "
+    "schema_context.edges_schema.relation_triples 推导 pattern_search。\n7. pattern_search 的节点 "
+    "label、关系 type、过滤字段、return_properties 必须来自 schema_context.nodes_schema / edges_schema / "
+    "relation_triples；不确定时先查记录资源，再用 schema_context 继续尝试路径检索。\n8."
+    " 属性过滤前先确认节点或关系字段；优先从 "
+    "mapping.property_map、mapping.return_properties 和 schema_context 确认。\n9. 不要编造未检索到的数据。\n10. "
+    "不要要求用户提供 Neo4J/HugeGraph 连接信息。\n11. 不要暴露 workspace_id、密码、token。\n12. 不要输出 Cypher、"
+    "Gremlin、SQL "
+    '或数据库连接信息。\n13. return_properties 必须列出明确字段名，不能使用 "*"、"all"'
+    " 或其它通配符；不确定字段时优先参考 schema_context/"
+    "mapping。\n14. 结构化 filter_dict 操作符使用 eq/ne/gt/gte/lt/lte/contains/starts_with/ends_with/in/"
+    'not_in/is_null，不要使用 Mongo 风格 "$contains"。\n15. filter_dict 顶层 key 必须是 schema 中存在的字段名，不能使用 '
+    '"$or"、"$and" 等 Mongo 风格逻辑操作符；“编码或名称”等 OR 查询必须拆成 queries 数组里的多个子查询。\n16.'
+    " 示例：查询编码或名称包含 A001 "
+    '时，应生成两个 queries 子项，分别使用 {"ObjectCode":{"contains":"A001"}} 和 '
+    '{"ObjectName":{"contains":"A001"}}。\n17. 同一字段同一值不要同时使用 eq 和 contains/starts_with/ends_with '
+    "重复查询；精确 eq 已命中时，不要再追加模糊兜底查询。\n18. 同一个 element_class/element_type/filter_dict/"
+    "return_properties 查询不要重复调用。\n19. 需要追加更窄过滤条件时可以继续查询，但最终事实以 Provider"
+    " 去重后的工具结果为准。\n20. 当 "
+    "schema_context.mapping_intent.prefer_tool 为 property_filter，且 property_filter/sorted_search "
+    "返回 success=true、sufficient_for_query=true 时，立即结束本次内部图检索，不要再追加 pattern_search。\n21. “关系记录/"
+    "工艺关系记录/受影响对象记录/表记录”的查询不等同于图路径查询；如果用户只要求记录字段、编号、列表或表信息，"
+    "property_filter 命中后即视为充分。\n\n路径检索策略：\n- "
+    "schema_context.query_analysis.path_intent 为 true 且 "
+    "schema_context.mapping_intent.pattern_search_required 为 true 时，应至少尝试一次 pattern_search，除非 "
+    "schema_context 中完全没有可用 relation_triples。\n- 若 object mapping 的 resource "
+    "是关系记录节点（例如名称含“关系”“映射”“受影响”“结构”“清单”等），用户只查询“记录/字段/编号/表信息”时应使用 "
+    "property_filter；只有问题明确需要关联对象详情、上下游对象、从 A 找 B 的对象属性时，才继续 pattern_search。\n- 构造"
+    " path_pattern "
+    "时使用 relation_triples 的 source_label、relation_type、target_label；物理关系 type 通常来自 "
+    "edges_schema.relationship_types 或 relation_triples.physical_relation_type/type。\n- 对 "
+    "D2O_RELATION 这类通用物理边，业务关系名通常在边属性 relation_type 中；可在边段 props/filters 中约束"
+    " relation_type。\n\n"
+    "可用内部工具以本次输入 allowed_tools 和实际 tools 列表为准；schema 工具只在 Provider 未预取到 schema 时提供。"
+    "可能的内部工具包括：\n- "
+    "get_object_types\n- get_relation_types\n- get_nodes_schema\n- get_edges_schema\n- "
+    "property_filter\n- pattern_search\n- count_search\n- aggregate_search\n- sorted_search\n- "
+    "get_element_info\n- hop_search\n- shortest_path\n- list_logic_titles\n- get_logic_content\n\n"
+    "当已经获得足够的工具结果时，输出简短 JSON object 作为结束说明。最终 provider 返回的数据以工具结果为准。\n"
+)
 
 
 class GraphAgentError(RuntimeError):
@@ -125,9 +125,12 @@ def _build_graph_agent_system_prompt(schema_context: Mapping[str, Any] | None) -
         return GRAPH_AGENT_SYSTEM_PROMPT
     if len(schema_payload) > 12000:
         schema_payload = "{}...".format(schema_payload[:12000])
-    return "{}\n\n预取图 schema 上下文（Provider 已按本次 entity/mapping 预取，优先使用，不要重复调用 schema 工具）：\n```json\n{}\n```".format(
-        GRAPH_AGENT_SYSTEM_PROMPT,
-        schema_payload,
+    return (
+        "{}\n\n预取图 schema 上下文（Provider 已按本次 entity/mapping 预取，优先使用，不要重复调用 schema"
+        " 工具）：\n```json\n{}\n```".format(
+            GRAPH_AGENT_SYSTEM_PROMPT,
+            schema_payload,
+        )
     )
 
 
@@ -174,11 +177,14 @@ def _read_object_definition(context: GraphSearchRuntimeContext) -> str:
     if not ontology_root.is_dir():
         return ""
     try:
-        version_dir = get_ontology_version_dir(
-            ontology_root,
-            str(context.ontology_version or "").strip() or None,
-            create=False,
-        ) or ontology_root
+        version_dir = (
+            get_ontology_version_dir(
+                ontology_root,
+                str(context.ontology_version or "").strip() or None,
+                create=False,
+            )
+            or ontology_root
+        )
     except Exception:
         version_dir = ontology_root
     resolution, error = resolve_object_reference(version_dir, entity)
@@ -260,15 +266,17 @@ def _agent_result_from_executions(
         total += int(record_count or 0)
         truncated = truncated or bool(backend_result.truncated)
         combined_warnings.extend(backend_result.warnings or [])
-        combined_records.append({
-            "tool": execution.tool_name,
-            "tool_args": dict(execution.tool_args or {}),
-            "record_count": record_count,
-            "raw_record_count": raw_record_count,
-            "result": _compact_execution_result(execution),
-            "records": records,
-            "truncated": bool(backend_result.truncated),
-        })
+        combined_records.append(
+            {
+                "tool": execution.tool_name,
+                "tool_args": dict(execution.tool_args or {}),
+                "record_count": record_count,
+                "raw_record_count": raw_record_count,
+                "result": _compact_execution_result(execution),
+                "records": records,
+                "truncated": bool(backend_result.truncated),
+            }
+        )
 
     return GraphAgentResult(
         tool_name="multi_tool_search",
@@ -327,10 +335,7 @@ def _strip_duplicate_result_payload(value: dict[str, Any]) -> dict[str, Any]:
             continue
         if key == "results" and isinstance(item, list):
             compact[key] = [
-                _strip_duplicate_result_payload(dict(child))
-                if isinstance(child, Mapping)
-                else child
-                for child in item
+                _strip_duplicate_result_payload(dict(child)) if isinstance(child, Mapping) else child for child in item
             ]
             continue
         compact[key] = item
@@ -438,11 +443,7 @@ def _candidate_property_identity_fields(properties: Mapping[str, Any]) -> list[s
     preferred = ["ID"]
     keys = [str(key) for key in properties if str(key)]
     selected = [key for key in preferred if key in properties]
-    selected.extend(
-        key
-        for key in sorted(keys)
-        if key not in selected and (key.endswith("ID") or key.endswith("_ID"))
-    )
+    selected.extend(key for key in sorted(keys) if key not in selected and (key.endswith("ID") or key.endswith("_ID")))
     return selected
 
 
@@ -468,7 +469,9 @@ def _path_intent_missing_pattern(
     context: GraphSearchRuntimeContext,
     executions: list[GraphToolExecution],
 ) -> bool:
-    query_analysis = context.schema_context.get("query_analysis") if isinstance(context.schema_context, Mapping) else None
+    query_analysis = (
+        context.schema_context.get("query_analysis") if isinstance(context.schema_context, Mapping) else None
+    )
     if not isinstance(query_analysis, Mapping) or not bool(query_analysis.get("path_intent")):
         return False
     if any(execution.tool_name == "pattern_search" for execution in executions):
@@ -570,11 +573,7 @@ def _returned_properties_from_nested_record(value: Any) -> set[str]:
 
 def _graph_tool_schemas_for_context(context: GraphSearchRuntimeContext) -> list[dict[str, Any]]:
     if _schema_context_preloaded(context.schema_context):
-        return [
-            schema
-            for schema in _GRAPH_TOOL_SCHEMAS
-            if schema["function"]["name"] not in _GRAPH_SCHEMA_TOOL_NAMES
-        ]
+        return [schema for schema in _GRAPH_TOOL_SCHEMAS if schema["function"]["name"] not in _GRAPH_SCHEMA_TOOL_NAMES]
     return list(_GRAPH_TOOL_SCHEMAS)
 
 
@@ -631,7 +630,10 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "property_filter",
-            "description": "按属性过滤节点或关系，支持 queries 批量子查询；OR 条件必须拆成多个 queries 子项，不要在 filter_dict 顶层使用 $or/$and。",
+            "description": (
+                "按属性过滤节点或关系，支持 queries 批量子查询；OR 条件必须拆成多个 queries 子项，不要在 filter_dict"
+                " 顶层使用 $or/$and。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -645,7 +647,10 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                 "element_type": {"type": "string", "enum": ["NODE", "EDGE"]},
                                 "filter_dict": {
                                     "type": "object",
-                                    "description": "顶层 key 必须是字段名；结构化操作符使用 contains/in/not_in 等无 $ 名称；不要使用 $or/$and，OR 请拆成多个 queries 子项。",
+                                    "description": (
+                                        "顶层 key 必须是字段名；结构化操作符使用 contains/in/not_in 等无 $"
+                                        " 名称；不要使用 $or/$and，OR 请拆成多个 queries 子项。"
+                                    ),
                                 },
                                 "return_properties": {
                                     "type": "array",
@@ -667,7 +672,10 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "count_search",
-            "description": "统计满足条件的节点或关系数量，支持 queries 批量子查询；OR 条件必须拆成多个 queries 子项，不要在 filter_dict 顶层使用 $or/$and。",
+            "description": (
+                "统计满足条件的节点或关系数量，支持 queries 批量子查询；OR 条件必须拆成多个 queries 子项，不要在"
+                " filter_dict 顶层使用 $or/$and。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -681,7 +689,10 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
                                 "element_type": {"type": "string", "enum": ["NODE", "EDGE"]},
                                 "filter_dict": {
                                     "type": "object",
-                                    "description": "顶层 key 必须是字段名；结构化操作符使用 contains/in/not_in 等无 $ 名称；不要使用 $or/$and，OR 请拆成多个 queries 子项。",
+                                    "description": (
+                                        "顶层 key 必须是字段名；结构化操作符使用 contains/in/not_in 等无 $"
+                                        " 名称；不要使用 $or/$and，OR 请拆成多个 queries 子项。"
+                                    ),
                                 },
                             },
                             "required": ["element_class", "element_type"],
@@ -705,7 +716,9 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "agg": {"type": "string", "enum": ["SUM", "AVG", "MIN", "MAX", "COUNT"]},
                     "filter_dict": {
                         "type": "object",
-                        "description": "顶层 key 必须是字段名；结构化操作符使用 contains/in/not_in 等无 $ 名称；不要使用 $or/$and。",
+                        "description": (
+                            "顶层 key 必须是字段名；结构化操作符使用 contains/in/not_in 等无 $ 名称；不要使用 $or/$and。"
+                        ),
                     },
                 },
                 "required": ["element_class", "element_type", "agg"],
@@ -724,7 +737,9 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "element_type": {"type": "string", "enum": ["NODE", "EDGE"]},
                     "filter_dict": {
                         "type": "object",
-                        "description": "顶层 key 必须是字段名；结构化操作符使用 contains/in/not_in 等无 $ 名称；不要使用 $or/$and。",
+                        "description": (
+                            "顶层 key 必须是字段名；结构化操作符使用 contains/in/not_in 等无 $ 名称；不要使用 $or/$and。"
+                        ),
                     },
                     "return_properties": {
                         "type": "array",
@@ -746,7 +761,7 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "pattern_search",
             "description": (
                 "按图结构模式匹配路径。path_pattern 使用 Jiutian 数组协议：节点、关系、节点交替排列。"
-                "节点或关系属性过滤写在 props 中，例如 {\"label\":\"ObjectVersion\",\"props\":{\"ObjectCode\":\"OBJ-001\"}}。"
+                '节点或关系属性过滤写在 props 中，例如 {"label":"ObjectVersion","props":{"ObjectCode":"OBJ-001"}}。'
                 "兼容 filters 作为 props 别名。"
                 "用 return_vars 指定需要返回的变量；用 return_properties 指定返回字段，"
                 "可传字符串数组应用到全部变量，或传 {变量名: [字段名]} 精确控制；"
@@ -758,7 +773,9 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "path_pattern": {"type": "array", "items": {"type": "array"}},
                     "return_vars": {"type": "array", "items": {"type": "string"}},
                     "return_properties": {
-                        "description": "明确字段名数组应用到全部返回变量，或变量名到明确字段名数组的对象；不能使用 * 或 all。",
+                        "description": (
+                            "明确字段名数组应用到全部返回变量，或变量名到明确字段名数组的对象；不能使用 * 或 all。"
+                        ),
                         "oneOf": [
                             {"type": "array", "items": {"type": "string", "description": "明确字段名，不能使用 *。"}},
                             {
@@ -794,109 +811,107 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-_GRAPH_TOOL_SCHEMAS.extend([
-    {
-        "type": "function",
-        "function": {
-            "name": "get_object_types",
-            "description": "获取当前 scope 内全部实体/节点类型。",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_relation_types",
-            "description": "获取当前 scope 内全部语义关系类型。",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "hop_search",
-            "description": "从指定节点实例出发查询 N 度邻域。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "entity_instance_id": {"type": "string"},
-                    "hop_num": {"type": "integer", "minimum": 1, "maximum": 5},
-                    "accurate_flag": {"type": "boolean"},
-                },
-                "required": ["entity_instance_id"],
+_GRAPH_TOOL_SCHEMAS.extend(
+    [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_object_types",
+                "description": "获取当前 scope 内全部实体/节点类型。",
+                "parameters": {"type": "object", "properties": {}},
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "shortest_path",
-            "description": "查询两个节点之间的最短关联路径。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "start_label": {"type": "string"},
-                    "start_props": {"type": "object"},
-                    "end_label": {"type": "string"},
-                    "end_props": {"type": "object"},
-                    "max_depth": {"type": "integer", "minimum": 1, "maximum": 15},
-                    "directed": {"type": "boolean"},
-                },
-                "required": ["start_label", "start_props", "end_label"],
+        {
+            "type": "function",
+            "function": {
+                "name": "get_relation_types",
+                "description": "获取当前 scope 内全部语义关系类型。",
+                "parameters": {"type": "object", "properties": {}},
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_logic_titles",
-            "description": "列出当前 scope 内的业务逻辑标题目录。",
-            "parameters": {
-                "type": "object",
-                "properties": {"entity_type": {"type": "string"}},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_logic_content",
-            "description": "按实体实例 ID 和可选逻辑标题读取业务逻辑内容。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "entity_instance_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
+        {
+            "type": "function",
+            "function": {
+                "name": "hop_search",
+                "description": "从指定节点实例出发查询 N 度邻域。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_instance_id": {"type": "string"},
+                        "hop_num": {"type": "integer", "minimum": 1, "maximum": 5},
+                        "accurate_flag": {"type": "boolean"},
                     },
-                    "logic_titles": {"type": "array", "items": {"type": "string"}},
+                    "required": ["entity_instance_id"],
                 },
-                "required": ["entity_instance_ids"],
             },
         },
-    },
-])
-
-_GRAPH_TOOL_ORDER = {
-    name: index
-    for index, name in enumerate([
-        "get_object_types",
-        "get_relation_types",
-        "get_nodes_schema",
-        "get_edges_schema",
-        "property_filter",
-        "pattern_search",
-        "count_search",
-        "aggregate_search",
-        "sorted_search",
-        "get_element_info",
-        "hop_search",
-        "shortest_path",
-        "list_logic_titles",
-        "get_logic_content",
-    ])
-}
-_GRAPH_TOOL_SCHEMAS.sort(
-    key=lambda schema: _GRAPH_TOOL_ORDER[schema["function"]["name"]]
+        {
+            "type": "function",
+            "function": {
+                "name": "shortest_path",
+                "description": "查询两个节点之间的最短关联路径。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "start_label": {"type": "string"},
+                        "start_props": {"type": "object"},
+                        "end_label": {"type": "string"},
+                        "end_props": {"type": "object"},
+                        "max_depth": {"type": "integer", "minimum": 1, "maximum": 15},
+                        "directed": {"type": "boolean"},
+                    },
+                    "required": ["start_label", "start_props", "end_label"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_logic_titles",
+                "description": "列出当前 scope 内的业务逻辑标题目录。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"entity_type": {"type": "string"}},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_logic_content",
+                "description": "按实体实例 ID 和可选逻辑标题读取业务逻辑内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_instance_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                        },
+                        "logic_titles": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["entity_instance_ids"],
+                },
+            },
+        },
+    ]
 )
+
+_GRAPH_TOOL_NAMES = (
+    "get_object_types",
+    "get_relation_types",
+    "get_nodes_schema",
+    "get_edges_schema",
+    "property_filter",
+    "pattern_search",
+    "count_search",
+    "aggregate_search",
+    "sorted_search",
+    "get_element_info",
+    "hop_search",
+    "shortest_path",
+    "list_logic_titles",
+    "get_logic_content",
+)
+_GRAPH_TOOL_ORDER = {name: index for index, name in enumerate(_GRAPH_TOOL_NAMES)}
+_GRAPH_TOOL_SCHEMAS.sort(key=lambda schema: _GRAPH_TOOL_ORDER[schema["function"]["name"]])

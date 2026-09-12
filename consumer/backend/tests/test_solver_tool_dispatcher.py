@@ -9,6 +9,7 @@ from agent.tools.solver import (
     configure_solver_tool_service,
     recover_solver_tool_result,
 )
+from backend_synthetic_credentials import synthetic_secret
 
 
 def _capability():
@@ -107,6 +108,7 @@ class _Service:
 
 def test_checkpoint_recovery_reports_pending_link_without_redispatch():
     class _Store:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_run_link(self, **_kwargs):
             return {
                 "card_name": "solve_synthetic_aaaaaaaa",
@@ -118,6 +120,7 @@ def test_checkpoint_recovery_reports_pending_link_without_redispatch():
     class _PendingService:
         store = _Store()
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def recover_job(self, *_args, **_kwargs):
             return {"status": "waiting_solver", "job_id": "job-synthetic-pending"}
 
@@ -144,7 +147,10 @@ def test_checkpoint_recovery_reports_pending_link_without_redispatch():
 def test_dispatcher_rechecks_scope_and_passes_locked_identity_to_service(monkeypatch):
     (spec,) = build_solver_tool_specs([_capability()])
     service = _Service()
-    cancel_probe = lambda: False
+
+    def cancel_probe():
+        return False
+
     monkeypatch.setattr(
         "agent.tools.solver._run_cancel_probe",
         lambda run_id: cancel_probe if run_id == "run-synthetic" else None,
@@ -188,12 +194,8 @@ def test_authoritative_result_is_terminal_and_sets_deterministic_agent_output():
                 "text": "Synthetic route plan\nItem 1 -> ROUTE_A",
             },
             "result_artifact_ref": "artifact://solver_result/" + "a" * 64,
-            "verification_evidence_ref": (
-                "artifact://verification_evidence/" + "b" * 64
-            ),
-            "candidate_results_artifact_ref": (
-                "artifact://candidate_results/" + "c" * 64
-            ),
+            "verification_evidence_ref": "artifact://verification_evidence/" + "b" * 64,
+            "candidate_results_artifact_ref": "artifact://candidate_results/" + "c" * 64,
             "candidate_results_artifact_digest": "sha256:" + "c" * 64,
         }
     )
@@ -209,17 +211,11 @@ def test_authoritative_result_is_terminal_and_sets_deterministic_agent_output():
     )
 
     assert outcome.terminal is True
-    assert outcome.state_updates["final_output"] == (
-        "Synthetic route plan\nItem 1 -> ROUTE_A"
-    )
-    assert outcome.state_updates["results"]["output"] == (
-        "Synthetic route plan\nItem 1 -> ROUTE_A"
-    )
+    assert outcome.state_updates["final_output"] == "Synthetic route plan\nItem 1 -> ROUTE_A"
+    assert outcome.state_updates["results"]["output"] == "Synthetic route plan\nItem 1 -> ROUTE_A"
     assert outcome.state_updates["results"]["solver"]["authoritative"] is True
     payload = json.loads(outcome.content)
-    assert payload["candidate_results_artifact_ref"].startswith(
-        "artifact://candidate_results/"
-    )
+    assert payload["candidate_results_artifact_ref"].startswith("artifact://candidate_results/")
 
 
 def test_solver_failure_is_terminal_and_normalizes_internal_verification_code():
@@ -337,11 +333,7 @@ def test_dispatcher_emits_sanitized_solver_and_tool_progress_events():
         assert payload["attempt_id"] == "attempt-synthetic"
         assert payload["event_seq"] in {4, 5}
         assert "problem_ir" not in payload
-    authoritative = next(
-        payload
-        for event_type, payload in events
-        if event_type == "solver.result.authoritative"
-    )
+    authoritative = next(payload for event_type, payload in events if event_type == "solver.result.authoritative")
     assert authoritative["authoritative"] is True
     assert authoritative["feasibility"] == "feasible"
     assert authoritative["optimality"] == "not_proven"
@@ -356,7 +348,7 @@ def test_dispatcher_rejects_sensitive_or_internal_service_output():
             "status": "completed",
             "run_id": "run-synthetic",
             "job_id": "job-synthetic",
-            "summary": {"token": "credential-synthetic"},
+            "summary": {"token": synthetic_secret("solver_tool_dispatcher-credential-01")},
             "internal_path": "C:/private/result.json",
         }
     )

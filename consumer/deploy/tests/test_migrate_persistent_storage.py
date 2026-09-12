@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import json
 import tarfile
-import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from migrate_persistent_storage import (  # noqa: E402
+from deploy.migrate_persistent_storage import (
     main,
     migrate,
     resolve_legacy_container_storage_paths,
@@ -38,12 +35,15 @@ class PersistentStorageMigrationTests(unittest.TestCase):
             encoding="utf-8",
         )
         system_config_path = self.root / ".onto-runtime" / "config" / "system_config.json"
-        _write_json(system_config_path, {
-            "storage": {
-                "chat_storage_dir": "./data/chats",
-                "execution_storage_dir": "./data/executions",
-            }
-        })
+        _write_json(
+            system_config_path,
+            {
+                "storage": {
+                    "chat_storage_dir": "./data/chats",
+                    "execution_storage_dir": "./data/executions",
+                }
+            },
+        )
 
         report = migrate(self.root, dry_run=True)
 
@@ -78,12 +78,15 @@ class PersistentStorageMigrationTests(unittest.TestCase):
 
     def test_preserves_existing_safe_absolute_system_config_storage_paths(self) -> None:
         system_config_path = self.root / ".onto-runtime" / "config" / "system_config.json"
-        _write_json(system_config_path, {
-            "storage": {
-                "chat_storage_dir": "/app/.onto-runtime/custom/chats",
-                "execution_storage_dir": "/app/.onto-runtime/custom/executions",
-            }
-        })
+        _write_json(
+            system_config_path,
+            {
+                "storage": {
+                    "chat_storage_dir": "/app/.onto-runtime/custom/chats",
+                    "execution_storage_dir": "/app/.onto-runtime/custom/executions",
+                }
+            },
+        )
 
         report = migrate(self.root, dry_run=False)
 

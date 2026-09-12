@@ -8,10 +8,14 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import agent.direct_execution.service as direct_execution_service_module
 import pytest
-
-import agent.direct_execution.service as service_module
-
+from agent.direct_execution.arguments import (
+    extract_runtime_argument_keys,
+    protect_deterministic_runtime_parameters,
+    protect_deterministic_script_args,
+)
+from agent.direct_execution.audit import canonical_sha256
 from agent.direct_execution.contracts import (
     AwaitingInput,
     Completed,
@@ -19,21 +23,16 @@ from agent.direct_execution.contracts import (
     Failed,
     NotApplicable,
 )
-from agent.direct_execution.audit import canonical_sha256
-from agent.direct_execution.arguments import (
-    extract_runtime_argument_keys,
-    protect_deterministic_script_args,
-    protect_deterministic_runtime_parameters,
-)
 from agent.direct_execution.models import RuntimeContext
 from agent.direct_execution.provider_broker import DeterministicProviderBrokerError
 from agent.direct_execution.service import DeterministicExecutionService
+from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
+from backend_synthetic_credentials import synthetic_invalid_password, synthetic_password, synthetic_secret
 from ontology.operation_execution import validate_and_lock_deterministic_operations
+from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 from shared_capabilities.ontology_script_sdk.deterministic_provider import (
     DETERMINISTIC_PROVIDER_SOCKET_ENV,
 )
-from shared_capabilities.business_data import AuthSpec, EffectiveConnection
-from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
 
 
 def _write_package(root: Path, *, parser=False, data_access="none") -> Path:
@@ -84,14 +83,12 @@ def _write_package(root: Path, *, parser=False, data_access="none") -> Path:
         encoding="utf-8",
     )
     (ontology_dir / "scripts" / "query_helper.py").write_text(
-        "def normalize_code(value):\n"
-        "    return str(value)\n",
+        "def normalize_code(value):\n    return str(value)\n",
         encoding="utf-8",
     )
     if parser:
         (ontology_dir / "scripts" / "query_parser.py").write_text(
-            "import json\n"
-            "print(json.dumps({'matched': True, 'arguments': {}, 'issues': []}))\n",
+            "import json\nprint(json.dumps({'matched': True, 'arguments': {}, 'issues': []}))\n",
             encoding="utf-8",
         )
     (ontology_dir / "schemas" / "query.input.json").write_text(
@@ -134,12 +131,7 @@ def _write_solver_only_package(root: Path, *, schema_version="0.2") -> Path:
         encoding="utf-8",
     )
     (ontology_dir / "operations" / "query.md").write_text(
-        "---\n"
-        "resource: operation\n"
-        "key: query\n"
-        "execution:\n"
-        "  mode: solver_workflow\n"
-        "---\n",
+        "---\nresource: operation\nkey: query\nexecution:\n  mode: solver_workflow\n---\n",
         encoding="utf-8",
     )
     return ontology_dir
@@ -173,9 +165,7 @@ def _add_runtime_session_parameter(
     descriptor_path = ontology_dir / "scripts" / "query.md"
     descriptor = descriptor_path.read_text(encoding="utf-8")
     descriptor = descriptor.replace(
-        "| 参数 key | CLI 参数 | 类型 | 必填 |\n"
-        "| --- | --- | --- | --- |\n"
-        "| code | --code | string | 是 |\n",
+        "| 参数 key | CLI 参数 | 类型 | 必填 |\n| --- | --- | --- | --- |\n| code | --code | string | 是 |\n",
         "| 参数 key | CLI 参数 | 类型 | 必填 | runtime |\n"
         "| --- | --- | --- | --- | --- |\n"
         "| code | --code | string | 是 | 否 |\n"
@@ -186,8 +176,7 @@ def _add_runtime_session_parameter(
     handler_path.write_text(
         handler_path.read_text(encoding="utf-8").replace(
             "parser.add_argument('--code', default='ok')\n",
-            "parser.add_argument('--code', default='ok')\n"
-            "parser.add_argument('--session-id', required=True)\n",
+            "parser.add_argument('--code', default='ok')\nparser.add_argument('--session-id', required=True)\n",
         ),
         encoding="utf-8",
     )
@@ -204,9 +193,7 @@ def _add_aliased_runtime_session_parameter(ontology_dir: Path) -> None:
     descriptor_path = ontology_dir / "scripts" / "query.md"
     descriptor = descriptor_path.read_text(encoding="utf-8")
     descriptor = descriptor.replace(
-        "| 参数 key | CLI 参数 | 类型 | 必填 |\n"
-        "| --- | --- | --- | --- |\n"
-        "| code | --code | string | 是 |\n",
+        "| 参数 key | CLI 参数 | 类型 | 必填 |\n| --- | --- | --- | --- |\n| code | --code | string | 是 |\n",
         "| 参数 key | CLI 参数 | 类型 | 必填 | placeholder |\n"
         "| --- | --- | --- | --- | --- |\n"
         "| code | --code | string | 是 | |\n"
@@ -217,8 +204,7 @@ def _add_aliased_runtime_session_parameter(ontology_dir: Path) -> None:
     handler_path.write_text(
         handler_path.read_text(encoding="utf-8").replace(
             "parser.add_argument('--code', default='ok')\n",
-            "parser.add_argument('--code', default='ok')\n"
-            "parser.add_argument('--sid', required=True)\n",
+            "parser.add_argument('--code', default='ok')\nparser.add_argument('--sid', required=True)\n",
         ),
         encoding="utf-8",
     )
@@ -319,9 +305,7 @@ def test_runtime_identity_name_cannot_be_downgraded_by_catalog_metadata(
 
 
 def test_legacy_runtime_identity_flag_is_forced_to_runtime_placeholder():
-    protected = protect_deterministic_script_args(
-        ["--session-id", "<session_id>", "--code", "<code>"]
-    )
+    protected = protect_deterministic_script_args(["--session-id", "<session_id>", "--code", "<code>"])
 
     assert protected == [
         "--session-id",
@@ -400,10 +384,13 @@ def test_preflight_can_reuse_an_already_resolved_exact_manifest(tmp_path, monkey
         ontology_dir=str(ontology_dir),
     )
 
-    assert DeterministicExecutionService().is_potentially_applicable(
-        _request(),
-        ontology_manifest=manifest,
-    ) is True
+    assert (
+        DeterministicExecutionService().is_potentially_applicable(
+            _request(),
+            ontology_manifest=manifest,
+        )
+        is True
+    )
 
 
 def test_execute_can_use_staged_manifest_without_live_package_lookup(
@@ -416,9 +403,7 @@ def test_execute_can_use_staged_manifest_without_live_package_lookup(
     monkeypatch.setattr(
         service_module,
         "get_ontology_manifest",
-        lambda *_args, **_kwargs: pytest.fail(
-            "staged deterministic execution must not reload the live manifest"
-        ),
+        lambda *_args, **_kwargs: pytest.fail("staged deterministic execution must not reload the live manifest"),
     )
     monkeypatch.setattr(
         service_module,
@@ -460,17 +445,13 @@ def test_staged_execute_keeps_admitted_package_after_same_version_resign(
     monkeypatch.setattr(
         service_module,
         "get_ontology_manifest",
-        lambda *_args, **_kwargs: pytest.fail(
-            "staged deterministic execution must not reload the replacement"
-        ),
+        lambda *_args, **_kwargs: pytest.fail("staged deterministic execution must not reload the replacement"),
     )
 
     def execute_staged(**kwargs):
         staged_root = Path(kwargs["ontology_dir"])
         observed["root"] = staged_root
-        observed["helper"] = (
-            staged_root / "scripts" / "query_helper.py"
-        ).read_text(encoding="utf-8")
+        observed["helper"] = (staged_root / "scripts" / "query_helper.py").read_text(encoding="utf-8")
         return json.dumps({"value": "CODE-42"})
 
     monkeypatch.setattr(
@@ -827,20 +808,21 @@ def test_preflight_routes_malformed_package_to_fail_closed_execution(
     _patch_manifest(monkeypatch, ontology_dir)
 
     def fail_package_load(*_args, **_kwargs):
-        raise service_module.DeterministicPackageError(
+        raise direct_execution_service_module.DeterministicPackageError(
             "invalid_deterministic_package",
             "invalid package",
         )
 
     monkeypatch.setattr(
-        service_module,
+        direct_execution_service_module,
         "load_deterministic_operation_specs",
         fail_package_load,
     )
 
-    assert DeterministicExecutionService().is_potentially_applicable(
-        _request(key=None, user_request="natural request")
-    ) is True
+    assert (
+        DeterministicExecutionService().is_potentially_applicable(_request(key=None, user_request="natural request"))
+        is True
+    )
 
 
 def test_invalid_deterministic_checkpoint_never_falls_through_to_legacy(
@@ -1227,9 +1209,7 @@ def test_real_handler_can_repeat_without_mutating_locked_package(tmp_path, monke
     ]
 
     assert all(isinstance(outcome, Completed) for outcome in outcomes)
-    assert outcomes[0].envelope["execution"]["result_sha256"] == outcomes[1].envelope[
-        "execution"
-    ]["result_sha256"]
+    assert outcomes[0].envelope["execution"]["result_sha256"] == outcomes[1].envelope["execution"]["result_sha256"]
     assert not (ontology_dir / "scripts" / "__pycache__").exists()
 
 
@@ -1476,11 +1456,13 @@ def test_checkpoint_resume_does_not_rerun_parser_or_override_confirmed_value(
     def execute(**kwargs):
         calls.append(kwargs)
         if kwargs["caller"] == "deterministic_parser":
-            return json.dumps({
-                "matched": True,
-                "arguments": {},
-                "issues": [{"field": "code", "message": "Choose a code"}],
-            })
+            return json.dumps(
+                {
+                    "matched": True,
+                    "arguments": {},
+                    "issues": [{"field": "code", "message": "Choose a code"}],
+                }
+            )
         assert "confirmed-code" in kwargs["args"]
         return json.dumps({"value": "confirmed-code"})
 
@@ -1524,16 +1506,14 @@ def test_checkpoint_preserves_all_parser_issues_and_resumes_them_in_order(
     input_schema_path.write_text(json.dumps(input_schema), encoding="utf-8")
     descriptor_path = ontology_dir / "scripts" / "query.md"
     descriptor_path.write_text(
-        descriptor_path.read_text(encoding="utf-8")
-        + "| region | --region | string | 否 |\n",
+        descriptor_path.read_text(encoding="utf-8") + "| region | --region | string | 否 |\n",
         encoding="utf-8",
     )
     handler_path = ontology_dir / "scripts" / "query.py"
     handler_path.write_text(
         handler_path.read_text(encoding="utf-8").replace(
             "parser.add_argument('--code', default='ok')\n",
-            "parser.add_argument('--code', default='ok')\n"
-            "parser.add_argument('--region')\n",
+            "parser.add_argument('--code', default='ok')\nparser.add_argument('--region')\n",
         ),
         encoding="utf-8",
     )
@@ -1544,14 +1524,16 @@ def test_checkpoint_preserves_all_parser_issues_and_resumes_them_in_order(
     def execute(**kwargs):
         calls.append(kwargs)
         if kwargs["caller"] == "deterministic_parser":
-            return json.dumps({
-                "matched": True,
-                "arguments": {},
-                "issues": [
-                    {"field": "code", "message": "Choose a code"},
-                    {"field": "region", "message": "Choose a region"},
-                ],
-            })
+            return json.dumps(
+                {
+                    "matched": True,
+                    "arguments": {},
+                    "issues": [
+                        {"field": "code", "message": "Choose a code"},
+                        {"field": "region", "message": "Choose a region"},
+                    ],
+                }
+            )
         return json.dumps({"value": "confirmed-code"})
 
     monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
@@ -1632,9 +1614,7 @@ def test_parser_and_handler_use_isolated_execution_contract(tmp_path, monkeypatc
     monkeypatch.setattr(
         service_module,
         "register_run_sandbox_companion",
-        lambda parent_run_id, companion_run_id: registered.append(
-            (parent_run_id, companion_run_id)
-        ),
+        lambda parent_run_id, companion_run_id: registered.append((parent_run_id, companion_run_id)),
     )
     released = []
     monkeypatch.setattr(
@@ -1681,8 +1661,7 @@ def test_parser_sandbox_release_failure_preserves_outer_retry_id(tmp_path, monke
     monkeypatch.setattr(
         service_module,
         "handle_execute_script_path",
-        lambda **kwargs: calls.append(kwargs)
-        or json.dumps({"matched": True, "arguments": {}, "issues": []}),
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"matched": True, "arguments": {}, "issues": []}),
     )
     released = []
 
@@ -1767,7 +1746,7 @@ def test_workspace_provider_binding_exposes_only_run_scoped_capability_socket(
         auth=AuthSpec(
             type="mindsdb_password",
             username="reader",
-            password="synthetic-provider-secret",
+            password=synthetic_password("deterministic_execution_service-credential-04"),
         ),
         options={"database": "snapshot", "data_revision": "rev-1"},
     )
@@ -1786,9 +1765,7 @@ def test_workspace_provider_binding_exposes_only_run_scoped_capability_socket(
 
     def execute(**kwargs):
         calls.append(kwargs)
-        socket_path = Path(
-            kwargs["env_overrides"][DETERMINISTIC_PROVIDER_SOCKET_ENV]
-        )
+        socket_path = Path(kwargs["env_overrides"][DETERMINISTIC_PROVIDER_SOCKET_ENV])
         assert socket_path.exists()
         if os.name == "posix":
             assert socket_path.is_socket()
@@ -1810,7 +1787,7 @@ def test_workspace_provider_binding_exposes_only_run_scoped_capability_socket(
     assert "sandbox_network_endpoint" not in handler_call
     assert "sandbox_network_domain_endpoint" not in handler_call
     assert SCRIPT_BUSINESS_DATA_CONNECTION_ENV not in handler_call["env_overrides"]
-    assert "synthetic-provider-secret" not in json.dumps(
+    assert synthetic_password("deterministic_execution_service-credential-04") not in json.dumps(
         handler_call["env_overrides"],
         sort_keys=True,
     )
@@ -1833,7 +1810,7 @@ def test_workspace_provider_does_not_grant_provider_network_egress_to_handler(
         auth=AuthSpec(
             type="mindsdb_password",
             username="reader",
-            password="provider-secret",
+            password=synthetic_password("deterministic_execution_service-credential-01"),
         ),
         options={"database": "snapshot", "data_revision": "rev-1"},
     )
@@ -1868,9 +1845,7 @@ def test_workspace_provider_does_not_grant_provider_network_egress_to_handler(
     assert "sandbox_network_domain_endpoint" not in handler_call
     assert SCRIPT_BUSINESS_DATA_CONNECTION_ENV not in handler_call["env_overrides"]
     assert DETERMINISTIC_PROVIDER_SOCKET_ENV in handler_call["env_overrides"]
-    assert outcome.envelope["execution"]["dependencies"][0]["scope_digest"] == (
-        "sha256:scope"
-    )
+    assert outcome.envelope["execution"]["dependencies"][0]["scope_digest"] == "sha256:scope"
 
 
 def test_workspace_provider_broker_failure_stops_before_handler(tmp_path, monkeypatch):
@@ -1880,7 +1855,7 @@ def test_workspace_provider_broker_failure_stops_before_handler(tmp_path, monkey
         version=1,
         provider="nl2sql_http",
         endpoint="https://service.example.net/query",
-        auth=AuthSpec(type="bearer", token="synthetic-provider-token"),
+        auth=AuthSpec(type="bearer", token=synthetic_secret("deterministic_execution_service-credential-05")),
         options={"data_revision": "rev-synthetic"},
     )
     monkeypatch.setattr(
@@ -1897,9 +1872,7 @@ def test_workspace_provider_broker_failure_stops_before_handler(tmp_path, monkey
     monkeypatch.setattr(
         service_module,
         "DeterministicProviderBroker",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            DeterministicProviderBrokerError("synthetic broker failure")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(DeterministicProviderBrokerError("synthetic broker failure")),
     )
     calls = []
     monkeypatch.setattr(
@@ -1927,7 +1900,11 @@ def test_injected_short_provider_credential_fails_before_handler(tmp_path, monke
         version=1,
         provider="neo4j",
         endpoint="bolt://snapshot.example.com:7687",
-        auth=AuthSpec(type="mindsdb_password", username="reader", password="short"),
+        auth=AuthSpec(
+            type="mindsdb_password",
+            username="reader",
+            password=synthetic_invalid_password("deterministic_execution_service-credential-03"),
+        ),
         options={"database": "snapshot", "data_revision": "rev-1"},
     )
     monkeypatch.setattr(
@@ -1961,8 +1938,14 @@ def test_injected_short_provider_credential_fails_before_handler(tmp_path, monke
 @pytest.mark.parametrize(
     ("handler_output", "expected_code"),
     (
-        (json.dumps({"value": "provider-secret"}), "secret_output_violation"),
-        ("Error: provider rejected password provider-secret", "handler_failed"),
+        (
+            json.dumps({"value": synthetic_password("deterministic_execution_service-credential-01")}),
+            "secret_output_violation",
+        ),
+        (
+            f"Error: provider rejected password {synthetic_password('deterministic_execution_service-credential-01')}",
+            "handler_failed",
+        ),
     ),
 )
 def test_provider_secret_never_reaches_result_or_failure_detail(
@@ -1980,7 +1963,7 @@ def test_provider_secret_never_reaches_result_or_failure_detail(
         auth=AuthSpec(
             type="mindsdb_password",
             username="reader",
-            password="provider-secret",
+            password=synthetic_password("deterministic_execution_service-credential-01"),
         ),
         options={"database": "snapshot", "data_revision": "rev-1"},
     )
@@ -2010,7 +1993,7 @@ def test_provider_secret_never_reaches_result_or_failure_detail(
 
     assert isinstance(outcome, Failed)
     assert outcome.code == expected_code
-    assert "provider-secret" not in str(outcome.internal_detail)
+    assert synthetic_password("deterministic_execution_service-credential-01") not in str(outcome.internal_detail)
 
 
 def test_provider_secret_in_artifact_is_rejected_before_persistence(tmp_path, monkeypatch):
@@ -2020,7 +2003,7 @@ def test_provider_secret_in_artifact_is_rejected_before_persistence(tmp_path, mo
         version=1,
         provider="neo4j",
         endpoint="bolt://snapshot.example.com:7687",
-        auth=AuthSpec(type="bearer", token="provider-token"),
+        auth=AuthSpec(type="bearer", token=synthetic_secret("deterministic_execution_service-credential-02")),
         options={"database": "snapshot", "data_revision": "rev-1"},
     )
     monkeypatch.setattr(
@@ -2037,7 +2020,9 @@ def test_provider_secret_in_artifact_is_rejected_before_persistence(tmp_path, mo
 
     def execute(**kwargs):
         artifact_dir = Path(kwargs["env_overrides"]["RUN_ARTIFACT_DIR"])
-        (artifact_dir / "result.txt").write_text("provider-token", encoding="utf-8")
+        (artifact_dir / "result.txt").write_text(
+            synthetic_secret("deterministic_execution_service-credential-02"), encoding="utf-8"
+        )
         return json.dumps({"value": "ok"})
 
     persisted = []
@@ -2071,7 +2056,7 @@ def test_encoded_provider_credentials_are_blocked_on_every_output_channel(
         auth=AuthSpec(
             type="mindsdb_password",
             username="reader",
-            password="synthetic-provider-secret",
+            password=synthetic_password("deterministic_execution_service-credential-04"),
         ),
         options={"database": "snapshot", "data_revision": "rev-synthetic"},
     )
@@ -2087,7 +2072,7 @@ def test_encoded_provider_credentials_are_blocked_on_every_output_channel(
         ),
     )
     encoded_value = base64.b64encode(
-        b"synthetic-provider-secret"
+        synthetic_password("deterministic_execution_service-credential-04").encode("utf-8")
     ).decode("ascii")
 
     def execute(**kwargs):
@@ -2111,9 +2096,7 @@ def test_encoded_provider_credentials_are_blocked_on_every_output_channel(
     )
 
     assert isinstance(outcome, Failed)
-    assert outcome.code == (
-        "handler_failed" if channel == "failure" else "secret_output_violation"
-    )
+    assert outcome.code == ("handler_failed" if channel == "failure" else "secret_output_violation")
     assert encoded_value not in str(outcome.internal_detail)
     assert persisted == []
 
@@ -2128,7 +2111,7 @@ def test_provider_username_is_not_treated_as_secret_substring(tmp_path, monkeypa
         auth=AuthSpec(
             type="mindsdb_password",
             username="a",
-            password="synthetic-provider-secret",
+            password=synthetic_password("deterministic_execution_service-credential-04"),
         ),
         options={"database": "snapshot", "data_revision": "rev-synthetic"},
     )
@@ -2218,9 +2201,7 @@ def test_embedded_endpoint_credentials_are_redacted_on_every_output_channel(
     )
 
     assert isinstance(outcome, Failed)
-    assert outcome.code == (
-        "handler_failed" if channel == "failure" else "secret_output_violation"
-    )
+    assert outcome.code == ("handler_failed" if channel == "failure" else "secret_output_violation")
     assert embedded_secret not in str(outcome.internal_detail)
     assert persisted == []
 
@@ -2236,7 +2217,7 @@ def test_provider_revision_change_invalidates_pending_checkpoint(tmp_path, monke
         auth=AuthSpec(
             type="mindsdb_password",
             username="reader",
-            password="provider-secret",
+            password=synthetic_password("deterministic_execution_service-credential-01"),
         ),
         options={"database": "snapshot"},
     )
@@ -2412,8 +2393,7 @@ def test_artifact_staging_is_hidden_then_frozen_before_persistence(
         return {
             "output_ref": "ref-1",
             "content_type": media_type,
-            "sha256": "sha256:"
-            + hashlib.sha256(_text.encode("utf-8")).hexdigest(),
+            "sha256": "sha256:" + hashlib.sha256(_text.encode("utf-8")).hexdigest(),
         }
 
     monkeypatch.setattr(service_module, "handle_execute_script_path", execute_handler)
@@ -2472,7 +2452,7 @@ def test_artifact_staging_cleans_only_stale_owned_directories(tmp_path, monkeypa
     recent.mkdir()
     unrelated.mkdir()
     (stale / "payload.txt").write_text("stale", encoding="utf-8")
-    stale_timestamp = time.time() - service_module.STALE_ARTIFACT_STAGING_SECONDS - 1
+    stale_timestamp = time.time() - direct_execution_service_module.STALE_ARTIFACT_STAGING_SECONDS - 1
     os.utime(stale, (stale_timestamp, stale_timestamp))
     os.utime(leased, (stale_timestamp, stale_timestamp))
     DeterministicExecutionService._refresh_artifact_staging_lease(leased)
@@ -2505,7 +2485,11 @@ def test_artifact_staging_lease_uses_windows_compatible_utime_fallback(
             raise NotImplementedError("synthetic Windows behavior")
         return original_utime(path, *args, **kwargs)
 
-    monkeypatch.setattr(service_module.os, "utime", windows_compatible_utime)
+    monkeypatch.setattr(
+        direct_execution_service_module.os,
+        "utime",
+        windows_compatible_utime,
+    )
 
     DeterministicExecutionService._refresh_artifact_staging_lease(staging_dir)
 
@@ -2588,8 +2572,7 @@ def test_artifact_persistence_failure_rolls_back_prior_artifacts(tmp_path, monke
             return {
                 "output_ref": "ref-first",
                 "content_type": media_type,
-                "sha256": "sha256:"
-                + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "sha256": "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
             }
 
         def rollback(self, output_refs):
@@ -2626,6 +2609,7 @@ def test_artifact_persistence_rejects_and_rolls_back_wrong_digest(tmp_path, monk
         def __init__(self):
             self.rolled_back = []
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def __call__(self, _name, _text, media_type):
             return {
                 "output_ref": "wrong-digest-ref",
@@ -2671,8 +2655,7 @@ def test_artifact_names_are_nfkc_unique_before_persistence(tmp_path, monkeypatch
         enabled=True,
         project_root=str(tmp_path),
         timeout_seconds=30,
-        artifact_writer=lambda name, text, media: stored.append((name, text, media))
-        or {"output_ref": "unexpected"},
+        artifact_writer=lambda name, text, media: stored.append((name, text, media)) or {"output_ref": "unexpected"},
     )
 
     assert isinstance(outcome, Failed)
@@ -2809,11 +2792,13 @@ def test_parser_receives_explicit_arguments_and_cannot_reopen_resolved_issue(
         if kwargs["caller"] == "deterministic_parser":
             payload = json.loads(kwargs["args"][1])
             assert payload["known_arguments"] == {"code": "explicit"}
-            return json.dumps({
-                "matched": True,
-                "arguments": {},
-                "issues": [{"field": "code", "message": "ambiguous"}],
-            })
+            return json.dumps(
+                {
+                    "matched": True,
+                    "arguments": {},
+                    "issues": [{"field": "code", "message": "ambiguous"}],
+                }
+            )
         return json.dumps({"value": "ok"})
 
     monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
@@ -2978,9 +2963,7 @@ def test_runtime_owned_parameter_is_injected_but_excluded_from_arguments_hash(
         "--session-id",
         "session-1",
     ]
-    assert outcome.envelope["execution"]["arguments_sha256"] == canonical_sha256(
-        {"code": "A"}
-    )
+    assert outcome.envelope["execution"]["arguments_sha256"] == canonical_sha256({"code": "A"})
 
 
 def test_runtime_owned_checkpoint_argument_is_rejected_as_stale(tmp_path, monkeypatch):

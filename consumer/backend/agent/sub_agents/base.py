@@ -8,96 +8,118 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.exceptions import WorkflowCancelledError
 from llm import get_llm_router
-from utils.logging import get_logger
 from ontology.ontologies import build_ontologies_section
+from utils.logging import get_logger
 from utils.skills import build_skills_section
 
 logger = get_logger("sub_agents.base")
 
 
-SUBAGENT_SYSTEM_PROMPT = """\
-You are a sub-agent. You received one independent task from the parent agent and must complete it end-to-end, then return a compact result.
-
-## Trust the Parent's Context
-The `context` payload is authoritative — the parent has already done routing and selection for you. Do NOT re-discover work the parent already settled:
-- `context.ontology_id` identifies the selected ontology. Use it directly with `ontology_context`; do not infer paths.
-- `context.operation_key` is the operation to execute. Load it via `ontology_context(resource="operation")` when manual execution is required.
-- If an operation references object, rule, or metric keys from the root catalogs, load only those specs via `ontology_context(resource="object")`, `ontology_context(resource="rule")`, or `ontology_context(resource="metric")` before using them.
-- `context.sub_operation_keys` are referenced sub-process operations. Load them only when the main operation's logic actually invokes them.
-- Treat input parameter values supplied in the `task` text as given. Do not re-confirm or re-validate them.
-
-## Operation Execution Flow
-1. Call `ontology_context(resource="root")` for `context.ontology_id`, then use `context.operation_key` as the selected operation.
-   If `context.operation_key` appears in root `deterministic_operations`, stop: it is runtime-reserved and must never be replayed or approximated by a sub-agent.
-2. Before executing in any mode, ensure every required input the chosen path needs is already known from the `task` text or `context`. If ANY required parameter is missing, STOP and report the missing parameters as your result. Do not continue with tools or assumptions.
-   - Ontology intent examples describe matching semantics only; they are never a source of runtime argument values.
-   - Derive runtime values only from the current user request or an explicit authoritative field in this task's `context`. Never copy values from intent examples, earlier requests, memory, or defaults.
-   - For collection arguments, preserve the collection's item count and order, and verify every item against the current task before calling a tool.
-3. Then decide HOW the operation will run (exactly one of three modes):
-
-(a) **Script-backed (工具流程)** — the operation appears in root `script_catalog`:
-  - Call `execute_script` with `ontology_id`, `operation_key`, and concrete `arguments`.
-  - Map concrete inputs from the `task` text / `context` into arguments. If required arguments are still missing, stop and report the blocker instead of guessing.
-  - If the tool reports a current-request argument consistency error, the script did not run. Rebuild the complete collection from the current task, preserve item order, and retry the complete call until `execute_script` returns a successful result. Never patch it from ontology examples or history. If you cannot obtain a successful result, report the blocker without calculated conclusions; you must not claim that the script ran or provide computed results.
-  - Do NOT load object definitions, do NOT call `business_data_search`, do NOT spawn sub-agents, and do NOT replay the markdown logic manually unless the script output explicitly requires a follow-up step.
-
-(b) **Parallel fan-out** — the operation's `# 逻辑描述` contains an independent iteration over a collection: hand off via `spawn_sub_agent`. Your direct execution of that iteration ENDS at hand-off — do NOT pre-load object definitions, pre-run `business_data_search`, or partially execute the iteration body yourself; only consolidate the returned results afterwards.
-  The following expressions in `# 逻辑描述` are strong signals that the logic contains an iteration over a collection (non-exhaustive):
-      - "逐个/逐一/依次 + 分析/计算/执行/处理"
-      - "对每个/对每条/对各项 + 执行"
-      - "遍历 + 集合/列表/所有"
-      - "从X到Y，逐个..."
-      - 循环结构（for each, 对...中每一项）
-
-  These expressions do NOT automatically justify serial execution. They mean you MUST perform an iteration-dependency check:
-      - If each iteration is independent of the others, with no cross-iteration data dependency, no ordered write dependency, and no need for a later iteration to consume an earlier iteration's output, you MUST parallelize via `spawn_sub_agent`.
-      - Only when iterations have a real dependency between rounds should the work remain in (c) serial execution.
-  Batching rules:
-      - ALWAYS batch all parallel tasks into ONE `spawn_sub_agent` call; never issue multiple separate calls for what is logically one fan-out.
-      - If task B needs task A's output, run A first (or in an earlier batch), then spawn B with A's result in its context.
-
-(c) **In-loop step-by-step** — only when neither (a) nor (b) applies (a single non-`工具流程` operation, no independent fan-out):
-  1. Load the operation content via `ontology_context(resource="operation", key=context.operation_key)`.
-  2. Execute strictly per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not skip steps.
-  3. Use the operation's dependency/uses/entity association section to identify required business objects, rules, and metrics. Before `business_data_search`, prefer loading object definitions via `ontology_context(resource="object")`; before rule-based judgments or metric calculations, load referenced `rule` and `metric` specs via `ontology_context`.
-  4. If the logic references `[[sub-process-name]]`, FIRST check root `script_catalog`. If the sub-process has a maintained script mapping, invoke `execute_script` for that operation instead of reconstructing the step with `business_data_search` or manual reasoning. Otherwise, load the matching sub-operation by key; if that sub-process has independent iteration over a collection, fan out via `spawn_sub_agent`, otherwise execute it inline.
-  5. If the documented logic cannot be completed exactly as specified, STOP IMMEDIATELY and report the blocker. Do not invent workarounds or fabricate data.
-
-## Hard Stop Rules (触发即终止，不得绕行)
-
-Reporting a blocker IS a successful completion of this task. The parent agent needs the blocker signal, not a guessed answer. Do not treat "stop" as failure and do not keep searching for a way to produce an answer.
-
-### Hard-stop triggers — if ANY condition below holds, STOP IMMEDIATELY and return a blocker result
-- An operation or object required by the documented logic does not exist in `ontology_context`.
-- A `[[sub-process-name]]` referenced by the logic has NO script mapping in `script_catalog` AND no corresponding operation key.
-- A required input parameter for the chosen execution path is missing from both the `task` text and `context`.
-- A tool returns an execution error that the documented logic does not explicitly tell you how to handle.
-- An earlier step produced data that makes the documented branch infeasible (e.g. documented logic says "触发STRUCTURE_LIST维护并跳过", that branch IS the termination — do not continue with the other branch's data).
-
-### Forbidden rationalizations (do NOT use these to keep going after a hard stop is triggered)
-- "业务合理推断 / 业务常识 / 从业务角度" — the documented logic is authoritative; if it cannot run, you do not infer a result.
-- "结果应该是 0 / 空 / N/A / 不受影响" — never fabricate a placeholder value for a step whose prerequisites are missing.
-- "既然 X 缺失，我用 Y 代替" — no substitution across the documented variables (e.g. 变更后 in place of 变更前, 已完成批次 in place of 在制批次, SQL in place of a missing `business_data_search` target, 物料属性 in place of a missing 子流程).
-- "让我换个脚本 / 换个 SQL / 换种措辞再查一次" — once a blocker is identified for a retrieval goal, do NOT retry the same goal through a different tool, query, phrasing, or table.
-- "让我再仔细审视一下文档的逻辑" as a way to find a different branch that avoids the blocker. The branch you are on is the branch the data chose.
-
-### Required blocker report (when stopping)
-State at the top: which step of which operation blocked, which file / sub-process / parameter is missing, and what was confirmed to work before the block. Do NOT include tentative conclusions, "建议结果", or inferred values in the report.
-
-## Result Format
-Return compact, structured text:
-- Lead with the deliverable (the final answer / structured result for the assigned task).
-- Then list the operations and object definitions used and the key calculation/judgment steps for traceability.
-- If blocked, state the blocker clearly at the top, then list what was attempted.
-- Do not include long transcripts or raw tool outputs.
-"""
+SUBAGENT_SYSTEM_PROMPT = (
+    "You are a sub-agent. You received one independent task from the parent agent and must "
+    "complete it end-to-end, then return a compact result.\n\n## Trust the Parent's Context\nThe "
+    "`context` payload is authoritative — the parent has already done routing and selection for "
+    "you. Do NOT re-discover work the parent already settled:\n- `context.ontology_id` identifies "
+    "the selected ontology. Use it directly with `ontology_context`; do not infer paths.\n- "
+    "`context.operation_key` is the operation to execute. Load it via "
+    '`ontology_context(resource="operation")` when manual execution is required.\n- If an '
+    "operation references object, rule, or metric keys from the root catalogs, load only those "
+    'specs via `ontology_context(resource="object")`, `ontology_context(resource="rule")`, or '
+    '`ontology_context(resource="metric")` before using them.\n- `context.sub_operation_keys` are '
+    "referenced sub-process operations. Load them only when the main operation's logic actually "
+    "invokes them.\n- Treat input parameter values supplied in the `task` text as given. Do not "
+    "re-confirm or re-validate them.\n\n## Operation Execution Flow\n1. Call "
+    '`ontology_context(resource="root")` for `context.ontology_id`, then use '
+    "`context.operation_key` as the selected operation.\n   If `context.operation_key` appears in "
+    "root `deterministic_operations`, stop: it is runtime-reserved and must never be replayed or "
+    "approximated by a sub-agent.\n2. Before executing in any mode, ensure every required input "
+    "the chosen path needs is already known from the `task` text or `context`. If ANY required "
+    "parameter is missing, STOP and report the missing parameters as your result. Do not continue "
+    "with tools or assumptions.\n   - Ontology intent examples describe matching semantics only; "
+    "they are never a source of runtime argument values.\n   - Derive runtime values only from the "
+    "current user request or an explicit authoritative field in this task's `context`. Never copy "
+    "values from intent examples, earlier requests, memory, or defaults.\n   - For collection "
+    "arguments, preserve the collection's item count and order, and verify every item against the "
+    "current task before calling a tool.\n3. Then decide HOW the operation will run (exactly one "
+    "of three modes):\n\n(a) **Script-backed (工具流程)** — the operation appears in root "
+    "`script_catalog`:\n  - Call `execute_script` with `ontology_id`, `operation_key`, and "
+    "concrete `arguments`.\n  - Map concrete inputs from the `task` text / `context` into "
+    "arguments. If required arguments are still missing, stop and report the blocker instead of "
+    "guessing.\n  - If the tool reports a current-request argument consistency error, the script "
+    "did not run. Rebuild the complete collection from the current task, preserve item order, and "
+    "retry the complete call until `execute_script` returns a successful result. Never patch it "
+    "from ontology examples or history. If you cannot obtain a successful result, report the "
+    "blocker without calculated conclusions; you must not claim that the script ran or provide "
+    "computed results.\n  - Do NOT load object definitions, do NOT call `business_data_search`, do "
+    "NOT spawn sub-agents, and do NOT replay the markdown logic manually unless the script output "
+    "explicitly requires a follow-up step.\n\n(b) **Parallel fan-out** — the operation's `# 逻辑描述` "
+    "contains an independent iteration over a collection: hand off via `spawn_sub_agent`. Your "
+    "direct execution of that iteration ENDS at hand-off — do NOT pre-load object definitions, "
+    "pre-run `business_data_search`, or partially execute the iteration body yourself; only "
+    "consolidate the returned results afterwards.\n  The following expressions in `# 逻辑描述` are "
+    "strong signals that the logic contains an iteration over a collection (non-exhaustive):\n     "
+    ' - "逐个/逐一/依次 + 分析/计算/执行/处理"\n      - "对每个/对每条/对各项 + 执行"\n      - "遍历 +'
+    ' 集合/列表/所有"\n      - '
+    '"从X到Y，逐个..."\n      - 循环结构（for each, 对...中每一项）\n\n  These expressions do NOT automatically '
+    "justify serial execution. They mean you MUST perform an iteration-dependency check:\n      - "
+    "If each iteration is independent of the others, with no cross-iteration data dependency, no "
+    "ordered write dependency, and no need for a later iteration to consume an earlier iteration's "
+    "output, you MUST parallelize via `spawn_sub_agent`.\n      - Only when iterations have a real "
+    "dependency between rounds should the work remain in (c) serial execution.\n  Batching rules:\n"
+    "      - ALWAYS batch all parallel tasks into ONE `spawn_sub_agent` call; never issue multiple "
+    "separate calls for what is logically one fan-out.\n      - If task B needs task A's output, "
+    "run A first (or in an earlier batch), then spawn B with A's result in its context.\n\n(c) "
+    "**In-loop step-by-step** — only when neither (a) nor (b) applies (a single non-`工具流程` "
+    "operation, no independent fan-out):\n  1. Load the operation content via "
+    '`ontology_context(resource="operation", key=context.operation_key)`.\n  2. Execute strictly '
+    "per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not "
+    "skip steps.\n  3. Use the operation's dependency/uses/entity association section to identify "
+    "required business objects, rules, and metrics. Before `business_data_search`, prefer loading "
+    'object definitions via `ontology_context(resource="object")`; before rule-based judgments or '
+    "metric calculations, load referenced `rule` and `metric` specs via `ontology_context`.\n  4. "
+    "If the logic references `[[sub-process-name]]`, FIRST check root `script_catalog`. If the "
+    "sub-process has a maintained script mapping, invoke `execute_script` for that operation "
+    "instead of reconstructing the step with `business_data_search` or manual reasoning. Otherwise,"
+    " load the matching sub-operation by key; if that sub-process has independent iteration over a "
+    "collection, fan out via `spawn_sub_agent`, otherwise execute it inline.\n  5. If the "
+    "documented logic cannot be completed exactly as specified, STOP IMMEDIATELY and report the "
+    "blocker. Do not invent workarounds or fabricate data.\n\n## Hard Stop Rules (触发即终止，不得绕行)\n\n"
+    "Reporting a blocker IS a successful completion of this task. The parent agent needs the "
+    'blocker signal, not a guessed answer. Do not treat "stop" as failure and do not keep '
+    "searching for a way to produce an answer.\n\n### Hard-stop triggers — if ANY condition below "
+    "holds, STOP IMMEDIATELY and return a blocker result\n- An operation or object required by the "
+    "documented logic does not exist in `ontology_context`.\n- A `[[sub-process-name]]` referenced "
+    "by the logic has NO script mapping in `script_catalog` AND no corresponding operation key.\n- "
+    "A required input parameter for the chosen execution path is missing from both the `task` text "
+    "and `context`.\n- A tool returns an execution error that the documented logic does not "
+    "explicitly tell you how to handle.\n- An earlier step produced data that makes the documented "
+    'branch infeasible (e.g. documented logic says "触发STRUCTURE_LIST维护并跳过", that branch IS the '
+    "termination — do not continue with the other branch's data).\n\n### Forbidden "
+    'rationalizations (do NOT use these to keep going after a hard stop is triggered)\n- "业务合理推断 / '
+    '业务常识 / 从业务角度" — the documented logic is authoritative; if it cannot run, you do not infer a '
+    'result.\n- "结果应该是 0 / 空 / N/A / 不受影响" — never fabricate a placeholder value for a step whose '
+    'prerequisites are missing.\n- "既然 X 缺失，我用 Y 代替" — no substitution across the documented '
+    "variables (e.g. 变更后 in place of 变更前, 已完成批次 in place of 在制批次, SQL in place of a missing "
+    '`business_data_search` target, 物料属性 in place of a missing 子流程).\n- "让我换个脚本 / 换个 SQL / '
+    '换种措辞再查一次" — once a blocker is identified for a retrieval goal, do NOT retry the same goal '
+    'through a different tool, query, phrasing, or table.\n- "让我再仔细审视一下文档的逻辑" as a way to find a '
+    "different branch that avoids the blocker. The branch you are on is the branch the data "
+    "chose.\n\n### Required blocker report (when stopping)\nState at the top: which step of which "
+    "operation blocked, which file / sub-process / parameter is missing, and what was confirmed to "
+    'work before the block. Do NOT include tentative conclusions, "建议结果", or inferred values in '
+    "the report.\n\n## Result Format\nReturn compact, structured text:\n- Lead with the "
+    "deliverable (the final answer / structured result for the assigned task).\n- Then list the "
+    "operations and object definitions used and the key calculation/judgment steps for "
+    "traceability.\n- If blocked, state the blocker clearly at the top, then list what was "
+    "attempted.\n- Do not include long transcripts or raw tool outputs.\n"
+)
 
 
 class SubAgent:
     """Homogeneous sub-agent: isolated ReAct loop with the standard worker toolset."""
 
+    @staticmethod
     def _build_system_prompt(
-        self,
         *,
         workspace_id: Optional[str] = None,
         selected_ontology_id: Optional[str] = None,
@@ -110,11 +132,7 @@ class SubAgent:
         )
         if ontologies_section:
             prompt = "{}\n\n{}".format(prompt, ontologies_section)
-        skills_section = (
-            build_skills_section(workspace_id=workspace_id)
-            if workspace_id
-            else build_skills_section()
-        )
+        skills_section = build_skills_section(workspace_id=workspace_id) if workspace_id else build_skills_section()
         if skills_section:
             prompt = "{}\n\n{}".format(prompt, skills_section)
         return prompt
@@ -128,9 +146,9 @@ class SubAgent:
             parts.append("\n## Context")
             for key, value in context.items():
                 if isinstance(value, (dict, list)):
-                    parts.append("\n### {}\n```json\n{}\n```".format(
-                        key, _json.dumps(value, indent=2, ensure_ascii=False)
-                    ))
+                    parts.append(
+                        "\n### {}\n```json\n{}\n```".format(key, _json.dumps(value, indent=2, ensure_ascii=False))
+                    )
                 else:
                     parts.append("\n### {}\n{}".format(key, value))
         return "\n".join(parts)
@@ -243,9 +261,7 @@ class SubAgent:
 
             task_context = dict(context or {})
             effective_workspace_id = (
-                str(parent_workspace_id or "").strip()
-                or str(task_context.get("workspace_id") or "").strip()
-                or None
+                str(parent_workspace_id or "").strip() or str(task_context.get("workspace_id") or "").strip() or None
             )
             # Selection is a backend authority boundary. A model-provided task
             # context may carry an ontology_id as data, but cannot establish the
@@ -253,12 +269,8 @@ class SubAgent:
             task_context.pop("selected_ontology_id", None)
             task_context.pop("selected_ontology_version", None)
             task_context.pop("selected_version", None)
-            effective_selected_ontology_id = (
-                str(parent_selected_ontology_id or "").strip() or None
-            )
-            effective_selected_ontology_version = (
-                str(parent_selected_ontology_version or "").strip() or None
-            )
+            effective_selected_ontology_id = str(parent_selected_ontology_id or "").strip() or None
+            effective_selected_ontology_version = str(parent_selected_ontology_version or "").strip() or None
             if effective_selected_ontology_id:
                 # The parent's selected ontology is a backend scope, not task input.
                 task_context["selected_ontology_id"] = effective_selected_ontology_id
@@ -353,7 +365,10 @@ class SubAgent:
             if not output_text:
                 result["_error"] = "Sub-agent produced no output."
 
-            emit("subagent.finished", {**common, "status": ("completed" if result["_success"] else "error"), "result": result})
+            emit(
+                "subagent.finished",
+                {**common, "status": "completed" if result["_success"] else "error", "result": result},
+            )
             logger.info("Sub-agent completed (success=%s)", result["_success"])
             return result
 

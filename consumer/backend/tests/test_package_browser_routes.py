@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
 import io
 import warnings
 import zipfile
 
 import pytest
 import yaml
-
 from api.auth.auth import AuthManager
 from api.routes import ontologies as ontologies_module
 from api.routes.ontologies import ontologies_router
+from api.testing import TestApplication
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD
+from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
@@ -60,10 +58,10 @@ def _build_client(tmp_path, monkeypatch):
 
     app = TestApplication()
     app.state.services["TESTING"] = True
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert user is not None
-    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(ontologies_router)
     client = TestClient(app)
@@ -170,9 +168,7 @@ def test_all_package_read_routes_reject_symlinked_version_directory(tmp_path, mo
 
 def test_editor_file_listing_uses_browser_filters_and_keeps_env_asset(tmp_path, monkeypatch):
     client, headers, version1 = _build_client(tmp_path, monkeypatch)
-    (version1 / "assets" / "linked.txt").symlink_to(
-        version1 / "assets" / "nested" / "guide.txt"
-    )
+    (version1 / "assets" / "linked.txt").symlink_to(version1 / "assets" / "nested" / "guide.txt")
 
     response = client.get(
         "/agentic/ontologies/demo-ontology/files",
@@ -189,9 +185,7 @@ def test_editor_file_listing_uses_browser_filters_and_keeps_env_asset(tmp_path, 
 
 def test_editor_file_read_rejects_symlink(tmp_path, monkeypatch):
     client, headers, version1 = _build_client(tmp_path, monkeypatch)
-    (version1 / "operations" / "linked.md").symlink_to(
-        version1 / "operations" / "流程.md"
-    )
+    (version1 / "operations" / "linked.md").symlink_to(version1 / "operations" / "流程.md")
 
     response = client.get(
         "/agentic/ontologies/demo-ontology/file",
@@ -205,9 +199,7 @@ def test_editor_file_read_rejects_symlink(tmp_path, monkeypatch):
 
 def test_editor_asset_read_keeps_env_and_rejects_symlink(tmp_path, monkeypatch):
     client, headers, version1 = _build_client(tmp_path, monkeypatch)
-    (version1 / "assets" / "linked.txt").symlink_to(
-        version1 / "assets" / "nested" / "guide.txt"
-    )
+    (version1 / "assets" / "linked.txt").symlink_to(version1 / "assets" / "nested" / "guide.txt")
 
     env_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
@@ -293,9 +285,7 @@ bound_operation: QueryPart
     assert "# Legacy Example" in (version_dir / "index.md").read_text(encoding="utf-8")
     assert (version_dir / "objects" / "index.md").is_file()
     assert (version_dir / "operations" / "index.md").is_file()
-    assert "bound_operation: QueryPart" in (
-        version_dir / "scripts" / "query_part.md"
-    ).read_text(encoding="utf-8")
+    assert "bound_operation: QueryPart" in (version_dir / "scripts" / "query_part.md").read_text(encoding="utf-8")
     assert not list(version_dir.glob("*-list.md"))
     assert not (version_dir / "ONTOLOGY.md").exists()
 
@@ -323,8 +313,7 @@ def test_import_zip_rejects_absolute_and_noncanonical_member_paths(
     unsafe_name,
 ):
     client, headers, _version1 = _build_client(tmp_path, monkeypatch)
-    archive = _zip_from_entries([(unsafe_name, "kind: ontology-package\n"
-            "schema_version: 0.1\n")])
+    archive = _zip_from_entries([(unsafe_name, "kind: ontology-package\n" "schema_version: 0.1\n")])
 
     response = client.post(
         "/agentic/ontologies/import-zip",

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from agent.memory.filesystem_manager import FileSystemMemoryManager
 
 

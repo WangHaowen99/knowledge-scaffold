@@ -805,10 +805,10 @@ async def _wait_for_terminal(
                             )
             except EventSubscriberReservationError:
                 continue
-            except EventReplayUnavailableError:
+            except EventReplayUnavailableError as exc:
                 current_snapshot = await manager.get_run(initial.run_id, scope)
                 if current_snapshot is None:
-                    raise RuntimeError("canonical run disappeared")
+                    raise RuntimeError("canonical run disappeared") from exc
                 if current_snapshot.status in TERMINAL_RUN_STATUSES:
                     return current_snapshot
                 cursor = current_snapshot.last_seq

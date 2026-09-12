@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 from agent.tools.business_data.value_lookup import (
     ValueLookupErrorCode,
@@ -16,9 +15,10 @@ from agent.tools.business_data.value_lookup import (
     render_lookup_coordinates,
     validate_value_inputs,
 )
-
+from backend_synthetic_credentials import synthetic_secret
 
 # -- fixtures -----------------------------------------------------------------
+
 
 def _make_ontology_dir(tmp_path: Path) -> Path:
     mappings_dir = tmp_path / "mappings"
@@ -81,8 +81,11 @@ FIELD_BINDINGS = {
 }
 
 ALL_FIELD_KEYS = (
-    "FLT_NR", "LATEST_DEP_ARP_CD", "LATEST_ARV_ARP_CD",
-    "AIRCRAFT_TYPE_CD", "INT_MK",
+    "FLT_NR",
+    "LATEST_DEP_ARP_CD",
+    "LATEST_ARV_ARP_CD",
+    "AIRCRAFT_TYPE_CD",
+    "INT_MK",
 )
 
 VALUE_BINDINGS = {
@@ -106,11 +109,12 @@ def _make_connection(provider="nl2sql_http") -> ResolvedBusinessDataSource:
         ontology_id="demo",
         provider=provider,
         mode="direct_provider",
-        config={"url": "http://example.com", "token": "t", "scene": "s"},
+        config={"url": "http://example.com", "token": synthetic_secret("value_lookup-credential-01"), "scene": "s"},
     )
 
 
 # -- validate_value_inputs ---------------------------------------------------
+
 
 def test_validate_accepts_valid_inputs():
     validated, error = validate_value_inputs(
@@ -144,11 +148,13 @@ def test_validate_rejects_non_string_field_key():
 
 def test_validate_rejects_unexpected_item_fields():
     _, error = validate_value_inputs(
-        [{
-            "field_key": "LATEST_DEP_ARP_CD",
-            "values": ["KUL"],
-            "binding_key": "forged",
-        }],
+        [
+            {
+                "field_key": "LATEST_DEP_ARP_CD",
+                "values": ["KUL"],
+                "binding_key": "forged",
+            }
+        ],
         FIELD_BINDINGS,
         ALL_FIELD_KEYS,
     )
@@ -222,14 +228,13 @@ def test_validate_rejects_control_chars_in_value():
 
 
 def test_validate_rejects_too_many_fields():
-    inputs = [
-        {"field_key": "LATEST_DEP_ARP_CD", "values": ["v"]}
-    ] * 33
+    inputs = [{"field_key": "LATEST_DEP_ARP_CD", "values": ["v"]}] * 33
     _, error = validate_value_inputs(inputs, FIELD_BINDINGS, ALL_FIELD_KEYS)
     assert error is not None
 
 
 # -- group_value_inputs_by_binding -------------------------------------------
+
 
 def test_group_merges_same_binding_across_fields():
     validated = [
@@ -237,7 +242,9 @@ def test_group_merges_same_binding_across_fields():
         {"field_key": "LATEST_ARV_ARP_CD", "values": ["CGO"]},
     ]
     groups, error = group_value_inputs_by_binding(
-        validated, FIELD_BINDINGS, VALUE_BINDINGS,
+        validated,
+        FIELD_BINDINGS,
+        VALUE_BINDINGS,
     )
     assert error is None
     assert len(groups) == 1
@@ -253,7 +260,9 @@ def test_group_separates_different_bindings():
         {"field_key": "AIRCRAFT_TYPE_CD", "values": ["32N"]},
     ]
     groups, error = group_value_inputs_by_binding(
-        validated, FIELD_BINDINGS, VALUE_BINDINGS,
+        validated,
+        FIELD_BINDINGS,
+        VALUE_BINDINGS,
     )
     assert error is None
     assert len(groups) == 2
@@ -267,7 +276,9 @@ def test_group_dedupes_values_across_fields():
         {"field_key": "LATEST_ARV_ARP_CD", "values": ["KUL"]},
     ]
     groups, error = group_value_inputs_by_binding(
-        validated, FIELD_BINDINGS, VALUE_BINDINGS,
+        validated,
+        FIELD_BINDINGS,
+        VALUE_BINDINGS,
     )
     assert error is None
     assert len(groups[0].input_values) == 1
@@ -294,8 +305,10 @@ def test_group_rejects_control_characters_in_mapping_coordinates():
 
 # -- render_lookup_coordinates -----------------------------------------------
 
+
 def test_render_coordinates_includes_all_fields():
     from agent.tools.business_data.value_lookup import ValueBindingGroup
+
     group = ValueBindingGroup(
         binding_key="airport-code",
         resource="机场中文代号",
@@ -319,6 +332,7 @@ def test_render_coordinates_includes_all_fields():
 
 def test_render_coordinates_dedupes_fields():
     from agent.tools.business_data.value_lookup import ValueBindingGroup
+
     group = ValueBindingGroup(
         binding_key="test",
         resource="r",
@@ -334,6 +348,7 @@ def test_render_coordinates_dedupes_fields():
 
 
 # -- execute_value_lookups ----------------------------------------------------
+
 
 def _patch_stream(monkeypatch, final_contents):
     """Patch query_business_data_stream to return canned final contents."""
@@ -383,13 +398,9 @@ def test_execute_value_lookups_completed(monkeypatch, tmp_path):
     assert response.status == "completed"
     assert len(response.value_results) == 2
     assert response.errors == []
-    airport_result = next(
-        r for r in response.value_results if r.binding_key == "airport-code"
-    )
+    airport_result = next(r for r in response.value_results if r.binding_key == "airport-code")
     assert "吉隆坡" in airport_result.content
-    aircraft_result = next(
-        r for r in response.value_results if r.binding_key == "aircraft-type"
-    )
+    aircraft_result = next(r for r in response.value_results if r.binding_key == "aircraft-type")
     assert "A320neo" in aircraft_result.content
 
 

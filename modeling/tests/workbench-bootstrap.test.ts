@@ -59,8 +59,47 @@ test('Workbench 仅在评测阶段将发布门禁焦点替换为正式评测', (
       agentFocus: gateFocus,
       workflowPhase,
       initialPath: 'manifest.yaml',
-    }), { kind: 'file', target: 'manifest.yaml' });
+    }), { kind: 'studio', target: '知识包 Studio', view: 'graph' });
   }
+});
+
+test('合成项目首次进入 Studio，快照、历史焦点和活动事件不会覆盖首页', async (t) => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: new URL('http://localhost/workbench.html?project=project_alpha') };
+  t.after(() => { globalThis.window = previousWindow; });
+  const interaction = { id: 'synthetic-confirmation', kind: 'confirmation' };
+  t.mock.method(globalThis, 'fetch', async (input) => {
+    const path = String(input);
+    const data = path.includes('/snapshot')
+      ? { project: { id: 'project_alpha', name: '合成项目' }, files: ['diagrams/synthetic.mmd'], materials: [] }
+      : path.includes('/state')
+        ? { state: { phase: 'evaluation' }, focus: { kind: 'flow', target: 'diagrams/synthetic.mmd' }, interaction, lastSeq: 5 }
+        : path.includes('/diff') ? { files: [{ path: 'rules/synthetic.md' }] }
+        : { content: '' };
+    return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+  });
+  const app = await import('../frontend/src/workbench/lib/appStore.js?test=studio-home');
+  const home = { kind: 'studio', target: '知识包 Studio', view: 'graph' };
+  assert.deepEqual(app.store.get().focus, home);
+  assert.equal(app.store.get().follow, false);
+  await app.actions.bootstrap('project_alpha');
+  assert.deepEqual(app.store.get().focus, home);
+  assert.deepEqual(app.store.get().interaction, interaction);
+  app.actions.handleEvent({ eventType: 'focus', seq: 4, target: { kind: 'flow', target: 'diagrams/synthetic.mmd' } });
+  assert.deepEqual(app.store.get().focus, home);
+  app.actions.handleEvent({ eventType: 'focus', seq: 6, target: { kind: 'flow', target: 'diagrams/synthetic.mmd' } });
+  assert.deepEqual(app.store.get().focus, home);
+  app.actions.setFollow(true);
+  assert.equal(app.store.get().focus.kind, 'flow');
+  app.actions.selectPath('diagrams/synthetic.mmd');
+  assert.equal(app.store.get().focus.target, 'diagrams/synthetic.mmd');
+});
+
+test('Studio 显式条目链接优先于首页，手动选择不被启动快照覆盖', () => {
+  const entry = { kind: 'studio', target: '知识包 Studio', view: 'entry', elementId: 'rule:synthetic' };
+  assert.deepEqual(resolveBootstrapFocus({ current: { kind: 'empty' }, routeFocus: entry }), entry);
+  const manual = { kind: 'file', target: 'rules/synthetic.md' };
+  assert.equal(resolveBootstrapFocus({ current: manual, routeFocus: entry }), manual);
 });
 
 test('Workbench 实时门禁焦点不会让建模阶段提前进入评测', () => {
