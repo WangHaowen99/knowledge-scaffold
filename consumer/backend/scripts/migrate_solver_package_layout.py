@@ -12,7 +12,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import sys
 from pathlib import Path
+from typing import TextIO
+
+result_logger = logging.getLogger(f"{__name__}.result")
+
+
+def _configure_stream_logger(
+    target: logging.Logger,
+    *,
+    stream: TextIO,
+    level: int,
+) -> None:
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    target.handlers.clear()
+    target.addHandler(handler)
+    target.setLevel(level)
+    target.propagate = False
+
+
+def _configure_cli_logging() -> None:
+    # The command emits one JSON document per run for both success and failure,
+    # so callers parse a single stream; keep every payload on stdout.
+    _configure_stream_logger(result_logger, stream=sys.stdout, level=logging.INFO)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,10 +92,11 @@ def main(argv: list[str] | None = None) -> int:
         migrate_solver_package_layout,
     )
 
+    _configure_cli_logging()
     args = build_parser().parse_args(argv)
     source = args.source_option or args.source_positional
     if source is None:
-        print(
+        result_logger.info(
             json.dumps(
                 {"dry_run": not args.apply, "ok": False, "error": "source is required"},
                 ensure_ascii=False,
@@ -86,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             target_version=args.target_version,
         )
     except (SolverPackageLayoutError, OSError, ValueError) as exc:
-        print(
+        result_logger.info(
             json.dumps(
                 {"dry_run": not args.apply, "ok": False, "error": str(exc)},
                 ensure_ascii=False,
@@ -94,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     payload = {"ok": True, **report.as_dict()}
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    result_logger.info(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 

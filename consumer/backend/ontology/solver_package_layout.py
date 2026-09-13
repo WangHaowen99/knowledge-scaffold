@@ -207,6 +207,16 @@ def solver_layout_marker(manifest: Mapping[str, Any] | None) -> str:
     return _layout_marker(manifest) or LEGACY_LAYOUT
 
 
+def _path_escapes_package(raw: str, relative: Path) -> bool:
+    """Return whether a declared relative path can point outside the package."""
+
+    if relative.is_absolute() or raw.startswith(("/", "\\")):
+        return True
+    if re.match(r"^[A-Za-z]:", raw):
+        return True
+    return any(part in {"", ".", ".."} for part in relative.parts)
+
+
 def resolve_solver_sidecar_path(
     package_root: Path,
     relative_path: str | os.PathLike[str],
@@ -227,12 +237,7 @@ def resolve_solver_sidecar_path(
     if not raw:
         raise SolverPackageLayoutError(f"{label.capitalize()} path is missing")
     relative = Path(raw)
-    if (
-        relative.is_absolute()
-        or raw.startswith(("/", "\\"))
-        or re.match(r"^[A-Za-z]:", raw)
-        or any(part in {"", ".", ".."} for part in relative.parts)
-    ):
+    if _path_escapes_package(raw, relative):
         raise SolverPackageLayoutError(f"{label.capitalize()} path must be contained in the package")
 
     root_resolved = root.resolve(strict=True)
@@ -630,7 +635,7 @@ def _migrate_solver_package_layout_locked(
                 decision_model_id=declaration.model_id,
             )
         required = ("entry", "input_schema", "result_schema")
-        if any(not source_paths[field] for field in required):
+        if any(not source_paths.get(field) for field in required):
             raise SolverPackageLayoutError(
                 f"Manifest solver operation is missing required sidecar paths: {operation.key}"
             )
@@ -655,7 +660,12 @@ def _migrate_solver_package_layout_locked(
             if not raw_source:
                 continue
             source_path = resolve_solver_sidecar_path(source, raw_source, field)
-            destination = Path(destination_names[field])
+            destination_name = destination_names.get(field, "")
+            if not destination_name:
+                raise SolverPackageLayoutError(
+                    f"Migration has no destination for sidecar field: {field}"
+                )
+            destination = Path(destination_name)
             moves.append((source_path, destination, field, operation.key))
             model_values[field if field != "entry" else "entry"] = destination.as_posix()
         _update_manifest_solver_references(
@@ -1193,7 +1203,8 @@ def _validate_sidecar_document(path: Path, label: str) -> None:
             value = json.loads(path.read_text(encoding="utf-8"))
         else:
             value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        # ValueError also covers the decode and JSON failures raised above.
         raise SolverPackageLayoutError(f"{label.capitalize()} sidecar is malformed") from exc
     if value is None:
         value = {}
@@ -1633,7 +1644,8 @@ def _copy_tree_without_links(source: Path, target: Path) -> None:
         raise SolverPackageLayoutError("Migration target already exists")
     try:
         shutil.copytree(source, target, symlinks=False)
-    except (OSError, shutil.Error) as exc:
+    except OSError as exc:
+        # shutil.Error, raised for per-file copytree failures, is an OSError.
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
         raise SolverPackageLayoutError("Unable to stage solver package migration") from exc
