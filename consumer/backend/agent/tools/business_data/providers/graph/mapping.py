@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 import yaml
-
+from ontology.ontologies import get_ontology_version_dir
 from ontology.ontology_catalog import (
     find_exact_object_data_mapping,
     resolve_object_reference,
 )
-from ontology.ontologies import get_ontology_version_dir
+
 from .models import GraphEntityMapping
 from .scope import sanitize_return_properties, validate_graph_identifier
 
@@ -99,8 +99,8 @@ class GraphMappingResolver:
             allow_graph_extensions=False,
         )
 
+    @staticmethod
     def _resolve_from_object_frontmatter(
-        self,
         version_dir: Path,
         entity: str,
     ) -> Optional[GraphEntityMapping]:
@@ -151,9 +151,7 @@ def _mapping_from_payload(
 ) -> GraphEntityMapping:
     raw = _merge_graph_extension(raw) if allow_graph_extensions else dict(raw)
     kind = (
-        str(raw.get("kind") or raw.get("resource_type") or "node").strip().lower()
-        if allow_graph_extensions
-        else "node"
+        str(raw.get("kind") or raw.get("resource_type") or "node").strip().lower() if allow_graph_extensions else "node"
     )
     if kind in {"vertex", "label"}:
         kind = "node"
@@ -184,11 +182,11 @@ def _mapping_from_payload(
             or _return_properties_from_fields(raw.get("fields"))
         ),
         default_filters=_normalize_filter_dict(raw.get("default_filters")) if allow_graph_extensions else {},
-        path_pattern=_normalize_path_pattern(raw.get("path_pattern")) if allow_graph_extensions and kind == "path" else None,
+        path_pattern=(
+            _normalize_path_pattern(raw.get("path_pattern")) if allow_graph_extensions and kind == "path" else None
+        ),
         return_vars=[
-            str(item).strip()
-            for item in (raw.get("return_vars") or [])
-            if allow_graph_extensions and str(item).strip()
+            str(item).strip() for item in (raw.get("return_vars") or []) if allow_graph_extensions and str(item).strip()
         ],
     )
 
@@ -213,16 +211,14 @@ def _select_provider_mapping(raw: Mapping[str, Any], provider: str) -> Mapping[s
 
 
 def _looks_like_object_data_mapping(raw: Mapping[str, Any]) -> bool:
-    return any(
-        key in raw
-        for key in (
-            "provider_alias",
-            "resource",
-            "fields",
-            "primary_key",
-            "policy",
-        )
+    mapping_keys = (
+        "provider_alias",
+        "resource",
+        "fields",
+        "primary_key",
+        "policy",
     )
+    return any(key in raw for key in mapping_keys)
 
 
 def _merge_graph_extension(raw: Mapping[str, Any]) -> dict[str, Any]:

@@ -57,7 +57,7 @@ def build_read_document_record(
         "source": str(source or "ontology_context"),
         "turn_id": int(turn_id or 0),
         "iteration": int(iteration) if iteration is not None else None,
-        "content_hash": _short_hash(content),
+        "content_hash": _content_hash(content),
         "size_bytes": len(content.encode("utf-8")),
         "mtime_ns": int(stat.st_mtime_ns) if stat is not None else None,
     }
@@ -309,5 +309,5 @@ def _infer_document_identity(file_path: str) -> Tuple[str, Optional[str], Option
     return "other", ontology_id, None, None
 
 
-def _short_hash(content: str) -> str:
-    return hashlib.sha1(str(content or "").encode("utf-8")).hexdigest()[:16]
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(str(content or "").encode("utf-8")).hexdigest()

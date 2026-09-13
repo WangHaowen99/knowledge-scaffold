@@ -11,7 +11,9 @@ import requests
 class ACPClient:
     """ACP 协议客户端"""
 
-    def __init__(self, base_url: str = "http://localhost:8200", timeout: float = 300.0, headers: dict[str, str] | None = None):
+    def __init__(
+        self, base_url: str = "http://localhost:8200", timeout: float = 300.0, headers: dict[str, str] | None = None
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()

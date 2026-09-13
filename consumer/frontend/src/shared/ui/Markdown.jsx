@@ -14,35 +14,45 @@ function ScrollableTable({ children }) {
 
   const updateScrollState = useCallback(() => {
     const scrollRegion = scrollRef.current;
-    if (!scrollRegion) return;
+    if (!scrollRegion) {
+      return;
+    }
 
-    const maxScrollLeft = Math.max(0, scrollRegion.scrollWidth - scrollRegion.clientWidth);
+    const maxScrollLeft = Math.max(
+      0,
+      scrollRegion.scrollWidth - scrollRegion.clientWidth,
+    );
     const scrollLeft = Math.max(0, scrollRegion.scrollLeft);
     const nextState = {
       isOverflowing: maxScrollLeft > 1,
       canScrollLeft: maxScrollLeft > 1 && scrollLeft > 1,
       canScrollRight: maxScrollLeft > 1 && scrollLeft < maxScrollLeft - 1,
     };
-    setScrollState((currentState) => (
-      currentState.isOverflowing === nextState.isOverflowing
-      && currentState.canScrollLeft === nextState.canScrollLeft
-      && currentState.canScrollRight === nextState.canScrollRight
-        ? currentState
-        : nextState
-    ));
+    setScrollState((currentState) =>
+      currentState.isOverflowing === nextState.isOverflowing &&
+      currentState.canScrollLeft === nextState.canScrollLeft &&
+      currentState.canScrollRight === nextState.canScrollRight ?
+        currentState :
+        nextState,
+    );
   }, []);
 
   useEffect(() => {
     const scrollRegion = scrollRef.current;
-    if (!scrollRegion) return undefined;
+    if (!scrollRegion) {
+      return undefined;
+    }
 
     updateScrollState();
-    const resizeObserver = typeof window.ResizeObserver === 'function'
-      ? new window.ResizeObserver(updateScrollState)
-      : null;
+    const resizeObserver =
+      typeof window.ResizeObserver === 'function' ?
+        new window.ResizeObserver(updateScrollState) :
+        null;
     resizeObserver?.observe(scrollRegion);
     const table = scrollRegion.querySelector('table');
-    if (table) resizeObserver?.observe(table);
+    if (table) {
+      resizeObserver?.observe(table);
+    }
     window.addEventListener('resize', updateScrollState);
 
     return () => {
@@ -85,9 +95,17 @@ export default function Markdown({ children }) {
         components={{
           table: ScrollableTable,
           pre({ children: preChildren, ...props }) {
-            const code = Array.isArray(preChildren) ? preChildren[0] : preChildren;
-            const lang = /language-(\w+)/.exec(code?.props?.className || '')?.[1] || '';
-            return <pre data-lang={lang} {...props}>{preChildren}</pre>;
+            const code = Array.isArray(preChildren) ?
+              preChildren[0] :
+              preChildren;
+            const lang =
+              /language-(?<language>\w+)/.exec(code?.props?.className || '')
+                ?.groups.language || '';
+            return (
+              <pre data-lang={lang} {...props}>
+                {preChildren}
+              </pre>
+            );
           },
           a({ ...props }) {
             return <a target="_blank" rel="noreferrer" {...props} />;

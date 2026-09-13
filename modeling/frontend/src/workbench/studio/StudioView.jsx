@@ -31,6 +31,8 @@ import {
   getStudioElement,
   getStudioElements,
   getStudioGraph,
+  getSchemaSemanticItems,
+  getSchemaSemanticSummary,
   invalidateStudioBootstrap,
   previewStudioDeletions,
   requestStudioReview,
@@ -95,6 +97,10 @@ export default function StudioView({ focus }) {
   const [deleteIds, setDeleteIds] = useState([]);
   const [externalRefreshNotice, setExternalRefreshNotice] = useState({ pending: false, message: '', revisionId: '' });
   const [reviewSubmitState, setReviewSubmitState] = useState({ phase: 'idle', message: '' });
+  const [schemaSemanticSummary, setSchemaSemanticSummary] = useState(null);
+  const [schemaSemanticIssues, setSchemaSemanticIssues] = useState({
+    open: false, phase: 'idle', items: [], total: 0, offset: 0, nextOffset: null, message: '',
+  });
   const [projectEventBaseline, setProjectEventBaseline] = useState({ projectId: '', cursor: 0, ready: false });
   const sessionRef = useRef(session);
   const requestRef = useRef(0);
@@ -158,10 +164,14 @@ export default function StudioView({ focus }) {
     const hasContent = Boolean(sessionRef.current.schema && sessionRef.current.graph);
     update({ phase: hasContent ? 'refreshing' : 'loading', error: null });
     try {
-      const bootstrap = await getStudioBootstrap(projectId, { limit: 200 }, {
-        signal: controller.signal,
-        cache: options.cache,
-      });
+      const [bootstrap, semanticResponse] = await Promise.all([
+        getStudioBootstrap(projectId, { limit: 200 }, {
+          signal: controller.signal,
+          cache: options.cache,
+        }),
+        getSchemaSemanticSummary(projectId, { signal: controller.signal })
+          .catch(() => null),
+      ]);
       const { schema, graph } = bootstrap;
       const list = bootstrap.elements;
       if (requestRef.current !== requestId) return;
@@ -171,6 +181,7 @@ export default function StudioView({ focus }) {
       const selectedElementId = selectedExists ? previous.selectedElementId : '';
       const revisionChanged = previous.workingRevision !== list.workingRevision;
       const pendingDraftRefresh = studioPendingDraftRefresh(previous.entryDrafts, list.workingRevision);
+      setSchemaSemanticSummary(semanticResponse?.summary || null);
       update({
         phase: 'ready',
         error: null,
@@ -437,6 +448,39 @@ export default function StudioView({ focus }) {
     if (!sessionRef.current.details[elementId]) void loadDetail(elementId);
   }, [loadDetail, navigate, update]);
 
+  const loadSchemaSemanticIssues = useCallback(async (offset = 0) => {
+    const summary = schemaSemanticSummary;
+    if (!summary?.available) return;
+    setSchemaSemanticIssues((current) => ({
+      ...current, open: true, phase: 'loading', offset, message: '',
+    }));
+    try {
+      const response = await getSchemaSemanticItems(projectId, {
+        level: summary.error_count > 0 ? 'error' : 'warning',
+        offset,
+        limit: 50,
+      });
+      setSchemaSemanticIssues({
+        open: true,
+        phase: 'ready',
+        items: response.items || [],
+        total: Number(response.total || 0),
+        offset: Number(response.offset || 0),
+        nextOffset: response.next_offset,
+        message: '',
+      });
+    } catch (error) {
+      setSchemaSemanticIssues((current) => ({
+        ...current, open: true, phase: 'error', message: studioError(error).message,
+      }));
+    }
+  }, [projectId, schemaSemanticSummary]);
+
+  const openSchemaSemanticObject = useCallback((objectKey) => {
+    setSchemaSemanticIssues((current) => ({ ...current, open: false }));
+    openDetail(`object:${objectKey}`, 'table');
+  }, [openDetail]);
+
   const submitPendingReview = useCallback(async () => {
     if (!sessionRef.current.studioPendingReview || reviewSubmitState.phase === 'saving') return;
     if (studioHasPendingLocalEdits(sessionRef.current)) {
@@ -453,10 +497,14 @@ export default function StudioView({ focus }) {
         clientMutationId: mutationId('studio-review-recovery'),
       });
       update({ studioPendingReview: false });
-      if (response.applied) {
+      if (response.noOp || response.mode === 'noop') {
+        store.set({ studioPendingCount: 0 });
+        setReviewSubmitState({ phase: 'saved', message: response.display?.text || '仅有工作记录，无需应用' });
+        await loadStudio({ cache: 'reload' });
+      } else if (response.applied) {
         store.set({ studioPendingCount: 0 });
         setReviewSubmitState({ phase: 'saved', message: response.display?.text || '确定性检查通过，修改已应用' });
-        await loadStudio();
+        await loadStudio({ cache: 'reload' });
         window.dispatchEvent(new Event('mw-package-updated'));
       } else {
         setReviewSubmitState({ phase: 'saved', message: response.display?.text || '已提交复核' });
@@ -583,6 +631,11 @@ export default function StudioView({ focus }) {
           <StudioWarningBanner warnings={session.studioWarnings} count={session.studioWarningCount}
             onDismiss={() => update({ studioWarnings: [], studioWarningCount: 0 })} />
         )}
+        {schemaSemanticSummary?.available
+          && (schemaSemanticSummary.error_count > 0 || schemaSemanticSummary.warning_count > 0) && (
+          <StudioSchemaSemanticBanner summary={schemaSemanticSummary}
+            onOpen={() => loadSchemaSemanticIssues(0)} />
+        )}
         <StudioAccessBanner access={session.schema?.access} />
         {session.studioPendingReview && (
           <StudioPendingReviewBanner state={reviewSubmitState} onSubmit={submitPendingReview}
@@ -620,6 +673,15 @@ export default function StudioView({ focus }) {
               setDeleteIds([]);
             navigate('table', '');
           }} />
+        )}
+        {schemaSemanticIssues.open && (
+          <StudioSchemaSemanticIssuesDialog
+            state={schemaSemanticIssues}
+            blocking={schemaSemanticSummary?.error_count > 0}
+            onClose={() => setSchemaSemanticIssues((current) => ({ ...current, open: false }))}
+            onPage={loadSchemaSemanticIssues}
+            onOpenObject={openSchemaSemanticObject}
+          />
         )}
       </div>
     </>
@@ -1695,6 +1757,50 @@ function StudioWarningBanner({ warnings, count, onDismiss }) {
       <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
     </details>
     <button className="btn btn-ghost" aria-label="关闭历史问题提示" title="关闭提示" onClick={onDismiss}><X size={14} /></button>
+  </div>;
+}
+
+function StudioSchemaSemanticBanner({ summary, onOpen }) {
+  const blocking = summary.error_count > 0;
+  return <div className={`studio-banner schema-semantics ${blocking ? 'error' : 'warning'}`} role="status">
+    <AlertCircle size={14} />
+    <span>{blocking
+      ? `Schema 对象还有 ${summary.error_count} 项业务语义待确认`
+      : `Schema 对象还有 ${summary.warning_count} 项字段说明待完善`}</span>
+    <button className="btn btn-sm" onClick={onOpen}>查看问题</button>
+  </div>;
+}
+
+function StudioSchemaSemanticIssuesDialog({ state, blocking, onClose, onPage, onOpenObject }) {
+  const pageEnd = Math.min(state.total, state.offset + state.items.length);
+  return <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) onClose();
+  }}>
+    <section className="studio-dialog studio-semantic-dialog" role="dialog" aria-modal="true"
+      aria-labelledby="studio-semantic-title">
+      <header><div><h2 id="studio-semantic-title">Schema 业务语义问题</h2>
+        <small>{blocking ? '阻断项' : '待完善项'} · {state.total} 项</small></div>
+        <button type="button" className="btn btn-ghost" aria-label="关闭" onClick={onClose}><X size={15} /></button>
+      </header>
+      {state.phase === 'loading' ? <div className="studio-dialog-message">正在读取问题…</div>
+        : state.phase === 'error' ? <div className="studio-dialog-message error" role="alert">{state.message}</div>
+          : <div className="studio-semantic-issue-list">
+            {state.items.map((issue) => <button type="button" key={issue.id}
+              className="studio-semantic-issue" onClick={() => onOpenObject(issue.objectKey)}>
+              <span><b>{issue.objectKey}</b>{issue.fieldKey ? <code>{issue.fieldKey}</code> : null}
+                <em>{issue.table}{issue.sourceColumn ? `.${issue.sourceColumn}` : ''}</em></span>
+              <strong>{issue.message}</strong>
+              <small>{issue.suggestion}</small>
+            </button>)}
+          </div>}
+      <footer>
+        <span className="studio-semantic-page">{state.total ? `${state.offset + 1}-${pageEnd} / ${state.total}` : '0 项'}</span>
+        <button type="button" className="btn" disabled={state.phase === 'loading' || state.offset === 0}
+          onClick={() => onPage(Math.max(0, state.offset - 50))}>上一页</button>
+        <button type="button" className="btn" disabled={state.phase === 'loading' || state.nextOffset == null}
+          onClick={() => onPage(state.nextOffset)}>下一页</button>
+      </footer>
+    </section>
   </div>;
 }
 

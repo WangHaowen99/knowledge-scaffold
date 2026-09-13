@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
-
 from ontology.ontology_catalog import split_object_aliases
 
 from .constants import TAG_PRIORITY
@@ -83,6 +82,7 @@ DATA_PROVIDER_CLIENT_MODULE = "shared_capabilities.ontology_script_sdk"
 MINDSDB_CLIENT_NAME = "MindsDBClient"
 DATA_PROVIDER_CLIENT_NAME = "DataProviderClient"
 
+
 def compile_modeling_template(
     *,
     source_root: Path,
@@ -100,9 +100,7 @@ def compile_modeling_template(
         logic_names=logic_names,
     )
     script_operation_keys = {
-        item["operation_key"]
-        for item in script_mappings_preview
-        if str(item.get("operation_key") or "").strip()
+        item["operation_key"] for item in script_mappings_preview if str(item.get("operation_key") or "").strip()
     }
     objects_result = generate_objects(source_root / OBJECT_SOURCE_DIR, target_root / OBJECTS_TARGET_DIR)
     objects_index_result = generate_objects_index(
@@ -373,13 +371,15 @@ def generate_objects_index(source_objects_dir: Path, target_objects_index_path: 
     warnings: List[str] = []
     for source_file in collect_md_files(source_objects_dir, recursive=True):
         content = source_file.read_text(encoding="utf-8")
-        rows.append([
-            source_file.stem,
-            extract_object_english_name(content),
-            extract_object_alias(content),
-            extract_first_section_text(content, OBJECT_DESC_TITLES),
-            "",
-        ])
+        rows.append(
+            [
+                source_file.stem,
+                extract_object_english_name(content),
+                extract_object_alias(content),
+                extract_first_section_text(content, OBJECT_DESC_TITLES),
+                "",
+            ]
+        )
 
     if not rows:
         warnings.append("object目录下未找到任何.md文件")
@@ -479,20 +479,22 @@ def render_operation_file(
         "# {}\n\n{}".format(OPERATION_OUTPUT_TITLE, output_markdown),
         "# {}\n{}".format(OPERATION_LOGIC_TITLE, logic_markdown).rstrip(),
     ]
-    return "\n\n".join(blocks).strip() + "\n", OperationSummary(
-        name=operation_name,
-        tag=tag,
-        business_desc=desc,
-        trigger_condition=trigger_condition,
-    ), warnings
+    return (
+        "\n\n".join(blocks).strip() + "\n",
+        OperationSummary(
+            name=operation_name,
+            tag=tag,
+            business_desc=desc,
+            trigger_condition=trigger_condition,
+        ),
+        warnings,
+    )
 
 
 def render_operations_index(operations: Sequence[OperationSummary]) -> str:
     ordered = sorted(operations, key=lambda item: (TAG_PRIORITY.get(item.tag, 99), item.name))
     rows = [[item.name, item.tag, item.business_desc, item.trigger_condition] for item in ordered]
-    return "# Operations 逻辑清单\n\n{}\n".format(
-        build_md_table(["名称", "标签", "业务描述", "触发条件"], rows)
-    )
+    return "# Operations 逻辑清单\n\n{}\n".format(build_md_table(["名称", "标签", "业务描述", "触发条件"], rows))
 
 
 def collect_script_mappings(
@@ -526,12 +528,14 @@ def collect_script_mappings(
             for warning in parameter_warnings
         )
         parameters = comment_parameters or build_script_parameters(source_file, metadata)
-        mappings.append({
-            "operation_key": related_logic,
-            "script_path": script_relative_path(source_file, source_script_dir),
-            "source_file": source_file,
-            "parameters": parameters,
-        })
+        mappings.append(
+            {
+                "operation_key": related_logic,
+                "script_path": script_relative_path(source_file, source_script_dir),
+                "source_file": source_file,
+                "parameters": parameters,
+            }
+        )
     return mappings, warnings
 
 
@@ -609,9 +613,7 @@ def generate_script_descriptors(
         rows.append([script_key, script_key, operation_key, script_path])
 
     index_path = target_scripts_dir / "index.md"
-    index_markdown = "# 脚本目录\n\n{}\n".format(
-        build_md_table(["script key", "标题", "绑定 operation", "入口"], rows)
-    )
+    index_markdown = "# 脚本目录\n\n{}\n".format(build_md_table(["script key", "标题", "绑定 operation", "入口"], rows))
     index_path.write_text(
         add_resource_frontmatter(
             index_markdown,
@@ -635,16 +637,18 @@ def render_script_descriptor(
     rows: List[List[str]] = []
     for parameter in parameters:
         aliases = parameter.get("aliases") or []
-        rows.append([
-            str(parameter.get("name") or ""),
-            str(parameter.get("flag") or ""),
-            str(parameter.get("type") or "string"),
-            "是" if parameter.get("required", True) else "否",
-            "是" if parameter.get("multiple", False) else "否",
-            str(parameter.get("description") or ""),
-            "，".join(str(alias) for alias in aliases) if isinstance(aliases, list) else "",
-            str(parameter.get("action") or ""),
-        ])
+        rows.append(
+            [
+                str(parameter.get("name") or ""),
+                str(parameter.get("flag") or ""),
+                str(parameter.get("type") or "string"),
+                "是" if parameter.get("required", True) else "否",
+                "是" if parameter.get("multiple", False) else "否",
+                str(parameter.get("description") or ""),
+                "，".join(str(alias) for alias in aliases) if isinstance(aliases, list) else "",
+                str(parameter.get("action") or ""),
+            ]
+        )
     body = "# 输入参数\n\n{}\n".format(
         build_md_table(["参数 key", "CLI 参数", "类型", "必填", "是否多值", "说明", "别名", "Action"], rows)
     )
@@ -763,23 +767,27 @@ def generate_graph(
 
     for source_file in collect_md_files(source_objects_dir, recursive=True):
         content = source_file.read_text(encoding="utf-8")
-        nodes.append({
-            "id": source_file.stem,
-            "type": "entity",
-            "description": extract_first_section_text(content, OBJECT_DESC_TITLES),
-            "source": "{}/{}".format(OBJECTS_TARGET_DIR, source_file.name),
-        })
+        nodes.append(
+            {
+                "id": source_file.stem,
+                "type": "entity",
+                "description": extract_first_section_text(content, OBJECT_DESC_TITLES),
+                "source": "{}/{}".format(OBJECTS_TARGET_DIR, source_file.name),
+            }
+        )
 
     for source_file in collect_md_files(source_logic_dir, recursive=True):
         logic_name = source_file.stem
         content = source_file.read_text(encoding="utf-8")
         tag = operation_tags.get(logic_name, "")
-        nodes.append({
-            "id": logic_name,
-            "type": "tool" if tag == TOOL_FLOW_TAG else "logic",
-            "description": extract_first_section_text(content, OPERATION_BUSINESS_DESC_TITLE),
-            "source": "{}/{}".format(OPERATIONS_TARGET_DIR, source_file.name),
-        })
+        nodes.append(
+            {
+                "id": logic_name,
+                "type": "tool" if tag == TOOL_FLOW_TAG else "logic",
+                "description": extract_first_section_text(content, OPERATION_BUSINESS_DESC_TITLE),
+                "source": "{}/{}".format(OPERATIONS_TARGET_DIR, source_file.name),
+            }
+        )
         for edge in extract_logic_object_semantic_edges(logic_name, content):
             edges.append(edge)
 
@@ -814,14 +822,16 @@ def extract_logic_object_semantic_edges(logic_name: str, source_markdown: str) -
         relation = str(values.get("语义关联关系", "") or "").strip()
         if not object_name or not relation or is_empty_relation_value(relation):
             continue
-        edges.append({
-            "source": logic_name,
-            "relation": relation,
-            "target": object_name,
-            "cardinality": "",
-            "domain": "logic-object",
-            "description": "{} 与 {} 的语义关联：{}".format(logic_name, object_name, relation),
-        })
+        edges.append(
+            {
+                "source": logic_name,
+                "relation": relation,
+                "target": object_name,
+                "cardinality": "",
+                "domain": "logic-object",
+                "description": "{} 与 {} 的语义关联：{}".format(logic_name, object_name, relation),
+            }
+        )
     return edges
 
 
@@ -844,17 +854,11 @@ def validate_script_business_data_imports(source: str) -> None:
             module = str(node.module or "")
             if module == forbidden or module.startswith(forbidden + "."):
                 raise ValueError(
-                    "ontology scripts must import DataProviderClient from "
-                    "shared_capabilities.ontology_script_sdk"
+                    "ontology scripts must import DataProviderClient from shared_capabilities.ontology_script_sdk"
                 )
         elif isinstance(node, ast.Import):
-            if any(
-                alias.name == forbidden or alias.name.startswith(forbidden + ".")
-                for alias in node.names
-            ):
-                raise ValueError(
-                    "ontology scripts must not import shared business_data directly"
-                )
+            if any(alias.name == forbidden or alias.name.startswith(forbidden + ".") for alias in node.names):
+                raise ValueError("ontology scripts must not import shared business_data directly")
 
 
 def extract_script_docstring_metadata(source_file: Path) -> Dict[str, object]:
@@ -948,9 +952,7 @@ def build_script_parameters(source_file: Path, metadata: Dict[str, object]) -> L
     docstring_parameters = metadata.get("parameters") or []
     argparse_parameters = extract_argparse_parameters(source_file)
 
-    usage_parameters = parameters_from_usage_flags(
-        extract_docstring_usage_flags(str(metadata.get("docstring") or ""))
-    )
+    usage_parameters = parameters_from_usage_flags(extract_docstring_usage_flags(str(metadata.get("docstring") or "")))
     cli_parameters = argparse_parameters or usage_parameters
     if not cli_parameters:
         return []
@@ -1010,11 +1012,7 @@ def merge_docstring_parameter(target: Dict[str, object], doc_parameter: Dict[str
     flag_alias = alias_from_flag(str(target.get("flag") or "").strip())
     if flag_alias:
         aliases.append(flag_alias)
-    aliases = dedupe_strings([
-        alias
-        for alias in aliases
-        if alias and alias != str(target.get("name") or "").strip()
-    ])
+    aliases = dedupe_strings([alias for alias in aliases if alias and alias != str(target.get("name") or "").strip()])
     if aliases:
         target["aliases"] = aliases
     else:
@@ -1057,14 +1055,16 @@ def parameters_from_usage_flags(flags: Sequence[str]) -> List[Dict[str, object]]
     parameters: List[Dict[str, object]] = []
     for flag in flags:
         flag_name = name_from_flag(flag)
-        parameters.append({
-            "name": flag_name,
-            "flag": flag,
-            "description": "",
-            "required": True,
-            "type": "string",
-            "aliases": [flag_name] if flag_name else [],
-        })
+        parameters.append(
+            {
+                "name": flag_name,
+                "flag": flag,
+                "description": "",
+                "required": True,
+                "type": "string",
+                "aliases": [flag_name] if flag_name else [],
+            }
+        )
     return parameters
 
 
@@ -1175,9 +1175,7 @@ def rewrite_business_data_client_imports(source: str) -> str:
         flags=re.MULTILINE,
     )
     text = legacy_client_pattern.sub(
-        lambda match: "{}{}{}".format(
-            match.group(1), DATA_PROVIDER_CLIENT_MODULE, match.group(2)
-        ),
+        lambda match: "{}{}{}".format(match.group(1), DATA_PROVIDER_CLIENT_MODULE, match.group(2)),
         text,
     )
     if not replace_client_name:
@@ -1187,9 +1185,11 @@ def rewrite_business_data_client_imports(source: str) -> str:
     except tokenize.TokenError:
         return text
     return tokenize.untokenize(
-        token._replace(string=DATA_PROVIDER_CLIENT_NAME)
-        if token.type == tokenize.NAME and token.string == MINDSDB_CLIENT_NAME
-        else token
+        (
+            token._replace(string=DATA_PROVIDER_CLIENT_NAME)
+            if token.type == tokenize.NAME and token.string == MINDSDB_CLIENT_NAME
+            else token
+        )
         for token in tokens
     )
 
@@ -1320,7 +1320,7 @@ def find_script_parameters_literal(comment_lines: Sequence[str]) -> Optional[str
             return remainder
 
         block: List[str] = []
-        for next_line in comment_lines[index + 1:]:
+        for next_line in comment_lines[index + 1 :]:
             text = str(next_line or "")
             stripped = text.strip()
             if not stripped:
@@ -1397,9 +1397,7 @@ def extract_argparse_parameters(source_file: Path) -> List[Dict[str, object]]:
     calls = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "add_argument"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"
     ]
     calls = sorted(calls, key=lambda node: getattr(node, "lineno", 0))
     parameters: List[Dict[str, object]] = []
@@ -1411,11 +1409,7 @@ def extract_argparse_parameters(source_file: Path) -> List[Dict[str, object]]:
 
 
 def parameter_from_argparse_call(call: ast.Call, *, index: int) -> Optional[Dict[str, object]]:
-    option_strings = [
-        value
-        for value in (literal_string(arg) for arg in call.args)
-        if value
-    ]
+    option_strings = [value for value in (literal_string(arg) for arg in call.args) if value]
     if not option_strings:
         return None
 
@@ -1724,10 +1718,7 @@ def filter_table_columns(table_lines: Sequence[str], columns: Sequence[str]) -> 
 
 
 def row_values_by_header(headers: Sequence[str], row: Sequence[str]) -> Dict[str, str]:
-    return {
-        header: (row[index] if index < len(row) else "")
-        for index, header in enumerate(headers)
-    }
+    return {header: row[index] if index < len(row) else "" for index, header in enumerate(headers)}
 
 
 def default_input_source(tag: str) -> str:

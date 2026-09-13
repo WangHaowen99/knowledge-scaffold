@@ -5,12 +5,10 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Set
 
 import pytest
-
-from config import AgentConfig
 from agent.tools.base import ToolCaller, ToolContext, ToolInvocation, ToolOutcome
 from agent.tools.registry import TOOL_SPECS
+from config import AgentConfig
 from tool_execution_test_adapter import execute_tool_batch
-
 
 ONTOLOGY_SCOPED_TOOLS = (
     "ontology_context",
@@ -69,6 +67,7 @@ def _recording_tool(tool_name: str, calls: list[Dict[str, Any]]):
             self.max_parallelism = original.max_parallelism
             self.category = original.category
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def execute(
             self,
             *,

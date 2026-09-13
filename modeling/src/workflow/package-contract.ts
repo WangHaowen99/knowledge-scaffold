@@ -6,9 +6,10 @@ import {
   knowledgeMarkdownGenerationContract,
 } from './knowledge-markdown-contract.js';
 import { MERMAID_SOURCE_VALIDATOR_VERSION } from './mermaid-source-contract.js';
+import { INTERNAL_PACKAGE_PATH_PREFIX } from './package-file-scope.js';
 
-export const PACKAGE_CONTRACT_VERSION = 'package-contract-v6';
-export const PACKAGE_FORMAT_VALIDATOR_VERSION = 'package-format-v4';
+export const PACKAGE_CONTRACT_VERSION = 'package-contract-v7';
+export const PACKAGE_FORMAT_VALIDATOR_VERSION = 'package-format-v5';
 export const PACKAGE_MANIFEST_KIND = 'ontology-package';
 export const PACKAGE_MANIFEST_SCHEMA_VERSION = '0.1';
 export const PACKAGE_STATUSES = ['draft', 'review', 'released', 'deprecated'] as const;
@@ -86,6 +87,9 @@ export function packageGenerationContract() {
       ],
     },
     packageFormat: {
+      scope: {
+        excludedInternalPathPrefixes: [INTERNAL_PACKAGE_PATH_PREFIX],
+      },
       requiredFiles: [...PACKAGE_REQUIRED_FILES],
       markdown: {
         requiredFrontmatterFields: ['resource', 'key', 'title'],

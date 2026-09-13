@@ -3,23 +3,24 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
 import json
 import os
-from pathlib import Path
 import stat
 import threading
 import time
+import uuid
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
-import uuid
-
 
 SCHEMA_VERSION = 4
 _CURSOR_VERSION = 1
 _MAX_CURSOR_LENGTH = 2048
 _MAX_REBUILD_ATTEMPTS = 3
+_DELTA_SCHEMA_VERSION = 1
+_DELTA_COMPACT_THRESHOLD = 128
 
 
 class SessionSummaryIndexError(RuntimeError):
@@ -129,11 +130,7 @@ class SessionSummary:
         if not isinstance(turn_count, int) or isinstance(turn_count, bool) or turn_count < 0:
             raise ValueError("turn_count must be a non-negative integer")
         resolved_status = _text(last_run_status, "last_run_status", allow_empty=False)
-        if (
-            not isinstance(last_event_sequence, int)
-            or isinstance(last_event_sequence, bool)
-            or last_event_sequence < 0
-        ):
+        if not isinstance(last_event_sequence, int) or isinstance(last_event_sequence, bool) or last_event_sequence < 0:
             raise ValueError("last_event_sequence must be a non-negative integer")
         if pending_interaction is not None and not isinstance(pending_interaction, Mapping):
             raise TypeError("pending_interaction must be an object or null")
@@ -154,11 +151,7 @@ class SessionSummary:
             metadata=_freeze(source_metadata),
             last_run_status=resolved_status,
             last_event_sequence=last_event_sequence,
-            pending_interaction=(
-                _freeze(dict(pending_interaction))
-                if pending_interaction is not None
-                else None
-            ),
+            pending_interaction=(_freeze(dict(pending_interaction)) if pending_interaction is not None else None),
         )
 
     @classmethod
@@ -271,6 +264,7 @@ class SessionSummaryIndex:
     ) -> None:
         self._path = Path(path)
         self._dirty_path = self._path.with_name(f"{self._path.name}.dirty")
+        self._delta_path = self._path.with_name(f"{self._path.name}.delta")
         self._rebuild_loader = rebuild_loader
         self._rebuild_scheduler = rebuild_scheduler
         self._lock = threading.RLock()
@@ -284,6 +278,7 @@ class SessionSummaryIndex:
         self._state = "cold"
         self._last_error = ""
         self._owned_projection_tokens: set[str] = set()
+        self._delta_entries = 0
 
     @property
     def state(self) -> str:
@@ -444,11 +439,7 @@ class SessionSummaryIndex:
             if current is not None:
                 resolved = replace(
                     resolved,
-                    active_run_id=(
-                        resolved.active_run_id
-                        if project_active_run
-                        else current.active_run_id
-                    ),
+                    active_run_id=(resolved.active_run_id if project_active_run else current.active_run_id),
                     last_run_status=current.last_run_status,
                     last_event_sequence=max(
                         resolved.last_event_sequence,
@@ -461,7 +452,13 @@ class SessionSummaryIndex:
                 return self._index_revision
             next_records = dict(self._records)
             next_records[resolved.session_id] = resolved
-            self._publish_locked(next_records, self._index_revision + 1)
+            self._publish_delta_locked(
+                operation="upsert",
+                session_id=resolved.session_id,
+                summary=resolved,
+                records=next_records,
+                revision=self._index_revision + 1,
+            )
             return self._index_revision
 
     def update_runtime(
@@ -502,22 +499,22 @@ class SessionSummaryIndex:
                 active_run_id=active_run_id,
                 last_run_status=resolved_status,
                 last_event_sequence=(
-                    current.last_event_sequence
-                    if last_event_sequence is None
-                    else last_event_sequence
+                    current.last_event_sequence if last_event_sequence is None else last_event_sequence
                 ),
-                pending_interaction=(
-                    _freeze(dict(pending_interaction))
-                    if pending_interaction is not None
-                    else None
-                ),
+                pending_interaction=(_freeze(dict(pending_interaction)) if pending_interaction is not None else None),
                 turn_count=current.turn_count if turn_count is None else turn_count,
             )
             if updated == current:
                 return True
             next_records = dict(self._records)
             next_records[resolved_id] = updated
-            self._publish_locked(next_records, self._index_revision + 1)
+            self._publish_delta_locked(
+                operation="upsert",
+                session_id=resolved_id,
+                summary=updated,
+                records=next_records,
+                revision=self._index_revision + 1,
+            )
             return True
 
     def delete(
@@ -536,7 +533,13 @@ class SessionSummaryIndex:
                 return False
             next_records = dict(self._records)
             next_records.pop(resolved_id)
-            self._publish_locked(next_records, self._index_revision + 1)
+            self._publish_delta_locked(
+                operation="delete",
+                session_id=resolved_id,
+                summary=None,
+                records=next_records,
+                revision=self._index_revision + 1,
+            )
             return True
 
     def list_page(self, *, limit: int, cursor: str | None = None) -> SessionPage:
@@ -551,20 +554,12 @@ class SessionSummaryIndex:
                 if cursor_revision != self._index_revision:
                     raise InvalidSessionCursor("session cursor is stale")
                 try:
-                    start = next(
-                        index + 1
-                        for index, item in enumerate(ordered)
-                        if item.sort_key == cursor_key
-                    )
+                    start = next(index + 1 for index, item in enumerate(ordered) if item.sort_key == cursor_key)
                 except StopIteration as exc:
                     raise InvalidSessionCursor("session cursor is invalid") from exc
             selected = tuple(ordered[start : start + limit])
             has_more = start + len(selected) < len(ordered)
-            next_cursor = (
-                _encode_cursor(self._index_revision, selected[-1].sort_key)
-                if has_more and selected
-                else None
-            )
+            next_cursor = _encode_cursor(self._index_revision, selected[-1].sort_key) if has_more and selected else None
             return SessionPage(
                 items=selected,
                 next_cursor=next_cursor,
@@ -604,21 +599,14 @@ class SessionSummaryIndex:
 
         keep_count = max(0, int(max_sessions))
         batch_limit = max(1, int(limit))
-        excluded = {
-            _text(session_id, "excluded session id", allow_empty=False)
-            for session_id in excluded_session_ids
-        }
+        excluded = {_text(session_id, "excluded session id", allow_empty=False) for session_id in excluded_session_ids}
         if not self.load_persisted_for_read():
-            raise SessionSummaryIndexDirtyError(
-                "session summary index is unavailable for bounded pruning"
-            )
+            raise SessionSummaryIndexDirtyError("session summary index is unavailable for bounded pruning")
         with self._lock:
             if self._state != "ready" or self._dirty_marker_present_locked():
                 self._state = "degraded"
                 self._last_error = "source_projection_pending"
-                raise SessionSummaryIndexDirtyError(
-                    "session summary index is unavailable for bounded pruning"
-                )
+                raise SessionSummaryIndexDirtyError("session summary index is unavailable for bounded pruning")
             overflow = max(0, len(self._records) - keep_count)
             if overflow == 0:
                 return ()
@@ -629,11 +617,7 @@ class SessionSummaryIndex:
             )
             candidates = []
             for summary in reversed(ordered):
-                if (
-                    summary.session_id in excluded
-                    or summary.pinned
-                    or summary.active_run_id
-                ):
+                if summary.session_id in excluded or summary.pinned or summary.active_run_id:
                     continue
                 candidates.append(
                     SessionPruneCandidate(
@@ -654,7 +638,7 @@ class SessionSummaryIndex:
         if not self._loaded:
             try:
                 document = self._read_document_locked()
-            except FileNotFoundError:
+            except FileNotFoundError as exc:
                 if self._rebuild_loader is None:
                     self._records = {}
                     self._index_revision = 0
@@ -666,19 +650,19 @@ class SessionSummaryIndex:
                     self._last_error = "index_not_ready"
                     raise SessionSummaryIndexError(
                         "session summary index is not ready for projection"
-                    )
+                    ) from exc
                 else:
                     self._rebuild_or_fail_locked(
                         base_revision=0,
                         wait_for_existing=not allow_dirty,
                     )
-            except Exception:
+            except Exception as exc:
                 if allow_dirty:
                     self._state = "degraded"
                     self._last_error = "index_invalid"
                     raise SessionSummaryIndexCorruptionError(
                         "session summary index requires a background rebuild"
-                    )
+                    ) from exc
                 try:
                     self._quarantine_locked()
                 except Exception as quarantine_error:
@@ -696,9 +680,7 @@ class SessionSummaryIndex:
                     if allow_dirty:
                         self._state = "degraded"
                         self._last_error = "schema_mismatch"
-                        raise SessionSummaryIndexCorruptionError(
-                            "session summary index requires a background rebuild"
-                        )
+                        raise SessionSummaryIndexCorruptionError("session summary index requires a background rebuild")
                     self._rebuild_or_fail_locked(base_revision=0)
                 else:
                     self._records = document["records"]
@@ -709,18 +691,12 @@ class SessionSummaryIndex:
 
         if self._dirty_marker_present_locked():
             dirty_tokens = set(self._read_dirty_tokens_or_quarantine_locked())
-            resolving_only = bool(
-                resolving_token
-                and dirty_tokens
-                and dirty_tokens == {resolving_token}
-            )
+            resolving_only = bool(resolving_token and dirty_tokens and dirty_tokens == {resolving_token})
             if not resolving_only:
                 if allow_dirty:
                     self._state = "degraded"
                     self._last_error = "source_projection_pending"
-                    raise SessionSummaryIndexDirtyError(
-                        "session summary index has an outstanding source projection"
-                    )
+                    raise SessionSummaryIndexDirtyError("session summary index has an outstanding source projection")
                 self._rebuild_or_fail_locked(
                     base_revision=self._index_revision,
                 )
@@ -732,9 +708,7 @@ class SessionSummaryIndex:
             return
         self._state = "degraded"
         self._last_error = "source_projection_pending"
-        raise SessionSummaryIndexDirtyError(
-            "session summary index has an outstanding source projection"
-        )
+        raise SessionSummaryIndexDirtyError("session summary index has an outstanding source projection")
 
     def _read_document_locked(self) -> dict[str, Any]:
         metadata = self._path.lstat()
@@ -742,9 +716,7 @@ class SessionSummaryIndex:
             raise ValueError("session summary index must be a regular file")
         with self._path.open("r", encoding="utf-8") as source:
             raw = json.load(source)
-        if not isinstance(raw, Mapping) or set(raw) != {
-            "schema_version", "index_revision", "records"
-        }:
+        if not isinstance(raw, Mapping) or set(raw) != {"schema_version", "index_revision", "records"}:
             raise ValueError("session summary index document is invalid")
         schema_version = raw["schema_version"]
         revision = raw["index_revision"]
@@ -761,6 +733,49 @@ class SessionSummaryIndex:
             if summary.session_id in parsed:
                 raise ValueError("session summary ids must be unique")
             parsed[summary.session_id] = summary
+        delta_entries = 0
+        if self._delta_path.exists() or self._delta_path.is_symlink():
+            delta_metadata = self._delta_path.lstat()
+            if stat.S_ISLNK(delta_metadata.st_mode) or not stat.S_ISREG(
+                delta_metadata.st_mode
+            ):
+                raise ValueError("session summary delta must be a regular file")
+            with self._delta_path.open("r", encoding="utf-8") as delta_source:
+                for raw_delta in delta_source:
+                    delta = json.loads(raw_delta)
+                    if not isinstance(delta, Mapping) or set(delta) not in (
+                        {"schema_version", "index_revision", "operation", "session_id", "record"},
+                    ):
+                        raise ValueError("session summary delta is invalid")
+                    if delta["schema_version"] != _DELTA_SCHEMA_VERSION:
+                        raise ValueError("session summary delta schema is invalid")
+                    delta_revision = delta["index_revision"]
+                    if (
+                        not isinstance(delta_revision, int)
+                        or isinstance(delta_revision, bool)
+                        or delta_revision < 1
+                    ):
+                        raise ValueError("session summary delta revision is invalid")
+                    if delta_revision <= revision:
+                        continue
+                    if delta_revision != revision + 1:
+                        raise ValueError("session summary delta revisions are not contiguous")
+                    session_id = _text(delta["session_id"], "session_id", allow_empty=False)
+                    operation = delta["operation"]
+                    if operation == "upsert":
+                        summary = SessionSummary.from_dict(delta["record"])
+                        if summary.session_id != session_id:
+                            raise ValueError("session summary delta id does not match record")
+                        parsed[session_id] = summary
+                    elif operation == "delete":
+                        if delta["record"] is not None:
+                            raise ValueError("session summary delete delta must not contain a record")
+                        parsed.pop(session_id, None)
+                    else:
+                        raise ValueError("session summary delta operation is invalid")
+                    revision = delta_revision
+                    delta_entries += 1
+        self._delta_entries = delta_entries
         return {
             "schema_version": schema_version,
             "index_revision": revision,
@@ -781,38 +796,24 @@ class SessionSummaryIndex:
         except FileNotFoundError:
             return ()
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise SessionSummaryIndexCorruptionError(
-                "session summary projection marker is unsafe"
-            )
+            raise SessionSummaryIndexCorruptionError("session summary projection marker is unsafe")
         try:
             with self._dirty_path.open("r", encoding="utf-8") as source:
                 document = json.load(source)
         except (OSError, json.JSONDecodeError) as exc:
-            raise SessionSummaryIndexCorruptionError(
-                "session summary projection marker is corrupt"
-            ) from exc
+            raise SessionSummaryIndexCorruptionError("session summary projection marker is corrupt") from exc
         if not isinstance(document, Mapping):
-            raise SessionSummaryIndexCorruptionError(
-                "session summary projection marker is invalid"
-            )
+            raise SessionSummaryIndexCorruptionError("session summary projection marker is invalid")
         if set(document) != {"tokens"}:
-            raise SessionSummaryIndexCorruptionError(
-                "session summary projection marker is invalid"
-            )
+            raise SessionSummaryIndexCorruptionError("session summary projection marker is invalid")
         tokens = document.get("tokens")
         if not isinstance(tokens, list) or not tokens:
-            raise SessionSummaryIndexCorruptionError(
-                "session summary projection marker is invalid"
-            )
+            raise SessionSummaryIndexCorruptionError("session summary projection marker is invalid")
         for token in tokens:
             if not isinstance(token, str) or not token:
-                raise SessionSummaryIndexCorruptionError(
-                    "session summary projection marker is invalid"
-                )
+                raise SessionSummaryIndexCorruptionError("session summary projection marker is invalid")
         if len(set(tokens)) != len(tokens):
-            raise SessionSummaryIndexCorruptionError(
-                "session summary projection marker is invalid"
-            )
+            raise SessionSummaryIndexCorruptionError("session summary projection marker is invalid")
         return tuple(tokens)
 
     def _dirty_marker_present_locked(self) -> bool:
@@ -859,9 +860,7 @@ class SessionSummaryIndex:
         observed_generation = self._rebuild_generation
         if self._rebuild_in_progress:
             if not wait_for_existing:
-                raise SessionSummaryIndexError(
-                    "session summary index rebuild is already in progress"
-                )
+                raise SessionSummaryIndexError("session summary index rebuild is already in progress")
             while self._rebuild_in_progress:
                 self._rebuild_condition.wait()
             if self._rebuild_generation != observed_generation:
@@ -887,17 +886,10 @@ class SessionSummaryIndex:
                     self._lock.acquire()
 
                 self._raise_if_rebuild_cancelled(cancel_event)
-                current_dirty_tokens = (
-                    self._read_dirty_tokens_or_quarantine_locked()
-                )
-                if (
-                    self._index_revision != attempt_revision
-                    or current_dirty_tokens != dirty_tokens
-                ):
+                current_dirty_tokens = self._read_dirty_tokens_or_quarantine_locked()
+                if self._index_revision != attempt_revision or current_dirty_tokens != dirty_tokens:
                     if attempts >= _MAX_REBUILD_ATTEMPTS:
-                        raise SessionSummaryIndexError(
-                            "session summary index rebuild did not converge"
-                        )
+                        raise SessionSummaryIndexError("session summary index rebuild did not converge")
                     continue
 
                 revision = max(
@@ -906,9 +898,7 @@ class SessionSummaryIndex:
                     self._index_revision + 1,
                 )
                 self._publish_locked(records, revision)
-                for token in (
-                    set(current_dirty_tokens) - self._owned_projection_tokens
-                ):
+                for token in set(current_dirty_tokens) - self._owned_projection_tokens:
                     self._complete_dirty_token_locked(token)
                 if not self._dirty_marker_present_locked():
                     self._state = "ready"
@@ -925,9 +915,7 @@ class SessionSummaryIndex:
         except Exception as exc:
             self._state = "degraded"
             self._last_error = "rebuild_failed"
-            failure = SessionSummaryIndexCorruptionError(
-                "session summary index could not be rebuilt"
-            )
+            failure = SessionSummaryIndexCorruptionError("session summary index could not be rebuilt")
             self._rebuild_failure = failure
             raise failure from exc
         finally:
@@ -940,18 +928,13 @@ class SessionSummaryIndex:
         cancel_event: threading.Event | None,
     ) -> None:
         if cancel_event is not None and cancel_event.is_set():
-            raise SessionSummaryIndexRebuildCancelled(
-                "session summary index rebuild was cancelled"
-            )
+            raise SessionSummaryIndexRebuildCancelled("session summary index rebuild was cancelled")
 
     def _publish_locked(self, records: dict[str, SessionSummary], revision: int) -> None:
         document = {
             "schema_version": SCHEMA_VERSION,
             "index_revision": revision,
-            "records": [
-                summary.to_dict()
-                for summary in sorted(records.values(), key=lambda item: item.session_id)
-            ],
+            "records": [summary.to_dict() for summary in sorted(records.values(), key=lambda item: item.session_id)],
         }
         try:
             _write_atomic_json(self._path, document)
@@ -966,6 +949,11 @@ class SessionSummaryIndex:
         self._records = records
         self._index_revision = revision
         self._loaded = True
+        self._delta_entries = 0
+        try:
+            self._delta_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to remove compacted session summary delta", exc_info=True)
         if self._dirty_marker_present_locked():
             self._state = "degraded"
             self._last_error = "source_projection_pending"
@@ -973,18 +961,65 @@ class SessionSummaryIndex:
             self._state = "ready"
             self._last_error = ""
 
+    def _publish_delta_locked(
+        self,
+        *,
+        operation: str,
+        session_id: str,
+        summary: SessionSummary | None,
+        records: dict[str, SessionSummary],
+        revision: int,
+    ) -> None:
+        if operation not in {"upsert", "delete"}:
+            raise ValueError("session summary delta operation is invalid")
+        if operation == "upsert" and summary is None:
+            raise ValueError("session summary upsert delta requires a record")
+        if operation == "delete" and summary is not None:
+            raise ValueError("session summary delete delta must not contain a record")
+        self._delta_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._delta_path.is_symlink():
+            raise SessionSummaryIndexWriteError(
+                "session summary delta must not be a symbolic link",
+                committed=False,
+            )
+        delta = {
+            "schema_version": _DELTA_SCHEMA_VERSION,
+            "index_revision": revision,
+            "operation": operation,
+            "session_id": session_id,
+            "record": summary.to_dict() if summary is not None else None,
+        }
+        try:
+            with self._delta_path.open("a", encoding="utf-8", newline="\n") as output:
+                json.dump(delta, output, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+        except OSError as exc:
+            raise SessionSummaryIndexWriteError(
+                "failed to append session summary delta",
+                committed=False,
+            ) from exc
+        self._records = records
+        self._index_revision = revision
+        self._loaded = True
+        self._delta_entries += 1
+        self._state = "ready" if not self._dirty_marker_present_locked() else "degraded"
+        self._last_error = "" if self._state == "ready" else "source_projection_pending"
+        if self._delta_entries >= _DELTA_COMPACT_THRESHOLD:
+            try:
+                self._publish_locked(records, revision)
+            except SessionSummaryIndexWriteError:
+                logger.warning("Deferred session summary delta compaction failed", exc_info=True)
+
     def _quarantine_locked(self) -> None:
         try:
             metadata = self._path.lstat()
         except FileNotFoundError:
             return
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise SessionSummaryIndexCorruptionError(
-                "unsafe session summary index cannot be quarantined"
-            )
-        quarantine = self._path.with_name(
-            f"{self._path.name}.corrupt.{time.time_ns()}.{uuid.uuid4().hex}"
-        )
+            raise SessionSummaryIndexCorruptionError("unsafe session summary index cannot be quarantined")
+        quarantine = self._path.with_name(f"{self._path.name}.corrupt.{time.time_ns()}.{uuid.uuid4().hex}")
         os.replace(self._path, quarantine)
 
     def _quarantine_dirty_locked(self) -> None:
@@ -993,12 +1028,8 @@ class SessionSummaryIndex:
         except FileNotFoundError:
             return
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise SessionSummaryIndexCorruptionError(
-                "unsafe session summary projection marker cannot be quarantined"
-            )
-        quarantine = self._dirty_path.with_name(
-            f"{self._dirty_path.name}.corrupt.{time.time_ns()}.{uuid.uuid4().hex}"
-        )
+            raise SessionSummaryIndexCorruptionError("unsafe session summary projection marker cannot be quarantined")
+        quarantine = self._dirty_path.with_name(f"{self._dirty_path.name}.corrupt.{time.time_ns()}.{uuid.uuid4().hex}")
         os.replace(self._dirty_path, quarantine)
 
 

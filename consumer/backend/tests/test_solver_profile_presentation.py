@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
 from solver_coordination.contracts import NormalizedInput, SolverResult, VerificationResult
 from solver_coordination.errors import SolverResultRejectedError
 from solver_coordination.presentation import (
@@ -17,7 +16,6 @@ from solver_coordination.profiles import (
     SolverProfileRegistry,
 )
 
-
 DISPLAY_MAPPING = {
     "OPTION_0": "SYNTHETIC_ROUTE_A",
     "OPTION_1": "SYNTHETIC_ROUTE_B",
@@ -27,12 +25,7 @@ DISPLAY_MAPPING = {
 def _normalized_input() -> NormalizedInput:
     return NormalizedInput(
         operation_key="solve_synthetic_route",
-        values={
-            "items": [
-                {"item_order": order, "item_id": f"ITEM_SYNTHETIC_{order:04d}"}
-                for order in range(1, 5)
-            ]
-        },
+        values={"items": [{"item_order": order, "item_id": f"ITEM_SYNTHETIC_{order:04d}"} for order in range(1, 5)]},
     )
 
 
@@ -41,8 +34,8 @@ _UNSET = object()
 
 def _capability(*, mapping: Any = None, text_presentation: Any = _UNSET) -> dict[str, Any]:
     model = {
-            "profile_id": "ordered_binary_route.v1",
-            "display_mapping": DISPLAY_MAPPING if mapping is None else mapping,
+        "profile_id": "ordered_binary_route.v1",
+        "display_mapping": DISPLAY_MAPPING if mapping is None else mapping,
     }
     if text_presentation is not _UNSET:
         model["text_presentation"] = text_presentation
@@ -160,9 +153,7 @@ def test_ordered_route_presenter_renders_declared_chinese_plan_text_verbatim():
         "第 1 批：来源甲，3.125 万吨，周期为 1.25 天，合成中间物流→SYNTHETIC_ROUTE_A；",
         "第 2 批：来源乙，8.250 万吨，周期为 2.5 天，合成中间物流→SYNTHETIC_ROUTE_B；",
     ]
-    assert summary["text"] == "  \n".join(
-        [summary["title"], *summary["lines"]]
-    )
+    assert summary["text"] == "  \n".join([summary["title"], *summary["lines"]])
 
 
 @pytest.mark.parametrize(
@@ -259,9 +250,7 @@ def test_profile_presentation_service_dispatches_by_locked_profile():
         verifier=type("Verifier", (), {"verify": lambda self, **kwargs: _verification()})(),
         presenter=presenter,
     )
-    service = ProfilePresentationService(
-        SolverProfileRegistry([registration])
-    )
+    service = ProfilePresentationService(SolverProfileRegistry([registration]))
 
     summary = service.present(
         capability=_capability(),

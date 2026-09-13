@@ -6,19 +6,17 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.exceptions import WorkflowCancelledError
 from config import AgentConfig, LLMConfig
 from integration.observability import get_observability_context
-from utils.logging import get_logger
-from llm.reasoning_summary import summarize_reasoning_intent
-from agent.exceptions import WorkflowCancelledError
 from llm.collectors import collect_non_stream_response, collect_stream_response
+from llm.reasoning_summary import summarize_reasoning_intent
 from llm.tool_calls import normalize_tool_calls
 from llm.transport import OpenAIChatTransport
 from llm.types import LLMResponse
-
+from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -121,8 +119,8 @@ class LLMService:
                 self._cancel_events[run_id] = event
             return event
 
+    @staticmethod
     def _raise_if_cancelled(
-        self,
         cancel_event: Optional[threading.Event],
         run_id: Optional[str],
     ) -> None:
@@ -193,7 +191,7 @@ class LLMService:
             return response_model.parse_obj(payload)
         return response_model(**payload)
 
-    def _make_request(
+    def _make_request(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         messages: List[Dict[str, Any]],
         stream: bool,
@@ -216,7 +214,7 @@ class LLMService:
             **kwargs,
         )
 
-    def _collect_response(
+    def _collect_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         response: Any,
         emit_func: Optional[Callable[..., None]] = None,
@@ -252,6 +250,7 @@ class LLMService:
         request_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         dispatch = self._dispatch_reasoning_summary
+
         def _dispatch_wrapper(*, reasoning_text, reasoning_block_id, run_id, reasoning_summary_callback):
             return dispatch(
                 reasoning_text=reasoning_text,
@@ -259,6 +258,7 @@ class LLMService:
                 run_id=run_id,
                 reasoning_summary_callback=reasoning_summary_callback,
             )
+
         return collect_non_stream_response(
             response,
             emit_func=emit_func,
@@ -268,7 +268,7 @@ class LLMService:
             dispatch_reasoning_summary=_dispatch_wrapper,
         )
 
-    def _collect_stream_response(
+    def _collect_stream_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         response: Any,
         emit_func: Optional[Callable[..., None]] = None,
@@ -278,6 +278,7 @@ class LLMService:
         tool_calls_closed_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     ) -> Dict[str, Any]:
         dispatch = self._dispatch_reasoning_summary
+
         def _dispatch_wrapper(*, reasoning_text, reasoning_block_id, run_id, reasoning_summary_callback):
             return dispatch(
                 reasoning_text=reasoning_text,
@@ -285,6 +286,7 @@ class LLMService:
                 run_id=run_id,
                 reasoning_summary_callback=reasoning_summary_callback,
             )
+
         return collect_stream_response(
             response,
             emit_func=emit_func,
@@ -410,7 +412,8 @@ class LLMService:
         """
         if not self.is_configured:
             raise RuntimeError(
-                "LLM service not configured. Set LLM_BASE_URL and LLM_MODEL, or save an enabled model profile in system config."
+                "LLM service not configured. Set LLM_BASE_URL and LLM_MODEL, or save an enabled model profile in system"
+                " config."
             )
 
         cancel_event = self._get_cancel_event(run_id)

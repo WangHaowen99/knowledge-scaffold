@@ -30,11 +30,11 @@ _SKILL_EVOLUTION_DIR_NAME = "skill-evolution"
 
 
 class PendingTaskExists(RuntimeError):
-    """Raised when a pending task already exists for an ontology. Used by
-    create_task_if_no_pending to make the gate-4 check-then-act atomic."""
+    """Raised when an ontology already has a pending evolution task."""
 
 
 def _utc_now() -> str:
+    """Return the current UTC timestamp without sub-second precision."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
@@ -53,9 +53,11 @@ class SkillEvolutionStore:
 
     # ------------------------------------------------------------------ paths
     def root(self) -> Path:
+        """Return the root directory for skill-evolution state."""
         return self._root / _SKILL_EVOLUTION_DIR_NAME
 
     def iter_workspace_ids(self) -> List[str]:
+        """List workspace identifiers with persisted evolution state."""
         ws_root = self.root() / "workspaces"
         if not ws_root.exists():
             return []
@@ -80,19 +82,24 @@ class SkillEvolutionStore:
         return self._workspace_root(workspace_id) / "corrupted"
 
     def task_path(self, workspace_id: str, task_id: str) -> Path:
+        """Return the task record path for a workspace and task."""
         return self._tasks_dir(workspace_id) / f"{_safe_segment(task_id)}.json"
 
     def baseline_path(self, workspace_id: str, task_id: str) -> Path:
+        """Return the immutable baseline archive path for a task."""
         return self._baseline_dir(workspace_id) / f"{_safe_segment(task_id)}.zip"
 
     def temp_path(self, workspace_id: str, task_id: str) -> Path:
+        """Return the temporary extraction directory for a task."""
         return self._temp_dir(workspace_id) / _safe_segment(task_id)
 
     def history_path(self, workspace_id: str, task_id: str) -> Path:
+        """Return the persisted approval-history path for a task."""
         return self._history_dir(workspace_id) / f"{_safe_segment(task_id)}.json"
 
     # ----------------------------------------------------------------- write
     def save_task(self, record: TaskRecord) -> None:
+        """Atomically persist a task record and refresh its update timestamp."""
         record.updated_at = _utc_now()
         path = self.task_path(record.workspace_id, record.task_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -103,6 +110,7 @@ class SkillEvolutionStore:
         os.replace(tmp, path)
 
     def create_task(self, record: TaskRecord) -> TaskRecord:
+        """Persist a task record under the store lock."""
         with self._lock:
             self.save_task(record)
         return record
@@ -127,6 +135,7 @@ class SkillEvolutionStore:
 
     # ------------------------------------------------------------------ read
     def get_task(self, workspace_id: str, task_id: str) -> Optional[TaskRecord]:
+        """Load one task record, quarantining malformed state when needed."""
         path = self.task_path(workspace_id, task_id)
         if not path.exists():
             return None
@@ -156,6 +165,7 @@ class SkillEvolutionStore:
         triggered_by: Optional[str] = None,
         is_admin: bool = False,
     ) -> List[TaskRecord]:
+        """List task records visible under the requested workspace filters."""
         tasks_dir = self._tasks_dir(workspace_id)
         if not tasks_dir.exists():
             return []
@@ -179,6 +189,7 @@ class SkillEvolutionStore:
         return out
 
     def has_pending(self, workspace_id: str, ontology_id: str) -> bool:
+        """Return whether an ontology has a non-terminal evolution task."""
         tasks_dir = self._tasks_dir(workspace_id)
         if not tasks_dir.exists():
             return False
@@ -196,16 +207,19 @@ class SkillEvolutionStore:
 
     # ----------------------------------------------------------- temp/baseline
     def ensure_temp_dir(self, workspace_id: str, task_id: str) -> Path:
+        """Create and return a task's temporary extraction directory."""
         path = self.temp_path(workspace_id, task_id)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def clean_temp(self, workspace_id: str, task_id: str) -> None:
+        """Remove temporary extracted artifacts for a task when present."""
         path = self.temp_path(workspace_id, task_id)
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
 
     def save_baseline(self, workspace_id: str, task_id: str, zip_bytes: bytes) -> Path:
+        """Atomically persist the submit-time baseline archive."""
         path = self.baseline_path(workspace_id, task_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -214,6 +228,7 @@ class SkillEvolutionStore:
         return path
 
     def clean_baseline(self, workspace_id: str, task_id: str) -> None:
+        """Remove a task's baseline archive when present."""
         path = self.baseline_path(workspace_id, task_id)
         if path.exists():
             try:
@@ -223,6 +238,7 @@ class SkillEvolutionStore:
 
     # --------------------------------------------------------------- history
     def save_history(self, workspace_id: str, task_id: str, payload: Dict[str, Any]) -> None:
+        """Atomically persist the approval decision and complete diff payload."""
         path = self.history_path(workspace_id, task_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
@@ -230,6 +246,7 @@ class SkillEvolutionStore:
         os.replace(tmp, path)
 
     def get_history(self, workspace_id: str, task_id: str) -> Optional[Dict[str, Any]]:
+        """Load a task's approval history, returning None when unavailable."""
         path = self.history_path(workspace_id, task_id)
         if not path.exists():
             return None

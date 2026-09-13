@@ -13,15 +13,20 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
-
+from agent.runtime.errors import WorkspaceBusyError
 from api.auth.auth import AuthUser
 from api.routes.skills import skills_router
 from api.routes.workspaces import workspaces_router
 from api.testing import TestApplication
-from agent.runtime.errors import WorkspaceBusyError
 from auth_test_backend import AuthManager
-
+from backend_synthetic_credentials import (
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    STRONG_PASSWORD,
+    STRONG_PASSWORD_2,
+    STRONG_PASSWORD_3,
+)
+from fastapi.testclient import TestClient
 
 FORBIDDEN_BODY = {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
 
@@ -53,10 +58,10 @@ def _build_env(tmp_path, monkeypatch):
     app = TestApplication()
     app.state.services["TESTING"] = True
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    admin = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    admin = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert admin is not None
-    admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    admin = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, STRONG_PASSWORD)
 
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.state.runtime_container = SimpleNamespace(
@@ -70,9 +75,8 @@ def _build_env(tmp_path, monkeypatch):
         "admin": {"Authorization": "Bearer {}".format(auth_manager.issue_token(admin))},
     }
     for username in ("alice", "bob"):
-        temporary_password = "UserStrong123!"
-        auth_manager.create_user(username, temporary_password, role="user")
-        user = auth_manager.change_password(username, temporary_password, "ChangedStrong123!")
+        auth_manager.create_user(username, STRONG_PASSWORD_2, role="user")
+        user = auth_manager.change_password(username, STRONG_PASSWORD_2, STRONG_PASSWORD_3)
         headers[username] = {"Authorization": "Bearer {}".format(auth_manager.issue_token(user))}
 
     return TestClient(app), headers
@@ -98,12 +102,8 @@ def _create_workspace_api(client, admin_headers, *, name, workspace_id, owner=_U
 
 def _setup_shared_and_owned(client, headers):
     """shared：无 owner 的公共空间，先创建自动成为默认；alice-ws：alice 私有空间。"""
-    shared = _create_workspace_api(
-        client, headers["admin"], name="Shared WS", workspace_id="shared", owner=None
-    )
-    owned = _create_workspace_api(
-        client, headers["admin"], name="Alice WS", workspace_id="alice-ws", owner="alice"
-    )
+    shared = _create_workspace_api(client, headers["admin"], name="Shared WS", workspace_id="shared", owner=None)
+    owned = _create_workspace_api(client, headers["admin"], name="Alice WS", workspace_id="alice-ws", owner="alice")
     return shared, owned
 
 
@@ -254,9 +254,7 @@ def test_list_workspaces_member_sees_workspace_with_member_role(tmp_path, monkey
     member_item = next(item for item in body["workspaces"] if item["id"] == "alice-ws")
     assert member_item["role"] == "member"
     assert member_item["members"] == ["bob"]
-    preferred = next(
-        item for item in body["workspaces"] if item["id"] == preferred_id
-    )
+    preferred = next(item for item in body["workspaces"] if item["id"] == preferred_id)
     assert preferred["owner"] == "bob"
     assert preferred["role"] == "admin"
 
@@ -379,10 +377,13 @@ def test_workspace_owner_reference_must_exist_on_create_and_transfer(tmp_path, m
     )
     assert transferred.status_code == 400
     assert transferred.json()["code"] == "WORKSPACE_OWNER_NOT_FOUND"
-    assert client.get(
-        "/agentic/workspaces/alice-ws",
-        headers=headers["admin"],
-    ).json()["owner"] == "alice"
+    assert (
+        client.get(
+            "/agentic/workspaces/alice-ws",
+            headers=headers["admin"],
+        ).json()["owner"]
+        == "alice"
+    )
 
 
 def test_put_members_owner_allowed_and_validated(tmp_path, monkeypatch):
@@ -447,10 +448,13 @@ def test_workspace_member_identity_must_exist_before_validation_or_save(tmp_path
     )
     assert saved.status_code == 400
     assert saved.json()["code"] == "WORKSPACE_MEMBER_NOT_FOUND"
-    assert client.get(
-        "/agentic/workspaces/alice-ws",
-        headers=headers["admin"],
-    ).json()["members"] == []
+    assert (
+        client.get(
+            "/agentic/workspaces/alice-ws",
+            headers=headers["admin"],
+        ).json()["members"]
+        == []
+    )
 
     multiple = client.put(
         "/agentic/workspaces/alice-ws/members",
@@ -484,38 +488,40 @@ def test_member_save_revalidates_after_successful_add_check(tmp_path, monkeypatc
 
     assert saved.status_code == 400
     assert saved.json()["code"] == "WORKSPACE_MEMBER_NOT_FOUND"
-    assert client.get(
-        "/agentic/workspaces/alice-ws",
-        headers=headers["admin"],
-    ).json()["members"] == []
+    assert (
+        client.get(
+            "/agentic/workspaces/alice-ws",
+            headers=headers["admin"],
+        ).json()["members"]
+        == []
+    )
 
 
 def test_pending_user_deletion_blocks_member_validation_and_save(tmp_path, monkeypatch):
     client, headers = _build_env(tmp_path, monkeypatch)
     _setup_shared_and_owned(client, headers)
     reconciliation_id = "b" * 32
-    reconciliation_path = (
-        tmp_path
-        / ".onto-runtime"
-        / "system"
-        / "user-deletion-reconciliation.json"
-    )
+    reconciliation_path = tmp_path / ".onto-runtime" / "system" / "user-deletion-reconciliation.json"
     reconciliation_path.parent.mkdir(parents=True, exist_ok=True)
     reconciliation_path.write_text(
-        json.dumps({
-            "version": 1,
-            "records": [{
-                "id": reconciliation_id,
-                "username": "bob",
-                "status": "cleanup_pending",
-                "identity_deleted": True,
-                "created_at": "2026-08-04T00:00:00+00:00",
-                "updated_at": "2026-08-04T00:00:00+00:00",
-                "attempts": 1,
-                "completed_steps": [],
-                "errors": {"workspace_members": "pending"},
-            }],
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "records": [
+                    {
+                        "id": reconciliation_id,
+                        "username": "bob",
+                        "status": "cleanup_pending",
+                        "identity_deleted": True,
+                        "created_at": "2026-08-04T00:00:00+00:00",
+                        "updated_at": "2026-08-04T00:00:00+00:00",
+                        "attempts": 1,
+                        "completed_steps": [],
+                        "errors": {"workspace_members": "pending"},
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -528,10 +534,13 @@ def test_pending_user_deletion_blocks_member_validation_and_save(tmp_path, monke
         assert response.json()["code"] == "USER_DELETION_RECONCILIATION_PENDING"
         assert response.json()["reconciliation_id"] == reconciliation_id
 
-    assert client.get(
-        "/agentic/workspaces/alice-ws",
-        headers=headers["admin"],
-    ).json()["members"] == []
+    assert (
+        client.get(
+            "/agentic/workspaces/alice-ws",
+            headers=headers["admin"],
+        ).json()["members"]
+        == []
+    )
 
 
 @pytest.mark.parametrize(
@@ -606,12 +615,7 @@ def test_modeling_shadow_workspace_rejects_non_object_json(tmp_path, monkeypatch
 def test_corrupt_user_deletion_state_returns_503_for_acl_writes(tmp_path, monkeypatch):
     client, headers = _build_env(tmp_path, monkeypatch)
     _setup_shared_and_owned(client, headers)
-    reconciliation_path = (
-        tmp_path
-        / ".onto-runtime"
-        / "system"
-        / "user-deletion-reconciliation.json"
-    )
+    reconciliation_path = tmp_path / ".onto-runtime" / "system" / "user-deletion-reconciliation.json"
     reconciliation_path.parent.mkdir(parents=True, exist_ok=True)
     reconciliation_path.write_text("{broken", encoding="utf-8")
 
@@ -678,10 +682,13 @@ def test_member_save_fails_closed_when_identity_directory_is_unavailable(tmp_pat
 
     assert response.status_code == 503
     assert response.json()["code"] == "AUTH_DIRECTORY_UNAVAILABLE"
-    assert client.get(
-        "/agentic/workspaces/alice-ws",
-        headers=headers["admin"],
-    ).json()["members"] == []
+    assert (
+        client.get(
+            "/agentic/workspaces/alice-ws",
+            headers=headers["admin"],
+        ).json()["members"]
+        == []
+    )
 
     # Removing all references remains possible even during an auth outage.
     cleared = client.put(
@@ -856,10 +863,13 @@ def test_workspace_owner_transfer_into_full_user_is_rejected_atomically(
 
     assert response.status_code == 400
     assert "工作空间数量已达上限" in response.json()["detail"]
-    assert client.get(
-        "/agentic/workspaces/bob-existing",
-        headers=headers["admin"],
-    ).json()["owner"] == "bob"
+    assert (
+        client.get(
+            "/agentic/workspaces/bob-existing",
+            headers=headers["admin"],
+        ).json()["owner"]
+        == "bob"
+    )
 
 
 def test_workspace_owner_transfer_out_releases_owner_quota(tmp_path, monkeypatch):
@@ -1105,9 +1115,7 @@ def test_modeling_service_can_ensure_owned_shadow_workspace(tmp_path, monkeypatc
     assert visible.json()["role"] == "admin"
 
 
-def test_modeling_shadow_workspace_is_not_blocked_by_user_workspace_limit(
-    tmp_path, monkeypatch
-):
+def test_modeling_shadow_workspace_is_not_blocked_by_user_workspace_limit(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
     monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
     client, headers = _build_env(tmp_path, monkeypatch)
@@ -1141,9 +1149,7 @@ def test_modeling_shadow_workspace_is_not_blocked_by_user_workspace_limit(
     assert "工作空间数量已达上限" in over_limit.json()["detail"]
 
 
-def test_modeling_shadow_workspace_provisioning_rejects_bad_token_and_owner_takeover(
-    tmp_path, monkeypatch
-):
+def test_modeling_shadow_workspace_provisioning_rejects_bad_token_and_owner_takeover(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
     client, _ = _build_env(tmp_path, monkeypatch)
 
@@ -1188,9 +1194,7 @@ def test_legacy_workspace_without_owner_fields_still_works(tmp_path, monkeypatch
     # list：普通用户不展示无关系的旧版 ownerless 空间
     listing = client.get("/agentic/workspaces", headers=headers["bob"])
     assert listing.status_code == 200
-    assert "legacy-ws" not in {
-        item["id"] for item in listing.json()["workspaces"]
-    }
+    assert "legacy-ws" not in {item["id"] for item in listing.json()["workspaces"]}
 
     # get：单查正常
     response = client.get("/agentic/workspaces/legacy-ws", headers=headers["bob"])

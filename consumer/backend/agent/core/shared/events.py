@@ -98,7 +98,13 @@ def emit_reasoning_summary_event(
     if callable(reasoning_summary_callback):
         reasoning_summary_callback(reasoning_block_id, summary)
         return
-    if event_writer is None or not state.get("run_id") or not reasoning_block_id or not summary:
+    missing_event_context = (
+        event_writer is None
+        or not state.get("run_id")
+        or not reasoning_block_id
+        or not summary
+    )
+    if missing_event_context:
         return
     emit_agent_event(
         run_id=str(state.get("run_id") or ""),

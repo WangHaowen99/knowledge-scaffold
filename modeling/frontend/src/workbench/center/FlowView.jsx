@@ -1,10 +1,12 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
+import { Maximize2, Scan, ZoomIn, ZoomOut } from 'lucide-react';
 import { displayPackageEntryName } from '../../legacyArchiveFilename.js';
 import { store } from '../lib/appStore.js';
 import { displayEvidenceReferences } from '../lib/evidence.js';
 import { useStore } from '../lib/store.js';
 import { flow as demoFlow } from '../lib/mock/fixtures.js';
+import LegacyFlowView from './LegacyFlowView.jsx';
+import { parseMmdPresentation, renderNativeMmd } from './mmdPresentation.js';
 
 const selNode = (s) => s.focus.node;
 const selFocus = (s) => s.focus;
@@ -52,7 +54,7 @@ export default function FlowView() {
     <div className="wb-flow-view">
       <MermaidPreview source={source} readableSource={readableSource} path={focus.target}
         focusNode={focusNode} fallbackFlow={demo ? demoFlow : undefined}
-        note={`${focusNode ? `助手正指向节点 ${focusNode}` : '点左栏文件或消息上的定位入口可切换视图'} · 绿色节点为本轮新增`} />
+        note={`${focusNode ? `助手正指向节点 ${focusNode}` : '点左栏文件或消息上的定位入口可切换视图'}`} />
     </div>
   );
 }
@@ -68,6 +70,22 @@ export function MermaidPreview({
   note = '',
 }) {
   const [mode, setMode] = useState('diagram');
+  const [presentation, setPresentation] = useState(null);
+  const controller = useRef(null);
+  const current = presentation?.source === source && presentation?.path === path ? presentation : null;
+  const legacy = current?.kind === 'legacy';
+
+  useEffect(() => {
+    let active = true;
+    if (!source) return;
+    void parseMmdPresentation(source).then((result) => {
+      if (active) setPresentation({ ...result, source, path });
+    }).catch((error) => {
+      if (active) setPresentation({ kind: 'error', source, path,
+        message: error instanceof Error ? error.message : '流程图语法无法解析' });
+    });
+    return () => { active = false; };
+  }, [source, path]);
   const [zoom, setZoom] = useState(1);
   const [fitZoom, setFitZoom] = useState(1);
   const flow = fallbackFlow || parseFlow(source, path);
@@ -94,18 +112,35 @@ export function MermaidPreview({
             onClick={() => setMode('source')}>{sourceLabel}</button>
         </div>
         {mode === 'diagram' && <div className="wb-flow-zoom" aria-label="流程图缩放">
-          <button className="btn btn-ghost" title="缩小" aria-label="缩小流程图" disabled={zoom <= 0.1}
-            onClick={() => setZoom((value) => Math.max(0.1, Number((value - 0.1).toFixed(2))))}><ZoomOut size={14} /></button>
+          <button className="btn btn-ghost" title="缩小" aria-label="缩小流程图" disabled={zoom <= (legacy ? 0.05 : 0.1)}
+            onClick={() => legacy ? controller.current?.zoomOut() : setZoom((value) => Math.max(0.1, Number((value - 0.1).toFixed(2))))}><ZoomOut size={14} /></button>
           <span>{Math.round(zoom * 100)}%</span>
           <button className="btn btn-ghost" title="放大" aria-label="放大流程图" disabled={zoom >= 1.8}
-            onClick={() => setZoom((value) => Math.min(1.8, Number((value + 0.1).toFixed(1))))}><ZoomIn size={14} /></button>
+            onClick={() => legacy ? controller.current?.zoomIn() : setZoom((value) => Math.min(1.8, Number((value + 0.1).toFixed(1))))}><ZoomIn size={14} /></button>
           <button className="btn btn-ghost" title="适合窗口" aria-label="流程图适合窗口"
-            onClick={() => setZoom(fitZoom)}><Maximize2 size={14} /></button>
+            onClick={() => legacy ? controller.current?.fit() : setZoom(fitZoom)}><Maximize2 size={14} /></button>
+          {legacy && <>
+            <button className="btn btn-ghost" title="查看全图" aria-label="查看全图"
+              onClick={() => controller.current?.overview()}><Scan size={14} /></button>
+            <button className="btn btn-ghost wb-flow-reset" title="原始大小" aria-label="恢复 100%"
+              onClick={() => controller.current?.reset()}>100%</button>
+          </>}
         </div>}
       </div>
       {mode === 'diagram' ? <>
-        <MermaidDiagram source={source} flow={flow} focusNode={focusNode} zoom={zoom} box={box}
-          onFit={handleFit} />
+        {legacy ? <LegacyFlowView key={`${path}:${source}`} graph={current.graph} focusNode={focusNode}
+          controller={controller} onZoom={setZoom} />
+          : current?.kind === 'native' ? <>
+            <p className="t-sm muted">此图包含特殊结构或样式，保留原始图形展示。</p>
+            <MermaidDiagram key={`${path}:${source}`} source={source} flow={flow} focusNode={focusNode}
+              zoom={zoom} box={box} onFit={handleFit} />
+          </> : <div className="wb-mermaid-viewport" ref={box}>
+            {current?.kind === 'error'
+              ? <div className="wb-flow-error" role="alert"><b>流程图暂时无法渲染</b>
+                <span>请切换到源码检查语法。</span><span>{current.message}</span></div>
+              : <><span className="t-sm muted" role="status">正在读取流程图…</span>
+                <div className="wb-flow">{flow.nodes.map((node) => <Node key={node.id} node={node} first focus={focusNode} />)}</div></>}
+          </div>}
         {note && <p className="t-sm muted" style={{ textAlign: 'center', marginTop: 'var(--s-6)' }}>{note}</p>}
       </> : (
         sourceView || <pre className="wb-flow-source">{source === undefined ? '正在读取流程源码…' : readableSource}</pre>
@@ -128,37 +163,17 @@ function MermaidDiagram({ source, flow, focusNode, zoom, box, onFit }) {
       setDimensions(null);
       return () => { active = false; };
     }
-    void import('mermaid').then(async ({ default: mermaid }) => {
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: 'base',
-        themeVariables: {
-          fontFamily: 'system-ui, sans-serif',
-          primaryColor: '#ffffff',
-          primaryTextColor: '#252a31',
-          primaryBorderColor: '#aeb8c7',
-          lineColor: '#8793a5',
-          secondaryColor: '#f3f6fa',
-          tertiaryColor: '#edf5ef',
-        },
-        flowchart: { htmlLabels: true, useMaxWidth: true, curve: 'basis' },
-      });
-      try {
-        const rendered = await mermaid.render(`wbMermaid${renderKey}`, source);
+    void renderNativeMmd(`wbMermaid${renderKey}`, source).then((rendered) => {
         if (active) {
           setSvg(rendered.svg);
           setError('');
           setDimensions(null);
         }
-      } catch (renderError) {
-        if (active) {
-          setSvg('');
-          setError(renderError instanceof Error ? renderError.message : '流程图语法暂时无法渲染');
-        }
+    }).catch((renderError) => {
+      if (active) {
+        setSvg('');
+        setError(renderError instanceof Error ? renderError.message : '流程图渲染器加载失败');
       }
-    }).catch((loadError) => {
-      if (active) setError(loadError instanceof Error ? loadError.message : '流程图渲染器加载失败');
     });
     return () => { active = false; };
   }, [renderKey, source]);

@@ -196,7 +196,7 @@ async def _summarize_terminal_runs(
 
 async def _cleanup_terminal_entries(fixture: _RaceFixture) -> None:
     for run_id in fixture.run_ids:
-        await fixture.manager._cleanup_finished_run(run_id)
+        await fixture.manager.cleanup_finished_run(run_id)
 
 
 def _assert_race_summary(summary: dict[str, Any], iterations: int) -> None:
@@ -243,7 +243,7 @@ async def _run_cancel_complete(iterations: int) -> tuple[dict[str, Any], _RaceFi
     summary.update(
         {
             "cancel_calls": len(fixture.runtime.cancel_calls),
-            "manager_entries_after_cleanup": len(fixture.manager._entries),
+            "manager_entries_after_cleanup": fixture.manager.tracked_run_count,
             "elapsed_ms": int((time.perf_counter() - started) * 1000),
         }
     )
@@ -280,7 +280,7 @@ async def _run_shutdown_complete(
         {
             "cancel_calls": len(fixture.runtime.cancel_calls),
             "shutdown_complete": shutdown_complete,
-            "manager_entries_after_cleanup": len(fixture.manager._entries),
+            "manager_entries_after_cleanup": fixture.manager.tracked_run_count,
             "elapsed_ms": int((time.perf_counter() - started) * 1000),
         }
     )
@@ -313,7 +313,7 @@ async def _run_late_event_gate(
             )
         except EventPublishRejectedError as exc:
             if exc.duplicate_terminal:
-                raise RuntimeError("late non-terminal was classified as duplicate terminal")
+                raise RuntimeError("late non-terminal was classified as duplicate terminal") from exc
             rejected += 1
     after_writes = sum(
         snapshot.last_seq

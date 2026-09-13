@@ -5,7 +5,6 @@ from pathlib import Path
 from config import AppConfig
 from workspace.workspaces import create_workspace, get_workspace_paths
 
-
 EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
 EXAMPLE_ONTOLOGY_DESCRIPTION = "Example domain ontology for tests"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -242,8 +241,7 @@ def test_runtime_loader_rejects_legacy_manifest(tmp_path):
     ontology_dir = tmp_path / "legacy"
     ontology_dir.mkdir()
     (ontology_dir / "manifest.yaml").write_text(
-        "kind: ontology\nid: legacy\nname: Legacy\ndescription: Legacy package\n"
-        "version: 1.0.0\nlanguage: zh-CN\n",
+        "kind: ontology\nid: legacy\nname: Legacy\ndescription: Legacy package\n" "version: 1.0.0\nlanguage: zh-CN\n",
         encoding="utf-8",
     )
     (ontology_dir / "index.md").write_text("# Legacy\n", encoding="utf-8")
@@ -382,7 +380,7 @@ def test_build_selected_ontology_preload_context_includes_root_docs(tmp_path, mo
     assert context is not None
     assert context.startswith(SELECTED_ONTOLOGY_CONTEXT_START)
     assert context.endswith(SELECTED_ONTOLOGY_CONTEXT_END)
-    assert "Do not call `ontology_context(resource=\"root\")`" not in context
+    assert 'Do not call `ontology_context(resource="root")`' not in context
     assert "id: demo-ontology" in context
     assert "ontology: Demo Ontology - Demo ontology for preload tests" in context
     assert "operations_catalog:\n- demo-op" in context
@@ -415,15 +413,11 @@ def test_build_selected_ontology_preload_context_formats_catalogs_compactly(tmp_
         encoding="utf-8",
     )
     (ontology_dir / "operations" / "index.md").write_text(
-        "| 名称 | 标签 | 业务描述 |\n"
-        "| --- | --- | --- |\n"
-        "| demo-op | 工具流程 | compact operation |\n",
+        "| 名称 | 标签 | 业务描述 |\n" "| --- | --- | --- |\n" "| demo-op | 工具流程 | compact operation |\n",
         encoding="utf-8",
     )
     (ontology_dir / "objects" / "index.md").write_text(
-        "| 中文名称 | 别名 | 业务定义 |\n"
-        "| --- | --- | --- |\n"
-        "| DemoObject | demo | compact object |\n",
+        "| 中文名称 | 别名 | 业务定义 |\n" "| --- | --- | --- |\n" "| DemoObject | demo | compact object |\n",
         encoding="utf-8",
     )
     (ontology_dir / "scripts").mkdir(parents=True)
@@ -444,14 +438,10 @@ def test_build_selected_ontology_preload_context_formats_catalogs_compactly(tmp_
 
     assert context is not None
     assert (
-        "operations_catalog:\n"
-        "columns: 名称 | 标签 | 业务描述\n"
-        "- demo-op | 工具流程 | compact operation"
+        "operations_catalog:\n" "columns: 名称 | 标签 | 业务描述\n" "- demo-op | 工具流程 | compact operation"
     ) in context
     assert (
-        "objects_catalog:\n"
-        "columns: 中文名称 | 别名 | 业务定义\n"
-        "- DemoObject | demo | compact object"
+        "objects_catalog:\n" "columns: 中文名称 | 别名 | 业务定义\n" "- DemoObject | demo | compact object"
     ) in context
     assert (
         "script_catalog:\n"
@@ -473,10 +463,7 @@ def test_root_catalog_derives_coordinator_metadata_without_mutating_package(tmp_
         {"operation key": "stage-a", "输出": "first result"},
         {"operation key": "stage-b", "输出": "second result"},
     ]
-    coordinator_source = (
-        "---\nresource: operation\nkey: summary\n---\n\n"
-        "Run [[stage-a]] and then [[stage-b]].\n"
-    )
+    coordinator_source = "---\nresource: operation\nkey: summary\n---\n\n" "Run [[stage-a]] and then [[stage-b]].\n"
     (operations_dir / "summary.md").write_text(coordinator_source, encoding="utf-8")
     (operations_dir / "stage-a.md").write_text(
         "---\nresource: operation\nkey: stage-a\n---\n",
@@ -571,8 +558,7 @@ def test_script_catalog_keeps_unbound_coordinator_helper_private(tmp_path):
         encoding="utf-8",
     )
     (scripts_dir / "monthly-helper.md").write_text(
-        "---\nresource: script\nkey: monthly-helper\n"
-        "title: Monthly helper\nentrypoint: monthly.py\n---\n",
+        "---\nresource: script\nkey: monthly-helper\n" "title: Monthly helper\nentrypoint: monthly.py\n---\n",
         encoding="utf-8",
     )
     (scripts_dir / "monthly.py").write_text(
@@ -690,10 +676,7 @@ def test_v01_preload_records_include_active_version_indexes(tmp_path, monkeypatc
 
     records = build_selected_ontology_preload_records("demo-v01", turn_id=3)
     record_paths = {record["path"] for record in records}
-    assert any(
-        path.endswith("ontologies/demo-v01/versions/2.0.0/manifest.yaml")
-        for path in record_paths
-    )
+    assert any(path.endswith("ontologies/demo-v01/versions/2.0.0/manifest.yaml") for path in record_paths)
     for relative_path in (
         "index.md",
         "objects/index.md",
@@ -702,7 +685,9 @@ def test_v01_preload_records_include_active_version_indexes(tmp_path, monkeypatc
         "metrics/index.md",
         "scripts/index.md",
     ):
-        assert any(path.endswith("ontologies/demo-v01/versions/2.0.0/{}".format(relative_path)) for path in record_paths)
+        assert any(
+            path.endswith("ontologies/demo-v01/versions/2.0.0/{}".format(relative_path)) for path in record_paths
+        )
     assert not any("/versions/1.0.0/" in path for path in record_paths)
     assert {record["ontology_version"] for record in records} == {"2.0.0"}
     assert {record["doc_type"] for record in records} >= {

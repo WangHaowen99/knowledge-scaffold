@@ -42,9 +42,7 @@ def test_controlled_script_runtime_forwards_only_bound_operation_identity(tmp_pa
         expected_script_digest="sha256:" + "a" * 64,
     )
 
-    output = ControlledScriptOperationRuntime(execute_script=execute_script).execute(
-        invocation
-    )
+    output = ControlledScriptOperationRuntime(execute_script=execute_script).execute(invocation)
 
     assert output == '{"schema_version":"synthetic.operation-result.v1"}'
     assert calls == [
@@ -54,10 +52,10 @@ def test_controlled_script_runtime_forwards_only_bound_operation_identity(tmp_pa
             "operation_key": "verify-synthetic",
             "arguments": {"request_json": "{}"},
             "base_path": tmp_path.resolve(),
-                "workspace_id": "workspace-synthetic",
-                "run_id": "run-synthetic",
-                "caller": "deterministic_service",
-                "timeout_seconds": 30,
+            "workspace_id": "workspace-synthetic",
+            "run_id": "run-synthetic",
+            "caller": "deterministic_service",
+            "timeout_seconds": 30,
             "data_access": "frozen_snapshot",
             "expected_script_path": script_path.resolve(),
             "expected_script_digest": "sha256:" + "a" * 64,

@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
-
 from agent.runtime.contracts import PublicEvent
 from api.auth.auth import AuthUser, require_authenticated_user
 from api.dependencies import require_workspace_id
 from api.protocols.a2a.models import A2ATaskSnapshot, A2ATaskState
 from api.routes import a2a as a2a_routes
 from api.testing import TestApplication
+from fastapi.testclient import TestClient
 
 
 class _Service:
@@ -67,12 +66,16 @@ class _EventHub:
 
 
 def _app(events=()):
+    def authenticated_user_override():
+        return AuthUser(username="operator_a", role="user")
+
+    def workspace_id_override():
+        return "workspace_demo"
+
     app = TestApplication()
     app.include_router(a2a_routes.a2a_router)
-    app.dependency_overrides[require_authenticated_user] = lambda: AuthUser(
-        username="operator_a", role="user"
-    )
-    app.dependency_overrides[require_workspace_id] = lambda: "workspace_demo"
+    app.dependency_overrides[require_authenticated_user] = authenticated_user_override
+    app.dependency_overrides[require_workspace_id] = workspace_id_override
     app.state.runtime_container = SimpleNamespace(
         manager=SimpleNamespace(repository=_Repository()),
         event_hub=_EventHub(list(events)),
@@ -150,14 +153,13 @@ def test_event_stream_projects_external_and_canonical_ids(monkeypatch):
         metadata={"canonical_run_id": "agentic-canonical-demo"},
     )
     snapshot = SimpleNamespace(run_id="agentic-canonical-demo")
+
     async def resolve_service(*_args):
         return _Service(view=view, snapshot=snapshot)
 
     monkeypatch.setattr(a2a_routes, "_service", resolve_service)
 
-    response = TestClient(_app([event])).get(
-        "/a2a/tasks/external_task_demo/events"
-    )
+    response = TestClient(_app([event])).get("/a2a/tasks/external_task_demo/events")
 
     assert response.status_code == 200
     assert '"task_id": "external_task_demo"' in response.text

@@ -18,7 +18,6 @@ from typing import Any, Mapping, Sequence
 
 from ontology.hash_contract import normalize_relative_path
 
-
 CONTRACT = "OntologyChanged/v1"
 MAX_EVENT_BYTES = 512 * 1024
 MAX_DIGEST_ENTRIES = 5_000
@@ -40,9 +39,7 @@ TRIGGERS = frozenset({"api", "upload", "import", "startup_recovery", "sweeper", 
 OPERATOR_TYPES = frozenset({"user", "service", "system"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
-_CROCKFORD = (string.digits + string.ascii_uppercase).translate(
-    str.maketrans("", "", "ILOU")
-)
+_CROCKFORD = (string.digits + string.ascii_uppercase).translate(str.maketrans("", "", "ILOU"))
 _TOP_LEVEL_FIELDS = {
     "contract",
     "event_id",
@@ -139,8 +136,7 @@ def build_digest_hints(
             "size_bytes": raw_digest.get("size_bytes"),
         }
     ordered_entries = {
-        path: normalized_entries[path]
-        for path in sorted(normalized_entries, key=lambda item: item.encode("utf-8"))
+        path: normalized_entries[path] for path in sorted(normalized_entries, key=lambda item: item.encode("utf-8"))
     }
     return {
         "algorithm": DIGEST_ALGORITHM,
@@ -354,23 +350,33 @@ def _validate_deleted_paths(deleted: Any, *, entries: Mapping[str, Any]) -> None
 
 def _validate_version_combination(mutation_type: str, before: str | None, after: str | None, completeness: str) -> None:
     if mutation_type == "ACTIVE_VERSION_CHANGED" and (after is None or before == after):
-        raise OntologyChangedValidationError("INVALID_VERSION_COMBINATION", "active version change requires a new after_version")
+        raise OntologyChangedValidationError(
+            "INVALID_VERSION_COMBINATION", "active version change requires a new after_version"
+        )
     if mutation_type == "ONTOLOGY_VISIBILITY_CHANGED" and before != after:
-        raise OntologyChangedValidationError("INVALID_VERSION_COMBINATION", "visibility change cannot change active version")
+        raise OntologyChangedValidationError(
+            "INVALID_VERSION_COMBINATION", "visibility change cannot change active version"
+        )
     if mutation_type == "ONTOLOGY_FILE_CHANGED" and (before is None or before != after):
         raise OntologyChangedValidationError("INVALID_VERSION_COMBINATION", "file change requires one active version")
     if mutation_type == "ONTOLOGY_IMPORTED" and after is None:
         raise OntologyChangedValidationError("INVALID_VERSION_COMBINATION", "import requires an active version")
     if mutation_type == "ONTOLOGY_VERSION_DELETED" and before != after:
-        raise OntologyChangedValidationError("INVALID_VERSION_COMBINATION", "version deletion cannot change active version")
+        raise OntologyChangedValidationError(
+            "INVALID_VERSION_COMBINATION", "version deletion cannot change active version"
+        )
     if mutation_type == "ONTOLOGY_DELETED" and (after is not None or completeness != "none"):
-        raise OntologyChangedValidationError("INVALID_VERSION_COMBINATION", "ontology deletion requires after_version null and no hints")
+        raise OntologyChangedValidationError(
+            "INVALID_VERSION_COMBINATION", "ontology deletion requires after_version null and no hints"
+        )
     if mutation_type == "EXTERNAL_DRIFT_DETECTED" and not _external_drift_versions_are_valid(
         before,
         after,
         completeness,
     ):
-        raise OntologyChangedValidationError("INVALID_VERSION_COMBINATION", "external drift requires one active version and no hints")
+        raise OntologyChangedValidationError(
+            "INVALID_VERSION_COMBINATION", "external drift requires one active version and no hints"
+        )
 
 
 def _external_drift_versions_are_valid(

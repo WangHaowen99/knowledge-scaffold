@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 import agent.runtime.lifecycle as lifecycle_module
+import pytest
 from agent.runtime.lifecycle import (
     JiuwenRunnerLifecycle,
     JiuwenRuntimeLifecycleError,

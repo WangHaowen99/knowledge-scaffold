@@ -3,7 +3,7 @@ from __future__ import annotations
 import json  # noqa: F401
 
 import requests  # noqa: F401
-
+from backend_synthetic_credentials import synthetic_invalid_password, synthetic_secret
 from shared_capabilities.business_data import (
     AuthSpec,
     EffectiveConnection,
@@ -13,8 +13,8 @@ from shared_capabilities.business_data import (
 )
 from shared_capabilities.business_data.providers.dataagent import (
     DataAgentProvider,
-    _extract_fields as extract_dataagent_fields,
 )
+from shared_capabilities.business_data.providers.dataagent import _extract_fields as extract_dataagent_fields
 from shared_capabilities.business_data.providers.mindsdb import (
     MindsDBProvider,
     _chunk_events,
@@ -27,18 +27,21 @@ class _Response:
         self.payload = payload
         self.status_code = status_code
         self.text = text
+        self.iter_lines = None
 
     def json(self):
         if isinstance(self.payload, Exception):
             raise self.payload
         return self.payload
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self):
         return None
 
     def __enter__(self):
         return self
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def __exit__(self, *args):
         return None
 
@@ -76,7 +79,12 @@ def _stream_response(*frames):
     lines = []
     for frame in frames:
         lines.extend(["data: {}".format(json.dumps(frame)), ""])
-    response.iter_lines = lambda decode_unicode=True: iter(lines)
+
+    def iter_lines(decode_unicode=True):
+        del decode_unicode
+        return iter(lines)
+
+    response.iter_lines = iter_lines
     return response
 
 
@@ -93,7 +101,7 @@ def _connection(provider, *, auth=None, options=None):
 def _nl2sql_connection(*, auth=None, options=None):
     return _connection(
         "nl2sql_http",
-        auth=auth or AuthSpec(type="bearer", token="token-x"),
+        auth=auth or AuthSpec(type="bearer", token=synthetic_secret("shared_business_data_providers-credential-04")),
         options={"scene": "scene-x", **dict(options or {})},
     )
 
@@ -112,7 +120,7 @@ def test_nl2sql_query_uses_explicit_connection_and_normalizes_result():
     provider = NL2SQLProvider(
         _connection(
             "nl2sql_http",
-            auth=AuthSpec(type="bearer", token="token-x"),
+            auth=AuthSpec(type="bearer", token=synthetic_secret("shared_business_data_providers-credential-04")),
             options={"scene": "scene-x", "timeout_seconds": 88},
         ),
         session=session,
@@ -127,7 +135,7 @@ def test_nl2sql_query_uses_explicit_connection_and_normalizes_result():
             {
                 "headers": {
                     "Content-Type": "application/json",
-                    "Authorization": "Bearer token-x",
+                    "Authorization": f"Bearer {synthetic_secret('shared_business_data_providers-credential-04')}",
                 },
                 "json": {"question": "find one", "scene": "scene-x"},
                 "timeout": 88,
@@ -196,7 +204,7 @@ def test_nl2sql_http_error_redacts_endpoint_and_token():
     result = provider.query("find one")
 
     assert result.success is False
-    assert "token-x" not in result.error
+    assert synthetic_secret("shared_business_data_providers-credential-04") not in result.error
     assert "https://provider.example.com" not in result.error
     assert "[REDACTED]" in result.error
 
@@ -214,7 +222,7 @@ def test_nl2sql_rejects_missing_required_contract_before_network():
         (
             _connection(
                 "nl2sql_http",
-                auth=AuthSpec(type="bearer", token="token-x"),
+                auth=AuthSpec(type="bearer", token=synthetic_secret("shared_business_data_providers-credential-04")),
             ),
             "Scene 不能为空",
         ),
@@ -252,7 +260,7 @@ def test_nl2sql_probe_executes_select_one_through_sql_endpoint():
             {
                 "headers": {
                     "Content-Type": "application/json",
-                    "Authorization": "Bearer token-x",
+                    "Authorization": f"Bearer {synthetic_secret('shared_business_data_providers-credential-04')}",
                 },
                 "json": {"sql": "SELECT 1", "scene": "scene-x"},
                 "timeout": 10,
@@ -277,7 +285,7 @@ def test_mindsdb_sql_authenticates_and_normalizes_result():
         def post(self, url, **kwargs):
             self.requests.append(("POST", url, kwargs))
             if url.endswith("/api/login"):
-                return _Response({"token": "jwt-x"})
+                return _Response({"token": synthetic_secret("shared_business_data_providers-credential-02")})
             return _Response({"type": "table", "data": [{"id": 1}]})
 
     session = _MindsSession(None)
@@ -285,7 +293,9 @@ def test_mindsdb_sql_authenticates_and_normalizes_result():
         _connection(
             "mindsdb",
             auth=AuthSpec(
-                type="mindsdb_password", username="mindsdb", password="password-x"
+                type="mindsdb_password",
+                username="mindsdb",
+                password=synthetic_invalid_password("shared_business_data_providers-credential-03"),
             ),
             options={"default_database": "analytics", "timeout_seconds": 120},
         ),
@@ -296,16 +306,17 @@ def test_mindsdb_sql_authenticates_and_normalizes_result():
 
     assert result.success is True
     assert result.data == {"type": "table", "data": [{"id": 1}]}
-    assert session.requests[1][2]["headers"]["Authorization"] == "Bearer jwt-x"
+    assert (
+        session.requests[1][2]["headers"]["Authorization"]
+        == f"Bearer {synthetic_secret('shared_business_data_providers-credential-02')}"
+    )
     assert session.requests[1][2]["json"]["context"]["db"] == "analytics"
 
 
 def test_mindsdb_sql_normalizes_http_200_error_payload():
     provider = MindsDBProvider(
         _connection("mindsdb"),
-        session=_Session(
-            _Response({"type": " ERROR ", "error_message": "权限拒绝"})
-        ),
+        session=_Session(_Response({"type": " ERROR ", "error_message": "权限拒绝"})),
     )
 
     result = provider.query_sql("SELECT 1")
@@ -336,13 +347,15 @@ def test_mindsdb_sql_error_payload_uses_fallback_fields_and_default():
 
 
 def test_mindsdb_sql_error_payload_redacts_connection_secrets():
+    provider_token = synthetic_secret("shared_business_data_providers-credential-04")
+    provider_password = synthetic_invalid_password("shared_business_data_providers-credential-03")
     provider = MindsDBProvider(
         _connection(
             "mindsdb",
             auth=AuthSpec(
                 type="bearer",
-                token="token-x",
-                password="password-x",
+                token=provider_token,
+                password=provider_password,
             ),
         ),
         session=_Session(
@@ -350,8 +363,7 @@ def test_mindsdb_sql_error_payload_redacts_connection_secrets():
                 {
                     "type": "error",
                     "error_message": (
-                        "token-x and password-x rejected by "
-                        "https://provider.example.com"
+                        f"{provider_token} and {provider_password} rejected by https://provider.example.com"
                     ),
                 }
             )
@@ -361,8 +373,8 @@ def test_mindsdb_sql_error_payload_redacts_connection_secrets():
     result = provider.query_sql("SELECT 1")
 
     assert result.success is False
-    assert "token-x" not in result.error
-    assert "password-x" not in result.error
+    assert provider_token not in result.error
+    assert provider_password not in result.error
     assert "https://provider.example.com" not in result.error
     assert result.error.count("[REDACTED]") == 3
 
@@ -380,18 +392,23 @@ def test_mindsdb_anonymous_401_is_not_replayed_with_empty_credentials():
 
 def test_mindsdb_native_event_sequence_uses_shared_contract():
     response = _Response({})
-    response.iter_lines = lambda decode_unicode=True: iter(
-        [
-            'data: {"type":"start","prompt":"starting"}',
-            "",
-            'data: {"output":"final answer"}',
-            "",
-            'data: {"type":"end"}',
-            "",
-            'data: {"type":"end"}',
-            "",
-        ]
-    )
+
+    def iter_lines(decode_unicode=True):
+        del decode_unicode
+        return iter(
+            [
+                'data: {"type":"start","prompt":"starting"}',
+                "",
+                'data: {"output":"final answer"}',
+                "",
+                'data: {"type":"end"}',
+                "",
+                'data: {"type":"end"}',
+                "",
+            ]
+        )
+
+    response.iter_lines = iter_lines
     session = _Session(response)
     provider = MindsDBProvider(
         _connection(
@@ -510,14 +527,19 @@ def test_mindsdb_chunk_events_preserve_pre_refactor_branch_priority_and_content(
 
 def test_mindsdb_query_without_final_is_not_reported_as_success():
     response = _Response({})
-    response.iter_lines = lambda decode_unicode=True: iter(
-        [
-            'data: {"type":"start","prompt":"starting"}',
-            "",
-            'data: {"type":"end"}',
-            "",
-        ]
-    )
+
+    def iter_lines(decode_unicode=True):
+        del decode_unicode
+        return iter(
+            [
+                'data: {"type":"start","prompt":"starting"}',
+                "",
+                'data: {"type":"end"}',
+                "",
+            ]
+        )
+
+    response.iter_lines = iter_lines
     session = _Session(response)
     sleep_calls = []
     provider = MindsDBProvider(
@@ -538,18 +560,25 @@ def test_mindsdb_query_without_final_is_not_reported_as_success():
 
 
 def test_mindsdb_native_error_chunk_is_failure_and_redacts_secrets():
+    provider_token = synthetic_secret("shared_business_data_providers-credential-04")
+    provider_password = synthetic_invalid_password("shared_business_data_providers-credential-03")
     response = _Response({})
-    response.iter_lines = lambda decode_unicode=True: iter(
-        [
-            (
-                'data: {"error":"token-x and password-x rejected by '
-                'https://provider.example.com"}'
-            ),
-            "",
-            'data: {"type":"end"}',
-            "",
-        ]
-    )
+
+    def iter_lines(decode_unicode=True):
+        del decode_unicode
+        return iter(
+            [
+                (
+                    f'data: {{"error":"{provider_token} and {provider_password} rejected by '
+                    'https://provider.example.com"}'
+                ),
+                "",
+                'data: {"type":"end"}',
+                "",
+            ]
+        )
+
+    response.iter_lines = iter_lines
     session = _Session(response)
     sleep_calls = []
     provider = MindsDBProvider(
@@ -557,8 +586,8 @@ def test_mindsdb_native_error_chunk_is_failure_and_redacts_secrets():
             "mindsdb",
             auth=AuthSpec(
                 type="bearer",
-                token="token-x",
-                password="password-x",
+                token=provider_token,
+                password=provider_password,
             ),
         ),
         session=session,
@@ -569,8 +598,8 @@ def test_mindsdb_native_error_chunk_is_failure_and_redacts_secrets():
 
     assert result.success is False
     assert result.metadata["error_code"] == "query_error"
-    assert "token-x" not in result.error
-    assert "password-x" not in result.error
+    assert provider_token not in result.error
+    assert provider_password not in result.error
     assert "https://provider.example.com" not in result.error
     assert result.error.count("[REDACTED]") == 3
     assert result.metadata["stream_attempts"] == 2
@@ -584,9 +613,7 @@ def test_mindsdb_stream_error_recovers_once_and_returns_final():
             _stream_response(
                 {
                     "type": "error",
-                    "error": (
-                        "token-x rejected by https://provider.example.com"
-                    ),
+                    "error": "token-x rejected by https://provider.example.com",
                 },
                 {"type": "end"},
             ),
@@ -601,7 +628,7 @@ def test_mindsdb_stream_error_recovers_once_and_returns_final():
     provider = MindsDBProvider(
         _connection(
             "mindsdb",
-            auth=AuthSpec(type="bearer", token="token-x"),
+            auth=AuthSpec(type="bearer", token=synthetic_secret("shared_business_data_providers-credential-04")),
         ),
         session=session,
         sleep_fn=sleep_calls.append,
@@ -618,7 +645,7 @@ def test_mindsdb_stream_error_recovers_once_and_returns_final():
     assert events[2].content == "recovered answer"
     assert len(session.requests) == 2
     assert sleep_calls == [5]
-    assert "token-x" not in events[1].content
+    assert synthetic_secret("shared_business_data_providers-credential-04") not in events[1].content
     assert "https://provider.example.com" not in events[1].content
 
 
@@ -629,9 +656,7 @@ def test_mindsdb_stream_read_failure_recovers_once():
         del decode_unicode
         yield 'data: {"type":"start","prompt":"starting"}'
         yield ""
-        raise requests.exceptions.ChunkedEncodingError(
-            "token-x disconnected from https://provider.example.com"
-        )
+        raise requests.exceptions.ChunkedEncodingError("token-x disconnected from https://provider.example.com")
 
     broken.iter_lines = broken_lines
     session = _SequenceSession(
@@ -647,7 +672,7 @@ def test_mindsdb_stream_read_failure_recovers_once():
     provider = MindsDBProvider(
         _connection(
             "mindsdb",
-            auth=AuthSpec(type="bearer", token="token-x"),
+            auth=AuthSpec(type="bearer", token=synthetic_secret("shared_business_data_providers-credential-04")),
         ),
         session=session,
         sleep_fn=sleep_calls.append,
@@ -664,7 +689,7 @@ def test_mindsdb_stream_read_failure_recovers_once():
     assert events[2].content == "answer after reconnect"
     assert len(session.requests) == 2
     assert sleep_calls == [5]
-    assert "token-x" not in events[1].content
+    assert synthetic_secret("shared_business_data_providers-credential-04") not in events[1].content
     assert "https://provider.example.com" not in events[1].content
 
 
@@ -702,11 +727,7 @@ def test_dataagent_builds_a2a_request_and_synthesizes_events():
                     "status": {
                         "state": "TASK_STATE_COMPLETED",
                         "message": {
-                            "parts": [
-                                {
-                                    "text": "{'sql': 'SELECT 1', 'columns': ['n'], 'rows_preview': [(1,)]}"
-                                }
-                            ]
+                            "parts": [{"text": "{'sql': 'SELECT 1', 'columns': ['n'], 'rows_preview': [(1,)]}"}]
                         },
                     }
                 }
@@ -716,7 +737,7 @@ def test_dataagent_builds_a2a_request_and_synthesizes_events():
     provider = DataAgentProvider(
         _connection(
             "dataagent",
-            auth=AuthSpec(type="bearer", token="data-token"),
+            auth=AuthSpec(type="bearer", token=synthetic_secret("shared_business_data_providers-credential-01")),
             options={"timeout_seconds": 44},
         ),
         session=session,
@@ -735,13 +756,7 @@ def test_dataagent_reports_incomplete_structured_result_without_exposing_sql_int
                 "task": {
                     "status": {
                         "state": "TASK_STATE_COMPLETED",
-                        "message": {
-                            "parts": [
-                                {
-                                    "text": "{'columns': ['n'], 'rows_preview': [(1,)]}"
-                                }
-                            ]
-                        },
+                        "message": {"parts": [{"text": "{'columns': ['n'], 'rows_preview': [(1,)]}"}]},
                     }
                 }
             }
@@ -758,9 +773,7 @@ def test_dataagent_reports_incomplete_structured_result_without_exposing_sql_int
 
 
 def test_dataagent_field_parser_preserves_matched_raw_text_on_literal_failure():
-    fields = extract_dataagent_fields(
-        r"{'sql': '\x', 'columns': [invalid], 'confidence': None, 'error': None}"
-    )
+    fields = extract_dataagent_fields(r"{'sql': '\x', 'columns': [invalid], 'confidence': None, 'error': None}")
 
     assert fields["sql"] == r"'\x'"
     assert fields["columns"] == "[invalid]"
@@ -771,14 +784,12 @@ def test_dataagent_field_parser_preserves_matched_raw_text_on_literal_failure():
 def test_dataagent_converts_unexpected_transport_exception_to_safe_failed_result():
     class _UnexpectedSession(_Session):
         def post(self, url, **kwargs):
-            raise RuntimeError(
-                "token-x failed at https://provider.example.com/internal"
-            )
+            raise RuntimeError("token-x failed at https://provider.example.com/internal")
 
     provider = DataAgentProvider(
         _connection(
             "dataagent",
-            auth=AuthSpec(type="bearer", token="token-x"),
+            auth=AuthSpec(type="bearer", token=synthetic_secret("shared_business_data_providers-credential-04")),
         ),
         session=_UnexpectedSession(None),
     )
@@ -788,7 +799,7 @@ def test_dataagent_converts_unexpected_transport_exception_to_safe_failed_result
     assert result.success is False
     assert result.metadata["error_code"] == "internal_error"
     assert result.error.startswith("RuntimeError: ")
-    assert "token-x" not in result.error
+    assert synthetic_secret("shared_business_data_providers-credential-04") not in result.error
     assert "https://provider.example.com" not in result.error
     assert "[REDACTED]" in result.error
 

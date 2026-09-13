@@ -1,8 +1,8 @@
 """Ontology management endpoints: list, import, delete and file operations."""
 
-import hashlib
 import ctypes
 import errno
+import hashlib
 import io
 import os
 import re
@@ -14,39 +14,23 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Optional
+from typing import Callable, Mapping, NamedTuple, Optional
 
 import yaml
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, Response
-from starlette.datastructures import FormData, UploadFile
-from config import LimitsConfig
-from integration.platform.assets import export_ontology_snapshot_safely
-from utils.atomic_files import staged_bytes
+from agent.tools.business_data.ontology_sources_store import (
+    build_ontology_business_data_summary,
+    clear_ontology_data_source_on_delete,
+)
+from api.auth.auth import get_current_user
 from api.dependencies import (
     require_workspace_id,
     require_workspace_owner_or_admin_id,
 )
 from api.request_parsing import read_optional_json_object
-from api.auth.auth import get_current_user
-from utils.logging import get_logger
-from ontology.ontologies import (
-    OntologyLoader,
-    ensure_ontology_versions,
-    get_ontology_registry,
-    get_ontology_version_dir,
-    invalidate_ontology_registry,
-    is_valid_ontology_version,
-    load_ontology_manifest_data,
-    validate_ontology_manifest_schema,
-    validate_ontology_version_revision,
-    save_ontology_manifest_data,
-)
-from ontology.ontology_catalog import (
-    find_asset_file,
-    read_required_asset_text,
-    supported_asset_formats_text,
-)
+from config import LimitsConfig
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, Response
+from integration.platform.assets import export_ontology_snapshot_safely
 from ontology.capabilities import (
     OntologyCapabilityRevisionConflictError,
     OntologyCapabilityStoreError,
@@ -57,6 +41,42 @@ from ontology.capabilities import (
     reset_business_checkpoint_capability,
     set_business_checkpoint_capability,
 )
+from ontology.change_events import build_digest_hints, empty_digest_hints
+from ontology.directory_replacement import portable_replace_directory
+from ontology.evidence.identity import build_semantic_manifest_digest
+from ontology.evidence.source_reader import PackageSourceReader
+from ontology.mutation_lock import ontology_mutation_lock
+from ontology.mutations import (
+    OntologyMutationConflictError,
+    OntologyMutationCoordinator,
+    OntologyMutationError,
+    PreparedOntologyMutation,
+    read_mutation_state_snapshot,
+)
+from ontology.ontologies import (
+    OntologyLoader,
+    ensure_ontology_versions,
+    get_ontology_registry,
+    get_ontology_version_dir,
+    invalidate_ontology_registry,
+    is_valid_ontology_version,
+    load_ontology_manifest_data,
+    save_ontology_manifest_data,
+    validate_ontology_manifest_schema,
+    validate_ontology_version_revision,
+)
+from ontology.ontology_catalog import (
+    find_asset_file,
+    read_required_asset_text,
+    supported_asset_formats_text,
+)
+from ontology.ontology_graph import build_ontology_graph
+from ontology.operation_execution import (
+    DeterministicPackageError,
+    has_execution_declaration,
+    is_deterministic_package_locked,
+    validate_and_lock_deterministic_operations,
+)
 from ontology.package_browser import (
     EXCLUDED_DIRECTORY_NAMES,
     PackageBrowserError,
@@ -65,51 +85,32 @@ from ontology.package_browser import (
     read_package_text,
 )
 from ontology.package_import import (
-    PackageNormalizationError,
     SUPPORTED_IMPORT_MANIFEST_KINDS,
+    PackageNormalizationError,
     build_versioned_install_manifest,
     has_importable_package_layout,
     inspect_importable_package,
     normalize_imported_package,
-    validate_ontology_revision,
     validate_imported_field_aliases,
     validate_imported_object_aliases,
+    validate_ontology_revision,
 )
-from ontology.operation_execution import (
-    DeterministicPackageError,
-    has_execution_declaration,
-    is_deterministic_package_locked,
-    validate_and_lock_deterministic_operations,
-)
-from ontology.mutation_lock import ontology_mutation_lock
-from ontology.directory_replacement import portable_replace_directory
 from ontology.view_cache import (
     OntologyPackageRevisionError,
     build_package_tree_source_signature,
     get_package_tree_cached,
     invalidate_ontology_views,
 )
-from agent.tools.business_data.ontology_sources_store import (
-    build_ontology_business_data_summary,
-    clear_ontology_data_source_on_delete,
-)
 from persistence.chat_store import ChatStore
-from ontology.ontology_graph import build_ontology_graph
-from ontology.change_events import build_digest_hints, empty_digest_hints
-from ontology.evidence.identity import build_semantic_manifest_digest
-from ontology.evidence.source_reader import PackageSourceReader
-from ontology.mutations import (
-    OntologyMutationError,
-    OntologyMutationConflictError,
-    OntologyMutationCoordinator,
-    PreparedOntologyMutation,
-    read_mutation_state_snapshot,
-)
+from starlette.datastructures import FormData, UploadFile
+from utils.atomic_files import staged_bytes
+from utils.logging import get_logger
 from workspace.workspaces import (
-    get_workspace_paths,
     get_workspace_ontologies_root,
+    get_workspace_paths,
     workspace_scope,
 )
+
 logger = get_logger("routes.ontologies")
 _ontology_install_lock = ontology_mutation_lock
 
@@ -131,6 +132,8 @@ class _OntologyFileWriteTarget:
     active_version: str
     target_version: str
     enabled: bool
+
+
 ONTOLOGY_MAX_ZIP_BYTES = 50 * 1024 * 1024
 ONTOLOGY_MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 ONTOLOGY_MAX_ZIP_MEMBERS = 10_000
@@ -172,6 +175,8 @@ def _read_limited_zip_upload(
 
 
 ONTOLOGY_VERSIONED_SKIP_NAMES = {"manifest.yaml", "versions"}
+
+
 class OntologyImportError(ValueError):
     """A stable client-visible import validation error."""
 
@@ -382,10 +387,7 @@ def _combine_prepared_steps(
 
 def _cleanup_mutation_staging_root(staging_root: Path, error: BaseException) -> None:
     """Remove ordinary staging debris while preserving uncertain-state recovery data."""
-    if (
-        isinstance(error, OntologyMutationError)
-        and error.code == "MUTATION_COMMIT_STATE_UNCERTAIN"
-    ):
+    if isinstance(error, OntologyMutationError) and error.code == "MUTATION_COMMIT_STATE_UNCERTAIN":
         logger.critical(
             "Preserving ontology mutation recovery data after uncertain commit: path=%s",
             staging_root,
@@ -477,8 +479,7 @@ def _ontology_name_conflict_response(exc: OntologyNameConflictError) -> JSONResp
     return JSONResponse(
         content={
             "error": (
-                f"知识包名称「{exc.ontology_name}」已存在，不可重复导入。"
-                "请修改 manifest.yaml 中的 name 字段后重新导入。"
+                f"知识包名称「{exc.ontology_name}」已存在，不可重复导入。请修改 manifest.yaml 中的 name 字段后重新导入。"
             ),
             "error_code": "ontology_name_conflict",
             "conflict_type": "name_exists",
@@ -497,11 +498,7 @@ def _resolve_ontology_dir(ontology_id: str) -> Optional[Path]:
 
     ontologies_dir = _get_ontologies_dir()
     ontology_dir = ontologies_dir / safe_name
-    if (
-        ontology_dir.is_symlink()
-        or not _is_safe_path(ontologies_dir, ontology_dir)
-        or not ontology_dir.is_dir()
-    ):
+    if ontology_dir.is_symlink() or not _is_safe_path(ontologies_dir, ontology_dir) or not ontology_dir.is_dir():
         return None
     return ontology_dir
 
@@ -580,9 +577,7 @@ def _resolve_ontology_file_write_target(
     if folder_key is None:
         return None
     manifest = load_ontology_manifest_data(ontology_dir)
-    active_version = str(
-        manifest.get("active_version") or manifest.get("version") or ""
-    ).strip()
+    active_version = str(manifest.get("active_version") or manifest.get("version") or "").strip()
     target_version, version_dir = _resolve_existing_version_snapshot_checked(
         ontology_dir,
         version,
@@ -660,12 +655,7 @@ def _get_requested_version(
     form: FormData | None = None,
 ) -> str:
     form_version = form.get("version") if form is not None else None
-    return str(
-        request.query_params.get("version")
-        or form_version
-        or default
-        or ""
-    ).strip()
+    return str(request.query_params.get("version") or form_version or default or "").strip()
 
 
 async def _owner_json_payload(
@@ -741,9 +731,7 @@ def _build_ontology_zip_buffer(ontology_dir: Path, version_dir: Path, *, version
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("{}/manifest.yaml".format(archive_root), _manifest_for_download(ontology_dir, version))
         file_paths = [
-            file_path
-            for file_path in version_dir.rglob("*")
-            if file_path.is_file() and not file_path.is_symlink()
+            file_path for file_path in version_dir.rglob("*") if file_path.is_file() and not file_path.is_symlink()
         ]
         file_paths.sort(key=lambda item: item.relative_to(version_dir).as_posix())
 
@@ -786,13 +774,12 @@ def _operation_max_chars() -> int:
 def _count_workspace_ontology_dirs(ontologies_dir: Path) -> int:
     if not ontologies_dir.is_dir():
         return 0
-    return sum(
-        1
-        for child in ontologies_dir.iterdir()
-        if child.is_dir()
-        and not child.name.startswith(".")
-        and ((child / "manifest.yaml").exists() or (child / "versions").is_dir())
-    )
+    count = 0
+    for child in ontologies_dir.iterdir():
+        has_ontology_content = (child / "manifest.yaml").exists() or (child / "versions").is_dir()
+        if child.is_dir() and not child.name.startswith(".") and has_ontology_content:
+            count += 1
+    return count
 
 
 def _validate_workspace_ontology_count_limit(
@@ -941,19 +928,19 @@ def _find_sessions_locking_ontology_version(
             if str(metadata.get("selected_ontology_id") or "").strip() != ontology_id:
                 continue
             locked_version = str(
-                metadata.get("selected_ontology_version")
-                or metadata.get("selected_version")
-                or ""
+                metadata.get("selected_ontology_version") or metadata.get("selected_version") or ""
             ).strip()
             if locked_version != version:
                 continue
             total += 1
             if len(matched) < limit:
-                matched.append({
-                    "session_id": str(getattr(session, "id", "") or ""),
-                    "title": str(getattr(session, "title", "") or ""),
-                    "user_key": user_dir.name,
-                })
+                matched.append(
+                    {
+                        "session_id": str(getattr(session, "id", "") or ""),
+                        "title": str(getattr(session, "title", "") or ""),
+                        "user_key": user_dir.name,
+                    }
+                )
     return total, matched
 
 
@@ -1036,12 +1023,14 @@ def get_ontology_business_checkpoint(
             )
         except OntologyCapabilityStoreError as exc:
             return JSONResponse(content={"error": str(exc)}, status_code=500)
-        return JSONResponse(content={
-            "ontology_id": ontology_id,
-            **capability,
-            "template_available": template["available"],
-            "template_error": template["error"],
-        })
+        return JSONResponse(
+            content={
+                "ontology_id": ontology_id,
+                **capability,
+                "template_available": template["available"],
+                "template_error": template["error"],
+            }
+        )
 
 
 @ontologies_router.put("/ontologies/{ontology_id}/capabilities/business-checkpoint")
@@ -1085,11 +1074,13 @@ def update_ontology_business_checkpoint(
             return JSONResponse(content={"error": str(exc)}, status_code=409)
         except OntologyCapabilityStoreError as exc:
             return JSONResponse(content={"error": str(exc)}, status_code=400)
-        return JSONResponse(content={
-            "success": True,
-            "ontology_id": ontology_id,
-            **capability,
-        })
+        return JSONResponse(
+            content={
+                "success": True,
+                "ontology_id": ontology_id,
+                **capability,
+            }
+        )
 
 
 @ontologies_router.put("/ontologies/{ontology_id}/status")
@@ -1158,11 +1149,13 @@ def update_ontology_status(
             return JSONResponse(content={"error": "Failed to update ontology status"}, status_code=500)
 
         export_ontology_snapshot_safely(workspace_id=workspace_id)
-        return JSONResponse(content={
-            "success": True,
-            "ontology_id": ontology.id,
-            "enabled": ontology.enabled,
-        })
+        return JSONResponse(
+            content={
+                "success": True,
+                "ontology_id": ontology.id,
+                "enabled": ontology.enabled,
+            }
+        )
 
 
 @ontologies_router.put("/ontologies/{ontology_id}/active-version")
@@ -1326,11 +1319,13 @@ def delete_ontology(
         )
 
         export_ontology_snapshot_safely(workspace_id=workspace_id)
-        return JSONResponse(content={
-            "success": True,
-            "ontology_id": ontology_id,
-            "mutation_revision": mutation_result.mutation_revision,
-        })
+        return JSONResponse(
+            content={
+                "success": True,
+                "ontology_id": ontology_id,
+                "mutation_revision": mutation_result.mutation_revision,
+            }
+        )
 
 
 @ontologies_router.delete("/ontologies/{ontology_id}/versions/{version}")
@@ -1370,8 +1365,7 @@ def delete_ontology_version(
             registry.refresh()
         except Exception:
             logger.warning(
-                "Ontology version delete registry refresh failed: "
-                "workspace_id=%s ontology_id=%s version=%s",
+                "Ontology version delete registry refresh failed: workspace_id=%s ontology_id=%s version=%s",
                 workspace_id,
                 ontology_id,
                 version,
@@ -1390,21 +1384,22 @@ def delete_ontology_version(
             export_ontology_snapshot_safely(workspace_id=workspace_id)
         except Exception:
             logger.warning(
-                "Ontology version delete snapshot export failed: "
-                "workspace_id=%s ontology_id=%s version=%s",
+                "Ontology version delete snapshot export failed: workspace_id=%s ontology_id=%s version=%s",
                 workspace_id,
                 ontology_id,
                 version,
                 exc_info=True,
             )
-        return JSONResponse(content={
-            "success": True,
-            "ontology_id": ontology_id,
-            "deleted_version": version,
-            "active_version": active_version,
-            "versions": updated_versions,
-            "mutation_revision": mutation_result.mutation_revision,
-        })
+        return JSONResponse(
+            content={
+                "success": True,
+                "ontology_id": ontology_id,
+                "deleted_version": version,
+                "active_version": active_version,
+                "versions": updated_versions,
+                "mutation_revision": mutation_result.mutation_revision,
+            }
+        )
 
 
 def _delete_ontology_version_locked(
@@ -1433,25 +1428,20 @@ def _delete_ontology_version_locked(
             )
             return JSONResponse(content={"error": "Failed to prepare ontology versions"}, status_code=500)
 
-        active_version = str(
-            manifest.get("active_version")
-            or manifest.get("version")
-            or ""
-        ).strip()
-        versions = [
-            str(item).strip()
-            for item in (manifest.get("versions") or [])
-            if str(item or "").strip()
-        ]
+        active_version = str(manifest.get("active_version") or manifest.get("version") or "").strip()
+        versions = [str(item).strip() for item in (manifest.get("versions") or []) if str(item or "").strip()]
 
         if version not in versions:
-            return JSONResponse(content={
-                "error": "Ontology version not found",
-                "ontology_id": ontology_id,
-                "version": version,
-                "active_version": active_version,
-                "versions": versions,
-            }, status_code=404)
+            return JSONResponse(
+                content={
+                    "error": "Ontology version not found",
+                    "ontology_id": ontology_id,
+                    "version": version,
+                    "active_version": active_version,
+                    "versions": versions,
+                },
+                status_code=404,
+            )
 
         version_dir = get_ontology_version_dir(
             ontology_dir,
@@ -1460,23 +1450,29 @@ def _delete_ontology_version_locked(
             manifest=manifest,
         )
         if version_dir is None or not version_dir.is_dir():
-            return JSONResponse(content={
-                "error": "Ontology version not found",
-                "ontology_id": ontology_id,
-                "version": version,
-                "active_version": active_version,
-                "versions": versions,
-            }, status_code=404)
+            return JSONResponse(
+                content={
+                    "error": "Ontology version not found",
+                    "ontology_id": ontology_id,
+                    "version": version,
+                    "active_version": active_version,
+                    "versions": versions,
+                },
+                status_code=404,
+            )
 
         if version == active_version:
-            return JSONResponse(content={
-                "error": "不能删除当前激活版本，请先切换激活版本后再删除。",
-                "conflict_type": "active_version",
-                "ontology_id": ontology_id,
-                "version": version,
-                "active_version": active_version,
-                "versions": versions,
-            }, status_code=409)
+            return JSONResponse(
+                content={
+                    "error": "不能删除当前激活版本，请先切换激活版本后再删除。",
+                    "conflict_type": "active_version",
+                    "ontology_id": ontology_id,
+                    "version": version,
+                    "active_version": active_version,
+                    "versions": versions,
+                },
+                status_code=409,
+            )
 
         reference_count, referenced_sessions = _find_sessions_locking_ontology_version(
             workspace_id=workspace_id,
@@ -1484,26 +1480,32 @@ def _delete_ontology_version_locked(
             version=version,
         )
         if reference_count > 0:
-            return JSONResponse(content={
-                "error": "Locked version is still referenced by existing chat sessions and cannot be deleted.",
-                "conflict_type": "session_reference",
-                "ontology_id": ontology_id,
-                "version": version,
-                "active_version": active_version,
-                "versions": versions,
-                "reference_count": reference_count,
-                "referenced_sessions": referenced_sessions,
-            }, status_code=409)
+            return JSONResponse(
+                content={
+                    "error": "Locked version is still referenced by existing chat sessions and cannot be deleted.",
+                    "conflict_type": "session_reference",
+                    "ontology_id": ontology_id,
+                    "version": version,
+                    "active_version": active_version,
+                    "versions": versions,
+                    "reference_count": reference_count,
+                    "referenced_sessions": referenced_sessions,
+                },
+                status_code=409,
+            )
 
         if len(versions) <= 1:
-            return JSONResponse(content={
-                "error": "最后一个版本不能按版本删除，请删除整个本体。",
-                "conflict_type": "last_version",
-                "ontology_id": ontology_id,
-                "version": version,
-                "active_version": active_version,
-                "versions": versions,
-            }, status_code=409)
+            return JSONResponse(
+                content={
+                    "error": "最后一个版本不能按版本删除，请删除整个本体。",
+                    "conflict_type": "last_version",
+                    "ontology_id": ontology_id,
+                    "version": version,
+                    "active_version": active_version,
+                    "versions": versions,
+                },
+                status_code=409,
+            )
         updated_versions = [item for item in versions if item != version]
 
         try:
@@ -1599,11 +1601,9 @@ def download_ontology(
             media_type="application/zip",
             headers={
                 "Cache-Control": "no-cache",
-                "Content-Disposition": (
-                    'attachment; filename="{}-{}.zip"'.format(
-                        ontology_dir.name,
-                        resolved_version,
-                    )
+                "Content-Disposition": 'attachment; filename="{}-{}.zip"'.format(
+                    ontology_dir.name,
+                    resolved_version,
                 ),
             },
         )
@@ -1636,8 +1636,8 @@ def get_ontology_graph(
         if ontology is None:
             return JSONResponse(content={"error": "Ontology not found"}, status_code=404)
 
-        return JSONResponse(content=
-            build_ontology_graph(
+        return JSONResponse(
+            content=build_ontology_graph(
                 ontology=ontology,
                 ontology_dir=version_dir,
                 version=version or ontology.active_version or ontology.version,
@@ -1678,9 +1678,7 @@ def get_ontology_tree(
                     version_dir,
                     trusted_root=ontology_dir,
                 ),
-                signature_loader=lambda: build_package_tree_source_signature(
-                    version_dir
-                ),
+                signature_loader=lambda: build_package_tree_source_signature(version_dir),
             )
         except PackageBrowserError as exc:
             return _package_browser_error_response(exc)
@@ -1693,15 +1691,11 @@ def get_ontology_tree(
                 },
                 status_code=503,
             )
-        return JSONResponse(content=
-            {
+        return JSONResponse(
+            content={
                 "ontology_id": ontology_id,
                 "version": resolved_version,
-                "excluded": sorted(
-                    name
-                    for name in EXCLUDED_DIRECTORY_NAMES
-                    if name != "__pycache__"
-                ),
+                "excluded": sorted(name for name in EXCLUDED_DIRECTORY_NAMES if name != "__pycache__"),
                 "entries": entries,
             }
         )
@@ -1742,8 +1736,8 @@ def get_ontology_raw_file(
                     ontology_id,
                 )
             return _package_browser_error_response(exc)
-        return JSONResponse(content=
-            {
+        return JSONResponse(
+            content={
                 "ontology_id": ontology_id,
                 "version": version,
                 **file_payload,
@@ -1773,15 +1767,20 @@ def list_ontology_files(
         except PackageBrowserError as exc:
             return _package_browser_error_response(exc)
         if folder_path is None or folder_key is None:
-            return JSONResponse(content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}, status_code=400)
+            return JSONResponse(
+                content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."},
+                status_code=400,
+            )
 
         if not folder_path.exists():
-            return JSONResponse(content={
-                "folder": folder_key,
-                "label": ONTOLOGY_FOLDER_LABELS[folder_key],
-                "version": version,
-                "files": [],
-            })
+            return JSONResponse(
+                content={
+                    "folder": folder_key,
+                    "label": ONTOLOGY_FOLDER_LABELS[folder_key],
+                    "version": version,
+                    "files": [],
+                }
+            )
 
         try:
             files = list_package_files(
@@ -1794,12 +1793,14 @@ def list_ontology_files(
         except PackageBrowserError as exc:
             return _package_browser_error_response(exc)
 
-        return JSONResponse(content={
-            "folder": folder_key,
-            "label": ONTOLOGY_FOLDER_LABELS[folder_key],
-            "version": version,
-            "files": files,
-        })
+        return JSONResponse(
+            content={
+                "folder": folder_key,
+                "label": ONTOLOGY_FOLDER_LABELS[folder_key],
+                "version": version,
+                "files": files,
+            }
+        )
 
 
 @ontologies_router.get("/ontologies/{ontology_id}/file")
@@ -1824,7 +1825,10 @@ def get_ontology_file(
         except PackageBrowserError as exc:
             return _package_browser_error_response(exc)
         if folder_path is None or folder_key is None:
-            return JSONResponse(content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}, status_code=400)
+            return JSONResponse(
+                content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."},
+                status_code=400,
+            )
 
         if folder_key == "assets":
             safe_name = _normalize_asset_key(request.query_params.get("name", ""))
@@ -1846,15 +1850,17 @@ def get_ontology_file(
             content, read_error = read_required_asset_text(file_path, "asset '{}'".format(safe_name))
             if read_error:
                 return JSONResponse(content={"error": read_error}, status_code=400)
-            return JSONResponse(content={
-                "folder": folder_key,
-                "label": ONTOLOGY_FOLDER_LABELS[folder_key],
-                "version": version,
-                "name": safe_name,
-                "content": content,
-                "read_only": True,
-                "supported_formats": supported_asset_formats_text(),
-            })
+            return JSONResponse(
+                content={
+                    "folder": folder_key,
+                    "label": ONTOLOGY_FOLDER_LABELS[folder_key],
+                    "version": version,
+                    "name": safe_name,
+                    "content": content,
+                    "read_only": True,
+                    "supported_formats": supported_asset_formats_text(),
+                }
+            )
 
         safe_name = _sanitize_md_filename(request.query_params.get("name", ""))
         if not safe_name:
@@ -1870,13 +1876,15 @@ def get_ontology_file(
         except PackageBrowserError as exc:
             return _package_browser_error_response(exc)
 
-        return JSONResponse(content={
-            "folder": folder_key,
-            "label": ONTOLOGY_FOLDER_LABELS[folder_key],
-            "version": version,
-            "name": safe_name,
-            "content": file_payload["content"],
-        })
+        return JSONResponse(
+            content={
+                "folder": folder_key,
+                "label": ONTOLOGY_FOLDER_LABELS[folder_key],
+                "version": version,
+                "name": safe_name,
+                "content": file_payload["content"],
+            }
+        )
 
 
 @ontologies_router.put("/ontologies/{ontology_id}/file")
@@ -1893,7 +1901,10 @@ def update_ontology_file(
             return JSONResponse(content=payload, status_code=status_code)
         folder_key = _normalize_ontology_folder_key(data.get("folder", ""))
         if folder_key is None:
-            return JSONResponse(content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}, status_code=400)
+            return JSONResponse(
+                content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."},
+                status_code=400,
+            )
         if folder_key == "assets":
             return JSONResponse(content={"error": "Asset files are read-only in this editor."}, status_code=400)
 
@@ -1925,9 +1936,7 @@ def update_ontology_file(
                 )
                 if target is None:
                     return JSONResponse(
-                        content={
-                            "error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."
-                        },
+                        content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."},
                         status_code=400,
                     )
                 if not _ontology_file_write_target_is_current(ontology_id, target):
@@ -1935,9 +1944,7 @@ def update_ontology_file(
                         content={"error": "Ontology not found"},
                         status_code=404,
                     )
-                immutable_response = _deterministic_package_immutable_response(
-                    target.folder_path
-                )
+                immutable_response = _deterministic_package_immutable_response(target.folder_path)
                 if immutable_response is not None:
                     return immutable_response
                 declaration_response = _deterministic_declaration_immutable_response(
@@ -1986,12 +1993,10 @@ def update_ontology_file(
                             },
                         )
                     audit_fields = _mutation_audit_fields(request)
-                    file_commit, file_rollback, file_finalize = (
-                        _stage_and_commit_revision_file(
-                            target.version_dir,
-                            file_path.relative_to(target.version_dir),
-                            content,
-                        )
+                    file_commit, file_rollback, file_finalize = _stage_and_commit_revision_file(
+                        target.version_dir,
+                        file_path.relative_to(target.version_dir),
+                        content,
                     )
                     file_precondition = _file_content_precondition(
                         file_path,
@@ -2063,7 +2068,10 @@ def upload_ontology_file(
             return JSONResponse(content=payload, status_code=status_code)
         folder_key = _normalize_ontology_folder_key(form.get("folder", ""))
         if folder_key is None:
-            return JSONResponse(content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}, status_code=400)
+            return JSONResponse(
+                content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."},
+                status_code=400,
+            )
         if folder_key == "assets":
             return JSONResponse(content={"error": "Asset upload is not supported from this editor."}, status_code=400)
 
@@ -2106,9 +2114,7 @@ def upload_ontology_file(
                 )
                 if target is None:
                     return JSONResponse(
-                        content={
-                            "error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."
-                        },
+                        content={"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."},
                         status_code=400,
                     )
                 if not _ontology_file_write_target_is_current(ontology_id, target):
@@ -2116,9 +2122,7 @@ def upload_ontology_file(
                         content={"error": "Ontology not found"},
                         status_code=404,
                     )
-                immutable_response = _deterministic_package_immutable_response(
-                    target.folder_path
-                )
+                immutable_response = _deterministic_package_immutable_response(target.folder_path)
                 if immutable_response is not None:
                     return immutable_response
                 declaration_response = _deterministic_declaration_immutable_response(
@@ -2175,12 +2179,10 @@ def upload_ontology_file(
                             },
                         )
                     audit_fields = _mutation_audit_fields(request)
-                    file_commit, file_rollback, file_finalize = (
-                        _stage_and_commit_revision_file(
-                            target.version_dir,
-                            target_path.relative_to(target.version_dir),
-                            content,
-                        )
+                    file_commit, file_rollback, file_finalize = _stage_and_commit_revision_file(
+                        target.version_dir,
+                        target_path.relative_to(target.version_dir),
+                        content,
                     )
                     file_precondition = _file_content_precondition(
                         target_path,
@@ -2287,9 +2289,18 @@ def _has_converted_ontology_structure(candidate_root: Path) -> bool:
     return has_importable_package_layout(candidate_root)
 
 
+class _ConvertedOntologyRoot(NamedTuple):
+    path: Path
+    ontology_id: str
+    name: str
+    description: str
+    version: str
+    source_format: str
+
+
 def _find_converted_ontology_root(
     extract_root: Path,
-) -> Optional[tuple[Path, str, str, str, str, str]]:
+) -> Optional[_ConvertedOntologyRoot]:
     """Find a current or v0.1 ontology package root from an extracted zip."""
     candidates: list[tuple[int, Path, str, str, str, str, str]] = []
     manifest_paths = []
@@ -2311,8 +2322,7 @@ def _find_converted_ontology_root(
                 raw_manifest = {}
             if (
                 isinstance(raw_manifest, dict)
-                and str(raw_manifest.get("kind") or "").strip()
-                in SUPPORTED_IMPORT_MANIFEST_KINDS
+                and str(raw_manifest.get("kind") or "").strip() in SUPPORTED_IMPORT_MANIFEST_KINDS
             ):
                 raise OntologyImportError("Unsupported or invalid ontology package manifest")
             continue
@@ -2323,15 +2333,17 @@ def _find_converted_ontology_root(
             except ValueError as exc:
                 raise OntologyImportError(str(exc)) from exc
 
-        candidates.append((
-            len(candidate_root.parts),
-            candidate_root,
-            package.ontology_id,
-            package.name,
-            package.description,
-            package.version,
-            package.source_format,
-        ))
+        candidates.append(
+            (
+                len(candidate_root.parts),
+                candidate_root,
+                package.ontology_id,
+                package.name,
+                package.description,
+                package.version,
+                package.source_format,
+            )
+        )
 
     if not candidates:
         logger.info(
@@ -2363,7 +2375,7 @@ def _find_converted_ontology_root(
         len(candidates),
         ontology_id,
     )
-    return (
+    return _ConvertedOntologyRoot(
         selected_root,
         ontology_id,
         ontology_name,
@@ -2389,7 +2401,7 @@ def _decode_zip_member_name(member: zipfile.ZipInfo) -> str:
 
     try:
         raw_bytes = raw_name.encode("cp437")
-    except Exception:
+    except UnicodeEncodeError:
         return raw_name
 
     for encoding in ("utf-8", "gbk", "gb18030", "big5"):
@@ -2397,7 +2409,7 @@ def _decode_zip_member_name(member: zipfile.ZipInfo) -> str:
             decoded = raw_bytes.decode(encoding)
             if decoded:
                 return decoded
-        except Exception:
+        except UnicodeDecodeError:
             continue
 
     return raw_name
@@ -2412,19 +2424,12 @@ def _zip_member_parts(member_name: str, *, is_directory: bool) -> Optional[tuple
     normalized = _normalize_zip_member_path(member_name)
     if not normalized or "\x00" in normalized or normalized.startswith("/"):
         return None
-    if (
-        re.match(r"^[A-Za-z]:", normalized)
-        or len(normalized.encode("utf-8")) > ONTOLOGY_MAX_ZIP_PATH_LENGTH
-    ):
+    if re.match(r"^[A-Za-z]:", normalized) or len(normalized.encode("utf-8")) > ONTOLOGY_MAX_ZIP_PATH_LENGTH:
         return None
     if is_directory and normalized.endswith("/"):
         normalized = normalized[:-1]
     parts = tuple(normalized.split("/"))
-    if (
-        not parts
-        or len(parts) > ONTOLOGY_MAX_ZIP_PATH_DEPTH
-        or any(not part or part in {".", ".."} for part in parts)
-    ):
+    if not parts or len(parts) > ONTOLOGY_MAX_ZIP_PATH_DEPTH or any(not part or part in {".", ".."} for part in parts):
         return None
     return parts
 
@@ -2458,18 +2463,12 @@ def _safe_extract_zip(uploaded_bytes: bytes, extract_root: Path) -> Optional[str
                     return "Zip contains symbolic link"
 
                 canonical_path = _canonical_zip_path(parts)
-                canonical_prefixes = [
-                    _canonical_zip_path(parts[:index])
-                    for index in range(1, len(parts))
-                ]
+                canonical_prefixes = [_canonical_zip_path(parts[:index]) for index in range(1, len(parts))]
                 if any(target_kinds.get(prefix) == "file" for prefix in canonical_prefixes):
                     return "Zip contains colliding paths"
                 if canonical_path in target_kinds:
                     return "Zip contains duplicate paths"
-                if not is_directory and any(
-                    existing.startswith(canonical_path + "/")
-                    for existing in target_kinds
-                ):
+                if not is_directory and any(existing.startswith(canonical_path + "/") for existing in target_kinds):
                     return "Zip contains colliding paths"
                 target_kinds[canonical_path] = "dir" if is_directory else "file"
 
@@ -2639,30 +2638,32 @@ def _write_default_ontology_meta(
         )
 
     if not index_path.exists():
-        index_content = "\n".join([
-            "---",
-            "resource: root",
-            "key: root",
-            f"title: {ontology_name}",
-            "---",
-            "",
-            f"# {ontology_name}",
-            "",
-            "## 领域范围",
-            description,
-            "",
-            "## 目录结构",
-            "- 基础元数据：`manifest.yaml`",
-            "- 操作目录：`operations/index.md`",
-            "- 操作文件：`operations/<操作名>.md`",
-            "- 实体目录：`objects/index.md`",
-            "- 实体定义：`objects/<实体名>.md`",
-            "- 脚本目录：`scripts/index.md`",
-            "- 脚本描述：`scripts/<脚本名>.md`",
-            "- 脚本文件：`scripts/<脚本名>.py`",
-            "- 关系图：`graph/nodes.json`、`graph/edges.json`",
-            "",
-        ])
+        index_content = "\n".join(
+            [
+                "---",
+                "resource: root",
+                "key: root",
+                f"title: {ontology_name}",
+                "---",
+                "",
+                f"# {ontology_name}",
+                "",
+                "## 领域范围",
+                description,
+                "",
+                "## 目录结构",
+                "- 基础元数据：`manifest.yaml`",
+                "- 操作目录：`operations/index.md`",
+                "- 操作文件：`operations/<操作名>.md`",
+                "- 实体目录：`objects/index.md`",
+                "- 实体定义：`objects/<实体名>.md`",
+                "- 脚本目录：`scripts/index.md`",
+                "- 脚本描述：`scripts/<脚本名>.md`",
+                "- 脚本文件：`scripts/<脚本名>.py`",
+                "- 关系图：`graph/nodes.json`、`graph/edges.json`",
+                "",
+            ]
+        )
         index_path.write_text(index_content, encoding="utf-8")
 
 
@@ -2710,11 +2711,7 @@ def _stage_and_commit_revision_file(
 
     version_dir = Path(version_dir)
     relative_path = Path(relative_path)
-    if (
-        relative_path.is_absolute()
-        or not relative_path.parts
-        or ".." in relative_path.parts
-    ):
+    if relative_path.is_absolute() or not relative_path.parts or ".." in relative_path.parts:
         raise ValueError("Unsafe ontology revision path")
     if not version_dir.is_dir() or version_dir.is_symlink():
         raise ValueError("Unsafe ontology revision path")
@@ -2730,10 +2727,7 @@ def _stage_and_commit_revision_file(
         shutil.copytree(version_dir, staged_root, symlinks=True)
         staged_manifest = staged_root / "manifest.yaml"
         shared_manifest = version_dir.parent.parent / "manifest.yaml"
-        if (
-            not staged_manifest.exists()
-            and version_dir.parent.name == "versions"
-        ):
+        if not staged_manifest.exists() and version_dir.parent.name == "versions":
             if shared_manifest.is_file() and not shared_manifest.is_symlink():
                 shutil.copy2(shared_manifest, staged_manifest)
         staged_path = staged_root / relative_path
@@ -3066,9 +3060,7 @@ def _install_ontology_version_package(
     ontology_dir.parent.mkdir(parents=True, exist_ok=True)
     coordinator = _mutation_coordinator(workspace_id)
 
-    staging_root = Path(
-        tempfile.mkdtemp(prefix=f".{ontology_id}-mutation-", dir=str(ontology_dir.parent))
-    )
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{ontology_id}-mutation-", dir=str(ontology_dir.parent)))
     staged_dir = staging_root / ontology_id
     backup_dir = staging_root / f"{ontology_id}.backup"
     try:
@@ -3177,9 +3169,7 @@ def _overwrite_ontology_active_version_package(
     if not active_version:
         raise ValueError("Ontology active version is missing")
 
-    staging_root = Path(
-        tempfile.mkdtemp(prefix=f".{ontology_id}-mutation-", dir=str(ontology_dir.parent))
-    )
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{ontology_id}-mutation-", dir=str(ontology_dir.parent)))
     staged_dir = staging_root / ontology_id
     backup_dir = staging_root / f"{ontology_id}.backup"
     try:
@@ -3316,12 +3306,7 @@ def import_ontology_zip_with_auto_create(
                 ) = converted_root_info
             else:
                 return JSONResponse(
-                    content={
-                        "error": (
-                            "Zip中未找到可导入的v0.1本体包。"
-                            "请将源格式包转换为v0.1后重新上传。"
-                        )
-                    },
+                    content={"error": "Zip中未找到可导入的v0.1本体包。请将源格式包转换为v0.1后重新上传。"},
                     status_code=400,
                 )
             if not ontology_id:
@@ -3330,32 +3315,36 @@ def import_ontology_zip_with_auto_create(
                     status_code=400,
                 )
             if not _is_valid_ontology_id(ontology_id):
-                return JSONResponse(content={
-                    "error": (
-                        "ontology id不合法，仅支持字母、数字、点、下划线和短横线，"
-                        "且需字母或数字开头"
-                    ),
-                    "ontology_id": ontology_id,
-                }, status_code=400)
+                return JSONResponse(
+                    content={
+                        "error": "ontology id不合法，仅支持字母、数字、点、下划线和短横线，且需字母或数字开头",
+                        "ontology_id": ontology_id,
+                    },
+                    status_code=400,
+                )
 
-            overwrite_flag = str(form.get("overwrite", "")).strip().lower() in {
-                "1", "true", "yes", "y", "on"
-            }
+            overwrite_flag = str(form.get("overwrite", "")).strip().lower() in {"1", "true", "yes", "y", "on"}
             action = str(form.get("action") or form.get("import_action") or "").strip()
             requested_new_version = str(form.get("new_version") or form.get("version") or "").strip()
             parsed_version = str(parsed_version or "").strip()
             if parsed_version and not is_valid_ontology_version(parsed_version):
-                return JSONResponse(content={
-                    "error": "version不合法，仅支持[A-Za-z0-9][A-Za-z0-9._-]*",
-                    "ontology_id": ontology_id,
-                    "version": parsed_version,
-                }, status_code=400)
+                return JSONResponse(
+                    content={
+                        "error": "version不合法，仅支持[A-Za-z0-9][A-Za-z0-9._-]*",
+                        "ontology_id": ontology_id,
+                        "version": parsed_version,
+                    },
+                    status_code=400,
+                )
             if requested_new_version and not is_valid_ontology_version(requested_new_version):
-                return JSONResponse(content={
-                    "error": "new_version不合法，仅支持[A-Za-z0-9][A-Za-z0-9._-]*",
-                    "ontology_id": ontology_id,
-                    "version": requested_new_version,
-                }, status_code=400)
+                return JSONResponse(
+                    content={
+                        "error": "new_version不合法，仅支持[A-Za-z0-9][A-Za-z0-9._-]*",
+                        "ontology_id": ontology_id,
+                        "version": requested_new_version,
+                    },
+                    status_code=400,
+                )
 
             ontologies_dir = _get_ontologies_dir()
             ontologies_dir.mkdir(parents=True, exist_ok=True)
@@ -3379,16 +3368,14 @@ def import_ontology_zip_with_auto_create(
                         existing_manifest = ensure_ontology_versions(ontology_dir)
                 except Exception:
                     logger.exception("Failed to prepare existing ontology versions: %s", ontology_dir)
-                    return JSONResponse(content={"error": "Failed to prepare existing ontology versions"}, status_code=500)
+                    return JSONResponse(
+                        content={"error": "Failed to prepare existing ontology versions"}, status_code=500
+                    )
                 active_version = str(
-                    existing_manifest.get("active_version")
-                    or existing_manifest.get("version")
-                    or ""
+                    existing_manifest.get("active_version") or existing_manifest.get("version") or ""
                 ).strip()
                 existing_versions = [
-                    str(item).strip()
-                    for item in (existing_manifest.get("versions") or [])
-                    if str(item or "").strip()
+                    str(item).strip() for item in (existing_manifest.get("versions") or []) if str(item or "").strip()
                 ]
 
             count_error = _validate_workspace_ontology_count_limit(
@@ -3409,15 +3396,20 @@ def import_ontology_zip_with_auto_create(
                     elif action == "create_version":
                         target_version = requested_new_version
                     else:
-                        return JSONResponse(content={
-                            "error": f"本体 {ontology_id} 已存在，上传包未解析到版本号，请选择覆盖当前激活版本或新增版本号。",
-                            "requires_confirmation": True,
-                            "conflict_type": "missing_version_existing",
-                            "ontology_id": ontology_id,
-                            "ontology_name": ontology_name,
-                            "active_version": active_version,
-                            "versions": existing_versions,
-                        }, status_code=409)
+                        return JSONResponse(
+                            content={
+                                "error": (
+                                    f"本体 {ontology_id} 已存在，上传包未解析到版本号，请选择覆盖当前激活版本或新增版本号。"
+                                ),
+                                "requires_confirmation": True,
+                                "conflict_type": "missing_version_existing",
+                                "ontology_id": ontology_id,
+                                "ontology_name": ontology_name,
+                                "active_version": active_version,
+                                "versions": existing_versions,
+                            },
+                            status_code=409,
+                        )
                 elif parsed_version in existing_versions:
                     if action in {"overwrite_matching", "overwrite_version"} or overwrite_flag:
                         target_version = parsed_version
@@ -3425,45 +3417,57 @@ def import_ontology_zip_with_auto_create(
                     elif action == "create_version":
                         target_version = requested_new_version
                     else:
-                        return JSONResponse(content={
-                            "error": f"本体 {ontology_id} 的版本 {parsed_version} 已存在，请选择覆盖匹配版本或新增版本号。",
-                            "requires_confirmation": True,
-                            "conflict_type": "version_exists",
-                            "ontology_id": ontology_id,
-                            "ontology_name": ontology_name,
-                            "version": parsed_version,
-                            "active_version": active_version,
-                            "versions": existing_versions,
-                        }, status_code=409)
+                        return JSONResponse(
+                            content={
+                                "error": (
+                                    f"本体 {ontology_id} 的版本 {parsed_version} 已存在，请选择覆盖匹配版本或新增版本号。"
+                                ),
+                                "requires_confirmation": True,
+                                "conflict_type": "version_exists",
+                                "ontology_id": ontology_id,
+                                "ontology_name": ontology_name,
+                                "version": parsed_version,
+                                "active_version": active_version,
+                                "versions": existing_versions,
+                            },
+                            status_code=409,
+                        )
                 else:
                     target_version = parsed_version
 
             if not target_version or not is_valid_ontology_version(target_version):
-                return JSONResponse(content={
-                    "error": "新增版本号不合法，仅支持[A-Za-z0-9][A-Za-z0-9._-]*",
-                    "ontology_id": ontology_id,
-                }, status_code=400)
+                return JSONResponse(
+                    content={
+                        "error": "新增版本号不合法，仅支持[A-Za-z0-9][A-Za-z0-9._-]*",
+                        "ontology_id": ontology_id,
+                    },
+                    status_code=400,
+                )
             if existed and target_version in existing_versions and action == "create_version":
-                return JSONResponse(content={
-                    "error": f"版本 {target_version} 已存在，请换一个版本号。",
-                    "ontology_id": ontology_id,
-                    "version": target_version,
-                }, status_code=409)
+                return JSONResponse(
+                    content={
+                        "error": f"版本 {target_version} 已存在，请换一个版本号。",
+                        "ontology_id": ontology_id,
+                        "version": target_version,
+                    },
+                    status_code=409,
+                )
             target_version_exists = existed and target_version in existing_versions
             incoming_version_is_new = parsed_version not in existing_versions
             if target_version_exists and incoming_version_is_new and not overwritten:
-                return JSONResponse(content={
-                    "error": f"版本 {target_version} 已存在，请换一个版本号。",
-                    "ontology_id": ontology_id,
-                    "version": target_version,
-                }, status_code=409)
+                return JSONResponse(
+                    content={
+                        "error": f"版本 {target_version} 已存在，请换一个版本号。",
+                        "ontology_id": ontology_id,
+                        "version": target_version,
+                    },
+                    status_code=409,
+                )
 
             checkpoint_reset_for_import = False
             try:
                 # Process v0.1 conformant package
-                with tempfile.TemporaryDirectory(
-                    prefix="ontology-normalized-"
-                ) as normalized_temp:
+                with tempfile.TemporaryDirectory(prefix="ontology-normalized-") as normalized_temp:
                     normalized_root = Path(normalized_temp) / ontology_id
                     normalization = normalize_imported_package(source_root, normalized_root)
                     normalization_warnings = list(normalization.warnings)
@@ -3479,9 +3483,7 @@ def import_ontology_zip_with_auto_create(
                             status_code=400,
                         )
                     alias_validation = validate_imported_object_aliases(normalization.root)
-                    field_alias_validation = validate_imported_field_aliases(
-                        normalization.root
-                    )
+                    field_alias_validation = validate_imported_field_aliases(normalization.root)
                     alias_errors = tuple(
                         sorted(
                             set(
@@ -3491,7 +3493,7 @@ def import_ontology_zip_with_auto_create(
                                 )
                             )
                         )
-)
+                    )
                     if alias_errors:
                         logger.warning(
                             "Import rejected by alias validation: ontology_id=%s errors=%s",
@@ -3513,7 +3515,8 @@ def import_ontology_zip_with_auto_create(
                         checkpoint_reset_for_import = True
                     except OntologyCapabilityStoreError:
                         logger.exception(
-                            "Failed to reset business CheckPoint capability before import: workspace_id=%s ontology_id=%s",
+                            "Failed to reset business CheckPoint capability before import: workspace_id=%s"
+                            " ontology_id=%s",
                             workspace_id,
                             ontology_id,
                         )
@@ -3542,7 +3545,8 @@ def import_ontology_zip_with_auto_create(
                         delete_ontology_capabilities(ontology_id, workspace_id=workspace_id)
                     except OntologyCapabilityStoreError:
                         logger.warning(
-                            "Failed to clean up CheckPoint capability after ontology name conflict: workspace_id=%s ontology_id=%s",
+                            "Failed to clean up CheckPoint capability after ontology name conflict: workspace_id=%s"
+                            " ontology_id=%s",
                             workspace_id,
                             ontology_id,
                             exc_info=True,
@@ -3577,13 +3581,15 @@ def import_ontology_zip_with_auto_create(
                         delete_ontology_capabilities(ontology_id, workspace_id=workspace_id)
                     except OntologyCapabilityStoreError:
                         logger.warning(
-                            "Failed to clean up CheckPoint capability after new ontology import failure: workspace_id=%s ontology_id=%s",
+                            "Failed to clean up CheckPoint capability after new ontology import failure:"
+                            " workspace_id=%s ontology_id=%s",
                             workspace_id,
                             ontology_id,
                             exc_info=True,
                         )
                 logger.exception(
-                    "Failed to import ontology from uploaded zip: workspace_id=%s filename=%s ontology_id=%s source_root=%s import_mode=%s",
+                    "Failed to import ontology from uploaded zip: workspace_id=%s filename=%s ontology_id=%s"
+                    " source_root=%s import_mode=%s",
                     workspace_id,
                     filename,
                     ontology_id,
@@ -3599,7 +3605,8 @@ def import_ontology_zip_with_auto_create(
             workspace_id=workspace_id,
         )
         logger.info(
-            "Import zip auto-create success: workspace_id=%s ontology_id=%s created=%s overwritten=%s import_mode=%s objects_count=%s operations_count=%s warnings=%s",
+            "Import zip auto-create success: workspace_id=%s ontology_id=%s created=%s overwritten=%s import_mode=%s"
+            " objects_count=%s operations_count=%s warnings=%s",
             workspace_id,
             ontology_id,
             (not existed),
@@ -3610,24 +3617,27 @@ def import_ontology_zip_with_auto_create(
             {key: len(value) for key, value in warnings.items()},
         )
 
-        return JSONResponse(content={
-            "success": True,
-            "created": not existed,
-            "overwritten": overwritten,
-            "import_mode": import_mode,
-            "package_format": package_format,
-            "ontology_id": ontology_id,
-            "ontology_name": ontology_name,
-            "version": target_version,
-            "active_version": target_version,
-            "mutation_revision": mutation_revision,
-            "source_root": str(source_root),
-            "objects_count": objects_count,
-            "operations_count": operations_count,
-            "objects_index_path": objects_index_path,
-            "operations_index_path": operations_index_path,
-            "business_data_configured": bool(business_data_summary.get("configured")),
-            "warnings": warnings,
-            "normalization_warnings": normalization_warnings,
-            "preview": preview,
-        }, status_code=201)
+        return JSONResponse(
+            content={
+                "success": True,
+                "created": not existed,
+                "overwritten": overwritten,
+                "import_mode": import_mode,
+                "package_format": package_format,
+                "ontology_id": ontology_id,
+                "ontology_name": ontology_name,
+                "version": target_version,
+                "active_version": target_version,
+                "mutation_revision": mutation_revision,
+                "source_root": str(source_root),
+                "objects_count": objects_count,
+                "operations_count": operations_count,
+                "objects_index_path": objects_index_path,
+                "operations_index_path": operations_index_path,
+                "business_data_configured": bool(business_data_summary.get("configured")),
+                "warnings": warnings,
+                "normalization_warnings": normalization_warnings,
+                "preview": preview,
+            },
+            status_code=201,
+        )

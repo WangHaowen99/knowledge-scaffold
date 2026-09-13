@@ -39,10 +39,14 @@ class MindsDBProvider:
                 final = event.result or ProviderResult(success=True, data=event.content, message=event.content)
             elif event.type == "error":
                 error = event.result or ProviderResult(success=False, error=event.content)
-        return error or final or ProviderResult(
-            success=False,
-            error="MindsDB agent returned no final answer",
-            metadata={"error_code": "missing_final"},
+        return (
+            error
+            or final
+            or ProviderResult(
+                success=False,
+                error="MindsDB agent returned no final answer",
+                metadata={"error_code": "missing_final"},
+            )
         )
 
     def query_sql(self, sql: str) -> ProviderResult:
@@ -62,11 +66,10 @@ class MindsDBProvider:
         try:
             data = response.json()
         except (ValueError, TypeError):
-            return ProviderResult(success=False, error="Invalid MindsDB SQL response JSON", metadata={"error_code": "invalid_json"})
-        if (
-            isinstance(data, dict)
-            and str(data.get("type") or "").strip().lower() == "error"
-        ):
+            return ProviderResult(
+                success=False, error="Invalid MindsDB SQL response JSON", metadata={"error_code": "invalid_json"}
+            )
+        if isinstance(data, dict) and str(data.get("type") or "").strip().lower() == "error":
             detail = next(
                 (
                     data.get(field)
@@ -93,7 +96,9 @@ class MindsDBProvider:
         question = str(question or "").strip()
         if not question:
             yield ProviderEvent(type="start")
-            yield ProviderEvent(type="error", content="查询问题不能为空", result=ProviderResult(success=False, error="查询问题不能为空"))
+            yield ProviderEvent(
+                type="error", content="查询问题不能为空", result=ProviderResult(success=False, error="查询问题不能为空")
+            )
             yield ProviderEvent(type="done")
             return
         project = str(self.connection.options.get("project_name") or "mindsdb")
@@ -120,9 +125,7 @@ class MindsDBProvider:
             stream_ended = False
             try:
                 with response:
-                    for chunk in iter_sse_data(
-                        response.iter_lines(decode_unicode=True)
-                    ):
+                    for chunk in iter_sse_data(response.iter_lines(decode_unicode=True)):
                         for event in _chunk_events(chunk):
                             if event.type == "start":
                                 if not start_emitted:
@@ -163,9 +166,7 @@ class MindsDBProvider:
                     exc,
                     fallback="stream connection interrupted",
                 )
-                failure_message = "MindsDB agent stream read failed: {}".format(
-                    detail
-                )
+                failure_message = "MindsDB agent stream read failed: {}".format(detail)
                 failure_code = "stream_read_error"
 
             if not start_emitted:
@@ -174,9 +175,7 @@ class MindsDBProvider:
             if attempt_index < _STREAM_RECOVERY_RETRIES:
                 yield ProviderEvent(
                     type="intermediate",
-                    content=(
-                        "MindsDB 查询流未完整返回，{} 秒后重试（{}/{}）：{}"
-                    ).format(
+                    content=("MindsDB 查询流未完整返回，{} 秒后重试（{}/{}）：{}").format(
                         _STREAM_RECOVERY_DELAY_SECONDS,
                         attempt_index + 1,
                         _STREAM_RECOVERY_RETRIES,
@@ -207,22 +206,19 @@ class MindsDBProvider:
             return _probe_failure("MindsDB URL 未配置", "missing_endpoint")
 
         timeout = min(
-            int(
-                timeout_seconds
-                or self.connection.options.get("timeout_seconds")
-                or 15
-            ),
+            int(timeout_seconds or self.connection.options.get("timeout_seconds") or 15),
             15,
         )
         auth = self.connection.auth
-        project_name = str(
-            self.connection.options.get("project_name") or "mindsdb"
-        ).strip() or "mindsdb"
-        agent_name = str(
-            self.connection.options.get("default_agent_name")
-            or self.connection.options.get("agent_name")
+        project_name = str(self.connection.options.get("project_name") or "mindsdb").strip() or "mindsdb"
+        agent_name = (
+            str(
+                self.connection.options.get("default_agent_name")
+                or self.connection.options.get("agent_name")
+                or "my_agent"
+            ).strip()
             or "my_agent"
-        ).strip() or "my_agent"
+        )
         headers = {"Content-Type": "application/json"}
 
         try:
@@ -252,11 +248,7 @@ class MindsDBProvider:
                             "MindsDB 登录响应格式无效",
                             "invalid_login_payload",
                         )
-                    token = str(
-                        login_payload.get("token")
-                        or login_payload.get("access_token")
-                        or ""
-                    ).strip()
+                    token = str(login_payload.get("token") or login_payload.get("access_token") or "").strip()
                     if not token:
                         return _probe_failure(
                             "MindsDB 登录返回成功，但未返回 token",
@@ -269,10 +261,7 @@ class MindsDBProvider:
                 headers["Authorization"] = "Bearer {}".format(auth.token)
 
             response = self._session.get(
-                endpoint
-                + "/api/projects/{}/agents".format(
-                    quote(project_name, safe="")
-                ),
+                endpoint + "/api/projects/{}/agents".format(quote(project_name, safe="")),
                 headers=headers,
                 timeout=timeout,
             )
@@ -284,9 +273,7 @@ class MindsDBProvider:
                     )
                 if response.status_code == 404:
                     return _probe_failure(
-                        "MindsDB Project '{}' 不存在或 Agent 列表接口不可用".format(
-                            project_name
-                        ),
+                        "MindsDB Project '{}' 不存在或 Agent 列表接口不可用".format(project_name),
                         "project_not_found",
                     )
                 if response.status_code >= 400:
@@ -406,26 +393,27 @@ class MindsDBProvider:
         kwargs = {
             "headers": headers,
             "json": payload,
-            "timeout": timeout_override
-            or float(self.connection.options.get("timeout_seconds", 600)),
+            "timeout": timeout_override or float(self.connection.options.get("timeout_seconds", 600)),
         }
         if stream:
             kwargs["stream"] = True
         try:
             response = self._session.post(self.connection.endpoint + path, **kwargs)
-            if (
-                response.status_code == 401
-                and self.connection.auth.type == "mindsdb_password"
-            ):
+            if response.status_code == 401 and self.connection.auth.type == "mindsdb_password":
                 response.close()
                 self._auth_token = ""
                 auth_failure = self._login()
                 if auth_failure:
                     return auth_failure
-                kwargs["headers"] = {"Content-Type": "application/json", "Authorization": "Bearer {}".format(self._auth_token)}
+                kwargs["headers"] = {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer {}".format(self._auth_token),
+                }
                 response = self._session.post(self.connection.endpoint + path, **kwargs)
         except requests.exceptions.RequestException:
-            return ProviderResult(success=False, error="MindsDB request failed", metadata={"error_code": "transport_error"})
+            return ProviderResult(
+                success=False, error="MindsDB request failed", metadata={"error_code": "transport_error"}
+            )
         if response.status_code != 200:
             detail = sanitize_public_text(
                 extract_error_detail(response),
@@ -434,7 +422,11 @@ class MindsDBProvider:
                 self.connection.auth.password,
             )
             response.close()
-            return ProviderResult(success=False, error="HTTP {}: {}".format(response.status_code, detail), metadata={"error_code": "http_error"})
+            return ProviderResult(
+                success=False,
+                error="HTTP {}: {}".format(response.status_code, detail),
+                metadata={"error_code": "http_error"},
+            )
         return response
 
 
@@ -464,9 +456,7 @@ def _mindsdb_agent_names(payload: Any) -> list[str] | None:
         if not isinstance(row, dict):
             continue
         normalized = {str(key).strip().lower(): value for key, value in row.items()}
-        name = str(
-            normalized.get("name") or normalized.get("agent_name") or ""
-        ).strip()
+        name = str(normalized.get("name") or normalized.get("agent_name") or "").strip()
         if name:
             names.append(name)
     return names
@@ -512,26 +502,20 @@ def _parse_mindsdb_chunk_to_events(raw_chunk: Any) -> list[dict[str, str]]:
         return [{"type": "error", "content": str(detail).strip()}]
 
     if chunk_type == "start":
-        content = str(chunk.get("prompt") or "").strip() or _collect_messages_text(
-            chunk.get("messages")
-        )
+        content = str(chunk.get("prompt") or "").strip() or _collect_messages_text(chunk.get("messages"))
         return [{"type": "start", "content": content or "开始执行本体探索"}]
 
     if chunk_type == "data":
         # MindsDB 2026.7 emits the final Agent answer in ``text`` while older
         # versions used ``content``. Accept both shapes so a successful remote
         # completion is not silently projected as an empty answer.
-        data = _extract_final_content(
-            str(chunk.get("text") or "").strip() or _collect_chunk_text(chunk)
-        )
+        data = _extract_final_content(str(chunk.get("text") or "").strip() or _collect_chunk_text(chunk))
         if not data:
             data = "查询成功，未匹配到数据。"
         return [{"type": "final", "content": data}]
 
     if "output" in chunk:
-        output = str(chunk.get("output") or "").strip() or _collect_messages_text(
-            chunk.get("messages")
-        )
+        output = str(chunk.get("output") or "").strip() or _collect_messages_text(chunk.get("messages"))
         if output:
             return [{"type": "final", "content": _extract_final_content(output)}]
 
@@ -553,16 +537,12 @@ def _parse_mindsdb_chunk_to_events(raw_chunk: Any) -> list[dict[str, str]]:
     actions = chunk.get("actions")
     if isinstance(actions, list):
         action_texts = _deduplicate_texts(_extract_action_messages(actions))
-        return [
-            {"type": "intermediate", "content": text} for text in action_texts
-        ]
+        return [{"type": "intermediate", "content": text} for text in action_texts]
 
     steps = chunk.get("steps")
     if isinstance(steps, list):
         step_texts = _extract_step_messages(steps)
-        return [
-            {"type": "intermediate", "content": text} for text in step_texts
-        ]
+        return [{"type": "intermediate", "content": text} for text in step_texts]
 
     message_text = _collect_chunk_text(chunk)
     if not message_text:
@@ -653,9 +633,7 @@ def _collect_messages_text(messages: Any) -> str:
 
 
 def _collect_chunk_text(chunk: dict[str, Any]) -> str:
-    return str(chunk.get("content") or "").strip() or _collect_messages_text(
-        chunk.get("messages")
-    )
+    return str(chunk.get("content") or "").strip() or _collect_messages_text(chunk.get("messages"))
 
 
 def _should_skip_context_chunk(content: str) -> bool:

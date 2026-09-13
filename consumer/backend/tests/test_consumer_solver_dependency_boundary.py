@@ -1,7 +1,6 @@
-from pathlib import Path
 import subprocess
 import sys
-
+from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = BACKEND.parents[1]
@@ -20,9 +19,7 @@ def test_consumer_production_has_no_concrete_solver_dependency_or_worker():
 
 
 def test_runtime_assembly_uses_consumer_connector_and_http_transport():
-    source = (BACKEND / "integration" / "solver_coordination_runtime.py").read_text(
-        encoding="utf-8"
-    )
+    source = (BACKEND / "integration" / "solver_coordination_runtime.py").read_text(encoding="utf-8")
     assert "LocalProcessSolverBackend" not in source
     assert "solver_coordination.backends" not in source
     assert "OrToolsConnector" in source
@@ -55,9 +52,7 @@ def test_all_consumer_production_python_avoids_concrete_solver_and_worker_import
 def test_backend_image_packages_standalone_solver_contract_from_root_context():
     dockerfile = (BACKEND / "Dockerfile").read_text(encoding="utf-8")
     compose = (BACKEND.parent / "docker-compose.yml").read_text(encoding="utf-8")
-    release_build = (BACKEND.parent / "deploy" / "build_release.sh").read_text(
-        encoding="utf-8"
-    )
+    release_build = (BACKEND.parent / "deploy" / "build_release.sh").read_text(encoding="utf-8")
 
     assert "COPY consumer/backend/requirements.txt ./requirements.txt" in dockerfile
     assert "COPY consumer/backend/ ./" in dockerfile
@@ -73,9 +68,7 @@ def test_backend_image_packages_standalone_solver_contract_from_root_context():
 
 
 def test_root_dockerignore_keeps_contracts_but_excludes_local_secrets():
-    dockerignore = (BACKEND.parents[1] / ".dockerignore").read_text(
-        encoding="utf-8"
-    )
+    dockerignore = (BACKEND.parents[1] / ".dockerignore").read_text(encoding="utf-8")
 
     assert "contracts/solver_services" not in dockerignore
     assert "**/.env" in dockerignore
@@ -83,9 +76,7 @@ def test_root_dockerignore_keeps_contracts_but_excludes_local_secrets():
 
 
 def test_independent_solver_image_copies_only_solver_and_contract_sources():
-    ortools = (REPOSITORY_ROOT / "solvers" / "ortools" / "Dockerfile").read_text(
-        encoding="utf-8"
-    )
+    ortools = (REPOSITORY_ROOT / "solvers" / "ortools" / "Dockerfile").read_text(encoding="utf-8")
 
     assert "COPY solvers/ortools/" in ortools
     assert "COPY contracts/solver_services/" in ortools

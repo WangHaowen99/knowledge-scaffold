@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 
 import pytest
-
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter, _SharedInvocationIndex
 from integration.mcp.scope import resolve_mcp_scope_from_token
 from integration.mcp.token_service import MCPTokenAuthError
@@ -16,7 +15,6 @@ from integration.observability.trace_context import (
     normalize_traceparent,
     parse_traceparent,
 )
-
 
 VALID_TRACEPARENT = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
 
@@ -142,6 +140,7 @@ def test_observability_close_flushes_and_closes_after_timeout():
             self.flush_count = 0
             self.close_count = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, _event):
             export_started.set()
             release_export.wait(timeout=1)

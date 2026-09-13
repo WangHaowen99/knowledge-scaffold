@@ -67,6 +67,7 @@ def _configure_cli_logging() -> None:
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
+
 BASE_URL = get_env("BASE_URL", "http://localhost:5055")
 API_MODE = get_env("API_MODE", "agentic")  # agentic | acp
 TEST_QUESTION_LIMIT = int(get_env("TEST_QUESTION_LIMIT", "0"))  # 0=all, N=first N
@@ -88,6 +89,24 @@ RUNS_EXECUTION_MODE = get_env("RUNS_EXECUTION_MODE", "serial")
 RUNS_MAX_CONCURRENCY = max(1, int(get_env("RUNS_MAX_CONCURRENCY", "4")))
 
 WORKSPACE_ID = get_env("WORKSPACE_ID", "default")
+_TOOL_THINKING_MARKERS = (
+    "加载本体",
+    "执行脚本",
+    "调用工具",
+    "调用故障",
+    "调用产品",
+    "ontology_context",
+    "execute_script",
+    "tool_call",
+)
+
+
+def _contains_tool_thinking_marker(text: str) -> bool:
+    for marker in _TOOL_THINKING_MARKERS:
+        if marker in text:
+            return True
+    return False
+
 
 _TEST_CASE_DIR = _TEST_DIR
 
@@ -149,6 +168,7 @@ def _llm_check_chinese_intrusion(text: str, target_lang: str) -> dict | None:
     try:
         from openai import OpenAI
         from lang import _get_llm_config_from_env
+
         llm_config = _get_llm_config_from_env()
         if not llm_config.get("api_key"):
             return None
@@ -162,12 +182,18 @@ def _llm_check_chinese_intrusion(text: str, target_lang: str) -> dict | None:
     prompt = (
         "You are a language detection expert. Determine whether the following text contains "
         "Chinese (Mandarin) content that is NOT part of the expected language.\n"
-        "Expected language: " + lang_name + " (" + target_lang + ").\n"
-        "Note: " + lang_name + " may use CJK characters that look similar to Chinese. "
+        "Expected language: "
+        + lang_name
+        + " ("
+        + target_lang
+        + ").\nNote: "
+        + lang_name
+        + " may use CJK characters that look similar to Chinese. "
         "Distinguish based on vocabulary, grammar, and context.\n\n"
         "Respond in JSON format:\n"
         '{"has_chinese": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}\n\n'
-        "Text:\n" + sample
+        "Text:\n"
+        + sample
     )
     try:
         response = client.chat.completions.create(
@@ -178,7 +204,7 @@ def _llm_check_chinese_intrusion(text: str, target_lang: str) -> dict | None:
             timeout=30,
         )
         raw = response.choices[0].message.content.strip()
-        json_match = re.search(r'\{[^}]+\}', raw)
+        json_match = re.search(r"\{[^}]+\}", raw)
         if json_match:
             result = json.loads(json_match.group())
             return {
@@ -197,16 +223,24 @@ def _heuristic_cjk_classify(text: str, target_lang: str) -> dict | None:
         if kana_count > 0:
             cjk_count = _char_count(text, 0x4E00, 0x9FFF)
             if kana_count / (cjk_count + kana_count) > 0.1:
-                return {"category": "none", "severity": "none", "confidence": 0.9,
-                        "description": "日文汉字(含假名，非中文)"}
+                return {
+                    "category": "none",
+                    "severity": "none",
+                    "confidence": 0.9,
+                    "description": "日文汉字(含假名，非中文)",
+                }
 
     if target_lang == "ko":
         hangul_count = _char_count(text, 0xAC00, 0xD7AF)
         if hangul_count > 0:
             cjk_count = _char_count(text, 0x4E00, 0x9FFF)
             if hangul_count / (cjk_count + hangul_count) > 0.1:
-                return {"category": "none", "severity": "none", "confidence": 0.9,
-                        "description": "韩文汉字(含韩文，非中文)"}
+                return {
+                    "category": "none",
+                    "severity": "none",
+                    "confidence": 0.9,
+                    "description": "韩文汉字(含韩文，非中文)",
+                }
 
     return None
 
@@ -253,9 +287,11 @@ def _classify_chinese_finding(text: str, event_type: str, target_lang: str = "")
                     "description": "LLM判定中文混入: %s" % llm_result.get("reason", ""),
                 }
 
-    filename_pattern = re.compile(r'[\u4e00-\u9fff\w\-]+\.(?:md|txt|json|py|yaml|yml|csv|xml|docx|xlsx|pdf)')
-    quoted_chinese_pattern = re.compile(r'[""\u201c\u201d`](?:[^"`\u201c\u201d]*[\u4e00-\u9fff][^"`\u201c\u201d]*)[""\u201d`\u201c]')
-    markdown_bold_pattern = re.compile(r'\*\*[^*]*[\u4e00-\u9fff][^*]*\*\*')
+    filename_pattern = re.compile(r"[\u4e00-\u9fff\w\-]+\.(?:md|txt|json|py|yaml|yml|csv|xml|docx|xlsx|pdf)")
+    quoted_chinese_pattern = re.compile(
+        r'[""\u201c\u201d`](?:[^"`\u201c\u201d]*[\u4e00-\u9fff][^"`\u201c\u201d]*)[""\u201d`\u201c]'
+    )
+    markdown_bold_pattern = re.compile(r"\*\*[^*]*[\u4e00-\u9fff][^*]*\*\*")
 
     chinese_chars = [c for c in text if "\u4e00" <= c <= "\u9fff"]
     total_chars = len(text.replace(" ", ""))
@@ -321,12 +357,14 @@ def _sample_eval_cases() -> list[dict]:
         return list(_EVAL_CASES)
     return random.sample(_EVAL_CASES, EVAL_SAMPLE_SIZE)
 
+
 def _resolve_test_language() -> str | None:
     if not TEST_LANGUAGE or TEST_LANGUAGE == "原语言":
         return None
     if TEST_LANGUAGE == "随机":
         return random.choice(SUPPORTED_LANGUAGES)
     return TEST_LANGUAGE
+
 
 def _translate_json_values(obj, target_lang: str):
     if isinstance(obj, str):
@@ -361,7 +399,13 @@ def _translate_question(q: dict, cache: dict | None = None, target_lang_override
 
     if target_lang in ("zh", "zh-cn"):
         logger.info(f"  🌐 {original_sheet}: 中文 (zh)")
-        return {**q, "lang": "zh", "lang_display": "中文", "original_sheet": original_sheet, "original_message": original_message}
+        return {
+            **q,
+            "lang": "zh",
+            "lang_display": "中文",
+            "original_sheet": original_sheet,
+            "original_message": original_message,
+        }
 
     if cache and original_sheet in cache:
         cached = cache[original_sheet]
@@ -408,6 +452,7 @@ def _translate_question(q: dict, cache: dict | None = None, target_lang_override
         "lang_display": lang_name,
     }
 
+
 def _load_flywheel_questions() -> list[dict]:
     questions = []
     original_dir = os.path.join(_TEST_CASE_DIR, "original_cases")
@@ -420,13 +465,16 @@ def _load_flywheel_questions() -> list[dict]:
             data = json.load(f)
         json_str = json.dumps(data, ensure_ascii=False)
         text_suffix = "调用故障数据飞轮流程，严格按照故障数据飞轮的输出格式输出"
-        questions.append({
-            "sheet": tc["sheet"],
-            "message": f"{json_str}\n{text_suffix}",
-            "json_data": data,
-            "text_suffix": text_suffix,
-        })
+        questions.append(
+            {
+                "sheet": tc["sheet"],
+                "message": f"{json_str}\n{text_suffix}",
+                "json_data": data,
+                "text_suffix": text_suffix,
+            }
+        )
     return questions
+
 
 def _resolve_questions() -> list[dict]:
     eval_cases = _sample_eval_cases()
@@ -591,6 +639,7 @@ _KG_OP_KEYWORDS = ["产品研发机理", "故障历史记录", "product R&D mech
 
 def _extract_kg_input_from_text(text: str, kg_tool_inputs: list) -> None:
     import re as _re
+
     for pm in _re.finditer(r"输入参数:", text):
         brace_start = text.find("{", pm.end())
         if brace_start == -1:
@@ -604,14 +653,14 @@ def _extract_kg_input_from_text(text: str, kg_tool_inputs: list) -> None:
             c = text[idx]
             if escaped:
                 escaped = False
-            elif c == '\\' and in_string:
+            elif c == "\\" and in_string:
                 escaped = True
             elif c == '"':
                 in_string = not in_string
             elif not in_string:
-                if c == '{':
+                if c == "{":
                     balance += 1
-                elif c == '}':
+                elif c == "}":
                     balance -= 1
                     if balance == 0:
                         end = idx + 1
@@ -625,6 +674,7 @@ def _extract_kg_input_from_text(text: str, kg_tool_inputs: list) -> None:
         except Exception:
             try:
                 import ast
+
                 params = ast.literal_eval(candidate)
             except Exception:
                 continue
@@ -632,12 +682,14 @@ def _extract_kg_input_from_text(text: str, kg_tool_inputs: list) -> None:
             continue
         op_key = params.get("operation_key", "")
         if any(kw in op_key for kw in _KG_OP_KEYWORDS):
-            kg_tool_inputs.append({
-                "tool_call_id": "",
-                "kind": "input",
-                "raw_message": candidate,
-                "parameters": params,
-            })
+            kg_tool_inputs.append(
+                {
+                    "tool_call_id": "",
+                    "kind": "input",
+                    "raw_message": candidate,
+                    "parameters": params,
+                }
+            )
 
 
 def parse_acp_sse_stream(response_text: str) -> dict:
@@ -657,11 +709,11 @@ def parse_acp_sse_stream(response_text: str) -> dict:
     while i < len(lines):
         line = lines[i]
         if line.startswith("event:"):
-            event_name = line[len("event:"):].strip()
+            event_name = line[len("event:") :].strip()
             i += 1
             data_str = ""
             while i < len(lines) and lines[i].startswith("data:"):
-                data_str += lines[i][len("data:"):].strip()
+                data_str += lines[i][len("data:") :].strip()
                 i += 1
             if not data_str:
                 continue
@@ -709,7 +761,9 @@ def parse_acp_sse_stream(response_text: str) -> dict:
             "run_completed": result.get("error") is None,
             "run_failed": result.get("error") is not None,
             "content_complete": result.get("error") is None and bool(result.get("final_output")),
-            "completeness_label": "complete" if result.get("error") is None and result.get("final_output") else "incomplete",
+            "completeness_label": (
+                "complete" if result.get("error") is None and result.get("final_output") else "incomplete"
+            ),
         }
         result["acp_thinking_text"] = ""
         result["acp_result_text"] = ""
@@ -759,16 +813,20 @@ def parse_acp_sse_stream(response_text: str) -> dict:
                 _extract_kg_input_from_text(text, kg_tool_inputs)
             if done:
                 thinking_text = "".join(thinking_parts)
-                progress_events.append({
-                    "type": "thinking",
-                    "text": thinking_text,
-                    "done": True,
-                })
-                tool_events.append({
-                    "type": "thinking",
-                    "text": thinking_text,
-                    "done": True,
-                })
+                progress_events.append(
+                    {
+                        "type": "thinking",
+                        "text": thinking_text,
+                        "done": True,
+                    }
+                )
+                tool_events.append(
+                    {
+                        "type": "thinking",
+                        "text": thinking_text,
+                        "done": True,
+                    }
+                )
 
         elif event_name == "result":
             text = data.get("text", "")
@@ -781,14 +839,16 @@ def parse_acp_sse_stream(response_text: str) -> dict:
             if text:
                 result_parts.append(text)
             if tool_name:
-                tool_events.append({
-                    "type": "tool.finished",
-                    "name": tool_name,
-                    "status": tool_status,
-                    "elapsed_ms": elapsed_ms,
-                    "result": tool_result,
-                    "operation_key": operation_key,
-                })
+                tool_events.append(
+                    {
+                        "type": "tool.finished",
+                        "name": tool_name,
+                        "status": tool_status,
+                        "elapsed_ms": elapsed_ms,
+                        "result": tool_result,
+                        "operation_key": operation_key,
+                    }
+                )
                 matched_script = None
                 match_source = operation_key or tool_name
                 for op_key, script_file in _OPERATION_SCRIPT_MAP.items():
@@ -800,26 +860,38 @@ def parse_acp_sse_stream(response_text: str) -> dict:
                 if matched_script:
                     stats = script_stats.setdefault(matched_script, {"count": 0, "total_result_length": 0})
                     stats["count"] += 1
-                    result_val = tool_result if isinstance(tool_result, str) else (json.dumps(tool_result, ensure_ascii=False) if tool_result else "")
+                    result_val = (
+                        tool_result
+                        if isinstance(tool_result, str)
+                        else (json.dumps(tool_result, ensure_ascii=False) if tool_result else "")
+                    )
                     stats["total_result_length"] += len(result_val)
-                    script_call_details.append({
-                        "name": matched_script,
-                        "status": tool_status or "success",
-                        "result_length": len(result_val),
-                    })
+                    script_call_details.append(
+                        {
+                            "name": matched_script,
+                            "status": tool_status or "success",
+                            "result_length": len(result_val),
+                        }
+                    )
                 if matched_script == "knowledge_graph_tool.py" or tool_name == "knowledge_graph_tool.py":
                     if tool_result:
-                        raw_output = tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False)
-                        kg_tool_outputs.append({
-                            "tool_call_id": "",
-                            "raw_output": raw_output,
-                        })
+                        raw_output = (
+                            tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False)
+                        )
+                        kg_tool_outputs.append(
+                            {
+                                "tool_call_id": "",
+                                "raw_output": raw_output,
+                            }
+                        )
             if done:
-                progress_events.append({
-                    "type": "result",
-                    "text": "".join(result_parts),
-                    "done": True,
-                })
+                progress_events.append(
+                    {
+                        "type": "result",
+                        "text": "".join(result_parts),
+                        "done": True,
+                    }
+                )
 
         elif event_name == "answer":
             text = data.get("text", "")
@@ -829,21 +901,25 @@ def parse_acp_sse_stream(response_text: str) -> dict:
             if first_answer_ts is None and text:
                 first_answer_ts = event_ts
             if done:
-                progress_events.append({
-                    "type": "answer",
-                    "text": "".join(answer_parts),
-                    "done": True,
-                })
+                progress_events.append(
+                    {
+                        "type": "answer",
+                        "text": "".join(answer_parts),
+                        "done": True,
+                    }
+                )
 
         elif event_name == "run.awaiting":
             question = data.get("question", "")
             tool_call_id = data.get("tool_call_id", "")
             options = data.get("options", [])
-            awaiting_events.append({
-                "question": question,
-                "tool_call_id": tool_call_id,
-                "options": options,
-            })
+            awaiting_events.append(
+                {
+                    "question": question,
+                    "tool_call_id": tool_call_id,
+                    "options": options,
+                }
+            )
 
         elif event_name == "run.completed":
             run_completed = True
@@ -853,22 +929,26 @@ def parse_acp_sse_stream(response_text: str) -> dict:
             error = data.get("error", "Unknown error")
 
         elif event_name == "progress":
-            progress_events.append({
-                "type": data.get("type", "progress"),
-                "text": data.get("text", ""),
-                "done": data.get("done", False),
-            })
+            progress_events.append(
+                {
+                    "type": data.get("type", "progress"),
+                    "text": data.get("text", ""),
+                    "done": data.get("done", False),
+                }
+            )
 
         elif event_name == "tool_call":
             tool_name = data.get("name", "")
             tool_args = data.get("args", {})
             tool_result = data.get("result")
-            tool_events.append({
-                "type": "tool_call",
-                "name": tool_name,
-                "args": tool_args,
-                "result": tool_result,
-            })
+            tool_events.append(
+                {
+                    "type": "tool_call",
+                    "name": tool_name,
+                    "args": tool_args,
+                    "result": tool_result,
+                }
+            )
 
             matched_script = None
             script_match = re.search(r"执行脚本[:\s]+(\S+\.py)", tool_name)
@@ -876,7 +956,9 @@ def parse_acp_sse_stream(response_text: str) -> dict:
                 matched_script = script_match.group(1)
             else:
                 for op_key, script_file in _OPERATION_SCRIPT_MAP.items():
-                    if op_key in tool_name or (isinstance(tool_args, dict) and op_key in json.dumps(tool_args, ensure_ascii=False)):
+                    if op_key in tool_name or (
+                        isinstance(tool_args, dict) and op_key in json.dumps(tool_args, ensure_ascii=False)
+                    ):
                         matched_script = script_file
                         break
 
@@ -886,27 +968,39 @@ def parse_acp_sse_stream(response_text: str) -> dict:
             if matched_script:
                 stats = script_stats.setdefault(matched_script, {"count": 0, "total_result_length": 0})
                 stats["count"] += 1
-                result_val = tool_result if isinstance(tool_result, str) else (json.dumps(tool_result, ensure_ascii=False) if tool_result else "")
+                result_val = (
+                    tool_result
+                    if isinstance(tool_result, str)
+                    else (json.dumps(tool_result, ensure_ascii=False) if tool_result else "")
+                )
                 stats["total_result_length"] += len(result_val)
-                script_call_details.append({
-                    "name": matched_script,
-                    "status": "success" if tool_result is not None else "pending",
-                    "result_length": len(result_val),
-                })
+                script_call_details.append(
+                    {
+                        "name": matched_script,
+                        "status": "success" if tool_result is not None else "pending",
+                        "result_length": len(result_val),
+                    }
+                )
 
             if matched_script == "knowledge_graph_tool.py" or tool_name == "knowledge_graph_tool.py":
                 if tool_args:
-                    kg_tool_inputs.append({
-                        "tool_call_id": "",
-                        "kind": "input",
-                        "raw_message": json.dumps(tool_args, ensure_ascii=False),
-                    })
+                    kg_tool_inputs.append(
+                        {
+                            "tool_call_id": "",
+                            "kind": "input",
+                            "raw_message": json.dumps(tool_args, ensure_ascii=False),
+                        }
+                    )
                 if tool_result:
-                    raw_output = tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False)
-                    kg_tool_outputs.append({
-                        "tool_call_id": "",
-                        "raw_output": raw_output,
-                    })
+                    raw_output = (
+                        tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False)
+                    )
+                    kg_tool_outputs.append(
+                        {
+                            "tool_call_id": "",
+                            "raw_output": raw_output,
+                        }
+                    )
 
     result_text = "".join(thinking_parts + result_parts)
     answer_text = "".join(answer_parts)
@@ -994,7 +1088,7 @@ def _consume_sse_stream(resp: requests.Response) -> str:
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
             buf += line + "\n"
             if line.startswith("event:"):
-                current_event = line[len("event:"):].strip()
+                current_event = line[len("event:") :].strip()
             elif not line and current_event in terminal_events:
                 break
     except Exception:
@@ -1252,7 +1346,7 @@ def parse_sse_stream(response_text: str) -> dict:
         if line.startswith("event:"):
             i += 1
             if i < len(lines) and lines[i].startswith("data:"):
-                data_str = lines[i][len("data:"):].strip()
+                data_str = lines[i][len("data:") :].strip()
                 i += 1
                 try:
                     data = json.loads(data_str)
@@ -1263,9 +1357,7 @@ def parse_sse_stream(response_text: str) -> dict:
                 event_ts = data.get("ts")
                 if event_ts is None and data.get("created_at"):
                     try:
-                        event_time = datetime.fromisoformat(
-                            str(data["created_at"]).replace("Z", "+00:00")
-                        )
+                        event_time = datetime.fromisoformat(str(data["created_at"]).replace("Z", "+00:00"))
                         if event_time.tzinfo is None:
                             event_time = event_time.replace(tzinfo=timezone.utc)
                         event_ts = event_time.astimezone(timezone.utc).timestamp() * 1000
@@ -1291,9 +1383,7 @@ def parse_sse_stream(response_text: str) -> dict:
 
                 elif event_type == "interaction.requested":
                     pending_interaction = {
-                        "interaction_id": (
-                            payload.get("interaction_id") or payload.get("id")
-                        ),
+                        "interaction_id": payload.get("interaction_id") or payload.get("id"),
                         "type": payload.get("type") or "input",
                         "prompt": payload.get("prompt") or payload.get("text") or "",
                         "options": list(payload.get("options") or []),
@@ -1323,12 +1413,14 @@ def parse_sse_stream(response_text: str) -> dict:
                     if isinstance(tool_input, dict) and tool_input.get("operation_key"):
                         op_key = tool_input["operation_key"]
                         if any(kw in op_key for kw in _KG_OP_KEYWORDS):
-                            kg_tool_inputs.append({
-                                "tool_call_id": tool_call_id,
-                                "kind": "input",
-                                "raw_message": json.dumps(tool_input, ensure_ascii=False),
-                                "parameters": tool_input,
-                            })
+                            kg_tool_inputs.append(
+                                {
+                                    "tool_call_id": tool_call_id,
+                                    "kind": "input",
+                                    "raw_message": json.dumps(tool_input, ensure_ascii=False),
+                                    "parameters": tool_input,
+                                }
+                            )
 
                     # 原有的脚本匹配逻辑
                     script_match = re.search(r"执行脚本[:\s]+(\S+\.py)", msg)
@@ -1349,38 +1441,46 @@ def parse_sse_stream(response_text: str) -> dict:
                     token_segments.append([])
                     tool_name = payload.get("name") or payload.get("tool_name", "")
                     elapsed_ms = payload.get("elapsed_ms", 0)
-                    tool_calls.append({
-                        "name": tool_name,
-                        "status": payload.get("status", ""),
-                        "elapsed_ms": elapsed_ms,
-                    })
+                    tool_calls.append(
+                        {
+                            "name": tool_name,
+                            "status": payload.get("status", ""),
+                            "elapsed_ms": elapsed_ms,
+                        }
+                    )
                     tc_id = payload.get("tool_call_id", "")
                     if tc_id in pending_script_map:
                         script_name = pending_script_map.pop(tc_id)
                         script_stats[script_name]["count"] += 1
                         script_stats[script_name]["total_ms"] += elapsed_ms
-                        script_call_details.append({
-                            "name": script_name,
-                            "status": payload.get("status", ""),
-                            "elapsed_ms": elapsed_ms,
-                        })
+                        script_call_details.append(
+                            {
+                                "name": script_name,
+                                "status": payload.get("status", ""),
+                                "elapsed_ms": elapsed_ms,
+                            }
+                        )
                     pending_script_tc_id.pop(tc_id, None)
                     if tc_id in kg_stream_buffers:
                         stream_text = "".join(kg_stream_buffers.pop(tc_id)).strip()
                         if stream_text:
-                            kg_tool_outputs.append({
-                                "tool_call_id": tc_id,
-                                "raw_output": stream_text,
-                            })
+                            kg_tool_outputs.append(
+                                {
+                                    "tool_call_id": tc_id,
+                                    "raw_output": stream_text,
+                                }
+                            )
 
                 elif event_type == "special_tool.finished":
                     in_reasoning = False
                     token_segments.append([])
-                    tool_calls.append({
-                        "name": payload.get("tool_name", ""),
-                        "status": payload.get("status", ""),
-                        "elapsed_ms": 0,
-                    })
+                    tool_calls.append(
+                        {
+                            "name": payload.get("tool_name", ""),
+                            "status": payload.get("status", ""),
+                            "elapsed_ms": 0,
+                        }
+                    )
 
                 elif event_type == "tool.progress":
                     kind = payload.get("kind", "")
@@ -1389,20 +1489,24 @@ def parse_sse_stream(response_text: str) -> dict:
                         if kind == "input":
                             msg = payload.get("message", "")
                             if msg:
-                                kg_tool_inputs.append({
-                                    "tool_call_id": tc_id,
-                                    "kind": "input",
-                                    "raw_message": msg,
-                                })
+                                kg_tool_inputs.append(
+                                    {
+                                        "tool_call_id": tc_id,
+                                        "kind": "input",
+                                        "raw_message": msg,
+                                    }
+                                )
                         elif kind == "output":
                             msg = payload.get("message", "")
                             output_match = re.search(r"执行结果[:\s]*", msg)
-                            output_text = msg[output_match.end():].strip() if output_match else msg.strip()
+                            output_text = msg[output_match.end() :].strip() if output_match else msg.strip()
                             if output_text:
-                                kg_tool_outputs.append({
-                                    "tool_call_id": tc_id,
-                                    "raw_output": output_text,
-                                })
+                                kg_tool_outputs.append(
+                                    {
+                                        "tool_call_id": tc_id,
+                                        "raw_output": output_text,
+                                    }
+                                )
                         elif kind == "stream":
                             msg = payload.get("message", "")
                             if tc_id not in kg_stream_buffers:
@@ -1442,7 +1546,9 @@ def parse_sse_stream(response_text: str) -> dict:
     dag_first_token_latency = dag_perf.get("first_token_latency", 0.0)
     dag_avg_inter_token_latency = dag_perf.get("avg_inter_token_latency", 0.0)
     effective_first_token_latency = dag_first_token_latency if dag_first_token_latency > 0 else first_token_latency
-    effective_avg_inter_token_latency = dag_avg_inter_token_latency if dag_avg_inter_token_latency > 0 else avg_inter_token_latency
+    effective_avg_inter_token_latency = (
+        dag_avg_inter_token_latency if dag_avg_inter_token_latency > 0 else avg_inter_token_latency
+    )
 
     return {
         "run_id": run_id,
@@ -1474,10 +1580,12 @@ def _parse_otel_trace_log(run_id: str) -> dict:
         log_candidates.append(os.path.join(runtime_root, "workspaces", workspace_id, "runtime", "observability"))
     elif runtime_root:
         log_candidates.extend(glob.glob(os.path.join(runtime_root, "workspaces", "*", "runtime", "observability")))
-    log_candidates.extend([
-        os.path.join(_TEST_DIR, "..", "backend", "logs"),
-        os.path.join(_TEST_DIR, "..", "logs"),
-    ])
+    log_candidates.extend(
+        [
+            os.path.join(_TEST_DIR, "..", "backend", "logs"),
+            os.path.join(_TEST_DIR, "..", "logs"),
+        ]
+    )
     for log_dir in log_candidates:
         candidates = sorted(glob.glob(os.path.join(log_dir, "otel_trace-*.log")), reverse=True)
         for perf_file in candidates:
@@ -1645,13 +1753,15 @@ def _detect_chinese_in_kg_outputs(kg_tool_outputs: list[dict], target_lang: str)
             for item in parsed:
                 if isinstance(item, dict):
                     _extract_chinese_kv(item, chinese_keys, chinese_values)
-        findings.append({
-            "chinese_char_count": chinese_chars,
-            "chinese_ratio": round(chinese_ratio, 3),
-            "chinese_keys": chinese_keys,
-            "chinese_values": chinese_values,
-            "raw_output_preview": raw_output[:300],
-        })
+        findings.append(
+            {
+                "chinese_char_count": chinese_chars,
+                "chinese_ratio": round(chinese_ratio, 3),
+                "chinese_keys": chinese_keys,
+                "chinese_values": chinese_values,
+                "raw_output_preview": raw_output[:300],
+            }
+        )
     return findings
 
 
@@ -1670,11 +1780,53 @@ def _extract_chinese_kv(obj: dict, keys_out: list, values_out: list):
 
 
 _KNOWN_LANG_KEYS = {
-    "zh", "zh-cn", "zh-tw", "en", "ja", "ko", "ru", "de", "fr", "es", "pt",
-    "ar", "it", "nl", "pl", "tr", "vi", "th", "hi", "id", "uk", "cs",
-    "et", "lv", "lt", "sv", "da", "fi", "hu", "ro", "bg", "hr", "sk",
-    "sl", "el", "he", "ms", "tl", "sw", "bn", "ta", "ur", "fa", "ca",
-    "sr", "no", "af",
+    "zh",
+    "zh-cn",
+    "zh-tw",
+    "en",
+    "ja",
+    "ko",
+    "ru",
+    "de",
+    "fr",
+    "es",
+    "pt",
+    "ar",
+    "it",
+    "nl",
+    "pl",
+    "tr",
+    "vi",
+    "th",
+    "hi",
+    "id",
+    "uk",
+    "cs",
+    "et",
+    "lv",
+    "lt",
+    "sv",
+    "da",
+    "fi",
+    "hu",
+    "ro",
+    "bg",
+    "hr",
+    "sk",
+    "sl",
+    "el",
+    "he",
+    "ms",
+    "tl",
+    "sw",
+    "bn",
+    "ta",
+    "ur",
+    "fa",
+    "ca",
+    "sr",
+    "no",
+    "af",
 }
 
 
@@ -1687,9 +1839,9 @@ def _validate_kg_language_param(kg_tool_inputs: list[dict], expected_lang: str) 
     for inp in kg_tool_inputs:
         msg = inp.get("raw_message", "")
         if msg.startswith("执行命令:"):
-            exec_cmd = msg[len("执行命令:"):].strip()
+            exec_cmd = msg[len("执行命令:") :].strip()
         elif msg.startswith("输入参数:"):
-            input_params_raw = msg[len("输入参数:"):].strip()
+            input_params_raw = msg[len("输入参数:") :].strip()
 
     search_text = ""
     source = None
@@ -1710,7 +1862,7 @@ def _validate_kg_language_param(kg_tool_inputs: list[dict], expected_lang: str) 
         parsed_lang = json_lang_match.group(1)
 
     if parsed_lang is None:
-        flag_match = re.search(r'(?:--language|-l)\s+(\S+)', search_text)
+        flag_match = re.search(r"(?:--language|-l)\s+(\S+)", search_text)
         if flag_match:
             candidate = flag_match.group(1)
             if candidate in _KNOWN_LANG_KEYS:
@@ -1739,8 +1891,7 @@ def _validate_kg_language_param(kg_tool_inputs: list[dict], expected_lang: str) 
         }
 
     _ZH_VARIANTS = {"zh", "zh-cn", "zh-tw"}
-    if (parsed_lang == expected_lang
-            or (parsed_lang in _ZH_VARIANTS and expected_lang in _ZH_VARIANTS)):
+    if parsed_lang == expected_lang or (parsed_lang in _ZH_VARIANTS and expected_lang in _ZH_VARIANTS):
         return {
             "status": "ok",
             "parsed_lang": parsed_lang,
@@ -1772,6 +1923,7 @@ def _llm_detect_language(text: str, target_lang: str) -> dict | None:
     try:
         from openai import OpenAI
         from lang import _get_llm_config_from_env
+
         llm_config = _get_llm_config_from_env()
         if not llm_config.get("api_key"):
             return None
@@ -1789,7 +1941,8 @@ def _llm_detect_language(text: str, target_lang: str) -> dict | None:
         '{"detected_lang": "<language_code>", "confidence": 0.0-1.0, "reason": "brief explanation"}\n\n'
         "Use ISO 639-1 language codes (e.g., en, zh, ja, ko, fr, de, es, pt, ru, ar, etc.).\n"
         "If the text contains multiple languages, identify the dominant one.\n\n"
-        "Text to analyze:\n" + sample
+        "Text to analyze:\n"
+        + sample
     )
     try:
         response = client.chat.completions.create(
@@ -1800,7 +1953,7 @@ def _llm_detect_language(text: str, target_lang: str) -> dict | None:
             timeout=30,
         )
         raw = response.choices[0].message.content.strip()
-        json_match = re.search(r'\{[^}]+\}', raw)
+        json_match = re.search(r"\{[^}]+\}", raw)
         if json_match:
             result = json.loads(json_match.group())
             return {
@@ -1828,14 +1981,35 @@ def _detect_kg_output_lang_match(kg_tool_outputs: list[dict], target_lang: str) 
             continue
 
         heuristic_lang = _detect_output_lang(raw)
-        is_latin_lang = target_lang in ("en", "fr", "de", "es", "pt", "it", "nl", "pl",
-                                         "sv", "da", "fi", "hu", "ro", "bg", "hr",
-                                         "sk", "sl", "cs", "uk", "no", "af", "ca")
+        is_latin_lang = target_lang in (
+            "en",
+            "fr",
+            "de",
+            "es",
+            "pt",
+            "it",
+            "nl",
+            "pl",
+            "sv",
+            "da",
+            "fi",
+            "hu",
+            "ro",
+            "bg",
+            "hr",
+            "sk",
+            "sl",
+            "cs",
+            "uk",
+            "no",
+            "af",
+            "ca",
+        )
 
         llm_result = _llm_detect_language(raw, target_lang)
         if llm_result:
             detected = llm_result["detected_lang"]
-            is_match = (detected == target_lang)
+            is_match = detected == target_lang
             method = f"llm (conf={llm_result['confidence']:.1f})"
         else:
             detected = heuristic_lang
@@ -1843,16 +2017,18 @@ def _detect_kg_output_lang_match(kg_tool_outputs: list[dict], target_lang: str) 
                 is_match = (detected == target_lang) or (heuristic_lang == "en")
                 method = "heuristic_fallback"
             else:
-                is_match = (detected == target_lang)
+                is_match = detected == target_lang
                 method = "heuristic"
 
-        match_details.append({
-            "detected_lang": detected,
-            "target_lang": target_lang,
-            "is_match": is_match,
-            "method": method,
-            "preview": raw[:200],
-        })
+        match_details.append(
+            {
+                "detected_lang": detected,
+                "target_lang": target_lang,
+                "is_match": is_match,
+                "method": method,
+                "preview": raw[:200],
+            }
+        )
         if detected:
             detected_langs.append(detected)
 
@@ -1926,12 +2102,8 @@ def _merge_agentic_turn_results(results: list[dict], run_ids: list[str]) -> dict
         "kg_tool_inputs",
     ):
         merged[key] = [item for result in results for item in result.get(key, [])]
-    merged["turn_count"] = sum(
-        int(result.get("turn_count") or 0) for result in results
-    )
-    merged["llm_call_count"] = sum(
-        int(result.get("llm_call_count") or 0) for result in results
-    )
+    merged["turn_count"] = sum(int(result.get("turn_count") or 0) for result in results)
+    merged["llm_call_count"] = sum(int(result.get("llm_call_count") or 0) for result in results)
     merged["run_ids"] = list(run_ids)
 
     combined_script_stats: dict[str, dict] = {}
@@ -1979,15 +2151,8 @@ def _create_agentic_run(
 def _stream_agentic_run(admission: dict) -> dict:
     run_id = str(admission["run_id"])
     links = admission.get("links") if isinstance(admission.get("links"), dict) else {}
-    events_path = str(
-        links.get("events")
-        or RUN_EVENTS_PATH.replace("{run_id}", run_id)
-    )
-    events_url = (
-        events_path
-        if events_path.startswith(("http://", "https://"))
-        else f"{BASE_URL}{events_path}"
-    )
+    events_path = str(links.get("events") or RUN_EVENTS_PATH.replace("{run_id}", run_id))
+    events_url = events_path if events_path.startswith(("http://", "https://")) else f"{BASE_URL}{events_path}"
     response = requests.get(
         events_url,
         params={"after_seq": 0},
@@ -2034,11 +2199,7 @@ def call_skill_execution(message: str, session_id: str) -> dict:
             result["error"] = "Agentic HITL auto-reply limit exceeded"
             break
 
-        options = (
-            pending.get("options")
-            if isinstance(pending.get("options"), list)
-            else []
-        )
+        options = pending.get("options") if isinstance(pending.get("options"), list) else []
         first_option = options[0] if options and isinstance(options[0], dict) else {}
         reply_value = first_option.get("value") or AGENTIC_AUTO_REPLY
         current_message = str(first_option.get("label") or reply_value)
@@ -2095,10 +2256,7 @@ def _extract_intermediate_summary(result: dict) -> dict:
                 if t:
                     thinking_parts.append(t)
                     user_visible_parts.append(f"\n🧠 {t}\n")
-                    _is_tool_thinking = any(kw in t for kw in (
-                        "加载本体", "执行脚本", "调用工具", "调用故障", "调用产品",
-                        "ontology_context", "execute_script", "tool_call",
-                    ))
+                    _is_tool_thinking = _contains_tool_thinking_marker(t)
                     if _is_tool_thinking:
                         current_thinking.append(t)
             elif en == "answer":
@@ -2224,7 +2382,10 @@ def _save_run_log(
         if tool_calls:
             lines.append(f"\n--- 工具调用详情 ({len(tool_calls)}) ---")
             for idx, tc in enumerate(tool_calls, 1):
-                lines.append(f"  [{idx}] {tc.get('name', '?')} | 状态: {tc.get('status', '?')} | 耗时: {tc.get('elapsed_ms', 0)}ms")
+                lines.append(
+                    f"  [{idx}] {tc.get('name', '?')} | 状态: {tc.get('status', '?')} | 耗时:"
+                    f" {tc.get('elapsed_ms', 0)}ms"
+                )
 
         # --- 中间过程 (可读重建) ---
         _raw = result.get("raw_events", [])
@@ -2246,10 +2407,7 @@ def _save_run_log(
                         if t:
                             _thinking_parts.append(t)
                             # 判断是否为工具调用相关的思考（非 token 级推理）
-                            _is_tool_thinking = any(kw in t for kw in (
-                                "加载本体", "执行脚本", "调用工具", "调用故障", "调用产品",
-                                "ontology_context", "execute_script", "tool_call",
-                            ))
+                            _is_tool_thinking = _contains_tool_thinking_marker(t)
                             if _is_tool_thinking:
                                 _current_thinking.append(t)
                     elif en == "answer":
@@ -2424,7 +2582,10 @@ def _save_run_log(
                     te = data.get("elapsed_ms", 0)
                     if tn:
                         tr_preview = (tr if isinstance(tr, str) else json.dumps(tr, ensure_ascii=False)) if tr else ""
-                        lines.append(f"  [{idx}] {event_name} | done={done} | tool: {tn} | status: {ts} | elapsed: {te}ms | text: {text[:80]}")
+                        lines.append(
+                            f"  [{idx}] {event_name} | done={done} | tool: {tn} | status: {ts} | elapsed: {te}ms |"
+                            f" text: {text[:80]}"
+                        )
                         if tr_preview:
                             lines.append(f"         | result: {tr_preview}")
                     else:
@@ -2438,12 +2599,21 @@ def _save_run_log(
                     args = data.get("args", {})
                     tool_result = data.get("result")
                     args_str = json.dumps(args, ensure_ascii=False)[:120] if args else ""
-                    result_str = (tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False))[:120] if tool_result else ""
+                    result_str = (
+                        (tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False))[
+                            :120
+                        ]
+                        if tool_result
+                        else ""
+                    )
                     lines.append(f"  [{idx}] {event_name} | name: {name} | args: {args_str}")
                     if result_str:
                         lines.append(f"         | result: {result_str}")
                 elif event_name == "run.created":
-                    lines.append(f"  [{idx}] {event_name} | run_id: {data.get('run_id', '')} | session_id: {data.get('session_id', '')}")
+                    lines.append(
+                        f"  [{idx}] {event_name} | run_id: {data.get('run_id', '')} | session_id:"
+                        f" {data.get('session_id', '')}"
+                    )
                 elif event_name == "run.awaiting":
                     question = data.get("question", "")
                     tool_call_id = data.get("tool_call_id", "")
@@ -2467,24 +2637,48 @@ def _save_run_log(
                     text = payload.get("text", "")
                     lines.append(f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | text: {text[:80]}")
                 elif event_type == "tool.started":
-                    lines.append(f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | tool: {payload.get('tool_name', '?')} | msg: {payload.get('message', '')[:80]}")
+                    lines.append(
+                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | tool:"
+                        f" {payload.get('tool_name', '?')} | msg: {payload.get('message', '')[:80]}"
+                    )
                 elif event_type == "tool.finished":
-                    lines.append(f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | tool: {payload.get('tool_name', '?')} | status: {payload.get('status', '?')} | elapsed: {payload.get('elapsed_ms', 0)}ms")
+                    lines.append(
+                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | tool:"
+                        f" {payload.get('tool_name', '?')} | status: {payload.get('status', '?')} | elapsed:"
+                        f" {payload.get('elapsed_ms', 0)}ms"
+                    )
                 elif event_type == "tool.progress":
                     kind = payload.get("kind", "")
                     msg = payload.get("message", "")
-                    lines.append(f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | kind: {kind} | msg: {msg[:80]}")
+                    lines.append(
+                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | kind: {kind} | msg: {msg[:80]}"
+                    )
                 elif event_type == "dag_performance":
-                    lines.append(f"  [{idx}] seq={seq} type={event_type} | worker={payload.get('worker_time', 0):.2f}s tokens={payload.get('total_tokens', 0)}")
+                    lines.append(
+                        f"  [{idx}] seq={seq} type={event_type} | worker={payload.get('worker_time', 0):.2f}s"
+                        f" tokens={payload.get('total_tokens', 0)}"
+                    )
                 elif event_type == "special_tool.started":
-                    lines.append(f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | msg: {payload.get('message', '')[:80]}")
+                    lines.append(
+                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | msg:"
+                        f" {payload.get('message', '')[:80]}"
+                    )
                 elif event_type == "special_tool.ui":
                     ui_payload = payload.get("ui_payload", {})
-                    lines.append(f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | question: {ui_payload.get('question', '')[:80]}")
+                    lines.append(
+                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | question:"
+                        f" {ui_payload.get('question', '')[:80]}"
+                    )
                 elif event_type == "special_tool.finished":
-                    lines.append(f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | status: {payload.get('status', '?')}")
+                    lines.append(
+                        f"  [{idx}] seq={seq} type={event_type} | tool: {payload.get('tool_name', '?')} | status:"
+                        f" {payload.get('status', '?')}"
+                    )
                 elif event_type in ("turn.started", "turn.finished"):
-                    lines.append(f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | status: {payload.get('status', '')}")
+                    lines.append(
+                        f"  [{idx}] seq={seq} type={event_type} | {node}/{component} | status:"
+                        f" {payload.get('status', '')}"
+                    )
                 else:
                     lines.append(f"  [{idx}] seq={seq} type={event_type} | {node}/{component}")
 
@@ -2500,8 +2694,15 @@ def _save_run_log(
 
 _CHATS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".onto-runtime", "workspaces", WORKSPACE_ID, "runtime", "users", AUTH_USERNAME or "benchmark-user", "chats",
+    ".onto-runtime",
+    "workspaces",
+    WORKSPACE_ID,
+    "runtime",
+    "users",
+    AUTH_USERNAME or "benchmark-user",
+    "chats",
 )
+
 
 def _read_snapshot_failures(session_id: str) -> list[dict]:
     """读取 session 的 snapshot.json，提取所有失败事件详情"""
@@ -2524,18 +2725,22 @@ def _read_snapshot_failures(session_id: str) -> list[dict]:
         if ev_type == "tool.finished":
             status = payload.get("status", "")
             if status in ("failure", "error"):
-                failures.append({
-                    "type": "tool.finished",
-                    "tool_name": payload.get("tool_name", ""),
-                    "error": str(payload.get("error") or payload.get("result", ""))[:500],
-                })
+                failures.append(
+                    {
+                        "type": "tool.finished",
+                        "tool_name": payload.get("tool_name", ""),
+                        "error": str(payload.get("error") or payload.get("result", ""))[:500],
+                    }
+                )
         elif ev_type == "turn.finished":
             status = payload.get("status", "")
             if status in ("failure", "error"):
-                failures.append({
-                    "type": "turn.finished",
-                    "error": str(payload.get("error") or payload.get("final_output", ""))[:500],
-                })
+                failures.append(
+                    {
+                        "type": "turn.finished",
+                        "error": str(payload.get("error") or payload.get("final_output", ""))[:500],
+                    }
+                )
     return failures
 
 
@@ -2557,8 +2762,10 @@ def _get_default_style_cell():
         _DEFAULT_STYLE_CELL.font = Font(name="微软雅黑", size=11)
         _DEFAULT_STYLE_CELL.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         _DEFAULT_STYLE_CELL.border = Border(
-            left=Side(style="thin"), right=Side(style="thin"),
-            top=Side(style="thin"), bottom=Side(style="thin"),
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin"),
         )
         _DEFAULT_STYLE_CELL.fill = PatternFill()
         _DEFAULT_STYLE_CELL.number_format = "General"
@@ -2583,9 +2790,18 @@ def _write_cell(ws, row, col, value, style_cell=None):
 def _ensure_xlsx(wb: openpyxl.Workbook):
     default_style = _get_default_style_cell()
     headers = [
-        "执行轮次", "执行开始时间", "执行耗时（XmXs）", "执行耗时（s）",
-        "tokens消耗", "LLM执行次数", "LLM总耗时（s）", "LLM平均耗时（s）", "脚本调用统计",
-        "首token时延（s）", "增量token平均时延（s）", "测试语言",
+        "执行轮次",
+        "执行开始时间",
+        "执行耗时（XmXs）",
+        "执行耗时（s）",
+        "tokens消耗",
+        "LLM执行次数",
+        "LLM总耗时（s）",
+        "LLM平均耗时（s）",
+        "脚本调用统计",
+        "首token时延（s）",
+        "增量token平均时延（s）",
+        "测试语言",
     ]
     for q in QUESTIONS:
         sheet_name = q["sheet"]
@@ -2615,6 +2831,7 @@ def _find_backend_log() -> str | None:
         if os.path.exists(dated):
             return dated
         import glob as _glob
+
         candidates = sorted(_glob.glob(os.path.join(log_dir, "agent-*.log")), reverse=True)
         if candidates:
             return candidates[0]
@@ -2662,14 +2879,16 @@ def _analyze_think_process(run_ids: list[str], log_baseline: int):
                 collected = []
                 for j in range(idx, min(idx + 80, len(lines))):
                     _, text = lines[j]
-                    if j > idx and ("executor:execute:" in text or "app.api.consume" in text or "app.agent.nodes" in text):
+                    if j > idx and (
+                        "executor:execute:" in text or "app.api.consume" in text or "app.agent.nodes" in text
+                    ):
                         break
                     collected.append(text)
                 full_text = "\n".join(collected)
                 out_idx = full_text.find("[最终输出]")
                 if out_idx >= 0:
                     run_data[rid]["final_output"] = full_text[out_idx:]
-                think_match = re.search(r'<think_process>([\s\S]*?)(?:</think_process>|$)', full_text)
+                think_match = re.search(r"<think_process>([\s\S]*?)(?:</think_process>|$)", full_text)
                 if think_match:
                     run_data[rid]["has_think_tag"] = True
                     run_data[rid]["think_content"] = think_match.group(1).strip()
@@ -2730,6 +2949,7 @@ def _get_system_info() -> dict:
     info = {}
     try:
         from lang import _get_llm_config_from_env
+
         llm_config = _get_llm_config_from_env()
         info["llm_provider"] = get_env("LLM_PROVIDER", "custom")
         info["llm_provider_id"] = get_env("LLM_PROVIDER", "custom")
@@ -2764,6 +2984,7 @@ def _generate_time_breakdown_chart(
 ):
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -2797,8 +3018,14 @@ def _generate_time_breakdown_chart(
     bars = ax1.barh(labels, vals, color=colors)
     for bar, v in zip(bars, vals):
         pct = v / avg_seconds * 100 if avg_seconds else 0
-        ax1.text(bar.get_width() + 0.2, bar.get_y() + bar.get_height() / 2,
-                 f"{v:.2f}s ({pct:.0f}%)", ha="left", va="center", fontsize=10)
+        ax1.text(
+            bar.get_width() + 0.2,
+            bar.get_y() + bar.get_height() / 2,
+            f"{v:.2f}s ({pct:.0f}%)",
+            ha="left",
+            va="center",
+            fontsize=10,
+        )
 
     ax1.set_xlabel("时间 (秒)")
     ax1.set_title(f"{lang_display}({lang_code}) 每次执行时间分解 (总耗时 {avg_seconds:.2f}s)")
@@ -2914,11 +3141,14 @@ def _generate_md_report(
     lines.append("|------|-----|")
     lines.append("| 总问题数 | %d |" % global_stats.get("total_questions", 0))
     lines.append("| 总执行次数 | %d |" % global_stats.get("total_runs", 0))
-    lines.append("| 成功率 | %d/%d (%.1f%%) |" % (
-        global_stats.get("success_count", 0),
-        global_stats.get("total_runs", 1),
-        global_stats.get("success_rate", 0),
-    ))
+    lines.append(
+        "| 成功率 | %d/%d (%.1f%%) |"
+        % (
+            global_stats.get("success_count", 0),
+            global_stats.get("total_runs", 1),
+            global_stats.get("success_rate", 0),
+        )
+    )
     lines.append("| 平均耗时 | %s |" % global_stats.get("avg_duration", "N/A"))
     lines.append("| 平均 Tokens | %.0f |" % global_stats.get("avg_tokens", 0))
     lines.append("| 平均首Token时延 | %.3fs |" % global_stats.get("avg_first_token_latency", 0))
@@ -3006,9 +3236,16 @@ def _generate_md_report(
         lines.append("| 脚本 | 总执行 | 平均耗时 | 最慢 | 失败 |")
         lines.append("|------|--------|----------|------|------|")
         for sn, sd in stats.get("scripts", {}).items():
-            lines.append("| %s | %d | %.1fs | %.1fs | %d |" % (
-                sn, sd.get("count", 0), sd.get("avg", 0) / 1000, sd.get("max", 0) / 1000, sd.get("fail", 0),
-            ))
+            lines.append(
+                "| %s | %d | %.1fs | %.1fs | %d |"
+                % (
+                    sn,
+                    sd.get("count", 0),
+                    sd.get("avg", 0) / 1000,
+                    sd.get("max", 0) / 1000,
+                    sd.get("fail", 0),
+                )
+            )
         lines.append("")
 
     failure_details = extra.get("failure_details", [])
@@ -3025,8 +3262,7 @@ def _generate_md_report(
                 fd_type = fd.get("type", "?")
                 tool_name = fd.get("tool_name", "")
                 error = fd.get("error", "")[:120]
-                lines.append("| %s | %d | %s | %s | %s | %s |" % (
-                    sheet, run_idx, lang, fd_type, tool_name, error))
+                lines.append("| %s | %d | %s | %s | %s | %s |" % (sheet, run_idx, lang, fd_type, tool_name, error))
         lines.append("")
     else:
         lines.append("### 失败详情")
@@ -3086,7 +3322,10 @@ def _generate_md_report(
         lines.append("| 指标 | 值 |")
         lines.append("|------|-----|")
         lines.append("| 非中文场景总执行 | %d |" % non_zh_total)
-        lines.append("| 无中文混入 | %d/%d (%.1f%%) |" % (non_zh_clean, non_zh_total, non_zh_clean / non_zh_total * 100 if non_zh_total else 0))
+        lines.append(
+            "| 无中文混入 | %d/%d (%.1f%%) |"
+            % (non_zh_clean, non_zh_total, non_zh_clean / non_zh_total * 100 if non_zh_total else 0)
+        )
         lines.append("")
         lines.append("> 本次实际使用: %s" % method_summary)
         lines.append("")
@@ -3100,21 +3339,46 @@ def _generate_md_report(
                 run_idx = entry.get("run", 0)
                 lang = entry.get("lang", "?")
                 for finding in entry.get("thinking_findings", []):
-                    round_match = re.search(r'Round (\d+)', finding.get("text", ""))
+                    round_match = re.search(r"Round (\d+)", finding.get("text", ""))
                     round_label = "R%s" % round_match.group(1) if round_match else "?"
                     desc = finding.get("description", "")
                     method = "LLM" if "LLM" in desc else ("启发式" if "假名" in desc or "谚文" in desc else "规则")
-                    snippets = re.findall(r'[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]', finding.get("text", ""))
+                    snippets = re.findall(
+                        r"[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]", finding.get("text", "")
+                    )
                     snippet_str = "; ".join(snippets[:2]) if snippets else ""
-                    lines.append("| %s | %d | %s | 思考 | %s | %s | %s | %s | %s |" % (
-                        sheet, run_idx, lang, round_label, finding.get("severity", ""), finding.get("category", ""), method, snippet_str))
+                    lines.append(
+                        "| %s | %d | %s | 思考 | %s | %s | %s | %s | %s |"
+                        % (
+                            sheet,
+                            run_idx,
+                            lang,
+                            round_label,
+                            finding.get("severity", ""),
+                            finding.get("category", ""),
+                            method,
+                            snippet_str,
+                        )
+                    )
                 for finding in entry.get("output_findings", []):
                     desc = finding.get("description", "")
                     method = "LLM" if "LLM" in desc else ("启发式" if "假名" in desc or "谚文" in desc else "规则")
-                    snippets = re.findall(r'[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]', finding.get("text", ""))
+                    snippets = re.findall(
+                        r"[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]", finding.get("text", "")
+                    )
                     snippet_str = "; ".join(snippets[:2]) if snippets else ""
-                    lines.append("| %s | %d | %s | 报告 | - | %s | %s | %s | %s |" % (
-                        sheet, run_idx, lang, finding.get("severity", ""), finding.get("category", ""), method, snippet_str))
+                    lines.append(
+                        "| %s | %d | %s | 报告 | - | %s | %s | %s | %s |"
+                        % (
+                            sheet,
+                            run_idx,
+                            lang,
+                            finding.get("severity", ""),
+                            finding.get("category", ""),
+                            method,
+                            snippet_str,
+                        )
+                    )
             lines.append("")
         else:
             lines.append("> ✅ 所有非中文场景均未检测到中文混入")
@@ -3136,9 +3400,16 @@ def _generate_md_report(
         lines.append("| 检测到含中文的执行次数 | %d |" % len(kg_log))
         for entry in kg_log:
             for kf in entry.get("findings", []):
-                lines.append("| %s 第%d次 (%s) | 中文字符 %d, 占比 %.1f%% |" % (
-                    entry["sheet"], entry["run"], entry["lang"],
-                    kf.get("chinese_char_count", 0), kf.get("chinese_ratio", 0) * 100))
+                lines.append(
+                    "| %s 第%d次 (%s) | 中文字符 %d, 占比 %.1f%% |"
+                    % (
+                        entry["sheet"],
+                        entry["run"],
+                        entry["lang"],
+                        kf.get("chinese_char_count", 0),
+                        kf.get("chinese_ratio", 0) * 100,
+                    )
+                )
         lines.append("")
     else:
         lines.append("> ✅ knowledge_graph_tool 返回数据中未检测到中文 (或未调用该工具)")
@@ -3171,8 +3442,10 @@ def _generate_md_report(
                     "is_display_name": "传入显示名称",
                     "no_exec_cmd": "未捕获执行命令",
                 }.get(check["status"], check["status"])
-                lines.append("| %s | %d | %s | %s | %s |" % (
-                    entry["sheet"], entry["run"], entry["lang"], status_label, check["description"]))
+                lines.append(
+                    "| %s | %d | %s | %s | %s |"
+                    % (entry["sheet"], entry["run"], entry["lang"], status_label, check["description"])
+                )
             lines.append("")
     else:
         lines.append("> (未捕获到 KG 工具输入参数，跳过检测)")
@@ -3203,10 +3476,16 @@ def _generate_md_report(
                 for d in check.get("details", []):
                     if d.get("detected_lang"):
                         detected_langs.append(d["detected_lang"])
-                lines.append("| %s | %d | %s | %s | %s |" % (
-                    entry["sheet"], entry["run"], entry["lang"],
-                    ",".join(detected_langs) if detected_langs else "未知",
-                    check["description"]))
+                lines.append(
+                    "| %s | %d | %s | %s | %s |"
+                    % (
+                        entry["sheet"],
+                        entry["run"],
+                        entry["lang"],
+                        ",".join(detected_langs) if detected_langs else "未知",
+                        check["description"],
+                    )
+                )
             lines.append("")
     else:
         lines.append("> (未捕获到 KG 工具输出，跳过检测)")
@@ -3219,10 +3498,14 @@ def _generate_md_report(
         lines.append("")
         lines.append("| 指标 | 值 |")
         lines.append("|------|-----|")
-        lines.append("| 标签使用率 | %d/%d (%.0f%%) |" % (
-            think_analysis["tag_count"], think_analysis["total"], think_analysis["tag_rate"]))
-        lines.append("| 最终结论干净度 | %d/%d (%.0f%%) |" % (
-            think_analysis["clean_count"], think_analysis["total"], think_analysis["clean_rate"]))
+        lines.append(
+            "| 标签使用率 | %d/%d (%.0f%%) |"
+            % (think_analysis["tag_count"], think_analysis["total"], think_analysis["tag_rate"])
+        )
+        lines.append(
+            "| 最终结论干净度 | %d/%d (%.0f%%) |"
+            % (think_analysis["clean_count"], think_analysis["total"], think_analysis["clean_rate"])
+        )
         lines.append("| 标签+干净双达标 | %.0f%% |" % think_analysis["both_rate"])
         lines.append("")
 
@@ -3236,8 +3519,10 @@ def _generate_md_report(
             for rid, d in non_clean:
                 tag_status = "未使用标签" if not d["has_think_tag"] else "结论不干净"
                 meta = run_id_meta.get(rid, {})
-                lines.append("| %s | %s | %d | %s | %s |" % (
-                    rid, meta.get("sheet", "?"), meta.get("run_idx", 0), meta.get("lang", "?"), tag_status))
+                lines.append(
+                    "| %s | %s | %d | %s | %s |"
+                    % (rid, meta.get("sheet", "?"), meta.get("run_idx", 0), meta.get("lang", "?"), tag_status)
+                )
             lines.append("")
         else:
             lines.append("> ✅ 所有执行均达标")
@@ -3269,10 +3554,16 @@ def _generate_md_report(
             lines.append("|------|--------|------|--------|--------|")
             for entry in leak_entries:
                 r = entry["result"]
-                lines.append("| %s | %d | %s | %s | %s |" % (
-                    entry["sheet"], entry["run"], entry["lang"],
-                    ", ".join(r["suppressed"]) if r["suppressed"] else "无",
-                    ", ".join(r["unsuppressed"]) if r["unsuppressed"] else "无"))
+                lines.append(
+                    "| %s | %d | %s | %s | %s |"
+                    % (
+                        entry["sheet"],
+                        entry["run"],
+                        entry["lang"],
+                        ", ".join(r["suppressed"]) if r["suppressed"] else "无",
+                        ", ".join(r["unsuppressed"]) if r["unsuppressed"] else "无",
+                    )
+                )
             lines.append("")
 
     content = "\n".join(lines)
@@ -3378,7 +3669,9 @@ def _execute_single_run(
             logger.info(f"  成功 | 耗时: {format_duration(elapsed)} | Turns: {result.get('turn_count', 0)}")
             logger.info(f"  Run ID: {run_id}")
             logger.info(f"  Tool Calls: {tool_count} | Tokens: {total_tokens}")
-            logger.info(f"  LLM调用: {llm_count}次 | LLM总耗时: {llm_total_time:.1f}s | LLM平均耗时: {llm_avg_time:.1f}s")
+            logger.info(
+                f"  LLM调用: {llm_count}次 | LLM总耗时: {llm_total_time:.1f}s | LLM平均耗时: {llm_avg_time:.1f}s"
+            )
             logger.info(f"  Worker: {worker_time:.1f}s")
             run_ftl = result.get("first_token_latency", 0.0)
             run_aitl = result.get("avg_inter_token_latency", 0.0)
@@ -3388,12 +3681,15 @@ def _execute_single_run(
                 logger.info(f"  首Token时延: {run_ftl:.3f}s | 增量Token平均时延: {run_aitl:.3f}s")
             if run_script_stats:
                 for sn, ss in run_script_stats.items():
-                    if ss['count'] > 0:
-                        total_ms = ss.get('total_ms', 0)
+                    if ss["count"] > 0:
+                        total_ms = ss.get("total_ms", 0)
                         if total_ms > 0:
-                            logger.info(f"  脚本 {sn}: {ss['count']}次 | 总耗时: {total_ms/1000:.1f}s | 平均: {total_ms/ss['count']/1000:.1f}s")
+                            logger.info(
+                                f"  脚本 {sn}: {ss['count']}次 | 总耗时: {total_ms/1000:.1f}s | 平均:"
+                                f" {total_ms/ss['count']/1000:.1f}s"
+                            )
                         else:
-                            total_len = ss.get('total_result_length', 0)
+                            total_len = ss.get("total_result_length", 0)
                             logger.info(f"  脚本 {sn}: {ss['count']}次 | 结果总长: {total_len}")
                     else:
                         logger.info(f"  脚本 {sn}: 0次")
@@ -3409,14 +3705,18 @@ def _execute_single_run(
                 final_output_text = result.get("final_output") or ""
                 if final_output_text.strip():
                     final_classification = _classify_chinese_finding(final_output_text, "final_output", lang_code)
-                    if final_classification["severity"] != "none" and _should_report_finding(final_classification["severity"]):
-                        output_findings.append({
-                            "event_type": "final_output",
-                            "text": final_output_text.strip(),
-                            "category": final_classification["category"],
-                            "severity": final_classification["severity"],
-                            "description": final_classification["description"],
-                        })
+                    if final_classification["severity"] != "none" and _should_report_finding(
+                        final_classification["severity"]
+                    ):
+                        output_findings.append(
+                            {
+                                "event_type": "final_output",
+                                "text": final_output_text.strip(),
+                                "category": final_classification["category"],
+                                "severity": final_classification["severity"],
+                                "description": final_classification["description"],
+                            }
+                        )
                 rd["thinking_findings"] = thinking_findings
                 rd["output_findings"] = output_findings
 
@@ -3426,7 +3726,10 @@ def _execute_single_run(
                     t_warn = sum(1 for finding in thinking_findings if finding.get("severity") == "warn")
                     o_err = sum(1 for finding in output_findings if finding.get("severity") == "error")
                     o_warn = sum(1 for finding in output_findings if finding.get("severity") == "warn")
-                    logger.info(f"  ⚠️ 检测到中文 (思考过程 {len(thinking_findings)} 处: 严重{t_err}/警告{t_warn}; 最终报告 {len(output_findings)} 处: 严重{o_err}/警告{o_warn}):")
+                    logger.info(
+                        f"  ⚠️ 检测到中文 (思考过程 {len(thinking_findings)} 处: 严重{t_err}/警告{t_warn}; 最终报告"
+                        f" {len(output_findings)} 处: 严重{o_err}/警告{o_warn}):"
+                    )
                     for finding in thinking_findings:
                         sev_icon = {"error": "🔴", "warn": "🟡", "info": "ℹ️"}.get(finding.get("severity", ""), "❓")
                         cat_label = {
@@ -3436,11 +3739,15 @@ def _execute_single_run(
                             "mixed_language": "中英混杂",
                             "pure_chinese": "纯中文",
                         }.get(finding.get("category", ""), finding.get("category", ""))
-                        round_match = re.search(r'Round (\d+)', finding['text'])
+                        round_match = re.search(r"Round (\d+)", finding["text"])
                         round_label = f"Round {round_match.group(1)}" if round_match else "?"
-                        chinese_snippets = re.findall(r'[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]', finding['text'])
-                        snippet_display = '; '.join(chinese_snippets[:3]) if chinese_snippets else ''
-                        logger.info(f"    {sev_icon} [思考] {round_label} | {cat_label} | {finding.get('description', '')}")
+                        chinese_snippets = re.findall(
+                            r"[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]", finding["text"]
+                        )
+                        snippet_display = "; ".join(chinese_snippets[:3]) if chinese_snippets else ""
+                        logger.info(
+                            f"    {sev_icon} [思考] {round_label} | {cat_label} | {finding.get('description', '')}"
+                        )
                         if snippet_display:
                             logger.info(f"      中文片段: {snippet_display}")
                     for finding in output_findings:
@@ -3452,8 +3759,10 @@ def _execute_single_run(
                             "mixed_language": "中英混杂",
                             "pure_chinese": "纯中文",
                         }.get(finding.get("category", ""), finding.get("category", ""))
-                        chinese_snippets = re.findall(r'[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]', finding['text'])
-                        snippet_display = '; '.join(chinese_snippets[:3]) if chinese_snippets else ''
+                        chinese_snippets = re.findall(
+                            r"[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]", finding["text"]
+                        )
+                        snippet_display = "; ".join(chinese_snippets[:3]) if chinese_snippets else ""
                         logger.info(f"    {sev_icon} [报告] | {cat_label} | {finding.get('description', '')}")
                         if snippet_display:
                             logger.info(f"      中文片段: {snippet_display}")
@@ -3482,7 +3791,14 @@ def _execute_single_run(
             if kg_inputs:
                 lang_param_check = _validate_kg_language_param(kg_inputs, lang_code)
                 rd["kg_lang_param_check"] = lang_param_check
-                status_icon = {"ok": "✅", "missing": "🔴", "mismatch": "🔴", "is_display_name": "🔴", "no_exec_cmd": "🟡", "no_input": "🟡"}.get(lang_param_check["status"], "❓")
+                status_icon = {
+                    "ok": "✅",
+                    "missing": "🔴",
+                    "mismatch": "🔴",
+                    "is_display_name": "🔴",
+                    "no_exec_cmd": "🟡",
+                    "no_input": "🟡",
+                }.get(lang_param_check["status"], "❓")
                 logger.info(f"  {status_icon} KG工具language参数检测: {lang_param_check['description']}")
                 if lang_param_check.get("exec_cmd"):
                     logger.info(f"    执行命令: {lang_param_check['exec_cmd']}")
@@ -3535,10 +3851,7 @@ def _execute_single_run(
                             break
                     if matched_kw is None:
                         continue
-                    has_result = any(
-                        tf["tool_name"].lower() == tn
-                        for tf in tools_finished
-                    )
+                    has_result = any(tf["tool_name"].lower() == tn for tf in tools_finished)
                     label = f"{ts['tool_name']}({matched_kw})"
                     if has_result:
                         unsuppressed_tools_found.append(label)
@@ -3602,7 +3915,9 @@ def run_tests():
     target_lang_code = ACP_LANG or _resolve_test_language() or "zh"
     target_lang_display = get_lang_display_name(target_lang_code)
     if lang_follow is True:
-        logger.info(f"🌐 语言跟随: 已开启 — 输出目标语言为 {target_lang_display} ({target_lang_code})，将执行中文混入检测")
+        logger.info(
+            f"🌐 语言跟随: 已开启 — 输出目标语言为 {target_lang_display} ({target_lang_code})，将执行中文混入检测"
+        )
     elif lang_follow is False:
         logger.info(f"🌐 语言跟随: 未开启 — 跳过中文混入检测 (Agent 输出可能包含中文)")
     else:
@@ -3615,7 +3930,10 @@ def run_tests():
         acp_suppress_original = _get_acp_suppress_patterns()
         acp_suppress_set = _set_acp_suppress_patterns(ACP_SUPPRESS_SCRIPT_PATTERNS)
         if acp_suppress_set:
-            logger.info(f"🔧 ACP 输出过滤: 已设置 acp_suppress_script_patterns = '{ACP_SUPPRESS_SCRIPT_PATTERNS}' (原值: '{acp_suppress_original}')")
+            logger.info(
+                f"🔧 ACP 输出过滤: 已设置 acp_suppress_script_patterns = '{ACP_SUPPRESS_SCRIPT_PATTERNS}' (原值:"
+                f" '{acp_suppress_original}')"
+            )
         else:
             logger.info(f"⚠️ ACP 输出过滤: 设置失败，将使用服务端默认值")
     elif API_MODE == "acp":
@@ -3714,8 +4032,13 @@ def run_tests():
                 for i in range(1, RUNS_PER_QUESTION + 1):
                     future = executor.submit(
                         _execute_single_run,
-                        message, sheet_name, lang_code, lang_display,
-                        i, RUNS_PER_QUESTION, question_idx,
+                        message,
+                        sheet_name,
+                        lang_code,
+                        lang_display,
+                        i,
+                        RUNS_PER_QUESTION,
+                        question_idx,
                     )
                     future_map[future] = i
 
@@ -3755,10 +4078,14 @@ def run_tests():
                         total_ms_val = ss.get("total_ms", 0)
                         avg_ms = total_ms_val / ss["count"] if ss["count"] > 0 else 0
                         if total_ms_val > 0:
-                            script_summary_parts.append(f"{sn}: {ss['count']}次/{total_ms_val/1000:.1f}s/avg{avg_ms/1000:.1f}s")
+                            script_summary_parts.append(
+                                f"{sn}: {ss['count']}次/{total_ms_val/1000:.1f}s/avg{avg_ms/1000:.1f}s"
+                            )
                         else:
                             script_summary_parts.append(f"{sn}: {ss['count']}次")
-                    _write_cell(ws, row_idx, 9, "; ".join(script_summary_parts) if script_summary_parts else "", style_cell)
+                    _write_cell(
+                        ws, row_idx, 9, "; ".join(script_summary_parts) if script_summary_parts else "", style_cell
+                    )
                     _write_cell(ws, row_idx, 10, run_first_token_latency, style_cell)
                     _write_cell(ws, row_idx, 11, run_avg_inter_token_latency, style_cell)
                     _write_cell(ws, row_idx, 12, f"{lang_display}({lang_code})", style_cell)
@@ -3786,53 +4113,82 @@ def run_tests():
                     global_script_run_details[detail["name"]].append(detail)
 
                 if rd["failure_details"]:
-                    global_failure_details.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "session_id": rd["session_id"],
-                        "failures": rd["failure_details"],
-                    })
+                    global_failure_details.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "session_id": rd["session_id"],
+                            "failures": rd["failure_details"],
+                        }
+                    )
 
                 if rd["thinking_findings"] or rd["output_findings"]:
-                    chinese_intrusion_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "thinking_findings": rd["thinking_findings"],
-                        "output_findings": rd["output_findings"],
-                        "findings": rd["thinking_findings"] + rd["output_findings"],
-                    })
+                    chinese_intrusion_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "thinking_findings": rd["thinking_findings"],
+                            "output_findings": rd["output_findings"],
+                            "findings": rd["thinking_findings"] + rd["output_findings"],
+                        }
+                    )
                 if rd["kg_findings"]:
-                    kg_chinese_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "findings": rd["kg_findings"],
-                    })
+                    kg_chinese_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "findings": rd["kg_findings"],
+                        }
+                    )
                 if rd.get("kg_lang_param_check"):
-                    kg_lang_param_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "check": rd["kg_lang_param_check"],
-                    })
+                    kg_lang_param_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "check": rd["kg_lang_param_check"],
+                        }
+                    )
                 if rd.get("kg_output_lang_check"):
-                    kg_output_lang_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "check": rd["kg_output_lang_check"],
-                    })
+                    kg_output_lang_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "check": rd["kg_output_lang_check"],
+                        }
+                    )
 
                 if rd.get("acp_suppress_result"):
-                    acp_suppress_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "result": rd["acp_suppress_result"],
-                    })
+                    acp_suppress_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "result": rd["acp_suppress_result"],
+                        }
+                    )
 
                 # 收集逐次执行详情
                 _inter = _extract_intermediate_summary(rd.get("result") or {})
-                run_details_log.append({
-                    "sheet": sheet_name, "run": i, "lang": lang_code,
-                    "elapsed": rd["elapsed"], "success": rd["success"],
-                    "run_id": rd["run_id"],
-                    "final_output": (rd.get("result") or {}).get("final_output", ""),
-                    "thinking": _inter["thinking"],
-                    "tool_steps": _inter["tool_steps"],
-                    "progress": _inter["progress"],
-                    "user_visible": _inter.get("user_visible", ""),
-                })
+                run_details_log.append(
+                    {
+                        "sheet": sheet_name,
+                        "run": i,
+                        "lang": lang_code,
+                        "elapsed": rd["elapsed"],
+                        "success": rd["success"],
+                        "run_id": rd["run_id"],
+                        "final_output": (rd.get("result") or {}).get("final_output", ""),
+                        "thinking": _inter["thinking"],
+                        "tool_steps": _inter["tool_steps"],
+                        "progress": _inter["progress"],
+                        "user_visible": _inter.get("user_visible", ""),
+                    }
+                )
 
                 if question_idx < 4:
                     if sheet_name not in flywheel_wos_track:
@@ -3848,8 +4204,13 @@ def run_tests():
             for i in range(1, RUNS_PER_QUESTION + 1):
                 row_idx = start_row + i - 1
                 rd = _execute_single_run(
-                    message, sheet_name, lang_code, lang_display,
-                    i, RUNS_PER_QUESTION, question_idx,
+                    message,
+                    sheet_name,
+                    lang_code,
+                    lang_display,
+                    i,
+                    RUNS_PER_QUESTION,
+                    question_idx,
                 )
 
                 elapsed = rd["elapsed"]
@@ -3874,7 +4235,9 @@ def run_tests():
                     total_ms_val = ss.get("total_ms", 0)
                     avg_ms = total_ms_val / ss["count"] if ss["count"] > 0 else 0
                     if total_ms_val > 0:
-                        script_summary_parts.append(f"{sn}: {ss['count']}次/{total_ms_val/1000:.1f}s/avg{avg_ms/1000:.1f}s")
+                        script_summary_parts.append(
+                            f"{sn}: {ss['count']}次/{total_ms_val/1000:.1f}s/avg{avg_ms/1000:.1f}s"
+                        )
                     else:
                         script_summary_parts.append(f"{sn}: {ss['count']}次")
                 _write_cell(ws, row_idx, 9, "; ".join(script_summary_parts) if script_summary_parts else "", style_cell)
@@ -3904,53 +4267,82 @@ def run_tests():
                     global_script_run_details[detail["name"]].append(detail)
 
                 if rd["failure_details"]:
-                    global_failure_details.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "session_id": rd["session_id"],
-                        "failures": rd["failure_details"],
-                    })
+                    global_failure_details.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "session_id": rd["session_id"],
+                            "failures": rd["failure_details"],
+                        }
+                    )
 
                 if rd["thinking_findings"] or rd["output_findings"]:
-                    chinese_intrusion_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "thinking_findings": rd["thinking_findings"],
-                        "output_findings": rd["output_findings"],
-                        "findings": rd["thinking_findings"] + rd["output_findings"],
-                    })
+                    chinese_intrusion_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "thinking_findings": rd["thinking_findings"],
+                            "output_findings": rd["output_findings"],
+                            "findings": rd["thinking_findings"] + rd["output_findings"],
+                        }
+                    )
                 if rd["kg_findings"]:
-                    kg_chinese_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "findings": rd["kg_findings"],
-                    })
+                    kg_chinese_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "findings": rd["kg_findings"],
+                        }
+                    )
                 if rd.get("kg_lang_param_check"):
-                    kg_lang_param_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "check": rd["kg_lang_param_check"],
-                    })
+                    kg_lang_param_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "check": rd["kg_lang_param_check"],
+                        }
+                    )
                 if rd.get("kg_output_lang_check"):
-                    kg_output_lang_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "check": rd["kg_output_lang_check"],
-                    })
+                    kg_output_lang_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "check": rd["kg_output_lang_check"],
+                        }
+                    )
 
                 if rd.get("acp_suppress_result"):
-                    acp_suppress_log.append({
-                        "sheet": sheet_name, "run": i, "lang": lang_code,
-                        "result": rd["acp_suppress_result"],
-                    })
+                    acp_suppress_log.append(
+                        {
+                            "sheet": sheet_name,
+                            "run": i,
+                            "lang": lang_code,
+                            "result": rd["acp_suppress_result"],
+                        }
+                    )
 
                 # 收集逐次执行详情
                 _inter = _extract_intermediate_summary(rd.get("result") or {})
-                run_details_log.append({
-                    "sheet": sheet_name, "run": i, "lang": lang_code,
-                    "elapsed": rd["elapsed"], "success": rd["success"],
-                    "run_id": rd["run_id"],
-                    "final_output": (rd.get("result") or {}).get("final_output", ""),
-                    "thinking": _inter["thinking"],
-                    "tool_steps": _inter["tool_steps"],
-                    "progress": _inter["progress"],
-                    "user_visible": _inter.get("user_visible", ""),
-                })
+                run_details_log.append(
+                    {
+                        "sheet": sheet_name,
+                        "run": i,
+                        "lang": lang_code,
+                        "elapsed": rd["elapsed"],
+                        "success": rd["success"],
+                        "run_id": rd["run_id"],
+                        "final_output": (rd.get("result") or {}).get("final_output", ""),
+                        "thinking": _inter["thinking"],
+                        "tool_steps": _inter["tool_steps"],
+                        "progress": _inter["progress"],
+                        "user_visible": _inter.get("user_visible", ""),
+                    }
+                )
 
                 if question_idx < 4:
                     if sheet_name not in flywheel_wos_track:
@@ -4028,7 +4420,12 @@ def run_tests():
     logger.info(f"  总执行次数: {global_total_runs}")
     logger.info(f"  全局平均耗时: {global_avg_duration_str} ({global_avg_seconds:.2f}s)")
     logger.info(f"  全局平均 Tokens: {round(global_avg_tokens, 0)}")
-    logger.info(f"  全局成功率: {global_success_count}/{global_total_runs} ({global_success_count / global_total_runs * 100:.1f}%)" if global_total_runs > 0 else "")
+    logger.info(
+        "  全局成功率:"
+        f" {global_success_count}/{global_total_runs} ({global_success_count / global_total_runs * 100:.1f}%)"
+        if global_total_runs > 0
+        else ""
+    )
     logger.info(f"{'='*70}")
 
     logger.info(f"\n{'='*70}")
@@ -4076,12 +4473,17 @@ def run_tests():
             avg_ms = sum(all_ms) / total_calls
             max_ms = max(all_ms)
             logger.info(f"  {script_name}:")
-            logger.info(f"    总执行: {total_calls} 次, 平均: {avg_ms/1000:.2f}s, 最慢: {max_ms/1000:.2f}s, 失败: {fail_count} 次")
+            logger.info(
+                f"    总执行: {total_calls} 次, 平均: {avg_ms/1000:.2f}s, 最慢: {max_ms/1000:.2f}s, 失败:"
+                f" {fail_count} 次"
+            )
             if success_count > 0:
                 success_ms = [d.get("elapsed_ms", 0) for d in success_details]
                 success_avg = sum(success_ms) / success_count
                 success_max = max(success_ms)
-                logger.info(f"    排除失败: {success_count} 次, 平均: {success_avg/1000:.2f}s, 最慢: {success_max/1000:.2f}s")
+                logger.info(
+                    f"    排除失败: {success_count} 次, 平均: {success_avg/1000:.2f}s, 最慢: {success_max/1000:.2f}s"
+                )
             else:
                 logger.info(f"    排除失败: 0 次")
         else:
@@ -4118,7 +4520,9 @@ def run_tests():
                 all_wos_ok = False
             else:
                 coverage = runs / runs * 100 if runs > 0 else 0
-                logger.info(f"  ✅ {sheet}: 执行 {runs} 次, work_order_sync.py 调用 {wos_calls} 次 (覆盖率 {coverage:.0f}%)")
+                logger.info(
+                    f"  ✅ {sheet}: 执行 {runs} 次, work_order_sync.py 调用 {wos_calls} 次 (覆盖率 {coverage:.0f}%)"
+                )
         if all_wos_ok:
             logger.info(f"  ✅ 所有飞轮问题均正常调用 work_order_sync.py")
         else:
@@ -4173,7 +4577,10 @@ def run_tests():
                     if sev in sev_counts:
                         sev_counts[sev] += 1
                     cat_counts[cat] += 1
-                logger.info(f"    🔴 严重: {sev_counts['error']} 处 | 🟡 警告: {sev_counts['warn']} 处 | ℹ️ 信息: {sev_counts['info']} 处")
+                logger.info(
+                    f"    🔴 严重: {sev_counts['error']} 处 | 🟡 警告: {sev_counts['warn']} 处 | ℹ️ 信息:"
+                    f" {sev_counts['info']} 处"
+                )
                 for cat, count in sorted(cat_counts.items(), key=lambda x: x[1], reverse=True):
                     label = category_labels.get(cat, cat)
                     logger.info(f"    {label}: {count} 处")
@@ -4193,13 +4600,21 @@ def run_tests():
                 if output_errors:
                     logger.info(f"\n  🔴 最终报告严重问题详情:")
                     for entry in chinese_intrusion_log:
-                        entry_output_errors = [finding for finding in entry.get("output_findings", []) if finding.get("severity") == "error"]
+                        entry_output_errors = [
+                            finding
+                            for finding in entry.get("output_findings", [])
+                            if finding.get("severity") == "error"
+                        ]
                         if entry_output_errors:
                             logger.info(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):")
                             for finding in entry_output_errors:
-                                cat_label = category_labels.get(finding.get("category", ""), finding.get("category", ""))
+                                cat_label = category_labels.get(
+                                    finding.get("category", ""), finding.get("category", "")
+                                )
                                 logger.info(f"    🔴 [报告] | [{cat_label}] {finding.get('description', '')}")
-                                chinese_snippets = re.findall(r'[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]', finding['text'])
+                                chinese_snippets = re.findall(
+                                    r"[\u4e00-\u9fff][\u4e00-\u9fff：，、（）\s\w]*[\u4e00-\u9fff]", finding["text"]
+                                )
                                 if chinese_snippets:
                                     logger.info(f"       中文片段: {'; '.join(chinese_snippets[:3])}")
 
@@ -4209,9 +4624,16 @@ def run_tests():
                     logger.info(f"\n  🔴 思考过程严重问题详情 (仅显示前5条):")
                     shown = 0
                     for entry in chinese_intrusion_log:
-                        entry_thinking_errors = [finding for finding in entry.get("thinking_findings", []) if finding.get("severity") == "error"]
+                        entry_thinking_errors = [
+                            finding
+                            for finding in entry.get("thinking_findings", [])
+                            if finding.get("severity") == "error"
+                        ]
                         if entry_thinking_errors:
-                            logger.info(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {len(entry_thinking_errors)} 处")
+                            logger.info(
+                                f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):"
+                                f" {len(entry_thinking_errors)} 处"
+                            )
                             shown += 1
                             if shown >= 5:
                                 break
@@ -4221,7 +4643,10 @@ def run_tests():
         non_zh_total = sum(RUNS_PER_QUESTION for q in QUESTIONS if q.get("lang", "zh") not in ("zh", "zh-cn"))
         if non_zh_total > 0:
             non_zh_clean = non_zh_total - len(chinese_intrusion_log)
-            logger.info(f"  📊 非中文场景共 {non_zh_total} 次执行, 无中文混入 {non_zh_clean}/{non_zh_total} ({non_zh_clean / non_zh_total * 100:.1f}%)")
+            logger.info(
+                f"  📊 非中文场景共 {non_zh_total} 次执行, 无中文混入"
+                f" {non_zh_clean}/{non_zh_total} ({non_zh_clean / non_zh_total * 100:.1f}%)"
+            )
         else:
             logger.info(f"  📊 无非中文场景执行, 跳过中文混入统计")
 
@@ -4249,7 +4674,10 @@ def run_tests():
         for entry in kg_chinese_log:
             logger.info(f"  [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}):")
             for kf in entry.get("findings", []):
-                logger.info(f"    中文字符: {kf['chinese_char_count']} | 占比: {kf['chinese_ratio']:.1%} | 键: {kf['chinese_keys'][:5]}")
+                logger.info(
+                    f"    中文字符: {kf['chinese_char_count']} | 占比: {kf['chinese_ratio']:.1%} | 键:"
+                    f" {kf['chinese_keys'][:5]}"
+                )
     else:
         logger.info(f"  ✅ knowledge_graph_tool 返回数据中未检测到中文 (或未调用该工具)")
 
@@ -4263,7 +4691,14 @@ def run_tests():
         for entry in kg_lang_param_log:
             check = entry["check"]
             status = check["status"]
-            icon = {"ok": "✅", "missing": "🔴", "mismatch": "🔴", "is_display_name": "🔴", "no_exec_cmd": "🟡", "no_input": "🟡"}.get(status, "❓")
+            icon = {
+                "ok": "✅",
+                "missing": "🔴",
+                "mismatch": "🔴",
+                "is_display_name": "🔴",
+                "no_exec_cmd": "🟡",
+                "no_input": "🟡",
+            }.get(status, "❓")
             logger.info(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {check['description']}")
             if check.get("exec_cmd"):
                 logger.info(f"     执行命令: {check['exec_cmd']}")
@@ -4277,7 +4712,9 @@ def run_tests():
         mismatch_count = sum(1 for e in kg_output_lang_log if e["check"]["status"] == "mismatch")
         no_output_count = sum(1 for e in kg_output_lang_log if e["check"]["status"] == "no_output")
         logger.info(f"  共 {len(kg_output_lang_log)} 次调用检测到输出")
-        logger.info(f"  ✅ 语言匹配: {ok_count} 次 | 🔴 语言不匹配: {mismatch_count} 次 | 🟡 无输出: {no_output_count} 次")
+        logger.info(
+            f"  ✅ 语言匹配: {ok_count} 次 | 🔴 语言不匹配: {mismatch_count} 次 | 🟡 无输出: {no_output_count} 次"
+        )
         for entry in kg_output_lang_log:
             check = entry["check"]
             if check["status"] in ("no_output", "skip_zh", "ok"):
@@ -4285,7 +4722,10 @@ def run_tests():
             icon = "🔴"
             logger.info(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): {check['description']}")
             for d in check.get("details", []):
-                logger.info(f"     检测语言={d['detected_lang']} | 目标={d['target_lang']} | 匹配={'是' if d['is_match'] else '否'}")
+                logger.info(
+                    f"     检测语言={d['detected_lang']} | 目标={d['target_lang']} |"
+                    f" 匹配={'是' if d['is_match'] else '否'}"
+                )
     else:
         logger.info(f"  (未捕获到 KG 工具输出，跳过检测)")
 
@@ -4301,7 +4741,10 @@ def run_tests():
             icon = "✅" if r["status"] == "ok" else "⚠️"
             suppressed_str = ", ".join(r["suppressed"]) if r["suppressed"] else "无"
             unsuppressed_str = ", ".join(r["unsuppressed"]) if r["unsuppressed"] else "无"
-            logger.info(f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): 已过滤={suppressed_str}, 未过滤={unsuppressed_str}")
+            logger.info(
+                f"  {icon} [{entry['sheet']}] 第{entry['run']}次 ({entry['lang']}): 已过滤={suppressed_str},"
+                f" 未过滤={unsuppressed_str}"
+            )
     else:
         if API_MODE == "acp":
             logger.info(f"  (未配置 ACP_SUPPRESS_SCRIPT_PATTERNS 或未触发过滤检测)")
@@ -4330,8 +4773,18 @@ def run_tests():
         "success_rate": global_success_count / global_total_runs * 100 if global_total_runs > 0 else 0,
         "avg_duration": global_avg_duration_str,
         "avg_tokens": global_avg_tokens,
-        "avg_first_token_latency": (first4_total_first_token_latency + rest_total_first_token_latency) / (first4_success_count + rest_success_count) if (first4_success_count + rest_success_count) > 0 else 0,
-        "avg_inter_token_latency": (first4_total_avg_inter_token_latency + rest_total_avg_inter_token_latency) / (first4_success_count + rest_success_count) if (first4_success_count + rest_success_count) > 0 else 0,
+        "avg_first_token_latency": (
+            (first4_total_first_token_latency + rest_total_first_token_latency)
+            / (first4_success_count + rest_success_count)
+            if (first4_success_count + rest_success_count) > 0
+            else 0
+        ),
+        "avg_inter_token_latency": (
+            (first4_total_avg_inter_token_latency + rest_total_avg_inter_token_latency)
+            / (first4_success_count + rest_success_count)
+            if (first4_success_count + rest_success_count) > 0
+            else 0
+        ),
         "avg_llm_call_count": global_total_llm_count / global_total_runs if global_total_runs > 0 else 0,
         "avg_llm_time": global_total_llm_time / global_total_runs if global_total_runs > 0 else 0,
         "avg_llm_avg_time": global_total_llm_time / global_total_llm_count if global_total_llm_count > 0 else 0,

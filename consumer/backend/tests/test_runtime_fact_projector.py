@@ -11,7 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from agent.core.shared.runtime_fact_projector import (
     RuntimeFactPersistencePending,
     _RuntimeFactBatcher,
@@ -319,6 +318,7 @@ def test_runtime_fact_in_flight_timeout_reports_pending_receipt(tmp_path: Path, 
     assert snapshot is not None
 
     class InFlightBatcher:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def submit(self, *_args, **_kwargs):
             raise RuntimeFactPersistencePending("write remains in progress")
 

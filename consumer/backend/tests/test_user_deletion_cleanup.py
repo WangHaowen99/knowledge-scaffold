@@ -1,25 +1,29 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
 import json
 import threading
 from types import SimpleNamespace
 
 import pytest
-
+from api.auth import user_deletion
+from api.auth.auth import AuthUser
+from api.routes.auth import auth_router
+from api.testing import TestApplication
+from auth_test_backend import AuthManager
+from backend_synthetic_credentials import (
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    MCP_TOKEN_SECRET,
+    STRONG_PASSWORD,
+    STRONG_PASSWORD_2,
+)
+from fastapi.testclient import TestClient
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.token_service import (
     MCPTokenAuthError,
     create_mcp_token,
     verify_mcp_token,
 )
-from api.auth import user_deletion
-from auth_test_backend import AuthManager
-from api.auth.auth import AuthUser
-from api.routes.auth import auth_router
 from utils.identifiers import safe_user_storage_key
 from workspace.workspaces import (
     create_workspace,
@@ -30,16 +34,13 @@ from workspace.workspaces import (
 )
 
 
-STRONG_PASSWORD = "Zq7#Wmx2Lp8!"
-
-
 def _mcp_config(path):
     return MCPRuntimeConfig(
         server_host="127.0.0.1",
         server_port=7488,
         public_base_url="",
         agentic_base_url="",
-        token_secret="test-secret-at-least-32-characters-long",
+        token_secret=MCP_TOKEN_SECRET,
         token_algorithm="HS256",
         token_issuer="meta-wise",
         token_audience="meta-wise-mcp",
@@ -59,14 +60,14 @@ def deletion_env(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
     monkeypatch.setenv("MEMORY_WORKSPACE_ROOT", str(memory_root))
     monkeypatch.setenv("MCP_TOKEN_STORE_PATH", str(token_store_path))
-    monkeypatch.setenv("MCP_TOKEN_SECRET", "test-mcp-secret")
+    monkeypatch.setenv("MCP_TOKEN_SECRET", MCP_TOKEN_SECRET)
     monkeypatch.setenv("MCP_TOKEN_ALGORITHM", "HS256")
     monkeypatch.setenv("MCP_TOKEN_ISSUER", "meta-wise")
     monkeypatch.setenv("MCP_TOKEN_AUDIENCE", "meta-wise-mcp")
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong#2026")
-    login = auth_manager.login("admin", "RootStrong#2026")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, STRONG_PASSWORD_2)
+    login = auth_manager.login("admin", STRONG_PASSWORD_2)
     assert login is not None
 
     app = TestApplication()
@@ -158,11 +159,7 @@ def test_delete_member_archives_data_revokes_mcp_and_prevents_reuse_inheritance(
     with pytest.raises(MCPTokenAuthError):
         verify_mcp_token(mcp_token, config=mcp_config)
 
-    manifests = list(
-        (deletion_env.runtime_root / "system" / "deleted-user-data").glob(
-            "*/manifest.json"
-        )
-    )
+    manifests = list((deletion_env.runtime_root / "system" / "deleted-user-data").glob("*/manifest.json"))
     assert len(manifests) == 1
     assert json.loads(manifests[0].read_text(encoding="utf-8"))["username"] == "alice"
     assert user_deletion.list_user_deletion_reconciliations() == []
@@ -252,9 +249,7 @@ def test_deletion_intent_is_durable_before_identity_delete_and_blocks_reuse(
     observed_records = []
 
     def fail_delete(username):
-        observed_records.extend(
-            user_deletion.list_user_deletion_reconciliations()
-        )
+        observed_records.extend(user_deletion.list_user_deletion_reconciliations())
         raise OSError("simulated uncertain identity deletion")
 
     monkeypatch.setattr(deletion_env.auth_manager, "delete_user", fail_delete)

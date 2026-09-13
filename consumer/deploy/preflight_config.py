@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, TextIO, Tuple, Union
 from urllib.parse import urlparse
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -217,9 +216,7 @@ def _load_compose_config_json(
     env_files: ComposeEnvFiles,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     resolved_env_files = (
-        (env_files.resolve(),)
-        if isinstance(env_files, Path)
-        else tuple(path.resolve() for path in env_files)
+        (env_files.resolve(),) if isinstance(env_files, Path) else tuple(path.resolve() for path in env_files)
     )
     if not resolved_env_files:
         return None, [{"type": "compose_config_unavailable", "reason": "no env file"}]
@@ -250,12 +247,14 @@ def _load_compose_config_json(
         compose_args = [*base_cmd]
         for env_file in resolved_env_files:
             compose_args.extend(("--env-file", str(env_file)))
-        compose_args.extend((
-            "-f",
-            str(compose_file.resolve()),
-            "--project-directory",
-            str(project_dir),
-        ))
+        compose_args.extend(
+            (
+                "-f",
+                str(compose_file.resolve()),
+                "--project-directory",
+                str(project_dir),
+            )
+        )
         try:
             result = subprocess.run(
                 [*compose_args, "config", "--format", "json"],
@@ -293,11 +292,7 @@ def _load_compose_config_json(
                         return payload, []
                     last_failure = parse_failure or "compose config fallback parse failed"
                     continue
-            last_failure = (
-                "compose config failed"
-                if base_cmd == ("docker-compose",)
-                else "compose config json failed"
-            )
+            last_failure = "compose config failed" if base_cmd == ("docker-compose",) else "compose config json failed"
             continue
         try:
             payload = json.loads(result.stdout or "{}")
@@ -310,10 +305,12 @@ def _load_compose_config_json(
 
         return payload, []
 
-    return None, [{
-        "type": "compose_config_unavailable",
-        "detail": last_failure or "docker compose config --format json is unavailable",
-    }]
+    return None, [
+        {
+            "type": "compose_config_unavailable",
+            "detail": last_failure or "docker compose config --format json is unavailable",
+        }
+    ]
 
 
 def _published_host_port(
@@ -385,10 +382,12 @@ def _release_storage_findings(
     ]
     for fragment in required_compose_fragments:
         if fragment not in compose_text:
-            errors.append({
-                "type": "missing_persistent_storage_compose_contract",
-                "fragment": fragment,
-            })
+            errors.append(
+                {
+                    "type": "missing_persistent_storage_compose_contract",
+                    "fragment": fragment,
+                }
+            )
 
     storage_config = _read_json_document(runtime_root / "config" / "system_config.json").get("storage")
     if not isinstance(storage_config, dict):
@@ -410,28 +409,36 @@ def _release_storage_findings(
                 continue
             if _relative_path(normalized):
                 target = warnings if pre_migration else errors
-                target.append({
-                    "type": "relative_storage_path",
-                    "source": source_name,
-                    "field": field,
-                    "value": normalized,
-                    "canonical": canonical_path,
-                })
+                target.append(
+                    {
+                        "type": "relative_storage_path",
+                        "source": source_name,
+                        "field": field,
+                        "value": normalized,
+                        "canonical": canonical_path,
+                    }
+                )
                 continue
             if not normalized.startswith(runtime_container_root + "/"):
                 target = warnings if pre_migration else errors
-                target.append({
-                    "type": "storage_path_outside_runtime_root",
-                    "source": source_name,
-                    "field": field,
-                    "value": normalized,
-                    "runtime_root": runtime_container_root,
-                })
+                target.append(
+                    {
+                        "type": "storage_path_outside_runtime_root",
+                        "source": source_name,
+                        "field": field,
+                        "value": normalized,
+                        "runtime_root": runtime_container_root,
+                    }
+                )
 
-    return errors, warnings, {
-        "runtime_root": runtime_container_root,
-        "canonical_paths": canonical_paths,
-    }
+    return (
+        errors,
+        warnings,
+        {
+            "runtime_root": runtime_container_root,
+            "canonical_paths": canonical_paths,
+        },
+    )
 
 
 def _graph_data_source_findings(
@@ -448,11 +455,13 @@ def _graph_data_source_findings(
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            errors.append({
-                "workspace_id": workspace_id,
-                "type": "invalid_ontology_data_sources",
-                "detail": str(exc),
-            })
+            errors.append(
+                {
+                    "workspace_id": workspace_id,
+                    "type": "invalid_ontology_data_sources",
+                    "detail": str(exc),
+                }
+            )
             continue
         sources = payload.get("sources") if isinstance(payload, dict) else None
         if not isinstance(sources, dict):
@@ -463,12 +472,14 @@ def _graph_data_source_findings(
                 continue
             mode = str(source.get("mode") or "direct_provider").strip()
             if mode != "direct_provider":
-                errors.append({
-                    "workspace_id": workspace_id,
-                    "ontology_id": str(ontology_id),
-                    "type": "legacy_data_source_mode",
-                    "mode": mode,
-                })
+                errors.append(
+                    {
+                        "workspace_id": workspace_id,
+                        "ontology_id": str(ontology_id),
+                        "type": "legacy_data_source_mode",
+                        "mode": mode,
+                    }
+                )
                 continue
             provider = str(source.get("provider") or "").strip().lower()
             if provider not in {"neo4j", "hugegraph"}:
@@ -477,51 +488,61 @@ def _graph_data_source_findings(
             resolved_ontology_id = str(ontology_id or "<missing>")
             config = source.get("config")
             if not isinstance(config, dict):
-                errors.append({
-                    "workspace_id": workspace_id,
-                    "ontology_id": resolved_ontology_id,
-                    "type": "invalid_graph_config",
-                })
+                errors.append(
+                    {
+                        "workspace_id": workspace_id,
+                        "ontology_id": resolved_ontology_id,
+                        "type": "invalid_graph_config",
+                    }
+                )
                 continue
             required = ["uri", "username", "password"] if provider == "neo4j" else ["url"]
             for field in required:
                 if not str(config.get(field) or "").strip():
-                    errors.append({
-                        "workspace_id": workspace_id,
-                        "ontology_id": resolved_ontology_id,
-                        "provider": provider,
-                        "type": "missing_graph_field",
-                        "field": field,
-                    })
+                    errors.append(
+                        {
+                            "workspace_id": workspace_id,
+                            "ontology_id": resolved_ontology_id,
+                            "provider": provider,
+                            "type": "missing_graph_field",
+                            "field": field,
+                        }
+                    )
             secret_fields = ["password"] if provider == "neo4j" else ["password", "token"]
             for field in secret_fields:
                 secret = str(config.get(field) or "").strip()
                 if secret and not secret.startswith("enc:v1:"):
-                    errors.append({
+                    errors.append(
+                        {
+                            "workspace_id": workspace_id,
+                            "ontology_id": resolved_ontology_id,
+                            "provider": provider,
+                            "type": "plaintext_graph_secret",
+                            "field": field,
+                        }
+                    )
+            if not str(config.get("workspace_property") or "").strip():
+                errors.append(
+                    {
                         "workspace_id": workspace_id,
                         "ontology_id": resolved_ontology_id,
                         "provider": provider,
-                        "type": "plaintext_graph_secret",
-                        "field": field,
-                    })
-            if not str(config.get("workspace_property") or "").strip():
-                errors.append({
-                    "workspace_id": workspace_id,
-                    "ontology_id": resolved_ontology_id,
-                    "provider": provider,
-                    "type": "missing_graph_scope_field",
-                    "field": "workspace_property",
-                })
+                        "type": "missing_graph_scope_field",
+                        "field": "workspace_property",
+                    }
+                )
             if not str(config.get("ontology_property") or "").strip():
-                warnings.append({
-                    "workspace_id": workspace_id,
-                    "ontology_id": resolved_ontology_id,
-                    "provider": provider,
-                    "type": "missing_optional_graph_scope_field",
-                    "field": "ontology_property",
-                    "reason": "missing" if "ontology_property" not in config else "blank",
-                    "effect": "ontology_scope_disabled",
-                })
+                warnings.append(
+                    {
+                        "workspace_id": workspace_id,
+                        "ontology_id": resolved_ontology_id,
+                        "provider": provider,
+                        "type": "missing_optional_graph_scope_field",
+                        "field": "ontology_property",
+                        "reason": "missing" if "ontology_property" not in config else "blank",
+                        "effect": "ontology_scope_disabled",
+                    }
+                )
     return errors, warnings, count
 
 
@@ -562,9 +583,7 @@ def validate_config(
         errors.append({"type": "weak_or_missing_auth_admin_token", "minimum_length": 16})
     if not bootstrap_admin_password and not bootstrap_user_store.is_file():
         errors.append({"type": "weak_or_missing_bootstrap_admin_password"})
-    elif bootstrap_admin_password and not _bootstrap_password_is_strong(
-        bootstrap_admin_password
-    ):
+    elif bootstrap_admin_password and not _bootstrap_password_is_strong(bootstrap_admin_password):
         errors.append({"type": "weak_or_missing_bootstrap_admin_password"})
     if bootstrap_admin_password and bootstrap_admin_password == admin_token:
         errors.append({"type": "bootstrap_password_reuses_auth_admin_token"})

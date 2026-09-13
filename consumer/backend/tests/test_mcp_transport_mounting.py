@@ -9,12 +9,12 @@ import httpx
 import pytest
 from starlette.applications import Starlette
 
-from integration.mcp.config import MCPRuntimeConfig
+from integration.mcp.config import MCPRuntimeConfig, validate_mcp_runtime_config
 from api.protocols.mcp import server as mcp_server
+from backend_synthetic_credentials import synthetic_secret
 from integration.mcp.scope import MCPRequestScope
 from integration.mcp.service_catalog import list_mcp_service_cards
 from integration.mcp.token_service import MCPTokenAuthError
-
 
 ENDPOINT_ID = "cdd181f5b6cb47a9"
 OTHER_ENDPOINT_ID = "a" * 16
@@ -24,9 +24,9 @@ def _config(tmp_path: Path, transport: str) -> MCPRuntimeConfig:
     return MCPRuntimeConfig(
         server_host="127.0.0.1",
         server_port=7488,
-        public_base_url="http://mcp.example",
+        public_base_url="https://service.example.net",
         agentic_base_url="",
-        token_secret="test-secret-at-least-32-characters-long",
+        token_secret=synthetic_secret("mcp_transport_mounting-credential-02"),
         token_algorithm="HS256",
         token_issuer="meta-wise",
         token_audience="meta-wise-mcp",
@@ -38,16 +38,51 @@ def _config(tmp_path: Path, transport: str) -> MCPRuntimeConfig:
     )
 
 
+def test_mcp_public_base_url_rejects_external_http(tmp_path):
+    cfg = MCPRuntimeConfig(
+        **{
+            **_config(tmp_path, "both").__dict__,
+            "public_base_url": "http://service.example.net",
+        }
+    )
+
+    with pytest.raises(ValueError, match="必须使用 HTTPS"):
+        validate_mcp_runtime_config(cfg)
+
+
+def test_mcp_public_base_url_allows_loopback_http(tmp_path):
+    cfg = MCPRuntimeConfig(
+        **{
+            **_config(tmp_path, "both").__dict__,
+            "public_base_url": "http://127.0.0.1:7488",
+        }
+    )
+
+    validate_mcp_runtime_config(cfg)
+    assert cfg.effective_public_base_url() == "http://127.0.0.1:7488"
+
+
+def test_mcp_public_base_url_is_not_derived_from_internal_host(tmp_path):
+    cfg = MCPRuntimeConfig(
+        **{
+            **_config(tmp_path, "both").__dict__,
+            "server_host": "mcp",
+            "public_base_url": "",
+        }
+    )
+
+    assert cfg.effective_public_base_url() == ""
+    cards = list_mcp_service_cards(cfg, mcp_endpoint_id=ENDPOINT_ID)
+    assert all(card["active_url"] == "" for card in cards)
+
+
 def test_search_tool_schemas_make_ontology_id_optional(tmp_path):
     async def load_schemas():
         server = mcp_server.create_mcp_server(
             _config(tmp_path, "streamable-http"),
             toolset="search",
         )
-        return {
-            name: tool.parameters
-            for name, tool in (await server.get_tools()).items()
-        }
+        return {name: tool.parameters for name, tool in (await server.get_tools()).items()}
 
     schemas = asyncio.run(load_schemas())
 
@@ -141,9 +176,9 @@ def test_mcp_service_catalog_reports_only_exposed_transport_urls(tmp_path):
         mcp_endpoint_id=ENDPOINT_ID,
     )
     http_search = next(card for card in http_cards if card["toolset"] == "search")
-    assert http_search["active_url"] == "http://mcp.example/{}/search/mcp".format(ENDPOINT_ID)
-    assert http_search["streamable_http_url"] == "http://mcp.example/{}/search/mcp".format(ENDPOINT_ID)
-    assert http_search["mcp_url"] == "http://mcp.example/{}/search/mcp".format(ENDPOINT_ID)
+    assert http_search["active_url"] == "https://service.example.net/{}/search/mcp".format(ENDPOINT_ID)
+    assert http_search["streamable_http_url"] == "https://service.example.net/{}/search/mcp".format(ENDPOINT_ID)
+    assert http_search["mcp_url"] == "https://service.example.net/{}/search/mcp".format(ENDPOINT_ID)
     assert http_search["sse_url"] == ""
     assert http_search["sse_enabled"] is False
 
@@ -152,10 +187,10 @@ def test_mcp_service_catalog_reports_only_exposed_transport_urls(tmp_path):
         mcp_endpoint_id=ENDPOINT_ID,
     )
     sse_search = next(card for card in sse_cards if card["toolset"] == "search")
-    assert sse_search["active_url"] == "http://mcp.example/{}/search/sse".format(ENDPOINT_ID)
+    assert sse_search["active_url"] == "https://service.example.net/{}/search/sse".format(ENDPOINT_ID)
     assert sse_search["streamable_http_url"] == ""
     assert sse_search["mcp_url"] == ""
-    assert sse_search["sse_url"] == "http://mcp.example/{}/search/sse".format(ENDPOINT_ID)
+    assert sse_search["sse_url"] == "https://service.example.net/{}/search/sse".format(ENDPOINT_ID)
     assert sse_search["sse_enabled"] is True
 
 
@@ -194,8 +229,8 @@ def test_mcp_http_root_app_mounts_all_four_endpoints_for_both_transport(monkeypa
 
     cards = list_mcp_service_cards(cfg, mcp_endpoint_id=ENDPOINT_ID)
     search = next(card for card in cards if card["toolset"] == "search")
-    assert search["streamable_http_url"] == "http://mcp.example/{}/search/mcp".format(ENDPOINT_ID)
-    assert search["sse_url"] == "http://mcp.example/{}/search/sse".format(ENDPOINT_ID)
+    assert search["streamable_http_url"] == "https://service.example.net/{}/search/mcp".format(ENDPOINT_ID)
+    assert search["sse_url"] == "https://service.example.net/{}/search/sse".format(ENDPOINT_ID)
 
 
 def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
@@ -281,9 +316,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
 
     def jsonrpc_payload(response):
         if response.headers.get("content-type", "").startswith("text/event-stream"):
-            data_line = next(
-                line for line in response.text.splitlines() if line.startswith("data: ")
-            )
+            data_line = next(line for line in response.text.splitlines() if line.startswith("data: "))
             return json.loads(data_line.removeprefix("data: "))
         return response.json() if response.content else None
 
@@ -355,9 +388,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                     },
                 )
                 tools_payload = jsonrpc_payload(tools_response)
-                assert [
-                    item["name"] for item in tools_payload["result"]["tools"]
-                ] == ["chat"]
+                assert [item["name"] for item in tools_payload["result"]["tools"]] == ["chat"]
 
                 call_response = await client.post(
                     endpoint_path,
@@ -376,9 +407,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                     },
                 )
                 call_payload = jsonrpc_payload(call_response)
-                assert call_payload["result"]["structuredContent"][
-                    "endpoint_id"
-                ] == ENDPOINT_ID
+                assert call_payload["result"]["structuredContent"]["endpoint_id"] == ENDPOINT_ID
 
                 progress_response = await client.post(
                     endpoint_path,
@@ -405,22 +434,12 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                     if line.startswith("data: ")
                 ]
                 notification_payload = next(
-                    item
-                    for item in progress_messages
-                    if item.get("method") == "notifications/progress"
+                    item for item in progress_messages if item.get("method") == "notifications/progress"
                 )
-                assert notification_payload["params"]["progressToken"] == (
-                    "progress_demo"
-                )
-                assert json.loads(notification_payload["params"]["message"])[
-                    "event"
-                ] == "run.started"
-                terminal_payload = next(
-                    item for item in progress_messages if item.get("id") == 4
-                )
-                assert terminal_payload["result"]["structuredContent"][
-                    "endpoint_id"
-                ] == ENDPOINT_ID
+                assert notification_payload["params"]["progressToken"] == "progress_demo"
+                assert json.loads(notification_payload["params"]["message"])["event"] == "run.started"
+                terminal_payload = next(item for item in progress_messages if item.get("id") == 4)
+                assert terminal_payload["result"]["structuredContent"]["endpoint_id"] == ENDPOINT_ID
 
                 terminated = await client.delete(endpoint_path, headers=headers)
                 assert terminated.status_code == 200
@@ -490,11 +509,7 @@ def test_workspace_endpoint_binding_app_validates_and_resets_context():
             receive,
             send,
         )
-        return next(
-            message["status"]
-            for message in messages
-            if message["type"] == "http.response.start"
-        )
+        return next(message["status"] for message in messages if message["type"] == "http.response.start")
 
     async def exercise_binding():
         assert await invoke(ENDPOINT_ID) == 200
@@ -559,28 +574,33 @@ def test_workspace_endpoint_binding_app_pins_and_releases_http_session():
             receive,
             send,
         )
-        start = next(
-            message
-            for message in messages
-            if message["type"] == "http.response.start"
-        )
+        start = next(message for message in messages if message["type"] == "http.response.start")
         return start["status"]
 
     async def exercise_binding():
         assert await invoke(ENDPOINT_ID) == 200
-        assert await invoke(
-            OTHER_ENDPOINT_ID,
-            session_id="session-a",
-        ) == 404
-        assert await invoke(
-            ENDPOINT_ID,
-            method="DELETE",
-            session_id="session-a",
-        ) == 200
-        assert await invoke(
-            OTHER_ENDPOINT_ID,
-            session_id="session-a",
-        ) == 200
+        assert (
+            await invoke(
+                OTHER_ENDPOINT_ID,
+                session_id="session-a",
+            )
+            == 404
+        )
+        assert (
+            await invoke(
+                ENDPOINT_ID,
+                method="DELETE",
+                session_id="session-a",
+            )
+            == 200
+        )
+        assert (
+            await invoke(
+                OTHER_ENDPOINT_ID,
+                session_id="session-a",
+            )
+            == 200
+        )
 
     asyncio.run(exercise_binding())
 
@@ -691,20 +711,10 @@ def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
             receive,
             send,
         )
-        start = next(
-            message
-            for message in messages
-            if message["type"] == "http.response.start"
-        )
-        body = next(
-            message["body"]
-            for message in messages
-            if message["type"] == "http.response.body"
-        )
+        start = next(message for message in messages if message["type"] == "http.response.start")
+        body = next(message["body"] for message in messages if message["type"] == "http.response.body")
         assert start["status"] == 503
-        assert json.loads(body)["error"]["message"] == (
-            "Server session capacity reached"
-        )
+        assert json.loads(body)["error"]["message"] == "Server session capacity reached"
 
     asyncio.run(exercise_binding())
     assert child_calls == []
@@ -754,11 +764,7 @@ def test_workspace_endpoint_binding_tracks_session_from_error_response():
             receive,
             send,
         )
-        start = next(
-            message
-            for message in messages
-            if message["type"] == "http.response.start"
-        )
+        start = next(message for message in messages if message["type"] == "http.response.start")
         assert start["status"] == 400
 
     asyncio.run(exercise_binding())
@@ -876,6 +882,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
         )
 
     monkeypatch.setattr(mcp_server, "resolve_mcp_scope_from_token", resolve_scope)
+
     async def execute_chat_tool(_args, *, scope, progress_callback=None):
         assert progress_callback is None
         return {
@@ -895,11 +902,13 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
         receive_queue: asyncio.Queue[dict] = asyncio.Queue()
         send_queue: asyncio.Queue[dict] = asyncio.Queue()
         event_buffer = ""
-        await receive_queue.put({
-            "type": "http.request",
-            "body": b"",
-            "more_body": False,
-        })
+        await receive_queue.put(
+            {
+                "type": "http.request",
+                "body": b"",
+                "more_body": False,
+            }
+        )
 
         async def receive():
             return await receive_queue.get()
@@ -912,8 +921,8 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
             while True:
                 separator = re.search(r"\r?\n\r?\n", event_buffer)
                 if separator is not None:
-                    raw_event = event_buffer[:separator.start()]
-                    event_buffer = event_buffer[separator.end():]
+                    raw_event = event_buffer[: separator.start()]
+                    event_buffer = event_buffer[separator.end() :]
                     event_match = re.search(
                         r"event: ([^\r\n]+)\r?\ndata: ([^\r\n]+)",
                         raw_event,
@@ -1021,9 +1030,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
                 event_name, event_data = await next_sse_event()
                 tools_payload = json.loads(event_data)
                 assert event_name == "message"
-                assert [
-                    item["name"] for item in tools_payload["result"]["tools"]
-                ] == ["chat"]
+                assert [item["name"] for item in tools_payload["result"]["tools"]] == ["chat"]
 
                 call_response = await client.post(
                     message_url,
@@ -1042,9 +1049,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
                 event_name, event_data = await next_sse_event()
                 call_payload = json.loads(event_data)
                 assert event_name == "message"
-                assert call_payload["result"]["structuredContent"][
-                    "endpoint_id"
-                ] == ENDPOINT_ID
+                assert call_payload["result"]["structuredContent"]["endpoint_id"] == ENDPOINT_ID
         finally:
             await receive_queue.put({"type": "http.disconnect"})
             await asyncio.wait_for(sse_task, timeout=5)
@@ -1106,4 +1111,141 @@ def test_run_server_runs_startup_migrations_before_listening(monkeypatch, tmp_pa
         "migrate",
         "create-app",
         "listen:True:127.0.0.1:7488",
+    ]
+
+
+def test_run_server_runs_startup_migrations_before_loading_implicit_config(
+    monkeypatch,
+    tmp_path,
+):
+    calls: list[str] = []
+    config = _config(tmp_path, "streamable-http")
+    fake_app = object()
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_load_mcp_dotenv",
+        lambda: calls.append("load-dotenv"),
+    )
+    monkeypatch.setattr(
+        "migrations.runner.run_startup_migrations",
+        lambda: calls.append("migrate"),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "load_mcp_runtime_config",
+        lambda: calls.append("load-config") or config,
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "create_mcp_http_root_app",
+        lambda *_args, **_kwargs: calls.append("create-app") or fake_app,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "uvicorn",
+        SimpleNamespace(
+            run=lambda app, *, host, port: calls.append(
+                "listen:{}:{}:{}".format(app is fake_app, host, port),
+            ),
+        ),
+    )
+
+    mcp_server.run_server()
+
+    assert calls == [
+        "load-dotenv",
+        "migrate",
+        "load-config",
+        "create-app",
+        "listen:True:127.0.0.1:7488",
+    ]
+
+
+def test_mcp_cli_migrates_before_loading_config_and_does_not_repeat_migration(
+    monkeypatch,
+    tmp_path,
+):
+    calls: list[str] = []
+    config = _config(tmp_path, "streamable-http")
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_load_mcp_dotenv",
+        lambda: calls.append("load-dotenv"),
+    )
+    monkeypatch.setattr(
+        "migrations.runner.run_startup_migrations",
+        lambda: calls.append("migrate"),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "load_mcp_runtime_config",
+        lambda: calls.append("load-config") or config,
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "run_server",
+        lambda cfg, **kwargs: calls.append(
+            "run-server:{}:{}".format(cfg is config, kwargs.get("_migrations_already_run"))
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["mcp-server"])
+
+    mcp_server.main()
+
+    assert calls == [
+        "load-dotenv",
+        "migrate",
+        "load-config",
+        "run-server:True:True",
+    ]
+
+
+def test_mcp_cli_stdio_migrates_before_loading_dotenv_backed_config(
+    monkeypatch,
+    tmp_path,
+):
+    calls: list[str] = []
+    config = _config(tmp_path, "stdio")
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_load_mcp_dotenv",
+        lambda: calls.append("load-dotenv"),
+    )
+    monkeypatch.setattr(
+        "migrations.runner.run_startup_migrations",
+        lambda: calls.append("migrate"),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "load_mcp_runtime_config",
+        lambda: calls.append("load-config") or config,
+    )
+
+    class FakeServer:
+        def run(self, *, transport=None):
+            calls.append("run:{}".format(transport))
+
+    monkeypatch.setattr(
+        mcp_server,
+        "create_mcp_server",
+        lambda *_args, **_kwargs: calls.append("create-server") or FakeServer(),
+    )
+    monkeypatch.setattr(
+        "integration.observability.otel.initialize_open_telemetry",
+        lambda: calls.append("otel"),
+    )
+    monkeypatch.setattr(sys, "argv", ["mcp-server", "--transport", "stdio"])
+
+    mcp_server.main()
+
+    assert calls == [
+        "load-dotenv",
+        "migrate",
+        "load-config",
+        "otel",
+        "create-server",
+        "run:stdio",
     ]

@@ -32,7 +32,7 @@ def _get_orchestrator():
 
 
 def _get_memory_manager(user: AuthUser):
-    return _get_orchestrator()._get_memory_manager(user.username)
+    return _get_orchestrator().get_memory_manager(user.username)
 
 
 def _parse_bool(value: Any) -> bool:

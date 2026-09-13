@@ -3,6 +3,9 @@
 The command is dry-run by default. Pass ``--apply`` only after reviewing the
 JSON plan. Applied migrations require a distinct ``--target`` and a new
 ``--target-version``; source revisions are never rewritten.
+
+Run it as a module with the backend on the import path, for example
+``PYTHONPATH=backend python -m scripts.migrate_solver_package_layout``.
 """
 
 from __future__ import annotations
@@ -10,17 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import sys
-
-
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
-
-from ontology.solver_package_layout import (
-    SolverPackageLayoutError,
-    migrate_solver_package_layout,
-)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Imported here so the module stays importable for argument-parser tests
+    # without the backend package tree on sys.path.
+    from ontology.solver_package_layout import (
+        SolverPackageLayoutError,
+        migrate_solver_package_layout,
+    )
+
     args = build_parser().parse_args(argv)
     source = args.source_option or args.source_positional
     if source is None:

@@ -30,7 +30,10 @@ async function withRenderedInput(run) {
     IS_REACT_ACT_ENVIRONMENT: true,
   };
   const originalGlobals = new Map(
-    Object.keys(testGlobals).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
+    Object.keys(testGlobals).map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
   );
   for (const [name, value] of Object.entries(testGlobals)) {
     Object.defineProperty(globalThis, name, {
@@ -43,15 +46,22 @@ async function withRenderedInput(run) {
   const { createRoot } = await import('react-dom/client');
   const root = createRoot(document.getElementById('root'));
   const inputRef = React.createRef();
-  const renderInput = async ({ value, isSubmitting = false, onChange = () => {}, onSend = () => {} }) => {
+  const renderInput = async ({
+    value,
+    isSubmitting = false,
+    onChange = () => {},
+    onSend = () => {},
+  }) => {
     await act(async () => {
-      root.render(React.createElement(ChatPromptInput, {
-        inputRef,
-        value,
-        isSubmitting,
-        onChange,
-        onSend,
-      }));
+      root.render(
+        React.createElement(ChatPromptInput, {
+          inputRef,
+          value,
+          isSubmitting,
+          onChange,
+          onSend,
+        }),
+      );
     });
   };
 
@@ -61,8 +71,11 @@ async function withRenderedInput(run) {
     await act(async () => root.unmount());
     dom.window.close();
     for (const [name, descriptor] of originalGlobals) {
-      if (descriptor === undefined) delete globalThis[name];
-      else Object.defineProperty(globalThis, name, descriptor);
+      if (descriptor === undefined) {
+        delete globalThis[name];
+      } else {
+        Object.defineProperty(globalThis, name, descriptor);
+      }
     }
   }
 }
@@ -81,17 +94,27 @@ test('renders a multiline prompt control without changing explicit line breaks',
 test('Enter sends and Shift+Enter keeps editing', async () => {
   await withRenderedInput(async ({ dom, inputRef, renderInput }) => {
     let sendCount = 0;
-    await renderInput({ value: '问题', onSend: () => { sendCount += 1; } });
+    await renderInput({
+      value: '问题',
+      onSend: () => {
+        sendCount += 1;
+      },
+    });
 
     const shiftedEnter = new dom.window.KeyboardEvent('keydown', {
-      key: 'Enter', shiftKey: true, bubbles: true, cancelable: true,
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
     });
     await act(async () => inputRef.current.dispatchEvent(shiftedEnter));
     assert.equal(sendCount, 0);
     assert.equal(shiftedEnter.defaultPrevented, false);
 
     const enter = new dom.window.KeyboardEvent('keydown', {
-      key: 'Enter', bubbles: true, cancelable: true,
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
     });
     await act(async () => inputRef.current.dispatchEvent(enter));
     assert.equal(sendCount, 1);

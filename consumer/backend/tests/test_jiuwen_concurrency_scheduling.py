@@ -8,7 +8,6 @@ from collections import defaultdict
 from types import SimpleNamespace
 
 import pytest
-
 from agent.core.jiuwen.concurrency import (
     JiuwenConcurrencyAbilityManager,
     JiuwenToolConcurrencyPolicy,
@@ -17,12 +16,12 @@ from agent.core.jiuwen.concurrency import (
     current_jiuwen_tool_call_identity,
     install_jiuwen_concurrency_ability_manager,
 )
+from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
 from agent.core.jiuwen_engine import (
     JiuwenReactLoopEngine,
     _JiuwenTerminalForceFinishBridge,
     _remember_jiuwen_terminal_tool_batch,
 )
-from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
 from agent.runtime.async_utils import (
     clear_bounded_offload_pools,
     configure_bounded_offload_pools,
@@ -48,10 +47,7 @@ def _lifespan_owned_offload_pools():
             operation_timeout_seconds=5.0,
         )
 
-    pools = tuple(
-        new_pool(name)
-        for name in ("concurrency-short", "concurrency-external", "concurrency-tool")
-    )
+    pools = tuple(new_pool(name) for name in ("concurrency-short", "concurrency-external", "concurrency-tool"))
     configure_bounded_offload_pools(
         short_io=pools[0],
         external_io=pools[1],
@@ -60,11 +56,10 @@ def _lifespan_owned_offload_pools():
     try:
         yield
     finally:
+
         async def close_pools():
             deadline = asyncio.get_running_loop().time() + 2.0
-            await asyncio.gather(
-                *(pool.close(deadline=deadline) for pool in pools)
-            )
+            await asyncio.gather(*(pool.close(deadline=deadline) for pool in pools))
 
         clear_bounded_offload_pools()
         asyncio.run(close_pools())
@@ -107,10 +102,7 @@ def test_shared_planner_emits_safe_batches_and_unsafe_barriers():
         is_concurrency_safe=lambda item: item[1],
     )
 
-    assert [
-        ([item[0] for item in batch.items], batch.parallel)
-        for batch in batches
-    ] == [
+    assert [([item[0] for item in batch.items], batch.parallel) for batch in batches] == [
         (["safe-a", "safe-b"], True),
         (["unsafe-a"], False),
         (["unsafe-b"], False),
@@ -122,10 +114,10 @@ def test_shared_planner_emits_safe_batches_and_unsafe_barriers():
         is_concurrency_safe=lambda item: item[1],
         parallel_enabled=False,
     )
-    assert [
-        ([item[0] for item in batch.items], batch.parallel)
-        for batch in serial_batches
-    ] == [(["safe-a"], False), (["safe-b"], False)]
+    assert [([item[0] for item in batch.items], batch.parallel) for batch in serial_batches] == [
+        (["safe-a"], False),
+        (["safe-b"], False),
+    ]
 
 
 def test_shared_parallelism_limit_normalization():
@@ -196,9 +188,7 @@ def test_jiuwen_scheduler_preserves_order_and_enforces_limits():
     ]
     assert max_active_total == 2
     assert max_active_by_tool["limited"] == 1
-    assert sorted(
-        identity.model_tool_call_id for identity in observed_identities
-    ) == [
+    assert sorted(identity.model_tool_call_id for identity in observed_identities) == [
         "call-1",
         "call-2",
         "call-3",
@@ -231,9 +221,7 @@ def test_jiuwen_scheduler_treats_terminal_unsafe_tool_as_barrier_and_stops():
 
     manager = JiuwenConcurrencyAbilityManager(
         _Delegate(),
-        policy_resolver=lambda tool_name: JiuwenToolConcurrencyPolicy(
-            concurrency_safe=tool_name != "interaction"
-        ),
+        policy_resolver=lambda tool_name: JiuwenToolConcurrencyPolicy(concurrency_safe=tool_name != "interaction"),
     )
     calls = [
         _tool_call("safe-1", "lookup"),
@@ -573,24 +561,21 @@ def test_mock_jiuwen_end_to_end_serializes_unsafe_calls_and_stops_after_interact
         delegate_events.index("model-safe-1:end"),
         delegate_events.index("model-safe-2:end"),
     )
-    assert delegate_events.index("model-unsafe-2:start") > delegate_events.index(
-        "model-unsafe-1:end"
-    )
-    assert delegate_events.index("model-interaction:start") > delegate_events.index(
-        "model-unsafe-2:end"
-    )
+    assert delegate_events.index("model-unsafe-2:start") > delegate_events.index("model-unsafe-1:end")
+    assert delegate_events.index("model-interaction:start") > delegate_events.index("model-unsafe-2:end")
     assert "model-trailing:start" not in delegate_events
-    assert sum(
-        1
-        for tool_name, event, _tool_call_id in execution_events
-        if tool_name == safe_tool_name and event == "start"
-    ) == 2
+    assert (
+        sum(
+            1
+            for tool_name, event, _tool_call_id in execution_events
+            if tool_name == safe_tool_name and event == "start"
+        )
+        == 2
+    )
 
     assert parent_context.has_force_finish_request is True
     assert parent_context.force_finish_result["result_type"] == "answer"
-    assert state["pending_user_interaction"]["prompt"] == (
-        "Provide a synthetic value to continue."
-    )
+    assert state["pending_user_interaction"]["prompt"] == ("Provide a synthetic value to continue.")
     assert terminal_result["model_tool_call_id"] == "model-interaction"
     assert terminal_result["tool_call_id"] != "model-interaction"
     assert terminal_result["correlation_token"] is not None

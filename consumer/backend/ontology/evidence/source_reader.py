@@ -9,7 +9,6 @@ from pathlib import Path
 from ontology.package_browser import PackageBrowserError, list_package_files, read_package_text
 from ontology.resource_types import ResourceSource
 
-
 SEMANTIC_DIRECTORIES = {
     "objects": "object",
     "operations": "operation",
@@ -19,9 +18,7 @@ SEMANTIC_DIRECTORIES = {
 }
 SEMANTIC_EXTENSIONS = {".md", ".txt", ".csv", ".tsv"}
 MAX_SOURCE_BYTES = 512_000
-_SECRET_RE = re.compile(
-    r"(?im)^\s*(?:password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)\s*[:=]"
-)
+_SECRET_RE = re.compile(r"(?im)^\s*(?:password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)\s*[:=]")
 
 
 @dataclass(frozen=True)
@@ -39,6 +36,7 @@ class PackageSources:
 
 
 class PackageSourceReader:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def read(self, *, ontology_dir: Path, ontology_id: str, ontology_version: str) -> PackageSources:
         root = ontology_dir.resolve()
         listed = list_package_files(

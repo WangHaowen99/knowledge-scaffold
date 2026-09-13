@@ -7,16 +7,17 @@ from typing import Any, AsyncIterator, Mapping
 
 from agent.runtime.async_utils import run_sync_compat
 from agent.tools.business_data.providers.base import OntologySearchEvent
+
 from .agent import GraphAgentError, GraphAgentTimeoutError, GraphAgentUnavailableError
 from .backends.base import GraphBackend, GraphBackendError, GraphBackendUnsupportedError
-from .formatting import build_error_result, build_success_result
 from .business_context import load_graph_business_context
+from .formatting import build_error_result, build_success_result
 from .mapping import GraphMappingResolver
 from .models import GraphEntityMapping, GraphSearchRuntimeContext
 from .scope import GraphScopeError, build_graph_scope
-from .trace import GraphToolTraceSink
 from .tools import schema as schema_tools
 from .tools.executor import GraphToolExecutor
+from .trace import GraphToolTraceSink
 
 _MAX_SCHEMA_LABELS = 80
 _MAX_SCHEMA_FIELDS_PER_LABEL = 30
@@ -59,27 +60,31 @@ class GraphSearchRuntime:
                 offload_kind="tool",
             )
         except GraphScopeError as exc:
-            yield _final(build_error_result(
-                provider=self.provider,
-                entity=normalized_entity,
-                query=normalized_query,
-                error_code="GRAPH_SCOPE_REQUIRED",
-                error=str(exc),
-                retryable=False,
-            ))
+            yield _final(
+                build_error_result(
+                    provider=self.provider,
+                    entity=normalized_entity,
+                    query=normalized_query,
+                    error_code="GRAPH_SCOPE_REQUIRED",
+                    error=str(exc),
+                    retryable=False,
+                )
+            )
             return
 
         if context.mapping is None:
             yield {"type": "intermediate", "content": "未找到图谱映射，跳过图数据库访问"}
-            yield _final(build_error_result(
-                provider=self.provider,
-                entity=normalized_entity,
-                query=normalized_query,
-                error_code="GRAPH_MAPPING_NOT_FOUND",
-                error="Entity '{}' has no graph mapping.".format(normalized_entity),
-                retryable=False,
-                warnings=["请在 mappings/object-data-mappings.json 中补充 object data mapping"],
-            ))
+            yield _final(
+                build_error_result(
+                    provider=self.provider,
+                    entity=normalized_entity,
+                    query=normalized_query,
+                    error_code="GRAPH_MAPPING_NOT_FOUND",
+                    error="Entity '{}' has no graph mapping.".format(normalized_entity),
+                    retryable=False,
+                    warnings=["请在 mappings/object-data-mappings.json 中补充 object data mapping"],
+                )
+            )
             return
 
         yield {
@@ -108,54 +113,64 @@ class GraphSearchRuntime:
                 tool_executor=tool_executor,
             )
         except GraphAgentUnavailableError as exc:
-            yield _final(build_error_result(
-                provider=self.provider,
-                entity=context.entity,
-                query=context.query,
-                error_code=exc.error_code,
-                error=str(exc),
-                retryable=exc.retryable,
-            ))
+            yield _final(
+                build_error_result(
+                    provider=self.provider,
+                    entity=context.entity,
+                    query=context.query,
+                    error_code=exc.error_code,
+                    error=str(exc),
+                    retryable=exc.retryable,
+                )
+            )
             return
         except GraphAgentTimeoutError as exc:
-            yield _final(build_error_result(
-                provider=self.provider,
-                entity=context.entity,
-                query=context.query,
-                error_code=exc.error_code,
-                error=str(exc),
-                retryable=exc.retryable,
-            ))
+            yield _final(
+                build_error_result(
+                    provider=self.provider,
+                    entity=context.entity,
+                    query=context.query,
+                    error_code=exc.error_code,
+                    error=str(exc),
+                    retryable=exc.retryable,
+                )
+            )
             return
         except GraphAgentError as exc:
-            yield _final(build_error_result(
-                provider=self.provider,
-                entity=context.entity,
-                query=context.query,
-                error_code=exc.error_code,
-                error=str(exc),
-                retryable=exc.retryable,
-            ))
+            yield _final(
+                build_error_result(
+                    provider=self.provider,
+                    entity=context.entity,
+                    query=context.query,
+                    error_code=exc.error_code,
+                    error=str(exc),
+                    retryable=exc.retryable,
+                )
+            )
             return
         except GraphBackendUnsupportedError as exc:
-            yield _final(build_error_result(
-                provider=self.provider,
-                entity=context.entity,
-                query=context.query,
-                error_code=exc.error_code,
-                error=str(exc),
-                retryable=exc.retryable,
-            ))
+            yield _final(
+                build_error_result(
+                    provider=self.provider,
+                    entity=context.entity,
+                    query=context.query,
+                    error_code=exc.error_code,
+                    error=str(exc),
+                    retryable=exc.retryable,
+                )
+            )
             return
         except GraphBackendError as exc:
-            yield _final(build_error_result(
-                provider=self.provider,
-                entity=context.entity,
-                query=context.query,
-                error_code=exc.error_code,
-                error="图数据库查询失败",
-                retryable=exc.retryable,
-            ))
+            yield _final(
+                build_error_result(
+                    provider=self.provider,
+                    entity=context.entity,
+                    query=context.query,
+                    error_code=exc.error_code,
+                    error="图数据库查询失败",
+                    retryable=exc.retryable,
+                )
+            )
             return
 
         backend_result = agent_result.backend_result
@@ -166,14 +181,16 @@ class GraphSearchRuntime:
                 backend_result.total if backend_result.total is not None else len(backend_result.records or []),
             ),
         }
-        yield _final(build_success_result(
-            provider=self.provider,
-            entity=context.entity,
-            query=context.query,
-            mapping=context.mapping,
-            agent_result=agent_result,
-            scope=context.scope,
-        ))
+        yield _final(
+            build_success_result(
+                provider=self.provider,
+                entity=context.entity,
+                query=context.query,
+                mapping=context.mapping,
+                agent_result=agent_result,
+                scope=context.scope,
+            )
+        )
 
     def _build_context(self, *, query: str, entity: str) -> GraphSearchRuntimeContext:
         workspace_id = str(self.provider_config.get("workspace_id") or "").strip()
@@ -372,9 +389,7 @@ def _compact_nodes_schema(payload: Any, focused_node_labels: list[str]) -> dict[
     raw_schema = payload.get("schema")
     schema = raw_schema if isinstance(raw_schema, Mapping) else {}
     selected_schema = {
-        str(label): _limit_schema_fields(fields)
-        for label, fields in schema.items()
-        if isinstance(fields, Mapping)
+        str(label): _limit_schema_fields(fields) for label, fields in schema.items() if isinstance(fields, Mapping)
     }
     raw_labels = sorted(selected_schema) or [
         str(label).strip()
@@ -426,14 +441,18 @@ def _compact_relation_triples(raw: Any, requested: set[str]) -> list[dict[str, A
     for item in raw:
         if not isinstance(item, Mapping):
             continue
-        relation_type = str(item.get("relation_type") or item.get("type") or item.get("physical_relation_type") or "").strip()
+        relation_type = str(
+            item.get("relation_type") or item.get("type") or item.get("physical_relation_type") or ""
+        ).strip()
         if requested and relation_type not in requested:
             continue
-        triples.append({
-            key: item.get(key)
-            for key in ("source_label", "relation_type", "target_label", "type", "physical_relation_type")
-            if item.get(key) not in (None, "")
-        })
+        triples.append(
+            {
+                key: item.get(key)
+                for key in ("source_label", "relation_type", "target_label", "type", "physical_relation_type")
+                if item.get(key) not in (None, "")
+            }
+        )
         if len(triples) >= _MAX_RELATION_TRIPLES:
             break
     return triples
@@ -443,11 +462,7 @@ def _limit_schema_fields(fields: Any) -> dict[str, Any]:
     if not isinstance(fields, Mapping):
         return {}
     selected: dict[str, Any] = {}
-    pairs = [
-        (str(key).strip(), value)
-        for key, value in fields.items()
-        if str(key).strip()
-    ]
+    pairs = [(str(key).strip(), value) for key, value in fields.items() if str(key).strip()]
     for key, value in sorted(pairs, key=lambda item: item[0]):
         selected[key] = value
         if len(selected) >= _MAX_SCHEMA_FIELDS_PER_LABEL:
@@ -480,28 +495,25 @@ def _graph_schema_expand_for_path_planning(provider_config: Mapping[str, Any]) -
 
 def _analyze_path_intent(*, query: str, entity: str, mapping: GraphEntityMapping) -> dict[str, Any]:
     text = "{} {} {} {}".format(query or "", entity or "", mapping.entity or "", mapping.title or "")
-    cues = [
-        cue
-        for cue in (
-            "关系",
-            "关联",
-            "影响",
-            "受影响",
-            "对应",
-            "父项",
-            "子项",
-            "上游",
-            "下游",
-            "变更前",
-            "变更后",
-            "BOM",
-            "结构",
-            "清单",
-            "工艺关系",
-            "供应商",
-        )
-        if cue in text
-    ]
+    path_cues = (
+        "关系",
+        "关联",
+        "影响",
+        "受影响",
+        "对应",
+        "父项",
+        "子项",
+        "上游",
+        "下游",
+        "变更前",
+        "变更后",
+        "BOM",
+        "结构",
+        "清单",
+        "工艺关系",
+        "供应商",
+    )
+    cues = [cue for cue in path_cues if cue in text]
     associated_object_detail = _requires_associated_object_detail(query=query, entity=entity)
     record_query = _looks_like_record_query(query=query, entity=entity) and not associated_object_detail
     path_intent = bool(cues) and not record_query and associated_object_detail
@@ -515,9 +527,7 @@ def _analyze_path_intent(*, query: str, entity: str, mapping: GraphEntityMapping
             "该问题包含关系/路径意图；若 schema_context.edges_schema.relation_triples 中存在可连接的节点和关系，"
             "应优先尝试 pattern_search。"
             if path_intent
-            else "该问题更像记录/字段查询；优先使用 property_filter。"
-            if record_query
-            else ""
+            else "该问题更像记录/字段查询；优先使用 property_filter。" if record_query else ""
         ),
     }
 
@@ -530,26 +540,29 @@ def _mapping_intent(
     path_analysis: Mapping[str, Any],
 ) -> dict[str, Any]:
     resource_kind = _mapping_resource_kind(mapping)
-    relationship_record = (
-        resource_kind == "record_node"
-        and _looks_like_relationship_record(
-            entity=entity,
-            mapping=mapping,
-        )
+    relationship_record = resource_kind == "record_node" and _looks_like_relationship_record(
+        entity=entity,
+        mapping=mapping,
     )
-    associated_object_detail = bool(path_analysis.get("associated_object_detail")) or _requires_associated_object_detail(
+    associated_object_detail = bool(
+        path_analysis.get("associated_object_detail")
+    ) or _requires_associated_object_detail(
         query=query,
         entity=entity,
     )
     record_query = _looks_like_record_query(query=query, entity=entity) and not associated_object_detail
     pattern_search_required = resource_kind == "path" or associated_object_detail
-    prefer_tool = "pattern_search" if pattern_search_required else "property_filter" if resource_kind == "record_node" else ""
+    prefer_tool = (
+        "pattern_search" if pattern_search_required else "property_filter" if resource_kind == "record_node" else ""
+    )
     reason = (
         "用户需要关联对象详情或映射本身为 path，优先 pattern_search"
         if pattern_search_required
-        else "用户查询的是映射资源记录/字段，property_filter 命中后即可结束"
-        if resource_kind == "record_node"
-        else "未识别到必须使用 pattern_search 的路径意图"
+        else (
+            "用户查询的是映射资源记录/字段，property_filter 命中后即可结束"
+            if resource_kind == "record_node"
+            else "未识别到必须使用 pattern_search 的路径意图"
+        )
     )
     return {
         "resource_kind": resource_kind,
@@ -578,38 +591,34 @@ def _looks_like_relationship_record(*, entity: str, mapping: GraphEntityMapping)
     text = "{} {} {} {}".format(entity or "", mapping.entity or "", mapping.title or "", mapping.label or "")
     if mapping.kind == "edge" or mapping.path_pattern:
         return True
-    return any(
-        cue in text
-        for cue in (
-            "关系",
-            "关联",
-            "影响对象",
-            "受影响",
-            "映射",
-            "BOM",
-            "结构",
-            "清单",
-            "_obj",
-        )
+    relationship_cues = (
+        "关系",
+        "关联",
+        "影响对象",
+        "受影响",
+        "映射",
+        "BOM",
+        "结构",
+        "清单",
+        "_obj",
     )
+    return any(cue in text for cue in relationship_cues)
 
 
 def _looks_like_record_query(*, query: str, entity: str) -> bool:
     text = "{} {}".format(query or "", entity or "")
-    return any(
-        cue in text
-        for cue in (
-            "记录",
-            "表",
-            "字段",
-            "编号",
-            "编码",
-            "信息",
-            "所有",
-            "列表",
-            "包含",
-        )
+    record_cues = (
+        "记录",
+        "表",
+        "字段",
+        "编号",
+        "编码",
+        "信息",
+        "所有",
+        "列表",
+        "包含",
     )
+    return any(cue in text for cue in record_cues)
 
 
 def _requires_associated_object_detail(*, query: str, entity: str) -> bool:

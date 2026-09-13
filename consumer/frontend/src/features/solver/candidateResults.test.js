@@ -84,8 +84,20 @@ const described = () => {
     candidate.metrics.safety_margin = index === 0 ? -500 : 250;
   });
   payload.metric_display = [
-    { key: 'primary_score', label: '利润', unit: '元', scale: 100, sense: 'maximize' },
-    { key: 'safety_margin', label: '最小余量', unit: '%', scale: 100, sense: 'maximize' },
+    {
+      key: 'primary_score',
+      label: '利润',
+      unit: '元',
+      scale: 100,
+      sense: 'maximize',
+    },
+    {
+      key: 'safety_margin',
+      label: '最小余量',
+      unit: '%',
+      scale: 100,
+      sense: 'maximize',
+    },
   ];
   return payload;
 };

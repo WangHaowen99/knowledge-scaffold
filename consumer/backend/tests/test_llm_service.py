@@ -9,13 +9,12 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APIStatusError, InternalServerError
-from pydantic import BaseModel
-
 from agent.exceptions import WorkflowCancelledError
 from config import AgentConfig, LLMConfig
 from llm import LLMService
 from llm.transport import _retry_delay_seconds
+from openai import APIStatusError, InternalServerError
+from pydantic import BaseModel
 
 
 class _FakeStreamingResponse:
@@ -26,6 +25,7 @@ class _FakeStreamingResponse:
     def iter_lines(self, decode_unicode=True):
         return iter(self._lines)
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self) -> None:
         return
 
@@ -42,9 +42,7 @@ class _FakeOpenAIClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create_completion)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_completion))
 
     def _create_completion(self, **kwargs):
         self.calls.append(kwargs)
@@ -130,9 +128,7 @@ def test_llm_retries_transient_status_and_uses_retry_after(monkeypatch):
     monkeypatch.setattr(
         llm.transport,
         "_wait_before_retry",
-        lambda delay_seconds, cancel_event: waits.append(
-            (delay_seconds, cancel_event)
-        ),
+        lambda delay_seconds, cancel_event: waits.append((delay_seconds, cancel_event)),
     )
 
     response = llm.call(
@@ -236,21 +232,30 @@ def test_retry_after_http_date_and_invalid_values_use_bounded_delays():
     now = datetime(2026, 8, 27, 0, 0, tzinfo=timezone.utc)
     valid_http_date = format_datetime(now + timedelta(seconds=5), usegmt=True)
 
-    assert _retry_delay_seconds(
-        0,
-        SimpleNamespace(headers={"Retry-After": valid_http_date}),
-        now_utc=now,
-    ) == 5.0
-    assert _retry_delay_seconds(
-        2,
-        SimpleNamespace(headers={"Retry-After": "invalid"}),
-        now_utc=now,
-    ) == 4.0
-    assert _retry_delay_seconds(
-        2,
-        SimpleNamespace(headers={"Retry-After": "600"}),
-        now_utc=now,
-    ) == 4.0
+    assert (
+        _retry_delay_seconds(
+            0,
+            SimpleNamespace(headers={"Retry-After": valid_http_date}),
+            now_utc=now,
+        )
+        == 5.0
+    )
+    assert (
+        _retry_delay_seconds(
+            2,
+            SimpleNamespace(headers={"Retry-After": "invalid"}),
+            now_utc=now,
+        )
+        == 4.0
+    )
+    assert (
+        _retry_delay_seconds(
+            2,
+            SimpleNamespace(headers={"Retry-After": "600"}),
+            now_utc=now,
+        )
+        == 4.0
+    )
 
 
 def test_llm_call_clamps_output_tokens_to_ops_limit(tmp_path, monkeypatch):
@@ -270,7 +275,7 @@ def test_llm_call_clamps_output_tokens_to_ops_limit(tmp_path, monkeypatch):
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test/v1",
+            base_url="http://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -337,14 +342,7 @@ def test_llm_call_uses_openai_client_stream_and_preserves_nested_tool_object_sta
             "model": "unit-model",
             "choices": [
                 {
-                    "delta": {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "function": {"arguments": "]}"}
-                            }
-                        ]
-                    },
+                    "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "]}"}}]},
                     "finish_reason": "tool_calls",
                 }
             ],
@@ -353,7 +351,7 @@ def test_llm_call_uses_openai_client_stream_and_preserves_nested_tool_object_sta
     fake_client = _FakeOpenAIClient([iter(stream_chunks)])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test/v1",
+            base_url="http://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -388,9 +386,7 @@ def test_llm_call_uses_openai_client_stream_and_preserves_nested_tool_object_sta
     assert fake_client.calls[0]["extra_body"]["thinking"] == {"type": "disabled"}
     tool_call = response.tool_calls[0]
     assert tool_call["function"]["name"] == "spawn_sub_agent"
-    assert json.loads(tool_call["function"]["arguments"]) == {
-        "tasks": [{"id": "cycle_impact", "task": "demo"}]
-    }
+    assert json.loads(tool_call["function"]["arguments"]) == {"tasks": [{"id": "cycle_impact", "task": "demo"}]}
 
 
 def test_llm_call_parses_response_model_without_sending_model_class():
@@ -411,7 +407,7 @@ def test_llm_call_parses_response_model_without_sending_model_class():
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -436,7 +432,7 @@ def test_llm_call_parses_response_model_without_sending_model_class():
 def test_llm_call_preserves_input_history_and_appends_single_assistant(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -445,16 +441,18 @@ def test_llm_call_preserves_input_history_and_appends_single_assistant(monkeypat
         )
     )
 
-    streamed_messages = iter([
-        {
-            "message": {
-                "role": "assistant",
-                "content": "final answer",
+    streamed_messages = iter(
+        [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "final answer",
+                },
+                "finish_reason": "stop",
+                "model": "unit-model",
             },
-            "finish_reason": "stop",
-            "model": "unit-model",
-        },
-    ])
+        ]
+    )
 
     request_kwargs = []
 
@@ -462,7 +460,7 @@ def test_llm_call_preserves_input_history_and_appends_single_assistant(monkeypat
         request_kwargs.append(kwargs)
         return object()
 
-    def fake_collect_response(
+    def fake_collect_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         response,
         emit_func=None,
         run_id=None,
@@ -533,7 +531,7 @@ def test_llm_call_collects_openai_sdk_non_stream_completion_without_close():
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test/v1",
+            base_url="http://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -570,7 +568,7 @@ def test_llm_request_payload_logged_at_debug(caplog):
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test/v1",
+            base_url="http://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -619,7 +617,7 @@ def test_llm_request_payload_not_logged_at_info(caplog):
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test/v1",
+            base_url="http://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -644,7 +642,7 @@ def test_provider_adapter_keeps_glm_reasoning_params_and_openai_compatible_full(
     messages = [{"role": "user", "content": "hi"}]
     glm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="glm-model",
             api_key=None,
             timeout=30,
@@ -655,7 +653,7 @@ def test_provider_adapter_keeps_glm_reasoning_params_and_openai_compatible_full(
     )
     openai = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="openai-model",
             api_key=None,
             timeout=30,
@@ -695,7 +693,7 @@ def test_provider_adapter_keeps_glm_reasoning_params_and_openai_compatible_full(
 def test_deepseek_provider_adapter_uses_v4_reasoning_extra_body():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="deepseek-v4-flash",
             api_key=None,
             timeout=30,
@@ -723,7 +721,7 @@ def test_deepseek_provider_adapter_uses_v4_reasoning_extra_body():
 def test_glm_and_deepseek_stream_usage_option_is_provider_adapter_controlled():
     glm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="glm-model",
             api_key=None,
             timeout=30,
@@ -734,7 +732,7 @@ def test_glm_and_deepseek_stream_usage_option_is_provider_adapter_controlled():
     )
     deepseek = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="deepseek-model",
             api_key=None,
             timeout=30,
@@ -745,7 +743,7 @@ def test_glm_and_deepseek_stream_usage_option_is_provider_adapter_controlled():
     )
     unknown = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unknown-model",
             api_key=None,
             timeout=30,
@@ -797,7 +795,7 @@ def test_glm_and_deepseek_stream_usage_option_is_provider_adapter_controlled():
 def test_provider_adapters_normalize_cache_usage_fields():
     glm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="glm-model",
             api_key=None,
             timeout=30,
@@ -808,7 +806,7 @@ def test_provider_adapters_normalize_cache_usage_fields():
     )
     deepseek = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="deepseek-model",
             api_key=None,
             timeout=30,
@@ -819,7 +817,7 @@ def test_provider_adapters_normalize_cache_usage_fields():
     )
     openai_compatible = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="compat-model",
             api_key=None,
             timeout=30,
@@ -885,7 +883,7 @@ def test_provider_adapters_normalize_cache_usage_fields():
 def test_unknown_provider_adapter_does_not_send_extra_body():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unknown-model",
             api_key=None,
             timeout=30,
@@ -910,7 +908,7 @@ def test_unknown_provider_adapter_does_not_send_extra_body():
 def test_llm_call_passes_stream_override_to_transport(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -926,7 +924,7 @@ def test_llm_call_passes_stream_override_to_transport(monkeypatch):
         request_kwargs.append(kwargs)
         return object()
 
-    def fake_collect_response(
+    def fake_collect_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         response,
         emit_func=None,
         run_id=None,
@@ -977,7 +975,7 @@ def test_llm_with_config_refreshes_transport_agent_config():
         context_max_rounds=10,
     )
     old_config = LLMConfig(
-        base_url="http://old.test",
+        base_url="http://old.example.net",
         model="old-model",
         api_key=None,
         timeout=30,
@@ -985,7 +983,7 @@ def test_llm_with_config_refreshes_transport_agent_config():
         temperature=0.0,
     )
     new_config = LLMConfig(
-        base_url="http://new.test",
+        base_url="http://new.example.net",
         model="new-model",
         api_key=None,
         timeout=30,
@@ -1003,7 +1001,7 @@ def test_llm_with_config_refreshes_transport_agent_config():
 def test_llm_call_exposes_collected_reasoning_content(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1016,7 +1014,7 @@ def test_llm_call_exposes_collected_reasoning_content(monkeypatch):
         del args, kwargs
         return object()
 
-    def fake_collect_response(
+    def fake_collect_response(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         response,
         emit_func=None,
         run_id=None,
@@ -1063,10 +1061,11 @@ def test_llm_call_exposes_collected_reasoning_content(monkeypatch):
     assert response.reasoning_content == "先判断是否需要工具"
     assert response.messages[-1]["reasoning_content"] == "先判断是否需要工具"
 
+
 def test_collect_stream_response_collects_empty_choices_usage_chunks():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1078,7 +1077,10 @@ def test_collect_stream_response_collects_empty_choices_usage_chunks():
     response = _FakeStreamingResponse(
         [
             'data: {"id":"chunk-usage","model":"unit-model","choices":[],"usage":{"total_tokens":10}}',
-            'data: {"id":"chunk-content","model":"unit-model","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}',
+            (
+                'data: {"id":"chunk-content","model":"unit-model","choices":[{"delta":{"content":"Hello"},'
+                '"finish_reason":null}]}'
+            ),
             'data: {"id":"chunk-stop","model":"unit-model","choices":[{"delta":{},"finish_reason":"stop"}]}',
             "data: [DONE]",
         ]
@@ -1095,7 +1097,7 @@ def test_collect_stream_response_collects_empty_choices_usage_chunks():
 def test_collect_non_stream_response_preserves_provider_usage_fields():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1141,7 +1143,7 @@ def test_collect_non_stream_response_preserves_provider_usage_fields():
 def test_collect_stream_response_repairs_cumulative_tool_argument_chunks():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1153,14 +1155,15 @@ def test_collect_stream_response_repairs_cumulative_tool_argument_chunks():
     response = _FakeStreamingResponse(
         [
             (
-                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/manifest.yaml\\""}}]},'
-                '"finish_reason":null}]}'
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call_1","type":"function","function":{"name":"read_file",'
+                '"arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/'
+                'manifest.yaml\\""}}]},"finish_reason":null}]}'
             ),
             (
-                'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"function":{"arguments":"{\\"file_path\\": \\"ontologies/example-domain-operations-manual/manifest.yaml\\"}"}}]},'
-                '"finish_reason":"tool_calls"}]}'
+                'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"function":{"arguments":"{\\"file_path\\": \\"ontologies/example-domain-operations-manual/'
+                'manifest.yaml\\"}"}}]},"finish_reason":"tool_calls"}]}'
             ),
             "data: [DONE]",
         ]
@@ -1179,7 +1182,7 @@ def test_collect_stream_response_repairs_cumulative_tool_argument_chunks():
 def test_collect_stream_response_keeps_final_tool_call_fragment_when_finish_reason_arrives_same_chunk():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1191,9 +1194,10 @@ def test_collect_stream_response_keeps_final_tool_call_fragment_when_finish_reas
     response = _FakeStreamingResponse(
         [
             (
-                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/objects/CHANGE_"}}]},'
-                '"finish_reason":null}]}'
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call_1","type":"function","function":{"name":"read_file",'
+                '"arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/objects/'
+                'CHANGE_"}}]},"finish_reason":null}]}'
             ),
             (
                 'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"tool_calls":'
@@ -1217,7 +1221,7 @@ def test_collect_stream_response_keeps_final_tool_call_fragment_when_finish_reas
 def test_collect_stream_response_emits_closed_tool_calls_as_one_batch_on_finish_reason():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1229,9 +1233,10 @@ def test_collect_stream_response_emits_closed_tool_calls_as_one_batch_on_finish_
     response = _FakeStreamingResponse(
         [
             (
-                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"a.md\\"}"}},'
-                '{"index":1,"id":"call_search","type":"function","function":{"name":"business_data_search","arguments":"{\\"query\\":\\"TargetItem\\"}"}}]},'
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call_read","type":"function","function":{"name":"read_file",'
+                '"arguments":"{\\"file_path\\":\\"a.md\\"}"}},{"index":1,"id":"call_search","type":"function",'
+                '"function":{"name":"business_data_search","arguments":"{\\"query\\":\\"TargetItem\\"}"}}]},'
                 '"finish_reason":null}]}'
             ),
             'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
@@ -1257,7 +1262,7 @@ def test_collect_stream_response_emits_closed_tool_calls_as_one_batch_on_finish_
 def test_collect_stream_response_emits_remaining_closed_tool_calls_on_finish_reason():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1269,9 +1274,9 @@ def test_collect_stream_response_emits_remaining_closed_tool_calls_on_finish_rea
     response = _FakeStreamingResponse(
         [
             (
-                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_read","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"a.md\\"}"}}]},'
-                '"finish_reason":"tool_calls"}]}'
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"id":"call_read","type":"function","function":{"name":"read_file",'
+                '"arguments":"{\\"file_path\\":\\"a.md\\"}"}}]},"finish_reason":"tool_calls"}]}'
             ),
             "data: [DONE]",
         ]
@@ -1291,7 +1296,7 @@ def test_collect_stream_response_emits_remaining_closed_tool_calls_on_finish_rea
 def test_collect_stream_response_defers_closed_tool_calls_until_id_and_arguments_are_complete():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1377,7 +1382,7 @@ def test_collect_stream_response_defers_closed_tool_calls_until_id_and_arguments
 def test_collect_non_stream_response_preserves_tool_calls():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1400,7 +1405,10 @@ def test_collect_non_stream_response_preserves_tool_calls():
                                 "type": "function",
                                 "function": {
                                     "name": "read_file",
-                                    "arguments": '{"file_path":"ontologies/example-domain-operations-manual/objects/CHANGE_ORDER受影响对象在制品处理结论.md"}',
+                                    "arguments": (
+                                        '{"file_path":"ontologies/example-domain-operations-manual/objects/'
+                                        'CHANGE_ORDER受影响对象在制品处理结论.md"}'
+                                    ),
                                 },
                             }
                         ],
@@ -1424,7 +1432,7 @@ def test_collect_non_stream_response_preserves_tool_calls():
 def test_collect_non_stream_response_dispatches_reasoning_summary(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1469,7 +1477,7 @@ def test_collect_non_stream_response_dispatches_reasoning_summary(monkeypatch):
 def test_collect_stream_response_keeps_reasoning_when_summary_dispatch_fails(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1486,8 +1494,14 @@ def test_collect_stream_response_keeps_reasoning_when_summary_dispatch_fails(mon
 
     response = _FakeStreamingResponse(
         [
-            'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}',
-            'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}',
+            (
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"reasoning_content":"think"},'
+                '"finish_reason":null}]}'
+            ),
+            (
+                "data:"
+                ' {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}'
+            ),
             "data: [DONE]",
         ]
     )
@@ -1506,7 +1520,7 @@ def test_collect_stream_response_keeps_reasoning_when_summary_dispatch_fails(mon
 def test_collect_stream_response_returns_stream_milestones():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.test",
+            base_url="http://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1516,8 +1530,14 @@ def test_collect_stream_response_returns_stream_milestones():
     )
     response = _FakeStreamingResponse(
         [
-            'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}',
-            'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}',
+            (
+                'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"reasoning_content":"think"},'
+                '"finish_reason":null}]}'
+            ),
+            (
+                "data:"
+                ' {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}'
+            ),
             "data: [DONE]",
         ]
     )

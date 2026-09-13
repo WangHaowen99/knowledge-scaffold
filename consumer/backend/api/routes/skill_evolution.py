@@ -36,7 +36,7 @@ def _service():
 
 
 def _task_or_404(workspace_id: str, task_id: str):
-    record = _service()._store.get_task(workspace_id, task_id)  # noqa: SLF001
+    record = _service().get_task(workspace_id, task_id)
     if record is None:
         return JSONResponse({"error": "任务不存在"}, status_code=404)
     return record
@@ -121,7 +121,7 @@ async def list_tasks(
     records = await run_in_runtime_pool(
         request,
         "short_io",
-        _service()._store.list_tasks,  # noqa: SLF001
+        _service().list_tasks,
         workspace_id,
         ontology_id=ontology_id,
         pending_only=pending_only,

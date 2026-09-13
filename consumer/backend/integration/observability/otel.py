@@ -14,6 +14,7 @@ from utils.logging import get_logger
 try:
     from opentelemetry.sdk.trace import SpanProcessor as _SpanProcessorBase
 except ImportError:  # pragma: no cover - guarded by initialize_open_telemetry
+
     class _SpanProcessorBase:
         pass
 
@@ -21,10 +22,10 @@ except ImportError:  # pragma: no cover - guarded by initialize_open_telemetry
 logger = get_logger("observability.otel")
 
 _lock = threading.RLock()
-_provider_initialized = False
-_meter_provider_initialized = False
+_provider_initialized: bool = False
+_meter_provider_initialized: bool = False
 _instrumented_apps: set[int] = set()
-_client_instrumentation_initialized = False
+_client_instrumentation_initialized: bool = False
 _metric_instruments: Optional[dict[str, Any]] = None
 _router_metric_recorders: dict[str, "_RouterMetricRecorder"] = {}
 _batch_metric_recorders: dict[str, "_RouterBatchMetricRecorder"] = {}
@@ -267,10 +268,7 @@ def record_cache_performance_metric(
     """Route a bounded cache outcome without identity metric labels."""
     resolved_cache = str(cache_name or "").strip()
     resolved_result = str(result or "").strip()
-    if (
-        resolved_cache not in _PERFORMANCE_CACHE_NAMES
-        or resolved_result not in _PERFORMANCE_CACHE_RESULTS
-    ):
+    if resolved_cache not in _PERFORMANCE_CACHE_NAMES or resolved_result not in _PERFORMANCE_CACHE_RESULTS:
         return False
     instruments = _get_batch_metric_instruments(
         router_id=str(router_id or "").strip(),
@@ -337,16 +335,8 @@ def force_flush_open_telemetry(timeout_millis: int = 5000) -> bool:
 
         trace_flush = getattr(trace.get_tracer_provider(), "force_flush", None)
         metric_flush = getattr(metrics.get_meter_provider(), "force_flush", None)
-        trace_result = (
-            trace_flush(timeout_millis=timeout_millis)
-            if callable(trace_flush)
-            else True
-        )
-        metric_result = (
-            metric_flush(timeout_millis=timeout_millis)
-            if callable(metric_flush)
-            else True
-        )
+        trace_result = trace_flush(timeout_millis=timeout_millis) if callable(trace_flush) else True
+        metric_result = metric_flush(timeout_millis=timeout_millis) if callable(metric_flush) else True
         return bool(trace_result is not False and metric_result is not False)
     except Exception:
         logger.warning("OpenTelemetry force flush failed", exc_info=True)
@@ -392,10 +382,7 @@ def shutdown_runtime_metrics(router_id: str, timeout_millis: int = 5000) -> bool
         recorder_succeeded = False
         if remaining_millis > 0:
             try:
-                recorder_succeeded = (
-                    current_recorder.shutdown(timeout_millis=remaining_millis)
-                    is not False
-                )
+                recorder_succeeded = current_recorder.shutdown(timeout_millis=remaining_millis) is not False
             except Exception:
                 logger.warning(
                     "OpenTelemetry runtime metric shutdown failed: router_id=%s",
@@ -441,9 +428,7 @@ def _get_metric_instruments(router_id: str = "") -> dict[str, Any]:
         try:
             from opentelemetry import metrics
 
-            _metric_instruments = _create_metric_instruments(
-                metrics.get_meter("onto.consumer.runtime")
-            )
+            _metric_instruments = _create_metric_instruments(metrics.get_meter("onto.consumer.runtime"))
         except Exception:
             _metric_instruments = {}
         return _metric_instruments
@@ -515,30 +500,14 @@ def _create_metric_instruments(meter: Any) -> dict[str, Any]:
         "tool.count": meter.create_counter("agent.tool.call.count"),
         "tool.failure": meter.create_counter("agent.tool.failure.count"),
         "tool.duration": meter.create_histogram("agent.tool.duration", unit="ms"),
-        "observability.accepted": meter.create_counter(
-            "agent.observability.export.accepted"
-        ),
-        "observability.completed": meter.create_counter(
-            "agent.observability.export.completed"
-        ),
-        "observability.exported": meter.create_counter(
-            "agent.observability.export.succeeded"
-        ),
-        "observability.failed": meter.create_counter(
-            "agent.observability.export.failed"
-        ),
-        "observability.dropped": meter.create_counter(
-            "agent.observability.export.dropped"
-        ),
-        "observability.current_depth": meter.create_gauge(
-            "agent.observability.queue.current_depth"
-        ),
-        "observability.peak_depth": meter.create_gauge(
-            "agent.observability.queue.peak_depth"
-        ),
-        "observability.shutdown_drain_timeout": meter.create_counter(
-            "agent.observability.shutdown.drain.timeout"
-        ),
+        "observability.accepted": meter.create_counter("agent.observability.export.accepted"),
+        "observability.completed": meter.create_counter("agent.observability.export.completed"),
+        "observability.exported": meter.create_counter("agent.observability.export.succeeded"),
+        "observability.failed": meter.create_counter("agent.observability.export.failed"),
+        "observability.dropped": meter.create_counter("agent.observability.export.dropped"),
+        "observability.current_depth": meter.create_gauge("agent.observability.queue.current_depth"),
+        "observability.peak_depth": meter.create_gauge("agent.observability.queue.peak_depth"),
+        "observability.shutdown_drain_timeout": meter.create_counter("agent.observability.shutdown.drain.timeout"),
     }
 
 
@@ -562,19 +531,14 @@ class _RouterMetricRecorder:
             metric_readers=[self._reader],
             shutdown_on_exit=False,
         )
-        self.instruments = _create_metric_instruments(
-            self._provider.get_meter("onto.consumer.runtime")
-        )
+        self.instruments = _create_metric_instruments(self._provider.get_meter("onto.consumer.runtime"))
 
     def force_flush(self, *, timeout_millis: int) -> bool:
         return bool(self._provider.force_flush(timeout_millis=timeout_millis) is not False)
 
     def shutdown(self, *, timeout_millis: int) -> bool:
         result = self._provider.shutdown(timeout_millis=timeout_millis)
-        return bool(
-            result is not False
-            and _metric_reader_stopped(getattr(self, "_reader", None))
-        )
+        return bool(result is not False and _metric_reader_stopped(getattr(self, "_reader", None)))
 
 
 class _RouterBatchMetricRecorder:
@@ -610,25 +574,16 @@ class _RouterBatchMetricRecorder:
         with self._lock:
             scope_name = self._scope_by_workspace.get(workspace_id)
             if scope_name is None:
-                if (
-                    len(self._workspace_by_scope)
-                    >= _MAX_BATCH_METRIC_WORKSPACES_PER_ROUTER
-                ):
-                    logger.warning(
-                        "OpenTelemetry batch metric workspace limit reached"
-                    )
+                if len(self._workspace_by_scope) >= _MAX_BATCH_METRIC_WORKSPACES_PER_ROUTER:
+                    logger.warning("OpenTelemetry batch metric workspace limit reached")
                     return {}
-                scope_name = "onto.consumer.observability.batch.scope-{:08x}".format(
-                    self._next_scope_number
-                )
+                scope_name = "onto.consumer.observability.batch.scope-{:08x}".format(self._next_scope_number)
                 self._next_scope_number += 1
                 self._scope_by_workspace[workspace_id] = scope_name
                 self._workspace_by_scope[scope_name] = workspace_id
             instruments = self._instruments_by_scope.get(scope_name)
             if instruments is None:
-                instruments = _create_metric_instruments(
-                    self._provider.get_meter(scope_name)
-                )
+                instruments = _create_metric_instruments(self._provider.get_meter(scope_name))
                 self._instruments_by_scope[scope_name] = instruments
             return instruments
 
@@ -641,10 +596,7 @@ class _RouterBatchMetricRecorder:
 
     def shutdown(self, *, timeout_millis: int) -> bool:
         result = self._provider.shutdown(timeout_millis=timeout_millis)
-        return bool(
-            result is not False
-            and _metric_reader_stopped(getattr(self, "_reader", None))
-        )
+        return bool(result is not False and _metric_reader_stopped(getattr(self, "_reader", None)))
 
 
 def _metric_reader_stopped(reader: Any) -> bool:
@@ -779,11 +731,10 @@ try:
             super().__init__(span_exporter, **options)
 
         def shutdown(self) -> Any:
-            return self._batch_processor.shutdown(
-                timeout_millis=self.shutdown_timeout_millis
-            )
+            return self._batch_processor.shutdown(timeout_millis=self.shutdown_timeout_millis)
 
 except ImportError:  # pragma: no cover - guarded by initialize_open_telemetry
+
     class _BoundedBatchSpanProcessor:  # type: ignore[no-redef]
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("OpenTelemetry SDK is not installed")
@@ -859,9 +810,7 @@ def _asgi_server_request_hook(
     try:
         from starlette.datastructures import Headers
 
-        workspace_id = str(
-            Headers(scope=scope).get("x-workspace-id") or ""
-        ).strip()
+        workspace_id = str(Headers(scope=scope).get("x-workspace-id") or "").strip()
     except Exception:
         logger.warning("Failed to read ASGI request headers", exc_info=True)
         workspace_id = ""
@@ -914,6 +863,7 @@ try:
             return None
 
 except ImportError:  # pragma: no cover - guarded by initialize_open_telemetry
+
     class _WorkspaceSpanExporter:  # type: ignore[no-redef]
         pass
 
@@ -948,9 +898,7 @@ try:
                     scope_name = str(getattr(scope_metrics.scope, "name", "") or "")
                     workspace_id = self._workspace_id
                     if not workspace_id and self._workspace_resolver is not None:
-                        workspace_id = str(
-                            self._workspace_resolver(scope_name) or ""
-                        )
+                        workspace_id = str(self._workspace_resolver(scope_name) or "")
                     for metric in scope_metrics.metrics:
                         for point in getattr(metric.data, "data_points", ()):
                             try:
@@ -976,5 +924,6 @@ try:
             return True
 
 except ImportError:  # pragma: no cover - guarded by initialize_open_telemetry
+
     class _WorkspaceMetricExporter:  # type: ignore[no-redef]
         pass

@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-
 from persistence.execution_store import (
     ExecutionStore,
     ExecutionStoreCorruptionError,
@@ -211,14 +210,8 @@ def test_fresh_store_marks_queued_and_running_turns_service_restarted(tmp_path):
     assert history["created_at"] == "2026-01-02T03:04:05+00:00"
     assert history["updated_at"].endswith("+00:00")
     assert history["turns"][0]["start_time"] == "2026-01-02T03:04:06+00:00"
-    assert all(
-        datetime.fromisoformat(turn["end_time"]).tzinfo == timezone.utc
-        for turn in history["turns"]
-    )
-    assert all(
-        turn["final_output"]["error_code"] == "SERVICE_RESTARTED"
-        for turn in history["turns"]
-    )
+    assert all(datetime.fromisoformat(turn["end_time"]).tzinfo == timezone.utc for turn in history["turns"])
+    assert all(turn["final_output"]["error_code"] == "SERVICE_RESTARTED" for turn in history["turns"])
     persisted = json.loads(execution_path.read_text(encoding="utf-8"))
     assert [turn["error_code"] for turn in persisted["turns"]] == [
         "SERVICE_RESTARTED",

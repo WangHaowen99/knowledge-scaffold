@@ -8,14 +8,10 @@ the shared lightweight LLM router.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _SCRIPT_DIR.parents[1]
-if str(_BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_DIR))
-
 _DOTENV_PATH = _SCRIPT_DIR / ".env"
 _env_cache: dict[str, str | None] | None = None
 
@@ -50,8 +46,8 @@ def _apply_dotenv_to_environment() -> None:
 _apply_dotenv_to_environment()
 
 from utils.lang import (  # noqa: E402
-    SUPPORTED_LANGUAGES,
     _LANG_DISPLAY_NAMES,
+    SUPPORTED_LANGUAGES,
     detect_language,
     get_lang_display_name,
     get_thinking_phrase,

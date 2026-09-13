@@ -8,20 +8,17 @@ import unicodedata
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
-
-from ontology.change_events import build_digest_hints, build_ontology_changed_event
-from ontology.change_events import validate_ontology_changed_event
+from ontology.change_events import build_digest_hints, build_ontology_changed_event, validate_ontology_changed_event
 from ontology.evidence.epoch_state import (
     EpochStateError,
     build_epoch_state,
     read_epoch_state,
-    write_epoch_state,
     validate_epoch_state,
+    write_epoch_state,
 )
 from ontology.hash_contract import field_i, field_n, field_s, hash_frames
 from ontology.resource_parser import ResourceParser
 from ontology.resource_types import ResourceSource
-
 
 CONTRACTS = Path(__file__).parents[1] / "ontology" / "contracts"
 

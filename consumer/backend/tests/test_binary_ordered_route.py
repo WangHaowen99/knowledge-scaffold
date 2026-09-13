@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from solver_coordination import Option, OrderedPlan, PlanItem, SolverContractError
 from solver_coordination.problem_families.binary_ordered_route import (
     MAX_PLAN_ITEMS,
@@ -38,9 +37,7 @@ def test_nine_items_generate_eighteen_stable_neutral_candidate_ids_and_order():
         knowledge_package_revision="package-revision-synthetic",
     )
 
-    assert [candidate.candidate_id for candidate in candidate_set.candidates] == list(
-        expected_candidate_ids(9)
-    )
+    assert [candidate.candidate_id for candidate in candidate_set.candidates] == list(expected_candidate_ids(9))
     assert candidate_set.candidate_count == 18
     assert all(len(candidate.assignments) == 9 for candidate in candidate_set.candidates)
     assert all(_transition_count(candidate.assignments) <= 1 for candidate in candidate_set.candidates)

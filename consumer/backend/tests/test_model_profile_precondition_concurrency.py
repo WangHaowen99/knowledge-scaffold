@@ -1,8 +1,8 @@
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from threading import Event
 
 import pytest
-
 from config.model_profile_references import get_model_profile_references
 from config.system_config import (
     ModelProfilePreconditionError,
@@ -21,7 +21,7 @@ def _profile(profile_id):
         "id": profile_id,
         "name": "Model {}".format(profile_id),
         "provider": "openai_compatible",
-        "base_url": "https://{}.example/v1".format(profile_id),
+        "base_url": "https://{}.example.net/v1".format(profile_id),
         "model": "{}-model".format(profile_id),
         "timeout": 600,
         "max_tokens": 4096,

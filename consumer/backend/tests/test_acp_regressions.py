@@ -6,20 +6,22 @@ import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-from llm import LLMPurpose
 import utils.lang as lang_module
 from agent.runtime.contracts import (
+    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
     PublicEvent,
     RunPreflightSnapshot,
     RunSnapshot,
-    RunStatus as CanonicalRunStatus,
+)
+from agent.runtime.contracts import RunStatus as CanonicalRunStatus
+from agent.runtime.contracts import (
     RuntimeInvocationContext,
-    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT,
 )
 from api.auth.auth import AuthUser
 from api.protocols.acp import server as acp_server
 from api.protocols.acp.models import RunStatus
 from api.testing import TestApplication
+from llm import LLMPurpose
 from persistence.execution_store import ExecutionStore
 from utils.lang import _detect_language_via_llm, detect_language, translate_text
 
@@ -133,14 +135,8 @@ def test_acp_forwards_explicit_deterministic_operation_and_arguments(
 
         assert not isinstance(created, JSONResponse)
         assert manager.contexts[-1].arguments == {"code": "CODE-42"}
-        assert (
-            manager.contexts[-1].requested_operation_key
-            == "operation_demo"
-        )
-        assert (
-            manager.contexts[-1].concurrency_limit
-            == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
-        )
+        assert manager.contexts[-1].requested_operation_key == "operation_demo"
+        assert manager.contexts[-1].concurrency_limit == USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
 
     from fastapi.responses import JSONResponse
 
@@ -207,8 +203,8 @@ def test_acp_builds_one_dynamic_preflight_before_each_durable_turn(tmp_path):
 
 
 def test_protocol_preflight_uses_orchestrator_for_runtime_container(monkeypatch):
-    from agent.runtime.runtime import RuntimeContainer
     import api.routes as routes
+    from agent.runtime.runtime import RuntimeContainer
     from api.protocols.preflight import build_protocol_preflight_snapshot
 
     calls = []
@@ -224,6 +220,7 @@ def test_protocol_preflight_uses_orchestrator_for_runtime_container(monkeypatch)
 
     class _ProductionRuntime(RuntimeContainer):
         def __init__(self):
+            super().__init__()
             self.short_io = _InlinePool()
 
     monkeypatch.setattr(
@@ -290,9 +287,7 @@ def test_acp_interaction_option_maps_to_canonical_value():
         {
             "id": "interaction_demo",
             "type": "single_choice",
-            "options": [
-                {"id": "option_a", "label": "Option A", "value": "value_a"}
-            ],
+            "options": [{"id": "option_a", "label": "Option A", "value": "value_a"}],
         },
         "Option A",
     )
@@ -370,9 +365,7 @@ def test_acp_hitl_answer_allocates_a_new_canonical_run(tmp_path):
     assert second.run_id != first.run_id
     assert manager.contexts[0].run_id == first.run_id
     assert manager.contexts[1].run_id == second.run_id
-    _session_id, latest = store.find_turn_by_protocol_id(
-        "acp", "external_run_demo"
-    )
+    _session_id, latest = store.find_turn_by_protocol_id("acp", "external_run_demo")
     assert latest["run_id"] == second.run_id
     history = store.get_session_history("session_demo")
     assert history["turns"][0]["status"] == "awaiting_input"
@@ -427,6 +420,7 @@ def test_language_llm_detection_uses_task_llm_router(monkeypatch):
     calls = []
 
     class _Router:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def call(self, **kwargs):
             calls.append(kwargs)
             return SimpleNamespace(content="es")
@@ -444,6 +438,7 @@ def test_language_translation_uses_task_llm_router(monkeypatch):
     calls = []
 
     class _Router:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def call(self, **kwargs):
             calls.append(kwargs)
             return SimpleNamespace(content="translated")

@@ -76,7 +76,10 @@ def build_ontology_graph(
     )
 
     nodes = sorted(nodes_by_id.values(), key=lambda item: (_type_order(item.get("type")), item.get("label") or ""))
-    edges = sorted(edges_by_id.values(), key=lambda item: (item.get("source") or "", item.get("target") or "", item.get("type") or ""))
+    edges = sorted(
+        edges_by_id.values(),
+        key=lambda item: (item.get("source") or "", item.get("target") or "", item.get("type") or ""),
+    )
     return {
         "ontology_id": ontology.id,
         "name": ontology.name,
@@ -271,7 +274,11 @@ def _add_node(
 
 def _keys_for_type(nodes_by_id: Dict[str, Dict[str, Any]], node_type: str) -> List[str]:
     return sorted(
-        [str(node.get("key") or "") for node in nodes_by_id.values() if node.get("type") == node_type and node.get("key")],
+        [
+            str(node.get("key") or "")
+            for node in nodes_by_id.values()
+            if node.get("type") == node_type and node.get("key")
+        ],
         key=len,
         reverse=True,
     )

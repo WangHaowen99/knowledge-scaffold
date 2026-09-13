@@ -27,3 +27,5 @@ docker run --rm -p 5110:5110 --env-file .env modeling-agent
 编排部署时，Agent 通过受 `MODELING_SERVICE_TOKEN` 保护的内部接口按当前账号读取 Modeling 平台运行时 LLM 配置，admin 可在 Workbench 配置中心统一设置，无需重启 Agent。`MODELING_LLM_BASE_URL` 和 `MODELING_LLM_MODEL` 仅作为本地独立运行兜底。`MODELING_CORE_BASE_URL` 默认指向 `http://127.0.0.1:5100`；容器编排中使用 `http://modeling:5100`。
 
 运行事实、项目唯一状态和候选自动修复状态保存在 `runtime.sqlite`，openJiuwen checkpoint 的物理文件为 `checkpoints.sqlite.db`。服务重启会把唯一状态从 `*:running` 转为 `*:suspended`，不会伪造完成状态，也不会清空同一候选的修复轮次。
+
+模型预算配置：`MODELING_GOAL_OUTPUT_TOKENS` 控制目标和流程候选的单次输出（默认 8192），`MODELING_ANALYST_OUTPUT_TOKENS` 控制资料分段分析（默认 8192），`MODELING_SUMMARY_OUTPUT_TOKENS` 仅用于空正文恢复摘要（默认 1024）。目标和资料分析使用独立预算，避免结构化结果被短摘要额度截断。

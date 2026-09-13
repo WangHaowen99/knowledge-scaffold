@@ -1,9 +1,7 @@
-
-
-from fastapi.testclient import TestClient
-
 from api.testing import TestApplication
 from auth_test_backend import AuthManager
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD, synthetic_secret
+from fastapi.testclient import TestClient
 
 
 def _build_client(tmp_path, monkeypatch):
@@ -15,12 +13,16 @@ def _build_client(tmp_path, monkeypatch):
     app = TestApplication()
     app.state.services["TESTING"] = True
     refresh_calls = []
-    app.state.services["REFRESH_PLATFORM_CONNECTOR"] = lambda: refresh_calls.append("refresh")
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    admin = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    def refresh_platform_connector():
+        refresh_calls.append("refresh")
+
+    app.state.services["REFRESH_PLATFORM_CONNECTOR"] = refresh_platform_connector
+
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    admin = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert admin is not None
-    admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    admin = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
 
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(platform_config_router)
@@ -39,10 +41,10 @@ def test_platform_config_api_saves_masked_config_and_refreshes_connector(tmp_pat
         "/api/platform-config",
         json={
             "enabled": True,
-            "base_url": "https://platform.example",
+            "base_url": "https://platform.example.net",
             "environment_id": "prod",
             "instance_id": "instance-prod-01",
-            "api_key": "secret-key",
+            "api_key": synthetic_secret("platform_config_api-credential-01"),
             "batch_size": 3,
             "timeout_seconds": 4,
             "heartbeat_interval_seconds": 20,
@@ -53,17 +55,17 @@ def test_platform_config_api_saves_masked_config_and_refreshes_connector(tmp_pat
     assert response.status_code == 200
     payload = response.json()
     assert payload["config"]["enabled"] is True
-    assert payload["config"]["base_url"] == "https://platform.example"
+    assert payload["config"]["base_url"] == "https://platform.example.net"
     assert payload["config"]["environment_id"] == "prod"
     assert payload["config"]["instance_id"] == "instance-prod-01"
     assert payload["config"]["has_api_key"] is True
     assert "api_key" not in payload["config"]
     assert refresh_calls == ["refresh"]
-    assert "secret-key" not in config_path.read_text(encoding="utf-8")
+    assert synthetic_secret("platform_config_api-credential-01") not in config_path.read_text(encoding="utf-8")
 
     resolved = PlatformConfig.from_env()
     assert resolved.available is True
-    assert resolved.api_key == "secret-key"
+    assert resolved.api_key == synthetic_secret("platform_config_api-credential-01")
 
     fetch_response = client.get("/api/platform-config", headers=headers)
     assert fetch_response.status_code == 200
@@ -88,9 +90,9 @@ def test_platform_config_api_tests_connection_with_submitted_values(tmp_path, mo
         "/api/platform-config/test",
         json={
             "enabled": True,
-            "base_url": "https://platform.example",
+            "base_url": "https://platform.example.net",
             "environment_id": "prod",
-            "api_key": "secret-key",
+            "api_key": synthetic_secret("platform_config_api-credential-01"),
         },
         headers=headers,
     )
@@ -104,8 +106,8 @@ def test_platform_config_api_tests_connection_with_submitted_values(tmp_path, mo
     assert captured == [
         {
             "enabled": True,
-            "base_url": "https://platform.example",
+            "base_url": "https://platform.example.net",
             "environment_id": "prod",
-            "api_key": "secret-key",
+            "api_key": synthetic_secret("platform_config_api-credential-01"),
         }
     ]

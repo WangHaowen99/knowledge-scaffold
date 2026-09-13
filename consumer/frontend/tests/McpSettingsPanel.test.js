@@ -78,9 +78,12 @@ function setInputValue(input, value) {
 }
 
 async function withRenderedPanel(run) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="root"></div></body></html>',
+    {
+      url: 'http://localhost/',
+    },
+  );
   const testGlobals = {
     window: dom.window,
     document: dom.window.document,
@@ -94,10 +97,17 @@ async function withRenderedPanel(run) {
     IS_REACT_ACT_ENVIRONMENT: true,
   };
   const originalGlobals = new Map(
-    Object.keys(testGlobals).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
+    Object.keys(testGlobals).map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
   );
   for (const [name, value] of Object.entries(testGlobals)) {
-    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      writable: true,
+      value,
+    });
   }
 
   const { createRoot } = await import('react-dom/client');
@@ -128,10 +138,12 @@ async function withRenderedPanel(run) {
   };
   const click = async (element) => {
     await act(async () => {
-      element.dispatchEvent(new dom.window.MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-      }));
+      element.dispatchEvent(
+        new dom.window.MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
     });
   };
 
@@ -141,12 +153,16 @@ async function withRenderedPanel(run) {
     await act(async () => root.unmount());
     dom.window.close();
     for (const [name, descriptor] of originalGlobals) {
-      if (descriptor === undefined) delete globalThis[name];
-      else Object.defineProperty(globalThis, name, descriptor);
+      if (descriptor === undefined) {
+        delete globalThis[name];
+      } else {
+        Object.defineProperty(globalThis, name, descriptor);
+      }
     }
   }
 }
 
+// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 test('workspace switch never projects the previous ontology list into a loading or failed scope', async () => {
   const workspaceBStatus = deferred();
   const workspaceBTokens = deferred();
@@ -157,7 +173,9 @@ test('workspace switch never projects the previous ontology list into a loading 
     const workspaceId = requestWorkspace;
     calls.push({ workspaceId, url });
     if (workspaceId === 'ws-a' && url === '/agentic/mcp/runtime/status') {
-      return Promise.resolve(jsonResponse(statusPayload('ws-a', '000000000000000a')));
+      return Promise.resolve(
+        jsonResponse(statusPayload('ws-a', '000000000000000a')),
+      );
     }
     if (workspaceId === 'ws-a' && url === '/agentic/mcp/tokens') {
       return Promise.resolve(jsonResponse({ items: [] }));
@@ -193,7 +211,10 @@ test('workspace switch never projects the previous ontology list into a loading 
       ontologiesError: '',
     });
     await waitFor(() => {
-      assert.match(document.querySelector('.settings-mcp-create').textContent, /Ontology A/);
+      assert.match(
+        document.querySelector('.settings-mcp-create').textContent,
+        /Ontology A/,
+      );
     });
 
     requestWorkspace = 'ws-b';
@@ -206,16 +227,21 @@ test('workspace switch never projects the previous ontology list into a loading 
       ontologiesError: '',
     });
     await waitFor(() => {
-      assert.equal(calls.filter((call) => call.workspaceId === 'ws-b').length, 3);
+      assert.equal(
+        calls.filter((call) => call.workspaceId === 'ws-b').length,
+        3,
+      );
     });
 
-    workspaceBStatus.resolve(jsonResponse(statusPayload('ws-b', '000000000000000b')));
+    workspaceBStatus.resolve(
+      jsonResponse(statusPayload('ws-b', '000000000000000b')),
+    );
     workspaceBTokens.resolve(jsonResponse({ items: [] }));
     workspaceBConcurrency.resolve(jsonResponse(concurrencyPayload()));
     await flush();
 
     const createSection = document.querySelector('.settings-mcp-create');
-    const ontologySelect = createSection.querySelectorAll('select')[1];
+    const [, ontologySelect] = createSection.querySelectorAll('select');
     const createButton = createSection.querySelector('.btn.btn-p');
     assert.doesNotMatch(createSection.textContent, /Ontology A/);
     assert.equal(ontologySelect.disabled, true);
@@ -229,8 +255,14 @@ test('workspace switch never projects the previous ontology list into a loading 
       ontologiesLoading: false,
       ontologiesError: 'list failed',
     });
-    assert.doesNotMatch(document.querySelector('.settings-mcp-create').textContent, /Ontology A/);
-    assert.equal(document.querySelector('.settings-mcp-create .btn.btn-p').disabled, true);
+    assert.doesNotMatch(
+      document.querySelector('.settings-mcp-create').textContent,
+      /Ontology A/,
+    );
+    assert.equal(
+      document.querySelector('.settings-mcp-create .btn.btn-p').disabled,
+      true,
+    );
 
     await renderPanel({
       ...common,
@@ -250,9 +282,14 @@ test('workspace switch never projects the previous ontology list into a loading 
     const readySection = document.querySelector('.settings-mcp-create');
     await click(readySection.querySelector('fieldset input[type="checkbox"]'));
     await waitFor(() => {
-      const selects = document.querySelector('.settings-mcp-create').querySelectorAll('select');
+      const selects = document
+        .querySelector('.settings-mcp-create')
+        .querySelectorAll('select');
       assert.equal(selects[1].value, 'onto-b');
-      assert.equal(document.querySelector('.settings-mcp-create .btn.btn-p').disabled, false);
+      assert.equal(
+        document.querySelector('.settings-mcp-create .btn.btn-p').disabled,
+        false,
+      );
     });
   });
 });
@@ -265,7 +302,7 @@ test('platform admin can save the workspace MCP streaming concurrency', async ()
     if (url === '/agentic/mcp/runtime/status') {
       return jsonResponse(statusPayload('ws-a', '000000000000000a'));
     }
-    if (url === '/agentic/mcp/tokens') return jsonResponse({ items: [] });
+    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
     if (url === '/agentic/mcp/runtime/concurrency' && !options.method) {
       return jsonResponse(concurrencyPayload(concurrency));
     }
@@ -313,8 +350,8 @@ test('missing concurrency endpoint does not hide the rest of the MCP panel', asy
     if (url === '/agentic/mcp/runtime/status') {
       return jsonResponse(statusPayload('ws-a', '000000000000000a'));
     }
-    if (url === '/agentic/mcp/tokens') return jsonResponse({ items: [] });
-    if (url === '/agentic/mcp/runtime/concurrency') return jsonResponse({ detail: 'Not Found' }, 404);
+    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
+    if (url === '/agentic/mcp/runtime/concurrency') { return jsonResponse({ detail: 'Not Found' }, 404); }
     throw new Error(`Unexpected request: ${url}`);
   };
 
@@ -362,9 +399,12 @@ test('workspace switch blocks a stale concurrency draft until the new scope load
     if (requestWorkspace === 'ws-a' && url === '/agentic/mcp/runtime/concurrency') {
       return Promise.resolve(jsonResponse(concurrencyPayload(11)));
     }
-    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/runtime/status') return workspaceBStatus.promise;
-    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/tokens') return workspaceBTokens.promise;
-    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/runtime/concurrency') return workspaceBConcurrency.promise;
+    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/runtime/status') { return workspaceBStatus.promise; }
+    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/tokens') { return workspaceBTokens.promise; }
+    if (
+      requestWorkspace === 'ws-b' &&
+      url === '/agentic/mcp/runtime/concurrency'
+    ) { return workspaceBConcurrency.promise; }
     throw new Error(`Unexpected request for ${requestWorkspace}: ${url}`);
   };
 
@@ -415,8 +455,8 @@ test('non-admin can inspect but cannot change MCP streaming concurrency', async 
     if (url === '/agentic/mcp/runtime/status') {
       return jsonResponse(statusPayload('ws-a', '000000000000000a'));
     }
-    if (url === '/agentic/mcp/tokens') return jsonResponse({ items: [] });
-    if (url === '/agentic/mcp/runtime/concurrency') return jsonResponse(concurrencyPayload(9));
+    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
+    if (url === '/agentic/mcp/runtime/concurrency') { return jsonResponse(concurrencyPayload(9)); }
     throw new Error(`Unexpected request: ${url}`);
   };
 

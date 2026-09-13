@@ -1,29 +1,26 @@
 from __future__ import annotations
 
+import json
+import time
 from contextlib import contextmanager
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 from pathlib import Path
 from threading import Thread
-import time
 
+from contracts.solver.tck import runner as runner_module
 from contracts.solver.tck.runner import (
     ConnectorTckRunner,
     FaultScenario,
     TckReport,
 )
-from contracts.solver.tck import runner as runner_module
-
+from contracts.solver.tck.tests.tck_synthetic_credentials import SERVICE_TOKEN
 
 CONTRACT_ROOT = Path(__file__).resolve().parents[2]
-SERVICE_TOKEN = "synthetic-tck-service-token"
 
 
 def _document(name: str) -> dict:
-    return json.loads(
-        (CONTRACT_ROOT / "examples" / name).read_text(encoding="utf-8")
-    )
+    return json.loads((CONTRACT_ROOT / "examples" / name).read_text(encoding="utf-8"))
 
 
 def _error(code: str, category: str = "contract", retryable: bool = False) -> dict:
@@ -61,7 +58,7 @@ class _SyntheticConnector(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         return self.headers.get("Authorization") == "Bearer " + SERVICE_TOKEN
 
-    def do_GET(self) -> None:
+    def do_GET(self) -> None:  # pylint: disable=invalid-name
         if self.path == "/v1/health":
             self._send(200, {"status": "ok"})
             return
@@ -104,7 +101,7 @@ class _SyntheticConnector(BaseHTTPRequestHandler):
             return
         self._send(404, _error("RESOURCE_NOT_FOUND"))
 
-    def do_POST(self) -> None:
+    def do_POST(self) -> None:  # pylint: disable=invalid-name
         if not self._authorized():
             self._send(401, _error("AUTHENTICATION_FAILED", "authentication"))
             return
@@ -157,8 +154,7 @@ class _SyntheticConnector(BaseHTTPRequestHandler):
                 "request_ref": payload["request_ref"],
                 "status": (
                     "running"
-                    if self.fault
-                    in {"attempt_lost", "restart", "late_result", "execution_failed"}
+                    if self.fault in {"attempt_lost", "restart", "late_result", "execution_failed"}
                     else "completed"
                 ),
             }
@@ -167,7 +163,7 @@ class _SyntheticConnector(BaseHTTPRequestHandler):
         self.jobs[job_id] = job
         self._send(202, job)
 
-    def do_DELETE(self) -> None:
+    def do_DELETE(self) -> None:  # pylint: disable=invalid-name
         if not self._authorized():
             self._send(401, _error("AUTHENTICATION_FAILED", "authentication"))
             return
@@ -245,6 +241,7 @@ def test_tck_runner_verifies_the_public_job_contract_black_box():
 class _FaultDriver:
     """Out-of-band test harness; runner traffic remains HTTP/JSON only."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def scenario(self, name, _request):
         def before_submit(_payload):
             _SyntheticConnector.fault = name.removeprefix("fault_")
@@ -293,8 +290,7 @@ def test_tck_runner_executes_optional_fault_driver_and_public_verifier():
             bearer_token=SERVICE_TOKEN,
             fault_driver=_FaultDriver(),
             result_verifier=lambda *, request, result: (
-                result["request_ref"] == request["request_ref"]
-                and result["solve_outcome"] == "optimal"
+                result["request_ref"] == request["request_ref"] and result["solve_outcome"] == "optimal"
             ),
         ).run()
 

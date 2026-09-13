@@ -8,7 +8,10 @@ import json
 def test_public_solver_summary_is_schema_free(tmp_path):
     from ontology.ontologies import OntologyLoader
     from ontology.ontology_catalog import build_root_payload
-    from solver_coordination.capability_catalog import public_solver_summary
+    from solver_coordination.capability_catalog import (
+        load_solver_capability_catalog,
+        public_solver_summary,
+    )
     from test_solver_capability_catalog import _write_solver_package
 
     manifest = _write_solver_package(tmp_path)
@@ -25,10 +28,7 @@ def test_public_solver_summary_is_schema_free(tmp_path):
     expected = public_solver_summary(
         # The schema-free builder is semantically equivalent to projecting a
         # full private record for the common discovery fields.
-        __import__(
-            "solver_coordination.capability_catalog",
-            fromlist=["load_solver_capability_catalog"],
-        ).load_solver_capability_catalog(tmp_path, manifest)
+        load_solver_capability_catalog(tmp_path, manifest)
     )
     assert summary == expected
     assert summary[0]["operation_key"] == "solve_route"

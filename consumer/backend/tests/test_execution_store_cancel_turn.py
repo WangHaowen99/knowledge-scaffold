@@ -99,14 +99,17 @@ def test_failed_terminal_reconcile_persists_partial_model_output(tmp_path):
     assert turn["status"] == "failed"
     assert turn["error_code"] == "MODEL_OUTPUT_TRUNCATED"
     assert turn["final_output"] == canonical_output
-    assert reloaded.reconcile_canonical_terminal(
-        "session_truncated",
-        1,
-        run_id="run_truncated",
-        status="failed",
-        final_output=canonical_output,
-        error_code="MODEL_OUTPUT_TRUNCATED",
-    ) is False
+    assert (
+        reloaded.reconcile_canonical_terminal(
+            "session_truncated",
+            1,
+            run_id="run_truncated",
+            status="failed",
+            final_output=canonical_output,
+            error_code="MODEL_OUTPUT_TRUNCATED",
+        )
+        is False
+    )
 
 
 def test_execution_store_atomic_replace_syncs_parent_directory(tmp_path, monkeypatch):

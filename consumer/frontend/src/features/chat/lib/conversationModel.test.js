@@ -8,9 +8,10 @@ import {
 } from './legacyAgentEvent.js';
 import { buildMessagesFromEvents } from './messageBuilder.js';
 
-const hydrateLegacyEnvelopes = (envelopes) => buildMessagesFromEvents(
-  envelopes.map((data) => ({ event: LEGACY_AGENT_STREAM_EVENT, data })),
-);
+const hydrateLegacyEnvelopes = (envelopes) =>
+  buildMessagesFromEvents(
+    envelopes.map((data) => ({ event: LEGACY_AGENT_STREAM_EVENT, data })),
+  );
 
 const assistantMessage = {
   id: 'turn-message-1',
@@ -64,34 +65,67 @@ const assistantMessage = {
       endTs: 1700,
     },
   ],
-  iterationMetrics: [{ iteration: 1, status: 'completed', totalElapsedMs: 700, ts: 1750 }],
+  iterationMetrics: [
+    { iteration: 1, status: 'completed', totalElapsedMs: 700, ts: 1750 },
+  ],
 };
 
 test('conversation model exposes the incomplete-output error code', () => {
-  const model = buildConversationViewModel([{
-    id: 'synthetic-truncated-turn',
-    runId: 'synthetic-run',
-    role: 'assistant',
-    status: 'failed',
-    content: 'synthetic partial answer',
-    meta: {
-      error: '回答达到输出上限，内容尚未完成',
-      error_code: 'MODEL_OUTPUT_TRUNCATED',
+  const model = buildConversationViewModel([
+    {
+      id: 'synthetic-truncated-turn',
+      runId: 'synthetic-run',
+      role: 'assistant',
+      status: 'failed',
+      content: 'synthetic partial answer',
+      meta: {
+        error: '回答达到输出上限，内容尚未完成',
+        error_code: 'MODEL_OUTPUT_TRUNCATED',
+      },
     },
-  }]);
+  ]);
 
   assert.equal(model.turns[0].status, 'error');
   assert.equal(model.turns[0].content, 'synthetic partial answer');
   assert.equal(model.turns[0].errorCode, 'MODEL_OUTPUT_TRUNCATED');
 });
 
-test('system cancellation notice remains a standalone non-turn message', () => {
+test('conversation model retains incomplete output together with recovery metadata', () => {
+  const recovery = {
+    action: 'continue',
+    label: '继续执行',
+    message: 'Continue the synthetic task from preserved context.',
+  };
   const model = buildConversationViewModel([{
-    id: 'interaction-cancelled-1',
-    role: 'system',
-    content: '用户取消了操作',
-    metadata: { type: 'interaction_cancelled' },
+    id: 'synthetic-interrupted-turn',
+    runId: 'synthetic-run',
+    role: 'assistant',
+    status: 'failed',
+    content: 'synthetic partial answer',
+    meta: {
+      error: 'synthetic event buffer overflow',
+      error_code: 'RUNTIME_EVENT_BUFFER_FULL',
+      incomplete: true,
+      error_retriable: true,
+      recovery,
+    },
   }]);
+
+  assert.equal(model.turns[0].status, 'error');
+  assert.equal(model.turns[0].content, 'synthetic partial answer');
+  assert.equal(model.turns[0].incomplete, true);
+  assert.deepEqual(model.turns[0].recovery, recovery);
+});
+
+test('system cancellation notice remains a standalone non-turn message', () => {
+  const model = buildConversationViewModel([
+    {
+      id: 'interaction-cancelled-1',
+      role: 'system',
+      content: '用户取消了操作',
+      metadata: { type: 'interaction_cancelled' },
+    },
+  ]);
 
   assert.equal(model.messages[0].role, 'system');
   assert.equal(model.messages[0].kind, 'message');
@@ -101,58 +135,82 @@ test('system cancellation notice remains a standalone non-turn message', () => {
 
 test('conversation blocks keep source segment order and add lifecycle last', () => {
   const model = buildConversationViewModel([assistantMessage]);
-  const turn = model.turns[0];
+  const [turn] = model.turns;
 
   assert.equal(model.kind, 'conversation');
   assert.equal(turn.runId, 'run-1');
-  assert.deepEqual(turn.blocks.map((block) => block.kind), [
-    'reasoning',
-    'business_data',
-    'content',
-    'status',
-  ]);
-  assert.deepEqual(turn.blocks.map((block) => block.order), [0, 1, 2, 3]);
+  assert.deepEqual(
+    turn.blocks.map((block) => block.kind),
+    ['reasoning', 'business_data', 'content', 'status'],
+  );
+  assert.deepEqual(
+    turn.blocks.map((block) => block.order),
+    [0, 1, 2, 3],
+  );
   assert.equal(turn.blocks[0].summary, '问题分析');
   assert.equal(turn.blocks[1].toolCallId, 'call-db');
-  assert.equal(turn.blocks[1].outputRef, '/agentic/sessions/s1/runs/run-1/tool-outputs/out-db');
+  assert.equal(
+    turn.blocks[1].outputRef,
+    '/agentic/sessions/s1/runs/run-1/tool-outputs/out-db',
+  );
   assert.equal(turn.blocks[1].outputSize, 8192);
-  assert.deepEqual(turn.blocks[1].progress.map((item) => item.type), ['intermediate', 'final']);
+  assert.deepEqual(
+    turn.blocks[1].progress.map((item) => item.type),
+    ['intermediate', 'final'],
+  );
   assert.equal(turn.blocks.at(-1).status, 'finished');
 });
 
 test('solver tool segments project progress and authoritative result separately', () => {
-  const model = buildConversationViewModel([{
-    id: 'solver-message',
-    role: 'assistant',
-    runId: 'run-synthetic',
-    status: 'success',
-    streamSegments: [{
-      type: 'tool',
-      state: 'completed',
-      finished: true,
-      meta: {
-        tool_name: 'solve_synthetic_route_aaaaaaaa',
-        tool_call_id: 'call-solver',
-        solver_events: [
-          { type: 'solver.progress', event_seq: 2, phase: 'solve', message: '正在求解' },
-          { type: 'solver.verification.completed', event_seq: 3, phase: 'verify', message: '独立校验完成' },
-        ],
-        solver_result: {
-          authoritative: true,
-          feasibility: 'feasible',
-          optimality: 'not_proven',
-          proof_kind: 'constraint_recalculation',
-          summary: { candidate_id: 'ALL_0' },
-          result_artifact_ref: 'artifact://result-synthetic',
-          verification_evidence_ref: 'artifact://evidence-synthetic',
+  const model = buildConversationViewModel([
+    {
+      id: 'solver-message',
+      role: 'assistant',
+      runId: 'run-synthetic',
+      status: 'success',
+      streamSegments: [
+        {
+          type: 'tool',
+          state: 'completed',
+          finished: true,
+          meta: {
+            tool_name: 'solve_synthetic_route_aaaaaaaa',
+            tool_call_id: 'call-solver',
+            solver_events: [
+              {
+                type: 'solver.progress',
+                event_seq: 2,
+                phase: 'solve',
+                message: '正在求解',
+              },
+              {
+                type: 'solver.verification.completed',
+                event_seq: 3,
+                phase: 'verify',
+                message: '独立校验完成',
+              },
+            ],
+            solver_result: {
+              authoritative: true,
+              feasibility: 'feasible',
+              optimality: 'not_proven',
+              proof_kind: 'constraint_recalculation',
+              summary: { candidate_id: 'ALL_0' },
+              result_artifact_ref: 'artifact://result-synthetic',
+              verification_evidence_ref: 'artifact://evidence-synthetic',
+            },
+          },
         },
-      },
-    }],
-  }]);
+      ],
+    },
+  ]);
 
-  const block = model.turns[0].blocks[0];
+  const [block] = model.turns[0].blocks;
   assert.equal(block.kind, 'solver');
-  assert.deepEqual(block.progress.map((item) => item.phase), ['solve', 'verify']);
+  assert.deepEqual(
+    block.progress.map((item) => item.phase),
+    ['solve', 'verify'],
+  );
   assert.equal(block.solverResult.authoritative, true);
   assert.equal(block.solverResult.optimality, 'not_proven');
 });
@@ -167,13 +225,15 @@ test('deterministic artifact segments normalize download metadata', () => {
         state: 'final',
         text: '',
         meta: {
-          artifacts: [{
-            name: 'result.json',
-            media_type: 'application/json',
-            size: 14,
-            sha256: 'sha256:abc',
-            output_ref: 'artifact-ref',
-          }],
+          artifacts: [
+            {
+              name: 'result.json',
+              media_type: 'application/json',
+              size: 14,
+              sha256: 'sha256:abc',
+              output_ref: 'artifact-ref',
+            },
+          ],
         },
         finished: true,
       },
@@ -197,8 +257,8 @@ test('deterministic artifact segments normalize download metadata', () => {
 test('conversation keys and timing are deterministic across rebuilds', () => {
   const first = buildConversationViewModel([assistantMessage]);
   const second = buildConversationViewModel([assistantMessage]);
-  const firstTurn = first.turns[0];
-  const secondTurn = second.turns[0];
+  const [firstTurn] = first.turns;
+  const [secondTurn] = second.turns;
 
   assert.equal(firstTurn.key, secondTurn.key);
   assert.deepEqual(
@@ -211,31 +271,42 @@ test('conversation keys and timing are deterministic across rebuilds', () => {
 });
 
 test('streaming fallback block keys stay stable while segment text grows', () => {
-  const build = (text) => buildConversationViewModel([{
-    id: 'streaming-turn',
-    runId: 'streaming-run',
-    role: 'assistant',
-    status: 'running',
-    isLoading: true,
-    streamSegments: [{ type: 'content', state: 'streaming', text }],
-  }]).turns[0].blocks[0].key;
+  const build = (text) =>
+    buildConversationViewModel([
+      {
+        id: 'streaming-turn',
+        runId: 'streaming-run',
+        role: 'assistant',
+        status: 'running',
+        isLoading: true,
+        streamSegments: [{ type: 'content', state: 'streaming', text }],
+      },
+    ]).turns[0].blocks[0].key;
 
   assert.equal(build('a'), build('answer still streaming'));
 });
 
 test('awaiting interaction is a terminal renderer block with a stable lifecycle key', () => {
-  const interaction = { id: 'ask-1', type: 'single_choice', prompt: '请选择方案' };
-  const running = buildConversationViewModel([{
-    ...assistantMessage,
-    status: 'running',
-    isLoading: true,
-    endTs: null,
-  }]).turns[0];
-  const awaiting = buildConversationViewModel([{
-    ...assistantMessage,
-    status: 'awaiting_input',
-    interaction,
-  }]).turns[0];
+  const interaction = {
+    id: 'ask-1',
+    type: 'single_choice',
+    prompt: '请选择方案',
+  };
+  const [running] = buildConversationViewModel([
+    {
+      ...assistantMessage,
+      status: 'running',
+      isLoading: true,
+      endTs: null,
+    },
+  ]).turns;
+  const [awaiting] = buildConversationViewModel([
+    {
+      ...assistantMessage,
+      status: 'awaiting_input',
+      interaction,
+    },
+  ]).turns;
 
   assert.equal(awaiting.status, 'awaiting');
   assert.equal(awaiting.terminal, true);
@@ -245,29 +316,34 @@ test('awaiting interaction is a terminal renderer block with a stable lifecycle 
 });
 
 test('structured runtime errors render their public message instead of object text', () => {
-  const turn = buildConversationViewModel([{
-    ...assistantMessage,
-    status: 'error',
-    content: '',
-    streamSegments: [],
-    meta: {
-      error: {
+  const [turn] = buildConversationViewModel([
+    {
+      ...assistantMessage,
+      status: 'error',
+      content: '',
+      streamSegments: [],
+      meta: {
+        error: {
+          error_code: 'MODEL_PROVIDER_ERROR',
+          message: '模型服务请求失败',
+          source: 'model',
+        },
         error_code: 'MODEL_PROVIDER_ERROR',
-        message: '模型服务请求失败',
-        source: 'model',
-      },
-      error_code: 'MODEL_PROVIDER_ERROR',
-      error_retriable: true,
-      recovery: {
-        action: 'continue',
-        label: '继续执行',
-        message: 'Continue from the preserved context.',
+        error_retriable: true,
+        recovery: {
+          action: 'continue',
+          label: '继续执行',
+          message: 'Continue from the preserved context.',
+        },
       },
     },
-  }]).turns[0];
+  ]).turns;
 
   assert.equal(turn.error, '模型服务请求失败');
-  assert.equal(turn.errorPresentation.message, '模型服务暂时不可用，请稍后继续执行。');
+  assert.equal(
+    turn.errorPresentation.message,
+    '模型服务暂时不可用，请稍后继续执行。',
+  );
   assert.equal(turn.blocks.at(-1).text, '模型服务请求失败');
   assert.equal(turn.recovery.action, 'continue');
   assert.equal(turn.recovery.label, '继续执行');
@@ -284,7 +360,9 @@ test('web search and generic tools remain distinct renderer kinds', () => {
         meta: {
           tool_name: 'web_search',
           tool_call_id: 'call-web',
-          web_search_events: [{ type: 'final', content: '返回 3 条来源', seq: 8, ts: 1500 }],
+          web_search_events: [
+            { type: 'final', content: '返回 3 条来源', seq: 8, ts: 1500 },
+          ],
           output_preview: JSON.stringify({
             ok: true,
             provider: 'tavily',
@@ -302,19 +380,29 @@ test('web search and generic tools remain distinct renderer kinds', () => {
         type: 'tool',
         state: 'error',
         text: '调用失败',
-        meta: { tool_name: 'other_tool', tool_call_id: 'call-other', error: 'boom' },
+        meta: {
+          tool_name: 'other_tool',
+          tool_call_id: 'call-other',
+          error: 'boom',
+        },
         finished: true,
       },
     ],
   };
-  const blocks = buildConversationViewModel([message]).turns[0].blocks;
+  const [{ blocks }] = buildConversationViewModel([message]).turns;
 
-  assert.deepEqual(blocks.map((block) => block.kind), ['web_search', 'tool', 'content', 'status']);
+  assert.deepEqual(
+    blocks.map((block) => block.kind),
+    ['web_search', 'tool', 'content', 'status'],
+  );
   assert.equal(blocks[0].progress[0].text, '返回 3 条来源');
   assert.equal(blocks[0].query, '示例企业总部地址');
   assert.equal(blocks[0].provider, 'tavily');
   assert.equal(blocks[0].resultCount, 2);
-  assert.deepEqual(blocks[0].sources.map((source) => source.domain), ['example.com', 'example.cn']);
+  assert.deepEqual(
+    blocks[0].sources.map((source) => source.domain),
+    ['example.com', 'example.cn'],
+  );
   assert.equal(blocks[0].responseTime, 0.42);
   assert.equal(blocks[1].status, 'error');
   assert.equal(blocks[1].error, 'boom');
@@ -323,61 +411,101 @@ test('web search and generic tools remain distinct renderer kinds', () => {
 test('canonical tool name fields select specialized renderer kinds', () => {
   const message = {
     ...assistantMessage,
-    streamSegments: [{
-      type: 'tool',
-      state: 'completed',
-      meta: {
-        name: 'business_data_search',
-        tool_call_id: 'call-canonical-business-data',
-        db_events: [{ type: 'final', content: 'Synthetic query completed', seq: 2, ts: 1200 }],
+    streamSegments: [
+      {
+        type: 'tool',
+        state: 'completed',
+        meta: {
+          name: 'business_data_search',
+          tool_call_id: 'call-canonical-business-data',
+          db_events: [
+            {
+              type: 'final',
+              content: 'Synthetic query completed',
+              seq: 2,
+              ts: 1200,
+            },
+          ],
+        },
+        finished: true,
       },
-      finished: true,
-    }],
+    ],
   };
 
-  const block = buildConversationViewModel([message]).turns[0].blocks[0];
+  const [messageTurn] = buildConversationViewModel([message]).turns;
+  const [block] = messageTurn.blocks;
   assert.equal(block.kind, 'business_data');
   assert.equal(block.toolName, 'business_data_search');
   assert.equal(block.progress[0].text, 'Synthetic query completed');
 });
 
 test('business data exposes progress and parsed structured output', () => {
-  const block = buildConversationViewModel([assistantMessage]).turns[0].blocks[1];
-  const structured = buildConversationViewModel([{
-    ...assistantMessage,
-    streamSegments: [{
-      ...assistantMessage.streamSegments[1],
-      meta: {
-        ...assistantMessage.streamSegments[1].meta,
-        output_preview: JSON.stringify({ columns: ['cost'], rows: [[3000]], total: 1 }),
-      },
-    }],
-  }]).turns[0].blocks[0];
+  const [assistantTurn] = buildConversationViewModel([assistantMessage]).turns;
+  const [, block] = assistantTurn.blocks;
+  const [structuredTurn] = buildConversationViewModel([
+    {
+      ...assistantMessage,
+      streamSegments: [
+        {
+          ...assistantMessage.streamSegments[1],
+          meta: {
+            ...assistantMessage.streamSegments[1].meta,
+            output_preview: JSON.stringify({
+              columns: ['cost'],
+              rows: [[3000]],
+              total: 1,
+            }),
+          },
+        },
+      ],
+    },
+  ]).turns;
+  const [structured] = structuredTurn.blocks;
 
-  assert.deepEqual(block.progress.map((event) => event.type), ['intermediate', 'final']);
-  assert.deepEqual(structured.parsedOutput, { columns: ['cost'], rows: [[3000]], total: 1 });
+  assert.deepEqual(
+    block.progress.map((event) => event.type),
+    ['intermediate', 'final'],
+  );
+  assert.deepEqual(structured.parsedOutput, {
+    columns: ['cost'],
+    rows: [[3000]],
+    total: 1,
+  });
 });
 
 test('business data progress omits empty entries and keeps provider errors', () => {
-  const block = buildConversationViewModel([{
-    ...assistantMessage,
-    streamSegments: [{
-      ...assistantMessage.streamSegments[1],
-      state: 'completed',
-      meta: {
-        ...assistantMessage.streamSegments[1].meta,
-        output_preview: '',
-        db_events: [
-          { type: 'start', content: '', seq: 1, ts: 1200 },
-          { type: 'error', content: 'MindsDB request failed', seq: 2, ts: 1210 },
-        ],
-      },
-    }],
-  }]).turns[0].blocks[0];
+  const [progressTurn] = buildConversationViewModel([
+    {
+      ...assistantMessage,
+      streamSegments: [
+        {
+          ...assistantMessage.streamSegments[1],
+          state: 'completed',
+          meta: {
+            ...assistantMessage.streamSegments[1].meta,
+            output_preview: '',
+            db_events: [
+              { type: 'start', content: '', seq: 1, ts: 1200 },
+              {
+                type: 'error',
+                content: 'MindsDB request failed',
+                seq: 2,
+                ts: 1210,
+              },
+            ],
+          },
+        },
+      ],
+    },
+  ]).turns;
+  const [block] = progressTurn.blocks;
 
   assert.equal(block.status, 'error');
   assert.equal(block.error, 'MindsDB request failed');
-  assert.deepEqual(block.progress.map((event) => event.type), ['error']);
+  assert.deepEqual(
+    block.progress.map((event) => event.type),
+    ['error'],
+  );
   assert.equal(block.progress[0].text, 'MindsDB request failed');
 });
 
@@ -394,15 +522,30 @@ test('raw envelopes hydrate into the same ordered conversation model', () => {
   const envelopes = [
     envelope('turn.started', {}, 1, 100),
     envelope('token.delta', { channel: 'reasoning', text: '思考' }, 2, 110),
-    envelope('tool.started', { tool_name: 'lookup', tool_call_id: 'call-1' }, 3, 120),
-    envelope('tool.finished', {
-      tool_name: 'lookup',
-      tool_call_id: 'call-1',
-      status: 'completed',
-      output_preview: 'done',
-    }, 4, 130),
+    envelope(
+      'tool.started',
+      { tool_name: 'lookup', tool_call_id: 'call-1' },
+      3,
+      120,
+    ),
+    envelope(
+      'tool.finished',
+      {
+        tool_name: 'lookup',
+        tool_call_id: 'call-1',
+        status: 'completed',
+        output_preview: 'done',
+      },
+      4,
+      130,
+    ),
     envelope('token.delta', { channel: 'content', text: '回答' }, 5, 140),
-    envelope('turn.finished', { status: 'success', final_output: '回答' }, 6, 150),
+    envelope(
+      'turn.finished',
+      { status: 'success', final_output: '回答' },
+      6,
+      150,
+    ),
   ];
 
   const model = buildConversationViewModel(hydrateLegacyEnvelopes(envelopes));
@@ -415,15 +558,17 @@ test('raw envelopes hydrate into the same ordered conversation model', () => {
 });
 
 test('duplicate fallback identities receive deterministic unique keys', () => {
-  const model = buildConversationViewModel([{
-    role: 'assistant',
-    runId: 'duplicate-run',
-    status: 'running',
-    streamSegments: [
-      { type: 'reasoning', text: 'same', state: 'streaming' },
-      { type: 'reasoning', text: 'same', state: 'streaming' },
-    ],
-  }]);
+  const model = buildConversationViewModel([
+    {
+      role: 'assistant',
+      runId: 'duplicate-run',
+      status: 'running',
+      streamSegments: [
+        { type: 'reasoning', text: 'same', state: 'streaming' },
+        { type: 'reasoning', text: 'same', state: 'streaming' },
+      ],
+    },
+  ]);
   const [first, second] = model.turns[0].blocks;
 
   assert.notEqual(first.key, second.key);
@@ -432,18 +577,36 @@ test('duplicate fallback identities receive deterministic unique keys', () => {
 });
 
 test('finished narrative segments cannot remain visually running', () => {
-  const blocks = buildConversationViewModel([{
-    id: 'finished-narrative',
-    role: 'assistant',
-    status: 'finished',
-    streamSegments: [
-      { type: 'reasoning', state: 'streaming', text: '分析完成', finished: true },
-      { type: 'content', state: 'streaming', text: '回答完成', finished: true },
-    ],
-  }]).turns[0].blocks;
+  const [{ blocks }] = buildConversationViewModel([
+    {
+      id: 'finished-narrative',
+      role: 'assistant',
+      status: 'finished',
+      streamSegments: [
+        {
+          type: 'reasoning',
+          state: 'streaming',
+          text: '分析完成',
+          finished: true,
+        },
+        {
+          type: 'content',
+          state: 'streaming',
+          text: '回答完成',
+          finished: true,
+        },
+      ],
+    },
+  ]).turns;
 
-  assert.deepEqual(blocks.slice(0, 2).map((block) => block.status), ['finished', 'finished']);
-  assert.deepEqual(blocks.slice(0, 2).map((block) => block.terminal), [true, true]);
+  assert.deepEqual(
+    blocks.slice(0, 2).map((block) => block.status),
+    ['finished', 'finished'],
+  );
+  assert.deepEqual(
+    blocks.slice(0, 2).map((block) => block.terminal),
+    [true, true],
+  );
 });
 
 test('raw tool envelopes preserve elapsed timing including orphan completions', () => {
@@ -458,19 +621,48 @@ test('raw tool envelopes preserve elapsed timing including orphan completions', 
   });
   const messages = hydrateLegacyEnvelopes([
     rawEnvelope('turn.started', {}, 1, 100),
-    rawEnvelope('tool.started', { tool_name: 'lookup', tool_call_id: 'timed' }, 2, 120),
-    rawEnvelope('tool.finished', {
-      tool_name: 'lookup', tool_call_id: 'timed', status: 'completed', elapsed_ms: 45,
-    }, 3, 180),
-    rawEnvelope('tool.finished', {
-      tool_name: 'orphan', tool_call_id: 'orphan', status: 'completed', elapsed_ms: 25,
-    }, 4, 220),
-    rawEnvelope('turn.finished', { status: 'success', final_output: 'done' }, 5, 240),
+    rawEnvelope(
+      'tool.started',
+      { tool_name: 'lookup', tool_call_id: 'timed' },
+      2,
+      120,
+    ),
+    rawEnvelope(
+      'tool.finished',
+      {
+        tool_name: 'lookup',
+        tool_call_id: 'timed',
+        status: 'completed',
+        elapsed_ms: 45,
+      },
+      3,
+      180,
+    ),
+    rawEnvelope(
+      'tool.finished',
+      {
+        tool_name: 'orphan',
+        tool_call_id: 'orphan',
+        status: 'completed',
+        elapsed_ms: 25,
+      },
+      4,
+      220,
+    ),
+    rawEnvelope(
+      'turn.finished',
+      { status: 'success', final_output: 'done' },
+      5,
+      240,
+    ),
   ]);
   const model = buildConversationViewModel(messages);
   const tools = model.turns[0].blocks.filter((block) => block.kind === 'tool');
 
-  assert.deepEqual(tools.map((block) => block.durationMs), [45, 25]);
+  assert.deepEqual(
+    tools.map((block) => block.durationMs),
+    [45, 25],
+  );
   assert.equal(tools[0].startedAt, 120);
   assert.equal(tools[0].endedAt, 180);
   assert.equal(tools[1].startedAt, 195);
@@ -482,27 +674,40 @@ test('web search projection survives a truncated preview and rejects unsafe link
     provider: 'tavily',
     result_count: 12,
     results: [
-      { title: 'Safe source', url: 'https://example.com/result', snippet: 'safe' },
-      { title: 'Unsafe source', url: 'data:text/html,<script>alert(1)</script>', snippet: 'plain text only' },
+      {
+        title: 'Safe source',
+        url: 'https://example.com/result',
+        snippet: 'safe',
+      },
+      {
+        title: 'Unsafe source',
+        url: 'data:text/html,<script>alert(1)</script>',
+        snippet: 'plain text only',
+      },
     ],
   };
-  const block = buildConversationViewModel([{
-    id: 'projected-search',
-    role: 'assistant',
-    status: 'finished',
-    streamSegments: [{
-      type: 'tool',
-      state: 'completed',
-      finished: true,
-      meta: {
-        tool_name: 'web_search',
-        tool_call_id: 'projected-web',
-        output_preview: '{'.padEnd(4096, 'x'),
-        output_truncated: true,
-        output_projection: projection,
-      },
-    }],
-  }]).turns[0].blocks[0];
+  const [searchTurn] = buildConversationViewModel([
+    {
+      id: 'projected-search',
+      role: 'assistant',
+      status: 'finished',
+      streamSegments: [
+        {
+          type: 'tool',
+          state: 'completed',
+          finished: true,
+          meta: {
+            tool_name: 'web_search',
+            tool_call_id: 'projected-web',
+            output_preview: '{'.padEnd(4096, 'x'),
+            output_truncated: true,
+            output_projection: projection,
+          },
+        },
+      ],
+    },
+  ]).turns;
+  const [block] = searchTurn.blocks;
 
   assert.equal(block.provider, 'tavily');
   assert.equal(block.resultCount, 12);

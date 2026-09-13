@@ -14,14 +14,9 @@ import uuid
 
 from .canonical import canonical_json_bytes, sha256_digest
 
-
 TERMINAL_JOB_STATUSES = frozenset({"completed", "timed_out", "failed", "cancelled"})
-TERMINAL_ATTEMPT_STATUSES = frozenset(
-    {"completed", "timed_out", "failed", "cancelled", "attempt_lost"}
-)
-RETRYABLE_SOLVER_ERROR_CODES = frozenset(
-    {"solver_unavailable", "connector_capacity", "attempt_lost"}
-)
+TERMINAL_ATTEMPT_STATUSES = frozenset({"completed", "timed_out", "failed", "cancelled", "attempt_lost"})
+RETRYABLE_SOLVER_ERROR_CODES = frozenset({"solver_unavailable", "connector_capacity", "attempt_lost"})
 _UNSET = object()
 
 
@@ -356,9 +351,7 @@ class SolverJobStore:
         _deadline_text(deadline_at)
         identity = {
             "workspace_id": _required_text(workspace_id, "workspace_id"),
-            "binding_revision_id": _required_text(
-                binding_revision_id, "binding_revision_id"
-            ),
+            "binding_revision_id": _required_text(binding_revision_id, "binding_revision_id"),
             "problem_digest": _required_text(problem_digest, "problem_digest"),
             "run_policy": dict(run_policy),
         }
@@ -418,9 +411,7 @@ class SolverJobStore:
             if existing is not None:
                 current = self._decode(existing, "binding") or {}
                 if current["configuration_digest"] != digest:
-                    raise JobStoreConflict(
-                        "binding revision is already bound to different configuration"
-                    )
+                    raise JobStoreConflict("binding revision is already bound to different configuration")
                 return current
             connection.execute(
                 """
@@ -555,16 +546,12 @@ class SolverJobStore:
             deadline_at=deadline,
             run_id=run_id,
         )
-        selected_job_id = _required_text(
-            job_id or "job_{}".format(uuid.uuid4().hex), "job_id"
-        )
+        selected_job_id = _required_text(job_id or "job_{}".format(uuid.uuid4().hex), "job_id")
         now_value = self._now()
         initial_owner = _optional_text(initial_lease_owner, "initial_lease_owner")
         if initial_owner is None:
             if initial_lease_seconds is not None:
-                raise JobStoreError(
-                    "initial_lease_seconds requires initial_lease_owner"
-                )
+                raise JobStoreError("initial_lease_seconds requires initial_lease_owner")
             initial_until = None
             initial_phase = "created"
             initial_fencing_token = 0
@@ -574,12 +561,8 @@ class SolverJobStore:
                 or not isinstance(initial_lease_seconds, int)
                 or initial_lease_seconds < 1
             ):
-                raise JobStoreError(
-                    "initial_lease_seconds must be a positive integer"
-                )
-            initial_until = (
-                now_value + timedelta(seconds=initial_lease_seconds)
-            ).isoformat()
+                raise JobStoreError("initial_lease_seconds must be a positive integer")
+            initial_until = (now_value + timedelta(seconds=initial_lease_seconds)).isoformat()
             initial_phase = "freeze_inputs"
             initial_fencing_token = 1
         now = now_value.isoformat()
@@ -610,9 +593,7 @@ class SolverJobStore:
                 )
                 requested = (revision, digest, problem_json, policy_json)
                 if immutable != requested:
-                    raise JobStoreConflict(
-                        "logical job key is already bound to different content"
-                    )
+                    raise JobStoreConflict("logical job key is already bound to different content")
                 return current, False
             collision = connection.execute(
                 """
@@ -703,14 +684,8 @@ class SolverJobStore:
                 """,
                 (workspace, owner, identifier),
             ).fetchall()
-            artifact_counts = {
-                str(item["artifact_type"]): int(item["artifact_count"])
-                for item in artifact_rows
-            }
-            if any(
-                artifact_counts.get(kind) != 1
-                for kind in ("normalized_input", "fact_snapshot", "problem_ir")
-            ):
+            artifact_counts = {str(item["artifact_type"]): int(item["artifact_count"]) for item in artifact_rows}
+            if any(artifact_counts.get(kind) != 1 for kind in ("normalized_input", "fact_snapshot", "problem_ir")):
                 raise JobStoreConflict("solver frozen input artifacts are incomplete")
             connection.execute(
                 """
@@ -730,9 +705,7 @@ class SolverJobStore:
             )
         return self._decode(updated, "job") or {}
 
-    def get_job(
-        self, job_id: str, *, workspace_id: str, owner_id: str
-    ) -> dict[str, Any] | None:
+    def get_job(self, job_id: str, *, workspace_id: str, owner_id: str) -> dict[str, Any] | None:
         workspace, owner = self._scope(workspace_id, owner_id)
         identifier = _required_text(job_id, "job_id")
         with self._connect() as connection:
@@ -747,9 +720,7 @@ class SolverJobStore:
 
     @staticmethod
     def _history_cursor(created_at: str, job_id: str) -> str:
-        payload = canonical_json_bytes(
-            {"created_at": created_at, "job_id": job_id}
-        )
+        payload = canonical_json_bytes({"created_at": created_at, "job_id": job_id})
         return base64.urlsafe_b64encode(payload).decode("ascii")
 
     @staticmethod
@@ -795,7 +766,9 @@ class SolverJobStore:
                 WHERE {}
                 ORDER BY created_at DESC, job_id DESC
                 LIMIT ?
-                """.format(" AND ".join(clauses)),
+                """.format(
+                    " AND ".join(clauses)
+                ),
                 values,
             ).fetchall()
         has_more = len(rows) > limit
@@ -803,13 +776,11 @@ class SolverJobStore:
         items = [dict(row) for row in selected]
         next_cursor = None
         if has_more and selected:
-            next_cursor = self._history_cursor(
-                selected[-1]["created_at"], selected[-1]["job_id"]
-            )
+            next_cursor = self._history_cursor(selected[-1]["created_at"], selected[-1]["job_id"])
         return {"items": items, "next_cursor": next_cursor}
 
+    @staticmethod
     def _job_for_update(
-        self,
         connection: sqlite3.Connection,
         *,
         workspace_id: str,
@@ -932,9 +903,7 @@ class SolverJobStore:
                 and datetime.fromisoformat(lease_until) > self._now()
             )
             cancellation_completion = (
-                row["status"] == "cancelling"
-                and requested_status == "cancelled"
-                and requested_phase == "cancel"
+                row["status"] == "cancelling" and requested_status == "cancelled" and requested_phase == "cancel"
             )
             if not lease_active and not cancellation_completion:
                 raise LeaseConflict("solver job lease has expired")
@@ -1000,9 +969,7 @@ class SolverJobStore:
             raise JobStoreError("expected_version must be an integer")
         requested_status = _required_text(status, "status") if status is not None else None
         requested_phase = _required_text(phase, "phase") if phase is not None else None
-        requested_error = (
-            _optional_text(error_code, "error_code") if error_code is not _UNSET else _UNSET
-        )
+        requested_error = _optional_text(error_code, "error_code") if error_code is not _UNSET else _UNSET
         with self._transaction() as connection:
             updated, _ = self._update_job_in_transaction(
                 connection,
@@ -1082,12 +1049,8 @@ class SolverJobStore:
         workspace, owner = self._scope(workspace_id, owner_id)
         identifier = _required_text(job_id, "job_id")
         attempt = _required_text(attempt_id, "attempt_id")
-        verification_json = _json_text(
-            dict(verification_payload), "verification event payload"
-        )
-        authoritative_json = _json_text(
-            dict(authoritative_payload), "authoritative event payload"
-        )
+        verification_json = _json_text(dict(verification_payload), "verification event payload")
+        authoritative_json = _json_text(dict(authoritative_payload), "authoritative event payload")
         with self._transaction() as connection:
             updated, changed = self._update_job_in_transaction(
                 connection,
@@ -1181,10 +1144,7 @@ class SolverJobStore:
             )
             if job["version"] != expected_version:
                 raise OptimisticLockError("solver job version is stale")
-            if (
-                job["fencing_token"] != fencing_token
-                or job["lease_owner"] != worker
-            ):
+            if job["fencing_token"] != fencing_token or job["lease_owner"] != worker:
                 raise LeaseConflict("solver recovery lease or fencing token is stale")
             if job["status"] in TERMINAL_JOB_STATUSES:
                 raise TerminalStateError("terminal solver jobs are immutable")
@@ -1271,11 +1231,7 @@ class SolverJobStore:
         workspace, owner = self._scope(workspace_id, owner_id)
         identifier = _required_text(job_id, "job_id")
         worker = _required_text(lease_owner, "lease_owner")
-        if (
-            isinstance(lease_seconds, bool)
-            or not isinstance(lease_seconds, int)
-            or lease_seconds < 1
-        ):
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or lease_seconds < 1:
             raise JobStoreError("lease_seconds must be a positive integer")
         with self._transaction() as connection:
             row = self._job_for_update(
@@ -1330,11 +1286,7 @@ class SolverJobStore:
         worker = _required_text(lease_owner, "lease_owner")
         if isinstance(fencing_token, bool) or not isinstance(fencing_token, int):
             raise JobStoreError("fencing_token must be an integer")
-        if (
-            isinstance(lease_seconds, bool)
-            or not isinstance(lease_seconds, int)
-            or lease_seconds < 1
-        ):
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or lease_seconds < 1:
             raise JobStoreError("lease_seconds must be a positive integer")
         with self._transaction() as connection:
             row = self._job_for_update(
@@ -1349,10 +1301,7 @@ class SolverJobStore:
                 raise TerminalStateError("terminal solver jobs cannot renew a lease")
             now = self._now()
             current_until = row["lease_until"]
-            if (
-                current_until is None
-                or datetime.fromisoformat(current_until) <= now
-            ):
+            if current_until is None or datetime.fromisoformat(current_until) <= now:
                 raise LeaseConflict("solver verification lease has expired")
             lease_until = (now + timedelta(seconds=lease_seconds)).isoformat()
             connection.execute(
@@ -1423,9 +1372,7 @@ class SolverJobStore:
         workspace, owner = self._scope(workspace_id, owner_id)
         job_identifier = _required_text(job_id, "job_id")
         identifier = _required_text(attempt_id, "attempt_id")
-        idempotency_key = _required_text(
-            backend_idempotency_key, "backend_idempotency_key"
-        )
+        idempotency_key = _required_text(backend_idempotency_key, "backend_idempotency_key")
         request = dict(request_payload)
         request_json = _json_text(request, "request_payload")
         request_digest = sha256_digest(request)
@@ -1453,9 +1400,7 @@ class SolverJobStore:
                     or current["request_digest"] != request_digest
                     or current["backend_idempotency_key"] != idempotency_key
                 ):
-                    raise AttemptPayloadConflict(
-                        "attempt_id is already bound to a different request"
-                    )
+                    raise AttemptPayloadConflict("attempt_id is already bound to a different request")
                 return current, False
             attempt_number = connection.execute(
                 """
@@ -1512,9 +1457,7 @@ class SolverJobStore:
         workspace, owner = self._scope(workspace_id, owner_id)
         job_identifier = _required_text(job_id, "job_id")
         identifier = _required_text(attempt_id, "attempt_id")
-        idempotency_key = _required_text(
-            backend_idempotency_key, "backend_idempotency_key"
-        )
+        idempotency_key = _required_text(backend_idempotency_key, "backend_idempotency_key")
         request = dict(request_payload)
         request_json = _json_text(request, "request_payload")
         request_digest = sha256_digest(request)
@@ -1539,9 +1482,7 @@ class SolverJobStore:
             if existing is not None:
                 current = self._decode(existing, "attempt") or {}
                 if current["request_digest"] != request_digest:
-                    raise AttemptPayloadConflict(
-                        "logical job already has an initial attempt for different content"
-                    )
+                    raise AttemptPayloadConflict("logical job already has an initial attempt for different content")
                 return current, False
             collision = connection.execute(
                 """
@@ -1598,9 +1539,7 @@ class SolverJobStore:
         workspace, owner = self._scope(workspace_id, owner_id)
         job_identifier = _required_text(job_id, "job_id")
         identifier = _required_text(attempt_id, "attempt_id")
-        idempotency_key = _required_text(
-            backend_idempotency_key, "backend_idempotency_key"
-        )
+        idempotency_key = _required_text(backend_idempotency_key, "backend_idempotency_key")
         request = dict(request_payload)
         request_json = _json_text(request, "request_payload")
         request_digest = sha256_digest(request)
@@ -1615,21 +1554,13 @@ class SolverJobStore:
             if existing is not None:
                 current = self._decode(existing, "attempt") or {}
                 if current["job_id"] != job_identifier:
-                    raise AttemptPayloadConflict(
-                        "retry attempt_id is already bound to different content"
-                    )
+                    raise AttemptPayloadConflict("retry attempt_id is already bound to different content")
                 if current["attempt_number"] < 2:
-                    raise AttemptPayloadConflict(
-                        "retry attempt_id is already bound to different content"
-                    )
+                    raise AttemptPayloadConflict("retry attempt_id is already bound to different content")
                 if current["request_digest"] != request_digest:
-                    raise AttemptPayloadConflict(
-                        "retry attempt_id is already bound to different content"
-                    )
+                    raise AttemptPayloadConflict("retry attempt_id is already bound to different content")
                 if current["backend_idempotency_key"] != idempotency_key:
-                    raise AttemptPayloadConflict(
-                        "retry attempt_id is already bound to different content"
-                    )
+                    raise AttemptPayloadConflict("retry attempt_id is already bound to different content")
                 return current, False, None
 
             job = self._job_for_update(
@@ -1647,11 +1578,7 @@ class SolverJobStore:
                 raise JobStoreConflict("solver job error is not retryable")
             run_policy = _json_value(job["run_policy_json"])
             max_attempts = run_policy.get("max_attempts", 1)
-            if (
-                isinstance(max_attempts, bool)
-                or not isinstance(max_attempts, int)
-                or max_attempts < 1
-            ):
+            if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
                 raise JobStoreConflict("solver retry policy max_attempts is invalid")
             attempts = connection.execute(
                 """
@@ -1772,9 +1699,7 @@ class SolverJobStore:
             ).fetchone()
         return self._decode(row, "attempt") or {}, True, superseded_backend_job_id
 
-    def get_attempt(
-        self, attempt_id: str, *, workspace_id: str, owner_id: str
-    ) -> dict[str, Any] | None:
+    def get_attempt(self, attempt_id: str, *, workspace_id: str, owner_id: str) -> dict[str, Any] | None:
         workspace, owner = self._scope(workspace_id, owner_id)
         identifier = _required_text(attempt_id, "attempt_id")
         with self._connect() as connection:
@@ -1787,9 +1712,7 @@ class SolverJobStore:
             ).fetchone()
         return self._decode(row, "attempt")
 
-    def list_attempts(
-        self, job_id: str, *, workspace_id: str, owner_id: str
-    ) -> tuple[dict[str, Any], ...]:
+    def list_attempts(self, job_id: str, *, workspace_id: str, owner_id: str) -> tuple[dict[str, Any], ...]:
         workspace, owner = self._scope(workspace_id, owner_id)
         identifier = _required_text(job_id, "job_id")
         with self._connect() as connection:
@@ -1803,12 +1726,8 @@ class SolverJobStore:
             ).fetchall()
         return tuple(self._decode(row, "attempt") or {} for row in rows)
 
-    def latest_attempt(
-        self, job_id: str, *, workspace_id: str, owner_id: str
-    ) -> dict[str, Any] | None:
-        attempts = self.list_attempts(
-            job_id, workspace_id=workspace_id, owner_id=owner_id
-        )
+    def latest_attempt(self, job_id: str, *, workspace_id: str, owner_id: str) -> dict[str, Any] | None:
+        attempts = self.list_attempts(job_id, workspace_id=workspace_id, owner_id=owner_id)
         return attempts[-1] if attempts else None
 
     def bind_backend_job(
@@ -1855,9 +1774,7 @@ class SolverJobStore:
                 raise LeaseConflict("solver backend binding requires the active fencing token")
             if row["backend_job_id"] is not None:
                 if row["backend_job_id"] != backend_identifier:
-                    raise JobStoreConflict(
-                        "attempt is already bound to a different backend job"
-                    )
+                    raise JobStoreConflict("attempt is already bound to a different backend job")
                 existing = connection.execute(
                     """
                     SELECT * FROM solve_attempts
@@ -1925,9 +1842,7 @@ class SolverJobStore:
                     and row["job_lease_until"] is not None
                     and datetime.fromisoformat(row["job_lease_until"]) > self._now()
                 )
-                cancellation_completion = (
-                    row["job_status"] == "cancelling" and next_status == "cancelled"
-                )
+                cancellation_completion = row["job_status"] == "cancelling" and next_status == "cancelled"
                 if not lease_active and not cancellation_completion:
                     raise LeaseConflict("solver attempt lease has expired")
             if row["status"] in TERMINAL_ATTEMPT_STATUSES:
@@ -2014,9 +1929,7 @@ class SolverJobStore:
                 raise TerminalStateError("terminal solver attempts reject late results")
             if row["result_digest"] is not None:
                 if row["result_digest"] != result_digest:
-                    raise JobStoreConflict(
-                        "attempt result is already bound to different content"
-                    )
+                    raise JobStoreConflict("attempt result is already bound to different content")
                 existing = connection.execute(
                     """
                     SELECT * FROM solve_attempts
@@ -2086,9 +1999,7 @@ class SolverJobStore:
                     link["contract_digest"],
                 )
                 if immutable != (job_identifier, attempt_identifier, card, contract):
-                    raise JobStoreConflict(
-                        "tool call is already linked to a different solver contract"
-                    )
+                    raise JobStoreConflict("tool call is already linked to a different solver contract")
                 subscription = connection.execute(
                     """
                     SELECT * FROM job_subscriptions
@@ -2436,10 +2347,7 @@ class SolverJobStore:
                     owner_id=owner,
                     job_id=row["job_id"],
                 )
-                if (
-                    job["status"] not in TERMINAL_JOB_STATUSES
-                    and job["status"] != "cancelling"
-                ):
+                if job["status"] not in TERMINAL_JOB_STATUSES and job["status"] != "cancelling":
                     now = self._now_text()
                     submit_lease_active = (
                         job["phase"] == "submit_job"
@@ -2651,9 +2559,7 @@ class SolverJobStore:
         result_payload = dict(result)
         result_json = _json_text(result_payload, "tool result")
         result_digest = sha256_digest(result_payload)
-        if fencing_token is not None and (
-            isinstance(fencing_token, bool) or not isinstance(fencing_token, int)
-        ):
+        if fencing_token is not None and (isinstance(fencing_token, bool) or not isinstance(fencing_token, int)):
             raise JobStoreError("fencing_token must be an integer")
         with self._transaction() as connection:
             row = connection.execute(
@@ -2690,14 +2596,11 @@ class SolverJobStore:
                 and result_payload.get("authoritative") is False
             )
             if not bool(row["subscription_active"]) and not subscriber_cancelled:
-                raise JobStoreConflict(
-                    "cancelled solver subscriptions cannot receive a business result"
-                )
+                raise JobStoreConflict("cancelled solver subscriptions cannot receive a business result")
             retryable_verification_failure = (
                 row["job_status"] == "solver_completed"
                 and result_payload.get("status") == "error"
-                and result_payload.get("code")
-                in {"verification_runtime_failed", "artifact_persist_failed"}
+                and result_payload.get("code") in {"verification_runtime_failed", "artifact_persist_failed"}
                 and result_payload.get("phase") in {"verify", "publish"}
                 and result_payload.get("retryable") is True
                 and result_payload.get("authoritative") is False
@@ -2707,14 +2610,10 @@ class SolverJobStore:
                 and not subscriber_cancelled
                 and not retryable_verification_failure
             ):
-                raise TerminalStateError(
-                    "tool result cannot be written before the solver job is terminal"
-                )
+                raise TerminalStateError("tool result cannot be written before the solver job is terminal")
             if row["tool_result_digest"] is not None:
                 if row["tool_result_digest"] != result_digest:
-                    raise JobStoreConflict(
-                        "tool result is already bound to different content"
-                    )
+                    raise JobStoreConflict("tool result is already bound to different content")
                 existing = connection.execute(
                     """
                     SELECT * FROM run_solver_links
@@ -2807,13 +2706,9 @@ class SolverJobStore:
         worker = _optional_text(lease_owner, "lease_owner")
         if (worker is None) != (fencing_token is None):
             raise JobStoreError("lease_owner and fencing_token must be provided together")
-        if fencing_token is not None and (
-            isinstance(fencing_token, bool) or not isinstance(fencing_token, int)
-        ):
+        if fencing_token is not None and (isinstance(fencing_token, bool) or not isinstance(fencing_token, int)):
             raise JobStoreError("fencing_token must be an integer")
-        identifier = _required_text(
-            artifact_id or "artifact_{}".format(uuid.uuid4().hex), "artifact_id"
-        )
+        identifier = _required_text(artifact_id or "artifact_{}".format(uuid.uuid4().hex), "artifact_id")
         with self._transaction() as connection:
             job = self._job_for_update(
                 connection,
@@ -2824,9 +2719,7 @@ class SolverJobStore:
             if job["status"] in TERMINAL_JOB_STATUSES:
                 raise TerminalStateError("terminal solver jobs reject artifact writes")
             if worker is None and job["lease_owner"] is not None:
-                raise LeaseConflict(
-                    "solver artifact write requires the active fencing token"
-                )
+                raise LeaseConflict("solver artifact write requires the active fencing token")
             if worker is not None:
                 if job["lease_owner"] != worker or job["fencing_token"] != fencing_token:
                     raise LeaseConflict("solver artifact lease or fencing token is stale")
@@ -2850,9 +2743,7 @@ class SolverJobStore:
             ).fetchone()
             if existing is not None:
                 if existing["artifact_ref"] != ref or existing["attempt_id"] != attempt:
-                    raise JobStoreConflict(
-                        "artifact digest is already bound to different metadata"
-                    )
+                    raise JobStoreConflict("artifact digest is already bound to different metadata")
                 return dict(existing)
             connection.execute(
                 """
@@ -2882,9 +2773,7 @@ class SolverJobStore:
             ).fetchone()
         return dict(row)
 
-    def list_artifacts(
-        self, job_id: str, *, workspace_id: str, owner_id: str
-    ) -> tuple[dict[str, Any], ...]:
+    def list_artifacts(self, job_id: str, *, workspace_id: str, owner_id: str) -> tuple[dict[str, Any], ...]:
         workspace, owner = self._scope(workspace_id, owner_id)
         with self._connect() as connection:
             rows = connection.execute(
@@ -2920,9 +2809,7 @@ class SolverJobStore:
         worker = _optional_text(lease_owner, "lease_owner")
         if (worker is None) != (fencing_token is None):
             raise JobStoreError("lease_owner and fencing_token must be provided together")
-        if fencing_token is not None and (
-            isinstance(fencing_token, bool) or not isinstance(fencing_token, int)
-        ):
+        if fencing_token is not None and (isinstance(fencing_token, bool) or not isinstance(fencing_token, int)):
             raise JobStoreError("fencing_token must be an integer")
         with self._transaction() as connection:
             job = self._job_for_update(
@@ -2932,19 +2819,12 @@ class SolverJobStore:
                 job_id=job_identifier,
             )
             if job["status"] in TERMINAL_JOB_STATUSES:
-                raise TerminalStateError(
-                    "terminal solver jobs reject verification writes"
-                )
+                raise TerminalStateError("terminal solver jobs reject verification writes")
             if worker is None and job["lease_owner"] is not None:
-                raise LeaseConflict(
-                    "solver verification write requires the active fencing token"
-                )
+                raise LeaseConflict("solver verification write requires the active fencing token")
             if worker is not None:
                 lease_until = job["lease_until"]
-                if (
-                    job["lease_owner"] != worker
-                    or job["fencing_token"] != fencing_token
-                ):
+                if job["lease_owner"] != worker or job["fencing_token"] != fencing_token:
                     raise LeaseConflict("solver verification lease is stale")
                 if lease_until is None:
                     raise LeaseConflict("solver verification lease is stale")
@@ -2970,9 +2850,7 @@ class SolverJobStore:
                     or existing["attempt_id"] != attempt
                     or existing["result_digest"] != result_digest
                 ):
-                    raise JobStoreConflict(
-                        "verification identity is already bound to different content"
-                    )
+                    raise JobStoreConflict("verification identity is already bound to different content")
                 return self._decode(existing, "verification") or {}
             connection.execute(
                 """
@@ -3002,9 +2880,7 @@ class SolverJobStore:
             ).fetchone()
         return self._decode(row, "verification") or {}
 
-    def list_verification_results(
-        self, job_id: str, *, workspace_id: str, owner_id: str
-    ) -> tuple[dict[str, Any], ...]:
+    def list_verification_results(self, job_id: str, *, workspace_id: str, owner_id: str) -> tuple[dict[str, Any], ...]:
         workspace, owner = self._scope(workspace_id, owner_id)
         with self._connect() as connection:
             rows = connection.execute(
@@ -3029,9 +2905,7 @@ class SolverJobStore:
         binding_clause = ""
         binding_values: tuple[Any, ...] = ()
         if binding_revision_id is not None:
-            binding_revision = _required_text(
-                binding_revision_id, "binding_revision_id"
-            )
+            binding_revision = _required_text(binding_revision_id, "binding_revision_id")
             binding_clause = "AND binding_revision_id = ?"
             binding_values = (binding_revision,)
         with self._connect() as connection:
@@ -3042,7 +2916,9 @@ class SolverJobStore:
                   {}
                   AND status NOT IN ({})
                 ORDER BY created_at ASC, job_id ASC
-                """.format(binding_clause, placeholders),
+                """.format(
+                    binding_clause, placeholders
+                ),
                 (
                     workspace,
                     owner,
@@ -3079,7 +2955,9 @@ class SolverJobStore:
                     )
                   )
                 ORDER BY job.workspace_id ASC, job.owner_id ASC
-                """.format(placeholders),
+                """.format(
+                    placeholders
+                ),
                 tuple(sorted(TERMINAL_JOB_STATUSES)),
             ).fetchall()
         return tuple((str(row["workspace_id"]), str(row["owner_id"])) for row in rows)
@@ -3112,7 +2990,9 @@ class SolverJobStore:
                     )
                   )
                 ORDER BY job.updated_at ASC, job.job_id ASC
-                """.format(placeholders),
+                """.format(
+                    placeholders
+                ),
                 (
                     workspace,
                     owner,

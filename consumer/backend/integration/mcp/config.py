@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from config import AppConfig
 
@@ -14,6 +16,36 @@ class MCPConfigurationError(RuntimeError):
 
 
 MIN_MCP_TOKEN_SECRET_LENGTH = 32
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = str(host or "").strip().lower().rstrip(".")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_public_base_url(value: str) -> str:
+    normalized = str(value or "").strip().rstrip("/")
+    if not normalized:
+        return ""
+    try:
+        parsed = urlsplit(normalized)
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("MCP_PUBLIC_BASE_URL 不是有效 URL") from exc
+    if not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("MCP_PUBLIC_BASE_URL 必须是无用户凭据的完整 URL")
+    if parsed.query or parsed.fragment:
+        raise ValueError("MCP_PUBLIC_BASE_URL 不能包含查询参数或片段")
+    if parsed.scheme == "http" and not _is_loopback_host(parsed.hostname):
+        raise ValueError("MCP_PUBLIC_BASE_URL 对外地址必须使用 HTTPS")
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("MCP_PUBLIC_BASE_URL 仅支持 HTTPS 或本机回环 HTTP")
+    return normalized
 
 
 def _read_env(name: str, default: str = "") -> str:
@@ -72,11 +104,14 @@ class MCPRuntimeConfig:
 
     def effective_public_base_url(self) -> str:
         if self.public_base_url:
-            return self.public_base_url.rstrip("/")
-        host = self.server_host
+            return _validate_public_base_url(self.public_base_url)
+        host = str(self.server_host or "").strip()
         if host in {"", "0.0.0.0", "::"}:
             host = "127.0.0.1"
-        return "http://{}:{}".format(host, self.server_port)
+        if not _is_loopback_host(host):
+            return ""
+        rendered_host = "[{}]".format(host) if ":" in host else host
+        return urlunsplit(("http", "{}:{}".format(rendered_host, self.server_port), "", "", ""))
 
 
 def load_mcp_runtime_config() -> MCPRuntimeConfig:
@@ -151,3 +186,4 @@ def validate_mcp_runtime_config(config: MCPRuntimeConfig) -> None:
         )
     if config.token_algorithm != "HS256":
         raise ValueError("MCP_TOKEN_ALGORITHM 目前仅支持 HS256")
+    _validate_public_base_url(config.public_base_url)

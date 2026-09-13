@@ -19,7 +19,10 @@
 
   /* 语义色取自 .mwr 的 good / warn / crit / blue，底色用同色系浅化 */
   --c-ok:      #0e6b4a;  --c-ok-bg:     #e2f5ed;  --c-ok-line:    #bde4d1;
-  --c-wait:    #7a5200;  --c-wait-bg:   #fbf0d7;  --c-wait-line:  #f0dfb0;
+  /* 待处理色降饱和：整套底色是冷调蓝灰，原来的土褐是里面唯一的暖褐，
+     大面积铺在阶段条上显脏。收到接近中性的暖灰，对比度仍达 AA
+     （正文 5.44:1、白字实心 5.83:1）。 */
+  --c-wait:    #7d6122;  --c-wait-bg:   #faf7f0;  --c-wait-line:  #eae2d2;
   --c-stale:   #a8322c;  --c-stale-bg:  #fdecea;  --c-stale-line: #f5c8c3;
   --c-accent:  #2a78d6;  --c-accent-bg: #eef4fc;  --c-accent-line:#cfe0f7;
   /* 助手色：原体系里没有第二品牌色，取偏靛的蓝以示区别但不出家族 */

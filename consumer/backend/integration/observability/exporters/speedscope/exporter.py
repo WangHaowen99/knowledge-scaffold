@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
 import json
 import os
-from pathlib import Path
 import threading
 import time
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-from utils.logging import get_logger
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability.speedscope_io import (
     resolve_speedscope_output_dir,
-    speedscope_session_path,
     speedscope_file_lock,
     speedscope_session_lock_path,
+    speedscope_session_path,
 )
+from utils.logging import get_logger
 
 logger = get_logger("observability.exporters.speedscope")
 
@@ -225,9 +225,7 @@ class SpeedscopeExporter:
                 if run.terminal:
                     self._write_run(run)
             pending_terminal_runs = [
-                self._run_from_pending_drop(pending)
-                for pending in self._pending_drops.values()
-                if pending.terminal
+                self._run_from_pending_drop(pending) for pending in self._pending_drops.values() if pending.terminal
             ]
             for run in pending_terminal_runs:
                 self._write_run(run)
@@ -237,7 +235,8 @@ class SpeedscopeExporter:
     def close(self) -> None:
         self.flush()
 
-    def _run_from_pending_drop(self, pending: _PendingDrop) -> _RunTrace:
+    @staticmethod
+    def _run_from_pending_drop(pending: _PendingDrop) -> _RunTrace:
         return _RunTrace(
             run_id=pending.run_id,
             session_id=pending.session_id,
@@ -282,9 +281,7 @@ class SpeedscopeExporter:
             session_id=str(event.session_id or (pending.session_id if pending else "") or ""),
             user_id=_event_user_id(event) or (pending.user_id if pending else ""),
             turn_id=(
-                _optional_int(event.turn_id)
-                if event.turn_id is not None
-                else (pending.turn_id if pending else None)
+                _optional_int(event.turn_id) if event.turn_id is not None else (pending.turn_id if pending else None)
             ),
             first_ts_ms=min(event_ts_ms, pending.first_ts_ms) if pending else event_ts_ms,
             last_ts_ms=max(event_ts_ms, pending.last_ts_ms) if pending else event_ts_ms,
@@ -296,7 +293,8 @@ class SpeedscopeExporter:
         self._runs[event.run_id] = run
         return run
 
-    def _open_span(self, run: _RunTrace, event: RuntimeEvent, kind: str) -> None:
+    @staticmethod
+    def _open_span(run: _RunTrace, event: RuntimeEvent, kind: str) -> None:
         raw_key = _event_span_key(event, kind)
         previous_id = run.active_by_raw_key.get(raw_key)
         if previous_id:
@@ -321,7 +319,8 @@ class SpeedscopeExporter:
         )
         run.active_by_raw_key[raw_key] = span_id
 
-    def _close_span(self, run: _RunTrace, event: RuntimeEvent, kind: str) -> None:
+    @staticmethod
+    def _close_span(run: _RunTrace, event: RuntimeEvent, kind: str) -> None:
         raw_key = _event_span_key(event, kind)
         span_id = run.active_by_raw_key.pop(raw_key, None)
         span = run.spans.get(span_id or "")
@@ -362,9 +361,7 @@ class SpeedscopeExporter:
             active_profile_name = _active_profile_name(document)
             run_prefix = _run_profile_prefix(run)
             document["profiles"] = [
-                profile
-                for profile in document["profiles"]
-                if not str(profile.get("name") or "").startswith(run_prefix)
+                profile for profile in document["profiles"] if not str(profile.get("name") or "").startswith(run_prefix)
             ]
             document = _compact_document_frames(document)
             frames = document["shared"]["frames"]
@@ -602,17 +599,15 @@ def _event_duration_ms(event: RuntimeEvent) -> int:
 
 def _event_has_duration(event: RuntimeEvent) -> bool:
     payload = dict(event.payload or {})
-    return any(
-        key in payload
-        for key in (
-            "duration_ms",
-            "elapsed_ms",
-            "wall_duration_ms",
-            "total_elapsed_ms",
-            "total_ms",
-            "stream_duration_ms",
-        )
+    duration_keys = (
+        "duration_ms",
+        "elapsed_ms",
+        "wall_duration_ms",
+        "total_elapsed_ms",
+        "total_ms",
+        "stream_duration_ms",
     )
+    return any(key in payload for key in duration_keys)
 
 
 def _normalized_status(event: RuntimeEvent) -> str:
@@ -620,7 +615,12 @@ def _normalized_status(event: RuntimeEvent) -> str:
     status = str(payload.get("status") or "").strip().lower()
     if status:
         return status
-    if event.type in {RuntimeEventType.RUN_FAILED, RuntimeEventType.LLM_FAILED, RuntimeEventType.TOOL_BATCH_FAILED, RuntimeEventType.RUNTIME_PHASE_FAILED}:
+    if event.type in {
+        RuntimeEventType.RUN_FAILED,
+        RuntimeEventType.LLM_FAILED,
+        RuntimeEventType.TOOL_BATCH_FAILED,
+        RuntimeEventType.RUNTIME_PHASE_FAILED,
+    }:
         return RuntimeStatus.ERROR
     if event.type == RuntimeEventType.RUN_CANCELLED:
         return RuntimeStatus.CANCELLED
@@ -731,7 +731,7 @@ def _caller_suffix_from_raw_key(raw_key: str, fallback: str) -> str:
     for prefix in ("iteration:", "llm:", "tools:"):
         if not raw_key.startswith(prefix):
             continue
-        remainder = raw_key[len(prefix):]
+        remainder = raw_key[len(prefix) :]
         parts = remainder.split(":")
         if len(parts) >= 3 and parts[0] == "subagent":
             return "subagent:{}".format(parts[1])
@@ -742,12 +742,12 @@ def _caller_suffix_from_raw_key(raw_key: str, fallback: str) -> str:
 
 def _best_parent(child: _Span, candidates: Iterable[_Span]) -> Optional[_Span]:
     options = [candidate for candidate in candidates if candidate.id != child.id]
-    containing = [
-        candidate
-        for candidate in options
-        if candidate.start_ms <= child.start_ms
-        and (candidate.end_ms or candidate.start_ms) >= (child.end_ms or child.start_ms)
-    ]
+    containing = []
+    for candidate in options:
+        contains_start = candidate.start_ms <= child.start_ms
+        contains_end = (candidate.end_ms or candidate.start_ms) >= (child.end_ms or child.start_ms)
+        if contains_start and contains_end:
+            containing.append(candidate)
     if containing:
         return min(containing, key=lambda item: (item.end_ms or item.start_ms) - item.start_ms)
     return min(options, key=lambda item: abs(item.start_ms - child.start_ms), default=None)
@@ -865,7 +865,7 @@ def _branch_to_root(leaf: _Span, spans: Mapping[str, _Span], root: _Span) -> lis
 def _is_compatible_lane(span_ids: set[str], spans: Mapping[str, _Span]) -> bool:
     rows = [spans[span_id] for span_id in span_ids]
     for index, left in enumerate(rows):
-        for right in rows[index + 1:]:
+        for right in rows[index + 1 :]:
             if not _overlaps(left, right):
                 continue
             if _is_ancestor(left, right, spans) or _is_ancestor(right, left, spans):
@@ -941,13 +941,11 @@ def _load_session_document(path: Path, session_id: str) -> dict[str, Any]:
     if path.exists():
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
-            if (
-                isinstance(document, dict)
-                and document.get("$schema") == SPEEDSCOPE_SCHEMA
-                and isinstance(document.get("profiles"), list)
-                and isinstance(document.get("shared"), dict)
-                and isinstance(document["shared"].get("frames"), list)
-            ):
+            has_valid_schema = isinstance(document, dict) and document.get("$schema") == SPEEDSCOPE_SCHEMA
+            has_valid_profiles = isinstance(document, dict) and isinstance(document.get("profiles"), list)
+            shared = document.get("shared") if isinstance(document, dict) else None
+            has_valid_frames = isinstance(shared, dict) and isinstance(shared.get("frames"), list)
+            if has_valid_schema and has_valid_profiles and has_valid_frames:
                 return document
         except (OSError, json.JSONDecodeError):
             logger.warning("Ignoring unreadable Speedscope session trace %s", path, exc_info=True)

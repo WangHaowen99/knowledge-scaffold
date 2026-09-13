@@ -33,7 +33,7 @@ test('knowledge workbench exposes the package-level CheckPoint capability toggle
 test('CheckPoint cannot be enabled without an enabled package and readable template', () => {
   assert.match(
     workbenchSource,
-    /!checkpointEnabled && \(!pkg\.enabled \|\| !checkpointTemplateAvailable\)/,
+    /!checkpointEnabled\s*&&\s*\(\s*!pkg\.enabled\s*\|\|\s*!checkpointTemplateAvailable\s*\)/,
   );
 });
 

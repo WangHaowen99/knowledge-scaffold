@@ -35,6 +35,7 @@ class _FakeSession:
     def __enter__(self):
         return self
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def __exit__(self, exc_type, exc, tb):
         return False
 
@@ -48,6 +49,7 @@ class _FakeSession:
 class _FakeDriver:
     def __init__(self):
         self.session_obj = _FakeSession()
+        self.database = None
 
     def session(self, database):
         self.database = database

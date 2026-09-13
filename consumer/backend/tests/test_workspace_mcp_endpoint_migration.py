@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from migrations.workspace_mcp_endpoint_id_v1 import MIGRATION_ID, execute_migration
 from workspace.workspaces import (
     WorkspaceMCPEndpointError,
@@ -75,9 +74,12 @@ def test_workspace_mcp_endpoint_migration_is_persistent_and_idempotent(
     assert report["counts"]["created"] == 1
     assert get_workspace_mcp_endpoint_id("workspace-a") == "a" * 16
     assert get_workspace_mcp_endpoint_id("workspace-b") == "b" * 16
-    assert first_path.with_name(
-        "workspace.json.pre-workspace-mcp-endpoint-id-v1.bak",
-    ).read_bytes() == legacy_bytes
+    assert (
+        first_path.with_name(
+            "workspace.json.pre-workspace-mcp-endpoint-id-v1.bak",
+        ).read_bytes()
+        == legacy_bytes
+    )
     first_bytes = first_path.read_bytes()
     second_bytes = second_path.read_bytes()
 
@@ -92,12 +94,7 @@ def test_workspace_mcp_endpoint_migration_is_persistent_and_idempotent(
     assert first_path.read_bytes() == first_bytes
     assert second_path.read_bytes() == second_bytes
     assert (runtime_root / "workspace-mcp-endpoints.lock").is_file()
-    assert (
-        runtime_root
-        / "config"
-        / "migrations"
-        / "workspace-mcp-endpoint-id-v1.json"
-    ).is_file()
+    assert (runtime_root / "config" / "migrations" / "workspace-mcp-endpoint-id-v1.json").is_file()
 
 
 def test_workspace_mcp_endpoint_dry_run_does_not_modify_metadata(tmp_path):
@@ -115,12 +112,7 @@ def test_workspace_mcp_endpoint_dry_run_does_not_modify_metadata(tmp_path):
     assert report["counts"]["created"] == 1
     assert metadata_path.read_bytes() == original
     assert not (runtime_root / "workspace-mcp-endpoints.lock").exists()
-    assert not (
-        runtime_root
-        / "config"
-        / "migrations"
-        / "workspace-mcp-endpoint-id-v1.json"
-    ).exists()
+    assert not (runtime_root / "config" / "migrations" / "workspace-mcp-endpoint-id-v1.json").exists()
 
 
 def test_workspace_mcp_endpoint_migration_rejects_duplicate_ids(tmp_path):
@@ -180,9 +172,7 @@ def test_registered_startup_migration_contains_workspace_endpoint_migration():
         MigrationPhase,
     )
 
-    registration = next(
-        item for item in REGISTERED_MIGRATIONS if item.migration_id == MIGRATION_ID
-    )
+    registration = next(item for item in REGISTERED_MIGRATIONS if item.migration_id == MIGRATION_ID)
 
     assert registration.phase == MigrationPhase.STARTUP
     assert registration.failure_policy == MigrationFailurePolicy.BLOCKING

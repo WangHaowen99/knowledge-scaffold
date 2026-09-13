@@ -25,9 +25,7 @@ class DataAgentProvider:
 
     def __init__(self, connection: EffectiveConnection, session=None):
         self.connection = connection
-        self._session = session or create_retry_session(
-            int(connection.options.get("max_retries", 3))
-        )
+        self._session = session or create_retry_session(int(connection.options.get("max_retries", 3)))
         self._owns_session = session is None
 
     def query(
@@ -141,7 +139,9 @@ def _parse_response(body: dict) -> ProviderResult:
     state = status.get("state", "")
     text = _extract_text(status.get("message") or {})
     if state != "TASK_STATE_COMPLETED":
-        reason = status.get("error") or (body.get("error") or {}).get("message") or text or "task state: {}".format(state)
+        reason = (
+            status.get("error") or (body.get("error") or {}).get("message") or text or "task state: {}".format(state)
+        )
         return ProviderResult(success=False, error=str(reason))
     fields = _extract_fields(text)
     if not fields:
@@ -169,7 +169,12 @@ def _parse_response(body: dict) -> ProviderResult:
             error="DataAgent 未返回有效的结构化查询结果",
             metadata=metadata,
         )
-    return ProviderResult(success=True, data={"columns": columns, "rows": rows} if columns or rows else None, message="查询成功，返回 {} 行数据".format(len(rows)) if rows else "查询成功，无数据返回", metadata=metadata)
+    return ProviderResult(
+        success=True,
+        data={"columns": columns, "rows": rows} if columns or rows else None,
+        message="查询成功，返回 {} 行数据".format(len(rows)) if rows else "查询成功，无数据返回",
+        metadata=metadata,
+    )
 
 
 _FIELD_PATTERNS = {

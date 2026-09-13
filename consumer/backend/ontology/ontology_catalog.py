@@ -12,22 +12,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
-
 from ontology.ontologies import (
     OntologyManifest,
     get_ontology_registry,
     get_runtime_ontology_manifest,
 )
-from solver_coordination.capability_catalog import (
-    load_solver_capability_catalog,
-    load_solver_summary_catalog,
-    public_solver_summary,
-    public_solver_catalog,
-)
 from ontology.package_browser import (
     PackageBrowserError,
     list_package_files,
     resolve_package_file,
+)
+from solver_coordination.capability_catalog import (
+    load_solver_capability_catalog,
+    load_solver_summary_catalog,
+    public_solver_catalog,
+    public_solver_summary,
 )
 
 ASSET_TEXT_EXTENSIONS = {
@@ -101,9 +100,7 @@ _FIELD_SECTION_TITLES = frozenset(
 )
 _FIELD_ALIAS_SPLIT_RE = re.compile(r"[,，、;；]")
 _MARKDOWN_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-+:?$")
-_FIELD_SECTION_HEADING_RE = re.compile(
-    r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*$"
-)
+_FIELD_SECTION_HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*$")
 _FIELD_FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 _OBJECT_CANONICAL_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _FIELD_ALIAS_QUERY_LIMIT = 20
@@ -296,9 +293,7 @@ def find_exact_object_data_mapping_result(
         )
     if isinstance(objects, list):
         for mapping in objects:
-            mapping_key = str(
-                mapping.get("object_key") or mapping.get("key") or ""
-            ).strip()
+            mapping_key = str(mapping.get("object_key") or mapping.get("key") or "").strip()
             if mapping_key == key:
                 return ObjectDataMappingLookupResult(
                     status=ObjectDataMappingStatus.FOUND,
@@ -321,11 +316,7 @@ def find_exact_object_data_mapping_result(
 def _load_object_data_mappings(
     ontology_dir: Path,
 ) -> _ObjectDataMappingsLoadResult:
-    mapping_path = (
-        Path(ontology_dir).resolve()
-        / "mappings"
-        / "object-data-mappings.json"
-    )
+    mapping_path = Path(ontology_dir).resolve() / "mappings" / "object-data-mappings.json"
     if not mapping_path.exists():
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.FILE_MISSING,
@@ -340,10 +331,7 @@ def _load_object_data_mappings(
     except UnicodeDecodeError:
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.INVALID,
-            error=(
-                "Error: Failed to decode mappings/object-data-mappings.json "
-                "as UTF-8."
-            ),
+            error="Error: Failed to decode mappings/object-data-mappings.json as UTF-8.",
         )
     except OSError:
         return _ObjectDataMappingsLoadResult(
@@ -353,48 +341,34 @@ def _load_object_data_mappings(
     except json.JSONDecodeError:
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.INVALID,
-            error=(
-                "Error: mappings/object-data-mappings.json contains invalid JSON."
-            ),
+            error="Error: mappings/object-data-mappings.json contains invalid JSON.",
         )
     if not isinstance(payload, dict):
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.INVALID,
-            error=(
-                "Error: mappings/object-data-mappings.json must contain a JSON object."
-            ),
+            error="Error: mappings/object-data-mappings.json must contain a JSON object.",
         )
 
     objects = payload.get("objects")
     if isinstance(objects, dict):
         invalid_keys = sorted(
-            str(mapping_key)
-            for mapping_key, mapping in objects.items()
-            if not isinstance(mapping, dict)
+            str(mapping_key) for mapping_key, mapping in objects.items() if not isinstance(mapping, dict)
         )
         if invalid_keys:
             return _ObjectDataMappingsLoadResult(
                 status=ObjectDataMappingStatus.INVALID,
-                error=(
-                    "Error: Object mappings must contain JSON objects: {}."
-                ).format(", ".join(invalid_keys)),
+                error=("Error: Object mappings must contain JSON objects: {}.").format(", ".join(invalid_keys)),
             )
     elif isinstance(objects, list):
         if any(not isinstance(mapping, dict) for mapping in objects):
             return _ObjectDataMappingsLoadResult(
                 status=ObjectDataMappingStatus.INVALID,
-                error=(
-                    "Error: 'objects' entries in mappings/object-data-mappings.json "
-                    "must be JSON objects."
-                ),
+                error="Error: 'objects' entries in mappings/object-data-mappings.json must be JSON objects.",
             )
     elif "objects" in payload:
         return _ObjectDataMappingsLoadResult(
             status=ObjectDataMappingStatus.INVALID,
-            error=(
-                "Error: 'objects' in mappings/object-data-mappings.json "
-                "must be a JSON object or array."
-            ),
+            error="Error: 'objects' in mappings/object-data-mappings.json must be a JSON object or array.",
         )
     return _ObjectDataMappingsLoadResult(
         status=ObjectDataMappingStatus.FOUND,
@@ -406,9 +380,7 @@ def validate_object_data_mappings(ontology_dir: Path) -> Optional[str]:
     result = _load_object_data_mappings(ontology_dir)
     if result.status != ObjectDataMappingStatus.INVALID:
         return None
-    return str(result.error or "Error: Invalid object data mapping.").removeprefix(
-        "Error: "
-    )
+    return str(result.error or "Error: Invalid object data mapping.").removeprefix("Error: ")
 
 
 def validate_value_bindings(ontology_dir: Path) -> ValueBindingValidationResult:
@@ -422,9 +394,7 @@ def validate_value_bindings(ontology_dir: Path) -> ValueBindingValidationResult:
     """
     load_result = _load_object_data_mappings(ontology_dir)
     if load_result.status == ObjectDataMappingStatus.INVALID:
-        mapping_error = str(
-            load_result.error or "Error: Invalid object data mapping."
-        ).removeprefix("Error: ")
+        mapping_error = str(load_result.error or "Error: Invalid object data mapping.").removeprefix("Error: ")
         return ValueBindingValidationResult(errors=(mapping_error,))
     if load_result.status != ObjectDataMappingStatus.FOUND:
         return ValueBindingValidationResult()
@@ -451,11 +421,7 @@ def validate_value_bindings(ontology_dir: Path) -> ValueBindingValidationResult:
     elif isinstance(objects, list):
         object_iter = [
             (
-                str(
-                    item.get("object_key")
-                    or item.get("key")
-                    or f"[index {index}]"
-                ),
+                str(item.get("object_key") or item.get("key") or f"[index {index}]"),
                 item,
             )
             for index, item in enumerate(objects)
@@ -465,9 +431,7 @@ def validate_value_bindings(ontology_dir: Path) -> ValueBindingValidationResult:
         # Legacy top-level single-object format: the payload root itself is
         # the object mapping.  Match the key resolution used by
         # find_exact_object_data_mapping_result so these fields are validated.
-        payload_key = str(
-            payload.get("object_key") or payload.get("key") or ""
-        ).strip()
+        payload_key = str(payload.get("object_key") or payload.get("key") or "").strip()
         if payload_key and isinstance(payload.get("fields"), dict):
             object_iter = [(payload_key, payload)]
         else:
@@ -487,8 +451,9 @@ def validate_value_bindings(ontology_dir: Path) -> ValueBindingValidationResult:
                 continue
             if ref not in binding_keys:
                 errors.append(
-                    "objects.{}.fields.{}.value_binding_ref references an "
-                    "unknown binding '{}'".format(object_key, field_key, ref)
+                    "objects.{}.fields.{}.value_binding_ref references an unknown binding '{}'".format(
+                        object_key, field_key, ref
+                    )
                 )
             else:
                 referenced.add(ref)
@@ -514,11 +479,7 @@ def load_value_bindings(ontology_dir: Path) -> Dict[str, Dict[str, Any]]:
     value_bindings = payload.get("value_bindings")
     if not isinstance(value_bindings, dict):
         return {}
-    return {
-        str(key): dict(value)
-        for key, value in value_bindings.items()
-        if isinstance(value, dict)
-    }
+    return {str(key): dict(value) for key, value in value_bindings.items() if isinstance(value, dict)}
 
 
 def get_object_field_bindings(
@@ -573,11 +534,7 @@ def get_object_value_bound_fields(
     value_bindings = load_value_bindings(ontology_dir)
     if not value_bindings:
         return ()
-    return tuple(
-        field_key
-        for field_key, binding_key in field_bindings.items()
-        if binding_key in value_bindings
-    )
+    return tuple(field_key for field_key, binding_key in field_bindings.items() if binding_key in value_bindings)
 
 
 def get_ontology_manifest(
@@ -591,9 +548,7 @@ def get_ontology_manifest(
         return None, "Error: `ontology_id` is required."
 
     registry = (
-        get_ontology_registry(workspace_id=workspace_id)
-        if str(workspace_id or "").strip()
-        else get_ontology_registry()
+        get_ontology_registry(workspace_id=workspace_id) if str(workspace_id or "").strip() else get_ontology_registry()
     )
     version_text = str(version or "").strip()
     if version_text:
@@ -703,9 +658,9 @@ def find_asset_file(
         return None, "Error: Invalid asset key."
 
     if not is_supported_asset_file(candidate):
-        return None, (
-            "Error: Unsupported asset format '{}'. Supported formats: {}."
-        ).format(candidate.suffix.lower() or candidate.name, supported_asset_formats_text())
+        return None, ("Error: Unsupported asset format '{}'. Supported formats: {}.").format(
+            candidate.suffix.lower() or candidate.name, supported_asset_formats_text()
+        )
 
     try:
         if candidate.stat().st_size > ASSET_MAX_READ_BYTES:
@@ -733,16 +688,13 @@ def parse_markdown_table(markdown: str) -> List[Dict[str, str]]:
         if not line.startswith("|") or not line.endswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if cells and all(
-            _MARKDOWN_TABLE_SEPARATOR_CELL_RE.fullmatch(cell.replace(" ", ""))
-            for cell in cells
-        ):
+        if cells and all(_MARKDOWN_TABLE_SEPARATOR_CELL_RE.fullmatch(cell.replace(" ", "")) for cell in cells):
             continue
         if not headers:
             headers = cells
             continue
         if len(cells) > len(headers):
-            cells = cells[:len(headers) - 1] + [" | ".join(cells[len(headers) - 1:])]
+            cells = cells[: len(headers) - 1] + [" | ".join(cells[len(headers) - 1 :])]
         if len(cells) != len(headers):
             continue
         rows.append({headers[index]: cells[index] for index in range(len(headers))})
@@ -771,11 +723,7 @@ def _split_object_alias_tokens(value: Any) -> Tuple[str, ...]:
 
 
 def split_field_aliases(value: Any) -> List[str]:
-    return [
-        alias
-        for alias in _split_field_alias_tokens(value)
-        if alias
-    ]
+    return [alias for alias in _split_field_alias_tokens(value) if alias]
 
 
 def resolve_field_reference(
@@ -800,15 +748,17 @@ def resolve_field_reference(
             key=lambda item: (normalize_object_identifier(item), item),
         )
         if len(field_keys) > 1:
-            return None, (
-                "Error: field reference '{}' is ambiguous. "
-                "Candidate field keys: {}."
-            ).format(requested, ", ".join(field_keys))
-        return FieldReferenceResolution(
-            requested_name=requested,
-            field_key=field_keys[0],
-            matched_by=matched_by,
-        ), None
+            return None, ("Error: field reference '{}' is ambiguous. Candidate field keys: {}.").format(
+                requested, ", ".join(field_keys)
+            )
+        return (
+            FieldReferenceResolution(
+                requested_name=requested,
+                field_key=field_keys[0],
+                matched_by=matched_by,
+            ),
+            None,
+        )
     return None, "Field reference '{}' was not found.".format(requested)
 
 
@@ -836,9 +786,7 @@ def find_field_alias_matches(
                 continue
             if len(definition.key) > _FIELD_REFERENCE_TEXT_LIMIT:
                 continue
-            if normalize_object_identifier(
-                display_name
-            ) == normalize_object_identifier(definition.key):
+            if normalize_object_identifier(display_name) == normalize_object_identifier(definition.key):
                 continue
             compare = normalize_object_identifier(display_name)
             identifier_keys = _field_identifier_keys(index, compare)
@@ -848,9 +796,7 @@ def find_field_alias_matches(
                 normalized_query,
                 display_name,
             ):
-                candidates.append(
-                    (start, end, display_name, definition.key)
-                )
+                candidates.append((start, end, display_name, definition.key))
 
     matches: Set[Tuple[str, str]] = set()
     selected_spans: List[Tuple[int, int]] = []
@@ -863,10 +809,7 @@ def find_field_alias_matches(
             normalize_object_identifier(item[3]),
         ),
     ):
-        if any(
-            selected_start <= start and end <= selected_end
-            for selected_start, selected_end in selected_spans
-        ):
+        if any(selected_start <= start and end <= selected_end for selected_start, selected_end in selected_spans):
             continue
         selected_spans.append((start, end))
         matches.add((display_name, field_key))
@@ -918,11 +861,7 @@ def resolve_object_reference_result(
         )
     except _ObjectDefinitionLoadError as exc:
         return ObjectReferenceLookupResult(
-            status=(
-                ObjectReferenceStatus.INVALID_PACKAGE
-                if exc.invalid_package
-                else ObjectReferenceStatus.READ_ERROR
-            ),
+            status=(ObjectReferenceStatus.INVALID_PACKAGE if exc.invalid_package else ObjectReferenceStatus.READ_ERROR),
             error="Error: {}".format(exc),
         )
     definitions = reference_index.definitions
@@ -939,10 +878,9 @@ def resolve_object_reference_result(
             candidates = sorted({item.key for item in matches}, key=normalize_object_identifier)
             return ObjectReferenceLookupResult(
                 status=ObjectReferenceStatus.AMBIGUOUS,
-                error=(
-                    "Error: object reference '{}' is ambiguous. "
-                    "Candidate object keys: {}."
-                ).format(requested, ", ".join(candidates)),
+                error=("Error: object reference '{}' is ambiguous. Candidate object keys: {}.").format(
+                    requested, ", ".join(candidates)
+                ),
             )
         match = matches[0]
         return ObjectReferenceLookupResult(
@@ -956,11 +894,7 @@ def resolve_object_reference_result(
         )
 
     available = sorted({item.key for item in definitions}, key=normalize_object_identifier)
-    suffix = (
-        " Available object keys: {}.".format(", ".join(available[:30]))
-        if available
-        else ""
-    )
+    suffix = " Available object keys: {}.".format(", ".join(available[:30])) if available else ""
     return ObjectReferenceLookupResult(
         status=ObjectReferenceStatus.NOT_FOUND,
         error="Object reference '{}' was not found.{}".format(requested, suffix),
@@ -1006,8 +940,7 @@ def _build_object_reference_matches(
     catalog: List[_ObjectCatalogEntry],
 ) -> Dict[str, Dict[str, Tuple[_ObjectDefinition, ...]]]:
     mutable: Dict[str, Dict[str, List[_ObjectDefinition]]] = {
-        kind: {}
-        for kind in ("key", "canonical_key", "title", "alias", "filename")
+        kind: {} for kind in ("key", "canonical_key", "title", "alias", "filename")
     }
 
     def add(kind: str, value: str, definition: _ObjectDefinition) -> None:
@@ -1017,9 +950,7 @@ def _build_object_reference_matches(
 
     definitions_by_key: Dict[str, List[_ObjectDefinition]] = {}
     for definition in definitions:
-        definitions_by_key.setdefault(
-            normalize_object_identifier(definition.key), []
-        ).append(definition)
+        definitions_by_key.setdefault(normalize_object_identifier(definition.key), []).append(definition)
         add("key", definition.key, definition)
         add("canonical_key", definition.canonical_key, definition)
         add("title", definition.title, definition)
@@ -1029,19 +960,14 @@ def _build_object_reference_matches(
         add("filename", definition.path.name, definition)
 
     for entry in catalog:
-        for definition in definitions_by_key.get(
-            normalize_object_identifier(entry.key), []
-        ):
+        for definition in definitions_by_key.get(normalize_object_identifier(entry.key), []):
             add("key", entry.key, definition)
             add("title", entry.title, definition)
             for alias in entry.aliases:
                 add("alias", alias, definition)
 
     return {
-        kind: {
-            compare: tuple(_dedupe_object_definitions(matches))
-            for compare, matches in by_identifier.items()
-        }
+        kind: {compare: tuple(_dedupe_object_definitions(matches)) for compare, matches in by_identifier.items()}
         for kind, by_identifier in mutable.items()
     }
 
@@ -1063,9 +989,7 @@ def _load_field_reference_index_cached(
     size: int,
 ) -> _FieldReferenceIndex:
     del modified_ns, size
-    definitions, _has_alias_column, _object_name = _load_field_definitions(
-        Path(object_path)
-    )
+    definitions, _has_alias_column, _object_name = _load_field_definitions(Path(object_path))
     return _FieldReferenceIndex(
         definitions=definitions,
         matches_by_kind=_build_field_reference_matches(definitions),
@@ -1075,10 +999,7 @@ def _load_field_reference_index_cached(
 def _build_field_reference_matches(
     definitions: Tuple[_FieldDefinition, ...],
 ) -> Dict[str, Dict[str, Tuple[_FieldDefinition, ...]]]:
-    mutable: Dict[str, Dict[str, List[_FieldDefinition]]] = {
-        kind: {}
-        for kind in ("key", "title", "alias")
-    }
+    mutable: Dict[str, Dict[str, List[_FieldDefinition]]] = {kind: {} for kind in ("key", "title", "alias")}
 
     def add(kind: str, value: str, definition: _FieldDefinition) -> None:
         compare = normalize_object_identifier(value)
@@ -1094,10 +1015,7 @@ def _build_field_reference_matches(
             add("alias", alias, definition)
 
     return {
-        kind: {
-            compare: tuple(_dedupe_field_definitions(matches))
-            for compare, matches in by_identifier.items()
-        }
+        kind: {compare: tuple(_dedupe_field_definitions(matches)) for compare, matches in by_identifier.items()}
         for kind, by_identifier in mutable.items()
     }
 
@@ -1106,12 +1024,12 @@ def _field_identifier_keys(
     index: _FieldReferenceIndex,
     compare: str,
 ) -> Set[str]:
-    return {
-        definition.key
-        for matched_by in ("key", "title", "alias")
-        for definition in index.matches_by_kind[matched_by].get(compare, ())
-        if definition.key
-    }
+    keys: Set[str] = set()
+    for matched_by in ("key", "title", "alias"):
+        for definition in index.matches_by_kind[matched_by].get(compare, ()):
+            if definition.key:
+                keys.add(definition.key)
+    return keys
 
 
 def _query_field_name_spans(
@@ -1122,16 +1040,12 @@ def _query_field_name_spans(
     if not normalized_name:
         return ()
     if normalized_name.isascii():
-        return tuple(
-            (match.start(), match.end())
-            for match in re.finditer(
-                r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])".format(
-                    re.escape(normalized_name)
-                ),
-                query,
-                flags=re.IGNORECASE,
-            )
+        matches = re.finditer(
+            r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])".format(re.escape(normalized_name)),
+            query,
+            flags=re.IGNORECASE,
         )
+        return tuple((match.start(), match.end()) for match in matches)
 
     spans: List[Tuple[int, int]] = []
     start = 0
@@ -1164,9 +1078,7 @@ def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
     definitions_by_filename: Dict[str, _ObjectDefinition] = {}
     for definition in definitions:
         definitions_by_exact_key.setdefault(definition.key, []).append(definition)
-        definitions_by_compare_key.setdefault(
-            normalize_object_identifier(definition.key), []
-        ).append(definition)
+        definitions_by_compare_key.setdefault(normalize_object_identifier(definition.key), []).append(definition)
         definitions_by_filename[normalize_object_identifier(definition.path.name)] = definition
 
     for object_key, matches in definitions_by_compare_key.items():
@@ -1180,12 +1092,8 @@ def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
 
     for entry in catalog:
         exact_matches = definitions_by_exact_key.get(entry.key, [])
-        normalized_matches = definitions_by_compare_key.get(
-            normalize_object_identifier(entry.key), []
-        )
-        filename_match = definitions_by_filename.get(
-            normalize_object_identifier("{}.md".format(entry.key))
-        )
+        normalized_matches = definitions_by_compare_key.get(normalize_object_identifier(entry.key), [])
+        filename_match = definitions_by_filename.get(normalize_object_identifier("{}.md".format(entry.key)))
         if not exact_matches:
             if normalized_matches:
                 errors.append(
@@ -1202,35 +1110,22 @@ def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
                     )
                 )
             else:
-                errors.append(
-                    "Object catalog key '{}' has no matching detail.".format(entry.key)
-                )
+                errors.append("Object catalog key '{}' has no matching detail.".format(entry.key))
             continue
         if len(exact_matches) > 1:
-            errors.append(
-                "Object catalog key '{}' matches multiple details.".format(entry.key)
-            )
+            errors.append("Object catalog key '{}' matches multiple details.".format(entry.key))
             continue
         definition = exact_matches[0]
         if has_alias_column:
-            catalog_aliases = {
-                normalize_object_identifier(alias) for alias in entry.aliases if alias
-            }
-            detail_aliases = {
-                normalize_object_identifier(alias) for alias in definition.aliases if alias
-            }
+            catalog_aliases = {normalize_object_identifier(alias) for alias in entry.aliases if alias}
+            detail_aliases = {normalize_object_identifier(alias) for alias in definition.aliases if alias}
             if catalog_aliases != detail_aliases:
-                catalog_alias_display = ", ".join(
-                    sorted(entry.aliases, key=normalize_object_identifier)
-                ) or "（无）"
-                detail_alias_display = ", ".join(
-                    sorted(definition.aliases, key=normalize_object_identifier)
-                ) or "（无）"
+                catalog_alias_display = ", ".join(sorted(entry.aliases, key=normalize_object_identifier)) or "（无）"
+                detail_alias_display = (
+                    ", ".join(sorted(definition.aliases, key=normalize_object_identifier)) or "（无）"
+                )
                 errors.append(
-                    (
-                        "对象 key='{}'、title='{}' 别名不一致："
-                        "objects/index.md = [{}]；{} = [{}]"
-                    ).format(
+                    ("对象 key='{}'、title='{}' 别名不一致：objects/index.md = [{}]；{} = [{}]").format(
                         definition.key,
                         definition.title,
                         catalog_alias_display,
@@ -1240,25 +1135,16 @@ def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
                 )
         warnings.extend(_duplicate_alias_warnings(entry.key, entry.aliases, source="catalog"))
         if any(not alias for alias in entry.raw_aliases):
-            warnings.append(
-                "Object '{}' catalog aliases contain an empty value.".format(entry.key)
-            )
+            warnings.append("Object '{}' catalog aliases contain an empty value.".format(entry.key))
 
     for definition in definitions:
-        warnings.extend(
-            _duplicate_alias_warnings(definition.key, definition.raw_aliases, source="detail")
-        )
+        warnings.extend(_duplicate_alias_warnings(definition.key, definition.raw_aliases, source="detail"))
         if any(not str(alias or "").strip() for alias in definition.raw_aliases):
-            warnings.append(
-                "Object '{}' detail aliases contain an empty value.".format(definition.key)
-            )
-        if definition.canonical_key and not _OBJECT_CANONICAL_KEY_RE.fullmatch(
-            definition.canonical_key
-        ):
+            warnings.append("Object '{}' detail aliases contain an empty value.".format(definition.key))
+        if definition.canonical_key and not _OBJECT_CANONICAL_KEY_RE.fullmatch(definition.canonical_key):
             errors.append(
                 (
-                    "Object '{}' canonical_key '{}' must contain only ASCII letters, "
-                    "digits, underscores, or hyphens."
+                    "Object '{}' canonical_key '{}' must contain only ASCII letters, digits, underscores, or hyphens."
                 ).format(definition.key, definition.canonical_key)
             )
 
@@ -1295,9 +1181,7 @@ def validate_field_aliases(ontology_dir: Path) -> FieldAliasValidationResult:
         for definition in definitions:
             if not definition.key:
                 if definition.title or definition.aliases:
-                    errors.append(
-                        "对象“{}”存在未填写字段 key 的字段定义".format(object_name)
-                    )
+                    errors.append("对象“{}”存在未填写字段 key 的字段定义".format(object_name))
                 continue
             key_compare = normalize_object_identifier(definition.key)
             keys_by_compare.setdefault(key_compare, []).append(definition)
@@ -1307,15 +1191,11 @@ def validate_field_aliases(ontology_dir: Path) -> FieldAliasValidationResult:
             ):
                 compare = normalize_object_identifier(value)
                 if compare:
-                    claims_by_compare.setdefault(compare, []).append(
-                        (kind, value, definition.key)
-                    )
+                    claims_by_compare.setdefault(compare, []).append((kind, value, definition.key))
             for alias in definition.aliases:
                 compare = normalize_object_identifier(alias)
                 if compare:
-                    claims_by_compare.setdefault(compare, []).append(
-                        ("别名", alias, definition.key)
-                    )
+                    claims_by_compare.setdefault(compare, []).append(("别名", alias, definition.key))
 
             warnings.extend(
                 _duplicate_field_alias_warnings(
@@ -1377,22 +1257,16 @@ def _load_object_catalog(
     try:
         markdown = read_optional_text(index_path)
     except UnicodeDecodeError as exc:
-        raise _ObjectCatalogReadError(
-            "Failed to decode objects/index.md as UTF-8."
-        ) from exc
+        raise _ObjectCatalogReadError("Failed to decode objects/index.md as UTF-8.") from exc
     except OSError as exc:
-        raise _ObjectCatalogReadError(
-            "Failed to read objects/index.md."
-        ) from exc
+        raise _ObjectCatalogReadError("Failed to read objects/index.md.") from exc
     rows = parse_markdown_table(markdown)
     headers = _first_markdown_table_headers(markdown)
     has_key_column = _has_table_header(headers, _OBJECT_KEY_HEADERS)
     has_alias_column = _has_table_header(headers, _OBJECT_ALIAS_HEADERS)
     warnings: List[str] = []
     if headers and not has_key_column:
-        warnings.append(
-            "Object catalog table has no supported key column; alias routing will use detail fallback."
-        )
+        warnings.append("Object catalog table has no supported key column; alias routing will use detail fallback.")
 
     entries: List[_ObjectCatalogEntry] = []
     if not has_key_column:
@@ -1402,9 +1276,7 @@ def _load_object_catalog(
         if not key:
             continue
         raw_aliases = (
-            _split_object_alias_tokens(_object_row_value(row, _OBJECT_ALIAS_HEADERS))
-            if has_alias_column
-            else ()
+            _split_object_alias_tokens(_object_row_value(row, _OBJECT_ALIAS_HEADERS)) if has_alias_column else ()
         )
         entries.append(
             _ObjectCatalogEntry(
@@ -1427,11 +1299,7 @@ def _load_object_definitions(objects_dir: Path) -> List[_ObjectDefinition]:
         frontmatter = _read_object_definition_frontmatter(path)
         raw_alias_value = frontmatter.get("aliases")
         if isinstance(raw_alias_value, list):
-            raw_aliases = tuple(
-                token
-                for alias in raw_alias_value
-                for token in _split_object_alias_tokens(alias)
-            )
+            raw_aliases = tuple(token for alias in raw_alias_value for token in _split_object_alias_tokens(alias))
             aliases = tuple(alias for alias in raw_aliases if alias)
         elif raw_alias_value is None:
             raw_aliases = ()
@@ -1457,13 +1325,9 @@ def _read_object_definition_frontmatter(path: Path) -> Dict[str, Any]:
     try:
         markdown = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        raise _ObjectDefinitionLoadError(
-            "Failed to decode object detail '{}' as UTF-8.".format(path.name)
-        ) from exc
+        raise _ObjectDefinitionLoadError("Failed to decode object detail '{}' as UTF-8.".format(path.name)) from exc
     except OSError as exc:
-        raise _ObjectDefinitionLoadError(
-            "Failed to read object detail '{}'.".format(path.name)
-        ) from exc
+        raise _ObjectDefinitionLoadError("Failed to read object detail '{}'.".format(path.name)) from exc
 
     if not markdown.startswith("---"):
         return {}
@@ -1483,9 +1347,7 @@ def _read_object_definition_frontmatter(path: Path) -> Dict[str, Any]:
         ) from exc
     if not isinstance(parsed, dict):
         raise _ObjectDefinitionLoadError(
-            "Object detail '{}' YAML frontmatter must be a mapping.".format(
-                path.name
-            ),
+            "Object detail '{}' YAML frontmatter must be a mapping.".format(path.name),
             invalid_package=True,
         )
     return parsed
@@ -1496,11 +1358,7 @@ def _load_field_definitions(
 ) -> Tuple[Tuple[_FieldDefinition, ...], bool, str]:
     markdown = Path(object_path).read_text(encoding="utf-8")
     frontmatter, body = split_markdown_frontmatter(markdown)
-    object_name = str(
-        frontmatter.get("title")
-        or frontmatter.get("key")
-        or Path(object_path).stem
-    ).strip()
+    object_name = str(frontmatter.get("title") or frontmatter.get("key") or Path(object_path).stem).strip()
 
     selected_headers, selected_rows = _parse_field_definition_table(body)
     if not selected_headers:
@@ -1512,11 +1370,7 @@ def _load_field_definitions(
         field_key = _object_row_value(row, _FIELD_KEY_HEADERS)
         title = _object_row_value(row, _FIELD_TITLE_HEADERS)
         raw_aliases = (
-            _split_field_alias_tokens(
-                _object_row_value(row, _FIELD_ALIAS_HEADERS)
-            )
-            if has_alias_column
-            else ()
+            _split_field_alias_tokens(_object_row_value(row, _FIELD_ALIAS_HEADERS)) if has_alias_column else ()
         )
         if not field_key and not title and not any(raw_aliases):
             continue
@@ -1562,11 +1416,7 @@ def _field_definition_sections(markdown: str) -> List[List[str]]:
         if fence_char:
             if fence_match:
                 marker = fence_match.group(1)
-                if (
-                    marker[0] == fence_char
-                    and len(marker) >= fence_length
-                    and not stripped[len(marker) :].strip()
-                ):
+                if marker[0] == fence_char and len(marker) >= fence_length and not stripped[len(marker) :].strip():
                     fence_char = ""
                     fence_length = 0
             continue
@@ -1627,10 +1477,7 @@ def _parse_first_field_table(
         headers = _split_field_table_row(raw_header)
         if not (
             _has_table_header(headers, _FIELD_KEY_HEADERS)
-            and (
-                _has_table_header(headers, _FIELD_TITLE_HEADERS)
-                or _has_table_header(headers, _FIELD_ALIAS_HEADERS)
-            )
+            and (_has_table_header(headers, _FIELD_TITLE_HEADERS) or _has_table_header(headers, _FIELD_ALIAS_HEADERS))
         ):
             continue
 
@@ -1638,12 +1485,7 @@ def _parse_first_field_table(
         if (
             len(separator) != len(headers)
             or not separator
-            or not all(
-                _MARKDOWN_TABLE_SEPARATOR_CELL_RE.fullmatch(
-                    cell.replace(" ", "")
-                )
-                for cell in separator
-            )
+            or not all(_MARKDOWN_TABLE_SEPARATOR_CELL_RE.fullmatch(cell.replace(" ", "")) for cell in separator)
         ):
             continue
 
@@ -1657,12 +1499,7 @@ def _parse_first_field_table(
             cells = _split_field_table_row(lines[cursor])
             normalized_cells = cells[: len(headers)]
             normalized_cells.extend([""] * (len(headers) - len(normalized_cells)))
-            rows.append(
-                {
-                    headers[column]: normalized_cells[column]
-                    for column in range(len(headers))
-                }
-            )
+            rows.append({headers[column]: normalized_cells[column] for column in range(len(headers))})
             cursor += 1
         return headers, rows
     return None
@@ -1790,9 +1627,7 @@ def _validate_object_identifier_conflicts(
                     ", ".join(distinct_alias_objects),
                 )
             )
-        for identity_object, identity_kind in _highest_priority_identity_claims(
-            identity_claims.get(compare, [])
-        ):
+        for identity_object, identity_kind in _highest_priority_identity_claims(identity_claims.get(compare, [])):
             if identity_object in distinct_alias_objects:
                 continue
             errors.append(
@@ -1820,9 +1655,7 @@ def _validate_object_identifier_conflicts(
             )
         identity_conflicts = [
             (identity_object, identity_kind)
-            for identity_object, identity_kind in _highest_priority_identity_claims(
-                identity_claims.get(compare, [])
-            )
+            for identity_object, identity_kind in _highest_priority_identity_claims(identity_claims.get(compare, []))
             if identity_object not in distinct and identity_kind != "canonical_key"
         ]
         if len(distinct) > 1:
@@ -1991,10 +1824,7 @@ def load_script_catalog(ontology_dir: Path) -> List[Dict[str, Any]]:
             if key in seen:
                 continue
             seen.add(key)
-            entry["_is_deterministic_handler"] = (
-                normalize_operation_token(entry.get("operation_key"))
-                in protected_keys
-            )
+            entry["_is_deterministic_handler"] = normalize_operation_token(entry.get("operation_key")) in protected_keys
             catalog.append(entry)
 
     return catalog
@@ -2020,28 +1850,28 @@ def load_script_entry_from_descriptor(
         candidate.relative_to(scripts_root)
     except ValueError:
         return None
-    if (
-        candidate.suffix.casefold() != ".md"
-        or candidate.name.casefold() == "index.md"
-        or not candidate.is_file()
-    ):
+    if candidate.suffix.casefold() != ".md" or candidate.name.casefold() == "index.md" or not candidate.is_file():
         return None
     return _script_entry_from_markdown(candidate, ontology_dir=ontology_root)
 
 
 def public_script_catalog(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [
-        _drop_empty_values({
-            "operation_key": str(entry.get("operation_key") or ""),
-            "script_key": str(entry.get("script_key") or ""),
-            "title": str(entry.get("title") or ""),
-            "parameters": _public_script_parameters(entry.get("parameters") or []),
-        })
-        for entry in catalog
-        if entry.get("_is_bound_operation")
-        and not entry.get("_is_deterministic_handler")
-        and str(entry.get("operation_key") or entry.get("script_key") or "").strip()
-    ]
+    public_entries = []
+    for entry in catalog:
+        operation_key = str(entry.get("operation_key") or entry.get("script_key") or "").strip()
+        if not entry.get("_is_bound_operation") or entry.get("_is_deterministic_handler") or not operation_key:
+            continue
+        public_entries.append(
+            _drop_empty_values(
+                {
+                    "operation_key": str(entry.get("operation_key") or ""),
+                    "script_key": str(entry.get("script_key") or ""),
+                    "title": str(entry.get("title") or ""),
+                    "parameters": _public_script_parameters(entry.get("parameters") or []),
+                }
+            )
+        )
+    return public_entries
 
 
 def _drop_empty_values(value: Dict[str, Any]) -> Dict[str, Any]:
@@ -2190,11 +2020,7 @@ def _first_row_value(row: Dict[str, str], *keys: str) -> str:
 def _split_aliases(value: str) -> List[str]:
     if not value:
         return []
-    return [
-        item.strip()
-        for item in re.split(r"[,，、;/；]+", str(value))
-        if item.strip()
-    ]
+    return [item.strip() for item in re.split(r"[,，、;/；]+", str(value)) if item.strip()]
 
 
 def _normalize_script_parameters(value: Any) -> List[Dict[str, Any]]:
@@ -2223,11 +2049,7 @@ def _normalize_script_parameters(value: Any) -> List[Dict[str, Any]]:
             parameter["default"] = item.get("default")
         aliases = item.get("aliases")
         if isinstance(aliases, list):
-            clean_aliases = [
-                str(alias).strip()
-                for alias in aliases
-                if str(alias or "").strip()
-            ]
+            clean_aliases = [str(alias).strip() for alias in aliases if str(alias or "").strip()]
             if clean_aliases:
                 parameter["aliases"] = clean_aliases
         action = _normalize_boolean_action(item.get("action"))
@@ -2274,11 +2096,7 @@ def _public_script_parameters(parameters: Any) -> List[Dict[str, Any]]:
             parameter["default"] = item.get("default")
         aliases = item.get("aliases")
         if isinstance(aliases, list):
-            clean_aliases = [
-                str(alias).strip()
-                for alias in aliases
-                if str(alias or "").strip()
-            ]
+            clean_aliases = [str(alias).strip() for alias in aliases if str(alias or "").strip()]
             if clean_aliases:
                 parameter["aliases"] = clean_aliases
         action = _normalize_boolean_action(item.get("action"))
@@ -2371,11 +2189,7 @@ def build_root_payload(
     manifest_data = yaml.safe_load(selected_manifest_path.read_text(encoding="utf-8")) or {}
     solver_catalog = ()
     solver_summary = ()
-    schema_version = str(
-        getattr(ontology, "schema_version", "")
-        or manifest_data.get("schema_version")
-        or ""
-    ).strip()
+    schema_version = str(getattr(ontology, "schema_version", "") or manifest_data.get("schema_version") or "").strip()
     if schema_version == "0.2" and ontology.enabled:
         if include_solver_catalog:
             solver_catalog = load_solver_capability_catalog(
@@ -2472,11 +2286,7 @@ def _annotate_coordinating_operations(
         "name",
         "key",
     )
-    row_keys = {
-        _object_row_value(row, key_candidates)
-        for row in rows
-        if _object_row_value(row, key_candidates)
-    }
+    row_keys = {_object_row_value(row, key_candidates) for row in rows if _object_row_value(row, key_candidates)}
     if len(row_keys) < 3:
         return catalog
 
@@ -2524,14 +2334,11 @@ def _public_operations_catalog(
     """Hide authoritative operations from Agent/manual execution catalogs."""
     if not deterministic_keys or not isinstance(catalog, list):
         return catalog
+
     def normalize(value: Any) -> str:
         return " ".join(str(value or "").strip().casefold().split())
 
-    normalized_keys = {
-        normalize(key)
-        for key in deterministic_keys
-        if normalize(key)
-    }
+    normalized_keys = {normalize(key) for key in deterministic_keys if normalize(key)}
     result: list[Any] = []
     for row in catalog:
         if not isinstance(row, dict):
@@ -2551,11 +2358,7 @@ def _public_operations_catalog(
         )
         if not operation_key:
             operation_key = next(
-                (
-                    str(value or "").strip()
-                    for value in row.values()
-                    if isinstance(value, (str, int, float))
-                ),
+                (str(value or "").strip() for value in row.values() if isinstance(value, (str, int, float))),
                 "",
             )
         if normalize(operation_key) in normalized_keys:
@@ -2608,31 +2411,35 @@ def format_root_payload_compact(
     ]
     if root_payload.get("value_domain_present"):
         lines.extend(["", _ROOT_VALUE_DOMAIN_HINT])
-    lines.extend([
-        *_format_optional_block("root_index", root_payload.get("root_index")),
-        "",
-        "operations_catalog:",
-        *_format_catalog(root_payload.get("operations_catalog")),
-        *deterministic_lines,
-        "",
-        "objects_catalog:",
-        *_format_catalog(root_payload.get("objects_catalog")),
-        "",
-        "rules_catalog:",
-        *_format_catalog(root_payload.get("rules_catalog")),
-        "",
-        "metrics_catalog:",
-        *_format_catalog(root_payload.get("metrics_catalog")),
-        "",
-        "script_catalog:",
-        *_format_script_catalog(root_payload.get("script_catalog")),
-    ])
-    if "assets_catalog" in root_payload:
-        lines.extend([
+    lines.extend(
+        [
+            *_format_optional_block("root_index", root_payload.get("root_index")),
             "",
-            "assets_catalog:",
-            *_format_catalog(root_payload.get("assets_catalog")),
-        ])
+            "operations_catalog:",
+            *_format_catalog(root_payload.get("operations_catalog")),
+            *deterministic_lines,
+            "",
+            "objects_catalog:",
+            *_format_catalog(root_payload.get("objects_catalog")),
+            "",
+            "rules_catalog:",
+            *_format_catalog(root_payload.get("rules_catalog")),
+            "",
+            "metrics_catalog:",
+            *_format_catalog(root_payload.get("metrics_catalog")),
+            "",
+            "script_catalog:",
+            *_format_script_catalog(root_payload.get("script_catalog")),
+        ]
+    )
+    if "assets_catalog" in root_payload:
+        lines.extend(
+            [
+                "",
+                "assets_catalog:",
+                *_format_catalog(root_payload.get("assets_catalog")),
+            ]
+        )
     if "solver_summary" in root_payload:
         lines.extend(
             [
@@ -2692,11 +2499,7 @@ def _format_catalog(catalog: Any) -> List[str]:
                 lines.append("- {}".format(" | ".join(values)))
             return lines
 
-        return [
-            "- {}".format(_compact_inline_text(row))
-            for row in catalog
-            if _compact_inline_text(row)
-        ] or ["- none"]
+        return ["- {}".format(_compact_inline_text(row)) for row in catalog if _compact_inline_text(row)] or ["- none"]
 
     text = str(catalog or "").strip()
     if not text:
@@ -2710,9 +2513,7 @@ def _format_script_catalog(catalog: Any) -> List[str]:
     if not isinstance(catalog, list):
         return _format_catalog(catalog)
 
-    lines: List[str] = [
-        "parameter format: name=description required|optional type; type[] means pass an array value."
-    ]
+    lines: List[str] = ["parameter format: name=description required|optional type; type[] means pass an array value."]
     for entry in catalog:
         if not isinstance(entry, dict):
             text = _compact_inline_text(entry)
@@ -2727,9 +2528,7 @@ def _format_script_catalog(catalog: Any) -> List[str]:
         parameters = entry.get("parameters") or []
         if isinstance(parameters, list) and parameters:
             params_text = "; ".join(
-                _format_script_parameter(parameter)
-                for parameter in parameters
-                if isinstance(parameter, dict)
+                _format_script_parameter(parameter) for parameter in parameters if isinstance(parameter, dict)
             )
             lines.append("- {} (parameters: {})".format(label, params_text))
         else:

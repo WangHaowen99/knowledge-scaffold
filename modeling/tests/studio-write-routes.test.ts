@@ -1243,6 +1243,74 @@ test('Studio 刷新可恢复工作草稿且确定性直提交幂等', async (t) 
     WHERE project_id = ? AND event_type = 'studio_review'`).get(project.id)!.count, 0);
 });
 
+test('Studio 忽略内部工作记录并在后续业务修改应用时保留记录', async (t) => {
+  const project = createProject({ owner: 'alice', name: 'Studio 合成工作记录', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const artifacts = getPackageArtifactStore();
+
+  const initial = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  const plan = await tool(app, project.id, runId, 'update_plan', {
+    markdown: '# Synthetic work plan\n\nTrack internal progress only.\n',
+  });
+  assert.equal(plan.statusCode, 200, plan.body);
+
+  const internalOnly = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  assert.notEqual(internalOnly.json().workingRevision, initial.json().workingRevision);
+  assert.equal(internalOnly.json().hasStagedChanges, false);
+  const snapshot = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/agent/snapshot` });
+  assert.equal(snapshot.json().studioPendingCount, 0);
+
+  const noOp = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: internalOnly.json().workingRevision,
+      clientMutationId: 'internal-only-review',
+    },
+  });
+  assert.equal(noOp.statusCode, 200, noOp.body);
+  assert.equal(noOp.json().mode, 'noop');
+  assert.equal(noOp.json().noOp, true);
+  assert.equal(noOp.json().reviewRequested, false);
+  assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM agent_project_event_outbox
+    WHERE project_id = ? AND event_type = 'studio_review'`).get(project.id)!.count, 0);
+
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/elements`,
+    payload: {
+      expectedRevision: internalOnly.json().workingRevision,
+      clientMutationId: 'mixed-create-object',
+      kind: 'object',
+      key: 'synthetic_record',
+      values: { title: 'Synthetic record', description: 'A fully synthetic record used for review tests.' },
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+
+  const mixed = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/studio/elements` });
+  assert.equal(mixed.json().hasStagedChanges, true);
+  const applied = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/studio/review`,
+    payload: {
+      expectedRevision: mixed.json().workingRevision,
+      clientMutationId: 'mixed-review',
+    },
+  });
+  assert.equal(applied.statusCode, 200, applied.body);
+  assert.equal(applied.json().mode, 'deterministic');
+  assert.equal(applied.json().applied, true);
+  assert.ok(applied.json().changedPaths.every((path: string) => !path.startsWith('.modeling/')));
+
+  const currentFiles = await artifacts.readPackageFiles(project.id);
+  assert.match(currentFiles.files['.modeling/plan.md'], /Track internal progress only/u);
+  assert.ok(currentFiles.files['objects/synthetic_record.md']);
+  const settled = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/agent/snapshot` });
+  assert.equal(settled.json().studioPendingCount, 0);
+});
+
 test('Studio 确定性检查阻止新增格式错误并保留工作草稿', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Studio 确定性检查', runtime: 'agent' });
   const app = appFor(t);

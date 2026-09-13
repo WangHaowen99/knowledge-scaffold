@@ -5,6 +5,7 @@ import importlib
 from unittest.mock import MagicMock
 
 import integration.observability.exporters.langfuse.client as langfuse_client
+from backend_synthetic_credentials import synthetic_secret
 
 
 def test_langfuse_client_module_does_not_import_langfuse_during_module_load(monkeypatch):
@@ -37,8 +38,8 @@ def test_create_langfuse_client_uses_explicit_config(monkeypatch):
         {
             "enabled": True,
             "public_key": "pk-test",
-            "secret_key": "sk-test",
-            "base_url": "https://langfuse.example",
+            "secret_key": synthetic_secret("tracing-credential-02"),
+            "base_url": "https://langfuse.example.net",
             "debug": True,
         }
     )
@@ -46,8 +47,8 @@ def test_create_langfuse_client_uses_explicit_config(monkeypatch):
     assert client is not None
     assert created == {
         "public_key": "pk-test",
-        "secret_key": "sk-test",
-        "host": "https://langfuse.example",
+        "secret_key": synthetic_secret("tracing-credential-02"),
+        "host": "https://langfuse.example.net",
         "debug": True,
     }
 
@@ -79,7 +80,7 @@ def test_trace_adapter_creates_trace_and_masks_sensitive_metadata():
     result = adapter.create_trace(
         "test_name",
         session_id="session-1",
-        metadata={"api_key": "secret", "email": "user@example.com"},
+        metadata={"api_key": synthetic_secret("tracing-credential-01"), "email": "user@example.com"},
         input={"query": "call me at 13812345678"},
     )
 
@@ -135,9 +136,7 @@ def test_trace_adapter_releases_terminal_trace_after_spans_finish():
 
     adapter.update_llm_span_tokens("trace-1", span_id, {"prompt_tokens": 1, "completion_tokens": 2})
 
-    mock_span.end.assert_called_once_with(
-        usage={"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
-    )
+    mock_span.end.assert_called_once_with(usage={"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3})
     assert "trace-1" not in adapter._active_traces
 
 

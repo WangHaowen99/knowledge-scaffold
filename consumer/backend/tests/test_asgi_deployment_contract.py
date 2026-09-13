@@ -1,11 +1,9 @@
-from pathlib import Path
 import re
+from pathlib import Path
 
-from packaging.requirements import Requirement
 import pytest
-
+from packaging.requirements import Requirement
 from server_config import validate_server_settings
-
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 CONSUMER_ROOT = BACKEND_ROOT.parent
@@ -49,16 +47,12 @@ def test_backend_dependencies_are_asgi_only():
 def test_backend_pins_plain_openjiuwen_0_1_17_without_feature_extras():
     requirements = (BACKEND_ROOT / "requirements.txt").read_text(encoding="utf-8")
     active_requirement_lines = [
-        line.strip()
-        for line in requirements.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
+        line.strip() for line in requirements.splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]
     normalized_lines = {line.lower() for line in active_requirement_lines}
     parsed_requirements = [Requirement(line) for line in active_requirement_lines]
     openjiuwen_requirements = [
-        requirement
-        for requirement in parsed_requirements
-        if requirement.name.lower() == "openjiuwen"
+        requirement for requirement in parsed_requirements if requirement.name.lower() == "openjiuwen"
     ]
 
     assert "openjiuwen==0.1.17" in normalized_lines

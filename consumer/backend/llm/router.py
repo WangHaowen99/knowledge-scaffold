@@ -27,7 +27,7 @@ def _normalize_purpose(purpose: str | LLMPurpose) -> LLMPurpose:
     return LLMPurpose(str(purpose or "").strip().lower())
 
 
-def _config_fingerprint(config: LLMConfig) -> Tuple[Any, ...]:
+def _config_fingerprint(config: LLMConfig) -> Tuple[Any, ...]:  # pylint: disable=too-many-return-values
     return (
         config.base_url,
         config.model,
@@ -105,7 +105,9 @@ class LLMRouter:
                     reasoning_summary_executor=self._reasoning_summary_executor,
                 )
                 self._services[fingerprint] = service
-            summary_service = service if _normalize_purpose(purpose) == LLMPurpose.SUMMARY else self.get_summary_service()
+            summary_service = (
+                service if _normalize_purpose(purpose) == LLMPurpose.SUMMARY else self.get_summary_service()
+            )
             service.summary_llm = summary_service
             service.agent_config = self.agent_config
             return service

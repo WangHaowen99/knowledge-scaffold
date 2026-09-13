@@ -11,6 +11,24 @@
   min-width: 0;
 }
 
+.mwr .system-config-fields .fieldrow {
+  align-items: flex-start;
+}
+
+.mwr .system-config-fields .fieldrow .fl {
+  width: min(38%, 360px);
+  min-width: 0;
+}
+
+.mwr .system-config-fields .fieldrow .fl .n,
+.mwr .system-config-fields .fieldrow .fl .h {
+  overflow-wrap: anywhere;
+}
+
+.mwr .system-config-fields .fieldrow > :not(.fl) {
+  min-width: 0;
+}
+
 .mwr .system-settings-section-tabs {
   display: flex;
   gap: 6px;
@@ -251,6 +269,10 @@
 }
 
 @media (max-width: 720px) {
+  .mwr .system-config-fields .fieldrow .fl {
+    width: auto;
+  }
+
   .mwr .system-config-transfer .ui-section-head,
   .mwr .system-config-module-actions,
   .mwr .system-config-feedback {

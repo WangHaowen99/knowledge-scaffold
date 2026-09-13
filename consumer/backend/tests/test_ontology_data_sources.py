@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
-
 import json
 import stat
 from types import SimpleNamespace
 
 import pytest
-
 from api.auth.auth import AuthManager
+from api.testing import TestApplication
+from backend_synthetic_credentials import (
+    ACCESS_KEY_SECRET,
+    API_KEY,
+    AUTH_SIGNING_SECRET,
+    BOOTSTRAP_ADMIN_PASSWORD,
+    ENCRYPTION_KEY,
+    STRONG_PASSWORD,
+    STRONG_PASSWORD_2,
+    STRONG_PASSWORD_3,
+)
+from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace, workspace_scope
-
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
 
 
 def _create_workspace_with_ontology(
@@ -86,22 +90,21 @@ def _build_test_client(
         short_io=_DirectIO(),
         http_client=object(),
     )
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
     if username == "admin":
-        user = auth_manager.authenticate("admin", "TestBootstrap#2026")
+        user = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
         assert user is not None
-        user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+        user = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, STRONG_PASSWORD)
     else:
-        temporary_password = "UserStrong123!"
-        auth_manager.create_user(username, temporary_password, role=role)
-        user = auth_manager.change_password(username, temporary_password, "ChangedStrong123!")
+        auth_manager.create_user(username, STRONG_PASSWORD_2, role=role)
+        user = auth_manager.change_password(username, STRONG_PASSWORD_2, STRONG_PASSWORD_3)
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(business_data_router)
     app.include_router(ontologies_router)
     return TestClient(app), {"Authorization": "Bearer {}".format(auth_manager.issue_token(user))}
 
 
-def _legacy_connection(connection_id: str, *, token: str = "legacy-token") -> dict:
+def _legacy_connection(connection_id: str, *, token: str = API_KEY) -> dict:
     return {
         "id": connection_id,
         "name": connection_id,
@@ -146,13 +149,13 @@ def test_migration_removes_legacy_deterministic_fields_from_neo4j_source(
     from agent.tools.business_data.provider_config_codec import encrypt_provider_config
     from migrations.ontology_data_sources_direct_v2 import migrate_legacy_ontology_data_sources
 
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
     config = {
-        "uri": "neo4j://neo4j.example.invalid:7687",
+        "uri": "neo4j://neo4j.example.net:7687",
         "database": "neo4j",
         "username": "reader",
-        "password": "synthetic-password",
+        "password": STRONG_PASSWORD,
         "workspace_property": "d2o_workspace_id",
         "workspace_value": "demo",
         "ontology_property": "d2o_ontology_id",
@@ -188,19 +191,22 @@ def test_migration_removes_legacy_deterministic_fields_from_neo4j_source(
     persisted = json.loads(source_path.read_text(encoding="utf-8"))
     persisted_config = persisted["sources"]["demo-ontology"]["config"]
     assert result["errors"] == []
-    assert set(persisted_config).isdisjoint(config.keys() & {
-        "data_revision",
-        "snapshot_selector",
-        "access_scope_revision",
-        "deterministic_read_only",
-        "deterministic_snapshot_immutable",
-        "deterministic_scope_isolated",
-    })
-    assert persisted_config["uri"] == "neo4j://neo4j.example.invalid:7687"
+    assert set(persisted_config).isdisjoint(
+        config.keys()
+        & {
+            "data_revision",
+            "snapshot_selector",
+            "access_scope_revision",
+            "deterministic_read_only",
+            "deterministic_snapshot_immutable",
+            "deterministic_scope_isolated",
+        }
+    )
+    assert persisted_config["uri"] == "neo4j://neo4j.example.net:7687"
     assert persisted_config["password"].startswith("enc:v1:")
     stored = get_ontology_data_source("demo-ontology", workspace_id="demo")
     assert stored is not None
-    assert stored.config["password"] == "synthetic-password"
+    assert stored.config["password"] == STRONG_PASSWORD
 
 
 def test_migration_rechecks_sources_when_old_marker_predates_field_cleanup(
@@ -210,13 +216,13 @@ def test_migration_rechecks_sources_when_old_marker_predates_field_cleanup(
     from agent.tools.business_data.provider_config_codec import encrypt_provider_config
     from migrations.ontology_data_sources_direct_v2 import migrate_legacy_ontology_data_sources
 
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
     config = {
-        "uri": "neo4j://neo4j.example.invalid:7687",
+        "uri": "neo4j://neo4j.example.net:7687",
         "database": "neo4j",
         "username": "reader",
-        "password": "synthetic-password",
+        "password": STRONG_PASSWORD,
         "workspace_property": "d2o_workspace_id",
         "workspace_value": "demo",
         "ontology_property": "d2o_ontology_id",
@@ -266,7 +272,7 @@ def test_ontology_data_source_encrypts_and_publicizes_secret_fields(tmp_path, mo
         set_ontology_data_source,
     )
 
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
     with workspace_scope("demo"):
         source = set_ontology_data_source(
@@ -277,7 +283,7 @@ def test_ontology_data_source_encrypts_and_publicizes_secret_fields(tmp_path, mo
                 "provider": "dataagent",
                 "config": {
                     "url": "https://dataagent.example.com/",
-                    "token": "secret-token",
+                    "token": API_KEY,
                     "timeout_seconds": 120,
                 },
             },
@@ -287,14 +293,14 @@ def test_ontology_data_source_encrypts_and_publicizes_secret_fields(tmp_path, mo
     raw = json.loads(raw_text)
     assert raw["version"] == 2
     assert raw["sources"]["demo-ontology"]["mode"] == "direct_provider"
-    assert "secret-token" not in raw_text
+    assert API_KEY not in raw_text
     assert raw["sources"]["demo-ontology"]["config"]["token"].startswith("enc:v1:")
 
     stored = get_ontology_data_source("demo-ontology", workspace_id="demo")
     assert stored is not None
     assert stored.provider == "dataagent"
     assert stored.config["url"] == "https://dataagent.example.com"
-    assert stored.config["token"] == "secret-token"
+    assert stored.config["token"] == API_KEY
     assert stored.config["timeout_seconds"] == 120
 
     public = publicize_ontology_data_source(source)
@@ -310,7 +316,7 @@ def test_ontology_data_source_encrypts_and_publicizes_secret_fields(tmp_path, mo
 def test_ontology_data_source_update_preserves_existing_secret_when_omitted(tmp_path, monkeypatch):
     from agent.tools.business_data.ontology_sources_store import get_ontology_data_source, set_ontology_data_source
 
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     _create_workspace_with_ontology(tmp_path, monkeypatch)
     set_ontology_data_source(
         ontology_id="demo-ontology",
@@ -320,7 +326,7 @@ def test_ontology_data_source_update_preserves_existing_secret_when_omitted(tmp_
             "provider": "dataagent",
             "config": {
                 "url": "https://old-dataagent.example.com/",
-                "token": "secret-token",
+                "token": API_KEY,
                 "timeout_seconds": 120,
             },
         },
@@ -338,7 +344,7 @@ def test_ontology_data_source_update_preserves_existing_secret_when_omitted(tmp_
     stored = get_ontology_data_source("demo-ontology", workspace_id="demo")
     assert stored is not None
     assert stored.config["url"] == "https://new-dataagent.example.com"
-    assert stored.config["token"] == "secret-token"
+    assert stored.config["token"] == API_KEY
     assert stored.config["timeout_seconds"] == 30
     assert updated.created_at == stored.created_at
 
@@ -446,7 +452,7 @@ def test_legacy_bindings_migrate_to_independent_direct_sources(tmp_path, monkeyp
     from agent.tools.business_data.ontology_sources_store import get_ontology_data_source, set_ontology_data_source
     from migrations.ontology_data_sources_direct_v2 import migrate_legacy_ontology_data_sources
 
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch, ontology_id="sales-ontology")
     _create_ontology(paths, "service-ontology")
     _write_legacy_connections(paths, _legacy_connection("shared-dataagent"))
@@ -454,12 +460,14 @@ def test_legacy_bindings_migrate_to_independent_direct_sources(tmp_path, monkeyp
     bindings_path = paths.workspace_dir / "ontology-bindings.json"
     connection_bytes = connection_path.read_bytes()
     bindings_path.write_text(
-        json.dumps({
-            "bindings": {
-                "sales-ontology": {"connection_id": "shared-dataagent"},
-                "service-ontology": {"connection_id": "shared-dataagent"},
+        json.dumps(
+            {
+                "bindings": {
+                    "sales-ontology": {"connection_id": "shared-dataagent"},
+                    "service-ontology": {"connection_id": "shared-dataagent"},
+                }
             }
-        }),
+        ),
         encoding="utf-8",
     )
     bindings_bytes = bindings_path.read_bytes()
@@ -478,7 +486,7 @@ def test_legacy_bindings_migrate_to_independent_direct_sources(tmp_path, monkeyp
     raw_text = (paths.workspace_dir / "ontology-data-sources.json").read_text(encoding="utf-8")
     raw = json.loads(raw_text)
     assert raw["version"] == 2
-    assert "legacy-token" not in raw_text
+    assert API_KEY not in raw_text
     for ontology_id in ("sales-ontology", "service-ontology"):
         assert raw["sources"][ontology_id]["mode"] == "direct_provider"
         assert raw["sources"][ontology_id]["provider"] == "dataagent"
@@ -508,7 +516,10 @@ def test_legacy_bindings_migrate_to_independent_direct_sources(tmp_path, monkeyp
         },
     )
     assert get_ontology_data_source("sales-ontology", workspace_id="demo").config["url"] == "https://sales.example.com"
-    assert get_ontology_data_source("service-ontology", workspace_id="demo").config["url"] == "https://dataagent.example.com"
+    assert (
+        get_ontology_data_source("service-ontology", workspace_id="demo").config["url"]
+        == "https://dataagent.example.com"
+    )
 
     repeated = migrate_legacy_ontology_data_sources(workspace_id="demo")
     assert repeated["migrated"] == 0
@@ -520,24 +531,26 @@ def test_existing_connection_ref_source_is_migrated_in_place(tmp_path, monkeypat
     from agent.tools.business_data.ontology_sources_store import get_ontology_data_source
     from migrations.ontology_data_sources_direct_v2 import migrate_legacy_ontology_data_sources
 
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
-    _write_legacy_connections(paths, _legacy_connection("shared-dataagent", token="shared-secret"))
+    _write_legacy_connections(paths, _legacy_connection("shared-dataagent", token=ACCESS_KEY_SECRET))
     connection_path = paths.workspace_dir / "data-connections.json"
     connection_bytes = connection_path.read_bytes()
     source_path = paths.workspace_dir / "ontology-data-sources.json"
     source_path.write_text(
-        json.dumps({
-            "version": 1,
-            "sources": {
-                "demo-ontology": {
-                    "mode": "connection_ref",
-                    "connection_id": "shared-dataagent",
-                    "created_at": "2026-01-03T00:00:00+00:00",
-                    "updated_at": "2026-01-03T00:00:00+00:00",
-                }
-            },
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "sources": {
+                    "demo-ontology": {
+                        "mode": "connection_ref",
+                        "connection_id": "shared-dataagent",
+                        "created_at": "2026-01-03T00:00:00+00:00",
+                        "updated_at": "2026-01-03T00:00:00+00:00",
+                    }
+                },
+            }
+        ),
         encoding="utf-8",
     )
     source_bytes = source_path.read_bytes()
@@ -549,7 +562,7 @@ def test_existing_connection_ref_source_is_migrated_in_place(tmp_path, monkeypat
     assert raw_source["mode"] == "direct_provider"
     assert raw_source["provider"] == "dataagent"
     assert "connection_id" not in raw_source
-    assert "shared-secret" not in raw_text
+    assert ACCESS_KEY_SECRET not in raw_text
     assert result["removed_legacy_files"] == 1
     assert result["backup_paths"] == [
         str(_manual_backup_path(source_path)),
@@ -558,7 +571,7 @@ def test_existing_connection_ref_source_is_migrated_in_place(tmp_path, monkeypat
     _assert_private_manual_backup(source_path, source_bytes)
     _assert_private_manual_backup(connection_path, connection_bytes)
     assert not connection_path.exists()
-    assert get_ontology_data_source("demo-ontology", workspace_id="demo").config["token"] == "shared-secret"
+    assert get_ontology_data_source("demo-ontology", workspace_id="demo").config["token"] == ACCESS_KEY_SECRET
 
 
 def test_forward_only_migration_discards_unbound_legacy_connections(tmp_path, monkeypatch):
@@ -584,9 +597,10 @@ def test_forward_only_migration_discards_unbound_legacy_connections(tmp_path, mo
     assert result["backup_paths"] == [str(backup_path)]
     _assert_private_manual_backup(connection_path, connection_bytes)
     assert not connection_path.exists()
-    assert json.loads(
-        (paths.workspace_dir / "ontology-data-sources.json").read_text(encoding="utf-8")
-    ) == {"version": 2, "sources": {}}
+    assert json.loads((paths.workspace_dir / "ontology-data-sources.json").read_text(encoding="utf-8")) == {
+        "version": 2,
+        "sources": {},
+    }
 
 
 def test_completed_migration_no_longer_depends_on_legacy_files(tmp_path, monkeypatch):
@@ -618,12 +632,14 @@ def test_validation_failure_preserves_legacy_files_and_is_retryable(tmp_path, mo
     _create_ontology(paths, "service-ontology")
     _write_legacy_connections(paths, _legacy_connection("available"))
     (paths.workspace_dir / "ontology-bindings.json").write_text(
-        json.dumps({
-            "bindings": {
-                "sales-ontology": {"connection_id": "available"},
-                "service-ontology": {"connection_id": "missing"},
+        json.dumps(
+            {
+                "bindings": {
+                    "sales-ontology": {"connection_id": "available"},
+                    "service-ontology": {"connection_id": "missing"},
+                }
             }
-        }),
+        ),
         encoding="utf-8",
     )
 
@@ -659,22 +675,24 @@ def test_migration_preserves_invalid_json_for_recovery(tmp_path, monkeypatch):
 def test_migration_encrypts_preserved_direct_provider_secret(tmp_path, monkeypatch):
     from migrations.ontology_data_sources_direct_v2 import migrate_legacy_ontology_data_sources
 
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
     target_path = paths.workspace_dir / "ontology-data-sources.json"
     target_path.write_text(
-        json.dumps({
-            "version": 1,
-            "sources": {
-                "demo-ontology": {
-                    "mode": "direct_provider",
-                    "provider": "dataagent",
-                    "config": {"url": "https://dataagent.example.com", "token": "preserved-secret"},
-                    "created_at": "2026-01-01T00:00:00+00:00",
-                    "updated_at": "2026-01-01T00:00:00+00:00",
-                }
-            },
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "sources": {
+                    "demo-ontology": {
+                        "mode": "direct_provider",
+                        "provider": "dataagent",
+                        "config": {"url": "https://dataagent.example.com", "token": API_KEY},
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                },
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -682,7 +700,7 @@ def test_migration_encrypts_preserved_direct_provider_secret(tmp_path, monkeypat
     raw_text = target_path.read_text(encoding="utf-8")
     assert result["errors"] == []
     assert result["preserved"] == 1
-    assert "preserved-secret" not in raw_text
+    assert API_KEY not in raw_text
     assert json.loads(raw_text)["version"] == 2
     assert json.loads(raw_text)["sources"]["demo-ontology"]["config"]["token"].startswith("enc:v1:")
 
@@ -694,19 +712,21 @@ def test_migration_dry_run_does_not_create_encryption_key_or_marker(tmp_path, mo
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
     target_path = paths.workspace_dir / "ontology-data-sources.json"
     target_path.write_text(
-        json.dumps({
-            "version": 1,
-            "sources": {
-                "demo-ontology": {
-                    "mode": "direct_provider",
-                    "provider": "dataagent",
-                    "config": {
-                        "url": "https://dataagent.example.com",
-                        "token": "plaintext-secret",
-                    },
-                }
-            },
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "sources": {
+                    "demo-ontology": {
+                        "mode": "direct_provider",
+                        "provider": "dataagent",
+                        "config": {
+                            "url": "https://dataagent.example.com",
+                            "token": ACCESS_KEY_SECRET,
+                        },
+                    }
+                },
+            }
+        ),
         encoding="utf-8",
     )
     before = target_path.read_bytes()
@@ -911,7 +931,7 @@ def test_ontology_data_source_routes_manage_private_source(tmp_path, monkeypatch
             "provider": "dataagent",
             "config": {
                 "url": "https://dataagent.example.com/",
-                "token": "secret-token",
+                "token": API_KEY,
                 "timeout_seconds": 120,
             },
         },
@@ -971,7 +991,7 @@ def test_ontology_data_source_test_route_accepts_unsaved_candidate(
         json={
             "mode": "direct_provider",
             "provider": "dataagent",
-            "config": {"url": "https://candidate.example.com/", "token": "candidate-token"},
+            "config": {"url": "https://candidate.example.com/", "token": API_KEY},
         },
     )
     assert response.status_code == 200
@@ -979,7 +999,7 @@ def test_ontology_data_source_test_route_accepts_unsaved_candidate(
     assert isinstance(captured["connection"], ResolvedBusinessDataSource)
     assert captured["connection"].ontology_id == "demo-ontology"
     assert captured["connection"].provider == "dataagent"
-    assert captured["connection"].config["token"] == "candidate-token"
+    assert captured["connection"].config["token"] == API_KEY
 
 
 def test_ontology_data_source_write_routes_reject_workspace_member(tmp_path, monkeypatch):

@@ -153,6 +153,41 @@ _FRONTMATTER_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 _SOLVER_OPERATION_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_OPERATION_KEY_HEADERS_CASEFOLDED = frozenset(
+    item.casefold() for item in _OPERATION_KEY_HEADERS
+)
+_SOLVER_MARKER_VALUES_CASEFOLDED = frozenset(
+    item.casefold() for item in _SOLVER_MARKER_VALUES
+)
+_EXECUTION_MODE_HEADERS = frozenset(
+    {"execution", "execution_mode", "execution mode", "type", "kind"}
+)
+_SIDECAR_SUFFIX_RE = re.compile(
+    r"(?:\.model\.ya?ml"
+    r"|\.input\.schema\.json"
+    r"|\.result\.schema\.json"
+    r"|\.fact(?:[-_]snapshot)?\.schema\.json"
+    r"|\.presentation\.ya?ml)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_operation_key_header(header: str) -> bool:
+    """Return whether a casefolded table header names the operation column.
+
+    The Chinese variants are accepted here too, or a hand-written index would
+    parse on read but be rejected on write.
+    """
+    if header in _OPERATION_KEY_HEADERS_CASEFOLDED:
+        return True
+    return "operation key" in header or "操作" in header
+
+
+def _is_solver_marker_header(header: str) -> bool:
+    """Return whether a casefolded table header can carry a solver marker."""
+    if header in _SOLVER_MARKER_VALUES_CASEFOLDED:
+        return True
+    return header in _EXECUTION_MODE_HEADERS or "solver" in header
 
 
 def is_operation_centric_layout(manifest: Mapping[str, Any] | None) -> bool:
@@ -845,6 +880,13 @@ def _discover_operations(root: Path) -> tuple[_Operation, ...]:
     return tuple(found)
 
 
+def _model_entry_matches(entry: Mapping[str, Any], operation_key: str, model_id: str) -> bool:
+    """Return whether a merged manifest entry names the same model declaration."""
+    if operation_key and str(entry["operation_key"] or "").strip() == operation_key:
+        return True
+    return bool(model_id and str(entry["model_id"] or "").strip() == model_id)
+
+
 def _discover_model_declarations(
     manifest: Mapping[str, Any], operations: Iterable[_Operation]
 ) -> tuple[_ModelDeclaration, ...]:
@@ -914,11 +956,7 @@ def _discover_model_declarations(
         matches = [
             item
             for item in model_entries
-            if (
-                operation_key
-                and str(item["operation_key"] or "").strip() == operation_key
-            )
-            or (model_id and str(item["model_id"] or "").strip() == model_id)
+            if _model_entry_matches(item, operation_key, model_id)
         ]
         if len(matches) > 1:
             raise SolverPackageLayoutError(
@@ -1041,18 +1079,14 @@ def _index_operation_keys(path: Path, *, expected: set[str] | None = None) -> se
         operation_columns = [
             index
             for index, header in enumerate(normalized_headers)
-            if header in {item.casefold() for item in _OPERATION_KEY_HEADERS}
-            or "operation key" in header
-            or "操作" in header
+            if _is_operation_key_header(header)
         ]
         if not operation_columns:
             continue
         solver_columns = {
             index
             for index, header in enumerate(normalized_headers)
-            if header in {item.casefold() for item in _SOLVER_MARKER_VALUES}
-            or header in {"execution", "execution_mode", "execution mode", "type", "kind"}
-            or "solver" in header
+            if _is_solver_marker_header(header)
         }
         column = operation_columns[0]
         for row in data_rows:
@@ -1067,12 +1101,7 @@ def _index_operation_keys(path: Path, *, expected: set[str] | None = None) -> se
                     if index < len(values)
                 }
                 sidecar_row = any(
-                    re.search(
-                        r"(?:\.model\.ya?ml|\.input\.schema\.json|\.result\.schema\.json|\.fact(?:[-_]snapshot)?\.schema\.json|\.presentation\.ya?ml)\b",
-                        cell,
-                        re.IGNORECASE,
-                    )
-                    for cell in values
+                    _SIDECAR_SUFFIX_RE.search(cell) for cell in values
                 )
                 explicit_solver = bool(marker_values & _SOLVER_MARKER_VALUES)
                 # If an expected set is available, a row that names an
@@ -1130,6 +1159,15 @@ def _split_table_row(line: str) -> list[str] | None:
 
 def _is_separator(cells: list[str]) -> bool:
     return bool(cells) and all(re.fullmatch(r"\s*:?-{3,}:?\s*", cell) for cell in cells)
+
+
+def _starts_markdown_table(lines: list[str], index: int) -> bool:
+    """Return whether ``lines[index]`` is a header row followed by a separator."""
+    if index + 1 >= len(lines):
+        return False
+    if _split_table_row(lines[index]) is None:
+        return False
+    return _is_separator(_split_table_row(lines[index + 1]) or [])
 
 
 def _read_frontmatter(path: Path) -> Mapping[str, Any] | None:
@@ -1237,16 +1275,28 @@ def _manifest_model_lists(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _mutable_model_matches(item: Mapping[str, Any], model_id: str, operation_key: str) -> bool:
+    """Return whether a raw manifest model maps to the given model or operation."""
+    if str(item.get("id") or item.get("model_id") or "").strip() == model_id:
+        return True
+    return str(item.get("operation_key") or item.get("operation") or "").strip() == operation_key
+
+
 def _find_mutable_model_values(
     models: Iterable[dict[str, Any]], *, model_id: str, operation_key: str
 ) -> dict[str, Any] | None:
     candidates = [
         item
         for item in models
-        if str(item.get("id") or item.get("model_id") or "").strip() == model_id
-        or str(item.get("operation_key") or item.get("operation") or "").strip() == operation_key
+        if _mutable_model_matches(item, model_id, operation_key)
     ]
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _stem_carries_preferred_token(path: Path, preferred_tokens: set[str]) -> bool:
+    """Return whether a candidate file name contains one of the expected tokens."""
+    normalized_stem = re.sub(r"[^a-z0-9]+", "-", path.stem.casefold()).strip("-")
+    return any(token in normalized_stem for token in preferred_tokens)
 
 
 def _infer_fact_snapshot_path(
@@ -1282,10 +1332,7 @@ def _infer_fact_snapshot_path(
     preferred = [
         path
         for path in candidates
-        if any(
-            token in re.sub(r"[^a-z0-9]+", "-", path.stem.casefold()).strip("-")
-            for token in preferred_tokens
-        )
+        if _stem_carries_preferred_token(path, preferred_tokens)
     ]
     if len(preferred) == 1:
         return preferred[0].relative_to(root).as_posix()
@@ -1467,7 +1514,9 @@ def _rewrite_operation_documents(
         body_text = text[frontmatter_match.end() :]
         for field, destination in replacements.items():
             pattern = re.compile(
-                rf"(?m)^(?P<prefix>[ \t]*(?:{re.escape(field)}|{re.escape(field.replace('_', '-'))})[ \t]*:[ \t]*)(?P<value>[^\r\n#]+)"
+                rf"(?m)^(?P<prefix>[ \t]*"
+                rf"(?:{re.escape(field)}|{re.escape(field.replace('_', '-'))})"
+                rf"[ \t]*:[ \t]*)(?P<value>[^\r\n#]+)"
             )
             frontmatter_text = pattern.sub(
                 lambda match: match.group("prefix") + destination,
@@ -1632,13 +1681,7 @@ def _mark_solver_rows_in_operation_index(path: Path, operation_keys: list[str]) 
         raise SolverPackageLayoutError("Solver operation index cannot be read") from exc
     lines = existing.splitlines()
     table_start = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if index + 1 < len(lines)
-            and _split_table_row(line) is not None
-            and _is_separator(_split_table_row(lines[index + 1]) or [])
-        ),
+        (index for index in range(len(lines)) if _starts_markdown_table(lines, index)),
         None,
     )
     if table_start is None:
@@ -1655,11 +1698,7 @@ def _mark_solver_rows_in_operation_index(path: Path, operation_keys: list[str]) 
         (
             index
             for index, header in enumerate(normalized)
-            if header in {item.casefold() for item in _OPERATION_KEY_HEADERS}
-            or "operation key" in header
-            # Accept the same Chinese headers the reader accepts, or a hand-written
-            # index would parse on read but be rejected on write.
-            or "操作" in header
+            if _is_operation_key_header(header)
         ),
         None,
     )

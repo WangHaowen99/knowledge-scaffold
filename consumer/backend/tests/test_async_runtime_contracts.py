@@ -6,8 +6,6 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
-
 from agent.runtime import (
     PublicEvent,
     PublicEventAdapter,
@@ -19,18 +17,20 @@ from agent.runtime import (
     RuntimeRecoveryAction,
     RuntimeResult,
 )
-from agent.runtime.mock import FixedAsyncAgentRuntime, ListRuntimeEventSink
 from agent.runtime.contracts import RunPreflightSnapshot
+from agent.runtime.mock import FixedAsyncAgentRuntime, ListRuntimeEventSink
 from agent.runtime.preflight import (
     build_run_preflight_snapshot,
     ontology_preflight_revision_matches,
 )
 from agent.runtime.preflight_cache import ImmutablePreflightCache
+from backend_synthetic_credentials import synthetic_invalid_password, synthetic_secret
 from ontology.view_cache import (
     build_package_content_revision,
     build_package_revision_source_signature,
     get_ontology_mutation_revision,
 )
+from pydantic import ValidationError
 
 
 def _context(run_id: str = "run-01", **arguments) -> RuntimeInvocationContext:
@@ -108,7 +108,7 @@ def test_preflight_builder_reuses_only_immutable_package_products():
 
     def load_profile():
         profile_loads.append("profile")
-        return {"id": "model-a", "api_key": "synthetic-secret"}
+        return {"id": "model-a", "api_key": synthetic_secret("async_runtime_contracts-credential-07")}
 
     first = build_run_preflight_snapshot(
         workspace_id="workspace-a",
@@ -136,9 +136,7 @@ def test_preflight_builder_reuses_only_immutable_package_products():
     assert first.ontology_source_signature == (("file", "index.md", 1, 2),)
     assert first.ontology_content_revision == "sha256:" + "a" * 64
     assert second.ontology_content_revision == first.ontology_content_revision
-    assert first.script_bindings["synthetic"]["_script_path"] == (
-        "scripts/synthetic.py"
-    )
+    assert first.script_bindings["synthetic"]["_script_path"] == ("scripts/synthetic.py")
     with pytest.raises(TypeError):
         first.script_bindings["synthetic"]["_script_path"] = "changed.py"
     assert second.model_profile is None
@@ -162,9 +160,9 @@ def test_default_preflight_package_loader_freezes_content_revision(
     tmp_path,
     monkeypatch,
 ):
-    from agent.runtime import preflight as preflight_module
-    import ontology.ontology_catalog as catalog_module
     import ontology.ontologies as ontologies_module
+    import ontology.ontology_catalog as catalog_module
+    from agent.runtime import preflight as preflight_module
 
     ontology_dir = tmp_path / "ontology"
     ontology_dir.mkdir()
@@ -185,9 +183,7 @@ def test_default_preflight_package_loader_freezes_content_revision(
 
     product = preflight_module._default_package_loader(manifest, "workspace-a")
 
-    assert product["ontology_content_revision"] == (
-        build_package_content_revision(ontology_dir)
-    )
+    assert product["ontology_content_revision"] == (build_package_content_revision(ontology_dir))
 
 
 def test_preflight_builder_reloads_manifest_inside_generation_retry():
@@ -251,9 +247,7 @@ def test_preflight_builder_rejects_disappeared_selected_manifest():
             model_profile_loader=lambda: {"id": "model-a"},
             cache=ImmutablePreflightCache(max_entries=4),
             generation_resolver=lambda _workspace_id, _ontology_id: (1, 2, 7),
-            package_loader=lambda manifest, _workspace_id: (
-                package_reads.append(manifest) or {}
-            ),
+            package_loader=lambda manifest, _workspace_id: (package_reads.append(manifest) or {}),
         )
 
     assert package_reads == []
@@ -333,12 +327,8 @@ def test_execution_guard_detects_source_drift_without_warm_package_reload(tmp_pa
         return {
             "root_payload": {"marker": "old"},
             "preload_records": (),
-            "ontology_source_signature": (
-                build_package_revision_source_signature(ontology_dir)
-            ),
-            "ontology_content_revision": build_package_content_revision(
-                ontology_dir
-            ),
+            "ontology_source_signature": (build_package_revision_source_signature(ontology_dir)),
+            "ontology_content_revision": build_package_content_revision(ontology_dir),
         }
 
     first = build_run_preflight_snapshot(
@@ -429,9 +419,7 @@ def test_invocation_context_is_strict_immutable_and_normalized():
     with pytest.raises(ValidationError):
         RuntimeInvocationContext.model_validate({**context.model_dump(), "query": "  "})
     with pytest.raises(ValidationError):
-        RuntimeInvocationContext.model_validate(
-            {**context.model_dump(), "llm_request_mode": "async"}
-        )
+        RuntimeInvocationContext.model_validate({**context.model_dump(), "llm_request_mode": "async"})
     with pytest.raises(ValidationError):
         context.query = "changed"
 
@@ -482,9 +470,7 @@ def test_history_message_contract_is_provider_neutral_and_role_safe():
             reasoning_content="private",
         )
     with pytest.raises(ValidationError):
-        RuntimeHistoryMessage.model_validate(
-            {"role": "system", "content": "untrusted system prompt"}
-        )
+        RuntimeHistoryMessage.model_validate({"role": "system", "content": "untrusted system prompt"})
 
 
 def test_runtime_result_enforces_terminal_error_shape():
@@ -618,9 +604,9 @@ def test_public_adapter_redacts_secrets_without_redacting_usage_tokens():
                 "retriable": True,
                 "source": "tool",
                 "details": {
-                    "access_token": "secret-token",
-                    "model_api_key": "secret-key",
-                    "refreshToken": "secret-refresh-token",
+                    "access_token": synthetic_secret("async_runtime_contracts-credential-06"),
+                    "model_api_key": synthetic_secret("async_runtime_contracts-credential-04"),
+                    "refreshToken": synthetic_secret("async_runtime_contracts-credential-05"),
                     "password_hint": "not a credential field",
                 },
             },
@@ -629,9 +615,7 @@ def test_public_adapter_redacts_secrets_without_redacting_usage_tokens():
                 "label": "继续执行",
                 "message": "Continue from the preserved context.",
             },
-            "history_messages": [
-                {"role": "user", "content": "private model context"}
-            ],
+            "history_messages": [{"role": "user", "content": "private model context"}],
         },
     )
 
@@ -669,8 +653,8 @@ def test_public_adapter_uses_tool_whitelist_and_marks_truncation():
             "tool_name": "lookup",
             "tool_call_id": "call-01",
             "iteration": 2,
-            "arguments": {"password": "secret"},
-            "request_headers": {"Authorization": "Bearer secret"},
+            "arguments": {"password": synthetic_invalid_password("async_runtime_contracts-credential-03")},
+            "request_headers": {"Authorization": f"Bearer {synthetic_secret('async_runtime_contracts-credential-01')}"},
         },
     )
     draft = PublicEventAdapter(max_text_length=32).adapt(event)
@@ -793,10 +777,7 @@ def test_public_adapter_preserves_interaction_prompt_but_not_internal_prompts():
     assert requested_draft is not None
     assert requested_draft.payload["prompt"] == interaction["prompt"]
     assert terminal_draft is not None
-    assert (
-        terminal_draft.payload["structured_content"]["interaction"]["prompt"]
-        == interaction["prompt"]
-    )
+    assert terminal_draft.payload["structured_content"]["interaction"]["prompt"] == interaction["prompt"]
     assert terminal_draft.payload["trace"]["prompt"] == "[REDACTED]"
 
 
@@ -847,9 +828,7 @@ def test_fixed_runtime_hitl_resume_cancel_and_release():
             if any(event.event_type == "interaction.requested" for event in sink.events):
                 break
             await asyncio.sleep(0)
-        interaction = next(
-            event for event in sink.events if event.event_type == "interaction.requested"
-        )
+        interaction = next(event for event in sink.events if event.event_type == "interaction.requested")
         resumed = await runtime.resume_interaction(
             "run-hitl",
             interaction.payload["interaction_id"],

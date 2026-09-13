@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 import threading
 import time
+from copy import deepcopy
 from importlib.metadata import version as package_version
 
 import pytest
@@ -12,6 +12,7 @@ from contracts.solver_services.ortools.validation import validate_document
 from solvers.ortools.app import create_app
 from solvers.ortools.config import OrToolsSolverConfig
 from solvers.ortools.service import OrToolsSolverService
+from solvers.ortools.tests.ortools_synthetic_credentials import INVALID_TOKEN, SERVICE_TOKEN
 from solvers.ortools.tests.test_process_runner import _domain_request
 
 
@@ -58,9 +59,7 @@ def test_health_and_capabilities_are_stable_public_documents(tmp_path):
     app.extensions["ortools_solver"].close()
 
 
-def test_submit_releases_capacity_when_attempt_persistence_fails(
-    tmp_path, submit_request, monkeypatch
-):
+def test_submit_releases_capacity_when_attempt_persistence_fails(tmp_path, submit_request, monkeypatch):
     service = OrToolsSolverService(_config(tmp_path, max_concurrent_jobs=1))
 
     def fail_create_or_get(**kwargs):
@@ -88,7 +87,7 @@ def test_legacy_v1_routes_are_not_exposed(tmp_path):
 def test_legacy_routes_remain_not_found_when_service_authentication_is_enabled(
     tmp_path,
 ):
-    app = create_app(_config(tmp_path, service_token="synthetic-service-token"))
+    app = create_app(_config(tmp_path, service_token=SERVICE_TOKEN))
     client = app.test_client()
     try:
         assert client.get("/v1/capabilities").status_code == 404
@@ -140,12 +139,8 @@ def test_submit_domain_problem_recomputes_candidates_before_ortools_selection(tm
     assert response.status_code == 200
     result = response.get_json()
     validate_document("result", result)
-    assert result["assignments"]["candidate_id"] == (
-        "OPTION_0_TO_OPTION_1_K0002"
-    )
-    assert result["assurance"]["certificate"]["evaluation_source"] == (
-        "refinery_route.v1"
-    )
+    assert result["assignments"]["candidate_id"] == ("OPTION_0_TO_OPTION_1_K0002")
+    assert result["assurance"]["certificate"]["evaluation_source"] == ("refinery_route.v1")
     app.extensions["ortools_solver"].close()
 
 
@@ -184,9 +179,7 @@ def test_submit_is_idempotent_and_conflicts_on_changed_payload(tmp_path, submit_
     app.extensions["ortools_solver"].close()
 
 
-def test_concurrent_identical_idempotency_key_reuses_one_job(
-    tmp_path, submit_request
-):
+def test_concurrent_identical_idempotency_key_reuses_one_job(tmp_path, submit_request):
     app = create_app(_config(tmp_path, max_concurrent_jobs=1))
     service = app.extensions["ortools_solver"]
     service.pause_dispatch()
@@ -196,9 +189,7 @@ def test_concurrent_identical_idempotency_key_reuses_one_job(
     def submit_once():
         client = app.test_client()
         barrier.wait()
-        responses.append(
-            _post(client, submit_request, key="concurrent-key-00000001")
-        )
+        responses.append(_post(client, submit_request, key="concurrent-key-00000001"))
 
     threads = [threading.Thread(target=submit_once) for _ in range(2)]
     for thread in threads:
@@ -230,9 +221,7 @@ def test_submit_rejects_unknown_fields_and_missing_idempotency(tmp_path, submit_
     app.extensions["ortools_solver"].close()
 
 
-def test_submit_rejects_noncanonical_json_and_hard_limit_overrides(
-    tmp_path, submit_request
-):
+def test_submit_rejects_noncanonical_json_and_hard_limit_overrides(tmp_path, submit_request):
     app = create_app(_config(tmp_path, max_solve_time_ms=1000))
     client = app.test_client()
     floating = json.dumps(submit_request).replace('"search_workers": 1', '"search_workers": 1.0')
@@ -253,9 +242,7 @@ def test_submit_rejects_noncanonical_json_and_hard_limit_overrides(
     app.extensions["ortools_solver"].close()
 
 
-def test_submit_rejects_body_larger_than_the_configured_payload_limit(
-    tmp_path, submit_request
-):
+def test_submit_rejects_body_larger_than_the_configured_payload_limit(tmp_path, submit_request):
     app = create_app(_config(tmp_path, max_payload_bytes=256))
     response = app.test_client().post(
         "/api/v1/jobs",
@@ -271,9 +258,7 @@ def test_submit_rejects_body_larger_than_the_configured_payload_limit(
         app.extensions["ortools_solver"].close()
 
 
-def test_delete_is_idempotent_and_result_is_unavailable_after_cancel(
-    tmp_path, submit_request
-):
+def test_delete_is_idempotent_and_result_is_unavailable_after_cancel(tmp_path, submit_request):
     app = create_app(_config(tmp_path))
     service = app.extensions["ortools_solver"]
     service.pause_dispatch()
@@ -313,7 +298,7 @@ def test_submit_rejects_lone_unicode_surrogate_as_json_contract_error(
 
 
 def test_service_token_is_service_local_and_never_echoed(tmp_path):
-    token = "synthetic-service-token-value"
+    token = SERVICE_TOKEN
     app = create_app(_config(tmp_path, service_token=token))
     client = app.test_client()
 
@@ -322,12 +307,8 @@ def test_service_token_is_service_local_and_never_echoed(tmp_path):
     missing = client.get("/api/v1/capabilities")
     client.set_cookie("ambient_session", "synthetic-cookie-value")
     cookie_only = client.get("/api/v1/capabilities")
-    invalid = client.get(
-        "/api/v1/capabilities", headers={"Authorization": "Bearer invalid-value"}
-    )
-    accepted = client.get(
-        "/api/v1/capabilities", headers={"Authorization": f"Bearer {token}"}
-    )
+    invalid = client.get("/api/v1/capabilities", headers={"Authorization": f"Bearer {INVALID_TOKEN}"})
+    accepted = client.get("/api/v1/capabilities", headers={"Authorization": f"Bearer {token}"})
 
     assert missing.status_code == 401
     assert cookie_only.status_code == 401
@@ -338,9 +319,7 @@ def test_service_token_is_service_local_and_never_echoed(tmp_path):
     app.extensions["ortools_solver"].close()
 
 
-def test_capacity_rejection_does_not_consume_the_idempotency_key(
-    tmp_path, submit_request
-):
+def test_capacity_rejection_does_not_consume_the_idempotency_key(tmp_path, submit_request):
     class CapacityGate:
         def __init__(self):
             self.available = False

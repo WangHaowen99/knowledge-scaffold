@@ -20,9 +20,9 @@ test('legacy solver surface is read-only history and evidence', () => {
 });
 
 test('solver is absent from primary navigation and retained as a lazy read-only surface', () => {
-  assert.equal(
-    appShellSource.includes("const SolverCoordinationWorkbench = lazy(() => import('../features/solver/SolverCoordinationWorkbench'))"),
-    true,
+  assert.match(
+    appShellSource,
+    /const SolverCoordinationWorkbench = lazy\(\s*\(\) => import\('\.\.\/features\/solver\/SolverCoordinationWorkbench'\),?\s*\);/,
   );
   assert.equal(appShellSource.includes("navBtn('solver'"), false);
   assert.equal(appShellSource.includes("surface === 'solver' && workspaceDataReady"), true);

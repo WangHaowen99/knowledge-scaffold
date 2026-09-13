@@ -24,6 +24,15 @@ export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent
 });
 export const getAgentState = (id) => api(`${P(id)}/agent/state`);
 export const getProgress = (id) => api(`${P(id)}/agent/progress`);
+export const listPerformanceRuns = (id, limit = 20) => api(
+  `${P(id)}/agent/performance/runs?limit=${encodeURIComponent(limit)}`,
+);
+export const getPerformanceRun = (id, runId) => api(
+  `${P(id)}/agent/performance/runs/${encodeURIComponent(runId)}`,
+);
+export const getPerformanceTimeline = (id, runId) => api(
+  `${P(id)}/agent/performance/runs/${encodeURIComponent(runId)}/timeline`,
+);
 export const getPackageFile = (id, path) => api(
   `${P(id)}/agent/file?path=${encodeURIComponent(path)}`,
 );

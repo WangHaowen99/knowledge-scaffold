@@ -17,6 +17,7 @@ import {
   enqueueStudioReviewProjectEvent,
   type StudioReviewProjectEvent,
 } from './project-event-outbox.js';
+import { isHiddenCandidateGroup } from './candidate-change-scope.js';
 import { StudioWriteError } from './studio-write-service.js';
 import { StudioReadService } from './studio-read-service.js';
 
@@ -35,6 +36,7 @@ interface ChangeRow {
   path: string;
   kind: 'write' | 'delete';
   content: string | null;
+  group_id: string;
 }
 
 interface ReviewInput {
@@ -46,8 +48,9 @@ export interface StudioReviewResponse {
   workingRevision: string;
   clientMutationId: string;
   reviewRequested: boolean;
-  mode: 'deterministic' | 'agent';
+  mode: 'deterministic' | 'agent' | 'noop';
   applied: boolean;
+  noOp?: boolean;
   replayed?: boolean;
   currentRevision?: string;
   packageVersion?: string;
@@ -72,6 +75,7 @@ interface DeterministicReviewContext {
   workingFiles: Record<string, string>;
   workingRevision: string;
   changes: ChangeRow[];
+  reviewableChanges: ChangeRow[];
   changedPaths: string[];
   elementIds: string[];
 }
@@ -168,7 +172,7 @@ export class StudioReviewService {
           { candidateRevision: workspace.candidate_id },
         );
       }
-      const changes = this.db.prepare(`SELECT path, kind, content FROM agent_candidate_changes
+      const changes = this.db.prepare(`SELECT path, kind, content, group_id FROM agent_candidate_changes
         WHERE project_id = ? AND run_id = ? ORDER BY path`)
         .all(project.id, workspace.run_id) as unknown as ChangeRow[];
       if (!changes.length) throw new StudioWriteError('NO_CANDIDATE', '当前没有待复核修改', 409);
@@ -179,7 +183,33 @@ export class StudioReviewService {
         throw revisionConflict(input.expectedRevision, actualRevision);
       }
 
-      const changedPaths = changes.map((change) => change.path).sort();
+      const reviewableChanges = changes.filter((change) => !isHiddenCandidateGroup(change.group_id));
+      if (!reviewableChanges.length) {
+        const response: StudioReviewResponse = {
+          workingRevision: actualRevision,
+          clientMutationId: input.clientMutationId,
+          reviewRequested: false,
+          mode: 'noop',
+          applied: false,
+          noOp: true,
+          changedPaths: [],
+          elementIds: [],
+          display: { text: '仅有工作记录，无需应用' },
+        };
+        this.db.prepare(`INSERT INTO studio_mutation_receipts (
+          project_id, client_mutation_id, request_hash, response_json, created_at
+        ) VALUES (?,?,?,?,?)`).run(
+          project.id,
+          input.clientMutationId,
+          hash,
+          JSON.stringify(response),
+          nowIso(),
+        );
+        this.db.exec('COMMIT');
+        return response;
+      }
+
+      const changedPaths = reviewableChanges.map((change) => change.path).sort();
       const elementIds = elementIdsFromPaths(changedPaths);
       if (isDeterministicStudioScope(elementIds)) {
         this.db.exec('COMMIT');
@@ -194,6 +224,7 @@ export class StudioReviewService {
           workingFiles,
           workingRevision: actualRevision,
           changes,
+          reviewableChanges,
           changedPaths,
           elementIds,
         });
@@ -259,15 +290,32 @@ export class StudioReviewService {
       );
       const groupId = `studio-direct-${createHash('sha256')
         .update(context.workingRevision).digest('hex').slice(0, 16)}`;
+      const hiddenGroups = new Map<string, ChangeRow[]>();
+      for (const change of context.changes) {
+        if (!isHiddenCandidateGroup(change.group_id)) continue;
+        const grouped = hiddenGroups.get(change.group_id) ?? [];
+        grouped.push(change);
+        hiddenGroups.set(change.group_id, grouped);
+      }
+      const selectedGroupIds = [groupId, ...hiddenGroups.keys()];
       const candidate = await this.artifacts.createCandidateRevision(context.project.id, {
         expectedRevision: context.baseRevision,
-        groups: [{
-          id: groupId,
-          summary: `Studio 的 ${context.elementIds.length} 个知识条目修改`,
-          changes: context.changes.map((change) => change.kind === 'delete'
-            ? { kind: 'delete' as const, path: `package/${change.path}` }
-            : { kind: 'write' as const, path: `package/${change.path}`, content: change.content ?? '' }),
-        }],
+        groups: [
+          {
+            id: groupId,
+            summary: `Studio 的 ${context.elementIds.length} 个知识条目修改`,
+            changes: context.reviewableChanges.map((change) => change.kind === 'delete'
+              ? { kind: 'delete' as const, path: `package/${change.path}` }
+              : { kind: 'write' as const, path: `package/${change.path}`, content: change.content ?? '' }),
+          },
+          ...[...hiddenGroups].map(([id, changes]) => ({
+            id,
+            summary: '同步内部工作记录',
+            changes: changes.map((change) => change.kind === 'delete'
+              ? { kind: 'delete' as const, path: `package/${change.path}` }
+              : { kind: 'write' as const, path: `package/${change.path}`, content: change.content ?? '' }),
+          })),
+        ],
         action: {
           cause: 'studio_deterministic_candidate',
           summary: `确定性检查 Studio 的 ${context.elementIds.length} 个知识条目修改`,
@@ -302,7 +350,7 @@ export class StudioReviewService {
       }
       const accepted = await this.artifacts.acceptCandidateRevision(context.project.id, {
         candidateId,
-        selectedGroupIds: [groupId],
+        selectedGroupIds,
         note: `Studio 确定性检查确认 ${context.elementIds.length} 个知识条目`,
         action: {
           cause: 'studio_deterministic_commit',

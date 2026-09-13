@@ -1,5 +1,4 @@
 import pytest
-
 from agent.direct_execution import audit
 from agent.direct_execution.build_revision import calculate_application_build_revision
 from integration.sandbox.runtime_contract import (
@@ -34,17 +33,13 @@ def test_sandbox_runtime_contract_is_pinned_and_architecture_specific():
             }
         )
     )
-    assert sandbox_runtime_revision_file() == (
-        "/app/sandbox-runtime/python/.runtime-revision"
-    )
-    assert shared_sandbox_runtime_revision_file() == (
-        "/run/onto-runtime-attestation/revision"
-    )
+    assert sandbox_runtime_revision_file() == ("/app/sandbox-runtime/python/.runtime-revision")
+    assert shared_sandbox_runtime_revision_file() == ("/run/onto-runtime-attestation/revision")
     assert sandbox_runtime_revision("amd64").startswith("sha256:")
     assert sandbox_runtime_revision("amd64") != sandbox_runtime_revision("arm64")
-    assert sandbox_runtime_revision(
-        "amd64", "sha256:" + "a" * 64
-    ) != sandbox_runtime_revision("amd64", "sha256:" + "b" * 64)
+    assert sandbox_runtime_revision("amd64", "sha256:" + "a" * 64) != sandbox_runtime_revision(
+        "amd64", "sha256:" + "b" * 64
+    )
 
 
 def test_deployed_runtime_revision_comes_from_shared_attestation(tmp_path, monkeypatch):
@@ -91,9 +86,7 @@ def test_runtime_revision_uses_application_and_sandbox_runtime_revisions(monkeyp
 
 def test_application_revision_covers_all_shipped_files_and_installed_versions(tmp_path):
     application_root = tmp_path / "backend"
-    endpoint_security = (
-        application_root / "agent" / "tools" / "business_data" / "endpoint_security.py"
-    )
+    endpoint_security = application_root / "agent" / "tools" / "business_data" / "endpoint_security.py"
     endpoint_security.parent.mkdir(parents=True)
     endpoint_security.write_text("version-one", encoding="utf-8")
     runtime = {

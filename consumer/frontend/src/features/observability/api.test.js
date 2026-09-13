@@ -43,7 +43,11 @@ test('download adapter returns the response blob and attachment filename', async
   const request = async () => ({
     ok: true,
     status: 200,
-    headers: { get: (name) => name === 'content-disposition' ? 'attachment; filename="session-a.speedscope.json"' : '' },
+    headers: {
+      get: (name) => name === 'content-disposition' ?
+        'attachment; filename="session-a.speedscope.json"' :
+        '',
+    },
     blob: async () => trace,
   });
 

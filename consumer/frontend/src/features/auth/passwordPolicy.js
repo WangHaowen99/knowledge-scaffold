@@ -39,7 +39,11 @@ export function evaluatePasswordRules(
     { id: 'min_length', label: PASSWORD_RULE_LABELS.min_length, met: value.length >= 8 },
     { id: 'max_length', label: PASSWORD_RULE_LABELS.max_length, met: value.length <= 128 },
     { id: 'character_classes', label: PASSWORD_RULE_LABELS.character_classes, met: countCharacterClasses(value) >= 3 },
-    { id: 'contains_username', label: PASSWORD_RULE_LABELS.contains_username, met: !normalizedUser || !normalizedValue.includes(normalizedUser) },
+    {
+      id: 'contains_username',
+      label: PASSWORD_RULE_LABELS.contains_username,
+      met: !normalizedUser || !normalizedValue.includes(normalizedUser),
+    },
     { id: 'surrounding_whitespace', label: PASSWORD_RULE_LABELS.surrounding_whitespace, met: value === value.trim() },
     { id: 'common_password', label: PASSWORD_RULE_LABELS.common_password, met: !WEAK_PASSWORDS.has(normalizedValue) },
   ];

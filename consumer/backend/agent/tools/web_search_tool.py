@@ -8,7 +8,6 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.web_search.service import WebSearchEventEmitter, query_web_search
 
-
 WEB_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
@@ -30,7 +29,9 @@ WEB_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results to return. The backend enforces a configured upper limit.",
+                    "description": (
+                        "Maximum number of results to return. The backend enforces a configured upper limit."
+                    ),
                 },
                 "freshness": {
                     "type": "string",
@@ -40,7 +41,9 @@ WEB_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                 "include_domains": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional public domains to restrict results to, e.g. ['example.com']. Do not pass URLs.",
+                    "description": (
+                        "Optional public domains to restrict results to, e.g. ['example.com']. Do not pass URLs."
+                    ),
                 },
                 "exclude_domains": {
                     "type": "array",
@@ -54,7 +57,7 @@ WEB_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
 }
 
 
-def handle_web_search(
+def handle_web_search(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     query: str,
     max_results: Optional[int] = None,
     freshness: str = "any",
@@ -87,6 +90,7 @@ class WebSearchTool:
         object.__setattr__(self, "schema", WEB_SEARCH_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent"})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
