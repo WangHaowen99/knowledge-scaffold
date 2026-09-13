@@ -321,7 +321,14 @@ def _build_root_payload(
     ontology_dir: Path,
     workspace_id: Optional[str],
 ) -> str:
-    payload = build_root_payload(ontology=ontology, ontology_dir=ontology_dir)
+    # The root context is the progressive discovery surface.  Full solver
+    # input/result schemas are admitted separately by preflight/tool-card
+    # loading and must not be copied into model-facing context.
+    payload = build_root_payload(
+        ontology=ontology,
+        ontology_dir=ontology_dir,
+        include_solver_catalog=False,
+    )
     if is_business_checkpoint_available(
         ontology.id,
         ontology_version=str(getattr(ontology, "version", "") or "").strip() or None,

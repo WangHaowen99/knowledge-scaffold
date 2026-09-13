@@ -254,6 +254,7 @@ class ProblemIRCompiler:
             "decision_model_digest",
             "input_schema_digest",
             "result_schema_digest",
+            "fact_snapshot_schema_digest",
             "engine_capabilities",
         )
         payload = {}

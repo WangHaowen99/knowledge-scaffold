@@ -72,6 +72,7 @@ from .shared.interaction_policy import user_interaction_supported_from_state as 
 from .shared.messages import append_current_date_reminder_to_text
 from .shared.modes import resolve_agent_mode as _resolve_agent_mode
 from .shared.ontology_context import active_ontology_id_from_state as _active_ontology_id_from_state
+from .shared.ontology_context import active_ontology_version_from_state as _active_ontology_version_from_state
 from .shared.ontology_context import (
     get_selected_ontology_context,
     hydrate_selected_ontology_read_documents,
@@ -1763,7 +1764,7 @@ class JiuwenReactLoopEngine:
             include_solver=not solver_tools_suppressed_from_state(state),
             workspace_id=workspace_id,
             selected_ontology_id=_active_ontology_id_from_state(state),
-            selected_ontology_version=_selected_ontology_version_from_state(state),
+            selected_ontology_version=_active_ontology_version_from_state(state),
         )
         return restrict_tools_for_solver_route(
             schemas,
@@ -1792,7 +1793,7 @@ class JiuwenReactLoopEngine:
             include_solver=not solver_tools_suppressed_from_state(state),
             workspace_id=workspace_id,
             selected_ontology_id=_active_ontology_id_from_state(state),
-            selected_ontology_version=_selected_ontology_version_from_state(state),
+            selected_ontology_version=_active_ontology_version_from_state(state),
         )
         return restrict_tools_for_solver_route(
             infos,

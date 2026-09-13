@@ -24,7 +24,9 @@ from ontology.package_browser import (
 )
 from solver_coordination.capability_catalog import (
     load_solver_capability_catalog,
+    load_solver_summary_catalog,
     public_solver_catalog,
+    public_solver_summary,
 )
 
 ASSET_TEXT_EXTENSIONS = {
@@ -2159,7 +2161,20 @@ def find_script_entry(
     return None
 
 
-def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dict[str, Any]:
+def build_root_payload(
+    *,
+    ontology: OntologyManifest,
+    ontology_dir: Path,
+    include_solver_catalog: bool = False,
+    include_solver_summary: bool = True,
+) -> Dict[str, Any]:
+    """Build an ontology root payload.
+
+    The default is the model-facing progressive projection: ``solver_summary``
+    only.  Legacy/private internal callers that still require the complete
+    schemas must opt in with ``include_solver_catalog=True``; new execution
+    paths should use ``SolverContractResolver`` directly.
+    """
     from ontology.operation_execution import protected_operation_keys
 
     root_index_text = read_optional_text(ontology_dir / "index.md")
@@ -2173,13 +2188,23 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
         raise ValueError("Ontology revision manifest is missing or unsafe")
     manifest_data = yaml.safe_load(selected_manifest_path.read_text(encoding="utf-8")) or {}
     solver_catalog = ()
+    solver_summary = ()
     schema_version = str(getattr(ontology, "schema_version", "") or manifest_data.get("schema_version") or "").strip()
     if schema_version == "0.2" and ontology.enabled:
-        solver_catalog = load_solver_capability_catalog(
-            ontology_dir,
-            manifest_data,
-            package_revision=ontology.version,
-        )
+        if include_solver_catalog:
+            solver_catalog = load_solver_capability_catalog(
+                ontology_dir,
+                manifest_data,
+                package_revision=ontology.version,
+            )
+            if include_solver_summary:
+                solver_summary = public_solver_summary(solver_catalog)
+        elif include_solver_summary:
+            solver_summary = load_solver_summary_catalog(
+                ontology_dir,
+                manifest_data,
+                package_revision=ontology.version,
+            )
     deterministic_keys = protected_operation_keys(ontology_dir)
     operations_catalog = parse_markdown_table(operations_text) or operations_text
     operations_catalog = _annotate_coordinating_operations(
@@ -2203,7 +2228,18 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
         "script_catalog": public_script_catalog(script_catalog),
         "value_domain_present": bool(load_value_bindings(ontology_dir)),
         **(
-            {"solver_catalog": public_solver_catalog(solver_catalog)}
+            {
+                **(
+                    {"solver_summary": solver_summary}
+                    if include_solver_summary
+                    else {}
+                ),
+                **(
+                    {"solver_catalog": public_solver_catalog(solver_catalog)}
+                    if include_solver_catalog
+                    else {}
+                ),
+            }
             if schema_version == "0.2" and ontology.enabled
             else {}
         ),
@@ -2404,6 +2440,14 @@ def format_root_payload_compact(
                 *_format_catalog(root_payload.get("assets_catalog")),
             ]
         )
+    if "solver_summary" in root_payload:
+        lines.extend(
+            [
+                "",
+                "solver_summary:",
+                *_format_solver_summary(root_payload.get("solver_summary")),
+            ]
+        )
     if "solver_catalog" in root_payload:
         lines.extend(
             [
@@ -2514,6 +2558,51 @@ def _format_solver_catalog(catalog: Any) -> List[str]:
             detail_parts.append("problem_family: {}".format(problem_family))
         details = "; ".join(detail_parts)
         lines.append("- {}{}".format(operation_key, " ({})".format(details) if details else ""))
+    return lines or ["- none"]
+
+
+def _format_solver_summary(catalog: Any) -> List[str]:
+    """Render progressive solver discovery metadata without schema bodies."""
+
+    if not catalog:
+        return ["- none"]
+    if not isinstance(catalog, list):
+        return _format_catalog(catalog)
+
+    lines: List[str] = []
+    for entry in catalog:
+        if not isinstance(entry, dict):
+            continue
+        operation_key = _compact_inline_text(entry.get("operation_key"))
+        if not operation_key:
+            continue
+        details: list[str] = []
+        model_id = _compact_inline_text(entry.get("decision_model_id"))
+        family = _compact_inline_text(entry.get("problem_family"))
+        policy = _compact_inline_text(entry.get("load_policy"))
+        next_action = entry.get("next_action")
+        if model_id:
+            details.append("decision_model: {}".format(model_id))
+        if family:
+            details.append("problem_family: {}".format(family))
+        if policy:
+            details.append("load_policy: {}".format(policy))
+        if isinstance(next_action, dict):
+            resource = _compact_inline_text(next_action.get("resource"))
+            key = _compact_inline_text(next_action.get("key"))
+            if resource and key:
+                details.append(
+                    "next_action: ontology_context(resource={}, key={})".format(
+                        resource,
+                        key,
+                    )
+                )
+        lines.append(
+            "- {}{}".format(
+                operation_key,
+                " ({})".format("; ".join(details)) if details else "",
+            )
+        )
     return lines or ["- none"]
 
 

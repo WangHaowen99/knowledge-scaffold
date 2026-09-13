@@ -739,6 +739,36 @@ def get_sole_enabled_ontology_id(
     return None
 
 
+def get_active_ontology_version(
+    ontology_id: str,
+    workspace_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return the active version of an enabled ontology, or None.
+
+    Counterpart to :func:`get_sole_enabled_ontology_id`. A session that never
+    made an explicit selection stores no revision, but revision-bound
+    capabilities cannot be resolved without one, so the run needs the active
+    version of whichever package it ended up on. Only enabled packages resolve;
+    a disabled package must not gain capabilities through this path.
+    """
+    normalized_id = str(ontology_id or "").strip()
+    if not normalized_id:
+        return None
+    try:
+        ontology = get_ontology_registry(workspace_id=workspace_id).get_ontology(normalized_id)
+    except Exception:
+        logger.warning("Failed to resolve active ontology version", exc_info=True)
+        return None
+    if ontology is None or not bool(getattr(ontology, "enabled", False)):
+        return None
+    return (
+        str(
+            getattr(ontology, "active_version", "") or getattr(ontology, "version", "") or ""
+        ).strip()
+        or None
+    )
+
+
 def build_ontologies_section(
     selected_ontology_id: Optional[str] = None,
     *,
@@ -815,6 +845,7 @@ def build_selected_ontology_preload_context_from_manifest(
             root_payload = build_root_payload(
                 ontology=ontology,
                 ontology_dir=Path(ontology.ontology_dir).resolve(),
+                include_solver_catalog=False,
             )
         lines.extend(
             [

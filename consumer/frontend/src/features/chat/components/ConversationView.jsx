@@ -530,9 +530,24 @@ function SolverAuthoritativeResult({ result }) {
   );
 }
 
+const solverPhaseLabel = (value) =>
+  ({
+    submit_job: '正在提交求解任务',
+    freeze_inputs: '正在冻结求解输入',
+    bind: '正在绑定知识版本',
+    solve: '正在求解',
+    verify: '正在独立校验',
+  })[value] || '正在求解';
+
 export function SolverCallBlock({ block, sessionId = '', runId = '' }) {
   const input = safeJson(block.input);
   const rejection = block.solverRejection;
+  // Protocol phases are machine names with no business meaning, so only the current
+  // one is surfaced while the job runs and none of them survive into the result.
+  const phase =
+    block.status === 'running' && block.progress?.length > 0 ?
+      solverPhaseLabel(block.progress[block.progress.length - 1].phase) :
+      '';
   return (
     <details
       className={`conversation-process solver-process status-${block.status}`}
@@ -549,14 +564,10 @@ export function SolverCallBlock({ block, sessionId = '', runId = '' }) {
         <BlockMeta status={block.status} durationMs={block.durationMs} />
       </summary>
       <div className="conversation-process-body">
-        {block.progress?.length > 0 && (
-          <ol className="solver-progress-list">
-            {block.progress.map((item) => (
-              <li key={item.key} data-phase={item.phase || 'unknown'}>
-                <span>{item.text || item.phase || item.type}</span>
-              </li>
-            ))}
-          </ol>
+        {phase && (
+          <p className="solver-progress-phase" role="status">
+            {phase}
+          </p>
         )}
         {block.solverResult && (
           <SolverAuthoritativeResult result={block.solverResult} />

@@ -191,6 +191,104 @@ def test_candidate_results_reject_tampered_content(mutate):
         CandidateResultsArtifact.from_dict(payload)
 
 
+def _domain_problem(*, metric_scale=100, profile_id="refinery_route.v1"):
+    problem = _problem()
+    parameters = dict(problem.parameters)
+    parameters["domain_evaluation"] = {
+        "profile_id": profile_id,
+        "metric_scale": metric_scale,
+    }
+    return ProblemIR(
+        problem_id=problem.problem_id,
+        problem_family=problem.problem_family,
+        decision_space=problem.decision_space,
+        parameters=parameters,
+        constraints=problem.constraints,
+        objectives=problem.objectives,
+        limits=problem.limits,
+    )
+
+
+def test_candidate_results_describe_domain_metrics_with_their_scale_and_unit():
+    payload = build_candidate_results(
+        problem=_domain_problem(),
+        capability=_capability(),
+        solver_result=_solver_result(),
+        verification=_verification(),
+    ).to_dict()
+
+    assert payload["metric_display"] == [
+        {
+            "key": "primary_score",
+            "label": "利润",
+            "unit": "元",
+            "scale": 100,
+            "sense": "maximize",
+        },
+        {
+            "key": "safety_margin",
+            "label": "最小余量",
+            "unit": "%",
+            "scale": 100,
+            "sense": "maximize",
+        },
+    ]
+    restored = CandidateResultsArtifact.from_dict(payload)
+    assert restored.digest == sha256_digest(payload)
+
+
+def test_candidate_results_omit_metric_display_outside_the_domain_profile():
+    payload = build_candidate_results(
+        problem=_domain_problem(profile_id="other_profile.v1"),
+        capability=_capability(),
+        solver_result=_solver_result(),
+        verification=_verification(),
+    ).to_dict()
+
+    # Legacy artifacts were persisted without the field; they must keep loading and
+    # must keep reproducing the digest that was stored alongside them.
+    assert "metric_display" not in payload
+    assert CandidateResultsArtifact.from_dict(payload).digest == sha256_digest(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["metric_display"][0].update(scale=0),
+        lambda payload: payload["metric_display"][0].update(sense="unknown"),
+        lambda payload: payload["metric_display"][0].update(label=" "),
+        lambda payload: payload["metric_display"][0].update(key="absent_metric"),
+        lambda payload: payload["metric_display"][0].pop("unit"),
+        lambda payload: payload["metric_display"].append(
+            dict(payload["metric_display"][0])
+        ),
+    ],
+)
+def test_candidate_results_reject_tampered_metric_display(mutate):
+    payload = deepcopy(
+        build_candidate_results(
+            problem=_domain_problem(),
+            capability=_capability(),
+            solver_result=_solver_result(),
+            verification=_verification(),
+        ).to_dict()
+    )
+    mutate(payload)
+
+    with pytest.raises(SolverContractError):
+        CandidateResultsArtifact.from_dict(payload)
+
+
+def test_candidate_results_reject_an_invalid_domain_metric_scale():
+    with pytest.raises(SolverContractError, match="scale"):
+        build_candidate_results(
+            problem=_domain_problem(metric_scale=0),
+            capability=_capability(),
+            solver_result=_solver_result(),
+            verification=_verification(),
+        )
+
+
 def test_candidate_results_reject_unverified_or_digest_divergent_evidence():
     with pytest.raises(SolverContractError, match="verified"):
         build_candidate_results(

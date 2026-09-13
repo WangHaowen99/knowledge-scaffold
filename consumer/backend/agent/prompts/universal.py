@@ -35,7 +35,8 @@ def build_lang_instruction(lang: str | None) -> str | None:
 
 _EXECUTION_MODE_WITH_SUB_AGENT = (
     "Then decide HOW the operation will run:\n**Solver-backed (`solver_workflow`)** — before the "
-    "modes below, when the selected operation appears in root `solver_catalog`, invoke its exact "
+    "modes below, when the selected operation appears in root `solver_summary`, follow its "
+    "`next_action` to load the operation details, then invoke its exact "
     "`solve_<operation>_<digest>` ToolCard with concrete business arguments. Do not pass an "
     "operation key, package revision, solver identity, endpoint, or credential unless the "
     "compatibility `solve` card schema explicitly requires its discriminator.\n(a) **Script-backed "
@@ -80,7 +81,8 @@ _EXECUTION_MODE_WITH_SUB_AGENT = (
 
 _EXECUTION_MODE_WITHOUT_SUB_AGENT = (
     "Then decide HOW the operation will run:\n**Solver-backed (`solver_workflow`)** — before the "
-    "modes below, when the selected operation appears in root `solver_catalog`, invoke its exact "
+    "modes below, when the selected operation appears in root `solver_summary`, follow its "
+    "`next_action` to load the operation details, then invoke its exact "
     "`solve_<operation>_<digest>` ToolCard with concrete business arguments. Do not pass an "
     "operation key, package revision, solver identity, endpoint, or credential unless the "
     "compatibility `solve` card schema explicitly requires its discriminator.\n(a) **Script-backed "
@@ -194,9 +196,11 @@ UNIVERSAL_AGENT_SYSTEM_PROMPT = (
     "{ONTOLOGIES_SECTION}\n\n## Ontology Execution Flow\nOnce an ontology is loaded, follow these "
     "steps in order.\n### Step 1: Resolve Ontology Layout\nUse the injected `<Selected-Ontology>` "
     "block's `operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, and "
-    "`script_catalog` when present, plus `solver_catalog` when available. Otherwise, call "
-    '`ontology_context(resource="root")` once for the selected ontology and use the returned '
-    "catalogs.\n### Step 2: Match Operation\n1. Select the **best-matching** operation from "
+    "`script_catalog` when present, plus lightweight `solver_summary` when available. The legacy "
+    "`solver_catalog` name is compatibility-only and must not be treated as a model-facing schema "
+    'transport. Otherwise, call `ontology_context(resource="root")` once for the selected ontology '
+    "and use the returned catalogs. Full solver schemas are loaded only by the platform-bound "
+    "ToolCard path.\n### Step 2: Match Operation\n1. Select the **best-matching** operation from "
     "`operations_catalog` based on user intent and the requested final-output contract.\n   - "
     "Before loading an operation or calling any execution tool, perform a mandatory comparison "
     "against **every row** in `operations_catalog`: extract all result types explicitly requested "
@@ -219,7 +223,7 @@ UNIVERSAL_AGENT_SYSTEM_PROMPT = (
     "documented sequence.\n   Operations listed in `deterministic_operations` are "
     "runtime-reserved. If one reaches the Agent loop, do not read, replay, approximate, or execute "
     "it with other tools; report a deterministic routing failure instead.\n2. Check "
-    "`solver_catalog` first for a `solver_workflow`, then `script_catalog` to determine whether "
+    "`solver_summary` first for a `solver_workflow`, then `script_catalog` to determine whether "
     "the operation is script-backed.\n   - If the selected operation is absent from "
     '`script_catalog`, do not call `ontology_context(resource="script", key=<operation_key>)` for '
     "it. Load the operation document and follow its referenced stages; only operations actually "

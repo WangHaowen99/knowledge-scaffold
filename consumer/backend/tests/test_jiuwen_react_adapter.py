@@ -2142,6 +2142,131 @@ def test_jiuwen_checkpoint_tool_requires_explicit_ontology_selection(monkeypatch
     assert selected_context.selected_ontology_is_explicit is True
 
 
+def test_active_ontology_version_mirrors_the_sole_enabled_fallback(monkeypatch):
+    """A session that never pinned a revision still gets one, and a session
+    that did pin one is never silently upgraded to the active version."""
+    from agent.core.shared.ontology_context import active_ontology_version_from_state
+
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.get_sole_enabled_ontology_id",
+        lambda workspace_id=None: "sole-ontology",
+    )
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.get_active_ontology_version",
+        lambda ontology_id, workspace_id=None: (
+            "2.1.0" if ontology_id == "sole-ontology" else None
+        ),
+    )
+
+    auto_selected = {"workspace_id": "ws-version", "user_context": {}}
+    assert active_ontology_version_from_state(auto_selected) == "2.1.0"
+
+    explicit_id_only = {
+        "workspace_id": "ws-version",
+        "user_context": {"selected_ontology_id": "sole-ontology"},
+    }
+    assert active_ontology_version_from_state(explicit_id_only) == "2.1.0"
+
+    version_locked = {
+        "workspace_id": "ws-version",
+        "user_context": {
+            "selected_ontology_id": "sole-ontology",
+            "selected_ontology_version": "1.0.0",
+        },
+    }
+    assert active_ontology_version_from_state(version_locked) == "1.0.0"
+
+    # Zero or several enabled packages → no unambiguous package, no revision.
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.get_sole_enabled_ontology_id",
+        lambda workspace_id=None: None,
+    )
+    assert active_ontology_version_from_state(auto_selected) is None
+
+
+def test_auto_selected_package_still_exposes_solver_cards(monkeypatch):
+    """Solver cards are revision-bound, so an auto-selected package used to
+    lose them entirely; the resolved active revision must reach both the tool
+    schema and the ToolContext."""
+    import agent.tools.registry as tool_registry
+    from agent.core.shared.tool_context import build_tool_context
+    from agent.tools.solver import build_solver_tool_specs
+
+    (solver_spec,) = build_solver_tool_specs(
+        [
+            {
+                "package_id": "sole-ontology",
+                "package_revision": "2.1.0",
+                "operation_key": "solve_synthetic_route",
+                "decision_model_id": "model-synthetic",
+                "problem_family": "synthetic_family.v1",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"item_count": {"type": "integer", "minimum": 1}},
+                    "required": ["item_count"],
+                    "additionalProperties": False,
+                },
+                "result_schema": {"type": "object"},
+                "contract_digest": "sha256:" + "b" * 64,
+                "validator_revision": "verifier-synthetic-1",
+                "enabled": True,
+            }
+        ]
+    )
+
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.get_sole_enabled_ontology_id",
+        lambda workspace_id=None: "sole-ontology",
+    )
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.get_active_ontology_version",
+        lambda ontology_id, workspace_id=None: (
+            "2.1.0" if ontology_id == "sole-ontology" else None
+        ),
+    )
+    monkeypatch.setattr(
+        tool_registry,
+        "get_solver_tool_specs_for_context",
+        lambda **kwargs: (solver_spec,)
+        if kwargs
+        == {
+            "selected_ontology_id": "sole-ontology",
+            "selected_ontology_version": "2.1.0",
+            "workspace_id": "ws-solver",
+        }
+        else (),
+    )
+
+    engine = JiuwenReactLoopEngine(agent_config=_agent_config())
+    state = {"workspace_id": "ws-solver", "user_context": {}}
+
+    schema_names = {
+        item["function"]["name"]
+        for item in engine._tools_schema_for_state(state, caller="main")
+    }
+    jiuwen_names = {
+        item["name"] for item in engine._jiuwen_tool_infos_for_state(state, caller="main")
+    }
+    assert solver_spec.name in schema_names
+    assert solver_spec.name in jiuwen_names
+
+    context = build_tool_context(
+        state,
+        memory_manager=None,
+        agent_config=_agent_config(),
+        caller="main",
+        agent_iteration=1,
+        workspace_id="ws-solver",
+        project_root="",
+    )
+    assert context.selected_ontology_id == "sole-ontology"
+    assert context.selected_ontology_version == "2.1.0"
+    # The revision is resolved for this run only; the session made no choice.
+    assert context.selected_ontology_is_explicit is False
+    assert "selected_ontology_version" not in state["user_context"]
+
+
 def test_jiuwen_loop_engine_no_fallback_with_multiple_ontologies(monkeypatch):
     """No explicit selection + multiple (or zero) enabled ontologies → the
     query is returned unchanged."""

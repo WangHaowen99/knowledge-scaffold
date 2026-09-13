@@ -1,6 +1,6 @@
 const SCHEMA_VERSION = 'solver.candidate-results.v1';
 const OPTIONS = Object.freeze(['OPTION_0', 'OPTION_1']);
-const TOP_LEVEL_FIELDS = Object.freeze([
+const REQUIRED_TOP_LEVEL_FIELDS = Object.freeze([
   'candidate_count',
   'candidate_source_digest',
   'candidate_source_kind',
@@ -12,6 +12,11 @@ const TOP_LEVEL_FIELDS = Object.freeze([
   'schema_version',
   'selected_candidate_id',
 ]);
+// Artifacts produced before the solver described its metrics omit the field, so it
+// stays optional rather than invalidating every stored result.
+const OPTIONAL_TOP_LEVEL_FIELDS = Object.freeze(['metric_display']);
+const METRIC_DISPLAY_FIELDS = Object.freeze(['key', 'label', 'scale', 'sense', 'unit']);
+const METRIC_SENSES = Object.freeze(['maximize', 'minimize']);
 const ROW_FIELDS = Object.freeze([
   'assignment',
   'candidate_id',
@@ -58,16 +63,66 @@ const freezeRow = (row) =>
     assignment: Object.freeze([...row.assignment]),
     metrics: Object.freeze({ ...row.metrics }),
     rejectionReasons: Object.freeze([...row.rejectionReasons]),
-    optionItemIds: Object.freeze({
-      OPTION_0: Object.freeze([...row.optionItemIds.OPTION_0]),
-      OPTION_1: Object.freeze([...row.optionItemIds.OPTION_1]),
-    }),
     sequenceLabels: Object.freeze([...row.sequenceLabels]),
   });
 
+const artifactFields = (payload) => {
+  if (!plainObject(payload)) {
+    invalid('artifact must be an object');
+  }
+  const present = new Set(Object.keys(payload));
+  const known = new Set([
+    ...REQUIRED_TOP_LEVEL_FIELDS,
+    ...OPTIONAL_TOP_LEVEL_FIELDS,
+  ]);
+  const fieldsMismatch =
+    REQUIRED_TOP_LEVEL_FIELDS.some((field) => !present.has(field)) ||
+    [...present].some((field) => !known.has(field));
+  if (fieldsMismatch) {
+    invalid('artifact fields are invalid');
+  }
+};
+
+const normalizeMetricDisplay = (raw, rows) => {
+  if (raw == null) {
+    return [];
+  }
+  if (!Array.isArray(raw)) {
+    invalid('metric display is invalid');
+  }
+  const descriptors = raw.map((descriptor) => {
+    exactFields(descriptor, METRIC_DISPLAY_FIELDS, 'metric display');
+    if (!Number.isSafeInteger(descriptor.scale) || descriptor.scale < 1) {
+      invalid('metric display scale is invalid');
+    }
+    if (!METRIC_SENSES.includes(descriptor.sense)) {
+      invalid('metric display sense is invalid');
+    }
+    return Object.freeze({
+      key: requiredText(descriptor.key, 'metric display key'),
+      label: requiredText(descriptor.label, 'metric display label'),
+      unit: requiredText(descriptor.unit, 'metric display unit'),
+      scale: descriptor.scale,
+      sense: descriptor.sense,
+    });
+  });
+  const keys = new Set(descriptors.map((descriptor) => descriptor.key));
+  if (keys.size !== descriptors.length) {
+    invalid('metric display keys are duplicated');
+  }
+  // A described metric that some row lacks would render as a blank comparison cell.
+  const valueMissing = descriptors.some((descriptor) =>
+    rows.some((row) => !Number.isSafeInteger(row.metrics[descriptor.key])),
+  );
+  if (valueMissing) {
+    invalid('metric display value is missing');
+  }
+  return descriptors;
+};
+
 // eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
 export function normalizeCandidateResults(payload) {
-  exactFields(payload, TOP_LEVEL_FIELDS, 'artifact');
+  artifactFields(payload);
   if (payload.schema_version !== SCHEMA_VERSION) {
     invalid('schema version is unsupported');
   }
@@ -161,10 +216,6 @@ export function normalizeCandidateResults(payload) {
       if (typeof candidate.selected !== 'boolean') {
         invalid('candidate selected flag is invalid');
       }
-      const optionItemIds = { OPTION_0: [], OPTION_1: [] };
-      assignment.forEach((option, index) =>
-        optionItemIds[option].push(itemIds[index]),
-      );
       return freezeRow({
         combinationNo,
         candidateId,
@@ -176,7 +227,6 @@ export function normalizeCandidateResults(payload) {
           reason.trim(),
         ),
         selected: candidate.selected,
-        optionItemIds,
         sequenceLabels: assignment.map((option) => optionLabels[option]),
       });
     })
@@ -219,5 +269,6 @@ export function normalizeCandidateResults(payload) {
     candidateCount,
     selectedCandidateId,
     rows: Object.freeze(rows),
+    metricDisplay: Object.freeze(normalizeMetricDisplay(payload.metric_display, rows)),
   });
 }

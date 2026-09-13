@@ -19,6 +19,8 @@ const DYNAMIC_CLASSES = new Set([
   'hit-live',
   'hit-recent',
   'is-forbidden',
+  'is-option-0',
+  'is-option-1',
   'is-success',
   'is-warning',
   'status-awaiting',

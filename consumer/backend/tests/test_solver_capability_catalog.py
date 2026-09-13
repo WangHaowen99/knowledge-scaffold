@@ -346,6 +346,30 @@ def test_catalog_rejects_capability_paths_outside_package(tmp_path):
         load_solver_capability_catalog(tmp_path, manifest)
 
 
+def test_fact_snapshot_schema_changes_solver_contract_digest(tmp_path):
+    from solver_coordination.capability_catalog import load_solver_capability_catalog
+
+    manifest = _write_solver_package(tmp_path)
+    fact_path = tmp_path / "schemas" / "solver-fact-snapshot.schema.json"
+    fact_path.write_text(
+        json.dumps({"type": "object", "properties": {"facts": {"type": "object"}}}),
+        encoding="utf-8",
+    )
+    manifest["capabilities"]["decision_models"][0]["fact_snapshot_schema"] = (
+        "schemas/solver-fact-snapshot.schema.json"
+    )
+
+    baseline = load_solver_capability_catalog(tmp_path, manifest)[0]
+    fact_path.write_text(
+        json.dumps({"type": "object", "required": ["facts"]}),
+        encoding="utf-8",
+    )
+    changed = load_solver_capability_catalog(tmp_path, manifest)[0]
+
+    assert changed.contract_digest != baseline.contract_digest
+    assert changed.package_digest != baseline.package_digest
+
+
 def test_root_payload_exposes_public_solver_catalog(tmp_path):
     from ontology.ontologies import OntologyLoader
     from ontology.ontology_catalog import build_root_payload, format_root_payload_compact
@@ -354,7 +378,11 @@ def test_root_payload_exposes_public_solver_catalog(tmp_path):
     ontology = OntologyLoader.load_ontology(tmp_path)
     assert ontology is not None
 
-    payload = build_root_payload(ontology=ontology, ontology_dir=tmp_path)
+    payload = build_root_payload(
+        ontology=ontology,
+        ontology_dir=tmp_path,
+        include_solver_catalog=True,
+    )
 
     assert payload["solver_catalog"][0]["operation_key"] == "solve_route"
     compact = "\n".join(
@@ -433,7 +461,11 @@ def test_switch_uses_selected_revision_manifest_for_schema_and_catalog(tmp_path)
     selected_v02 = set_ontology_active_version(ontology_dir, "2.0.0")
     assert selected_v02.schema_version == "0.2"
     assert (
-        build_root_payload(ontology=selected_v02, ontology_dir=version2)["solver_catalog"][0]["operation_key"]
+        build_root_payload(
+            ontology=selected_v02,
+            ontology_dir=version2,
+            include_solver_catalog=True,
+        )["solver_catalog"][0]["operation_key"]
         == "solve_route"
     )
     assert "capabilities" not in load_ontology_manifest_data(ontology_dir)
@@ -509,7 +541,11 @@ def test_real_install_switch_and_download_preserve_revision_manifests(tmp_path, 
     assert selected_v02.schema_version == "0.2"
     assert Path(selected_v02.manifest_path) == version2 / "manifest.yaml"
     assert (
-        build_root_payload(ontology=selected_v02, ontology_dir=version2)["solver_catalog"][0]["operation_key"]
+        build_root_payload(
+            ontology=selected_v02,
+            ontology_dir=version2,
+            include_solver_catalog=True,
+        )["solver_catalog"][0]["operation_key"]
         == "solve_route"
     )
     with zipfile.ZipFile(routes._build_ontology_zip_buffer(ontology_dir, version2, version="2.0.0")) as archive:
