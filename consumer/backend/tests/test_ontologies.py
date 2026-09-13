@@ -191,6 +191,37 @@ def test_get_sole_enabled_ontology_id_variants(tmp_path, monkeypatch):
     assert get_sole_enabled_ontology_id() is None
 
 
+def test_get_active_ontology_version_variants(tmp_path, monkeypatch):
+    """Revision-bound capabilities need a concrete version for a package the
+    session never pinned; only enabled packages may supply one."""
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import get_active_ontology_version
+
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    _write_example_manifest(workspace_paths)
+    disabled_dir = workspace_paths.ontologies_dir / "disabled-ontology"
+    disabled_dir.mkdir(parents=True)
+    (disabled_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: disabled-ontology\n"
+            "name: disabled-ontology\n"
+            "description: disabled-ontology\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+            "enabled: false\n"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+
+    assert get_active_ontology_version(EXAMPLE_ONTOLOGY_ID) == "1.0.0"
+    assert get_active_ontology_version("disabled-ontology") is None
+    assert get_active_ontology_version("missing-ontology") is None
+    assert get_active_ontology_version("") is None
+
+
 def test_build_ontologies_section_keeps_empty_block_for_empty_workspace(tmp_path, monkeypatch):
     import ontology.ontologies as ontologies_module
     from ontology.ontologies import build_ontologies_section, get_ontology_registry

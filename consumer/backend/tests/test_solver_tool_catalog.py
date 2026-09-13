@@ -134,6 +134,23 @@ def test_catalog_rejects_runtime_fields_and_non_strict_input_schema():
         build_solver_tool_specs([loose_capability])
 
 
+def test_missing_revision_names_the_reason_instead_of_dropping_cards(caplog):
+    from agent.tools.solver import get_solver_tool_specs_for_context
+
+    with caplog.at_level("DEBUG", logger="agent.tools.solver"):
+        assert get_solver_tool_specs_for_context(
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version=None,
+            workspace_id="workspace-synthetic",
+        ) == ()
+
+    assert any(
+        "resolved no revision" in record.getMessage()
+        and record.levelname == "WARNING"
+        for record in caplog.records
+    )
+
+
 def test_static_registry_and_jiuwen_add_request_scoped_solver_cards(monkeypatch):
     (solver_spec,) = build_solver_tool_specs([_capability()])
     monkeypatch.setattr(
