@@ -774,9 +774,33 @@ class AskRail(BaseInterruptRail):
                     "direct_answer_required": True,
                     "instruction": "不要再次提问。请直接以最终自然语言回答用户插话并结束本轮，服务端会恢复原问题。",
                 }, ensure_ascii=False))
+            kind = str(arguments.get("kind") or "clarification")
+            scope_confirmation_gate = self._context.scope_confirmation_gate if self._context else None
+            if (
+                kind == "scope_confirmation"
+                and scope_confirmation_gate is not None
+                and not scope_confirmation_gate()
+            ):
+                result = _validation_report(
+                    "SCOPE_ANALYSIS_REQUIRED",
+                    _contract_validator_version(self._context, "interactionBoundary", "interaction-boundary-v1"),
+                    [_finding(
+                        "interaction.scope_confirmation.analysis_required",
+                        "",
+                        "尚未取得本轮确定性能力分析结果，不能发起脚本范围确认",
+                        "先调用 analyze_deterministic_capabilities 并等待成功返回，再基于分析结论发起范围确认",
+                    )],
+                    instruction=(
+                        "不要在没有分析结果时发起脚本范围确认。"
+                        "立即调用 analyze_deterministic_capabilities 并等待成功返回，"
+                        "再基于分析结论整理推荐范围方案后重新发起 scope_confirmation。"
+                    ),
+                    display="正在补做确定性能力分析",
+                    repair_scope="interaction",
+                )
+                return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
             if self._context:
                 self._context.decision_card_requested = True
-            kind = str(arguments.get("kind") or "clarification")
             options = _normalized_options(arguments.get("options"), kind)
             request = InterruptRequest(
                 message=str(arguments.get("question") or "需要你补充一个决定"),

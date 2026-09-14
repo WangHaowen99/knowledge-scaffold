@@ -19,6 +19,7 @@ EventSink = Callable[[str, dict[str, Any]], None]
 StateAction = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 AfterCoreTool = Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]]
 ConfirmationGuard = Callable[[], bool]
+ScopeConfirmationGate = Callable[[], bool]
 ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 ValidationRepairSave = Callable[[dict[str, Any]], None]
@@ -156,6 +157,7 @@ class ToolContext:
     state_action: StateAction | None = None
     after_core_tool: AfterCoreTool | None = None
     confirmation_guard: ConfirmationGuard | None = None
+    scope_confirmation_gate: ScopeConfirmationGate | None = None
     tool_receipt_lookup: ToolReceiptLookup | None = None
     tool_receipt_save: ToolReceiptSave | None = None
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
