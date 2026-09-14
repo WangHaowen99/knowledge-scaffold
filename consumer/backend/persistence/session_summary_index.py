@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import stat
 import threading
@@ -21,6 +22,8 @@ _MAX_CURSOR_LENGTH = 2048
 _MAX_REBUILD_ATTEMPTS = 3
 _DELTA_SCHEMA_VERSION = 1
 _DELTA_COMPACT_THRESHOLD = 128
+
+logger = logging.getLogger(__name__)
 
 
 class SessionSummaryIndexError(RuntimeError):

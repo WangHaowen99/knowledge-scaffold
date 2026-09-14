@@ -38,6 +38,8 @@ from workspace.catalog_snapshot import (
     WorkspaceSourceSignature,
 )
 
+logger = logging.getLogger(__name__)
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows development fallback

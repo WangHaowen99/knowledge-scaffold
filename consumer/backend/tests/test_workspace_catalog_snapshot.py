@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
