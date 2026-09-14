@@ -7,10 +7,11 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
 from urllib.parse import urljoin, urlsplit
 
 import requests
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from api.auth.auth import (
@@ -20,6 +21,7 @@ from api.auth.auth import (
     require_admin_user,
     require_authenticated_user,
 )
+from api.auth.diagnostics import auth_diagnostic_context, record_auth_failure
 from api.auth.user_deletion import (
     UserDeletionReconciliationError,
     UserDeletionPendingError,
@@ -36,6 +38,22 @@ auth_router = APIRouter(prefix="/auth")
 # 连接 3s / 读取 10s
 _REGISTER_PROXY_TIMEOUT = (3, 10)
 REFRESH_COOKIE_NAME = "onto_refresh_token"
+
+
+async def _run_auth_operation(
+    request: Request, operation: str, function: Callable[..., Any], *args: Any,
+) -> Any:
+    with auth_diagnostic_context(operation):
+        try:
+            return await run_in_runtime_pool(request, "external_io", function, *args)
+        except HTTPException as exc:
+            reason = "runtime_unavailable"
+            if exc.status_code == 429:
+                reason = "capacity_exhausted"
+            elif exc.detail == "Runtime is draining":
+                reason = "runtime_draining"
+            record_auth_failure("runtime", reason, error=exc)
+            raise
 
 
 def _first_forwarded_value(request: Request, name: str) -> str:
@@ -208,9 +226,9 @@ async def login(request: Request):
     if not auth_manager:
         return JSONResponse({"error": "Auth not configured"}, status_code=500)
     try:
-        result = await run_in_runtime_pool(
+        result = await _run_auth_operation(
             request,
-            "external_io",
+            "login",
             auth_manager.login,
             username,
             password,
@@ -244,9 +262,9 @@ async def refresh(request: Request):
     if not refresh_token:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
     try:
-        tokens = await run_in_runtime_pool(
+        tokens = await _run_auth_operation(
             request,
-            "external_io",
+            "refresh",
             auth_manager.refresh_tokens,
             refresh_token,
         )

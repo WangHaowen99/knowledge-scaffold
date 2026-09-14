@@ -229,6 +229,20 @@ PYTHONPATH=backend /tmp/knowledge-consumer-tests/bin/python -m pytest backend/te
 - 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，`mode=local` 时各工作空间的本地 OpenTelemetry 记录由 `local.retention_days` 独立控制。
 - 如果直接接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
 
+### 认证失败诊断
+
+登录和刷新失败会通过 `auth.diagnostics` 输出一条诊断日志。每次尝试使用服务端生成的 `auth_attempt_id`，跨认证后端和运行时线程池保持一致；该编号只用于日志关联，不来自用户身份或请求头。
+
+- `auth_operation`：`login` 或 `refresh`。
+- `auth_stage`：`token_request`、`token_response`、`jwks`、`jwt_validation` 或 `runtime`；未分类异常使用 `authentication`。
+- `auth_reason`、`auth_error_type`：代码定义的失败原因和受限异常类别。
+- `auth_upstream_status`：可获得的上游 HTTP 状态；网络错误等场景为空。
+- `auth_elapsed_ms`：本次认证尝试截至失败的总耗时，包含线程池等待时间。
+
+例如，`jwks / request_failed` 表示公钥拉取失败，`jwks / refresh_throttled` 表示再次拉取受到 5 秒最小间隔限制；它们均可能发生在令牌接口已经成功之后。正常的无效凭据仍返回 401，不产生可用性告警；503 响应保留现有公开提示。
+
+诊断不记录用户名、密码、令牌、Cookie、请求或响应正文、公钥标识、认证服务地址、异常消息或异常堆栈。普通文本和结构化日志均包含上述诊断字段。
+
 ## HTTP 接口
 
 主要路由组：

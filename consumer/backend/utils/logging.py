@@ -73,6 +73,7 @@ _RESERVED_RECORD_KEYS = {
     "processName",
     "process",
     "message",
+    "suppress_log_context",
 }
 
 
@@ -170,6 +171,9 @@ def _format_agent_context(context: dict[str, Any]) -> str:
 
 
 def _enrich_record_with_log_context(record: logging.LogRecord) -> dict[str, Any]:
+    if getattr(record, "suppress_log_context", False):
+        record.__dict__.setdefault("agent_context", "")
+        return {}
     context = get_log_context()
     if context:
         for key, value in context.items():

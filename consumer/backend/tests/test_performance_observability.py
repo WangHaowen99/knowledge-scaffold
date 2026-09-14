@@ -7,6 +7,14 @@ import pytest
 from backend_synthetic_credentials import synthetic_secret
 
 
+@pytest.fixture(autouse=True)
+def isolate_default_metric_route(monkeypatch):
+    from integration.observability import workspace_router
+
+    # Global recorder tests must not inherit a router from another test.
+    monkeypatch.setattr(workspace_router, "get_default_workspace_router", lambda: None)
+
+
 def test_request_timing_collector_is_allowlisted_aggregated_and_scoped():
     from integration.observability.performance import (
         get_server_timing_header,
@@ -425,7 +433,7 @@ def test_cache_metric_reaches_local_exporter_through_shared_router_without_ident
     tmp_path,
     monkeypatch,
 ):
-    from integration.observability import performance
+    from integration.observability import performance, workspace_router
     from integration.observability.exporters.local.exporter import LocalPerfExporter
     from integration.observability.otel import force_flush_runtime_metrics
     from integration.observability.workspace_router import WorkspaceObservabilityRouter
@@ -437,6 +445,7 @@ def test_cache_metric_reaches_local_exporter_through_shared_router_without_ident
         log_dir=log_dir,
     )
     router = WorkspaceObservabilityRouter()
+    monkeypatch.setattr(workspace_router, "get_default_workspace_router", lambda: router)
     monkeypatch.setattr(
         router,
         "_build_exporter",
@@ -448,7 +457,7 @@ def test_cache_metric_reaches_local_exporter_through_shared_router_without_ident
             assert performance.record_cache_event("workspace_catalog", "hit") is True
         assert force_flush_runtime_metrics(router.router_id) is True
     finally:
-        router.close()
+        assert router.close(timeout=5.0) is True
 
     records = [
         json.loads(line)
