@@ -62,9 +62,11 @@ test('知识包分阶段生成过程持久化', async () => {
     competencyQuestionId: operationTargetId(process.id),
   }));
   const faux = createFauxCore({ provider: 'generation-trace', models: [{ id: 'generation-trace' }] });
+  // operation 批次上限是 2，5 个流程拆成 [2, 2, 1] 三批，每批各回一次
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(0, 3) })]),
-    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(3) })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(0, 2) })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(2, 4) })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(4) })]),
   ]);
 
   const result = await generatePackage(project, {
@@ -93,10 +95,15 @@ test('知识包分阶段生成过程持久化', async () => {
     knowledgeBatchCount: prepare?.details?.knowledgeBatchCount,
     operationBatchCount: prepare?.details?.operationBatchCount,
     totalStepCount: prepare?.details?.totalStepCount,
-  }, { objectBatchCount: 0, knowledgeBatchCount: 0, operationBatchCount: 2, totalStepCount: 3 });
+  }, { objectBatchCount: 0, knowledgeBatchCount: 0, operationBatchCount: 3, totalStepCount: 4 });
   assert.ok(events.some((event) => event.title === '物理 Schema 对象已生成'));
   assert.ok(events.some((event) => event.title.includes('生成业务操作')));
-  assert.ok(events.some((event) => event.title === '提交业务操作' && event.details?.operationCount === 3));
+  assert.deepEqual(
+    events.filter((event) => event.title === '提交业务操作')
+      .map((event) => Number(event.details?.operationCount))
+      .sort((left, right) => left - right),
+    [1, 2, 2],
+  );
   assert.ok(events.some((event) => event.kind === 'generation_completed'));
 });
 
@@ -369,7 +376,8 @@ test('知识包自动补交耗尽后等待专家决定是否跳过', async () =>
     competencyQuestionId: operationTargetId(processes[0].id),
   };
   const faux = createFauxCore({ provider: 'generation-trace-fail', models: [{ id: 'generation-trace-fail' }] });
-  faux.setResponses(Array.from({ length: 6 }, () => (
+  // 3 个操作批次 × 每批最多 3 次提交：额度喂满，让它耗在自动补交上，而不是耗在假响应队列见底
+  faux.setResponses(Array.from({ length: 9 }, () => (
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })])
   )));
 

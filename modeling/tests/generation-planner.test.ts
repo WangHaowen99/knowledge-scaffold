@@ -11,17 +11,23 @@ import {
 import { buildOperationTargets } from '../src/workflow/m2.js';
 import { confirmedFlowchart } from './fixtures/confirmed-flowchart.js';
 
-test('动态批次在大上下文中扩大对象批次且保持输出上限', () => {
+test('动态批次在大上下文中仍受对象批次上限约束', () => {
   const items = Array.from({ length: 25 }, (_, index) => ({ id: index, name: `对象${index}` }));
-  assert.equal(dynamicBatchSize('object', items, 1_000_000), 12);
-  assert.deepEqual(planGenerationUnits('object', items, 1_000_000).map((unit) => unit.items.length), [12, 12, 1]);
+  assert.equal(dynamicBatchSize('object', items, 1_000_000), 4);
+  assert.deepEqual(planGenerationUnits('object', items, 1_000_000).map((unit) => unit.items.length), [4, 4, 4, 4, 4, 4, 1]);
 });
 
 test('生成单元依赖指纹只随本单元输入变化', () => {
   const first = planGenerationUnits('knowledge', Array.from({ length: 16 }, (_, index) => ({ id: index })), 1_000_000);
   const second = planGenerationUnits('knowledge', Array.from({ length: 16 }, (_, index) => ({ id: index === 15 ? 99 : index })), 1_000_000);
-  assert.equal(first[0].dependencyHash, second[0].dependencyHash);
-  assert.notEqual(first[1].dependencyHash, second[1].dependencyHash);
+  // 只改了最后一项，于是只有它所在的那个单元指纹该变。按位置比对而不是写死某个下标，
+  // 这样批大小再调整时断言依然成立。
+  assert.equal(first.length, second.length);
+  assert.deepEqual(
+    first.slice(0, -1).map((unit) => unit.dependencyHash),
+    second.slice(0, -1).map((unit) => unit.dependencyHash),
+  );
+  assert.notEqual(first[first.length - 1].dependencyHash, second[second.length - 1].dependencyHash);
 });
 
 test('下游单元指纹包含上游计划，避免对象变化后复用旧规则操作', () => {
@@ -45,9 +51,9 @@ test('受控并发保持输入顺序并限制同时执行数', async () => {
   assert.deepEqual(values, [10, 20, 30, 40, 50]);
 });
 
-test('operation 动态批次遵守结构化提交每批最多三个流程', () => {
+test('operation 动态批次遵守结构化提交每批最多两个流程', () => {
   const items = Array.from({ length: 8 }, (_, index) => ({ id: index }));
-  assert.deepEqual(planGenerationUnits('operation', items, 1_000_000).map((unit) => unit.items.length), [3, 3, 2]);
+  assert.deepEqual(planGenerationUnits('operation', items, 1_000_000).map((unit) => unit.items.length), [2, 2, 2, 2]);
 });
 
 test('模型限流后自适应门闩把后续并发减半', async () => {
