@@ -387,6 +387,17 @@ export class AgentCoreService {
       const document = documents.find((item) => item.id === summary.id)!;
       return { ...summary, refs: referringFiles(packageFiles.files, document).length };
     });
+    // 待批准计划必须随快照返回：计划卡只在 change_plan 事件到达时渲染，
+    // 刷新或恢复后会话里没有这条事件，用户就再也找不到批准入口。
+    let pendingChangePlan: ReturnType<ChangeControlStore['snapshot']> | null = null;
+    const activePlanRow = this.changeControl.activePlanForProject(project.id);
+    if (activePlanRow && activePlanRow.status === 'active' && activePlanRow.approval_status === 'pending') {
+      pendingChangePlan = this.changeControl.snapshot(
+        activePlanRow.project_id,
+        activePlanRow.run_id,
+        activePlanRow.id,
+      );
+    }
     return {
       project,
       revision: packageFiles.revision.oid,
@@ -399,6 +410,7 @@ export class AgentCoreService {
       materials,
       confirmPolicy: this.workbenchConfirmPolicy(project.id),
       packageDataSource: getProjectPackageDataSourceSelection(project.id),
+      changePlan: pendingChangePlan,
     };
   }
 

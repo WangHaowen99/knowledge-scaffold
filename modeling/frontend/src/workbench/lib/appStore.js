@@ -221,8 +221,21 @@ function rejectedMessage(result, fallback) {
 
 function planContinuationPrompt(approved) {
   return approved
-    ? '我已在页面批准当前建模计划。请从计划第一项继续，先核对当前状态和写入回执，不要重复已经完成的任务。'
+    ? '我已在页面批准当前建模计划。请继续执行已批准的建模计划：完成候选预检，候选修订写入后执行完整校验，校验通过后生成统一确认卡；不要重复已经完成的任务。'
     : '我已在页面拒绝当前建模计划。请读取计划的最终状态并停止这份计划，不要产生任何候选修改。';
+}
+
+function planCardBlocks(plan) {
+  return [{
+    type: 'plan',
+    plan,
+    items: (plan.tasks || []).map((task) => ({
+      t: task.title,
+      st: ['accepted', 'skipped'].includes(task.status)
+        ? 'done'
+        : ['staged', 'validated', 'waiting_user'].includes(task.status) ? 'now' : '',
+    })),
+  }];
 }
 
 async function waitForPlanContinuationBoundary(projectId, timeoutMs = 20_000) {
@@ -293,6 +306,9 @@ export const actions = {
         || snapshot.files[0]
         || '';
       const activity = agent.activity ? progressActivity(agent.activity) : null;
+      const pendingChangePlan = snapshot.changePlan && snapshot.changePlan.approval_status === 'pending'
+        ? snapshot.changePlan
+        : null;
       const restoredAgentFocus = agent.focus && availableFocusTarget(agent.focus, {
         files: snapshot.files,
         fileErrors: {},
@@ -317,7 +333,7 @@ export const actions = {
         phases: Array.isArray(agent.phases) ? agent.phases : [],
         progress: null,
         progressError: '',
-        changePlan: null,
+        changePlan: pendingChangePlan,
         files: snapshot.files,
         materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
         candidateDiff: candidate.files || [],
@@ -336,6 +352,21 @@ export const actions = {
         focus,
         replayUntilSeq: Number(agent.lastSeq) || 0,
       });
+      if (pendingChangePlan) {
+        const planMessageId = `change-plan-${pendingChangePlan.id}`;
+        const existingPlanMessage = store.get().messages.find((message) => message.id === planMessageId);
+        const existingPlan = existingPlanMessage?.blocks?.[0]?.plan;
+        if (!existingPlan
+          || existingPlan.version !== pendingChangePlan.version
+          || existingPlan.updated_at !== pendingChangePlan.updated_at) {
+          actions.appendMessage({
+            id: planMessageId,
+            role: 'assistant',
+            createdAt: pendingChangePlan.updated_at,
+            blocks: planCardBlocks(pendingChangePlan),
+          });
+        }
+      }
       if (initialPath) void actions.loadFile(initialPath);
       if (snapshot.materials[0]?.id) void actions.loadMaterial(snapshot.materials[0].id);
       return { snapshot, agent, agentAvailable };
@@ -514,14 +545,7 @@ export const actions = {
         id: `change-plan-${event.plan.id}`,
         role: 'assistant',
         createdAt: event.createdAt,
-        blocks: [{
-          type: 'plan',
-          plan: event.plan,
-          items: (event.plan.tasks || []).map((task) => ({
-            t: task.title,
-            st: (() => { if (['accepted', 'skipped'].includes(task.status)) return 'done'; return ['staged', 'validated', 'waiting_user'].includes(task.status) ? 'now' : ''; })(),
-          })),
-        }],
+        blocks: planCardBlocks(event.plan),
       });
     }
     if (eventType === 'change_set' && !replaying) {
