@@ -218,10 +218,10 @@ def _reject_symlink_components(
         current = current / part
         try:
             current_stat = current.lstat()
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             if allow_missing:
                 return
-            raise PackageBrowserError("not_found", "Package directory not found")
+            raise PackageBrowserError("not_found", "Package directory not found") from exc
         except OSError as exc:
             raise PackageBrowserError("invalid_path", "Invalid package path") from exc
         if stat.S_ISLNK(current_stat.st_mode):

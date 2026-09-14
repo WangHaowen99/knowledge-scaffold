@@ -28,6 +28,16 @@ _PRIVATE_BODY = "synthetic-private-response-body"
 _PRIVATE_ERROR = f"{_BASE_URL} {_PASSWORD} {_ACCESS_TOKEN} {_PRIVATE_BODY}"
 
 
+class _AuthFailureCase:
+    def __init__(self, operation, case, stage, reason, error_type, upstream_status):
+        self.operation = operation
+        self.case = case
+        self.stage = stage
+        self.reason = reason
+        self.error_type = error_type
+        self.upstream_status = upstream_status
+
+
 class _Response:
     def __init__(self, status_code=200, payload=None, error=None):
         self.status_code = status_code
