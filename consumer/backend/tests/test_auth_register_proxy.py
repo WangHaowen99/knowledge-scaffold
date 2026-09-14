@@ -66,7 +66,7 @@ def test_capabilities_proxy_registration_setting(auth_manager, monkeypatch):
         "get",
         lambda *args, **kwargs: _StubResponse(200, {"registration_enabled": True}),
     )
-    client = TestClient(_build_app(auth_manager, "http://auth-server:5056/"))
+    client = TestClient(_build_app(auth_manager, "https://auth-server:5056/"))
 
     response = client.get("/auth/capabilities")
 
@@ -97,7 +97,7 @@ def test_register_proxy_passthrough_success(auth_manager, monkeypatch):
 
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = TestClient(_build_app(auth_manager, "http://auth-server:5056/"))
+    client = TestClient(_build_app(auth_manager, "https://auth-server:5056/"))
     response = client.post(
         "/auth/register",
         json={
@@ -117,7 +117,7 @@ def test_register_proxy_passthrough_success(auth_manager, monkeypatch):
         },
     }
     # 尾斜杠归一 + 路径拼接正确
-    assert calls["url"] == "http://auth-server:5056/register"
+    assert calls["url"] == "https://auth-server:5056/register"
     assert calls["json"]["email"] == "eve@example.com"
     # 必须转发真实客户端 IP，否则 auth server 的按 IP 限流会塌缩成 BFF 单一 IP
     assert "X-Forwarded-For" in calls["headers"]
@@ -138,7 +138,7 @@ def test_register_proxy_passthrough_password_policy_error(auth_manager, monkeypa
 
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
+    client = TestClient(_build_app(auth_manager, "https://auth-server:5056"))
     response = client.post(
         "/auth/register",
         json={
@@ -161,7 +161,7 @@ def test_register_proxy_passthrough_rate_limited(auth_manager, monkeypatch):
 
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
+    client = TestClient(_build_app(auth_manager, "https://auth-server:5056"))
     response = client.post(
         "/auth/register",
         json={
@@ -182,7 +182,7 @@ def test_register_proxy_upstream_down(auth_manager, monkeypatch):
 
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
+    client = TestClient(_build_app(auth_manager, "https://auth-server:5056"))
     response = client.post(
         "/auth/register",
         json={
@@ -203,7 +203,7 @@ def test_register_proxy_non_json_upstream(auth_manager, monkeypatch):
 
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
-    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
+    client = TestClient(_build_app(auth_manager, "https://auth-server:5056"))
     response = client.post(
         "/auth/register",
         json={
@@ -218,7 +218,7 @@ def test_register_proxy_non_json_upstream(auth_manager, monkeypatch):
 
 def test_register_verify_resend_endpoints_removed(auth_manager):
     """验证码链路已删除：verify/resend 端点不再存在（404）。"""
-    client = TestClient(_build_app(auth_manager, "http://auth-server:5056"))
+    client = TestClient(_build_app(auth_manager, "https://auth-server:5056"))
     for path in ("/auth/register/verify", "/auth/register/resend"):
         response = client.post(path, json={})
         assert response.status_code == 404

@@ -1156,11 +1156,11 @@ def test_skill_evolution_connection_test_probes_runs_endpoint(monkeypatch):
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": True, "base_url": "http://evolver.example.net", "timeout_seconds": 30},
+        {"enabled": True, "base_url": "https://evolver.example.net", "timeout_seconds": 30},
     )
     assert result["success"] is True
     assert "skill-evolver 连接成功" in result["message"]
-    assert captured["url"] == "http://evolver.example.net/api/status"
+    assert captured["url"] == "https://evolver.example.net/api/status"
     assert captured["headers"]["Accept"] == "application/json"
     # probe timeout is capped short (<=5) regardless of the configured HTTP timeout
     assert captured["timeout"] <= 5
@@ -1177,7 +1177,7 @@ def test_skill_evolution_connection_test_reports_unreachable(monkeypatch):
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": True, "base_url": "http://evolver.example.net", "timeout_seconds": 30},
+        {"enabled": True, "base_url": "https://evolver.example.net", "timeout_seconds": 30},
     )
     assert result["success"] is False
     assert "无法连接" in result["message"]
@@ -1188,7 +1188,7 @@ def test_skill_evolution_connection_test_disabled_is_success():
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": False, "base_url": "http://evolver.example.net"},
+        {"enabled": False, "base_url": "https://evolver.example.net"},
     )
     assert result["success"] is True
     assert "关闭" in result["message"]

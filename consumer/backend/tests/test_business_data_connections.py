@@ -270,7 +270,7 @@ def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkey
             "mode": "direct_provider",
             "provider": "nl2sql_http",
             "config": {
-                "url": "http://nl2sql:5600",
+                "url": "https://nl2sql:5600",
                 "token": synthetic_secret("business_data_connections-credential-06"),
                 "scene": "mw_proj_demo",
             },

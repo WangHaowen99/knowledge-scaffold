@@ -15,7 +15,7 @@ def _connection() -> EffectiveConnection:
     return EffectiveConnection(
         version=1,
         provider="nl2sql_http",
-        endpoint="http://nl2sql.example.net",
+        endpoint="https://nl2sql.example.net",
         auth=AuthSpec(type="bearer", token=synthetic_secret("nl2sql_http_search_adapter-credential-01")),
         options={"scene": "scene-x", "timeout_seconds": 88},
     )

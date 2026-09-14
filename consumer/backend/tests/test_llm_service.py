@@ -275,7 +275,7 @@ def test_llm_call_clamps_output_tokens_to_ops_limit(tmp_path, monkeypatch):
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net/v1",
+            base_url="https://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -351,7 +351,7 @@ def test_llm_call_uses_openai_client_stream_and_preserves_nested_tool_object_sta
     fake_client = _FakeOpenAIClient([iter(stream_chunks)])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net/v1",
+            base_url="https://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -407,7 +407,7 @@ def test_llm_call_parses_response_model_without_sending_model_class():
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -432,7 +432,7 @@ def test_llm_call_parses_response_model_without_sending_model_class():
 def test_llm_call_preserves_input_history_and_appends_single_assistant(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -531,7 +531,7 @@ def test_llm_call_collects_openai_sdk_non_stream_completion_without_close():
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net/v1",
+            base_url="https://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -568,7 +568,7 @@ def test_llm_request_payload_logged_at_debug(caplog):
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net/v1",
+            base_url="https://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -617,7 +617,7 @@ def test_llm_request_payload_not_logged_at_info(caplog):
     fake_client = _FakeOpenAIClient([completion])
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net/v1",
+            base_url="https://unit.example.net/v1",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -642,7 +642,7 @@ def test_provider_adapter_keeps_glm_reasoning_params_and_openai_compatible_full(
     messages = [{"role": "user", "content": "hi"}]
     glm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="glm-model",
             api_key=None,
             timeout=30,
@@ -653,7 +653,7 @@ def test_provider_adapter_keeps_glm_reasoning_params_and_openai_compatible_full(
     )
     openai = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="openai-model",
             api_key=None,
             timeout=30,
@@ -693,7 +693,7 @@ def test_provider_adapter_keeps_glm_reasoning_params_and_openai_compatible_full(
 def test_deepseek_provider_adapter_uses_v4_reasoning_extra_body():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="deepseek-v4-flash",
             api_key=None,
             timeout=30,
@@ -721,7 +721,7 @@ def test_deepseek_provider_adapter_uses_v4_reasoning_extra_body():
 def test_glm_and_deepseek_stream_usage_option_is_provider_adapter_controlled():
     glm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="glm-model",
             api_key=None,
             timeout=30,
@@ -732,7 +732,7 @@ def test_glm_and_deepseek_stream_usage_option_is_provider_adapter_controlled():
     )
     deepseek = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="deepseek-model",
             api_key=None,
             timeout=30,
@@ -743,7 +743,7 @@ def test_glm_and_deepseek_stream_usage_option_is_provider_adapter_controlled():
     )
     unknown = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unknown-model",
             api_key=None,
             timeout=30,
@@ -795,7 +795,7 @@ def test_glm_and_deepseek_stream_usage_option_is_provider_adapter_controlled():
 def test_provider_adapters_normalize_cache_usage_fields():
     glm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="glm-model",
             api_key=None,
             timeout=30,
@@ -806,7 +806,7 @@ def test_provider_adapters_normalize_cache_usage_fields():
     )
     deepseek = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="deepseek-model",
             api_key=None,
             timeout=30,
@@ -817,7 +817,7 @@ def test_provider_adapters_normalize_cache_usage_fields():
     )
     openai_compatible = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="compat-model",
             api_key=None,
             timeout=30,
@@ -883,7 +883,7 @@ def test_provider_adapters_normalize_cache_usage_fields():
 def test_unknown_provider_adapter_does_not_send_extra_body():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unknown-model",
             api_key=None,
             timeout=30,
@@ -908,7 +908,7 @@ def test_unknown_provider_adapter_does_not_send_extra_body():
 def test_llm_call_passes_stream_override_to_transport(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -975,7 +975,7 @@ def test_llm_with_config_refreshes_transport_agent_config():
         context_max_rounds=10,
     )
     old_config = LLMConfig(
-        base_url="http://old.example.net",
+        base_url="https://old.example.net",
         model="old-model",
         api_key=None,
         timeout=30,
@@ -983,7 +983,7 @@ def test_llm_with_config_refreshes_transport_agent_config():
         temperature=0.0,
     )
     new_config = LLMConfig(
-        base_url="http://new.example.net",
+        base_url="https://new.example.net",
         model="new-model",
         api_key=None,
         timeout=30,
@@ -1001,7 +1001,7 @@ def test_llm_with_config_refreshes_transport_agent_config():
 def test_llm_call_exposes_collected_reasoning_content(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1065,7 +1065,7 @@ def test_llm_call_exposes_collected_reasoning_content(monkeypatch):
 def test_collect_stream_response_collects_empty_choices_usage_chunks():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1097,7 +1097,7 @@ def test_collect_stream_response_collects_empty_choices_usage_chunks():
 def test_collect_non_stream_response_preserves_provider_usage_fields():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1143,7 +1143,7 @@ def test_collect_non_stream_response_preserves_provider_usage_fields():
 def test_collect_stream_response_repairs_cumulative_tool_argument_chunks():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1182,7 +1182,7 @@ def test_collect_stream_response_repairs_cumulative_tool_argument_chunks():
 def test_collect_stream_response_keeps_final_tool_call_fragment_when_finish_reason_arrives_same_chunk():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1221,7 +1221,7 @@ def test_collect_stream_response_keeps_final_tool_call_fragment_when_finish_reas
 def test_collect_stream_response_emits_closed_tool_calls_as_one_batch_on_finish_reason():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1262,7 +1262,7 @@ def test_collect_stream_response_emits_closed_tool_calls_as_one_batch_on_finish_
 def test_collect_stream_response_emits_remaining_closed_tool_calls_on_finish_reason():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1296,7 +1296,7 @@ def test_collect_stream_response_emits_remaining_closed_tool_calls_on_finish_rea
 def test_collect_stream_response_defers_closed_tool_calls_until_id_and_arguments_are_complete():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1382,7 +1382,7 @@ def test_collect_stream_response_defers_closed_tool_calls_until_id_and_arguments
 def test_collect_non_stream_response_preserves_tool_calls():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1432,7 +1432,7 @@ def test_collect_non_stream_response_preserves_tool_calls():
 def test_collect_non_stream_response_dispatches_reasoning_summary(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1477,7 +1477,7 @@ def test_collect_non_stream_response_dispatches_reasoning_summary(monkeypatch):
 def test_collect_stream_response_keeps_reasoning_when_summary_dispatch_fails(monkeypatch):
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,
@@ -1520,7 +1520,7 @@ def test_collect_stream_response_keeps_reasoning_when_summary_dispatch_fails(mon
 def test_collect_stream_response_returns_stream_milestones():
     llm = LLMService(
         LLMConfig(
-            base_url="http://unit.example.net",
+            base_url="https://unit.example.net",
             model="unit-model",
             api_key=None,
             timeout=30,

@@ -1604,8 +1604,8 @@ def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_field
             "agent.tool_name": "business_data_search",
             "agent.message": "private-message",
             "agent.error_message": "private-error",
-            "http.url": "http://hugegraph.example.net/vertices?properties=private-property",
-            "url.full": "http://service.example.net/search?q=private-query#fragment",
+            "http.url": "https://hugegraph.example.net/vertices?properties=private-property",
+            "url.full": "https://service.example.net/search?q=private-query#fragment",
             "http.request.method": "GET",
         },
         events=(
@@ -1624,8 +1624,8 @@ def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_field
     record = span_record(span)
     serialized = json.dumps(record)
 
-    assert record["labels"]["http.url"] == "http://hugegraph.example.net/vertices"
-    assert record["labels"]["url.full"] == "http://service.example.net/search"
+    assert record["labels"]["http.url"] == "https://hugegraph.example.net/vertices"
+    assert record["labels"]["url.full"] == "https://service.example.net/search"
     assert record["labels"]["agent.tool_name"] == "business_data_search"
     assert record["events"][0]["event"] == "tool.progress"
     assert record["events"][0]["labels"] == {

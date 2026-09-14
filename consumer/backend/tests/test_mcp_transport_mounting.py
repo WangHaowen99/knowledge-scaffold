@@ -324,7 +324,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
-                base_url="http://testserver",
+                base_url="https://testserver",
                 follow_redirects=False,
             ) as client:
                 old_route = await client.post("/chat/mcp")
@@ -966,7 +966,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
 
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
-                base_url="http://testserver",
+                base_url="https://testserver",
             ) as client:
                 headers = {"content-type": "application/json"}
                 initialized = await client.post(

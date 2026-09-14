@@ -17,7 +17,7 @@ from config.system_config import (
 def _base() -> dict:
     return {
         "enabled": True,
-        "base_url": "http://x:8765/",
+        "base_url": "https://x:8765/",
         "timeout_seconds": 30,
         "poll_interval_seconds": 10,
         "task_timeout_seconds": 1800,
@@ -27,7 +27,7 @@ def _base() -> dict:
 
 def test_normalizes_base_url_trailing_slash_and_enabled_bool():
     n = _normalize_skill_evolution_effective(_base())
-    assert n["base_url"] == "http://x:8765"  # rstrip("/")
+    assert n["base_url"] == "https://x:8765"  # rstrip("/")
     assert n["enabled"] is True
 
 

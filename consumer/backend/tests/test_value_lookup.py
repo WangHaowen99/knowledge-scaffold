@@ -109,7 +109,7 @@ def _make_connection(provider="nl2sql_http") -> ResolvedBusinessDataSource:
         ontology_id="demo",
         provider=provider,
         mode="direct_provider",
-        config={"url": "http://example.com", "token": synthetic_secret("value_lookup-credential-01"), "scene": "s"},
+        config={"url": "https://example.com", "token": synthetic_secret("value_lookup-credential-01"), "scene": "s"},
     )
 
 
