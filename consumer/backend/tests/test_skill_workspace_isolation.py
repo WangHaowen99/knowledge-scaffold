@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -191,7 +192,7 @@ def test_subagent_prompt_uses_explicit_workspace_skill_registry(tmp_path, monkey
 
     from agent.sub_agents.base import SubAgent
 
-    prompt = SubAgent().build_system_prompt(workspace_id="workspace-a")
+    prompt = internal(SubAgent()).build_system_prompt(workspace_id="workspace-a")
 
     assert "only-a" in prompt
     assert "only-b" not in prompt

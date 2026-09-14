@@ -88,11 +88,6 @@ from .shared.tool_context import build_tool_context
 logger = get_logger("jiuwen_engine")
 
 
-def install_jiuwen_model_for_test(agent: Any, model: Any) -> None:
-    """Install a synthetic model where openJiuwen has no public test hook."""
-    setattr(agent, "_llm", model)
-
-
 async def _persist_state_snapshot(
     snapshot_callback: Any,
     state: Mapping[str, Any],
@@ -258,10 +253,6 @@ class _JiuwenEngineEventBuffer:
     def overflow_error(self) -> JiuwenEngineEventBufferFull | None:
         with self._lock:
             return self._overflow_error
-
-    def loop_for_test(self) -> asyncio.AbstractEventLoop:
-        """Return the owning event loop for scheduling contract tests."""
-        return self._loop
 
     def set_overflow_callback(self, callback: Callable[[], None]) -> None:
         self._overflow_callback = callback
@@ -452,10 +443,6 @@ class _JiuwenTerminalForceFinishBridge:
                 "result_type": "answer",
             },
         )
-
-    async def on_after_tool_call_for_test(self, ctx: Any) -> None:
-        """Run the terminal callback through a public test boundary."""
-        await self._on_after_tool_call(ctx)
 
     async def _request_force_finish(self, ctx: Any, result_payload: Mapping[str, Any]) -> None:
         request_force_finish = getattr(ctx, "request_force_finish", None)
@@ -1240,56 +1227,6 @@ class JiuwenReactLoopEngine:
             tool_choice=tool_choice,
         )
 
-    def create_agent(
-        self,
-        *,
-        max_iterations: int,
-        system_prompt: Optional[str] = None,
-        state: Optional[Mapping[str, Any]] = None,
-        caller: str = "main",
-        enable_reasoning: bool = False,
-        llm_config: Any = None,
-        stream_enabled: bool = True,
-        context_max_rounds: Optional[int] = None,
-    ) -> Any:
-        """Create a Jiuwen agent through the supported engine boundary."""
-        return self._create_agent(
-            max_iterations=max_iterations,
-            system_prompt=system_prompt,
-            state=state,
-            caller=caller,
-            enable_reasoning=enable_reasoning,
-            llm_config=llm_config,
-            stream_enabled=stream_enabled,
-            context_max_rounds=context_max_rounds,
-        )
-
-    def build_inputs(self, state: Mapping[str, Any]) -> Dict[str, Any]:
-        """Build normalized model inputs through the public engine boundary."""
-        return self._build_inputs(state)
-
-    def set_input_context_builder_for_test(self, callback: Any) -> None:
-        """Inject the selected-context formatter in an isolated test."""
-        self._append_selected_context_for_test = callback
-
-    def append_selected_ontology_context_to_query(
-        self, state: Mapping[str, Any], query: str
-    ) -> str:
-        callback = getattr(self, "_append_selected_context_for_test", None)
-        if callback is not None:
-            return callback(state, query)
-        return self._append_selected_ontology_context_to_query(state, query)
-
-    def tools_schema_for_state(
-        self, state: Mapping[str, Any], *, caller: str
-    ) -> list[Mapping[str, Any]]:
-        return self._tools_schema_for_state(state, caller=caller)
-
-    def jiuwen_tool_infos_for_state(
-        self, state: Mapping[str, Any], *, caller: str
-    ) -> list[Mapping[str, Any]]:
-        return self._jiuwen_tool_infos_for_state(state, caller=caller)
-
     @staticmethod
     def _seed_initial_messages(state: Dict[str, Any], *, system_prompt: Optional[str]) -> None:
         user_content = str(state.get("user_request") or "").strip()
@@ -1519,15 +1456,6 @@ class JiuwenReactLoopEngine:
                 if isawaitable(result):
                     await result
 
-    async def consume_managed_agent_stream_for_test(
-        self,
-        agent: Any,
-        inputs: Dict[str, Any],
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Exercise managed-stream lifecycle behavior through a public boundary."""
-        return await self._consume_managed_agent_stream(agent, inputs, **kwargs)
-
     async def _consume_stream_chunks(
         self,
         stream_result: Any,
@@ -1717,7 +1645,7 @@ class JiuwenReactLoopEngine:
             query = _last_user_message_content(state)
         if not query:
             raise ValueError("Jiuwen ReAct runtime requires a user_request or user message.")
-        query_with_context = self.append_selected_ontology_context_to_query(state, query)
+        query_with_context = self._append_selected_ontology_context_to_query(state, query)
         query_with_context = self._append_current_turn_tool_provenance_to_query(
             state,
             query_with_context,
@@ -2426,13 +2354,6 @@ def _build_jiuwen_history_source_messages(state: Mapping[str, Any]) -> list[Dict
     return history
 
 
-def build_jiuwen_history_source_messages_for_test(
-    state: Mapping[str, Any],
-) -> list[Dict[str, Any]]:
-    """Build the persisted history source through a public test boundary."""
-    return _build_jiuwen_history_source_messages(state)
-
-
 def _build_jiuwen_context_messages(
     state: Mapping[str, Any],
     *,
@@ -2760,15 +2681,6 @@ async def _dispose_owned_jiuwen_runtime(
                 result = release(session_id)
                 if isawaitable(result):
                     await result
-
-
-async def dispose_owned_jiuwen_runtime_for_test(
-    agent: Any,
-    *,
-    session_id: str,
-) -> None:
-    """Exercise owned runtime cleanup through a public test boundary."""
-    await _dispose_owned_jiuwen_runtime(agent, session_id=session_id)
 
 
 async def _with_observability_context(

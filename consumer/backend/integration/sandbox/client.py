@@ -26,16 +26,6 @@ class JiuwenboxClient:
         self._timeout = timeout
         self._client = self._build_client(base_url, timeout=timeout)
 
-    def transport_uses_environment_proxy(self) -> bool:
-        """Return whether the underlying HTTP transport honors env proxies."""
-        return bool(getattr(self._client, "_trust_env", False))
-
-    def set_http_client_for_test(self, client: object) -> None:
-        self._client = client
-
-    def close_for_test(self) -> None:
-        self._client.close()
-
     @staticmethod
     def _build_client(base_url: str, *, timeout: float) -> httpx.Client:
         normalized = base_url.strip()

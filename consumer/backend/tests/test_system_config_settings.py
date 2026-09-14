@@ -1,3 +1,4 @@
+from internal_access import internal
 import hashlib
 import json
 
@@ -40,10 +41,10 @@ def test_limits_config_uses_current_builtin_defaults(tmp_path, monkeypatch):
 def test_resolve_default_runtime_root_handles_flat_container_layout():
     import config.system_config as system_config_module
 
-    assert system_config_module.resolve_default_runtime_root_for_test(
+    assert internal(system_config_module).resolve_default_runtime_root(
         system_config_module.Path("/app")
     ) == system_config_module.Path("/app/.onto-runtime")
-    assert system_config_module.resolve_default_runtime_root_for_test(
+    assert internal(system_config_module).resolve_default_runtime_root(
         system_config_module.Path("/repo/backend")
     ) == system_config_module.Path("/repo/.onto-runtime")
 
@@ -54,7 +55,7 @@ def test_config_runtime_root_can_follow_project_root_env(tmp_path, monkeypatch):
     runtime_root = tmp_path / "custom-runtime"
     monkeypatch.setenv(system_config_module.PROJECT_ROOT_ENV, str(runtime_root))
 
-    assert system_config_module.resolve_config_runtime_root_for_test() == runtime_root
+    assert internal(system_config_module).resolve_config_runtime_root() == runtime_root
 
 
 def test_system_config_ignores_legacy_backend_config_when_new_config_is_missing(tmp_path, monkeypatch):

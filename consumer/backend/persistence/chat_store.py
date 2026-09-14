@@ -1543,17 +1543,6 @@ class ChatStore:
     def session_summary_index(self) -> Optional[SessionSummaryIndex]:
         return self._summary_index
 
-    def set_summary_index_for_test(
-        self,
-        summary_index: Optional[SessionSummaryIndex],
-    ) -> None:
-        """Replace the summary index for failure-injection tests."""
-        self._summary_index = summary_index
-
-    def source_store_for_test(self) -> Any:
-        """Expose the authoritative source adapter to persistence tests."""
-        return self._store
-
     @staticmethod
     def _summary_from_file_session(session: _FileChatSession) -> SessionSummary:
         events = list(getattr(session, "events", []) or [])

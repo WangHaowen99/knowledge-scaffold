@@ -1,7 +1,7 @@
 from agent.tools.execute_script import _build_cli_args
 from ontology.ontology_catalog import (
     _format_script_catalog,
-    parse_script_parameters_from_markdown,
+    _parse_script_parameters_from_markdown,
     public_script_catalog,
 )
 
@@ -14,7 +14,7 @@ def test_script_parameter_default_round_trips_into_execution_catalog():
 | mode | --mode | string | 否 | standard | 处理模式 |
 """
 
-    parameters = parse_script_parameters_from_markdown(markdown)
+    parameters = _parse_script_parameters_from_markdown(markdown)
     assert parameters[1]["default"] == "standard"
 
     public = public_script_catalog(
@@ -50,7 +50,7 @@ def test_modeling_markdown_boolean_actions_drive_consumer_cli_semantics():
 | enabled | --enabled | boolean | 否 | false | 普通布尔值 | 否 |  |
 """
 
-    parameters = parse_script_parameters_from_markdown(markdown)
+    parameters = _parse_script_parameters_from_markdown(markdown)
     assert parameters[0]["action"] == "store_true"
     assert parameters[1]["action"] == "store_false"
     assert "action" not in parameters[2]

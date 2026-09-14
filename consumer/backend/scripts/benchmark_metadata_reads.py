@@ -217,7 +217,7 @@ enabled: true
     return ontology_dir, version_dir
 
 
-def frontend_request_contract(
+def _frontend_request_contract(
     *,
     runner: Callable[..., Any] = subprocess.run,
 ) -> dict[str, int]:
@@ -433,7 +433,7 @@ def run_benchmark(
                 "ontology_list": ontology_list_metrics,
                 "ontology_tree": ontology_tree_metrics,
             },
-            "frontend_contract": frontend_request_contract(),
+            "frontend_contract": _frontend_request_contract(),
         }
         report["violations"] = evaluate_thresholds(report)
         report["passed"] = not report["violations"]

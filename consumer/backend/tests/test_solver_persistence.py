@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import sqlite3
 import threading
@@ -143,12 +144,11 @@ def test_idempotency_key_isolated_by_owner_and_lock_registry_reclaims_entries(tm
         == "validation_run_synthetic_002"
     )
     # The durable result itself is owner-namespaced as well.
-    first_path = store.owner_runs_root_for_test("synthetic_operator") / (
-        "validation_run_synthetic_001.json"
-    )
-    second_path = store.owner_runs_root_for_test("other_operator") / (
-        "validation_run_synthetic_002.json"
-    )
+    runs_root = internal(store).runs_root
+    first_owner = internal(store).owner_digest("synthetic_operator")
+    second_owner = internal(store).owner_digest("other_operator")
+    first_path = runs_root / first_owner / "validation_run_synthetic_001.json"
+    second_path = runs_root / second_owner / "validation_run_synthetic_002.json"
     assert first_path.is_file()
     assert second_path.is_file()
     assert first_path.parent != second_path.parent
@@ -184,10 +184,7 @@ def test_validation_replay_rejects_tampered_run_payload(tmp_path, monkeypatch):
         request_fingerprint=fingerprint,
         payload=_validation_payload("validation_run_replay_001", "4"),
     )
-    run_path = store.run_path_for_test(
-        "validation_run_replay_001",
-        owner_id="synthetic_operator",
-    )
+    run_path = internal(store).run_path("validation_run_replay_001", owner_id="synthetic_operator")
     payload = json.loads(run_path.read_text(encoding="utf-8"))
     payload["selection_status"] = "not_publishable"
     run_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -252,9 +249,6 @@ def test_candidate_artifact_reference_is_content_addressed_and_owner_scoped(tmp_
         / "candidate_sets"
     )
     assert len(list(owner_dir.rglob(ref + ".json"))) == 1
-    artifact = store.artifact_record_for_test(
-        candidate_set.candidate_set_digest,
-        owner_id="synthetic_operator",
-    )
+    artifact = internal(store).ledger.get_artifact(candidate_set.candidate_set_digest, owner_id="synthetic_operator")
     assert artifact is not None
     assert artifact["artifact_ref"] == ref

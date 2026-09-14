@@ -6,7 +6,7 @@ import inspect
 import threading
 import time
 import uuid
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 from utils.logging import get_logger
 from workspace.workspaces import get_current_workspace_id, validate_workspace_id
@@ -189,7 +189,6 @@ class WorkspaceObservabilityRouter:
         self._close_phase = _CLOSE_PHASE_FORCE_FLUSH
         self._close_active_run_ids: tuple[str, ...] = ()
         self._close_was_retiring = False
-        self._diagnostic_exporter_factory: Callable[[str], object | None] | None = None
         _register_router(self)
 
     @property
@@ -217,75 +216,6 @@ class WorkspaceObservabilityRouter:
                 "max_pending_spans_per_run": self._max_pending_spans_per_run,
                 "max_pending_spans_total": self._max_pending_spans_total,
             }
-
-    @property
-    def draining_otel(self) -> bool:
-        """Return whether close is still accepting late telemetry for drain."""
-        with self._lock:
-            return self._draining_otel
-
-    def set_exporter_factory_for_test(
-        self, factory: Callable[[str], object | None]
-    ) -> None:
-        """Install a deterministic exporter factory for lifecycle tests."""
-        with self._lock:
-            self._diagnostic_exporter_factory = factory
-
-    def set_observer_for_test(self, workspace_id: str, observer: ObservabilityBus | None) -> None:
-        """Install a prebuilt observer for deterministic lifecycle tests."""
-        with self._lock:
-            self._observers_by_workspace[workspace_id] = observer
-
-    def observer_for_test(self, workspace_id: str) -> ObservabilityBus | None:
-        """Return a configured observer without exposing the registry."""
-        with self._lock:
-            return self._observers_by_workspace.get(workspace_id)
-
-    def seed_pending_spans_for_test(
-        self,
-        *,
-        run_id: str,
-        workspace_id: str,
-        spans: list[OTelSpanSnapshot],
-    ) -> None:
-        """Seed buffered spans for close-path tests without bypassing accounting."""
-        with self._lock:
-            self._run_workspaces[run_id] = workspace_id
-            self._pending_spans_by_run[run_id] = list(spans)
-            self._pending_span_count += len(spans)
-            self._pending_span_peak_count = max(
-                self._pending_span_peak_count, self._pending_span_count
-            )
-
-    def buffer_span_for_test(self, span: OTelSpanSnapshot) -> None:
-        """Buffer one span through the same path used by SDK export."""
-        self._buffer_pending_span(span)
-
-    def pending_spans_for_test(self) -> dict[str, tuple[OTelSpanSnapshot, ...]]:
-        """Return an immutable snapshot of buffered spans for capacity tests."""
-        with self._lock:
-            return {
-                run_id: tuple(spans)
-                for run_id, spans in self._pending_spans_by_run.items()
-            }
-
-    def bind_run_workspace_for_test(self, run_id: str, workspace_id: str) -> None:
-        """Bind a synthetic run to a workspace for export batching tests."""
-        with self._lock:
-            self._run_workspaces[run_id] = workspace_id
-
-    def flush_run_for_test(self, run_id: str) -> None:
-        """Flush one buffered run through the production serialization path."""
-        self._flush_run(run_id)
-
-    def close_worker_is_alive(self) -> bool:
-        """Return whether asynchronous close completion is still running."""
-        with self._lock:
-            return bool(self._close_worker is not None and self._close_worker.is_alive())
-
-    def close_lock_for_test(self) -> threading.Lock:
-        """Return the close serialization lock for bounded lock tests."""
-        return self._close_lock
 
     def emit(self, event: RuntimeEvent) -> bool:
         if self._is_closed():
@@ -880,11 +810,8 @@ class WorkspaceObservabilityRouter:
                 return True
         return False
 
-    def _build_exporter(self, workspace_id: str) -> object | None:
-        with self._lock:
-            diagnostic_factory = self._diagnostic_exporter_factory
-        if diagnostic_factory is not None:
-            return diagnostic_factory(workspace_id)
+    @staticmethod
+    def _build_exporter(workspace_id: str) -> object | None:
         try:
             config = get_workspace_observability_config(workspace_id)
         except Exception:

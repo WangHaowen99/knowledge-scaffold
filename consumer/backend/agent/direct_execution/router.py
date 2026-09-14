@@ -236,11 +236,3 @@ class OperationDirectRouter:
             if not ctx_field or runtime_context.get(ctx_field) is None:
                 missing.append(key)
         return missing
-
-    def check_runtime_requirements_for_test(
-        self,
-        requirements: list[str],
-        runtime_context: RuntimeContext,
-    ) -> list[str]:
-        """Check server-owned runtime inputs through a public test boundary."""
-        return self._check_runtime_requirements(requirements, runtime_context)

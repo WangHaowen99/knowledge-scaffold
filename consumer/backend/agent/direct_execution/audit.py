@@ -51,14 +51,6 @@ def _application_build_revision() -> str:
     return build_sha
 
 
-def application_build_revision_for_test() -> str:
-    return _application_build_revision()
-
-
-def clear_application_build_revision_cache_for_test() -> None:
-    _application_build_revision.cache_clear()
-
-
 def runtime_revision() -> str:
     """Bind the application build to the currently attested sandbox image."""
     return "deterministic-runner:{}:{}:{}".format(

@@ -3641,21 +3641,3 @@ def import_ontology_zip_with_auto_create(
             },
             status_code=201,
         )
-
-
-# Public test boundaries for filesystem mutation behavior
-read_limited_zip_upload_for_test = _read_limited_zip_upload
-prepare_atomic_bytes_replace_for_test = _prepare_atomic_bytes_replace
-prepare_atomic_directory_delete_for_test = _prepare_atomic_directory_delete
-prepare_atomic_directory_replace_for_test = _prepare_atomic_directory_replace
-combine_prepared_steps_for_test = _combine_prepared_steps
-cleanup_mutation_staging_root_for_test = _cleanup_mutation_staging_root
-manifest_for_download_for_test = _manifest_for_download
-build_ontology_zip_buffer_for_test = _build_ontology_zip_buffer
-find_converted_ontology_root_for_test = _find_converted_ontology_root
-is_valid_ontology_id_for_test = _is_valid_ontology_id
-set_ontology_enabled_for_test = _set_ontology_enabled
-stage_and_commit_revision_file_for_test = _stage_and_commit_revision_file
-replace_ontology_dir_for_test = _replace_ontology_dir
-copy_versioned_package_contents_for_test = _copy_versioned_package_contents
-install_ontology_version_package_for_test = _install_ontology_version_package

@@ -19,13 +19,6 @@ _observer: Optional[object] = None
 _retiring_observers: list[object] = []
 
 
-def set_observer_for_test(observer: Optional[object]) -> None:
-    """Install the process observer for lifecycle tests without bypassing its lock."""
-    global _observer
-    with _observer_lock:
-        _observer = observer
-
-
 def get_observer():
     """Return the process-scoped observer for runtime events."""
     global _observer

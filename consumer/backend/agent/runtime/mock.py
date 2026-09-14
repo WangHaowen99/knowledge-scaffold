@@ -39,10 +39,6 @@ class FixedAsyncAgentRuntime:
         self._runs: dict[str, _MockRun] = {}
         self.released_session_ids: list[str] = []
 
-    def active_run_count(self) -> int:
-        """Return the number of active scripted runtime runs."""
-        return len(self._runs)
-
     async def arun(
         self,
         context: RuntimeInvocationContext,

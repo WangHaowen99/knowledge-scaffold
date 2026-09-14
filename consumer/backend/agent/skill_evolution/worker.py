@@ -14,7 +14,6 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime, timezone
-from collections.abc import Callable
 from typing import Optional
 
 from config.system_config import load_system_config
@@ -53,7 +52,6 @@ class SkillEvolutionWorker:
         self._task_timeout = max(60, int(task_timeout_seconds))
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._iteration_callback_for_test: Optional[Callable[[], None]] = None
 
     def _read_live_config(self):
         """Read the current skill_evolution config from disk.
@@ -79,34 +77,7 @@ class SkillEvolutionWorker:
         self._poll_interval = poll
         self._task_timeout = timeout
         if enabled:
-            callback = self._iteration_callback_for_test
-            if callback is None:
-                self._tick()
-            else:
-                callback()
-
-    def run_iteration(self) -> None:
-        """Run one config-refresh/dispatch cycle through a public boundary."""
-        self._run_iteration()
-
-    def tick(self) -> None:
-        """Advance eligible tasks once through the worker boundary."""
-        self._tick()
-
-    def set_iteration_callback_for_test(
-        self,
-        callback: Callable[[], None] | None,
-    ) -> None:
-        """Replace one enabled iteration in an isolated lifecycle test."""
-        self._iteration_callback_for_test = callback
-
-    @property
-    def poll_interval_seconds(self) -> int:
-        return self._poll_interval
-
-    @property
-    def task_timeout_seconds(self) -> int:
-        return self._task_timeout
+            self._tick()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():

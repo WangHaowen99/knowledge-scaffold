@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import logging
 import subprocess
@@ -53,7 +54,7 @@ def _completed(
 
 def test_bounded_runner_rejects_non_python_executable():
     with pytest.raises(ValueError, match="trusted Python interpreter"):
-        execute_script_module.validated_python_argv_for_test(
+        internal(execute_script_module).validated_python_argv(
             [execute_script_module.sys.executable + ".untrusted", "--version"]
         )
 

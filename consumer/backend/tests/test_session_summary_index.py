@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import inspect
 import json
 import threading
@@ -88,7 +89,7 @@ def test_cursor_is_opaque_strict_and_rejected_after_index_revision_changes(tmp_p
 
 
 def test_cursor_decoder_catches_the_value_error_family_once():
-    source = inspect.getsource(session_summary_index_module.decode_cursor_for_test)
+    source = inspect.getsource(internal(session_summary_index_module).decode_cursor)
 
     assert "except ValueError as exc:" in source
     assert "except (UnicodeError, ValueError)" not in source
@@ -271,10 +272,10 @@ def test_abandoned_projection_stays_dirty_until_same_process_rebuild(tmp_path):
     projection = index.begin_source_projection()
     records.append(_summary("after", updated_at="2026-08-31T02:00:00+00:00"))
     assert index.abandon_source_projection(projection) is True
-    assert index.dirty_marker_exists_for_test() is True
+    assert internal(index).dirty_path.exists() is True
 
     assert [item.session_id for item in index.list_all()] == ["after", "before"]
-    assert index.dirty_marker_exists_for_test() is False
+    assert internal(index).dirty_path.exists() is False
     assert index.state == "ready"
 
 
@@ -394,7 +395,7 @@ def test_rebuild_loader_does_not_hold_index_lock_and_retries_after_concurrent_wr
             return [seed]
         return [seed, concurrent]
 
-    index.set_rebuild_loader_for_test(rebuild_loader)
+    internal(index).rebuild_loader = rebuild_loader
     rebuild_errors = []
     writer_errors = []
     rebuild_thread = threading.Thread(
@@ -444,7 +445,7 @@ def test_rebuild_stops_after_bounded_conflicting_source_projections(tmp_path):
         index.abandon_source_projection(token)
         return [seed]
 
-    index.set_rebuild_loader_for_test(rebuild_loader)
+    internal(index).rebuild_loader = rebuild_loader
 
     with pytest.raises(SessionSummaryIndexCorruptionError):
         index.rebuild()

@@ -219,12 +219,6 @@ class ObservabilityBus:
         with self._exporter_close_lock:
             return self._exporter_closed
 
-    def worker_is_alive(self) -> bool:
-        return self._worker.is_alive()
-
-    def wait_for_worker(self, timeout: float = 1.0) -> None:
-        self._worker.join(timeout=timeout)
-
     def emit_metric(self, event: RuntimeEvent) -> bool:
         """Persist an OTel metric outside the trace-detail queue."""
         with self._lock:

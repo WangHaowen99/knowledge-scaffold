@@ -32,10 +32,6 @@ class LocalPerfExporter:
     def available(self) -> bool:
         return True
 
-    def set_store_for_test(self, store: Any) -> None:
-        """Replace the persistence sink for deterministic exporter tests."""
-        self._store = store
-
     def export(self, event: RuntimeEvent) -> None:
         for record in self._records_for_event(event):
             self._write_record(record)

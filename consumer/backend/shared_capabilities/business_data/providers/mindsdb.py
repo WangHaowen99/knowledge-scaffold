@@ -31,10 +31,6 @@ class MindsDBProvider:
         self._auth_token: str = ""
         self._sleep = sleep_fn or time.sleep
 
-    def set_post_for_test(self, callback) -> None:
-        """Install a synthetic HTTP POST boundary for protocol tests."""
-        self._session.post = callback
-
     def query(self, question: str) -> ProviderResult:
         final: ProviderResult | None = None
         error: ProviderResult | None = None

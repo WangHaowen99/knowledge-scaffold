@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 from operator import getitem
 from types import SimpleNamespace
@@ -281,9 +282,7 @@ def test_structured_runtime_requirement_is_checked_with_canonical_context_field(
     assert extract_runtime_requirements(
         script_parameters=[{"name": "session_id", "flag": "--session-id", "required": True}]
     ) == ["session_id"]
-    assert router.check_runtime_requirements_for_test(["session_id"], context) == [
-        "session_id"
-    ]
+    assert internal(router).check_runtime_requirements(["session_id"], context) == ["session_id"]
 
 
 def test_direct_business_parameter_is_not_overridden_by_runtime_context():
@@ -595,7 +594,7 @@ def test_direct_runner_uses_pinned_manifest_without_live_lookup(monkeypatch, tmp
     )
     monkeypatch.setattr(
         direct_runner_module,
-        "build_script_env_overrides",
+        "_build_script_env_overrides",
         lambda **_kwargs: {},
     )
     captured = {}
@@ -754,7 +753,7 @@ def test_direct_runner_redacts_unexpected_exception_from_result_and_events(
             None,
         ),
     )
-    monkeypatch.setattr(direct_runner_module, "build_script_env_overrides", lambda **kwargs: {})
+    monkeypatch.setattr(direct_runner_module, "_build_script_env_overrides", lambda **kwargs: {})
     monkeypatch.setattr(
         direct_runner_module,
         "handle_execute_script_path",
@@ -859,7 +858,7 @@ def test_direct_runner_fails_before_required_business_data_script(
     )
     monkeypatch.setattr(
         direct_runner_module,
-        "build_script_env_overrides",
+        "_build_script_env_overrides",
         lambda **kwargs: (_ for _ in ()).throw(BusinessDataConnectionError("synthetic unavailable")),
     )
     executed = []
@@ -916,7 +915,7 @@ def test_direct_runner_discards_success_stderr_from_model_output(monkeypatch, tm
             None,
         ),
     )
-    monkeypatch.setattr(direct_runner_module, "build_script_env_overrides", lambda **kwargs: {})
+    monkeypatch.setattr(direct_runner_module, "_build_script_env_overrides", lambda **kwargs: {})
     captured = {}
     monkeypatch.setattr(
         direct_runner_module,
@@ -974,7 +973,7 @@ def test_direct_runner_env_failure_preserves_tool_started_and_span_identity(
     )
     monkeypatch.setattr(
         direct_runner_module,
-        "build_script_env_overrides",
+        "_build_script_env_overrides",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("env build failed")),
     )
     executed = []

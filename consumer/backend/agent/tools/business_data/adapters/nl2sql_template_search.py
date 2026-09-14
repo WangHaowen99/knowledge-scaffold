@@ -139,6 +139,7 @@ class NL2SQLTemplateSearchAdapter:
         ontology_version: str = "",
     ):
         self._client = NL2SQLProvider(connection)
+        self._session = self._client._session
         self.ontology_id = str(ontology_id or "").strip()
         self.ontology_version = str(ontology_version or "").strip()
         self._workspace_root = str(workspace_root or "").strip()
@@ -150,14 +151,6 @@ class NL2SQLTemplateSearchAdapter:
             self.ontology_id,
             self.ontology_version,
         )
-
-    @property
-    def post_callback_for_test(self):
-        return None
-
-    @post_callback_for_test.setter
-    def post_callback_for_test(self, callback) -> None:
-        self._client.set_post_for_test(callback)
 
     # -- matcher discovery --
 
@@ -267,7 +260,7 @@ class NL2SQLTemplateSearchAdapter:
                 # Apply dedupe post-processing if dedupe_key is set
                 dedupe_key = metadata.get("dedupe_key")
                 if dedupe_key and result.get("success"):
-                    result = self.dedupe_result(result, dedupe_key)
+                    result = self._dedupe_result(result, dedupe_key)
         else:
             # No match — fall back to NL2SQL
             yield {
@@ -287,7 +280,7 @@ class NL2SQLTemplateSearchAdapter:
     # -- dedupe post-processing --
 
     @staticmethod
-    def dedupe_result(
+    def _dedupe_result(
         result: dict,
         dedupe_key: str,
     ) -> dict:

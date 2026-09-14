@@ -1,3 +1,4 @@
+from internal_access import internal
 import asyncio
 import logging
 import os
@@ -482,10 +483,10 @@ def test_finished_run_releases_manager_entry_registry():
         await manager.create_run(_context("run_cleanup"), _scope())
         await _wait_for_status(manager, "run_cleanup", RunStatus.COMPLETED)
         for _ in range(20):
-            if not manager.has_tracked_run("run_cleanup"):
+            if "run_cleanup" not in internal(manager).entries:
                 break
             await asyncio.sleep(0)
-        assert not manager.has_tracked_run("run_cleanup")
+        assert "run_cleanup" not in internal(manager).entries
         assert manager.supervisor.get_run_task("run_cleanup") is None
 
     asyncio.run(run_test())
@@ -497,7 +498,7 @@ def test_unknown_run_cancel_does_not_allocate_entries_and_interact_is_removed():
         with pytest.raises(RunNotFoundError):
             await manager.cancel_run("run_missing", _scope())
         assert not hasattr(manager, "interact")
-        assert manager.tracked_run_count == 0
+        assert internal(manager).entries == {}
 
     asyncio.run(run_test())
 
@@ -1385,7 +1386,7 @@ def test_native_jiuwen_runtime_executes_through_b_run_manager():
             "turn.started",
             "turn.finished",
         ]
-        assert runtime.active_run_count() == 0
+        assert internal(runtime).runs == {}
 
     asyncio.run(run_test())
 
@@ -1632,10 +1633,10 @@ def test_native_runtime_hitl_persists_checkpoint_before_new_run(tmp_path):
         assert [event.turn_id for event in interaction_events] == [1, 2]
         assert interaction_events[1].payload["prompt"] == "Provide a second synthetic value"
         for _ in range(20):
-            if not service.session_adapter.has_run_context("run_hitl_checkpoint"):
+            if not internal(service.session_adapter).run_contexts:
                 break
             await asyncio.sleep(0.005)
-        assert service.session_adapter.run_context_count() == 0
+        assert internal(service.session_adapter).run_contexts == {}
 
     asyncio.run(run_test())
 
@@ -1681,8 +1682,8 @@ def test_prepare_failure_compensates_allocated_turn(tmp_path, caplog):
         assert failed.error.error_code == "SESSION_PREPARE_FAILED"
         assert turn["status"] == "failed"
         assert orchestrator.chat_store.get_active_run("session_demo") is None
-        assert not service.session_adapter.has_pending_prepare("run_prepare_compensation")
-        assert service.session_adapter.run_context_count() == 0
+        assert internal(service.session_adapter).pending_prepare_turns == {}
+        assert internal(service.session_adapter).run_contexts == {}
 
     with caplog.at_level(logging.ERROR, logger="agent.runtime.manager"):
         asyncio.run(run_test())
@@ -1904,12 +1905,12 @@ def test_terminal_projection_failure_still_releases_session_context():
     async def run_test():
         adapter = OrchestratorSessionAdapter(lambda: SimpleNamespace())
         context = _context("run_projection_failure")
-        adapter.set_run_context_for_test(context)
+        internal(adapter).run_contexts[context.run_id] = context
 
         def fail_projection(_event):
             raise RuntimeError("synthetic projection failure")
 
-        adapter.replace_persist_event_for_test(fail_projection)
+        internal(adapter).persist_event_sync = fail_projection
         event = PublicEvent(
             schema_version="1.0",
             event_id="run_projection_failure:1",
@@ -1926,7 +1927,7 @@ def test_terminal_projection_failure_still_releases_session_context():
 
         with pytest.raises(RuntimeError, match="synthetic projection failure"):
             await adapter.persist_event(event)
-        assert adapter.run_context_count() == 0
+        assert internal(adapter).run_contexts == {}
 
     asyncio.run(run_test())
 
@@ -1949,7 +1950,7 @@ def test_deterministic_terminal_projection_uses_recovery_journal(tmp_path):
 
     adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
     context = _context("run_deterministic_terminal")
-    adapter.set_run_context_for_test(context)
+    internal(adapter).run_contexts[context.run_id] = context
     event = PublicEvent(
         schema_version="1.0",
         event_id="run_deterministic_terminal:1",
@@ -1974,7 +1975,7 @@ def test_deterministic_terminal_projection_uses_recovery_journal(tmp_path):
         created_at=utc_now_iso(),
     )
 
-    adapter.persist_event_sync_for_test(event)
+    internal(adapter).persist_event_sync(event)
 
     assert execution_store.get_pending_deterministic_terminal("session_demo") is None
     assert execution_store.get_turn("session_demo", 1)["status"] == "success"
@@ -2012,7 +2013,7 @@ def test_deterministic_finalize_waits_for_canonical_terminal_event(tmp_path):
         },
     )
 
-    adapter.finalize_sync_for_test(context, result, None)
+    internal(adapter).finalize_sync(context, result, None)
 
     assert execution_store.get_turn("session_demo", 1)["status"] == "running"
     assert execution_store.get_pending_deterministic_terminal("session_demo") is None
@@ -2045,7 +2046,7 @@ def test_cancelled_public_terminal_overrides_precommitted_deterministic_success(
 
     adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
     context = _context("run_deterministic_cancel_race")
-    adapter.set_run_context_for_test(context)
+    internal(adapter).run_contexts[context.run_id] = context
     event = PublicEvent(
         schema_version="1.0",
         event_id="run_deterministic_cancel_race:1",
@@ -2060,7 +2061,7 @@ def test_cancelled_public_terminal_overrides_precommitted_deterministic_success(
         created_at=utc_now_iso(),
     )
 
-    adapter.persist_event_sync_for_test(event)
+    internal(adapter).persist_event_sync(event)
 
     turn = execution_store.get_turn("session_demo", 1)
     assert turn["status"] == "cancelled"
@@ -2101,7 +2102,7 @@ def test_cancelled_public_terminal_reconciles_precommitted_regular_success(
     context = _context("run_regular_cancel_race").model_copy(
         update={"arguments": {"selected_ontology_id": "ontology_demo"}}
     )
-    adapter.set_run_context_for_test(context)
+    internal(adapter).run_contexts[context.run_id] = context
     event = PublicEvent(
         schema_version="1.0",
         event_id="run_regular_cancel_race:1",
@@ -2116,7 +2117,7 @@ def test_cancelled_public_terminal_reconciles_precommitted_regular_success(
         created_at=utc_now_iso(),
     )
 
-    adapter.persist_event_sync_for_test(event)
+    internal(adapter).persist_event_sync(event)
     asyncio.run(
         adapter.submit_reflection(
             context,
@@ -2385,7 +2386,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
         operation_key="synthetic_operation",
         elapsed_ms=4,
     )
-    deterministic = adapter.try_direct_execute_sync_for_test(context, dependencies)
+    deterministic = internal(adapter).try_direct_execute_sync(context, dependencies)
     assert [event.event_type for event in deterministic] == [
         "turn.started",
         "tool.started",
@@ -2429,7 +2430,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
             )
         }
     )
-    pinned = adapter.try_direct_execute_sync_for_test(pinned_context, dependencies)
+    pinned = internal(adapter).try_direct_execute_sync(pinned_context, dependencies)
     assert pinned[-1].status == "completed"
     staged_manifest = _DeterministicService.staged_manifests[-1]
     assert staged_manifest["exists_during_execute"] is True
@@ -2441,7 +2442,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
 
     _DeterministicService.outcome = NotApplicable("explicit_legacy_operation")
     _DecisionRouter.decision = SimpleNamespace(route="execute")
-    legacy_pinned = adapter.try_direct_execute_sync_for_test(pinned_context, dependencies)
+    legacy_pinned = internal(adapter).try_direct_execute_sync(pinned_context, dependencies)
 
     assert legacy_pinned[-1].status == "completed"
     assert legacy_stage_observations[-1]["exists"] is True
@@ -2460,7 +2461,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     assert build_package_revision_source_signature(ontology_dir) == source_signature
     calls_before_drift = _DeterministicService.calls
 
-    drifted = adapter.try_direct_execute_sync_for_test(pinned_context, dependencies)
+    drifted = internal(adapter).try_direct_execute_sync(pinned_context, dependencies)
 
     assert drifted[-1].status == "failed"
     assert drifted[-1].payload["error"]["error_code"] == "ontology_revision_changed"
@@ -2468,7 +2469,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     _DeterministicService.outcome = NotApplicable("synthetic-fallback")
 
     _DecisionRouter.decision = SimpleNamespace(route="fallback_agent_loop")
-    assert adapter.try_direct_execute_sync_for_test(context, dependencies) is None
+    assert internal(adapter).try_direct_execute_sync(context, dependencies) is None
     assert calls == []
 
     _DecisionRouter.decision = SimpleNamespace(
@@ -2476,13 +2477,13 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
         operation_key="synthetic_operation",
         missing_business_arguments=["synthetic_argument"],
     )
-    missing = adapter.try_direct_execute_sync_for_test(context, dependencies)
+    missing = internal(adapter).try_direct_execute_sync(context, dependencies)
     assert [event.event_type for event in missing] == ["turn.started", "turn.finished"]
     assert missing[-1].status == "completed"
     assert "synthetic_argument" in missing[-1].payload["content"]
 
     _DecisionRouter.decision = SimpleNamespace(route="execute")
-    success = adapter.try_direct_execute_sync_for_test(context, dependencies)
+    success = internal(adapter).try_direct_execute_sync(context, dependencies)
     assert [event.event_type for event in success] == [
         "turn.started",
         "tool.finished",
@@ -2498,7 +2499,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
         return [], _DirectResult("error", "synthetic failure output", "synthetic_error")
 
     dependencies["run_direct_script"] = failed_direct_script
-    failed = adapter.try_direct_execute_sync_for_test(context, dependencies)
+    failed = internal(adapter).try_direct_execute_sync(context, dependencies)
     assert failed[-1].status == "failed"
     assert failed[-1].payload["error"]["error_code"] == "SYNTHETIC_ERROR"
 
@@ -2677,7 +2678,7 @@ def test_noninteractive_direct_result_does_not_publish_interaction_request():
             session_adapter=_SessionAdapter(),
         )
         sink = _Sink()
-        result = await service.consume_events_for_test(
+        result = await internal(service).consume_events(
             context,
             sink,
             PublicEventAdapter(include_trace=False),

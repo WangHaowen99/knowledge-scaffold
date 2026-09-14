@@ -1,5 +1,6 @@
 """Tests for chat session persistence."""
 
+from internal_access import internal
 import hashlib
 import json
 from operator import getitem
@@ -93,7 +94,7 @@ def test_get_session_metadata_uses_ready_summary_without_full_session_read(
         ),
     )
     monkeypatch.setattr(
-        store.source_store_for_test(),
+        internal(store).store,
         "get_session",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("ready metadata lookup must not replay chat events")
@@ -125,7 +126,7 @@ def test_get_session_metadata_cold_index_schedules_rebuild_and_reads_snapshot_on
     )
     reader = ChatStore(str(storage_dir), summary_index=index)
     monkeypatch.setattr(
-        reader.source_store_for_test(),
+        internal(reader).store,
         "_replay_event_log_unlocked",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("cold metadata fallback must not replay chat events")
@@ -206,12 +207,12 @@ def test_chat_projection_failure_rebuilds_in_same_process(tmp_path, monkeypatch)
     )
     store.create_session(session_id="after-fact", title="After")
 
-    assert index.dirty_marker_exists_for_test() is True
+    assert internal(index).dirty_path.exists() is True
     assert {item.session_id for item in index.list_all()} == {
         "before-failure",
         "after-fact",
     }
-    assert index.dirty_marker_exists_for_test() is False
+    assert internal(index).dirty_path.exists() is False
 
 
 def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
@@ -228,7 +229,7 @@ def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
     holder["store"] = store
     store.create_session(session_id="stable", title="Stable")
     monkeypatch.setattr(
-        store.source_store_for_test(),
+        internal(store).store,
         "create_session",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic source failure")),
     )
@@ -237,7 +238,7 @@ def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
         store.create_session(session_id="failed", title="Failed")
 
     assert [item.session_id for item in index.list_all()] == ["stable"]
-    assert index.dirty_marker_exists_for_test() is False
+    assert internal(index).dirty_path.exists() is False
 
 
 def test_marker_publish_failure_does_not_abort_source_fact_before_restart(
@@ -253,7 +254,7 @@ def test_marker_publish_failure_does_not_abort_source_fact_before_restart(
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
     store.create_session(session_id="stable", title="Stable")
-    original_write = summary_index_module.write_atomic_json
+    original_write = internal(summary_index_module).write_atomic_json
 
     def fail_dirty_marker(target, document):
         if str(target).endswith(".dirty"):
@@ -263,7 +264,7 @@ def test_marker_publish_failure_does_not_abort_source_fact_before_restart(
             )
         return original_write(target, document)
 
-    monkeypatch.setattr(summary_index_module, "write_atomic_json", fail_dirty_marker)
+    monkeypatch.setattr(summary_index_module, "_write_atomic_json", fail_dirty_marker)
 
     store.create_session(session_id="must-commit", title="Committed")
     assert store.get_session("must-commit") is not None
@@ -289,7 +290,7 @@ def test_marker_directory_fsync_failure_does_not_abort_source_fact(
     holder["store"] = store
     index.rebuild()
     store.create_session(session_id="stable", title="Stable")
-    original_write = summary_index_module.write_atomic_json
+    original_write = internal(summary_index_module).write_atomic_json
 
     def fail_after_marker_replace(target, document):
         if str(target).endswith(".dirty"):
@@ -302,7 +303,7 @@ def test_marker_directory_fsync_failure_does_not_abort_source_fact(
 
     monkeypatch.setattr(
         summary_index_module,
-        "write_atomic_json",
+        "_write_atomic_json",
         fail_after_marker_replace,
     )
 
@@ -709,7 +710,7 @@ def test_chat_store_recovery_skips_pre_compaction_generation_after_truncate_fail
         raise RuntimeError("injected failure before event-log truncate")
 
     monkeypatch.setattr(
-        store.source_store_for_test(),
+        internal(store).store,
         "_truncate_event_log_unlocked",
         fail_before_truncate,
     )

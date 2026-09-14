@@ -1,3 +1,4 @@
+from internal_access import internal
 import json
 import threading
 import time
@@ -295,7 +296,7 @@ def test_summary_rebuild_close_cancels_publish_after_running_loader_returns(
         loader_returned.set()
         return []
 
-    index.set_rebuild_loader_for_test(blocking_loader)
+    internal(index).rebuild_loader = blocking_loader
     assert index.request_rebuild() is True
     assert loader_started.wait(timeout=1.0) is True
 
@@ -303,11 +304,11 @@ def test_summary_rebuild_close_cancels_publish_after_running_loader_returns(
     release_loader.set()
     assert loader_returned.wait(timeout=1.0) is True
     deadline = time.monotonic() + 1.0
-    while index.rebuild_in_progress() and time.monotonic() < deadline:
+    while internal(index).rebuild_in_progress and time.monotonic() < deadline:
         time.sleep(0.01)
 
-    assert index.rebuild_in_progress() is False
-    assert index.path_exists_for_test() is False
+    assert internal(index).rebuild_in_progress is False
+    assert internal(index).path.exists() is False
 
 
 def test_user_store_manager_indexed_prune_excludes_pinned_and_active_sessions(
@@ -340,16 +341,16 @@ def test_user_store_manager_indexed_prune_excludes_pinned_and_active_sessions(
     chat_store.set_session_pinned("prune-0", True)
     chat_store.set_active_run("prune-1", "run-active")
 
-    original_list_sessions = chat_store.source_store_for_test().list_sessions
+    original_list_sessions = internal(chat_store).store.list_sessions
     monkeypatch.setattr(
-        chat_store.source_store_for_test(),
+        internal(chat_store).store,
         "list_sessions",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("indexed prune must not enumerate chat histories")
         ),
     )
     deleted = manager.prune_sessions("alice", "prune", max_sessions=3)
-    monkeypatch.setattr(chat_store.source_store_for_test(), "list_sessions", original_list_sessions)
+    monkeypatch.setattr(internal(chat_store).store, "list_sessions", original_list_sessions)
 
     assert len(deleted) == 2
     assert "prune-0" not in deleted
@@ -523,7 +524,7 @@ def test_indexed_prune_does_not_delete_session_updated_after_candidate_selection
             candidate = candidates[0]
             session_id = getattr(candidate, "session_id", candidate)
             monkeypatch.setattr(
-                chat_store.source_store_for_test(),
+                internal(chat_store).store,
                 "_now_iso",
                 lambda: "2026-06-01T00:00:00+00:00",
             )
@@ -628,11 +629,7 @@ def test_recovery_discovery_defers_unready_index_and_continues_other_users(
         ),
     )
 
-    targets = [
-        target
-        for target in manager.iter_recovery_targets_for_test()
-        if isinstance(target, tuple)
-    ]
+    targets = [target for target in internal(manager).iter_recovery_targets() if isinstance(target, tuple)]
 
     assert targets == [
         ("workspace", "bob", "bob-session"),
@@ -733,7 +730,7 @@ def test_recovery_catalog_discovery_obeys_the_batch_deadline(tmp_path, monkeypat
 
     def endless_catalog_scan():
         while True:
-            yield user_store_manager_module.recovery_scan_tick_for_test()
+            yield internal(user_store_manager_module).RECOVERY_SCAN_TICK
 
     monkeypatch.setattr(manager, "_iter_recovery_targets", endless_catalog_scan)
     started = time.monotonic()
@@ -758,7 +755,7 @@ def test_one_slow_recovery_discovery_step_cannot_overrun_deadline(tmp_path, monk
 
     def slow_catalog_scan():
         time.sleep(0.15)
-        yield user_store_manager_module.recovery_scan_tick_for_test()
+        yield internal(user_store_manager_module).RECOVERY_SCAN_TICK
 
     monkeypatch.setattr(manager, "_iter_recovery_targets", slow_catalog_scan)
     started = time.monotonic()
@@ -934,7 +931,7 @@ def test_prune_batch_reports_more_work_when_authoritative_recheck_skips_candidat
             f"2026-05-0{index + 1}T00:00:00+00:00",
         )
     # Bypass projection to reproduce a pin racing candidate selection.
-    chat_store.source_store_for_test().set_session_pinned("stale-0", True)
+    internal(chat_store).store.set_session_pinned("stale-0", True)
 
     result = manager.prune_sessions_batch(
         "alice",

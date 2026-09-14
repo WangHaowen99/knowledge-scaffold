@@ -6,6 +6,7 @@ Run with:
 
 from __future__ import annotations
 
+from internal_access import internal
 import importlib.util
 import json
 import sys
@@ -26,7 +27,7 @@ if _CONVERTER_SPEC is None or _CONVERTER_SPEC.loader is None:
 _CONVERTER = importlib.util.module_from_spec(_CONVERTER_SPEC)
 sys.modules[_CONVERTER_SPEC.name] = _CONVERTER
 _CONVERTER_SPEC.loader.exec_module(_CONVERTER)
-decode_zip_member_name_for_test = _CONVERTER.decode_zip_member_name_for_test
+_decode_zip_member_name = internal(_CONVERTER).decode_zip_member_name
 convert_package = _CONVERTER.convert_package
 import_package = _CONVERTER.import_package
 import_package_from_zip = _CONVERTER.import_package_from_zip
@@ -827,15 +828,15 @@ class TestZipImport:
         # 解码后应恢复为 GBK 中文（与 UTF-8 flag 与纯 ASCII 共同回归）。
         utf8_info = zipfile.ZipInfo("operations/查询流程.md")
         utf8_info.flag_bits |= 0x800
-        assert decode_zip_member_name_for_test(utf8_info) == "operations/查询流程.md"
+        assert _decode_zip_member_name(utf8_info) == "operations/查询流程.md"
 
         gbk_info = zipfile.ZipInfo("operations/查询流程.md".encode("gbk").decode("cp437"))
         gbk_info.flag_bits &= ~0x800
-        assert decode_zip_member_name_for_test(gbk_info) == "operations/查询流程.md"
+        assert _decode_zip_member_name(gbk_info) == "operations/查询流程.md"
 
         ascii_info = zipfile.ZipInfo("objects/Widget.md")
         ascii_info.flag_bits &= ~0x800
-        assert decode_zip_member_name_for_test(ascii_info) == "objects/Widget.md"
+        assert _decode_zip_member_name(ascii_info) == "objects/Widget.md"
 
     @staticmethod
     def test_traversal_member_rejected(tmp_path: Path) -> None:

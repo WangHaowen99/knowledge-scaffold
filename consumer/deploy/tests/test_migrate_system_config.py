@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import os
 from pathlib import Path
@@ -111,7 +112,7 @@ def test_apply_preserves_backend_env_owner_during_atomic_replacement(
     source_stat = env_path.stat(follow_symlinks=False)
     expected_owner = (source_stat.st_uid, source_stat.st_gid)
     replacements: list[tuple[Path, tuple[int, int] | None]] = []
-    atomic_write_bytes = migration_module.atomic_write_bytes_for_test
+    atomic_write_bytes = internal(migration_module).atomic_write_bytes
 
     def record_atomic_replacement(
         path: Path,

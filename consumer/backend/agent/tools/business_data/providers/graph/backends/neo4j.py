@@ -842,9 +842,6 @@ class Neo4jGraphBackend:
         self._driver = GraphDatabase.driver(self.uri, **driver_options)
         return self._driver
 
-    def get_driver_for_test(self):
-        """Initialize the driver through the production path for contract tests."""
-        return self._get_driver()
     def _run(self, query: str, params: Mapping[str, Any]):
         driver = self._get_driver()
         with driver.session(database=self.database) as session:
@@ -896,11 +893,6 @@ class Neo4jGraphBackend:
         )
         normalized.update({"found": True, "kind": "relationship", "element_type": "EDGE"})
         return normalized
-
-
-def resolved_address_hostname_for_test(address: Any) -> str:
-    """Read the Neo4j address TLS name across supported driver versions."""
-    return str(getattr(address, "_host_name", "") or "")
 
 
 def _build_element_class_match(alias: str, element_type: str, param_name: str = "elem_class") -> str:

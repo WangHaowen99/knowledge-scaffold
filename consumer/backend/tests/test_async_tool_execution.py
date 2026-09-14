@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import json
 import threading
@@ -442,16 +443,16 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                     context,
                 )
                 self.assertIn("工具执行超时", result.messages[0]["content"])
-                state = executor_module.background_sync_tool_state_for_test()
+                state = internal(executor_module).background_sync_tool_state()
                 self.assertEqual(len(state.tasks), 1)
             finally:
                 release.set()
                 await asyncio.wait_for(run_sync_compat(finished.wait), timeout=2)
                 async with asyncio.timeout(1):
-                    while executor_module.background_sync_tool_state_for_test().tasks:
+                    while internal(executor_module).background_sync_tool_state().tasks:
                         await asyncio.sleep(0.005)
 
-        self.assertEqual(len(executor_module.background_sync_tool_state_for_test().tasks), 0)
+        self.assertEqual(len(internal(executor_module).background_sync_tool_state().tasks), 0)
 
     async def test_repeated_failure_guard_still_stops_the_tool_loop(self):
         iteration = 0
@@ -638,13 +639,12 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
                 }
 
         manager = SubAgentManager(max_concurrency=1, max_depth=3)
-        semaphore = manager.get_async_semaphore_for_test()
+        semaphore = internal(manager).get_async_semaphore()
         await semaphore.acquire()
         tasks = [
             SubAgentTaskSpec(id="first", task="first-result", context={}),
             SubAgentTaskSpec(id="second", task="second-result", context={}),
         ]
-        restored_slots = 0
         try:
             with patch("agent.sub_agents.manager.SubAgent", FakeSubAgent):
                 result = await asyncio.wait_for(
@@ -689,14 +689,13 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
                     cancelled += 1
 
         manager = SubAgentManager(max_concurrency=3, max_depth=3)
-        semaphore = manager.get_async_semaphore_for_test()
+        semaphore = internal(manager).get_async_semaphore()
         await semaphore.acquire()
         tasks = [
             SubAgentTaskSpec(id="first", task="first", context={}),
             SubAgentTaskSpec(id="second", task="second", context={}),
             SubAgentTaskSpec(id="third", task="third", context={}),
         ]
-        restored_slots = 0
         try:
             with patch("agent.sub_agents.manager.SubAgent", FakeSubAgent):
                 group = asyncio.create_task(
@@ -717,24 +716,12 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await group
 
-            for _ in range(manager.max_concurrency - 1):
-                await asyncio.wait_for(semaphore.acquire(), timeout=2)
-                restored_slots += 1
-            self.assertTrue(semaphore.locked())
+            self.assertEqual(internal(semaphore).value, manager.max_concurrency - 1)
             self.assertEqual(cancelled, len(tasks))
         finally:
-            for _ in range(restored_slots + 1):
-                semaphore.release()
+            semaphore.release()
 
-        full_capacity_slots = 0
-        try:
-            for _ in range(manager.max_concurrency):
-                await asyncio.wait_for(semaphore.acquire(), timeout=2)
-                full_capacity_slots += 1
-            self.assertTrue(semaphore.locked())
-        finally:
-            for _ in range(full_capacity_slots):
-                semaphore.release()
+        self.assertEqual(internal(semaphore).value, manager.max_concurrency)
 
 
 if __name__ == "__main__":

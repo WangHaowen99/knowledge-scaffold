@@ -196,11 +196,6 @@ class ConsecutiveToolFailureGuard:
         with self._lock:
             self._reset_locked()
 
-    def has_pending_invocations_for_test(self) -> bool:
-        """Return whether ordered guard state remains after lifecycle cleanup."""
-        with self._lock:
-            return bool(self._registered_invocations or self._pending_results)
-
     def _close_locked(self) -> None:
         self._closed = True
         self._clear_locked()
@@ -445,9 +440,6 @@ class CurrentRuntimeToolAdapter:
         with self._invocation_index_lock:
             self._invocation_index += 1
             return self._invocation_index
-
-    def next_invocation_index_for_test(self) -> int:
-        return self._next_invocation_index()
 
     async def _emit_state_snapshot(self) -> None:
         if not callable(self.state_snapshot_callback):

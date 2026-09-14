@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import stat
 from types import SimpleNamespace
@@ -805,14 +806,14 @@ def test_manual_backup_failure_blocks_source_mutation(tmp_path, monkeypatch):
     )
     connection_bytes = connection_path.read_bytes()
     bindings_bytes = bindings_path.read_bytes()
-    original_write = migration_module.write_bytes_atomic
+    original_write = internal(migration_module).write_bytes_atomic
 
     def fail_backup(path, payload, *, mode=None):
         if path.name.endswith(migration_module.MANUAL_BACKUP_SUFFIX):
             raise OSError("backup denied")
         return original_write(path, payload, mode=mode)
 
-    monkeypatch.setattr(migration_module, "write_bytes_atomic", fail_backup)
+    monkeypatch.setattr(migration_module, "_write_bytes_atomic", fail_backup)
     code, report = migration_module.execute_migration(
         tmp_path / ".onto-runtime",
         dry_run=False,
@@ -842,12 +843,12 @@ def test_forward_only_cleanup_failure_blocks_completion_and_is_retryable(tmp_pat
         encoding="utf-8",
     )
     bindings_bytes = bindings_path.read_bytes()
-    original_remove = migration_module.remove_legacy_files
+    original_remove = internal(migration_module).remove_legacy_files
 
     def fail_cleanup(_paths):
         raise OSError("cleanup denied")
 
-    monkeypatch.setattr(migration_module, "remove_legacy_files", fail_cleanup)
+    monkeypatch.setattr(migration_module, "_remove_legacy_files", fail_cleanup)
     code, report = migration_module.execute_migration(
         tmp_path / ".onto-runtime",
         dry_run=False,
@@ -868,7 +869,7 @@ def test_forward_only_cleanup_failure_blocks_completion_and_is_retryable(tmp_pat
     ]
     assert not (paths.workspace_dir / "ontology-data-sources.direct-v2.migration-complete.json").exists()
 
-    monkeypatch.setattr(migration_module, "remove_legacy_files", original_remove)
+    monkeypatch.setattr(migration_module, "_remove_legacy_files", original_remove)
     retry_code, retry_report = migration_module.execute_migration(
         tmp_path / ".onto-runtime",
         dry_run=False,

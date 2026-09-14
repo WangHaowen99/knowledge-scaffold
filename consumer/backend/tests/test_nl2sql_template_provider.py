@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import textwrap
 from pathlib import Path
@@ -86,7 +87,7 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
         captured["timeout"] = timeout
         return _FakeResponse()
 
-    provider.post_callback_for_test = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查询零件", entity="TargetItem"))
 
@@ -135,7 +136,7 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
         captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
-    provider.post_callback_for_test = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查某个不存在的东西", entity=""))
 
@@ -190,7 +191,7 @@ def test_default_matcher_with_rich_template_dedupes(tmp_path):
     def post_response(*_args, **_kwargs):
         return _FakeResponse()
 
-    provider.post_callback_for_test = post_response
+    internal(provider).session.post = post_response
 
     events = list(provider.search_stream(query="查询零件", entity=""))
 
@@ -243,7 +244,7 @@ def test_external_matcher_discovered_and_called(tmp_path):
         captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
-    provider.post_callback_for_test = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查询零件信息", entity=""))
 
@@ -347,7 +348,7 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
         captured["url"] = url
         return _FakeResponse()
 
-    provider.post_callback_for_test = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="随便查", entity=""))
 
@@ -384,7 +385,7 @@ def test_template_matcher_returns_error_for_http_failure(tmp_path):
     def post_response(*_args, **_kwargs):
         return _FakeResponse()
 
-    provider.post_callback_for_test = post_response
+    internal(provider).session.post = post_response
 
     events = list(provider.search_stream(query="查询零件", entity=""))
 
@@ -410,7 +411,7 @@ def test_dedupe_result_keeps_first_per_key():
         ],
     }
 
-    deduped = NL2SQLTemplateSearchAdapter.dedupe_result(result, dedupe_key="id")
+    deduped = internal(NL2SQLTemplateSearchAdapter).dedupe_result(result, dedupe_key="id")
 
     assert len(deduped["data"]) == 2
     row_a = next(r for r in deduped["data"] if r["id"] == "A")
@@ -422,7 +423,7 @@ def test_dedupe_result_keeps_first_per_key():
 def test_dedupe_result_empty_data_is_noop():
     """_dedupe_result with empty data returns the result unchanged."""
     result = {"success": True, "data": []}
-    deduped = NL2SQLTemplateSearchAdapter.dedupe_result(result, dedupe_key="id")
+    deduped = internal(NL2SQLTemplateSearchAdapter).dedupe_result(result, dedupe_key="id")
     assert len(deduped["data"]) == 0
 
 
@@ -589,7 +590,7 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
         captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
-    provider.post_callback_for_test = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查询零件信息", entity=""))
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import json
 
 from agent.tools.business_data.adapters.nl2sql_template_search import (
@@ -119,7 +120,7 @@ def test_adapter_default_matcher_uses_locked_version_templates(tmp_path):
         captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
-    provider.post_callback_for_test = _fake_post
+    internal(provider).session.post = _fake_post
 
     list(provider.search_stream(query="query", entity="TargetItem"))
     assert captured["url"] == "https://nl2sql.example.net/api/v1/sql"

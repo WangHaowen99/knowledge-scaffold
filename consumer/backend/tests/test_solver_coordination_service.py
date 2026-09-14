@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -765,7 +766,7 @@ def test_service_persists_frozen_inputs_before_backend_submission(tmp_path):
     def _interrupt_frozen_persist(**kwargs):
         raise SystemExit("synthetic process interruption")
 
-    service.set_persist_frozen_inputs_for_test(_interrupt_frozen_persist)
+    internal(service).persist_frozen_inputs = _interrupt_frozen_persist
 
     with pytest.raises(SystemExit, match="synthetic process interruption"):
         _start(service)
@@ -786,14 +787,14 @@ def test_recovery_waits_while_foreground_is_freezing_inputs(tmp_path):
     service, store, backend, _verifier = _service(tmp_path)
     entered = threading.Event()
     release = threading.Event()
-    original_persist = service.persist_frozen_inputs_for_test
+    original_persist = internal(service).persist_frozen_inputs
 
     def _blocked_frozen_persist(**kwargs):
         entered.set()
         assert release.wait(5)
         return original_persist(**kwargs)
 
-    service.set_persist_frozen_inputs_for_test(_blocked_frozen_persist)
+    internal(service).persist_frozen_inputs = _blocked_frozen_persist
     with ThreadPoolExecutor(max_workers=1) as executor:
         foreground = executor.submit(_start, service)
         assert entered.wait(5)
@@ -833,14 +834,14 @@ def test_shared_subscription_can_cancel_while_inputs_are_freezing(tmp_path):
     service, store, backend, _verifier = _service(tmp_path)
     entered = threading.Event()
     release = threading.Event()
-    original_persist = service.persist_frozen_inputs_for_test
+    original_persist = internal(service).persist_frozen_inputs
 
     def _blocked_frozen_persist(**kwargs):
         entered.set()
         assert release.wait(5)
         return original_persist(**kwargs)
 
-    service.set_persist_frozen_inputs_for_test(_blocked_frozen_persist)
+    internal(service).persist_frozen_inputs = _blocked_frozen_persist
     with ThreadPoolExecutor(max_workers=1) as executor:
         foreground = executor.submit(
             _start,
@@ -877,14 +878,14 @@ def test_last_freeze_subscription_cancels_without_submitting_backend(tmp_path):
     service, store, backend, _verifier = _service(tmp_path)
     entered = threading.Event()
     release = threading.Event()
-    original_persist = service.persist_frozen_inputs_for_test
+    original_persist = internal(service).persist_frozen_inputs
 
     def _blocked_frozen_persist(**kwargs):
         entered.set()
         assert release.wait(5)
         return original_persist(**kwargs)
 
-    service.set_persist_frozen_inputs_for_test(_blocked_frozen_persist)
+    internal(service).persist_frozen_inputs = _blocked_frozen_persist
     with ThreadPoolExecutor(max_workers=1) as executor:
         foreground = executor.submit(_start, service)
         assert entered.wait(5)
@@ -951,7 +952,7 @@ def test_service_cancels_shared_job_only_after_last_subscription_leaves(tmp_path
     backend = _Backend(status="running")
     service, store, _backend, verifier = _service(tmp_path, backend=backend)
     service.max_polls = 1
-    service.job_orchestrator.set_clock_for_test(_fixed_clock)
+    internal(service.job_orchestrator).clock = _fixed_clock
 
     first = _start(service, tool_call_id="tool-call-synthetic-first")
     assert first["status"] == "running"
@@ -994,14 +995,16 @@ def test_service_recovers_subscriber_cancel_after_tool_result_write_interruption
     backend = _Backend(status="running")
     service, store, _backend, verifier = _service(tmp_path, backend=backend)
     service.max_polls = 1
-    service.job_orchestrator.set_clock_for_test(_fixed_clock)
+    internal(service.job_orchestrator).clock = _fixed_clock
     first = _start(service, tool_call_id="tool-call-synthetic-active")
     assert first["status"] == "running"
+
+    write_tool_result = internal(service).write_tool_result
 
     def _interrupt_tool_result(**kwargs):
         raise RuntimeError("synthetic process interruption")
 
-    service.set_write_tool_result_for_test(_interrupt_tool_result)
+    internal(service).write_tool_result = _interrupt_tool_result
     with pytest.raises(RuntimeError, match="synthetic process interruption"):
         _start(
             service,
@@ -1013,7 +1016,7 @@ def test_service_recovers_subscriber_cancel_after_tool_result_write_interruption
     shared_job = store.get_job(first["job_id"], workspace_id=WORKSPACE, owner_id=OWNER)
     assert shared_job["status"] == "waiting_solver"
 
-    service.set_write_tool_result_for_test(None)
+    internal(service).write_tool_result = write_tool_result
     service.fact_resolver = _FailIfCalledFactResolver()
     recovered = _start(
         service,
@@ -1031,14 +1034,16 @@ def test_service_job_recovery_preserves_cancelled_subscriber_after_crash(tmp_pat
     backend = _Backend(status="running")
     service, store, _backend, verifier = _service(tmp_path, backend=backend)
     service.max_polls = 1
-    service.job_orchestrator.set_clock_for_test(_fixed_clock)
+    internal(service.job_orchestrator).clock = _fixed_clock
     active = _start(service, tool_call_id="tool-call-synthetic-active-recovery")
     assert active["status"] == "running"
+
+    write_tool_result = internal(service).write_tool_result
 
     def _interrupt_tool_result(**kwargs):
         raise RuntimeError("synthetic process interruption")
 
-    service.set_write_tool_result_for_test(_interrupt_tool_result)
+    internal(service).write_tool_result = _interrupt_tool_result
     with pytest.raises(RuntimeError, match="synthetic process interruption"):
         _start(
             service,
@@ -1046,7 +1051,7 @@ def test_service_job_recovery_preserves_cancelled_subscriber_after_crash(tmp_pat
             cancel_requested=lambda: True,
         )
 
-    service.set_write_tool_result_for_test(None)
+    internal(service).write_tool_result = write_tool_result
     service.fact_resolver = _FailIfCalledFactResolver()
     backend.status = "completed_optimal"
     recovered = service.recover_job(
@@ -1360,12 +1365,13 @@ def test_service_verifies_distinct_run_jobs_independently(tmp_path):
 
 def test_service_recovers_completed_job_when_tool_result_write_was_interrupted(tmp_path):
     service, store, backend, verifier = _service(tmp_path)
+    write_tool_result = internal(service).write_tool_result
     events = []
 
     def _interrupt_tool_result(**kwargs):
         raise RuntimeError("synthetic process interruption")
 
-    service.set_write_tool_result_for_test(_interrupt_tool_result)
+    internal(service).write_tool_result = _interrupt_tool_result
     with pytest.raises(RuntimeError, match="synthetic process interruption"):
         _start(service, progress_callback=lambda kind, payload: events.append((kind, payload)))
 
@@ -1380,7 +1386,7 @@ def test_service_recovers_completed_job_when_tool_result_write_was_interrupted(t
     assert job["status"] == "completed"
     assert link["tool_result"] is None
 
-    service.set_write_tool_result_for_test(None)
+    internal(service).write_tool_result = write_tool_result
     service.fact_resolver = _FailIfCalledFactResolver()
     recovered = _start(service, progress_callback=lambda kind, payload: events.append((kind, payload)))
 
@@ -1799,7 +1805,7 @@ def test_service_recovery_terminalizes_missing_frozen_artifact(tmp_path):
             "synthetic frozen artifact is missing",
         )
 
-    service.set_load_frozen_artifact_for_test(missing_artifact)
+    internal(service).load_frozen_artifact = missing_artifact
     recovered = service.recover_job(
         started["job_id"],
         workspace_id=WORKSPACE,

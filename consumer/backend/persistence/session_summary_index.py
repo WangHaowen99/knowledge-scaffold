@@ -283,19 +283,6 @@ class SessionSummaryIndex:
         self._owned_projection_tokens: set[str] = set()
         self._delta_entries = 0
 
-    def set_rebuild_loader_for_test(self, loader: Callable[[], Iterable[Any]] | None) -> None:
-        self._rebuild_loader = loader
-
-    def rebuild_in_progress(self) -> bool:
-        with self._lock:
-            return self._rebuild_in_progress
-
-    def path_exists_for_test(self) -> bool:
-        return self._path.exists()
-
-    def dirty_marker_exists_for_test(self) -> bool:
-        return self._dirty_path.exists()
-
     @property
     def state(self) -> str:
         with self._lock:
@@ -370,7 +357,7 @@ class SessionSummaryIndex:
             tokens = set(self._read_dirty_tokens_locked())
             tokens.add(token)
             try:
-                write_atomic_json(self._dirty_path, {"tokens": sorted(tokens)})
+                _write_atomic_json(self._dirty_path, {"tokens": sorted(tokens)})
             except SessionSummaryIndexWriteError as exc:
                 if exc.committed or self._dirty_marker_present_locked():
                     self._state = "degraded"
@@ -852,7 +839,7 @@ class SessionSummaryIndex:
             return False
         tokens.remove(token)
         if tokens:
-            write_atomic_json(self._dirty_path, {"tokens": sorted(tokens)})
+            _write_atomic_json(self._dirty_path, {"tokens": sorted(tokens)})
             return True
         try:
             self._dirty_path.unlink()
@@ -953,7 +940,7 @@ class SessionSummaryIndex:
             "records": [summary.to_dict() for summary in sorted(records.values(), key=lambda item: item.session_id)],
         }
         try:
-            write_atomic_json(self._path, document)
+            _write_atomic_json(self._path, document)
         except SessionSummaryIndexWriteError as exc:
             if exc.committed:
                 self._records = records
@@ -1049,7 +1036,7 @@ class SessionSummaryIndex:
         os.replace(self._dirty_path, quarantine)
 
 
-def write_atomic_json(path: Path, document: Mapping[str, Any]) -> None:
+def _write_atomic_json(path: Path, document: Mapping[str, Any]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.parent.is_symlink():
@@ -1147,6 +1134,3 @@ def _decode_cursor(cursor: str) -> tuple[int, tuple[int, str, str]]:
     if not isinstance(sort_key[2], str):
         raise InvalidSessionCursor("session cursor is invalid")
     return revision, (pinned, sort_key[1], sort_key[2])
-
-
-decode_cursor_for_test = _decode_cursor

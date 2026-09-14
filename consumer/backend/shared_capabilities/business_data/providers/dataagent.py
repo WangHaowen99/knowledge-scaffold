@@ -28,10 +28,6 @@ class DataAgentProvider:
         self._session = session or create_retry_session(int(connection.options.get("max_retries", 3)))
         self._owns_session = session is None
 
-    def set_post_for_test(self, callback) -> None:
-        """Install a synthetic HTTP POST boundary for protocol tests."""
-        self._session.post = callback
-
     def query(
         self,
         question: str,

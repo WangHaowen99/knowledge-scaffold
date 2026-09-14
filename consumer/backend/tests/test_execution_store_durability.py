@@ -1,3 +1,4 @@
+from internal_access import internal
 import json
 import os
 from datetime import datetime, timezone
@@ -149,7 +150,7 @@ def test_failed_atomic_commit_never_publishes_uncommitted_cache(
             None,
         )
 
-    assert not store.has_cached_session_for_test(session_id)
+    assert session_id not in internal(store).cache
     session_path = storage_dir / session_id / "execution.json"
     durable = json.loads(session_path.read_text(encoding="utf-8"))
     assert durable["turns"][0]["status"] == durable_status

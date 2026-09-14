@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import sqlite3
 import threading
@@ -341,7 +342,7 @@ def test_runtime_fact_store_applies_configured_busy_timeout(tmp_path: Path):
         timeout_ms=37,
     )
 
-    with store.connect_for_test() as connection:
+    with internal(store).connect() as connection:
         busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
 
     assert busy_timeout == 37
@@ -396,7 +397,7 @@ def test_batched_timeout_before_dequeue_cancels_the_write(tmp_path: Path):
         batcher.submit(_ungrounded_fact_command("call-canceled"), timeout_ms=5)
 
     time.sleep(0.08)
-    with RuntimeFactsStore(path).connect_for_test() as connection:
+    with internal(RuntimeFactsStore(path)).connect() as connection:
         persisted = connection.execute(
             "SELECT COUNT(*) FROM runtime_facts WHERE tool_call_id='call-canceled'"
         ).fetchone()[0]
@@ -444,7 +445,7 @@ def test_batched_timeout_during_write_returns_pending_and_allows_late_completion
 
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        with original_store(path).connect_for_test() as connection:
+        with internal(original_store(path)).connect() as connection:
             persisted = connection.execute(
                 "SELECT COUNT(*) FROM runtime_facts WHERE tool_call_id='call-in-flight'"
             ).fetchone()[0]

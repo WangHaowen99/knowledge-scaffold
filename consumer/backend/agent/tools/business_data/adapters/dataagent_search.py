@@ -15,17 +15,6 @@ class DataAgentSearchAdapter:
     def __init__(self, connection):
         self._client = SharedDataAgentProvider(connection)
 
-    def set_post_for_test(self, callback) -> None:
-        self._client.set_post_for_test(callback)
-
-    @property
-    def post_callback_for_test(self):
-        return None
-
-    @post_callback_for_test.setter
-    def post_callback_for_test(self, callback) -> None:
-        self.set_post_for_test(callback)
-
     def search_stream(
         self,
         *,

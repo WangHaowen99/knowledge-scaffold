@@ -1,3 +1,4 @@
+from internal_access import internal
 import config.settings as settings
 import config.system_config as system_config
 from config.settings import AgentConfig
@@ -16,10 +17,7 @@ def _base_agent_config() -> AgentConfig:
 
 
 def _effective_agent_config(**overrides):
-    effective = {
-        name: spec["default"]
-        for name, spec in system_config.section_fields_for_test("agent").items()
-    }
+    effective = {name: spec["default"] for name, spec in internal(system_config).SECTION_FIELDS["agent"].items()}
     effective.update(overrides)
     return effective
 
@@ -110,7 +108,7 @@ def test_agent_connection_check_uses_jiuwen_smoke_with_effective_config(monkeypa
     assert len(calls) == 1
     checked_config, checked_mode, register_tools = calls[0]
     assert checked_mode == "quick"
-    assert register_tools is system_config.validate_jiuwen_tools_without_runtime_delegates
+    assert register_tools is internal(system_config).validate_jiuwen_tools_without_runtime_delegates
     assert checked_config.main_agent_max_iterations == 7
     assert checked_config.runtime_warmup_enabled is False
 

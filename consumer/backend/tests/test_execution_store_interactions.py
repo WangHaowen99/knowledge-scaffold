@@ -1,3 +1,4 @@
+from internal_access import internal
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -300,7 +301,7 @@ def test_execution_projection_failure_rebuilds_runtime_in_same_process(
             )
         ]
 
-    index.set_rebuild_loader_for_test(rebuild_summaries)
+    internal(index).rebuild_loader = rebuild_summaries
     monkeypatch.setattr(
         index,
         "update_runtime",
@@ -316,7 +317,7 @@ def test_execution_projection_failure_rebuilds_runtime_in_same_process(
     repaired = _summary(index, "runtime-same-process")
     assert repaired.active_run_id == "run-same-process"
     assert repaired.last_run_status == "running"
-    assert index.dirty_marker_exists_for_test() is False
+    assert internal(index).dirty_path.exists() is False
 
 
 def test_execution_source_failure_abandons_projection_for_rebuild(
@@ -331,7 +332,7 @@ def test_execution_source_failure_abandons_projection_for_rebuild(
     def rebuild_summaries():
         return [base_summary]
 
-    index.set_rebuild_loader_for_test(rebuild_summaries)
+    internal(index).rebuild_loader = rebuild_summaries
     store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
     original_replace = execution_store_module.os.replace
 
@@ -350,7 +351,7 @@ def test_execution_source_failure_abandons_projection_for_rebuild(
         )
 
     assert _summary(index, "runtime-write-failure").last_run_status == "idle"
-    assert index.dirty_marker_exists_for_test() is False
+    assert internal(index).dirty_path.exists() is False
 
 
 def test_execution_marker_failure_does_not_abort_durable_turn(tmp_path, monkeypatch):
@@ -359,7 +360,7 @@ def test_execution_marker_failure_does_not_abort_durable_turn(tmp_path, monkeypa
     _seed_session_summary(index, "execution-marker-failure")
     base_summary = _summary(index, "execution-marker-failure")
     store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
-    original_write = summary_index_module.write_atomic_json
+    original_write = internal(summary_index_module).write_atomic_json
 
     def fail_dirty_marker(target, document):
         if str(target).endswith(".dirty"):
@@ -369,7 +370,7 @@ def test_execution_marker_failure_does_not_abort_durable_turn(tmp_path, monkeypa
             )
         return original_write(target, document)
 
-    monkeypatch.setattr(summary_index_module, "write_atomic_json", fail_dirty_marker)
+    monkeypatch.setattr(summary_index_module, "_write_atomic_json", fail_dirty_marker)
 
     turn, created = store.create_turn_for_run(
         session_id="execution-marker-failure",
@@ -1268,10 +1269,12 @@ def test_protocol_run_id_reservation_is_released_when_durable_write_fails(
     store = ExecutionStore(str(tmp_path / "executions"))
     reservation_id = store.reserve_protocol_run_id("a2a", "external-task-retry")
     assert reservation_id is not None
+    save_session = internal(store).save_session
+
     def fail_save(*_args, **_kwargs):
         raise OSError("synthetic durable write failure")
 
-    save_session = store.replace_save_session_for_test(fail_save)
+    monkeypatch.setattr(store, "_save_session", fail_save)
     with pytest.raises(OSError, match="synthetic durable write failure"):
         store.create_turn_for_reserved_protocol_run(
             protocol="a2a",
@@ -1281,7 +1284,7 @@ def test_protocol_run_id_reservation_is_released_when_durable_write_fails(
             user_request="synthetic request",
         )
 
-    store.replace_save_session_for_test(save_session)
+    monkeypatch.setattr(store, "_save_session", save_session)
     retried, retried_created = _create_reserved_protocol_turn(
         store,
         session_id="protocol-session-b",

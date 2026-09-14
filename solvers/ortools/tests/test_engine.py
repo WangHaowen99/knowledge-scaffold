@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from solvers.ortools.tests.internal_access import internal
 import time
 from copy import deepcopy
 
@@ -150,7 +151,7 @@ def test_lexicographic_phases_share_one_total_deadline(submit_request, monkeypat
 
 def test_total_deadline_also_includes_problem_translation(submit_request, monkeypatch):
     now = [20.0]
-    original_parse = engine_module.parse_problem_for_test
+    original_parse = internal(engine_module).parse_problem
 
     def delayed_parse(problem):
         parsed = original_parse(problem)

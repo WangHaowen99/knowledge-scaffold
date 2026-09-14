@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -301,5 +302,5 @@ def test_refreshed_router_shares_cancellation_state(tmp_path, monkeypatch):
     service = second.get_service(LLMPurpose.MAIN)
 
     event = second.get_cancel_event("run-shared")
-    assert event is service.get_cancel_event_for_test("run-shared")
+    assert event is internal(service).get_cancel_event("run-shared")
     assert event.is_set()

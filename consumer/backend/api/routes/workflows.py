@@ -87,7 +87,7 @@ def _get_stores():
     return get_request_stores()
 
 
-async def resolve_stores(runtime: Any):
+async def _resolve_stores(runtime: Any):
     return await runtime.short_io.run(_get_stores)
 
 
@@ -895,7 +895,7 @@ async def create_run(
     if manager is None or runtime.short_io is None:
         return _error("RUNTIME_DRAINING", "runtime is unavailable", 503, retriable=True)
     scope = _run_scope(current_user.username, workspace_id, "run")
-    _chat_store, execution_store = await resolve_stores(runtime)
+    _chat_store, execution_store = await _resolve_stores(runtime)
     fingerprint = _request_fingerprint(
         username=current_user.username,
         workspace_id=workspace_id,
@@ -1271,7 +1271,7 @@ async def create_sync_run(
             session_id=session_id,
         )
 
-    _chat_store, execution_store = await resolve_stores(runtime)
+    _chat_store, execution_store = await _resolve_stores(runtime)
     model_profile_id = str(
         data.get("model_profile_id")
         or context_values.get("model_profile_id")
@@ -1581,7 +1581,7 @@ async def get_run(
         snapshot = await manager.get_run(run_id, scope)
         if snapshot is not None:
             return _snapshot_payload(snapshot)
-    _chat_store, execution_store = await resolve_stores(runtime)
+    _chat_store, execution_store = await _resolve_stores(runtime)
     try:
         _session_id, turn = await runtime.short_io.run(
             execution_store.find_turn_by_run_id,
@@ -1622,7 +1622,7 @@ async def stream_run_events(
         else None
     )
     if snapshot is None:
-        _chat_store, execution_store = await resolve_stores(runtime)
+        _chat_store, execution_store = await _resolve_stores(runtime)
         _session_id, turn = await runtime.short_io.run(
             execution_store.find_turn_by_run_id,
             run_id,
@@ -1768,7 +1768,7 @@ async def submit_run_feedback(
     manager = runtime.manager
     scope = _run_scope(current_user.username, workspace_id, "read")
     live = await manager.get_run(run_id, scope) if manager is not None else None
-    _chat_store, execution_store = await resolve_stores(runtime)
+    _chat_store, execution_store = await _resolve_stores(runtime)
     session_id, turn = await runtime.short_io.run(
         execution_store.find_turn_by_run_id,
         run_id,

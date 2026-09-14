@@ -1,5 +1,6 @@
 """Tests for ontology management routes."""
 
+from internal_access import internal
 import io
 import json
 import shutil
@@ -274,7 +275,7 @@ def test_non_active_file_cleanup_failure_keeps_success_and_publishes_invalidatio
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     _ontology_dir, _version_one, version_two, _write_manifest = _write_two_version_file_ontology(workspace_paths)
-    original_prepare = ontologies_module.stage_and_commit_revision_file_for_test
+    original_prepare = internal(ontologies_module).stage_and_commit_revision_file
 
     def prepare_with_failed_cleanup(*args, **kwargs):
         commit, rollback, finalize = original_prepare(*args, **kwargs)
@@ -376,7 +377,7 @@ def test_zip_upload_read_is_bounded_to_configured_limit(monkeypatch):
     uploaded_file = type("UploadedFile", (), {"file": stream})()
     monkeypatch.setattr(ontologies_module, "ONTOLOGY_MAX_ZIP_BYTES", 4)
 
-    uploaded_bytes, error = ontologies_module.read_limited_zip_upload_for_test(uploaded_file)
+    uploaded_bytes, error = internal(ontologies_module).read_limited_zip_upload(uploaded_file)
 
     assert uploaded_bytes is None
     assert error == "Zip file too large"
@@ -2845,12 +2846,12 @@ def test_combined_prepared_steps_roll_back_the_in_progress_filesystem_step(
         manifest_path = case_root / "manifest.yaml"
         manifest_path.write_text("versions: [1.0.0, 2.0.0]\n", encoding="utf-8")
 
-        directory_step = ontologies_module.prepare_atomic_directory_delete_for_test(version_dir)
-        manifest_step = ontologies_module.prepare_atomic_bytes_replace_for_test(
+        directory_step = internal(ontologies_module).prepare_atomic_directory_delete(version_dir)
+        manifest_step = internal(ontologies_module).prepare_atomic_bytes_replace(
             manifest_path,
             b"versions: [1.0.0]\n",
         )
-        commit, rollback, finalize = ontologies_module.combine_prepared_steps_for_test(
+        commit, rollback, finalize = internal(ontologies_module).combine_prepared_steps(
             directory_step,
             manifest_step,
         )
@@ -2887,7 +2888,7 @@ def test_uncertain_mutation_preserves_staging_recovery_data(tmp_path):
     backup_dir.mkdir(parents=True)
     (backup_dir / "manifest.yaml").write_text("id: eco\n", encoding="utf-8")
 
-    ontologies_module.cleanup_mutation_staging_root_for_test(
+    internal(ontologies_module).cleanup_mutation_staging_root(
         staging_root,
         ontologies_module.OntologyMutationError(
             "MUTATION_COMMIT_STATE_UNCERTAIN",
@@ -3176,7 +3177,7 @@ def test_prepared_directory_replace_restores_existing_dir_when_switch_fails(
         return original_replace(source, target)
 
     monkeypatch.setattr(ontologies_module.os, "replace", fake_replace)
-    commit, rollback, finalize = ontologies_module.prepare_atomic_directory_replace_for_test(
+    commit, rollback, finalize = internal(ontologies_module).prepare_atomic_directory_replace(
         staged_dir,
         ontology_dir,
         backup_dir,
@@ -3215,7 +3216,7 @@ def test_replace_ontology_dir_keeps_existing_dir_when_atomic_exchange_fails(
     )
 
     try:
-        ontologies_module.replace_ontology_dir_for_test(staged_dir=staged_dir, ontology_dir=ontology_dir)
+        internal(ontologies_module).replace_ontology_dir(staged_dir=staged_dir, ontology_dir=ontology_dir)
     except PermissionError as exc:
         assert str(exc) == "staged dir is busy"
     else:
@@ -3234,7 +3235,7 @@ def test_replace_ontology_dir_atomically_exchanges_existing_tree(tmp_path):
     (ontology_dir / "old.md").write_text("old\n", encoding="utf-8")
     (staged_dir / "new.md").write_text("new\n", encoding="utf-8")
 
-    ontologies_module.replace_ontology_dir_for_test(
+    internal(ontologies_module).replace_ontology_dir(
         staged_dir=staged_dir,
         ontology_dir=ontology_dir,
     )
@@ -3254,7 +3255,7 @@ def test_replace_ontology_dir_uses_portable_backup_when_exchange_is_unavailable(
     staged_dir.mkdir()
     (ontology_dir / "old.md").write_text("old\n", encoding="utf-8")
     (staged_dir / "new.md").write_text("new\n", encoding="utf-8")
-    ontologies_module.replace_ontology_dir_for_test(
+    internal(ontologies_module).replace_ontology_dir(
         staged_dir=staged_dir,
         ontology_dir=ontology_dir,
     )
@@ -3265,7 +3266,7 @@ def test_replace_ontology_dir_uses_portable_backup_when_exchange_is_unavailable(
 
 
 def test_ontology_id_keeps_legacy_dot_compatibility():
-    assert ontologies_module.is_valid_ontology_id_for_test("factory.v2") is True
+    assert internal(ontologies_module).is_valid_ontology_id("factory.v2") is True
 
 
 def test_copy_versioned_package_keeps_existing_dir_when_copy_fails(tmp_path, monkeypatch):
@@ -3286,7 +3287,7 @@ def test_copy_versioned_package_keeps_existing_dir_when_copy_fails(tmp_path, mon
     monkeypatch.setattr(ontologies_module.shutil, "copy2", fail_second_copy)
 
     try:
-        ontologies_module.copy_versioned_package_contents_for_test(source_dir, version_dir)
+        internal(ontologies_module).copy_versioned_package_contents(source_dir, version_dir)
     except OSError as exc:
         assert str(exc) == "disk full"
     else:
@@ -3348,7 +3349,7 @@ def test_concurrent_version_installs_are_serialized_without_lost_updates(
 
     def install(version, source):
         try:
-            ontologies_module.install_ontology_version_package_for_test(
+            internal(ontologies_module).install_ontology_version_package(
                 source_root=source,
                 ontology_dir=ontology_dir,
                 ontology_id="demo",
@@ -3414,7 +3415,7 @@ def test_install_and_status_mutation_share_one_ontology_lock(tmp_path, monkeypat
 
     def install():
         try:
-            ontologies_module.install_ontology_version_package_for_test(
+            internal(ontologies_module).install_ontology_version_package(
                 source_root=source,
                 ontology_dir=ontology_dir,
                 ontology_id="demo",
@@ -3430,7 +3431,7 @@ def test_install_and_status_mutation_share_one_ontology_lock(tmp_path, monkeypat
     def disable():
         mutation_started.set()
         try:
-            ontologies_module.set_ontology_enabled_for_test(ontology_dir, False)
+            internal(ontologies_module).set_ontology_enabled(ontology_dir, False)
         except Exception as exc:
             errors.append(exc)
         finally:

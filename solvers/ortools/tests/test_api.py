@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from solvers.ortools.tests.internal_access import internal
 import json
 import threading
 import time
@@ -69,7 +70,8 @@ def test_submit_releases_capacity_when_attempt_persistence_fails(tmp_path, submi
     try:
         with pytest.raises(RuntimeError, match="synthetic persistence failure"):
             service.submit(idempotency_key="capacity-release-key-0001", document=submit_request)
-        assert service.capacity_is_available_for_test() is True
+        assert internal(service).capacity.acquire(blocking=False) is True
+        internal(service).capacity.release()
     finally:
         service.close()
 
@@ -333,7 +335,7 @@ def test_capacity_rejection_does_not_consume_the_idempotency_key(tmp_path, submi
     app = create_app(_config(tmp_path, max_concurrent_jobs=1))
     service = app.extensions["ortools_solver"]
     gate = CapacityGate()
-    service.install_capacity_gate_for_test(gate)
+    internal(service).capacity = gate
     client = app.test_client()
 
     rejected = _post(client, submit_request)

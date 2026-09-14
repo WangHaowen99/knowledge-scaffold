@@ -985,10 +985,6 @@ class AsyncExecutionService:
             await self._submit_reflection(context, result)
         return result
 
-    async def consume_events_for_test(self, *args: Any, **kwargs: Any) -> Any:
-        """Consume runtime events through the service boundary."""
-        return await self._consume_events(*args, **kwargs)
-
     async def cancel(self, run_id: str, reason: str) -> bool:
         return await self.runtime.cancel(run_id, reason)
 
@@ -1057,48 +1053,6 @@ class OrchestratorSessionAdapter:
         if not callable(resolver):
             resolver = getattr(orchestrator, "_get_memory_manager", None)
         return resolver(context.username) if callable(resolver) else None
-
-    def has_run_context(self, run_id: str) -> bool:
-        """Return whether a prepared runtime context is retained."""
-        with self._context_lock:
-            return str(run_id or "") in self._run_contexts
-
-    def run_context_count(self) -> int:
-        with self._context_lock:
-            return len(self._run_contexts)
-
-    def set_run_context_for_test(self, context: RuntimeInvocationContext) -> None:
-        with self._context_lock:
-            self._run_contexts[context.run_id] = context
-
-    def replace_persist_event_for_test(self, callback: Callable[[Any], Any]) -> None:
-        self._persist_event_sync = callback
-
-    def has_pending_prepare(self, run_id: str) -> bool:
-        """Return whether prepare compensation state is retained."""
-        with self._context_lock:
-            return str(run_id or "") in self._pending_prepare_turns
-
-    def persist_event_sync_for_test(self, event: Any) -> None:
-        """Persist an event through the synchronous projection boundary."""
-        self._persist_event_sync(event)
-
-    def finalize_sync_for_test(
-        self,
-        context: RuntimeInvocationContext,
-        result: RuntimeResult,
-        parse_execution_summary: Callable[[str], Any] | None = None,
-    ) -> None:
-        """Finalize a run through the synchronous lifecycle boundary."""
-        self._finalize_sync(context, result, parse_execution_summary)
-
-    def try_direct_execute_sync_for_test(
-        self,
-        context: RuntimeInvocationContext,
-        dependencies: Mapping[str, Any],
-    ) -> list[RuntimeEvent] | None:
-        """Exercise direct execution through its supported service boundary."""
-        return self._try_direct_execute_sync(context, dependencies)
 
     @contextmanager
     def execution_scope(self, context: RuntimeInvocationContext):

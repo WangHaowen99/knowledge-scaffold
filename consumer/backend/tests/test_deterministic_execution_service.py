@@ -1,3 +1,4 @@
+from internal_access import internal
 import base64
 import hashlib
 import json
@@ -2455,14 +2456,14 @@ def test_artifact_staging_cleans_only_stale_owned_directories(tmp_path, monkeypa
     stale_timestamp = time.time() - direct_execution_service_module.STALE_ARTIFACT_STAGING_SECONDS - 1
     os.utime(stale, (stale_timestamp, stale_timestamp))
     os.utime(leased, (stale_timestamp, stale_timestamp))
-    DeterministicExecutionService.refresh_artifact_staging_lease_for_test(leased)
+    internal(DeterministicExecutionService).refresh_artifact_staging_lease(leased)
     monkeypatch.setenv(
         "DETERMINISTIC_ARTIFACT_STAGING_ROOT",
         str(shared_root),
     )
 
-    parent = DeterministicExecutionService.artifact_staging_parent_for_test()
-    DeterministicExecutionService.cleanup_stale_artifact_staging_for_test(parent)
+    parent = internal(DeterministicExecutionService).artifact_staging_parent()
+    internal(DeterministicExecutionService).cleanup_stale_artifact_staging(parent)
 
     assert not stale.exists()
     assert leased.is_dir()
@@ -2491,7 +2492,7 @@ def test_artifact_staging_lease_uses_windows_compatible_utime_fallback(
         windows_compatible_utime,
     )
 
-    DeterministicExecutionService.refresh_artifact_staging_lease_for_test(staging_dir)
+    internal(DeterministicExecutionService).refresh_artifact_staging_lease(staging_dir)
 
     assert calls == [{"follow_symlinks": False}, {}]
 

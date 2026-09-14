@@ -54,11 +54,6 @@ def _background_sync_tool_state() -> _BackgroundSyncToolState:
         return state
 
 
-def background_sync_tool_state_for_test() -> _BackgroundSyncToolState:
-    """Expose bounded worker state for lifecycle tests."""
-    return _background_sync_tool_state()
-
-
 _SAFE_SCRIPT_EXECUTION_ERROR = "Error: Script execution failed due to an internal error."
 
 _ONTOLOGY_SCOPED_TOOLS = frozenset(

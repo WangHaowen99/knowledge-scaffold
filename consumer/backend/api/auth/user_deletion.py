@@ -219,7 +219,7 @@ def delete_user_with_cleanup(auth_backend: Any, username: str) -> UserDeletionRe
                     operation_id,
                 ) from exc
 
-            completed_steps, errors = cleanup_deleted_user_artifacts(
+            completed_steps, errors = _cleanup_deleted_user_artifacts(
                 normalized_username,
                 operation_id=operation_id,
             )
@@ -297,7 +297,7 @@ def retry_user_deletion_reconciliation(
             raise ValueError("用户名已被重新创建或仍存在，拒绝自动清理身份数据")
 
         with workspace_user_deletion_guard(username):
-            completed_steps, errors = cleanup_deleted_user_artifacts(
+            completed_steps, errors = _cleanup_deleted_user_artifacts(
                 username,
                 operation_id=record_id,
             )
@@ -321,7 +321,7 @@ def retry_user_deletion_reconciliation(
         )
 
 
-def cleanup_deleted_user_artifacts(
+def _cleanup_deleted_user_artifacts(
     username: str,
     *,
     operation_id: str,
@@ -331,7 +331,7 @@ def cleanup_deleted_user_artifacts(
     steps: tuple[tuple[str, Callable[[], Any]], ...] = (
         (
             "workspace_members",
-            lambda: remove_user_from_workspace_members_and_invalidate(username),
+            lambda: _remove_user_from_workspace_members_and_invalidate(username),
         ),
         (
             "workspace_runtime",
@@ -365,7 +365,7 @@ def cleanup_deleted_user_artifacts(
     return completed_steps, errors
 
 
-def remove_user_from_workspace_members_and_invalidate(username: str) -> list[str]:
+def _remove_user_from_workspace_members_and_invalidate(username: str) -> list[str]:
     """Keep the user-deletion boundary safe if the cleanup helper evolves."""
     generation_before = get_workspace_catalog_generation()
     updated_workspace_ids = remove_user_from_workspace_members(username)

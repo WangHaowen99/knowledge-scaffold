@@ -6,7 +6,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import hashlib
-import inspect
 import json
 import linecache
 import os
@@ -41,6 +40,7 @@ _THREAD_RUN_COUNTS: dict[int, dict[str, int]] = {}
 _THREAD_RUN_COUNTS_LOCK = threading.RLock()
 _PROCESS_SAMPLE_COUNT = 0
 _PROCESS_SAMPLE_BUDGET_LOCK = threading.RLock()
+
 
 @dataclass
 class _ThreadStackProfile:
@@ -324,67 +324,6 @@ def _sample_profile(profile: _RunStackProfile) -> None:
             thread_profile.weights.append(profile.sample_interval_ms)
     del frames_by_thread
     del now_ns
-
-
-def sample_profile(profile: _RunStackProfile) -> None:
-    """Sample a profile through the supported diagnostics boundary."""
-    _sample_profile(profile)
-
-
-def release_process_samples(count: int) -> None:
-    """Release process-wide sample budget through the diagnostics API."""
-    _release_process_samples(count)
-
-
-def reset_diagnostics_state() -> None:
-    """Clear profiler diagnostics state for isolated test cases."""
-    release_process_samples(_PROCESS_SAMPLE_COUNT)
-    with _LOCK:
-        _RUNS.clear()
-    with _THREAD_RUN_COUNTS_LOCK:
-        _THREAD_RUN_COUNTS.clear()
-    _CONTEXT_BINDINGS.set(())
-
-
-def register_diagnostics_profile(profile: _RunStackProfile) -> None:
-    """Register a synthetic profile for deterministic diagnostics tests."""
-    with _LOCK:
-        _RUNS[profile.run_id] = profile
-
-
-def has_active_diagnostics_profile(run_id: str) -> bool:
-    """Return whether a run currently owns an active diagnostics profile."""
-    with _LOCK:
-        return str(run_id or "") in _RUNS
-
-
-def process_sample_count() -> int:
-    """Return the process-wide count of reserved samples."""
-    with _PROCESS_SAMPLE_BUDGET_LOCK:
-        return _PROCESS_SAMPLE_COUNT
-
-
-def thread_run_counts() -> dict[int, dict[str, int]]:
-    """Return a snapshot of active run bindings grouped by thread."""
-    with _THREAD_RUN_COUNTS_LOCK:
-        return {thread_id: dict(counts) for thread_id, counts in _THREAD_RUN_COUNTS.items()}
-
-
-def active_diagnostics_profile(run_id: str) -> Optional[_RunStackProfile]:
-    """Return the active profile for diagnostics inspection, if any."""
-    with _LOCK:
-        return _RUNS.get(str(run_id or ""))
-
-
-def current_frame() -> FrameType:
-    """Return the current frame for diagnostics without exposing CPython internals."""
-    frame = inspect.currentframe()
-    if frame is None:  # pragma: no cover - CPython always supplies a frame
-        raise RuntimeError("Current frame is unavailable")
-    caller = frame.f_back
-    if caller is None:  # pragma: no cover - module execution has a caller
-        raise RuntimeError("Caller frame is unavailable")
-    return caller
 
 
 def _sample_stack(

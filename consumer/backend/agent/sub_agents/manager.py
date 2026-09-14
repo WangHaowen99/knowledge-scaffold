@@ -361,10 +361,6 @@ class SubAgentManager:
             raise RuntimeError("SubAgentManager semaphore initialization failed")
         return semaphore
 
-    def get_async_semaphore_for_test(self) -> asyncio.BoundedSemaphore:
-        """Expose the manager-owned semaphore for concurrency lifecycle tests."""
-        return self._get_async_semaphore()
-
     @staticmethod
     def _emit_group_started(
         event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],

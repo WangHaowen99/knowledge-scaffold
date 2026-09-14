@@ -18,17 +18,6 @@ _SERVICE: Optional[SkillEvolutionService] = None
 _WORKER: Optional[SkillEvolutionWorker] = None
 
 
-def singleton_state() -> dict[str, object | None]:
-    """Return registry singleton state for lifecycle tests."""
-    with _INSTANCE_LOCK:
-        return {"store": _STORE, "service": _SERVICE, "worker": _WORKER}
-
-
-def clear_singletons_for_test() -> None:
-    """Clear singleton references after an isolated lifecycle test."""
-    reset_skill_evolution_singletons()
-
-
 def get_skill_evolution_store() -> SkillEvolutionStore:
     global _STORE
     if _STORE is not None:

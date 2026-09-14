@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import os
 import stat
@@ -1146,9 +1147,9 @@ def test_deleted_and_recreated_workspace_does_not_reuse_cached_package_tree(
     recreate_thread = threading.Thread(target=recreate_workspace)
     delete_thread.start()
     assert invalidation_entered.wait(timeout=5)
-    metadata_lock_available = (
-        workspaces_module.workspace_metadata_lock_is_available_for_test()
-    )
+    metadata_lock_available = internal(workspaces_module).workspace_metadata_lock.acquire(blocking=False)
+    if metadata_lock_available:
+        internal(workspaces_module).workspace_metadata_lock.release()
     recreate_thread.start()
     release_invalidation.set()
     delete_thread.join(timeout=5)

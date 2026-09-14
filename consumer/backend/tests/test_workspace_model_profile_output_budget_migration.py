@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 from pathlib import Path
 
@@ -169,14 +170,14 @@ def test_workspace_partial_apply_is_retryable_and_retains_previous_backup(
 
     import migrations.workspace_model_profile_output_budget_v1 as migration
 
-    original_writer = migration.write_bytes_atomic
+    original_writer = internal(migration).write_bytes_atomic
 
     def fail_beta_target(path, payload):
         if path == beta_path:
             raise OSError("synthetic beta write failure")
         return original_writer(path, payload)
 
-    monkeypatch.setattr(migration, "write_bytes_atomic", fail_beta_target)
+    monkeypatch.setattr(migration, "_write_bytes_atomic", fail_beta_target)
     code, partial = _execute(runtime_root, dry_run=False)
 
     assert code == 2
@@ -188,7 +189,7 @@ def test_workspace_partial_apply_is_retryable_and_retains_previous_backup(
         "max_tokens"
     ] == 8192
 
-    monkeypatch.setattr(migration, "write_bytes_atomic", original_writer)
+    monkeypatch.setattr(migration, "_write_bytes_atomic", original_writer)
     code, retry = _execute(runtime_root, dry_run=False)
 
     assert code == 0

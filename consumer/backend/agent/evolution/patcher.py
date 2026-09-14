@@ -599,19 +599,6 @@ class OperationPatcher:
                 out.append(agg)
         return out
 
-    def collect_actionable_for_test(
-        self,
-        ontology_id: str,
-        operation_key: str,
-        *,
-        workspace_id: Optional[str] = None,
-    ) -> List[Aggregate]:
-        return self._collect_actionable(
-            ontology_id,
-            operation_key,
-            workspace_id=workspace_id,
-        )
-
     @staticmethod
     def _normalize_merged_fps(
         declared: List[str],
@@ -632,8 +619,6 @@ class OperationPatcher:
             if len(matches) == 1:
                 resolved.append(matches[0])
         return resolved
-
-    normalize_merged_fps_for_test = staticmethod(_normalize_merged_fps)
 
     # ------------------------------------------------------------------ LLM
     @staticmethod
@@ -688,9 +673,6 @@ class OperationPatcher:
             logger.info("patcher: LLM returned no structured output for %s/%s", ontology_id, operation_key)
             return None
         return output
-
-    def llm_merge_for_test(self, **kwargs: Any) -> Optional[StagedMergeOutput]:
-        return self._llm_merge(**kwargs)
 
 
 # -----------------------------------------------------------------------------

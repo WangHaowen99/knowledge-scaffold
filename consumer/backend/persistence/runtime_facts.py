@@ -269,10 +269,6 @@ class RuntimeFactsStore:
         connection.execute("PRAGMA busy_timeout={}".format(self.timeout_ms))
         return connection
 
-    def connect_for_test(self) -> sqlite3.Connection:
-        """Open a configured connection for persistence contract assertions."""
-        return self._connect()
-
 
 def _required(command: Mapping[str, Any], name: str) -> str:
     value = str(command.get(name) or "").strip()

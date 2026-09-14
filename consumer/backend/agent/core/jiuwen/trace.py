@@ -141,10 +141,6 @@ class JiuwenModelTraceBridge:
             api_params=self._build_api_params(model=model_name, tools_count=len(tools)),
         )
 
-    async def on_before_model_call_for_test(self, ctx: Any) -> None:
-        """Run the registered pre-model callback through a public test boundary."""
-        await self._on_before_model_call(ctx)
-
     async def _on_after_model_call(self, ctx: Any) -> None:
         if read_field(ctx, "exception") is not None:
             return
@@ -199,10 +195,6 @@ class JiuwenModelTraceBridge:
             model_provider=self.model_provider,
             tool_names=tool_names_from_calls_or_infos(tool_calls, tool_infos),
         )
-
-    async def on_after_model_call_for_test(self, ctx: Any) -> None:
-        """Run the registered post-model callback through a public test boundary."""
-        await self._on_after_model_call(ctx)
 
     def _notify_model_completion(self, completion: Mapping[str, Any]) -> None:
         if self.model_completion_callback is None:

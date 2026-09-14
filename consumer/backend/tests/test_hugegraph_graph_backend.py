@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 
 import pytest
@@ -341,7 +342,7 @@ def test_hugegraph_uses_pinned_ip_with_original_tls_identity(monkeypatch):
         }
     )
     monkeypatch.setattr(
-        backend.pinned_session_for_test(),
+        internal(backend).pinned_session,
         "request",
         lambda **kwargs: captured.update(kwargs) or Response(),
     )
@@ -351,11 +352,8 @@ def test_hugegraph_uses_pinned_ip_with_original_tls_identity(monkeypatch):
     assert captured["url"].startswith("https://192.0.2.24:8443/graphs/graph_demo/")
     assert captured["headers"]["Host"] == "snapshot.example.com:8443"
     assert captured["allow_redirects"] is False
-    assert backend.pinned_session_for_test().trust_env is False
-    assert (
-        backend.pinned_session_for_test().adapters["https://"].server_hostname
-        == "snapshot.example.com"
-    )
+    assert internal(backend).pinned_session.trust_env is False
+    assert internal(internal(backend).pinned_session.adapters["https://"]).server_hostname == "snapshot.example.com"
     backend.close()
 
 

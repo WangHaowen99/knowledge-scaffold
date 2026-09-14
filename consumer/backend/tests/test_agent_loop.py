@@ -4,14 +4,13 @@ import pytest
 from agent.core.engine import AgentLoopEngine
 from agent.core.jiuwen.common import JiuwenBackendUnavailable
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
-from agent.core.shared.modes import VALID_AGENT_MODES
+from agent.core.shared.modes import resolve_agent_mode
 
 
 def test_agent_loop_engine_is_jiuwen_only_facade():
     assert issubclass(AgentLoopEngine, JiuwenReactLoopEngine)
     assert AgentLoopEngine.__init__ is JiuwenReactLoopEngine.__init__
     assert AgentLoopEngine.arun is JiuwenReactLoopEngine.arun
-    assert AgentLoopEngine.valid_agent_modes is VALID_AGENT_MODES
 
 
 @pytest.mark.parametrize(
@@ -24,8 +23,8 @@ def test_agent_loop_engine_is_jiuwen_only_facade():
         (None, "quick"),
     ],
 )
-def test_agent_loop_engine_delegates_mode_resolution(user_context, expected):
-    assert AgentLoopEngine.resolve_agent_mode(user_context) == expected
+def test_resolve_agent_mode_normalizes_supported_modes(user_context, expected):
+    assert resolve_agent_mode(user_context) == expected
 
 
 def test_agent_loop_engine_propagates_jiuwen_backend_unavailable(monkeypatch):

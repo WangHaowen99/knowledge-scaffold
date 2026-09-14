@@ -58,11 +58,6 @@ def _decode_key(value: str) -> bytes:
     return key
 
 
-def load_key_for_test() -> bytes:
-    """Load the configured key through the production synchronization path."""
-    return _load_key()
-
-
 def _read_key_file(path: Path) -> str:
     descriptor = os.open(
         path,

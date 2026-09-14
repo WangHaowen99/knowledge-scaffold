@@ -65,16 +65,6 @@ class DataConnectionSecretManager:
         self._routes_by_run: dict[str, dict[str, _ProxyRoute]] = {}
         self._route_creation_locks: dict[tuple[str, str], threading.Lock] = {}
 
-    def set_client_for_test(self, client: object) -> None:
-        self._client = client
-
-    def client_for_test(self) -> object:
-        return self._client
-
-    def has_routes_for_run(self, run_id: str) -> bool:
-        with self._lock:
-            return bool(self._routes_by_run.get(str(run_id or "").strip()))
-
     def prepare(
         self,
         *,

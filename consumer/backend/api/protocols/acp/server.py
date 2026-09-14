@@ -83,10 +83,6 @@ async def _acp_workspace_id(
         yield workspace_id
 
 
-acp_principal = _acp_principal
-acp_workspace_id = _acp_workspace_id
-
-
 async def _stores(request: Request, username: str, workspace_id: str):
     from api.routes import get_user_stores
 
@@ -1027,13 +1023,3 @@ async def list_runs(
         )
         runs.append(response.model_dump(mode="json"))
     return {"runs": runs}
-
-
-# Explicit test boundaries for ACP protocol helpers.
-scope_for_test = _scope
-build_await_response_for_test = _build_await_response
-interaction_response_values_for_test = _interaction_response_values
-admit_run_for_test = _admit_run
-response_from_snapshot_for_test = _response_from_snapshot
-map_public_event_for_test = _map_public_event
-create_from_payload_for_test = _create_from_payload

@@ -1,3 +1,4 @@
+from internal_access import internal
 import json
 import os
 import stat
@@ -503,7 +504,7 @@ def test_secure_open_uses_windows_no_follow_fallback_without_posix_flags(
 
     monkeypatch.setattr(os, "open", fail_blocking_open)
 
-    descriptor = references.open_runtime_config_descriptor_for_test(config_path)
+    descriptor = internal(references).open_runtime_config_descriptor(config_path)
 
     assert descriptor == 41
     assert calls == [config_path]

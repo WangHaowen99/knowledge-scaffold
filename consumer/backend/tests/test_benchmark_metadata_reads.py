@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import json
 from types import SimpleNamespace
 
@@ -85,7 +86,7 @@ def test_frontend_contract_uses_executable_behavior_probe():
             + "\n",
         )
 
-    assert benchmark.frontend_request_contract(runner=run) == {
+    assert internal(benchmark).frontend_request_contract(runner=run) == {
         "ontology_list_requests": 1,
         "non_knowledge_tree_requests": 0,
     }
@@ -119,14 +120,6 @@ def test_benchmark_exercises_production_metadata_entrypoints(monkeypatch):
     monkeypatch.setattr(workspaces, "list_workspaces", list_workspaces)
     monkeypatch.setattr(ontologies, "get_ontology_registry", get_registry)
     monkeypatch.setattr(view_cache, "get_package_tree_cached", get_tree)
-    monkeypatch.setattr(
-        benchmark,
-        "frontend_request_contract",
-        lambda: {
-            "ontology_list_requests": 1,
-            "non_knowledge_tree_requests": 0,
-        },
-    )
 
     report = benchmark.run_benchmark(
         samples=5,

@@ -886,16 +886,6 @@ class ExecutionStore:
             return None
         return self._load_session(session_id)
 
-    def replace_save_session_for_test(self, callback: Any) -> Any:
-        """Replace the durable session writer and return its previous value."""
-        previous = self._save_session
-        self._save_session = callback
-        return previous
-
-    def has_cached_session_for_test(self, session_id: str) -> bool:
-        """Return whether a session is present in the volatile read cache."""
-        return session_id in self._cache
-
     def _save_session(
         self,
         session_id: str,

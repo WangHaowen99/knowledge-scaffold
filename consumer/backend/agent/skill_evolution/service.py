@@ -330,10 +330,6 @@ class SkillEvolutionService:
         """List tasks through the service boundary."""
         return self._store.list_tasks(workspace_id, **filters)
 
-    def set_config_provider_for_test(self, provider: Callable[[], Dict[str, Any]]) -> None:
-        """Override configuration lookup for deterministic worker tests."""
-        self._config = provider  # type: ignore[method-assign]
-
     # ----------------------------------------------------------- config/client
     @staticmethod
     def _config() -> Dict[str, Any]:
@@ -420,9 +416,6 @@ class SkillEvolutionService:
             h.update(files[rel])
             h.update(b"\0")
         return h.hexdigest()
-
-    def compute_version_sha_for_test(self, version_dir: Path) -> str:
-        return self._compute_version_sha(version_dir)
 
     @staticmethod
     def _version_dir_mtime(version_dir: Path) -> float:

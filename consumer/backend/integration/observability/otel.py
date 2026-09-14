@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import importlib
 import os
 import threading
 import time
-from typing import Any, Callable, Iterator, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from integration.observability.otel_data import metric_record, snapshot_readable_span
 from utils.logging import get_logger
@@ -467,110 +466,6 @@ def _get_batch_metric_instruments(
         return recorder.instruments_for_workspace(workspace_id)
 
 
-def batch_span_processor_options(
-    env: Optional[Mapping[str, str]] = None,
-) -> dict[str, int]:
-    """Resolve bounded span processor options through the public API."""
-    return _batch_span_processor_options(env)
-
-
-def create_batch_span_processor(
-    span_exporter: Any,
-    *,
-    env: Optional[Mapping[str, str]] = None,
-) -> Any:
-    """Create the bounded SDK span processor through the public API."""
-    return _create_batch_span_processor(span_exporter, env=env)
-
-
-def create_metric_instruments(meter: Any) -> dict[str, Any]:
-    """Create the standard observability metric instruments."""
-    return _create_metric_instruments(meter)
-
-
-def batch_metric_instruments(*, router_id: str, workspace_id: str) -> dict[str, Any]:
-    """Resolve metric instruments for one router/workspace pair."""
-    return _get_batch_metric_instruments(router_id=router_id, workspace_id=workspace_id)
-
-
-def runtime_metric_recorder_count(router_id: str) -> int:
-    """Return the number of metric recorders retained for one router."""
-    resolved_router_id = str(router_id or "")
-    with _lock:
-        recorder_count = 0
-        recorders = (
-            _router_metric_recorders.get(resolved_router_id),
-            _batch_metric_recorders.get(resolved_router_id),
-        )
-        for recorder in recorders:
-            if recorder is not None:
-                recorder_count += 1
-        return recorder_count
-
-
-def batch_metric_recorder_snapshot(router_id: str) -> dict[str, Any] | None:
-    """Return stable diagnostics for the batch recorder owned by a router."""
-    with _lock:
-        recorder = _batch_metric_recorders.get(str(router_id or ""))
-    return recorder.diagnostics_snapshot() if recorder is not None else None
-
-
-class BatchMetricReaderMonitor:
-    """Stable liveness monitor for one SDK metric reader."""
-
-    def __init__(self, recorder: Any) -> None:
-        self._recorder = recorder
-
-    def is_alive(self) -> bool:
-        """Return whether the monitored reader still owns a live worker."""
-        return not _metric_reader_stopped(getattr(self._recorder, "_reader", None))
-
-
-def batch_metric_reader_monitor(router_id: str) -> BatchMetricReaderMonitor | None:
-    """Capture a reader liveness monitor before a shutdown transition."""
-    with _lock:
-        recorder = _batch_metric_recorders.get(str(router_id or ""))
-    return BatchMetricReaderMonitor(recorder) if recorder is not None else None
-
-
-def wait_for_batch_metric_reader(router_id: str, timeout: float) -> None:
-    """Wait for a router's batch metric reader to stop in lifecycle tests."""
-    with _lock:
-        recorder = _batch_metric_recorders.get(str(router_id or ""))
-    if recorder is not None:
-        recorder.wait_for_reader_shutdown(timeout)
-
-
-def metric_recorder_shutdown_result(provider: Any, *, batch: bool) -> bool:
-    """Verify recorder shutdown propagation against a supplied provider."""
-    recorder_type = _RouterBatchMetricRecorder if batch else _RouterMetricRecorder
-    recorder = object.__new__(recorder_type)
-    recorder._provider = provider
-    recorder._reader = None
-    return recorder.shutdown(timeout_millis=50)
-
-
-@contextmanager
-def runtime_metric_recorder_test_scope(
-    *,
-    router_recorders: dict[str, Any],
-    batch_recorders: dict[str, Any],
-) -> Iterator[None]:
-    """Temporarily replace recorder registries for isolated lifecycle tests."""
-    global _router_metric_recorders, _batch_metric_recorders
-    with _lock:
-        previous_router_recorders = _router_metric_recorders
-        previous_batch_recorders = _batch_metric_recorders
-        _router_metric_recorders = router_recorders
-        _batch_metric_recorders = batch_recorders
-    try:
-        yield
-    finally:
-        with _lock:
-            _router_metric_recorders = previous_router_recorders
-            _batch_metric_recorders = previous_batch_recorders
-
-
 def _operate_metric_recorders(
     recorders: list[Any],
     *,
@@ -695,22 +590,6 @@ class _RouterBatchMetricRecorder:
     def resolve_workspace(self, scope_name: str) -> str:
         with self._lock:
             return self._workspace_by_scope.get(str(scope_name or ""), "")
-
-    def diagnostics_snapshot(self) -> dict[str, Any]:
-        """Return recorder ownership and scope diagnostics without mutable internals."""
-        with self._lock:
-            return {
-                "provider_id": id(self._provider),
-                "reader_id": id(self._reader),
-                "reader_alive": not _metric_reader_stopped(self._reader),
-                "workspace_by_scope": dict(self._workspace_by_scope),
-            }
-
-    def wait_for_reader_shutdown(self, timeout: float) -> None:
-        """Wait for the SDK reader worker in bounded lifecycle tests."""
-        thread = getattr(self._reader, "_daemon_thread", None)
-        if thread is not None:
-            thread.join(timeout=max(0.0, float(timeout)))
 
     def force_flush(self, *, timeout_millis: int) -> bool:
         return bool(self._provider.force_flush(timeout_millis=timeout_millis) is not False)
@@ -853,21 +732,6 @@ try:
 
         def shutdown(self) -> Any:
             return self._batch_processor.shutdown(timeout_millis=self.shutdown_timeout_millis)
-
-        def diagnostics_options(self) -> dict[str, int]:
-            """Return the effective SDK queue options for verification."""
-            state = self._batch_processor
-            return {
-                "max_queue_size": int(state._max_queue_size),
-                "max_export_batch_size": int(state._max_export_batch_size),
-                "schedule_delay_millis": int(state._schedule_delay_millis),
-                "export_timeout_millis": int(state._export_timeout_millis),
-            }
-
-        def wait_for_worker_shutdown(self, timeout: float) -> None:
-            """Wait for the SDK worker in shutdown-boundary tests."""
-            worker = self._batch_processor._worker_thread
-            worker.join(timeout=max(0.0, float(timeout)))
 
 except ImportError:  # pragma: no cover - guarded by initialize_open_telemetry
 

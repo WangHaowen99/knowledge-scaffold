@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import importlib
 import json
 import sys
@@ -669,11 +670,11 @@ def test_concurrent_solver_worker_refresh_keeps_only_latest_worker_running(
     )
 
     first_refresh = threading.Thread(
-        target=app_module.install_solver_recovery_worker,
+        target=internal(app_module).install_solver_recovery_worker,
         args=(application, "service-first"),
     )
     second_refresh = threading.Thread(
-        target=app_module.install_solver_recovery_worker,
+        target=internal(app_module).install_solver_recovery_worker,
         args=(application, "service-second"),
     )
     first_refresh.start()

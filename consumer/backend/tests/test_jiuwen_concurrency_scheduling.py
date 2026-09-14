@@ -1,5 +1,6 @@
 """Tests for Consumer-owned openJiuwen tool scheduling."""
 
+from internal_access import internal
 import asyncio
 import json
 import threading
@@ -296,8 +297,8 @@ def test_terminal_bridge_correlates_model_and_consumer_call_ids():
     with bind_jiuwen_tool_call_identity(model_call):
         _remember_jiuwen_terminal_tool_batch(terminal_result, batch_result)
         with bind_jiuwen_tool_call_identity(unrelated_call):
-            asyncio.run(bridge.on_after_tool_call_for_test(unrelated_context))
-        asyncio.run(bridge.on_after_tool_call_for_test(matching_context))
+            asyncio.run(internal(bridge).on_after_tool_call(unrelated_context))
+        asyncio.run(internal(bridge).on_after_tool_call(matching_context))
 
     assert getitem(terminal_result, "tool_call_id") == "consumer-internal-call"
     assert getitem(terminal_result, "model_tool_call_id") == ""
@@ -327,7 +328,7 @@ def test_jiuwen_scheduler_installer_is_idempotent():
         max_parallel_workers=4,
     )
     assert agent.ability_manager is installed
-    assert installed.max_parallel_workers_for_test() == 4
+    assert internal(installed).max_parallel_workers == 4
 
 
 def test_jiuwen_engine_installs_scheduler_on_factory_agent():
@@ -338,12 +339,12 @@ def test_jiuwen_engine_installs_scheduler_on_factory_agent():
         agent_factory=lambda: agent,
     )
 
-    created_agent = engine.create_agent(max_iterations=1)
+    created_agent = internal(engine).create_agent(max_iterations=1)
 
     assert created_agent is agent
     assert isinstance(agent.ability_manager, JiuwenConcurrencyAbilityManager)
     assert agent.ability_manager.marker == "factory-delegate"
-    assert agent.ability_manager.max_parallel_workers_for_test() == 3
+    assert internal(agent.ability_manager).max_parallel_workers == 3
 
 
 def test_mock_jiuwen_end_to_end_serializes_unsafe_calls_and_stops_after_interaction(
@@ -522,7 +523,7 @@ def test_mock_jiuwen_end_to_end_serializes_unsafe_calls_and_stops_after_interact
         agent_config=SimpleNamespace(parallel_default_max_workers=2),
         agent_factory=lambda: agent,
     )
-    scheduled_agent = engine.create_agent(max_iterations=1)
+    scheduled_agent = internal(engine).create_agent(max_iterations=1)
     bridge = _JiuwenTerminalForceFinishBridge(
         terminal_result,
         event_class_provider=lambda: _CallbackEvents,

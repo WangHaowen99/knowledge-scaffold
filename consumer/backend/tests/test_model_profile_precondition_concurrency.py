@@ -1,3 +1,4 @@
+from internal_access import internal
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from threading import Event
@@ -70,7 +71,7 @@ def test_workspace_reference_write_waits_for_destructive_commit_then_revalidates
     candidate, precondition = _delete_candidate_and_precondition()
     entered_commit = Event()
     release_commit = Event()
-    original_write = system_config_module.write_config_document_unlocked
+    original_write = internal(system_config_module).write_config_document_unlocked
 
     def blocking_write(*args, **kwargs):
         entered_commit.set()
@@ -79,7 +80,7 @@ def test_workspace_reference_write_waits_for_destructive_commit_then_revalidates
 
     monkeypatch.setattr(
         system_config_module,
-        "write_config_document_unlocked",
+        "_write_config_document_unlocked",
         blocking_write,
     )
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -114,7 +115,7 @@ def test_destructive_commit_waits_for_workspace_reference_write_without_deadlock
     candidate, precondition = _delete_candidate_and_precondition()
     reference_validated = Event()
     release_workspace_write = Event()
-    original_validate = workspaces_module.validate_global_runtime_profile_refs
+    original_validate = internal(workspaces_module).validate_global_runtime_profile_refs
 
     def blocking_reference_validation(*args, **kwargs):
         result = original_validate(*args, **kwargs)
@@ -124,7 +125,7 @@ def test_destructive_commit_waits_for_workspace_reference_write_without_deadlock
 
     monkeypatch.setattr(
         workspaces_module,
-        "validate_global_runtime_profile_refs",
+        "_validate_global_runtime_profile_refs",
         blocking_reference_validation,
     )
     with ThreadPoolExecutor(max_workers=2) as executor:

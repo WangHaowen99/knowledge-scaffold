@@ -14,9 +14,7 @@ class NL2SQLHttpSearchAdapter:
 
     def __init__(self, connection):
         self._client = NL2SQLProvider(connection)
-
-    def set_post_for_test(self, callback) -> None:
-        self._client.set_post_for_test(callback)
+        self._session = self._client._session
 
     def search_stream(
         self,

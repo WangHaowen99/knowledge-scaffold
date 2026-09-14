@@ -1,3 +1,4 @@
+from internal_access import internal
 import json
 import multiprocessing
 import os
@@ -93,7 +94,7 @@ def test_stack_frame_names_omit_source_text(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
 
-    frame_index = profile.frame_index(stack_profiler_module.current_frame())
+    frame_index = profile.frame_index(internal(sys).getframe())
 
     frame_name = profile.frames[frame_index]["name"]
     assert frame_name.startswith("test_speedscope_profiles.")
@@ -115,8 +116,8 @@ def test_context_bindings_do_not_leak_for_interleaved_runs(tmp_path):
         session_id="session-b",
         turn_id=1,
     )
-    stack_profiler_module.register_diagnostics_profile(profile_a)
-    stack_profiler_module.register_diagnostics_profile(profile_b)
+    internal(stack_profiler_module).RUNS["run-a"] = profile_a
+    internal(stack_profiler_module).RUNS["run-b"] = profile_b
     context_a = Context()
     context_b = Context()
 
@@ -135,7 +136,7 @@ def test_context_bindings_do_not_leak_for_interleaved_runs(tmp_path):
 
         assert profile_a.thread_profile().active_count == 0
         assert profile_b.thread_profile().active_count == 0
-        assert stack_profiler_module.thread_run_counts() == {}
+        assert internal(stack_profiler_module).THREAD_RUN_COUNTS == {}
     finally:
         _reset_stack_profiler_state()
 
@@ -154,8 +155,8 @@ def test_shared_event_loop_thread_sampling_is_skipped_when_multiple_runs_are_bou
         session_id="session-b",
         turn_id=1,
     )
-    stack_profiler_module.register_diagnostics_profile(profile_a)
-    stack_profiler_module.register_diagnostics_profile(profile_b)
+    internal(stack_profiler_module).RUNS["run-a"] = profile_a
+    internal(stack_profiler_module).RUNS["run-b"] = profile_b
     context_a = Context()
     context_b = Context()
 
@@ -163,7 +164,7 @@ def test_shared_event_loop_thread_sampling_is_skipped_when_multiple_runs_are_bou
         assert context_a.run(stack_profiler_module.attach_current_thread_stack_profile, "run-a")
         assert context_b.run(stack_profiler_module.attach_current_thread_stack_profile, "run-b")
 
-        stack_profiler_module.sample_profile(profile_a)
+        internal(stack_profiler_module).sample_profile(profile_a)
 
         thread_profile = profile_a.thread_profile()
         assert thread_profile.samples == []
@@ -183,14 +184,14 @@ def test_stack_sample_budget_is_per_run_not_per_thread(tmp_path, monkeypatch):
         turn_id=1,
         max_samples=1,
     )
-    stack_profiler_module.register_diagnostics_profile(profile)
+    internal(stack_profiler_module).RUNS["run-budget"] = profile
     monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
 
     try:
         assert stack_profiler_module.attach_current_thread_stack_profile("run-budget")
 
-        stack_profiler_module.sample_profile(profile)
-        stack_profiler_module.sample_profile(profile)
+        internal(stack_profiler_module).sample_profile(profile)
+        internal(stack_profiler_module).sample_profile(profile)
 
         thread_profile = profile.thread_profile()
         assert profile.total_samples == 1
@@ -219,28 +220,28 @@ def test_process_sample_budget_limits_concurrent_runs(tmp_path, monkeypatch):
         max_samples=10,
         process_max_samples=1,
     )
-    stack_profiler_module.register_diagnostics_profile(profile_a)
-    stack_profiler_module.register_diagnostics_profile(profile_b)
+    internal(stack_profiler_module).RUNS["run-a"] = profile_a
+    internal(stack_profiler_module).RUNS["run-b"] = profile_b
     monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
 
     try:
         assert stack_profiler_module.attach_current_thread_stack_profile("run-a")
-        stack_profiler_module.sample_profile(profile_a)
+        internal(stack_profiler_module).sample_profile(profile_a)
         stack_profiler_module.detach_current_thread_stack_profile("run-a")
 
         assert stack_profiler_module.attach_current_thread_stack_profile("run-b")
-        stack_profiler_module.sample_profile(profile_b)
+        internal(stack_profiler_module).sample_profile(profile_b)
 
         assert profile_a.total_samples == 1
         assert profile_b.total_samples == 0
         assert profile_b.thread_profile().dropped_samples == 1
-        assert stack_profiler_module.process_sample_count() == 1
+        assert internal(stack_profiler_module).PROCESS_SAMPLE_COUNT == 1
 
-        stack_profiler_module.release_process_samples(profile_a.total_samples)
-        stack_profiler_module.sample_profile(profile_b)
+        internal(stack_profiler_module).release_process_samples(profile_a.total_samples)
+        internal(stack_profiler_module).sample_profile(profile_b)
 
         assert profile_b.total_samples == 1
-        assert stack_profiler_module.process_sample_count() == 1
+        assert internal(stack_profiler_module).PROCESS_SAMPLE_COUNT == 1
     finally:
         stack_profiler_module.detach_current_thread_stack_profile("run-a")
         stack_profiler_module.detach_current_thread_stack_profile("run-b")
@@ -263,19 +264,19 @@ def test_run_trace_close_cleans_started_profile_after_pre_loop_exception(tmp_pat
             user_query="query",
             workspace_id="workspace",
         )
-        assert not stack_profiler_module.has_active_diagnostics_profile("run-pre-loop-error")
+        assert "run-pre-loop-error" not in internal(stack_profiler_module).RUNS
 
         try:
             raise RuntimeError("before agent loop")
         except RuntimeError:
             trace.close(status=RuntimeStatus.ERROR)
 
-        assert not stack_profiler_module.has_active_diagnostics_profile("run-pre-loop-error")
-        assert stack_profiler_module.process_sample_count() == 0
-        assert not stack_profiler_module.has_active_diagnostics_profile("run-pre-loop-error")
+        assert "run-pre-loop-error" not in internal(stack_profiler_module).RUNS
+        assert internal(stack_profiler_module).PROCESS_SAMPLE_COUNT == 0
+        assert "run-pre-loop-error" not in internal(stack_profiler_module).RUNS
 
         trace.close(status=RuntimeStatus.ERROR)
-        assert stack_profiler_module.process_sample_count() == 0
+        assert internal(stack_profiler_module).PROCESS_SAMPLE_COUNT == 0
     finally:
         _reset_stack_profiler_state()
 
@@ -447,7 +448,7 @@ def test_speedscope_flush_writes_terminal_pending_drop_without_run_event(tmp_pat
     profile_names = [profile["name"] for profile in document["profiles"]]
     frame_names = [frame["name"] for frame in document["shared"]["frames"]]
 
-    assert exporter.pending_drop_count == 0
+    assert internal(exporter).pending_drops == {}
     assert any("Run run-terminal-only-drop" in name and "[INCOMPLETE]" in name for name in profile_names)
     assert any("INCOMPLETE: dropped 1" in name for name in frame_names)
 
@@ -471,10 +472,10 @@ def test_speedscope_pending_drops_are_bounded_and_expire(tmp_path):
             )
         )
 
-    assert exporter.pending_drop_count == 2
-    assert not exporter.has_pending_drop("run-pending-0")
+    assert len(internal(exporter).pending_drops) == 2
+    assert "run-pending-0" not in internal(exporter).pending_drops
 
-    exporter.age_pending_drop_for_test("run-pending-1", seconds=10.0)
+    internal(exporter).pending_drops["run-pending-1"].updated_at -= 10.0
     exporter.record_drop(
         RuntimeEvent(
             type=RuntimeEventType.LLM_STARTED,
@@ -486,7 +487,7 @@ def test_speedscope_pending_drops_are_bounded_and_expire(tmp_path):
         )
     )
 
-    assert not exporter.has_pending_drop("run-pending-1")
+    assert "run-pending-1" not in internal(exporter).pending_drops
 
 
 @pytest.mark.parametrize("use_log_dir", [True, False])
@@ -521,9 +522,8 @@ def test_speedscope_writers_share_runtime_output_dir(tmp_path, monkeypatch, use_
             turn_id=2,
             enabled=True,
         )
-        profile = stack_profiler_module.active_diagnostics_profile("run-sampled-output-dir")
-        assert profile is not None
-        stack_profiler_module.sample_profile(profile)
+        profile = internal(stack_profiler_module).RUNS["run-sampled-output-dir"]
+        internal(stack_profiler_module).sample_profile(profile)
         stack_profiler_module.stop_run_stack_profile(
             "run-sampled-output-dir",
             status=RuntimeStatus.SUCCESS,
@@ -553,7 +553,7 @@ def test_speedscope_prune_removes_expired_json_and_session_lock(tmp_path):
     os.utime(stale_path, (stale_timestamp, stale_timestamp))
     os.utime(stale_lock, (stale_timestamp, stale_timestamp))
 
-    exporter.prune_old_files(current_path)
+    internal(exporter).prune_old_files(current_path)
 
     assert not stale_path.exists()
     assert not stale_lock.exists()
@@ -711,7 +711,12 @@ def _new_stack_profile(
 
 
 def _reset_stack_profiler_state():
-    stack_profiler_module.reset_diagnostics_state()
+    internal(stack_profiler_module).release_process_samples(internal(stack_profiler_module).PROCESS_SAMPLE_COUNT)
+    with internal(stack_profiler_module).LOCK:
+        internal(stack_profiler_module).RUNS.clear()
+    with internal(stack_profiler_module).THREAD_RUN_COUNTS_LOCK:
+        internal(stack_profiler_module).THREAD_RUN_COUNTS.clear()
+    internal(stack_profiler_module).CONTEXT_BINDINGS.set(())
 
 
 def _load_single_speedscope_document(output_dir):
@@ -792,9 +797,10 @@ class _LockHoldingSpeedscopeExporter:
 
     def export(self, event):
         if not self.export_started.is_set():
-            self.export_started.set()
-            self.release_export.wait(timeout=2.0)
-            self.delegate.export_while_locked(event)
+            with internal(self.delegate).lock:
+                self.export_started.set()
+                self.release_export.wait(timeout=2.0)
+                self.delegate.export(event)
             return
         self.delegate.export(event)
 

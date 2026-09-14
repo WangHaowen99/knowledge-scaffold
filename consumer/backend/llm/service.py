@@ -102,23 +102,6 @@ class LLMService:
         with self._cancel_lock:
             self._cancel_events.pop(run_id, None)
 
-    def set_cancel_event_for_test(self, run_id: str, event: threading.Event) -> None:
-        with self._cancel_lock:
-            self._cancel_events[run_id] = event
-
-    def get_cancel_event_for_test(
-        self,
-        run_id: Optional[str],
-    ) -> Optional[threading.Event]:
-        """Resolve a cancellation event through the production service path."""
-        return self._get_cancel_event(run_id)
-
-    def collect_non_stream_response_for_test(self, response: Any, **kwargs: Any) -> Dict[str, Any]:
-        return self._collect_non_stream_response(response, **kwargs)
-
-    def collect_response_for_test(self, response: Any, **kwargs: Any) -> Dict[str, Any]:
-        return self._collect_response(response, **kwargs)
-
     def _get_cancel_event(self, run_id: Optional[str]) -> Optional[threading.Event]:
         """Return the cancel event for ``run_id``, creating one on first touch.
 
@@ -312,25 +295,6 @@ class LLMService:
             request_label=request_label,
             tool_calls_closed_callback=tool_calls_closed_callback,
             dispatch_reasoning_summary=_dispatch_wrapper,
-        )
-
-    def collect_stream_response_for_test(
-        self,
-        response: Any,
-        emit_func: Optional[Callable[..., None]] = None,
-        run_id: Optional[str] = None,
-        reasoning_summary_callback: Optional[Callable[[str, str], None]] = None,
-        request_label: Optional[str] = None,
-        tool_calls_closed_callback: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
-    ) -> Dict[str, Any]:
-        """Collect a stream through the production path for contract tests."""
-        return self._collect_stream_response(
-            response,
-            emit_func=emit_func,
-            run_id=run_id,
-            reasoning_summary_callback=reasoning_summary_callback,
-            request_label=request_label,
-            tool_calls_closed_callback=tool_calls_closed_callback,
         )
 
     def _execute_single_request(

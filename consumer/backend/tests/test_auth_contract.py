@@ -6,6 +6,7 @@
 消息一旦改变即破坏三类外部消费方。
 """
 
+from internal_access import internal
 from types import SimpleNamespace
 
 import pytest
@@ -146,9 +147,9 @@ def test_non_admin_on_admin_route_returns_403(client, auth_manager):
 
 
 def test_password_change_required_state_does_not_block_routes(client, auth_manager):
-    users = auth_manager.load_users_for_test()
+    users = internal(auth_manager).load_users()
     users["admin"]["must_change_password"] = True
-    auth_manager.save_users_for_test(users)
+    internal(auth_manager).save_users(users)
     token = _login(client).json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
 

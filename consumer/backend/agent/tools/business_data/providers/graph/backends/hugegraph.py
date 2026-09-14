@@ -62,10 +62,6 @@ class _PinnedTLSAdapter(HTTPAdapter):
         self._server_hostname = server_hostname
         super().__init__()
 
-    @property
-    def server_hostname(self) -> str:
-        return self._server_hostname
-
     def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
         pool_kwargs["assert_hostname"] = self._server_hostname
         pool_kwargs["server_hostname"] = self._server_hostname
@@ -198,9 +194,6 @@ class HugeGraphBackend:
                     "https://",
                     _PinnedTLSAdapter(server_hostname),
                 )
-
-    def pinned_session_for_test(self) -> Any:
-        return self._pinned_session
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def close(self) -> None:

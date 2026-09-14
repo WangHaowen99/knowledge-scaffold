@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 
 from agent.tools.business_data.adapters.nl2sql_http_search import (
@@ -67,7 +68,7 @@ def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
     def post_response(*_args, **_kwargs):
         return _Response()
 
-    adapter.set_post_for_test(post_response)
+    internal(adapter).session.post = post_response
 
     events = list(adapter.search_stream(query="查询零件", entity="TargetItem"))
 
@@ -92,7 +93,7 @@ def test_nl2sql_value_lookup_returns_structured_content():
     def post_response(*_args, **_kwargs):
         return _Response()
 
-    adapter.set_post_for_test(post_response)
+    internal(adapter).session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -111,7 +112,7 @@ def test_nl2sql_value_lookup_preserves_text_answer_when_no_rows():
     def post_response(*_args, **_kwargs):
         return _TextAnswerResponse()
 
-    adapter.set_post_for_test(post_response)
+    internal(adapter).session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -127,7 +128,7 @@ def test_nl2sql_value_lookup_emits_provider_failure_in_final():
     def post_response(*_args, **_kwargs):
         return _FailureResponse()
 
-    adapter.set_post_for_test(post_response)
+    internal(adapter).session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 

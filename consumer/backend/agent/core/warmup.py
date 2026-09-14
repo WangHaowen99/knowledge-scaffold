@@ -55,12 +55,6 @@ def get_runtime_warmup_status() -> RuntimeWarmupStatus:
         return _copy_status_unlocked()
 
 
-def runtime_warmup_task_for_test() -> Optional[asyncio.Task[Any]]:
-    """Return the supervised warm-up task for lifecycle assertions."""
-    with _lock:
-        return _task
-
-
 def start_runtime_warmup(
     *,
     agent_config: Any = None,

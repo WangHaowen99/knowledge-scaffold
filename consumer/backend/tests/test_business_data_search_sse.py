@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 from agent.tools.base import ToolContext
 from agent.tools.business_data.adapters.mindsdb_search import MindsDBSearchAdapter
 from agent.tools.business_data_search import (
@@ -213,7 +214,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
             ]
         )
 
-    provider.set_post_for_test(_fake_post)
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查询快艇 B001", entity="TargetItem"))
 

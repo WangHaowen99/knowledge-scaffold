@@ -1,3 +1,4 @@
+from internal_access import internal
 import asyncio
 import json
 import re
@@ -476,13 +477,13 @@ def test_workspace_endpoint_binding_app_validates_and_resets_context():
 
         seen_endpoint_ids.append(mcp_server.get_bound_mcp_endpoint_id())
         seen_state_endpoint_ids.append(
-            scope["state"][mcp_server.mcp_endpoint_state_key()],
+            scope["state"][internal(mcp_server).MCP_ENDPOINT_STATE_KEY],
         )
         await JSONResponse({"ok": True})(scope, receive, send)
 
-    binding_app = mcp_server.WorkspaceEndpointBindingApp(
+    binding_app = internal(mcp_server).WorkspaceEndpointBindingApp(
         child_app,
-        session_bindings=mcp_server.WorkspaceEndpointSessionBindings(),
+        session_bindings=internal(mcp_server).WorkspaceEndpointSessionBindings(),
     )
 
     async def invoke(endpoint_id):
@@ -507,7 +508,7 @@ def test_workspace_endpoint_binding_app_validates_and_resets_context():
                 "client": ("test", 1),
                 "server": ("test", 80),
                 "path_params": {"mcp_endpoint_id": endpoint_id},
-                "state": {mcp_server.mcp_endpoint_state_key(): "f" * 16},
+                "state": {internal(mcp_server).MCP_ENDPOINT_STATE_KEY: "f" * 16},
             },
             receive,
             send,
@@ -530,20 +531,20 @@ def test_workspace_endpoint_binding_app_validates_and_resets_context():
 
 def test_workspace_endpoint_binding_app_pins_and_releases_http_session():
     seen_endpoint_ids: list[str] = []
-    bindings = mcp_server.WorkspaceEndpointSessionBindings()
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings()
 
     async def child_app(scope, receive, send):
         from starlette.responses import JSONResponse
 
         seen_endpoint_ids.append(
-            scope["state"][mcp_server.mcp_endpoint_state_key()],
+            scope["state"][internal(mcp_server).MCP_ENDPOINT_STATE_KEY],
         )
         response = JSONResponse({"ok": True})
-        if not mcp_server.request_mcp_session_id(scope):
+        if not internal(mcp_server).request_mcp_session_id(scope):
             response.headers["mcp-session-id"] = "session-a"
         await response(scope, receive, send)
 
-    binding_app = mcp_server.WorkspaceEndpointBindingApp(
+    binding_app = internal(mcp_server).WorkspaceEndpointBindingApp(
         child_app,
         session_bindings=bindings,
     )
@@ -616,7 +617,7 @@ def test_workspace_endpoint_binding_app_pins_and_releases_http_session():
 
 def test_workspace_endpoint_session_bindings_expire_after_idle_timeout():
     now = [0.0]
-    bindings = mcp_server.WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=10,
         max_active_sessions=2,
         clock=lambda: now[0],
@@ -638,7 +639,7 @@ def test_workspace_endpoint_session_bindings_expire_after_idle_timeout():
 
 def test_workspace_endpoint_session_bindings_expire_in_last_seen_order():
     now = [0.0]
-    bindings = mcp_server.WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=10,
         max_active_sessions=3,
         clock=lambda: now[0],
@@ -657,15 +658,15 @@ def test_workspace_endpoint_session_bindings_expire_in_last_seen_order():
 
 
 def test_workspace_endpoint_session_bindings_reject_capacity_without_eviction():
-    bindings = mcp_server.WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=60,
         max_active_sessions=1,
     )
 
     assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
-    with pytest.raises(mcp_server.MCPActiveSessionLimitError):
+    with pytest.raises(internal(mcp_server).MCPActiveSessionLimitError):
         bindings.reserve_new_session(ENDPOINT_ID)
-    with pytest.raises(mcp_server.MCPActiveSessionLimitError):
+    with pytest.raises(internal(mcp_server).MCPActiveSessionLimitError):
         bindings.bind_or_validate("session-b", ENDPOINT_ID)
 
     assert bindings.bind_or_validate("session-a", OTHER_ENDPOINT_ID) is False
@@ -674,7 +675,7 @@ def test_workspace_endpoint_session_bindings_reject_capacity_without_eviction():
 
 def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
     child_calls: list[str] = []
-    bindings = mcp_server.WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=60,
         max_active_sessions=1,
     )
@@ -683,7 +684,7 @@ def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
     async def child_app(scope, receive, send):
         child_calls.append(scope["path"])
 
-    binding_app = mcp_server.WorkspaceEndpointBindingApp(
+    binding_app = internal(mcp_server).WorkspaceEndpointBindingApp(
         child_app,
         session_bindings=bindings,
     )
@@ -724,7 +725,7 @@ def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
 
 
 def test_workspace_endpoint_binding_tracks_session_from_error_response():
-    bindings = mcp_server.WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=60,
         max_active_sessions=1,
     )
@@ -736,7 +737,7 @@ def test_workspace_endpoint_binding_tracks_session_from_error_response():
         response.headers["mcp-session-id"] = "session-from-error"
         await response(scope, receive, send)
 
-    binding_app = mcp_server.WorkspaceEndpointBindingApp(
+    binding_app = internal(mcp_server).WorkspaceEndpointBindingApp(
         child_app,
         session_bindings=bindings,
     )
@@ -773,7 +774,7 @@ def test_workspace_endpoint_binding_tracks_session_from_error_response():
     asyncio.run(exercise_binding())
 
     assert bindings.active_count() == 1
-    with pytest.raises(mcp_server.MCPActiveSessionLimitError):
+    with pytest.raises(internal(mcp_server).MCPActiveSessionLimitError):
         bindings.reserve_new_session(ENDPOINT_ID)
 
 
@@ -783,9 +784,9 @@ def test_configure_streamable_http_session_idle_timeout():
         routes=[SimpleNamespace(app=SimpleNamespace(session_manager=session_manager))],
     )
 
-    mcp_server.configure_streamable_http_session_idle_timeout(
+    internal(mcp_server).configure_streamable_http_session_idle_timeout(
         app,
-        mcp_server.mcp_session_idle_timeout_seconds(),
+        internal(mcp_server).MCP_SESSION_IDLE_TIMEOUT_SECONDS,
     )
 
     assert session_manager.session_idle_timeout == 1800.0
@@ -824,7 +825,7 @@ def test_resolve_scope_prefers_current_http_request_endpoint(monkeypatch, tmp_pa
     monkeypatch.setattr(mcp_server, "resolve_mcp_scope_from_token", resolve_scope)
 
     with mcp_server.bind_mcp_endpoint_id(OTHER_ENDPOINT_ID):
-        scope = mcp_server.resolve_scope(
+        scope = internal(mcp_server).resolve_scope(
             _config(tmp_path, "streamable-http"),
             required_scope="mcp:chat",
         )
@@ -841,7 +842,7 @@ def test_current_http_request_without_endpoint_state_fails_closed(monkeypatch):
     )
 
     with pytest.raises(MCPTokenAuthError) as exc_info:
-        mcp_server.get_request_mcp_endpoint_id_best_effort()
+        internal(mcp_server).get_request_mcp_endpoint_id_best_effort()
 
     assert exc_info.value.code == "MCP_WORKSPACE_ENDPOINT_INVALID"
 

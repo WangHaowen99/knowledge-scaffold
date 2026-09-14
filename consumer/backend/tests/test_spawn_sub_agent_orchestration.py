@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import inspect
 import json
@@ -650,7 +651,7 @@ def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkey
     tool = SpawnSubAgentTool()
 
     async def exercise():
-        semaphore = manager.get_async_semaphore_for_test()
+        semaphore = internal(manager).get_async_semaphore()
         await semaphore.acquire()
         try:
             return await tool.aexecute(

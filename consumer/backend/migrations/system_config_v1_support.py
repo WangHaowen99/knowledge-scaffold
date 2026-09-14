@@ -1110,7 +1110,7 @@ def _ensure_private_file(path: Path) -> None:
         os.close(descriptor)
 
 
-def write_bytes_atomic(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
+def _write_bytes_atomic(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise OSError("target must not be a symbolic link")
@@ -1140,7 +1140,7 @@ def write_bytes_atomic(path: Path, payload: bytes, *, mode: int = 0o600) -> None
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    write_bytes_atomic(
+    _write_bytes_atomic(
         path,
         (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
@@ -1154,7 +1154,7 @@ def _candidate_backup_path(base_path: Path, index: int) -> Path:
     return base_path if index == 0 else base_path.with_name(f"{base_path.name}.{index}")
 
 
-def create_verified_backup(
+def _create_verified_backup(
     source_path: Path,
     source_bytes: bytes,
     base_path: Path,
@@ -1168,7 +1168,7 @@ def create_verified_backup(
                 _ensure_private_file(candidate)
                 return candidate, False
             continue
-        write_bytes_atomic(candidate, source_bytes)
+        _write_bytes_atomic(candidate, source_bytes)
         if _read_regular_file_bytes(candidate) != source_bytes:
             raise OSError("backup content verification failed")
         _ensure_private_file(candidate)
@@ -1243,7 +1243,7 @@ def _merge_backup_paths(*groups: list[Path]) -> list[Path]:
     return merged
 
 
-def write_marker(
+def _write_marker(
     runtime_root: Path,
     migration_id: str,
     *,
@@ -1440,7 +1440,7 @@ def execute_document_migration(
             try:
                 for backup in existing_backups:
                     _ensure_private_file(backup)
-                write_marker(
+                _write_marker(
                     resolved_root,
                     migration_id,
                     backup_paths=existing_backups,
@@ -1516,7 +1516,7 @@ def execute_document_migration(
         )
 
     try:
-        backup_path, backup_created = create_verified_backup(
+        backup_path, backup_created = _create_verified_backup(
             loaded.path,
             loaded.raw_bytes,
             planned_backup,
@@ -1543,7 +1543,7 @@ def execute_document_migration(
     ).encode("utf-8")
     temporary = loaded.path.with_name(f"{loaded.path.name}.{uuid.uuid4().hex}.migration.tmp")
     try:
-        write_bytes_atomic(temporary, target_bytes)
+        _write_bytes_atomic(temporary, target_bytes)
         temporary_payload = json.loads(_read_regular_file_bytes(temporary).decode("utf-8"))
         if temporary_payload != plan.target_document:
             raise OSError("temporary target verification failed")
@@ -1594,7 +1594,7 @@ def execute_document_migration(
         )
 
     try:
-        write_marker(
+        _write_marker(
             resolved_root,
             migration_id,
             backup_paths=backup_paths,

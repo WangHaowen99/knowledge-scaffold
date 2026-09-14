@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import importlib
 import threading
@@ -24,23 +25,8 @@ class _FakeAgentCallbackEvent:
 
 class _FakeCallbackFramework:
     def __init__(self) -> None:
-        self._callbacks = {}
-        self._metrics = {}
-
-    def seed_callbacks_for_test(self, callbacks) -> None:
-        self._callbacks = dict(callbacks)
-
-    def seed_metrics_for_test(self, metrics) -> None:
-        self._metrics = dict(metrics)
-
-    def callbacks_for_test(self):
-        return dict(self._callbacks)
-
-    def metric_names_for_test(self):
-        return list(self._metrics)
-
-    def pop_callback_for_test(self, event) -> None:
-        self._callbacks.pop(event, None)
+        internal(self).callbacks = {}
+        internal(self).metrics = {}
 
 
 class _FakeCallbackManager:
@@ -59,9 +45,6 @@ class _FakeCallbackManager:
     def _get_agent_event(self, event) -> str:
         return "{}_{}".format(self.agent_id, event)
 
-    def agent_event_for_test(self, event) -> str:
-        return self._get_agent_event(event)
-
     async def clear(self) -> None:
         self.clear_calls += 1
         if self.clear_error is not None:
@@ -72,7 +55,7 @@ class _FakeCallbackManager:
             _FakeAgentCallbackEvent.ON_MODEL_EXCEPTION,
             _FakeAgentCallbackEvent.AFTER_TOOL_CALL,
         ):
-            self.framework.pop_callback_for_test(self._get_agent_event(event))
+            internal(self.framework).callbacks.pop(internal(self).get_agent_event(event), None)
 
 
 def _install_fake_runner(monkeypatch, framework, released_sessions):
@@ -104,29 +87,28 @@ def test_owned_runtime_cleanup_removes_only_owned_callbacks_metrics_and_session(
         card=SimpleNamespace(id="agent-a"),
         agent_callback_manager=manager,
     )
-    owned_event = manager.agent_event_for_test(_FakeAgentCallbackEvent.BEFORE_MODEL_CALL)
+    owned_event = internal(manager).get_agent_event(_FakeAgentCallbackEvent.BEFORE_MODEL_CALL)
     unrelated_event = "agent-b_before_model_call"
-    framework.seed_callbacks_for_test({
+    internal(framework).callbacks = {
         owned_event: [object()],
         unrelated_event: [object()],
-    })
-    framework.seed_metrics_for_test({
+    }
+    internal(framework).metrics = {
         "{}:_on_before_model_call".format(owned_event): object(),
         "{}:_on_before_model_call".format(unrelated_event): object(),
-    })
+    }
     _install_fake_runner(monkeypatch, framework, released_sessions)
 
     asyncio.run(
-        jiuwen_engine.dispose_owned_jiuwen_runtime_for_test(
+        internal(jiuwen_engine).dispose_owned_jiuwen_runtime(
             agent,
             session_id="agent-a.session.1",
         )
     )
 
     assert manager.clear_calls == 1
-    callbacks = framework.callbacks_for_test()
-    assert callbacks == {unrelated_event: callbacks[unrelated_event]}
-    assert framework.metric_names_for_test() == ["{}:_on_before_model_call".format(unrelated_event)]
+    assert internal(framework).callbacks == {unrelated_event: internal(framework).callbacks[unrelated_event]}
+    assert list(internal(framework).metrics) == ["{}:_on_before_model_call".format(unrelated_event)]
     assert released_sessions == ["agent-a.session.1"]
 
 
@@ -142,24 +124,22 @@ def test_owned_runtime_cleanup_releases_session_when_callback_clear_fails(monkey
         card=SimpleNamespace(id="agent-failing-clear"),
         agent_callback_manager=manager,
     )
-    owned_event = manager.agent_event_for_test(_FakeAgentCallbackEvent.AFTER_MODEL_CALL)
-    framework.seed_metrics_for_test({
+    owned_event = internal(manager).get_agent_event(_FakeAgentCallbackEvent.AFTER_MODEL_CALL)
+    internal(framework).metrics = {
         "{}:_on_after_model_call".format(owned_event): object(),
         "agent-unrelated_after_model_call:_on_after_model_call": object(),
-    })
+    }
     _install_fake_runner(monkeypatch, framework, released_sessions)
 
     with pytest.raises(RuntimeError, match="clear failed"):
         asyncio.run(
-            jiuwen_engine.dispose_owned_jiuwen_runtime_for_test(
+            internal(jiuwen_engine).dispose_owned_jiuwen_runtime(
                 agent,
                 session_id="agent-failing-clear.session.1",
             )
         )
 
-    assert framework.metric_names_for_test() == [
-        "agent-unrelated_after_model_call:_on_after_model_call"
-    ]
+    assert list(internal(framework).metrics) == ["agent-unrelated_after_model_call:_on_after_model_call"]
     assert released_sessions == ["agent-failing-clear.session.1"]
 
 
@@ -462,7 +442,7 @@ def test_managed_stream_cancellation_waits_for_child_producer_cleanup(monkeypatc
 
     async def exercise():
         task = asyncio.create_task(
-            engine.consume_managed_agent_stream_for_test(
+            internal(engine).consume_managed_agent_stream(
                 agent,
                 {"query": "offline", "conversation_id": "managed-cancel-session"},
                 session=session,

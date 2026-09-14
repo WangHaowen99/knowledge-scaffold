@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import logging
 import os
@@ -120,7 +121,7 @@ def test_create_sandbox_treats_409_as_conflict():
             return _FakeResponse({"detail": "sandbox already exists"}, status_code=409)
 
     client = JiuwenboxClient.__new__(JiuwenboxClient)
-    client.set_http_client_for_test(ConflictHttpClient())
+    internal(client).client = ConflictHttpClient()
 
     with pytest.raises(SandboxCreateError, match=r"failed \(409\): sandbox already exists"):
         client.create_sandbox("onto-conflict", {"version": 1})
@@ -131,9 +132,9 @@ def test_jiuwenbox_control_plane_client_ignores_environment_proxy(monkeypatch):
 
     client = JiuwenboxClient("http://127.0.0.1:8321")
     try:
-        assert client.transport_uses_environment_proxy() is False
+        assert internal(internal(client).client).trust_env is False
     finally:
-        client.close_for_test()
+        internal(client).client.close()
 
 
 def test_jiuwenbox_control_plane_requires_explicit_protocol():
@@ -157,7 +158,7 @@ def test_registry_single_flights_same_run_creation(tmp_path):
             return {"id": sandbox_id, "phase": "ready"}
 
     fake_client = BlockingSandboxClient()
-    registry.set_client_for_test(fake_client)
+    internal(registry).client = fake_client
     ctx = _policy_context(tmp_path, run_id="run-concurrent")
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -179,7 +180,7 @@ def test_registry_rejects_scope_change_for_existing_run(tmp_path):
         def create_sandbox(self, sandbox_id, policy, policy_mode):
             return {"id": sandbox_id, "phase": "ready"}
 
-    registry.set_client_for_test(ReadySandboxClient())
+    internal(registry).client = ReadySandboxClient()
     first_ctx = _policy_context(tmp_path, run_id="run-scope", ontology_id="ontology-a")
     second_ctx = _policy_context(tmp_path, run_id="run-scope", ontology_id="ontology-b")
 
@@ -208,7 +209,7 @@ def test_registry_strict_release_failure_keeps_mapping_for_retry(tmp_path):
                 raise RuntimeError("temporary delete failure")
 
     fake_client = RetryDeleteSandboxClient()
-    registry.set_client_for_test(fake_client)
+    internal(registry).client = fake_client
     ctx = _policy_context(tmp_path, run_id="run-release-retry")
     sandbox_id = registry.ensure(ctx)
 
@@ -237,7 +238,7 @@ def test_registry_releases_only_companions_registered_to_parent(tmp_path):
             self.deleted.append(sandbox_id)
 
     fake_client = TrackingSandboxClient()
-    registry.set_client_for_test(fake_client)
+    internal(registry).client = fake_client
     unrelated_main = _policy_context(tmp_path, run_id="job-det-parser")
     companion = _policy_context(tmp_path, run_id="det-parser-opaque")
     unrelated_sandbox_id = registry.ensure(unrelated_main)
@@ -269,7 +270,7 @@ def test_registry_failed_companion_release_remains_registered_for_parent_retry(t
                 raise RuntimeError("temporary delete failure")
 
     fake_client = RetryDeleteSandboxClient()
-    registry.set_client_for_test(fake_client)
+    internal(registry).client = fake_client
     companion = _policy_context(tmp_path, run_id="det-parser-retry")
     registry.register_companion("parent-run", companion.run_id)
     registry.ensure(companion)
@@ -307,7 +308,7 @@ def test_registry_concurrent_release_waits_and_retries_failed_companion_delete(t
                 raise RuntimeError("temporary delete failure")
 
     fake_client = BlockingRetryDeleteClient()
-    registry.set_client_for_test(fake_client)
+    internal(registry).client = fake_client
     companion = _policy_context(tmp_path, run_id="det-parser-concurrent-release")
     registry.register_companion("parent-run", companion.run_id)
     registry.ensure(companion)
@@ -705,7 +706,7 @@ def test_deterministic_runtime_attestation_rejects_mismatched_image(monkeypatch)
     )
 
     with pytest.raises(SandboxUnavailableError, match="runtime revision mismatch"):
-        sandbox_executor_module.attest_sandbox_runtime_for_test(
+        internal(sandbox_executor_module).attest_sandbox_runtime(
             registry,
             "onto-stale",
             config=_sandbox_config(),
@@ -732,7 +733,7 @@ def test_deterministic_runtime_attestation_accepts_matching_image(monkeypatch):
         lambda: "sha256:expected-image",
     )
 
-    sandbox_executor_module.attest_sandbox_runtime_for_test(
+    internal(sandbox_executor_module).attest_sandbox_runtime(
         MatchingRegistry(),
         "onto-current",
         config=_sandbox_config(),
@@ -1158,7 +1159,7 @@ def test_data_proxy_manager_creates_safe_env_without_raw_secret(monkeypatch):
     )
     fake_client = _FakeJiuwenboxClient()
     manager = DataConnectionSecretManager(_sandbox_config())
-    manager.set_client_for_test(fake_client)
+    internal(manager).client = fake_client
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1195,7 +1196,7 @@ def test_data_proxy_manager_rejects_script_disallowed_providers(monkeypatch, pro
     )
     fake_client = _FakeJiuwenboxClient()
     manager = DataConnectionSecretManager(_sandbox_config())
-    manager.set_client_for_test(fake_client)
+    internal(manager).client = fake_client
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1230,7 +1231,7 @@ def test_data_proxy_manager_fails_closed_when_route_create_returns_400(monkeypat
 
     fake_client = ConflictClient()
     manager = DataConnectionSecretManager(_sandbox_config())
-    manager.set_client_for_test(fake_client)
+    internal(manager).client = fake_client
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1241,7 +1242,7 @@ def test_data_proxy_manager_fails_closed_when_route_create_returns_400(monkeypat
 
     assert len(fake_client.created) == 1
     assert fake_client.started == []
-    assert not manager.has_routes_for_run("run-conflict")
+    assert internal(manager).routes_by_run.get("run-conflict") in (None, {})
 
 
 def test_data_proxy_manager_rolls_back_when_route_start_fails(monkeypatch):
@@ -1262,7 +1263,7 @@ def test_data_proxy_manager_rolls_back_when_route_start_fails(monkeypatch):
 
     fake_client = StartFailureClient()
     manager = DataConnectionSecretManager(_sandbox_config())
-    manager.set_client_for_test(fake_client)
+    internal(manager).client = fake_client
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1273,7 +1274,7 @@ def test_data_proxy_manager_rolls_back_when_route_start_fails(monkeypatch):
 
     assert len(fake_client.created) == 1
     assert fake_client.deleted == fake_client.started
-    assert not manager.has_routes_for_run("run-start-fail")
+    assert internal(manager).routes_by_run.get("run-start-fail") in (None, {})
 
 
 def test_data_proxy_manager_authenticates_mindsdb_once_per_run(monkeypatch):
@@ -1292,7 +1293,7 @@ def test_data_proxy_manager_authenticates_mindsdb_once_per_run(monkeypatch):
     )
     fake_client = _FakeJiuwenboxClient()
     manager = DataConnectionSecretManager(_sandbox_config())
-    manager.set_client_for_test(fake_client)
+    internal(manager).client = fake_client
     login_calls = []
 
     monkeypatch.setattr(
@@ -1346,7 +1347,7 @@ def test_data_proxy_manager_rejects_failed_mindsdb_login(monkeypatch):
     )
     fake_client = _FakeJiuwenboxClient()
     manager = DataConnectionSecretManager(_sandbox_config())
-    manager.set_client_for_test(fake_client)
+    internal(manager).client = fake_client
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1375,7 +1376,7 @@ def test_data_proxy_manager_blocks_http_mindsdb_password_before_login(monkeypatc
         },
     )
     manager = DataConnectionSecretManager(_sandbox_config(secret_allow_plain_http=False))
-    manager.set_client_for_test(_FakeJiuwenboxClient())
+    internal(manager).client = _FakeJiuwenboxClient()
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1398,7 +1399,7 @@ def test_data_proxy_manager_rejects_cross_scope_run_reuse(monkeypatch):
         config={"url": "http://198.51.100.27:47334", "requires_auth": False},
     )
     manager = DataConnectionSecretManager(_sandbox_config())
-    manager.set_client_for_test(_FakeJiuwenboxClient())
+    internal(manager).client = _FakeJiuwenboxClient()
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1417,7 +1418,7 @@ def test_data_proxy_manager_blocks_http_secret_when_disabled_globally(monkeypatc
         config={"url": "http://192.0.2.8:8080", "token": synthetic_secret("sandbox-credential-04")},
     )
     manager = DataConnectionSecretManager(_sandbox_config(secret_allow_plain_http=False))
-    manager.set_client_for_test(_FakeJiuwenboxClient())
+    internal(manager).client = _FakeJiuwenboxClient()
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1435,7 +1436,7 @@ def test_data_proxy_manager_allows_http_secret_when_enabled_globally(monkeypatch
         config={"url": "http://192.0.2.8:8080", "token": synthetic_secret("sandbox-credential-04")},
     )
     manager = DataConnectionSecretManager(_sandbox_config(secret_allow_plain_http=True))
-    manager.set_client_for_test(_FakeJiuwenboxClient())
+    internal(manager).client = _FakeJiuwenboxClient()
     monkeypatch.setattr(
         "integration.sandbox.data_proxy.resolve_business_data_connection",
         lambda **_: connection,
@@ -1445,9 +1446,7 @@ def test_data_proxy_manager_allows_http_secret_when_enabled_globally(monkeypatch
 
     assert prepared.data_proxy_url.startswith("http://")
     assert ":8322/onto-" in prepared.data_proxy_url
-    assert manager.client_for_test().created[0]["api_key"] == synthetic_secret(
-        "sandbox-credential-04"
-    )
+    assert internal(manager).client.created[0]["api_key"] == synthetic_secret("sandbox-credential-04")
 
 
 def test_sandbox_config_ignores_system_config_section(tmp_path, monkeypatch):

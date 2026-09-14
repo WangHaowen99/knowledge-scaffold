@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import pytest
 from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
 from agent.tools.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
@@ -575,13 +576,9 @@ def test_neo4j_resolver_uses_pinned_ip_and_keeps_original_tls_uri(monkeypatch):
         }
     )
 
-    backend.get_driver_for_test()
+    internal(backend).get_driver()
 
     assert captured["uri"] == "neo4j+s://snapshot.example.com:7687"
     resolved = captured["resolver"](("snapshot.example.com", 7687))
     assert resolved == [("192.0.2.24", 7687)]
-    from agent.tools.business_data.providers.graph.backends.neo4j import (
-        resolved_address_hostname_for_test,
-    )
-
-    assert resolved_address_hostname_for_test(resolved[0]) == "snapshot.example.com"
+    assert internal(resolved[0]).host_name == "snapshot.example.com"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 from operator import getitem
 from types import SimpleNamespace
@@ -69,7 +70,7 @@ def test_native_runtime_binds_solver_route_from_current_request(monkeypatch):
         ],
     )
 
-    state = JiuwenAsyncAgentRuntime.build_engine_state_for_test(context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(context)
 
     assert captured == {
         "user_request": "solve synthetic route plan",
@@ -117,7 +118,7 @@ def test_native_runtime_seeds_exact_preflight_products(monkeypatch):
     )
     context = _context("run-preflight-products").model_copy(update={"preflight_snapshot": snapshot})
 
-    state = JiuwenAsyncAgentRuntime.build_engine_state_for_test(context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(context)
 
     assert getitem(captured, "root_payload") is snapshot.root_payload
     assert state["_selected_ontology_context_cache"] == "<Selected-Ontology />"
@@ -287,7 +288,7 @@ def test_native_runtime_suppresses_solver_tools_for_current_evaluation(monkeypat
         ],
     )
 
-    state = JiuwenAsyncAgentRuntime.build_engine_state_for_test(context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(context)
 
     assert solver_route_requirement_from_state(state) is None
     assert solver_tools_suppressed_from_state(state) is True

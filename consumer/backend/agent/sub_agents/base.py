@@ -120,7 +120,7 @@ class SubAgent:
     """Homogeneous sub-agent: isolated ReAct loop with the standard worker toolset."""
 
     @staticmethod
-    def build_system_prompt(
+    def _build_system_prompt(
         *,
         workspace_id: Optional[str] = None,
         selected_ontology_id: Optional[str] = None,
@@ -279,7 +279,7 @@ class SubAgent:
             if effective_selected_ontology_version:
                 task_context["selected_ontology_version"] = effective_selected_ontology_version
                 task_context["selected_version"] = effective_selected_ontology_version
-            system_prompt = self.build_system_prompt(
+            system_prompt = self._build_system_prompt(
                 workspace_id=effective_workspace_id,
                 selected_ontology_id=effective_selected_ontology_id,
                 selected_ontology_version=effective_selected_ontology_version,

@@ -155,7 +155,7 @@ def test_member_write_and_user_delete_cannot_leave_orphan_reference(
 
     monkeypatch.setattr(
         user_deletion,
-        "cleanup_deleted_user_artifacts",
+        "_cleanup_deleted_user_artifacts",
         cleanup_only_workspace_members,
     )
 
