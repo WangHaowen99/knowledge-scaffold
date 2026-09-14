@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import os
 from pathlib import Path
@@ -927,7 +928,7 @@ def test_object_reference_uses_versioned_in_memory_index(tmp_path, monkeypatch):
         key="ObjectA",
         aliases=("AliasA",),
     )
-    original_loader = catalog_module._load_object_definitions
+    original_loader = internal(catalog_module).load_object_definitions
     load_count = 0
 
     def counting_loader(path):

@@ -1,5 +1,6 @@
 """Tests for lightweight task LLM configuration and routing."""
 
+from internal_access import internal
 import threading
 from types import SimpleNamespace
 
@@ -208,7 +209,7 @@ def test_reasoning_summary_uses_task_llm_when_configured(monkeypatch):
 
     summaries = []
     summary_ready = threading.Event()
-    main_llm._collect_stream_response(
+    internal(main_llm).collect_stream_response(
         response,
         reasoning_summary_callback=lambda block_id, summary: (
             summaries.append((block_id, summary)),
@@ -259,7 +260,7 @@ def test_reasoning_summary_falls_back_to_primary_llm(monkeypatch):
 
     summaries = []
     summary_ready = threading.Event()
-    llm._collect_stream_response(
+    internal(llm).collect_stream_response(
         response,
         reasoning_summary_callback=lambda block_id, summary: (
             summaries.append((block_id, summary)),

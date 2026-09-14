@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import stat
 from types import SimpleNamespace
@@ -805,7 +806,7 @@ def test_manual_backup_failure_blocks_source_mutation(tmp_path, monkeypatch):
     )
     connection_bytes = connection_path.read_bytes()
     bindings_bytes = bindings_path.read_bytes()
-    original_write = migration_module._write_bytes_atomic
+    original_write = internal(migration_module).write_bytes_atomic
 
     def fail_backup(path, payload, *, mode=None):
         if path.name.endswith(migration_module.MANUAL_BACKUP_SUFFIX):
@@ -842,7 +843,7 @@ def test_forward_only_cleanup_failure_blocks_completion_and_is_retryable(tmp_pat
         encoding="utf-8",
     )
     bindings_bytes = bindings_path.read_bytes()
-    original_remove = migration_module._remove_legacy_files
+    original_remove = internal(migration_module).remove_legacy_files
 
     def fail_cleanup(_paths):
         raise OSError("cleanup denied")

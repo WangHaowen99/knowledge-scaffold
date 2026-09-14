@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import importlib
 import json
 import os
@@ -153,9 +154,9 @@ def test_manager_single_flight_builds_one_generation_and_persists_transitions(
     package = _package(tmp_path)
     manager_a = EvidenceIndexManager(runtime)
     manager_b = EvidenceIndexManager(runtime)
-    original_build = EvidenceIndexManager._build_generation
+    original_build = internal(EvidenceIndexManager).build_generation
     manager_module = importlib.import_module("ontology.evidence.manager")
-    original_write = manager_module._atomic_json_write
+    original_write = internal(manager_module).atomic_json_write
     entered = threading.Event()
     release = threading.Event()
     calls = 0
@@ -307,7 +308,7 @@ def test_cleanup_waits_for_build_and_preserves_newly_published_generation(
 
     build_manager = EvidenceIndexManager(runtime)
     cleanup_manager = EvidenceIndexManager(runtime)
-    original_build = build_manager._build_single_flight
+    original_build = internal(build_manager).build_single_flight
     entered = threading.Event()
     release = threading.Event()
 

@@ -6,6 +6,7 @@ owner/members 管理端点权限、以及无 owner 字段旧数据的兼容性�
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -1325,7 +1326,7 @@ def test_owner_transfer_and_former_owner_update_are_one_serializable_transaction
 
     entered_transfer = threading.Event()
     release_transfer = threading.Event()
-    original_update_locked = workspace_module._update_workspace_locked
+    original_update_locked = internal(workspace_module).update_workspace_locked
 
     def blocking_update_locked(workspace_id, **fields):
         if fields.get("owner") == "carol":

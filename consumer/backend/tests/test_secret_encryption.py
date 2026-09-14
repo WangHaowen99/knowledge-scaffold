@@ -1,3 +1,4 @@
+from internal_access import internal
 import base64
 import threading
 
@@ -47,7 +48,7 @@ def test_key_file_first_create_is_atomic_under_concurrency(tmp_path, monkeypatch
 
     def load_key() -> None:
         try:
-            results.append(secrets_module._load_key())
+            results.append(internal(secrets_module).load_key())
         except Exception as exc:  # pragma: no cover - surfaced by assertion below
             errors.append(exc)
 

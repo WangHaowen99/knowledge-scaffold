@@ -1,5 +1,6 @@
 """Tests for date-partitioned backend logging."""
 
+from internal_access import internal
 import gzip
 import json
 import logging
@@ -50,17 +51,17 @@ def _restore_root_logging(tmp_path, monkeypatch):
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
     original_level = root_logger.level
-    original_configured = logging_utils._LOGGING_CONFIGURED
-    original_configured_level = logging_utils._CONFIGURED_LOG_LEVEL
-    original_runtime_level = logging_utils._CURRENT_RUNTIME_LOG_LEVEL
-    original_config_signature = logging_utils._OPS_CONFIG_SIGNATURE
-    original_config_value = logging_utils._LOG_LEVEL_FROM_OPS_CONFIG
+    original_configured = internal(logging_utils).LOGGING_CONFIGURED
+    original_configured_level = internal(logging_utils).CONFIGURED_LOG_LEVEL
+    original_runtime_level = internal(logging_utils).CURRENT_RUNTIME_LOG_LEVEL
+    original_config_signature = internal(logging_utils).OPS_CONFIG_SIGNATURE
+    original_config_value = internal(logging_utils).LOG_LEVEL_FROM_OPS_CONFIG
 
     monkeypatch.setenv("OPS_CONFIG_PATH", str(tmp_path / "missing-ops-config.json"))
 
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
-    logging_utils._LOGGING_CONFIGURED = False
+    internal(logging_utils).LOGGING_CONFIGURED = False
 
     try:
         yield
@@ -71,11 +72,11 @@ def _restore_root_logging(tmp_path, monkeypatch):
         for handler in original_handlers:
             root_logger.addHandler(handler)
         root_logger.setLevel(original_level)
-        logging_utils._LOGGING_CONFIGURED = original_configured
-        logging_utils._CONFIGURED_LOG_LEVEL = original_configured_level
-        logging_utils._CURRENT_RUNTIME_LOG_LEVEL = original_runtime_level
-        logging_utils._OPS_CONFIG_SIGNATURE = original_config_signature
-        logging_utils._LOG_LEVEL_FROM_OPS_CONFIG = original_config_value
+        internal(logging_utils).LOGGING_CONFIGURED = original_configured
+        internal(logging_utils).CONFIGURED_LOG_LEVEL = original_configured_level
+        internal(logging_utils).CURRENT_RUNTIME_LOG_LEVEL = original_runtime_level
+        internal(logging_utils).OPS_CONFIG_SIGNATURE = original_config_signature
+        internal(logging_utils).LOG_LEVEL_FROM_OPS_CONFIG = original_config_value
 
 
 def test_date_partitioned_handler_writes_same_day_records_to_one_file(tmp_path):

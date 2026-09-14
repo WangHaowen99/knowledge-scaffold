@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import threading
 from contextlib import asynccontextmanager
@@ -522,7 +523,7 @@ def test_mcp_chat_tool_exposes_selected_ontology_and_forwards_context(monkeypatc
     async def call_with_scope(_required_scope, callback):
         return await callback(scope)
 
-    mcp_server._register_chat_tool(
+    internal(mcp_server).register_chat_tool(
         _FakeMCP(),
         call_with_scope=call_with_scope,
     )
@@ -588,7 +589,7 @@ def test_chat_tool_reports_progress_when_context_has_progress_token(
     async def call_with_scope(_required_scope, callback):
         return await callback(scope)
 
-    mcp_server._register_chat_tool(
+    internal(mcp_server).register_chat_tool(
         _FakeMCP(),
         call_with_scope=call_with_scope,
     )

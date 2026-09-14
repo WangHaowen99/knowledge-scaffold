@@ -1,3 +1,4 @@
+from internal_access import internal
 from agent.core.orchestrator import AgenticOrchestrator
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
@@ -57,7 +58,7 @@ def test_protocol_preflight_uses_summary_metadata_and_turn_count_without_history
         ),
     )
 
-    request, ontology_id, version, profile_id = orchestrator._build_protocol_preflight_request(
+    request, ontology_id, version, profile_id = internal(orchestrator).build_protocol_preflight_request(
         user_request="run operation",
         user_context={},
         arguments={},

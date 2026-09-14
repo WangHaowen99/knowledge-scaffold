@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import hashlib
 import os
@@ -538,7 +539,7 @@ def test_tool_context_receives_private_snapshot_without_state_or_repr_leak(tmp_p
         preflight_snapshot=snapshot,
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(runtime_context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(runtime_context)
     assert secret not in repr(state)
     assert "preflight_snapshot" not in state
 
@@ -601,7 +602,7 @@ def test_preflight_engine_state_is_pickle_safe_for_openjiuwen_checkpoint(tmp_pat
         preflight_snapshot=snapshot,
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(runtime_context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(runtime_context)
     restored = pickle.loads(pickle.dumps(state))
     state["_preflight_selected_ontology_preload_records"][0]["metadata"]["section"] = "run-local-change"
 

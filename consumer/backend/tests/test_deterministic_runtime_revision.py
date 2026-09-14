@@ -1,3 +1,4 @@
+from internal_access import internal
 import pytest
 from agent.direct_execution import audit
 from agent.direct_execution.build_revision import calculate_application_build_revision
@@ -71,17 +72,17 @@ def test_shared_attestation_takes_precedence_over_environment(tmp_path, monkeypa
 def test_runtime_revision_uses_application_and_sandbox_runtime_revisions(monkeypatch):
     monkeypatch.setenv("APP_BUILD_SHA", "app-build-a")
     monkeypatch.setattr(audit, "sandbox_runtime_revision", lambda: "sha256:sandbox-a")
-    audit._application_build_revision.cache_clear()
+    internal(audit).application_build_revision.cache_clear()
 
     first = audit.runtime_revision()
 
     monkeypatch.setenv("APP_BUILD_SHA", "app-build-b")
-    audit._application_build_revision.cache_clear()
+    internal(audit).application_build_revision.cache_clear()
     second = audit.runtime_revision()
 
     assert first == "deterministic-runner:v2:app-build-a:sha256:sandbox-a"
     assert second == "deterministic-runner:v2:app-build-b:sha256:sandbox-a"
-    audit._application_build_revision.cache_clear()
+    internal(audit).application_build_revision.cache_clear()
 
 
 def test_application_revision_covers_all_shipped_files_and_installed_versions(tmp_path):
@@ -128,10 +129,10 @@ def test_baked_application_revision_precedes_environment_override(tmp_path, monk
     )
     monkeypatch.setattr(audit, "__file__", str(fake_audit_path))
     monkeypatch.setenv("APP_BUILD_SHA", "stale-operator-value")
-    audit._application_build_revision.cache_clear()
+    internal(audit).application_build_revision.cache_clear()
 
-    assert audit._application_build_revision() == baked_revision
-    audit._application_build_revision.cache_clear()
+    assert internal(audit).application_build_revision() == baked_revision
+    internal(audit).application_build_revision.cache_clear()
 
 
 def test_invalid_baked_application_revision_fails_closed(tmp_path, monkeypatch):
@@ -141,11 +142,11 @@ def test_invalid_baked_application_revision_fails_closed(tmp_path, monkeypatch):
     fake_audit_path.write_text("# build probe", encoding="utf-8")
     (backend_root / ".app-runtime-revision").write_text("invalid\n", encoding="utf-8")
     monkeypatch.setattr(audit, "__file__", str(fake_audit_path))
-    audit._application_build_revision.cache_clear()
+    internal(audit).application_build_revision.cache_clear()
 
     with pytest.raises(RuntimeError, match="application build revision is invalid"):
-        audit._application_build_revision()
-    audit._application_build_revision.cache_clear()
+        internal(audit).application_build_revision()
+    internal(audit).application_build_revision.cache_clear()
 
 
 def test_empty_baked_application_revision_fails_closed(tmp_path, monkeypatch):
@@ -156,11 +157,11 @@ def test_empty_baked_application_revision_fails_closed(tmp_path, monkeypatch):
     (backend_root / ".app-runtime-revision").write_text("\n", encoding="utf-8")
     monkeypatch.setattr(audit, "__file__", str(fake_audit_path))
     monkeypatch.setenv("APP_BUILD_SHA", "must-not-fallback")
-    audit._application_build_revision.cache_clear()
+    internal(audit).application_build_revision.cache_clear()
 
     with pytest.raises(RuntimeError, match="application build revision is invalid"):
-        audit._application_build_revision()
-    audit._application_build_revision.cache_clear()
+        internal(audit).application_build_revision()
+    internal(audit).application_build_revision.cache_clear()
 
 
 def test_unreadable_baked_application_revision_fails_closed(tmp_path, monkeypatch):
@@ -180,11 +181,11 @@ def test_unreadable_baked_application_revision_fails_closed(tmp_path, monkeypatc
     monkeypatch.setattr(audit, "__file__", str(fake_audit_path))
     monkeypatch.setenv("APP_BUILD_SHA", "must-not-fallback")
     monkeypatch.setattr(type(revision_path), "read_text", unreadable)
-    audit._application_build_revision.cache_clear()
+    internal(audit).application_build_revision.cache_clear()
 
     with pytest.raises(RuntimeError, match="could not be read"):
-        audit._application_build_revision()
-    audit._application_build_revision.cache_clear()
+        internal(audit).application_build_revision()
+    internal(audit).application_build_revision.cache_clear()
 
 
 def test_empty_shared_sandbox_revision_fails_closed(tmp_path, monkeypatch):

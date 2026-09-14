@@ -1,5 +1,6 @@
 """Tests for the openJiuwen ReAct adapter boundary."""
 
+from internal_access import internal
 import asyncio
 import importlib
 import importlib.util
@@ -925,8 +926,8 @@ def test_jiuwen_model_trace_stashes_assistant_context_for_tool_calls():
         exception=None,
     )
 
-    asyncio.run(bridge._on_before_model_call(ctx))
-    asyncio.run(bridge._on_after_model_call(ctx))
+    asyncio.run(internal(bridge).on_before_model_call(ctx))
+    asyncio.run(internal(bridge).on_after_model_call(ctx))
 
     assert getitem(state, "_jiuwen_pending_assistant_context") == {
         "content": "需要先查询业务数据。",
@@ -997,8 +998,8 @@ def test_jiuwen_model_trace_normalizes_openai_compatible_cache_usage():
         exception=None,
     )
 
-    asyncio.run(bridge._on_before_model_call(ctx))
-    asyncio.run(bridge._on_after_model_call(ctx))
+    asyncio.run(internal(bridge).on_before_model_call(ctx))
+    asyncio.run(internal(bridge).on_after_model_call(ctx))
 
     llm_finished = [event for event in observer.events if event.type == RuntimeEventType.LLM_FINISHED]
     assert len(llm_finished) == 1
@@ -1071,8 +1072,8 @@ def test_jiuwen_model_trace_normalizes_usage_metadata_cache_tokens():
         exception=None,
     )
 
-    asyncio.run(bridge._on_before_model_call(ctx))
-    asyncio.run(bridge._on_after_model_call(ctx))
+    asyncio.run(internal(bridge).on_before_model_call(ctx))
+    asyncio.run(internal(bridge).on_after_model_call(ctx))
 
     llm_finished = [event for event in observer.events if event.type == RuntimeEventType.LLM_FINISHED]
     assert len(llm_finished) == 1
@@ -1136,7 +1137,7 @@ def test_jiuwen_model_trace_includes_runtime_config_api_params():
         exception=None,
     )
 
-    asyncio.run(bridge._on_before_model_call(ctx))
+    asyncio.run(internal(bridge).on_before_model_call(ctx))
 
     llm_started = [event for event in observer.events if event.type == RuntimeEventType.LLM_STARTED]
     assert len(llm_started) == 1
@@ -1968,7 +1969,7 @@ def test_suppressed_solver_turn_appends_current_turn_provenance_to_query(monkeyp
     def append_selected_ontology_context(_state, query):
         return query + "\n<Selected-Ontology>synthetic</Selected-Ontology>"
 
-    engine._append_selected_ontology_context_to_query = append_selected_ontology_context
+    internal(engine).append_selected_ontology_context_to_query = append_selected_ontology_context
     state = {
         "session_id": "session-synthetic",
         "user_request": "【合成测试数据】请统计资源负荷和容量校验结果。",
@@ -1979,7 +1980,7 @@ def test_suppressed_solver_turn_appends_current_turn_provenance_to_query(monkeyp
         ),
     }
 
-    query = engine._build_inputs(state)["query"]
+    query = internal(engine).build_inputs(state)["query"]
 
     assert "<Current-Turn-Tool-Provenance>" in query
     assert "Only the latest user message defines the active request." in query
@@ -2089,8 +2090,10 @@ def test_jiuwen_checkpoint_tool_requires_explicit_ontology_selection(monkeypatch
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
 
     def tool_names(state):
-        schema_names = {item["function"]["name"] for item in engine._tools_schema_for_state(state, caller="main")}
-        jiuwen_names = {item["name"] for item in engine._jiuwen_tool_infos_for_state(state, caller="main")}
+        schemas = internal(engine).tools_schema_for_state(state, caller="main")
+        tool_infos = internal(engine).jiuwen_tool_infos_for_state(state, caller="main")
+        schema_names = {item["function"]["name"] for item in schemas}
+        jiuwen_names = {item["name"] for item in tool_infos}
         return schema_names, jiuwen_names
 
     fallback_state = {"workspace_id": "demo", "user_context": {}}
@@ -2245,10 +2248,10 @@ def test_auto_selected_package_still_exposes_solver_cards(monkeypatch):
 
     schema_names = {
         item["function"]["name"]
-        for item in engine._tools_schema_for_state(state, caller="main")
+        for item in internal(engine).tools_schema_for_state(state, caller="main")
     }
     jiuwen_names = {
-        item["name"] for item in engine._jiuwen_tool_infos_for_state(state, caller="main")
+        item["name"] for item in internal(engine).jiuwen_tool_infos_for_state(state, caller="main")
     }
     assert solver_spec.name in schema_names
     assert solver_spec.name in jiuwen_names
@@ -3188,7 +3191,8 @@ def test_jiuwen_loop_engine_uses_main_tool_schema_for_acp_caller(monkeypatch):
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {"user_context": {"agent_mode": "quick"}}
 
-    jiuwen_names = [schema["function"]["name"] for schema in engine._tools_schema_for_state(state, caller="acp")]
+    schemas = internal(engine).tools_schema_for_state(state, caller="acp")
+    jiuwen_names = [schema["function"]["name"] for schema in schemas]
     expected_schemas = get_tools_schema(
         "main",
         include_memory=False,
@@ -3204,11 +3208,11 @@ def test_jiuwen_loop_engine_exposes_memory_only_for_explicit_memory_request(monk
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
 
-    ordinary_schemas = engine._tools_schema_for_state(
+    ordinary_schemas = internal(engine).tools_schema_for_state(
         {"user_request": "summarize this plan", "messages": []},
         caller="main",
     )
-    memory_schemas = engine._tools_schema_for_state(
+    memory_schemas = internal(engine).tools_schema_for_state(
         {"user_request": "remember that I prefer tables", "messages": []},
         caller="main",
     )
@@ -5316,7 +5320,7 @@ def test_patch_jiuwen_openai_reasoning_alias_accepts_delta_reasoning_field():
 
     _patch_jiuwen_openai_reasoning_alias(SimpleNamespace(OpenAIModelClient=FakeOpenAIModelClient))
 
-    parsed = FakeOpenAIModelClient()._parse_stream_chunk(
+    parsed = internal(FakeOpenAIModelClient()).parse_stream_chunk(
         SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(reasoning="兼容思考字段"))])
     )
 
@@ -5347,7 +5351,7 @@ def test_patch_jiuwen_openai_reasoning_alias_preserves_stream_cache_tokens():
 
     _patch_jiuwen_openai_reasoning_alias(SimpleNamespace(OpenAIModelClient=FakeOpenAIModelClient))
 
-    parsed = FakeOpenAIModelClient()._parse_stream_chunk(
+    parsed = internal(FakeOpenAIModelClient()).parse_stream_chunk(
         SimpleNamespace(
             usage=FakeUsage(),
             choices=[SimpleNamespace(delta=SimpleNamespace(reasoning="兼容思考字段"))],
@@ -5370,7 +5374,7 @@ def test_patch_jiuwen_openai_reasoning_alias_accepts_message_reasoning_field():
     _patch_jiuwen_openai_reasoning_alias(SimpleNamespace(OpenAIModelClient=FakeOpenAIModelClient))
 
     parsed = asyncio.run(
-        FakeOpenAIModelClient()._parse_response(
+        internal(FakeOpenAIModelClient()).parse_response(
             SimpleNamespace(
                 choices=[SimpleNamespace(message={"reasoning": "非流式兼容思考字段"})],
                 usage=None,
@@ -5395,7 +5399,7 @@ def test_patch_jiuwen_openai_reasoning_alias_preserves_non_stream_finish_reason(
     _patch_jiuwen_openai_reasoning_alias(SimpleNamespace(OpenAIModelClient=FakeOpenAIModelClient))
 
     parsed = asyncio.run(
-        FakeOpenAIModelClient()._parse_response(
+        internal(FakeOpenAIModelClient()).parse_response(
             SimpleNamespace(
                 choices=[SimpleNamespace(finish_reason="length")],
                 usage=None,
@@ -5779,7 +5783,7 @@ def test_create_agent_passes_context_max_rounds_from_agent_config(monkeypatch):
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(context_max_rounds=7),
     )
-    engine._create_agent(
+    internal(engine).create_agent(
         max_iterations=10,
         system_prompt="prompt",
         caller="main",
@@ -5799,7 +5803,7 @@ def test_create_agent_solver_route_requires_tool_choice(monkeypatch):
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
-    engine._create_agent(
+    internal(engine).create_agent(
         max_iterations=10,
         system_prompt="prompt",
         state={
@@ -5826,7 +5830,7 @@ def test_create_agent_normal_turn_keeps_automatic_tool_choice(monkeypatch):
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
-    engine._create_agent(
+    internal(engine).create_agent(
         max_iterations=10,
         system_prompt="prompt",
         state={"user_context": {}},
@@ -5873,7 +5877,7 @@ def test_history_messages_uses_same_normalization_as_factory(monkeypatch):
     # Normalization is now exercised through _create_agent ?
     # create_default_jiuwen_agent(context_max_rounds=...).
     engine = JiuwenReactLoopEngine(agent_config=config_with_none)
-    engine._create_agent(
+    internal(engine).create_agent(
         max_iterations=10,
         system_prompt="prompt",
         caller="main",

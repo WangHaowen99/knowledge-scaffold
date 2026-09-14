@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import threading
 
 import pytest
@@ -34,9 +35,9 @@ def test_jiuwen_tool_batches_share_one_stable_invocation_index():
         invocation_index_provider=counter.next,
     )
 
-    assert first._next_invocation_index() == 1
-    assert second._next_invocation_index() == 2
-    assert first._next_invocation_index() == 3
+    assert internal(first).next_invocation_index() == 1
+    assert internal(second).next_invocation_index() == 2
+    assert internal(first).next_invocation_index() == 3
 
 
 def test_traceparent_parser_normalizes_valid_w3c_context():
@@ -161,12 +162,12 @@ def test_observability_close_flushes_and_closes_after_timeout():
 
         assert exporter.close_count == 0
         release_export.set()
-        bus._worker.join(timeout=1)
+        internal(bus).worker.join(timeout=1)
 
-        assert not bus._worker.is_alive()
+        assert not internal(bus).worker.is_alive()
         assert exporter.close_count == 1
         assert exporter.flush_count >= 1
     finally:
         release_export.set()
-        bus._worker.join(timeout=1)
+        internal(bus).worker.join(timeout=1)
         bus.close(timeout=1)

@@ -5,6 +5,7 @@ Uses a real temp ontology fixture + a fake skill-evolver HTTP client (no network
 
 from __future__ import annotations
 
+from internal_access import internal
 import io
 import json
 import zipfile
@@ -94,7 +95,7 @@ class FakeClient:
 
 class FakeExecutionStore:
     def __init__(self, turns: List[Dict[str, Any]]):
-        self._history = {
+        internal(self).history = {
             "session_id": "sess1",
             "turns": turns,
             "session_history": [],
@@ -102,7 +103,7 @@ class FakeExecutionStore:
         }
 
     def get_session_history(self, session_id):
-        return self._history
+        return internal(self).history
 
 
 def _service_config(max_iterations=15):
@@ -120,7 +121,7 @@ def _make_service(tmp_path, client=None):
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store, client=client)
     # Enable the feature for tests and provide a base_url.
-    service._config = _service_config  # noqa: SLF001
+    internal(service).config = _service_config  # noqa: SLF001
     return store, service
 
 
@@ -292,7 +293,7 @@ def _patch_ontology(service, onto_dir, monkeypatch):
 
 def _stamp_real_sha(service, store, rec, onto_dir, version="1.0.0"):
     """Set the record's version_sha to the real sha of a version dir."""
-    rec.version_sha = service._compute_version_sha(onto_dir / "versions" / version)  # noqa: SLF001
+    rec.version_sha = internal(service).compute_version_sha(onto_dir / "versions" / version)  # noqa: SLF001
     store.save_task(rec)
 
 
@@ -426,7 +427,7 @@ def test_start_infers_ontology_from_trace(tmp_path, monkeypatch):
             {"turn_id": 2, "user_request": "q2"},
         ]
     )
-    exec_store._history["read_documents"] = {
+    internal(exec_store).history["read_documents"] = {
         "by_path": {"x": {"ontology_id": "onto1"}, "y": {"ontology_id": "onto1"}},
         "recent_paths": [],
         "active_object_docs": [],
@@ -469,7 +470,7 @@ def test_infer_toolbased_ontology_version(tmp_path, monkeypatch):
     # re-reading the manifest at turn completion (which races when active is switched mid-turn).
     from agent.core.orchestrator import AgenticOrchestrator
 
-    infer = AgenticOrchestrator._infer_toolbased_ontology_version
+    infer = internal(AgenticOrchestrator).infer_toolbased_ontology_version
     # single ontology, all reads agree on version → that version
     rd = {
         "by_path": {
@@ -539,7 +540,7 @@ def test_read_document_record_carries_ontology_version():
     assert by_path[record["normalized_path"]]["ontology_version"] == "1.0.0"
     from agent.core.orchestrator import AgenticOrchestrator
 
-    assert AgenticOrchestrator._infer_toolbased_ontology_version("ws", merged) == "1.0.0"
+    assert internal(AgenticOrchestrator).infer_toolbased_ontology_version("ws", merged) == "1.0.0"
 
 
 def test_start_blocks_when_ontology_not_inferrable(tmp_path, monkeypatch):
@@ -994,7 +995,7 @@ def test_max_iterations_forwarded_from_config(tmp_path, monkeypatch):
     def service_config():
         return _service_config(max_iterations=25)
 
-    service._config = service_config  # noqa: SLF001
+    internal(service).config = service_config  # noqa: SLF001
     _patch_ontology(service, onto_dir, monkeypatch)
     exec_store = FakeExecutionStore(
         [

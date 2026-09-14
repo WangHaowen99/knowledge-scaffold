@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import logging
 import os
@@ -216,10 +217,10 @@ class ACPTestRunner:
         return resp.status_code == 200
 
     def _set_lang_enabled(self, enabled: bool, default_lang: str = "zh"):
-        self._set_runtime_config({"lang": {"enabled": enabled, "default": default_lang}})
+        internal(self).set_runtime_config({"lang": {"enabled": enabled, "default": default_lang}})
 
     def _set_suppress_patterns(self, patterns: str):
-        self._set_runtime_config({"acp_suppress_script_patterns": patterns})
+        internal(self).set_runtime_config({"acp_suppress_script_patterns": patterns})
 
     # ═══════════════════════════════════════════
     # Test Group 1: API 端点基础功能
@@ -1272,7 +1273,7 @@ def main():
         sys.exit(1)
     logger.info("  ✓ 登录成功\n")
 
-    original_config = runner._get_runtime_config()
+    original_config = internal(runner).get_runtime_config()
     original_lang = original_config.get("lang", {})
     original_suppress = original_config.get("acp_suppress_script_patterns", "")
 
@@ -1328,7 +1329,7 @@ def main():
     logger.info(f"\n    {'─' * 50}")
 
     logger.info(f"\n  [3/3] 恢复运行时配置...")
-    runner._set_runtime_config(
+    internal(runner).set_runtime_config(
         {
             "lang": original_lang,
             "acp_suppress_script_patterns": original_suppress,

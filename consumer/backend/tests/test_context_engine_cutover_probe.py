@@ -15,6 +15,7 @@ without requiring a live LLM:
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import inspect
 from types import SimpleNamespace
@@ -334,21 +335,21 @@ class TestCreateAgentEffectiveRounds:
     def test_normal_request_uses_configured_rounds(self, monkeypatch):
         captured = self._setup_factory_spy(monkeypatch)
         engine = JiuwenReactLoopEngine(agent_config=_agent_config(context_max_rounds=5))
-        engine._create_agent(max_iterations=10, system_prompt="p", caller="main")
+        internal(engine).create_agent(max_iterations=10, system_prompt="p", caller="main")
         assert captured["context_max_rounds"] == 5
 
     def test_resume_request_clamps_to_at_least_two(self, monkeypatch):
         captured = self._setup_factory_spy(monkeypatch)
         engine = JiuwenReactLoopEngine(agent_config=_agent_config(context_max_rounds=1))
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
-        engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
+        internal(engine).create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert captured["context_max_rounds"] == 2
 
     def test_resume_request_keeps_configured_when_above_two(self, monkeypatch):
         captured = self._setup_factory_spy(monkeypatch)
         engine = JiuwenReactLoopEngine(agent_config=_agent_config(context_max_rounds=7))
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
-        engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
+        internal(engine).create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert captured["context_max_rounds"] == 7
 
 
@@ -363,7 +364,7 @@ class TestFactoryAgentCapabilityValidation:
             agent_factory=lambda: created,
         )
         state = {"messages": [{"role": "user", "content": "hello"}]}
-        result = engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
+        result = internal(engine).create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert result is created
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator

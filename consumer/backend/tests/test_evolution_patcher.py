@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 
 from agent.evolution import registry
@@ -36,7 +37,7 @@ def _aggregate(fp: str) -> Aggregate:
 def test_normalize_merged_fps_accepts_unique_visible_prefixes():
     agg = _aggregate("abcdef1234567890abcdef1234567890abcdef12")
 
-    merged = OperationPatcher._normalize_merged_fps(
+    merged = internal(OperationPatcher).normalize_merged_fps(
         ["abcdef123456"],
         [agg],
     )
@@ -48,7 +49,7 @@ def test_normalize_merged_fps_rejects_ambiguous_prefixes():
     first = _aggregate("abcdef1234567890abcdef1234567890abcdef12")
     second = _aggregate("abcdef1234560000abcdef1234567890abcdef12")
 
-    merged = OperationPatcher._normalize_merged_fps(
+    merged = internal(OperationPatcher).normalize_merged_fps(
         ["abcdef123456"],
         [first, second],
     )
@@ -91,7 +92,7 @@ def test_llm_merge_requests_json_object_response(monkeypatch):
     )
     agg = _aggregate("abcdef1234567890abcdef1234567890abcdef12")
 
-    result = patcher._llm_merge(
+    result = internal(patcher).llm_merge(
         ontology_id="example",
         operation_key="OP_A",
         current_md="# OP_A",
@@ -122,7 +123,7 @@ def test_update_config_changes_threshold_decisions():
         ),
     )
 
-    assert patcher._collect_actionable("example", "OP_A") == []
+    assert internal(patcher).collect_actionable("example", "OP_A") == []
 
     patcher.update_config(
         PatcherConfig(
@@ -131,7 +132,7 @@ def test_update_config_changes_threshold_decisions():
         )
     )
 
-    assert patcher._collect_actionable("example", "OP_A") == [agg]
+    assert internal(patcher).collect_actionable("example", "OP_A") == [agg]
 
 
 def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):

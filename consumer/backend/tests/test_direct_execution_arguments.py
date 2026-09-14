@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 from operator import getitem
 from types import SimpleNamespace
@@ -281,7 +282,7 @@ def test_structured_runtime_requirement_is_checked_with_canonical_context_field(
     assert extract_runtime_requirements(
         script_parameters=[{"name": "session_id", "flag": "--session-id", "required": True}]
     ) == ["session_id"]
-    assert router._check_runtime_requirements(["session_id"], context) == ["session_id"]
+    assert internal(router).check_runtime_requirements(["session_id"], context) == ["session_id"]
 
 
 def test_direct_business_parameter_is_not_overridden_by_runtime_context():

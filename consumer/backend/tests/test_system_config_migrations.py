@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 import os
 import stat
@@ -889,7 +890,7 @@ def test_source_change_after_backup_is_reported_as_target_conflict(
         runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}}
     )
     replacement = json.dumps({"external_change": True}).encode()
-    real_create_backup = support._create_verified_backup
+    real_create_backup = internal(support).create_verified_backup
 
     def create_backup_then_change_source(source_path, source_bytes, base_path):
         result = real_create_backup(source_path, source_bytes, base_path)
@@ -947,7 +948,7 @@ def test_marker_write_failure_blocks_then_retry_completes_marker(
 
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
     _write_document(runtime_root, {"llm": {"api_key": synthetic_secret("system_config_migrations-credential-08")}})
-    real_write_marker = support._write_marker
+    real_write_marker = internal(support).write_marker
     monkeypatch.setattr(
         support,
         "_write_marker",

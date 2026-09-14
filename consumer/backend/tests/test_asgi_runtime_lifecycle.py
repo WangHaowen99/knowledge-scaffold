@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import threading
 from types import SimpleNamespace
@@ -497,5 +498,5 @@ def test_runtime_container_closes_the_process_level_event_bus():
 
 
 def test_safe_sync_step_propagates_explicit_incomplete_result():
-    assert app_module._safe_sync_step("synthetic", lambda: False) is False
-    assert app_module._safe_sync_step("synthetic", lambda: None) is True
+    assert internal(app_module).safe_sync_step("synthetic", lambda: False) is False
+    assert internal(app_module).safe_sync_step("synthetic", lambda: None) is True

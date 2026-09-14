@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import importlib
 import json
 import os
@@ -496,7 +497,7 @@ def test_real_install_switch_and_download_preserve_revision_manifests(tmp_path, 
     v02_manifest = _write_solver_package(source2, version="2.0.0")
     ontology_dir = tmp_path / "installed"
 
-    version1, _revision1 = routes._install_ontology_version_package(
+    version1, _revision1 = internal(routes).install_ontology_version_package(
         source_root=source1,
         ontology_dir=ontology_dir,
         ontology_id=v01_manifest["id"],
@@ -506,7 +507,7 @@ def test_real_install_switch_and_download_preserve_revision_manifests(tmp_path, 
         existed=False,
         workspace_id="default",
     )
-    version2, _revision2 = routes._install_ontology_version_package(
+    version2, _revision2 = internal(routes).install_ontology_version_package(
         source_root=source2,
         ontology_dir=ontology_dir,
         ontology_id=v02_manifest["id"],
@@ -529,7 +530,7 @@ def test_real_install_switch_and_download_preserve_revision_manifests(tmp_path, 
         ontology_dir=version1,
     )
     with zipfile.ZipFile(
-        routes._build_ontology_zip_buffer(ontology_dir, version1, version="1.0.0")
+        internal(routes).build_ontology_zip_buffer(ontology_dir, version1, version="1.0.0")
         # solver-chunk-24
     ) as archive:
         assert archive.namelist().count("installed/manifest.yaml") == 1
@@ -548,7 +549,12 @@ def test_real_install_switch_and_download_preserve_revision_manifests(tmp_path, 
         )["solver_catalog"][0]["operation_key"]
         == "solve_route"
     )
-    with zipfile.ZipFile(routes._build_ontology_zip_buffer(ontology_dir, version2, version="2.0.0")) as archive:
+    archive_buffer = internal(routes).build_ontology_zip_buffer(
+        ontology_dir,
+        version2,
+        version="2.0.0",
+    )
+    with zipfile.ZipFile(archive_buffer) as archive:
         assert archive.namelist().count("installed/manifest.yaml") == 1
         downloaded_v02 = yaml.safe_load(
             archive.read("installed/manifest.yaml").decode("utf-8")
@@ -585,7 +591,7 @@ def test_unknown_schema_is_rejected_by_persistent_version_paths(tmp_path, monkey
             target_version="1.0.0",
         )
     with pytest.raises(ValueError, match="schema version"):
-        routes._install_ontology_version_package(
+        internal(routes).install_ontology_version_package(
             source_root=unknown,
             ontology_dir=tmp_path / "unknown-install",
             ontology_id=manifest["id"],
@@ -617,7 +623,7 @@ def test_unknown_schema_is_rejected_by_persistent_version_paths(tmp_path, monkey
         set_ontology_active_version(supported, "2.0.0")
     assert load_ontology_manifest_data(supported)["active_version"] == "1.0.0"
     with pytest.raises(ValueError, match="schema version"):
-        routes._manifest_for_download(supported, "2.0.0")
+        internal(routes).manifest_for_download(supported, "2.0.0")
 
 
 def test_ensure_versions_migrates_manifest_into_immutable_revision(tmp_path):
@@ -698,7 +704,7 @@ def test_runtime_binding_data_is_rejected_across_package_paths(tmp_path, monkeyp
     (ontology_dir / "manifest.yaml").write_text(yaml.safe_dump(valid_shared, sort_keys=False), encoding="utf-8")
     (version_dir / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     with pytest.raises(ValueError, match="runtime binding"):
-        routes._manifest_for_download(ontology_dir, "1.0.0")
+        internal(routes).manifest_for_download(ontology_dir, "1.0.0")
 
 
 def test_versioned_revision_manifest_paths_fail_closed_when_missing_or_symlink(
@@ -722,7 +728,7 @@ def test_versioned_revision_manifest_paths_fail_closed_when_missing_or_symlink(
     with pytest.raises(ValueError, match="revision manifest"):
         get_ontology_version_dir(ontology_dir, "1.0.0", create=False)
     with pytest.raises(ValueError, match="revision manifest"):
-        routes._manifest_for_download(ontology_dir, "1.0.0")
+        internal(routes).manifest_for_download(ontology_dir, "1.0.0")
 
     version_manifest = version_dir / "manifest.yaml"
     version_manifest.write_text(yaml.safe_dump(shared, sort_keys=False), encoding="utf-8")
@@ -737,7 +743,7 @@ def test_versioned_revision_manifest_paths_fail_closed_when_missing_or_symlink(
         get_ontology_version_dir(ontology_dir, "1.0.0", create=False)
     assert OntologyLoader.load_ontology(ontology_dir) is None
     with pytest.raises(ValueError, match="revision directory"):
-        routes._manifest_for_download(ontology_dir, "1.0.0")
+        internal(routes).manifest_for_download(ontology_dir, "1.0.0")
 
 
 def test_existing_v01_version_dirs_backfill_revision_manifests_before_validation(
@@ -772,7 +778,7 @@ def test_existing_v01_version_dirs_backfill_revision_manifests_before_validation
     assert "active_version" not in version1_manifest
     assert "versions" not in version1_manifest
 
-    downloaded = yaml.safe_load(routes._manifest_for_download(ontology_dir, "1.1.0"))
+    downloaded = yaml.safe_load(internal(routes).manifest_for_download(ontology_dir, "1.1.0"))
     assert downloaded["version"] == "1.1.0"
     assert (version2 / "manifest.yaml").is_file()
 
@@ -864,7 +870,7 @@ def test_global_enabled_state_wins_over_revision_manifest(tmp_path, monkeypatch)
         ontology=ontology,
         ontology_dir=version_dir,
     )
-    downloaded = yaml.safe_load(routes._manifest_for_download(ontology_dir, "1.0.0"))
+    downloaded = yaml.safe_load(internal(routes).manifest_for_download(ontology_dir, "1.0.0"))
     assert downloaded["enabled"] is False
     assert load_ontology_manifest_data(ontology_dir)["enabled"] is False
 
@@ -943,7 +949,7 @@ Invalid runtime-bound operation.
     # solver-chunk-45
     installed = tmp_path / "installed"
     with pytest.raises(ValueError, match="runtime binding"):
-        routes._install_ontology_version_package(
+        internal(routes).install_ontology_version_package(
             source_root=source,
             ontology_dir=installed,
             ontology_id=manifest["id"],
@@ -985,7 +991,7 @@ Invalid runtime-bound operation.
 
     assert OntologyLoader.load_ontology(ontology_dir) is None
     with pytest.raises(ValueError, match="runtime binding"):
-        routes._manifest_for_download(ontology_dir, "1.0.0")
+        internal(routes).manifest_for_download(ontology_dir, "1.0.0")
 
 
 def test_status_mutation_validates_before_write_and_uses_atomic_replace(tmp_path, monkeypatch):
@@ -996,7 +1002,7 @@ def test_status_mutation_validates_before_write_and_uses_atomic_replace(tmp_path
     unknown_manifest = _write_manifest(unknown, schema_version="0.3")
     unknown_before = (unknown / "manifest.yaml").read_bytes()
     with pytest.raises(ValueError, match="schema version"):
-        routes._set_ontology_enabled(unknown, False)
+        internal(routes).set_ontology_enabled(unknown, False)
     assert (unknown / "manifest.yaml").read_bytes() == unknown_before
     # solver-chunk-48
 
@@ -1013,7 +1019,7 @@ def test_status_mutation_validates_before_write_and_uses_atomic_replace(tmp_path
             lambda path: original_is_symlink(path) or path == symlink_manifest,
         )
         with pytest.raises(ValueError, match="manifest"):
-            routes._set_ontology_enabled(symlinked, False)
+            internal(routes).set_ontology_enabled(symlinked, False)
     assert symlink_manifest.read_bytes() == symlink_before
 
     valid = tmp_path / "valid"
@@ -1028,7 +1034,7 @@ def test_status_mutation_validates_before_write_and_uses_atomic_replace(tmp_path
         return original_replace(source, target)
 
     monkeypatch.setattr(os, "replace", _replace)
-    ontology = routes._set_ontology_enabled(valid, False)
+    ontology = internal(routes).set_ontology_enabled(valid, False)
     assert ontology.enabled is False
     assert replace_calls
     assert replace_calls[-1][1] == valid / "manifest.yaml"
@@ -1063,7 +1069,7 @@ Must not reach the live revision.
 
     # solver-chunk-51
     with pytest.raises(ValueError, match="runtime binding"):
-        routes._stage_and_commit_revision_file(
+        internal(routes).stage_and_commit_revision_file(
             version_dir,
             relative_path,
             invalid_content,
@@ -1122,7 +1128,7 @@ Invalid import revision.
     )
 
     with pytest.raises(routes.OntologyImportError, match="runtime binding"):
-        routes._find_converted_ontology_root(extract_root)
+        internal(routes).find_converted_ontology_root(extract_root)
 
 
 # solver-chunk-54

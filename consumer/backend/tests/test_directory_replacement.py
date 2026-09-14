@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import pytest
 from ontology import directory_replacement
 from ontology.directory_replacement import (
@@ -22,7 +23,7 @@ def test_sync_directory_opens_with_explicit_restrictive_mode(tmp_path, monkeypat
     monkeypatch.setattr(directory_replacement.os, "fsync", lambda _descriptor: None)
     monkeypatch.setattr(directory_replacement.os, "close", lambda _descriptor: None)
 
-    directory_replacement._sync_directory(tmp_path)
+    internal(directory_replacement).sync_directory(tmp_path)
 
     assert opened == [
         (

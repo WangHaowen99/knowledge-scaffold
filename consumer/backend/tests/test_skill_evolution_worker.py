@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -37,12 +38,12 @@ def _make_record(store, task_id="t1", status="running", age_minutes=0):
 def test_worker_times_out_long_running_task(tmp_path):
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store)
-    service._config = _enabled_config  # noqa: SLF001
+    internal(service).config = _enabled_config  # noqa: SLF001
     worker = SkillEvolutionWorker(store, service, poll_interval_seconds=10, task_timeout_seconds=60)
     # Task created 2 hours ago → exceeds 60s timeout
     rec = _make_record(store, age_minutes=120, status="running")
 
-    worker._tick()
+    internal(worker).tick()
 
     refreshed = store.get_task("ws1", "t1")
     assert refreshed.status == "failed"
@@ -62,18 +63,18 @@ def test_worker_does_not_time_out_fresh_task(tmp_path):
 
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store, client=_NoopClient())
-    service._config = _enabled_config  # noqa: SLF001
+    internal(service).config = _enabled_config  # noqa: SLF001
     worker = SkillEvolutionWorker(store, service, poll_interval_seconds=10, task_timeout_seconds=1800)
     _make_record(store, age_minutes=0, status="submitted")
 
-    worker._tick()
+    internal(worker).tick()
     assert store.get_task("ws1", "t1").status == "running"
 
 
 def test_mark_inflight_interrupted_on_restart(tmp_path):
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store)
-    service._config = _enabled_config  # noqa: SLF001
+    internal(service).config = _enabled_config  # noqa: SLF001
     # In-flight tasks
     _make_record(store, task_id="t1", status="submitted")
     _make_record(store, task_id="t2", status="running")
@@ -101,16 +102,16 @@ def test_init_worker_does_not_deadlock(tmp_path, monkeypatch):
     # Don't start a real background thread in the test.
     monkeypatch.setattr(reg.SkillEvolutionWorker, "start", lambda self: None)
     monkeypatch.setattr(reg.SkillEvolutionWorker, "stop", lambda self: None)
-    reg._STORE = None
-    reg._SERVICE = None
-    reg._WORKER = None
+    internal(reg).STORE = None
+    internal(reg).SERVICE = None
+    internal(reg).WORKER = None
     try:
         result = reg.init_skill_evolution_worker()
         assert result is not None
     finally:
-        reg._WORKER = None
-        reg._SERVICE = None
-        reg._STORE = None
+        internal(reg).WORKER = None
+        internal(reg).SERVICE = None
+        internal(reg).STORE = None
 
 
 def _setup_reg(monkeypatch, tmp_path):
@@ -121,9 +122,9 @@ def _setup_reg(monkeypatch, tmp_path):
     monkeypatch.setattr(reg, "get_runtime_root", lambda: str(tmp_path))
     monkeypatch.setattr(reg.SkillEvolutionWorker, "start", lambda self: None)
     monkeypatch.setattr(reg.SkillEvolutionWorker, "stop", lambda self: None)
-    reg._STORE = None
-    reg._SERVICE = None
-    reg._WORKER = None
+    internal(reg).STORE = None
+    internal(reg).SERVICE = None
+    internal(reg).WORKER = None
     return reg
 
 
@@ -133,10 +134,10 @@ def test_init_starts_worker_even_when_disabled(monkeypatch, tmp_path):
     # _run_iteration). Regression for the 'admin enables at runtime → /start creates a task but no thread advances it'
     # blocker — there is no separate reconcile step to forget.
     reg = _setup_reg(monkeypatch, tmp_path)
-    assert reg._WORKER is None
+    assert internal(reg).WORKER is None
     w = reg.init_skill_evolution_worker()
     assert w is not None
-    assert reg._WORKER is not None
+    assert internal(reg).WORKER is not None
     # idempotent: second init returns the same singleton
     assert reg.init_skill_evolution_worker() is w
 
@@ -155,10 +156,10 @@ def test_run_iteration_skips_tick_when_disabled(monkeypatch, tmp_path):
         "load_system_config",
         lambda: {"skill_evolution": {"enabled": False, "poll_interval_seconds": 7, "task_timeout_seconds": 120}},
     )
-    worker._run_iteration()
+    internal(worker).run_iteration()
     assert ticks == []
-    assert worker._poll_interval == 7
-    assert worker._task_timeout == 120
+    assert internal(worker).poll_interval == 7
+    assert internal(worker).task_timeout == 120
 
 
 def test_run_iteration_ticks_and_adopts_new_intervals(monkeypatch, tmp_path):
@@ -171,16 +172,16 @@ def test_run_iteration_ticks_and_adopts_new_intervals(monkeypatch, tmp_path):
     service = SkillEvolutionService(store)
     worker = SkillEvolutionWorker(store, service, poll_interval_seconds=10, task_timeout_seconds=60)
     ticks = []
-    monkeypatch.setattr(worker, "_tick", lambda: ticks.append(worker._task_timeout))
+    monkeypatch.setattr(worker, "_tick", lambda: ticks.append(internal(worker).task_timeout))
     monkeypatch.setattr(
         worker_mod,
         "load_system_config",
         lambda: {"skill_evolution": {"enabled": True, "poll_interval_seconds": 3, "task_timeout_seconds": 90}},
     )
-    worker._run_iteration()
+    internal(worker).run_iteration()
     assert ticks == [90]
-    assert worker._poll_interval == 3
-    assert worker._task_timeout == 90
+    assert internal(worker).poll_interval == 3
+    assert internal(worker).task_timeout == 90
 
 
 def test_fail_does_not_clobber_terminal(tmp_path):
@@ -191,7 +192,7 @@ def test_fail_does_not_clobber_terminal(tmp_path):
     # back to failed.
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store)
-    service._config = _enabled_config  # noqa: SLF001
+    internal(service).config = _enabled_config  # noqa: SLF001
     rec = _make_record(store, age_minutes=120, status="running")
 
     # Simulate a route approving the task after the worker snapshotted `rec`.

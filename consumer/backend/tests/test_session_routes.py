@@ -1,5 +1,6 @@
 """HTTP route tests for chat session management."""
 
+from internal_access import internal
 import asyncio
 import json
 import threading
@@ -1275,7 +1276,7 @@ def test_index_rebuild_failure_returns_bounded_authoritative_legacy_list(
     client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "legacy-fallback-chats"))
     chat_store.create_session(session_id="legacy-fallback", title="Legacy fallback")
-    chat_store._summary_index = _FaultingSummaryIndex("rebuild")
+    internal(chat_store).summary_index = _FaultingSummaryIndex("rebuild")
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, _FakeExecutionStore()),
@@ -1299,7 +1300,7 @@ def test_index_failure_returns_bounded_authoritative_page_for_paginated_requests
     client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "paged-index-failure" / failure_stage))
     chat_store.create_session(session_id="paged-session", title="Paged")
-    chat_store._summary_index = _FaultingSummaryIndex(failure_stage)
+    internal(chat_store).summary_index = _FaultingSummaryIndex(failure_stage)
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, _FakeExecutionStore()),

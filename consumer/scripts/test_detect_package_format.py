@@ -6,6 +6,7 @@ Run with:
 
 from __future__ import annotations
 
+from internal_access import internal
 import importlib.util
 import sys
 from pathlib import Path
@@ -24,7 +25,7 @@ _CONVERTER = importlib.util.module_from_spec(_CONVERTER_SPEC)
 sys.modules[_CONVERTER_SPEC.name] = _CONVERTER
 _CONVERTER_SPEC.loader.exec_module(_CONVERTER)
 PackageFormatProfile = _CONVERTER.PackageFormatProfile
-_has_frontmatter = _CONVERTER._has_frontmatter
+_has_frontmatter = internal(_CONVERTER).has_frontmatter
 detect_package_format = _CONVERTER.detect_package_format
 
 

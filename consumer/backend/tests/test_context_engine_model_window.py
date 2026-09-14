@@ -15,6 +15,7 @@ Test matrix:
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import importlib.metadata
 from typing import List
@@ -158,7 +159,7 @@ async def _capture_real_react_model_window(
         )
     )
     fake_model = _CapturingFakeModel()
-    agent._llm = fake_model
+    internal(agent).llm = fake_model
     preview_messages: list[list] = []
 
     async def capture_preview(ctx):

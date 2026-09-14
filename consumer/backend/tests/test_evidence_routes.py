@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -146,7 +147,7 @@ def _workspace(tmp_path: Path, monkeypatch):
         "---\nresource: object\nkey: eco\ntitle: 工程更改指令\n---\n# 工程更改指令\n\n## 字段\nECO编号。\n",
         encoding="utf-8",
     )
-    ontologies_module._global_registry = None
+    internal(ontologies_module).global_registry = None
     return paths
 
 

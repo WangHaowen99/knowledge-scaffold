@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 from pathlib import Path
 
@@ -169,7 +170,7 @@ def test_workspace_partial_apply_is_retryable_and_retains_previous_backup(
 
     import migrations.workspace_model_profile_output_budget_v1 as migration
 
-    original_writer = migration._write_bytes_atomic
+    original_writer = internal(migration).write_bytes_atomic
 
     def fail_beta_target(path, payload):
         if path == beta_path:

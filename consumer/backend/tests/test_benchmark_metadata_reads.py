@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import json
 from types import SimpleNamespace
 
@@ -85,7 +86,7 @@ def test_frontend_contract_uses_executable_behavior_probe():
             + "\n",
         )
 
-    assert benchmark._frontend_request_contract(runner=run) == {
+    assert internal(benchmark).frontend_request_contract(runner=run) == {
         "ontology_list_requests": 1,
         "non_knowledge_tree_requests": 0,
     }

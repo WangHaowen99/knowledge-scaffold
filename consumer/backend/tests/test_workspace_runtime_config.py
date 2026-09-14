@@ -1,3 +1,4 @@
+from internal_access import internal
 import ast
 import inspect
 import textwrap
@@ -26,7 +27,7 @@ def _boolean_term_count(node):
 
 
 def test_owner_update_quota_guard_stays_within_boolean_term_budget():
-    source = textwrap.dedent(inspect.getsource(workspaces_module._enforce_workspace_owner_limit_for_update))
+    source = textwrap.dedent(inspect.getsource(internal(workspaces_module).enforce_workspace_owner_limit_for_update))
     tree = ast.parse(source)
 
     assert all(_boolean_term_count(node.test) < 4 for node in ast.walk(tree) if isinstance(node, ast.If))

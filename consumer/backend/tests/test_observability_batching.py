@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import inspect
 import json
 import threading
@@ -41,7 +42,7 @@ def test_batch_span_processor_defaults_and_shutdown_budget(monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
 
-    assert otel._batch_span_processor_options() == {
+    assert internal(otel).batch_span_processor_options() == {
         "max_queue_size": 2048,
         "max_export_batch_size": 256,
         "schedule_delay_millis": 300,
@@ -60,7 +61,7 @@ def test_batch_span_processor_validates_operational_overrides(monkeypatch, caplo
     monkeypatch.setenv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "128")
     monkeypatch.setenv("OTEL_BSP_SCHEDULE_DELAY", "250")
     monkeypatch.setenv("OTEL_BSP_EXPORT_TIMEOUT", "4000")
-    assert otel._batch_span_processor_options() == {
+    assert internal(otel).batch_span_processor_options() == {
         "max_queue_size": 1024,
         "max_export_batch_size": 128,
         "schedule_delay_millis": 250,
@@ -71,7 +72,7 @@ def test_batch_span_processor_validates_operational_overrides(monkeypatch, caplo
     monkeypatch.setenv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "512")
     monkeypatch.setenv("OTEL_BSP_SCHEDULE_DELAY", "invalid")
     monkeypatch.setenv("OTEL_BSP_EXPORT_TIMEOUT", "0")
-    assert otel._batch_span_processor_options() == {
+    assert internal(otel).batch_span_processor_options() == {
         "max_queue_size": 128,
         "max_export_batch_size": 128,
         "schedule_delay_millis": 300,
@@ -82,7 +83,7 @@ def test_batch_span_processor_validates_operational_overrides(monkeypatch, caplo
     monkeypatch.setenv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "999999999")
     monkeypatch.setenv("OTEL_BSP_SCHEDULE_DELAY", "999999999")
     monkeypatch.setenv("OTEL_BSP_EXPORT_TIMEOUT", "999999999")
-    assert otel._batch_span_processor_options() == {
+    assert internal(otel).batch_span_processor_options() == {
         "max_queue_size": 65536,
         "max_export_batch_size": 4096,
         "schedule_delay_millis": 5000,
@@ -114,14 +115,14 @@ def test_batch_span_processor_factory_builds_a_real_bounded_processor(monkeypatc
             del spans
             return SpanExportResult.SUCCESS
 
-    processor = otel._create_batch_span_processor(Exporter())
+    processor = internal(otel).create_batch_span_processor(Exporter())
     try:
         assert isinstance(processor, BatchSpanProcessor)
-        state = processor._batch_processor
-        assert state._max_queue_size == 2048
-        assert state._max_export_batch_size == 256
-        assert state._schedule_delay_millis == 300
-        assert state._export_timeout_millis == 5000
+        state = internal(processor).batch_processor
+        assert internal(state).max_queue_size == 2048
+        assert internal(state).max_export_batch_size == 256
+        assert internal(state).schedule_delay_millis == 300
+        assert internal(state).export_timeout_millis == 5000
         assert processor.shutdown_timeout_millis == 5000
     finally:
         processor.shutdown()
@@ -142,7 +143,7 @@ def test_batch_span_processor_shutdown_is_bounded_for_blocking_exporter():
             release.wait(timeout=2.0)
             return SpanExportResult.SUCCESS
 
-    processor = otel._create_batch_span_processor(
+    processor = internal(otel).create_batch_span_processor(
         BlockingExporter(),
         env={
             "OTEL_BSP_MAX_QUEUE_SIZE": "1",
@@ -160,7 +161,7 @@ def test_batch_span_processor_shutdown_is_bounded_for_blocking_exporter():
     processor.shutdown()
     elapsed = time.monotonic() - started
     release.set()
-    processor._batch_processor._worker_thread.join(timeout=1.0)
+    internal(internal(processor).batch_processor).worker_thread.join(timeout=1.0)
 
     assert processor.shutdown_timeout_millis == 50
     assert elapsed < 0.5
@@ -210,7 +211,7 @@ def test_local_exporter_export_batch_uses_store_batch_path(tmp_path):
 
     exporter = LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     store = RecordingStore()
-    exporter._store = store
+    internal(exporter).store = store
     records = [_otel_record(1), _otel_record(2)]
     events = [
         RuntimeEvent(
@@ -546,7 +547,7 @@ def test_batch_metric_labels_are_low_cardinality(monkeypatch):
         def create_gauge(self, name, **_kwargs):
             return Instrument(name, "gauge")
 
-    instruments = otel._create_metric_instruments(Meter())
+    instruments = internal(otel).create_metric_instruments(Meter())
     monkeypatch.setattr(otel, "_get_metric_instruments", lambda _router_id="": instruments)
 
     for metric_name in (
@@ -645,22 +646,26 @@ def test_batch_metrics_share_one_provider_and_reader_per_router():
     workspace_ids = [f"workspace_synthetic_{index:03d}" for index in range(50)]
     try:
         for workspace_id in workspace_ids:
-            assert otel._get_batch_metric_instruments(
+            assert internal(otel).get_batch_metric_instruments(
                 router_id=router.router_id,
                 workspace_id=workspace_id,
             )
 
         recorders = [
             recorder
-            for key, recorder in otel._batch_metric_recorders.items()
+            for key, recorder in internal(otel).batch_metric_recorders.items()
             if key == router.router_id or (isinstance(key, tuple) and key[0] == router.router_id)
         ]
         assert len(recorders) == 1
-        assert len({id(recorder._provider) for recorder in recorders}) == 1
-        assert len({id(recorder._reader) for recorder in recorders}) == 1
+        assert len({id(internal(recorder).provider) for recorder in recorders}) == 1
+        assert len({id(internal(recorder).reader) for recorder in recorders}) == 1
         recorder = recorders[0]
-        assert len(recorder._workspace_by_scope) == 50
-        assert all(workspace_id not in scope_name for scope_name, workspace_id in recorder._workspace_by_scope.items())
+        assert len(internal(recorder).workspace_by_scope) == 50
+        workspace_by_scope = internal(recorder).workspace_by_scope
+        assert all(
+            workspace_id not in scope_name
+            for scope_name, workspace_id in workspace_by_scope.items()
+        )
     finally:
         otel.shutdown_runtime_metrics(router.router_id)
         router.close()
@@ -702,9 +707,9 @@ def test_router_metric_recorders_propagate_provider_shutdown_failure():
             assert timeout_millis == 50
             return False
 
-    for recorder_type in (otel._RouterMetricRecorder, otel._RouterBatchMetricRecorder):
+    for recorder_type in (internal(otel).RouterMetricRecorder, internal(otel).RouterBatchMetricRecorder):
         recorder = object.__new__(recorder_type)
-        recorder._provider = Provider()
+        internal(recorder).provider = Provider()
 
         assert recorder.shutdown(timeout_millis=50) is False
 
@@ -731,15 +736,15 @@ def test_metric_shutdown_retains_blocked_reader_until_retry(monkeypatch):
         router_id=router.router_id,
         workspace_id="workspace_synthetic_blocked_reader",
     )
-    recorder = otel._batch_metric_recorders[router.router_id]
-    reader_thread = recorder._reader._daemon_thread
+    recorder = internal(otel).batch_metric_recorders[router.router_id]
+    reader_thread = internal(internal(recorder).reader).daemon_thread
     assert entered.wait(timeout=1.0)
 
     first_result = otel.shutdown_runtime_metrics(
         router.router_id,
         timeout_millis=50,
     )
-    retained_after_timeout = otel._batch_metric_recorders.get(router.router_id) is recorder
+    retained_after_timeout = internal(otel).batch_metric_recorders.get(router.router_id) is recorder
     alive_after_timeout = reader_thread is not None and reader_thread.is_alive()
 
     release.set()
@@ -755,7 +760,7 @@ def test_metric_shutdown_retains_blocked_reader_until_retry(monkeypatch):
     assert retained_after_timeout is True
     assert alive_after_timeout is True
     assert second_result is True
-    assert router.router_id not in otel._batch_metric_recorders
+    assert router.router_id not in internal(otel).batch_metric_recorders
 
 
 def test_metric_shutdown_retries_only_recorders_that_failed(monkeypatch):
@@ -843,8 +848,8 @@ def test_workspace_router_close_drains_bus_before_metric_shutdown(monkeypatch):
             router_id=router.router_id,
             workspace_id=workspace_id,
         )
-        initial_recorder = otel._batch_metric_recorders[router.router_id]
-        initial_reader_thread = initial_recorder._reader._daemon_thread
+        initial_recorder = internal(otel).batch_metric_recorders[router.router_id]
+        initial_reader_thread = internal(internal(initial_recorder).reader).daemon_thread
 
         bus = ObservabilityBus(
             Exporter(),
@@ -853,7 +858,7 @@ def test_workspace_router_close_drains_bus_before_metric_shutdown(monkeypatch):
             workspace_id=workspace_id,
             flush_interval_seconds=10,
         )
-        router._observers_by_workspace[workspace_id] = bus
+        internal(router).observers_by_workspace[workspace_id] = bus
         real_bus_close = bus.close
         real_shutdown = workspace_router_module.shutdown_runtime_metrics
 
@@ -901,8 +906,8 @@ def test_workspace_router_close_drains_bus_before_metric_shutdown(monkeypatch):
         assert shutdown_before_gauge_completion == [False]
         assert shutdown_called.is_set()
         assert resolve_workspace_router(router.router_id) is None
-        assert router.router_id not in otel._router_metric_recorders
-        assert router.router_id not in otel._batch_metric_recorders
+        assert router.router_id not in internal(otel).router_metric_recorders
+        assert router.router_id not in internal(otel).batch_metric_recorders
         assert initial_reader_thread is None or not initial_reader_thread.is_alive()
     finally:
         release_gauge.set()
@@ -935,16 +940,16 @@ def test_repeated_observer_reset_does_not_accumulate_metric_readers(monkeypatch)
             router_id=router.router_id,
             workspace_id=workspace_id,
         )
-        recorder = otel._batch_metric_recorders[router.router_id]
-        reader_thread = recorder._reader._daemon_thread
-        with provider_module._observer_lock:
-            provider_module._observer = router
+        recorder = internal(otel).batch_metric_recorders[router.router_id]
+        reader_thread = internal(internal(recorder).reader).daemon_thread
+        with internal(provider_module).observer_lock:
+            internal(provider_module).observer = router
 
         provider_module.reset_observer(timeout=1.0)
 
         assert resolve_workspace_router(router.router_id) is None
-        assert router.router_id not in otel._router_metric_recorders
-        assert router.router_id not in otel._batch_metric_recorders
+        assert router.router_id not in internal(otel).router_metric_recorders
+        assert router.router_id not in internal(otel).batch_metric_recorders
         assert reader_thread is None or not reader_thread.is_alive()
 
     remaining_reader_threads = {
@@ -965,8 +970,8 @@ def test_workspace_router_zero_budget_unregisters_without_metric_resources():
     router.close(timeout=0)
 
     assert resolve_workspace_router(router.router_id) is None
-    assert router.router_id not in otel._router_metric_recorders
-    assert router.router_id not in otel._batch_metric_recorders
+    assert router.router_id not in internal(otel).router_metric_recorders
+    assert router.router_id not in internal(otel).batch_metric_recorders
 
 
 def test_workspace_router_failed_metric_shutdown_is_retryable_without_recreation(
@@ -1008,13 +1013,13 @@ def test_workspace_router_failed_metric_shutdown_is_retryable_without_recreation
     assert resolve_workspace_router(router.router_id) is router
     assert router.accepts_new_metric_recorders is False
     assert (
-        otel._get_batch_metric_instruments(
+        internal(otel).get_batch_metric_instruments(
             router_id=router.router_id,
             workspace_id="workspace_synthetic_shutdown_retry",
         )
         == {}
     )
-    assert router.router_id not in otel._batch_metric_recorders
+    assert router.router_id not in internal(otel).batch_metric_recorders
 
     assert router.close(timeout=1.0) is True
 
@@ -1105,9 +1110,9 @@ def test_workspace_router_close_preserves_buffered_span_flush(monkeypatch):
     def build_exporter(_workspace_id):
         return Exporter()
 
-    router._build_exporter = build_exporter
-    router._run_workspaces[run_id] = workspace_id
-    router._pending_spans_by_run[run_id] = [
+    internal(router).build_exporter = build_exporter
+    internal(router).run_workspaces[run_id] = workspace_id
+    internal(router).pending_spans_by_run[run_id] = [
         OTelSpanSnapshot(
             name="agent.run",
             trace_id="1" * 32,
@@ -1124,7 +1129,7 @@ def test_workspace_router_close_preserves_buffered_span_flush(monkeypatch):
             scope_name="test",
         )
     ]
-    router._pending_span_count = 1
+    internal(router).pending_span_count = 1
     monkeypatch.setattr(
         workspace_router_module,
         "force_flush_open_telemetry",
@@ -1139,7 +1144,7 @@ def test_workspace_router_close_preserves_buffered_span_flush(monkeypatch):
     router.close(timeout=1.0)
 
     assert [event.type for event in exported] == ["otel.span.exported"]
-    assert router._pending_span_count == 0
+    assert internal(router).pending_span_count == 0
 
 
 def test_workspace_router_pending_span_saturation_exports_bounded_metrics(
@@ -1176,7 +1181,7 @@ def test_workspace_router_pending_span_saturation_exports_bounded_metrics(
     )
     try:
         for index in range(3):
-            router._buffer_pending_span(
+            internal(router).buffer_pending_span(
                 OTelSpanSnapshot(
                     name=f"agent.tool.{index}",
                     trace_id="1" * 32,
@@ -1267,7 +1272,7 @@ def test_workspace_router_close_preserves_span_arriving_during_force_flush(
     def build_exporter(_workspace_id):
         return Exporter()
 
-    router._build_exporter = build_exporter
+    internal(router).build_exporter = build_exporter
 
     def flush_with_first_span(*_args, **_kwargs):
         router.export_otel_span(span)
@@ -1287,7 +1292,7 @@ def test_workspace_router_close_preserves_span_arriving_during_force_flush(
     router.close(timeout=1.0)
 
     assert [event.type for event in exported] == ["otel.span.exported"]
-    assert router._pending_span_count == 0
+    assert internal(router).pending_span_count == 0
     assert resolve_workspace_router(router.router_id) is None
 
 
@@ -1332,9 +1337,9 @@ def test_workspace_router_close_budget_is_not_blocked_by_runtime_consumer(
     def build_exporter(_workspace_id):
         return Exporter()
 
-    router._build_exporter = build_exporter
-    router._run_workspaces[run_id] = workspace_id
-    router._pending_spans_by_run[run_id] = [
+    internal(router).build_exporter = build_exporter
+    internal(router).run_workspaces[run_id] = workspace_id
+    internal(router).pending_spans_by_run[run_id] = [
         OTelSpanSnapshot(
             name="agent.run",
             trace_id="5" * 32,
@@ -1351,7 +1356,7 @@ def test_workspace_router_close_budget_is_not_blocked_by_runtime_consumer(
             scope_name="test",
         )
     ]
-    router._pending_span_count = 1
+    internal(router).pending_span_count = 1
     register_run_runtime_event_consumer(run_id, blocked_consumer)
     monkeypatch.setattr(
         workspace_router_module,
@@ -1380,12 +1385,12 @@ def test_workspace_router_close_budget_is_not_blocked_by_runtime_consumer(
         assert entered.wait(timeout=0.1)
         assert elapsed < 0.15
         assert resolve_workspace_router(router.router_id) is router
-        close_worker = router._close_worker
+        close_worker = internal(router).close_worker
         assert close_worker is not None and close_worker.is_alive()
 
         router.close(timeout=0.05)
 
-        assert router._close_worker is close_worker
+        assert internal(router).close_worker is close_worker
         assert close_worker.is_alive()
 
         release.set()
@@ -1397,7 +1402,7 @@ def test_workspace_router_close_budget_is_not_blocked_by_runtime_consumer(
             "otel.span.exported",
             RuntimeEventType.LLM_FINISHED,
         ]
-        assert router._pending_span_count == 0
+        assert internal(router).pending_span_count == 0
     finally:
         fallback_release.cancel()
         release.set()
@@ -1410,8 +1415,8 @@ def test_workspace_router_close_lock_acquisition_uses_remaining_budget():
     )
 
     router = WorkspaceObservabilityRouter()
-    router._close_lock.acquire()
-    fallback_release = threading.Timer(0.3, router._close_lock.release)
+    internal(router).close_lock.acquire()
+    fallback_release = threading.Timer(0.3, internal(router).close_lock.release)
     fallback_release.daemon = True
     fallback_release.start()
 
@@ -1424,8 +1429,8 @@ def test_workspace_router_close_lock_acquisition_uses_remaining_budget():
         assert resolve_workspace_router(router.router_id) is router
     finally:
         fallback_release.cancel()
-        if router._close_lock.locked():
-            router._close_lock.release()
+        if internal(router).close_lock.locked():
+            internal(router).close_lock.release()
         router.close(timeout=1.0)
 
 
@@ -1587,7 +1592,7 @@ def test_workspace_router_retains_bus_when_exporter_close_fails(monkeypatch):
     exporter = Exporter()
     bus = ObservabilityBus(exporter, metric_recorder=lambda *_args, **_kwargs: None)
     router = WorkspaceObservabilityRouter()
-    router._observers_by_workspace[workspace_id] = bus
+    internal(router).observers_by_workspace[workspace_id] = bus
     monkeypatch.setattr(workspace_router_module, "force_flush_open_telemetry", lambda **_kwargs: True)
     monkeypatch.setattr(workspace_router_module, "force_flush_runtime_metrics", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
@@ -1599,7 +1604,7 @@ def test_workspace_router_retains_bus_when_exporter_close_fails(monkeypatch):
     router.close(timeout=1.0)
 
     assert resolve_workspace_router(router.router_id) is router
-    assert router._observers_by_workspace[workspace_id] is bus
+    assert internal(router).observers_by_workspace[workspace_id] is bus
     assert shutdown_calls == []
 
     router.close(timeout=1.0)
@@ -1650,7 +1655,7 @@ def test_workspace_router_force_flush_failure_retains_late_span_for_retry(monkey
     def build_exporter(_workspace_id):
         return Exporter()
 
-    router._build_exporter = build_exporter
+    internal(router).build_exporter = build_exporter
     flush_results = [False, True]
 
     def flush_trace(**_kwargs):
@@ -1665,14 +1670,14 @@ def test_workspace_router_force_flush_failure_retains_late_span_for_retry(monkey
     router.close(timeout=1.0)
 
     assert resolve_workspace_router(router.router_id) is router
-    assert router._draining_otel is True
-    assert router._pending_span_count == 1
+    assert internal(router).draining_otel is True
+    assert internal(router).pending_span_count == 1
     assert exported == []
 
     router.close(timeout=1.0)
 
     assert resolve_workspace_router(router.router_id) is None
-    assert router._pending_span_count == 0
+    assert internal(router).pending_span_count == 0
     assert [event.type for event in exported] == ["otel.span.exported"]
 
 
@@ -1700,7 +1705,7 @@ def test_workspace_router_force_flush_exception_keeps_drain_gate_open(monkeypatc
     router.close(timeout=1.0)
 
     assert resolve_workspace_router(router.router_id) is router
-    assert router._draining_otel is True
+    assert internal(router).draining_otel is True
 
     router.close(timeout=1.0)
 
@@ -1746,7 +1751,7 @@ def test_workspace_router_materializes_first_no_run_span_only_during_close_drain
         build_calls.append(resolved_workspace_id)
         return Exporter()
 
-    router._build_exporter = build_exporter
+    internal(router).build_exporter = build_exporter
 
     def flush_trace(**_kwargs):
         router.export_otel_span(span)

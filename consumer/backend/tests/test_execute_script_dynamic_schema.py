@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import json
 from concurrent.futures import ThreadPoolExecutor
 from operator import getitem
@@ -254,12 +255,10 @@ def test_jiuwen_and_token_schemas_use_selected_ontology_and_workspace(monkeypatc
     }
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
 
-    token_parameters = _execute_script_schema(engine._tools_schema_for_state(state, caller="main"))["function"][
-        "parameters"
-    ]
-    tool_info_parameters = _execute_script_tool_info(engine._jiuwen_tool_infos_for_state(state, caller="main"))[
-        "parameters"
-    ]
+    token_schema = internal(engine).tools_schema_for_state(state, caller="main")
+    token_parameters = _execute_script_schema(token_schema)["function"]["parameters"]
+    tool_infos = internal(engine).jiuwen_tool_infos_for_state(state, caller="main")
+    tool_info_parameters = _execute_script_tool_info(tool_infos)["parameters"]
 
     assert tool_info_parameters == token_parameters
     assert "workspace_input" in tool_info_parameters["properties"]["arguments"]["properties"]
@@ -314,8 +313,8 @@ def test_suppressed_solver_state_hides_cards_from_both_jiuwen_tool_shapes(monkey
         ),
     }
 
-    assert engine._tools_schema_for_state(state, caller="main") == [token_schema]
-    assert engine._jiuwen_tool_infos_for_state(state, caller="main") == [tool_info]
+    assert internal(engine).tools_schema_for_state(state, caller="main") == [token_schema]
+    assert internal(engine).jiuwen_tool_infos_for_state(state, caller="main") == [tool_info]
     assert token_calls[0]["include_solver"] is False
     assert info_calls[0]["include_solver"] is False
 
@@ -447,15 +446,15 @@ def test_execute_script_rejects_non_object_arguments():
 
 
 def test_dynamic_schema_deduplicates_parameter_descriptions():
-    merged = execute_script_module._merge_script_parameter_property_schema(
+    merged = internal(execute_script_module).merge_script_parameter_property_schema(
         None,
         {"type": "string", "description": "First format"},
     )
-    merged = execute_script_module._merge_script_parameter_property_schema(
+    merged = internal(execute_script_module).merge_script_parameter_property_schema(
         merged,
         {"type": "string", "description": "Second format"},
     )
-    merged = execute_script_module._merge_script_parameter_property_schema(
+    merged = internal(execute_script_module).merge_script_parameter_property_schema(
         merged,
         {"type": "string", "description": "First format"},
     )
@@ -660,7 +659,7 @@ def test_required_connection_error_preserves_internal_cause(monkeypatch, error_t
     )
 
     with pytest.raises(execute_script_module.BusinessDataConnectionError) as exc:
-        execute_script_module._build_script_env_overrides(
+        internal(execute_script_module).build_script_env_overrides(
             workspace_id="workspace_demo",
             ontology_id="knowledge_package_demo",
             required=True,
@@ -728,11 +727,11 @@ def test_handle_execute_script_discards_success_stderr(monkeypatch, tmp_path):
     ],
 )
 def test_normalize_script_entrypoint_rejects_cross_platform_escapes(entrypoint):
-    assert ontology_catalog_module._normalize_script_entrypoint(entrypoint) is None
+    assert internal(ontology_catalog_module).normalize_script_entrypoint(entrypoint) is None
 
 
 def test_normalize_script_entrypoint_accepts_windows_separators_inside_scripts():
-    assert ontology_catalog_module._normalize_script_entrypoint(r"subdir\run.py") == "scripts/subdir/run.py"
+    assert internal(ontology_catalog_module).normalize_script_entrypoint(r"subdir\run.py") == "scripts/subdir/run.py"
 
 
 @pytest.mark.parametrize("link_kind", ["scripts_root", "script_file"])
@@ -764,7 +763,7 @@ def test_resolve_ontology_script_path_rejects_symlink_escape(tmp_path, link_kind
 
 
 def test_script_parameter_parser_preserves_explicit_runtime_false():
-    parameters = ontology_catalog_module._parse_script_parameters_from_markdown(
+    parameters = internal(ontology_catalog_module).parse_script_parameters_from_markdown(
         "\n".join(
             [
                 "| name | flag | type | required | runtime |",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from internal_access import internal
 import asyncio
 import threading
 import unittest
@@ -120,7 +121,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
             ],
         }
 
-        history = jiuwen_engine._build_jiuwen_history_source_messages(state)
+        history = internal(jiuwen_engine).build_jiuwen_history_source_messages(state)
 
         self.assertEqual(len(history), 4)
         self.assertEqual(history[1]["reasoning_content"], "previous reasoning")
@@ -326,7 +327,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
             buffer = _JiuwenEngineEventBuffer(max_buffer_size=1)
             scheduled = 0
             scheduled_lock = threading.Lock()
-            real_call_soon_threadsafe = buffer._loop.call_soon_threadsafe
+            real_call_soon_threadsafe = internal(buffer).loop.call_soon_threadsafe
 
             def counted_call_soon_threadsafe(callback, *args):
                 nonlocal scheduled
@@ -342,7 +343,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
                         continue
 
             with patch.object(
-                buffer._loop,
+                internal(buffer).loop,
                 "call_soon_threadsafe",
                 side_effect=counted_call_soon_threadsafe,
             ):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from internal_access import internal
 import ctypes
 import hashlib
 import json
@@ -24,9 +25,9 @@ from scripts.run_controlled_solver_validation import (
 def test_windows_handle_conversion_reads_ctypes_value_instead_of_int():
     handle = ctypes.c_void_p(12345)
 
-    assert runner._native_handle_value(handle) == 12345
+    assert internal(runner).native_handle_value(handle) == 12345
     with pytest.raises(ControlledValidationError, match="invalid"):
-        runner._native_handle_value(ctypes.c_void_p(None))
+        internal(runner).native_handle_value(ctypes.c_void_p(None))
 
 
 ITEM_IDS = tuple("ITEM_SYNTHETIC_{:04d}".format(index) for index in range(1, 5))
@@ -374,7 +375,7 @@ def test_loader_rejects_a_linked_bundle_file(tmp_path, monkeypatch):
     try:
         input_path.symlink_to(external)
     except OSError:
-        original = runner._unsafe_link
+        original = internal(runner).unsafe_link
         monkeypatch.setattr(
             runner,
             "_unsafe_link",
@@ -395,7 +396,7 @@ def test_windows_bundle_reader_uses_a_no_follow_handle(tmp_path, monkeypatch):
     path = tmp_path / "synthetic.json"
     path.write_bytes(b"{}")
     opened: list[Path] = []
-    real_open = runner._open_windows_no_follow
+    real_open = internal(runner).open_windows_no_follow
 
     def recording_open(selected_path: Path) -> int:
         opened.append(selected_path)
@@ -403,7 +404,7 @@ def test_windows_bundle_reader_uses_a_no_follow_handle(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner, "_open_windows_no_follow", recording_open)
 
-    assert runner._read_bounded_file(path) == b"{}"
+    assert internal(runner).read_bounded_file(path) == b"{}"
     assert opened == [path]
 
 
@@ -434,7 +435,7 @@ def test_controlled_connector_configuration_rejects_http_without_explicit_opt_in
     )
 
     with pytest.raises(ControlledValidationError, match="endpoint"):
-        runner._connector_configuration_from_env()
+        internal(runner).connector_configuration_from_env()
 
 
 def test_controlled_connector_configuration_accepts_private_http_with_opt_in(
@@ -447,7 +448,7 @@ def test_controlled_connector_configuration_accepts_private_http_with_opt_in(
     )
     monkeypatch.setenv("SOLVER_CONTROLLED_VALIDATION_ALLOW_HTTP", "true")
 
-    configuration = runner._connector_configuration_from_env()
+    configuration = internal(runner).connector_configuration_from_env()
 
     assert configuration.endpoint == "http://ortools-solver:8080"
 
@@ -618,7 +619,7 @@ def test_connector_token_file_cannot_live_in_repository_or_bundle(tmp_path, monk
     monkeypatch.setenv("SOLVER_CONTROLLED_VALIDATION_SERVICE_TOKEN_FILE", str(token_file))
 
     with pytest.raises(ControlledValidationError, match="credential file"):
-        runner._connector_configuration_from_env(protected_repository_roots=(repository,), bundle_root=root)
+        internal(runner).connector_configuration_from_env(protected_repository_roots=(repository,), bundle_root=root)
 
 
 def test_connector_job_is_cancelled_when_polling_fails(tmp_path, monkeypatch):
