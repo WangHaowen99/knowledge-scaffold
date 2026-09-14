@@ -897,16 +897,24 @@
 
       function formatMs(ms) {
         const n = Number(ms || 0);
-        if (!Number.isFinite(n)) return '-';
-        if (n < 1000) return `${n.toFixed(0)} ms`;
-        if (n < 60000) return `${(n / 1000).toFixed(2)} s`;
+        if (!Number.isFinite(n)) {
+          return '-';
+        }
+        if (n < 1000) {
+          return `${n.toFixed(0)} ms`;
+        }
+        if (n < 60000) {
+          return `${(n / 1000).toFixed(2)} s`;
+        }
         const min = Math.floor(n / 60000);
         const sec = ((n % 60000) / 1000).toFixed(1);
         return `${min}m ${sec}s`;
       }
 
       function formatPct(part, total) {
-        if (!total) return '0%';
+        if (!total) {
+          return '0%';
+        }
         return `${((part / total) * 100).toFixed(1)}%`;
       }
 
@@ -966,9 +974,13 @@
 
       function getStatusMeta(status) {
         const rawStatus = String(status ?? '').trim();
-        if (!rawStatus) return { code: 'unknown', ...STATUS_META.unknown };
+        if (!rawStatus) {
+          return { code: 'unknown', ...STATUS_META.unknown };
+        }
         const meta = STATUS_META[rawStatus];
-        if (meta) return { code: rawStatus, ...meta };
+        if (meta) {
+          return { code: rawStatus, ...meta };
+        }
         return {
           code: rawStatus,
           label: rawStatus,
@@ -991,7 +1003,9 @@
               .filter(Boolean),
           ),
         ];
-        if (!uniqueStatuses.length) return '';
+        if (!uniqueStatuses.length) {
+          return '';
+        }
         return `
           <div class="status-note">
             <div class="label">状态说明</div>
@@ -1019,21 +1033,29 @@
       /* === Count-up animation === */
       function countUp(el, target, duration = 600) {
         const start = parseInt(el.textContent) || 0;
-        if (start === target) return;
+        if (start === target) {
+          return;
+        }
         const startTime = performance.now();
         function tick(now) {
           const progress = Math.min((now - startTime) / duration, 1);
           const eased = 1 - Math.pow(1 - progress, 3);
           el.textContent = String(Math.round(start + (target - start) * eased));
-          if (progress < 1) requestAnimationFrame(tick);
+          if (progress < 1) {
+            requestAnimationFrame(tick);
+          }
         }
         requestAnimationFrame(tick);
       }
 
       /* === Heat-map class for duration cell === */
       function heatClass(ms, warnThreshold = 3000, hotThreshold = 8000) {
-        if (ms >= hotThreshold) return 'heat-hot';
-        if (ms >= warnThreshold) return 'heat-warm';
+        if (ms >= hotThreshold) {
+          return 'heat-hot';
+        }
+        if (ms >= warnThreshold) {
+          return 'heat-warm';
+        }
         return '';
       }
 
@@ -1060,7 +1082,9 @@
       }
 
       function normalizeTimestamp(raw, fallbackIndex) {
-        if (!raw) return { ms: fallbackIndex, text: '-' };
+        if (!raw) {
+          return { ms: fallbackIndex, text: '-' };
+        }
         const normalized = String(raw).replace(' ', 'T');
         const date = new Date(normalized);
         if (Number.isNaN(date.getTime())) {
@@ -1070,9 +1094,15 @@
       }
 
       function getRunSortValue(run, mode) {
-        if (mode === 'slowest') return run.totalMs;
-        if (mode === 'llm') return run.llmMs;
-        if (mode === 'tools') return run.toolsBatchMs;
+        if (mode === 'slowest') {
+          return run.totalMs;
+        }
+        if (mode === 'llm') {
+          return run.llmMs;
+        }
+        if (mode === 'tools') {
+          return run.toolsBatchMs;
+        }
         return run.lastTs;
       }
 
@@ -1088,7 +1118,9 @@
             const text = await file.text();
             const lines = text.split(/\r?\n/);
             lines.forEach((line, lineIndex) => {
-              if (!line.trim()) return;
+              if (!line.trim()) {
+                return;
+              }
               const parsed = safeJsonParse(line);
               if (!parsed || typeof parsed !== 'object') {
                 parseErrors.push({
@@ -1115,8 +1147,12 @@
 
         events.forEach((event) => {
           const runId = String(event.run_id || '').trim();
-          if (!runId) return;
-          if (!byRun.has(runId)) byRun.set(runId, []);
+          if (!runId) {
+            return;
+          }
+          if (!byRun.has(runId)) {
+            byRun.set(runId, []);
+          }
           byRun.get(runId).push(event);
         });
 
@@ -1172,7 +1208,9 @@
           const iterationMap = new Map();
           runEvents.forEach((item) => {
             const iteration = Number(item.iteration);
-            if (!Number.isFinite(iteration) || iteration <= 0) return;
+            if (!Number.isFinite(iteration) || iteration <= 0) {
+              return;
+            }
             if (!iterationMap.has(iteration)) {
               iterationMap.set(iteration, {
                 iteration,
@@ -1287,7 +1325,9 @@
               row.count += 1;
               row.totalMs += duration;
               row.maxMs = Math.max(row.maxMs, duration);
-              if (item.status) row.statuses.add(String(item.status));
+              if (item.status) {
+                row.statuses.add(String(item.status));
+              }
             });
 
           const selectedOntologyId =
@@ -1340,7 +1380,9 @@
         const sortMode = els.sortSelect.value;
         const runs = [...state.runs]
           .filter((run) => {
-            if (!keyword) return true;
+            if (!keyword) {
+              return true;
+            }
             const runStatusMeta = getStatusMeta(run.status);
             const haystack = [
               run.runId,
@@ -1436,7 +1478,9 @@
         labelRenderer,
         valueRenderer = formatMs,
       ) {
-        if (!items.length) return '<div class="empty">暂无数据</div>';
+        if (!items.length) {
+          return '<div class="empty">暂无数据</div>';
+        }
         const max = Math.max(
           ...items.map((item) => Number(item[valueKey] || 0)),
           1,
@@ -1506,18 +1550,24 @@
 
         const eventRows = run.events
           .map(
-            (event) => `
+            (event) => {
+              const durationValue = event.duration_ms != null
+                ? event.duration_ms
+                : event.total_duration_ms;
+              const durationText = durationValue != null ? formatMs(durationValue) : '-';
+              return `
           <tr data-etype="${escapeHtml(event.event || '-')}">
             <td class="mono">${escapeHtml(event.timestamp || '-')}</td>
             <td class="mono">${escapeHtml(event.event || '-')}</td>
             <td>${event.iteration ?? '-'}</td>
             <td>${event.status ? renderStatusTag(event.status) : '-'}</td>
-            <td class="${heatClass(Number(event.duration_ms || event.total_duration_ms || 0))}">${event.duration_ms != null ? formatMs(event.duration_ms) : event.total_duration_ms != null ? formatMs(event.total_duration_ms) : '-'}</td>
+            <td class="${heatClass(Number(event.duration_ms || event.total_duration_ms || 0))}">${durationText}</td>
             <td class="mono">${escapeHtml(event.tool_name || (Array.isArray(event.tool_names) ? event.tool_names.join(', ') : '-'))}</td>
             <td class="mono">${escapeHtml(event.request_label || '-')}</td>
             <td class="mono">${escapeHtml(event.__file)}:${event.__line}</td>
           </tr>
-        `,
+        `;
+            },
           )
           .join('');
 
@@ -1702,7 +1752,9 @@
             header.addEventListener('click', () => {
               const targetId = header.dataset.target;
               const body = document.getElementById(targetId);
-              if (!body) return;
+              if (!body) {
+                return;
+              }
               header.classList.toggle('collapsed');
               body.classList.toggle('hidden');
             });
@@ -1714,7 +1766,9 @@
         if (filterBar && eventBody) {
           filterBar.addEventListener('click', (e) => {
             const pill = e.target.closest('.filter-pill');
-            if (!pill) return;
+            if (!pill) {
+              return;
+            }
             const { etype } = pill.dataset;
             filterBar
               .querySelectorAll('.filter-pill')
@@ -1737,7 +1791,9 @@
       }
 
       async function loadFiles(files) {
-        if (!files || !files.length) return;
+        if (!files || !files.length) {
+          return;
+        }
         const { allEvents, parseErrors, fileNames } = await parseFiles(files);
         state.files = fileNames;
         state.parseErrors = parseErrors;

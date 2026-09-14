@@ -78,3 +78,23 @@ test('unknown PublicEvent types remain forward compatible while legacy envelopes
     payload: {},
   }), false);
 });
+
+test('PublicEvent rejects each invalid required and optional field category', () => {
+  const invalidEvents = [
+    null,
+    event({ schema_version: '2.0' }),
+    event({ event_id: '' }),
+    event({ run_id: '' }),
+    event({ seq: 0 }),
+    event({ event_type: '' }),
+    event({ status: 'unknown' }),
+    event({ payload: [] }),
+    event({ source: [] }),
+    event({ span_key: 1 }),
+    event({ session_id: 1 }),
+    event({ turn_id: 0 }),
+    event({ created_at: 'invalid-date' }),
+  ];
+
+  assert.equal(invalidEvents.every((value) => !isPublicEvent(value)), true);
+});

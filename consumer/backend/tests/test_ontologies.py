@@ -191,8 +191,9 @@ def test_get_sole_enabled_ontology_id_variants(tmp_path, monkeypatch):
 
 
 def test_get_active_ontology_version_variants(tmp_path, monkeypatch):
-    """Revision-bound capabilities need a concrete version for a package the
-    session never pinned; only enabled packages may supply one."""
+    """Revision-bound capabilities need a concrete version for a package the."""
+    # Details: Revision-bound capabilities need a concrete version for a package the session never pinned; only
+    # enabled packages may supply one.
     import ontology.ontologies as ontologies_module
     from ontology.ontologies import get_active_ontology_version
 

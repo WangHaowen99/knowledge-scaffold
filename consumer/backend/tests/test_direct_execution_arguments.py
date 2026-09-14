@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from operator import getitem
 from types import SimpleNamespace
 
 import agent.direct_execution.router as direct_router_module
@@ -632,7 +633,7 @@ def test_direct_runner_uses_pinned_manifest_without_live_lookup(monkeypatch, tmp
     )
 
     assert result.status == "success"
-    assert captured["ontology_dir"] == ontology_dir.resolve()
+    assert getitem(captured, "ontology_dir") == ontology_dir.resolve()
 
 
 def test_direct_router_allows_missing_optional_runtime_context(monkeypatch):
@@ -946,7 +947,7 @@ def test_direct_runner_discards_success_stderr_from_model_output(monkeypatch, tm
     )
 
     assert result.status == "success"
-    assert captured["include_stderr_on_success"] is False
+    assert getitem(captured, "include_stderr_on_success") is False
 
 
 def test_direct_runner_env_failure_preserves_tool_started_and_span_identity(

@@ -312,92 +312,93 @@ test('tool finish without a start event derives its timing from elapsed_ms', () 
   assert.equal(state.streamSegments[0].parentKey, 'iteration:main:1');
 });
 
-// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
+const nestedSubagentEvents = () => [
+  publicEvent(
+    'subagent_group.started',
+    {
+      group_id: 'group-root',
+      depth: 1,
+      tasks: [{ task_id: 'root-task', task: 'Root task', task_index: 0 }],
+    },
+    1,
+  ),
+  publicEvent(
+    'subagent.started',
+    {
+      group_id: 'group-root',
+      subagent_id: 'sub-root',
+      task_id: 'root-task',
+      task: 'Root task',
+      task_index: 0,
+    },
+    2,
+  ),
+  publicEvent(
+    'subagent_group.started',
+    {
+      group_id: 'group-child',
+      depth: 2,
+      parent_subagent_id: 'sub-root',
+      tasks: [{ task_id: 'child-task', task: 'Child task', task_index: 0 }],
+    },
+    3,
+  ),
+  publicEvent(
+    'subagent.started',
+    {
+      group_id: 'group-child',
+      subagent_id: 'sub-child',
+      task_id: 'child-task',
+      task: 'Child task',
+      task_index: 0,
+    },
+    4,
+  ),
+  publicEvent(
+    'subagent.delta',
+    {
+      group_id: 'group-child',
+      subagent_id: 'sub-child',
+      task_id: 'child-task',
+      channel: 'content',
+      text: 'nested output',
+    },
+    5,
+    {
+      trace_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      span_id: 'bbbbbbbbbbbbbbbb',
+      parent_span_id: 'cccccccccccccccc',
+    },
+  ),
+  publicEvent(
+    'subagent.finished',
+    {
+      group_id: 'group-child',
+      subagent_id: 'sub-child',
+      task_id: 'child-task',
+      status: 'completed',
+      result: { output: 'done' },
+    },
+    6,
+  ),
+  publicEvent(
+    'subagent_group.finished',
+    {
+      group_id: 'group-child',
+      depth: 2,
+      status: 'completed',
+      task_count: 1,
+      completed_count: 1,
+      error_count: 0,
+    },
+    7,
+  ),
+];
+
 test('nested subagent groups attach under parent subagent child', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
 
-  [
-    publicEvent(
-      'subagent_group.started',
-      {
-        group_id: 'group-root',
-        depth: 1,
-        tasks: [{ task_id: 'root-task', task: 'Root task', task_index: 0 }],
-      },
-      1,
-    ),
-    publicEvent(
-      'subagent.started',
-      {
-        group_id: 'group-root',
-        subagent_id: 'sub-root',
-        task_id: 'root-task',
-        task: 'Root task',
-        task_index: 0,
-      },
-      2,
-    ),
-    publicEvent(
-      'subagent_group.started',
-      {
-        group_id: 'group-child',
-        depth: 2,
-        parent_subagent_id: 'sub-root',
-        tasks: [{ task_id: 'child-task', task: 'Child task', task_index: 0 }],
-      },
-      3,
-    ),
-    publicEvent(
-      'subagent.started',
-      {
-        group_id: 'group-child',
-        subagent_id: 'sub-child',
-        task_id: 'child-task',
-        task: 'Child task',
-        task_index: 0,
-      },
-      4,
-    ),
-    publicEvent(
-      'subagent.delta',
-      {
-        group_id: 'group-child',
-        subagent_id: 'sub-child',
-        task_id: 'child-task',
-        channel: 'content',
-        text: 'nested output',
-      },
-      5,
-      {
-        trace_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        span_id: 'bbbbbbbbbbbbbbbb',
-        parent_span_id: 'cccccccccccccccc',
-      },
-    ),
-    publicEvent(
-      'subagent.finished',
-      {
-        group_id: 'group-child',
-        subagent_id: 'sub-child',
-        task_id: 'child-task',
-        status: 'completed',
-        result: { output: 'done' },
-      },
-      6,
-    ),
-    publicEvent(
-      'subagent_group.finished',
-      {
-        group_id: 'group-child',
-        depth: 2,
-        status: 'completed',
-        task_count: 1,
-        completed_count: 1,
-        error_count: 0,
-      },
-      7,
-    ),
-  ].forEach((event) => {
+  nestedSubagentEvents().forEach((event) => {
     state = applyPublicEvent(state, event);
   });
 

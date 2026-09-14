@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 from contextlib import asynccontextmanager, contextmanager
+from operator import getitem
 from types import SimpleNamespace
 
 import pytest
@@ -1411,7 +1412,7 @@ def test_empty_authoritative_store_publishes_empty_index_on_first_request(
     holder = {}
     index = SessionSummaryIndex(
         tmp_path / "empty-session-summary-index.json",
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     chat_store = ChatStore(
         str(tmp_path / "empty-chats"),

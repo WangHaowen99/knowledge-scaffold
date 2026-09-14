@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from operator import getitem
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.exceptions import WorkflowCancelledError
@@ -291,7 +292,7 @@ class SubAgent:
                 token_index[channel] += 1
                 emit(
                     "subagent.delta",
-                    {**common, "channel": channel, "text": token, "index": token_index[channel]},
+                    {**common, "channel": channel, "text": token, "index": getitem(token_index, channel)},
                 )
 
             from agent.core.engine import AgentLoopEngine

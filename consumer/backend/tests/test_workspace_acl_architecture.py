@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from operator import getitem
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +52,9 @@ def test_http_routes_do_not_write_workspace_acl_through_storage_functions():
             if function_name == "run_in_runtime_pool" and len(node.args) >= 3:
                 callback_name = _callable_name(node.args[2])
             invoked_names = {name for name in (function_name, callback_name) if name}
-            observed_service_calls.update(service_aliases[name] for name in invoked_names if name in service_aliases)
+            observed_service_calls.update(
+                getitem(service_aliases, name) for name in invoked_names if name in service_aliases
+            )
             unsafe_storage = invoked_names & ({"create_workspace", "update_workspace"} | storage_aliases)
             if unsafe_storage:
                 violations.append(

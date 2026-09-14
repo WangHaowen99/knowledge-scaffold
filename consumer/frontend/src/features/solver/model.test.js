@@ -137,7 +137,9 @@ test('each validation action can create a fresh caller-owned idempotency key', (
 
 test('a newer request epoch rejects a slower restore response', async () => {
   let releaseRestore;
-  const restoreResponse = new Promise((resolve) => { releaseRestore = resolve; });
+  const restoreResponse = new Promise((resolve) => {
+    releaseRestore = resolve;
+  });
   const guard = createRequestEpochGuard();
   const restoreEpoch = guard.capture();
   const accepted = restoreResponse.then(() => guard.accepts(restoreEpoch));

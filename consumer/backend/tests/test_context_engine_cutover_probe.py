@@ -90,8 +90,9 @@ class TestResolveEffectiveContextMaxRounds:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_empty_dict_interaction_response_is_normal(self):
-        """An empty dict interaction_response is falsy, so treated as normal.
-        This matches the orchestrator's own truthiness check."""
+        """An empty dict interaction_response is falsy, so treated as normal."""
+        # Details: An empty dict interaction_response is falsy, so treated as normal. This matches the orchestrator's
+        # own truthiness check.
         state = {"user_context": {"interaction_response": {}}}
         assert _resolve_effective_context_max_rounds(1, state) == 1
 
@@ -241,8 +242,8 @@ class TestEngineDoesNotImportSlidingWindow:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_build_history_messages_does_not_call_sliding_window(self, monkeypatch):
-        """_build_jiuwen_history_messages must forward full history without
-        calling apply_sliding_window."""
+        """_build_jiuwen_history_messages must forward full history without."""
+        # Details: _build_jiuwen_history_messages must forward full history without calling apply_sliding_window.
         calls = []
 
         def fail_if_called(messages, max_rounds):
@@ -263,8 +264,8 @@ class TestEngineDoesNotImportSlidingWindow:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_build_context_messages_does_not_call_sliding_window(self, monkeypatch):
-        """_build_jiuwen_context_messages must forward full history without
-        calling apply_sliding_window."""
+        """_build_jiuwen_context_messages must forward full history without."""
+        # Details: _build_jiuwen_context_messages must forward full history without calling apply_sliding_window.
         calls = []
 
         def fail_if_called(messages, max_rounds):

@@ -449,7 +449,7 @@ const collectMessage = (message, units, rootOntologyId = '') => {
 const collectTraceUnits = (input) => {
   const units = [];
   const rootOntologyId = ontologyIdFrom(input);
-  let values = [];
+  let values;
   if (Array.isArray(input)) {
     values = input;
   } else if (Array.isArray(input?.messages)) {
@@ -458,6 +458,8 @@ const collectTraceUnits = (input) => {
     values = input.envelopes;
   } else if (plainObject(input)) {
     values = [input];
+  } else {
+    values = [];
   }
   values.forEach((value) => {
     const kind = stringValue(value?.kind ?? value?.type).toLocaleLowerCase();

@@ -114,128 +114,156 @@ export function importRequestFields(request = {}) {
   return { action, overwrite: 'true' };
 }
 
-// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
+const IMPORT_FLOW_REDUCERS = {
+  SELECT_FILE: (_current, event) => {
+    const error = validateImportFile(event.file);
+    if (error) {
+      return {
+        ...createImportFlowState(),
+        phase: IMPORT_PHASE.ERROR,
+        file: event.file || null,
+        error,
+      };
+    }
+    return {
+      ...createImportFlowState(),
+      phase: IMPORT_PHASE.CONFIRMING,
+      file: event.file,
+    };
+  },
+  SET_ACKNOWLEDGED: (current, event) =>
+    current.phase === IMPORT_PHASE.CONFIRMING ?
+      { ...current, acknowledged: Boolean(event.value), error: '' } :
+      current,
+  START_UPLOAD: (current) => {
+    if (current.phase !== IMPORT_PHASE.CONFIRMING || !current.acknowledged) {
+      return { ...current, error: '请先确认导入安全边界' };
+    }
+    return {
+      ...current,
+      phase: IMPORT_PHASE.UPLOADING,
+      request: { action: '', newVersion: '' },
+      error: '',
+      result: null,
+    };
+  },
+  CONFLICT: (current, event) => ({
+    ...current,
+    phase: IMPORT_PHASE.CONFLICT,
+    conflict: normalizeImportConflict(event.payload),
+    newVersion: '',
+    error: '',
+  }),
+  SET_NEW_VERSION: (current, event) =>
+    current.phase === IMPORT_PHASE.CONFLICT ?
+      { ...current, newVersion: String(event.value || ''), error: '' } :
+      current,
+  RESOLVE_CONFLICT: (current, event) => {
+    const error = validateImportDecision(current, event.action);
+    if (error) {
+      return { ...current, error };
+    }
+    const request = {
+      action: event.action,
+      newVersion:
+        event.action === IMPORT_ACTION.CREATE_VERSION ?
+          String(current.newVersion || '').trim() :
+          '',
+    };
+    return { ...current, phase: IMPORT_PHASE.UPLOADING, request, error: '' };
+  },
+  FAILURE: (current, event) => {
+    const errorCode = String(event.errorCode || '');
+    return {
+      ...current,
+      phase: IMPORT_PHASE.ERROR,
+      error: String(event.error || '知识包导入失败'),
+      errorCode,
+      request: errorCode === 'ontology_name_conflict' ? null : current.request,
+      conflict: errorCode === 'ontology_name_conflict' ? null : current.conflict,
+    };
+  },
+  RETRY: (current) => current.file && current.request ?
+    { ...current, phase: IMPORT_PHASE.UPLOADING, error: '' } :
+    current,
+  REOPEN_CONFLICT: (current) => current.conflict ?
+    { ...current, phase: IMPORT_PHASE.CONFLICT, error: '' } :
+    current,
+  SUCCESS: (current, event) => {
+    const result = event.payload || {};
+    return {
+      ...current,
+      phase: IMPORT_PHASE.SUCCESS,
+      result: {
+        ...result,
+        preview: buildImportPreview(result),
+      },
+      conflict: null,
+      file: null,
+      error: '',
+    };
+  },
+  CLEAR_PREVIEW: (current) => current.result ?
+    { ...current, result: { ...current.result, preview: null } } :
+    current,
+  CANCEL: (current) => {
+    const stoppedWaiting = current.phase === IMPORT_PHASE.UPLOADING;
+    return {
+      ...createImportFlowState(),
+      phase: IMPORT_PHASE.CANCELLED,
+      stoppedWaiting,
+      reconciliationPending: stoppedWaiting,
+    };
+  },
+  RECONCILED: (current) =>
+    current.phase === IMPORT_PHASE.CANCELLED && current.reconciliationPending ?
+      { ...current, reconciliationPending: false } :
+      current,
+  RESET: () => createImportFlowState(),
+};
+
 export function reduceImportFlow(state, event) {
   const current = state || createImportFlowState();
-  switch (event?.type) {
-    case 'SELECT_FILE': {
-      const error = validateImportFile(event.file);
-      if (error) {
-        return {
-          ...createImportFlowState(),
-          phase: IMPORT_PHASE.ERROR,
-          file: event.file || null,
-          error,
-        };
-      }
-      return {
-        ...createImportFlowState(),
-        phase: IMPORT_PHASE.CONFIRMING,
-        file: event.file,
-      };
-    }
-    case 'SET_ACKNOWLEDGED':
-      return current.phase === IMPORT_PHASE.CONFIRMING ?
-        { ...current, acknowledged: Boolean(event.value), error: '' } :
-        current;
-    case 'START_UPLOAD':
-      if (current.phase !== IMPORT_PHASE.CONFIRMING || !current.acknowledged) {
-        return { ...current, error: '请先确认导入安全边界' };
-      }
-      return {
-        ...current,
-        phase: IMPORT_PHASE.UPLOADING,
-        request: { action: '', newVersion: '' },
-        error: '',
-        result: null,
-      };
-    case 'CONFLICT':
-      return {
-        ...current,
-        phase: IMPORT_PHASE.CONFLICT,
-        conflict: normalizeImportConflict(event.payload),
-        newVersion: '',
-        error: '',
-      };
-    case 'SET_NEW_VERSION':
-      return current.phase === IMPORT_PHASE.CONFLICT ?
-        { ...current, newVersion: String(event.value || ''), error: '' } :
-        current;
-    case 'RESOLVE_CONFLICT': {
-      const error = validateImportDecision(current, event.action);
-      if (error) {
-        return { ...current, error };
-      }
-      const request = {
-        action: event.action,
-        newVersion:
-          event.action === IMPORT_ACTION.CREATE_VERSION ?
-            String(current.newVersion || '').trim() :
-            '',
-      };
-      return { ...current, phase: IMPORT_PHASE.UPLOADING, request, error: '' };
-    }
-    case 'FAILURE': {
-      const errorCode = String(event.errorCode || '');
-      return {
-        ...current,
-        phase: IMPORT_PHASE.ERROR,
-        error: String(event.error || '知识包导入失败'),
-        errorCode,
-        request:
-          errorCode === 'ontology_name_conflict' ? null : current.request,
-        conflict:
-          errorCode === 'ontology_name_conflict' ? null : current.conflict,
-      };
-    }
-    case 'RETRY':
-      return current.file && current.request ?
-        { ...current, phase: IMPORT_PHASE.UPLOADING, error: '' } :
-        current;
-    case 'REOPEN_CONFLICT':
-      return current.conflict ?
-        { ...current, phase: IMPORT_PHASE.CONFLICT, error: '' } :
-        current;
-    case 'SUCCESS': {
-      const result = event.payload || {};
-      return {
-        ...current,
-        phase: IMPORT_PHASE.SUCCESS,
-        result: {
-          ...result,
-          preview: buildImportPreview(result),
-        },
-        conflict: null,
-        file: null,
-        error: '',
-      };
-    }
-    case 'CLEAR_PREVIEW':
-      return current.result ?
-        { ...current, result: { ...current.result, preview: null } } :
-        current;
-    case 'CANCEL': {
-      const stoppedWaiting = current.phase === IMPORT_PHASE.UPLOADING;
-      return {
-        ...createImportFlowState(),
-        phase: IMPORT_PHASE.CANCELLED,
-        stoppedWaiting,
-        reconciliationPending: stoppedWaiting,
-      };
-    }
-    case 'RECONCILED':
-      return current.phase === IMPORT_PHASE.CANCELLED &&
-        current.reconciliationPending ?
-        { ...current, reconciliationPending: false } :
-        current;
-    case 'RESET':
-      return createImportFlowState();
-    default:
-      return current;
-  }
+  const reducer = IMPORT_FLOW_REDUCERS[event?.type];
+  return reducer ? reducer(current, event) : current;
 }
 
-// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
+function successfulImportNotice(state) {
+  const result = state.result || {};
+  const activeVersion = result.active_version || result.version || '';
+  const warningMessages = importWarningMessages(
+    importResultWarningDetails(result),
+  );
+  const warningPreview = warningMessages.slice(
+    0,
+    IMPORT_WARNING_PREVIEW_LIMIT,
+  );
+  const hiddenWarningCount = warningMessages.length - warningPreview.length;
+  const hiddenWarningNotice = hiddenWarningCount ?
+    `；其余 ${hiddenWarningCount} 条未展示` :
+    '';
+  const warningNotice = warningMessages.length ?
+    `；警告 ${warningMessages.length} 条：${warningPreview.join('；')}${hiddenWarningNotice}` :
+    '';
+  const packageName = result.ontology_name || result.ontology_id || '知识包';
+  const activeVersionNotice = activeVersion ?
+    ` · 激活版本 ${activeVersion}` :
+    '';
+  return (
+    `导入成功：${packageName}（对象 ${result.objects_count ?? '-'} · ` +
+    `操作 ${result.operations_count ?? '-'}${activeVersionNotice}）${warningNotice}`
+  );
+}
+
+function cancelledImportNotice(state) {
+  if (!state.stoppedWaiting) {
+    return '已关闭知识包导入';
+  }
+  return state.reconciliationPending ?
+    '已停止等待导入结果；服务端处理可能仍在执行或已经生效，正在延迟刷新核对。' :
+    '已执行一次延迟刷新核对；服务端仍可能继续处理，请稍后再次刷新并核对知识包列表和激活版本。';
+}
+
 export function importFlowNotice(state) {
   switch (state?.phase) {
     case IMPORT_PHASE.CONFIRMING:
@@ -244,41 +272,12 @@ export function importFlowNotice(state) {
       return `正在上传并解析：${state.file?.name || ''}`;
     case IMPORT_PHASE.CONFLICT:
       return `检测到版本冲突：${state.conflict?.ontologyName || state.conflict?.ontologyId || ''}`;
-    case IMPORT_PHASE.SUCCESS: {
-      const result = state.result || {};
-      const activeVersion = result.active_version || result.version || '';
-      const warningMessages = importWarningMessages(
-        importResultWarningDetails(result),
-      );
-      const warningPreview = warningMessages.slice(
-        0,
-        IMPORT_WARNING_PREVIEW_LIMIT,
-      );
-      const hiddenWarningCount = warningMessages.length - warningPreview.length;
-      const hiddenWarningNotice = hiddenWarningCount ?
-        `；其余 ${hiddenWarningCount} 条未展示` :
-        '';
-      const warningNotice = warningMessages.length ?
-        `；警告 ${warningMessages.length} 条：${warningPreview.join('；')}${hiddenWarningNotice}` :
-        '';
-      const packageName = result.ontology_name || result.ontology_id || '知识包';
-      const activeVersionNotice = activeVersion ?
-        ` · 激活版本 ${activeVersion}` :
-        '';
-      return (
-        `导入成功：${packageName}（对象 ${result.objects_count ?? '-'} · ` +
-        `操作 ${result.operations_count ?? '-'}${activeVersionNotice}）${warningNotice}`
-      );
-    }
+    case IMPORT_PHASE.SUCCESS:
+      return successfulImportNotice(state);
     case IMPORT_PHASE.ERROR:
       return `导入失败：${state.error || '请求异常，请稍后重试'}`;
     case IMPORT_PHASE.CANCELLED:
-      if (!state.stoppedWaiting) {
-        return '已关闭知识包导入';
-      }
-      return state.reconciliationPending ?
-        '已停止等待导入结果；服务端处理可能仍在执行或已经生效，正在延迟刷新核对。' :
-        '已执行一次延迟刷新核对；服务端仍可能继续处理，请稍后再次刷新并核对知识包列表和激活版本。';
+      return cancelledImportNotice(state);
     default:
       return '';
   }
@@ -344,7 +343,7 @@ function importResultWarningDetails(result = {}) {
 }
 
 function importWarningMessages(warnings) {
-  let values = [];
+  let values;
   if (Array.isArray(warnings)) {
     values = warnings;
   } else if (warnings && typeof warnings === 'object') {
@@ -353,6 +352,8 @@ function importWarningMessages(warnings) {
     );
   } else if (warnings) {
     values = [warnings];
+  } else {
+    values = [];
   }
   return values.map((value) => String(value || '').trim()).filter(Boolean);
 }

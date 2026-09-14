@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from operator import getitem
 from types import SimpleNamespace
 
 import pytest
@@ -381,9 +382,9 @@ def test_sub_agent_task_context_cannot_define_selected_ontology_scope(monkeypatc
     )
 
     assert result["_success"] is True
-    assert calls["state"]["user_context"].get("selected_ontology_id") is None
+    assert getitem(getitem(calls, "state"), "user_context").get("selected_ontology_id") is None
     assert calls["prompt_scope"]["selected_ontology_id"] is None
-    assert "task-controlled-ontology" not in calls["state"]["user_request"]
+    assert "task-controlled-ontology" not in getitem(getitem(calls, "state"), "user_request")
 
 
 def test_sub_agent_parent_workspace_locks_scope_with_task_context_fallback(monkeypatch):

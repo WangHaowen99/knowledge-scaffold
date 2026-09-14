@@ -5,6 +5,7 @@ import json
 import threading
 import time
 from collections import defaultdict
+from operator import getitem
 from types import SimpleNamespace
 
 import pytest
@@ -298,8 +299,8 @@ def test_terminal_bridge_correlates_model_and_consumer_call_ids():
             asyncio.run(bridge._on_after_tool_call(unrelated_context))
         asyncio.run(bridge._on_after_tool_call(matching_context))
 
-    assert terminal_result["tool_call_id"] == "consumer-internal-call"
-    assert terminal_result["model_tool_call_id"] == ""
+    assert getitem(terminal_result, "tool_call_id") == "consumer-internal-call"
+    assert getitem(terminal_result, "model_tool_call_id") == ""
     assert unrelated_context.force_finish_results == []
     assert matching_context.force_finish_results == [
         {

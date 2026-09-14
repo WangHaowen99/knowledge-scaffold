@@ -440,9 +440,10 @@ class TestAskUserRecoveryEffectiveRounds:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_configured_one_becomes_two_for_resume(self):
-        """When configured_rounds=1 and resume is active, the ContextEngine
-        must receive default_window_round_num=2 (via _resolve_effective_context_max_rounds).
-        Here we verify that ContextEngineConfig(2) retains 2 rounds."""
+        """When configured_rounds=1 and resume is active, the ContextEngine."""
+        # Details: When configured_rounds=1 and resume is active, the ContextEngine must receive
+        # default_window_round_num=2 (via _resolve_effective_context_max_rounds). Here we verify that
+        # ContextEngineConfig(2) retains 2 rounds.
         from agent.core.jiuwen_engine import _resolve_effective_context_max_rounds
 
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
@@ -527,8 +528,8 @@ class TestNoHardMessageLimit:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_large_history_within_single_round_not_truncated(self):
-        """A single round with >200 messages must not be truncated when
-        max_context_message_num=None."""
+        """A single round with >200 messages must not be truncated when."""
+        # Details: A single round with >200 messages must not be truncated when max_context_message_num=None.
         config = ContextEngineConfig(
             max_context_message_num=None,
             default_window_round_num=1,

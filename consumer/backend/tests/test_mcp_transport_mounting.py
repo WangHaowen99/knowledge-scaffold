@@ -114,7 +114,8 @@ def test_mcp_http_root_app_mounts_only_streamable_http_when_transport_is_http(mo
     captured_transports: list[str] = []
 
     class FakeMcpServer:
-        def http_app(self, *, path: str, transport: str):
+        @staticmethod
+        def http_app(*, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
 
@@ -144,7 +145,8 @@ def test_mcp_http_root_app_mounts_only_sse_when_transport_is_sse(monkeypatch, tm
     captured_transports: list[str] = []
 
     class FakeMcpServer:
-        def http_app(self, *, path: str, transport: str):
+        @staticmethod
+        def http_app(*, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
 
@@ -198,7 +200,8 @@ def test_mcp_http_root_app_mounts_all_four_endpoints_for_both_transport(monkeypa
     captured_transports: list[str] = []
 
     class FakeMcpServer:
-        def http_app(self, *, path: str, transport: str):
+        @staticmethod
+        def http_app(*, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
 
@@ -1225,7 +1228,8 @@ def test_mcp_cli_stdio_migrates_before_loading_dotenv_backed_config(
     )
 
     class FakeServer:
-        def run(self, *, transport=None):
+        @staticmethod
+        def run(*, transport=None):
             calls.append("run:{}".format(transport))
 
     monkeypatch.setattr(

@@ -131,8 +131,8 @@ def test_validate_value_bindings_passes_when_no_bindings_or_refs(tmp_path):
 
 
 def test_validate_value_bindings_validates_legacy_top_level_object_format(tmp_path):
-    """Legacy single-object format (fields at payload root) must also be
-    validated, not silently skipped."""
+    """Legacy single-object format (fields at payload root) must also be."""
+    # Details: Legacy single-object format (fields at payload root) must also be validated, not silently skipped.
     payload = _full_mapping_payload()
     flight = payload["objects"]["flight"]
     top_level = {

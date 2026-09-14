@@ -55,13 +55,15 @@ const statusLabel = (status) =>
 
 function BlockMeta({ status, durationMs }) {
   const duration = formatDurationMs(durationMs);
-  let icon = <Check size={11} />;
+  let icon;
   if (status === 'running') {
     icon = <Loader2 className="spin" size={11} />;
   } else if (status === 'error') {
     icon = <AlertCircle size={11} />;
   } else if (status === 'cancelled') {
     icon = <Circle size={11} />;
+  } else {
+    icon = <Check size={11} />;
   }
   return (
     <span className={`conversation-block-meta status-${status || 'idle'}`}>
@@ -905,7 +907,7 @@ export function RunStatusBlock({
       setRecoveryRequested(false);
     }
   };
-  let statusIcon = <Check size={12} />;
+  let statusIcon;
   if (activeProgress) {
     statusIcon = (
       <span className="tdots" aria-hidden="true">
@@ -922,6 +924,8 @@ export function RunStatusBlock({
     statusIcon = <Circle size={12} />;
   } else if (isAwaiting) {
     statusIcon = <Clock3 size={12} />;
+  } else {
+    statusIcon = <Check size={12} />;
   }
   return (
     <div

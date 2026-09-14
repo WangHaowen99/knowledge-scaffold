@@ -545,32 +545,14 @@ function blocked(code, message, usages = []) {
   return { allowed: false, code, message, usages };
 }
 
-// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
-export function globalProfileDeleteDecision({
-  profileId,
-  config,
-  referenceInventory,
-  preservesProfileCount = false,
-} = {}) {
-  const id = text(profileId);
-  const profiles = Array.isArray(config?.profiles) ? config.profiles : [];
-  if (!id || !profiles.some((profile) => text(profile.id) === id)) {
-    return blocked('profile_missing', '未找到要删除的全局模型');
-  }
-  if (profiles.length <= 1 && !preservesProfileCount) {
-    return blocked(
-      'last_global_model',
-      '全局至少需要保留一个模型，请先新增替代模型',
-    );
-  }
-
+function globalProfileUsageBlock(config, profileId) {
   const globalUsages = roleUsages(
     {
       default_main_profile_ref: config?.default_main_profile_ref,
       default_task_profile_ref: config?.default_task_profile_ref,
     },
     'global',
-    id,
+    profileId,
     '全局',
   );
   const unknownGlobal = globalUsages.filter(
@@ -593,40 +575,86 @@ export function globalProfileDeleteDecision({
       directGlobal,
     );
   }
+  return null;
+}
 
+function collectWorkspaceProfileUsages(referenceInventory, profileId) {
   if (
     !referenceInventory?.complete ||
     !Array.isArray(referenceInventory.entries)
   ) {
-    return blocked(
-      'references_incomplete',
-      '尚未完整核对所有工作空间的运行时引用，已阻止删除',
-    );
+    return {
+      blocked: blocked(
+        'references_incomplete',
+        '尚未完整核对所有工作空间的运行时引用，已阻止删除',
+      ),
+      usages: [],
+    };
   }
   const workspaceUsages = [];
   for (const entry of referenceInventory.entries) {
     if (!entry || entry.runtimeKnown === false) {
-      return blocked(
-        'references_incomplete',
-        '部分工作空间的运行时引用加载失败，已阻止删除',
-      );
+      return {
+        blocked: blocked(
+          'references_incomplete',
+          '部分工作空间的运行时引用加载失败，已阻止删除',
+        ),
+        usages: [],
+      };
     }
     const label = `${text(entry.workspaceName) || text(entry.workspaceId) || '未知工作空间'} · `;
     if (Array.isArray(entry.references)) {
       workspaceUsages.push(
-        ...aggregateRoleUsages(entry.references, 'global', id, label),
+        ...aggregateRoleUsages(entry.references, 'global', profileId, label),
       );
     } else if (entry.runtime && typeof entry.runtime === 'object') {
       workspaceUsages.push(
-        ...roleUsages(entry.runtime.llm || {}, 'global', id, label),
+        ...roleUsages(entry.runtime.llm || {}, 'global', profileId, label),
       );
     } else {
-      return blocked(
-        'references_incomplete',
-        '部分工作空间的运行时引用加载失败，已阻止删除',
-      );
+      return {
+        blocked: blocked(
+          'references_incomplete',
+          '部分工作空间的运行时引用加载失败，已阻止删除',
+        ),
+        usages: [],
+      };
     }
   }
+  return { blocked: null, usages: workspaceUsages };
+}
+
+export function globalProfileDeleteDecision({
+  profileId,
+  config,
+  referenceInventory,
+  preservesProfileCount = false,
+} = {}) {
+  const id = text(profileId);
+  const profiles = Array.isArray(config?.profiles) ? config.profiles : [];
+  if (!id || !profiles.some((profile) => text(profile.id) === id)) {
+    return blocked('profile_missing', '未找到要删除的全局模型');
+  }
+  if (profiles.length <= 1 && !preservesProfileCount) {
+    return blocked(
+      'last_global_model',
+      '全局至少需要保留一个模型，请先新增替代模型',
+    );
+  }
+
+  const globalUsageBlock = globalProfileUsageBlock(config, id);
+  if (globalUsageBlock) {
+    return globalUsageBlock;
+  }
+
+  const workspaceReferences = collectWorkspaceProfileUsages(
+    referenceInventory,
+    id,
+  );
+  if (workspaceReferences.blocked) {
+    return workspaceReferences.blocked;
+  }
+  const { usages: workspaceUsages } = workspaceReferences;
   if (workspaceUsages.some((usage) => usage.kind === 'unknown')) {
     return blocked(
       'references_unknown',
