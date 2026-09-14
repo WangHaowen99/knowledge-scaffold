@@ -192,14 +192,14 @@ def test_concurrent_same_username_logins_keep_token_pairs_isolated(backend):
 
 def test_token_endpoint_200_requires_complete_verified_token_pair(monkeypatch):
     incomplete = RemoteAuthBackend(
-        "http://auth.example.net",
+        "https://auth.example.net",
         session=_StubSession(token_payload={"refresh_token": ACCESS_KEY_SECRET, "expires_in": 60}),
     )
     with pytest.raises(ValueError, match="认证服务暂不可用"):
         incomplete.login("admin", INVALID_PASSWORD)
 
     malformed = RemoteAuthBackend(
-        "http://auth.example.net",
+        "https://auth.example.net",
         session=_StubSession(
             token_payload={
                 "access_token": API_KEY,
@@ -217,7 +217,7 @@ def test_token_endpoint_200_requires_complete_verified_token_pair(monkeypatch):
 
 def test_jwks_refresh_throttles_unknown_kids_and_drops_removed_key(monkeypatch):
     session = _StubSession(jwks_payload={"keys": []})
-    backend = RemoteAuthBackend("http://auth.example.net", session=session)
+    backend = RemoteAuthBackend("https://auth.example.net", session=session)
 
     assert backend._signing_key("forged-a") is None
     assert backend._signing_key("forged-b") is None

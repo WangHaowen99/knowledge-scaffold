@@ -167,7 +167,7 @@ def test_hugegraph_property_filter_can_disable_ontology_scope(monkeypatch):
     _install_hugegraph_http(monkeypatch, include_other_ontology=True)
     backend = HugeGraphBackend(
         {
-            "url": "http://service.example.net",
+            "url": "https://service.example.net",
             "graph": "demo",
         }
     )
@@ -195,7 +195,7 @@ def test_hugegraph_backend_executes_schema_property_count_aggregate_sorted_and_d
     calls = _install_hugegraph_http(monkeypatch)
     backend = HugeGraphBackend(
         {
-            "url": "http://service.example.net",
+            "url": "https://service.example.net",
             "graph": "demo",
             "graph_space": "DEFAULT",
             "username": "user",
@@ -276,7 +276,7 @@ def test_hugegraph_backend_executes_schema_property_count_aggregate_sorted_and_d
     assert sorted_result.records[0]["properties"] == {"TargetItemCode": "M-001"}
     assert detail["found"] is True
     assert detail["properties"]["TargetItemCode"] == "M-001"
-    assert calls[0]["url"] == "http://service.example.net/graphspaces/DEFAULT/graphs/demo/schema"
+    assert calls[0]["url"] == "https://service.example.net/graphspaces/DEFAULT/graphs/demo/schema"
     assert calls[0]["headers"] == {
         "Authorization": f"Bearer {synthetic_secret('hugegraph_graph_backend-credential-03')}"
     }
@@ -285,7 +285,7 @@ def test_hugegraph_backend_executes_schema_property_count_aggregate_sorted_and_d
 
 def test_hugegraph_property_filter_supports_workspace_only_scope(monkeypatch):
     _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "https://hugegraph.example.net", "graph": "demo"})
 
     result = backend.property_filter(
         element_class="TargetItem",
@@ -305,7 +305,7 @@ def test_hugegraph_uses_separate_connection_and_query_timeouts(monkeypatch):
     calls = _install_hugegraph_http(monkeypatch)
     backend = HugeGraphBackend(
         {
-            "url": "http://service.example.net",
+            "url": "https://service.example.net",
             "graph": "demo",
             "timeout_seconds": 120,
             "graph_query_timeout_seconds": 30,
@@ -360,7 +360,7 @@ def test_hugegraph_legacy_timeout_does_not_override_default_query_timeout(monkey
     calls = _install_hugegraph_http(monkeypatch)
     backend = HugeGraphBackend(
         {
-            "url": "http://service.example.net",
+            "url": "https://service.example.net",
             "graph": "demo",
             "timeout_seconds": 60,
         }
@@ -381,7 +381,7 @@ def test_hugegraph_timeout_is_retried_at_most_once(monkeypatch):
     monkeypatch.setattr("requests.request", timeout_request)
     backend = HugeGraphBackend(
         {
-            "url": "http://service.example.net",
+            "url": "https://service.example.net",
             "graph": "demo",
             "max_retries": 5,
         }
@@ -396,7 +396,7 @@ def test_hugegraph_timeout_is_retried_at_most_once(monkeypatch):
 
 def test_hugegraph_backend_pattern_search_forces_scope(monkeypatch):
     _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "https://hugegraph.example.net", "graph": "demo"})
 
     result = backend.pattern_search(
         path_pattern=[
@@ -418,7 +418,7 @@ def test_hugegraph_backend_pattern_search_forces_scope(monkeypatch):
 
 def test_hugegraph_backend_pattern_search_treats_filters_as_props(monkeypatch):
     _install_hugegraph_http(monkeypatch, include_competing_path=True)
-    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "https://hugegraph.example.net", "graph": "demo"})
 
     result = backend.pattern_search(
         path_pattern=[
@@ -442,7 +442,7 @@ def test_hugegraph_backend_pattern_search_treats_filters_as_props(monkeypatch):
 
 def test_hugegraph_backend_pattern_search_projects_return_vars_and_properties(monkeypatch):
     _install_hugegraph_http(monkeypatch, include_competing_path=True)
-    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "https://hugegraph.example.net", "graph": "demo"})
 
     result = backend.pattern_search(
         path_pattern=[
@@ -471,7 +471,7 @@ def test_hugegraph_backend_pattern_search_projects_return_vars_and_properties(mo
 
 def test_hugegraph_backend_runs_extra_mcp_graph_tools(monkeypatch):
     _install_hugegraph_http(monkeypatch)
-    backend = HugeGraphBackend({"url": "http://hugegraph.example.net", "graph": "demo"})
+    backend = HugeGraphBackend({"url": "https://hugegraph.example.net", "graph": "demo"})
 
     hop = backend.hop_search(
         entity_instance_id="v-e1",

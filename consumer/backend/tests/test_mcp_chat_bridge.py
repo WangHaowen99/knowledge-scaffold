@@ -302,7 +302,7 @@ def _config(path: Path) -> MCPRuntimeConfig:
         server_host="127.0.0.1",
         server_port=7488,
         public_base_url="",
-        agentic_base_url="http://service.example.net",
+        agentic_base_url="https://service.example.net",
         token_secret=synthetic_secret("mcp_chat_bridge-credential-01"),
         token_algorithm="HS256",
         token_issuer="synthetic-issuer",

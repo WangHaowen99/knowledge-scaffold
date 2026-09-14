@@ -163,7 +163,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
         EffectiveConnection(
             version=1,
             provider="mindsdb",
-            endpoint="http://unit.example.net",
+            endpoint="https://unit.example.net",
             auth=AuthSpec(type="none"),
             options={
                 "default_database": "",
@@ -201,7 +201,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
 
     def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         del headers, json, timeout, stream
-        assert url == "http://unit.example.net/api/projects/project_x/agents/agent_x/completions/stream"
+        assert url == "https://unit.example.net/api/projects/project_x/agents/agent_x/completions/stream"
         return _FakeResponse(
             [
                 'data: {"type":"start","prompt":"开始执行本体探索"}',

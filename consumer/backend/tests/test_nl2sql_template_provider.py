@@ -18,7 +18,7 @@ from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 
 def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
     config = {
-        "url": "http://nl2sql.example.net/",
+        "url": "https://nl2sql.example.net/",
         "token": synthetic_secret("nl2sql_template_provider-credential-01"),
         "scene": "scene-x",
         "timeout_seconds": 88,
@@ -91,7 +91,7 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
     events = list(provider.search_stream(query="查询零件", entity="TargetItem"))
 
     # Should call /api/v1/sql (not /api/v1/query)
-    assert captured["url"] == "http://nl2sql.example.net/api/v1/sql"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/sql"
     assert "SELECT * FROM Part" in captured["json"]["sql"]
 
     assert events[0] == {"type": "start", "content": "开始查询本体数据"}
@@ -140,7 +140,7 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
     events = list(provider.search_stream(query="查某个不存在的东西", entity=""))
 
     # Should call /api/v1/query (NL2SQL)
-    assert captured["url"] == "http://nl2sql.example.net/api/v1/query"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/query"
     assert "模板未命中" in events[1]["content"]
     assert events[1]["public_summary"] == "模板未命中，改用自然语言查询"
 
@@ -351,7 +351,7 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
 
     events = list(provider.search_stream(query="随便查", entity=""))
 
-    assert captured["url"] == "http://nl2sql.example.net/api/v1/query"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/query"
     assert "模板未命中" in events[1]["content"]
 
 

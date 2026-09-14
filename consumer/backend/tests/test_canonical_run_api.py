@@ -344,7 +344,7 @@ def _ordinary_payload(
 async def _client_for(app: FastAPI):
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
-        base_url="http://testserver",
+        base_url="https://testserver",
     )
 
 
