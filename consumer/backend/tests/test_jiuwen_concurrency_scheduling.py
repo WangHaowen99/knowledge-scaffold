@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for Consumer-owned openJiuwen tool scheduling."""
 
 from internal_access import internal

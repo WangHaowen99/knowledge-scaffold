@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Environment-backed configuration for the standalone OR-Tools Solver Service."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Authentication helpers for narrowly scoped service-to-service APIs."""
 
 from __future__ import annotations

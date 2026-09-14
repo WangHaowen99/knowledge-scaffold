@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Forward-only migration of legacy system model fields to profile refs."""
 
 from __future__ import annotations

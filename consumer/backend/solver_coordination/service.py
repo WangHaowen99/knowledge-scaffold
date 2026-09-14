@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Single application-service path for every solver invocation."""
 
 from __future__ import annotations

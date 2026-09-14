@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Observability bridge for provider-internal graph tools and model calls."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-2 tests for the native async Jiuwen Engine entry points."""
 
 from __future__ import annotations

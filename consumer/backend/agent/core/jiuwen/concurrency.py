@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Consumer-owned concurrency scheduling for the openJiuwen adapter."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Issue #14 system-config migration planning and durable file primitives.
 
 The two registered migrations remain separate commit steps.  This temporary

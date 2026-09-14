@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Security and behavior tests for ontology package browsing."""
 
 from __future__ import annotations

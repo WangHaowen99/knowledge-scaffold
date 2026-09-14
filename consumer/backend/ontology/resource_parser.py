@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Single deterministic parser for ontology Context, Evidence, and Graph."""
 
 from __future__ import annotations

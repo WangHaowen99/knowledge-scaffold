@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the agent-stream.v2 protocol and registry event emission paths."""
 
 import json

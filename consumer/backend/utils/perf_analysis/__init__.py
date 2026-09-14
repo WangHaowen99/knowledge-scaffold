@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Read-model helpers for local observability performance analysis."""
 
 from utils.perf_analysis.aggregate import build_global_overview, build_run_detail, build_session_analysis

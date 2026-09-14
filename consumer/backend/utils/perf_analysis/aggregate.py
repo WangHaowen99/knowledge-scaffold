@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Aggregation helpers for local observability perf records."""
 
 from __future__ import annotations

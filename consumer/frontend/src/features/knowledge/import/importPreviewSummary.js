@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

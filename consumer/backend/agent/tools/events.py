@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tool-level SSE event emission helpers."""
 
 from __future__ import annotations

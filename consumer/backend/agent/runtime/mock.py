@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Deterministic async runtime used by line-B development and tests."""
 
 from __future__ import annotations

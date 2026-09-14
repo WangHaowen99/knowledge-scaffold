@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Contract tests for operation-centric solver package layout migration."""
 
 from __future__ import annotations

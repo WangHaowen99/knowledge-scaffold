@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """RemoteAuthBackend：AuthBackend 协议的远程实现（对接独立 auth server）。
 
 施工步骤 4（docs/decisions/2026-07-09-decoupled-auth-architecture.md D2/D4 + 方案 a）：

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Versioned canonical JSON and digest helpers for solver artifacts.
 
 The digest boundary deliberately accepts only JSON-shaped values.  Domain

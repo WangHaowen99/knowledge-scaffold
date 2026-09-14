@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Sandbox selection and explicit local-fallback tests for execute_script."""
 
 from __future__ import annotations

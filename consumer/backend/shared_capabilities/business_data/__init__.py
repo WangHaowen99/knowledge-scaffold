@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Single provider protocol implementation shared by all business-data callers."""
 
 from .capability import require_capability

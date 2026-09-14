@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Generate JiuwenBox security policies for onto-agent script sandboxes."""
 
 from __future__ import annotations

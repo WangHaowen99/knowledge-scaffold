@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Revisioned, workspace-scoped caches for ontology read views."""
 
 from __future__ import annotations

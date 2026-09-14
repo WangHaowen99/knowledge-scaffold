@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression coverage for workspace-private model-profile budgets."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Run-scoped business-data proxy setup for sandbox scripts."""
 
 from __future__ import annotations

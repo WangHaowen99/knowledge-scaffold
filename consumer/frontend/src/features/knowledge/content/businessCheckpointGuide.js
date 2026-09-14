@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const businessCheckpointGuide = [
   '# 本体包 Checkpoint 通用规范',
   '',

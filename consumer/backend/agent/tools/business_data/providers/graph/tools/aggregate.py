@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Internal aggregate graph tool adapters."""
 
 from __future__ import annotations

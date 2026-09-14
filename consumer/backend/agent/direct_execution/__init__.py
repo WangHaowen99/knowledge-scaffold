@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Direct execution branch for ontology script operations.
 
 When enabled, this module intercepts user requests at the orchestrator level—

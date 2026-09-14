@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';

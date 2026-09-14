@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for ontology-scoped business data provider APIs and probes."""
 
 from __future__ import annotations

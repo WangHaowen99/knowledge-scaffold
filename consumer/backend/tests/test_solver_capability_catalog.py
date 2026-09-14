@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Synthetic coverage for ontology-package v0.2 solver capabilities."""
 
 from __future__ import annotations

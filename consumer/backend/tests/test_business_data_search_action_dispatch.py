@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for action dispatch in business_data_search (query vs lookup_values)."""
 
 from __future__ import annotations

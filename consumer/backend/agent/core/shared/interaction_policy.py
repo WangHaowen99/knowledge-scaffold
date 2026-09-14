@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Helpers for controlling request_user_interaction availability."""
 
 from __future__ import annotations

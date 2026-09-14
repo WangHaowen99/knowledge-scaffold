@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const MCP_SCOPES = Object.freeze(['mcp:search', 'mcp:chat']);
 export const MCP_STREAM_USER_CONCURRENCY_DEFAULT = 5;
 export const MCP_STREAM_USER_CONCURRENCY_MIN = 1;

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Vendor-neutral observability for agent runtime events.
 
 Runtime code should enter through trace facades and ``RuntimeObserver``.

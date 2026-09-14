@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Background worker that advances in-flight skill-evolution tasks.
 
 Mirrors the operation-evolution patcher lifecycle: a single daemon thread,

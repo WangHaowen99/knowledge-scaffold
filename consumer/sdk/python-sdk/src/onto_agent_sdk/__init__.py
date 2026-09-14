@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from .client import OntoAgentClient, create_client
 from .errors import ApiError
 from .streaming import EventStream, iter_sse_events

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Strict W3C ``traceparent`` parsing shared by HTTP and MCP entrypoints."""
 
 from __future__ import annotations

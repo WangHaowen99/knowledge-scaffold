@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Runtime-generated credentials shared by backend tests.
 
 The values in this module are synthetic, process-local, and never sourced from

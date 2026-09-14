@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """
 run_acp_full_matrix.py — ACP 全场景自动测试矩阵
 

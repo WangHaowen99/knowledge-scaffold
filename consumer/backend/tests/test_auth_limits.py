@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from api.auth.auth import AuthManager
 from backend_synthetic_credentials import AUTH_SIGNING_SECRET
 

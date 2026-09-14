@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for HugeGraph graph backend behavior."""
 
 from __future__ import annotations

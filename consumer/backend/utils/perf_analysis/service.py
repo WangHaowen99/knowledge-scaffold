@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Application services for local observability performance analysis."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { useEffect, useMemo, useState } from 'react';
 import { Filter, RefreshCw } from 'lucide-react';
 

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Authentication and user management endpoints (extracted from app.py, behavior unchanged).
 
 注册相关端点是对独立 auth server 的薄代理（BFF）：consumer 自身不实现注册，

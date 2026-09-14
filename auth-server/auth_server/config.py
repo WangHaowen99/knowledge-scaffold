@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """全部来自环境变量的 auth server 配置。"""
 
 from __future__ import annotations

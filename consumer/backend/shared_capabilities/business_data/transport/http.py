@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP lifecycle, retry, and safe error helpers."""
 
 from __future__ import annotations

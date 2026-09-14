@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { isSessionWaitingForUserStatus } from './sessionModel.js';
 
 export const INTERACTION_CANCELLED_TYPE = 'interaction_cancelled';

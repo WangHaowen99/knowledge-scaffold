@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Proposal buffer: append-only jsonl + aggregate.json per (ontology, op).
 
 Single writer source for operation-evolution data. Reflection writes here

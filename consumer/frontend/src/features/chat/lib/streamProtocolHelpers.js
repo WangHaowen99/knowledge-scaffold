@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set([
   'start',
   'intermediate',

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Native-runtime integration tests for durable ontology version stamps."""
 
 from __future__ import annotations

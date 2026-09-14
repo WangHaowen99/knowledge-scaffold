@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared protocol admission hook for request-scoped run preflight."""
 
 from __future__ import annotations

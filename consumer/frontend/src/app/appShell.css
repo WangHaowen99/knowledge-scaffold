@@ -1,3 +1,4 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved. */
 /* ---- 应用外壳（左侧导航 + 顶栏） ---- */
 .mwr.shell { display: flex; height: 100vh; height: 100dvh; background: var(--surface-page); }
 .mwr .side { width: 272px; flex: none; min-height: 0; background: rgba(255, 255, 255, .94); border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; box-shadow: 2px 0 12px rgba(16, 24, 40, .025); }

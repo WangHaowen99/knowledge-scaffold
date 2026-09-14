@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useAuthContext } from '../auth';
 import { authFetch } from '../../shared/api/auth';

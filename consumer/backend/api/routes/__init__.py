@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """FastAPI router assembly and native async runtime dependency wiring."""
 
 from __future__ import annotations

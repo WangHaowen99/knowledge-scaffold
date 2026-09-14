@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Build an application runtime fingerprint from shipped files and dependencies."""
 
 from __future__ import annotations

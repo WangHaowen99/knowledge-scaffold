@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Run-scoped orchestration for native-async sub-agent task groups."""
 
 from __future__ import annotations

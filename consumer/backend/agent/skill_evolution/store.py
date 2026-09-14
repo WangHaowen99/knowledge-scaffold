@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Filesystem store for skill-evolution tasks, temp artifacts, and history.
 
 Layout (mirrors operations-evolution, project-root level, workspace-isolated):

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Profile-scoped presentation of already verified solver results."""
 
 from __future__ import annotations

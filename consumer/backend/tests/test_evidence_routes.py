@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP contracts for ontology evidence management and lookup."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Control-plane conversion into caller-neutral effective connections."""
 
 from __future__ import annotations

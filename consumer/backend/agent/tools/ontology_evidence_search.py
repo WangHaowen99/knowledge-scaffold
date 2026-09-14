@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Agent tool for deterministic ontology evidence retrieval."""
 
 from __future__ import annotations

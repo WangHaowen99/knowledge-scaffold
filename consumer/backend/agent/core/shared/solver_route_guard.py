@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Fail-closed routing for explicitly named ontology Solver Operations."""
 
 from __future__ import annotations

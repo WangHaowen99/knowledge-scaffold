@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for spawn_sub_agent orchestration behavior."""
 
 from __future__ import annotations

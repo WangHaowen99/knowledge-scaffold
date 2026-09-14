@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export async function writeClipboardText(text, options = {}) {
   const value = String(text ?? '');
   if (!value) {

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Project tool completion into persisted, grounded Runtime Facts."""
 
 from __future__ import annotations

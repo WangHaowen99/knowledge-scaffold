@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Structured ontology_context and Grounding registration tests."""
 
 from __future__ import annotations

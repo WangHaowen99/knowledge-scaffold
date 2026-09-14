@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Resource cleanup contracts for the OpenJiuwen smoke check."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Independent exhaustive verification for the ordered binary route profile.
 
 This module intentionally duplicates the small arithmetic and candidate

@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const PUBLIC_EVENT_SCHEMA_VERSION = '1.0';
 
 const PUBLIC_EVENT_STATUSES = new Set([

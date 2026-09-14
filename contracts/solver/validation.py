@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Standalone validation helpers for the solver.job.v1 contract artifact.
 
 This module intentionally has no dependency on the Consumer application.  It is

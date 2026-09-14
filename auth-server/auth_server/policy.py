@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """密码策略：从 consumer AuthManager.validate_password_policy 平移，违规代码一字不差。"""
 
 from __future__ import annotations

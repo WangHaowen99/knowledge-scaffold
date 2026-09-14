@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Durable state for solver jobs, attempts, subscriptions, and outbox events."""
 
 from __future__ import annotations

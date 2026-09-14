@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Convert internal runtime events into sanitized public event drafts."""
 
 from __future__ import annotations

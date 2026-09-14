@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Native FastAPI dependencies shared by Consumer API routes."""
 
 from __future__ import annotations

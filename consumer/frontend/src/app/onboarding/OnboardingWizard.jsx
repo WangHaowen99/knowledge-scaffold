@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 /* eslint-disable react-refresh/only-export-components -- colocated focus helpers are direct unit-test seams. */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {

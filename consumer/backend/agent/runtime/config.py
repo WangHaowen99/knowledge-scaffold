@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Validated limits for one ASGI-owned asynchronous runtime."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Consumer asynchronous run lifecycle, cancellation, HITL, and replay."""
 
 from __future__ import annotations

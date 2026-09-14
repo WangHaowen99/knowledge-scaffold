@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Prompt templates for the main agent loop."""
 
 from __future__ import annotations

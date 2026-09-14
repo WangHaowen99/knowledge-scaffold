@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Map project-relative scripts to sandbox-visible same-path mounts."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Host-owned, credential-bearing broker for deterministic graph capabilities."""
 
 from __future__ import annotations

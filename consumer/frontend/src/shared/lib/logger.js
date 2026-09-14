@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 /* eslint-disable no-console -- The central logger owns the development console fallback. */
 /**
  * Logging utility with log levels and structured output.

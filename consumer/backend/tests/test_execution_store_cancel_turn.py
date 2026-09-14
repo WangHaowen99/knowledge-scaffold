@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for cancelled turn persistence in execution store."""
 
 from datetime import datetime, timezone

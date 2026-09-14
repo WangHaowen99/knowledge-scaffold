@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Workspace-local routes from stable evidence IDs to immutable generations."""
 
 from __future__ import annotations

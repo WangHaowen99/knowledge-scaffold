@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Safe ontology package inputs for shared parsing and evidence indexing."""
 
 from __future__ import annotations

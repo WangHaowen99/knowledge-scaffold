@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const CONFIG_CENTER_SCOPES = {
   global: {
     lv: 'L1', badge: 'sb-l1', label: '全局配置',

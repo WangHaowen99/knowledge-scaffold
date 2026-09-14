@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """LLM service for making API calls to language models."""
 
 from __future__ import annotations

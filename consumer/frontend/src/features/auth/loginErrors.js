@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const LOGIN_ERROR_MESSAGES = Object.freeze({
   invalidCredentials: '账号或密码错误，请重新输入。',
   rateLimited: '登录尝试过于频繁，请稍后再试。',

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from internal_access import internal
 from agent.core.orchestrator import AgenticOrchestrator
 from persistence.chat_store import ChatStore

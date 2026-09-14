@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Assembly of B business adapters into the ASGI-owned runtime container."""
 
 from __future__ import annotations

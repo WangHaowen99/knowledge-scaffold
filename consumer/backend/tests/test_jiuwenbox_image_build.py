@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Build-contract tests for the Onto-owned JiuwenBox image."""
 
 from __future__ import annotations

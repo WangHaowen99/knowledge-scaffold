@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """OR-Tools model translators and execution engines."""
 
 from .candidate_selection import (

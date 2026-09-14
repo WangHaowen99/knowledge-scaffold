@@ -1,3 +1,4 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved. */
 /* ---- 操作向导（蒙版聚光灯） ---- */
 .mwr-wiz-mask { position: fixed; inset: 0; z-index: 1000; }
 .mwr-wiz-hole { position: fixed; border-radius: 14px; pointer-events: none; box-shadow: 0 0 0 9999px rgba(15, 17, 22, .58); outline: 2px solid var(--blue-l); outline-offset: 2px; transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease; }

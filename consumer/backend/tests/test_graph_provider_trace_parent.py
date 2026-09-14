@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Graph runtime spans must remain children of business_data_search."""
 
 from __future__ import annotations

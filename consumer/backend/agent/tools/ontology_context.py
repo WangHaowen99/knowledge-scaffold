@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Ontology context tool for loading ontology specs by semantic keys."""
 
 from __future__ import annotations

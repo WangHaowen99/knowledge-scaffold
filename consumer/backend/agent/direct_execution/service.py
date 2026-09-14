@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """General deterministic operation execution service."""
 
 from __future__ import annotations

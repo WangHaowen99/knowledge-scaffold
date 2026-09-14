@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Stable identities for ontology epochs, generations, and evidence chunks."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP routes for skill-evolution tasks.
 
 All under `/agentic/skill-evolution`, JWT-required (same as other `/agentic/*`).

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Synthetic checks for the verified package handoff and its mount boundary."""
 
 from pathlib import Path

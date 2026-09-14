@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Workspace-scoped lookup for static ontology and runtime evidence IDs."""
 
 from __future__ import annotations

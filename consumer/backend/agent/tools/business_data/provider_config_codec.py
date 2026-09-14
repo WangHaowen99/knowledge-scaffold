@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared provider config normalization and secret handling."""
 
 from __future__ import annotations

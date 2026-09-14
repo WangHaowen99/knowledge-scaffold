@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Deterministic operation package contracts and integrity helpers.
 
 The v0.1 package format remains the only runtime format.  Operations opt in by

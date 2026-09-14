@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """MCP unary projection tests on the native ASGI event loop."""
 
 from __future__ import annotations

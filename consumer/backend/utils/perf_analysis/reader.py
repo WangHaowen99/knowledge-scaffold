@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Bounded reader for date-partitioned local observability perf logs."""
 
 from __future__ import annotations

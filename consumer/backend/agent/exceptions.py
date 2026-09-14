@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Custom exceptions for the agentic system."""
 
 from typing import Any, Dict, Optional

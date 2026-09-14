@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const LEGACY_TOKEN_KEY = 'onto_agent_token';
 const LEGACY_REFRESH_TOKEN_KEY = 'onto_agent_refresh_token';
 const LEGACY_AUTH_SESSION_KEY = 'onto_agent_auth_session';

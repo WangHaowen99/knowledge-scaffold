@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Workspace/owner-scoped durable storage for candidate-set artifacts."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared HTTP error responses for agentic routes."""
 
 from __future__ import annotations

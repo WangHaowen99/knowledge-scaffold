@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Helpers for ontology context loading and script catalog resolution."""
 
 from __future__ import annotations

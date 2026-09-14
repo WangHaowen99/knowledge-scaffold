@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Project verified, persisted solver output into the only trusted result DTO."""
 
 from __future__ import annotations

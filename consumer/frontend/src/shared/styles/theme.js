@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 // 主题配色：L3 个人偏好，存浏览器本地，挂在 <html data-mwr-theme=...>。
 // 色板定义见 shared/styles/base.css 的主题变量。
 const KEY = 'mw_pref_theme';

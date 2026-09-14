@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Run one sandbox child while bounding captured stdout and stderr.
 
 This module is intentionally outside the public ontology script SDK: it owns

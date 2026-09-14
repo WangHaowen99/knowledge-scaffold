@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared helpers for memory manager backends."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Bounded authentication diagnostics without identity or credential values."""
 
 from __future__ import annotations

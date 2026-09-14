@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """开放注册流程：一步直接建号 + 进程内固定窗口限流（按 IP / 按 email）。
 
 校验通过（用户名格式 / 邮箱格式 / 密码策略 / 唯一性）后即调

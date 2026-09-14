@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Operation evolution proposal buffer primitives.
 
 This package is independent from `agentic.memory`. Memory keeps user/workspace

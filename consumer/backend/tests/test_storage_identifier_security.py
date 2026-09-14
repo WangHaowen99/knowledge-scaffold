@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import pytest
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore

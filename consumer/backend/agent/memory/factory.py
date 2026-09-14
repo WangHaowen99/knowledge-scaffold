@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Per-user factory for the filesystem memory manager backend."""
 
 from __future__ import annotations

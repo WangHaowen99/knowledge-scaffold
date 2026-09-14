@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Boundary helpers for the openJiuwen ReAct runtime.
 
 The current runtime keeps OpenAI-compatible nested tool schemas and tool calls.

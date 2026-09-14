@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Connector port implemented by concrete solver-service adapters."""
 
 from __future__ import annotations

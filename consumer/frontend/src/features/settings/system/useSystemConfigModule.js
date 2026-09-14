@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 
 import { saveSystemConfigSection, testSystemConfigSection } from './api';

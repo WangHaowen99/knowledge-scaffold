@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Natural-language ontology evidence retrieval and response contracts."""
 
 from __future__ import annotations

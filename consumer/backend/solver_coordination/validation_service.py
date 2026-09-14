@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Pure, dependency-injected execution of one candidate validation batch."""
 
 from __future__ import annotations

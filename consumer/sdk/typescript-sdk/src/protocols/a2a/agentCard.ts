@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { HttpClient } from '../../transport/http.js';
 import type { A2AAgentCard } from '../../types/a2a.js';
 

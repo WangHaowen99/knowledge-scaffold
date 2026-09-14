@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Validation and migration helpers for solver assets in ontology packages.
 
 The solver contract is deliberately kept operation-centric.  A package which

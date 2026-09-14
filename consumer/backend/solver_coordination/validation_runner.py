@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Execute one strict, frozen-snapshot validation operation batch."""
 
 from __future__ import annotations

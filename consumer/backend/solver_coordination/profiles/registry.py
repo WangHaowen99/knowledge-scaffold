@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Fail-closed lookup and fact dispatch for solver profiles."""
 
 from __future__ import annotations

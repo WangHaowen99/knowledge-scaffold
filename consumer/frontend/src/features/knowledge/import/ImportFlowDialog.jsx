@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { Modal } from '../../../shared/ui/primitives';
 import {
   IMPORT_ACTION,

@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const MODEL_PROFILE_DEFAULTS = Object.freeze({
   provider: 'openai_compatible',
   base_url: '',

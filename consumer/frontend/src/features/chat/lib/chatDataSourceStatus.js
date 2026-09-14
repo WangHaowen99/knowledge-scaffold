@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const COMMON_TITLE = '从一个业务问题开始';
 
 export function getChatDataSourceStatus(ontology) {

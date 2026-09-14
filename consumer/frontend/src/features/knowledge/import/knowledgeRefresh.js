@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export function nextKnowledgeRevision(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value + 1 : 1;
 }

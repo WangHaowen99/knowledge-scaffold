@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-1 tests for openJiuwen Runner and event-loop ownership."""
 
 from __future__ import annotations

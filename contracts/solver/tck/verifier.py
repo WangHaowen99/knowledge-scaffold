@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Public, connector-neutral result verifiers used by TCK admission.
 
 The verifier deliberately consumes only the public submit/result documents.  It
