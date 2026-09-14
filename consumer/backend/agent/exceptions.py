@@ -20,6 +20,7 @@ class AgenticError(Exception):
             return f"{self.message} - {self.details}"
         return self.message
 
+
 class DAGValidationError(AgenticError):
     """Raised when DAG has cycles or invalid dependencies."""
 

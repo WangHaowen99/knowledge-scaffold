@@ -6,29 +6,29 @@ import threading
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from agent.core.shared.modes import resolve_agent_mode
+from agent.runtime.contracts import RunScope, TERMINAL_RUN_STATUSES
+from agent.runtime.errors import SessionBusyError
 from api.auth.auth import AuthUser, require_authenticated_user
 from api.dependencies import get_runtime_container, require_workspace_id
 from api.exceptions import APIError
 from api.request_parsing import read_json_object, read_optional_json_object
-from llm import LLMPurpose, get_llm_router
 from config import LimitsConfig
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
-from agent.runtime.contracts import RunScope, TERMINAL_RUN_STATUSES
-from agent.runtime.errors import SessionBusyError
-from agent.core.shared.modes import resolve_agent_mode
-from ontology.ontologies import get_ontology_registry
-from utils.logging import get_logger
-from utils.identifiers import validate_session_id
+from llm import LLMPurpose, get_llm_router
 from llm.llm_request_mode import normalize_llm_request_mode
+from ontology.ontologies import get_ontology_registry
+from persistence.deterministic_terminal import (
+    recover_pending_deterministic_artifacts,
+    recover_pending_deterministic_terminal,
+)
 from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     InteractionCheckpointError,
 )
 from persistence.session_summary_index import InvalidSessionCursor, SessionSummary
-from persistence.deterministic_terminal import (
-    recover_pending_deterministic_artifacts,
-    recover_pending_deterministic_terminal,
-)
+from utils.identifiers import validate_session_id
+from utils.logging import get_logger
 from workspace.workspaces import workspace_scope
 
 logger = get_logger("routes.sessions")
@@ -114,6 +114,7 @@ sessions_router = APIRouter(
 
 def _get_user_stores():
     from api.routes import get_request_stores
+
     return get_request_stores()
 
 
@@ -126,9 +127,7 @@ def _get_session_after_terminal_recovery(
     session = chat_store.get_session(session_id)
     if session is None:
         return None
-    if not callable(
-        getattr(execution_store, "deterministic_terminal_transaction", None)
-    ):
+    if not callable(getattr(execution_store, "deterministic_terminal_transaction", None)):
         return session
     if recover_pending_deterministic_terminal(
         execution_store,
@@ -136,9 +135,7 @@ def _get_session_after_terminal_recovery(
         session_id,
     ):
         session = chat_store.get_session(session_id)
-    if callable(
-        getattr(execution_store, "get_pending_deterministic_artifacts", None)
-    ):
+    if callable(getattr(execution_store, "get_pending_deterministic_artifacts", None)):
         recover_pending_deterministic_artifacts(
             execution_store,
             chat_store,
@@ -195,11 +192,7 @@ def _is_durable_agent_event(event) -> bool:
     # events, so a reconnecting poll must receive streamed tokens to render
     # the assistant's live text.
     data = event.get("data") if isinstance(event, dict) else None
-    return (
-        isinstance(data, dict)
-        and event.get("event") == "agent.v2"
-        and data.get("protocol") == "agent-stream.v2"
-    )
+    return isinstance(data, dict) and event.get("event") == "agent.v2" and data.get("protocol") == "agent-stream.v2"
 
 
 def _last_durable_seq(events, *, run_id: str | None = None) -> int:
@@ -259,15 +252,9 @@ def _session_runtime_payload(
         run_id = str(latest.get("run_id") or "").strip() or None
         if status == "success":
             status = "completed"
-        if (
-            status == "failed"
-            and str(latest.get("error_code") or "") == "SERVICE_RESTARTED"
-        ):
+        if status == "failed" and str(latest.get("error_code") or "") == "SERVICE_RESTARTED":
             status = "interrupted"
-        if (
-            status == "awaiting_input"
-            and not latest.get("interaction_consumed_at")
-        ):
+        if status == "awaiting_input" and not latest.get("interaction_consumed_at"):
             return {
                 "active_run_id": run_id,
                 "active_run_status": status,
@@ -280,9 +267,7 @@ def _session_runtime_payload(
         return {
             "active_run_id": None,
             "active_run_status": status or "idle",
-            "last_seq": _last_durable_seq(
-                getattr(session, "events", []) or []
-            ),
+            "last_seq": _last_durable_seq(getattr(session, "events", []) or []),
         }
     status = _last_turn_status(getattr(session, "events", []) or [])
     return {
@@ -314,10 +299,7 @@ async def _runtime_payloads_for_sessions(
 
     def histories_by_session():
         _chat_store, execution_store = _get_user_stores()
-        return {
-            session.id: execution_store.get_session_history(session.id)
-            for session in sessions
-        }
+        return {session.id: execution_store.get_session_history(session.id) for session in sessions}
 
     histories = await runtime.short_io.run(histories_by_session)
     return {
@@ -357,11 +339,7 @@ async def _indexed_session_payloads(
         workspace_id=workspace_id,
         scopes=("agent:read",),
     )
-    snapshots = (
-        await runtime.manager.list_runs(scope)
-        if runtime.manager is not None
-        else []
-    )
+    snapshots = await runtime.manager.list_runs(scope) if runtime.manager is not None else []
     active_run_ids = _collect_active_run_ids(snapshots)
     live_by_session = {}
     for snapshot in snapshots:
@@ -370,9 +348,7 @@ async def _indexed_session_payloads(
             live_by_session[snapshot.session_id] = snapshot
 
     recovery_candidates = [
-        summary
-        for summary in summaries
-        if summary.active_run_id or summary.pending_interaction is not None
+        summary for summary in summaries if summary.active_run_id or summary.pending_interaction is not None
     ]
 
     def recover_page_candidates():
@@ -394,11 +370,7 @@ async def _indexed_session_payloads(
                 )
         return recovered
 
-    recovered_payloads = (
-        await runtime.short_io.run(recover_page_candidates)
-        if recovery_candidates
-        else {}
-    )
+    recovered_payloads = await runtime.short_io.run(recover_page_candidates) if recovery_candidates else {}
     payloads = []
     for summary in summaries:
         payload = _summary_payload(summary)
@@ -453,6 +425,7 @@ async def list_sessions(
     chat_store, execution_store = await runtime.short_io.run(_get_user_stores)
     summary_index = getattr(chat_store, "session_summary_index", None)
     if summary_index is not None:
+
         def read_index_page():
             load_persisted = getattr(
                 summary_index,
@@ -578,11 +551,7 @@ async def list_sessions(
         workspace_id=workspace_id,
         scopes=("agent:read",),
     )
-    snapshots = (
-        await runtime.manager.list_runs(scope)
-        if runtime.manager is not None
-        else []
-    )
+    snapshots = await runtime.manager.list_runs(scope) if runtime.manager is not None else []
     active_run_ids = _collect_active_run_ids(snapshots)
 
     def recover_sessions() -> None:
@@ -725,11 +694,7 @@ async def get_session(
         workspace_id=workspace_id,
         scopes=("agent:read",),
     )
-    snapshots = (
-        await runtime.manager.list_runs(scope)
-        if runtime.manager is not None
-        else []
-    )
+    snapshots = await runtime.manager.list_runs(scope) if runtime.manager is not None else []
     active_run_ids = _collect_active_run_ids(snapshots)
     session = await runtime.short_io.run(
         _get_session_after_terminal_recovery,
@@ -745,10 +710,7 @@ async def get_session(
     if "since" in request.query_params:
         return JSONResponse(
             {
-                "error": (
-                    "Session delta polling has been removed; reconnect through "
-                    "the run event stream"
-                ),
+                "error": "Session delta polling has been removed; reconnect through the run event stream",
             },
             status_code=410,
         )
@@ -805,8 +767,7 @@ async def get_tool_output(
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "sandbox; default-src 'none'",
             "Access-Control-Expose-Headers": (
-                "X-Tool-Output-Ref, X-Tool-Call-Id, "
-                "X-Tool-Output-Size, X-Tool-Output-SHA256"
+                "X-Tool-Output-Ref, X-Tool-Call-Id, X-Tool-Output-Size, X-Tool-Output-SHA256"
             ),
         },
     )
@@ -867,9 +828,7 @@ async def delete_session(
                     execution_store.delete_session(session_id),
                 )
 
-            chat_deleted, execution_deleted = await runtime.short_io.run(
-                delete_from_stores
-            )
+            chat_deleted, execution_deleted = await runtime.short_io.run(delete_from_stores)
     except SessionBusyError as exc:
         return JSONResponse(
             {
@@ -910,9 +869,7 @@ async def get_session_messages(
     ):
         return JSONResponse({"error": "Session not found"}, status_code=404)
 
-    return {
-        "messages": [m.to_dict() for m in messages]
-    }
+    return {"messages": [m.to_dict() for m in messages]}
 
 
 @sessions_router.post(
@@ -1016,12 +973,11 @@ async def list_session_turns(
         status,
     )
     if _is_truthy(request.query_params.get("has_feedback")):
-        turns = [
-            turn
-            for turn in turns
-            if isinstance(turn.get("feedback"), dict)
-            and bool(turn["feedback"].get("vote"))
-        ]
+        feedback_turns = []
+        for turn in turns:
+            if isinstance(turn.get("feedback"), dict) and bool(turn["feedback"].get("vote")):
+                feedback_turns.append(turn)
+        turns = feedback_turns
     return {"turns": turns, "count": len(turns)}
 
 
@@ -1064,7 +1020,7 @@ async def generate_session_title(
 
         title = response.content.strip()
         # Clean up title - remove quotes, punctuation at the end
-        title = title.strip('"\'""''')
+        title = title.strip('"\'""')
         if len(title) > 30:
             title = title[:30] + "..."
 
@@ -1075,12 +1031,9 @@ async def generate_session_title(
             title,
         )
 
-        logger.info("Generated title for session {}: {}".format(session_id, title))
+        logger.info("Generated title for session %s: %s", session_id, title)
 
-        return {
-            "title": title,
-            "session_id": session_id
-        }
+        return {"title": title, "session_id": session_id}
 
     except Exception:
         logger.exception("Failed to generate title")
@@ -1092,8 +1045,4 @@ async def generate_session_title(
             fallback_title,
         )
 
-        return {
-            "title": fallback_title,
-            "session_id": session_id,
-            "fallback": True
-        }
+        return {"title": fallback_title, "session_id": session_id, "fallback": True}

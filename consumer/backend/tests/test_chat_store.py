@@ -2,12 +2,12 @@
 
 import hashlib
 import json
+from operator import getitem
 from pathlib import Path
-
-import pytest
 
 import persistence.chat_store as chat_store_module
 import persistence.session_summary_index as summary_index_module
+import pytest
 from persistence.chat_store import ChatStore, ToolOutputLimits
 from persistence.session_summary_index import (
     SessionSummaryIndex,
@@ -39,12 +39,15 @@ def test_chat_store_projects_durable_summary_mutations_but_not_stream_tokens(tmp
     assert store.update_session_title(created.id, "Updated") is not None
     assert store.merge_session_metadata(created.id, {"agent_mode": "quick"}) is not None
     assert store.set_session_pinned(created.id, True) is not None
-    assert store.record_interaction_cancellation(
-        created.id,
-        "interaction-summary",
-        "Synthetic interaction cancelled",
-        cancelled_at="2026-08-31T12:00:00+00:00",
-    ) is True
+    assert (
+        store.record_interaction_cancellation(
+            created.id,
+            "interaction-summary",
+            "Synthetic interaction cancelled",
+            cancelled_at="2026-08-31T12:00:00+00:00",
+        )
+        is True
+    )
     assert store.set_active_run(created.id, "run-summary") is True
 
     summary = _only_summary(index)
@@ -140,6 +143,7 @@ def test_chat_store_summary_failure_does_not_rollback_durable_write(tmp_path):
         def __init__(self):
             self.degraded_reason = None
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def upsert_chat(self, _summary, **_options):
             raise OSError("synthetic index failure")
 
@@ -160,7 +164,7 @@ def test_chat_projection_crash_marker_repairs_valid_index_after_restart(tmp_path
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -169,9 +173,7 @@ def test_chat_projection_crash_marker_repairs_valid_index_after_restart(tmp_path
     monkeypatch.setattr(
         index,
         "upsert_chat",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("synthetic process exit before projection")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic process exit before projection")),
     )
     store.create_session(session_id="after-fact", title="After fact")
     assert store.get_session("after-fact") is not None
@@ -191,7 +193,7 @@ def test_chat_projection_failure_rebuilds_in_same_process(tmp_path, monkeypatch)
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -200,9 +202,7 @@ def test_chat_projection_failure_rebuilds_in_same_process(tmp_path, monkeypatch)
     monkeypatch.setattr(
         index,
         "upsert_chat",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("synthetic projection failure")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic projection failure")),
     )
     store.create_session(session_id="after-fact", title="After")
 
@@ -222,7 +222,7 @@ def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -230,9 +230,7 @@ def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
     monkeypatch.setattr(
         store._store,
         "create_session",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            OSError("synthetic source failure")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic source failure")),
     )
 
     with pytest.raises(OSError, match="source failure"):
@@ -250,7 +248,7 @@ def test_marker_publish_failure_does_not_abort_source_fact_before_restart(
     holder = {}
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -285,7 +283,7 @@ def test_marker_directory_fsync_failure_does_not_abort_source_fact(
     holder = {}
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -476,9 +474,7 @@ def test_chat_store_append_events_once_repairs_interrupted_jsonl_tail(tmp_path):
 
     loaded = store.get_session(created.id)
     assert loaded is not None
-    assert [item["data"]["event_id"] for item in loaded.events] == [
-        event["data"]["event_id"]
-    ]
+    assert [item["data"]["event_id"] for item in loaded.events] == [event["data"]["event_id"]]
     lines = event_log_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["data"]["event_id"] == event["data"]["event_id"]
@@ -585,10 +581,7 @@ def test_chat_session_public_events_hide_model_output_after_terminal_tool_batch(
 
     loaded = store.get_session(created.id)
     assert loaded is not None
-    assert any(
-        "伪响应" in str((event.get("data") or {}).get("payload") or "")
-        for event in loaded.events
-    )
+    assert any("伪响应" in str((event.get("data") or {}).get("payload") or "") for event in loaded.events)
 
     public_events = loaded.to_dict(include_messages=True)["events"]
     public_text = json.dumps(public_events, ensure_ascii=False)
@@ -630,10 +623,7 @@ def test_chat_store_writes_stream_events_to_append_only_log(tmp_path):
 
     lines = event_log_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
-    assert [
-        json.loads(line)["data"]["payload"]["text"]
-        for line in lines
-    ] == ["hello", " world"]
+    assert [json.loads(line)["data"]["payload"]["text"] for line in lines] == ["hello", " world"]
 
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
     assert snapshot["events"] == []
@@ -737,9 +727,7 @@ def test_chat_store_recovery_skips_pre_compaction_generation_after_truncate_fail
     recovered_store = ChatStore(str(storage_dir))
     recovered = recovered_store.get_session(created.id)
     assert recovered is not None
-    assert [event["data"]["event_id"] for event in recovered.events] == [
-        first["data"]["event_id"]
-    ]
+    assert [event["data"]["event_id"] for event in recovered.events] == [first["data"]["event_id"]]
 
     second = build_agent_event(
         run_id="run-compact-crash",
@@ -751,8 +739,7 @@ def test_chat_store_recovery_skips_pre_compaction_generation_after_truncate_fail
     )
     assert recovered_store.append_events(created.id, [second]) is True
     generations = [
-        json.loads(line)["_chat_store_generation"]
-        for line in event_log_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line)["_chat_store_generation"] for line in event_log_path.read_text(encoding="utf-8").splitlines()
     ]
     assert generations == [0, 1]
 
@@ -778,9 +765,7 @@ def test_chat_store_persists_complete_tool_output_across_compaction(tmp_path):
 
     assert artifact is not None
     assert artifact["output_size"] == len(complete_output.encode("utf-8"))
-    assert artifact["sha256"] == (
-        "sha256:" + hashlib.sha256(complete_output.encode("utf-8")).hexdigest()
-    )
+    assert artifact["sha256"] == ("sha256:" + hashlib.sha256(complete_output.encode("utf-8")).hexdigest())
     artifact_root = tmp_path / "chats" / created.id / "tool-outputs"
     metadata_files = list(artifact_root.glob("*/*.json"))
     content_files = list(artifact_root.glob("*/*.txt"))
@@ -815,11 +800,14 @@ def test_chat_store_persists_complete_tool_output_across_compaction(tmp_path):
     )
     assert reloaded is not None
     assert reloaded["output"] == complete_output
-    assert store.get_tool_output(
-        created.id,
-        "another-run",
-        artifact["output_ref"],
-    ) is None
+    assert (
+        store.get_tool_output(
+            created.id,
+            "another-run",
+            artifact["output_ref"],
+        )
+        is None
+    )
 
 
 def test_chat_store_preserves_explicit_artifact_content_type(tmp_path):
@@ -886,26 +874,21 @@ def test_chat_store_reads_legacy_inline_tool_output_artifact(tmp_path):
     output_ref = "a" * 32
     run_id = "legacy-run"
     run_key = hashlib.sha256(run_id.encode("utf-8")).hexdigest()
-    artifact_path = (
-        tmp_path
-        / "chats"
-        / session.id
-        / "tool-outputs"
-        / run_key
-        / "{}.json".format(output_ref)
-    )
+    artifact_path = tmp_path / "chats" / session.id / "tool-outputs" / run_key / "{}.json".format(output_ref)
     artifact_path.parent.mkdir(parents=True)
     artifact_path.write_text(
-        json.dumps({
-            "version": 1,
-            "output_ref": output_ref,
-            "session_id": session.id,
-            "run_id": run_id,
-            "tool_call_id": "legacy-call",
-            "content_type": "text/plain; charset=utf-8",
-            "output_size": 6,
-            "output": "legacy",
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "output_ref": output_ref,
+                "session_id": session.id,
+                "run_id": run_id,
+                "tool_call_id": "legacy-call",
+                "content_type": "text/plain; charset=utf-8",
+                "output_size": 6,
+                "output": "legacy",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -931,16 +914,22 @@ def test_chat_store_can_rollback_scoped_tool_output(tmp_path):
     )
     assert artifact is not None
 
-    assert store.delete_tool_output(
-        session.id,
-        "run-rollback",
-        artifact["output_ref"],
-    ) is True
-    assert store.get_tool_output(
-        session.id,
-        "run-rollback",
-        artifact["output_ref"],
-    ) is None
+    assert (
+        store.delete_tool_output(
+            session.id,
+            "run-rollback",
+            artifact["output_ref"],
+        )
+        is True
+    )
+    assert (
+        store.get_tool_output(
+            session.id,
+            "run-rollback",
+            artifact["output_ref"],
+        )
+        is None
+    )
 
 
 def test_chat_store_rejects_same_size_tool_output_corruption(tmp_path):
@@ -953,21 +942,25 @@ def test_chat_store_rejects_same_size_tool_output_corruption(tmp_path):
         "abc",
     )
     assert artifact is not None
-    content_path = next(
-        (tmp_path / "chats" / session.id / "tool-outputs").glob("*/*.txt")
-    )
+    content_path = next((tmp_path / "chats" / session.id / "tool-outputs").glob("*/*.txt"))
     content_path.write_text("xyz", encoding="utf-8")
 
-    assert store.get_tool_output(
-        session.id,
-        "run-corrupt",
-        artifact["output_ref"],
-    ) is None
-    assert store.get_tool_output_file(
-        session.id,
-        "run-corrupt",
-        artifact["output_ref"],
-    ) is None
+    assert (
+        store.get_tool_output(
+            session.id,
+            "run-corrupt",
+            artifact["output_ref"],
+        )
+        is None
+    )
+    assert (
+        store.get_tool_output_file(
+            session.id,
+            "run-corrupt",
+            artifact["output_ref"],
+        )
+        is None
+    )
 
 
 def test_chat_store_tool_output_rollback_can_retry_payload_delete_failure(
@@ -999,19 +992,25 @@ def test_chat_store_tool_output_rollback_can_retry_payload_delete_failure(
 
     monkeypatch.setattr(Path, "unlink", flaky_unlink)
 
-    assert store.delete_tool_output(
-        session.id,
-        "run-retry-rollback",
-        artifact["output_ref"],
-    ) is False
+    assert (
+        store.delete_tool_output(
+            session.id,
+            "run-retry-rollback",
+            artifact["output_ref"],
+        )
+        is False
+    )
     assert content_path.exists()
     assert metadata_path.exists()
 
-    assert store.delete_tool_output(
-        session.id,
-        "run-retry-rollback",
-        artifact["output_ref"],
-    ) is True
+    assert (
+        store.delete_tool_output(
+            session.id,
+            "run-retry-rollback",
+            artifact["output_ref"],
+        )
+        is True
+    )
     assert not content_path.exists()
     assert not metadata_path.exists()
 
@@ -1132,18 +1131,24 @@ def test_chat_store_reserved_output_ref_has_idempotent_recovery_delete(tmp_path)
     )
 
     assert artifact["output_ref"] == output_ref
-    assert store.delete_tool_output(
-        session.id,
-        "run-reserved",
-        output_ref,
-        missing_ok=True,
-    ) is True
-    assert store.delete_tool_output(
-        session.id,
-        "run-reserved",
-        output_ref,
-        missing_ok=True,
-    ) is True
+    assert (
+        store.delete_tool_output(
+            session.id,
+            "run-reserved",
+            output_ref,
+            missing_ok=True,
+        )
+        is True
+    )
+    assert (
+        store.delete_tool_output(
+            session.id,
+            "run-reserved",
+            output_ref,
+            missing_ok=True,
+        )
+        is True
+    )
 
 
 def test_chat_store_migrates_legacy_json_session(tmp_path):

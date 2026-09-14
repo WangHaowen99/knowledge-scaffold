@@ -5,10 +5,11 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, NamedTuple, Optional
 
 from config import AgentConfig, AppConfig, LLMConfig
-from config.system_config import SystemConfigValidationError, resolve_role_config
+from config.system_config import (SystemConfigValidationError,
+                                  resolve_role_config)
 from llm.service import LLMService
 from llm.types import LLMResponse
 
@@ -27,17 +28,31 @@ def _normalize_purpose(purpose: str | LLMPurpose) -> LLMPurpose:
     return LLMPurpose(str(purpose or "").strip().lower())
 
 
-def _config_fingerprint(config: LLMConfig) -> Tuple[Any, ...]:
-    return (
-        config.base_url,
-        config.model,
-        config.api_key,
-        config.timeout,
-        config.max_tokens,
-        config.temperature,
-        config.provider,
-        config.profile_id,
-        config.profile_name,
+class _LLMConfigFingerprint(NamedTuple):
+    """Hashable identity for one effective LLM configuration."""
+
+    base_url: Optional[str]
+    model: Optional[str]
+    api_key: Optional[str]
+    timeout: int
+    max_tokens: int
+    temperature: float
+    provider: str
+    profile_id: Optional[str]
+    profile_name: Optional[str]
+
+
+def _config_fingerprint(config: LLMConfig) -> _LLMConfigFingerprint:
+    return _LLMConfigFingerprint(
+        base_url=config.base_url,
+        model=config.model,
+        api_key=config.api_key,
+        timeout=config.timeout,
+        max_tokens=config.max_tokens,
+        temperature=config.temperature,
+        provider=config.provider,
+        profile_id=config.profile_id,
+        profile_name=config.profile_name,
     )
 
 
@@ -55,7 +70,7 @@ class LLMRouter:
         self.agent_config = agent_config or AgentConfig.from_env()
         self._main_config = self.config.llm
         self._task_config = self.config.task_llm
-        self._services: Dict[Tuple[Any, ...], LLMService] = {}
+        self._services: Dict[_LLMConfigFingerprint, LLMService] = {}
         self._services_lock = threading.RLock()
 
         if previous_router is not None:
@@ -105,7 +120,9 @@ class LLMRouter:
                     reasoning_summary_executor=self._reasoning_summary_executor,
                 )
                 self._services[fingerprint] = service
-            summary_service = service if _normalize_purpose(purpose) == LLMPurpose.SUMMARY else self.get_summary_service()
+            summary_service = (
+                service if _normalize_purpose(purpose) == LLMPurpose.SUMMARY else self.get_summary_service()
+            )
             service.summary_llm = summary_service
             service.agent_config = self.agent_config
             return service

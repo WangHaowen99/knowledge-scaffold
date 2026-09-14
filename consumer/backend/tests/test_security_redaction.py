@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from backend_synthetic_credentials import synthetic_secret
 from utils.security.redaction import (
     REDACTED,
     is_sensitive_key,
@@ -27,11 +28,7 @@ def test_sensitive_key_recognizes_common_prefixed_credentials():
 
 
 def test_redact_sensitive_text_handles_assignments_json_and_private_keys():
-    private_key = (
-        "-----BEGIN PRIVATE KEY-----\n"
-        "prod-private-key\n"
-        "-----END PRIVATE KEY-----"
-    )
+    private_key = "-----BEGIN PRIVATE KEY-----\n" "prod-private-key\n" "-----END PRIVATE KEY-----"
     samples = (
         "access_token=prod-token",
         "client_secret=prod-secret",
@@ -50,9 +47,9 @@ def test_redact_sensitive_text_handles_assignments_json_and_private_keys():
 
 def test_redact_sensitive_value_recurses_through_json_like_data():
     value = {
-        "access_token": "prod-token",
+        "access_token": synthetic_secret("security_redaction-credential-02"),
         "nested": {
-            "client_secret": "prod-secret",
+            "client_secret": synthetic_secret("security_redaction-credential-01"),
             "message": "db_password=prod-pass",
         },
         "warnings": ['{"password":"prod-json-pass"}'],

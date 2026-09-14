@@ -38,17 +38,28 @@ export function getTheme() {
 
 export function applyTheme(id) {
   const theme = THEMES.some((x) => x.id === id) ? id : 'default';
-  if (theme === 'default') delete document.documentElement.dataset.mwrTheme;
-  else document.documentElement.dataset.mwrTheme = theme;
-  try { localStorage.setItem(KEY, theme); } catch { /* ignore */ }
+  if (theme === 'default') {
+    delete document.documentElement.dataset.mwrTheme;
+  } else {
+    document.documentElement.dataset.mwrTheme = theme;
+  }
+  try {
+    localStorage.setItem(KEY, theme);
+  } catch {
+    /* ignore */
+  }
   syncBrandFavicon(theme);
   return theme;
 }
 
 function syncBrandFavicon(theme) {
-  if (typeof document.querySelector !== 'function') return;
+  if (typeof document.querySelector !== 'function') {
+    return;
+  }
   const link = document.querySelector('link[rel="icon"]');
-  if (!link) return;
+  if (!link) {
+    return;
+  }
   if (theme === 'default' || typeof Image === 'undefined') {
     link.href = '/brand-mark.png';
     return;
@@ -56,12 +67,16 @@ function syncBrandFavicon(theme) {
   const image = new Image();
   image.onload = () => {
     const currentTheme = document.documentElement.dataset.mwrTheme || 'default';
-    if (currentTheme !== theme) return;
+    if (currentTheme !== theme) {
+      return;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = 64;
     canvas.height = 64;
     const context = canvas.getContext('2d');
-    if (!context) return;
+    if (!context) {
+      return;
+    }
     context.filter = BRAND_FAVICON_FILTERS[theme] || 'none';
     context.drawImage(image, 0, 0, 64, 64);
     link.href = canvas.toDataURL('image/png');
@@ -79,9 +94,12 @@ export function getAppearance() {
 }
 
 function resolveAppearance(appearance) {
-  return appearance === 'system'
-    ? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-    : appearance;
+  if (appearance !== 'system') {
+    return appearance;
+  }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?
+    'dark' :
+    'light';
 }
 
 function stopAppearanceTransition(root) {
@@ -95,19 +113,27 @@ function stopAppearanceTransition(root) {
 }
 
 function prefersReducedMotion() {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+  return (
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+  );
 }
 
 export function applyAppearance(id, { animate = false } = {}) {
   const appearance = APPEARANCES.some((item) => item.id === id) ? id : 'system';
   const resolved = resolveAppearance(appearance);
   const root = document.documentElement;
-  try { localStorage.setItem(APPEARANCE_KEY, appearance); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(APPEARANCE_KEY, appearance);
+  } catch {
+    /* ignore */
+  }
 
   const version = ++appearanceTransitionVersion;
   stopAppearanceTransition(root);
   const updateMode = () => {
-    if (version === appearanceTransitionVersion) root.dataset.mwrMode = resolved;
+    if (version === appearanceTransitionVersion) {
+      root.dataset.mwrMode = resolved;
+    }
   };
 
   if (!animate || root.dataset.mwrMode === resolved || prefersReducedMotion()) {
@@ -120,11 +146,15 @@ export function applyAppearance(id, { animate = false } = {}) {
     try {
       const transition = document.startViewTransition(updateMode);
       activeViewTransition = transition;
-      Promise.resolve(transition.finished).catch(() => {}).finally(() => {
-        if (version !== appearanceTransitionVersion) return;
-        activeViewTransition = null;
-        delete root.dataset.mwrAppearanceTransition;
-      });
+      Promise.resolve(transition.finished)
+        .catch(() => {})
+        .finally(() => {
+          if (version !== appearanceTransitionVersion) {
+            return;
+          }
+          activeViewTransition = null;
+          delete root.dataset.mwrAppearanceTransition;
+        });
       return appearance;
     } catch {
       delete root.dataset.mwrAppearanceTransition;
@@ -135,7 +165,9 @@ export function applyAppearance(id, { animate = false } = {}) {
   void root.offsetWidth;
   updateMode();
   fallbackCleanupTimer = setTimeout(() => {
-    if (version !== appearanceTransitionVersion) return;
+    if (version !== appearanceTransitionVersion) {
+      return;
+    }
     fallbackCleanupTimer = null;
     delete root.dataset.mwrAppearanceTransition;
   }, APPEARANCE_TRANSITION_MS);

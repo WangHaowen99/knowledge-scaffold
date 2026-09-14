@@ -12,19 +12,21 @@ def _write_ontology(tmp_path, payload=None):
     version_dir = workspace_root / "demo-ontology" / "versions" / "1.0.0"
     (version_dir / "mappings").mkdir(parents=True)
     (workspace_root / "demo-ontology" / "manifest.yaml").write_text(
-        "\n".join([
-            "kind: ontology-package",
-            "schema_version: 0.1",
-            "id: demo-ontology",
-            "name: Demo Ontology",
-            "description: Demo",
-            "version: 1.0.0",
-            "active_version: 1.0.0",
-            "versions:",
-            "  - 1.0.0",
-            "language: zh-CN",
-            "",
-        ]),
+        "\n".join(
+            [
+                "kind: ontology-package",
+                "schema_version: 0.1",
+                "id: demo-ontology",
+                "name: Demo Ontology",
+                "description: Demo",
+                "version: 1.0.0",
+                "active_version: 1.0.0",
+                "versions:",
+                "  - 1.0.0",
+                "language: zh-CN",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
     (version_dir / "mappings" / "object-data-mappings.json").write_text(
@@ -59,7 +61,7 @@ def test_resolver_reads_object_data_mappings_final_template(tmp_path):
                             "source": "d2o_workspace_id",
                             "type": "string",
                         },
-                    }
+                    },
                 },
             },
         },
@@ -110,14 +112,7 @@ def test_resolver_returns_none_without_mapping(tmp_path):
 
 def test_resolver_reads_object_data_mappings_provider_section(tmp_path):
     workspace_root = _write_ontology(tmp_path, {"graph": {"entities": {}}})
-    mapping_file = (
-        workspace_root
-        / "demo-ontology"
-        / "versions"
-        / "1.0.0"
-        / "mappings"
-        / "object-data-mappings.json"
-    )
+    mapping_file = workspace_root / "demo-ontology" / "versions" / "1.0.0" / "mappings" / "object-data-mappings.json"
     mapping_file.write_text(
         json.dumps(
             {

@@ -3,7 +3,6 @@ from contextlib import suppress
 from dataclasses import replace
 
 import pytest
-
 from agent.runtime.contracts import (
     PublicEventDraft,
     RunScope,
@@ -91,10 +90,7 @@ async def _start_waiting_stream(
     stream = event_bus.stream(run_id, after_seq=after_seq)
     pending = asyncio.create_task(anext(stream))
     for _ in range(100):
-        if (
-            pending.done()
-            or event_bus.active_subscriber_count > previous_count
-        ):
+        if pending.done() or event_bus.active_subscriber_count > previous_count:
             break
         await asyncio.sleep(0)
     return stream, pending
@@ -171,8 +167,8 @@ def test_all_terminal_statuses_seal_after_persist_and_fanout():
             contexts[status] = context
             stream = event_bus.stream(context.run_id)
 
-            async def collect_live_events():
-                return [event async for event in stream]
+            async def collect_live_events(event_stream=stream):
+                return [event async for event in event_stream]
 
             collector = asyncio.create_task(collect_live_events())
             for _ in range(100):
@@ -197,9 +193,7 @@ def test_all_terminal_statuses_seal_after_persist_and_fanout():
             await event_bus.publish(_draft(completed))
         assert late.value.duplicate_terminal is False
         with pytest.raises(EventPublishRejectedError) as duplicate:
-            await event_bus.publish(
-                _draft(completed, "turn.finished", status="completed")
-            )
+            await event_bus.publish(_draft(completed, "turn.finished", status="completed"))
         assert duplicate.value.duplicate_terminal is True
 
         events = await repository.list_after(completed.run_id, 0)
@@ -228,9 +222,7 @@ def test_default_subscriber_limits_are_three_per_run_and_one_hundred_total():
         first_context = await _create_running(repository, "run_capacity_first")
         first_subscriptions = []
         for _ in range(3):
-            first_subscriptions.append(
-                await _start_waiting_stream(event_bus, first_context.run_id)
-            )
+            first_subscriptions.append(await _start_waiting_stream(event_bus, first_context.run_id))
         assert event_bus.subscriber_queue_size == 512
         with pytest.raises(EventSubscriberLimitExceeded) as per_run:
             overflow = event_bus.stream(first_context.run_id)
@@ -249,9 +241,7 @@ def test_default_subscriber_limits_are_three_per_run_and_one_hundred_total():
                 repository,
                 "run_capacity_{:03d}".format(index),
             )
-            all_subscriptions.append(
-                await _start_waiting_stream(event_bus, context.run_id)
-            )
+            all_subscriptions.append(await _start_waiting_stream(event_bus, context.run_id))
         assert event_bus.active_subscriber_count == 100
 
         overflow_context = await _create_running(
@@ -280,10 +270,7 @@ def test_reservations_are_bounded_consumed_and_explicitly_releasable():
         context = await _create_running(repository, "run_reservation")
         event_bus = AsyncEventBus(repository)
 
-        reservations = [
-            await event_bus.reserve_subscriber(context.run_id)
-            for _ in range(3)
-        ]
+        reservations = [await event_bus.reserve_subscriber(context.run_id) for _ in range(3)]
         with pytest.raises(EventSubscriberLimitExceeded):
             await event_bus.reserve_subscriber(context.run_id)
         assert event_bus.reserved_subscriber_count == 3

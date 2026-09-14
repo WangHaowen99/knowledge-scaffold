@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createServer } from 'vite';
+import { SYNTHETIC_ACCOUNT } from './syntheticTestData.js';
 
 const frontendRoot = fileURLToPath(new URL('../', import.meta.url));
 const vite = await createServer({
@@ -12,8 +13,12 @@ const vite = await createServer({
   logLevel: 'silent',
   server: { middlewareMode: true },
 });
-const { default: LoginPage } = await vite.ssrLoadModule('/src/features/auth/LoginPage.jsx');
-const { AuthCtx } = await vite.ssrLoadModule('/src/features/auth/useAuthContext.js');
+const { default: LoginPage } = await vite.ssrLoadModule(
+  '/src/features/auth/LoginPage.jsx',
+);
+const { AuthCtx } = await vite.ssrLoadModule(
+  '/src/features/auth/useAuthContext.js',
+);
 
 after(async () => {
   await vite.close();
@@ -27,7 +32,9 @@ function jsonResponse(data, status = 200) {
 }
 
 async function withRenderedLoginPage(run) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const dom = new JSDOM(
+    '<!doctype html><html><body><div id="root"></div></body></html>',
+  );
   const testGlobals = {
     window: dom.window,
     document: dom.window.document,
@@ -40,7 +47,10 @@ async function withRenderedLoginPage(run) {
     IS_REACT_ACT_ENVIRONMENT: true,
   };
   const originalGlobals = new Map(
-    Object.keys(testGlobals).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
+    Object.keys(testGlobals).map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
   );
   const originalFetch = globalThis.fetch;
   for (const [name, value] of Object.entries(testGlobals)) {
@@ -54,7 +64,9 @@ async function withRenderedLoginPage(run) {
   const { createRoot } = await import('react-dom/client');
   const root = createRoot(document.getElementById('root'));
 
-  const renderPage = async (authValue = { login: async () => ({ success: true }) }) => {
+  const renderPage = async (
+    authValue = { login: async () => ({ success: true }) },
+  ) => {
     await act(async () => {
       root.render(
         React.createElement(
@@ -80,8 +92,11 @@ async function withRenderedLoginPage(run) {
     dom.window.close();
     globalThis.fetch = originalFetch;
     for (const [name, descriptor] of originalGlobals) {
-      if (descriptor === undefined) delete globalThis[name];
-      else Object.defineProperty(globalThis, name, descriptor);
+      if (descriptor === undefined) {
+        delete globalThis[name];
+      } else {
+        Object.defineProperty(globalThis, name, descriptor);
+      }
     }
   }
 }
@@ -90,10 +105,12 @@ async function openRegisterView(dom) {
   const switchButton = document.querySelector('.lswitch .llink');
   assert.ok(switchButton);
   await act(async () => {
-    switchButton.dispatchEvent(new dom.window.MouseEvent('click', {
-      bubbles: true,
-      cancelable: true,
-    }));
+    switchButton.dispatchEvent(
+      new dom.window.MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
   });
 }
 
@@ -104,21 +121,27 @@ async function changeInputValue(dom, input, value) {
   )?.set;
   valueSetter.call(input, value);
   await act(async () => {
-    input.dispatchEvent(new dom.window.Event('input', {
-      bubbles: true,
-      cancelable: true,
-    }));
-    input.dispatchEvent(new dom.window.Event('change', {
-      bubbles: true,
-      cancelable: true,
-    }));
+    input.dispatchEvent(
+      new dom.window.Event('input', {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    input.dispatchEvent(
+      new dom.window.Event('change', {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
   });
 }
 
 test('register form marks required fields and shows feedback on empty submit', async () => {
   let registerCalls = 0;
   globalThis.fetch = async (url) => {
-    if (url === '/auth/capabilities') return jsonResponse({ registration_enabled: true });
+    if (url === '/auth/capabilities') {
+      return jsonResponse({ registration_enabled: true });
+    }
     if (url === '/auth/register') {
       registerCalls += 1;
       return jsonResponse({ success: true });
@@ -148,10 +171,12 @@ test('register form marks required fields and shows feedback on empty submit', a
     };
 
     await act(async () => {
-      form.dispatchEvent(new dom.window.Event('submit', {
-        bubbles: true,
-        cancelable: true,
-      }));
+      form.dispatchEvent(
+        new dom.window.Event('submit', {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
     });
 
     const errorBox = document.querySelector('.lerr[role="alert"]');
@@ -165,7 +190,9 @@ test('register form marks required fields and shows feedback on empty submit', a
 test('register form still submits valid input to /auth/register', async () => {
   let registerPayload = null;
   globalThis.fetch = async (url, options = {}) => {
-    if (url === '/auth/capabilities') return jsonResponse({ registration_enabled: true });
+    if (url === '/auth/capabilities') {
+      return jsonResponse({ registration_enabled: true });
+    }
     if (url === '/auth/register') {
       registerPayload = JSON.parse(options.body);
       return jsonResponse({ success: true });
@@ -185,31 +212,38 @@ test('register form still submits valid input to /auth/register', async () => {
     form.checkValidity = () => true;
     form.reportValidity = () => true;
 
-    await changeInputValue(dom, usernameInput, 'alice');
-    await changeInputValue(dom, emailInput, 'alice@example.com');
-    await changeInputValue(dom, passwordInput, 'P@ssw0rd!');
+    await changeInputValue(dom, usernameInput, SYNTHETIC_ACCOUNT.username);
+    await changeInputValue(dom, emailInput, SYNTHETIC_ACCOUNT.email);
+    await changeInputValue(dom, passwordInput, SYNTHETIC_ACCOUNT.password);
 
     await act(async () => {
-      form.dispatchEvent(new dom.window.Event('submit', {
-        bubbles: true,
-        cancelable: true,
-      }));
+      form.dispatchEvent(
+        new dom.window.Event('submit', {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
     });
     await flush();
 
     assert.deepEqual(registerPayload, {
-      username: 'alice',
-      email: 'alice@example.com',
-      password: 'P@ssw0rd!',
+      username: SYNTHETIC_ACCOUNT.username,
+      email: SYNTHETIC_ACCOUNT.email,
+      password: SYNTHETIC_ACCOUNT.password,
     });
-    assert.equal(document.getElementById('login-username').value, 'alice');
+    assert.equal(
+      document.getElementById('login-username').value,
+      SYNTHETIC_ACCOUNT.username,
+    );
     assert.ok(document.querySelector('.lok'));
   });
 });
 
 test('login failures use safe Chinese copy and expose an accessible alert', async () => {
   globalThis.fetch = async (url) => {
-    if (url === '/auth/capabilities') return jsonResponse({ registration_enabled: false });
+    if (url === '/auth/capabilities') {
+      return jsonResponse({ registration_enabled: false });
+    }
     throw new Error(`Unexpected URL: ${url}`);
   };
 

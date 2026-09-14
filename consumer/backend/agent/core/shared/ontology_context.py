@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from ontology.ontologies import (
     build_selected_ontology_preload_context,
     build_selected_ontology_preload_records,
+    get_active_ontology_version,
     get_sole_enabled_ontology_id,
 )
 from utils.read_docs import merge_read_documents_registry
@@ -46,6 +47,30 @@ def selected_ontology_version_from_state(state: Mapping[str, Any]) -> Optional[s
         ).strip()
         or None
     )
+
+
+def active_ontology_version_from_state(state: Mapping[str, Any]) -> Optional[str]:
+    """Resolve the package revision this run operates on.
+
+    Mirrors :func:`active_ontology_id_from_state`. An explicit session version
+    always wins and is never upgraded, so a version-locked session stays
+    reproducible. When the session carries no version -- which is exactly what
+    auto-selecting the sole enabled package produces, since such a session is
+    created without a selection and therefore persists no revision -- the
+    active version of the resolved package is used. Revision-bound
+    capabilities such as solver tool cards resolve to nothing without it, and
+    an absent version already means "the active version" everywhere else.
+    Like the id resolution, this never writes back into ``user_context`` or
+    session metadata.
+    """
+    selected_version = selected_ontology_version_from_state(state)
+    if selected_version:
+        return selected_version
+    ontology_id = active_ontology_id_from_state(state)
+    if not ontology_id:
+        return None
+    workspace_id = str(state.get("workspace_id") or "").strip() or None
+    return get_active_ontology_version(ontology_id, workspace_id)
 
 
 def get_selected_ontology_context(state: Mapping[str, Any]) -> Optional[str]:

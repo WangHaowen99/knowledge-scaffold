@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from solver_coordination.errors import (
     ERRORS,
     CandidateDigestMismatchError,
@@ -62,6 +61,4 @@ def test_verification_error_retryability_is_stable():
         "code": "verification_runtime_failed",
         "retryable": True,
     }
-    assert error_payload("verification_divergence") == {
-        "code": "verification_divergence"
-    }
+    assert error_payload("verification_divergence") == {"code": "verification_divergence"}

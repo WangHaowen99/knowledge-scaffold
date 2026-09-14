@@ -6,7 +6,6 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-
 from agent.core.orchestrator import AgenticOrchestrator
 from agent.runtime.contracts import (
     RunPreflightSnapshot,
@@ -26,7 +25,6 @@ from workspace.workspaces import (
     create_workspace,
     get_workspace_ontologies_root,
 )
-
 
 WORKSPACE_ID = "workspace_demo"
 ONTOLOGY_ID = "ontology_demo"
@@ -78,9 +76,7 @@ def _configure_runtime_llm(monkeypatch, tmp_path):
         workspace_id=WORKSPACE_ID,
         set_as_default=True,
     )
-    configure_llm_router(
-        LLMRouter(AppConfig.from_env(), agent_config=AgentConfig.from_env())
-    )
+    configure_llm_router(LLMRouter(AppConfig.from_env(), agent_config=AgentConfig.from_env()))
     reset_observer(timeout=0)
     yield
     reset_llm_router_for_tests()
@@ -209,9 +205,7 @@ def test_selected_ontology_stamps_first_and_locked_turns(
 
     assert first.arguments["selected_ontology_version"] == ACTIVE_VERSION
     assert second.arguments["selected_ontology_version"] == ACTIVE_VERSION
-    turns = orchestrator.execution_store.get_session_history(
-        "session-selected"
-    )["turns"]
+    turns = orchestrator.execution_store.get_session_history("session-selected")["turns"]
     assert [turn["ontology_version"] for turn in turns] == [
         ACTIVE_VERSION,
         ACTIVE_VERSION,
@@ -249,6 +243,53 @@ def test_requested_ontology_version_skips_active_registry_resolution(
     assert prepared.arguments["selected_ontology_version"] == ACTIVE_VERSION
 
 
+def test_protocol_deterministic_preflight_passes_only_business_arguments(
+    tmp_path,
+    monkeypatch,
+):
+    _write_ontology_manifest()
+    captured = []
+
+    def capture_request(_service, request, *, ontology_manifest):
+        assert ontology_manifest.id == ONTOLOGY_ID
+        captured.append(request)
+        return True
+
+    monkeypatch.setattr(
+        "agent.direct_execution.service.DeterministicExecutionService.is_potentially_applicable",
+        capture_request,
+    )
+    orchestrator, _adapter = _services(tmp_path)
+
+    applicable = orchestrator.is_deterministic_request_potentially_applicable(
+        user_request="synthetic deterministic request",
+        user_context={
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+            "selected_version": ACTIVE_VERSION,
+        },
+        arguments={
+            "selected_ontology_id": ONTOLOGY_ID,
+            "selected_ontology_version": ACTIVE_VERSION,
+            "selected_version": ACTIVE_VERSION,
+            "synthetic_argument": "synthetic_value",
+        },
+        session_id="session-protocol-preflight",
+        user_id="user_demo",
+        workspace_id=WORKSPACE_ID,
+    )
+
+    assert applicable is True
+    assert captured[-1].arguments == {
+        "synthetic_argument": "synthetic_value",
+    }
+    assert captured[-1].runtime_context.selected_ontology_id == ONTOLOGY_ID
+    assert (
+        captured[-1].runtime_context.selected_ontology_version
+        == ACTIVE_VERSION
+    )
+
+
 def test_prepare_reuses_matching_preflight_manifest_and_profile(tmp_path, monkeypatch):
     _orchestrator, adapter = _services(tmp_path)
     monkeypatch.setattr(
@@ -259,9 +300,7 @@ def test_prepare_reuses_matching_preflight_manifest_and_profile(tmp_path, monkey
     )
     monkeypatch.setattr(
         "ontology.ontologies.get_ontology_registry",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("matching preflight must avoid a registry scan")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("matching preflight must avoid a registry scan")),
     )
     monkeypatch.setattr(
         "config.system_config.resolve_effective_llm_profile_config",
@@ -389,8 +428,7 @@ def test_orchestrator_preflight_caches_package_but_resolves_profile_per_request(
     )
     monkeypatch.setattr(
         "ontology.ontology_catalog.build_root_payload",
-        lambda **_kwargs: package_loads.append("package")
-        or {"operations_catalog": [], "solver_catalog": []},
+        lambda **_kwargs: package_loads.append("package") or {"operations_catalog": [], "solver_catalog": []},
     )
     monkeypatch.setattr(
         "config.system_config.resolve_effective_llm_profile_config",
@@ -465,9 +503,7 @@ def test_orchestrator_reloads_manifest_when_revision_changes_during_preflight(
     )
     monkeypatch.setattr(
         "agent.direct_execution.service.DeterministicExecutionService.is_potentially_applicable",
-        lambda *_args, ontology_manifest=None, **_kwargs: (
-            ontology_manifest.name == "current-manifest"
-        ),
+        lambda *_args, ontology_manifest=None, **_kwargs: (ontology_manifest.name == "current-manifest"),
     )
 
     snapshot = orchestrator.build_run_preflight_snapshot(
@@ -523,9 +559,7 @@ def test_tool_loaded_ontology_stamps_version_at_finalize(tmp_path):
         None,
         [
             build_read_document_record(
-                file_path=(
-                    f"ontologies/{ONTOLOGY_ID}/objects/object_demo.md"
-                ),
+                file_path=(f"ontologies/{ONTOLOGY_ID}/objects/object_demo.md"),
                 content="# Object Demo",
                 source="ontology_context",
                 turn_id=1,
@@ -544,9 +578,7 @@ def test_tool_loaded_ontology_stamps_version_at_finalize(tmp_path):
         read_documents=read_documents,
     )
 
-    turn = orchestrator.execution_store.get_session_history("session-tool")[
-        "turns"
-    ][0]
+    turn = orchestrator.execution_store.get_session_history("session-tool")["turns"][0]
     assert turn["ontology_version"] == ACTIVE_VERSION
 
 
@@ -567,7 +599,5 @@ def test_no_ontology_read_leaves_version_empty(tmp_path):
         },
     )
 
-    turn = orchestrator.execution_store.get_session_history("session-none")[
-        "turns"
-    ][0]
+    turn = orchestrator.execution_store.get_session_history("session-none")["turns"][0]
     assert turn.get("ontology_version") in (None, "")

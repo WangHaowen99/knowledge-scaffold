@@ -30,6 +30,7 @@
 - 支持流式 LLM 响应中的工具调用组装与执行
 - 支持 `read_documents` 结构化账本，用于约束本体检索前置阅读条件
 - 支持 `ontology_context` 本体定义读取、`skill` 技能说明读取、`business_data_search` 业务数据检索、可选 `web_search` 联网搜索和 `execute_script` 脚本流程执行
+- 普通 Agent 脚本支持[生成标识声明、当前请求证据校验与结构化失败原因](../../docs/script-argument-evidence.md)
 - 支持统一 `memory` 工具，用于显式记忆沉淀，并在后台路由到普通记忆或 operation evolution
 - 支持 `spawn_sub_agent` 批量子任务分解、并发执行和嵌套深度限制
 - 支持技能 CRUD、本体文件管理、本体导入、工作区管理、工作区运行配置和系统配置管理
@@ -102,22 +103,22 @@ Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runti
 
 ## 测试
 
-推荐在 `backend/` 目录下执行：
+完整后端测试还会调用独立认证和 Solver 服务。先在测试虚拟环境执行 `python -m pip install -r requirements-test.txt`，安装已有服务的测试依赖。测试夹具为 MCP 等认证边界提供独立的合成配置，不依赖真实凭据。
+
+建议从干净 Git 检出执行全量测试，虚拟环境放在代码树之外，避免本地 `.env`、运行数据或第三方依赖目录影响测试收集和静态检查。
+
+以下示例在 `backend/` 目录下创建独立测试环境并执行：
 
 ```bash
-PYTHONPATH=. venv/bin/pytest tests
-```
-
-也可以使用 Python 模块方式：
-
-```bash
-PYTHONPATH=. venv/bin/python -m pytest tests
+python -m venv /tmp/knowledge-consumer-tests
+/tmp/knowledge-consumer-tests/bin/python -m pip install -r requirements-test.txt
+PYTHONPATH=. /tmp/knowledge-consumer-tests/bin/python -m pytest tests
 ```
 
 如果从 `consumer/` 目录运行，可使用：
 
 ```bash
-PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
+PYTHONPATH=backend /tmp/knowledge-consumer-tests/bin/python -m pytest backend/tests
 ```
 
 ## 配置
@@ -227,6 +228,20 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 - Speedscope 文件只保存阶段/调用名称、状态、时间关系和模型/工具等安全标签，不保存源码文本、用户问题、Prompt、reasoning、回答、工具参数、SQL 参数或工具输出。MCP 请求不携带知识问答会话的 workspace 运行上下文，因此不会写入这些会话 trace。
 - 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，`mode=local` 时各工作空间的本地 OpenTelemetry 记录由 `local.retention_days` 独立控制。
 - 如果直接接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
+
+### 认证失败诊断
+
+登录和刷新失败会通过 `auth.diagnostics` 输出一条诊断日志。每次尝试使用服务端生成的 `auth_attempt_id`，跨认证后端和运行时线程池保持一致；该编号只用于日志关联，不来自用户身份或请求头。
+
+- `auth_operation`：`login` 或 `refresh`。
+- `auth_stage`：`token_request`、`token_response`、`jwks`、`jwt_validation` 或 `runtime`；未分类异常使用 `authentication`。
+- `auth_reason`、`auth_error_type`：代码定义的失败原因和受限异常类别。
+- `auth_upstream_status`：可获得的上游 HTTP 状态；网络错误等场景为空。
+- `auth_elapsed_ms`：本次认证尝试截至失败的总耗时，包含线程池等待时间。
+
+例如，`jwks / request_failed` 表示公钥拉取失败，`jwks / refresh_throttled` 表示再次拉取受到 5 秒最小间隔限制；它们均可能发生在令牌接口已经成功之后。正常的无效凭据仍返回 401，不产生可用性告警；503 响应保留现有公开提示。
+
+诊断不记录用户名、密码、令牌、Cookie、请求或响应正文、公钥标识、认证服务地址、异常消息或异常堆栈。普通文本和结构化日志均包含上述诊断字段。
 
 ## HTTP 接口
 

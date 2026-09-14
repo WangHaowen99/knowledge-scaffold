@@ -31,19 +31,28 @@ export const EMPTY_TEST_STATUS = Object.freeze({
 });
 
 const SUPPORTED_SECTION_SET = new Set(SYSTEM_CONFIG_SECTIONS);
-const PREVIEW_SECRET_KEY = /(?:^|[_-])(?:api[_-]?key|secret(?:[_-]key)?|access[_-]token|refresh[_-]token|admin[_-]token|password|credential)(?:$|[_-])/i;
+const PREVIEW_SECRET_KEY =
+  /(?:^|[_-])(?:api[_-]?key|secret(?:[_-]key)?|access[_-]token|refresh[_-]token|admin[_-]token|password|credential)(?:$|[_-])/i;
 const SECRET_MASK = '••••••••';
 
 function isPlainObject(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
 function cloneJsonValue(value) {
-  if (Array.isArray(value)) return value.map(cloneJsonValue);
-  if (!isPlainObject(value)) return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneJsonValue(item)]));
+  if (Array.isArray(value)) {
+    return value.map(cloneJsonValue);
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, cloneJsonValue(item)]),
+  );
 }
 
 function isBlankSecret(value) {
@@ -51,49 +60,84 @@ function isBlankSecret(value) {
 }
 
 function removeBlankSecret(target, field, path, removed) {
-  if (!Object.prototype.hasOwnProperty.call(target, field) || !isBlankSecret(target[field])) return;
+  if (
+    !Object.prototype.hasOwnProperty.call(target, field) ||
+    !isBlankSecret(target[field])
+  ) {
+    return;
+  }
   delete target[field];
   removed.push([...path, field].join('.'));
 }
 
 function stripSecretPlaceholders(section, data, removed) {
-  if (section === 'llm') removeBlankSecret(data, 'api_key', [section], removed);
+  if (section === 'llm') {
+    removeBlankSecret(data, 'api_key', [section], removed);
+  }
   if (section === 'auth') {
     removeBlankSecret(data, 'auth_secret', [section], removed);
     removeBlankSecret(data, 'auth_server_admin_token', [section], removed);
   }
-  if (section === 'web_search') removeBlankSecret(data, 'api_key', [section], removed);
+  if (section === 'web_search') {
+    removeBlankSecret(data, 'api_key', [section], removed);
+  }
   if (section === 'llm_profiles' && Array.isArray(data.profiles)) {
     data.profiles.forEach((profile, index) => {
       if (isPlainObject(profile)) {
-        removeBlankSecret(profile, 'api_key', [section, 'profiles', String(index)], removed);
+        removeBlankSecret(
+          profile,
+          'api_key',
+          [section, 'profiles', String(index)],
+          removed,
+        );
       }
     });
   }
 }
 
 function isEmptyModelTemplate(section) {
-  if (!Array.isArray(section.profiles) || section.profiles.length !== 0) return false;
-  const allowedKeys = new Set(['profiles', 'default_main_profile_ref', 'default_task_profile_ref']);
-  return Object.keys(section).every((key) => allowedKeys.has(key))
-    && section.default_main_profile_ref == null
-    && section.default_task_profile_ref == null;
+  if (!Array.isArray(section.profiles) || section.profiles.length !== 0) {
+    return false;
+  }
+  const allowedKeys = new Set([
+    'profiles',
+    'default_main_profile_ref',
+    'default_task_profile_ref',
+  ]);
+  return (
+    Object.keys(section).every((key) => allowedKeys.has(key)) &&
+    section.default_main_profile_ref == null &&
+    section.default_task_profile_ref == null
+  );
 }
 
 function maskPreviewValue(value, key = '') {
-  if (PREVIEW_SECRET_KEY.test(key) && value !== undefined && value !== null && value !== '') {
+  const shouldMask =
+    PREVIEW_SECRET_KEY.test(key) &&
+    value !== undefined &&
+    value !== null &&
+    value !== '';
+  if (shouldMask) {
     return SECRET_MASK;
   }
-  if (Array.isArray(value)) return value.map((item) => maskPreviewValue(item));
-  if (!isPlainObject(value)) return value;
-  return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
-    childKey,
-    maskPreviewValue(childValue, childKey),
-  ]));
+  if (Array.isArray(value)) {
+    return value.map((item) => maskPreviewValue(item));
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([childKey, childValue]) => [
+      childKey,
+      maskPreviewValue(childValue, childKey),
+    ]),
+  );
 }
 
 export function assertSystemConfigSection(section) {
-  const normalized = String(section || '').trim().toLowerCase();
+  const normalized = String(section || '')
+    .trim()
+    .toLowerCase();
   if (!SUPPORTED_SECTION_SET.has(normalized)) {
     throw new Error(`不支持的系统配置 section：${normalized || '空值'}`);
   }
@@ -105,29 +149,44 @@ export function maskSystemConfigSecrets(config) {
 }
 
 export function prepareSystemConfigImport(rawConfig) {
-  if (!isPlainObject(rawConfig)) throw new Error('导入文件必须是 JSON 对象');
-
-  const unsupportedSections = Object.keys(rawConfig).filter((section) => !SUPPORTED_SECTION_SET.has(section));
-  if (unsupportedSections.length) {
-    throw new Error(`导入文件包含不支持的 section：${unsupportedSections.sort().join('、')}`);
+  if (!isPlainObject(rawConfig)) {
+    throw new Error('导入文件必须是 JSON 对象');
   }
 
-  const sourceSections = SYSTEM_CONFIG_SECTIONS.filter((section) => (
-    Object.prototype.hasOwnProperty.call(rawConfig, section)
-  ));
-  if (!sourceSections.length) throw new Error('导入文件未包含合法的系统配置 section');
+  const unsupportedSections = Object.keys(rawConfig).filter(
+    (section) => !SUPPORTED_SECTION_SET.has(section),
+  );
+  if (unsupportedSections.length) {
+    throw new Error(
+      `导入文件包含不支持的 section：${unsupportedSections.sort().join('、')}`,
+    );
+  }
+
+  const sourceSections = SYSTEM_CONFIG_SECTIONS.filter((section) =>
+    Object.prototype.hasOwnProperty.call(rawConfig, section),
+  );
+  if (!sourceSections.length) {
+    throw new Error('导入文件未包含合法的系统配置 section');
+  }
 
   const config = {};
   const removedSecretPaths = [];
   const omittedSections = [];
   sourceSections.forEach((section) => {
     const rawSection = rawConfig[section];
-    if (!isPlainObject(rawSection)) throw new Error(`${section} 必须是 JSON 对象`);
+    if (!isPlainObject(rawSection)) {
+      throw new Error(`${section} 必须是 JSON 对象`);
+    }
     const nextSection = cloneJsonValue(rawSection);
     stripSecretPlaceholders(section, nextSection, removedSecretPaths);
 
-    if (section === 'llm_profiles' && Object.prototype.hasOwnProperty.call(nextSection, 'profiles')) {
-      if (!Array.isArray(nextSection.profiles)) throw new Error('llm_profiles.profiles 必须是数组');
+    if (
+      section === 'llm_profiles' &&
+      Object.prototype.hasOwnProperty.call(nextSection, 'profiles')
+    ) {
+      if (!Array.isArray(nextSection.profiles)) {
+        throw new Error('llm_profiles.profiles 必须是数组');
+      }
       if (isEmptyModelTemplate(nextSection)) {
         omittedSections.push({
           section,
@@ -142,7 +201,9 @@ export function prepareSystemConfigImport(rawConfig) {
     config[section] = nextSection;
   });
 
-  const sections = SYSTEM_CONFIG_SECTIONS.filter((section) => Object.prototype.hasOwnProperty.call(config, section));
+  const sections = SYSTEM_CONFIG_SECTIONS.filter((section) =>
+    Object.prototype.hasOwnProperty.call(config, section),
+  );
   if (!sections.length) {
     throw new Error('导入文件只包含空模型模板，没有可覆盖的配置');
   }
@@ -183,82 +244,94 @@ export function createSystemConfigModuleState(data = {}, readOnly = false) {
   };
 }
 
+const resetSystemConfigFeedback = (current, draft) => ({
+  ...current,
+  draft,
+  error: '',
+  success: '',
+  testStatus: { ...EMPTY_TEST_STATUS },
+});
+
+const SYSTEM_CONFIG_STATE_REDUCERS = {
+  SOURCE_CHANGED: (current, event) => createSystemConfigModuleState(
+    event.data,
+    event.readOnly ?? current.readOnly,
+  ),
+  READ_ONLY_CHANGED: (current, event) => ({
+    ...current,
+    readOnly: Boolean(event.value),
+  }),
+  PATCH_DRAFT: (current, event) => resetSystemConfigFeedback(current, {
+    ...current.draft,
+    ...(event.data || {}),
+  }),
+  REPLACE_DRAFT: (current, event) => resetSystemConfigFeedback(
+    current,
+    cloneJsonValue(event.data || {}),
+  ),
+  RESET_DRAFT: (current) => resetSystemConfigFeedback(
+    current,
+    cloneJsonValue(current.baseline),
+  ),
+  BEGIN_ACTION: (current, event) => {
+    if (current.readOnly) {
+      return current;
+    }
+    return {
+      ...current,
+      busyAction: String(event.action || ''),
+      error: '',
+      success: '',
+    };
+  },
+  SAVE_SUCCEEDED: (current, event) => {
+    const saved = cloneJsonValue(event.data || {});
+    return {
+      ...current,
+      baseline: saved,
+      draft: cloneJsonValue(saved),
+      busyAction: '',
+      error: '',
+      success: String(event.message || '配置已保存'),
+      testStatus: { ...EMPTY_TEST_STATUS },
+    };
+  },
+  TEST_FINISHED: (current, event) => {
+    const status = {
+      success: Boolean(event.result?.success),
+      message: String(event.result?.message || ''),
+      tested_at: event.result?.tested_at || new Date().toISOString(),
+    };
+    return {
+      ...current,
+      busyAction: '',
+      error: status.success ? '' : status.message || '连接测试失败',
+      success: status.success ? status.message || '连接测试成功' : '',
+      testStatus: status,
+    };
+  },
+  ACTION_FAILED: (current, event) => ({
+    ...current,
+    busyAction: '',
+    error: String(event.error || '操作失败'),
+    success: '',
+  }),
+};
+
 export function reduceSystemConfigModuleState(state, event) {
   const current = state || createSystemConfigModuleState();
-  switch (event?.type) {
-    case 'SOURCE_CHANGED':
-      return createSystemConfigModuleState(event.data, event.readOnly ?? current.readOnly);
-    case 'READ_ONLY_CHANGED':
-      return { ...current, readOnly: Boolean(event.value) };
-    case 'PATCH_DRAFT':
-      return {
-        ...current,
-        draft: { ...current.draft, ...(event.data || {}) },
-        error: '',
-        success: '',
-        testStatus: { ...EMPTY_TEST_STATUS },
-      };
-    case 'REPLACE_DRAFT':
-      return {
-        ...current,
-        draft: cloneJsonValue(event.data || {}),
-        error: '',
-        success: '',
-        testStatus: { ...EMPTY_TEST_STATUS },
-      };
-    case 'RESET_DRAFT':
-      return {
-        ...current,
-        draft: cloneJsonValue(current.baseline),
-        error: '',
-        success: '',
-        testStatus: { ...EMPTY_TEST_STATUS },
-      };
-    case 'BEGIN_ACTION':
-      if (current.readOnly) return current;
-      return { ...current, busyAction: String(event.action || ''), error: '', success: '' };
-    case 'SAVE_SUCCEEDED': {
-      const saved = cloneJsonValue(event.data || {});
-      return {
-        ...current,
-        baseline: saved,
-        draft: cloneJsonValue(saved),
-        busyAction: '',
-        error: '',
-        success: String(event.message || '配置已保存'),
-        testStatus: { ...EMPTY_TEST_STATUS },
-      };
-    }
-    case 'TEST_FINISHED': {
-      const status = {
-        success: Boolean(event.result?.success),
-        message: String(event.result?.message || ''),
-        tested_at: event.result?.tested_at || new Date().toISOString(),
-      };
-      return {
-        ...current,
-        busyAction: '',
-        error: status.success ? '' : (status.message || '连接测试失败'),
-        success: status.success ? (status.message || '连接测试成功') : '',
-        testStatus: status,
-      };
-    }
-    case 'ACTION_FAILED':
-      return {
-        ...current,
-        busyAction: '',
-        error: String(event.error || '操作失败'),
-        success: '',
-      };
-    default:
-      return current;
-  }
+  const reducer = SYSTEM_CONFIG_STATE_REDUCERS[event?.type];
+  return reducer ? reducer(current, event) : current;
 }
 
 export function formatSystemConfigTestTime(value, locale = 'zh-CN') {
-  if (!value) return '';
+  if (!value) {
+    return '';
+  }
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
   return new Intl.DateTimeFormat(locale, {
     year: 'numeric',
     month: '2-digit',

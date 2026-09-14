@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-
 from api.auth import user_deletion
 from api.auth.user_deletion import UserDeletionPendingError, identity_reference_guard
 from api.workspace_acl_service import (
@@ -103,25 +102,27 @@ def test_identity_directory_rejects_noncanonical_usernames(acl_env, entries):
 
 def test_pending_user_deletion_cannot_be_reintroduced_as_member(acl_env):
     operation_id = "a" * 32
-    reconciliation_path = (
-        acl_env.runtime_root / "system" / "user-deletion-reconciliation.json"
-    )
+    reconciliation_path = acl_env.runtime_root / "system" / "user-deletion-reconciliation.json"
     reconciliation_path.parent.mkdir(parents=True, exist_ok=True)
     reconciliation_path.write_text(
-        json.dumps({
-            "version": 1,
-            "records": [{
-                "id": operation_id,
-                "username": "alice",
-                "status": "cleanup_pending",
-                "identity_deleted": True,
-                "created_at": "2026-08-04T00:00:00+00:00",
-                "updated_at": "2026-08-04T00:00:00+00:00",
-                "attempts": 1,
-                "completed_steps": [],
-                "errors": {"workspace_members": "pending"},
-            }],
-        }),
+        json.dumps(
+            {
+                "version": 1,
+                "records": [
+                    {
+                        "id": operation_id,
+                        "username": "alice",
+                        "status": "cleanup_pending",
+                        "identity_deleted": True,
+                        "created_at": "2026-08-04T00:00:00+00:00",
+                        "updated_at": "2026-08-04T00:00:00+00:00",
+                        "attempts": 1,
+                        "completed_steps": [],
+                        "errors": {"workspace_members": "pending"},
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     backend = _DirectoryBackend({"admin", "alice"})
@@ -272,9 +273,7 @@ def test_first_personal_workspace_is_owned_empty_and_not_global_default(acl_env)
     assert personal["members"] == []
     assert personal["is_default"] is False
     assert [item["id"] for item in workspaces].count(personal["id"]) == 1
-    assert next(item for item in list_workspaces() if item["id"] == "private")[
-        "is_default"
-    ] is True
+    assert next(item for item in list_workspaces() if item["id"] == "private")["is_default"] is True
 
 
 def test_personal_workspace_creation_and_user_delete_preserve_identity_invariant(

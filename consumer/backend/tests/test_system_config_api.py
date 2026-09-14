@@ -1,14 +1,12 @@
 import hashlib
-
-from fastapi.testclient import TestClient
-
-from api.testing import TestApplication
 import json
 
 import pytest
-
 from api.routes.system_config import system_config_router
+from api.testing import TestApplication
 from auth_test_backend import AuthManager
+from backend_synthetic_credentials import AUTH_SIGNING_SECRET, BOOTSTRAP_ADMIN_PASSWORD, synthetic_secret
+from fastapi.testclient import TestClient
 
 
 def _build_client(tmp_path, monkeypatch):
@@ -21,12 +19,16 @@ def _build_client(tmp_path, monkeypatch):
 
     app = TestApplication()
     app.state.services["TESTING"] = True
-    app.state.services["REFRESH_RUNTIME_SERVICES"] = lambda asgi_app: None
 
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    admin = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    def refresh_runtime_services(_asgi_app):
+        return None
+
+    app.state.services["REFRESH_RUNTIME_SERVICES"] = refresh_runtime_services
+
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
+    admin = auth_manager.authenticate("admin", BOOTSTRAP_ADMIN_PASSWORD)
     assert admin is not None
-    admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
+    admin = auth_manager.change_password("admin", BOOTSTRAP_ADMIN_PASSWORD, "RootStrong123!")
 
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.include_router(system_config_router)
@@ -37,7 +39,7 @@ def _build_client(tmp_path, monkeypatch):
 
 
 def _issue_token(tmp_path, username, role):
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager = AuthManager(str(tmp_path / "users.json"), AUTH_SIGNING_SECRET)
     user = auth_manager.create_user(username, "UserStrong123!", role=role)
     user = auth_manager.change_password(username, "UserStrong123!", "ChangedStrong123!")
     return auth_manager.issue_token(user)
@@ -48,7 +50,7 @@ def _persisted_profile(index):
         "id": "profile-{}".format(index),
         "name": "Profile {}".format(index),
         "provider": "openai_compatible",
-        "base_url": "https://llm.example/v1",
+        "base_url": "https://llm.example.net/v1",
         "model": "model-{}".format(index),
         "api_key": "",
         "timeout": 600,
@@ -89,7 +91,7 @@ def test_get_readiness_and_template_leave_config_tree_unchanged(tmp_path, monkey
             "data": {
                 "base_url": "https://example.com/v1",
                 "model": "test-model",
-                "api_key": "read-only-api-secret",
+                "api_key": synthetic_secret("system_config_api-credential-05"),
             },
         },
         headers=headers,
@@ -117,7 +119,7 @@ def test_get_system_config_returns_sanitized_migration_required_error(
     client, headers = _build_client(tmp_path, monkeypatch)
     config_path = tmp_path / "config" / "system_config.json"
     config_path.write_text(
-        json.dumps({"llm": {"api_key": "plaintext-api-secret"}}),
+        json.dumps({"llm": {"api_key": synthetic_secret("system_config_api-credential-04")}}),
         encoding="utf-8",
     )
     original = config_path.read_bytes()
@@ -129,7 +131,7 @@ def test_get_system_config_returns_sanitized_migration_required_error(
         "code": "SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED",
         "detail": "系统配置包含明文 secret，需要先完成安全迁移",
     }
-    assert "plaintext-api-secret" not in response.text
+    assert synthetic_secret("system_config_api-credential-04") not in response.text
     assert config_path.read_bytes() == original
 
 
@@ -353,9 +355,7 @@ def test_load_system_config_sanitizes_effective_normalization_errors(
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
     def fail_normalization(_section):
-        raise system_config_module.SystemConfigValidationError(
-            "private-normalization-detail"
-        )
+        raise system_config_module.SystemConfigValidationError("private-normalization-detail")
 
     monkeypatch.setattr(
         system_config_module,
@@ -395,7 +395,7 @@ def test_patch_updates_section_and_preserves_secret_masking(tmp_path, monkeypatc
             "data": {
                 "base_url": "https://example.com/v1",
                 "model": "test-model",
-                "api_key": "sk-test",
+                "api_key": synthetic_secret("system_config_api-credential-06"),
                 "timeout": 120,
                 "max_tokens": 1024,
                 "temperature": 0.2,
@@ -449,7 +449,7 @@ def test_template_and_import_round_trip(tmp_path, monkeypatch):
                 "llm": {
                     "base_url": "https://example.com/v1",
                     "model": "test-model",
-                    "api_key": "sk-test",
+                    "api_key": synthetic_secret("system_config_api-credential-06"),
                 }
             }
         },
@@ -474,7 +474,7 @@ def test_patch_updates_web_search_and_preserves_secret_masking(tmp_path, monkeyp
                 "enabled": True,
                 "provider": "tavily",
                 "base_url": "https://api.tavily.com",
-                "api_key": "tvly-test",
+                "api_key": synthetic_secret("system_config_api-credential-08"),
                 "timeout_seconds": 10,
                 "default_max_results": 3,
                 "max_results_limit": 6,
@@ -570,8 +570,8 @@ def test_patch_rejects_global_observability_section(tmp_path, monkeypatch):
                 },
                 "langfuse": {
                     "public_key": "pk-test",
-                    "secret_key": "sk-test",
-                    "base_url": "https://langfuse.example",
+                    "secret_key": synthetic_secret("system_config_api-credential-06"),
+                    "base_url": "https://langfuse.example.net",
                     "debug": True,
                 },
             },
@@ -602,10 +602,7 @@ def test_patch_rejects_process_subscriber_limit_below_run_limit(
     )
 
     assert response.status_code == 400
-    assert (
-        response.json()["detail"]
-        == "sse_max_subscribers_total 不能小于 sse_max_subscribers_per_run"
-    )
+    assert response.json()["detail"] == "sse_max_subscribers_total 不能小于 sse_max_subscribers_per_run"
 
 
 def test_system_config_connection_test_rejects_global_observability_section(tmp_path, monkeypatch):
@@ -760,9 +757,9 @@ def test_new_llm_profile_does_not_inherit_legacy_or_other_profile_api_key(tmp_pa
         json={
             "section": "llm",
             "data": {
-                "base_url": "https://legacy.example/v1",
+                "base_url": "https://legacy.example.net/v1",
                 "model": "legacy-model",
-                "api_key": "legacy-secret",
+                "api_key": synthetic_secret("system_config_api-credential-01"),
             },
         },
         headers=headers,
@@ -780,9 +777,9 @@ def test_new_llm_profile_does_not_inherit_legacy_or_other_profile_api_key(tmp_pa
                         "id": "p1",
                         "name": "Model P1",
                         "provider": "openai_compatible",
-                        "base_url": "https://p1.example/v1",
+                        "base_url": "https://p1.example.net/v1",
                         "model": "p1-model",
-                        "api_key": "p1-secret",
+                        "api_key": synthetic_secret("system_config_api-credential-03"),
                         "timeout": 600,
                         "max_tokens": 4096,
                         "temperature": 0.7,
@@ -806,7 +803,7 @@ def test_new_llm_profile_does_not_inherit_legacy_or_other_profile_api_key(tmp_pa
                         "id": "p1",
                         "name": "Model P1",
                         "provider": "openai_compatible",
-                        "base_url": "https://p1.example/v1",
+                        "base_url": "https://p1.example.net/v1",
                         "model": "p1-model",
                         "timeout": 600,
                         "max_tokens": 4096,
@@ -817,7 +814,7 @@ def test_new_llm_profile_does_not_inherit_legacy_or_other_profile_api_key(tmp_pa
                         "id": "p2",
                         "name": "Model P2",
                         "provider": "openai_compatible",
-                        "base_url": "https://p2.example/v1",
+                        "base_url": "https://p2.example.net/v1",
                         "model": "p2-model",
                         "timeout": 600,
                         "max_tokens": 4096,
@@ -846,7 +843,7 @@ def _global_profile(profile_id, *, api_key=None):
         "id": profile_id,
         "name": "Model {}".format(profile_id),
         "provider": "openai_compatible",
-        "base_url": "https://{}.example/v1".format(profile_id),
+        "base_url": "https://{}.example.net/v1".format(profile_id),
         "model": "{}-model".format(profile_id),
         "timeout": 600,
         "max_tokens": 4096,
@@ -885,8 +882,8 @@ def test_global_profile_rename_atomically_preserves_secret_and_rebinds_default(
             "section": "llm_profiles",
             "data": {
                 "profiles": [
-                    _global_profile("old", api_key="old-secret"),
-                    _global_profile("stable", api_key="stable-secret"),
+                    _global_profile("old", api_key=synthetic_secret("system_config_api-credential-02")),
+                    _global_profile("stable", api_key=synthetic_secret("system_config_api-credential-07")),
                 ],
                 "default_main_profile_ref": {"scope": "global", "id": "old"},
                 "default_task_profile_ref": {"scope": "global", "id": "old"},
@@ -921,10 +918,9 @@ def test_global_profile_rename_atomically_preserves_secret_and_rebinds_default(
 
     assert response.status_code == 200
     profile_map = {
-        profile["id"]: profile
-        for profile in system_config_module.load_system_config()["llm_profiles"]["profiles"]
+        profile["id"]: profile for profile in system_config_module.load_system_config()["llm_profiles"]["profiles"]
     }
-    assert profile_map["renamed"]["api_key"] == "old-secret"
+    assert profile_map["renamed"]["api_key"] == synthetic_secret("system_config_api-credential-02")
     assert response.json()["config"]["default_main_profile_ref"] == {
         "scope": "global",
         "id": "renamed",
@@ -947,9 +943,9 @@ def test_legacy_global_profile_rename_preserves_the_legacy_secret(
         json={
             "section": "llm",
             "data": {
-                "base_url": "https://legacy.example/v1",
+                "base_url": "https://legacy.example.net/v1",
                 "model": "legacy-model",
-                "api_key": "legacy-secret",
+                "api_key": synthetic_secret("system_config_api-credential-01"),
             },
         },
         headers=headers,
@@ -984,7 +980,7 @@ def test_legacy_global_profile_rename_preserves_the_legacy_secret(
     assert response.status_code == 200
     profiles = system_config_module.load_system_config()["llm_profiles"]["profiles"]
     assert profiles[0]["id"] == "renamed-legacy"
-    assert profiles[0]["api_key"] == "legacy-secret"
+    assert profiles[0]["api_key"] == synthetic_secret("system_config_api-credential-01")
 
 
 def test_destructive_global_profile_patch_rejects_missing_or_stale_config_precondition(
@@ -997,11 +993,14 @@ def test_destructive_global_profile_patch_rejects_missing_or_stale_config_precon
         "default_main_profile_ref": {"scope": "global", "id": "stable"},
         "default_task_profile_ref": None,
     }
-    assert client.patch(
-        "/api/system-config",
-        json={"section": "llm_profiles", "data": initial_data},
-        headers=headers,
-    ).status_code == 200
+    assert (
+        client.patch(
+            "/api/system-config",
+            json={"section": "llm_profiles", "data": initial_data},
+            headers=headers,
+        ).status_code
+        == 200
+    )
     candidate = {
         "profiles": [_global_profile("stable")],
         "default_main_profile_ref": {"scope": "global", "id": "stable"},
@@ -1017,14 +1016,17 @@ def test_destructive_global_profile_patch_rejects_missing_or_stale_config_precon
     assert missing.json()["code"] == "MODEL_PROFILE_PRECONDITION_REQUIRED"
 
     precondition = _destructive_precondition(client, headers, removed=["old"])
-    assert client.patch(
-        "/api/system-config",
-        json={
-            "section": "web_search",
-            "data": {"enabled": True},
-        },
-        headers=headers,
-    ).status_code == 200
+    assert (
+        client.patch(
+            "/api/system-config",
+            json={
+                "section": "web_search",
+                "data": {"enabled": True},
+            },
+            headers=headers,
+        ).status_code
+        == 200
+    )
     stale = client.patch(
         "/api/system-config",
         json={
@@ -1068,11 +1070,14 @@ def test_destructive_global_profile_patch_rejects_changed_references_and_active_
         "default_main_profile_ref": {"scope": "global", "id": "stable"},
         "default_task_profile_ref": None,
     }
-    assert client.patch(
-        "/api/system-config",
-        json={"section": "llm_profiles", "data": data},
-        headers=headers,
-    ).status_code == 200
+    assert (
+        client.patch(
+            "/api/system-config",
+            json={"section": "llm_profiles", "data": data},
+            headers=headers,
+        ).status_code
+        == 200
+    )
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     stale_precondition = _destructive_precondition(client, headers, removed=["old"])
     update_workspace_runtime_config(
@@ -1127,11 +1132,14 @@ def test_import_rejects_referenced_global_profile_removal_without_partial_write(
         "default_main_profile_ref": {"scope": "global", "id": "stable"},
         "default_task_profile_ref": None,
     }
-    assert client.patch(
-        "/api/system-config",
-        json={"section": "llm_profiles", "data": initial},
-        headers=headers,
-    ).status_code == 200
+    assert (
+        client.patch(
+            "/api/system-config",
+            json={"section": "llm_profiles", "data": initial},
+            headers=headers,
+        ).status_code
+        == 200
+    )
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     update_workspace_runtime_config(
         "alpha",
@@ -1193,11 +1201,14 @@ def test_global_profile_rename_rejects_ambiguous_or_unverified_mapping(
         "default_main_profile_ref": {"scope": "global", "id": "stable"},
         "default_task_profile_ref": None,
     }
-    assert client.patch(
-        "/api/system-config",
-        json={"section": "llm_profiles", "data": data},
-        headers=headers,
-    ).status_code == 200
+    assert (
+        client.patch(
+            "/api/system-config",
+            json={"section": "llm_profiles", "data": data},
+            headers=headers,
+        ).status_code
+        == 200
+    )
     precondition = _destructive_precondition(
         client,
         headers,

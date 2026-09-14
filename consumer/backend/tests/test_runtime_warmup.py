@@ -2,9 +2,8 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
-import pytest
-
 import agent.core.warmup as warmup
+import pytest
 
 
 class _InlineShortIO:
@@ -41,9 +40,7 @@ def _reset_status(monkeypatch):
 def test_runtime_warmup_can_be_disabled_without_runtime(monkeypatch):
     _reset_status(monkeypatch)
 
-    status = warmup.start_runtime_warmup(
-        agent_config=SimpleNamespace(runtime_warmup_enabled=False)
-    )
+    status = warmup.start_runtime_warmup(agent_config=SimpleNamespace(runtime_warmup_enabled=False))
 
     assert status.state == "disabled"
     assert status.enabled is False
@@ -111,10 +108,7 @@ def test_runtime_warmup_failure_is_terminal_without_exception_details(
     assert status.error_type is None
     assert status.error_message is None
     records = [record for record in caplog.records if record.name == "warmup"]
-    assert any(
-        record.getMessage() == "Runtime warm-up finished state=failed"
-        for record in records
-    )
+    assert any(record.getMessage() == "Runtime warm-up finished state=failed" for record in records)
     assert all(record.exc_info is None for record in records)
     assert "private-marker" not in caplog.text
 
@@ -155,6 +149,4 @@ def test_runtime_warmup_requires_lifespan_runtime(monkeypatch):
     _reset_status(monkeypatch)
 
     with pytest.raises(RuntimeError, match="lifespan-owned RuntimeContainer"):
-        warmup.start_runtime_warmup(
-            agent_config=SimpleNamespace(runtime_warmup_enabled=True)
-        )
+        warmup.start_runtime_warmup(agent_config=SimpleNamespace(runtime_warmup_enabled=True))

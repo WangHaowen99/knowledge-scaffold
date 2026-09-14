@@ -19,19 +19,19 @@ export function normalizeMcpStreamConcurrency({
   min = MCP_STREAM_USER_CONCURRENCY_MIN,
   max = MCP_STREAM_USER_CONCURRENCY_MAX,
 } = {}) {
-  const normalizedMin = Number.isInteger(min)
-    && min >= MCP_STREAM_USER_CONCURRENCY_MIN
-    && min <= MCP_STREAM_USER_CONCURRENCY_MAX
-    ? min
-    : MCP_STREAM_USER_CONCURRENCY_MIN;
-  const normalizedMax = Number.isInteger(max) && max >= normalizedMin
-    ? Math.min(max, MCP_STREAM_USER_CONCURRENCY_MAX)
-    : MCP_STREAM_USER_CONCURRENCY_MAX;
-  const normalizedValue = Number.isInteger(value)
-    && value >= normalizedMin
-    && value <= normalizedMax
-    ? value
-    : MCP_STREAM_USER_CONCURRENCY_DEFAULT;
+  const normalizedMin = Number.isInteger(min) &&
+    min >= MCP_STREAM_USER_CONCURRENCY_MIN &&
+    min <= MCP_STREAM_USER_CONCURRENCY_MAX ?
+    min :
+    MCP_STREAM_USER_CONCURRENCY_MIN;
+  const normalizedMax = Number.isInteger(max) && max >= normalizedMin ?
+    Math.min(max, MCP_STREAM_USER_CONCURRENCY_MAX) :
+    MCP_STREAM_USER_CONCURRENCY_MAX;
+  const normalizedValue = Number.isInteger(value) &&
+    value >= normalizedMin &&
+    value <= normalizedMax ?
+    value :
+    MCP_STREAM_USER_CONCURRENCY_DEFAULT;
   return { value: normalizedValue, min: normalizedMin, max: normalizedMax };
 }
 
@@ -39,7 +39,12 @@ export function mcpScopeKey(workspaceId = '') {
   return JSON.stringify([text(workspaceId)]);
 }
 
-export function acceptsMcpResponse({ currentScope, requestScope, currentSequence, requestSequence }) {
+export function acceptsMcpResponse({
+  currentScope,
+  requestScope,
+  currentSequence,
+  requestSequence,
+}) {
   return currentScope === requestScope && currentSequence === requestSequence;
 }
 
@@ -53,11 +58,15 @@ function normalizeService(service) {
     transport: text(service?.transport),
     client_config_type: text(service?.client_config_type),
     active_url: text(service?.active_url || service?.url),
-    tags: Array.isArray(service?.tags) ? service.tags.map(text).filter(Boolean) : [],
-    tools: (Array.isArray(service?.tools) ? service.tools : []).map((tool) => ({
-      name: text(tool?.name),
-      description: text(tool?.description),
-    })).filter((tool) => tool.name),
+    tags: Array.isArray(service?.tags) ?
+      service.tags.map(text).filter(Boolean) :
+      [],
+    tools: (Array.isArray(service?.tools) ? service.tools : [])
+      .map((tool) => ({
+        name: text(tool?.name),
+        description: text(tool?.description),
+      }))
+      .filter((tool) => tool.name),
   };
 }
 
@@ -106,24 +115,35 @@ export function normalizeMcpTokens(payload = {}, expectedWorkspaceId = '') {
       name: text(item.name),
       workspace_id: text(item.workspace_id),
       ontology_id: text(item.ontology_id),
-      binding_mode: text(item.binding_mode) || (text(item.ontology_id) ? 'ontology' : 'workspace'),
+      binding_mode:
+        text(item.binding_mode) ||
+        (text(item.ontology_id) ? 'ontology' : 'workspace'),
       username: text(item.username),
-      scopes: Array.isArray(item.scopes) ? item.scopes.map(text).filter((scope) => MCP_SCOPES.includes(scope)) : [],
+      scopes: Array.isArray(item.scopes) ?
+        item.scopes.map(text).filter((scope) => MCP_SCOPES.includes(scope)) :
+        [],
       status: text(item.status),
       created_at: text(item.created_at),
       expires_at: item.expires_at == null ? null : text(item.expires_at),
       revoked_at: item.revoked_at == null ? null : text(item.revoked_at),
       last_used_at: item.last_used_at == null ? null : text(item.last_used_at),
     }))
-    .filter((item) => item.token_id && (!expected || item.workspace_id === expected));
+    .filter(
+      (item) => item.token_id && (!expected || item.workspace_id === expected),
+    );
 }
 
 export function normalizeMcpOntologies(payload = {}) {
   return (Array.isArray(payload.ontologies) ? payload.ontologies : [])
     .filter((item) => item && typeof item === 'object')
     .map((item) => {
-      const versions = Array.isArray(item.versions) ? item.versions.map(text).filter(Boolean) : [];
-      const businessData = item.business_data && typeof item.business_data === 'object' ? item.business_data : {};
+      const versions = Array.isArray(item.versions) ?
+        item.versions.map(text).filter(Boolean) :
+        [];
+      const businessData =
+        item.business_data && typeof item.business_data === 'object' ?
+          item.business_data :
+          {};
       return {
         id: text(item.id),
         name: text(item.name) || text(item.id),
@@ -141,59 +161,102 @@ export function normalizeMcpOntologies(payload = {}) {
 }
 
 export function mcpOntologyEligibility(ontology, scopes = MCP_SCOPES) {
-  if (!ontology?.enabled) return { eligible: false, reason: '知识包已禁用' };
-  if (!ontology.active_version || !ontology.versions.includes(ontology.active_version)) {
+  if (!ontology?.enabled) {
+    return { eligible: false, reason: '知识包已禁用' };
+  }
+  if (
+    !ontology.active_version ||
+    !ontology.versions.includes(ontology.active_version)
+  ) {
     return { eligible: false, reason: '没有可用的激活版本' };
   }
   if ((Array.isArray(scopes) ? scopes : []).includes('mcp:search')) {
     const provider = text(ontology.business_data?.provider).toLowerCase();
-    if (!ontology.business_data?.ready || !MCP_GRAPH_PROVIDERS.includes(provider)) {
-      return { eligible: false, reason: 'Search 需要可用的 Neo4j 或 HugeGraph 数据源' };
+    if (
+      !ontology.business_data?.ready ||
+      !MCP_GRAPH_PROVIDERS.includes(provider)
+    ) {
+      return {
+        eligible: false,
+        reason: 'Search 需要可用的 Neo4j 或 HugeGraph 数据源',
+      };
     }
   }
   return { eligible: true, reason: '' };
 }
 
-export function resolveMcpOntologySelection({ ontologies = [], scopes = MCP_SCOPES, currentId = '' } = {}) {
-  const eligible = ontologies.filter((ontology) => mcpOntologyEligibility(ontology, scopes).eligible);
+export function resolveMcpOntologySelection({
+  ontologies = [],
+  scopes = MCP_SCOPES,
+  currentId = '',
+} = {}) {
+  const eligible = ontologies.filter(
+    (ontology) => mcpOntologyEligibility(ontology, scopes).eligible,
+  );
   const normalizedCurrentId = text(currentId);
-  if (eligible.some((ontology) => ontology.id === normalizedCurrentId)) return normalizedCurrentId;
-  return eligible.length === 1 ? eligible[0].id : '';
+  if (eligible.some((ontology) => ontology.id === normalizedCurrentId)) {
+    return normalizedCurrentId;
+  }
+  const [onlyEligible] = eligible;
+  return eligible.length === 1 ? onlyEligible.id : '';
 }
 
 export function createdMcpToken(payload = {}) {
   return text(payload.token);
 }
 
-export function buildMcpTokenRequest({ name = '', expiresIn = '86400', scopes = MCP_SCOPES, ontologyId = '' } = {}) {
+export function buildMcpTokenRequest({
+  name = '',
+  expiresIn = '86400',
+  scopes = MCP_SCOPES,
+  ontologyId = '',
+} = {}) {
   const normalizedScopes = (Array.isArray(scopes) ? scopes : [])
     .map(text)
-    .filter((scope, index, values) => MCP_SCOPES.includes(scope) && values.indexOf(scope) === index);
-  if (!normalizedScopes.length) throw new Error('至少选择一个 MCP scope');
+    .filter(
+      (scope, index, values) =>
+        MCP_SCOPES.includes(scope) && values.indexOf(scope) === index,
+    );
+  if (!normalizedScopes.length) {
+    throw new Error('至少选择一个 MCP scope');
+  }
   const normalizedOntologyId = text(ontologyId);
-  if (!normalizedOntologyId) throw new Error('请选择 Token 绑定的知识包');
+  if (!normalizedOntologyId) {
+    throw new Error('请选择 Token 绑定的知识包');
+  }
   const expires = expiresIn === 'never' ? null : Number(expiresIn);
-  if (expires !== null && (!Number.isInteger(expires) || expires <= 0)) throw new Error('Token 有效期无效');
+  if (expires !== null && (!Number.isInteger(expires) || expires <= 0)) {
+    throw new Error('Token 有效期无效');
+  }
   return {
-    name: text(name), expires_in: expires, scopes: normalizedScopes, ontology_id: normalizedOntologyId,
+    name: text(name),
+    expires_in: expires,
+    scopes: normalizedScopes,
+    ontology_id: normalizedOntologyId,
   };
 }
 
 function serviceConfigType(service) {
-  if (service?.client_config_type) return service.client_config_type;
+  if (service?.client_config_type) {
+    return service.client_config_type;
+  }
   return service?.transport === 'sse' ? 'sse' : 'http';
 }
 
 export function buildMcpClientConfig(service, token = '<MCP_TOKEN>') {
-  return JSON.stringify({
-    mcpServers: {
-      [service?.id || 'meta-wise-mcp']: {
-        type: serviceConfigType(service),
-        url: text(service?.active_url),
-        headers: { Authorization: `Bearer ${token || '<MCP_TOKEN>'}` },
+  return JSON.stringify(
+    {
+      mcpServers: {
+        [service?.id || 'meta-wise-mcp']: {
+          type: serviceConfigType(service),
+          url: text(service?.active_url),
+          headers: { Authorization: `Bearer ${token || '<MCP_TOKEN>'}` },
+        },
       },
     },
-  }, null, 2);
+    null,
+    2,
+  );
 }
 
 export function createMcpScopeState(scopeKey) {
@@ -209,6 +272,9 @@ export function createMcpScopeState(scopeKey) {
   };
 }
 
-export function canUseMcpSelfService({ authenticated = false, capability = true } = {}) {
+export function canUseMcpSelfService({
+  authenticated = false,
+  capability = true,
+} = {}) {
   return Boolean(authenticated && capability);
 }

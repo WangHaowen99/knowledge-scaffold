@@ -184,7 +184,7 @@ export default function PackageCheck({
             ? '请先发布或放弃人工编辑草稿，再重新检查正式知识包'
             : '对当前知识包重新执行格式、引用、来源映射和规则检查'}
           onClick={() => { void onRecheck?.(); }}>
-          {rechecking ? '检查中…' : check ? '重新检查' : '执行检查'}
+          {(() => { if (rechecking) return '检查中…'; return check ? '重新检查' : '执行检查'; })()}
         </button>
         {counts?.错误 > 0 && (
           <button type="button" className="btn btn-p"
@@ -288,18 +288,14 @@ export default function PackageCheck({
                 {ignorable && !alreadyIgnored && (
                   <button type="button" className="btn pcheck-act"
                     disabled={Boolean(handoffId) || anotherIgnoreIsOpen}
-                    title={anotherIgnoreIsOpen
-                      ? '请先在建模助手中完成当前暂缓理由表单'
-                      : openedIgnore
+                    title={(() => { if (anotherIgnoreIsOpen) return '请先在建模助手中完成当前暂缓理由表单'; return openedIgnore
                       ? '暂缓理由表单已在建模助手中打开，点击前往处理'
-                      : '在建模助手里说明理由后暂缓；发布前仍需清零'}
+                      : '在建模助手里说明理由后暂缓；发布前仍需清零'; })()}
                     onClick={() => {
                       if (openedIgnore) onInteractionFocus?.(openedIgnore);
                       else void handOff(f, 'ignore');
                     }}>
-                    {handoffId === `${f.id}:ignore`
-                      ? '正在打开…'
-                      : openedIgnore ? '前往助手处理' : '暂缓并说明理由'}
+                    {(() => { if (handoffId === `${f.id}:ignore`) return '正在打开…'; return openedIgnore ? '前往助手处理' : '暂缓并说明理由'; })()}
                   </button>
                 )}
               </div>

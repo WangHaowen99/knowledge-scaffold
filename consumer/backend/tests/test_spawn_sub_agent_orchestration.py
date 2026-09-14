@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from operator import getitem
 from types import SimpleNamespace
 
 import pytest
-
 from agent.exceptions import WorkflowCancelledError
 from agent.tools.base import ToolContext
 from agent.tools.spawn_sub_agent import SpawnSubAgentTool
@@ -382,9 +382,9 @@ def test_sub_agent_task_context_cannot_define_selected_ontology_scope(monkeypatc
     )
 
     assert result["_success"] is True
-    assert calls["state"]["user_context"].get("selected_ontology_id") is None
+    assert getitem(getitem(calls, "state"), "user_context").get("selected_ontology_id") is None
     assert calls["prompt_scope"]["selected_ontology_id"] is None
-    assert "task-controlled-ontology" not in calls["state"]["user_request"]
+    assert "task-controlled-ontology" not in getitem(getitem(calls, "state"), "user_request")
 
 
 def test_sub_agent_parent_workspace_locks_scope_with_task_context_fallback(monkeypatch):
@@ -445,15 +445,13 @@ def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_pa
     (ontology_dir / "objects").mkdir(parents=True)
     (ontology_dir / "scripts").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
-        (
-            "kind: ontology-package\n"
-            "schema_version: 0.1\n"
-            "id: demo-ontology\n"
-            "name: Demo Ontology\n"
-            "description: Demo ontology for spawn-sub-agent tests\n"
-            "version: 1.0.0\n"
-            "language: zh-CN\n"
-        ),
+        "kind: ontology-package\n"
+        "schema_version: 0.1\n"
+        "id: demo-ontology\n"
+        "name: Demo Ontology\n"
+        "description: Demo ontology for spawn-sub-agent tests\n"
+        "version: 1.0.0\n"
+        "language: zh-CN\n",
         encoding="utf-8",
     )
     (ontology_dir / "operations" / "index.md").write_text("- demo-tool\n- child-tool\n", encoding="utf-8")
@@ -585,9 +583,7 @@ def test_spawn_sub_agent_batch_respects_global_concurrency_cap(monkeypatch):
                     {"id": "t4", "task": "four"},
                 ]
             },
-            context=_make_context(
-                agent_config=_agent_config(sub_agent_max_concurrency=2)
-            ),
+            context=_make_context(agent_config=_agent_config(sub_agent_max_concurrency=2)),
             tool_call_id="call_spawn_2",
         )
     )
@@ -652,6 +648,7 @@ def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkey
     _patch_subagent(monkeypatch, handler)
 
     tool = SpawnSubAgentTool()
+
     async def exercise():
         semaphore = manager._get_async_semaphore()
         await semaphore.acquire()
@@ -707,11 +704,7 @@ def test_spawn_sub_agent_propagates_workflow_cancellation(monkeypatch):
         asyncio.run(
             tool.aexecute(
                 args={"tasks": [{"id": "cancelled-task", "task": "stop now"}]},
-                context=_make_context(
-                    event_emitter=lambda event_type, payload: events.append(
-                        (event_type, payload)
-                    )
-                ),
+                context=_make_context(event_emitter=lambda event_type, payload: events.append((event_type, payload))),
                 tool_call_id="call_spawn_cancelled",
             )
         )

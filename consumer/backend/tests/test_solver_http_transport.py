@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import pytest
+import json
 
+import pytest
+from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.connectors.endpoint_policy import EndpointPolicy
 from solver_coordination.connectors.errors import (
     ConnectorAuthenticationError,
@@ -16,7 +18,7 @@ class _Response:
         self.status_code = status_code
         self._payload = payload
         self.headers = headers or {}
-        self.content = __import__("json").dumps(payload).encode("utf-8")
+        self.content = json.dumps(payload).encode("utf-8")
 
     def close(self):
         pass
@@ -58,7 +60,7 @@ def _transport(session, *, retries=0):
     return HttpSolverTransport(
         session=session,
         credential_resolver=lambda reference: (
-            "synthetic-service-token"
+            synthetic_secret("solver_http_transport-credential-01")
             if reference == "secret://solver/service-token"
             else None
         ),
@@ -83,7 +85,7 @@ def test_transport_calls_service_api_with_managed_headers():
     assert payload == {"api_versions": ["ortools.solver.v1"]}
     call = session.calls[0]
     assert call["url"] == "https://solver.example.com/api/v1/capabilities"
-    assert call["headers"]["Authorization"] == "Bearer synthetic-service-token"
+    assert call["headers"]["Authorization"] == f"Bearer {synthetic_secret('solver_http_transport-credential-01')}"
     assert call["allow_redirects"] is False
 
 

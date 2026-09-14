@@ -192,7 +192,12 @@ def _script_check(text: str) -> dict:
             has_cjk = True
         elif 0x0400 <= cp <= 0x052F:
             has_cyrillic = True
-        elif 0x0600 <= cp <= 0x06FF or 0x0750 <= cp <= 0x077F or 0xFB50 <= cp <= 0xFDFF or 0xFE70 <= cp <= 0xFEFF:
+        elif any((
+            0x0600 <= cp <= 0x06FF,
+            0x0750 <= cp <= 0x077F,
+            0xFB50 <= cp <= 0xFDFF,
+            0xFE70 <= cp <= 0xFEFF,
+        )):
             has_arabic = True
         elif 0x0900 <= cp <= 0x097F:
             has_devanagari = True
@@ -203,9 +208,21 @@ def _script_check(text: str) -> dict:
         elif 0x0B80 <= cp <= 0x0BFF:
             has_tamil = True
 
-        if (has_hiragana and has_katakana and has_hangul and has_cjk
-                and has_cyrillic and has_arabic and has_devanagari
-                and has_thai and has_bengali and has_tamil):
+        all_script_flags_found = all(
+            (
+                has_hiragana,
+                has_katakana,
+                has_hangul,
+                has_cjk,
+                has_cyrillic,
+                has_arabic,
+                has_devanagari,
+                has_thai,
+                has_bengali,
+                has_tamil,
+            )
+        )
+        if all_script_flags_found:
             break
 
     return {
@@ -300,7 +317,7 @@ def _detect_language_via_llm(text: str, script_hint: str | None = None) -> str |
         if result and len(result) <= 5 and result.replace("-", "").isalpha():
             return result
     except Exception as e:
-        logger.debug(f"[lang] LLM detection failed: {e}")
+        logger.debug("[lang] LLM detection failed: %s", e)
     return None
 
 
@@ -337,7 +354,7 @@ def detect_language(text: str, lang: str | None = None, default_lang: str | None
     try:
         lang = detect(text)
     except LangDetectException:
-        logger.debug(f"[langdetect] Failed to detect language for text: {text[:100]}")
+        logger.debug("[langdetect] Failed to detect language for text: %s", text[:100])
         return default_validated
 
     if lang == "ko" and not script["hangul"]:
@@ -420,6 +437,6 @@ def translate_text(text: str, target_lang: str, source_lang: str = "auto") -> st
         if result:
             return result
     except Exception as e:
-        logger.warning(f"[lang] Translation failed for {target_lang}: {e}")
+        logger.warning("[lang] Translation failed for %s: %s", target_lang, e)
 
     return text

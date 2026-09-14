@@ -18,13 +18,13 @@ test('protected data loads for every authenticated user', () => {
 test('workspace data waits for a loaded and valid workspace selection', () => {
   const workspaces = [{ id: 'alpha' }];
   const loaded = { loaded: true };
-  assert.equal(canLoadWorkspaceData(false, loaded, 'alpha', workspaces), false);
-  assert.equal(canLoadWorkspaceData(true, { loaded: false }, 'alpha', workspaces), false);
-  assert.equal(canLoadWorkspaceData(true, { loaded: true, loading: true }, 'alpha', workspaces), false);
-  assert.equal(canLoadWorkspaceData(true, { loaded: true, error: 'failed' }, 'alpha', workspaces), false);
-  assert.equal(canLoadWorkspaceData(true, loaded, '', workspaces), false);
-  assert.equal(canLoadWorkspaceData(true, loaded, 'stale', workspaces), false);
-  assert.equal(canLoadWorkspaceData(true, loaded, 'alpha', workspaces), true);
+  assert.equal(canLoadWorkspaceData(false, 'alpha', workspaces, loaded), false);
+  assert.equal(canLoadWorkspaceData(true, 'alpha', workspaces, { loaded: false }), false);
+  assert.equal(canLoadWorkspaceData(true, 'alpha', workspaces, { loaded: true, loading: true }), false);
+  assert.equal(canLoadWorkspaceData(true, 'alpha', workspaces, { loaded: true, error: 'failed' }), false);
+  assert.equal(canLoadWorkspaceData(true, '', workspaces, loaded), false);
+  assert.equal(canLoadWorkspaceData(true, 'stale', workspaces, loaded), false);
+  assert.equal(canLoadWorkspaceData(true, 'alpha', workspaces, loaded), true);
 });
 
 test('workspace-scoped surfaces stay blocked while global surfaces remain available', () => {

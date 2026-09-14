@@ -146,14 +146,14 @@ class LangfuseTraceAdapter:
     def available(self) -> bool:
         return self._client is not None
 
-    def create_trace(
+    def create_trace(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         name: str,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         tags: Optional[list] = None,
-        input: Optional[Dict[str, Any]] = None,
+        input: Optional[Dict[str, Any]] = None,  # pylint: disable=redefined-builtin
         trace_id: Optional[str] = None,
     ) -> Optional[str]:
         if not self._client:
@@ -200,14 +200,14 @@ class LangfuseTraceAdapter:
         except Exception as exc:
             logger.error("Failed to update trace output: %s", exc)
 
-    def create_span(
+    def create_span(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         trace_id: str,
         name: str,
         metadata: Optional[Dict[str, Any]] = None,
         tags: Optional[list] = None,
         parent_observation_id: Optional[str] = None,
-        input: Optional[Dict[str, Any]] = None,
+        input: Optional[Dict[str, Any]] = None,  # pylint: disable=redefined-builtin
         output: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         trace = self.get_trace(trace_id)
@@ -229,14 +229,14 @@ class LangfuseTraceAdapter:
             logger.error("Failed to create span: %s", exc, exc_info=True)
             return None
 
-    def create_llm_span(
+    def create_llm_span(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         trace_id: str,
         name: str,
         metadata: Optional[Dict[str, Any]] = None,
         tags: Optional[list] = None,
         parent_observation_id: Optional[str] = None,
-        input: Optional[Dict[str, Any]] = None,
+        input: Optional[Dict[str, Any]] = None,  # pylint: disable=redefined-builtin
         output: Optional[Dict[str, Any]] = None,
         model: Optional[str] = None,
         usage: Optional[Dict[str, Any]] = None,
@@ -262,7 +262,7 @@ class LangfuseTraceAdapter:
             logger.error("Failed to create LLM span: %s", exc)
             return None
 
-    def update_llm_span_tokens(
+    def update_llm_span_tokens(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
         self,
         trace_id: str,
         span_id: str,

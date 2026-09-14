@@ -5,11 +5,11 @@ import json
 import stat
 from pathlib import Path
 
+from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 from utils.security.secrets import encrypt_secret
 from workspace.workspaces import create_workspace
 
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+SECRET_TEST_KEY = ENCRYPTION_KEY
 
 
 def _setup_runtime(tmp_path, monkeypatch, *, with_key=True, workspace_ids=("alpha", "beta")):
@@ -114,7 +114,7 @@ def test_apply_migrates_config_backs_up_sources_and_reports_steps_separately(
 ):
     runtime_root, config_path = _setup_runtime(tmp_path, monkeypatch)
     encrypted_secret = encrypt_secret(
-        "global-secret",
+        synthetic_secret("workspace_observability_migration-credential-02"),
         context="observability.langfuse.secret_key",
     )
     _write_global_config(
@@ -126,7 +126,7 @@ def test_apply_migrates_config_backs_up_sources_and_reports_steps_separately(
             "langfuse": {
                 "public_key": "pk-global",
                 "secret_key": encrypted_secret,
-                "base_url": "https://langfuse.example",
+                "base_url": "https://langfuse.example.net",
                 "debug": True,
             },
         },
@@ -159,22 +159,20 @@ def test_apply_migrates_config_backs_up_sources_and_reports_steps_separately(
 
     for workspace_id in ("alpha", "beta"):
         workspace_config = get_workspace_observability_config(workspace_id)
-        assert workspace_config["langfuse"]["secret_key"] == "global-secret"
-        target_text = (
-            runtime_root / "workspaces" / workspace_id / "observability_config.json"
-        ).read_text(encoding="utf-8")
-        assert "global-secret" not in target_text
+        assert workspace_config["langfuse"]["secret_key"] == synthetic_secret(
+            "workspace_observability_migration-credential-02"
+        )
+        target_text = (runtime_root / "workspaces" / workspace_id / "observability_config.json").read_text(
+            encoding="utf-8"
+        )
+        assert synthetic_secret("workspace_observability_migration-credential-02") not in target_text
 
     marker = json.loads((runtime_root / MARKER_RELATIVE_PATH).read_text(encoding="utf-8"))
     assert marker["status"] == "completed"
     assert marker["workspace_ids"] == ["alpha", "beta"]
 
-    system_backup = next(
-        path for path in map(Path, report["backup_paths"]) if "system_config.json" in path.name
-    )
-    log_backup = next(
-        path for path in map(Path, report["backup_paths"]) if "agent_perf-" in path.name
-    )
+    system_backup = next(path for path in map(Path, report["backup_paths"]) if "system_config.json" in path.name)
+    log_backup = next(path for path in map(Path, report["backup_paths"]) if "agent_perf-" in path.name)
     assert system_backup.read_bytes() == original_config
     assert log_backup.read_text(encoding="utf-8") == "old-performance-data\n"
     assert stat.S_IMODE(system_backup.stat().st_mode) == 0o600
@@ -182,7 +180,7 @@ def test_apply_migrates_config_backs_up_sources_and_reports_steps_separately(
     assert not old_log.exists()
 
     rendered_report = json.dumps(report, ensure_ascii=False)
-    assert "global-secret" not in rendered_report
+    assert synthetic_secret("workspace_observability_migration-credential-02") not in rendered_report
     assert encrypted_secret not in rendered_report
     assert "token" not in rendered_report.lower()
     assert "hash" not in rendered_report.lower()
@@ -199,7 +197,7 @@ def test_apply_does_not_invoke_unrelated_system_config_read_migrations(
             {
                 "llm": {
                     "model": "legacy-model",
-                    "api_key": "unrelated-plaintext-secret",
+                    "api_key": synthetic_secret("workspace_observability_migration-credential-06"),
                 },
                 "observability": _local_observability(),
             }
@@ -213,8 +211,10 @@ def test_apply_does_not_invoke_unrelated_system_config_read_migrations(
     assert report["config_migration"]["status"] == "applied"
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
     assert "observability" not in persisted
-    assert persisted["llm"]["api_key"] == "unrelated-plaintext-secret"
-    assert "unrelated-plaintext-secret" not in json.dumps(report, ensure_ascii=False)
+    assert persisted["llm"]["api_key"] == synthetic_secret("workspace_observability_migration-credential-06")
+    assert synthetic_secret("workspace_observability_migration-credential-06") not in json.dumps(
+        report, ensure_ascii=False
+    )
 
 
 def test_no_legacy_data_is_a_repeatable_noop_without_marker(tmp_path, monkeypatch):
@@ -331,23 +331,19 @@ def test_existing_canonical_target_is_preserved_while_missing_targets_are_create
             "local": {"retention_days": 3},
             "langfuse": {
                 "public_key": "",
-                "secret_key": "alpha-secret",
+                "secret_key": synthetic_secret("workspace_observability_migration-credential-01"),
                 "base_url": "",
                 "debug": False,
             },
         },
     )
-    alpha_before = (
-        runtime_root / "workspaces" / "alpha" / "observability_config.json"
-    ).read_bytes()
+    alpha_before = (runtime_root / "workspaces" / "alpha" / "observability_config.json").read_bytes()
 
     code, report = _execute(runtime_root, dry_run=False, log_dir=tmp_path / "logs")
 
     assert code == 0
     assert report["counts"]["workspace_configs_preserved"] == 1
-    assert (
-        runtime_root / "workspaces" / "alpha" / "observability_config.json"
-    ).read_bytes() == alpha_before
+    assert (runtime_root / "workspaces" / "alpha" / "observability_config.json").read_bytes() == alpha_before
     assert get_workspace_observability_config("alpha")["local"]["retention_days"] == 3
     assert get_workspace_observability_config("beta")["local"]["retention_days"] == 21
 
@@ -405,15 +401,9 @@ def test_retry_blocks_when_retained_source_diverges_from_owned_target(
         log_dir=tmp_path / "logs",
     )
     assert first_code == 2
-    alpha_target = (
-        runtime_root / "workspaces" / "alpha" / "observability_config.json"
-    )
-    assert json.loads(alpha_target.read_text(encoding="utf-8"))["local"][
-        "retention_days"
-    ] == 12
-    marker = json.loads(
-        (runtime_root / migration.MARKER_RELATIVE_PATH).read_text(encoding="utf-8")
-    )
+    alpha_target = runtime_root / "workspaces" / "alpha" / "observability_config.json"
+    assert json.loads(alpha_target.read_text(encoding="utf-8"))["local"]["retention_days"] == 12
+    marker = json.loads((runtime_root / migration.MARKER_RELATIVE_PATH).read_text(encoding="utf-8"))
     assert marker["owned_workspace_ids"] == ["alpha", "beta"]
 
     # A retained source may legitimately be repaired before the next startup.
@@ -431,12 +421,8 @@ def test_retry_blocks_when_retained_source_diverges_from_owned_target(
     assert retry_code == 2
     assert retry["config_migration"]["source_retained"] is True
     assert "WORKSPACE_OBSERVABILITY_TARGET_CONFLICT" in retry["error_codes"]
-    assert json.loads(alpha_target.read_text(encoding="utf-8"))["local"][
-        "retention_days"
-    ] == 12
-    assert not (
-        runtime_root / "workspaces" / "beta" / "observability_config.json"
-    ).exists()
+    assert json.loads(alpha_target.read_text(encoding="utf-8"))["local"]["retention_days"] == 12
+    assert not (runtime_root / "workspaces" / "beta" / "observability_config.json").exists()
     persisted_source = json.loads(config_path.read_text(encoding="utf-8"))
     assert persisted_source["observability"]["local"]["retention_days"] == 24
 
@@ -485,9 +471,7 @@ def test_retry_never_overwrites_workspace_config_changed_after_partial_failure(
     assert retry["config_migration"]["source_retained"] is True
     assert "WORKSPACE_OBSERVABILITY_TARGET_CONFLICT" in retry["error_codes"]
     assert get_workspace_observability_config("alpha")["local"]["retention_days"] == 99
-    assert not (
-        runtime_root / "workspaces" / "beta" / "observability_config.json"
-    ).exists()
+    assert not (runtime_root / "workspaces" / "beta" / "observability_config.json").exists()
     assert "observability" in json.loads(config_path.read_text(encoding="utf-8"))
 
 
@@ -499,7 +483,7 @@ def test_failed_source_survives_unrelated_system_config_rewrite(tmp_path, monkey
             {
                 "llm": {
                     "model": "legacy-model",
-                    "api_key": "legacy-plaintext-secret",
+                    "api_key": synthetic_secret("workspace_observability_migration-credential-03"),
                 },
                 "observability": _local_observability(retention_days=12),
             }
@@ -534,7 +518,9 @@ def test_failed_source_survives_unrelated_system_config_rewrite(tmp_path, monkey
     system_config_module.update_system_config_section("web_search", {"enabled": True})
 
     rewritten = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "legacy-plaintext-secret" not in config_path.read_text(encoding="utf-8")
+    assert synthetic_secret("workspace_observability_migration-credential-03") not in config_path.read_text(
+        encoding="utf-8"
+    )
     assert "observability" in rewritten
 
     monkeypatch.setattr(migration, "_write_workspace_target", original_write)
@@ -577,9 +563,7 @@ def test_progress_marker_failure_happens_before_any_workspace_write(
     assert code == 2
     assert "MIGRATION_MARKER_PREPARE_FAILED" in report["error_codes"]
     assert "observability" in json.loads(config_path.read_text(encoding="utf-8"))
-    assert not (
-        runtime_root / "workspaces" / "alpha" / "observability_config.json"
-    ).exists()
+    assert not (runtime_root / "workspaces" / "alpha" / "observability_config.json").exists()
     assert not (runtime_root / migration.MARKER_RELATIVE_PATH).exists()
 
     monkeypatch.setattr(migration, "_write_marker", original_write_marker)
@@ -720,7 +704,7 @@ def test_missing_secret_key_blocks_without_creating_key_or_writing_files(tmp_pat
         {
             "enabled": True,
             "mode": "langfuse",
-            "langfuse": {"secret_key": "plaintext-secret"},
+            "langfuse": {"secret_key": synthetic_secret("workspace_observability_migration-credential-04")},
         },
     )
     before = _tree_snapshot(runtime_root)
@@ -731,7 +715,9 @@ def test_missing_secret_key_blocks_without_creating_key_or_writing_files(tmp_pat
     assert "SECRET_KEY_REQUIRED" in report["error_codes"]
     assert _tree_snapshot(runtime_root) == before
     assert not (runtime_root / "config" / "secret.key").exists()
-    assert "plaintext-secret" not in json.dumps(report, ensure_ascii=False)
+    assert synthetic_secret("workspace_observability_migration-credential-04") not in json.dumps(
+        report, ensure_ascii=False
+    )
 
 
 def test_legacy_default_workspace_is_not_implicitly_moved_by_observability_migration(
@@ -780,7 +766,7 @@ def test_normal_workspace_observability_reads_never_modify_persisted_files(
             "local": {"retention_days": 7},
             "langfuse": {
                 "public_key": "",
-                "secret_key": "read-only-secret",
+                "secret_key": synthetic_secret("workspace_observability_migration-credential-05"),
                 "base_url": "",
                 "debug": False,
             },

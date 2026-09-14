@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import ast
+from operator import getitem
 from pathlib import Path
-
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 ROUTES_ROOT = BACKEND_ROOT / "api" / "routes"
@@ -38,8 +38,7 @@ def test_http_routes_do_not_write_workspace_acl_through_storage_functions():
             if isinstance(node, ast.ImportFrom):
                 for name in node.names:
                     if (
-                        node.module == "workspace.workspaces"
-                        or name.name in {"create_workspace", "update_workspace"}
+                        node.module == "workspace.workspaces" or name.name in {"create_workspace", "update_workspace"}
                     ) and name.name in {"create_workspace", "update_workspace"}:
                         storage_aliases.add(name.asname or name.name)
                     if node.module == "api.workspace_acl_service" and name.name in required_service_calls:
@@ -54,19 +53,15 @@ def test_http_routes_do_not_write_workspace_acl_through_storage_functions():
                 callback_name = _callable_name(node.args[2])
             invoked_names = {name for name in (function_name, callback_name) if name}
             observed_service_calls.update(
-                service_aliases[name]
-                for name in invoked_names
-                if name in service_aliases
+                getitem(service_aliases, name) for name in invoked_names if name in service_aliases
             )
             unsafe_storage = invoked_names & ({"create_workspace", "update_workspace"} | storage_aliases)
             if unsafe_storage:
                 violations.append(
-                    f"{path.relative_to(BACKEND_ROOT)}:{node.lineno} calls "
-                    f"{sorted(unsafe_storage)[0]}"
+                    f"{path.relative_to(BACKEND_ROOT)}:{node.lineno} calls " f"{sorted(unsafe_storage)[0]}"
                 )
             if "update_workspace_authorized" in invoked_names and any(
-                keyword.arg is None or keyword.arg in {"owner", "members"}
-                for keyword in node.keywords
+                keyword.arg is None or keyword.arg in {"owner", "members"} for keyword in node.keywords
             ):
                 violations.append(
                     f"{path.relative_to(BACKEND_ROOT)}:{node.lineno} writes ACL via update_workspace_authorized"

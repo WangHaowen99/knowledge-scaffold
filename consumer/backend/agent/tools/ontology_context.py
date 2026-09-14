@@ -1,55 +1,55 @@
 """Ontology context tool for loading ontology specs by semantic keys."""
 
 from __future__ import annotations
+
 import copy
-from dataclasses import dataclass
-from pathlib import Path
 import hashlib
 import json
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set
 
-from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.evolution import build_near_point_block
-from utils.logging import get_logger
+from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
+from config.evidence_config import EvidenceConfig
 from ontology.capabilities import (
     BUSINESS_CHECKPOINT_TEMPLATE_KEY,
     is_business_checkpoint_available,
 )
-from ontology.ontology_catalog import (
-    build_root_payload,
-    find_asset_file,
-    find_script_entry,
-    find_markdown_file,
-    format_markdown_payload_compact,
-    format_root_payload_compact,
-    get_ontology_manifest,
-    get_object_value_bound_fields,
-    load_script_catalog,
-    read_required_text,
-    read_required_asset_text,
-    resolve_object_reference,
-    find_asset_file,
-)
-from ontology.package_browser import PackageBrowserError, read_package_text
-from ontology.resource_parser import parse_resource_cached
-from ontology.resource_types import ResourceSource
 from ontology.evidence.manager import (
     EvidenceIndexManager,
     EvidenceIndexManagerError,
     active_pointer_is_serviceable,
     read_active_pointer_snapshot,
 )
-from config.evidence_config import EvidenceConfig
-from workspace.workspaces import get_workspace_paths
-from utils.read_docs import (
-    build_grounding_subject_key,
-    build_read_document_record,
-    normalize_read_documents_registry,
+from ontology.ontology_catalog import (
+    build_root_payload,
+    find_asset_file,
+    find_markdown_file,
+    find_script_entry,
+    format_markdown_payload_compact,
+    format_root_payload_compact,
+    get_object_value_bound_fields,
+    get_ontology_manifest,
+    load_script_catalog,
+    read_required_asset_text,
+    read_required_text,
+    resolve_object_reference,
 )
 from ontology.operation_execution import (
     is_protected_handler_descriptor,
     is_protected_operation_descriptor,
 )
+from ontology.package_browser import PackageBrowserError, read_package_text
+from ontology.resource_parser import parse_resource_cached
+from ontology.resource_types import ResourceSource
+from utils.logging import get_logger
+from utils.read_docs import (
+    build_grounding_subject_key,
+    build_read_document_record,
+    normalize_read_documents_registry,
+)
+from workspace.workspaces import get_workspace_paths
 
 logger = get_logger("tools.ontology_context")
 
@@ -68,9 +68,9 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
     "function": {
         "name": "ontology_context",
         "description": (
-            "Load ontology root catalogs, operation, object/entity, rule, metric, script, and CheckPoint template specs. "
-            "This tool reads ontology specs only; it does not query business data or execute scripts. "
-            "Load each needed ontology resource once and reuse it."
+            "Load ontology root catalogs, operation, object/entity, rule, metric, script, and CheckPoint template"
+            " specs. This tool reads ontology specs only; it does not query business data or execute scripts. Load each"
+            " needed ontology resource once and reuse it."
         ),
         "parameters": {
             "type": "object",
@@ -87,7 +87,7 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
                         "operation returns operation content by key; object returns object/entity definition by key; "
                         "rule returns rule content by key; metric returns metric content by key; "
                         "script returns registered script description by key or bound operation key; "
-"asset is accepted only "
+                        "asset is accepted only "
                         "when response_format is structured. "
                         "asset returns only business-checkpoint-template.md "
                         "when CheckPoint is enabled."
@@ -131,10 +131,13 @@ def get_ontology_context_schema(*, structured_enabled: bool) -> Dict[str, Any]:
         return schema
     properties = schema["function"]["parameters"]["properties"]
     properties["resource"]["enum"] = list(_TEXT_RESOURCES)
-    properties["resource"]["description"] = properties["resource"]["description"].split(
-        "; asset is accepted only",
-        1,
-    )[0] + "."
+    properties["resource"]["description"] = (
+        properties["resource"]["description"].split(
+            "; asset is accepted only",
+            1,
+        )[0]
+        + "."
+    )
     for field in ("section", "max_chars", "response_format"):
         properties.pop(field, None)
     return schema
@@ -171,7 +174,8 @@ def _handle_ontology_context_result(
     ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
     if error:
         return _OntologyContextResult(content=error)
-    assert ontology is not None
+    if ontology is None:
+        return _OntologyContextResult(content="Error: ontology manifest is unavailable.")
 
     normalized_resource = str(resource or "").strip()
     ontology_dir = Path(ontology.ontology_dir).resolve()
@@ -202,7 +206,8 @@ def _handle_ontology_context_result(
         resolution, resolution_error = resolve_object_reference(ontology_dir, key)
         if resolution_error:
             return _OntologyContextResult(content=resolution_error)
-        assert resolution is not None
+        if resolution is None:
+            return _OntologyContextResult(content="Error: object reference is unavailable.")
         content, read_error = read_required_text(
             resolution.path,
             "object '{}'".format(key),
@@ -223,10 +228,7 @@ def _handle_ontology_context_result(
         if bound_fields:
             rendered = "{}\n\nruntime_field_context:\n{}".format(
                 rendered.rstrip(),
-                "\n".join(
-                    "- field_key: {}; value_bound: true".format(field_key)
-                    for field_key in bound_fields
-                ),
+                "\n".join("- field_key: {}; value_bound: true".format(field_key) for field_key in bound_fields),
             )
         return _OntologyContextResult(
             content=rendered,
@@ -253,9 +255,7 @@ def _handle_ontology_context_result(
         )
     if normalized_resource == "script":
         script_entry = find_script_entry(load_script_catalog(ontology_dir), key)
-        resolved_key = str(
-            (script_entry or {}).get("script_key") or key or ""
-        ).strip()
+        resolved_key = str((script_entry or {}).get("script_key") or key or "").strip()
         return _build_markdown_result(
             ontology_id=ontology.id,
             ontology_dir=ontology_dir,
@@ -272,9 +272,9 @@ def _handle_ontology_context_result(
         normalized_key = str(key or "").replace("\\", "/").strip("/")
         if normalized_key != BUSINESS_CHECKPOINT_TEMPLATE_KEY:
             return _OntologyContextResult(
-                content=(
-                    "Error: ontology_context resource 'asset' only supports '{}'."
-                ).format(BUSINESS_CHECKPOINT_TEMPLATE_KEY)
+                content=("Error: ontology_context resource 'asset' only supports '{}'.").format(
+                    BUSINESS_CHECKPOINT_TEMPLATE_KEY
+                )
             )
         if not is_business_checkpoint_available(
             ontology.id,
@@ -287,7 +287,8 @@ def _handle_ontology_context_result(
         path, asset_error = find_asset_file(ontology_dir, BUSINESS_CHECKPOINT_TEMPLATE_KEY)
         if asset_error:
             return _OntologyContextResult(content=asset_error)
-        assert path is not None
+        if path is None:
+            return _OntologyContextResult(content="Error: CheckPoint template is unavailable.")
         content, read_error = read_required_asset_text(
             path,
             "asset '{}'".format(BUSINESS_CHECKPOINT_TEMPLATE_KEY),
@@ -301,7 +302,8 @@ def _handle_ontology_context_result(
         )
     return _OntologyContextResult(
         content=(
-            "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, script, or asset."
+            "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, script, or"
+            " asset."
         ).format(normalized_resource)
     )
 
@@ -319,7 +321,14 @@ def _build_root_payload(
     ontology_dir: Path,
     workspace_id: Optional[str],
 ) -> str:
-    payload = build_root_payload(ontology=ontology, ontology_dir=ontology_dir)
+    # The root context is the progressive discovery surface.  Full solver
+    # input/result schemas are admitted separately by preflight/tool-card
+    # loading and must not be copied into model-facing context.
+    payload = build_root_payload(
+        ontology=ontology,
+        ontology_dir=ontology_dir,
+        include_solver_catalog=False,
+    )
     if is_business_checkpoint_available(
         ontology.id,
         ontology_version=str(getattr(ontology, "version", "") or "").strip() or None,
@@ -342,23 +351,20 @@ def _build_markdown_result(
     path, error = find_markdown_file(directory.resolve(), key, resource_name)
     if error:
         return _OntologyContextResult(content=error)
-    assert path is not None
+    if path is None:
+        return _OntologyContextResult(content="Error: {} '{}' could not be resolved.".format(resource_name, key))
 
     if path_protection is not None:
         try:
             if path_protection(path):
-                return _OntologyContextResult(
-                    content="Error: deterministic_operation_protected"
-                )
+                return _OntologyContextResult(content="Error: deterministic_operation_protected")
         except Exception:
             logger.exception(
                 "Failed to classify deterministic %s descriptor protection: %s",
                 resource_name,
                 path,
             )
-            return _OntologyContextResult(
-                content="Error: deterministic_operation_protection_unavailable"
-            )
+            return _OntologyContextResult(content="Error: deterministic_operation_protection_unavailable")
 
     content, read_error = read_required_text(path, "{} '{}'".format(resource_name, key))
     if read_error:
@@ -388,6 +394,7 @@ class OntologyContextTool:
         object.__setattr__(self, "schema", ONTOLOGY_CONTEXT_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent", "acp"})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
@@ -410,8 +417,7 @@ class OntologyContextTool:
             allowed = json.dumps(list(_TEXT_RESOURCES), ensure_ascii=False)
             return ToolOutcome(
                 content=(
-                    "Error: Tool 'ontology_context' invalid argument(s): "
-                    "arguments.resource must be one of {}."
+                    "Error: Tool 'ontology_context' invalid argument(s): arguments.resource must be one of {}."
                 ).format(allowed)
             )
         result = _handle_ontology_context_result(
@@ -521,10 +527,18 @@ def _build_structured_context(
         selected_sections = [section for section in selected_sections if section.section_anchor == section_anchor]
         if not selected_sections:
             available = [section.section_anchor for section in parsed.sections]
-            return json.dumps(
-                {"contract": "OntologyContext/v2", "success": False, "result_code": "SECTION_NOT_FOUND", "available_sections": available},
-                ensure_ascii=False,
-            ), None
+            return (
+                json.dumps(
+                    {
+                        "contract": "OntologyContext/v2",
+                        "success": False,
+                        "result_code": "SECTION_NOT_FOUND",
+                        "available_sections": available,
+                    },
+                    ensure_ascii=False,
+                ),
+                None,
+            )
     content = "\n\n".join(section.text for section in selected_sections) if selected_sections else parsed.body_text
     truncated = len(content) > max_chars
     content = content[:max_chars]
@@ -534,7 +548,8 @@ def _build_structured_context(
         pointer_after = active_manager.active_pointer(ontology.id)
     except EvidenceIndexManagerError as exc:
         return "Error: {}".format(exc.code), None
-    assert pointer is not None
+    if pointer is None:
+        return "Error: INDEX_NOT_READY", None
     if not pointer_after or any(
         pointer.get(field) != pointer_after.get(field)
         for field in ("mutation_revision", "expected_epoch", "active_generation", "status")
@@ -667,11 +682,7 @@ def _build_read_record(
     content: str,
     resolved_path: Optional[Path],
 ) -> Optional[Dict[str, Any]]:
-    if (
-        not context.project_root
-        or resolved_path is None
-        or str(content or "").startswith("Error:")
-    ):
+    if not context.project_root or resolved_path is None or str(content or "").startswith("Error:"):
         return None
 
     manifest_kwargs = {"workspace_id": context.workspace_id}

@@ -7,12 +7,10 @@ import importlib
 import threading
 from types import SimpleNamespace
 
-import pytest
-
 import agent.core.jiuwen_engine as jiuwen_engine
+import pytest
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 from agent.exceptions import WorkflowCancelledError
-
 
 _REAL_IMPORT_MODULE = importlib.import_module
 
@@ -140,9 +138,7 @@ def test_owned_runtime_cleanup_releases_session_when_callback_clear_fails(monkey
             )
         )
 
-    assert list(framework._metrics) == [
-        "agent-unrelated_after_model_call:_on_after_model_call"
-    ]
+    assert list(framework._metrics) == ["agent-unrelated_after_model_call:_on_after_model_call"]
     assert released_sessions == ["agent-failing-clear.session.1"]
 
 
@@ -469,13 +465,16 @@ def test_managed_stream_cancellation_waits_for_child_producer_cleanup(monkeypatc
         with pytest.raises(asyncio.CancelledError):
             await task
         await asyncio.sleep(0)
-        return [
-            task
-            for task in asyncio.all_tasks()
-            if task is not asyncio.current_task()
-            and not task.done()
-            and task.get_name() == "jiuwen-managed-stream-producer"
-        ]
+        pending_tasks = []
+        for active_task in asyncio.all_tasks():
+            is_pending_producer = (
+                active_task is not asyncio.current_task()
+                and not active_task.done()
+                and active_task.get_name() == "jiuwen-managed-stream-producer"
+            )
+            if is_pending_producer:
+                pending_tasks.append(active_task)
+        return pending_tasks
 
     pending_managed_producers = asyncio.run(exercise())
 

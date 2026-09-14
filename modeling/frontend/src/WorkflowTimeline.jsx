@@ -189,7 +189,7 @@ export default function WorkflowTimeline({ steps = [], activeId = '', onSelect, 
                   data-step-status={status}
                   data-tour={`node-${step.focus || step.id}`}
                   className={`tl-node ${statusClass(status)} ${active ? 'active' : ''} ${selectable ? 'clickable' : ''}`.trim()}
-                  style={{ ...stepStyle, ...(!selectable ? { opacity: .62, cursor: 'not-allowed' } : {}) }}
+                  style={{ ...stepStyle, ...(!selectable ? { opacity: 0.62, cursor: 'not-allowed' } : {}) }}
                   disabled={!selectable}
                   aria-current={active ? 'step' : undefined}
                   aria-label={compact ? `${label} · ${STATUS_LABELS[status]}` : undefined}

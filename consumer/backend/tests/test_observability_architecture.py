@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +23,6 @@ def test_initialize_open_telemetry_instruments_fastapi_with_asgi_hook(
     monkeypatch,
 ):
     from fastapi import FastAPI
-
     from integration.observability import otel as otel_mod
 
     calls = []
@@ -33,9 +33,7 @@ def test_initialize_open_telemetry_instruments_fastapi_with_asgi_hook(
             del cls
             calls.append((application, kwargs))
 
-    instrumentation_module = types.ModuleType(
-        "opentelemetry.instrumentation.fastapi"
-    )
+    instrumentation_module = types.ModuleType("opentelemetry.instrumentation.fastapi")
     instrumentation_module.FastAPIInstrumentor = FakeFastAPIInstrumentor
     monkeypatch.setitem(
         sys.modules,
@@ -54,17 +52,13 @@ def test_initialize_open_telemetry_instruments_fastapi_with_asgi_hook(
     opentelemetry_module.__path__ = []
     opentelemetry_module.metrics = object()
     opentelemetry_module.trace = object()
-    instrumentation_package = types.ModuleType(
-        "opentelemetry.instrumentation"
-    )
+    instrumentation_package = types.ModuleType("opentelemetry.instrumentation")
     instrumentation_package.__path__ = []
     sdk_module = types.ModuleType("opentelemetry.sdk")
     sdk_module.__path__ = []
     sdk_metrics_module = types.ModuleType("opentelemetry.sdk.metrics")
     sdk_metrics_module.MeterProvider = object
-    sdk_metrics_export_module = types.ModuleType(
-        "opentelemetry.sdk.metrics.export"
-    )
+    sdk_metrics_export_module = types.ModuleType("opentelemetry.sdk.metrics.export")
     sdk_metrics_export_module.PeriodicExportingMetricReader = object
     sdk_resources_module = types.ModuleType("opentelemetry.sdk.resources")
 
@@ -76,13 +70,9 @@ def test_initialize_open_telemetry_instruments_fastapi_with_asgi_hook(
     sdk_resources_module.Resource = FakeResource
     sdk_trace_module = types.ModuleType("opentelemetry.sdk.trace")
     sdk_trace_module.TracerProvider = object
-    sdk_trace_sampling_module = types.ModuleType(
-        "opentelemetry.sdk.trace.sampling"
-    )
+    sdk_trace_sampling_module = types.ModuleType("opentelemetry.sdk.trace.sampling")
     sdk_trace_sampling_module.ALWAYS_ON = object()
-    sdk_trace_export_module = types.ModuleType(
-        "opentelemetry.sdk.trace.export"
-    )
+    sdk_trace_export_module = types.ModuleType("opentelemetry.sdk.trace.export")
     sdk_trace_export_module.SimpleSpanProcessor = object
     for name, module in (
         ("opentelemetry", opentelemetry_module),
@@ -118,6 +108,7 @@ def test_observability_bus_emit_does_not_wait_for_exporter():
     from integration.observability import ObservabilityBus, RuntimeEvent, RuntimeEventType
 
     class SlowExporter:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             time.sleep(0.2)
 
@@ -153,6 +144,7 @@ def test_observability_bus_close_exits_after_full_queue_drains():
         def __init__(self):
             self.export_count = 0
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             del event
             self.export_count += 1
@@ -187,6 +179,7 @@ def test_observability_bus_closes_exporter_after_worker_stops():
         def __init__(self):
             self.closed = False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             del event
 
@@ -210,6 +203,7 @@ def test_runtime_metrics_use_only_bounded_aggregation_dimensions(monkeypatch):
     recorded_attributes = []
 
     class Instrument:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _record(self, value, attributes):
             del value
             recorded_attributes.append(dict(attributes))
@@ -217,14 +211,27 @@ def test_runtime_metrics_use_only_bounded_aggregation_dimensions(monkeypatch):
         add = _record
         record = _record
 
+    instrument_names = (
+        "run.count",
+        "run.failure",
+        "run.duration",
+        "llm.count",
+        "llm.failure",
+        "llm.duration",
+        "llm.tokens",
+        "tool.count",
+        "tool.failure",
+        "tool.duration",
+    )
+
+    def metric_instruments(router_id=""):
+        del router_id
+        return {name: Instrument() for name in instrument_names}
+
     monkeypatch.setattr(
         otel_mod,
         "_get_metric_instruments",
-        lambda router_id="": {name: Instrument() for name in (
-            "run.count", "run.failure", "run.duration",
-            "llm.count", "llm.failure", "llm.duration", "llm.tokens",
-            "tool.count", "tool.failure", "tool.duration",
-        )},
+        metric_instruments,
     )
 
     otel_mod.record_runtime_metrics(
@@ -258,8 +265,7 @@ def test_runtime_metrics_use_only_bounded_aggregation_dimensions(monkeypatch):
     assert recorded_attributes
     assert all(set(attributes) <= allowed for attributes in recorded_attributes)
     assert all(
-        not {"agent.run_id", "agent.session_id", "agent.turn_id", "agent.observability.router_id"}
-        & set(attributes)
+        not {"agent.run_id", "agent.session_id", "agent.turn_id", "agent.observability.router_id"} & set(attributes)
         for attributes in recorded_attributes
     )
 
@@ -269,6 +275,7 @@ def test_local_perf_exporter_writes_metrics_without_rich_llm_content(tmp_path, m
 
     from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
     from integration.observability.exporters.local import exporter as local_exporter_module
+
     exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     exporter.export(
         RuntimeEvent(
@@ -351,6 +358,7 @@ def test_local_perf_exporter_projects_glm_cache_usage(tmp_path, monkeypatch):
 
     from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
     from integration.observability.exporters.local import exporter as local_exporter_module
+
     exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     exporter.export(
         RuntimeEvent(
@@ -391,6 +399,7 @@ def test_local_perf_exporter_does_not_parse_provider_specific_cache_fields(tmp_p
 
     from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
     from integration.observability.exporters.local import exporter as local_exporter_module
+
     exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     exporter.export(
         RuntimeEvent(
@@ -430,6 +439,7 @@ def test_local_perf_exporter_projects_runtime_perf_families(tmp_path, monkeypatc
 
     from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
     from integration.observability.exporters.local import exporter as local_exporter_module
+
     exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     events = [
         RuntimeEvent(
@@ -580,8 +590,10 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
         def __init__(self, exporter):
             self.exporter = exporter
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             self.exporter.export(event)
+
     exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     observer = ExportingObserver(exporter)
 
@@ -626,14 +638,10 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
     direct_tool = next(
-        record
-        for record in records
-        if record["kind"] == "tool_call" and record["event"] == "tool.finished"
+        record for record in records if record["kind"] == "tool_call" and record["event"] == "tool.finished"
     )
     direct_batch = next(
-        record
-        for record in records
-        if record["kind"] == "tool_batch" and record["event"] == "tool_batch.finished"
+        record for record in records if record["kind"] == "tool_batch" and record["event"] == "tool_batch.finished"
     )
 
     assert direct_tool["caller"] == "direct"
@@ -706,6 +714,7 @@ def test_agent_runtime_trace_finishes_agent_loop_once():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -737,6 +746,7 @@ def test_agent_runtime_trace_scope_finishes_success_and_error():
         def __init__(self, target):
             self.target = target
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             self.target.append(event)
             return True
@@ -784,6 +794,7 @@ def test_agent_runtime_trace_scopes_mark_cancellation_explicitly():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -834,13 +845,14 @@ def test_agent_runtime_trace_scopes_mark_cancellation_explicitly():
 
 
 def test_agent_runtime_trace_evaluates_lazy_llm_payload_only_when_enabled():
-    from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER
+    from integration.observability import NOOP_OBSERVER, AgentRuntimeTrace
 
     events = []
 
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -885,6 +897,7 @@ def test_agent_runtime_trace_lazy_payload_failure_does_not_escape():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -919,6 +932,7 @@ def test_agent_runtime_trace_llm_call_scope_records_success_and_error():
         def __init__(self, target):
             self.target = target
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             self.target.append(event)
             return True
@@ -1057,6 +1071,7 @@ def test_agent_runtime_trace_records_iteration_perf_events():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -1112,6 +1127,7 @@ def test_run_runtime_trace_phase_scope_records_success():
     class RecordingObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             events.append(event)
             return True
@@ -1146,10 +1162,12 @@ def test_observer_provider_uses_workspace_router_as_observer(monkeypatch):
     class FakeRouter:
         available = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             del event
             return True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self, timeout=1.0):
             del timeout
             pass
@@ -1176,10 +1194,12 @@ def test_observer_provider_reuses_process_scoped_observer(monkeypatch):
         def __init__(self):
             created_routers.append(self)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             del event
             return True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self, timeout=1.0):
             del timeout
             pass
@@ -1209,6 +1229,7 @@ def test_observer_provider_reserves_run_before_reset_can_retire(monkeypatch):
         def __init__(self):
             self.retired = False
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def reserve_run(self, run_id, workspace_id):
             assert (run_id, workspace_id) == ("run-race", "demo")
             reserve_started.set()
@@ -1218,6 +1239,7 @@ def test_observer_provider_reserves_run_before_reset_can_retire(monkeypatch):
             del timeout
             self.retired = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self, timeout=1):
             del timeout
 
@@ -1226,9 +1248,9 @@ def test_observer_provider_reserves_run_before_reset_can_retire(monkeypatch):
     monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
 
     acquired = []
-    acquire_thread = threading.Thread(target=lambda: acquired.append(
-        provider_mod.get_observer_for_run("run-race", "demo")
-    ))
+    acquire_thread = threading.Thread(
+        target=lambda: acquired.append(provider_mod.get_observer_for_run("run-race", "demo"))
+    )
 
     def reset():
         reset_started.set()
@@ -1352,49 +1374,64 @@ def test_retired_run_metrics_stay_on_the_original_workspace_router():
     initialize_open_telemetry()
     old_metrics = []
     old_exporter = Mock()
-    old_exporter.export.side_effect = lambda event: old_metrics.append(event)
     new_exporter = Mock()
+
+    def export_old_metric(event):
+        old_metrics.append(event)
+
+    def build_old_exporter(_workspace_id):
+        return old_exporter
+
+    def build_new_exporter(_workspace_id):
+        return new_exporter
+
+    old_exporter.export.side_effect = export_old_metric
     old_router = WorkspaceObservabilityRouter()
-    old_router._build_exporter = lambda workspace_id: old_exporter
+    old_router._build_exporter = build_old_exporter
     new_router = None
     try:
         assert old_router.reserve_run("run-before-refresh", "demo") is True
         assert "demo" in old_router._observers_by_workspace
-        assert old_router.emit(RuntimeEvent(
-            type=RuntimeEventType.RUN_STARTED,
-            run_id="run-before-refresh",
-            span_key="run:run-before-refresh",
-            payload={"workspace_id": "demo"},
-        )) is True
+        assert (
+            old_router.emit(
+                RuntimeEvent(
+                    type=RuntimeEventType.RUN_STARTED,
+                    run_id="run-before-refresh",
+                    span_key="run:run-before-refresh",
+                    payload={"workspace_id": "demo"},
+                )
+            )
+            is True
+        )
 
         old_router.retire()
         new_router = WorkspaceObservabilityRouter()
-        new_router._build_exporter = lambda workspace_id: new_exporter
+        new_router._build_exporter = build_new_exporter
         assert new_router.reserve_run("run-after-refresh", "demo") is True
 
-        assert old_router.emit(RuntimeEvent(
-            type=RuntimeEventType.RUN_FINISHED,
-            run_id="run-before-refresh",
-            span_key="run:run-before-refresh",
-            payload={
-                "workspace_id": "demo",
-                "status": "success",
-                "duration_ms": 25,
-            },
-        )) is True
+        assert (
+            old_router.emit(
+                RuntimeEvent(
+                    type=RuntimeEventType.RUN_FINISHED,
+                    run_id="run-before-refresh",
+                    span_key="run:run-before-refresh",
+                    payload={
+                        "workspace_id": "demo",
+                        "status": "success",
+                        "duration_ms": 25,
+                    },
+                )
+            )
+            is True
+        )
         assert force_flush_runtime_metrics(old_router.router_id)
 
         old_metric_names = {
-            event.payload["otel_record"]["name"]
-            for event in old_metrics
-            if event.type == "otel.metric.exported"
+            event.payload["otel_record"]["name"] for event in old_metrics if event.type == "otel.metric.exported"
         }
         assert "agent.run.count" in old_metric_names
         assert "agent.run.duration" in old_metric_names
-        assert all(
-            call.args[0].type != "otel.metric.exported"
-            for call in new_exporter.export.call_args_list
-        )
+        assert all(call.args[0].type != "otel.metric.exported" for call in new_exporter.export.call_args_list)
     finally:
         old_router.release_run("run-before-refresh")
         if new_router is not None:
@@ -1567,8 +1604,8 @@ def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_field
             "agent.tool_name": "business_data_search",
             "agent.message": "private-message",
             "agent.error_message": "private-error",
-            "http.url": "http://hugegraph.test/vertices?properties=private-property",
-            "url.full": "http://service.test/search?q=private-query#fragment",
+            "http.url": "https://hugegraph.example.net/vertices?properties=private-property",
+            "url.full": "https://service.example.net/search?q=private-query#fragment",
             "http.request.method": "GET",
         },
         events=(
@@ -1587,8 +1624,8 @@ def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_field
     record = span_record(span)
     serialized = json.dumps(record)
 
-    assert record["labels"]["http.url"] == "http://hugegraph.test/vertices"
-    assert record["labels"]["url.full"] == "http://service.test/search"
+    assert record["labels"]["http.url"] == "https://hugegraph.example.net/vertices"
+    assert record["labels"]["url.full"] == "https://service.example.net/search"
     assert record["labels"]["agent.tool_name"] == "business_data_search"
     assert record["events"][0]["event"] == "tool.progress"
     assert record["events"][0]["labels"] == {
@@ -1599,31 +1636,34 @@ def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_field
         "database_provider": "hugegraph",
     }
     assert record["events"][0]["metrics"] == {"iteration": 1}
-    assert all(
-        value not in serialized
-        for value in (
-            "private-message",
-            "private-error",
-            "private-preview",
-            "private-query",
-            "private-result",
-        )
+    private_values = (
+        "private-message",
+        "private-error",
+        "private-preview",
+        "private-query",
+        "private-result",
     )
+    assert all(value not in serialized for value in private_values)
 
 
 def test_mcp_false_result_marks_request_span_as_error(monkeypatch):
     from contextlib import contextmanager
 
+    from api.protocols.mcp import server as server_mod
     from integration.mcp.scope import MCPRequestScope
     from opentelemetry.trace import StatusCode
-    from api.protocols.mcp import server as server_mod
 
     span = Mock(status=None, attributes={}, events=[])
     span.set_attributes.side_effect = span.attributes.update
-    span.add_event.side_effect = lambda name, attributes=None: span.events.append(
-        (name, dict(attributes or {}))
-    )
-    span.set_status.side_effect = lambda status: setattr(span, "status", status)
+
+    def add_span_event(name, attributes=None):
+        span.events.append((name, dict(attributes or {})))
+
+    def set_span_status(status):
+        span.status = status
+
+    span.add_event.side_effect = add_span_event
+    span.set_status.side_effect = set_span_status
 
     @contextmanager
     def fake_observation(scope, *, required_scope):
@@ -1667,9 +1707,10 @@ def test_runtime_refresh_resets_observability_provider(monkeypatch):
     }
 
     class FakeApp:
-        class state:
-            services = {"LLM_ROUTER": object()}
-            runtime_container = None
+        state = types.SimpleNamespace(
+            services={"LLM_ROUTER": object()},
+            runtime_container=None,
+        )
 
     def fake_build_runtime_services(
         previous_llm_router=None,
@@ -1709,9 +1750,10 @@ def test_runtime_refresh_does_not_restart_platform_manager(monkeypatch):
     }
 
     class FakeApp:
-        class state:
-            services = {"LLM_ROUTER": object()}
-            runtime_container = None
+        state = types.SimpleNamespace(
+            services={"LLM_ROUTER": object()},
+            runtime_container=None,
+        )
 
     monkeypatch.setattr(
         app_mod,
@@ -1803,7 +1845,7 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
     from workspace.workspaces import create_workspace
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     initialize_open_telemetry()
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     create_workspace("Beta", workspace_id="beta")
@@ -1814,8 +1856,8 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
             "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-alpha",
-                "secret_key": "sk-alpha",
-                "base_url": "https://langfuse-alpha.example",
+                "secret_key": synthetic_secret("observability_architecture-credential-01"),
+                "base_url": "https://langfuse-alpha.example.net",
             },
         },
     )
@@ -1826,8 +1868,8 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
             "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-beta",
-                "secret_key": "sk-beta",
-                "base_url": "https://langfuse-beta.example",
+                "secret_key": synthetic_secret("observability_architecture-credential-02"),
+                "base_url": "https://langfuse-beta.example.net",
             },
         },
     )
@@ -1845,6 +1887,7 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
         def export(self, event):
             self.events.append(event)
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             pass
 
@@ -1866,12 +1909,14 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
                 payload={"workspace_id": "alpha"},
             )
         )
-        router.export(RuntimeEvent(
-            type=RuntimeEventType.LLM_FINISHED,
-            run_id="run-alpha",
-            span_key="llm:run-alpha:1",
-            parent_key="run:run-alpha",
-        ))
+        router.export(
+            RuntimeEvent(
+                type=RuntimeEventType.LLM_FINISHED,
+                run_id="run-alpha",
+                span_key="llm:run-alpha:1",
+                parent_key="run:run-alpha",
+            )
+        )
         router.export(
             RuntimeEvent(
                 type=RuntimeEventType.RUN_STARTED,
@@ -1883,16 +1928,11 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
     finally:
         router.close()
 
-    assert [
-        event.run_id
-        for event in created["pk-alpha"].events
-        if not event.type.startswith("otel.")
-    ] == ["run-alpha", "run-alpha"]
-    assert [
-        event.run_id
-        for event in created["pk-beta"].events
-        if not event.type.startswith("otel.")
-    ] == ["run-beta"]
+    assert [event.run_id for event in created["pk-alpha"].events if not event.type.startswith("otel.")] == [
+        "run-alpha",
+        "run-alpha",
+    ]
+    assert [event.run_id for event in created["pk-beta"].events if not event.type.startswith("otel.")] == ["run-beta"]
 
 
 def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path, monkeypatch):
@@ -1908,7 +1948,7 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
     from workspace.workspaces import create_workspace
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     initialize_open_telemetry()
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     update_workspace_observability_config(
@@ -1950,11 +1990,7 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
         for path in log_dir.glob("otel_trace-*.log")
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
-    non_metric_kinds = [
-        record["kind"]
-        for record in records
-        if record["kind"] != "metric"
-    ]
+    non_metric_kinds = [record["kind"] for record in records if record["kind"] != "metric"]
     assert non_metric_kinds == [
         "span",
         "run",
@@ -1964,11 +2000,7 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
     run_span = next(record for record in records if record.get("name") == "agent.run")
     assert run_span["start_ms"] == 1000
     assert run_span["duration_ms"] == 234
-    metrics = {
-        record["name"]: record
-        for record in records
-        if record["kind"] == "metric"
-    }
+    metrics = {record["name"]: record for record in records if record["kind"] == "metric"}
     assert metrics["agent.run.count"]["value"] == 1
     assert metrics["agent.run.count"]["labels"]["agent.model"] == "glm-5"
     assert metrics["agent.run.count"]["labels"]["agent.model_provider"] == "glm"
@@ -1976,11 +2008,7 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
     assert metrics["agent.run.duration"]["value"]["count"] == 1
     assert metrics["agent.run.duration"]["value"]["sum"] == 234
     assert metrics["agent.run.duration"]["value"]["bucket_counts"]
-    assert {
-        record["run_id"]
-        for record in records
-        if record["kind"] != "metric"
-    } == {"run-local-workspace"}
+    assert {record["run_id"] for record in records if record["kind"] != "metric"} == {"run-local-workspace"}
     assert all("run_id" not in record for record in records if record["kind"] == "metric")
     assert not (tmp_path / "logs").exists()
 
@@ -2015,13 +2043,16 @@ def test_observer_provider_keeps_workspace_observer_when_one_config_fails(tmp_pa
     observer = provider_mod.get_observer()
     try:
         assert observer is not NOOP_OBSERVER
-        assert observer.emit(
-            RuntimeEvent(
-                type=RuntimeEventType.RUN_STARTED,
-                run_id="run-beta",
-                payload={"workspace_id": "beta"},
+        assert (
+            observer.emit(
+                RuntimeEvent(
+                    type=RuntimeEventType.RUN_STARTED,
+                    run_id="run-beta",
+                    payload={"workspace_id": "beta"},
+                )
             )
-        ) is True
+            is True
+        )
     finally:
         provider_mod.reset_observer(timeout=1)
 
@@ -2033,7 +2064,7 @@ def test_bad_workspace_langfuse_config_does_not_block_platform_dispatch(tmp_path
     from workspace.workspaces import create_workspace
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     update_workspace_observability_config(
         "alpha",
@@ -2042,7 +2073,7 @@ def test_bad_workspace_langfuse_config_does_not_block_platform_dispatch(tmp_path
             "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-alpha",
-                "base_url": "https://langfuse-alpha.example",
+                "base_url": "https://langfuse-alpha.example.net",
             },
         },
     )
@@ -2053,6 +2084,7 @@ def test_bad_workspace_langfuse_config_does_not_block_platform_dispatch(tmp_path
         def __init__(self):
             self.events = []
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             self.events.append(event)
             return True
@@ -2074,8 +2106,8 @@ def test_bad_workspace_langfuse_config_does_not_block_platform_dispatch(tmp_path
 
 
 def test_observer_provider_ignores_environment_variables(monkeypatch):
-    from integration.observability import NOOP_OBSERVER
     import integration.observability.provider as provider_mod
+    from integration.observability import NOOP_OBSERVER
 
     monkeypatch.setenv("OBSERVABILITY_MODE", "fake")
     monkeypatch.setattr(
@@ -2089,8 +2121,8 @@ def test_observer_provider_ignores_environment_variables(monkeypatch):
 
 
 def test_observer_provider_returns_noop_when_workspace_router_unavailable(monkeypatch):
-    from integration.observability import NOOP_OBSERVER
     import integration.observability.provider as provider_mod
+    from integration.observability import NOOP_OBSERVER
 
     class UnavailableRouter:
         available = False
@@ -2102,8 +2134,8 @@ def test_observer_provider_returns_noop_when_workspace_router_unavailable(monkey
 
 
 def test_observer_provider_returns_noop_when_router_creation_fails(monkeypatch):
-    from integration.observability import NOOP_OBSERVER
     import integration.observability.provider as provider_mod
+    from integration.observability import NOOP_OBSERVER
 
     def fail_router():
         raise RuntimeError("bad router")
@@ -2119,6 +2151,7 @@ def test_langfuse_exporter_accepts_adapter_not_config():
     class FakeAdapter:
         available = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             return None
 
@@ -2184,14 +2217,63 @@ def test_langfuse_exporter_preserves_existing_trace_granularity(monkeypatch):
     exporter = LangfuseExporter(FakeAdapter())
     events = [
         RuntimeEvent(type=RuntimeEventType.RUN_STARTED, run_id="run-1", session_id="s1", payload={"user_query": "hi"}),
-        RuntimeEvent(type=RuntimeEventType.AGENT_LOOP_STARTED, run_id="run-1", session_id="s1", span_key="loop:main", payload={"caller": "main"}),
-        RuntimeEvent(type=RuntimeEventType.LLM_STARTED, run_id="run-1", session_id="s1", span_key="llm:1", parent_key="loop:main", payload={"caller": "main", "iteration": 1, "model": "m"}),
-        RuntimeEvent(type=RuntimeEventType.LLM_FINISHED, run_id="run-1", session_id="s1", span_key="llm:1", payload={"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}}),
-        RuntimeEvent(type=RuntimeEventType.TOOL_BATCH_STARTED, run_id="run-1", session_id="s1", span_key="tools:1", parent_key="loop:main", payload={"caller": "main", "iteration": 1}),
-        RuntimeEvent(type=RuntimeEventType.TOOL_BATCH_FINISHED, run_id="run-1", session_id="s1", span_key="tools:1", payload={"status": RuntimeStatus.SUCCESS}),
-        RuntimeEvent(type=RuntimeEventType.LLM_STARTED, run_id="run-1", session_id="s1", span_key="reasoning:abc", payload={"request_label": RuntimeRequestLabel.REASONING_SUMMARY, "model": "m"}),
-        RuntimeEvent(type=RuntimeEventType.LLM_FINISHED, run_id="run-1", session_id="s1", span_key="reasoning:abc", payload={"usage": {}}),
-        RuntimeEvent(type=RuntimeEventType.RUN_FINISHED, run_id="run-1", session_id="s1", payload={"status": RuntimeStatus.SUCCESS, "final_answer": "done"}),
+        RuntimeEvent(
+            type=RuntimeEventType.AGENT_LOOP_STARTED,
+            run_id="run-1",
+            session_id="s1",
+            span_key="loop:main",
+            payload={"caller": "main"},
+        ),
+        RuntimeEvent(
+            type=RuntimeEventType.LLM_STARTED,
+            run_id="run-1",
+            session_id="s1",
+            span_key="llm:1",
+            parent_key="loop:main",
+            payload={"caller": "main", "iteration": 1, "model": "m"},
+        ),
+        RuntimeEvent(
+            type=RuntimeEventType.LLM_FINISHED,
+            run_id="run-1",
+            session_id="s1",
+            span_key="llm:1",
+            payload={"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}},
+        ),
+        RuntimeEvent(
+            type=RuntimeEventType.TOOL_BATCH_STARTED,
+            run_id="run-1",
+            session_id="s1",
+            span_key="tools:1",
+            parent_key="loop:main",
+            payload={"caller": "main", "iteration": 1},
+        ),
+        RuntimeEvent(
+            type=RuntimeEventType.TOOL_BATCH_FINISHED,
+            run_id="run-1",
+            session_id="s1",
+            span_key="tools:1",
+            payload={"status": RuntimeStatus.SUCCESS},
+        ),
+        RuntimeEvent(
+            type=RuntimeEventType.LLM_STARTED,
+            run_id="run-1",
+            session_id="s1",
+            span_key="reasoning:abc",
+            payload={"request_label": RuntimeRequestLabel.REASONING_SUMMARY, "model": "m"},
+        ),
+        RuntimeEvent(
+            type=RuntimeEventType.LLM_FINISHED,
+            run_id="run-1",
+            session_id="s1",
+            span_key="reasoning:abc",
+            payload={"usage": {}},
+        ),
+        RuntimeEvent(
+            type=RuntimeEventType.RUN_FINISHED,
+            run_id="run-1",
+            session_id="s1",
+            payload={"status": RuntimeStatus.SUCCESS, "final_answer": "done"},
+        ),
     ]
 
     for event in events:
@@ -2201,9 +2283,7 @@ def test_langfuse_exporter_preserves_existing_trace_granularity(monkeypatch):
     call_names = [name for name, _, _ in calls]
     assert call_names.count("create_trace") == 1
     assert any(
-        name == "create_span"
-        and kwargs["name"] == "agent_loop:main"
-        and kwargs["metadata"]["caller"] == "main"
+        name == "create_span" and kwargs["name"] == "agent_loop:main" and kwargs["metadata"]["caller"] == "main"
         for name, _, kwargs in calls
     )
     assert any(name == "create_llm_span" and kwargs["name"] == "llm:main_iteration" for name, _, kwargs in calls)
@@ -2365,7 +2445,8 @@ def test_langfuse_exporter_records_detailed_llm_tool_and_run_payloads():
     assert llm_start[2]["metadata"]["api_params"]["temperature"] == 0.2
 
     tool_end = [
-        call for call in calls
+        call
+        for call in calls
         if call[0] == "end_observation" and call[2].get("output", {}).get("tool_call_id") == "call-1"
     ][0]
     assert tool_end[2]["output"]["output_preview"] == "file content"
@@ -2386,16 +2467,17 @@ def test_langfuse_exporter_records_detailed_llm_tool_and_run_payloads():
 
 
 def test_tool_protocol_events_emit_runtime_tool_events():
-    from config import AgentConfig
-    from integration.observability import RuntimeEventType
     from agent.tools.base import ToolContext
     from agent.tools.events import emit_tool_finished, emit_tool_started
+    from config import AgentConfig
+    from integration.observability import RuntimeEventType
 
     emitted = []
 
     class FakeObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             emitted.append(event)
 
@@ -2463,6 +2545,7 @@ def test_tool_finished_keeps_full_output_only_in_trace_observer(monkeypatch):
     class FakeObserver:
         enabled = True
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def emit(self, event):
             runtime_events.append(event)
             return True
@@ -2702,8 +2785,6 @@ def test_langfuse_trace_id_is_stable_for_the_same_run_identity():
 def test_otel_exporter_preserves_request_parent_in_background_run(tmp_path, monkeypatch):
     import json
 
-    from opentelemetry import trace
-
     from integration.observability import RuntimeEvent, RuntimeEventType
     from integration.observability.identity import bind_runtime_trace_identity
     from integration.observability.otel import initialize_open_telemetry
@@ -2713,6 +2794,7 @@ def test_otel_exporter_preserves_request_parent_in_background_run(tmp_path, monk
         update_workspace_observability_config,
     )
     from integration.observability.workspace_router import WorkspaceObservabilityRouter
+    from opentelemetry import trace
     from workspace.workspaces import create_workspace
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
@@ -2735,20 +2817,24 @@ def test_otel_exporter_preserves_request_parent_in_background_run(tmp_path, monk
         def run_in_background():
             with bind_otel_context(captured):
                 bind_runtime_trace_identity("run-background")
-                router.emit(RuntimeEvent(
-                    type=RuntimeEventType.RUN_STARTED,
-                    run_id="run-background",
-                    session_id="session-background",
-                    span_key="run:run-background",
-                    payload={"workspace_id": "otel-context"},
-                ))
-                router.emit(RuntimeEvent(
-                    type=RuntimeEventType.RUN_FINISHED,
-                    run_id="run-background",
-                    session_id="session-background",
-                    span_key="run:run-background",
-                    payload={"status": "success"},
-                ))
+                router.emit(
+                    RuntimeEvent(
+                        type=RuntimeEventType.RUN_STARTED,
+                        run_id="run-background",
+                        session_id="session-background",
+                        span_key="run:run-background",
+                        payload={"workspace_id": "otel-context"},
+                    )
+                )
+                router.emit(
+                    RuntimeEvent(
+                        type=RuntimeEventType.RUN_FINISHED,
+                        run_id="run-background",
+                        session_id="session-background",
+                        span_key="run:run-background",
+                        payload={"status": "success"},
+                    )
+                )
                 router.release_run("run-background")
 
         worker = threading.Thread(target=run_in_background)

@@ -7,7 +7,6 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-
 logger = logging.getLogger("config.evidence")
 
 
@@ -112,13 +111,19 @@ class EvidenceConfig:
             tool_exposure_mode=exposure_mode if exposure_mode in {"adaptive", "always"} else "adaptive",
             auto_build_enabled=bool(section.get("auto_build_enabled", base.auto_build_enabled)),
             sweeper_enabled=bool(section.get("sweeper_enabled", base.sweeper_enabled)),
-            sweeper_interval_seconds=max(1, int(section.get("sweeper_interval_seconds", base.sweeper_interval_seconds))),
+            sweeper_interval_seconds=max(
+                1, int(section.get("sweeper_interval_seconds", base.sweeper_interval_seconds))
+            ),
             structured_context_enabled=structured,
             auto_ground_business_data=bool(section.get("auto_ground_business_data", base.auto_ground_business_data)),
             runtime_fact_mode=runtime_mode if runtime_mode in {"sync", "batched", "off"} else "sync",
-            runtime_fact_write_timeout_ms=max(1, int(section.get("runtime_fact_write_timeout_ms", base.runtime_fact_write_timeout_ms))),
+            runtime_fact_write_timeout_ms=max(
+                1, int(section.get("runtime_fact_write_timeout_ms", base.runtime_fact_write_timeout_ms))
+            ),
             runtime_fact_batch_size=max(1, int(section.get("runtime_fact_batch_size", base.runtime_fact_batch_size))),
-            runtime_fact_flush_interval_ms=max(1, int(section.get("runtime_fact_flush_interval_ms", base.runtime_fact_flush_interval_ms))),
+            runtime_fact_flush_interval_ms=max(
+                1, int(section.get("runtime_fact_flush_interval_ms", base.runtime_fact_flush_interval_ms))
+            ),
             semantic_mode=semantic_mode if semantic_mode in {"off", "local", "external"} else "off",
             graph_enabled=bool(section.get("graph_enabled", base.graph_enabled)),
         )

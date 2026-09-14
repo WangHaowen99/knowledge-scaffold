@@ -12,15 +12,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from pydantic import BaseModel, Field
-
+from utils.atomic_files import staged_bytes
+from utils.read_docs import build_read_document_record
 from workspace.workspaces import (
     get_workspace_catalog_generation,
     get_workspace_ontologies_root,
     get_workspace_project_root,
 )
-
-from utils.atomic_files import staged_bytes
-from utils.read_docs import build_read_document_record
 
 logger = logging.getLogger("ontology.ontologies")
 
@@ -31,9 +29,7 @@ ONTOLOGY_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ONTOLOGY_SHARED_MANIFEST_NAME = "manifest.yaml"
 ONTOLOGY_VERSIONS_DIR_NAME = "versions"
 SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS = frozenset({"0.1", "0.2"})
-_FORBIDDEN_RUNTIME_BINDING_KEY_PARTS = frozenset(
-    {"endpoint", "token", "secret", "platform"}
-)
+_FORBIDDEN_RUNTIME_BINDING_KEY_PARTS = frozenset({"endpoint", "token", "secret", "platform"})
 
 
 def validate_no_runtime_binding_data(value: Any) -> None:
@@ -45,14 +41,8 @@ def validate_no_runtime_binding_data(value: Any) -> None:
             separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
             normalized = re.sub(r"[^a-z0-9]+", "_", separated.lower()).strip("_")
             key_parts = frozenset(part for part in normalized.split("_") if part)
-            if normalized == "runtime_binding" or key_parts.intersection(
-                _FORBIDDEN_RUNTIME_BINDING_KEY_PARTS
-            ):
-                raise ValueError(
-                    "Forbidden runtime binding field in ontology package: {}".format(
-                        key or "<empty>"
-                    )
-                )
+            if normalized == "runtime_binding" or key_parts.intersection(_FORBIDDEN_RUNTIME_BINDING_KEY_PARTS):
+                raise ValueError("Forbidden runtime binding field in ontology package: {}".format(key or "<empty>"))
             validate_no_runtime_binding_data(item)
         return
     if isinstance(value, (list, tuple)):
@@ -140,10 +130,7 @@ class OntologyLoader:
 
         shared_kind = str(raw.get("kind")).strip()
         shared_schema_version = str(raw.get("schema_version") or "").strip()
-        if (
-            shared_kind != "ontology-package"
-            or shared_schema_version not in SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS
-        ):
+        if shared_kind != "ontology-package" or shared_schema_version not in SUPPORTED_ONTOLOGY_SCHEMA_VERSIONS:
             logger.error(
                 "Ontology manifest must declare kind=ontology-package and a supported schema version: %s",
                 manifest_path,
@@ -237,18 +224,10 @@ class OntologyLoader:
                 versions=versions or [active_version],
                 language=str(package_raw.get("language")).strip(),
                 enabled=_coerce_manifest_enabled(package_raw.get("enabled", True)),
-                scope=[
-                    str(item).strip()
-                    for item in (package_raw.get("scope") or [])
-                    if str(item).strip()
-                ],
+                scope=[str(item).strip() for item in (package_raw.get("scope") or []) if str(item).strip()],
                 manifest_path=str(selected_manifest_path),
                 ontology_dir=str(active_dir),
-                index_path=(
-                    str(index_path)
-                    if index_path.exists()
-                    else None
-                ),
+                index_path=(str(index_path) if index_path.exists() else None),
             )
         except Exception as exc:
             logger.error("Failed to build ontology manifest model from %s: %s", manifest_path, exc)
@@ -341,9 +320,7 @@ def load_ontology_manifest_data(ontology_dir: Path) -> Dict[str, Any]:
     if versions_dir.exists() or versions_dir.is_symlink():
         if not versions_dir.is_dir() or versions_dir.is_symlink():
             raise ValueError("Ontology versions directory is missing or unsafe")
-        active_version = str(
-            raw.get("active_version") or raw.get("version") or ""
-        ).strip()
+        active_version = str(raw.get("active_version") or raw.get("version") or "").strip()
         revision_root = versions_dir / active_version
         if schema_version == "0.2":
             _validate_revision_with_legacy_backfill(
@@ -395,11 +372,7 @@ def _remove_root_version_payload(ontology_dir: Path) -> None:
 
 def ensure_ontology_versions(ontology_dir: Path) -> Dict[str, Any]:
     manifest = load_ontology_manifest_data(ontology_dir)
-    version = str(
-        manifest.get("active_version")
-        or manifest.get("version")
-        or "1.0.0"
-    ).strip()
+    version = str(manifest.get("active_version") or manifest.get("version") or "1.0.0").strip()
     if not is_valid_ontology_version(version):
         raise ValueError("Invalid ontology version")
 
@@ -578,9 +551,7 @@ class OntologyRegistry:
             # next registry lookup instead of pairing old data with a new marker.
             self._source_signature = stable_signature
             self._next_source_check_at = (
-                self._clock() + self._check_interval_seconds
-                if stable_signature is not None
-                else self._clock()
+                self._clock() + self._check_interval_seconds if stable_signature is not None else self._clock()
             )
 
         logger.info("Ontology discovery complete: %s ontologies loaded", loaded_count)
@@ -593,14 +564,9 @@ class OntologyRegistry:
         """Return whether the filesystem backing this registry changed."""
         with self._refresh_lock:
             now = self._clock()
-            if (
-                self._source_signature is not None
-                and now < self._next_source_check_at
-            ):
+            if self._source_signature is not None and now < self._next_source_check_at:
                 return False
-            current_signature = _build_registry_source_signature(
-                self.ontology_dirs
-            )
+            current_signature = _build_registry_source_signature(self.ontology_dirs)
             self._next_source_check_at = now + self._check_interval_seconds
             return self._source_signature != current_signature
 
@@ -679,9 +645,7 @@ def get_ontology_registry(
         ontology_dirs = [(base_dir / "ontologies").resolve()]
 
     root_key = tuple(str(path.resolve()) for path in ontology_dirs)
-    workspace_generation = (
-        get_workspace_catalog_generation() if base_dir is None else 0
-    )
+    workspace_generation = get_workspace_catalog_generation() if base_dir is None else 0
     key: Tuple[Any, ...] = (workspace_generation, *root_key)
     with _registry_lock:
         if _global_registry is None and _registries:
@@ -729,11 +693,7 @@ def invalidate_ontology_registry(
         ontology_dirs = [(base_dir / "ontologies").resolve()]
     root_key = tuple(str(path.resolve()) for path in ontology_dirs)
     with _registry_lock:
-        removed = [
-            _registries.pop(key)
-            for key in tuple(_registries)
-            if key[1:] == root_key
-        ]
+        removed = [_registries.pop(key) for key in tuple(_registries) if key[1:] == root_key]
         if any(_global_registry is registry for registry in removed):
             _global_registry = next(iter(_registries.values()), None)
 
@@ -779,6 +739,36 @@ def get_sole_enabled_ontology_id(
     return None
 
 
+def get_active_ontology_version(
+    ontology_id: str,
+    workspace_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return the active version of an enabled ontology, or None.
+
+    Counterpart to :func:`get_sole_enabled_ontology_id`. A session that never
+    made an explicit selection stores no revision, but revision-bound
+    capabilities cannot be resolved without one, so the run needs the active
+    version of whichever package it ended up on. Only enabled packages resolve;
+    a disabled package must not gain capabilities through this path.
+    """
+    normalized_id = str(ontology_id or "").strip()
+    if not normalized_id:
+        return None
+    try:
+        ontology = get_ontology_registry(workspace_id=workspace_id).get_ontology(normalized_id)
+    except Exception:
+        logger.warning("Failed to resolve active ontology version", exc_info=True)
+        return None
+    if ontology is None or not bool(getattr(ontology, "enabled", False)):
+        return None
+    return (
+        str(
+            getattr(ontology, "active_version", "") or getattr(ontology, "version", "") or ""
+        ).strip()
+        or None
+    )
+
+
 def build_ontologies_section(
     selected_ontology_id: Optional[str] = None,
     *,
@@ -802,23 +792,15 @@ def build_ontologies_section(
     if selected_id:
         ontology_ids = [selected_ontology.id] if selected_ontology is not None else []
     else:
-        ontology_ids = sorted(
-            ontology_id
-            for ontology_id, ontology in ontologies.items()
-            if ontology.enabled
-        )
+        ontology_ids = sorted(ontology_id for ontology_id, ontology in ontologies.items() if ontology.enabled)
     for ontology_id in ontology_ids:
         ontology = ontologies[ontology_id]
-        lines.append(
-            "- {}: {}".format(
-                ontology.id,
-                ontology.description
-            )
-        )
+        lines.append("- {}: {}".format(ontology.id, ontology.description))
 
     lines.append("</Available-Ontologies>")
 
     return "\n".join(lines)
+
 
 def build_selected_ontology_preload_context(
     selected_ontology_id: Optional[str] = None,
@@ -863,10 +845,13 @@ def build_selected_ontology_preload_context_from_manifest(
             root_payload = build_root_payload(
                 ontology=ontology,
                 ontology_dir=Path(ontology.ontology_dir).resolve(),
+                include_solver_catalog=False,
             )
-        lines.extend([
-            *format_root_payload_compact(ontology_id=ontology.id, root_payload=root_payload),
-        ])
+        lines.extend(
+            [
+                *format_root_payload_compact(ontology_id=ontology.id, root_payload=root_payload),
+            ]
+        )
 
         lines.append(SELECTED_ONTOLOGY_CONTEXT_END)
     except Exception:

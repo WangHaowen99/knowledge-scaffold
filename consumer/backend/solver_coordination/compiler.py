@@ -121,6 +121,16 @@ class ProblemIRCompiler:
                 raise
             raise ProblemCompilationError() from exc
 
+    def resolve_capability_model(
+        self, capability: Any
+    ) -> tuple[Mapping[str, Any], tuple[str, ...]]:
+        """Attach the locked decision model and return its required facts."""
+        model, model_digest = self._resolve_model(capability)
+        return (
+            self._capability_with_model(capability, model, model_digest),
+            self._required_facts(model),
+        )
+
     @staticmethod
     def _components(compiled: Any) -> dict[str, Any]:
         if isinstance(compiled, ProblemIR):
@@ -244,6 +254,7 @@ class ProblemIRCompiler:
             "decision_model_digest",
             "input_schema_digest",
             "result_schema_digest",
+            "fact_snapshot_schema_digest",
             "engine_capabilities",
         )
         payload = {}

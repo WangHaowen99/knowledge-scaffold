@@ -6,6 +6,7 @@ Run with:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 import zipfile
@@ -16,18 +17,25 @@ import yaml
 
 # Ensure the module under test is importable.
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.append(str(SCRIPT_DIR))
-
-from legacy_package_converter import _decode_zip_member_name  # noqa: E402
-from legacy_package_converter import convert_package  # noqa: E402
-from legacy_package_converter import import_package  # noqa: E402
-from legacy_package_converter import import_package_from_zip  # noqa: E402
-from legacy_package_converter import validate_package  # noqa: E402
-
+_CONVERTER_SPEC = importlib.util.spec_from_file_location(
+    "legacy_package_converter",
+    SCRIPT_DIR / "legacy_package_converter.py",
+)
+if _CONVERTER_SPEC is None or _CONVERTER_SPEC.loader is None:
+    raise ImportError("legacy_package_converter cannot be loaded")
+_CONVERTER = importlib.util.module_from_spec(_CONVERTER_SPEC)
+sys.modules[_CONVERTER_SPEC.name] = _CONVERTER
+_CONVERTER_SPEC.loader.exec_module(_CONVERTER)
+_decode_zip_member_name = _CONVERTER._decode_zip_member_name
+convert_package = _CONVERTER.convert_package
+import_package = _CONVERTER.import_package
+import_package_from_zip = _CONVERTER.import_package_from_zip
+validate_package = _CONVERTER.validate_package
 
 # --------------------------------------------------------------------------- #
 # Tests: validate_package error handling
 # --------------------------------------------------------------------------- #
+
 
 class TestValidateErrorHandling:
     """Tests for validator error handling."""
@@ -55,6 +63,7 @@ class TestValidateErrorHandling:
 # Tests: synthetic edge cases
 # --------------------------------------------------------------------------- #
 
+
 class TestSyntheticPackages:
     """Tests with minimal synthetic package structures."""
 
@@ -79,8 +88,7 @@ class TestSyntheticPackages:
         objects = root / "objects"
         objects.mkdir()
         (objects / "index.md").write_text(
-            "---\nresource: object_index\nkey: objects\ntitle: objects\n---\n"
-            "# Objects\n",
+            "---\nresource: object_index\nkey: objects\ntitle: objects\n---\n# Objects\n",
             encoding="utf-8",
         )
         (objects / "Foo.md").write_text(
@@ -90,13 +98,11 @@ class TestSyntheticPackages:
         ops = root / "operations"
         ops.mkdir()
         (ops / "index.md").write_text(
-            "---\nresource: operation_index\nkey: operations\n"
-            "title: operations\n---\n# Operations\n",
+            "---\nresource: operation_index\nkey: operations\ntitle: operations\n---\n# Operations\n",
             encoding="utf-8",
         )
         (ops / "Bar.md").write_text(
-            "---\nresource: operation\nkey: Bar\ntitle: Bar\n"
-            "uses:\n  objects:\n    - Foo\n---\n# Bar\n",
+            "---\nresource: operation\nkey: Bar\ntitle: Bar\nuses:\n  objects:\n    - Foo\n---\n# Bar\n",
             encoding="utf-8",
         )
 
@@ -112,40 +118,30 @@ class TestSyntheticPackages:
         assert result.required_conversion is False
 
     @staticmethod
-    def test_old_format_imports_after_conversion(
-        tmp_path: Path
-    ) -> None:
+    def test_old_format_imports_after_conversion(tmp_path: Path) -> None:
         """Simulate a legacy old-format package."""
         pkg = tmp_path / "old_pkg"
         pkg.mkdir()
         (pkg / "manifest.yaml").write_text(
-            "kind: ontology\n"
-            "id: old-test\n"
-            "name: old-test\n"
-            "description: test\n"
-            "version: 1.0.0\n",
+            "kind: ontology\nid: old-test\nname: old-test\ndescription: test\nversion: 1.0.0\n",
             encoding="utf-8",
         )
         (pkg / "ONTOLOGY.md").write_text(
             "# Old Package\n\nNo frontmatter here.",
             encoding="utf-8",
         )
-        (pkg / "objects-list.md").write_text("# Objects\n\nNo frontmatter.",
-                                            encoding="utf-8")
+        (pkg / "objects-list.md").write_text("# Objects\n\nNo frontmatter.", encoding="utf-8")
         objects = pkg / "objects"
         objects.mkdir()
         (objects / "Widget.md").write_text(
             "# Widget\n\n| 属性名称 | 来源表 |\n| --- | --- |\n",
             encoding="utf-8",
         )
-        (pkg / "operations-list.md").write_text(
-            "# Operations\n", encoding="utf-8"
-        )
+        (pkg / "operations-list.md").write_text("# Operations\n", encoding="utf-8")
         ops = pkg / "operations"
         ops.mkdir()
         (ops / "DoStuff.md").write_text(
-            "---\nresource: operation\nkey: DoStuff\ntitle: DoStuff\n"
-            "uses:\n  objects:\n    - Widget\n---\n# DoStuff\n",
+            "---\nresource: operation\nkey: DoStuff\ntitle: DoStuff\nuses:\n  objects:\n    - Widget\n---\n# DoStuff\n",
             encoding="utf-8",
         )
 
@@ -162,12 +158,11 @@ class TestSyntheticPackages:
 # Tests: mapping conversion and field-level validation
 # --------------------------------------------------------------------------- #
 
+
 def _write_mapping(root: Path, payload: dict) -> None:
     mappings = root / "mappings"
     mappings.mkdir(exist_ok=True)
-    (mappings / "object-data-mappings.json").write_text(
-        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-    )
+    (mappings / "object-data-mappings.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def _valid_mapping_payload() -> dict:
@@ -186,7 +181,7 @@ def _valid_mapping_payload() -> dict:
                 "policy": {"read_only": True, "max_rows": 200},
             }
         },
-      }
+    }
 
 
 class TestManifestIdFormat:
@@ -267,18 +262,13 @@ class TestManifestFirstClassFields:
         result = convert_package(pkg, output)
         assert result.success is True
 
-        converted = yaml.safe_load(
-            (output / "manifest.yaml").read_text(encoding="utf-8")
-        )
+        converted = yaml.safe_load((output / "manifest.yaml").read_text(encoding="utf-8"))
         # Semantics survive conversion untouched (no silent default rebuild).
         assert converted["enabled"] is False
         assert converted["scope"] == ["finance"]
         assert "x_enabled" not in converted
         assert "x_scope" not in converted
-        assert not any(
-            "x_enabled" in action or "x_scope" in action
-            for action in result.actions_applied
-        )
+        assert not any("x_enabled" in action or "x_scope" in action for action in result.actions_applied)
 
 
 class TestMappingValidation:
@@ -305,9 +295,7 @@ class TestMappingValidation:
         payload["objects"]["Foo"]["primary_key"] = ["missing_field"]
         pkg = TestMappingValidation._make_package(tmp_path, payload)
         result = validate_package(pkg)
-        assert any(
-            e.rule == "mappings.primary_key_ref" for e in result.errors
-        )
+        assert any(e.rule == "mappings.primary_key_ref" for e in result.errors)
 
     @staticmethod
     def test_metadata_field_key_rejected(tmp_path: Path) -> None:
@@ -318,9 +306,7 @@ class TestMappingValidation:
         }
         pkg = TestMappingValidation._make_package(tmp_path, payload)
         result = validate_package(pkg)
-        assert any(
-            e.rule == "mappings.field_metadata" for e in result.errors
-        )
+        assert any(e.rule == "mappings.field_metadata" for e in result.errors)
 
     @staticmethod
     def test_boolean_max_rows_rejected(tmp_path: Path) -> None:
@@ -328,21 +314,15 @@ class TestMappingValidation:
         payload["objects"]["Foo"]["policy"]["max_rows"] = True
         pkg = TestMappingValidation._make_package(tmp_path, payload)
         result = validate_package(pkg)
-        assert any(
-            e.rule == "mappings.policy_max_rows" for e in result.errors
-        )
+        assert any(e.rule == "mappings.policy_max_rows" for e in result.errors)
 
     @staticmethod
     def test_require_user_filter_missing_reference(tmp_path: Path) -> None:
         payload = _valid_mapping_payload()
-        payload["objects"]["Foo"]["policy"]["require_user_filter"] = [
-            "missing_field"
-        ]
+        payload["objects"]["Foo"]["policy"]["require_user_filter"] = ["missing_field"]
         pkg = TestMappingValidation._make_package(tmp_path, payload)
         result = validate_package(pkg)
-        assert any(
-            e.rule == "mappings.require_user_filter_ref" for e in result.errors
-        )
+        assert any(e.rule == "mappings.require_user_filter_ref" for e in result.errors)
 
 
 class TestMappingConversion:
@@ -380,11 +360,7 @@ class TestMappingConversion:
         TestMappingConversion._make_mapping_package(pkg)
         output = tmp_path / "map_out"
         convert_package(pkg, output)
-        mapping = json.loads(
-            (output / "mappings" / "object-data-mappings.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        mapping = json.loads((output / "mappings" / "object-data-mappings.json").read_text(encoding="utf-8"))
         assert mapping["objects"]["Foo"]["primary_key"] == ["编号", "名称"]
 
     @staticmethod
@@ -395,17 +371,10 @@ class TestMappingConversion:
         output = tmp_path / "map_out"
         result = convert_package(pkg, output)
         # source_table is removed from the converted fields.
-        mapping = json.loads(
-            (output / "mappings" / "object-data-mappings.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        mapping = json.loads((output / "mappings" / "object-data-mappings.json").read_text(encoding="utf-8"))
         assert "source_table" not in mapping["objects"]["Foo"]["fields"]
         # ... and the removal is recorded as an action.
-        assert any(
-            "source_table" in action and "removed" in action
-            for action in result.actions_applied
-        )
+        assert any("source_table" in action and "removed" in action for action in result.actions_applied)
 
     @staticmethod
     def test_metadata_field_references_cleaned(tmp_path: Path) -> None:
@@ -417,52 +386,35 @@ class TestMappingConversion:
         entry = payload["objects"]["Foo"]
         entry["primary_key"] = ["编号", "source_table"]
         entry["policy"] = {"require_user_filter": ["source_table", "编号"]}
-        mapping_path.write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-        )
+        mapping_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
         output = tmp_path / "map_out"
         result = convert_package(pkg, output)
         assert result.success is True
-        mapping = json.loads(
-            (output / "mappings" / "object-data-mappings.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        mapping = json.loads((output / "mappings" / "object-data-mappings.json").read_text(encoding="utf-8"))
         entry = mapping["objects"]["Foo"]
         assert "source_table" not in entry["fields"]
         assert entry["primary_key"] == ["编号"]
         assert entry["policy"]["require_user_filter"] == ["编号"]
         # The dangling-reference cleanup is recorded too.
-        assert any(
-            "source_table" in action and "removed" in action
-            for action in result.actions_applied
-        )
+        assert any("source_table" in action and "removed" in action for action in result.actions_applied)
 
     @staticmethod
-    def test_unmatched_primary_key_kept_with_error(
-        tmp_path: Path
-    ) -> None:
+    def test_unmatched_primary_key_kept_with_error(tmp_path: Path) -> None:
         pkg = tmp_path / "map_pkg"
         pkg.mkdir()
         TestMappingConversion._make_mapping_package(pkg)
         mapping_path = pkg / "mappings" / "object-data-mappings.json"
         payload = json.loads(mapping_path.read_text(encoding="utf-8"))
         payload["objects"]["Foo"]["primary_key"] = ["ghost_col", "fd_name"]
-        mapping_path.write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-        )
+        mapping_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
         output = tmp_path / "map_out"
         result = convert_package(pkg, output)
         assert result.success is False
         assert any("ghost_col" in e for e in result.errors)
         # The unknown entry is kept as-is; the matched one is rewritten.
-        mapping = json.loads(
-            (output / "mappings" / "object-data-mappings.json").read_text(
-                encoding="utf-8"
-            )
-        )
+        mapping = json.loads((output / "mappings" / "object-data-mappings.json").read_text(encoding="utf-8"))
         assert mapping["objects"]["Foo"]["primary_key"] == ["ghost_col", "名称"]
 
     @staticmethod
@@ -474,9 +426,7 @@ class TestMappingConversion:
         result = convert_package(pkg, output)
         assert result.success is True
         assert not (output / "mappings").exists()
-        assert not any(
-            action.startswith("mapping:") for action in result.actions_applied
-        )
+        assert not any(action.startswith("mapping:") for action in result.actions_applied)
 
 
 class TestFieldTypeNormalization:
@@ -497,41 +447,27 @@ class TestFieldTypeNormalization:
 
     @staticmethod
     @pytest.mark.parametrize("alias", ["float", "int", "integer", "double", "decimal"])
-    def test_validate_accepts_numeric_alias(
-        tmp_path: Path, alias: str
-    ) -> None:
+    def test_validate_accepts_numeric_alias(tmp_path: Path, alias: str) -> None:
         pkg = TestFieldTypeNormalization._make_package(tmp_path, alias)
         result = validate_package(pkg)
         assert result.is_conformant is True
-        assert not any(
-            e.rule.startswith("mappings") for e in result.errors
-        )
+        assert not any(e.rule.startswith("mappings") for e in result.errors)
 
     @staticmethod
     @pytest.mark.parametrize("alias", ["float", "int", "integer", "double", "decimal"])
-    def test_convert_normalizes_field_type(
-        tmp_path: Path, alias: str
-    ) -> None:
+    def test_convert_normalizes_field_type(tmp_path: Path, alias: str) -> None:
         pkg = TestFieldTypeNormalization._make_package(tmp_path, alias)
         output = tmp_path / "type_out"
         result = convert_package(pkg, output)
         assert result.success is True
-        mapping = json.loads(
-            (output / "mappings" / "object-data-mappings.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        assert (
-            mapping["objects"]["Foo"]["fields"]["编号"]["type"] == "number"
-        )
+        mapping = json.loads((output / "mappings" / "object-data-mappings.json").read_text(encoding="utf-8"))
+        assert mapping["objects"]["Foo"]["fields"]["编号"]["type"] == "number"
 
     @staticmethod
     def test_validate_rejects_unknown_type(tmp_path: Path) -> None:
         pkg = TestFieldTypeNormalization._make_package(tmp_path, "blob")
         result = validate_package(pkg)
-        assert any(
-            e.rule == "mappings.field_type" for e in result.errors
-        )
+        assert any(e.rule == "mappings.field_type" for e in result.errors)
 
 
 class TestSkillSourcePackages:
@@ -602,9 +538,7 @@ class TestSkillSourcePackages:
         assert (output / "index.md").is_file()
         assert (output / "mappings" / "object-data-mappings.json").is_file()
 
-        manifest = yaml.safe_load(
-            (output / "manifest.yaml").read_text(encoding="utf-8")
-        )
+        manifest = yaml.safe_load((output / "manifest.yaml").read_text(encoding="utf-8"))
         assert manifest["kind"] == "ontology-package"
         assert manifest["schema_version"] == "0.1"
         assert manifest["id"] == "source-demo"
@@ -615,9 +549,7 @@ class TestSkillSourcePackages:
         assert "material_code" in object_doc
         assert "属性规则" not in object_doc
 
-        operation_doc = (
-            output / "operations" / "物料查询.md"
-        ).read_text(encoding="utf-8")
+        operation_doc = (output / "operations" / "物料查询.md").read_text(encoding="utf-8")
         assert "resource: operation" in operation_doc
         assert "objects: []" in operation_doc
         assert "# 管理标签\n#主流程" in operation_doc
@@ -770,8 +702,7 @@ class TestSkillSourcePackages:
         (source / "action" / "__pycache__" / "helper.pyc").write_bytes(b"x")
         (source / "action" / ".DS_Store").write_bytes(b"junk")
         (source / "action" / "查询物料.py").write_text(
-            "# 工具流程: 物料查询\n"
-            "print(1)\n",
+            "# 工具流程: 物料查询\nprint(1)\n",
             encoding="utf-8",
         )
 
@@ -788,10 +719,7 @@ class TestSkillSourcePackages:
         output = tmp_path / "flow_use_output"
         TestSkillSourcePackages.make_source_package(source)
         (source / "logic" / "物料查询.md").write_text(
-            "# 与logic的关联\n"
-            "- 被流程使用 > 查询流程\n\n"
-            "# 逻辑描述\n"
-            "查询物料。\n",
+            "# 与logic的关联\n- 被流程使用 > 查询流程\n\n# 逻辑描述\n查询物料。\n",
             encoding="utf-8",
         )
 
@@ -831,14 +759,11 @@ class TestSkillSourcePackages:
         TestSkillSourcePackages.make_source_package(source)
         (source / "action").mkdir(parents=True, exist_ok=True)
         (source / "action" / "查询物料.py").write_text(
-            "# 工具流程: 物料查询\n"
-            "print(1)\n",
+            "# 工具流程: 物料查询\nprint(1)\n",
             encoding="utf-8",
         )
         (source / "asset").mkdir(parents=True, exist_ok=True)
-        (source / "asset" / "common.conf").write_text(
-            "threshold=3\n", encoding="utf-8"
-        )
+        (source / "asset" / "common.conf").write_text("threshold=3\n", encoding="utf-8")
 
         result = convert_package(source, output)
 
@@ -858,9 +783,7 @@ class TestSkillSourcePackages:
         zip_output = tmp_path / "asset_skill_source_converted.zip"
         TestSkillSourcePackages.make_source_package(source)
         (source / "asset").mkdir(parents=True, exist_ok=True)
-        (source / "asset" / "SKILL.md").write_text(
-            "# Shared asset\n", encoding="utf-8"
-        )
+        (source / "asset" / "SKILL.md").write_text("# Shared asset\n", encoding="utf-8")
 
         with zipfile.ZipFile(zip_path, "w") as zf:
             for path in sorted(source.rglob("*")):
@@ -875,10 +798,10 @@ class TestSkillSourcePackages:
         assert result.errors == []
 
 
-
 # --------------------------------------------------------------------------- #
 # Tests: zip import
 # --------------------------------------------------------------------------- #
+
 
 def _make_standard_zip(root: Path, zip_path: Path) -> None:
     TestSyntheticPackages.make_standard_package(root)
@@ -906,9 +829,7 @@ class TestZipImport:
         utf8_info.flag_bits |= 0x800
         assert _decode_zip_member_name(utf8_info) == "operations/查询流程.md"
 
-        gbk_info = zipfile.ZipInfo(
-            "operations/查询流程.md".encode("gbk").decode("cp437")
-        )
+        gbk_info = zipfile.ZipInfo("operations/查询流程.md".encode("gbk").decode("cp437"))
         gbk_info.flag_bits &= ~0x800
         assert _decode_zip_member_name(gbk_info) == "operations/查询流程.md"
 
@@ -952,9 +873,7 @@ class TestZipImport:
         assert result.zip_output != ""
 
     @staticmethod
-    def test_zip_import_produces_zip_and_clears_import_path(
-        tmp_path: Path
-    ) -> None:
+    def test_zip_import_produces_zip_and_clears_import_path(tmp_path: Path) -> None:
         src = tmp_path / "src"
         src.mkdir()
         zip_path = tmp_path / "pkg.zip"
@@ -998,9 +917,7 @@ class TestZipImport:
 
         from legacy_package_converter import main
 
-        exit_code = main(
-            ["legacy_package_converter.py", str(src), "--output-dir", str(out_dir)]
-        )
+        exit_code = main(["legacy_package_converter.py", str(src), "--output-dir", str(out_dir)])
         assert exit_code == 0
         assert out_dir.is_dir()
 

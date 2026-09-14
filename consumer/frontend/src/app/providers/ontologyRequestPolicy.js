@@ -4,9 +4,10 @@ export function ontologyRequestPolicy({
   configSection = '',
 } = {}) {
   const knowledgeSubscriber = surface === 'chat' || surface === 'kb';
-  const mcpSubscriber = surface === 'config'
-    && configScope === 'workspace'
-    && configSection === 'mcp';
+  const mcpSubscriber =
+    surface === 'config' &&
+    configScope === 'workspace' &&
+    configSection === 'mcp';
   return {
     listEnabled: knowledgeSubscriber || mcpSubscriber,
     treeEnabled: surface === 'kb',

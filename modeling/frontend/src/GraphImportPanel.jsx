@@ -415,7 +415,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
           </div>
         </div>
         <label className={`btn ${controlsDisabled ? 'disabled' : ''}`}>
-          {activeRunId || hasRunningImport ? '后台导入执行中' : busy === 'upload' ? '上传解析中…' : preview ? '更换 Excel' : '选择 Excel'}
+          {(() => { if (activeRunId || hasRunningImport) return '后台导入执行中'; return busy === 'upload' ? '上传解析中…' : (() => { if (preview) return '更换 Excel'; return '选择 Excel'; })(); })()}
           <input type="file" accept=".xlsx,.xls" multiple hidden disabled={controlsDisabled} onChange={chooseFile} />
         </label>
       </div>

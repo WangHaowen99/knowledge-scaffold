@@ -4,6 +4,15 @@ import asyncio
 import json
 
 import pytest
+from backend_synthetic_credentials import synthetic_secret
+
+
+@pytest.fixture(autouse=True)
+def isolate_default_metric_route(monkeypatch):
+    from integration.observability import workspace_router
+
+    # Global recorder tests must not inherit a router from another test.
+    monkeypatch.setattr(workspace_router, "get_default_workspace_router", lambda: None)
 
 
 def test_request_timing_collector_is_allowlisted_aggregated_and_scoped():
@@ -26,10 +35,9 @@ def test_request_timing_collector_is_allowlisted_aggregated_and_scoped():
 
 
 def test_server_timing_middleware_merges_existing_header_without_identity_values():
+    from api.middleware import install_http_middleware
     from fastapi import FastAPI, Response
     from fastapi.testclient import TestClient
-
-    from api.middleware import install_http_middleware
     from integration.observability.performance import record_timing
 
     app = FastAPI()
@@ -50,7 +58,7 @@ def test_server_timing_middleware_merges_existing_header_without_identity_values
         response = client.get(
             "/items/route-secret-value",
             headers={
-                "Authorization": "Bearer request-secret-value",
+                "Authorization": f"Bearer {synthetic_secret('performance_observability-credential-01')}",
                 "X-Workspace-Id": "workspace-secret-value",
                 "X-User-Id": "user-secret-value",
                 "X-Run-Id": "run-secret-value",
@@ -59,21 +67,19 @@ def test_server_timing_middleware_merges_existing_header_without_identity_values
 
     header = response.headers["server-timing"]
     assert header == "upstream;dur=2, system_config;dur=4"
-    assert all(
-        value not in header
-        for value in (
-            "route-secret-value",
-            "request-secret-value",
-            "workspace-secret-value",
-            "user-secret-value",
-            "run-secret-value",
-        )
+    private_values = (
+        "route-secret-value",
+        "request-secret-value",
+        "workspace-secret-value",
+        "user-secret-value",
+        "run-secret-value",
     )
+    assert all(value not in header for value in private_values)
 
 
 def test_server_timing_context_is_cleared_when_request_is_cancelled():
-    from integration.observability.performance import record_timing
     from api.middleware import ServerTimingMiddleware
+    from integration.observability.performance import record_timing
 
     async def cancelled_app(_scope, _receive, _send):
         assert record_timing("auth", 3) is True
@@ -94,8 +100,8 @@ def test_server_timing_context_is_cleared_when_request_is_cancelled():
 
 
 def test_server_timing_context_is_isolated_between_concurrent_requests():
-    from integration.observability.performance import record_timing
     from api.middleware import ServerTimingMiddleware
+    from integration.observability.performance import record_timing
 
     first_recorded = asyncio.Event()
     release_first = asyncio.Event()
@@ -143,11 +149,10 @@ def test_server_timing_context_is_isolated_between_concurrent_requests():
 
 
 def test_cache_metric_uses_real_otel_counter_with_only_bounded_labels(monkeypatch):
+    from integration.observability import performance
     from opentelemetry import metrics
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader
-
-    from integration.observability import performance
 
     reader = InMemoryMetricReader()
     provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
@@ -160,17 +165,11 @@ def test_cache_metric_uses_real_otel_counter_with_only_bounded_labels(monkeypatc
         assert performance.record_cache_event("workspace_catalog", "user_secret_value") is False
 
         metrics_data = reader.get_metrics_data()
-        exported_metrics = [
-            metric
-            for resource_metrics in metrics_data.resource_metrics
-            for scope_metrics in resource_metrics.scope_metrics
-            for metric in scope_metrics.metrics
-        ]
-        cache_metric = next(
-            metric
-            for metric in exported_metrics
-            if metric.name == "agent.cache.event.count"
-        )
+        exported_metrics = []
+        for resource_metrics in metrics_data.resource_metrics:
+            for scope_metrics in resource_metrics.scope_metrics:
+                exported_metrics.extend(scope_metrics.metrics)
+        cache_metric = next(metric for metric in exported_metrics if metric.name == "agent.cache.event.count")
         points = list(cache_metric.data.data_points)
     finally:
         provider.shutdown()
@@ -187,12 +186,11 @@ def test_cache_metric_uses_real_otel_counter_with_only_bounded_labels(monkeypatc
 def test_real_cache_components_emit_outcomes_and_request_phase_headers(
     monkeypatch,
 ):
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     from api.middleware import install_http_middleware
     from config import system_config as system_config_module
     from config.config_snapshot import ConfigSnapshotManager, ConfigSourceSignature
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
     from integration.observability import performance
     from ontology import view_cache as ontology_view_cache_module
     from ontology.view_cache import OntologyViewCache
@@ -243,9 +241,7 @@ def test_real_cache_components_emit_outcomes_and_request_phase_headers(
     )
     config_error_manager = ConfigSnapshotManager(
         source_path="synthetic-error.json",
-        loader=lambda _environment: (_ for _ in ()).throw(
-            RuntimeError("synthetic config load error")
-        ),
+        loader=lambda _environment: (_ for _ in ()).throw(RuntimeError("synthetic config load error")),
         environment={},
         signature_loader=lambda _path: config_signature,
     )
@@ -277,9 +273,7 @@ def test_real_cache_components_emit_outcomes_and_request_phase_headers(
         is_transient_error=lambda exc: isinstance(exc, OSError),
     )
     workspace_error_manager = WorkspaceCatalogManager(
-        loader=lambda: (_ for _ in ()).throw(
-            RuntimeError("synthetic workspace load error")
-        ),
+        loader=lambda: (_ for _ in ()).throw(RuntimeError("synthetic workspace load error")),
         signature_loader=lambda: workspace_signature,
     )
 
@@ -334,7 +328,9 @@ def test_real_cache_components_emit_outcomes_and_request_phase_headers(
             workspace_error_manager.get_snapshot()
         workspaces_module.list_workspaces()
 
-        load_tree = lambda: [{"name": "synthetic.txt", "type": "file"}]
+        def load_tree():
+            return [{"name": "synthetic.txt", "type": "file"}]
+
         ontology_cache.get_package_tree(
             workspace_id="workspace_demo",
             ontology_id="ontology_demo",
@@ -363,9 +359,7 @@ def test_real_cache_components_emit_outcomes_and_request_phase_headers(
                 workspace_id="workspace_demo",
                 ontology_id="ontology_error",
                 version="v1",
-                loader=lambda: (_ for _ in ()).throw(
-                    RuntimeError("synthetic ontology load error")
-                ),
+                loader=lambda: (_ for _ in ()).throw(RuntimeError("synthetic ontology load error")),
             )
         ontology_view_cache_module.get_package_tree_cached(
             workspace_id="workspace_demo",
@@ -379,16 +373,11 @@ def test_real_cache_components_emit_outcomes_and_request_phase_headers(
         response = client.get("/cache-observability")
 
     assert response.status_code == 200
-    timing_names = {
-        item.split(";", 1)[0]
-        for item in response.headers["server-timing"].split(", ")
-    }
+    timing_names = {item.split(";", 1)[0] for item in response.headers["server-timing"].split(", ")}
     assert {"system_config", "workspace_catalog", "ontology_view"} <= timing_names
     outcomes_by_cache = {}
     for _value, attributes in cache_counter.records:
-        outcomes_by_cache.setdefault(attributes["cache"], set()).add(
-            attributes["result"]
-        )
+        outcomes_by_cache.setdefault(attributes["cache"], set()).add(attributes["result"])
     assert outcomes_by_cache == {
         "system_config": {"bypass", "error", "hit", "miss", "stale"},
         "workspace_catalog": {"bypass", "error", "hit", "miss", "stale"},
@@ -399,11 +388,10 @@ def test_real_cache_components_emit_outcomes_and_request_phase_headers(
 def test_streaming_header_is_pre_start_only_and_late_timing_is_still_metered(
     monkeypatch,
 ):
+    from api.middleware import install_http_middleware
     from fastapi import FastAPI
     from fastapi.responses import StreamingResponse
     from fastapi.testclient import TestClient
-
-    from api.middleware import install_http_middleware
     from integration.observability import performance
 
     class RecordingHistogram:
@@ -445,7 +433,7 @@ def test_cache_metric_reaches_local_exporter_through_shared_router_without_ident
     tmp_path,
     monkeypatch,
 ):
-    from integration.observability import performance
+    from integration.observability import performance, workspace_router
     from integration.observability.exporters.local.exporter import LocalPerfExporter
     from integration.observability.otel import force_flush_runtime_metrics
     from integration.observability.workspace_router import WorkspaceObservabilityRouter
@@ -457,6 +445,7 @@ def test_cache_metric_reaches_local_exporter_through_shared_router_without_ident
         log_dir=log_dir,
     )
     router = WorkspaceObservabilityRouter()
+    monkeypatch.setattr(workspace_router, "get_default_workspace_router", lambda: router)
     monkeypatch.setattr(
         router,
         "_build_exporter",
@@ -468,18 +457,14 @@ def test_cache_metric_reaches_local_exporter_through_shared_router_without_ident
             assert performance.record_cache_event("workspace_catalog", "hit") is True
         assert force_flush_runtime_metrics(router.router_id) is True
     finally:
-        router.close()
+        assert router.close(timeout=5.0) is True
 
     records = [
         json.loads(line)
         for path in log_dir.glob("otel_trace-*.log")
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
-    metric = next(
-        record
-        for record in records
-        if record.get("name") == "agent.cache.event.count"
-    )
+    metric = next(record for record in records if record.get("name") == "agent.cache.event.count")
     assert metric["value"] == 1
     assert metric["labels"] == {
         "cache": "workspace_catalog",
@@ -533,15 +518,11 @@ def test_scoped_metric_failure_falls_back_without_affecting_cache_access(
     monkeypatch.setattr(
         otel,
         "record_cache_performance_metric",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("synthetic metric route failure")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic metric route failure")),
     )
 
     assert performance.record_cache_event("workspace_catalog", "hit") is True
-    assert counter.records == [
-        (1, {"cache": "workspace_catalog", "result": "hit"})
-    ]
+    assert counter.records == [(1, {"cache": "workspace_catalog", "result": "hit"})]
 
 
 def _http_scope(path: str) -> dict:
@@ -569,13 +550,6 @@ async def _discard_send(_message: dict) -> None:
 
 
 def _server_timing_from_messages(messages: list[dict]) -> str:
-    start = next(
-        message
-        for message in messages
-        if message["type"] == "http.response.start"
-    )
-    headers = {
-        key.decode("latin-1").lower(): value.decode("latin-1")
-        for key, value in start["headers"]
-    }
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in start["headers"]}
     return headers.get("server-timing", "")

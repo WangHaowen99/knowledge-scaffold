@@ -4,13 +4,12 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from ontology.mutations import (
     MutationOutboxDispatcher,
     MutationStore,
     OntologyMutationConflictError,
-    OntologyMutationError,
     OntologyMutationCoordinator,
+    OntologyMutationError,
     PreparedOntologyMutation,
 )
 

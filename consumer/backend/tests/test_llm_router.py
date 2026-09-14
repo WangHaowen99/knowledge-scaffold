@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 
+from backend_synthetic_credentials import synthetic_secret
 from config import AgentConfig, AppConfig
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from llm import LLMPurpose, LLMRouter
@@ -41,26 +44,26 @@ def _write_system_config(tmp_path, monkeypatch):
                             "id": "fast",
                             "name": "Fast Model",
                             "provider": "openai_compatible",
-                            "base_url": "https://fast.example/v1",
+                            "base_url": "https://fast.example.net/v1",
                             "model": "fast-model",
-                            "api_key": "fast-secret",
+                            "api_key": synthetic_secret("llm_router-credential-02"),
                             "enabled": True,
                         },
                         {
                             "id": "accurate",
                             "name": "Accurate Model",
                             "provider": "deepseek",
-                            "base_url": "https://accurate.example/v1",
+                            "base_url": "https://accurate.example.net/v1",
                             "model": "accurate-model",
-                            "api_key": "accurate-secret",
+                            "api_key": synthetic_secret("llm_router-credential-01"),
                             "enabled": True,
                         },
                     ],
                 },
                 "task_llm": {
-                    "base_url": "https://task.example/v1",
+                    "base_url": "https://task.example.net/v1",
                     "model": "task-model",
-                    "api_key": "task-secret",
+                    "api_key": synthetic_secret("llm_router-credential-04"),
                     "timeout": 45,
                 },
             },
@@ -109,9 +112,9 @@ def test_main_can_use_workspace_private_profile(tmp_path, monkeypatch):
                     "id": "private",
                     "name": "Private Model",
                     "provider": "openai_compatible",
-                    "base_url": "https://private.example/v1",
+                    "base_url": "https://private.example.net/v1",
                     "model": "private-model",
-                    "api_key": "private-secret",
+                    "api_key": synthetic_secret("llm_router-credential-03"),
                     "enabled": True,
                 }
             ]
@@ -124,7 +127,7 @@ def test_main_can_use_workspace_private_profile(tmp_path, monkeypatch):
     assert config.profile_id == "workspace:private"
     assert config.profile_name == "Private Model"
     assert config.model == "private-model"
-    assert config.api_key == "private-secret"
+    assert config.api_key == synthetic_secret("llm_router-credential-03")
 
 
 def test_main_without_profile_uses_workspace_default_profile(tmp_path, monkeypatch):
@@ -139,9 +142,9 @@ def test_main_without_profile_uses_workspace_default_profile(tmp_path, monkeypat
                     "id": "private",
                     "name": "Private Model",
                     "provider": "openai_compatible",
-                    "base_url": "https://private.example/v1",
+                    "base_url": "https://private.example.net/v1",
                     "model": "private-model",
-                    "api_key": "private-secret",
+                    "api_key": synthetic_secret("llm_router-credential-03"),
                     "enabled": True,
                 }
             ]
@@ -159,7 +162,7 @@ def test_main_without_profile_uses_workspace_default_profile(tmp_path, monkeypat
 
     assert config.profile_id == "workspace:private"
     assert config.model == "private-model"
-    assert config.api_key == "private-secret"
+    assert config.api_key == synthetic_secret("llm_router-credential-03")
 
 
 def test_task_ignores_workspace_private_profile(tmp_path, monkeypatch):
@@ -174,9 +177,9 @@ def test_task_ignores_workspace_private_profile(tmp_path, monkeypatch):
                     "id": "private",
                     "name": "Private Model",
                     "provider": "openai_compatible",
-                    "base_url": "https://private.example/v1",
+                    "base_url": "https://private.example.net/v1",
                     "model": "private-model",
-                    "api_key": "private-secret",
+                    "api_key": synthetic_secret("llm_router-credential-03"),
                     "enabled": True,
                 }
             ]
@@ -203,17 +206,72 @@ def test_router_caches_services_by_config(tmp_path, monkeypatch):
     assert first.summary_llm is router.get_service(LLMPurpose.SUMMARY)
 
 
+def test_router_cache_key_distinguishes_each_config_field(tmp_path, monkeypatch):
+    _write_system_config(tmp_path, monkeypatch)
+    router = LLMRouter(AppConfig.from_env(), agent_config=_agent_config())
+    base_config = router.get_config(LLMPurpose.SUMMARY)
+    current_config = SimpleNamespace(value=base_config)
+
+    def get_current_config(*_args, **_kwargs):
+        return current_config.value
+
+    monkeypatch.setattr(router, "get_config", get_current_config)
+    base_service = router.get_service(LLMPurpose.SUMMARY)
+    distinct_values = {
+        "base_url": "https://alternate.example.net/v1",
+        "model": "alternate-model",
+        "api_key": synthetic_secret("llm-router-alternate-credential"),
+        "timeout": base_config.timeout + 1,
+        "max_tokens": base_config.max_tokens + 1,
+        "temperature": base_config.temperature + 0.1,
+        "provider": "alternate-provider",
+        "profile_id": "global:alternate",
+        "profile_name": "Alternate Model",
+    }
+    distinct_services = []
+
+    for field_name, value in distinct_values.items():
+        current_config.value = replace(base_config, **{field_name: value})
+        distinct_services.append(router.get_service(LLMPurpose.SUMMARY))
+
+    current_config.value = replace(base_config)
+    assert router.get_service(LLMPurpose.SUMMARY) is base_service
+    assert all(service is not base_service for service in distinct_services)
+    assert len({id(service) for service in distinct_services}) == len(distinct_values)
+
+
+def test_router_cache_reuses_service_for_concurrent_requests(tmp_path, monkeypatch):
+    _write_system_config(tmp_path, monkeypatch)
+    router = LLMRouter(AppConfig.from_env(), agent_config=_agent_config())
+    config = router.get_config(LLMPurpose.SUMMARY)
+
+    def get_config(*_args, **_kwargs):
+        return config
+
+    monkeypatch.setattr(router, "get_config", get_config)
+
+    def get_summary_service(_index):
+        return router.get_service(LLMPurpose.SUMMARY)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        services = list(executor.map(get_summary_service, range(32)))
+
+    assert all(service is services[0] for service in services)
+
+
 def test_call_routes_memory_with_defaults(tmp_path, monkeypatch):
     _write_system_config(tmp_path, monkeypatch)
     router = LLMRouter(AppConfig.from_env(), agent_config=_agent_config())
     calls = []
 
     def fake_call(self, messages, **kwargs):
-        calls.append({
-            "model": self.config.model,
-            "messages": messages,
-            "kwargs": kwargs,
-        })
+        calls.append(
+            {
+                "model": self.config.model,
+                "messages": messages,
+                "kwargs": kwargs,
+            }
+        )
         return SimpleNamespace(content="ok")
 
     monkeypatch.setattr(LLMService, "call", fake_call)

@@ -8,7 +8,7 @@ import {
 import { LocateFixed, Minus, Pin, PinOff, Plus } from 'lucide-react';
 import { WebGLGraphRuntime } from './StudioWebGLRuntime.js';
 
-const StudioWebGLGraph = forwardRef(function StudioWebGLGraph({
+const StudioWebGLGraph = forwardRef(({
   nodes,
   edges,
   routes,
@@ -30,7 +30,7 @@ const StudioWebGLGraph = forwardRef(function StudioWebGLGraph({
   onUnsupported,
   onZoomTierChange,
   onViewportChange,
-}, ref) {
+}, ref) => {
   const hostRef = useRef(null);
   const minimapRef = useRef(null);
   const runtimeRef = useRef(null);

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from agent.skill_evolution.models import TaskRecord
 from agent.skill_evolution.store import SkillEvolutionStore
 
@@ -156,9 +155,11 @@ def test_iter_workspace_ids(tmp_path):
 
 
 def test_create_task_if_no_pending_blocks_on_collision(tmp_path):
-    """The authoritative gate-4 check: a second pending task for the same
-    ontology is refused atomically (closes the has_pending→create_task race)."""
+    """The authoritative gate-4 check: a second pending task for the same."""
+    # Details: The authoritative gate-4 check: a second pending task for the same ontology is refused atomically
+    # (closes the has_pending→create_task race).
     from agent.skill_evolution.store import PendingTaskExists
+
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     store.create_task(_make_record("t1", status="running", ontology_id="a"))
     with pytest.raises(PendingTaskExists):
@@ -170,6 +171,7 @@ def test_create_task_if_no_pending_blocks_on_collision(tmp_path):
 def test_create_task_if_no_pending_allows_when_terminal(tmp_path):
     """A terminal task for the same ontology must not block a new pending one."""
     from agent.skill_evolution.store import PendingTaskExists
+
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     store.create_task(_make_record("t1", status="approved", ontology_id="a"))
     rec2 = _make_record("t2", status="submitted", ontology_id="a")
@@ -178,8 +180,9 @@ def test_create_task_if_no_pending_allows_when_terminal(tmp_path):
 
 
 def test_no_change_not_pending(tmp_path):
-    """no_change is a terminal status — must NOT count toward pending (gate 4
-    must not block a new evolution just because a prior one produced no change)."""
+    """no_change is a terminal status — must NOT count toward pending (gate 4."""
+    # Details: no_change is a terminal status — must NOT count toward pending (gate 4 must not block a new evolution
+    # just because a prior one produced no change).
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     store.create_task(_make_record("t1", status="no_change", ontology_id="a"))
     assert store.has_pending("ws1", "a") is False
@@ -187,8 +190,9 @@ def test_no_change_not_pending(tmp_path):
 
 
 def test_list_tasks_quarantines_corrupt_record(tmp_path):
-    """list_tasks hitting an unparseable record must quarantine it and continue,
-    not raise — mirrors the get_task quarantine path (worker scans rely on this)."""
+    """list_tasks hitting an unparseable record must quarantine it and continue,."""
+    # Details: list_tasks hitting an unparseable record must quarantine it and continue, not raise — mirrors the
+    # get_task quarantine path (worker scans rely on this).
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     store.create_task(_make_record("t1", status="approved"))
     path = store.task_path("ws1", "t1")

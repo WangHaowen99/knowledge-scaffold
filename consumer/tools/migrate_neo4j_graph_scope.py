@@ -9,7 +9,6 @@ import logging
 import sys
 from typing import Any, Mapping, TextIO
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +37,9 @@ def main() -> None:
     parser.add_argument("--label", default="D2O_NODE", help="Node label to migrate.")
     parser.add_argument("--relationship-type", default="D2O_RELATION", help="Relationship type to migrate.")
     parser.add_argument("--apply", action="store_true", help="Apply updates. Omit for dry-run.")
-    parser.add_argument("--limit", type=int, default=0, help="Optional max records to update per node/relationship query.")
+    parser.add_argument(
+        "--limit", type=int, default=0, help="Optional max records to update per node/relationship query."
+    )
     args = parser.parse_args()
 
     driver = _connect(args.uri, args.username, args.password)
@@ -102,7 +103,7 @@ def _connect(uri: str, username: str, password: str) -> Any:
     try:
         from neo4j import GraphDatabase
     except ImportError as exc:
-        raise SystemExit("neo4j driver is not installed; install backend/requirements.txt first") from exc
+        raise RuntimeError("neo4j driver is not installed; install backend/requirements.txt first") from exc
     return GraphDatabase.driver(uri, auth=(username, password))
 
 
@@ -135,7 +136,7 @@ def _count(session: Any, match_clause: str, params: Mapping[str, Any]) -> int:
     return int(record["total"] if record else 0)
 
 
-def _apply(
+def _apply(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     session: Any,
     match_clause: str,
     params: Mapping[str, Any],

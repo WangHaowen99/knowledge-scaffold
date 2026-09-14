@@ -73,3 +73,13 @@ def test_reasoning_sanitizer_hides_platform_capability_claims() -> None:
     visible = sanitizer.feed("工具集中没有该读取能力，请确认平台是否开放。") + sanitizer.finish()
 
     assert visible == "（内部配置已隐藏）"
+
+
+def test_visible_text_hides_internal_http_and_https_links() -> None:
+    http_link = "http" + "://localhost:5100/api/projects"
+    https_link = "https" + "://example.com/api/projects"
+    text = f"请查看 {http_link} 和 {https_link}。"
+
+    visible = sanitize_visible_text(text)
+
+    assert visible == "请查看 内部链接 和 内部链接。"

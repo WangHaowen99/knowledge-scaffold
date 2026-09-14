@@ -1,6 +1,7 @@
 import threading
 from datetime import UTC, datetime
 
+from backend_synthetic_credentials import synthetic_secret
 from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
 
 
@@ -27,10 +28,10 @@ def test_platform_event_mapper_projects_run_terminal_event_without_rich_content(
         event,
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
         ),
     )
 
@@ -77,10 +78,10 @@ def test_platform_event_mapper_projects_tool_finished_event():
         event,
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
         ),
         run_context={"workspace_id": "workspace-a", "user_id": "user-a"},
     )
@@ -128,10 +129,10 @@ def test_platform_telemetry_adapter_normalizes_completed_tool_status():
         event,
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
         ),
     )
 
@@ -170,10 +171,10 @@ def test_platform_event_mapper_projects_model_usage_event():
         event,
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
         ),
         run_context={"workspace_id": "workspace-a", "user_id": "user-a"},
     )
@@ -206,10 +207,10 @@ def test_platform_event_mapper_ignores_unsupported_event_type():
         ),
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
         ),
     )
 
@@ -250,10 +251,10 @@ def test_platform_event_mapper_builds_ontology_snapshot_event(tmp_path):
     envelope = build_ontology_snapshot_event(
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
         ),
         workspace_id="workspace-a",
         ontology_root=ontology_root,
@@ -312,10 +313,10 @@ def test_platform_exporter_batches_events_with_environment_auth_headers():
     exporter = PlatformExporter(
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example/",
+            base_url="https://platform.example.net/",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
             batch_size=2,
             timeout_seconds=3.5,
         ),
@@ -357,11 +358,11 @@ def test_platform_exporter_batches_events_with_environment_auth_headers():
 
     assert len(calls) == 1
     url, payload, headers, timeout = calls[0]
-    assert url == "https://platform.example/api/v1/events/ingest"
+    assert url == "https://platform.example.net/api/v1/events/ingest"
     assert headers == {
         "Content-Type": "application/json",
         "X-Environment-Id": "prod",
-        "X-Environment-Api-Key": "secret",
+        "X-Environment-Api-Key": synthetic_secret("platform_connector-credential-02"),
     }
     assert timeout == 3.5
     assert [event["event_type"] for event in payload["events"]] == [
@@ -405,10 +406,10 @@ def test_platform_exporter_sends_ontology_snapshot_with_environment_auth_headers
     exporter = PlatformExporter(
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example/",
+            base_url="https://platform.example.net/",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
             timeout_seconds=3.5,
         ),
         transport=transport,
@@ -422,11 +423,11 @@ def test_platform_exporter_sends_ontology_snapshot_with_environment_auth_headers
 
     assert len(calls) == 1
     url, payload, headers, timeout = calls[0]
-    assert url == "https://platform.example/api/v1/events/ingest"
+    assert url == "https://platform.example.net/api/v1/events/ingest"
     assert headers == {
         "Content-Type": "application/json",
         "X-Environment-Id": "prod",
-        "X-Environment-Api-Key": "secret",
+        "X-Environment-Api-Key": synthetic_secret("platform_connector-credential-02"),
     }
     assert timeout == 3.5
     assert payload["events"][0]["event_type"] == "asset.snapshot"
@@ -451,10 +452,10 @@ def test_platform_exporter_sends_ontology_snapshot_for_each_workspace(monkeypatc
     exporter = PlatformExporter(
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example/",
+            base_url="https://platform.example.net/",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
         ),
         transport=transport,
     )
@@ -489,10 +490,10 @@ def test_platform_exporter_background_heartbeat_sends_immediately_and_repeats():
     exporter = PlatformExporter(
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
             heartbeat_interval_seconds=0.01,
         ),
         transport=transport,
@@ -530,10 +531,10 @@ def test_platform_exporter_background_heartbeat_retries_after_failure():
     exporter = PlatformExporter(
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
             heartbeat_interval_seconds=0.01,
         ),
         transport=transport,
@@ -567,15 +568,19 @@ def test_platform_observer_starts_when_connector_is_enabled(monkeypatch):
             self.config = config
             calls.append(("exporter", start_heartbeat))
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export(self, event):
             calls.append(("event", event.run_id))
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def flush(self):
             calls.append("flush")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def close(self):
             calls.append("close")
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def export_ontology_snapshots(self):
             calls.append("snapshots")
 
@@ -616,10 +621,10 @@ def test_platform_exporter_retries_buffer_after_batch_failure():
     exporter = PlatformExporter(
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example",
+            base_url="https://platform.example.net",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
             batch_size=1,
         ),
         transport=transport,
@@ -647,9 +652,9 @@ def test_platform_config_generates_and_reuses_local_instance_id(monkeypatch, tmp
     instance_id_file = tmp_path / "platform" / "instance_id"
     monkeypatch.setenv("ONTO_PLATFORM_CONFIG_PATH", str(tmp_path / "platform_config.json"))
     monkeypatch.setenv("ONTO_PLATFORM_ENABLED", "true")
-    monkeypatch.setenv("ONTO_PLATFORM_BASE_URL", "https://platform.example")
+    monkeypatch.setenv("ONTO_PLATFORM_BASE_URL", "https://platform.example.net")
     monkeypatch.setenv("ONTO_PLATFORM_ENVIRONMENT_ID", "prod")
-    monkeypatch.setenv("ONTO_PLATFORM_API_KEY", "secret")
+    monkeypatch.setenv("ONTO_PLATFORM_API_KEY", synthetic_secret("platform_connector-credential-02"))
     monkeypatch.setenv("ONTO_PLATFORM_INSTANCE_ID_FILE", str(instance_id_file))
 
     first = PlatformConfig.from_env()
@@ -672,7 +677,7 @@ def test_platform_config_reads_saved_file_before_environment_and_masks_secret(mo
     config_path = tmp_path / "config" / "platform_config.json"
     monkeypatch.setenv("ONTO_PLATFORM_CONFIG_PATH", str(config_path))
     monkeypatch.setenv("ONTO_PLATFORM_ENABLED", "false")
-    monkeypatch.setenv("ONTO_PLATFORM_BASE_URL", "https://env-platform.example")
+    monkeypatch.setenv("ONTO_PLATFORM_BASE_URL", "https://env-platform.example.net")
     monkeypatch.setenv("ONTO_PLATFORM_ENVIRONMENT_ID", "env-prod")
     monkeypatch.setenv("ONTO_PLATFORM_API_KEY", "env-secret")
     monkeypatch.setenv("ONTO_PLATFORM_INSTANCE_ID", "env-instance")
@@ -680,10 +685,10 @@ def test_platform_config_reads_saved_file_before_environment_and_masks_secret(mo
     public_config = save_platform_config(
         {
             "enabled": True,
-            "base_url": "https://saved-platform.example",
+            "base_url": "https://saved-platform.example.net",
             "environment_id": "saved-prod",
             "instance_id": "saved-instance",
-            "api_key": "saved-secret",
+            "api_key": synthetic_secret("platform_connector-credential-01"),
             "batch_size": 7,
             "timeout_seconds": 2.5,
             "heartbeat_interval_seconds": 15,
@@ -693,10 +698,10 @@ def test_platform_config_reads_saved_file_before_environment_and_masks_secret(mo
     fetched_public_config = get_public_platform_config()
 
     assert resolved.enabled is True
-    assert resolved.base_url == "https://saved-platform.example"
+    assert resolved.base_url == "https://saved-platform.example.net"
     assert resolved.environment_id == "saved-prod"
     assert resolved.instance_id == "saved-instance"
-    assert resolved.api_key == "saved-secret"
+    assert resolved.api_key == synthetic_secret("platform_connector-credential-01")
     assert resolved.batch_size == 7
     assert resolved.timeout_seconds == 2.5
     assert resolved.heartbeat_interval_seconds == 15
@@ -704,7 +709,7 @@ def test_platform_config_reads_saved_file_before_environment_and_masks_secret(mo
     assert fetched_public_config["has_api_key"] is True
     assert "api_key" not in public_config
     assert "api_key" not in fetched_public_config
-    assert "saved-secret" not in config_path.read_text(encoding="utf-8")
+    assert synthetic_secret("platform_connector-credential-01") not in config_path.read_text(encoding="utf-8")
 
 
 def test_platform_policy_maps_snapshot_to_agent_ops_config_fields():
@@ -773,10 +778,10 @@ def test_platform_policy_client_fetches_snapshot_with_environment_auth_headers()
     snapshot = fetch_policy_snapshot(
         PlatformConfig(
             enabled=True,
-            base_url="https://platform.example/",
+            base_url="https://platform.example.net/",
             environment_id="prod",
             instance_id="instance-prod-01",
-            api_key="secret",
+            api_key=synthetic_secret("platform_connector-credential-02"),
             timeout_seconds=2.0,
         ),
         transport=transport,
@@ -785,11 +790,11 @@ def test_platform_policy_client_fetches_snapshot_with_environment_auth_headers()
     assert snapshot["snapshot_key"] == "policy-runtime-prod-01-v1"
     assert calls == [
         (
-            "https://platform.example/api/v1/runtime/policy-snapshot?runtime_id=instance-prod-01",
+            "https://platform.example.net/api/v1/runtime/policy-snapshot?runtime_id=instance-prod-01",
             {
                 "Accept": "application/json",
                 "X-Environment-Id": "prod",
-                "X-Environment-Api-Key": "secret",
+                "X-Environment-Api-Key": synthetic_secret("platform_connector-credential-02"),
             },
             2.0,
         )

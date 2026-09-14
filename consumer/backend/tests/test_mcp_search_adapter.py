@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from operator import getitem
 from types import SimpleNamespace
 
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
@@ -81,7 +82,8 @@ def test_bound_search_uses_token_ontology_when_argument_is_omitted(monkeypatch):
     )
     monkeypatch.setattr(
         "api.protocols.mcp.search_adapter._build_runtime",
-        lambda **kwargs: captured.update(runtime=kwargs) or SimpleNamespace(
+        lambda **kwargs: captured.update(runtime=kwargs)
+        or SimpleNamespace(
             provider="neo4j",
             close=lambda: None,
         ),
@@ -107,8 +109,8 @@ def test_bound_search_uses_token_ontology_when_argument_is_omitted(monkeypatch):
     )
 
     assert result["ok"] is True
-    assert captured["runtime"]["ontology_id"] == "knowledge_package_demo"
-    assert captured["validated"]["ontology_id"] == "knowledge_package_demo"
+    assert getitem(getitem(captured, "runtime"), "ontology_id") == "knowledge_package_demo"
+    assert getitem(getitem(captured, "validated"), "ontology_id") == "knowledge_package_demo"
 
 
 def test_bound_search_rejects_conflicting_ontology_before_runtime():

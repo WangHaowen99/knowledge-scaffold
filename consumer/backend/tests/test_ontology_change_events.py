@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from ontology.change_events import (
     OntologyChangedValidationError,
     build_digest_hints,
@@ -13,7 +12,6 @@ from ontology.change_events import (
     new_ulid,
     validate_ontology_changed_event,
 )
-
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64

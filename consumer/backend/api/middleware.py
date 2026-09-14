@@ -133,7 +133,10 @@ def install_http_middleware(app) -> None:
         CORSMiddleware,
         allow_origins=[],
         allow_origin_regex=r".*",
-        allow_credentials=True,
+        # Authentication cookies are same-origin only. Cross-origin callers
+        # may use public APIs, but cannot ask the browser to attach the refresh
+        # cookie.
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=[
             "Content-Type",

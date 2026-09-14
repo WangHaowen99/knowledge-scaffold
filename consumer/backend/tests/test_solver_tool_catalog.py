@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import agent.tools.registry as tool_registry
 import pytest
-
+from agent.core.jiuwen.tools import get_jiuwen_tool_infos
+from agent.tools.registry import validate_tool_arguments
 from agent.tools.solver import (
     SolverToolCatalogError,
     build_solver_tool_specs,
 )
-from agent.tools.registry import validate_tool_arguments
-import agent.tools.registry as tool_registry
-from agent.core.jiuwen.tools import get_jiuwen_tool_infos
 
 
 def _capability(
@@ -59,9 +58,7 @@ def test_exact_solver_card_has_ascii_bounded_name_and_operation_schema():
 def test_exact_card_name_truncates_slug_without_losing_digest_identity():
     operation_key = "solve_" + "very_long_operation_name_" * 8
 
-    (spec,) = build_solver_tool_specs(
-        [_capability(operation_key)], provider_name_limit=48
-    )
+    (spec,) = build_solver_tool_specs([_capability(operation_key)], provider_name_limit=48)
 
     assert len(spec.name) <= 48
     assert spec.name.startswith("solve_")
@@ -109,11 +106,14 @@ def test_compatibility_card_uses_strict_discriminator_oneof_not_flat_union():
     assert len(parameters["oneOf"]) == 2
     assert parameters["additionalProperties"] is False
     assert set(parameters["properties"]) == {"operation_key", "arguments"}
-    assert validate_tool_arguments(
-        "solve",
-        {"operation_key": "solve_alpha", "arguments": {"item_count": 2, "mode": "safe"}},
-        tool_schema=spec.schema,
-    ) is None
+    assert (
+        validate_tool_arguments(
+            "solve",
+            {"operation_key": "solve_alpha", "arguments": {"item_count": 2, "mode": "safe"}},
+            tool_schema=spec.schema,
+        )
+        is None
+    )
     error = validate_tool_arguments(
         "solve",
         {"operation_key": "solve_alpha", "arguments": {"threshold": 2}},
@@ -134,18 +134,38 @@ def test_catalog_rejects_runtime_fields_and_non_strict_input_schema():
         build_solver_tool_specs([loose_capability])
 
 
+def test_missing_revision_names_the_reason_instead_of_dropping_cards(caplog):
+    from agent.tools.solver import get_solver_tool_specs_for_context
+
+    with caplog.at_level("DEBUG", logger="agent.tools.solver"):
+        assert get_solver_tool_specs_for_context(
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version=None,
+            workspace_id="workspace-synthetic",
+        ) == ()
+
+    assert any(
+        "resolved no revision" in record.getMessage()
+        and record.levelname == "WARNING"
+        for record in caplog.records
+    )
+
+
 def test_static_registry_and_jiuwen_add_request_scoped_solver_cards(monkeypatch):
     (solver_spec,) = build_solver_tool_specs([_capability()])
     monkeypatch.setattr(
         tool_registry,
         "get_solver_tool_specs_for_context",
-        lambda **kwargs: (solver_spec,)
-        if kwargs == {
-            "selected_ontology_id": "package-synthetic",
-            "selected_ontology_version": "revision-synthetic-1",
-            "workspace_id": "workspace-synthetic",
-        }
-        else (),
+        lambda **kwargs: (
+            (solver_spec,)
+            if kwargs
+            == {
+                "selected_ontology_id": "package-synthetic",
+                "selected_ontology_version": "revision-synthetic-1",
+                "workspace_id": "workspace-synthetic",
+            }
+            else ()
+        ),
     )
 
     schemas = tool_registry.get_tools_schema(
@@ -163,10 +183,13 @@ def test_static_registry_and_jiuwen_add_request_scoped_solver_cards(monkeypatch)
 
     assert solver_spec.schema in schemas
     assert any(item["name"] == solver_spec.name for item in infos)
-    assert tool_registry.get_tool_spec(
-        solver_spec.name,
-        selected_ontology_id="package-synthetic",
-        selected_ontology_version="revision-synthetic-1",
-        workspace_id="workspace-synthetic",
-    ) is solver_spec
+    assert (
+        tool_registry.get_tool_spec(
+            solver_spec.name,
+            selected_ontology_id="package-synthetic",
+            selected_ontology_version="revision-synthetic-1",
+            workspace_id="workspace-synthetic",
+        )
+        is solver_spec
+    )
     assert tool_registry.get_tool_spec(solver_spec.name) is None

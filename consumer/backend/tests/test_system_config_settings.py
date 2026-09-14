@@ -2,20 +2,15 @@ import hashlib
 import json
 
 import pytest
-
+from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 from config.settings import AgentConfig, AppConfig, LimitsConfig
 
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+SECRET_TEST_KEY = ENCRYPTION_KEY
 
 
 def _apply_system_config_migrations(config_path, monkeypatch):
-    from migrations.system_config_model_profiles_v1 import (
-        execute_migration as execute_model_migration,
-    )
-    from migrations.system_config_secret_encryption_v1 import (
-        execute_migration as execute_secret_migration,
-    )
+    from migrations.system_config_model_profiles_v1 import execute_migration as execute_model_migration
+    from migrations.system_config_secret_encryption_v1 import execute_migration as execute_secret_migration
 
     runtime_root = config_path.parents[1]
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
@@ -72,7 +67,7 @@ def test_system_config_ignores_legacy_backend_config_when_new_config_is_missing(
         """
 {
   "llm": {
-    "base_url": "https://legacy.example/v1",
+    "base_url": "https://legacy.example.net/v1",
     "model": "legacy-model",
     "api_key": "legacy-secret"
   }
@@ -111,9 +106,9 @@ def test_system_config_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch
     system_config_module.update_system_config_section(
         "llm",
         {
-            "base_url": "https://llm.example/v1",
+            "base_url": "https://llm.example.net/v1",
             "model": "main-model",
-            "api_key": "main-secret",
+            "api_key": synthetic_secret("system_config_settings-credential-04"),
         },
     )
     system_config_module.update_system_config_section(
@@ -125,9 +120,9 @@ def test_system_config_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch
                     "id": "main",
                     "name": "Main",
                     "provider": "openai_compatible",
-                    "base_url": "https://llm.example/v1",
+                    "base_url": "https://llm.example.net/v1",
                     "model": "main-model",
-                    "api_key": "profile-secret",
+                    "api_key": synthetic_secret("system_config_settings-credential-05"),
                     "enabled": True,
                 }
             ],
@@ -137,14 +132,16 @@ def test_system_config_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch
     raw_text = config_path.read_text(encoding="utf-8")
     raw = json.loads(raw_text)
 
-    assert "main-secret" not in raw_text
-    assert "profile-secret" not in raw_text
+    assert synthetic_secret("system_config_settings-credential-04") not in raw_text
+    assert synthetic_secret("system_config_settings-credential-05") not in raw_text
     assert raw["llm"]["api_key"].startswith("enc:v1:")
     assert raw["llm_profiles"]["profiles"][0]["api_key"].startswith("enc:v1:")
 
     effective = system_config_module.load_system_config()
-    assert effective["llm"]["api_key"] == "main-secret"
-    assert effective["llm_profiles"]["profiles"][0]["api_key"] == "profile-secret"
+    assert effective["llm"]["api_key"] == synthetic_secret("system_config_settings-credential-04")
+    assert effective["llm_profiles"]["profiles"][0]["api_key"] == synthetic_secret(
+        "system_config_settings-credential-05"
+    )
 
     public = system_config_module.get_public_system_config()
     assert public["llm"]["has_api_key"] is True
@@ -166,7 +163,7 @@ def test_existing_runtime_system_config_plaintext_secrets_require_migration_with
         """
 {
   "llm": {
-    "base_url": "https://llm.example/v1",
+    "base_url": "https://llm.example.net/v1",
     "model": "main-model",
     "api_key": "runtime-secret"
   }
@@ -203,9 +200,9 @@ def test_load_public_and_template_reads_leave_file_tree_and_hashes_unchanged(
     system_config_module.update_system_config_section(
         "llm",
         {
-            "base_url": "https://llm.example/v1",
+            "base_url": "https://llm.example.net/v1",
             "model": "main-model",
-            "api_key": "read-only-secret",
+            "api_key": synthetic_secret("system_config_settings-credential-06"),
         },
     )
 
@@ -217,10 +214,10 @@ def test_load_public_and_template_reads_leave_file_tree_and_hashes_unchanged(
         }
 
     before = snapshot()
-    assert system_config_module.load_raw_system_config()["llm"]["api_key"].startswith(
-        "enc:v1:"
+    assert system_config_module.load_raw_system_config()["llm"]["api_key"].startswith("enc:v1:")
+    assert system_config_module.load_system_config()["llm"]["api_key"] == synthetic_secret(
+        "system_config_settings-credential-06"
     )
-    assert system_config_module.load_system_config()["llm"]["api_key"] == "read-only-secret"
     assert system_config_module.get_public_system_config()["llm"]["has_api_key"] is True
     assert system_config_module.get_system_config_template()["llm"]["api_key"] == ""
 
@@ -274,7 +271,7 @@ def test_legacy_model_read_requires_migration_without_fallback_or_writes(
     original = json.dumps(
         {
             "task_llm": {
-                "base_url": "https://task.example/v1",
+                "base_url": "https://task.example.net/v1",
                 "model": "task-model",
             }
         }
@@ -300,7 +297,7 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
         """
 {
   "llm": {
-    "base_url": "https://llm.example/v1",
+    "base_url": "https://llm.example.net/v1",
     "model": "main-model",
     "api_key": "main-secret",
     "timeout": 321,
@@ -308,7 +305,7 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     "temperature": 0.3
   },
   "task_llm": {
-    "base_url": "https://task.example/v1",
+    "base_url": "https://task.example.net/v1",
     "model": "task-model",
     "api_key": "task-secret",
     "timeout": 45
@@ -336,7 +333,7 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
   "web_search": {
     "enabled": true,
     "provider": "tavily",
-    "base_url": "https://search.example",
+    "base_url": "https://search.example.net",
     "api_key": "search-secret",
     "timeout_seconds": 12,
     "default_max_results": 4,
@@ -365,9 +362,9 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
             "agent",
             {"context_prune_tools": "read_file"},
         )
-    assert app_config.llm.base_url == "https://llm.example/v1"
+    assert app_config.llm.base_url == "https://llm.example.net/v1"
     assert app_config.llm.model == "main-model"
-    assert app_config.task_llm.base_url == "https://task.example/v1"
+    assert app_config.task_llm.base_url == "https://task.example.net/v1"
     assert app_config.task_llm.timeout == 45
     assert app_config.task_llm.max_tokens == 4096
     assert app_config.task_llm.temperature == 0.7
@@ -387,7 +384,7 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     assert not hasattr(agent_config, "context_prune_tools")
     assert agent_config.web_search.enabled is True
     assert agent_config.web_search.provider == "tavily"
-    assert agent_config.web_search.base_url == "https://search.example"
+    assert agent_config.web_search.base_url == "https://search.example.net"
     assert agent_config.web_search.api_key == "search-secret"
     assert agent_config.web_search.timeout_seconds == 12
     assert agent_config.web_search.default_max_results == 4
@@ -399,22 +396,21 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
 def test_saved_system_config_fields_override_environment_variables(tmp_path, monkeypatch):
     import config.system_config as system_config_module
 
+    saved_api_key = synthetic_secret("system_config_settings-credential-07")
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "system_config.json"
     config_path.write_text(
-        """
-{
-  "llm": {
-    "base_url": "https://saved.example/v1",
-    "model": "saved-model",
-    "api_key": "saved-secret"
-  },
-  "storage": {
-    "project_root": "/saved/project"
-  }
-}
-""".strip(),
+        json.dumps(
+            {
+                "llm": {
+                    "base_url": "https://saved.example.net/v1",
+                    "model": "saved-model",
+                    "api_key": saved_api_key,
+                },
+                "storage": {"project_root": "/saved/project"},
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -422,9 +418,9 @@ def test_saved_system_config_fields_override_environment_variables(tmp_path, mon
 
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setenv("LLM_BASE_URL", "https://env.example/v1")
+    monkeypatch.setenv("LLM_BASE_URL", "https://env.example.net/v1")
     monkeypatch.setenv("LLM_MODEL", "env-model")
-    monkeypatch.setenv("LLM_API_KEY", "env-secret")
+    monkeypatch.setenv("LLM_API_KEY", synthetic_secret("system-config-environment"))
     monkeypatch.setenv("PROJECT_ROOT", "/env/project")
     monkeypatch.setenv("CHAT_STORAGE_DIR", "/env/chats")
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
@@ -432,13 +428,13 @@ def test_saved_system_config_fields_override_environment_variables(tmp_path, mon
     config = system_config_module.load_system_config()
     app_config = AppConfig.from_env()
 
-    assert config["llm"]["base_url"] == "https://saved.example/v1"
+    assert config["llm"]["base_url"] == "https://saved.example.net/v1"
     assert config["llm"]["model"] == "saved-model"
-    assert config["llm"]["api_key"] == "saved-secret"
+    assert config["llm"]["api_key"] == saved_api_key
     assert config["storage"]["project_root"] == "/saved/project"
     assert "ontology_search" not in config
     assert config["storage"]["chat_storage_dir"] == "/env/chats"
-    assert app_config.llm.base_url == "https://saved.example/v1"
+    assert app_config.llm.base_url == "https://saved.example.net/v1"
     assert app_config.llm.model == "saved-model"
     assert app_config.project_root == "/saved/project"
     assert app_config.chat_storage_dir == "/env/chats"
@@ -454,7 +450,7 @@ def test_legacy_llm_config_is_exposed_as_default_model_profile(tmp_path, monkeyp
         """
 {
   "llm": {
-    "base_url": "https://legacy.example/v1",
+    "base_url": "https://legacy.example.net/v1",
     "model": "legacy-model",
     "api_key": "legacy-secret",
     "timeout": 222,
@@ -503,17 +499,17 @@ def test_global_model_profiles_generate_missing_ids_on_save(tmp_path, monkeypatc
                 {
                     "name": "Global A",
                     "provider": "openai_compatible",
-                    "base_url": "https://global-a.example/v1",
+                    "base_url": "https://global-a.example.net/v1",
                     "model": "global-a-model",
-                    "api_key": "global-a-secret",
+                    "api_key": synthetic_secret("system_config_settings-credential-02"),
                     "enabled": True,
                 },
                 {
                     "name": "Global B",
                     "provider": "deepseek",
-                    "base_url": "https://global-b.example/v1",
+                    "base_url": "https://global-b.example.net/v1",
                     "model": "global-b-model",
-                    "api_key": "global-b-secret",
+                    "api_key": synthetic_secret("system_config_settings-credential-03"),
                     "enabled": True,
                 },
             ]
@@ -529,7 +525,9 @@ def test_global_model_profiles_generate_missing_ids_on_save(tmp_path, monkeypatc
 
     effective = system_config_module.load_system_config()
     assert [profile["id"] for profile in effective["llm_profiles"]["profiles"]] == profile_ids
-    assert effective["llm_profiles"]["profiles"][0]["api_key"] == "global-a-secret"
+    assert effective["llm_profiles"]["profiles"][0]["api_key"] == synthetic_secret(
+        "system_config_settings-credential-02"
+    )
 
 
 def test_global_model_profiles_reject_colon_ids_on_save(tmp_path, monkeypatch):
@@ -552,9 +550,9 @@ def test_global_model_profiles_reject_colon_ids_on_save(tmp_path, monkeypatch):
                         "id": "vendor:model",
                         "name": "Global A",
                         "provider": "openai_compatible",
-                        "base_url": "https://global-a.example/v1",
+                        "base_url": "https://global-a.example.net/v1",
                         "model": "global-a-model",
-                        "api_key": "global-a-secret",
+                        "api_key": synthetic_secret("system_config_settings-credential-02"),
                         "enabled": True,
                     }
                 ]
@@ -622,7 +620,7 @@ def test_system_config_readiness_is_ready_when_model_profile_exists(tmp_path, mo
         "id": "main",
         "name": "Main",
         "provider": "openai_compatible",
-        "base_url": "https://llm.example/v1",
+        "base_url": "https://llm.example.net/v1",
         "model": "main-model",
         "api_key": "secret",
         "timeout": 60,
@@ -659,7 +657,7 @@ def test_default_model_profile_overrides_legacy_llm_for_runtime(tmp_path, monkey
         """
 {
   "llm": {
-    "base_url": "https://legacy.example/v1",
+    "base_url": "https://legacy.example.net/v1",
     "model": "legacy-model",
     "api_key": "legacy-secret"
   },
@@ -670,7 +668,7 @@ def test_default_model_profile_overrides_legacy_llm_for_runtime(tmp_path, monkey
         "id": "fast",
         "name": "Fast Model",
         "provider": "openai_compatible",
-        "base_url": "https://fast.example/v1",
+        "base_url": "https://fast.example.net/v1",
         "model": "fast-model",
         "api_key": "fast-secret",
         "timeout": 45,
@@ -708,14 +706,14 @@ def test_registered_migrations_convert_legacy_task_llm_and_default_profile_id(
         json.dumps(
             {
                 "llm": {
-                    "base_url": "https://main.example/v1",
+                    "base_url": "https://main.example.net/v1",
                     "model": "main-model",
-                    "api_key": "main-secret",
+                    "api_key": synthetic_secret("system_config_settings-credential-04"),
                 },
                 "task_llm": {
-                    "base_url": "https://task.example/v1",
+                    "base_url": "https://task.example.net/v1",
                     "model": "task-model",
-                    "api_key": "task-secret",
+                    "api_key": synthetic_secret("system_config_settings-credential-09"),
                     "timeout": 45,
                 },
                 "llm_profiles": {
@@ -725,9 +723,9 @@ def test_registered_migrations_convert_legacy_task_llm_and_default_profile_id(
                             "id": "fast",
                             "name": "Fast",
                             "provider": "openai_compatible",
-                            "base_url": "https://fast.example/v1",
+                            "base_url": "https://fast.example.net/v1",
                             "model": "fast-model",
-                            "api_key": "fast-secret",
+                            "api_key": synthetic_secret("system_config_settings-credential-01"),
                             "enabled": True,
                         }
                     ],
@@ -747,8 +745,8 @@ def test_registered_migrations_convert_legacy_task_llm_and_default_profile_id(
     assert "task_llm" not in config
     profiles = config["llm_profiles"]["profiles"]
     task_profile = next(p for p in profiles if p["model"] == "task-model")
-    assert task_profile["base_url"] == "https://task.example/v1"
-    assert task_profile["api_key"] == "task-secret"
+    assert task_profile["base_url"] == "https://task.example.net/v1"
+    assert task_profile["api_key"] == synthetic_secret("system_config_settings-credential-09")
     assert config["llm_profiles"]["default_task_profile_ref"] == {"scope": "global", "id": task_profile["id"]}
     # default_profile_id renamed to default_main_profile_ref
     assert config["llm_profiles"]["default_main_profile_ref"] == {"scope": "global", "id": "fast"}
@@ -964,7 +962,7 @@ def test_model_profiles_do_not_expose_or_accept_token_hard_limits(tmp_path, monk
         "id": "main",
         "name": "Main",
         "provider": "openai_compatible",
-        "base_url": "https://llm.example/v1",
+        "base_url": "https://llm.example.net/v1",
         "model": "main-model",
         "api_key": "secret",
         "timeout": 60,
@@ -1019,18 +1017,20 @@ def test_model_profile_count_is_limited_by_ops_config(tmp_path, monkeypatch):
 
     profiles = []
     for index in range(3):
-        profiles.append({
-            "id": "model-{}".format(index),
-            "name": "Model {}".format(index),
-            "provider": "openai_compatible",
-            "base_url": "https://llm.example/v1",
-            "model": "main-model",
-            "api_key": "secret",
-            "timeout": 60,
-            "max_tokens": 1024,
-            "temperature": 0.2,
-            "enabled": True,
-        })
+        profiles.append(
+            {
+                "id": "model-{}".format(index),
+                "name": "Model {}".format(index),
+                "provider": "openai_compatible",
+                "base_url": "https://service.example.net/v1",
+                "model": "main-model",
+                "api_key": synthetic_secret("system_config_settings-credential-08"),
+                "timeout": 60,
+                "max_tokens": 1024,
+                "temperature": 0.2,
+                "enabled": True,
+            }
+        )
 
     try:
         system_config_module.update_system_config_section(
@@ -1058,7 +1058,7 @@ def test_system_config_ignores_saved_global_observability_section(tmp_path, monk
     "langfuse": {
       "public_key": "pk-test",
       "secret_key": "sk-test",
-      "base_url": "https://langfuse.example",
+      "base_url": "https://langfuse.example.net",
       "debug": true
     }
   }
@@ -1096,6 +1096,7 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
     captured = {}
 
     class FakeResponse:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def raise_for_status(self):
             return None
 
@@ -1118,8 +1119,8 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
         {
             "enabled": True,
             "provider": "tavily",
-            "base_url": "https://search.example",
-            "api_key": "tvly-test",
+            "base_url": "https://search.example.net",
+            "api_key": synthetic_secret("system_config_settings-credential-10"),
             "timeout_seconds": 8,
             "default_max_results": 2,
             "max_results_limit": 5,
@@ -1129,16 +1130,17 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
 
     assert result["success"] is True
     assert "联网搜索连接成功" in result["message"]
-    assert captured["url"] == "https://search.example/search"
-    assert captured["headers"]["Authorization"] == "Bearer tvly-test"
+    assert captured["url"] == "https://search.example.net/search"
+    assert captured["headers"]["Authorization"] == f"Bearer {synthetic_secret('system_config_settings-credential-10')}"
     assert captured["json"]["max_results"] == 1
     assert captured["json"]["include_raw_content"] is False
     assert captured["timeout"] == 8
 
 
 def test_skill_evolution_connection_test_probes_runs_endpoint(monkeypatch):
-    """A real (lightweight) reachability probe replaces the old fall-through
-    '配置校验通过' that reported success for an unreachable skill-evolver."""
+    """A real (lightweight) reachability probe replaces the old fall-through."""
+    # Details: A real (lightweight) reachability probe replaces the old fall-through '配置校验通过' that reported success
+    # for an unreachable skill-evolver.
     import config.system_config as system_config_module
 
     captured = {}
@@ -1155,11 +1157,11 @@ def test_skill_evolution_connection_test_probes_runs_endpoint(monkeypatch):
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": True, "base_url": "http://evolver.example", "timeout_seconds": 30},
+        {"enabled": True, "base_url": "https://evolver.example.net", "timeout_seconds": 30},
     )
     assert result["success"] is True
     assert "skill-evolver 连接成功" in result["message"]
-    assert captured["url"] == "http://evolver.example/api/status"
+    assert captured["url"] == "https://evolver.example.net/api/status"
     assert captured["headers"]["Accept"] == "application/json"
     # probe timeout is capped short (<=5) regardless of the configured HTTP timeout
     assert captured["timeout"] <= 5
@@ -1176,7 +1178,7 @@ def test_skill_evolution_connection_test_reports_unreachable(monkeypatch):
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": True, "base_url": "http://evolver.example", "timeout_seconds": 30},
+        {"enabled": True, "base_url": "https://evolver.example.net", "timeout_seconds": 30},
     )
     assert result["success"] is False
     assert "无法连接" in result["message"]
@@ -1187,7 +1189,7 @@ def test_skill_evolution_connection_test_disabled_is_success():
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": False, "base_url": "http://evolver.example"},
+        {"enabled": False, "base_url": "https://evolver.example.net"},
     )
     assert result["success"] is True
     assert "关闭" in result["message"]
@@ -1217,9 +1219,7 @@ def test_system_config_defaults_auth_users_file_to_runtime_root(tmp_path, monkey
 
     config = system_config_module.load_system_config()
 
-    assert config["storage"]["auth_users_file"] == str(
-        system_config_module.ONTO_RUNTIME_ROOT / "users.json"
-    )
+    assert config["storage"]["auth_users_file"] == str(system_config_module.ONTO_RUNTIME_ROOT / "users.json")
 
 
 def test_system_config_normalizes_legacy_flat_container_runtime_root(tmp_path, monkeypatch):

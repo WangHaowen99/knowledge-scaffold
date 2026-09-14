@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from agent.evolution import ProposalBuffer, compute_fingerprint
 
 
@@ -245,23 +244,35 @@ def test_change_listener_fires_with_event_type(tmp_path: Path):
 def test_invalid_inputs_rejected(buf: ProposalBuffer):
     with pytest.raises(ValueError):
         buf.append(
-            ontology_id="example", operation_key="OP_A",
-            kind="bogus", content="xxxxx", source="passive",
+            ontology_id="example",
+            operation_key="OP_A",
+            kind="bogus",
+            content="xxxxx",
+            source="passive",
         )
     with pytest.raises(ValueError):
         buf.append(
-            ontology_id="example", operation_key="OP_A",
-            kind="procedure", content="xxxxx", source="from-the-void",
+            ontology_id="example",
+            operation_key="OP_A",
+            kind="procedure",
+            content="xxxxx",
+            source="from-the-void",
         )
     with pytest.raises(ValueError):
         buf.append(
-            ontology_id="", operation_key="OP_A",
-            kind="procedure", content="xxxxx", source="passive",
+            ontology_id="",
+            operation_key="OP_A",
+            kind="procedure",
+            content="xxxxx",
+            source="passive",
         )
     with pytest.raises(ValueError):
         buf.append(
-            ontology_id="example", operation_key="OP_A",
-            kind="procedure", content="x", source="passive",
+            ontology_id="example",
+            operation_key="OP_A",
+            kind="procedure",
+            content="x",
+            source="passive",
         )
 
 
@@ -276,11 +287,17 @@ def test_archive_applied_marks_status_and_writes_snapshot(buf: ProposalBuffer):
 
 def test_compute_fingerprint_partitions_by_op(buf: ProposalBuffer):
     fp1 = compute_fingerprint(
-        kind="procedure", ontology_id="A", operation_key="OP_A",
-        entity_key=None, content="同样的内容",
+        kind="procedure",
+        ontology_id="A",
+        operation_key="OP_A",
+        entity_key=None,
+        content="同样的内容",
     )
     fp2 = compute_fingerprint(
-        kind="procedure", ontology_id="A", operation_key="OP_B",
-        entity_key=None, content="同样的内容",
+        kind="procedure",
+        ontology_id="A",
+        operation_key="OP_B",
+        entity_key=None,
+        content="同样的内容",
     )
     assert fp1 != fp2

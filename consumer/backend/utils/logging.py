@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
-from datetime import datetime, timedelta
 import gzip
 import json
 import logging
@@ -14,6 +11,10 @@ import re
 import shutil
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from datetime import datetime, timedelta
+from operator import getitem
 from typing import Any, Optional
 
 LOG_DIR = "logs"
@@ -73,6 +74,7 @@ _RESERVED_RECORD_KEYS = {
     "processName",
     "process",
     "message",
+    "suppress_log_context",
 }
 
 
@@ -170,15 +172,16 @@ def _format_agent_context(context: dict[str, Any]) -> str:
 
 
 def _enrich_record_with_log_context(record: logging.LogRecord) -> dict[str, Any]:
+    if getattr(record, "suppress_log_context", False):
+        record.__dict__.setdefault("agent_context", "")
+        return {}
     context = get_log_context()
     if context:
         for key, value in context.items():
             record.__dict__.setdefault(key, value)
 
     record_context = {
-        key: record.__dict__.get(key)
-        for key in _LOG_CONTEXT_FIELDS
-        if record.__dict__.get(key) is not None
+        key: record.__dict__.get(key) for key in _LOG_CONTEXT_FIELDS if record.__dict__.get(key) is not None
     }
     record.__dict__.setdefault("agent_context", _format_agent_context(record_context))
     return record_context
@@ -310,7 +313,7 @@ class DatePartitionedRotatingFileHandler(logging.Handler):
     ) -> None:
         super().__init__()
         self.base_log_path = os.path.abspath(base_log_path)
-        self.baseFilename = self.base_log_path
+        self.baseFilename = self.base_log_path  # pylint: disable=invalid-name
         self.encoding = encoding
         self.max_bytes = max_bytes
         self.backup_count = backup_count
@@ -391,7 +394,7 @@ class DatePartitionedRotatingFileHandler(logging.Handler):
             keep_groups = max(self.backup_count + 1, 1)
             stale_dates = sorted(date_groups)[:-keep_groups]
         for stale_date in stale_dates:
-            for stale_path in date_groups[stale_date]:
+            for stale_path in getitem(date_groups, stale_date):
                 try:
                     os.remove(stale_path)
                 except FileNotFoundError:
@@ -480,10 +483,16 @@ def configure_logging(
     resolved_file = log_file or os.getenv("LOG_FILE", LOG_FILE)
 
     env_max_bytes = os.getenv(LOG_MAX_BYTES_ENV)
-    resolved_max_bytes = max_bytes if max_bytes is not None else (int(env_max_bytes) if env_max_bytes else DEFAULT_MAX_BYTES)
+    resolved_max_bytes = (
+        max_bytes if max_bytes is not None else (int(env_max_bytes) if env_max_bytes else DEFAULT_MAX_BYTES)
+    )
 
     env_backup_count = os.getenv(LOG_BACKUP_COUNT_ENV)
-    resolved_backup_count = backup_count if backup_count is not None else (int(env_backup_count) if env_backup_count else DEFAULT_BACKUP_COUNT)
+    resolved_backup_count = (
+        backup_count
+        if backup_count is not None
+        else (int(env_backup_count) if env_backup_count else DEFAULT_BACKUP_COUNT)
+    )
     default_retention_days, default_compress_old = _load_agent_log_retention_policy()
     resolved_retention_days = retention_days if retention_days is not None else default_retention_days
     resolved_compress_old = compress_old if compress_old is not None else default_compress_old
@@ -508,12 +517,12 @@ def configure_logging(
             handler.close()
 
     resolved_log_path = os.path.abspath(log_path)
-    matching_file_handlers = [
-        handler
-        for handler in root_logger.handlers
-        if getattr(handler, "base_log_path", None) == resolved_log_path
-        or getattr(handler, "baseFilename", None) == resolved_log_path
-    ]
+    matching_file_handlers = []
+    for handler in root_logger.handlers:
+        matches_base_path = getattr(handler, "base_log_path", None) == resolved_log_path
+        matches_filename = getattr(handler, "baseFilename", None) == resolved_log_path
+        if matches_base_path or matches_filename:
+            matching_file_handlers.append(handler)
 
     if not any(isinstance(handler, DatePartitionedRotatingFileHandler) for handler in matching_file_handlers):
         for handler in matching_file_handlers:
@@ -522,7 +531,7 @@ def configure_logging(
 
         file_handler = DatePartitionedRotatingFileHandler(
             log_path,
-            encoding='utf-8',
+            encoding="utf-8",
             max_bytes=resolved_max_bytes,
             backup_count=resolved_backup_count,
             retention_days=resolved_retention_days,
@@ -533,8 +542,7 @@ def configure_logging(
         root_logger.addHandler(file_handler)
 
     if resolved_console and not any(
-        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
-        for h in root_logger.handlers
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root_logger.handlers
     ):
         console_handler = logging.StreamHandler()
         console_handler.setLevel(resolved_level)

@@ -1,5 +1,4 @@
 import pytest
-
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
 from utils.identifiers import safe_user_storage_key

@@ -58,7 +58,7 @@ test('工作台主按钮在交互和提交状态保持可读', () => {
     assert.match(rule, /color:\s*#fff/, `${selector} 必须保留白色文字`);
   }
   assert.match(workbenchBlocksSource, /aria-busy=\{sending\}/);
-  assert.match(workbenchBlocksSource, /sending \? '正在接受…'/);
+  assert.match(workbenchBlocksSource, /sending[\s\S]*正在接受…/);
 });
 
 test('内容检查按钮明确说明会逐项处理错误并复检候选', () => {

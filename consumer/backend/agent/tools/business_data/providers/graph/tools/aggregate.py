@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from ..backends.base import GraphBackend
 from typing import Any
 
+from ..backends.base import GraphBackend
 from ..models import GraphBackendResult, GraphScope
 
 

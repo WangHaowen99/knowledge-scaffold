@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from solver_coordination.connectors.errors import (
     ConnectorContractError,
     ConnectorResultError,
@@ -203,9 +202,7 @@ def test_submit_domain_problem_rejects_service_without_domain_evaluation_capabil
 
 def test_submit_domain_problem_preserves_context_after_capability_check():
     capabilities = deepcopy(_capabilities())
-    capabilities["problem_types"][0]["features"].append(
-        "domain_candidate_evaluation"
-    )
+    capabilities["problem_types"][0]["features"].append("domain_candidate_evaluation")
     request_id = OrToolsConnector.request_id("hmac-sha256:" + "b" * 64)
     transport = _Transport()
     transport.responses.extend(
@@ -235,9 +232,7 @@ def test_submit_domain_problem_preserves_context_after_capability_check():
         "/api/v1/capabilities",
         "/api/v1/jobs",
     ]
-    submitted_context = transport.calls[1]["json_payload"]["problem"]["data"][
-        "parameters"
-    ]["domain_evaluation"]
+    submitted_context = transport.calls[1]["json_payload"]["problem"]["data"]["parameters"]["domain_evaluation"]
     assert submitted_context == _domain_context()
 
 
@@ -304,9 +299,7 @@ def test_result_validates_all_locked_correlation_and_maps_solver_result():
         deadline=datetime.now(timezone.utc) + timedelta(seconds=30),
     )
 
-    result = connector.result(
-        binding=_binding(), job_id="job_synthetic_0002"
-    )
+    result = connector.result(binding=_binding(), job_id="job_synthetic_0002")
 
     assert result.problem_id == problem.problem_id
     assert result.status == "optimal"

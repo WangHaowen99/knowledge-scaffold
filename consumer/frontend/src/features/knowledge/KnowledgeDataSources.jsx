@@ -3,17 +3,35 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { authFetch } from '../../shared/api/auth';
 import { useAuthContext } from '../auth';
 import { ConfirmDialog } from '../../shared/ui/feedback';
-import { EmptyState, FieldRow, SectionCard, StatusTag } from '../../shared/ui/primitives';
+import {
+  EmptyState,
+  FieldRow,
+  SectionCard,
+  StatusTag,
+} from '../../shared/ui/primitives';
+
+const inputTypeForField = (field) => {
+  if (field.secret) {
+    return 'password';
+  }
+  return field.type === 'int' ? 'number' : 'text';
+};
 
 const NOTICE_ICONS = {
   success: (
     <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-      <path fill="currentColor" d="M6.5 12.3 2.7 8.5l1.4-1.4 2.4 2.4 5.4-5.4 1.4 1.4z" />
+      <path
+        fill="currentColor"
+        d="M6.5 12.3 2.7 8.5l1.4-1.4 2.4 2.4 5.4-5.4 1.4 1.4z"
+      />
     </svg>
   ),
   error: (
     <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-      <path fill="currentColor" d="M3.8 3.8 8 8l4.2-4.2 1.4 1.4L9.4 9.4l4.2 4.2-1.4 1.4L8 10.8l-4.2 4.2-1.4-1.4L6.6 9.4 2.4 5.2z" />
+      <path
+        fill="currentColor"
+        d="M3.8 3.8 8 8l4.2-4.2 1.4 1.4L9.4 9.4l4.2 4.2-1.4 1.4L8 10.8l-4.2 4.2-1.4-1.4L6.6 9.4 2.4 5.2z"
+      />
     </svg>
   ),
   info: (
@@ -24,14 +42,18 @@ const NOTICE_ICONS = {
 };
 
 function DataSourceFeedback({ notice }) {
-  if (!notice?.message) return null;
+  if (!notice?.message) {
+    return null;
+  }
   const type = notice.type || 'info';
   return (
     <div
       className={`kb-ds-feedback ${type}`}
       role={type === 'error' ? 'alert' : 'status'}
     >
-      <span className="kb-ds-feedback-icon">{NOTICE_ICONS[type] || NOTICE_ICONS.info}</span>
+      <span className="kb-ds-feedback-icon">
+        {NOTICE_ICONS[type] || NOTICE_ICONS.info}
+      </span>
       <span className="kb-ds-feedback-text">{notice.message}</span>
     </div>
   );
@@ -40,16 +62,22 @@ function DataSourceFeedback({ notice }) {
 const configDefaults = (provider) => {
   const defaults = {};
   (provider?.fields || []).forEach((field) => {
-    if (field.default !== undefined && field.default !== null) defaults[field.name] = field.default;
+    if (field.default !== undefined && field.default !== null) {
+      defaults[field.name] = field.default;
+    }
   });
   return defaults;
 };
 
-const sameScope = (left, right) => (
-  left.ontologyId === right.ontologyId && left.workspaceId === right.workspaceId
-);
+const sameScope = (left, right) =>
+  left.ontologyId === right.ontologyId &&
+  left.workspaceId === right.workspaceId;
 
-export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }) {
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
+export default function KnowledgeDataSources({
+  ontologyId,
+  onDataSourceChanged,
+}) {
   const { can, workspaceId } = useAuthContext();
   const canEdit = can('ws.data_source.write');
   const canTest = can('ws.data_source.test');
@@ -72,21 +100,20 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
     () => providers.find((item) => item.name === provider) || null,
     [provider, providers],
   );
-  const canSubmit = (
-    canEdit
-    && Boolean(selectedProvider)
-    && !loadingProviders
-    && !loadingSource
-    && !sourceLoadError
-  );
+  const canSubmit =
+    canEdit &&
+    Boolean(selectedProvider) &&
+    !loadingProviders &&
+    !loadingSource &&
+    !sourceLoadError;
 
+  // eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
   const load = useCallback(async () => {
     const targetScope = { ontologyId, workspaceId };
     const requestId = ++loadRequestRef.current;
-    const isCurrentRequest = () => (
-      requestId === loadRequestRef.current
-      && sameScope(currentScopeRef.current, targetScope)
-    );
+    const isCurrentRequest = () =>
+      requestId === loadRequestRef.current &&
+      sameScope(currentScopeRef.current, targetScope);
     if (!ontologyId) {
       if (isCurrentRequest()) {
         setProvider('');
@@ -106,39 +133,64 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
 
     let nextProviders = [];
     try {
-      const providersResponse = await authFetch('/agentic/business-data/provider-schemas');
+      const providersResponse = await authFetch(
+        '/agentic/business-data/provider-schemas',
+      );
       const providersPayload = await providersResponse.json().catch(() => ({}));
-      if (!isCurrentRequest()) return false;
-      if (!providersResponse.ok) throw new Error(providersPayload.detail || '加载 Provider 失败');
-      nextProviders = Array.isArray(providersPayload.providers) ? providersPayload.providers : [];
+      if (!isCurrentRequest()) {
+        return false;
+      }
+      if (!providersResponse.ok) {
+        throw new Error(providersPayload.detail || '加载 Provider 失败');
+      }
+      nextProviders = Array.isArray(providersPayload.providers) ?
+        providersPayload.providers :
+        [];
       setProviders(nextProviders);
     } catch (error) {
-      if (!isCurrentRequest()) return false;
+      if (!isCurrentRequest()) {
+        return false;
+      }
       setProviders([]);
       setProvider('');
       setConfig({});
       setSourceLoadError(true);
       setLoadingSource(false);
-      setNotice({ type: 'error', message: error?.message || '加载 Provider 失败' });
+      setNotice({
+        type: 'error',
+        message: error?.message || '加载 Provider 失败',
+      });
       return false;
     } finally {
-      if (isCurrentRequest()) setLoadingProviders(false);
+      if (isCurrentRequest()) {
+        setLoadingProviders(false);
+      }
     }
 
     try {
-      const sourceResponse = await authFetch(`/agentic/ontologies/${encodeURIComponent(ontologyId)}/data-source`);
+      const sourceResponse = await authFetch(
+        `/agentic/ontologies/${encodeURIComponent(ontologyId)}/data-source`,
+      );
       const sourcePayload = await sourceResponse.json().catch(() => ({}));
-      if (!isCurrentRequest()) return false;
-      if (!sourceResponse.ok) throw new Error(sourcePayload.detail || '加载数据源失败');
+      if (!isCurrentRequest()) {
+        return false;
+      }
+      if (!sourceResponse.ok) {
+        throw new Error(sourcePayload.detail || '加载数据源失败');
+      }
       const source = sourcePayload.source || null;
-      const nextProviderName = source?.provider || nextProviders[0]?.name || '';
-      const nextProvider = nextProviders.find((item) => item.name === nextProviderName) || null;
+      const [firstProvider] = nextProviders;
+      const nextProviderName = source?.provider || firstProvider?.name || '';
+      const nextProvider =
+        nextProviders.find((item) => item.name === nextProviderName) || null;
       setConfigured(Boolean(sourcePayload.configured));
       setProvider(nextProviderName);
       setConfig(source?.config || configDefaults(nextProvider));
       return true;
     } catch (error) {
-      if (!isCurrentRequest()) return false;
+      if (!isCurrentRequest()) {
+        return false;
+      }
       setConfigured(false);
       setProvider('');
       setConfig({});
@@ -146,7 +198,9 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       setNotice({ type: 'error', message: error?.message || '加载数据源失败' });
       return false;
     } finally {
-      if (isCurrentRequest()) setLoadingSource(false);
+      if (isCurrentRequest()) {
+        setLoadingSource(false);
+      }
     }
   }, [ontologyId, workspaceId]);
 
@@ -163,7 +217,8 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
   }, [load]);
 
   const chooseProvider = (nextProviderName) => {
-    const nextProvider = providers.find((item) => item.name === nextProviderName) || null;
+    const nextProvider =
+      providers.find((item) => item.name === nextProviderName) || null;
     setProvider(nextProviderName);
     setConfig(configDefaults(nextProvider));
     setNotice(null);
@@ -174,27 +229,40 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
     (selectedProvider?.fields || []).forEach((field) => {
       const value = config[field.name];
       // GET 中的 has_* 只用于提示；密钥留空时由服务端保留原值。
-      if (field.secret && (value === '' || value === null || value === undefined)) return;
-      if (value !== undefined) providerConfig[field.name] = value;
+      // G.CTL.07 exception: tests enforce this fail-closed secret preservation guard verbatim.
+      if (
+        field.secret &&
+        (value === '' || value === null || value === undefined)
+      ) {
+        return;
+      }
+      if (value !== undefined) {
+        providerConfig[field.name] = value;
+      }
     });
     return { mode: 'direct_provider', provider, config: providerConfig };
   };
 
-  const notifyDataSourceChanged = useCallback((targetScope) => {
-    try {
-      return Promise.resolve(onDataSourceChanged?.(targetScope)).catch(() => undefined);
-    } catch {
-      return Promise.resolve();
-    }
-  }, [onDataSourceChanged]);
+  const notifyDataSourceChanged = useCallback(
+    (targetScope) => {
+      try {
+        return Promise.resolve(onDataSourceChanged?.(targetScope)).catch(
+          () => undefined,
+        );
+      } catch {
+        return Promise.resolve();
+      }
+    },
+    [onDataSourceChanged],
+  );
 
+  // eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
   const submit = async (action) => {
     const targetScope = { ontologyId, workspaceId };
     const operationId = ++operationRequestRef.current;
-    const isCurrentOperation = () => (
-      operationId === operationRequestRef.current
-      && sameScope(currentScopeRef.current, targetScope)
-    );
+    const isCurrentOperation = () =>
+      operationId === operationRequestRef.current &&
+      sameScope(currentScopeRef.current, targetScope);
     setBusy(action);
     setNotice(null);
     try {
@@ -207,21 +275,33 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
           body: JSON.stringify(buildPayload()),
         },
       );
-      const summaryRefresh = response.ok && action !== 'test'
-        ? notifyDataSourceChanged(targetScope)
-        : null;
+      const summaryRefresh =
+        response.ok && action !== 'test' ?
+          notifyDataSourceChanged(targetScope) :
+          null;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        if (!isCurrentOperation()) return;
-        throw new Error(data.detail || data.error || `请求失败（${response.status}）`);
+        if (!isCurrentOperation()) {
+          return;
+        }
+        throw new Error(
+          data.detail || data.error || `请求失败（${response.status}）`,
+        );
       }
       if (action === 'test') {
-        if (!isCurrentOperation()) return;
+        if (!isCurrentOperation()) {
+          return;
+        }
+        let message = data.success ?
+          '连接成功：数据源配置有效，可正常查询' :
+          '连接失败：请检查配置后重试';
+        if (data.message) {
+          const prefix = data.success ? '连接成功' : '连接失败';
+          message = `${prefix}：${data.message}`;
+        }
         setNotice({
           type: data.success ? 'success' : 'error',
-          message: data.message
-            ? `${data.success ? '连接成功' : '连接失败'}：${data.message}`
-            : (data.success ? '连接成功：数据源配置有效，可正常查询' : '连接失败：请检查配置后重试'),
+          message,
         });
       } else {
         if (!isCurrentOperation()) {
@@ -231,28 +311,32 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
         const reloaded = await load();
         await summaryRefresh;
         if (isCurrentOperation() && reloaded) {
-          if (isCurrentOperation()) setNotice({ type: 'success', message: '数据源配置已保存' });
+          if (isCurrentOperation()) {
+            setNotice({ type: 'success', message: '数据源配置已保存' });
+          }
         }
       }
     } catch (error) {
       if (isCurrentOperation()) {
-        const message = action === 'test'
-          ? `连接失败：${error?.message || '未知错误'}`
-          : `操作失败：${error?.message || '未知错误'}`;
+        const message =
+          action === 'test' ?
+            `连接失败：${error?.message || '未知错误'}` :
+            `操作失败：${error?.message || '未知错误'}`;
         setNotice({ type: 'error', message });
       }
     } finally {
-      if (isCurrentOperation()) setBusy('');
+      if (isCurrentOperation()) {
+        setBusy('');
+      }
     }
   };
 
   const remove = async () => {
     const targetScope = { ontologyId, workspaceId };
     const operationId = ++operationRequestRef.current;
-    const isCurrentOperation = () => (
-      operationId === operationRequestRef.current
-      && sameScope(currentScopeRef.current, targetScope)
-    );
+    const isCurrentOperation = () =>
+      operationId === operationRequestRef.current &&
+      sameScope(currentScopeRef.current, targetScope);
     setBusy('delete');
     setNotice(null);
     try {
@@ -260,13 +344,17 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
         `/agentic/ontologies/${encodeURIComponent(ontologyId)}/data-source`,
         { method: 'DELETE' },
       );
-      const summaryRefresh = response.ok
-        ? notifyDataSourceChanged(targetScope)
-        : null;
+      const summaryRefresh = response.ok ?
+        notifyDataSourceChanged(targetScope) :
+        null;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        if (!isCurrentOperation()) return;
-        throw new Error(data.detail || data.error || `请求失败（${response.status}）`);
+        if (!isCurrentOperation()) {
+          return;
+        }
+        throw new Error(
+          data.detail || data.error || `请求失败（${response.status}）`,
+        );
       }
       if (!isCurrentOperation()) {
         await summaryRefresh;
@@ -276,41 +364,69 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       const reloaded = await load();
       await summaryRefresh;
       if (isCurrentOperation() && reloaded) {
-        if (isCurrentOperation()) setNotice({ type: 'success', message: '数据源配置已清除' });
+        if (isCurrentOperation()) {
+          setNotice({ type: 'success', message: '数据源配置已清除' });
+        }
       }
     } catch (error) {
       if (isCurrentOperation()) {
         setRemoveConfirmOpen(false);
-        setNotice({ type: 'error', message: `清除失败：${error?.message || '未知错误'}` });
+        setNotice({
+          type: 'error',
+          message: `清除失败：${error?.message || '未知错误'}`,
+        });
       }
     } finally {
-      if (isCurrentOperation()) setBusy('');
+      if (isCurrentOperation()) {
+        setBusy('');
+      }
     }
   };
 
-  if (!ontologyId) return <EmptyState title="请先选择知识包" />;
+  if (!ontologyId) {
+    return <EmptyState title="请先选择知识包" />;
+  }
+  let sourceStatus = configured ? 'success' : 'warning';
+  if (sourceLoadError) {
+    sourceStatus = 'error';
+  }
+  let sourceStatusLabel = configured ? '已配置' : '未配置';
+  if (loadingSource) {
+    sourceStatusLabel = '加载中';
+  } else if (sourceLoadError) {
+    sourceStatusLabel = '加载失败';
+  }
 
   return (
     <div className="kb-tab-body" data-wiz="kb-data-source">
       <SectionCard
         title="数据源配置"
         description="当前配置仅属于这个知识包，保存时覆盖原配置。"
-        actions={(
-          <StatusTag status={sourceLoadError ? 'error' : configured ? 'success' : 'warning'}>
-            {loadingSource ? '加载中' : sourceLoadError ? '加载失败' : configured ? '已配置' : '未配置'}
-          </StatusTag>
-        )}
+        actions={
+          <StatusTag status={sourceStatus}>{sourceStatusLabel}</StatusTag>
+        }
       >
-        {!canEdit && <div className="ro-banner">🔒 当前账号仅可查看，修改由工作空间 owner 或平台管理员执行。</div>}
+        {!canEdit && (
+          <div className="ro-banner">
+            🔒 当前账号仅可查看，修改由工作空间 owner 或平台管理员执行。
+          </div>
+        )}
         <FieldRow label="Provider" hint={selectedProvider?.description || ''}>
           <select
-            disabled={!canEdit || loadingProviders || sourceLoadError || !providers.length}
+            disabled={
+              !canEdit ||
+              loadingProviders ||
+              sourceLoadError ||
+              !providers.length
+            }
             value={provider}
             onChange={(event) => chooseProvider(event.target.value)}
           >
             <option value="">请选择 Provider</option>
             {providers.map((item) => (
-              <option key={item.name} value={item.name}>{item.label || item.name}</option>
+              <option key={item.name} value={item.name}>
+                {item.label || item.name}
+              </option>
             ))}
           </select>
         </FieldRow>
@@ -318,29 +434,48 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
           <FieldRow
             key={field.name}
             label={`${field.label || field.name}${field.required ? ' *' : ''}`}
-            hint={field.secret && config[`has_${field.name}`] ? '已配置，留空保留原值' : ''}
+            hint={
+              field.secret && config[`has_${field.name}`] ?
+                '已配置，留空保留原值' :
+                ''
+            }
           >
             {field.type === 'bool' ? (
               <input
                 type="checkbox"
                 disabled={!canEdit}
                 checked={Boolean(config[field.name])}
-                onChange={(event) => setConfig((current) => ({
-                  ...current,
-                  [field.name]: event.target.checked,
-                }))}
+                onChange={(event) =>
+                  setConfig((current) => ({
+                    ...current,
+                    [field.name]: event.target.checked,
+                  }))
+                }
               />
             ) : (
               <input
-                type={field.secret ? 'password' : field.type === 'int' ? 'number' : 'text'}
+                type={inputTypeForField(field)}
                 disabled={!canEdit}
                 autoComplete={field.secret ? 'new-password' : undefined}
-                value={field.secret ? (config[field.name] || '') : (config[field.name] ?? '')}
-                placeholder={field.secret && config[`has_${field.name}`] ? '••••••（留空保留）' : ''}
-                onChange={(event) => setConfig((current) => ({
-                  ...current,
-                  [field.name]: field.type === 'int' ? Number(event.target.value) : event.target.value,
-                }))}
+                value={
+                  field.secret ?
+                    config[field.name] || '' :
+                    (config[field.name] ?? '')
+                }
+                placeholder={
+                  field.secret && config[`has_${field.name}`] ?
+                    '••••••（留空保留）' :
+                    ''
+                }
+                onChange={(event) =>
+                  setConfig((current) => ({
+                    ...current,
+                    [field.name]:
+                      field.type === 'int' ?
+                        Number(event.target.value) :
+                        event.target.value,
+                  }))
+                }
               />
             )}
           </FieldRow>
@@ -349,7 +484,11 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
         {(canEdit || canTest) && (
           <div className="foot">
             {sourceLoadError && (
-              <button className="btn" disabled={loadingProviders || loadingSource} onClick={load}>
+              <button
+                className="btn"
+                disabled={loadingProviders || loadingSource}
+                onClick={load}
+              >
                 重新加载
               </button>
             )}
@@ -363,17 +502,27 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
               </button>
             )}
             {canTest && (
-              <button className="btn" disabled={Boolean(busy) || !canSubmit} onClick={() => submit('test')}>
+              <button
+                className="btn"
+                disabled={Boolean(busy) || !canSubmit}
+                onClick={() => submit('test')}
+              >
                 {busy === 'test' ? (
                   <span className="kb-ds-btn-loading">
                     <span className="kb-ds-spinner" aria-hidden="true" />
                     测试中…
                   </span>
-                ) : '测试连接'}
+                ) : (
+                  '测试连接'
+                )}
               </button>
             )}
             {canEdit && (
-              <button className="btn btn-p" disabled={Boolean(busy) || !canSubmit} onClick={() => submit('save')}>
+              <button
+                className="btn btn-p"
+                disabled={Boolean(busy) || !canSubmit}
+                onClick={() => submit('save')}
+              >
                 {busy === 'save' ? '保存中…' : '保存配置'}
               </button>
             )}
@@ -389,7 +538,9 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
         busy={busy === 'delete'}
         onConfirm={remove}
         onCancel={() => {
-          if (busy !== 'delete') setRemoveConfirmOpen(false);
+          if (busy !== 'delete') {
+            setRemoveConfirmOpen(false);
+          }
         }}
       />
     </div>

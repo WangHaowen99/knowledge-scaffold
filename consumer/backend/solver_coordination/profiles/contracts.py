@@ -21,7 +21,8 @@ class ProfileFactProvider(Protocol):
         capability: Any,
         normalized_input: NormalizedInput,
         **identity: Any,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        return ...
 
 
 class ProfileCompiler(Protocol):
@@ -31,7 +32,8 @@ class ProfileCompiler(Protocol):
         capability: Any,
         normalized_input: NormalizedInput,
         fact_snapshot: FactSnapshot,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        return ...
 
 
 class ProfileVerifier(Protocol):
@@ -43,7 +45,8 @@ class ProfileVerifier(Protocol):
         normalized_input: NormalizedInput,
         fact_snapshot: FactSnapshot,
         solver_result: SolverResult,
-    ) -> VerificationResult: ...
+    ) -> VerificationResult:
+        return ...
 
 
 class ProfilePresentationPort(Protocol):
@@ -54,7 +57,8 @@ class ProfilePresentationPort(Protocol):
         normalized_input: NormalizedInput,
         solver_result: SolverResult,
         verification: VerificationResult,
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        return ...
 
 
 class ProfileInputAdapter(Protocol):
@@ -64,7 +68,8 @@ class ProfileInputAdapter(Protocol):
         operation_key: str,
         values: Mapping[str, Any],
         normalization: Mapping[str, Any],
-    ) -> Mapping[str, Any]: ...
+    ) -> Mapping[str, Any]:
+        return ...
 
 
 @dataclass(frozen=True)

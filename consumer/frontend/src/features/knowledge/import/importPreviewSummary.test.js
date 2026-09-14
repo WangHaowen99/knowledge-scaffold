@@ -8,15 +8,23 @@ test('summarizeImportPreview reduces source and result file contents to operatio
       total_files: 5,
       truncated: true,
       files: [
-        { path: 'objects/a.md', size: 20, content: 'a'.repeat(100), truncated: false, binary: false },
-        { path: 'assets/logo.png', size: 12, content: '', truncated: false, binary: true },
-        { path: 'operations/b.md', size: 40, content: 'b', truncated: true, binary: false },
+        {
+          path: 'objects/a.md', size: 20, content: 'a'.repeat(100), truncated: false, binary: false,
+        },
+        {
+          path: 'assets/logo.png', size: 12, content: '', truncated: false, binary: true,
+        },
+        {
+          path: 'operations/b.md', size: 40, content: 'b', truncated: true, binary: false,
+        },
       ],
     },
     result: {
       total_files: 4,
       truncated: false,
-      files: [{ path: 'objects/a.md', size: 18, content: 'normalized', truncated: false, binary: false }],
+      files: [{
+        path: 'objects/a.md', size: 18, content: 'normalized', truncated: false, binary: false,
+      }],
     },
     warnings: { aliases: ['别名重复'], normalization_warnings: ['路径已规范化'] },
   });
@@ -53,7 +61,9 @@ test('summarizeImportPreview supports text and legacy array previews without exp
   });
 
   const summary = summarizeImportPreview([
-    { path: 'objects/a.md', size: 3, content: 'abc', binary: false, truncated: false },
+    {
+      path: 'objects/a.md', size: 3, content: 'abc', binary: false, truncated: false,
+    },
     'legacy message',
   ]);
   assert.deepEqual(summary, {

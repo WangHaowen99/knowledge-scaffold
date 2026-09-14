@@ -12,11 +12,15 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
+from agent.script_argument_errors import script_argument_error_content
+from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
+from agent.tools.business_data.effective_connection import build_effective_connection
 from agent.tools.business_data.resolver import (
     BusinessDataConnectionError,
     resolve_business_data_source,
@@ -25,36 +29,35 @@ from agent.tools.business_data.script_env import (
     SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
     serialize_script_business_data_connection,
 )
-from agent.tools.business_data.effective_connection import build_effective_connection
-from utils.logging import get_logger
-from ontology.ontology_catalog import (
-    find_script_entry,
-    get_ontology_manifest,
-    load_script_catalog,
-    resolve_ontology_script_path,
-)
-from ontology.ontologies import OntologyManifest, OntologyRegistry
-from ontology.view_cache import (
-    OntologyPackageRevisionError,
-    get_ontology_mutation_revision,
-    resolve_package_staging_boundary,
-    stage_verified_package_revision,
-)
-from integration.sandbox.executor import SandboxScriptExecutor
-from integration.sandbox.errors import (
-    SandboxExecError,
-    SandboxUnavailableError,
-    SandboxUnsupportedProviderError,
-)
-from integration.sandbox.config import load_sandbox_config
-from integration.sandbox.alerts import log_sandbox_security_fallback
-from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
     is_runtime_parameter,
     runtime_parameter_field,
     script_parameter_argument_keys,
 )
+from integration.sandbox.alerts import log_sandbox_security_fallback
+from integration.sandbox.config import load_sandbox_config
+from integration.sandbox.errors import (
+    SandboxExecError,
+    SandboxUnavailableError,
+    SandboxUnsupportedProviderError,
+)
+from integration.sandbox.executor import SandboxScriptExecutor
+from integration.sandbox.package_revision import verified_package_execution
+from ontology.ontologies import OntologyManifest, OntologyRegistry
+from ontology.ontology_catalog import (
+    find_script_entry,
+    get_ontology_manifest,
+    load_script_catalog,
+    resolve_ontology_script_path,
+)
+from ontology.view_cache import (
+    OntologyPackageRevisionError,
+    get_ontology_mutation_revision,
+    resolve_package_staging_boundary,
+    stage_verified_package_revision,
+)
+from utils.logging import get_logger
 from workspace.workspaces import get_workspace_ontologies_root
 
 logger = get_logger("tools.execute_script")
@@ -99,20 +102,12 @@ _SANDBOX_PERMISSION_FAILURE_MARKERS = (
     "access denied",
 )
 
-_SCRIPT_EXECUTION_INTERNAL_ERROR = (
-    "Error: Script execution failed due to an internal error."
-)
-ONTOLOGY_PREFLIGHT_CHANGED_ERROR = (
-    "Error: Ontology package changed after run admission."
-)
+_SCRIPT_EXECUTION_INTERNAL_ERROR = "Error: Script execution failed due to an internal error."
+ONTOLOGY_PREFLIGHT_CHANGED_ERROR = "Error: Ontology package changed after run admission."
 _PUBLIC_SCRIPT_ERROR_PREFIX = "ONTO_PUBLIC_ERROR:"
 _PUBLIC_SCRIPT_ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-_PUBLIC_SCRIPT_STDOUT_ERROR_CODE_PATTERN = re.compile(
-    r"^[A-Za-z][A-Za-z0-9_]{0,63}$"
-)
-_PUBLIC_SCRIPT_STDOUT_ERROR_KEYS = frozenset(
-    {"error_code", "message", "details"}
-)
+_PUBLIC_SCRIPT_STDOUT_ERROR_CODE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_PUBLIC_SCRIPT_STDOUT_ERROR_KEYS = frozenset({"error_code", "message", "details"})
 _PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH = 240
 _PUBLIC_PYTHON_EXCEPTION_TYPES = frozenset(
     {
@@ -136,17 +131,18 @@ _PUBLIC_PYTHON_EXCEPTION_TYPES = frozenset(
     }
 )
 _WORKSPACE_PROVIDER_DATA_ACCESS = "workspace_provider"
-_BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE = (
-    "BUSINESS_DATA_CONNECTION_UNAVAILABLE"
+_BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE = "BUSINESS_DATA_CONNECTION_UNAVAILABLE"
+_BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR = ("Error: [{}] Required business data connection is unavailable.").format(
+    _BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE
 )
-_BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR = (
-    "Error: [{}] Required business data connection is unavailable."
-).format(_BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE)
 
-SCRIPT_LIVE_LOG_ENABLED = (
-    os.getenv("SCRIPT_LIVE_LOG_ENABLED", "false").strip().lower()
-    in {"1", "true", "yes", "y", "on"}
-)
+SCRIPT_LIVE_LOG_ENABLED = os.getenv("SCRIPT_LIVE_LOG_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
 
 
 class _ScriptOutputLimitExceeded(RuntimeError):
@@ -157,6 +153,7 @@ class _ScriptOutputLimitExceeded(RuntimeError):
 
 class _ScriptExecutionCancelled(RuntimeError):
     pass
+
 
 EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
@@ -182,9 +179,7 @@ EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
                 },
                 "operation_key": {
                     "type": "string",
-                    "description": (
-                        "Operation key whose maintained script is registered in script_catalog."
-                    ),
+                    "description": "Operation key whose maintained script is registered in script_catalog.",
                 },
                 "arguments": {
                     "type": "object",
@@ -238,13 +233,15 @@ def build_execute_script_tool_schema(
         catalog: List[Dict[str, Any]] = []
         scripted_ontologies: List[OntologyManifest] = []
         for ontology in ontologies:
-            ontology_catalog = [
-                entry
-                for entry in load_script_catalog(Path(ontology.ontology_dir).resolve())
-                if bool(entry.get("_is_bound_operation", True))
-                and not entry.get("_is_deterministic_handler")
-                and str(entry.get("operation_key") or "").strip()
-            ]
+            ontology_catalog = []
+            for entry in load_script_catalog(Path(ontology.ontology_dir).resolve()):
+                operation_key = str(entry.get("operation_key") or "").strip()
+                if (
+                    bool(entry.get("_is_bound_operation", True))
+                    and not entry.get("_is_deterministic_handler")
+                    and operation_key
+                ):
+                    ontology_catalog.append(entry)
             if not ontology_catalog:
                 continue
             scripted_ontologies.append(ontology)
@@ -290,17 +287,10 @@ def build_execute_script_tool_schema_from_catalog(
     parameters = schema["function"]["parameters"]
     properties = parameters["properties"]
     properties["ontology_id"]["enum"] = list(
-        dict.fromkeys(
-            str(ontology_id or "").strip()
-            for ontology_id in ontology_ids
-            if str(ontology_id or "").strip()
-        )
+        dict.fromkeys(str(ontology_id or "").strip() for ontology_id in ontology_ids if str(ontology_id or "").strip())
     )
     properties["operation_key"]["enum"] = list(
-        dict.fromkeys(
-            str(entry.get("operation_key") or "").strip()
-            for entry in catalog
-        )
+        dict.fromkeys(str(entry.get("operation_key") or "").strip() for entry in catalog)
     )
 
     argument_properties: Dict[str, Dict[str, Any]] = {}
@@ -332,25 +322,24 @@ def build_execute_script_tool_schema_from_catalog(
                 ", ".join(parameter_names) if parameter_names else "no arguments",
             )
         )
+        generated_identifiers = entry.get("generated_identifiers")
+        if isinstance(generated_identifiers, Mapping) and generated_identifiers:
+            operation_parameter_summaries.append(
+                "{} creates UUID4 result identifiers at: {}".format(
+                    entry.get("operation_key"), ", ".join(sorted(generated_identifiers))
+                )
+            )
 
-    common_required = (
-        set.intersection(*required_by_operation)
-        if required_by_operation
-        else set()
-    )
+    common_required = set.intersection(*required_by_operation) if required_by_operation else set()
     argument_schema = properties["arguments"]
     argument_schema["properties"] = argument_properties
-    argument_schema["required"] = [
-        name for name in argument_properties if name in common_required
-    ]
+    argument_schema["required"] = [name for name in argument_properties if name in common_required]
     argument_schema["additionalProperties"] = False
     if operation_parameter_summaries:
-        argument_schema["description"] = (
-            "{} Available operation inputs: {}.".format(
-                str(argument_schema.get("description") or "").rstrip(". "),
-                "; ".join(operation_parameter_summaries),
-            ).strip()
-        )
+        argument_schema["description"] = "{} Available operation inputs: {}.".format(
+            str(argument_schema.get("description") or "").rstrip(". "),
+            "; ".join(operation_parameter_summaries),
+        ).strip()
     return schema
 
 
@@ -371,16 +360,15 @@ def _get_schema_ontology_manifests(
         ontology, error = get_ontology_manifest(ontology_id, **kwargs)
         return ([ontology] if ontology is not None else []), error
 
-    registry = OntologyRegistry(
-        ontology_dirs=[get_workspace_ontologies_root(normalized_workspace_id)]
-    )
+    registry = OntologyRegistry(ontology_dirs=[get_workspace_ontologies_root(normalized_workspace_id)])
     registry.discover_ontologies()
     if not ontology_id:
-        return [
-            ontology
-            for item in sorted(registry.list_enabled_ontologies())
-            if (ontology := registry.get_ontology(item)) is not None
-        ], None
+        ontologies: List[OntologyManifest] = []
+        for item in sorted(registry.list_enabled_ontologies()):
+            ontology = registry.get_ontology(item)
+            if ontology is not None:
+                ontologies.append(ontology)
+        return ontologies, None
 
     manifest_kwargs = {"workspace_id": workspace_id}
     if str(ontology_version or "").strip():
@@ -427,22 +415,17 @@ def _merge_script_parameter_property_schema(
         # A false constraint is worse than leaving a conflicting union property untyped.
         merged: Dict[str, Any] = {}
     else:
-        merged = {
-            key: deepcopy(value)
-            for key, value in existing.items()
-            if key != "description"
-        }
-    descriptions = list(
-        dict.fromkeys(
-            part.strip()
-            for text in (
-                str(existing.get("description") or "").strip(),
-                str(incoming.get("description") or "").strip(),
-            )
-            for part in text.split(" / ")
-            if part.strip()
-        )
+        merged = {key: deepcopy(value) for key, value in existing.items() if key != "description"}
+    descriptions: List[str] = []
+    description_texts = (
+        str(existing.get("description") or "").strip(),
+        str(incoming.get("description") or "").strip(),
     )
+    for text in description_texts:
+        for part in text.split(" / "):
+            normalized_part = part.strip()
+            if normalized_part and normalized_part not in descriptions:
+                descriptions.append(normalized_part)
     if descriptions:
         merged["description"] = " / ".join(descriptions)
     return merged
@@ -477,7 +460,7 @@ def _is_successful_script_output(content: Any) -> bool:
         payload = json.loads(text)
     except (TypeError, ValueError):
         return True
-    return not (isinstance(payload, Mapping) and payload.get("error"))
+    return not _tool_payload_failed(payload)
 
 
 def _prior_successful_operation_calls(
@@ -487,13 +470,16 @@ def _prior_successful_operation_calls(
     operation_key: str,
     current_tool_call_id: Optional[str],
 ) -> List[Dict[str, Any]]:
-    outputs = {
-        str(message.get("tool_call_id") or "").strip(): str(message.get("content") or "")
-        for message in messages
-        if message.get("role") == "tool"
-        and message.get("name") == "execute_script"
-        and str(message.get("tool_call_id") or "").strip()
-    }
+    latest_user_index = next((
+        index for index in range(len(messages) - 1, -1, -1)
+        if str(messages[index].get("role") or "").lower() == "user"
+    ), -1)
+    messages = messages[latest_user_index + 1:]
+    outputs = {}
+    for message in messages:
+        tool_call_id = str(message.get("tool_call_id") or "").strip()
+        if message.get("role") == "tool" and message.get("name") == "execute_script" and tool_call_id:
+            outputs[tool_call_id] = str(message.get("content") or "")
     successful: List[Dict[str, Any]] = []
     current_id = str(current_tool_call_id or "").strip()
     for message in messages:
@@ -585,13 +571,8 @@ def _classify_sandbox_failure_text(value: Any) -> Optional[str]:
     text = str(value or "").strip().lower()
     if not text:
         return None
-    if any(
-        marker in text
-        for marker in (
-            *_SANDBOX_POLICY_FAILURE_MARKERS,
-            *_SANDBOX_PERMISSION_FAILURE_MARKERS,
-        )
-    ):
+    sandbox_failure_markers = (*_SANDBOX_POLICY_FAILURE_MARKERS, *_SANDBOX_PERMISSION_FAILURE_MARKERS)
+    if any(marker in text for marker in sandbox_failure_markers):
         return "sandbox_policy_unavailable"
     if any(marker in text for marker in _SANDBOX_TOOL_MISSING_MARKERS):
         return "sandbox_tool_missing"
@@ -609,9 +590,7 @@ def _classify_sandbox_result_failure(
         return None
     if any(marker in stderr for marker in _SANDBOX_POLICY_FAILURE_MARKERS):
         return "sandbox_policy_unavailable"
-    if completed.returncode == 126 and any(
-        marker in stderr for marker in _SANDBOX_PERMISSION_FAILURE_MARKERS
-    ):
+    if completed.returncode == 126 and any(marker in stderr for marker in _SANDBOX_PERMISSION_FAILURE_MARKERS):
         return "sandbox_policy_unavailable"
     if (
         any(marker in stderr for marker in ("can't open file", "cannot open file"))
@@ -621,8 +600,7 @@ def _classify_sandbox_result_failure(
     if "modulenotfounderror" in stderr and "no module named" in stderr:
         return "sandbox_tool_missing"
     if completed.returncode == 127 and any(
-        marker in stderr
-        for marker in ("command not found", "executable file not found")
+        marker in stderr for marker in ("command not found", "executable file not found")
     ):
         return "sandbox_tool_missing"
     return None
@@ -644,19 +622,37 @@ def _strip_child_environ(src: Dict[str, str]) -> Dict[str, str]:
     is Windows Docker noise that serves no purpose inside the container
     but can push the total past ARG_MAX.
     """
-    _ALWAYS = frozenset({
-        "PATH", "PYTHONPATH", "HOME", "USER", "LANG",
-        "TMPDIR", "TEMP", "TMP", "SHELL", "HOSTNAME",
-    })
-    _CONFIG_PREFIXES = (
-        "LLM_", "TASK_LLM_", "AUTH_", "MINDSDB_", "NL2SQL_",
-        "PROJECT_", "ONTOLOGY_", "MEMORY_", "RAG_", "AGENT_",
-        "APP_", "FLASK_", "OPENAI_", "DOCKER_",
+    always_allowed = frozenset(
+        {
+            "PATH",
+            "PYTHONPATH",
+            "HOME",
+            "USER",
+            "LANG",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+            "SHELL",
+            "HOSTNAME",
+        }
     )
-    return {
-        k: v for k, v in src.items()
-        if k in _ALWAYS or k.startswith(_CONFIG_PREFIXES)
-    }
+    config_prefixes = (
+        "LLM_",
+        "TASK_LLM_",
+        "AUTH_",
+        "MINDSDB_",
+        "NL2SQL_",
+        "PROJECT_",
+        "ONTOLOGY_",
+        "MEMORY_",
+        "RAG_",
+        "AGENT_",
+        "APP_",
+        "FLASK_",
+        "OPENAI_",
+        "DOCKER_",
+    )
+    return {k: v for k, v in src.items() if k in always_allowed or k.startswith(config_prefixes)}
 
 
 def _run_with_live_logging(
@@ -690,8 +686,11 @@ def _run_with_live_logging(
     label = " [{}]".format(script_name) if script_name else ""
 
     def _read_stdout() -> None:
-        assert proc.stdout is not None
-        for line in proc.stdout:
+        stdout = proc.stdout
+        if stdout is None:
+            logger.error("[script:stdout]%s stream is unavailable", label)
+            return
+        for line in stdout:
             stdout_lines.append(line)
             logger.info(
                 "[script:stdout]%s line_chars=%s",
@@ -700,8 +699,11 @@ def _run_with_live_logging(
             )
 
     def _read_stderr() -> None:
-        assert proc.stderr is not None
-        for line in proc.stderr:
+        stderr = proc.stderr
+        if stderr is None:
+            logger.error("[script:stderr]%s stream is unavailable", label)
+            return
+        for line in stderr:
             stderr_lines.append(line)
             logger.info(
                 "[script:stderr]%s line_chars=%s",
@@ -716,7 +718,7 @@ def _run_with_live_logging(
 
     try:
         proc.wait(timeout=max(1, int(timeout_seconds)))
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         proc.kill()
         t_out.join(timeout=5)
         t_err.join(timeout=5)
@@ -725,7 +727,7 @@ def _run_with_live_logging(
             timeout=timeout_seconds,
             output="".join(stdout_lines),
             stderr="".join(stderr_lines),
-        )
+        ) from exc
 
     t_out.join(timeout=10)
     t_err.join(timeout=10)
@@ -908,12 +910,11 @@ def _spawn_with_args_file(
     try:
         with open(loader_path, "w", encoding="utf-8") as f:
             f.write(
-                'import json,os,sys,runpy\n'
-                'with open({!r}) as _f:\n'
-                '  sys.argv = [{!r}] + json.load(_f)\n'
-                'os.unlink({!r})\n'
-                'runpy.run_path({!r}, run_name="__main__")\n'
-                .format(args_path, target, args_path, target)
+                "import json,os,sys,runpy\n"
+                "with open({!r}) as _f:\n"
+                "  sys.argv = [{!r}] + json.load(_f)\n"
+                "os.unlink({!r})\n"
+                'runpy.run_path({!r}, run_name="__main__")\n'.format(args_path, target, args_path, target)
             )
 
         # Strip oversized env vars — the loader doesn't need them and they
@@ -973,9 +974,7 @@ def _build_script_env_overrides(
 ) -> Dict[str, str]:
     if not workspace_id:
         if required:
-            raise BusinessDataConnectionError(
-                "Required business data connection is unavailable."
-            )
+            raise BusinessDataConnectionError("Required business data connection is unavailable.")
         return {}
     try:
         connection = resolve_business_data_source(
@@ -983,12 +982,8 @@ def _build_script_env_overrides(
             ontology_id=ontology_id,
         )
         connection_config = dict(connection.config)
-        graph_workspace_id = str(
-            connection_config.get("workspace_value") or workspace_id or ""
-        ).strip()
-        graph_ontology_id = str(
-            connection_config.get("ontology_value") or ontology_id or ""
-        ).strip()
+        graph_workspace_id = str(connection_config.get("workspace_value") or workspace_id or "").strip()
+        graph_ontology_id = str(connection_config.get("ontology_value") or ontology_id or "").strip()
         effective_connection = build_effective_connection(connection)
         effective_connection = replace(
             effective_connection,
@@ -1011,13 +1006,11 @@ def _build_script_env_overrides(
                 "Required script business data connection is unavailable: error_type=%s",
                 type(exc).__name__,
             )
-            raise BusinessDataConnectionError(
-                "Required business data connection is unavailable."
-            ) from exc
+            raise BusinessDataConnectionError("Required business data connection is unavailable.") from exc
         raise
 
 
-def handle_execute_script_path(
+def handle_execute_script_path(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
     script_path: str,
     args: Optional[Sequence[Any]] = None,
     base_path: Optional[Path] = None,
@@ -1131,18 +1124,13 @@ def handle_execute_script_path(
                 resolved_path.relative_to(ontology_scripts_root)
             except ValueError:
                 logger.warning(
-                    (
-                        "Blocked script outside ontology scripts (%s): "
-                        "script_path=%s resolved_path=%s ontology_dir=%s"
-                    ),
+                    "Blocked script outside ontology scripts (%s): script_path=%s resolved_path=%s ontology_dir=%s",
                     call_context,
                     script_path,
                     resolved_path,
                     ontology_root,
                 )
-                return (
-                    "Error: Access denied - script must be within current ontology scripts directory"
-                )
+                return "Error: Access denied - script must be within current ontology scripts directory"
             if caller != "deterministic_service":
                 try:
                     from ontology.operation_execution import (
@@ -1202,11 +1190,7 @@ def handle_execute_script_path(
                 "SSL_CERT_FILE",
                 "SSL_CERT_DIR",
             }
-            child_env = {
-                key: value
-                for key, value in os.environ.items()
-                if key in allowed_host_names
-            }
+            child_env = {key: value for key, value in os.environ.items() if key in allowed_host_names}
         else:
             child_env = os.environ.copy()
         if data_access == "frozen_snapshot":
@@ -1239,15 +1223,11 @@ def handle_execute_script_path(
         )
 
         started_at = time.monotonic()
-        total_size = _estimate_cmdline_size(
-            child_env, sys.executable, str(resolved_path), *cli_args
-        )
+        total_size = _estimate_cmdline_size(child_env, sys.executable, str(resolved_path), *cli_args)
         # CLI args alone — catches cases where env is small but args are huge
         # (e.g., native Windows with 32 KB cmdline limit)
         cli_args_size = _estimate_cmdline_size({}, *cli_args)
-        oversize_args = (
-            total_size > _MAX_ARG_SAFE_TOTAL or cli_args_size > _MAX_CLI_ARGS_SIZE
-        )
+        oversize_args = total_size > _MAX_ARG_SAFE_TOTAL or cli_args_size > _MAX_CLI_ARGS_SIZE
 
         completed: Optional[subprocess.CompletedProcess[str]] = None
         sandbox_config = load_sandbox_config()
@@ -1275,19 +1255,17 @@ def handle_execute_script_path(
             if sys.platform != "linux":
                 fallback_reason = "unsupported_platform"
                 fallback_blocked_message = (
-                    "Error: Sandbox unavailable: sandbox execution requires Linux "
-                    "(current platform: {})".format(sys.platform)
+                    "Error: Sandbox unavailable: sandbox execution requires Linux (current platform: {})".format(
+                        sys.platform
+                    )
                 )
             elif not run_id:
                 fallback_reason = "missing_run_id"
-                fallback_blocked_message = (
-                    "Error: Sandbox unavailable: run_id is required for sandbox execution"
-                )
+                fallback_blocked_message = "Error: Sandbox unavailable: run_id is required for sandbox execution"
             elif oversize_args:
                 fallback_reason = "oversize_args"
                 fallback_blocked_message = (
-                    "Error: Sandbox unavailable: oversized script arguments are not "
-                    "supported by sandbox execution"
+                    "Error: Sandbox unavailable: oversized script arguments are not supported by sandbox execution"
                 )
             else:
                 try:
@@ -1310,9 +1288,7 @@ def handle_execute_script_path(
                         stderr_limit_bytes=stderr_limit_bytes,
                         file_size_limit_bytes=file_size_limit_bytes,
                         cancel_event=cancel_event,
-                        restrict_filesystem_to_ontology=(
-                            sandbox_restrict_filesystem_to_ontology
-                        ),
+                        restrict_filesystem_to_ontology=(sandbox_restrict_filesystem_to_ontology),
                     )
                 except SandboxUnsupportedProviderError as exc:
                     fallback_reason = "unsupported_provider"
@@ -1324,13 +1300,8 @@ def handle_execute_script_path(
                     fallback_blocked_message = "Error: Sandbox unavailable."
                 except SandboxExecError as exc:
                     if "timed out" in str(exc).lower():
-                        return "Error: Script execution timed out after {} seconds.".format(
-                            timeout_seconds
-                        )
-                    fallback_reason = (
-                        _classify_sandbox_failure_text(exc)
-                        or "sandbox_exec_failed"
-                    )
+                        return "Error: Script execution timed out after {} seconds.".format(timeout_seconds)
+                    fallback_reason = _classify_sandbox_failure_text(exc) or "sandbox_exec_failed"
                     fallback_error = exc
                     fallback_blocked_message = (
                         "Error: Sandbox policy unavailable."
@@ -1338,10 +1309,7 @@ def handle_execute_script_path(
                         else "Error: Sandbox execution failed."
                     )
                 except Exception as exc:
-                    fallback_reason = (
-                        _classify_sandbox_failure_text(exc)
-                        or "sandbox_execution_error"
-                    )
+                    fallback_reason = _classify_sandbox_failure_text(exc) or "sandbox_execution_error"
                     fallback_error = exc
                     fallback_blocked_message = (
                         "Error: Sandbox policy unavailable."
@@ -1372,9 +1340,7 @@ def handle_execute_script_path(
                     )
                     return _SCRIPT_EXECUTION_INTERNAL_ERROR
                 blocked = _fallback_or_error(
-                    fallback_local=(
-                        sandbox_config.fallback_local and not sandbox_required
-                    ),
+                    fallback_local=(sandbox_config.fallback_local and not sandbox_required),
                     mode=execution_mode,
                     reason=fallback_reason,
                     blocked_message=fallback_blocked_message,
@@ -1454,20 +1420,14 @@ def handle_execute_script_path(
         stderr = completed.stderr or ""
         if cancel_event is not None and cancel_event.is_set():
             return "Error: Script execution cancelled."
-        if stdout_limit_bytes is not None and len(stdout.encode("utf-8")) > int(
-            stdout_limit_bytes
-        ):
+        if stdout_limit_bytes is not None and len(stdout.encode("utf-8")) > int(stdout_limit_bytes):
             return "Error: Script stdout output exceeds the configured limit."
-        if stderr_limit_bytes is not None and len(stderr.encode("utf-8")) > int(
-            stderr_limit_bytes
-        ):
+        if stderr_limit_bytes is not None and len(stderr.encode("utf-8")) > int(stderr_limit_bytes):
             return "Error: Script stderr output exceeds the configured limit."
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.info(
-            (
-                "Python script completed (%s): resolved_path=%s return_code=%s "
-                "elapsed_ms=%s stdout_chars=%s stderr_chars=%s"
-            ),
+            "Python script completed (%s): resolved_path=%s return_code=%s "
+            "elapsed_ms=%s stdout_chars=%s stderr_chars=%s",
             call_context,
             resolved_path,
             completed.returncode,
@@ -1478,11 +1438,9 @@ def handle_execute_script_path(
 
         if completed.returncode != 0:
             logger.warning(
-                (
-                    "Python script exited with non-zero status (%s): "
-                    "resolved_path=%s return_code=%s elapsed_ms=%s "
-                    "stdout_chars=%s stderr_chars=%s"
-                ),
+                "Python script exited with non-zero status (%s): "
+                "resolved_path=%s return_code=%s elapsed_ms=%s "
+                "stdout_chars=%s stderr_chars=%s",
                 call_context,
                 resolved_path,
                 completed.returncode,
@@ -1504,11 +1462,7 @@ def handle_execute_script_path(
                 call_context,
                 len(stderr),
             )
-        result = (
-            _combine_process_output(stdout=stdout, stderr=stderr)
-            if include_stderr_on_success
-            else stdout
-        )
+        result = _combine_process_output(stdout=stdout, stderr=stderr) if include_stderr_on_success else stdout
         if result:
             return result
         return "Script executed successfully with no output."
@@ -1520,20 +1474,16 @@ def handle_execute_script_path(
             call_context,
             script_path,
         )
-        return "Error: Script {} output exceeds the configured limit.".format(
-            exc.stream_name
-        )
+        return "Error: Script {} output exceeds the configured limit.".format(exc.stream_name)
     except _ScriptExecutionCancelled:
         logger.info("Python script cancelled (%s): script_path=%s", call_context, script_path)
         return "Error: Script execution cancelled."
     except subprocess.TimeoutExpired as exc:
-        timeout_stdout = (exc.stdout or "")
-        timeout_stderr = (exc.stderr or "")
+        timeout_stdout = exc.stdout or ""
+        timeout_stderr = exc.stderr or ""
         logger.warning(
-            (
-                "Python script timed out (%s): script_path=%s resolved_path=%s "
-                "timeout_seconds=%s stdout_chars=%s stderr_chars=%s"
-            ),
+            "Python script timed out (%s): script_path=%s resolved_path=%s "
+            "timeout_seconds=%s stdout_chars=%s stderr_chars=%s",
             call_context,
             script_path,
             resolved_path or "n/a",
@@ -1663,9 +1613,7 @@ def _identity_field_evidence(
         for key, nested in parsed.items():
             child_path = "{}.{}".format(path, key)
             nested_parsed = _parse_embedded_json_container(nested)
-            if _is_identity_field(str(key)) and not isinstance(
-                nested_parsed, (Mapping, list, tuple)
-            ):
+            if _is_identity_field(str(key)) and not isinstance(nested_parsed, (Mapping, list, tuple)):
                 normalized = _normalize_argument_evidence(nested_parsed)
                 if normalized:
                     fields.append((child_path, normalized))
@@ -1685,11 +1633,7 @@ def _structured_collections(
         for key, nested in value.items():
             child_path = "{}.{}".format(path, key)
             parsed = _parse_embedded_json_container(nested)
-            if (
-                isinstance(parsed, list)
-                and len(parsed) >= 2
-                and all(isinstance(item, Mapping) for item in parsed)
-            ):
+            if isinstance(parsed, list) and len(parsed) >= 2 and all(isinstance(item, Mapping) for item in parsed):
                 collections.append((child_path, list(parsed)))
             else:
                 collections.extend(_structured_collections(parsed, child_path))
@@ -1700,6 +1644,9 @@ def _validate_structured_arguments_against_request(
     arguments: Mapping[str, Any],
     request_text: str,
     trusted_tool_evidence: str = "",
+    *,
+    generated_identifiers: Optional[Mapping[str, str]] = None,
+    issues: Optional[List[Dict[str, str]]] = None,
 ) -> List[str]:
     """Reject cross-item value pairing when the current request enumerates a collection.
 
@@ -1709,52 +1656,79 @@ def _validate_structured_arguments_against_request(
     internal data, or requests without item-level evidence, are ignored.
     """
     full_request = _normalize_argument_evidence(request_text)
-    if not full_request:
-        return []
     normalized_tool_evidence = _normalize_argument_evidence(trusted_tool_evidence)
     errors: List[str] = []
+
+    def reject(
+        code: str, path: str, message: str, field_paths: Sequence[str] = (),
+    ) -> None:
+        errors.append(message)
+        if issues is not None:
+            issues.extend({"code": code, "path": field_path} for field_path in field_paths or (path,))
+
+    evidence_records = _tool_evidence_records(trusted_tool_evidence)
+    generated_values = _generated_identifier_values(arguments, generated_identifiers or {})
+    for path, raw_value in generated_values.items():
+        if not _is_generated_uuid4(raw_value):
+            reject(
+                "invalid_generated_identifier", path,
+                "{} must be a generated UUID4 identifier".format(path),
+            )
     for path, value in _identity_field_evidence(arguments):
+        if path in generated_values:
+            continue
         if value in full_request:
             continue
-        if normalized_tool_evidence and value in normalized_tool_evidence:
+        field = path.rsplit(".", 1)[-1]
+        if any(record.get(field) == value for record in evidence_records):
             continue
-        errors.append(
+        reject(
+            "ungrounded_identity", path,
             "{} identity value is not grounded in the current request or current tool evidence".format(
                 path
             )
         )
+    for path, record in _argument_records(arguments):
+        supported = {
+            field: value for field, value in record.items()
+            if any(evidence.get(field) == value for evidence in evidence_records)
+        }
+        if (
+            len(supported) >= 2
+            and any(_is_identity_field(field) for field in supported)
+            and not any(
+                all(evidence.get(field) == value for field, value in supported.items())
+                for evidence in evidence_records
+            )
+        ):
+            reject("evidence_record_mismatch", path,
+                   "{} combines fields from different tool-result records".format(path))
     raw_segments = [
-        part.strip()
-        for part in _REQUEST_ITEM_SPLIT_PATTERN.split(request_text)
-        if _normalize_argument_evidence(part)
+        part.strip() for part in _REQUEST_ITEM_SPLIT_PATTERN.split(request_text) if _normalize_argument_evidence(part)
     ]
     segments = [_normalize_argument_evidence(part) for part in raw_segments]
     if len(segments) < 2:
         return errors
     for path, items in _structured_collections(arguments):
         if normalized_tool_evidence and all(
-            _item_is_grounded_in_tool_evidence(item, normalized_tool_evidence)
+            _item_is_grounded_in_tool_evidence(item, evidence_records)
+            for item in items
+        ) and not any(
+            sum(value in full_request for _field, value in _flatten_item_field_evidence(item)) >= 2
             for item in items
         ):
             continue
         item_fields = [_flatten_item_field_evidence(item) for item in items]
         anchored: List[tuple[int, int, List[tuple[str, str]]]] = []
         for index, fields in enumerate(item_fields):
-            grounded_values = list(
-                dict.fromkeys(value for _field, value in fields if value in full_request)
-            )
+            grounded_values = list(dict.fromkeys(value for _field, value in fields if value in full_request))
             if len(grounded_values) < 2:
                 continue
-            scores = [
-                sum(1 for value in grounded_values if value in segment)
-                for segment in segments
-            ]
+            scores = [sum(1 for value in grounded_values if value in segment) for segment in segments]
             best_score = max(scores, default=0)
             if best_score < 2:
                 continue
-            best_positions = [
-                position for position, score in enumerate(scores) if score == best_score
-            ]
+            best_positions = [position for position, score in enumerate(scores) if score == best_score]
             if len(best_positions) == 1:
                 anchored.append((index, best_positions[0], fields))
 
@@ -1770,9 +1744,7 @@ def _validate_structured_arguments_against_request(
                 for field in item_field_paths:
                     field_item_counts[field] = field_item_counts.get(field, 0) + 1
                 segment = segments[segment_position]
-                field_segment_support.update(
-                    field for field, value in fields if value in segment
-                )
+                field_segment_support.update(field for field, value in fields if value in segment)
                 cross_supported_fields: Set[str] = set()
                 for field, value in fields:
                     field_values.setdefault(field, set()).add(value)
@@ -1785,34 +1757,28 @@ def _validate_structured_arguments_against_request(
                     ):
                         cross_supported_fields.add(field)
                 for field in cross_supported_fields:
-                    field_cross_segment_support[field] = (
-                        field_cross_segment_support.get(field, 0) + 1
-                    )
+                    field_cross_segment_support[field] = field_cross_segment_support.get(field, 0) + 1
 
-            comparable_fields = {
-                field
-                for field, item_count in field_item_counts.items()
-                if item_count >= 2
-                and (
-                    field in field_segment_support
-                    or (
-                        field_cross_segment_support.get(field, 0) >= 2
-                        and len(field_values.get(field, set())) >= 2
-                    )
+            comparable_fields = set()
+            for field, item_count in field_item_counts.items():
+                field_has_segment_support = field in field_segment_support
+                field_has_cross_segment_support = (
+                    field_cross_segment_support.get(field, 0) >= 2 and len(field_values.get(field, set())) >= 2
                 )
-            }
+                if item_count >= 2 and (field_has_segment_support or field_has_cross_segment_support):
+                    comparable_fields.add(field)
             conflicting_items: List[tuple[int, int]] = []
             conflicting_fields: Set[str] = set()
+            conflicting_field_paths: List[str] = []
             for index, segment_position, fields in anchored:
                 segment = segments[segment_position]
-                mismatched = {
-                    field
-                    for field, value in fields
-                    if field in comparable_fields and value not in segment
-                }
+                mismatched = {field for field, value in fields if field in comparable_fields and value not in segment}
                 if mismatched:
                     conflicting_items.append((index + 1, segment_position))
                     conflicting_fields.update(mismatched)
+                    conflicting_field_paths.extend(
+                        "{}[{}].{}".format(path, index, field) for field in sorted(mismatched)
+                    )
 
             if conflicting_items:
                 request_evidence = " | ".join(
@@ -1822,35 +1788,25 @@ def _validate_structured_arguments_against_request(
                     )
                     for item_number, segment_position in conflicting_items
                 )
-                errors.append(
+                reject(
+                    "request_field_mismatch", path,
                     "{} item {} fields {} conflict with the corresponding "
                     "current-request items. Request evidence: {}".format(
                         path,
                         ", ".join(str(index) for index, _position in conflicting_items),
                         ", ".join(sorted(conflicting_fields)),
                         request_evidence,
-                    )
+                    ),
+                    conflicting_field_paths,
                 )
                 continue
 
-            anchored_positions = [
-                position
-                for _index, position, _fields in sorted(
-                    anchored,
-                    key=lambda entry: entry[0],
-                )
-            ]
-            positions_are_distinct = len(set(anchored_positions)) == len(
-                anchored_positions
-            )
-            if positions_are_distinct and any(
-                current < previous
-                for previous, current in zip(
-                    anchored_positions,
-                    anchored_positions[1:],
-                )
-            ):
-                errors.append("{} item order conflicts with the current request".format(path))
+            sorted_anchors = sorted(anchored, key=lambda entry: entry[0])
+            anchored_positions = [position for _index, position, _fields in sorted_anchors]
+            positions_are_distinct = len(set(anchored_positions)) == len(anchored_positions)
+            adjacent_positions = zip(anchored_positions, anchored_positions[1:])
+            if positions_are_distinct and any(current < previous for previous, current in adjacent_positions):
+                reject("request_item_order", path, "{} item order conflicts with the current request".format(path))
                 continue
 
         evidenced: List[tuple[int, List[int]]] = []
@@ -1870,7 +1826,8 @@ def _validate_structured_arguments_against_request(
         matched_count = sum(1 for _index, candidates in evidenced if candidates)
         unmatched = [index + 1 for index, candidates in evidenced if not candidates]
         if unmatched and matched_count >= max(1, (len(evidenced) + 1) // 2):
-            errors.append(
+            reject(
+                "request_record_mismatch", path,
                 "{} item {} combines values that do not co-occur in the current request".format(
                     path,
                     ", ".join(str(index) for index in unmatched),
@@ -1892,53 +1849,177 @@ def _validate_structured_arguments_against_request(
                 break
             previous = next_position
         if not ordered:
-            errors.append("{} item order conflicts with the current request".format(path))
+            reject("request_item_order", path, "{} item order conflicts with the current request".format(path))
     return errors
+
+
+def _generated_identifier_values(
+    value: Any, rules: Mapping[str, str], path: str = "arguments",
+) -> Dict[str, Any]:
+    if not rules:
+        return {}
+    parsed = _parse_embedded_json_container(value)
+    rule_path = re.sub(r"\[\d+\]", "[]", path.removeprefix("arguments."))
+    values = {path: parsed} if rules.get(rule_path) == "uuid4" else {}
+    if isinstance(parsed, Mapping):
+        for field, nested in parsed.items():
+            values.update(_generated_identifier_values(nested, rules, "{}.{}".format(path, field)))
+    elif isinstance(parsed, (list, tuple)):
+        for index, nested in enumerate(parsed):
+            values.update(_generated_identifier_values(nested, rules, "{}[{}]".format(path, index)))
+    return values
+
+
+def _is_generated_uuid4(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        identifier = uuid.UUID(value)
+    except ValueError:
+        return False
+    return identifier.version == 4 and str(identifier) == value.lower()
+
+
+def _argument_records(value: Any, path: str = "arguments") -> List[tuple[str, Dict[str, str]]]:
+    """Keep scalar field associations within each JSON object, including embedded JSON."""
+    value = _parse_embedded_json_container(value)
+    records: List[tuple[str, Dict[str, str]]] = []
+    if isinstance(value, Mapping):
+        record = {}
+        for field, nested in value.items():
+            parsed = _parse_embedded_json_container(nested)
+            if not isinstance(parsed, (Mapping, list, tuple)) and parsed is not None:
+                record[str(field)] = _normalize_argument_evidence(parsed)
+            records.extend(_argument_records(parsed, "{}.{}".format(path, field)))
+        if record:
+            records.append((path, record))
+    elif isinstance(value, (list, tuple)):
+        for index, nested in enumerate(value):
+            records.extend(_argument_records(nested, "{}[{}]".format(path, index)))
+    return records
+
+
+def _tool_evidence_records(evidence: str) -> List[Dict[str, str]]:
+    records = []
+    try:
+        documents = [json.loads(evidence)]
+    except (ValueError, TypeError):
+        documents = []
+        for line in str(evidence or "").splitlines():
+            try:
+                documents.append(json.loads(line))
+            except ValueError:
+                continue
+    for document in documents:
+        records.extend(_successful_evidence_records(document))
+    return records
+
+
+def _successful_evidence_records(value: Any) -> List[Dict[str, str]]:
+    """Do not promote failed rows or their nested diagnostics into evidence."""
+    if _tool_payload_failed(value):
+        return []
+    records = []
+    if isinstance(value, Mapping):
+        scalars = {
+            str(key): _normalize_argument_evidence(item)
+            for key, item in value.items()
+            if item is not None and not isinstance(item, (Mapping, list))
+        }
+        if scalars:
+            records.append(scalars)
+        for item in value.values():
+            records.extend(_successful_evidence_records(item))
+    elif isinstance(value, list):
+        for item in value:
+            records.extend(_successful_evidence_records(item))
+    return records
+
+
+def _tool_payload_failed(payload: Any) -> bool:
+    return isinstance(payload, Mapping) and (
+        any(payload.get(key) is False for key in ("ok", "success", "_success"))
+        or any(bool(payload.get(key)) for key in ("error", "_error", "error_code"))
+        or str(payload.get("status") or "").strip().casefold()
+        in {"error", "failed", "failure", "cancelled", "timeout"}
+    )
 
 
 def _item_is_grounded_in_tool_evidence(
     item: Mapping[str, Any],
-    normalized_evidence: str,
+    evidence_records: Sequence[Mapping[str, str]],
 ) -> bool:
-    """Return whether a structured item is substantially present in trusted tool output.
+    records = _argument_records(item)
+    return bool(records) and all(
+        len(record) >= 2 and any(
+            all(evidence.get(field) == value for field, value in record.items())
+            for evidence in evidence_records
+        )
+        for _path, record in records
+    )
 
-    Business query results are legitimate script inputs even when they do not occur in
-    the user's prose. Requiring every usable scalar avoids treating a collection as
-    trusted merely because it shares generic IDs or labels with a query result.
-    """
-    values = _flatten_item_evidence(item)
-    if len(values) < 2:
-        return False
-    supported = sum(1 for value in values if value in normalized_evidence)
-    return supported / len(values) >= 0.75
+
+def _successful_structured_tool_output(content: Any) -> Any:
+    if isinstance(content, list) and all(isinstance(item, Mapping) for item in content):
+        content = "\n".join(str(item.get("text") or item.get("content") or "") for item in content)
+    try:
+        payload = json.loads(content) if isinstance(content, str) else content
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, (Mapping, list)):
+        return None
+    if _tool_payload_failed(payload):
+        return None
+    return payload
 
 
 def _current_turn_business_data_evidence(
     messages: Sequence[Mapping[str, Any]],
+    *,
+    ontology_id: str = "",
 ) -> str:
-    """Collect business-data tool output produced after the latest user request."""
-    latest_user_index = -1
-    for index, message in enumerate(messages):
-        if str(message.get("role") or "").lower() == "user":
-            latest_user_index = index
+    """Collect successful data/script results only after the latest user request.
 
+    Script evidence requires a preceding execute_script call with the same call ID
+    and selected package. Assistant prose and uncorrelated tool messages do not count.
+    """
+    latest_user_index = next((
+        index for index in range(len(messages) - 1, -1, -1)
+        if str(messages[index].get("role") or "").lower() == "user"
+    ), -1)
+    if latest_user_index < 0:
+        return ""
+    script_calls: Dict[str, Mapping[str, Any]] = {}
     evidence: List[str] = []
     for message in messages[latest_user_index + 1:]:
-        if str(message.get("role") or "").lower() != "tool":
+        role = str(message.get("role") or "").lower()
+        if role == "assistant":
+            for call in message.get("tool_calls") or []:
+                if not isinstance(call, Mapping):
+                    continue
+                function = call.get("function") or call
+                if not isinstance(function, Mapping) or function.get("name") != "execute_script":
+                    continue
+                arguments = _parse_tool_call_arguments(function.get("arguments"))
+                call_id = str(call.get("id") or "")
+                if call_id and arguments and arguments.get("operation_key"):
+                    script_calls[call_id] = arguments
+            continue
+        if role != "tool":
             continue
         tool_name = str(message.get("name") or message.get("tool_name") or "")
-        if tool_name != "business_data_search":
+        if tool_name == "execute_script":
+            call = script_calls.pop(str(message.get("tool_call_id") or ""), None)
+            if call is None or not ontology_id or call.get("ontology_id") != ontology_id:
+                continue
+        elif tool_name != "business_data_search":
             continue
-        content = message.get("content")
-        if isinstance(content, str):
-            evidence.append(content)
-        elif isinstance(content, list):
-            evidence.extend(
-                str(item.get("text") or item.get("content") or "")
-                for item in content
-                if isinstance(item, Mapping)
-            )
-    return "\n".join(part for part in evidence if part)
+        if message.get("is_error") is True or str(message.get("status") or "").lower() in {"error", "failed"}:
+            continue
+        payload = _successful_structured_tool_output(message.get("content"))
+        if payload is not None:
+            evidence.append(json.dumps(payload, ensure_ascii=False))
+    return "\n".join(evidence)
 
 
 def _latest_user_request(messages: Sequence[Mapping[str, Any]]) -> str:
@@ -1964,7 +2045,7 @@ def _extract_public_script_error(stderr: str) -> Optional[str]:
         line = raw_line.strip()
         if not line.startswith(_PUBLIC_SCRIPT_ERROR_PREFIX):
             continue
-        serialized = line[len(_PUBLIC_SCRIPT_ERROR_PREFIX):].strip()
+        serialized = line[len(_PUBLIC_SCRIPT_ERROR_PREFIX) :].strip()
         try:
             payload = json.loads(serialized)
         except (TypeError, ValueError):
@@ -1977,9 +2058,7 @@ def _extract_public_script_error(stderr: str) -> Optional[str]:
             continue
         if not isinstance(message, str):
             continue
-        normalized_message = " ".join(message.split())[
-            :_PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH
-        ].strip()
+        normalized_message = " ".join(message.split())[:_PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH].strip()
         return "[{}]{}".format(
             code,
             " {}".format(normalized_message) if normalized_message else "",
@@ -2018,9 +2097,7 @@ def _extract_public_script_stdout_error(stdout: str) -> Optional[str]:
     normalized_code = code.upper()
     if not _PUBLIC_SCRIPT_ERROR_CODE_PATTERN.fullmatch(normalized_code):
         return None
-    normalized_message = " ".join(message.split())[
-        :_PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH
-    ].strip()
+    normalized_message = " ".join(message.split())[:_PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH].strip()
     return "[{}]{}".format(
         normalized_code,
         " {}".format(normalized_message) if normalized_message else "",
@@ -2129,6 +2206,7 @@ def handle_execute_script(
     turn_id: Optional[int] = None,
     workspace_id: Optional[str] = None,
     runtime_context: Optional[Mapping[str, Any]] = None,
+    argument_validation_context: Optional[tuple[str, str]] = None,
     data_access: str = "live",
     expected_script_path: Optional[Path] = None,
     expected_script_digest: Optional[str] = None,
@@ -2190,35 +2268,25 @@ def handle_execute_script(
         manifest_id = str(preflight_ontology_manifest.get("id") or "").strip()
         if manifest_id != normalized_ontology_id:
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
-        manifest_version = str(
-            preflight_ontology_manifest.get("version") or ""
-        ).strip()
+        manifest_version = str(preflight_ontology_manifest.get("version") or "").strip()
         if manifest_version != normalized_ontology_version:
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
-        entry_operation_key = str(
-            preflight_ontology_script_entry.get("operation_key") or ""
-        ).strip()
+        entry_operation_key = str(preflight_ontology_script_entry.get("operation_key") or "").strip()
         if entry_operation_key != str(operation_key or "").strip():
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
         if not bool(preflight_ontology_script_entry.get("_is_bound_operation")):
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
-        raw_ontology_dir = str(
-            preflight_ontology_manifest.get("ontology_dir") or ""
-        ).strip()
+        raw_ontology_dir = str(preflight_ontology_manifest.get("ontology_dir") or "").strip()
         if not raw_ontology_dir:
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
         source_ontology_dir = Path(os.path.abspath(raw_ontology_dir))
-        raw_script_path = str(
-            preflight_ontology_script_entry.get("_script_path") or ""
-        ).strip()
+        raw_script_path = str(preflight_ontology_script_entry.get("_script_path") or "").strip()
         pinned_path = str(
             preflight_ontology_script_entry.get("_expected_script_path")
             or preflight_ontology_script_entry.get("_resolved_script_path")
             or ""
         ).strip()
-        pinned_digest = str(
-            preflight_ontology_script_entry.get("_expected_script_digest") or ""
-        ).strip()
+        pinned_digest = str(preflight_ontology_script_entry.get("_expected_script_digest") or "").strip()
         source_script_path = resolve_ontology_script_path(
             source_ontology_dir,
             raw_script_path,
@@ -2233,22 +2301,21 @@ def handle_execute_script(
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", pinned_digest):
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
-        if expected_script_path is not None and (
-            source_script_path != Path(expected_script_path).resolve()
-        ):
-            return "Error: Bound script identity changed for operation '{}'".format(
-                operation_key
-            )
+        if expected_script_path is not None and (source_script_path != Path(expected_script_path).resolve()):
+            return "Error: Bound script identity changed for operation '{}'".format(operation_key)
         project_root = Path(os.path.abspath(os.fspath(base_path))) if base_path else None
         if project_root is None:
             return "Error: Project base path not configured"
 
         def mutation_revision_matches() -> bool:
             try:
-                return get_ontology_mutation_revision(
-                    str(workspace_id),
-                    normalized_ontology_id,
-                ) == preflight_ontology_mutation_revision
+                return (
+                    get_ontology_mutation_revision(
+                        str(workspace_id),
+                        normalized_ontology_id,
+                    )
+                    == preflight_ontology_mutation_revision
+                )
             except Exception:
                 return False
 
@@ -2271,27 +2338,32 @@ def handle_execute_script(
                     return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
                 staged_entry = dict(preflight_ontology_script_entry)
                 staged_entry["_expected_script_path"] = str(staged_script_path)
-                return handle_execute_script(
-                    ontology_id=ontology_id,
-                    ontology_version=ontology_version,
-                    operation_key=operation_key,
-                    arguments=arguments,
-                    base_path=staging_boundary,
-                    timeout_seconds=timeout_seconds,
-                    tool_call_id=tool_call_id,
-                    caller=caller,
-                    run_id=run_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    workspace_id=workspace_id,
-                    runtime_context=runtime_context,
-                    data_access=data_access,
-                    expected_script_path=staged_script_path,
-                    expected_script_digest=pinned_digest,
-                    _resolved_ontology_dir=staged_ontology_dir,
-                    _resolved_ontology_id=normalized_ontology_id,
-                    _resolved_script_entry=staged_entry,
-                )
+                with verified_package_execution(
+                    staged_ontology_dir, workspace_id=str(workspace_id),
+                    ontology_id=normalized_ontology_id, run_id=run_id,
+                ):
+                    return handle_execute_script(
+                        ontology_id=ontology_id,
+                        ontology_version=ontology_version,
+                        operation_key=operation_key,
+                        arguments=arguments,
+                        base_path=staging_boundary,
+                        timeout_seconds=timeout_seconds,
+                        tool_call_id=tool_call_id,
+                        caller=caller,
+                        run_id=run_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        workspace_id=workspace_id,
+                        runtime_context=runtime_context,
+                        argument_validation_context=argument_validation_context,
+                        data_access=data_access,
+                        expected_script_path=staged_script_path,
+                        expected_script_digest=pinned_digest,
+                        _resolved_ontology_dir=staged_ontology_dir,
+                        _resolved_ontology_id=normalized_ontology_id,
+                        _resolved_script_entry=staged_entry,
+                    )
         except OntologyPackageRevisionError:
             return ONTOLOGY_PREFLIGHT_CHANGED_ERROR
     else:
@@ -2301,7 +2373,8 @@ def handle_execute_script(
         ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
         if error:
             return error
-        assert ontology is not None
+        if ontology is None:
+            return "Error: ontology manifest is unavailable."
         ontology_dir = Path(ontology.ontology_dir).resolve()
         resolved_ontology_id = ontology.id
         script_entry = None
@@ -2309,10 +2382,7 @@ def handle_execute_script(
     try:
         from ontology.operation_execution import is_deterministic_operation
 
-        if (
-            caller != "deterministic_service"
-            and is_deterministic_operation(ontology_dir, operation_key)
-        ):
+        if caller != "deterministic_service" and is_deterministic_operation(ontology_dir, operation_key):
             return "Error: deterministic_operation_protected"
     except Exception:
         logger.exception(
@@ -2330,7 +2400,8 @@ def handle_execute_script(
         )
     if script_entry is None:
         return (
-            "Error: Operation '{}' in ontology '{}' has no registered script implementation or is not a bound operation."
+            "Error: Operation '{}' in ontology '{}' has no registered script implementation or is not a bound"
+            " operation."
         ).format(operation_key, resolved_ontology_id)
 
     raw_script_path = str(script_entry.get("_script_path") or "").strip()
@@ -2357,9 +2428,18 @@ def handle_execute_script(
     try:
         script_path = str(resolved_script_path.relative_to(project_root)).replace("\\", "/")
     except ValueError:
-        return "Error: Registered script for operation '{}' is outside project root.".format(
-            operation_key
+        return "Error: Registered script for operation '{}' is outside project root.".format(operation_key)
+
+    if argument_validation_context is not None:
+        request_text, trusted_evidence = argument_validation_context
+        issues: List[Dict[str, str]] = []
+        _validate_structured_arguments_against_request(
+            dict(arguments or {}), request_text, trusted_evidence,
+            generated_identifiers=script_entry.get("generated_identifiers"),
+            issues=issues,
         )
+        if issues:
+            return script_argument_error_content(issues)
 
     cli_args, missing_args, invalid_args = _build_cli_args(
         script_args=list(script_entry.get("arguments") or []),
@@ -2378,8 +2458,7 @@ def handle_execute_script(
             ", ".join(missing_args),
         )
     requires_business_data = (
-        str(script_entry.get("data_access") or "none").strip().casefold()
-        == _WORKSPACE_PROVIDER_DATA_ACCESS
+        str(script_entry.get("data_access") or "none").strip().casefold() == _WORKSPACE_PROVIDER_DATA_ACCESS
     )
     try:
         env_overrides = _build_script_env_overrides(
@@ -2467,17 +2546,11 @@ def _build_cli_args(
                     result.pop()
                 runtime_match = _RUNTIME_PLACEHOLDER_PATTERN.match(placeholder.strip())
                 declared_runtime_key = (
-                    runtime_match.group(1).replace("-", "_")
-                    if runtime_match
-                    else placeholder.strip()
+                    runtime_match.group(1).replace("-", "_") if runtime_match else placeholder.strip()
                 )
-                runtime_key = runtime_parameter_field(
-                    {"runtime": True, "placeholder": placeholder}
-                )
+                runtime_key = runtime_parameter_field({"runtime": True, "placeholder": placeholder})
                 if runtime_key is None:
-                    invalid.append(
-                        "Unsupported runtime parameter '{}'".format(declared_runtime_key)
-                    )
+                    invalid.append("Unsupported runtime parameter '{}'".format(declared_runtime_key))
                 elif runtime_context is None or runtime_context.get(runtime_key) is None:
                     invalid.append("Runtime context missing '{}'".format(runtime_key))
                 for candidate in {
@@ -2816,6 +2889,7 @@ class ExecuteScriptTool:
         object.__setattr__(self, "schema", EXECUTE_SCRIPT_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent", "acp"})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
@@ -2837,8 +2911,7 @@ class ExecuteScriptTool:
             )
             current_fingerprint = _canonical_tool_arguments(args)
             repeated_identically = any(
-                _canonical_tool_arguments(call["arguments"]) == current_fingerprint
-                for call in successful_calls
+                _canonical_tool_arguments(call["arguments"]) == current_fingerprint for call in successful_calls
             )
             if repeated_identically:
                 logger.warning(
@@ -2846,11 +2919,13 @@ class ExecuteScriptTool:
                     context.run_id or "n/a",
                     operation_key,
                 )
-                return ToolOutcome(content=(
-                    "This deterministic operation already succeeded with exactly the same inputs. "
-                    "Reuse the previous successful tool result and produce the final user answer now. "
-                    "Do not call execute_script again for rounding, formatting, or verification."
-                ))
+                return ToolOutcome(
+                    content=(
+                        "This deterministic operation already succeeded with exactly the same inputs. "
+                        "Reuse the previous successful tool result and produce the final user answer now. "
+                        "Do not call execute_script again for rounding, formatting, or verification."
+                    )
+                )
             if len(successful_calls) >= MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION:
                 logger.warning(
                     "blocked excessive successful execute_script replays: run_id=%s operation_key=%s count=%s",
@@ -2858,33 +2933,24 @@ class ExecuteScriptTool:
                     operation_key,
                     len(successful_calls),
                 )
-                return ToolOutcome(content=(
-                    "This deterministic operation has already returned successful results multiple times. "
-                    "Stop changing informational or display-only inputs. Reuse the latest successful "
-                    "result and produce the final user answer now. Only a new, explicitly requested "
-                    "independent scenario justifies another execution."
-                ))
-        argument_values = args.get("arguments")
-        if isinstance(argument_values, Mapping):
-            consistency_errors = _validate_structured_arguments_against_request(
-                argument_values,
-                _latest_user_request(context_messages),
-                _current_turn_business_data_evidence(context_messages),
-            )
-            if consistency_errors:
-                return ToolOutcome(content=(
-                    "Error: Script argument consistency check failed: {}. "
-                    "The script did not run. "
-                    "Rebuild the complete collection from the current user request, "
-                    "preserve item order, and retry the complete call without using "
-                    "ontology examples or history. Do not provide computed results or "
-                    "claim success until execute_script returns a successful result."
-                ).format("; ".join(consistency_errors)))
+                return ToolOutcome(
+                    content=(
+                        "This deterministic operation has already returned successful results multiple times. "
+                        "Stop changing informational or display-only inputs. Reuse the latest successful "
+                        "result and produce the final user answer now. Only a new, explicitly requested "
+                        "independent scenario justifies another execution."
+                    )
+                )
         call_args = {
             key: args[key]
             for key in ("ontology_id", "operation_key", "arguments")
             if key in args
         }
+        if isinstance(args.get("arguments"), Mapping):
+            call_args["argument_validation_context"] = (
+                _latest_user_request(context_messages),
+                _current_turn_business_data_evidence(context_messages, ontology_id=ontology_id),
+            )
         if context.project_root:
             # Keep the caller's path representation intact; normalize it at the
             # execution boundary so POSIX-style paths remain observable on
@@ -2910,7 +2976,10 @@ class ExecuteScriptTool:
         if selected_ontology_version:
             call_args["runtime_context"]["selected_ontology_version"] = selected_ontology_version
             call_args["runtime_context"]["ontology_version"] = selected_ontology_version
-        if context.selected_ontology_id and context.selected_ontology_id == str(call_args.get("ontology_id") or "").strip():
+        if (
+            context.selected_ontology_id
+            and context.selected_ontology_id == str(call_args.get("ontology_id") or "").strip()
+        ):
             call_args["ontology_version"] = selected_ontology_version
             manifest = getattr(context, "preflight_ontology_manifest", None)
             manifest_matches_selection = bool(selected_ontology_version)
@@ -2918,10 +2987,7 @@ class ExecuteScriptTool:
                 manifest_matches_selection = False
             elif str(manifest.get("id") or "").strip() != context.selected_ontology_id:
                 manifest_matches_selection = False
-            elif (
-                str(manifest.get("version") or "").strip()
-                != selected_ontology_version
-            ):
+            elif str(manifest.get("version") or "").strip() != selected_ontology_version:
                 manifest_matches_selection = False
             if manifest_matches_selection:
                 bindings = getattr(
@@ -2929,11 +2995,7 @@ class ExecuteScriptTool:
                     "preflight_ontology_script_bindings",
                     None,
                 )
-                script_entry = (
-                    bindings.get(operation_key)
-                    if isinstance(bindings, Mapping)
-                    else None
-                )
+                script_entry = bindings.get(operation_key) if isinstance(bindings, Mapping) else None
                 call_args.update(
                     {
                         "preflight_ontology_manifest": manifest,
@@ -2956,10 +3018,8 @@ class ExecuteScriptTool:
                     }
                 )
         logger.info(
-            (
-                "execute_script tool invoked: tool_call_id=%s caller=%s "
-                "run_id=%s session_id=%s turn_id=%s ontology_id=%s ontology_version=%s operation_key=%s"
-            ),
+            "execute_script tool invoked: tool_call_id=%s caller=%s "
+            "run_id=%s session_id=%s turn_id=%s ontology_id=%s ontology_version=%s operation_key=%s",
             tool_call_id or "n/a",
             context.caller,
             context.run_id or "n/a",
@@ -2997,8 +3057,6 @@ def _terminal_execute_script_error(content: str) -> Optional[Dict[str, str]]:
         return None
     return {
         "error_code": "EXECUTE_SCRIPT_FAILED",
-        "message": (
-            "The deterministic operation failed, so no calculated conclusion was produced."
-        ),
+        "message": "The deterministic operation failed, so no calculated conclusion was produced.",
         "tool_name": "execute_script",
     }

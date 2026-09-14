@@ -67,11 +67,7 @@ def _public_chat_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     terminal_runs: set[str] = set()
     for event in events or []:
         data = event.get("data") if isinstance(event, dict) else None
-        if (
-            not isinstance(data, dict)
-            or event.get("event") != "agent.v2"
-            or data.get("protocol") != "agent-stream.v2"
-        ):
+        if not isinstance(data, dict) or event.get("event") != "agent.v2" or data.get("protocol") != "agent-stream.v2":
             public_events.append(event)
             continue
 
@@ -159,6 +155,7 @@ class ToolOutputLimits:
 # ============================================================================
 # Internal Append-Only File-Based Storage
 # ============================================================================
+
 
 @dataclass
 class _FileChatSession:
@@ -268,9 +265,7 @@ class _AppendOnlyChatStore:
         normalized_ref = str(output_ref or "").strip().lower()
         if not _TOOL_OUTPUT_REF_PATTERN.fullmatch(normalized_ref):
             raise ValueError("output_ref is invalid")
-        return self._tool_output_run_dir(session_id, run_id) / "{}.json".format(
-            normalized_ref
-        )
+        return self._tool_output_run_dir(session_id, run_id) / "{}.json".format(normalized_ref)
 
     def _tool_output_content_path(
         self,
@@ -324,10 +319,7 @@ class _AppendOnlyChatStore:
             return None
         try:
             file_size = path.stat().st_size
-            max_legacy_bytes = (
-                self._tool_output_limits.max_output_bytes * 6
-                + _TOOL_OUTPUT_METADATA_MAX_BYTES
-            )
+            max_legacy_bytes = self._tool_output_limits.max_output_bytes * 6 + _TOOL_OUTPUT_METADATA_MAX_BYTES
             if file_size > max_legacy_bytes:
                 logger.warning(
                     "Rejected oversized tool output artifact session=%s run=%s ref=%s",
@@ -369,9 +361,7 @@ class _AppendOnlyChatStore:
             return None
         if version not in {1, 2, 3}:
             return None
-        if version >= 3 and not _TOOL_OUTPUT_SHA256_PATTERN.fullmatch(
-            str(record.get("sha256") or "")
-        ):
+        if version >= 3 and not _TOOL_OUTPUT_SHA256_PATTERN.fullmatch(str(record.get("sha256") or "")):
             return None
         return record
 
@@ -397,7 +387,8 @@ class _AppendOnlyChatStore:
             _LEGACY_MIGRATED_SUFFIX,
         )
 
-    def _now_iso(self) -> str:
+    @staticmethod
+    def _now_iso() -> str:
         """Get current timestamp in ISO format."""
         return datetime.utcnow().isoformat() + "Z"
 
@@ -501,8 +492,7 @@ class _AppendOnlyChatStore:
                             generation = max(0, int(raw_generation))
                         except (TypeError, ValueError):
                             logger.warning(
-                                "Skipping chat event with invalid log generation "
-                                "session=%s line=%s",
+                                "Skipping chat event with invalid log generation session=%s line=%s",
                                 session_id,
                                 line_number,
                             )
@@ -593,7 +583,8 @@ class _AppendOnlyChatStore:
             stream.flush()
             os.fsync(stream.fileno())
 
-    def _valid_events(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _valid_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         valid_events: List[Dict[str, Any]] = []
         for event in events:
             if not isinstance(event, dict):
@@ -628,9 +619,7 @@ class _AppendOnlyChatStore:
             if os.path.islink(path):
                 logger.warning("Ignoring symlinked chat session storage entry: %s", name)
                 continue
-            if os.path.isdir(path) and os.path.exists(
-                os.path.join(path, _SNAPSHOT_FILENAME)
-            ):
+            if os.path.isdir(path) and os.path.exists(os.path.join(path, _SNAPSHOT_FILENAME)):
                 session_ids.add(name)
             elif name.endswith(".json"):
                 session_ids.add(name[:-5])
@@ -797,9 +786,7 @@ class _AppendOnlyChatStore:
             if require_unprotected or expected_updated_at is not None:
                 snapshot = self._read_snapshot_unlocked(session_id)
                 if expected_updated_at is not None and (
-                    snapshot is None
-                    or str(getattr(snapshot, "updated_at", "") or "")
-                    != str(expected_updated_at)
+                    snapshot is None or str(getattr(snapshot, "updated_at", "") or "") != str(expected_updated_at)
                 ):
                     return False
                 if require_unprotected and snapshot is not None:
@@ -845,11 +832,7 @@ class _AppendOnlyChatStore:
             event_data = {"role": role, "content": content}
             if metadata:
                 event_data["metadata"] = metadata
-            event = {
-                "event": "chat_message",
-                "data": event_data,
-                "ts": int(time.time() * 1000)
-            }
+            event = {"event": "chat_message", "data": event_data, "ts": int(time.time() * 1000)}
             self._append_events_to_log_unlocked(
                 session_id,
                 [event],
@@ -888,11 +871,7 @@ class _AppendOnlyChatStore:
                 if event.get("event") != "chat_message":
                     continue
                 data = event.get("data") if isinstance(event.get("data"), dict) else {}
-                metadata = (
-                    data.get("metadata")
-                    if isinstance(data.get("metadata"), dict)
-                    else {}
-                )
+                metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
                 if (
                     metadata.get("type") == _INTERACTION_CANCELLED_EVENT_TYPE
                     and str(metadata.get("interaction_id") or "").strip() == normalized_id
@@ -921,8 +900,8 @@ class _AppendOnlyChatStore:
             self._write_snapshot_unlocked(snapshot)
             return self._get_session_unlocked(session_id)
 
+    @staticmethod
     def _apply_event_to_session(
-        self,
         session: _FileChatSession,
         event: Dict[str, Any],
     ) -> bool:
@@ -934,11 +913,7 @@ class _AppendOnlyChatStore:
 
         if event_name == "chat_message":
             data = event.get("data") if isinstance(event.get("data"), dict) else {}
-            metadata = (
-                data.get("metadata")
-                if isinstance(data.get("metadata"), dict)
-                else {}
-            )
+            metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
             turn_id = metadata.get("turn_id")
             role = str(data.get("role") or "")
             if turn_id is not None and role:
@@ -946,20 +921,11 @@ class _AppendOnlyChatStore:
                     existing = session.events[index]
                     if existing.get("event") != "chat_message":
                         continue
-                    existing_data = (
-                        existing.get("data")
-                        if isinstance(existing.get("data"), dict)
-                        else {}
-                    )
+                    existing_data = existing.get("data") if isinstance(existing.get("data"), dict) else {}
                     existing_metadata = (
-                        existing_data.get("metadata")
-                        if isinstance(existing_data.get("metadata"), dict)
-                        else {}
+                        existing_data.get("metadata") if isinstance(existing_data.get("metadata"), dict) else {}
                     )
-                    if (
-                        str(existing_data.get("role") or "") == role
-                        and existing_metadata.get("turn_id") == turn_id
-                    ):
+                    if str(existing_data.get("role") or "") == role and existing_metadata.get("turn_id") == turn_id:
                         session.events[index] = deepcopy(event)
                         return True
 
@@ -973,10 +939,7 @@ class _AppendOnlyChatStore:
                 last_data = last_event.get("data") or {}
 
                 # Check if we can merge with the previous event
-                if (
-                    last_event.get("event") == "agent.v2"
-                    and last_data.get("type") == event_type
-                ):
+                if last_event.get("event") == "agent.v2" and last_data.get("type") == event_type:
                     last_payload = last_data.get("payload") or {}
 
                     can_merge = False
@@ -1046,11 +1009,7 @@ class _AppendOnlyChatStore:
             missing_events = []
             for event in event_list:
                 data = event.get("data") if isinstance(event, dict) else None
-                event_id = (
-                    str(data.get("event_id") or "")
-                    if isinstance(data, dict)
-                    else ""
-                )
+                event_id = str(data.get("event_id") or "") if isinstance(data, dict) else ""
                 if event_id and event_id in existing_ids:
                     continue
                 missing_events.append(event)
@@ -1146,14 +1105,15 @@ class _AppendOnlyChatStore:
                 normalized_session_id,
                 normalized_run_id,
             )
-            if (
-                usage["run_count"] >= self._tool_output_limits.max_run_count
-                or usage["run_bytes"] + projected_size
-                > self._tool_output_limits.max_run_bytes
-                or usage["session_count"] >= self._tool_output_limits.max_session_count
-                or usage["session_bytes"] + projected_size
-                > self._tool_output_limits.max_session_bytes
-            ):
+            run_limit_reached = usage["run_count"] >= self._tool_output_limits.max_run_count
+            run_bytes_exceeded = (
+                usage["run_bytes"] + projected_size > self._tool_output_limits.max_run_bytes
+            )
+            session_limit_reached = usage["session_count"] >= self._tool_output_limits.max_session_count
+            session_bytes_exceeded = (
+                usage["session_bytes"] + projected_size > self._tool_output_limits.max_session_bytes
+            )
+            if any((run_limit_reached, run_bytes_exceeded, session_limit_reached, session_bytes_exceeded)):
                 logger.warning(
                     "Skipped tool output artifact above run/session quota session=%s run=%s",
                     normalized_session_id,
@@ -1242,9 +1202,7 @@ class _AppendOnlyChatStore:
                     with open(content_path, "rb") as f:
                         raw_output = f.read(self._tool_output_limits.max_output_bytes + 1)
                     output = (
-                        raw_output.decode("utf-8")
-                        if self._tool_output_bytes_match_record(record, raw_output)
-                        else None
+                        raw_output.decode("utf-8") if self._tool_output_bytes_match_record(record, raw_output) else None
                     )
                 except (IOError, OSError, UnicodeDecodeError):
                     output = None
@@ -1338,10 +1296,7 @@ class _AppendOnlyChatStore:
             )
             if int(record.get("version") or 1) == 1:
                 output = record.get("output")
-                if (
-                    not isinstance(output, str)
-                    or len(output.encode("utf-8")) != record["output_size"]
-                ):
+                if not isinstance(output, str) or len(output.encode("utf-8")) != record["output_size"]:
                     return None
                 artifact_path = metadata_path
                 artifact_bytes = None
@@ -1350,9 +1305,7 @@ class _AppendOnlyChatStore:
                 artifact_path = metadata_path.with_suffix(".txt")
                 try:
                     with artifact_path.open("rb") as stream:
-                        artifact_bytes = stream.read(
-                            self._tool_output_limits.max_output_bytes + 1
-                        )
+                        artifact_bytes = stream.read(self._tool_output_limits.max_output_bytes + 1)
                     if not self._tool_output_bytes_match_record(
                         record,
                         artifact_bytes,
@@ -1360,9 +1313,7 @@ class _AppendOnlyChatStore:
                         return None
                 except OSError:
                     return None
-                response_content_type = (
-                    record.get("content_type") or "text/plain; charset=utf-8"
-                )
+                response_content_type = record.get("content_type") or "text/plain; charset=utf-8"
         result = {
             **record,
             "artifact_path": str(artifact_path),
@@ -1449,6 +1400,7 @@ class _AppendOnlyChatStore:
 # Public API Classes
 # ============================================================================
 
+
 @dataclass
 class ChatMessage:
     """Represents a single chat message."""
@@ -1532,9 +1484,7 @@ class ChatSession:
 
         events = getattr(session, "events", []) or []
         if not include_messages:
-            metadata["message_count"] = sum(
-                1 for event in events if event.get("event") == "chat_message"
-            )
+            metadata["message_count"] = sum(1 for event in events if event.get("event") == "chat_message")
 
         if include_messages:
             index = 0
@@ -1736,10 +1686,7 @@ class ChatStore:
     def rebuild_session_summaries(self) -> List[SessionSummary]:
         """Read durable chat facts for an explicit index rebuild."""
 
-        return [
-            self._summary_from_file_session(session)
-            for session in self._store.list_sessions()
-        ]
+        return [self._summary_from_file_session(session) for session in self._store.list_sessions()]
 
     def refresh_session_summary(self, session_id: str) -> SessionSummary | None:
         """Reproject one authoritative chat snapshot after a prune recheck."""

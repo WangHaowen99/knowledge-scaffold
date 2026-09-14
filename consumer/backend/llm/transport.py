@@ -10,13 +10,11 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
-
-from config import AgentConfig, LLMConfig
 from agent.exceptions import WorkflowCancelledError
-from utils.logging import get_logger
+from config import AgentConfig, LLMConfig
 from llm.provider_adapters import get_provider_adapter
-
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -44,9 +42,7 @@ def _retry_delay_seconds(
     if headers is None:
         return fallback
 
-    raw_retry_after = str(
-        headers.get("retry-after") or headers.get("Retry-After") or ""
-    ).strip()
+    raw_retry_after = str(headers.get("retry-after") or headers.get("Retry-After") or "").strip()
     if not raw_retry_after:
         return fallback
 
@@ -101,9 +97,7 @@ class OpenAIChatTransport:
         tools: Optional[List[Dict[str, Any]]],
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        extra_body: Dict[str, Any] = self.provider_adapter.extra_body(
-            enable_reasoning=enable_reasoning
-        )
+        extra_body: Dict[str, Any] = self.provider_adapter.extra_body(enable_reasoning=enable_reasoning)
         extra_body.update(kwargs)
 
         payload: Dict[str, Any] = {
@@ -142,7 +136,8 @@ class OpenAIChatTransport:
             **kwargs,
         )
         logger.info(
-            "Making LLM request via OpenAI client to %s/chat/completions, messages=%d tools=%d stream=%s temperature=%s reasoning=%s",
+            "Making LLM request via OpenAI client to %s/chat/completions, messages=%d tools=%d stream=%s temperature=%s"
+            " reasoning=%s",
             str(self.config.base_url or "").rstrip("/"),
             len(messages),
             len(tools or []),
@@ -162,10 +157,7 @@ class OpenAIChatTransport:
             try:
                 return self._get_openai_client().chat.completions.create(**payload)
             except APIStatusError as exc:
-                if (
-                    not _is_retryable_status_code(exc.status_code)
-                    or attempt >= max_attempts - 1
-                ):
+                if not _is_retryable_status_code(exc.status_code) or attempt >= max_attempts - 1:
                     logger.error(
                         "LLM request failed with status %d after %d attempt(s)",
                         exc.status_code,

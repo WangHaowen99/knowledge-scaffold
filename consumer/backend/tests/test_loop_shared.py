@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+from operator import getitem
 from types import SimpleNamespace
 
 from agent.tools.base import ToolBatchResult
@@ -131,16 +132,16 @@ def test_apply_tool_batch_result_to_state_merges_runtime_fields():
 
     assert state["results"] == {"existing": 1, "new": 2}
     assert state["completed_ids"] == ["old", "new-id"]
-    assert state["failed_ids"] == ["failed-id"]
-    assert state["errors"] == ["err"]
+    assert getitem(state, "failed_ids") == ["failed-id"]
+    assert getitem(state, "errors") == ["err"]
     assert [message["content"] for message in state["messages"]] == [
         "hello",
         "tool output",
         "extra output",
     ]
-    assert "ontologies/demo/objects/widget.md" in state["read_documents"]["by_path"]
+    assert "ontologies/demo/objects/widget.md" in getitem(getitem(state, "read_documents"), "by_path")
     assert state["evolution_recall_records"] == [{"id": "existing"}, {"id": "next"}]
-    assert state["plain"] == "value"
+    assert getitem(state, "plain") == "value"
 
 
 def test_build_tool_timing_metrics_computes_overlap_and_parallel_execution():
@@ -176,11 +177,14 @@ def test_build_public_iteration_timing_separates_model_tools_and_setup():
         "model_elapsed_ms": 3000,
         "setup_elapsed_ms": 84774,
     }
-    assert build_public_iteration_timing(
-        total_elapsed_ms=10,
-        model_elapsed_ms=None,
-        tools_elapsed_ms=2,
-    ) == {}
+    assert (
+        build_public_iteration_timing(
+            total_elapsed_ms=10,
+            model_elapsed_ms=None,
+            tools_elapsed_ms=2,
+        )
+        == {}
+    )
 
 
 def test_iteration_event_can_override_main_source_node():

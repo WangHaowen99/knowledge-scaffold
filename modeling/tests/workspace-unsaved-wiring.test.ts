@@ -21,7 +21,9 @@ test('顶层离开保护同时接收流程图和知识包文本的未保存状�
 
 test('后台包更新不会覆盖仍在自动保存或冲突中的本地输入', () => {
   assert.match(reviewPanelSource, /const dirtyRef = useRef\(false\)/);
-  assert.match(reviewPanelSource, /\(dirtyRef\.current \|\| diagramDirtyRef\.current\) && current \? current/);
+  assert.match(reviewPanelSource, /dirtyRef\.current \|\| diagramDirtyRef\.current/);
+  assert.match(reviewPanelSource, /if \(\(dirtyRef\.current \|\| diagramDirtyRef\.current\) && current\)/);
+  assert.match(reviewPanelSource, /return current/);
   assert.match(reviewPanelSource, /当前文件有未保存修改，已保留你的草稿/);
   assert.match(reviewPanelSource, /onDirtyChange\?\.\(hasUnsavedDraft\)/);
   assert.match(workspaceSource, /workspaceDirty:\s*workspaceDirtyRef\.current/);

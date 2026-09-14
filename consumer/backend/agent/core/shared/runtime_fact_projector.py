@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional
 
 from config.evidence_config import EvidenceConfig
@@ -89,26 +89,29 @@ def capture_business_data_snapshot(
         if ontology_id and entity
         else ()
     )
-    return GroundingLookupSnapshot(
-        workspace_id=workspace_id,
-        runtime_dir=runtime_dir,
-        run_id=str(context.run_id or "run-unknown"),
-        tool_call_id=stable_call_id,
-        tool_name="business_data_search",
-        ontology_id=ontology_id,
-        ontology_epoch=str(pointer.get("expected_epoch") or "") or None if pointer else None,
-        mutation_revision=int(pointer.get("mutation_revision") or 0) if pointer else None,
-        index_generation=str(pointer.get("active_generation") or "") or None if pointer else None,
-        subject=entity,
-        query_digest=query_digest,
-        provider=str(provider or "").strip() or None,
-        selectors=selectors,
-        read_documents=normalize_read_documents_registry(context.read_documents),
-        runtime_fact_mode=config.runtime_fact_mode,
-        runtime_fact_write_timeout_ms=config.runtime_fact_write_timeout_ms,
-        runtime_fact_batch_size=config.runtime_fact_batch_size,
-        runtime_fact_flush_interval_ms=config.runtime_fact_flush_interval_ms,
-    ), "enabled"
+    return (
+        GroundingLookupSnapshot(
+            workspace_id=workspace_id,
+            runtime_dir=runtime_dir,
+            run_id=str(context.run_id or "run-unknown"),
+            tool_call_id=stable_call_id,
+            tool_name="business_data_search",
+            ontology_id=ontology_id,
+            ontology_epoch=str(pointer.get("expected_epoch") or "") or None if pointer else None,
+            mutation_revision=int(pointer.get("mutation_revision") or 0) if pointer else None,
+            index_generation=str(pointer.get("active_generation") or "") or None if pointer else None,
+            subject=entity,
+            query_digest=query_digest,
+            provider=str(provider or "").strip() or None,
+            selectors=selectors,
+            read_documents=normalize_read_documents_registry(context.read_documents),
+            runtime_fact_mode=config.runtime_fact_mode,
+            runtime_fact_write_timeout_ms=config.runtime_fact_write_timeout_ms,
+            runtime_fact_batch_size=config.runtime_fact_batch_size,
+            runtime_fact_flush_interval_ms=config.runtime_fact_flush_interval_ms,
+        ),
+        "enabled",
+    )
 
 
 def project_business_data_result(
@@ -247,9 +250,7 @@ class _RuntimeFactBatcher:
                     # persist_failed receipt deterministic: no late ghost write.
                     pending.state = "canceled"
                     self._condition.notify_all()
-                    raise RuntimeFactsStoreError(
-                        "Runtime Fact batched write timed out before persistence"
-                    )
+                    raise RuntimeFactsStoreError("Runtime Fact batched write timed out before persistence")
                 if pending.state == "writing":
                     # SQLite work cannot be canceled safely once its transaction
                     # has started. Report an unknown/pending receipt instead of
@@ -296,9 +297,7 @@ class _RuntimeFactBatcher:
                 records = RuntimeFactsStore(
                     self.path,
                     timeout_ms=self.write_timeout_ms,
-                ).put_many(
-                    [pending.command for pending in active_batch]
-                )
+                ).put_many([pending.command for pending in active_batch])
             except BaseException as exc:
                 with self._condition:
                     for pending in active_batch:
@@ -440,11 +439,8 @@ def _binding_subject_matches(
         and str(binding.get("resource_key") or "") == selector.resource_key
         and str(binding.get("ontology_epoch") or "").removeprefix("sha256:")
         == str(snapshot.ontology_epoch or "").removeprefix("sha256:")
-        and int(
-            binding.get("mutation_revision")
-            if binding.get("mutation_revision") is not None
-            else -1
-        ) == snapshot.mutation_revision
+        and int(binding.get("mutation_revision") if binding.get("mutation_revision") is not None else -1)
+        == snapshot.mutation_revision
         and str(binding.get("index_generation") or "") == snapshot.index_generation
     )
 
@@ -453,16 +449,8 @@ def _record_matches_binding(record: Any, binding: Mapping[str, Any]) -> bool:
     if not isinstance(record, dict):
         return False
     return bool(
-        int(
-            record.get("mutation_revision")
-            if record.get("mutation_revision") is not None
-            else -1
-        )
-        == int(
-            binding.get("mutation_revision")
-            if binding.get("mutation_revision") is not None
-            else -2
-        )
+        int(record.get("mutation_revision") if record.get("mutation_revision") is not None else -1)
+        == int(binding.get("mutation_revision") if binding.get("mutation_revision") is not None else -2)
         and str(record.get("ontology_epoch") or "").removeprefix("sha256:")
         == str(binding.get("ontology_epoch") or "").removeprefix("sha256:")
         and str(record.get("source_content_sha256") or "") == str(binding.get("source_content_sha256") or "")
@@ -533,18 +521,25 @@ def _fallback_tool_call_id(
     entity: str,
     query_digest: str,
 ) -> str:
-    return "call_auto_" + hash_frames(
-        "runtime_tool_call/v1",
-        [
-            field_s("run_id", str(context.run_id or "")),
-            field_n("session_id") if context.session_id is None else field_s("session_id", str(context.session_id)),
-            field_i("turn_id", int(context.turn_id or 0)),
-            field_n("iteration") if context.agent_iteration is None else field_i("iteration", int(context.agent_iteration)),
-            field_s("ontology_id", ontology_id),
-            field_s("entity", entity),
-            field_h("query_digest", query_digest.removeprefix("sha256:")),
-        ],
-    )[:32]
+    return (
+        "call_auto_"
+        + hash_frames(
+            "runtime_tool_call/v1",
+            [
+                field_s("run_id", str(context.run_id or "")),
+                field_n("session_id") if context.session_id is None else field_s("session_id", str(context.session_id)),
+                field_i("turn_id", int(context.turn_id or 0)),
+                (
+                    field_n("iteration")
+                    if context.agent_iteration is None
+                    else field_i("iteration", int(context.agent_iteration))
+                ),
+                field_s("ontology_id", ontology_id),
+                field_s("entity", entity),
+                field_h("query_digest", query_digest.removeprefix("sha256:")),
+            ],
+        )[:32]
+    )
 
 
 def _safe_int(value: Any) -> Optional[int]:

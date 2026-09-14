@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
+from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.canonical import sha256_digest
 from solver_coordination.compiler import ProblemCompilationError, ProblemIRCompiler
 from solver_coordination.contracts import NormalizedInput
@@ -12,13 +12,13 @@ from solver_coordination.problem_families.registry import ProblemFamilyRegistry
 class _SyntheticAdapter:
     family_key = "synthetic_family.v1"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, *, capability, normalized_input, fact_snapshot):
         model = capability["decision_model"]
         return {
             "decision_space": {"choice": model["choices"]},
             "parameters": dict(normalized_input.values),
-            "constraints": list(model.get("constraints", []))
-            + [{"fact_digest": fact_snapshot.digest}],
+            "constraints": list(model.get("constraints", [])) + [{"fact_digest": fact_snapshot.digest}],
             "objectives": list(model.get("objectives", [])),
             "limits": dict(model.get("limits", {})),
         }
@@ -27,6 +27,7 @@ class _SyntheticAdapter:
 class _ExplodingAdapter:
     family_key = "exploding_family.v1"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, **kwargs):
         raise RuntimeError("synthetic adapter failure")
 
@@ -34,6 +35,7 @@ class _ExplodingAdapter:
 class _DefaultingAdapter:
     family_key = "synthetic_family.v1"
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, *, capability, normalized_input, fact_snapshot):
         model = capability.get("decision_model", {}) if isinstance(capability, dict) else {}
         return {
@@ -55,6 +57,7 @@ class _LockedModelLoader:
 
 
 class _RegistryDouble:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def compile_problem(self, family_key, **kwargs):
         assert family_key == "synthetic_family.v1"
         return _SyntheticAdapter().compile_problem(**kwargs)
@@ -108,12 +111,8 @@ def test_compiler_emits_canonical_problem_ir_and_digest_binds_all_inputs():
     registry = ProblemFamilyRegistry([_SyntheticAdapter()])
     compiler = ProblemIRCompiler(registry=registry, compiler_version="compiler-synthetic-1")
 
-    first = compiler.compile(
-        capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot()
-    )
-    same = compiler.compile(
-        capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot()
-    )
+    first = compiler.compile(capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot())
+    same = compiler.compile(capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot())
     changed_model = compiler.compile(
         capability=_capability(choices=["a", "b", "c"]),
         normalized_input=_input(),
@@ -130,13 +129,23 @@ def test_compiler_emits_canonical_problem_ir_and_digest_binds_all_inputs():
         normalized_input=_input(),
         fact_snapshot=_snapshot("2026-01-02T00:00:00Z"),
     )
-    changed_compiler = ProblemIRCompiler(
-        registry=registry, compiler_version="compiler-synthetic-2"
-    ).compile(capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot())
+    changed_compiler = ProblemIRCompiler(registry=registry, compiler_version="compiler-synthetic-2").compile(
+        capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot()
+    )
 
     assert first.to_dict()["schema_version"] == "solver.problem.v1"
     assert first.problem_id == same.problem_id == first.problem_digest
-    assert len({changed_model.problem_id, changed_input.problem_id, changed_snapshot.problem_id, changed_compiler.problem_id}) == 4
+    assert (
+        len(
+            {
+                changed_model.problem_id,
+                changed_input.problem_id,
+                changed_snapshot.problem_id,
+                changed_compiler.problem_id,
+            }
+        )
+        == 4
+    )
 
 
 def test_compiler_depends_on_the_registry_port_not_a_concrete_registry_class():
@@ -144,18 +153,14 @@ def test_compiler_depends_on_the_registry_port_not_a_concrete_registry_class():
         registry=_RegistryDouble(),  # type: ignore[arg-type]
         compiler_version="compiler-synthetic-1",
     )
-    problem = compiler.compile(
-        capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot()
-    )
+    problem = compiler.compile(capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot())
     assert problem.problem_family == "synthetic_family.v1"
 
 
 def test_compiler_maps_family_failures_to_model_compile_failed():
     compiler = ProblemIRCompiler(registry=ProblemFamilyRegistry())
     with pytest.raises(ProblemCompilationError) as exc_info:
-        compiler.compile(
-            capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot()
-        )
+        compiler.compile(capability=_capability(), normalized_input=_input(), fact_snapshot=_snapshot())
     assert exc_info.value.code == "model_compile_failed"
 
     exploding = ProblemIRCompiler(registry=ProblemFamilyRegistry([_ExplodingAdapter()]))
@@ -281,9 +286,7 @@ def test_locked_model_loader_rejects_malformed_or_drifted_models(document, diges
 def test_locked_model_loader_cannot_self_attest_a_different_body():
     trusted_model = _capability()["decision_model"]
     declared_digest = sha256_digest(trusted_model)
-    capability = {
-        key: value for key, value in _capability().items() if key != "decision_model"
-    }
+    capability = {key: value for key, value in _capability().items() if key != "decision_model"}
     capability["decision_model_digest"] = declared_digest
     lying_model = {**trusted_model, "choices": ["tampered-choice"]}
     compiler = ProblemIRCompiler(
@@ -329,9 +332,7 @@ def test_compiler_rejects_snapshot_without_model_required_fact_proof():
     )
     compiler = ProblemIRCompiler(registry=ProblemFamilyRegistry([_SyntheticAdapter()]))
     with pytest.raises(ProblemCompilationError) as exc_info:
-        compiler.compile(
-            capability=_capability(), normalized_input=_input(), fact_snapshot=unchecked
-        )
+        compiler.compile(capability=_capability(), normalized_input=_input(), fact_snapshot=unchecked)
     assert exc_info.value.code == "model_compile_failed"
 
 
@@ -339,7 +340,7 @@ def test_compiler_rejects_runtime_binding_data_in_decision_model():
     capability = _capability()
     capability["decision_model"]["runtime_binding"] = {
         "endpoint": "endpoint-synthetic",
-        "token": "credential-synthetic",
+        "token": synthetic_secret("solver_problem_compiler-credential-01"),
     }
     compiler = ProblemIRCompiler(registry=ProblemFamilyRegistry([_SyntheticAdapter()]))
     with pytest.raises(ProblemCompilationError) as exc_info:

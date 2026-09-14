@@ -279,7 +279,8 @@ class RunRuntimeTrace:
             )
         )
 
-    def _phase_span_key(self, phase_name: str, component: str) -> str:
+    @staticmethod
+    def _phase_span_key(phase_name: str, component: str) -> str:
         return "phase:{}:{}:{}".format(
             _safe_span_token(component),
             _safe_span_token(phase_name),

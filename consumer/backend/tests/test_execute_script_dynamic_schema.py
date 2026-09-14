@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
 import json
+from concurrent.futures import ThreadPoolExecutor
+from operator import getitem
+from types import SimpleNamespace
 
-import pytest
-
-from agent.core.jiuwen.tools import get_jiuwen_tool_infos
-from agent.core.shared.solver_route_guard import bind_solver_route_requirement
-from agent.core.shared.tool_context import build_tool_context
-from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 import agent.tools.execute_script as execute_script_module
 import ontology.ontology_catalog as ontology_catalog_module
+import pytest
+from agent.core.jiuwen.tools import get_jiuwen_tool_infos
+from agent.core.jiuwen_engine import JiuwenReactLoopEngine
+from agent.core.shared.solver_route_guard import bind_solver_route_requirement
+from agent.core.shared.tool_context import build_tool_context
 from agent.tools.execute_script import handle_execute_script
 from agent.tools.registry import get_tool_schema, get_tools_schema, validate_tool_arguments
 from config.settings import AgentConfig
@@ -254,12 +254,12 @@ def test_jiuwen_and_token_schemas_use_selected_ontology_and_workspace(monkeypatc
     }
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
 
-    token_parameters = _execute_script_schema(
-        engine._tools_schema_for_state(state, caller="main")
-    )["function"]["parameters"]
-    tool_info_parameters = _execute_script_tool_info(
-        engine._jiuwen_tool_infos_for_state(state, caller="main")
-    )["parameters"]
+    token_parameters = _execute_script_schema(engine._tools_schema_for_state(state, caller="main"))["function"][
+        "parameters"
+    ]
+    tool_info_parameters = _execute_script_tool_info(engine._jiuwen_tool_infos_for_state(state, caller="main"))[
+        "parameters"
+    ]
 
     assert tool_info_parameters == token_parameters
     assert "workspace_input" in tool_info_parameters["properties"]["arguments"]["properties"]
@@ -378,9 +378,9 @@ def test_workspace_fallback_aggregates_only_scripted_ontologies(monkeypatch, tmp
         [("run-gamma", [{"name": "gamma_input", "required": True}])],
     )
 
-    parameters = _execute_script_schema(
-        get_tools_schema("main", workspace_id="workspace-target")
-    )["function"]["parameters"]
+    parameters = _execute_script_schema(get_tools_schema("main", workspace_id="workspace-target"))["function"][
+        "parameters"
+    ]
 
     assert set(parameters["properties"]["ontology_id"]["enum"]) == {
         "ontology-alpha",
@@ -412,11 +412,14 @@ def test_zero_argument_operation_publishes_closed_empty_arguments_schema(monkeyp
     assert arguments["properties"] == {}
     assert arguments["required"] == []
     assert arguments["additionalProperties"] is False
-    assert validate_tool_arguments(
-        "execute_script",
-        {"ontology_id": "demo", "operation_key": "run", "arguments": {}},
-        tool_schema=schema,
-    ) is None
+    assert (
+        validate_tool_arguments(
+            "execute_script",
+            {"ontology_id": "demo", "operation_key": "run", "arguments": {}},
+            tool_schema=schema,
+        )
+        is None
+    )
 
 
 def test_execute_script_requires_arguments_but_accepts_empty_object():
@@ -623,9 +626,7 @@ def test_handle_execute_script_fails_before_required_business_data_script(
         execute_script_module,
         "resolve_business_data_source",
         lambda **kwargs: (_ for _ in ()).throw(
-            execute_script_module.BusinessDataConnectionError(
-                "synthetic unavailable"
-            )
+            execute_script_module.BusinessDataConnectionError("synthetic unavailable")
         ),
     )
     executed = []
@@ -644,8 +645,7 @@ def test_handle_execute_script_fails_before_required_business_data_script(
     )
 
     assert result == (
-        "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] "
-        "Required business data connection is unavailable."
+        "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] " "Required business data connection is unavailable."
     )
     assert executed == []
 
@@ -715,7 +715,7 @@ def test_handle_execute_script_discards_success_stderr(monkeypatch, tmp_path):
     )
 
     assert result == "ok"
-    assert captured["include_stderr_on_success"] is False
+    assert getitem(captured, "include_stderr_on_success") is False
 
 
 @pytest.mark.parametrize(
@@ -732,10 +732,7 @@ def test_normalize_script_entrypoint_rejects_cross_platform_escapes(entrypoint):
 
 
 def test_normalize_script_entrypoint_accepts_windows_separators_inside_scripts():
-    assert (
-        ontology_catalog_module._normalize_script_entrypoint(r"subdir\run.py")
-        == "scripts/subdir/run.py"
-    )
+    assert ontology_catalog_module._normalize_script_entrypoint(r"subdir\run.py") == "scripts/subdir/run.py"
 
 
 @pytest.mark.parametrize("link_kind", ["scripts_root", "script_file"])
@@ -757,10 +754,13 @@ def test_resolve_ontology_script_path_rejects_symlink_escape(tmp_path, link_kind
     except OSError as exc:
         pytest.skip("symlink creation is unavailable: {}".format(exc))
 
-    assert ontology_catalog_module.resolve_ontology_script_path(
-        ontology_dir,
-        "scripts/run.py",
-    ) is None
+    assert (
+        ontology_catalog_module.resolve_ontology_script_path(
+            ontology_dir,
+            "scripts/run.py",
+        )
+        is None
+    )
 
 
 def test_script_parameter_parser_preserves_explicit_runtime_false():

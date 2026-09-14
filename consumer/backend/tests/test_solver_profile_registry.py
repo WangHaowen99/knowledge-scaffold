@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
 from solver_coordination.profiles import (
     ProfileFactResolver,
     ProfileNotFound,

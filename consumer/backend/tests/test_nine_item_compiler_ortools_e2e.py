@@ -1,28 +1,42 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+import importlib.util
+import multiprocessing.spawn
 import sys
 import threading
 import time
+import types
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import requests
+from backend_synthetic_credentials import synthetic_secret
 from werkzeug.serving import make_server
-
 
 # This test exercises the standalone Solver Service over HTTP through the
 # Consumer-owned Connector.  Only the integration-test process imports the
 # service application used to create the independent HTTP boundary.
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-if str(REPOSITORY_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPOSITORY_ROOT))
+_CONTRACTS_PACKAGE = REPOSITORY_ROOT / "contracts"
+if "contracts" not in sys.modules:
+    _CONTRACTS_MODULE = types.ModuleType("contracts")
+    _CONTRACTS_MODULE.__path__ = [str(_CONTRACTS_PACKAGE)]
+    _CONTRACTS_MODULE.__package__ = "contracts"
+    sys.modules["contracts"] = _CONTRACTS_MODULE
 
-from solvers.ortools.app import create_app
-from solvers.ortools.config import OrToolsSolverConfig
-from solvers.ortools.tests.test_refinery_route_engine import (
-    _context as _synthetic_solver_context,
+_SOLVERS_PACKAGE = REPOSITORY_ROOT / "solvers"
+_SOLVERS_SPEC = importlib.util.spec_from_file_location(
+    "solvers",
+    _SOLVERS_PACKAGE / "__init__.py",
+    submodule_search_locations=[str(_SOLVERS_PACKAGE)],
 )
+if _SOLVERS_SPEC is None or _SOLVERS_SPEC.loader is None:
+    raise ImportError("solvers package cannot be loaded")
+_SOLVERS_MODULE = importlib.util.module_from_spec(_SOLVERS_SPEC)
+sys.modules.setdefault("solvers", _SOLVERS_MODULE)
+_SOLVERS_SPEC.loader.exec_module(_SOLVERS_MODULE)
+
 from solver_coordination.canonical import sha256_digest
 from solver_coordination.compiler import ProblemIRCompiler
 from solver_coordination.connectors.helpers import capability_fingerprint
@@ -30,16 +44,19 @@ from solver_coordination.connectors.http_transport import HttpSolverTransport
 from solver_coordination.connectors.ortools import OrToolsConnector
 from solver_coordination.contracts import NormalizedInput
 from solver_coordination.fact_snapshot import FactSnapshotBuilder
+from solver_coordination.presentation import ProfilePresentationService
 from solver_coordination.problem_families.candidate_selection import (
     CandidateSelectionAdapter,
 )
 from solver_coordination.problem_families.registry import ProblemFamilyRegistry
 from solver_coordination.profiles import build_default_solver_profile_registry
-from solver_coordination.presentation import ProfilePresentationService
 from solver_coordination.verification.ordered_binary_route import (
     OrderedBinaryRouteIndependentVerifier,
 )
 
+from solvers.ortools.app import create_app
+from solvers.ortools.config import OrToolsSolverConfig
+from solvers.ortools.tests.test_refinery_route_engine import _context as _synthetic_solver_context
 
 _OBJECTIVES = [
     {"metric": "primary_score", "sense": "maximize"},
@@ -53,6 +70,7 @@ _ITEM_IDS = tuple("ITEM_SYNTHETIC_{:04d}".format(index) for index in range(1, 10
 class _LoopbackEndpointPolicy:
     """Test-only loopback policy; production defaults to HTTPS with explicit private-HTTP opt-in."""
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def validate(self, endpoint: str) -> str:
         if not endpoint.startswith("http://127.0.0.1:"):
             raise ValueError("endpoint must be a loopback test endpoint")
@@ -70,7 +88,7 @@ def _solver_config(tmp_path) -> OrToolsSolverConfig:
         memory_limit_bytes=512 * 1024 * 1024,
         file_limit_bytes=1024 * 1024,
         prefer_wait_max_ms=5_000,
-        service_token="synthetic-ortools-token",
+        service_token=synthetic_secret("nine_item_compiler_ortools_e2e-credential-01"),
         enforce_os_limits=False,
     )
 
@@ -92,7 +110,7 @@ def _normalized_input() -> NormalizedInput:
                     "duration": "1.00",
                 }
                 for index, item_id in enumerate(_ITEM_IDS, start=1)
-            ]
+            ],
         },
     )
 
@@ -182,14 +200,25 @@ def _snapshot(normalized_input: NormalizedInput):
     )
 
 
-def test_nine_item_compiler_http_ortools_verifier_and_presentation_chain(tmp_path):
+def test_nine_item_compiler_http_ortools_verifier_and_presentation_chain(tmp_path, monkeypatch):
+    original_preparation_data = multiprocessing.spawn.get_preparation_data
+
+    def preparation_data_with_repository_root(process_name):
+        preparation_data = original_preparation_data(process_name)
+        repository_root = str(REPOSITORY_ROOT)
+        preparation_data["sys_path"] = [
+            repository_root,
+            *(entry for entry in preparation_data["sys_path"] if entry != repository_root),
+        ]
+        return preparation_data
+
+    monkeypatch.setattr(multiprocessing.spawn, "get_preparation_data", preparation_data_with_repository_root)
+
     normalized_input = _normalized_input()
     fact_snapshot = _snapshot(normalized_input)
     capability = _capability()
     profiles = build_default_solver_profile_registry()
-    compiler = ProblemIRCompiler(
-        registry=ProblemFamilyRegistry([CandidateSelectionAdapter(profiles)])
-    )
+    compiler = ProblemIRCompiler(registry=ProblemFamilyRegistry([CandidateSelectionAdapter(profiles)]))
     problem = compiler.compile(
         capability=capability,
         normalized_input=normalized_input,
@@ -205,12 +234,10 @@ def test_nine_item_compiler_http_ortools_verifier_and_presentation_chain(tmp_pat
     server = make_server("127.0.0.1", 0, app, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    token = "synthetic-ortools-token"
+    token = synthetic_secret("nine_item_compiler_ortools_e2e-credential-01")
     endpoint = "http://127.0.0.1:{}".format(server.server_port)
     transport = HttpSolverTransport(
-        credential_resolver=lambda ref: token
-        if ref == "secret://solver/synthetic"
-        else None,
+        credential_resolver=lambda ref: token if ref == "secret://solver/synthetic" else None,
         endpoint_policy=_LoopbackEndpointPolicy(),
         timeout_seconds=5,
         max_retries=0,
@@ -275,9 +302,7 @@ def test_nine_item_compiler_http_ortools_verifier_and_presentation_chain(tmp_pat
         )
         assert verification.status == "verified"
         assert verification.optimality == "proven_optimal"
-        assert solver_result.assignment["candidate_id"] == (
-            "OPTION_0_TO_OPTION_1_K0004"
-        )
+        assert solver_result.assignment["candidate_id"] == "OPTION_0_TO_OPTION_1_K0004"
         assert [solver_result.assignment[item_id] for item_id in _ITEM_IDS] == [
             "OPTION_0",
             "OPTION_0",

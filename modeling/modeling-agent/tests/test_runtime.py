@@ -629,13 +629,13 @@ async def test_repeated_completed_evaluation_read_calls_core_once_and_emits_one_
         assert completed["status"] == "completed", completed["error"]
         calls = [call for call in gateway.calls if call["tool"] == "get_evaluation_results"]
         assert len(calls) == 1
-        trace = [
-            event.payload for event in runtime.store.events_after(
-                "project_evaluation_result_cache", 0,
-            )
-            if event.kind == "tool"
-            and event.payload.get("name") == "get_evaluation_results"
-        ]
+        trace = []
+        for event in runtime.store.events_after("project_evaluation_result_cache", 0):
+            if event.kind != "tool":
+                continue
+            if event.payload.get("name") != "get_evaluation_results":
+                continue
+            trace.append(event.payload)
         assert [event["phase"] for event in trace] == ["started", "completed"]
     finally:
         await runtime.shutdown()
@@ -1941,11 +1941,14 @@ async def test_material_parse_event_is_durable_idempotent_and_continues_without_
         )
         assert duplicate == {"accepted": True, "duplicate": True, "continued": False}
         after_retry = runtime.store.events_after("project_material_event", 0)
-        assert len([
-            item for item in after_retry
-            if item.kind == "message"
-            and item.payload.get("blocks", [{}])[0].get("type") == "uploadResult"
-        ]) == 1
+        upload_results_after_retry = 0
+        for item in after_retry:
+            if item.kind != "message":
+                continue
+            if item.payload.get("blocks", [{}])[0].get("type") != "uploadResult":
+                continue
+            upload_results_after_retry += 1
+        assert upload_results_after_retry == 1
         run_count = runtime.store._db.execute(  # noqa: SLF001 - idempotence invariant
             "SELECT COUNT(*) AS n FROM agent_runs WHERE project_id = ?",
             ("project_material_event",),
@@ -2018,12 +2021,13 @@ async def test_material_batch_waits_for_all_terminal_events_and_continues_once(s
         assert completed["status"] == "completed", completed["error"]
         assert second["continued"] is True
         events = runtime.store.events_after("project_material_batch", 0)
-        results = [
-            event.payload["blocks"][0]
-            for event in events
-            if event.kind == "message"
-            and event.payload.get("blocks", [{}])[0].get("type") == "uploadResult"
-        ]
+        results = []
+        for event in events:
+            if event.kind != "message":
+                continue
+            if event.payload.get("blocks", [{}])[0].get("type") != "uploadResult":
+                continue
+            results.append(event.payload["blocks"][0])
         assert len(results) == 1
         assert results[0]["parsed"] == 1
         assert results[0]["failed"] == 1
@@ -2596,8 +2600,15 @@ async def test_full_read_tool_emits_real_checkpoint_progress(monkeypatch) -> Non
 
     assert result["coverage"][0]["complete"] is True
     assert events[0][1]["detail"] == "正在建立完整阅读计划"
-    checkpoint = next(payload for kind, payload in events if kind == "progress"
-        and payload.get("counters", {}).get("progress") == 67)
+    checkpoint = None
+    for kind, payload in events:
+        if kind != "progress":
+            continue
+        if payload.get("counters", {}).get("progress") != 67:
+            continue
+        checkpoint = payload
+        break
+    assert checkpoint is not None
     assert checkpoint["detail"] == "8/12 个分块完成 · 全文覆盖 67%"
     assert checkpoint["counters"]["current"] == 8
     assert any(call["tool"] == "get_material_analysis_progress" for call in gateway.calls)
@@ -2778,23 +2789,28 @@ async def test_interjection_restores_question_when_model_only_answers(settings) 
 
         events = runtime.store.events_after("project_demo", 0)
         answer_done = max(event.seq for event in events if event.kind == "message_done")
-        original_closed = next(
-            event.seq for event in events
-            if event.kind == "interaction" and event.payload.get("id") == original.id
-            and event.payload.get("status") == "answered"
-        )
-        restored_opened = next(
-            event.seq for event in events
-            if event.kind == "interaction" and event.payload.get("id") == restored.id
-            and event.payload.get("status") == "pending"
-        )
+        original_closed = None
+        restored_opened = None
+        for event in events:
+            if event.kind != "interaction":
+                continue
+            if event.payload.get("id") == original.id and event.payload.get("status") == "answered":
+                original_closed = event.seq
+            if event.payload.get("id") == restored.id and event.payload.get("status") == "pending":
+                restored_opened = event.seq
+        assert original_closed is not None
+        assert restored_opened is not None
         assert answer_done < original_closed < restored_opened
-        assert not any(
-            event.kind == "message"
-            and event.payload.get("blocks", [{}])[0].get("type") == "answer"
-            and event.payload.get("blocks", [{}])[0].get("interactionId") == original.id
-            for event in events
-        )
+        original_answer_messages = 0
+        for event in events:
+            if event.kind != "message":
+                continue
+            if event.payload.get("blocks", [{}])[0].get("type") != "answer":
+                continue
+            if event.payload.get("blocks", [{}])[0].get("interactionId") != original.id:
+                continue
+            original_answer_messages += 1
+        assert original_answer_messages == 0
 
         await runtime.answer_interaction(
             project_id="project_demo",
@@ -3290,11 +3306,13 @@ async def test_cancel_run_settles_unfinished_tool_activity(settings) -> None:
         cancelled = await runtime.cancel(project_id=run.project_id)
 
         events = runtime.store.events_after(run.project_id, 0)
-        tool_events = [
-            event for event in events
-            if event.kind == "tool"
-            and event.payload.get("toolCallId") == "call_cancel_change_set"
-        ]
+        tool_events = []
+        for event in events:
+            if event.kind != "tool":
+                continue
+            if event.payload.get("toolCallId") != "call_cancel_change_set":
+                continue
+            tool_events.append(event)
         assert cancelled["status"] == "cancelled"
         assert [event.payload.get("phase") for event in tool_events] == ["started", "cancelled"]
         assert tool_events[-1].payload["summary"] == "运行已停止，当前操作已取消"
@@ -4137,12 +4155,15 @@ async def test_discarded_rejected_changes_is_a_guarded_autonomous_progress_tool(
         assert spec.input_schema == {"type": "object", "properties": {}, "additionalProperties": False}
         assert spec.parallel_safe is False
         events = runtime.store.events_after("project_discard_rejected_changes", 0)
-        completed = [
-            event for event in events
-            if event.kind == "tool"
-            and event.payload.get("name") == "discard_rejected_candidate_changes"
-            and event.payload.get("phase") == "completed"
-        ]
+        completed = []
+        for event in events:
+            if event.kind != "tool":
+                continue
+            if event.payload.get("name") != "discard_rejected_candidate_changes":
+                continue
+            if event.payload.get("phase") != "completed":
+                continue
+            completed.append(event)
         assert len(completed) == 1
         assert completed[0].payload["summary"] == "已放弃 2 项退回修改，当前已确认版本保持不变"
     finally:
@@ -4180,12 +4201,17 @@ async def test_explicit_evaluation_retry_cannot_be_satisfied_by_text_only(settin
         assert completed["status"] == "completed", completed["error"]
         assert [call["tool"] for call in gateway.calls].count("run_evaluation") == 1
         events = runtime.store.events_after("project_evaluation_proof", 0)
-        tool_started = next(
-            event for event in events
-            if event.kind == "tool"
-            and event.payload.get("name") == "run_evaluation"
-            and event.payload.get("phase") == "started"
-        )
+        tool_started = None
+        for event in events:
+            if event.kind != "tool":
+                continue
+            if event.payload.get("name") != "run_evaluation":
+                continue
+            if event.payload.get("phase") != "started":
+                continue
+            tool_started = event
+            break
+        assert tool_started is not None
         visible_deltas = [event for event in events if event.kind == "message_delta"]
         assert visible_deltas
         assert all(event.seq > tool_started.seq for event in visible_deltas)

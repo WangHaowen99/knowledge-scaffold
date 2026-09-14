@@ -19,7 +19,6 @@ from ontology.mutations import read_mutation_state_snapshot
 from utils.read_docs import normalize_read_documents_registry
 from workspace.workspaces import get_workspace_paths
 
-
 ONTOLOGY_EVIDENCE_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
@@ -75,10 +74,7 @@ def is_ontology_evidence_search_visible(
         pointer = read_active_pointer_snapshot(get_workspace_paths(workspace).runtime_dir, ontology_id)
     except (ValueError, EvidenceIndexManagerError):
         return False
-    return bool(
-        active_pointer_is_serviceable(pointer)
-        and pointer.get("epoch_status") == "ready"
-    )
+    return bool(active_pointer_is_serviceable(pointer) and pointer.get("epoch_status") == "ready")
 
 
 @dataclass(frozen=True)
@@ -94,6 +90,7 @@ class OntologyEvidenceSearchTool:
         object.__setattr__(self, "schema", ONTOLOGY_EVIDENCE_SEARCH_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent"})
 
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def execute(
         self,
         *,
@@ -173,12 +170,16 @@ class OntologyEvidenceSearchTool:
             return ToolOutcome(content=_manager_error(exc))
 
         if not _same_pointer(pointer_before, pointer_after):
-            return ToolOutcome(content=_error("INDEX_STALE", "检索期间知识包版本发生变化，请重新加载本体根上下文。", True, 500))
+            return ToolOutcome(
+                content=_error("INDEX_STALE", "检索期间知识包版本发生变化，请重新加载本体根上下文。", True, 500)
+            )
         if (runtime_dir / "ontology-mutations.sqlite3").is_file() and not _same_mutation_state(
             mutation_state_after_pointer,
             mutation_state_after_query,
         ):
-            return ToolOutcome(content=_error("INDEX_STALE", "检索期间知识包版本发生变化，请重新加载本体根上下文。", True, 500))
+            return ToolOutcome(
+                content=_error("INDEX_STALE", "检索期间知识包版本发生变化，请重新加载本体根上下文。", True, 500)
+            )
         _mark_loaded_hits(response, context.read_documents)
         return ToolOutcome(content=json.dumps(response, ensure_ascii=False, separators=(",", ":")))
 
@@ -199,11 +200,8 @@ def _validate_root_context(
     expected_revision = int(pointer.get("mutation_revision") or 0)
     if any(
         str(record.get("ontology_epoch") or "").removeprefix("sha256:") == expected_epoch.removeprefix("sha256:")
-        and int(
-            record.get("mutation_revision")
-            if record.get("mutation_revision") is not None
-            else -1
-        ) == expected_revision
+        and int(record.get("mutation_revision") if record.get("mutation_revision") is not None else -1)
+        == expected_revision
         for record in roots
     ):
         return None
@@ -255,18 +253,9 @@ def _state_pointer_consistent(
         return False
     return bool(
         state_after.get("enabled")
-        and int(
-            state_after.get("mutation_revision")
-            if state_after.get("mutation_revision") is not None
-            else -1
-        )
-        == int(
-            pointer.get("mutation_revision")
-            if pointer.get("mutation_revision") is not None
-            else -2
-        )
-        and str(state_after.get("active_version") or "")
-        == str(pointer.get("ontology_version") or "")
+        and int(state_after.get("mutation_revision") if state_after.get("mutation_revision") is not None else -1)
+        == int(pointer.get("mutation_revision") if pointer.get("mutation_revision") is not None else -2)
+        and str(state_after.get("active_version") or "") == str(pointer.get("ontology_version") or "")
     )
 
 

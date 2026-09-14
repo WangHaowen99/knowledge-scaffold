@@ -7,6 +7,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .contracts import RunPreflightSnapshot
 from .preflight_cache import (
     ImmutablePreflightCache,
@@ -88,6 +90,9 @@ def _default_package_loader(
         load_script_catalog,
         resolve_ontology_script_path,
     )
+    from solver_coordination.capability_catalog import (
+        SolverContractResolver,
+    )
     from ontology.ontologies import (
         build_selected_ontology_preload_context_from_manifest,
         build_selected_ontology_preload_records_from_manifest,
@@ -107,18 +112,48 @@ def _default_package_loader(
         root_payload = build_root_payload(
             ontology=ontology_manifest,
             ontology_dir=ontology_dir,
+            include_solver_catalog=False,
         )
         public_script_catalog = root_payload.get("script_catalog") or ()
         if not isinstance(public_script_catalog, (list, tuple)):
             public_script_catalog = ()
-        public_solver_catalog = root_payload.get("solver_catalog") or ()
-        if not isinstance(public_solver_catalog, (list, tuple)):
-            public_solver_catalog = ()
-        solver_capabilities = tuple(
-            entry
-            for entry in public_solver_catalog
-            if isinstance(entry, Mapping)
-        )
+        # The root payload is a model-facing discovery surface and contains
+        # only ``solver_summary``.  ToolCard construction needs the complete,
+        # validated schemas, so load that private projection directly from
+        # the exact package revision.  Keep the legacy root-catalog fallback
+        # for tests and pre-0.2 adapters that provide only the old payload.
+        solver_capabilities: tuple[Mapping[str, Any], ...] = ()
+        manifest_path = ontology_dir / "manifest.yaml"
+        if manifest_path.is_file() and not manifest_path.is_symlink():
+            try:
+                manifest_data = yaml.safe_load(
+                    manifest_path.read_text(encoding="utf-8")
+                ) or {}
+            except (OSError, UnicodeError, yaml.YAMLError):
+                manifest_data = {}
+            if isinstance(manifest_data, Mapping):
+                full_catalog = SolverContractResolver(
+                    ontology_dir,
+                    manifest_data,
+                    package_revision=str(
+                        getattr(ontology_manifest, "version", "") or ""
+                    ).strip()
+                    or None,
+                ).load_public()
+                solver_capabilities = tuple(
+                    entry
+                    for entry in full_catalog
+                    if isinstance(entry, Mapping)
+                )
+        if not solver_capabilities:
+            legacy_solver_catalog = root_payload.get("solver_catalog") or ()
+            if not isinstance(legacy_solver_catalog, (list, tuple)):
+                legacy_solver_catalog = ()
+            solver_capabilities = tuple(
+                entry
+                for entry in legacy_solver_catalog
+                if isinstance(entry, Mapping)
+            )
         script_bindings: dict[str, Mapping[str, Any]] = {}
         for entry in load_script_catalog(ontology_dir):
             operation_key = str(entry.get("operation_key") or "").strip()

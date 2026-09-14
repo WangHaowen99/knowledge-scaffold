@@ -1,6 +1,8 @@
 export async function writeClipboardText(text, options = {}) {
   const value = String(text ?? '');
-  if (!value) return { ok: false, method: '', error: '没有可复制的内容' };
+  if (!value) {
+    return { ok: false, method: '', error: '没有可复制的内容' };
+  }
 
   const navigatorRef = options.navigatorRef ?? globalThis.navigator;
   const documentRef = options.documentRef ?? globalThis.document;
@@ -29,12 +31,18 @@ export async function writeClipboardText(text, options = {}) {
     textarea.focus();
     textarea.select();
     const copied = documentRef.execCommand?.('copy') === true;
-    return copied
-      ? { ok: true, method: 'selection', error: '' }
-      : { ok: false, method: 'selection', error: '复制失败，请手动选择内容' };
+    return copied ?
+      { ok: true, method: 'selection', error: '' } :
+      { ok: false, method: 'selection', error: '复制失败，请手动选择内容' };
   } catch {
-    return { ok: false, method: 'selection', error: '复制失败，请手动选择内容' };
+    return {
+      ok: false,
+      method: 'selection',
+      error: '复制失败，请手动选择内容',
+    };
   } finally {
-    if (textarea?.parentNode) textarea.parentNode.removeChild(textarea);
+    if (textarea?.parentNode) {
+      textarea.parentNode.removeChild(textarea);
+    }
   }
 }

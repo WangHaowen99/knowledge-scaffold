@@ -12,16 +12,18 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
+from integration.observability import AgentRuntimeTrace, RuntimeStatus
+from utils.json_utils import _loads_json_object_loose
+
 from ...exceptions import (
     AgentLoopStalledError,
     TerminalToolExecutionError,
     WorkflowCancelledError,
 )
-from integration.observability import AgentRuntimeTrace, RuntimeStatus
 from ...runtime.async_utils import call_async_or_thread
+from ...script_argument_errors import safe_script_argument_error
 from ...tools.base import ToolBatchResult, ToolInvocation
 from ...tools.executor import aexecute_tool_batch
-from utils.json_utils import _loads_json_object_loose
 from ..shared.state_updates import apply_tool_batch_result_to_state
 from .common import (
     JiuwenBackendUnavailable,
@@ -29,7 +31,6 @@ from .common import (
     normalize_arguments,
     read_field,
 )
-
 
 JIUWEN_STATE_MESSAGES_LOCK = threading.Lock()
 JIUWEN_PENDING_ASSISTANT_CONTEXT_KEY = "_jiuwen_pending_assistant_context"
@@ -123,10 +124,14 @@ class ConsecutiveToolFailureGuard:
             self._last_failure_iteration = None
             return
 
+        validation_error = _script_argument_failure(batch_result)
         fingerprint = (
             str(tool_call.name or "").strip().lower(),
-            _canonical_tool_arguments(tool_call.arguments),
-            error,
+            _canonical_tool_arguments({
+                key: tool_call.arguments.get(key)
+                for key in ("ontology_id", "operation_key")
+            } if validation_error else tool_call.arguments),
+            _canonical_json(validation_error) if validation_error else error,
         )
         repeated = fingerprint == self._last_failure and (
             agent_iteration is None
@@ -142,7 +147,8 @@ class ConsecutiveToolFailureGuard:
             raise AgentLoopStalledError(
                 "Repeated failure for tool '{}'".format(
                     str(tool_call.name or "").strip() or "unknown",
-                )
+                ),
+                details={"last_argument_validation": validation_error} if validation_error else None,
             )
 
     def _ensure_next_invocation_locked(self, index: int) -> None:
@@ -174,15 +180,9 @@ class ConsecutiveToolFailureGuard:
 
     def _advance_next_invocation_locked(self, completed_index: int) -> None:
         next_index = completed_index + 1
-        candidates = (
-            self._registered_invocations
-            | set(self._pending_results)
-            | self._skipped_invocations
-        )
+        candidates = self._registered_invocations | set(self._pending_results) | self._skipped_invocations
         self._next_invocation_index = (
-            next_index
-            if next_index in candidates
-            else (min(candidates) if candidates else None)
+            next_index if next_index in candidates else (min(candidates) if candidates else None)
         )
 
     def _invocation_is_known_locked(self, index: int) -> bool:
@@ -250,11 +250,7 @@ class CurrentRuntimeToolAdapter:
         self.terminal_error_callback = terminal_error_callback
         self._invocation_index = 0
         self._invocation_index_lock = threading.Lock()
-        self._serial_execution_lock = (
-            asyncio.Lock()
-            if not _is_tool_concurrency_safe(self.tool_name)
-            else None
-        )
+        self._serial_execution_lock = asyncio.Lock() if not _is_tool_concurrency_safe(self.tool_name) else None
 
     async def invoke(self, tool_args: Any, session: Any = None) -> str:
         del session
@@ -332,9 +328,7 @@ class CurrentRuntimeToolAdapter:
         context.tool_batch_index = batch_index
         runtime_trace = runtime_trace_from_tool_context(context)
         iteration = tool_context_iteration(context)
-        guard_iteration = _coerce_agent_iteration(
-            getattr(context, "agent_iteration", None)
-        )
+        guard_iteration = _coerce_agent_iteration(getattr(context, "agent_iteration", None))
         try:
             if self.tool_batch_started_callback is not None:
                 self.tool_batch_started_callback(
@@ -531,14 +525,30 @@ def _canonical_tool_error(batch_result: Any) -> Optional[str]:
         return _canonical_json(parsed) if is_error else None
     normalized = " ".join(text.split())
     lowered = normalized.lower()
-    if (
-        lowered.startswith("error:")
-        or lowered.startswith("tool execution failed")
-        or lowered.startswith("error executing script")
-        or normalized.startswith("工具执行失败")
+    starts_with_error = lowered.startswith("error:")
+    starts_with_tool_failure = lowered.startswith("tool execution failed")
+    starts_with_script_failure = lowered.startswith("error executing script")
+    starts_with_localized_failure = normalized.startswith("工具执行失败")
+    if any(
+        (
+            starts_with_error,
+            starts_with_tool_failure,
+            starts_with_script_failure,
+            starts_with_localized_failure,
+        )
     ):
         return normalized
     return None
+
+
+def _script_argument_failure(batch_result: Any) -> Optional[Dict[str, Any]]:
+    try:
+        payload = json.loads(first_tool_message_content(batch_result))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping) or payload.get("ok") is not False:
+        return None
+    return safe_script_argument_error(payload.get("error"))
 
 
 def _canonical_json(value: Any) -> str:
@@ -671,9 +681,7 @@ def register_current_runtime_tools(
         tool_module = import_module("openjiuwen.core.foundation.tool")
         runner_module = import_module("openjiuwen.core.runner")
     except ImportError as exc:
-        raise JiuwenBackendUnavailable(
-            format_jiuwen_import_error(exc)
-        ) from exc
+        raise JiuwenBackendUnavailable(format_jiuwen_import_error(exc)) from exc
 
     infos = list(tool_infos or [])
     if not infos:
@@ -785,6 +793,18 @@ def get_jiuwen_tool_infos(
 ) -> list[Dict[str, Any]]:
     from ...tools.registry import get_tool_schema_for_context, get_tool_specs_for_caller
 
+    tool_specs = get_tool_specs_for_caller(
+        caller,
+        include_memory=include_memory,
+        include_orchestration=include_orchestration,
+        include_web_search=include_web_search,
+        include_interaction=include_interaction,
+        include_business_checkpoint=include_business_checkpoint,
+        include_solver=include_solver,
+        workspace_id=workspace_id,
+        selected_ontology_id=selected_ontology_id,
+        selected_ontology_version=selected_ontology_version,
+    )
     return [
         jiuwen_tool_info_from_schema(
             get_tool_schema_for_context(
@@ -794,18 +814,7 @@ def get_jiuwen_tool_infos(
                 workspace_id=workspace_id,
             )
         )
-        for spec in get_tool_specs_for_caller(
-            caller,
-            include_memory=include_memory,
-            include_orchestration=include_orchestration,
-            include_web_search=include_web_search,
-            include_interaction=include_interaction,
-            include_business_checkpoint=include_business_checkpoint,
-            include_solver=include_solver,
-            workspace_id=workspace_id,
-            selected_ontology_id=selected_ontology_id,
-            selected_ontology_version=selected_ontology_version,
-        )
+        for spec in tool_specs
     ]
 
 
@@ -936,11 +945,7 @@ def consume_jiuwen_pending_assistant_context(state: Dict[str, Any]) -> Dict[str,
     pending = state.pop(JIUWEN_PENDING_ASSISTANT_CONTEXT_KEY, None)
     if not isinstance(pending, Mapping):
         return {}
-    return {
-        key: str(pending.get(key) or "")
-        for key in ("content", "reasoning_content")
-        if str(pending.get(key) or "")
-    }
+    return {key: str(pending.get(key) or "") for key in ("content", "reasoning_content") if str(pending.get(key) or "")}
 
 
 def clear_jiuwen_pending_assistant_context(state: Dict[str, Any]) -> None:
@@ -1007,10 +1012,7 @@ def remove_assistant_tool_call_from_state(
             remaining_calls = [
                 tool_call
                 for tool_call in tool_calls
-                if str(
-                    tool_call.get("id") if isinstance(tool_call, Mapping) else ""
-                ).strip()
-                != normalized_id
+                if str(tool_call.get("id") if isinstance(tool_call, Mapping) else "").strip() != normalized_id
             ]
             if len(remaining_calls) == len(tool_calls):
                 continue
@@ -1023,9 +1025,7 @@ def remove_assistant_tool_call_from_state(
 
             next_message.pop("tool_calls", None)
             has_remaining_payload = any(
-                value not in (None, "", [], {})
-                for key, value in next_message.items()
-                if key != "role"
+                value not in (None, "", [], {}) for key, value in next_message.items() if key != "role"
             )
             if has_remaining_payload:
                 messages[index] = next_message

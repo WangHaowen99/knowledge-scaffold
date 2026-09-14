@@ -6,7 +6,9 @@ import requests
 
 
 class ApiError(Exception):
-    def __init__(self, message: str, *, status: int, data: Any = None, response: Optional[requests.Response] = None) -> None:
+    def __init__(
+        self, message: str, *, status: int, data: Any = None, response: Optional[requests.Response] = None
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.data = data

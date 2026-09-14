@@ -9,10 +9,11 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from operator import getitem
 from typing import Any, Mapping
 
-from utils.security.redaction import redact_sensitive_text
 from integration.observability.events import RuntimeEvent, RuntimeEventType
+from utils.security.redaction import redact_sensitive_text
 
 _TIMING_FIELDS = (
     "total_elapsed_ms",
@@ -115,42 +116,51 @@ class MCPPublicTraceCollector:
         """Build the public MCP summary from OTel-derived runtime events."""
         payload = dict(event.payload or {})
         if event.type == RuntimeEventType.AGENT_ITERATION_FINISHED:
-            self.consume({
-                "type": "iteration.completed",
-                "span_id": event.span_id,
-                "payload": {
-                    **payload,
-                    "total_elapsed_ms": payload.get("total_ms"),
-                    "model_elapsed_ms": payload.get("llm_wall_ms"),
-                    "tools_elapsed_ms": payload.get("tools_window_ms"),
-                    "setup_elapsed_ms": payload.get("prompt_build_ms"),
+            self.consume(
+                {
+                    "type": "iteration.completed",
+                    "span_id": event.span_id,
+                    "payload": {
+                        **payload,
+                        "total_elapsed_ms": payload.get("total_ms"),
+                        "model_elapsed_ms": payload.get("llm_wall_ms"),
+                        "tools_elapsed_ms": payload.get("tools_window_ms"),
+                        "setup_elapsed_ms": payload.get("prompt_build_ms"),
+                    },
                 },
-            }, source="otel")
+                source="otel",
+            )
         elif event.type in {
             RuntimeEventType.TOOL_STARTED,
             RuntimeEventType.TOOL_PROGRESS,
             RuntimeEventType.TOOL_FINISHED,
         }:
-            self.consume({
-                "type": event.type,
-                "span_id": event.span_id,
-                "payload": payload,
-            }, source="otel")
+            self.consume(
+                {
+                    "type": event.type,
+                    "span_id": event.span_id,
+                    "payload": payload,
+                },
+                source="otel",
+            )
         elif event.type in {
             RuntimeEventType.RUN_FINISHED,
             RuntimeEventType.RUN_FAILED,
             RuntimeEventType.RUN_CANCELLED,
         }:
-            self.consume({
-                "type": "turn.finished",
-                "span_id": event.span_id,
-                "payload": {
-                    "status": payload.get("status"),
-                    "final_output": payload.get("final_answer"),
-                    "error": payload.get("error_message"),
-                    "cancel_reason": payload.get("cancel_reason"),
+            self.consume(
+                {
+                    "type": "turn.finished",
+                    "span_id": event.span_id,
+                    "payload": {
+                        "status": payload.get("status"),
+                        "final_output": payload.get("final_answer"),
+                        "error": payload.get("error_message"),
+                        "cancel_reason": payload.get("cancel_reason"),
+                    },
                 },
-            }, source="otel")
+                source="otel",
+            )
 
     def _is_cross_source_duplicate(
         self,
@@ -190,10 +200,7 @@ class MCPPublicTraceCollector:
             omitted = dict(self._omitted)
             if len(entries) > self.max_events:
                 selected = self._select_entries(entries, self.max_events)
-                selected_keys = {
-                    (entry.order, entry.kind, entry.priority)
-                    for entry in selected
-                }
+                selected_keys = {(entry.order, entry.kind, entry.priority) for entry in selected}
                 for entry in entries:
                     if (entry.order, entry.kind, entry.priority) not in selected_keys:
                         omitted[entry.kind] = omitted.get(entry.kind, 0) + 1
@@ -251,7 +258,7 @@ class MCPPublicTraceCollector:
         current = str(state.get("text") or "")
         remaining = self.max_text_chars - len(current)
         if len(text) > remaining:
-            state["text"] = current + text[:max(0, remaining)]
+            state["text"] = current + text[: max(0, remaining)]
             state["truncated"] = True
             self._text_truncations += 1
             return
@@ -366,9 +373,7 @@ class MCPPublicTraceCollector:
         else:
             self._totals["tool_calls_succeeded"] += 1
         priority = 5 if failed else 4 if state.get("_has_evidence") else 3
-        self._append_entry(
-            _TraceEntry(order, "tools", priority, self._public_tool_item(state))
-        )
+        self._append_entry(_TraceEntry(order, "tools", priority, self._public_tool_item(state)))
 
     def _consume_turn_finished(self, payload: Mapping[str, Any], order: int) -> None:
         iteration = _non_negative_int(payload.get("iteration"))
@@ -487,9 +492,7 @@ class MCPPublicTraceCollector:
             if error_code and not state.get("error_code"):
                 self._set_text(state, "error_code", error_code, limit=160)
             retry_count = _non_negative_int(
-                candidate.get("retry_count")
-                if candidate.get("retry_count") is not None
-                else candidate.get("retries")
+                candidate.get("retry_count") if candidate.get("retry_count") is not None else candidate.get("retries")
             )
             if retry_count is not None:
                 state["retry_count"] = max(retry_count, int(state.get("retry_count") or 0))
@@ -508,24 +511,16 @@ class MCPPublicTraceCollector:
                 action = self._text(candidate.get("action"), limit=60)
                 if action and not state.get("action"):
                     state["action"] = action
-                value_result_count = _non_negative_int(
-                    candidate.get("value_result_count")
-                )
+                value_result_count = _non_negative_int(candidate.get("value_result_count"))
                 if value_result_count is not None:
                     state["value_result_count"] = value_result_count
-                binding_keys = _bounded_str_list(
-                    candidate.get("binding_keys"), limit=120, max_items=8
-                )
+                binding_keys = _bounded_str_list(candidate.get("binding_keys"), limit=120, max_items=8)
                 if binding_keys:
                     state["binding_keys"] = binding_keys
-                error_codes = _bounded_str_list(
-                    candidate.get("error_codes"), limit=160, max_items=8
-                )
+                error_codes = _bounded_str_list(candidate.get("error_codes"), limit=160, max_items=8)
                 if error_codes:
                     state["error_codes"] = error_codes
-                provider_request_count = _non_negative_int(
-                    candidate.get("provider_request_count")
-                )
+                provider_request_count = _non_negative_int(candidate.get("provider_request_count"))
                 if provider_request_count is not None:
                     state["provider_request_count"] = provider_request_count
 
@@ -635,9 +630,7 @@ class MCPPublicTraceCollector:
                 item=merged,
             )
             return
-        self._append_entry(
-            _TraceEntry(entry.order, entry.kind, entry.priority, copy.deepcopy(item))
-        )
+        self._append_entry(_TraceEntry(entry.order, entry.kind, entry.priority, copy.deepcopy(item)))
 
     def _append_entry(self, entry: _TraceEntry) -> None:
         self._entries.append(entry)
@@ -684,7 +677,8 @@ class MCPPublicTraceCollector:
             )
         return entries
 
-    def _public_tool_item(self, state: Mapping[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _public_tool_item(state: Mapping[str, Any]) -> dict[str, Any]:
         allowed = (
             "tool_name",
             "tool_call_id",
@@ -727,9 +721,7 @@ class MCPPublicTraceCollector:
         tool_call_id = str(payload.get("tool_call_id") or "").strip()
         if tool_call_id:
             return "id:{}".format(tool_call_id)
-        tool_name = str(
-            payload.get("tool_name") or payload.get("name") or ""
-        ).strip()
+        tool_name = str(payload.get("tool_name") or payload.get("name") or "").strip()
         if prefer_pending:
             for key in reversed(self._pending_order):
                 state = self._pending_tools.get(key)
@@ -825,11 +817,7 @@ class MCPPublicTraceCollector:
                         warning_item["tool_call_id"] = item["tool_call_id"]
                     warnings.append(warning_item)
 
-        iteration_ids = (
-            set(iterations_by_id)
-            | set(agent_output_by_iteration)
-            | set(tools_by_iteration)
-        )
+        iteration_ids = set(iterations_by_id) | set(agent_output_by_iteration) | set(tools_by_iteration)
         iterations: list[dict[str, Any]] = []
         for iteration in sorted(iteration_ids, key=lambda value: (value, iteration_order.get(value, 0))):
             item = iterations_by_id.get(iteration, {"iteration": iteration})
@@ -884,11 +872,7 @@ class MCPPublicTraceCollector:
             return result
         if calls:
             query_call = next(
-                (
-                    call
-                    for call in reversed(calls)
-                    if str(call.get("query_summary") or "").strip()
-                ),
+                (call for call in reversed(calls) if str(call.get("query_summary") or "").strip()),
                 None,
             )
             if query_call is not None:
@@ -905,7 +889,7 @@ class MCPPublicTraceCollector:
                     summary = "调用工具：{}".format("、".join(unique_names))
                     summary_truncated = len(summary) > self.max_text_chars
                     return {
-                        "summary": summary[:self.max_text_chars],
+                        "summary": summary[: self.max_text_chars],
                         "source": "tool_name",
                         "truncated": summary_truncated,
                     }
@@ -1000,7 +984,7 @@ def _compact_iteration_timing(payload: Mapping[str, Any]) -> dict[str, int]:
         "tools_elapsed_ms": tools_ms,
         "setup_elapsed_ms": setup_ms,
     }
-    return {key: values[key] for key in _TIMING_FIELDS}
+    return {key: getitem(values, key) for key in _TIMING_FIELDS}
 
 
 def _query_digest(query: str) -> str:
@@ -1040,9 +1024,7 @@ def _dedupe_text_list(values: list[Any], limit: int) -> list[str]:
     return result
 
 
-def _bounded_str_list(
-    values: Any, *, limit: int, max_items: int
-) -> list[str]:
+def _bounded_str_list(values: Any, *, limit: int, max_items: int) -> list[str]:
     """Return a bounded list of stripped, deduplicated strings from *values*."""
     if not isinstance(values, (list, tuple)):
         return []

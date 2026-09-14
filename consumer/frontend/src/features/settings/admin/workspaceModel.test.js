@@ -29,13 +29,19 @@ test('authenticated users can create workspaces while collection management stay
 
 test('workspace creation is exposed to ordinary users without exposing global default controls', () => {
   assert.equal(panelSource.includes('const canCreate = canCreateWorkspace(currentUser);'), true);
-  assert.equal(panelSource.includes('{canCreate && <button className="btn btn-p"'), true);
+  assert.match(
+    panelSource,
+    /\{canCreate\s*&&\s*\(\s*<button\s+className="btn btn-p"/,
+  );
   assert.equal(panelSource.includes('canSetDefault={canManageCollection}'), true);
-  assert.equal(panelSource.includes('{isCreate && canSetDefault && ('), true);
+  assert.match(panelSource, /\{isCreate\s*&&\s*canSetDefault\s*&&\s*\(/);
   assert.equal(panelSource.includes('const canDelete = canDeleteWorkspace(currentUser, workspace);'), true);
-  assert.equal(panelSource.includes('{canDelete && <button className="btn btn-sm btn-danger"'), true);
+  assert.match(
+    panelSource,
+    /\{canDelete\s*&&\s*\(\s*<button\s+className="btn btn-sm btn-danger"/,
+  );
   assert.equal(appShellSource.includes("const canCreateWorkspace = can('workspace.create');"), true);
-  assert.equal(appShellSource.includes('action={canCreateWorkspace ? ('), true);
+  assert.match(appShellSource, /action=\{\s*canCreateWorkspace\s*\?\s*\(/);
 });
 
 test('workspace payload is normalized then searched and paged on the client', () => {

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
+from operator import getitem
 from types import SimpleNamespace
 
 import agent.tools.execute_script as execute_script_module
+import pytest
 from agent.tools.execute_script import _build_cli_args_from_parameters
 
 
@@ -44,7 +45,7 @@ def test_execute_script_builds_boolean_cli_arguments(parameter, value, expected)
 
     args, missing, invalid = _build_cli_args_from_parameters(
         script_parameters=[parameter],
-        arguments={parameter["name"]: value},
+        arguments={getitem(parameter, "name"): value},
     )
 
     assert (args, missing, invalid) == (expected, [], [])
@@ -214,7 +215,7 @@ def test_execute_script_tool_injects_selected_operation_ontology_as_runtime_onto
     )
 
     assert outcome.content == "ok"
-    assert captured["runtime_context"]["ontology_id"] == "demo"
+    assert getitem(getitem(captured, "runtime_context"), "ontology_id") == "demo"
 
 
 def test_explicit_runtime_user_id_uses_backend_context():

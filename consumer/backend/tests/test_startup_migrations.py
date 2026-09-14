@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 
 
 def _raise_when_iterated(error: BaseException):
@@ -51,7 +52,7 @@ def _write_legacy_connection(workspace_dir, *, connection_id="shared-dataagent")
                         "provider": "dataagent",
                         "config": {
                             "url": "https://dataagent.example.com/",
-                            "token": "legacy-secret",
+                            "token": synthetic_secret("startup_migrations-credential-01"),
                             "timeout_seconds": 60,
                         },
                         "created_at": "2026-01-01T00:00:00+00:00",
@@ -75,15 +76,12 @@ def _run_startup_in_process(runtime_root, secret_key):
 
 
 def _migration_report(report, migration_id):
-    return next(
-        item for item in report["migrations"] if item["migration_id"] == migration_id
-    )
+    return next(item for item in report["migrations"] if item["migration_id"] == migration_id)
 
 
 def test_shared_runner_registers_explicit_phase_and_failure_policy():
     from migrations.observability_workspace_config_v1 import MIGRATION_ID as OBSERVABILITY_ID
     from migrations.ontology_data_sources_direct_v2 import MIGRATION_ID as DATA_SOURCE_ID
-    from migrations.system_config_model_profiles_v1 import MIGRATION_ID as MODEL_CONFIG_ID
     from migrations.system_config_model_profile_output_budget_env_v1 import (
         MIGRATION_ID as MODEL_OUTPUT_BUDGET_ENV_ID,
     )
@@ -93,13 +91,14 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
     from migrations.workspace_model_profile_output_budget_v1 import (
         MIGRATION_ID as WORKSPACE_OUTPUT_BUDGET_ID,
     )
-    from migrations.system_config_secret_encryption_v1 import MIGRATION_ID as SECRET_CONFIG_ID
-    from migrations.workspace_mcp_endpoint_id_v1 import MIGRATION_ID as WORKSPACE_MCP_ID
     from migrations.runner import (
         REGISTERED_MIGRATIONS,
         MigrationFailurePolicy,
         MigrationPhase,
     )
+    from migrations.system_config_model_profiles_v1 import MIGRATION_ID as MODEL_CONFIG_ID
+    from migrations.system_config_secret_encryption_v1 import MIGRATION_ID as SECRET_CONFIG_ID
+    from migrations.workspace_mcp_endpoint_id_v1 import MIGRATION_ID as WORKSPACE_MCP_ID
 
     assert [migration.migration_id for migration in REGISTERED_MIGRATIONS] == [
         WORKSPACE_MCP_ID,
@@ -178,7 +177,9 @@ def test_startup_runner_skips_fresh_workspace_without_marker(tmp_path):
     workspace_report = _migration_report(
         report,
         "ontology-data-sources-direct-v2",
-    )["workspaces"]["demo"]
+    )[
+        "workspaces"
+    ]["demo"]
     assert report["ok"] is True
     assert workspace_report["skipped"] is True
     assert not (workspace_dir / MARKER_FILE).exists()
@@ -204,14 +205,16 @@ def test_startup_runner_migrates_legacy_connection_and_binding(tmp_path):
     workspace_report = _migration_report(
         report,
         "ontology-data-sources-direct-v2",
-    )["workspaces"]["demo"]
+    )[
+        "workspaces"
+    ]["demo"]
     connection_backup = workspace_dir / "data-connections.json.pre-direct-v2.bak"
     bindings_backup = workspace_dir / "ontology-bindings.json.pre-direct-v2.bak"
     assert report["ok"] is True
     assert source["mode"] == "direct_provider"
     assert source["provider"] == "dataagent"
     assert "connection_id" not in source
-    assert "legacy-secret" not in source_text
+    assert synthetic_secret("startup_migrations-credential-01") not in source_text
     assert source["config"]["token"].startswith("enc:v1:")
     assert workspace_report["removed_legacy_files"] == 2
     assert workspace_report["backup_paths"] == [str(connection_backup), str(bindings_backup)]
@@ -285,8 +288,7 @@ def test_fastapi_lifespan_runs_critical_migrations_before_runtime_startup(monkey
         app_module,
         "initialize_runtime_dependencies",
         lambda *args, **kwargs: (
-            order.append("dependencies")
-            or SimpleNamespace(operation_patcher=None, reflection_worker=None)
+            order.append("dependencies") or SimpleNamespace(operation_patcher=None, reflection_worker=None)
         ),
     )
     monkeypatch.setattr(
@@ -491,9 +493,7 @@ def test_run_context_excludes_deployment_and_external_admin_from_app_startup(
         "deployment",
     ]
     assert external_code == 0
-    assert [item["migration_id"] for item in external["migrations"]] == [
-        "external-admin"
-    ]
+    assert [item["migration_id"] for item in external["migrations"]] == ["external-admin"]
 
 
 def test_concurrent_process_startup_is_serialized_and_idempotent(tmp_path):
@@ -520,13 +520,10 @@ def test_concurrent_process_startup_is_serialized_and_idempotent(tmp_path):
         ),
         encoding="utf-8",
     )
-    secret_key = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+    secret_key = ENCRYPTION_KEY
 
     with ProcessPoolExecutor(max_workers=2) as executor:
-        futures = [
-            executor.submit(_run_startup_in_process, runtime_root, secret_key)
-            for _ in range(2)
-        ]
+        futures = [executor.submit(_run_startup_in_process, runtime_root, secret_key) for _ in range(2)]
         reports = [future.result(timeout=20) for future in futures]
 
     assert all(report["ok"] for report in reports)
@@ -576,9 +573,9 @@ def test_registered_issue_1_13_and_14_migrations_preserve_each_others_data(
                     "local": {"retention_days": 8},
                 },
                 "task_llm": {
-                    "base_url": "https://task.example/v1",
+                    "base_url": "https://task.example.net/v1",
                     "model": "task-model",
-                    "api_key": "task-secret",
+                    "api_key": synthetic_secret("startup_migrations-credential-02"),
                 },
                 "future_section": {"preserved": True},
             },
@@ -608,7 +605,5 @@ def test_registered_issue_1_13_and_14_migrations_preserve_each_others_data(
     assert "observability" not in migrated
     assert "task_llm" not in migrated
     assert migrated["llm_profiles"]["profiles"][0]["api_key"].startswith("enc:v1:")
-    workspace_observability = json.loads(
-        (workspace_dir / "observability_config.json").read_text(encoding="utf-8")
-    )
+    workspace_observability = json.loads((workspace_dir / "observability_config.json").read_text(encoding="utf-8"))
     assert workspace_observability["local"]["retention_days"] == 8

@@ -56,6 +56,43 @@ logger = logging.getLogger("modeling_agent")
 INTERJECTION_CONTINUATION_PREFIX = "interjection-continuation:"
 
 
+def _has_complete_package_import_event(
+    event_id: str,
+    baseline_revision: str,
+    package_name: str,
+    package_version: str,
+) -> bool:
+    return all((event_id, baseline_revision, package_name, package_version))
+
+
+def _confirmation_claimed_without_pending_interaction(
+    result: dict[str, Any],
+    context: Any,
+    live: LiveRun,
+) -> bool:
+    if result.get("result_type") != "success":
+        return False
+    if not context.confirmation_claimed_in_text:
+        return False
+    if context.interjection_reply_required:
+        return False
+    return live.restore_interaction is None
+
+
+def _user_input_requested_without_decision_card(
+    result: dict[str, Any],
+    context: Any,
+    live: LiveRun,
+) -> bool:
+    if result.get("result_type") != "success":
+        return False
+    if not context.user_input_request_in_text:
+        return False
+    if context.decision_card_requested or context.interjection_reply_required:
+        return False
+    return live.restore_interaction is None
+
+
 def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -1344,7 +1381,9 @@ class AgentService:
         baseline_revision = str(event.get("baselineRevision") or "").strip()
         package_name = str(event.get("packageName") or "").strip()
         package_version = str(event.get("packageVersion") or "").strip()
-        if not event_id or not baseline_revision or not package_name or not package_version:
+        if not _has_complete_package_import_event(
+            event_id, baseline_revision, package_name, package_version,
+        ):
             raise AgentRuntimeError("INVALID_PACKAGE_IMPORT_EVENT", "导入基线事件不完整", status=400)
 
         inserted = self.store.record_external_event(event_id, project_id, "package_import", event)
@@ -3716,20 +3755,9 @@ class AgentService:
                     result = await self._ensure_visible_result(live, run, result)
                     self._settle(live, run, result)
                     return
-                if (
-                    result.get("result_type") == "success"
-                    and context.confirmation_claimed_in_text
-                    and not context.interjection_reply_required
-                    and live.restore_interaction is None
-                ):
+                if _confirmation_claimed_without_pending_interaction(result, context, live):
                     live.confirmation_required = True
-                if (
-                    result.get("result_type") == "success"
-                    and context.user_input_request_in_text
-                    and not context.decision_card_requested
-                    and not context.interjection_reply_required
-                    and live.restore_interaction is None
-                ):
+                if _user_input_requested_without_decision_card(result, context, live):
                     next_retry = self._retry_continuation(
                         decision_card_retries,
                         MAX_DECISION_CARD_RETRIES,

@@ -1,8 +1,12 @@
-export const createFirstSendCoordinator = ({ onPendingChange = () => {} } = {}) => {
+export const createFirstSendCoordinator = ({
+  onPendingChange = () => {},
+} = {}) => {
   let activeFlight = null;
 
   const clearFlight = (token) => {
-    if (activeFlight?.token !== token) return;
+    if (activeFlight?.token !== token) {
+      return;
+    }
     activeFlight = null;
     onPendingChange(false);
   };
@@ -28,7 +32,9 @@ export const createFirstSendCoordinator = ({ onPendingChange = () => {} } = {}) 
     },
 
     reset() {
-      if (!activeFlight) return;
+      if (!activeFlight) {
+        return;
+      }
       activeFlight = null;
       onPendingChange(false);
     },
@@ -39,16 +45,28 @@ export const createFirstSendCoordinator = ({ onPendingChange = () => {} } = {}) 
   };
 };
 
-export const isBlankChatSubmitting = (currentChatId, firstSendPending) => (
-  !currentChatId && Boolean(firstSendPending)
-);
+export const isBlankChatSubmitting = (currentChatId, firstSendPending) =>
+  !currentChatId && Boolean(firstSendPending);
 
-export const scheduleBlankChatFocus = ({ getCurrentChatId, getInput, scheduleFrame }) => {
-  if (typeof getCurrentChatId !== 'function' || typeof getInput !== 'function') return false;
-  if (typeof scheduleFrame !== 'function' || getCurrentChatId()) return false;
+export const scheduleBlankChatFocus = ({
+  getCurrentChatId,
+  getInput,
+  scheduleFrame,
+}) => {
+  if (
+    typeof getCurrentChatId !== 'function' ||
+    typeof getInput !== 'function'
+  ) {
+    return false;
+  }
+  if (typeof scheduleFrame !== 'function' || getCurrentChatId()) {
+    return false;
+  }
 
   scheduleFrame(() => {
-    if (!getCurrentChatId()) getInput()?.focus();
+    if (!getCurrentChatId()) {
+      getInput()?.focus();
+    }
   });
   return true;
 };

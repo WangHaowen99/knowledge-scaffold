@@ -130,6 +130,7 @@ class RuntimeSolverCapabilityResolver:
             "decision_model_digest": sha256_digest(model),
             "input_schema_digest": record.input_schema_digest,
             "result_schema_digest": record.result_schema_digest,
+            "fact_snapshot_schema_digest": record.fact_snapshot_schema_digest,
             "engine_capabilities": list(record.engine_capabilities),
             "decision_model": model,
         }

@@ -1,5 +1,4 @@
 import pytest
-
 from scripts import benchmark_session_admission as benchmark
 
 
@@ -43,10 +42,7 @@ def test_admission_gate_uses_strict_thresholds_and_bounded_reads():
 
     repeated_traversal = _report()
     repeated_traversal["counters"]["preflight_source_signature_traversals"] = 4
-    traversal_codes = {
-        item["code"]
-        for item in benchmark.evaluate_thresholds(repeated_traversal)
-    }
+    traversal_codes = {item["code"] for item in benchmark.evaluate_thresholds(repeated_traversal)}
     assert "preflight_source_signature_traversal_repeated" in traversal_codes
 
     missing_paths = _report()
@@ -59,9 +55,7 @@ def test_admission_gate_uses_strict_thresholds_and_bounded_reads():
             "admitted_turns": 0,
         }
     )
-    path_codes = {
-        item["code"] for item in benchmark.evaluate_thresholds(missing_paths)
-    }
+    path_codes = {item["code"] for item in benchmark.evaluate_thresholds(missing_paths)}
     assert path_codes == {
         "dynamic_fact_check_skipped",
         "ontology_manifest_check_skipped",

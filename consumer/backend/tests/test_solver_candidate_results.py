@@ -3,7 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-
 from solver_coordination.candidate_results import (
     CandidateResultsArtifact,
     build_candidate_results,
@@ -16,10 +15,7 @@ from solver_coordination.contracts import (
     VerificationResult,
 )
 
-
-ITEM_IDS = tuple(
-    "ITEM_SYNTHETIC_{:04d}".format(index) for index in range(1, 10)
-)
+ITEM_IDS = tuple("ITEM_SYNTHETIC_{:04d}".format(index) for index in range(1, 10))
 
 
 def _candidate(candidate_id, assignment, rank):
@@ -99,10 +95,7 @@ def _capability():
 def _solver_result():
     assignment = {
         "candidate_id": "OPTION_0_TO_OPTION_1_K0004",
-        **{
-            item_id: ("OPTION_0" if index <= 4 else "OPTION_1")
-            for index, item_id in enumerate(ITEM_IDS, start=1)
-        },
+        **{item_id: ("OPTION_0" if index <= 4 else "OPTION_1") for index, item_id in enumerate(ITEM_IDS, start=1)},
     }
     return SolverResult(
         problem_id=_problem().problem_id,
@@ -132,9 +125,7 @@ def _verification(*, status="verified", candidate_digest=None):
                 "candidate_count": 18,
                 "eligible_count": 18,
                 "candidate_digest": candidate_digest
-                or _problem().parameters["candidate_selection"][
-                    "candidate_evaluation_digest"
-                ],
+                or _problem().parameters["candidate_selection"]["candidate_evaluation_digest"],
                 "selected_candidate_id": "OPTION_0_TO_OPTION_1_K0004",
             },
         ),
@@ -157,16 +148,15 @@ def test_candidate_results_are_complete_business_ordered_and_select_combination_
     assert payload["schema_version"] == "solver.candidate-results.v1"
     assert payload["candidate_count"] == 18
     assert payload["candidate_source_kind"] == "problem_ir.candidate_selection"
-    assert payload["candidate_source_digest"] == _problem().parameters[
-        "candidate_selection"
-    ]["candidate_evaluation_digest"]
+    assert (
+        payload["candidate_source_digest"]
+        == _problem().parameters["candidate_selection"]["candidate_evaluation_digest"]
+    )
     assert payload["option_labels"] == {
         "OPTION_0": "ROUTE_SYNTHETIC_A",
         "OPTION_1": "ROUTE_SYNTHETIC_B",
     }
-    assert [row["combination_no"] for row in payload["candidates"]] == list(
-        range(1, 19)
-    )
+    assert [row["combination_no"] for row in payload["candidates"]] == list(range(1, 19))
     winner = next(row for row in payload["candidates"] if row["selected"])
     assert winner["combination_no"] == 10
     assert winner["candidate_id"] == "OPTION_0_TO_OPTION_1_K0004"
@@ -199,6 +189,104 @@ def test_candidate_results_reject_tampered_content(mutate):
 
     with pytest.raises(SolverContractError):
         CandidateResultsArtifact.from_dict(payload)
+
+
+def _domain_problem(*, metric_scale=100, profile_id="refinery_route.v1"):
+    problem = _problem()
+    parameters = dict(problem.parameters)
+    parameters["domain_evaluation"] = {
+        "profile_id": profile_id,
+        "metric_scale": metric_scale,
+    }
+    return ProblemIR(
+        problem_id=problem.problem_id,
+        problem_family=problem.problem_family,
+        decision_space=problem.decision_space,
+        parameters=parameters,
+        constraints=problem.constraints,
+        objectives=problem.objectives,
+        limits=problem.limits,
+    )
+
+
+def test_candidate_results_describe_domain_metrics_with_their_scale_and_unit():
+    payload = build_candidate_results(
+        problem=_domain_problem(),
+        capability=_capability(),
+        solver_result=_solver_result(),
+        verification=_verification(),
+    ).to_dict()
+
+    assert payload["metric_display"] == [
+        {
+            "key": "primary_score",
+            "label": "利润",
+            "unit": "元",
+            "scale": 100,
+            "sense": "maximize",
+        },
+        {
+            "key": "safety_margin",
+            "label": "最小余量",
+            "unit": "%",
+            "scale": 100,
+            "sense": "maximize",
+        },
+    ]
+    restored = CandidateResultsArtifact.from_dict(payload)
+    assert restored.digest == sha256_digest(payload)
+
+
+def test_candidate_results_omit_metric_display_outside_the_domain_profile():
+    payload = build_candidate_results(
+        problem=_domain_problem(profile_id="other_profile.v1"),
+        capability=_capability(),
+        solver_result=_solver_result(),
+        verification=_verification(),
+    ).to_dict()
+
+    # Legacy artifacts were persisted without the field; they must keep loading and
+    # must keep reproducing the digest that was stored alongside them.
+    assert "metric_display" not in payload
+    assert CandidateResultsArtifact.from_dict(payload).digest == sha256_digest(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["metric_display"][0].update(scale=0),
+        lambda payload: payload["metric_display"][0].update(sense="unknown"),
+        lambda payload: payload["metric_display"][0].update(label=" "),
+        lambda payload: payload["metric_display"][0].update(key="absent_metric"),
+        lambda payload: payload["metric_display"][0].pop("unit"),
+        lambda payload: payload["metric_display"].append(
+            dict(payload["metric_display"][0])
+        ),
+    ],
+)
+def test_candidate_results_reject_tampered_metric_display(mutate):
+    payload = deepcopy(
+        build_candidate_results(
+            problem=_domain_problem(),
+            capability=_capability(),
+            solver_result=_solver_result(),
+            verification=_verification(),
+        ).to_dict()
+    )
+    mutate(payload)
+
+    with pytest.raises(SolverContractError):
+        CandidateResultsArtifact.from_dict(payload)
+
+
+def test_candidate_results_reject_an_invalid_domain_metric_scale():
+    with pytest.raises(SolverContractError, match="scale"):
+        build_candidate_results(
+            problem=_domain_problem(metric_scale=0),
+            capability=_capability(),
+            solver_result=_solver_result(),
+            verification=_verification(),
+        )
 
 
 def test_candidate_results_reject_unverified_or_digest_divergent_evidence():

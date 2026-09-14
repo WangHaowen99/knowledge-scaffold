@@ -28,11 +28,14 @@ function payloadMessage(payload, fallback) {
 }
 
 function formatDate(value) {
-  if (!value) return '永不过期';
+  if (!value) {
+    return '永不过期';
+  }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
+// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established component boundary.
 export default function McpSettingsPanel({
   workspaceId,
   workspaceName = '',
@@ -67,11 +70,13 @@ export default function McpSettingsPanel({
   const [message, setMessage] = useState({ scopeKey: '', type: '', text: '' });
 
   scopeRef.current = scopeKey;
-  if (scopeState.scopeKey !== scopeKey) setScopeState(createMcpScopeState(scopeKey));
+  if (scopeState.scopeKey !== scopeKey) {
+    setScopeState(createMcpScopeState(scopeKey));
+  }
 
-  const currentRemote = remoteState.scopeKey === scopeKey
-    ? remoteState
-    : { status: null, tokens: [], concurrency: null };
+  const currentRemote = remoteState.scopeKey === scopeKey ?
+    remoteState :
+    { status: null, tokens: [], concurrency: null };
   const currentMessage = message.scopeKey === scopeKey ? message : { type: '', text: '' };
   const loading = loadingScope === scopeKey;
   const acting = actionState.scopeKey === scopeKey ? actionState : { kind: '', tokenId: '' };
@@ -99,18 +104,25 @@ export default function McpSettingsPanel({
   const concurrencyReady = currentRemote.scopeKey === scopeKey && currentRemote.concurrency !== null;
 
   useEffect(() => {
-    if (!concurrencyReady) setConcurrencyDraft(MCP_STREAM_USER_CONCURRENCY_DEFAULT);
+    if (!concurrencyReady) {
+      setConcurrencyDraft(MCP_STREAM_USER_CONCURRENCY_DEFAULT);
+    }
   }, [concurrencyReady, scopeKey]);
 
+  // eslint-disable-next-line complexity -- Coordinate three related remote resources atomically.
   const loadData = useCallback(async ({ clearMessage = false } = {}) => {
-    if (!workspaceId || !authenticated) return;
+    if (!workspaceId || !authenticated) {
+      return;
+    }
     loadControllerRef.current?.abort();
     const controller = new AbortController();
     const requestScope = scopeKey;
     const requestSequence = ++loadSequenceRef.current;
     loadControllerRef.current = controller;
     setLoadingScope(requestScope);
-    if (clearMessage) setMessage({ scopeKey: requestScope, type: '', text: '' });
+    if (clearMessage) {
+      setMessage({ scopeKey: requestScope, type: '', text: '' });
+    }
     const accepted = () => !controller.signal.aborted && acceptsMcpResponse({
       currentScope: scopeRef.current,
       requestScope,
@@ -128,22 +140,30 @@ export default function McpSettingsPanel({
         tokensResponse.json().catch(() => ({})),
         concurrencyResponse.json().catch(() => ({})),
       ]);
-      if (!statusResponse.ok) throw new Error(payloadMessage(statusPayload, '加载 MCP 服务状态失败'));
-      if (!tokensResponse.ok) throw new Error(payloadMessage(tokensPayload, '加载 MCP Token 失败'));
+      if (!statusResponse.ok) {
+        throw new Error(payloadMessage(statusPayload, '加载 MCP 服务状态失败'));
+      }
+      if (!tokensResponse.ok) {
+        throw new Error(payloadMessage(tokensPayload, '加载 MCP Token 失败'));
+      }
       // Keep the status and token UI usable while an older backend is rolling out.
       if (!concurrencyResponse.ok && concurrencyResponse.status !== 404) {
         throw new Error(payloadMessage(concurrencyPayload, '加载 MCP 并发配置失败'));
       }
       const status = normalizeMcpStatus(statusPayload, workspaceId);
-      if (!status.valid) throw new Error(status.error);
-      if (!accepted()) return;
-      const concurrencyConfig = concurrencyResponse.ok
-        ? normalizeMcpStreamConcurrency({
+      if (!status.valid) {
+        throw new Error(status.error);
+      }
+      if (!accepted()) {
+        return;
+      }
+      const concurrencyConfig = concurrencyResponse.ok ?
+        normalizeMcpStreamConcurrency({
           value: concurrencyPayload.stream_user_workspace_concurrency,
           min: concurrencyPayload.min,
           max: concurrencyPayload.max,
-        })
-        : null;
+        }) :
+        null;
       setRemoteState({
         scopeKey: requestScope,
         status,
@@ -154,10 +174,16 @@ export default function McpSettingsPanel({
         concurrencyConfig?.value ?? MCP_STREAM_USER_CONCURRENCY_DEFAULT,
       );
     } catch (error) {
-      if (accepted()) setMessage({ scopeKey: requestScope, type: 'error', text: error.message || '加载 MCP 配置失败' });
+      if (accepted()) {
+        setMessage({ scopeKey: requestScope, type: 'error', text: error.message || '加载 MCP 配置失败' });
+      }
     } finally {
-      if (accepted()) setLoadingScope('');
-      if (loadControllerRef.current === controller) loadControllerRef.current = null;
+      if (accepted()) {
+        setLoadingScope('');
+      }
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+      }
     }
   }, [authenticated, request, scopeKey, workspaceId]);
 
@@ -173,8 +199,12 @@ export default function McpSettingsPanel({
       signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payloadMessage(payload, '保存 MCP 并发配置失败'));
-    if (controller.signal.aborted || scopeRef.current !== requestScope) return;
+    if (!response.ok) {
+      throw new Error(payloadMessage(payload, '保存 MCP 并发配置失败'));
+    }
+    if (controller.signal.aborted || scopeRef.current !== requestScope) {
+      return;
+    }
     setConcurrencyDraft(normalizeMcpStreamConcurrency({
       value: payload.stream_user_workspace_concurrency,
       min: payload.min,
@@ -198,10 +228,14 @@ export default function McpSettingsPanel({
   );
 
   useEffect(() => {
-    if (!ontologyListReady) return;
+    if (!ontologyListReady) {
+      return;
+    }
     const ontologies = normalizedOntologies;
     setScopeState((current) => {
-      if (current.scopeKey !== scopeKey) return current;
+      if (current.scopeKey !== scopeKey) {
+        return current;
+      }
       return {
         ...current,
         form: {
@@ -245,7 +279,9 @@ export default function McpSettingsPanel({
   });
 
   const performAction = async (kind, callback, { available = selfServiceAvailable } = {}) => {
-    if (!workspaceId || !available) return;
+    if (!workspaceId || !available) {
+      return;
+    }
     actionControllerRef.current?.abort();
     const controller = new AbortController();
     const requestScope = scopeKey;
@@ -262,13 +298,17 @@ export default function McpSettingsPanel({
       if (!controller.signal.aborted && scopeRef.current === requestScope) {
         setActionState({ scopeKey: requestScope, kind: '', tokenId: '' });
       }
-      if (actionControllerRef.current === controller) actionControllerRef.current = null;
+      if (actionControllerRef.current === controller) {
+        actionControllerRef.current = null;
+      }
     }
   };
 
   const createToken = () => {
-    if (!ontologyListReady) return;
-    return performAction('create', async (controller, requestScope) => {
+    if (!ontologyListReady) {
+      return;
+    }
+    void performAction('create', async (controller, requestScope) => {
       const body = buildMcpTokenRequest(scopeState.form);
       const response = await request('/agentic/mcp/tokens', {
         method: 'POST',
@@ -277,8 +317,12 @@ export default function McpSettingsPanel({
         signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payloadMessage(payload, '创建 MCP Token 失败'));
-      if (controller.signal.aborted || scopeRef.current !== requestScope) return;
+      if (!response.ok) {
+        throw new Error(payloadMessage(payload, '创建 MCP Token 失败'));
+      }
+      if (controller.signal.aborted || scopeRef.current !== requestScope) {
+        return;
+      }
       const createdBinding = currentOntologies.find(
         (ontology) => ontology.id === scopeState.form.ontologyId,
       );
@@ -302,13 +346,19 @@ export default function McpSettingsPanel({
 
   const revokeTokenAction = () => performAction('revoke', async (controller, requestScope) => {
     const tokenId = scopeState.revokeTokenId;
-    if (!tokenId) return;
+    if (!tokenId) {
+      return;
+    }
     const response = await request(`/agentic/mcp/tokens/${encodeURIComponent(tokenId)}`, {
       method: 'DELETE', signal: controller.signal,
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payloadMessage(payload, '吊销 MCP Token 失败'));
-    if (controller.signal.aborted || scopeRef.current !== requestScope) return;
+    if (!response.ok) {
+      throw new Error(payloadMessage(payload, '吊销 MCP Token 失败'));
+    }
+    if (controller.signal.aborted || scopeRef.current !== requestScope) {
+      return;
+    }
     updateScopeState({ revokeTokenId: '', createdToken: '' });
     setMessage({ scopeKey: requestScope, type: 'success', text: 'Token 已吊销。' });
     await loadData();
@@ -316,21 +366,27 @@ export default function McpSettingsPanel({
 
   const copyValue = async (key, value) => {
     const result = await copyMcpText(value);
-    if (scopeRef.current !== scopeKey) return;
+    if (scopeRef.current !== scopeKey) {
+      return;
+    }
     if (result.ok) {
       updateScopeState({ copiedKey: key });
       setMessage({ scopeKey, type: 'success', text: '已复制到剪贴板。' });
       window.clearTimeout(copyTimerRef.current);
       copyTimerRef.current = window.setTimeout(() => {
-        if (scopeRef.current === scopeKey) updateScopeState({ copiedKey: '' });
+        if (scopeRef.current === scopeKey) {
+          updateScopeState({ copiedKey: '' });
+        }
       }, 1600);
-    } else setMessage({ scopeKey, type: 'error', text: result.error });
+    } else {
+      setMessage({ scopeKey, type: 'error', text: result.error });
+    }
   };
 
   const toggleScope = (value) => {
-    const scopes = scopeState.form.scopes.includes(value)
-      ? scopeState.form.scopes.filter((scope) => scope !== value)
-      : [...scopeState.form.scopes, value];
+    const scopes = scopeState.form.scopes.includes(value) ?
+      scopeState.form.scopes.filter((scope) => scope !== value) :
+      [...scopeState.form.scopes, value];
     updateForm({
       scopes,
       ontologyId: resolveMcpOntologySelection({
@@ -341,8 +397,12 @@ export default function McpSettingsPanel({
     });
   };
 
-  if (!authenticated) return <div className="settings-mcp-empty">登录后可管理当前账号的 MCP Token。</div>;
-  if (!workspaceId) return <div className="settings-mcp-empty">请选择工作空间后管理 MCP。</div>;
+  if (!authenticated) {
+    return <div className="settings-mcp-empty">登录后可管理当前账号的 MCP Token。</div>;
+  }
+  if (!workspaceId) {
+    return <div className="settings-mcp-empty">请选择工作空间后管理 MCP。</div>;
+  }
 
   return (
     <div className="settings-mcp-panel">
@@ -353,13 +413,20 @@ export default function McpSettingsPanel({
         </button>
       </section>
       {!selfServiceAvailable && <div className="settings-mcp-notice">当前认证能力未开放 MCP Token 自服务。</div>}
-      {currentMessage.text && <div className={`settings-mcp-notice ${currentMessage.type}`} role={currentMessage.type === 'error' ? 'alert' : 'status'}>{currentMessage.text}</div>}
+      {currentMessage.text && (
+        <div
+          className={`settings-mcp-notice ${currentMessage.type}`}
+          role={currentMessage.type === 'error' ? 'alert' : 'status'}
+        >
+          {currentMessage.text}
+        </div>
+      )}
       {loading && !currentRemote.status && <div className="settings-mcp-empty">加载 MCP 状态与 Token…</div>}
       {currentRemote.status && (
         <section className="settings-mcp-metrics">
           <div><span>服务状态</span><strong>{currentRemote.status.running ? '在线' : '离线'}</strong></div>
           <div><span>Transport</span><strong>{currentRemote.status.transport || '—'}</strong></div>
-          <div><span>Public URL</span><strong>{currentRemote.status.publicBaseUrl || '—'}</strong></div>
+          <div><span>Public URL</span><strong>{currentRemote.status.publicBaseUrl || '外部地址未配置'}</strong></div>
           <div><span>Active Tokens</span><strong>{activeTokenCount}</strong></div>
         </section>
       )}
@@ -371,16 +438,32 @@ export default function McpSettingsPanel({
             <div className="settings-mcp-actions">
               <button className="btn" type="button" disabled={!service.active_url}
                 onClick={() => copyValue(`endpoint:${service.id}`, service.active_url)}>
-                {scopeState.copiedKey === `endpoint:${service.id}` ? <Check size={14} /> : <Copy size={14} />}复制 endpoint
+                {scopeState.copiedKey === `endpoint:${service.id}` ?
+                  <Check size={14} /> :
+                  <Copy size={14} />}
+                复制 endpoint
               </button>
-              <button className="btn" type="button" onClick={() => updateScopeState({ selectedServiceId: service.id })}><Info size={14} />说明</button>
+              <button
+                className="btn"
+                type="button"
+                onClick={() =>
+                  updateScopeState({ selectedServiceId: service.id })}
+              >
+                <Info size={14} />说明
+              </button>
             </div>
           </article>
         ))}
         {!loading && !services.length && <div className="settings-mcp-empty">暂无 MCP 服务目录。</div>}
       </section>
       <section className="card settings-mcp-concurrency">
-        <div><h3>流式 Chat 并发控制</h3><p>控制普通用户在当前工作空间可同时运行的 MCP Progress 流式 Chat 数量，默认 5，范围 1–32。</p></div>
+        <div>
+          <h3>流式 Chat 并发控制</h3>
+          <p>
+            控制普通用户在当前工作空间可同时运行的 MCP Progress
+            流式 Chat 数量，默认 5，范围 1–32。
+          </p>
+        </div>
         <label>普通用户并发数
           <input
             type="number"
@@ -392,8 +475,24 @@ export default function McpSettingsPanel({
             onChange={(event) => setConcurrencyDraft(event.target.value)}
           />
         </label>
-        {!canManageConcurrency && <div className="settings-mcp-binding-hint">仅平台管理员可修改；当前值为 {concurrency.value}。</div>}
-        {canManageConcurrency && <div className="settings-mcp-actions"><button className="btn btn-p" type="button" disabled={!concurrencyReady || Boolean(acting.kind)} onClick={saveConcurrency}><Save size={14} />{acting.kind === 'concurrency' ? '保存中…' : '保存并发配置'}</button></div>}
+        {!canManageConcurrency && (
+          <div className="settings-mcp-binding-hint">
+            仅平台管理员可修改；当前值为 {concurrency.value}。
+          </div>
+        )}
+        {canManageConcurrency && (
+          <div className="settings-mcp-actions">
+            <button
+              className="btn btn-p"
+              type="button"
+              disabled={!concurrencyReady || Boolean(acting.kind)}
+              onClick={saveConcurrency}
+            >
+              <Save size={14} />
+              {acting.kind === 'concurrency' ? '保存中…' : '保存并发配置'}
+            </button>
+          </div>
+        )}
       </section>
       <section className="card settings-mcp-create">
         <h3>生成 Token</h3>
@@ -405,16 +504,20 @@ export default function McpSettingsPanel({
           <option value="604800">7 天</option><option value="2592000">30 天</option><option value="never">永不过期</option>
         </select></label>
         <fieldset><legend>最小权限</legend>{MCP_SCOPES.map((scope) => (
-          <label key={scope}><input type="checkbox" checked={scopeState.form.scopes.includes(scope)}
-            disabled={!selfServiceAvailable || Boolean(acting.kind)} onChange={() => toggleScope(scope)} />{scope}</label>
+          <label key={scope}><input
+            type="checkbox"
+            checked={scopeState.form.scopes.includes(scope)}
+            disabled={!selfServiceAvailable || Boolean(acting.kind)}
+            onChange={() => toggleScope(scope)}
+          />{scope}</label>
         ))}</fieldset>
         <label>绑定知识包<select value={scopeState.form.ontologyId}
           disabled={!selfServiceAvailable || Boolean(acting.kind) || !ontologyListReady}
           onChange={(event) => updateForm({ ontologyId: event.target.value })}>
           <option value="">
-            {ontologiesLoading ? '正在加载知识包…'
-              : ontologiesError ? '知识包加载失败'
-                : '请选择知识包'}
+            {ontologiesLoading && '正在加载知识包…'}
+            {!ontologiesLoading && ontologiesError && '知识包加载失败'}
+            {!ontologiesLoading && !ontologiesError && '请选择知识包'}
           </option>
           {ontologyOptions.map((ontology) => (
             <option key={ontology.id} value={ontology.id} disabled={!ontology.eligibility.eligible}>
@@ -436,8 +539,8 @@ export default function McpSettingsPanel({
           <div className="settings-mcp-binding-hint error">当前权限组合下没有可绑定的知识包。</div>
         )}
         <button className="btn btn-p" type="button"
-          disabled={!selfServiceAvailable || Boolean(acting.kind)
-            || !ontologyListReady || !scopeState.form.ontologyId || !scopeState.form.scopes.length}
+          disabled={!selfServiceAvailable || Boolean(acting.kind) ||
+            !ontologyListReady || !scopeState.form.ontologyId || !scopeState.form.scopes.length}
           onClick={createToken}>
           <Plus size={14} />{acting.kind === 'create' ? '生成中…' : '生成 Token'}
         </button>
@@ -458,10 +561,21 @@ export default function McpSettingsPanel({
         </tr></thead><tbody>
           {currentRemote.tokens.map((token) => <tr key={token.token_id}>
             <td>{token.name || token.token_id}</td><td><code>{token.token_masked || '已隐藏'}</code></td>
-            <td>{currentOntologies.find((item) => item.id === token.ontology_id)?.name || token.ontology_id || '工作空间级（旧 Token）'}</td>
-            <td>{token.scopes.join('、') || '—'}</td><td>{token.status || '—'}</td><td>{formatDate(token.expires_at)}</td>
-            <td><button className="btn btn-danger" type="button" disabled={!selfServiceAvailable || token.status !== 'active' || Boolean(acting.kind)}
-              onClick={() => updateScopeState({ revokeTokenId: token.token_id })}><Trash2 size={14} />吊销</button></td>
+            <td>
+              {currentOntologies.find(
+                (item) => item.id === token.ontology_id,
+              )?.name || token.ontology_id || '工作空间级（旧 Token）'}
+            </td>
+            <td>{token.scopes.join('、') || '—'}</td>
+            <td>{token.status || '—'}</td>
+            <td>{formatDate(token.expires_at)}</td>
+            <td><button className="btn btn-danger" type="button" disabled={
+              !selfServiceAvailable ||
+              token.status !== 'active' ||
+              Boolean(acting.kind)
+            }
+            onClick={() => updateScopeState({ revokeTokenId: token.token_id })}
+            ><Trash2 size={14} />吊销</button></td>
           </tr>)}
           {!loading && !currentRemote.tokens.length && <tr><td colSpan="7" className="empty">暂无 MCP Token。</td></tr>}
         </tbody></table></div>
@@ -476,14 +590,34 @@ export default function McpSettingsPanel({
             </button></div>;
         })}
       </section>}
-      {selectedService && <Modal title={selectedService.title} description={selectedService.description || selectedService.summary}
-        onClose={() => updateScopeState({ selectedServiceId: '' })} actions={<button className="btn btn-p" type="button" onClick={() => updateScopeState({ selectedServiceId: '' })}>完成</button>}>
-        <div className="settings-mcp-tools">{selectedService.tools.map((tool) => <article key={tool.name}><code>{tool.name}</code><p>{tool.description}</p></article>)}</div>
+      {selectedService && <Modal
+        title={selectedService.title}
+        description={selectedService.description || selectedService.summary}
+        onClose={() => updateScopeState({ selectedServiceId: '' })}
+        actions={<button
+          className="btn btn-p"
+          type="button"
+          onClick={() => updateScopeState({ selectedServiceId: '' })}
+        >完成</button>}
+      >
+        <div className="settings-mcp-tools">{selectedService.tools.map(
+          (tool) => <article key={tool.name}>
+            <code>{tool.name}</code><p>{tool.description}</p>
+          </article>,
+        )}</div>
       </Modal>}
       {revokeToken && <Modal title="吊销 MCP Token" description={`Token：${revokeToken.name || revokeToken.token_masked}`}
-        onClose={() => { if (!acting.kind) updateScopeState({ revokeTokenId: '' }); }} actions={<>
-          <button className="btn" type="button" disabled={Boolean(acting.kind)} onClick={() => updateScopeState({ revokeTokenId: '' })}>取消</button>
-          <button className="btn btn-danger" type="button" disabled={Boolean(acting.kind)} onClick={revokeTokenAction}>{acting.kind === 'revoke' ? '吊销中…' : '确认吊销'}</button>
+        onClose={() => {
+          if (!acting.kind) {
+            updateScopeState({ revokeTokenId: '' });
+          }
+        }} actions={<>
+          <button className="btn" type="button" disabled={Boolean(acting.kind)}
+            onClick={() => updateScopeState({ revokeTokenId: '' })}>取消</button>
+          <button className="btn btn-danger" type="button"
+            disabled={Boolean(acting.kind)} onClick={revokeTokenAction}>
+            {acting.kind === 'revoke' ? '吊销中…' : '确认吊销'}
+          </button>
         </>}><p>吊销立即生效，使用该凭据的客户端会失去访问权限。</p></Modal>}
     </div>
   );

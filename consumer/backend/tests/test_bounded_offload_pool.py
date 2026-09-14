@@ -1,10 +1,9 @@
 import asyncio
-from contextvars import ContextVar
 import threading
-
-import pytest
+from contextvars import ContextVar
 
 import agent.runtime.offload as offload_module
+import pytest
 from agent.runtime import (
     BoundedOffloadPool,
     OffloadPoolClosed,
@@ -57,9 +56,7 @@ def test_offload_pool_bounds_pending_work_and_preserves_event_loop_progress():
         assert await first is True
         assert await second == "queued-result"
         assert queued_invoked.is_set()
-        assert await pool.close(
-            deadline=asyncio.get_running_loop().time() + 0.5
-        )
+        assert await pool.close(deadline=asyncio.get_running_loop().time() + 0.5)
 
     asyncio.run(scenario())
 
@@ -87,15 +84,11 @@ def test_offload_timeout_keeps_worker_visible_until_real_completion():
             assert entered.is_set()
             assert pool.metrics()["running"] == 1
             assert pool.metrics()["unfinished"] == 1
-            assert not await pool.close(
-                deadline=asyncio.get_running_loop().time() + 0.01
-            )
+            assert not await pool.close(deadline=asyncio.get_running_loop().time() + 0.01)
         finally:
             release.set()
             await _wait_for_metric(pool, "unfinished", 0)
-            assert await pool.close(
-                deadline=asyncio.get_running_loop().time() + 0.5
-            )
+            assert await pool.close(deadline=asyncio.get_running_loop().time() + 0.5)
 
     asyncio.run(scenario())
 
@@ -130,9 +123,7 @@ def test_offload_close_cancels_queued_worker_without_invoking_it():
             queued_task = asyncio.create_task(pool.run(queued_operation))
             await _wait_for_metric(pool, "unfinished", 2)
 
-            assert not await pool.close(
-                deadline=asyncio.get_running_loop().time() + 0.01
-            )
+            assert not await pool.close(deadline=asyncio.get_running_loop().time() + 0.01)
             with pytest.raises(asyncio.CancelledError):
                 await queued_task
             assert not queued_invoked.is_set()
@@ -145,9 +136,7 @@ def test_offload_close_cancels_queued_worker_without_invoking_it():
                 with pytest.raises(asyncio.CancelledError):
                     await queued_task
             await _wait_for_metric(pool, "unfinished", 0)
-            assert await pool.close(
-                deadline=asyncio.get_running_loop().time() + 0.5
-            )
+            assert await pool.close(deadline=asyncio.get_running_loop().time() + 0.5)
 
     asyncio.run(scenario())
 
@@ -162,10 +151,9 @@ def test_offload_pool_propagates_context_and_run_observability(monkeypatch):
                 self.run_id = run_id
 
             def __enter__(self):
-                profiled_runs.append(
-                    (self.run_id, threading.current_thread().name)
-                )
+                profiled_runs.append((self.run_id, threading.current_thread().name))
 
+            # pylint: disable-next=add-staticmethod-or-classmethod-decorator
             def __exit__(self, exc_type, exc, traceback):
                 return False
 
@@ -183,24 +171,23 @@ def test_offload_pool_propagates_context_and_run_observability(monkeypatch):
         )
         context_reset_handle = marker.set("request-context")
         try:
-            assert await pool.run(
-                marker.get,
-                profile_run_id="run-observed",
-            ) == "request-context"
+            assert (
+                await pool.run(
+                    marker.get,
+                    profile_run_id="run-observed",
+                )
+                == "request-context"
+            )
         finally:
             marker.reset(context_reset_handle)
-        assert profiled_runs == [
-            ("run-observed", "agentic-synthetic-context_0")
-        ]
+        assert profiled_runs == [("run-observed", "agentic-synthetic-context_0")]
 
         pool.set_operation_timeout_seconds(2)
         assert pool.operation_timeout_seconds == 2
         with pytest.raises(ValueError, match="timeout must be positive"):
             pool.set_operation_timeout_seconds(0)
 
-        assert await pool.close(
-            deadline=asyncio.get_running_loop().time() + 0.5
-        )
+        assert await pool.close(deadline=asyncio.get_running_loop().time() + 0.5)
         assert pool.metrics()["closed"] is True
         with pytest.raises(OffloadPoolClosed):
             await pool.run(lambda: "rejected")
@@ -224,8 +211,6 @@ def test_run_forwards_business_run_id_keyword():
         try:
             assert await pool.run(operation, run_id="business-run") == "business-run"
         finally:
-            assert await pool.close(
-                deadline=asyncio.get_running_loop().time() + 0.5
-            )
+            assert await pool.close(deadline=asyncio.get_running_loop().time() + 0.5)
 
     asyncio.run(scenario())

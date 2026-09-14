@@ -187,7 +187,14 @@ def _normalize_domain_list(values: Iterable[Any]) -> List[str]:
 
 
 def _is_valid_public_domain(domain: str) -> bool:
-    if not domain or "/" in domain or ":" in domain or domain.startswith(".") or domain.endswith("."):
+    has_invalid_shape = (
+        not domain
+        or "/" in domain
+        or ":" in domain
+        or domain.startswith(".")
+        or domain.endswith(".")
+    )
+    if has_invalid_shape:
         return False
     if "." not in domain:
         return False

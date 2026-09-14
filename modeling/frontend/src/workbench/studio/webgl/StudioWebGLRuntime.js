@@ -506,7 +506,7 @@ export class WebGLGraphRuntime {
       const highlighted = this.interactionState.activeNodeIds.has(item.id);
       const dimmed = this.interactionState.hasHighlight && !highlighted;
       const container = new Container();
-      container.zIndex = selected ? 10 : highlighted ? 2 : 1;
+      container.zIndex = (() => { if (selected) return 10; return highlighted ? 2 : 1; })();
       const position = this.positions.get(item.id) || this.basePositions.get(item.id) || point(0, 0);
       container.position.set(position.x, position.y);
       container.alpha = dimmed ? 0.18 : 1;
@@ -624,14 +624,14 @@ export class WebGLGraphRuntime {
       const edgeVisual = {
         color: style.color,
         width: active || hovered ? 2.7 : 1.45,
-        alpha: dimmed ? 0.1 : active || hovered ? 1 : 0.8,
+        alpha: (() => { if (dimmed) return 0.1; return active || hovered ? 1 : 0.8; })(),
         dash: style.dash,
       };
       const styleKey = `${edgeVisual.color}|${edgeVisual.width}|${edgeVisual.alpha}|${edgeVisual.dash?.join(',') || ''}`;
       if (!graphicsByStyle.has(styleKey)) graphicsByStyle.set(styleKey, new Graphics());
       const graphics = graphicsByStyle.get(styleKey);
       drawEdgeLine(graphics, points, edgeVisual);
-      drawArrow(graphics, points, style.color, dimmed ? 0.1 : active || hovered ? 1 : 0.95);
+      drawArrow(graphics, points, style.color, (() => { if (dimmed) return 0.1; return active || hovered ? 1 : 0.95; })());
 
       if (item.label) labelEntries.push({ edge: item, points, style, state: { active, hovered, dimmed } });
       if (this.shouldAnimateEdge(item, active, hovered)) {
@@ -793,7 +793,7 @@ export class WebGLGraphRuntime {
       container.position.set(placement.x, placement.y);
       container.scale.set(labelScale);
       container.alpha = 1;
-      label.alpha = state.dimmed ? 0.58 : emphasized ? 1 : 0.94;
+      label.alpha = (() => { if (state.dimmed) return 0.58; return emphasized ? 1 : 0.94; })();
       container.zIndex = emphasized ? 2 : 1;
       placed.push({ edgeId: edge.id, rect: placement.rect });
     });
@@ -836,9 +836,9 @@ export class WebGLGraphRuntime {
     if (this.interactionState.selectedId) return Math.min(edgeCount, 260);
     const compact = zoom < 0.62;
     const standard = !compact && zoom < 0.9;
-    const factor = compact ? 0.24 : standard ? 0.4 : 0.64;
-    const floor = compact ? 24 : standard ? 36 : 48;
-    const ceiling = compact ? 80 : standard ? 160 : 320;
+    const factor = (() => { if (compact) return 0.24; return standard ? 0.4 : 0.64; })();
+    const floor = (() => { if (compact) return 24; return standard ? 36 : 48; })();
+    const ceiling = (() => { if (compact) return 80; return standard ? 160 : 320; })();
     return Math.min(edgeCount, ceiling, Math.max(floor, Math.round(edgeCount * factor)));
   }
 
@@ -1224,7 +1224,7 @@ export class WebGLGraphRuntime {
       view.title.scale.set(view.titleBaseScale * boost);
     });
     if (this.host) this.host.dataset.visibleNodeCount = String(visibleNodeCount);
-    this.callbacks.onZoomTierChange?.(zoom < 0.52 ? 'compact' : zoom < 0.86 ? 'standard' : 'detail');
+    this.callbacks.onZoomTierChange?.((() => { if (zoom < 0.52) return 'compact'; return zoom < 0.86 ? 'standard' : 'detail'; })());
   }
 
   resize() {
@@ -1579,7 +1579,7 @@ function emptyInteractionState() {
 }
 
 function drawNodeShape(graphics, item, color, fill, selected, highlighted, pinned) {
-  const selectionColor = selected ? color : highlighted ? 0x7ca7dc : color;
+  const selectionColor = (() => { if (selected) return color; return highlighted ? 0x7ca7dc : color; })();
   traceNodeShape(graphics, item).fill({ color: fill });
   if (selected) traceNodeShape(graphics, item).fill({ color: selectionColor, alpha: 0.12 });
   else if (highlighted) traceNodeShape(graphics, item).fill({ color: selectionColor, alpha: 0.08 });

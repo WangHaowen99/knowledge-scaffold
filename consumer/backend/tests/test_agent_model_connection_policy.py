@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from agent.core.model_connection_policy import (
     ModelConnectionPolicyError,
     resolve_model_connection_policy,

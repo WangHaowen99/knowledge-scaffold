@@ -70,7 +70,7 @@ function commit(session, document, selection = session.selection) {
     selection,
     editGeneration: session.editGeneration + 1,
     dirty,
-    saveStatus: session.saveInFlight ? 'saving' : dirty ? 'dirty' : 'saved',
+    saveStatus: (() => { if (session.saveInFlight) return 'saving'; return dirty ? 'dirty' : 'saved'; })(),
   };
 }
 
@@ -167,7 +167,7 @@ export function reduceFlowchartEditorSession(session, action) {
       selection: null,
       editGeneration: session.editGeneration + 1,
       dirty,
-      saveStatus: session.saveInFlight ? 'saving' : dirty ? 'dirty' : 'saved',
+      saveStatus: (() => { if (session.saveInFlight) return 'saving'; return dirty ? 'dirty' : 'saved'; })(),
     };
   }
 
@@ -183,7 +183,7 @@ export function reduceFlowchartEditorSession(session, action) {
       selection: null,
       editGeneration: session.editGeneration + 1,
       dirty,
-      saveStatus: session.saveInFlight ? 'saving' : dirty ? 'dirty' : 'saved',
+      saveStatus: (() => { if (session.saveInFlight) return 'saving'; return dirty ? 'dirty' : 'saved'; })(),
     };
   }
 

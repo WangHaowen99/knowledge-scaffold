@@ -601,11 +601,9 @@ export default function FlowchartEditor({
     });
   }, [activeDiagram?.id, disabled]);
 
-  const statusText = session.saveStatus === 'saving'
-    ? '保存中…'
-    : session.dirty
+  const statusText = (() => { if (session.saveStatus === 'saving') return '保存中…'; return session.dirty
       ? '有未保存修改'
-      : session.savedRevision == null ? '草稿已保存' : `草稿修订 ${session.savedRevision}`;
+      : (() => { if (session.savedRevision == null) return '草稿已保存'; return `草稿修订 ${session.savedRevision}`; })(); })();
 
   return (
     <section className="flowchart-editor" data-dirty={session.dirty ? 'true' : 'false'}
@@ -629,11 +627,9 @@ export default function FlowchartEditor({
             </button>
           ))}
           <AddFlowchartCard disabled={disabled || session.dirty || session.saveStatus === 'saving'}
-            disabledReason={session.dirty
-              ? '请先保存当前流程图修改，再继续添加'
-              : session.saveStatus === 'saving'
+            disabledReason={(() => { if (session.dirty) return '请先保存当前流程图修改，再继续添加'; return session.saveStatus === 'saving'
                 ? '草稿保存完成后可继续添加'
-                : disabled ? '当前流程图正在处理，请稍后再试' : ''}
+                : (() => { if (disabled) return '当前流程图正在处理，请稍后再试'; return ''; })(); })()}
             onRecommend={onRecommendDiagram} onImportMermaid={onImportMermaid}
             onCreateBlank={createBlank} />
         </div>

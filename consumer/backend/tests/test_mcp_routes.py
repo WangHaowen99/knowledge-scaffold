@@ -5,11 +5,9 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import httpx
-from fastapi.testclient import TestClient
-
 import api.routes as routes_module
 import api.routes.mcp as mcp_routes
+import httpx
 from agent.runtime.contracts import USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
 from api.auth.auth import AuthUser
 from api.protocols.mcp.paths import (
@@ -17,6 +15,8 @@ from api.protocols.mcp.paths import (
     MCP_INTERNAL_CHAT_STREAM_PATH,
 )
 from api.testing import TestApplication
+from backend_synthetic_credentials import synthetic_secret
+from fastapi.testclient import TestClient
 from integration.mcp.ontology_binding import MCPOntologyBindingError
 from integration.mcp.scope import MCPRequestScope
 
@@ -40,7 +40,11 @@ class _AuthBackend:
 
     def verify_token(self, token):
         self.verify_calls += 1
-        return AuthUser(username="operator_a", role=self.role) if token == "valid" else None
+        return (
+            AuthUser(username="operator_a", role=self.role)
+            if token == synthetic_secret("mcp_routes-credential-03")
+            else None
+        )
 
     def get_user(self, username):
         return AuthUser(username=username, role=self.role)
@@ -65,7 +69,7 @@ def test_mcp_concurrency_get_returns_default_and_bounds(monkeypatch):
 
     response = TestClient(app).get(
         "/agentic/mcp/runtime/concurrency",
-        headers={"Authorization": "Bearer valid"},
+        headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
     )
 
     assert response.status_code == 200
@@ -95,7 +99,7 @@ def test_runtime_status_uses_workspace_scoped_service_urls(monkeypatch):
 
     response = TestClient(app).get(
         "/agentic/mcp/runtime/status",
-        headers={"Authorization": "Bearer valid"},
+        headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
     )
 
     assert response.status_code == 200
@@ -111,7 +115,7 @@ def test_internal_chat_revalidates_scope_and_passes_runtime_store(monkeypatch):
         username="operator_a",
         workspace_id="workspace_demo",
         scopes=["mcp:chat"],
-        token="token-placeholder",
+        token=synthetic_secret("mcp_routes-credential-02"),
     )
     monkeypatch.setattr(mcp_routes, "resolve_mcp_scope_from_token", lambda *_args, **_kwargs: scope)
     monkeypatch.setattr(
@@ -131,7 +135,7 @@ def test_internal_chat_revalidates_scope_and_passes_runtime_store(monkeypatch):
     response = TestClient(app).post(
         "/agentic/mcp/internal/chat",
         headers={
-            "Authorization": "Bearer token-placeholder",
+            "Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-02')}",
             "X-Workspace-Id": "workspace_demo",
         },
         json={"request": "synthetic question", "session_id": "session_demo"},
@@ -153,7 +157,7 @@ def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch)
         username="operator_a",
         workspace_id="workspace_demo",
         scopes=["mcp:chat"],
-        token="token-placeholder",
+        token=synthetic_secret("mcp_routes-credential-02"),
     )
     monkeypatch.setattr(
         mcp_routes,
@@ -219,7 +223,7 @@ def test_internal_chat_stream_returns_progress_then_terminal_result(monkeypatch)
             return await client.post(
                 MCP_INTERNAL_CHAT_STREAM_PATH,
                 headers={
-                    "Authorization": "Bearer token-placeholder",
+                    "Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-02')}",
                     "X-Workspace-Id": "workspace_demo",
                 },
                 json={
@@ -319,7 +323,7 @@ def test_admin_updates_mcp_stream_concurrency_policy(monkeypatch):
 
     response = TestClient(app).patch(
         "/agentic/mcp/runtime/concurrency",
-        headers={"Authorization": "Bearer valid"},
+        headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
         json={"stream_user_workspace_concurrency": 9},
     )
 
@@ -346,7 +350,7 @@ def test_admin_update_rejects_mcp_stream_concurrency_outside_supported_range(mon
     for invalid in (0, 33, True, 1.5, "5"):
         response = TestClient(app).patch(
             "/agentic/mcp/runtime/concurrency",
-            headers={"Authorization": "Bearer valid"},
+            headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
             json={"stream_user_workspace_concurrency": invalid},
         )
         assert response.status_code == 400
@@ -361,7 +365,7 @@ def test_non_admin_cannot_update_mcp_stream_concurrency_policy(monkeypatch):
 
     response = TestClient(app).patch(
         "/agentic/mcp/runtime/concurrency",
-        headers={"Authorization": "Bearer valid"},
+        headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
         json={"stream_user_workspace_concurrency": 9},
     )
 
@@ -377,14 +381,14 @@ def test_internal_chat_rejects_workspace_scope_mismatch(monkeypatch):
             username="operator_a",
             workspace_id="workspace_demo",
             scopes=["mcp:chat"],
-            token="token-placeholder",
+            token=synthetic_secret("mcp_routes-credential-02"),
         ),
     )
 
     response = TestClient(app).post(
         "/agentic/mcp/internal/chat",
         headers={
-            "Authorization": "Bearer token-placeholder",
+            "Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-02')}",
             "X-Workspace-Id": "workspace_other",
         },
         json={"request": "synthetic question"},
@@ -422,12 +426,12 @@ def test_management_token_creation_uses_native_dependencies(monkeypatch):
 
     def create_token(**kwargs):
         captured.update(kwargs)
-        return {"item": {"id": "token_demo"}, "token": "one-time-placeholder"}
+        return {"item": {"id": "token_demo"}, "token": synthetic_secret("mcp_routes-credential-01")}
 
     monkeypatch.setattr(mcp_routes, "_create_token", create_token)
     response = TestClient(app).post(
         "/agentic/mcp/tokens",
-        headers={"Authorization": "Bearer valid"},
+        headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
         json={"name": "synthetic", "scopes": ["mcp:chat"]},
     )
 
@@ -475,7 +479,7 @@ def test_create_token_api_forwards_validated_ontology_binding(monkeypatch):
     def create_token(**kwargs):
         captured.update(kwargs)
         return {
-            "token": "one-time-placeholder",
+            "token": synthetic_secret("mcp_routes-credential-01"),
             "item": {
                 "token_id": "token_demo",
                 "ontology_id": kwargs["ontology_id"],
@@ -486,7 +490,7 @@ def test_create_token_api_forwards_validated_ontology_binding(monkeypatch):
     monkeypatch.setattr(mcp_routes, "create_mcp_token", create_token)
     response = TestClient(app).post(
         "/agentic/mcp/tokens",
-        headers={"Authorization": "Bearer valid"},
+        headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
         json={
             "ontology_id": "knowledge_package_demo",
             "scopes": ["mcp:search", "mcp:chat"],
@@ -524,12 +528,12 @@ def test_create_token_api_returns_stable_ontology_errors(monkeypatch):
 
     invalid = TestClient(app).post(
         "/agentic/mcp/tokens",
-        headers={"Authorization": "Bearer valid"},
+        headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
         json={"ontology_id": ""},
     )
     disabled = TestClient(app).post(
         "/agentic/mcp/tokens",
-        headers={"Authorization": "Bearer valid"},
+        headers={"Authorization": f"Bearer {synthetic_secret('mcp_routes-credential-03')}"},
         json={"ontology_id": "knowledge_package_demo"},
     )
 

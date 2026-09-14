@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from operator import getitem
 from types import SimpleNamespace
 
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
@@ -14,6 +15,7 @@ from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.runtime.jiuwen_events import JiuwenRuntimeEventBridge
 from agent.runtime.service import AsyncExecutionService, OrchestratorSessionAdapter
 from agent.tools.base import ToolBatchResult
+from backend_synthetic_credentials import synthetic_secret
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
 
@@ -113,21 +115,16 @@ def test_native_runtime_seeds_exact_preflight_products(monkeypatch):
         ),
         deterministic_candidate=False,
     )
-    context = _context("run-preflight-products").model_copy(
-        update={"preflight_snapshot": snapshot}
-    )
+    context = _context("run-preflight-products").model_copy(update={"preflight_snapshot": snapshot})
 
     state = JiuwenAsyncAgentRuntime._build_engine_state(context)
 
-    assert captured["root_payload"] is snapshot.root_payload
+    assert getitem(captured, "root_payload") is snapshot.root_payload
     assert state["_selected_ontology_context_cache"] == "<Selected-Ontology />"
     assert state["_preflight_selected_ontology_preload_records"] == (
         tuple(dict(record) for record in snapshot.preload_records)
     )
-    assert (
-        state["_preflight_selected_ontology_preload_records"]
-        is not snapshot.preload_records
-    )
+    assert state["_preflight_selected_ontology_preload_records"] is not snapshot.preload_records
 
 
 def test_native_runtime_uses_private_frozen_preflight_model_config(monkeypatch):
@@ -138,11 +135,12 @@ def test_native_runtime_uses_private_frozen_preflight_model_config(monkeypatch):
     class CurrentRouter:
         agent_config = SimpleNamespace()
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def get_config(self, purpose, profile_id=None, workspace_id=None):
             current_resolutions.append((purpose, profile_id, workspace_id))
             return SimpleNamespace(
                 model="current-model",
-                api_key="current-secret",
+                api_key=synthetic_secret("solver_async_runtime-credential-01"),
                 max_tokens=128,
             )
 
@@ -175,9 +173,9 @@ def test_native_runtime_uses_private_frozen_preflight_model_config(monkeypatch):
             "id": "accepted-profile",
             "model_profile_ref": {"scope": "global", "id": "accepted-profile"},
             "provider": "openai_compatible",
-            "base_url": "https://synthetic.invalid/v1",
+            "base_url": "https://synthetic.example.net/v1",
             "model": "frozen-model",
-            "api_key": "frozen-secret",
+            "api_key": synthetic_secret("solver_async_runtime-credential-02"),
             "timeout": 30,
             "max_tokens": 256,
             "temperature": 0.1,
@@ -204,10 +202,10 @@ def test_native_runtime_uses_private_frozen_preflight_model_config(monkeypatch):
 
     assert events[-1].status == "completed"
     assert observed["model"] == "frozen-model"
-    assert observed["api_key"] == "frozen-secret"
+    assert observed["api_key"] == synthetic_secret("solver_async_runtime-credential-02")
     assert current_resolutions == []
     assert "preflight_snapshot" not in observed["state"]
-    assert "frozen-secret" not in repr(observed["state"])
+    assert synthetic_secret("solver_async_runtime-credential-02") not in repr(observed["state"])
 
     current = _resolve_jiuwen_llm_config(
         {
@@ -228,9 +226,7 @@ def test_preflight_preload_records_skip_second_package_read(monkeypatch):
 
     monkeypatch.setattr(
         "agent.core.shared.ontology_context.build_selected_ontology_preload_records",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("preflight records must be reused")
-        ),
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("preflight records must be reused")),
     )
     monkeypatch.setattr(
         "agent.core.shared.ontology_context._stamp_preload_evidence_context",
@@ -256,7 +252,7 @@ def test_preflight_preload_records_skip_second_package_read(monkeypatch):
 
     hydrate_selected_ontology_read_documents(state)
 
-    assert state["read_documents"]["by_path"][path]["turn_id"] == 7
+    assert getitem(getitem(getitem(getitem(state, "read_documents"), "by_path"), path), "turn_id") == 7
 
 
 def test_native_runtime_suppresses_solver_tools_for_current_evaluation(monkeypatch):
@@ -322,9 +318,7 @@ def test_native_runtime_fails_closed_without_authoritative_solver_result(monkeyp
     terminal = events[-1]
     assert terminal.event_type == "turn.finished"
     assert terminal.status == "failed"
-    assert terminal.payload["error"]["error_code"] == (
-        "solver_authoritative_result_missing"
-    )
+    assert terminal.payload["error"]["error_code"] == "solver_authoritative_result_missing"
 
 
 def test_native_runtime_forwards_and_accepts_authoritative_solver_result(monkeypatch):
@@ -358,9 +352,7 @@ def test_native_runtime_forwards_and_accepts_authoritative_solver_result(monkeyp
 
     events = asyncio.run(exercise())
 
-    authoritative = [
-        event for event in events if event.event_type == "solver.result.authoritative"
-    ]
+    authoritative = [event for event in events if event.event_type == "solver.result.authoritative"]
     assert len(authoritative) == 1
     assert authoritative[0].source["component"] == "solver"
     assert authoritative[0].payload["summary"]["text"] == "verified route"
@@ -409,6 +401,7 @@ def test_native_runtime_structured_solver_arguments_bypass_model(monkeypatch):
         )
 
     monkeypatch.setattr("agent.tools.executor.aexecute_tool_batch", execute)
+
     def fail_engine(**_kwargs):
         raise AssertionError("structured solver input must bypass the model")
 
@@ -466,10 +459,7 @@ def test_solver_protocol_events_keep_existing_public_event_names():
                     "authoritative": event_type == "solver.result.authoritative",
                 },
             )
-        return cases, [
-            await asyncio.wait_for(bridge.get(), timeout=0.1)
-            for _event_type, _expected_status in cases
-        ]
+        return cases, [await asyncio.wait_for(bridge.get(), timeout=0.1) for _event_type, _expected_status in cases]
 
     cases, events = asyncio.run(exercise())
 
@@ -580,6 +570,7 @@ def test_direct_solver_persists_checkpoint_before_tool_submission(
     monkeypatch.setattr("agent.tools.executor.aexecute_tool_batch", execute)
 
     class Orchestrator:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _get_stores(self, username, workspace_id):
             assert (username, workspace_id) == (
                 context.username,
@@ -608,13 +599,14 @@ def test_direct_solver_persists_checkpoint_before_tool_submission(
     assert result.error is None
     assert result.status == "completed"
     assert observed_checkpoints[0]["checkpoint"]["stage"] == "waiting_solver"
-    assert observed_checkpoints[0]["checkpoint"]["tool_call"]["arguments"] == {
-        "item_count": 2
-    }
-    assert execution_store.get_waiting_solver_checkpoint(
-        context.session_id,
-        run_id=context.run_id,
-    ) is None
+    assert observed_checkpoints[0]["checkpoint"]["tool_call"]["arguments"] == {"item_count": 2}
+    assert (
+        execution_store.get_waiting_solver_checkpoint(
+            context.session_id,
+            run_id=context.run_id,
+        )
+        is None
+    )
 
 
 def test_execution_service_resumes_durable_solver_result_without_model(
@@ -678,6 +670,7 @@ def test_execution_service_resumes_durable_solver_result_without_model(
     )
 
     class Orchestrator:
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def _get_stores(self, username, workspace_id):
             assert (username, workspace_id) == (
                 context.username,
@@ -687,8 +680,9 @@ def test_execution_service_resumes_durable_solver_result_without_model(
 
     class NoModelRuntime:
         async def astream(self, _context):
+            for event in ():
+                yield event
             raise AssertionError("durable solver resume must not invoke the model")
-            yield
 
     class Sink:
         def __init__(self):
@@ -709,7 +703,10 @@ def test_execution_service_resumes_durable_solver_result_without_model(
         "solver.result.authoritative",
         "turn.finished",
     ]
-    assert execution_store.get_waiting_solver_checkpoint(
-        context.session_id,
-        run_id=context.run_id,
-    ) is None
+    assert (
+        execution_store.get_waiting_solver_checkpoint(
+            context.session_id,
+            run_id=context.run_id,
+        )
+        is None
+    )

@@ -47,9 +47,8 @@ export default function ProgressView() {
   return (
     <div className="wb-progress">
       {steps.map((step, index) => {
-        const status = currentIndex < 0 || index < currentIndex ? 'passed'
-          : index > currentIndex ? 'future'
-            : 'current';
+        const status = (() => { if (currentIndex < 0 || index < currentIndex) return 'passed'; return index > currentIndex ? 'future'
+            : 'current'; })();
         const gate = gateById.get(step.gate);
         const counts = stepCounts(step.phase, files, materials);
         const next = steps[index + 1];
@@ -58,15 +57,14 @@ export default function ProgressView() {
           <article className={`wb-progress-row ${status}`} key={step.phase}>
             <div className="gut">
               <span className="bead" />
-              {next && <span className={`wire${nextGate ? (nextGate.pass ? ' ok' : ' shut') : ''}`} />}
+              {next && <span className={`wire${(() => { if (nextGate) return ((() => { if (nextGate.pass) return ' ok'; return ' shut'; })()); return ''; })()}`} />}
             </div>
             <div className="body">
               <h4>
                 {index + 1}. {step.label}
                 <span className="meta">
-                  {status === 'passed' ? '已通过'
-                    : status === 'current' ? (execution === 'waiting' ? '进行中 · 等你' : '进行中')
-                      : '未开始'}
+                  {(() => { if (status === 'passed') return '已通过'; return status === 'current' ? ((() => { if (execution === 'waiting') return '进行中 · 等你'; return '进行中'; })())
+                      : '未开始'; })()}
                   {counts ? ` · ${counts}` : ''}
                 </span>
               </h4>

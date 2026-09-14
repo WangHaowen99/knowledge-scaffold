@@ -30,7 +30,9 @@ test('request adapter supplies a stable fallback for non-JSON failures', async (
   const request = async () => ({
     ok: false,
     status: 502,
-    json: async () => { throw new Error('invalid json'); },
+    json: async () => {
+      throw new Error('invalid json');
+    },
   });
   await assert.rejects(
     () => requestObservabilityJson(request, '/overview', {}, '加载失败'),
@@ -43,7 +45,11 @@ test('download adapter returns the response blob and attachment filename', async
   const request = async () => ({
     ok: true,
     status: 200,
-    headers: { get: (name) => name === 'content-disposition' ? 'attachment; filename="session-a.speedscope.json"' : '' },
+    headers: {
+      get: (name) => name === 'content-disposition' ?
+        'attachment; filename="session-a.speedscope.json"' :
+        '',
+    },
     blob: async () => trace,
   });
 

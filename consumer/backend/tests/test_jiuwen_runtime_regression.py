@@ -154,15 +154,14 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual(runtime._runs, {})
-        self.assertFalse(
-            [
-                task
-                for task in asyncio.all_tasks()
-                if task is not asyncio.current_task()
-                and not task.done()
-                and task.get_name().startswith("jiuwen-runtime-")
-            ]
-        )
+        pending_runtime_tasks = []
+        for task in asyncio.all_tasks():
+            is_pending_runtime_task = (
+                task is not asyncio.current_task() and not task.done() and task.get_name().startswith("jiuwen-runtime-")
+            )
+            if is_pending_runtime_task:
+                pending_runtime_tasks.append(task)
+        self.assertFalse(pending_runtime_tasks)
         for run_id, result, events in outputs:
             with self.subTest(run_id=run_id):
                 self.assertEqual(result.status, "completed")
@@ -172,9 +171,7 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(events[-1].event_type, "turn.finished")
                 self.assertEqual(events[-1].status, "completed")
                 tool_ids = {
-                    event.payload.get("tool_call_id")
-                    for event in events
-                    if event.event_type.startswith("tool.")
+                    event.payload.get("tool_call_id") for event in events if event.event_type.startswith("tool.")
                 }
                 self.assertEqual(tool_ids, {"{}:tool".format(run_id)})
 
@@ -196,9 +193,7 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
             engine_factory=BlockingEngine,
         )
         owner_sink = _PublicEventBusSink()
-        owner = asyncio.create_task(
-            runtime.arun(_context("duplicate-run"), owner_sink)
-        )
+        owner = asyncio.create_task(runtime.arun(_context("duplicate-run"), owner_sink))
         await asyncio.wait_for(started.wait(), timeout=2)
 
         with self.assertRaisesRegex(RuntimeError, "already has an active run"):

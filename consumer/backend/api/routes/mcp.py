@@ -51,7 +51,6 @@ from workspace.workspaces import (
     workspace_scope,
 )
 
-
 mcp_router = APIRouter(prefix=MCP_API_PREFIX)
 _MCPChatAuthorization = tuple[MCPRequestScope, Any] | JSONResponse
 MCP_STREAM_USER_WORKSPACE_CONCURRENCY_DEFAULT = 5
@@ -171,17 +170,13 @@ def _update_mcp_concurrency(
         or not isinstance(value, int)
         or not 1 <= value <= MCP_STREAM_USER_WORKSPACE_CONCURRENCY_MAX
     ):
-        raise ValueError(
-            "stream_user_workspace_concurrency must be an integer between 1 and 32"
-        )
+        raise ValueError("stream_user_workspace_concurrency must be an integer between 1 and 32")
     updated = update_workspace_runtime_config(
         workspace_id,
         {"mcp": {"stream_user_workspace_concurrency": value}},
     )
     return {
-        "stream_user_workspace_concurrency": int(
-            updated["mcp"]["stream_user_workspace_concurrency"]
-        ),
+        "stream_user_workspace_concurrency": int(updated["mcp"]["stream_user_workspace_concurrency"]),
         "default": MCP_STREAM_USER_WORKSPACE_CONCURRENCY_DEFAULT,
         "min": 1,
         "max": MCP_STREAM_USER_WORKSPACE_CONCURRENCY_MAX,
@@ -352,11 +347,7 @@ async def _authorize_internal_mcp_chat(request: Request) -> _MCPChatAuthorizatio
         )
 
     auth_backend = get_auth_manager(request)
-    user = (
-        await _short_io(request, auth_backend.get_user, scope.username)
-        if auth_backend is not None
-        else None
-    )
+    user = await _short_io(request, auth_backend.get_user, scope.username) if auth_backend is not None else None
     if user is None:
         return JSONResponse(
             content={
@@ -445,15 +436,9 @@ async def stream_internal_mcp_chat(
         scope.workspace_id,
     )
     queue_size = int(getattr(cfg, "chat_progress_queue_size", 128))
-    heartbeat_seconds = int(
-        getattr(cfg, "chat_progress_heartbeat_seconds", 15)
-    )
-    max_message_bytes = int(
-        getattr(cfg, "chat_progress_max_message_bytes", 4096)
-    )
-    event_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(
-        maxsize=max(16, queue_size)
-    )
+    heartbeat_seconds = int(getattr(cfg, "chat_progress_heartbeat_seconds", 15))
+    max_message_bytes = int(getattr(cfg, "chat_progress_max_message_bytes", 4096))
+    event_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=max(16, queue_size))
     progress_was_dropped = False
 
     async def publish_progress(event: dict[str, Any]) -> None:
@@ -486,9 +471,7 @@ async def stream_internal_mcp_chat(
                 scope=scope,
                 payload=payload,
                 concurrency_limit=(
-                    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT
-                    if str(user.role or "") == "admin"
-                    else ordinary_limit
+                    USER_WORKSPACE_RUN_CONCURRENCY_LIMIT if str(user.role or "") == "admin" else ordinary_limit
                 ),
                 queue_wait_seconds=min(
                     30,

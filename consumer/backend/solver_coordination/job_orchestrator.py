@@ -128,11 +128,7 @@ class DurableJobOrchestrator:
             raise TypeError("store must be a SolverJobStore")
         if not isinstance(idempotency_secret, bytes) or not idempotency_secret:
             raise ValueError("idempotency_secret must be non-empty bytes")
-        if (
-            isinstance(lease_seconds, bool)
-            or not isinstance(lease_seconds, int)
-            or lease_seconds < 1
-        ):
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or lease_seconds < 1:
             raise ValueError("lease_seconds must be a positive integer")
         for method in ("submit", "poll", "cancel", "result"):
             if not callable(getattr(backend, method, None)):
@@ -144,9 +140,7 @@ class DurableJobOrchestrator:
             not isinstance(binding_revision_id, str) or not binding_revision_id.strip()
         ):
             raise ValueError("binding_revision_id must be a non-empty string")
-        self.binding_revision_id = (
-            binding_revision_id.strip() if isinstance(binding_revision_id, str) else None
-        )
+        self.binding_revision_id = binding_revision_id.strip() if isinstance(binding_revision_id, str) else None
         self.lease_owner = (lease_owner or "solver_worker_{}".format(uuid.uuid4().hex)).strip()
         if not self.lease_owner:
             raise ValueError("lease_owner is required")
@@ -164,9 +158,7 @@ class DurableJobOrchestrator:
 
         return max(self.lease_seconds, 60)
 
-    def _binding_configuration(
-        self, *, job: Mapping[str, Any], workspace_id: str, owner_id: str
-    ) -> Mapping[str, Any]:
+    def _binding_configuration(self, *, job: Mapping[str, Any], workspace_id: str, owner_id: str) -> Mapping[str, Any]:
         record = self.store.get_binding_revision(
             str(job["binding_revision_id"]),
             workspace_id=workspace_id,
@@ -195,8 +187,7 @@ class DurableJobOrchestrator:
         try:
             parameters = inspect.signature(method).parameters
             accepts_var_kwargs = any(
-                parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in parameters.values()
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
             )
             accepts_binding = "binding" in parameters or accepts_var_kwargs
         except (TypeError, ValueError):
@@ -204,11 +195,7 @@ class DurableJobOrchestrator:
             accepts_var_kwargs = True
             accepts_binding = True
         if not accepts_var_kwargs:
-            kwargs = {
-                name: value
-                for name, value in kwargs.items()
-                if name in parameters
-            }
+            kwargs = {name: value for name, value in kwargs.items() if name in parameters}
         # Some fixture backends predate ``result_quality``. A ``**kwargs`` wrapper may still
         # forward unknown keywords to an older strict implementation, so only
         # send this optional field when the actual callable declares it.
@@ -304,18 +291,12 @@ class DurableJobOrchestrator:
 
     def _backend_idempotency_key(self, logical_job_key: str, attempt_id: str) -> str:
         message = "{}\0{}".format(logical_job_key, attempt_id).encode("utf-8")
-        return "hmac-sha256:" + hmac.new(
-            self._idempotency_secret, message, hashlib.sha256
-        ).hexdigest()
+        return "hmac-sha256:" + hmac.new(self._idempotency_secret, message, hashlib.sha256).hexdigest()
 
     @staticmethod
     def _run_result_quality(job: Mapping[str, Any]) -> str:
         policy = job.get("run_policy")
-        quality = (
-            policy.get("result_quality", "optimal")
-            if isinstance(policy, Mapping)
-            else "optimal"
-        )
+        quality = policy.get("result_quality", "optimal") if isinstance(policy, Mapping) else "optimal"
         if quality not in {"optimal", "feasible", "any"}:
             raise BackendProtocolError("persisted solver result quality is invalid")
         return str(quality)
@@ -370,37 +351,21 @@ class DurableJobOrchestrator:
             tool_call_id=tool_call_id,
         )
         if existing_link is not None:
-            if (
-                existing_link["card_name"] != card_name
-                or existing_link["contract_digest"] != contract_digest
-            ):
+            if existing_link["card_name"] != card_name or existing_link["contract_digest"] != contract_digest:
                 raise JobStoreConflict("solver contract drifted during run recovery")
-            job = self._require_job(
-                existing_link["job_id"], workspace_id=workspace_id, owner_id=owner_id
-            )
+            job = self._require_job(existing_link["job_id"], workspace_id=workspace_id, owner_id=owner_id)
             if job["binding_revision_id"] != binding_revision_id:
-                raise JobStoreConflict(
-                    "solver tool call is already linked to a different binding revision"
-                )
+                raise JobStoreConflict("solver tool call is already linked to a different binding revision")
             if sha256_digest(job["run_policy"]) != sha256_digest(dict(run_policy)):
-                raise JobStoreConflict(
-                    "solver tool call is already linked to a different run policy"
-                )
+                raise JobStoreConflict("solver tool call is already linked to a different run policy")
             if _as_utc(job["deadline_at"]) != _as_utc(deadline_at):
-                raise JobStoreConflict(
-                    "solver tool call is already linked to a different deadline"
-                )
-            if (
-                job["problem_digest"] != problem_digest
-                or sha256_digest(job["problem"]) != sha256_digest(problem_payload)
+                raise JobStoreConflict("solver tool call is already linked to a different deadline")
+            if job["problem_digest"] != problem_digest or sha256_digest(job["problem"]) != sha256_digest(
+                problem_payload
             ):
-                raise JobStoreConflict(
-                    "solver tool call is already linked to a different problem payload"
-                )
+                raise JobStoreConflict("solver tool call is already linked to a different problem payload")
             if job["status"] == "cancelling":
-                cancelled = self._finish_cancellation(
-                    job, workspace_id=workspace_id, owner_id=owner_id
-                )
+                cancelled = self._finish_cancellation(job, workspace_id=workspace_id, owner_id=owner_id)
                 cancelled["subscription_id"] = existing_link["subscription_id"]
                 return cancelled
             stored_attempt = self._require_attempt(
@@ -422,11 +387,7 @@ class DurableJobOrchestrator:
             subscription = self._subscription_outcome(existing_link["subscription_id"], job)
             return self._outcome(job, stored_attempt, subscription)
 
-        preparation_lease_owner = (
-            "{}:freeze:{}".format(self.lease_owner, uuid.uuid4().hex)
-            if defer_submit
-            else None
-        )
+        preparation_lease_owner = "{}:freeze:{}".format(self.lease_owner, uuid.uuid4().hex) if defer_submit else None
         preparation_lease_seconds = max(self.lease_seconds, 60)
         job, created = self.store.create_or_get_job(
             workspace_id=workspace_id,
@@ -440,9 +401,7 @@ class DurableJobOrchestrator:
             initial_lease_owner=preparation_lease_owner,
             initial_lease_seconds=preparation_lease_seconds if defer_submit else None,
         )
-        stored_attempt = self.store.latest_attempt(
-            job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
+        stored_attempt = self.store.latest_attempt(job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
         if stored_attempt is None:
             selected_attempt_id = attempt_id or "attempt_{}".format(uuid.uuid4().hex)
             stored_attempt, _ = self.store.create_or_get_initial_attempt(
@@ -451,9 +410,7 @@ class DurableJobOrchestrator:
                 owner_id=owner_id,
                 attempt_id=selected_attempt_id,
                 request_payload=problem_payload,
-                backend_idempotency_key=self._backend_idempotency_key(
-                    job["logical_job_key"], selected_attempt_id
-                ),
+                backend_idempotency_key=self._backend_idempotency_key(job["logical_job_key"], selected_attempt_id),
             )
 
         subscription_id = "subscription_{}".format(uuid.uuid4().hex)
@@ -469,11 +426,7 @@ class DurableJobOrchestrator:
             card_name=card_name,
             contract_digest=contract_digest,
         )
-        if (
-            stored_attempt["backend_job_id"] is None
-            and job["status"] not in TERMINAL_JOB_STATUSES
-            and not defer_submit
-        ):
+        if stored_attempt["backend_job_id"] is None and job["status"] not in TERMINAL_JOB_STATUSES and not defer_submit:
             job, stored_attempt = self._submit_attempt_with_lease(
                 job,
                 stored_attempt,
@@ -505,39 +458,26 @@ class DurableJobOrchestrator:
             owner_id=owner_id,
             attempt_id=selected_attempt_id,
             request_payload=job["problem"],
-            backend_idempotency_key=self._backend_idempotency_key(
-                job["logical_job_key"], selected_attempt_id
-            ),
+            backend_idempotency_key=self._backend_idempotency_key(job["logical_job_key"], selected_attempt_id),
         )
         if superseded_backend_job_id is not None:
             self._backend_call(
                 "cancel",
                 job_id=superseded_backend_job_id,
-                binding=self._binding_configuration(
-                    job=job, workspace_id=workspace_id, owner_id=owner_id
-                ),
+                binding=self._binding_configuration(job=job, workspace_id=workspace_id, owner_id=owner_id),
             )
         else:
-            attempts = self.store.list_attempts(
-                job_id, workspace_id=workspace_id, owner_id=owner_id
-            )
+            attempts = self.store.list_attempts(job_id, workspace_id=workspace_id, owner_id=owner_id)
             if len(attempts) >= 2:
                 previous = attempts[-2]
-                if (
-                    previous["error_code"] == "superseded_by_retry"
-                    and previous["backend_job_id"] is not None
-                ):
+                if previous["error_code"] == "superseded_by_retry" and previous["backend_job_id"] is not None:
                     self._backend_call(
                         "cancel",
                         job_id=previous["backend_job_id"],
-                        binding=self._binding_configuration(
-                            job=job, workspace_id=workspace_id, owner_id=owner_id
-                        ),
+                        binding=self._binding_configuration(job=job, workspace_id=workspace_id, owner_id=owner_id),
                     )
         job = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
-        job, attempt = self._submit_attempt_with_lease(
-            job, attempt, workspace_id=workspace_id, owner_id=owner_id
-        )
+        job, attempt = self._submit_attempt_with_lease(job, attempt, workspace_id=workspace_id, owner_id=owner_id)
         return self._outcome(job, attempt, None)
 
     def _submit_attempt(
@@ -550,9 +490,7 @@ class DurableJobOrchestrator:
         fencing_token: int | None = None,
         lease_owner: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        current_job = self._require_job(
-            job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
+        current_job = self._require_job(job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
         if current_job["status"] in TERMINAL_JOB_STATUSES:
             return current_job, dict(attempt)
         if current_job["status"] != "submitting":
@@ -611,18 +549,12 @@ class DurableJobOrchestrator:
             backend_job_id=backend_job_id,
             fencing_token=fencing_token,
         )
-        current_job = self._require_job(
-            current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
+        current_job = self._require_job(current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
         if current_job["status"] == "cancelling":
             # A cancellation may have been reserved while submit was in flight.
             # Finish it under the same lease instead of publishing a waiting state.
-            self._finish_cancellation(
-                current_job, workspace_id=workspace_id, owner_id=owner_id
-            )
-            cancelled_job = self._require_job(
-                current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-            )
+            self._finish_cancellation(current_job, workspace_id=workspace_id, owner_id=owner_id)
+            cancelled_job = self._require_job(current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
             cancelled_attempt = self.store.latest_attempt(
                 current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id
             )
@@ -649,12 +581,8 @@ class DurableJobOrchestrator:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Submit only after acquiring a short-lived, uniquely owned job lease."""
 
-        current_job = self._require_job(
-            job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
-        current_attempt = self.store.latest_attempt(
-            current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
+        current_job = self._require_job(job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
+        current_attempt = self.store.latest_attempt(current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
         if not _attempt_is_ready_for_submission(
             current_job,
             current_attempt,
@@ -662,9 +590,7 @@ class DurableJobOrchestrator:
         ):
             return current_job, current_attempt
 
-        submission_lease_owner = "{}:submit:{}".format(
-            self.lease_owner, uuid.uuid4().hex
-        )
+        submission_lease_owner = "{}:submit:{}".format(self.lease_owner, uuid.uuid4().hex)
         claimed: dict[str, Any] | None = None
         try:
             try:
@@ -682,13 +608,9 @@ class DurableJobOrchestrator:
                     workspace_id=workspace_id,
                     owner_id=owner_id,
                 )
-                return latest, self.store.latest_attempt(
-                    latest["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                )
+                return latest, self.store.latest_attempt(latest["job_id"], workspace_id=workspace_id, owner_id=owner_id)
 
-            claimed_attempt = self.store.latest_attempt(
-                claimed["job_id"], workspace_id=workspace_id, owner_id=owner_id
-            )
+            claimed_attempt = self.store.latest_attempt(claimed["job_id"], workspace_id=workspace_id, owner_id=owner_id)
             if not _attempt_is_ready_for_submission(
                 claimed,
                 claimed_attempt,
@@ -705,16 +627,10 @@ class DurableJobOrchestrator:
                     lease_owner=submission_lease_owner,
                 )
             except LeaseConflict:
-                latest = self._require_job(
-                    claimed["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                )
-                return latest, self.store.latest_attempt(
-                    latest["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                )
+                latest = self._require_job(claimed["job_id"], workspace_id=workspace_id, owner_id=owner_id)
+                return latest, self.store.latest_attempt(latest["job_id"], workspace_id=workspace_id, owner_id=owner_id)
             except Exception:
-                latest = self._require_job(
-                    claimed["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                )
+                latest = self._require_job(claimed["job_id"], workspace_id=workspace_id, owner_id=owner_id)
                 if latest["status"] == "cancelling":
                     return latest, self.store.latest_attempt(
                         latest["job_id"],
@@ -724,9 +640,7 @@ class DurableJobOrchestrator:
                 raise
         finally:
             if claimed is not None:
-                current = self.store.get_job(
-                    claimed["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                )
+                current = self.store.get_job(claimed["job_id"], workspace_id=workspace_id, owner_id=owner_id)
                 if (
                     current is not None
                     and current["lease_owner"] == submission_lease_owner
@@ -741,16 +655,10 @@ class DurableJobOrchestrator:
                             fencing_token=claimed["fencing_token"],
                         )
                     except LeaseConflict:
-                        logger.debug(
-                            "Submission lease was already released or superseded"
-                        )
+                        logger.debug("Submission lease was already released or superseded")
 
-        refreshed = self._require_job(
-            current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
-        return refreshed, self.store.latest_attempt(
-            refreshed["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
+        refreshed = self._require_job(current_job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
+        return refreshed, self.store.latest_attempt(refreshed["job_id"], workspace_id=workspace_id, owner_id=owner_id)
 
     def _transition_job(
         self,
@@ -766,9 +674,7 @@ class DurableJobOrchestrator:
         fencing_token: int | None = None,
     ) -> tuple[dict[str, Any], bool]:
         for _ in range(8):
-            current = self._require_job(
-                job_id, workspace_id=workspace_id, owner_id=owner_id
-            )
+            current = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
             if current["status"] == status and current["phase"] == phase:
                 return current, False
             if current["status"] in TERMINAL_JOB_STATUSES:
@@ -810,28 +716,20 @@ class DurableJobOrchestrator:
         except (KeyError, TypeError, ValueError) as exc:
             raise JobOrchestrationError("persisted ProblemIR is invalid") from exc
 
-    def poll_once(
-        self, job_id: str, *, workspace_id: str, owner_id: str
-    ) -> dict[str, Any]:
+    def poll_once(self, job_id: str, *, workspace_id: str, owner_id: str) -> dict[str, Any]:
         job = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
         if job["status"] in TERMINAL_JOB_STATUSES or job["status"] == "solver_completed":
             return self._outcome(
                 job,
-                self.store.latest_attempt(
-                    job_id, workspace_id=workspace_id, owner_id=owner_id
-                ),
+                self.store.latest_attempt(job_id, workspace_id=workspace_id, owner_id=owner_id),
                 None,
             )
         if job["status"] == "cancelling":
-            return self._finish_cancellation(
-                job, workspace_id=workspace_id, owner_id=owner_id
-            )
+            return self._finish_cancellation(job, workspace_id=workspace_id, owner_id=owner_id)
         if job["phase"] == "freeze_inputs":
             return self._outcome(
                 job,
-                self.store.latest_attempt(
-                    job_id, workspace_id=workspace_id, owner_id=owner_id
-                ),
+                self.store.latest_attempt(job_id, workspace_id=workspace_id, owner_id=owner_id),
                 None,
             )
         poll_lease_owner = "{}:poll:{}".format(self.lease_owner, uuid.uuid4().hex)
@@ -844,9 +742,7 @@ class DurableJobOrchestrator:
             expected_version=job["version"],
         )
         try:
-            attempt = self.store.latest_attempt(
-                job_id, workspace_id=workspace_id, owner_id=owner_id
-            )
+            attempt = self.store.latest_attempt(job_id, workspace_id=workspace_id, owner_id=owner_id)
             if attempt is None:
                 raise JobOrchestrationError("solver job has no attempt")
             if attempt["backend_job_id"] is None:
@@ -860,16 +756,12 @@ class DurableJobOrchestrator:
                 )
                 if attempt["backend_job_id"] is None:
                     return self._outcome(claimed, attempt, None)
-                claimed = self._require_job(
-                    job_id, workspace_id=workspace_id, owner_id=owner_id
-                )
+                claimed = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
             if self._now() >= _as_utc(claimed["deadline_at"]):
                 self._backend_call(
                     "cancel",
                     job_id=attempt["backend_job_id"],
-                    binding=self._binding_configuration(
-                        job=claimed, workspace_id=workspace_id, owner_id=owner_id
-                    ),
+                    binding=self._binding_configuration(job=claimed, workspace_id=workspace_id, owner_id=owner_id),
                 )
                 self.store.update_attempt_status(
                     attempt["attempt_id"],
@@ -903,9 +795,7 @@ class DurableJobOrchestrator:
                 polled = self._backend_call(
                     "poll",
                     job_id=attempt["backend_job_id"],
-                    binding=self._binding_configuration(
-                        job=claimed, workspace_id=workspace_id, owner_id=owner_id
-                    ),
+                    binding=self._binding_configuration(job=claimed, workspace_id=workspace_id, owner_id=owner_id),
                 )
             except Exception as exc:
                 mapped = _map_connector_exception(exc)
@@ -935,9 +825,7 @@ class DurableJobOrchestrator:
                     event_type="solver.progress",
                     payload=payload,
                 )
-                current = self._require_job(
-                    job_id, workspace_id=workspace_id, owner_id=owner_id
-                )
+                current = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
                 return self._outcome(
                     current,
                     self._require_attempt(
@@ -963,9 +851,7 @@ class DurableJobOrchestrator:
                 solver_result = self._backend_call(
                     "result",
                     job_id=attempt["backend_job_id"],
-                    binding=self._binding_configuration(
-                        job=claimed, workspace_id=workspace_id, owner_id=owner_id
-                    ),
+                    binding=self._binding_configuration(job=claimed, workspace_id=workspace_id, owner_id=owner_id),
                 )
                 if not isinstance(solver_result, SolverResult):
                     raise BackendProtocolError("backend result is not SolverResult")
@@ -1025,28 +911,19 @@ class DurableJobOrchestrator:
                 )
             raise BackendProtocolError("backend returned an unsupported status")
         except LeaseConflict:
-            current = self._require_job(
-                job_id, workspace_id=workspace_id, owner_id=owner_id
-            )
+            current = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
             return self._outcome(
                 current,
-                self.store.latest_attempt(
-                    job_id, workspace_id=workspace_id, owner_id=owner_id
-                ),
+                self.store.latest_attempt(job_id, workspace_id=workspace_id, owner_id=owner_id),
                 None,
             )
-        except BackendTransientError:
-            current = self._require_job(
-                job_id, workspace_id=workspace_id, owner_id=owner_id
-            )
-            if (
-                current.get("lease_owner") != poll_lease_owner
-                or current.get("fencing_token") != claimed.get("fencing_token")
+        except BackendTransientError as exc:
+            current = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
+            if current.get("lease_owner") != poll_lease_owner or current.get("fencing_token") != claimed.get(
+                "fencing_token"
             ):
-                raise LeaseConflict("solver poll lease is stale")
-            current_attempt = self.store.latest_attempt(
-                job_id, workspace_id=workspace_id, owner_id=owner_id
-            )
+                raise LeaseConflict("solver poll lease is stale") from exc
+            current_attempt = self.store.latest_attempt(job_id, workspace_id=workspace_id, owner_id=owner_id)
             try:
                 self.store.append_event(
                     job_id,
@@ -1061,18 +938,12 @@ class DurableJobOrchestrator:
                     },
                 )
             except JobStoreError:
-                logger.warning(
-                    "Failed to persist a solver retry progress event"
-                )
+                logger.warning("Failed to persist a solver retry progress event")
             return self._outcome(current, current_attempt, None)
         except Exception:
-            current = self._require_job(
-                job_id, workspace_id=workspace_id, owner_id=owner_id
-            )
+            current = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
             if current["status"] == "cancelling":
-                return self._finish_cancellation(
-                    current, workspace_id=workspace_id, owner_id=owner_id
-                )
+                return self._finish_cancellation(current, workspace_id=workspace_id, owner_id=owner_id)
             return self._mark_recovery_failed(
                 job_id,
                 workspace_id=workspace_id,
@@ -1082,9 +953,7 @@ class DurableJobOrchestrator:
                 lease_owner=poll_lease_owner,
             )
         finally:
-            current = self.store.get_job(
-                job_id, workspace_id=workspace_id, owner_id=owner_id
-            )
+            current = self.store.get_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
             if current is not None and current["lease_owner"] == poll_lease_owner:
                 try:
                     self.store.release_job_lease(
@@ -1104,19 +973,11 @@ class DurableJobOrchestrator:
         workspace_id: str,
         owner_id: str,
     ) -> dict[str, Any]:
-        cancellation = self.store.cancel_subscription(
-            subscription_id, workspace_id=workspace_id, owner_id=owner_id
-        )
-        job = self._require_job(
-            cancellation["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
+        cancellation = self.store.cancel_subscription(subscription_id, workspace_id=workspace_id, owner_id=owner_id)
+        job = self._require_job(cancellation["job_id"], workspace_id=workspace_id, owner_id=owner_id)
         if cancellation["cancel_reserved"]:
-            outcome = self._finish_cancellation(
-                job, workspace_id=workspace_id, owner_id=owner_id
-            )
-            job = self._require_job(
-                outcome["job_id"], workspace_id=workspace_id, owner_id=owner_id
-            )
+            outcome = self._finish_cancellation(job, workspace_id=workspace_id, owner_id=owner_id)
+            job = self._require_job(outcome["job_id"], workspace_id=workspace_id, owner_id=owner_id)
         cancellation["job_status"] = job["status"]
         return cancellation
 
@@ -1127,27 +988,18 @@ class DurableJobOrchestrator:
         workspace_id: str,
         owner_id: str,
     ) -> dict[str, Any]:
-        current = self._require_job(
-            job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
+        current = self._require_job(job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
         if current["status"] in TERMINAL_JOB_STATUSES:
             return self._outcome(
                 current,
-                self.store.latest_attempt(
-                    current["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                ),
+                self.store.latest_attempt(current["job_id"], workspace_id=workspace_id, owner_id=owner_id),
                 None,
             )
         if current["status"] != "cancelling":
             raise JobStoreConflict("solver cancellation was not reserved")
-        attempt = self.store.latest_attempt(
-            current["job_id"], workspace_id=workspace_id, owner_id=owner_id
-        )
+        attempt = self.store.latest_attempt(current["job_id"], workspace_id=workspace_id, owner_id=owner_id)
         if current["phase"] in _PRE_SUBMISSION_PHASES and attempt is not None:
-            if (
-                attempt["backend_job_id"] is None
-                and attempt["status"] not in TERMINAL_ATTEMPT_STATUSES
-            ):
+            if attempt["backend_job_id"] is None and attempt["status"] not in TERMINAL_ATTEMPT_STATUSES:
                 attempt = self.store.update_attempt_status(
                     attempt["attempt_id"],
                     workspace_id=workspace_id,
@@ -1176,9 +1028,7 @@ class DurableJobOrchestrator:
                     # would issue a second submit for the same attempt.
                     return self._outcome(current, attempt, None)
 
-                cancellation_lease_owner = "{}:cancel:{}".format(
-                    self.lease_owner, uuid.uuid4().hex
-                )
+                cancellation_lease_owner = "{}:cancel:{}".format(self.lease_owner, uuid.uuid4().hex)
                 try:
                     current = self.store.claim_job(
                         current["job_id"],
@@ -1189,9 +1039,7 @@ class DurableJobOrchestrator:
                         expected_version=current["version"],
                     )
                 except (LeaseConflict, OptimisticLockError, TerminalStateError):
-                    refreshed = self._require_job(
-                        job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                    )
+                    refreshed = self._require_job(job["job_id"], workspace_id=workspace_id, owner_id=owner_id)
                     return self._outcome(
                         refreshed,
                         self.store.latest_attempt(
@@ -1202,9 +1050,7 @@ class DurableJobOrchestrator:
                         None,
                     )
                 cancellation_fencing_token = current["fencing_token"]
-                attempt = self.store.latest_attempt(
-                    current["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                )
+                attempt = self.store.latest_attempt(current["job_id"], workspace_id=workspace_id, owner_id=owner_id)
                 if (
                     attempt is not None
                     and attempt["backend_job_id"] is None
@@ -1255,9 +1101,7 @@ class DurableJobOrchestrator:
                         return self._outcome(current, attempt, None)
                     backend_job_id = _backend_value(submitted, "job_id")
                     if not isinstance(backend_job_id, str) or not backend_job_id.strip():
-                        raise BackendProtocolError(
-                            "backend submit replay did not return a job_id during cancellation"
-                        )
+                        raise BackendProtocolError("backend submit replay did not return a job_id during cancellation")
                     attempt = self.store.bind_backend_job(
                         attempt["attempt_id"],
                         workspace_id=workspace_id,
@@ -1269,11 +1113,7 @@ class DurableJobOrchestrator:
             attempt_fence = (
                 cancellation_fencing_token
                 if cancellation_fencing_token is not None
-                else (
-                    current["fencing_token"]
-                    if current.get("lease_owner") is not None
-                    else None
-                )
+                else (current["fencing_token"] if current.get("lease_owner") is not None else None)
             )
             if (
                 attempt is not None
@@ -1284,9 +1124,7 @@ class DurableJobOrchestrator:
                     self._backend_call(
                         "cancel",
                         job_id=attempt["backend_job_id"],
-                        binding=self._binding_configuration(
-                            job=current, workspace_id=workspace_id, owner_id=owner_id
-                        ),
+                        binding=self._binding_configuration(job=current, workspace_id=workspace_id, owner_id=owner_id),
                     )
                 except Exception:
                     try:
@@ -1330,21 +1168,15 @@ class DurableJobOrchestrator:
             )[0]
             return self._outcome(cancelled, attempt, None)
         except (LeaseConflict, OptimisticLockError, TerminalStateError):
-            refreshed = self._require_job(
-                current["job_id"], workspace_id=workspace_id, owner_id=owner_id
-            )
+            refreshed = self._require_job(current["job_id"], workspace_id=workspace_id, owner_id=owner_id)
             return self._outcome(
                 refreshed,
-                self.store.latest_attempt(
-                    refreshed["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                ),
+                self.store.latest_attempt(refreshed["job_id"], workspace_id=workspace_id, owner_id=owner_id),
                 None,
             )
         finally:
             if cancellation_lease_owner is not None:
-                latest = self.store.get_job(
-                    current["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                )
+                latest = self.store.get_job(current["job_id"], workspace_id=workspace_id, owner_id=owner_id)
                 if (
                     latest is not None
                     and latest.get("lease_owner") == cancellation_lease_owner
@@ -1359,13 +1191,23 @@ class DurableJobOrchestrator:
                             fencing_token=cancellation_fencing_token,
                         )
                     except LeaseConflict:
-                        logger.debug(
-                            "Cancellation lease was already released or superseded"
-                        )
+                        logger.debug("Cancellation lease was already released or superseded")
 
-    def recover_once(
-        self, *, workspace_id: str, owner_id: str
-    ) -> tuple[dict[str, Any], ...]:
+    def finish_cancellation(
+        self,
+        job: Mapping[str, Any],
+        *,
+        workspace_id: str,
+        owner_id: str,
+    ) -> dict[str, Any]:
+        """Complete a previously reserved cancellation through the public API."""
+        return self._finish_cancellation(
+            job,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+        )
+
+    def recover_once(self, *, workspace_id: str, owner_id: str) -> tuple[dict[str, Any], ...]:
         outcomes: list[dict[str, Any]] = []
         for job in self.store.list_recoverable_jobs(
             workspace_id=workspace_id,
@@ -1373,11 +1215,7 @@ class DurableJobOrchestrator:
             binding_revision_id=None,
         ):
             try:
-                outcomes.append(
-                    self.poll_once(
-                        job["job_id"], workspace_id=workspace_id, owner_id=owner_id
-                    )
-                )
+                outcomes.append(self.poll_once(job["job_id"], workspace_id=workspace_id, owner_id=owner_id))
             except LeaseConflict:
                 continue
             except Exception:
@@ -1396,9 +1234,7 @@ class DurableJobOrchestrator:
         fencing_token: int,
         lease_owner: str,
     ) -> dict[str, Any]:
-        attempt = self.store.latest_attempt(
-            job_id, workspace_id=workspace_id, owner_id=owner_id
-        )
+        attempt = self.store.latest_attempt(job_id, workspace_id=workspace_id, owner_id=owner_id)
         current = self._require_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
         failed, failed_attempt, _ = self.store.fail_job_and_attempt_with_event(
             job_id,
@@ -1415,29 +1251,20 @@ class DurableJobOrchestrator:
         )
         return self._outcome(failed, failed_attempt, None)
 
-    def _require_job(
-        self, job_id: str, *, workspace_id: str, owner_id: str
-    ) -> dict[str, Any]:
-        job = self.store.get_job(
-            job_id, workspace_id=workspace_id, owner_id=owner_id
-        )
+    def _require_job(self, job_id: str, *, workspace_id: str, owner_id: str) -> dict[str, Any]:
+        job = self.store.get_job(job_id, workspace_id=workspace_id, owner_id=owner_id)
         if job is None:
             raise JobOrchestrationError("solver job was not found")
         return job
 
-    def _require_attempt(
-        self, attempt_id: str, *, workspace_id: str, owner_id: str
-    ) -> dict[str, Any]:
-        attempt = self.store.get_attempt(
-            attempt_id, workspace_id=workspace_id, owner_id=owner_id
-        )
+    def _require_attempt(self, attempt_id: str, *, workspace_id: str, owner_id: str) -> dict[str, Any]:
+        attempt = self.store.get_attempt(attempt_id, workspace_id=workspace_id, owner_id=owner_id)
         if attempt is None:
             raise JobOrchestrationError("solver attempt was not found")
         return attempt
 
-    def _subscription_outcome(
-        self, subscription_id: str, job: Mapping[str, Any]
-    ) -> dict[str, Any]:
+    @staticmethod
+    def _subscription_outcome(subscription_id: str, job: Mapping[str, Any]) -> dict[str, Any]:
         return {"subscription_id": subscription_id, "job_id": job["job_id"]}
 
     @staticmethod

@@ -770,10 +770,10 @@ async def _wait_for_sync_terminal(
             # this request activates its stream. Re-open without the consumed
             # reservation; terminal replay does not consume subscriber capacity.
             continue
-        except EventReplayUnavailableError:
+        except EventReplayUnavailableError as exc:
             snapshot = await manager.get_run(run_id, scope)
             if snapshot is None:
-                raise RuntimeError("canonical run disappeared")
+                raise RuntimeError("canonical run disappeared") from exc
             trace_complete = False
             if snapshot.status in TERMINAL_RUN_STATUSES:
                 return snapshot, None

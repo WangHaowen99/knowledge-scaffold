@@ -1,7 +1,7 @@
 """Tests for A2A mapper utilities."""
 
-from api.protocols.a2a.mapper import map_run_status_to_a2a
 from agent.runtime.contracts import RunStatus
+from api.protocols.a2a.mapper import map_run_status_to_a2a
 
 
 def test_map_run_status_running_to_in_progress():

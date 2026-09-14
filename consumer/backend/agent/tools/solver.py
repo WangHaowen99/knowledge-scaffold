@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from hashlib import sha256
 import json
+import logging
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -17,6 +18,8 @@ from agent.tools.events import emit_protocol_event
 from agent.tools.solver_terminal import SolverTerminalOutcomeProjector
 from solver_coordination.canonical import json_schema_digest, sha256_digest
 
+
+logger = logging.getLogger(__name__)
 
 _SOLVER_COORDINATION_SERVICE: Any = None
 _TERMINAL_OUTCOME_PROJECTOR = SolverTerminalOutcomeProjector()
@@ -210,14 +213,20 @@ def dispatch_solver_checkpoint_tool(
             "job_id": "",
         }
 
-    user_context = state.get("user_context")
-    user_context = user_context if isinstance(user_context, Mapping) else {}
-    selected_id = str(user_context.get("selected_ontology_id") or "").strip()
-    selected_revision = str(
-        user_context.get("selected_ontology_version")
-        or user_context.get("selected_version")
-        or ""
-    ).strip()
+    # Resolve the package identity the same way a live turn does: a session
+    # that auto-selected its package stores neither id nor revision, and the
+    # checkpoint state is the only identity this recovery path has.
+    from agent.core.shared.ontology_context import (
+        active_ontology_id_from_state,
+        active_ontology_version_from_state,
+    )
+
+    identity_state = {
+        "user_context": state.get("user_context"),
+        "workspace_id": workspace_id,
+    }
+    selected_id = active_ontology_id_from_state(identity_state) or ""
+    selected_revision = active_ontology_version_from_state(identity_state) or ""
     specs = get_solver_tool_specs_for_context(
         selected_ontology_id=selected_id,
         selected_ontology_version=selected_revision,
@@ -338,9 +347,25 @@ def get_solver_tool_specs_for_context(
     package_id = str(selected_ontology_id or "").strip()
     revision = str(selected_ontology_version or "").strip()
     workspace = str(workspace_id or "").strip()
-    if not package_id or not revision or not workspace:
+    # Cards are revision-bound, so an incomplete identity yields no tools at
+    # all. Name the missing part instead of letting the cards vanish without a
+    # trace, because the symptom points nowhere near the cause.
+    if not workspace or not package_id:
+        logger.debug(
+            "Solver tool cards unavailable: workspace=%r package=%r",
+            workspace,
+            package_id,
+        )
+        return ()
+    if not revision:
+        logger.warning(
+            "Solver tool cards unavailable: package %s in workspace %s resolved no revision",
+            package_id,
+            workspace,
+        )
         return ()
     if _SOLVER_COORDINATION_SERVICE is None:
+        logger.debug("Solver tool cards unavailable: coordination service not configured")
         return ()
     admitted_capabilities = _admitted_public_capabilities(
         package_id=package_id,
@@ -357,6 +382,11 @@ def get_solver_tool_specs_for_context(
         )
     )
     if not capabilities:
+        logger.debug(
+            "Solver tool cards unavailable: package %s@%s declares no public capabilities",
+            package_id,
+            revision,
+        )
         return ()
     dispatcher = SolverToolDispatcher(
         service=_SOLVER_COORDINATION_SERVICE,
@@ -365,6 +395,12 @@ def get_solver_tool_specs_for_context(
     try:
         return build_solver_tool_specs(capabilities, dispatcher=dispatcher)
     except SolverToolCatalogError:
+        logger.warning(
+            "Solver tool cards unavailable: package %s@%s has an invalid capability catalog",
+            package_id,
+            revision,
+            exc_info=True,
+        )
         return ()
 
 
@@ -429,14 +465,34 @@ def _admitted_public_capabilities(
         for capability in public
     ):
         return ()
+    # A preflight product is the private execution surface.  If a caller
+    # accidentally binds the lightweight ``solver_summary`` here, fail closed
+    # rather than attempting a live package read or exposing an underspecified
+    # ToolCard.
+    if any(
+        not isinstance(capability.get("input_schema"), Mapping)
+        for capability in public
+    ):
+        return ()
     return public
 
 
 def _load_public_capabilities(
     *, package_id: str, package_revision: str, workspace_id: str
 ) -> list[Mapping[str, Any]]:
+    """Load full ToolCard capabilities from the locked package revision.
+
+    Root ontology context is intentionally progressive and may contain only
+    ``solver_summary``.  Solver ToolCards still require the strict input
+    schema, therefore this fallback path resolves the exact manifest and uses
+    the package-bound full catalog loader instead of reading a model-facing
+    root payload.
+    """
     try:
-        from ontology.ontology_catalog import build_root_payload, get_ontology_manifest
+        from ontology.ontology_catalog import get_ontology_manifest
+        from solver_coordination.capability_catalog import (
+            SolverContractResolver,
+        )
 
         ontology, error = get_ontology_manifest(
             package_id,
@@ -445,13 +501,19 @@ def _load_public_capabilities(
         )
         if error or ontology is None or ontology.version != package_revision:
             return []
-        payload = build_root_payload(
-            ontology=ontology,
-            ontology_dir=Path(ontology.ontology_dir).resolve(),
-        )
-        catalog = payload.get("solver_catalog")
-        if not isinstance(catalog, list):
+        manifest_path = Path(ontology.manifest_path).resolve()
+        if not manifest_path.is_file() or manifest_path.is_symlink():
             return []
+        import yaml
+
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(manifest, Mapping):
+            return []
+        catalog = SolverContractResolver(
+            Path(ontology.ontology_dir).resolve(),
+            manifest,
+            package_revision=package_revision,
+        ).load_public()
         return [item for item in catalog if isinstance(item, Mapping)]
     except Exception:
         return []

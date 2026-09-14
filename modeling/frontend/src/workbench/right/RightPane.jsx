@@ -367,9 +367,7 @@ export function MaterialPurposeBatchCard({ materials }) {
 }
 
 export function messageForInteraction(interaction) {
-  const type = interaction.kind === 'confirmation'
-    ? 'confirm'
-    : interaction.kind === 'release_confirmation' ? 'release' : 'ask';
+  const type = (() => { if (interaction.kind === 'confirmation') return 'confirm'; return interaction.kind === 'release_confirmation' ? 'release' : 'ask'; })();
   return {
     id: `interaction-${interaction.id}`,
     role: 'assistant',
@@ -387,7 +385,7 @@ function Message({ m }) {
       data-message-id={m.id}
       data-interaction-id={m.blocks?.find((block) => block.interaction)?.interaction?.id || undefined}>
       <div className="wb-who">
-        <b>{mine ? '你' : system ? '资料' : '助手'}</b>{at ? ` · ${at}` : ''}
+        <b>{(() => { if (mine) return '你'; return system ? '资料' : '助手'; })()}</b>{at ? ` · ${at}` : ''}
         {m.focus && (
           <>
             <span className="spacer" />

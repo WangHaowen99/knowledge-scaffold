@@ -84,8 +84,12 @@ test('global payload rejects dangling main and task refs', () => {
   }), /引用无效/);
 });
 
-test('workspace test payload includes unsaved profiles and profile_id while normal save permits an empty array', () => {
-  const testPayload = buildWorkspaceModelPayload([profile('private', { api_key: 'draft-secret' })], { profileId: 'private' });
+test('workspace test payload includes unsaved profiles and profile_id ' +
+  'while normal save permits an empty array', () => {
+  const testPayload = buildWorkspaceModelPayload(
+    [profile('private', { api_key: 'draft-secret' })],
+    { profileId: 'private' },
+  );
   assert.equal(testPayload.profile_id, 'private');
   assert.equal(testPayload.profiles[0].api_key, 'draft-secret');
   assert.deepEqual(buildWorkspaceModelPayload([]), { profiles: [] });
@@ -150,7 +154,12 @@ test('global deletion checks main and task refs across every workspace', () => {
     referenceInventory: {
       complete: true,
       entries: [
-        { workspaceId: 'alpha', workspaceName: 'Alpha', runtimeKnown: true, runtime: { llm: { default_task_profile_ref: 'global:fast' } } },
+        {
+          workspaceId: 'alpha',
+          workspaceName: 'Alpha',
+          runtimeKnown: true,
+          runtime: { llm: { default_task_profile_ref: 'global:fast' } },
+        },
         { workspaceId: 'beta', workspaceName: 'Beta', runtimeKnown: true, runtime: { llm: {} } },
       ],
     },
@@ -163,7 +172,11 @@ test('global deletion checks main and task refs across every workspace', () => {
     config,
     referenceInventory: {
       complete: true,
-      entries: [{ workspaceId: 'beta', runtimeKnown: true, runtime: { llm: { default_main_profile_ref: 'global:other' } } }],
+      entries: [{
+        workspaceId: 'beta',
+        runtimeKnown: true,
+        runtime: { llm: { default_main_profile_ref: 'global:other' } },
+      }],
     },
   });
   assert.equal(allowed.allowed, true);
@@ -349,9 +362,17 @@ test('global deletion consumes aggregate reference entries without runtime docum
   assert.match(referenced.message, /Alpha.*任务 Agent/);
 });
 
-test('workspace deletion blocks unknown runtime and referenced private roles, then allows an unreferenced profile', () => {
+test('workspace deletion blocks unknown runtime and referenced private roles, ' +
+  'then allows an unreferenced profile', () => {
   const profiles = [profile('private'), profile('other')];
-  assert.equal(workspaceProfileDeleteDecision({ profileId: 'private', profiles, runtimeKnown: false }).code, 'references_incomplete');
+  assert.equal(
+    workspaceProfileDeleteDecision({
+      profileId: 'private',
+      profiles,
+      runtimeKnown: false,
+    }).code,
+    'references_incomplete',
+  );
 
   const referenced = workspaceProfileDeleteDecision({
     profileId: 'private',
@@ -385,15 +406,27 @@ test('profile test fingerprint changes with endpoint, model, or draft key', () =
   assert.equal(isProfileTestResultCurrent(result, { ...base, api_key: 'rotated-secret' }), false);
 });
 
-test('delete snapshot comparison fails closed for missing, stale, and confirmation-period changes', () => {
-  assert.equal(deletionSnapshotDecision({ currentFingerprint: '', baselineFingerprint: 'base' }).code, 'snapshot_unknown');
-  assert.equal(deletionSnapshotDecision({ currentFingerprint: 'server-new', baselineFingerprint: 'base' }).code, 'snapshot_changed');
+test('delete snapshot comparison fails closed for missing, stale, ' +
+  'and confirmation-period changes', () => {
   assert.equal(deletionSnapshotDecision({
-    currentFingerprint: 'base', baselineFingerprint: 'base', openedFingerprint: 'opened-old',
+    currentFingerprint: '',
+    baselineFingerprint: 'base',
+  }).code, 'snapshot_unknown');
+  assert.equal(deletionSnapshotDecision({
+    currentFingerprint: 'server-new',
+    baselineFingerprint: 'base',
   }).code, 'snapshot_changed');
   assert.equal(deletionSnapshotDecision({
-    currentFingerprint: 'base', baselineFingerprint: 'base', openedFingerprint: 'base',
-    currentGeneration: 'inventory-a', openedGeneration: 'inventory-a',
+    currentFingerprint: 'base',
+    baselineFingerprint: 'base',
+    openedFingerprint: 'opened-old',
+  }).code, 'snapshot_changed');
+  assert.equal(deletionSnapshotDecision({
+    currentFingerprint: 'base',
+    baselineFingerprint: 'base',
+    openedFingerprint: 'base',
+    currentGeneration: 'inventory-a',
+    openedGeneration: 'inventory-a',
   }).allowed, true);
 });
 

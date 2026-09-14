@@ -352,7 +352,7 @@ export function EvaluationRoundChips({ rounds, selectedRoundId, busy = false, on
           disabled={busy}
           onClick={() => onSelect(r.id)}>
           v{r.packageVersion} · {fmtTime(r.createdAt)}
-          {r.status === 'running' ? ' ⏳' : r.status === 'failed' ? ' ✕' : ` ${r.passCount}/${r.progressTotal}`}
+          {(() => { if (r.status === 'running') return ' ⏳'; return r.status === 'failed' ? ' ✕' : ` ${r.passCount}/${r.progressTotal}`; })()}
         </button>
       ))}
     </div>
@@ -577,7 +577,7 @@ function RoundDetail({ projectId, data, history, onChanged }) {
   return (
     <div style={{ marginTop: 18 }}>
       <div className="ev-status">
-        <span className={`tag ${round.status === 'done' ? 'tag-ok' : round.status === 'failed' ? 'tag-err' : 'tag-draft'}`}>
+        <span className={`tag ${(() => { if (round.status === 'done') return 'tag-ok'; return round.status === 'failed' ? 'tag-err' : 'tag-draft'; })()}`}>
           {{ running: '运行中', done: '已完成', failed: '失败' }[round.status]}
         </span>
         <span style={{ fontSize: 13, fontWeight: 650 }}>

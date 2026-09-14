@@ -203,17 +203,13 @@ function setOptional(params, key, value) {
 
 export function applyStudioFocus(session, focus) {
   if (focus?.kind !== 'studio') return session;
-  const requestedView = ['graph', 'table', 'entry'].includes(focus.view)
-    ? focus.view
-    : focus.elementId ? 'entry' : session.view;
+  const requestedView = (() => { if (['graph', 'table', 'entry'].includes(focus.view)) return focus.view; return focus.elementId ? 'entry' : session.view; })();
   const selectedElementId = focus.elementId || session.selectedElementId;
   return {
     ...session,
     view: requestedView,
     selectedElementId,
-    returnView: requestedView === 'entry'
-      ? (session.view === 'table' ? 'table' : session.returnView || 'graph')
-      : requestedView,
+    returnView: (() => { if (requestedView === 'entry') return ((() => { if (session.view === 'table') return 'table'; return session.returnView || 'graph'; })()); return requestedView; })(),
   };
 }
 

@@ -14,20 +14,14 @@ import multiprocessing
 import os
 from pathlib import Path
 import signal
-import sys
 import tempfile
 import time
 from typing import Any
 from uuid import uuid4
 
-
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(_BACKEND_ROOT) not in sys.path:
-    sys.path.append(str(_BACKEND_ROOT))
-
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
-
 
 _CHILD_TIMEOUT_SECONDS = 10.0
 _PROCESS_CONTEXT = multiprocessing.get_context("spawn")
@@ -150,8 +144,7 @@ def _verify_running(round_root: Path, marker: Path, round_index: int) -> dict[st
             interrupted.get("run_id") != expected.get("run_id"),
             interrupted.get("status") != "failed",
             interrupted.get("error_code") != "SERVICE_RESTARTED",
-            (interrupted.get("final_output") or {}).get("error_code")
-            != "SERVICE_RESTARTED",
+            (interrupted.get("final_output") or {}).get("error_code") != "SERVICE_RESTARTED",
         )
     )
     if running_recovery_failed:
@@ -186,15 +179,10 @@ def _verify_running(round_root: Path, marker: Path, round_index: int) -> dict[st
     chat_store.clear_active_run(session_id)
     _fsync_tree(round_root)
 
-    persisted = ExecutionStore(str(round_root / "executions")).get_session_history(
-        session_id
-    )
+    persisted = ExecutionStore(str(round_root / "executions")).get_session_history(session_id)
     if persisted is None:
         raise RuntimeError("running verification history disappeared")
-    old_run_occurrences = sum(
-        turn.get("run_id") == interrupted["run_id"]
-        for turn in persisted.get("turns", [])
-    )
+    old_run_occurrences = sum(turn.get("run_id") == interrupted["run_id"] for turn in persisted.get("turns", []))
     if old_run_occurrences != 1 or persisted["turns"][-1]["status"] != "success":
         raise RuntimeError("running-loss verification produced invalid durable history")
     return {
@@ -305,9 +293,7 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
         "value": "value_a",
     }
     idempotency_key = "awaiting-answer-key-{:04d}".format(round_index)
-    request_fingerprint = "awaiting-answer-fingerprint-{:04d}".format(
-        round_index
-    )
+    request_fingerprint = "awaiting-answer-fingerprint-{:04d}".format(round_index)
     answer_turn, created = execution_store.consume_interaction_and_create_turn(
         session_id=session_id,
         interaction_id=str(interaction["id"]),
@@ -324,17 +310,13 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
         idempotency_key_hash=idempotency_key,
         request_fingerprint=request_fingerprint,
     )
-    cross_key_turn, cross_key_created = (
-        execution_store.consume_interaction_and_create_turn(
-            session_id=session_id,
-            interaction_id=str(interaction["id"]),
-            user_request="Choose synthetic option A",
-            interaction_response=response,
-            idempotency_key_hash="awaiting-answer-retry-key-{:04d}".format(
-                round_index
-            ),
-            request_fingerprint=request_fingerprint,
-        )
+    cross_key_turn, cross_key_created = execution_store.consume_interaction_and_create_turn(
+        session_id=session_id,
+        interaction_id=str(interaction["id"]),
+        user_request="Choose synthetic option A",
+        interaction_response=response,
+        idempotency_key_hash="awaiting-answer-retry-key-{:04d}".format(round_index),
+        request_fingerprint=request_fingerprint,
     )
     answer_allocation_failed = any(
         (
@@ -377,9 +359,7 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
     chat_store.clear_active_run(session_id)
     _fsync_tree(round_root)
 
-    persisted = ExecutionStore(str(round_root / "executions")).get_session_history(
-        session_id
-    )
+    persisted = ExecutionStore(str(round_root / "executions")).get_session_history(session_id)
     if persisted is None or len(persisted.get("turns", [])) != 2:
         raise RuntimeError("awaiting answer durable history is incomplete")
     persisted_original, persisted_answer = persisted["turns"]
@@ -387,8 +367,7 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
         (
             persisted_original.get("status") != "awaiting_input",
             persisted_original.get("run_id") != original["run_id"],
-            persisted_original.get("interaction_consumed_by_turn_id")
-            != persisted_answer.get("turn_id"),
+            persisted_original.get("interaction_consumed_by_turn_id") != persisted_answer.get("turn_id"),
             persisted_original.get("interaction_response") != response,
             persisted_answer.get("status") != "success",
         )
@@ -404,9 +383,7 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
         "hitl_card_restored": True,
         "original_run_remained_awaiting": True,
         "http_layer_exercised": False,
-        "admission_primitive": (
-            "ExecutionStore.consume_interaction_and_create_turn"
-        ),
+        "admission_primitive": "ExecutionStore.consume_interaction_and_create_turn",
     }
 
 
@@ -452,9 +429,7 @@ def _wait_until_ready(process: multiprocessing.Process, marker: Path) -> None:
             return
         if process.exitcode is not None:
             process.join(timeout=1.0)
-            raise RuntimeError(
-                "seed child exited before ready: code={}".format(process.exitcode)
-            )
+            raise RuntimeError("seed child exited before ready: code={}".format(process.exitcode))
         time.sleep(0.01)
     raise TimeoutError("seed child did not persist readiness marker")
 
@@ -482,11 +457,7 @@ def _kill_seed_child(mode: str, round_root: Path, round_index: int) -> Path:
         raise TimeoutError("seed child did not stop after SIGKILL")
     expected_code = -int(signal.SIGKILL)
     if process.exitcode != expected_code:
-        raise RuntimeError(
-            "seed child was not killed by SIGKILL: code={}".format(
-                process.exitcode
-            )
-        )
+        raise RuntimeError("seed child was not killed by SIGKILL: code={}".format(process.exitcode))
     return marker
 
 
@@ -517,9 +488,7 @@ def _run_verifier(
             result = None
     receiver.close()
     if process.exitcode != 0:
-        raise RuntimeError(
-            "verifier child failed: code={}".format(process.exitcode)
-        )
+        raise RuntimeError("verifier child failed: code={}".format(process.exitcode))
     if result is None:
         raise RuntimeError("verifier child produced no result")
     if not isinstance(result, dict) or not result.get("passed"):
@@ -551,19 +520,11 @@ def _run_restart_rounds(
         sigkills += 1
         result = _run_verifier(verify_mode, round_root, marker, round_index)
         verified += int(bool(result.get("passed")))
-        idempotent_retries += int(
-            bool(result.get("exact_retry_reused_run"))
-        )
-        cross_key_retries += int(
-            bool(result.get("cross_key_retry_reused_run"))
-        )
+        idempotent_retries += int(bool(result.get("exact_retry_reused_run")))
+        cross_key_retries += int(bool(result.get("cross_key_retry_reused_run")))
         hitl_cards_restored += int(bool(result.get("hitl_card_restored")))
-        new_runs_created += int(
-            bool(result.get("new_run_created") or result.get("new_turn_created"))
-        )
-        original_runs_reopened += int(
-            result.get("original_run_remained_awaiting") is False
-        )
+        new_runs_created += int(bool(result.get("new_run_created") or result.get("new_turn_created")))
+        original_runs_reopened += int(result.get("original_run_remained_awaiting") is False)
         old_run_rebuilds += max(
             0,
             int(result.get("old_run_occurrences", 1)) - 1,

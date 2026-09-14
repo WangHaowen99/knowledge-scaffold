@@ -7,6 +7,7 @@ from typing import Iterator
 from agent.tools.business_data.adapters.base import BusinessDataSearchEvent
 from shared_capabilities.business_data import MindsDBProvider, iter_query_events
 
+
 class MindsDBSearchAdapter:
     name = "mindsdb"
 

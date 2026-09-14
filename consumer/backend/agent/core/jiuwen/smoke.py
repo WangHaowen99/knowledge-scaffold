@@ -20,7 +20,6 @@ from ..jiuwen_engine import (
     unregister_current_runtime_tools,
 )
 
-
 _DEFAULT_REGISTER_TOOLS = register_current_runtime_tools
 logger = logging.getLogger(__name__)
 

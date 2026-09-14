@@ -1,8 +1,5 @@
 import pytest
-
-
-SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
-TEST_BOOTSTRAP_ADMIN_PASSWORD = "TestBootstrap#2026"
+from backend_synthetic_credentials import BOOTSTRAP_ADMIN_PASSWORD, ENCRYPTION_KEY, synthetic_secret
 
 
 @pytest.fixture(autouse=True)
@@ -14,8 +11,9 @@ def isolate_system_config_file(tmp_path, monkeypatch):
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_path.parent)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
     monkeypatch.setenv(system_config_module.SYSTEM_CONFIG_PATH_ENV, str(config_path))
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
-    monkeypatch.setenv("AUTH_BOOTSTRAP_ADMIN_PASSWORD", TEST_BOOTSTRAP_ADMIN_PASSWORD)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", ENCRYPTION_KEY)
+    monkeypatch.setenv("AUTH_BOOTSTRAP_ADMIN_PASSWORD", BOOTSTRAP_ADMIN_PASSWORD)
+    monkeypatch.setenv("MCP_TOKEN_SECRET", synthetic_secret("isolated-backend-mcp"))
 
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))

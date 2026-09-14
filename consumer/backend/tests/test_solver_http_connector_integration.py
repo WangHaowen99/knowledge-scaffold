@@ -1,8 +1,9 @@
-from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.connectors.helpers import capability_fingerprint
 from solver_coordination.connectors.http_transport import HttpSolverTransport
 from solver_coordination.connectors.ortools import OrToolsConnector
@@ -10,6 +11,7 @@ from solver_coordination.contracts import ProblemIR
 
 
 class _LocalHttpEndpointPolicy:
+    # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def validate(self, endpoint: str) -> str:
         if not endpoint.startswith("http://127.0.0.1:"):
             raise ValueError("test endpoint must be loopback HTTP")
@@ -75,7 +77,7 @@ def _capabilities():
 
 
 def test_ortools_connector_reaches_service_api_over_real_http():
-    token = "synthetic-http-service-token"
+    token = synthetic_secret("solver_http_connector_integration-credential-01")
     state = {}
 
     class SolverHandler(BaseHTTPRequestHandler):
@@ -83,18 +85,14 @@ def test_ortools_connector_reaches_service_api_over_real_http():
             return self.headers.get("Authorization") == "Bearer " + token
 
         def _write_json(self, status, payload=None):
-            body = (
-                json.dumps(payload, separators=(",", ":")).encode("utf-8")
-                if payload is not None
-                else b""
-            )
+            body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else b""
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
-        def do_POST(self):
+        def do_POST(self):  # pylint: disable=invalid-name
             if self.path != "/api/v1/jobs" or not self._authorized():
                 self._write_json(401 if not self._authorized() else 404)
                 return
@@ -110,7 +108,7 @@ def test_ortools_connector_reaches_service_api_over_real_http():
             }
             self._write_json(202, state["job"])
 
-        def do_GET(self):
+        def do_GET(self):  # pylint: disable=invalid-name
             if not self._authorized():
                 self._write_json(401)
                 return
@@ -121,22 +119,25 @@ def test_ortools_connector_reaches_service_api_over_real_http():
                 self._write_json(200, state["job"])
                 return
             if self.path == "/api/v1/jobs/job_synthetic_0001/result":
-                self._write_json(200, {
-                "api_version": "ortools.solver.v1",
-                "job_id": "job_synthetic_0001",
-                "request_id": state["job"]["request_id"],
-                "problem_type": "binary_ordered_route",
-                "problem_version": "1.0",
-                "solve_outcome": "optimal",
-                "assignments": {"candidate_id": "CANDIDATE_SYNTHETIC_0001"},
-                "objective_values": {"primary_score": 10},
-                "assurance": {"best_bound": 10, "gap": "0", "certificate": None},
-                "engine": {
-                    "name": "ortools-cp-sat",
-                    "version": "synthetic",
-                    "service_build": "sha256:" + "1" * 64,
-                },
-                })
+                self._write_json(
+                    200,
+                    {
+                        "api_version": "ortools.solver.v1",
+                        "job_id": "job_synthetic_0001",
+                        "request_id": state["job"]["request_id"],
+                        "problem_type": "binary_ordered_route",
+                        "problem_version": "1.0",
+                        "solve_outcome": "optimal",
+                        "assignments": {"candidate_id": "CANDIDATE_SYNTHETIC_0001"},
+                        "objective_values": {"primary_score": 10},
+                        "assurance": {"best_bound": 10, "gap": "0", "certificate": None},
+                        "engine": {
+                            "name": "ortools-cp-sat",
+                            "version": "synthetic",
+                            "service_build": "sha256:" + "1" * 64,
+                        },
+                    },
+                )
                 return
             self._write_json(404)
 

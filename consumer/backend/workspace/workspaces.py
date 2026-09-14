@@ -38,6 +38,8 @@ from workspace.catalog_snapshot import (
     WorkspaceSourceSignature,
 )
 
+logger = logging.getLogger(__name__)
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows development fallback
@@ -48,9 +50,7 @@ WORKSPACE_HEADER = "X-Workspace-Id"
 LEGACY_DEFAULT_WORKSPACE_ID = "default"
 _WORKSPACE_ID_MAX_LEN = 64
 _WORKSPACE_MEMBERS_MAX_COUNT = 64
-_PERSONAL_WORKSPACE_ID_PATTERN = re.compile(
-    r"^home-[0-9a-f]{20}(?:-[0-9a-f]{8})?$"
-)
+_PERSONAL_WORKSPACE_ID_PATTERN = re.compile(r"^home-[0-9a-f]{20}(?:-[0-9a-f]{8})?$")
 _MCP_ENDPOINT_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 _MCP_ENDPOINT_LOCK_FILE = "workspace-mcp-endpoints.lock"
 _MCP_ENDPOINT_BACKUP_SUFFIX = "pre-workspace-mcp-endpoint-id-v1.bak"
@@ -61,11 +61,9 @@ _workspace_metadata_lock = threading.RLock()
 _workspace_endpoint_process_lock = threading.Lock()
 _workspace_catalog_manager: WorkspaceCatalogManager | None = None
 _workspace_catalog_manager_root: Path | None = None
-_workspace_catalog_last_generation = 0
+_workspace_catalog_last_generation: int = 0
 _workspace_config_generations: dict[str, int] = {}
-_TRANSIENT_WORKSPACE_CATALOG_ERRNOS = frozenset(
-    {errno.EAGAIN, errno.EINTR, errno.EBUSY, errno.ENOENT}
-)
+_TRANSIENT_WORKSPACE_CATALOG_ERRNOS = frozenset({errno.EAGAIN, errno.EINTR, errno.EBUSY, errno.ENOENT})
 _IS_WINDOWS = os.name == "nt"
 
 
@@ -211,7 +209,7 @@ def _normalize_workspace_name(name: str) -> str:
     return value
 
 
-_WORKSPACE_ID_PATTERN = re.compile(r'^[a-z][a-z0-9_-]*$')
+_WORKSPACE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 def validate_workspace_id(workspace_id: str) -> str:
@@ -238,10 +236,7 @@ def validate_mcp_endpoint_id(value: str) -> str:
 
 
 def generate_mcp_endpoint_id(existing_ids: set[str]) -> str:
-    normalized_existing = {
-        validate_mcp_endpoint_id(value)
-        for value in existing_ids
-    }
+    normalized_existing = {validate_mcp_endpoint_id(value) for value in existing_ids}
     while True:
         candidate = secrets.token_hex(8)
         if candidate not in normalized_existing:
@@ -284,11 +279,7 @@ def _trusted_workspaces_root(
     root = _resolve_runtime_root(runtime_root)
     workspaces_root = root / "workspaces"
     if _is_link_or_junction(workspaces_root):
-        raise WorkspacePathError(
-            "workspaces root must not be a symlink or junction: {}".format(
-                workspaces_root
-            )
-        )
+        raise WorkspacePathError("workspaces root must not be a symlink or junction: {}".format(workspaces_root))
     if create:
         workspaces_root.mkdir(parents=True, exist_ok=True)
     try:
@@ -296,15 +287,9 @@ def _trusted_workspaces_root(
     except FileNotFoundError:
         return workspaces_root
     if not stat.S_ISDIR(metadata.st_mode):
-        raise WorkspacePathError(
-            "workspaces root is not a directory: {}".format(workspaces_root)
-        )
+        raise WorkspacePathError("workspaces root is not a directory: {}".format(workspaces_root))
     if workspaces_root.resolve(strict=True) != workspaces_root:
-        raise WorkspacePathError(
-            "workspaces root escaped the trusted runtime root: {}".format(
-                workspaces_root
-            )
-        )
+        raise WorkspacePathError("workspaces root escaped the trusted runtime root: {}".format(workspaces_root))
     return workspaces_root
 
 
@@ -321,34 +306,21 @@ def _validate_workspace_directory_path(
     candidate = Path(workspace_dir)
     if candidate.parent != trusted_root:
         raise WorkspacePathError(
-            "workspace directory must be a direct child of the trusted "
-            "workspaces root: {}".format(candidate)
+            "workspace directory must be a direct child of the trusted workspaces root: {}".format(candidate)
         )
     workspace_id = validate_workspace_id(candidate.name)
     if workspace_id != candidate.name:
-        raise WorkspacePathError(
-            "workspace directory name is not canonical: {}".format(candidate)
-        )
+        raise WorkspacePathError("workspace directory name is not canonical: {}".format(candidate))
     if _is_link_or_junction(candidate):
-        raise WorkspacePathError(
-            "workspace directory must not be a symlink or junction: {}".format(
-                candidate
-            )
-        )
+        raise WorkspacePathError("workspace directory must not be a symlink or junction: {}".format(candidate))
     try:
         metadata = candidate.stat(follow_symlinks=False)
     except FileNotFoundError:
         return candidate
     if not stat.S_ISDIR(metadata.st_mode):
-        raise WorkspacePathError(
-            "workspace path is not a directory: {}".format(candidate)
-        )
+        raise WorkspacePathError("workspace path is not a directory: {}".format(candidate))
     if candidate.resolve(strict=True) != trusted_root / workspace_id:
-        raise WorkspacePathError(
-            "workspace directory escaped the trusted workspaces root: {}".format(
-                candidate
-            )
-        )
+        raise WorkspacePathError("workspace directory escaped the trusted workspaces root: {}".format(candidate))
     return candidate
 
 
@@ -359,33 +331,21 @@ def _validate_workspace_metadata_path(
 ) -> Path:
     candidate = Path(metadata_path)
     if candidate.name != "workspace.json":
-        raise WorkspacePathError(
-            "workspace metadata must be named workspace.json: {}".format(candidate)
-        )
+        raise WorkspacePathError("workspace metadata must be named workspace.json: {}".format(candidate))
     workspace_dir = _validate_workspace_directory_path(
         candidate.parent,
         workspaces_root=workspaces_root,
     )
     if _is_link_or_junction(candidate):
-        raise WorkspacePathError(
-            "workspace metadata must not be a symlink or junction: {}".format(
-                candidate
-            )
-        )
+        raise WorkspacePathError("workspace metadata must not be a symlink or junction: {}".format(candidate))
     try:
         metadata = candidate.stat(follow_symlinks=False)
     except FileNotFoundError:
         return candidate
     if not stat.S_ISREG(metadata.st_mode):
-        raise WorkspacePathError(
-            "workspace metadata is not a regular file: {}".format(candidate)
-        )
+        raise WorkspacePathError("workspace metadata is not a regular file: {}".format(candidate))
     if candidate.resolve(strict=True) != workspace_dir / "workspace.json":
-        raise WorkspacePathError(
-            "workspace metadata escaped its trusted workspace directory: {}".format(
-                candidate
-            )
-        )
+        raise WorkspacePathError("workspace metadata escaped its trusted workspace directory: {}".format(candidate))
     return candidate
 
 
@@ -437,8 +397,7 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
             _fsync_directory(path.parent)
         except Exception as exc:
             raise WorkspaceDurabilityError(
-                "Workspace JSON replacement committed, but directory durability "
-                "could not be confirmed",
+                "Workspace JSON replacement committed, but directory durability could not be confirmed",
                 committed=True,
             ) from exc
     except BaseException as exc:
@@ -474,11 +433,7 @@ def _write_json_and_publish(
             try:
                 publish()
             except BaseException as publish_error:
-                exc.add_note(
-                    "Workspace snapshot invalidation also failed: {}".format(
-                        type(publish_error).__name__
-                    )
-                )
+                exc.add_note("Workspace snapshot invalidation also failed: {}".format(type(publish_error).__name__))
         raise
     else:
         publish()
@@ -576,11 +531,7 @@ def _workspace_dirs_for_runtime_root(runtime_root: Path) -> List[Path]:
     workspace_dirs: list[Path] = []
     for entry in sorted(workspaces_root.iterdir(), key=lambda item: item.name):
         if _is_link_or_junction(entry):
-            raise WorkspacePathError(
-                "workspace directory must not be a symlink or junction: {}".format(
-                    entry
-                )
-            )
+            raise WorkspacePathError("workspace directory must not be a symlink or junction: {}".format(entry))
         try:
             entry_metadata = entry.stat(follow_symlinks=False)
         except FileNotFoundError:
@@ -589,21 +540,13 @@ def _workspace_dirs_for_runtime_root(runtime_root: Path) -> List[Path]:
             continue
         metadata_path = entry / "workspace.json"
         if _is_link_or_junction(metadata_path):
-            raise WorkspacePathError(
-                "workspace metadata must not be a symlink or junction: {}".format(
-                    metadata_path
-                )
-            )
+            raise WorkspacePathError("workspace metadata must not be a symlink or junction: {}".format(metadata_path))
         try:
             metadata = metadata_path.stat(follow_symlinks=False)
         except FileNotFoundError:
             continue
         if not stat.S_ISREG(metadata.st_mode):
-            raise WorkspacePathError(
-                "workspace metadata is not a regular file: {}".format(
-                    metadata_path
-                )
-            )
+            raise WorkspacePathError("workspace metadata is not a regular file: {}".format(metadata_path))
         _validate_workspace_metadata_path(
             metadata_path,
             workspaces_root=workspaces_root,
@@ -631,11 +574,13 @@ def _scan_workspace_mcp_endpoints(
                 payload,
             )
         except Exception as exc:
-            errors.append({
-                "code": "WORKSPACE_METADATA_INVALID",
-                "workspace_id": workspace_id,
-                "detail": str(exc),
-            })
+            errors.append(
+                {
+                    "code": "WORKSPACE_METADATA_INVALID",
+                    "workspace_id": workspace_id,
+                    "detail": str(exc),
+                }
+            )
             continue
 
         workspaces.append((resolved_workspace_id, metadata_path, payload))
@@ -645,24 +590,30 @@ def _scan_workspace_mcp_endpoints(
         try:
             endpoint_id = validate_mcp_endpoint_id(raw_endpoint_id)
         except ValueError as exc:
-            errors.append({
-                "code": "WORKSPACE_MCP_ENDPOINT_INVALID",
-                "workspace_id": resolved_workspace_id,
-                "detail": str(exc),
-            })
+            errors.append(
+                {
+                    "code": "WORKSPACE_MCP_ENDPOINT_INVALID",
+                    "workspace_id": resolved_workspace_id,
+                    "detail": str(exc),
+                }
+            )
             continue
         prior_owner = endpoint_owners.get(endpoint_id)
         if prior_owner is not None:
-            errors.append({
-                "code": "WORKSPACE_MCP_ENDPOINT_DUPLICATE",
-                "workspace_id": resolved_workspace_id,
-                "detail": "mcp_endpoint_id 与工作空间 {} 重复".format(prior_owner),
-            })
-            errors.append({
-                "code": "WORKSPACE_MCP_ENDPOINT_DUPLICATE",
-                "workspace_id": prior_owner,
-                "detail": "mcp_endpoint_id 与工作空间 {} 重复".format(resolved_workspace_id),
-            })
+            errors.append(
+                {
+                    "code": "WORKSPACE_MCP_ENDPOINT_DUPLICATE",
+                    "workspace_id": resolved_workspace_id,
+                    "detail": "mcp_endpoint_id 与工作空间 {} 重复".format(prior_owner),
+                }
+            )
+            errors.append(
+                {
+                    "code": "WORKSPACE_MCP_ENDPOINT_DUPLICATE",
+                    "workspace_id": prior_owner,
+                    "detail": "mcp_endpoint_id 与工作空间 {} 重复".format(resolved_workspace_id),
+                }
+            )
             continue
         endpoint_owners[endpoint_id] = resolved_workspace_id
     return workspaces, endpoint_owners, errors
@@ -694,11 +645,14 @@ def _enforce_workspace_owner_limit(
     if owner is None:
         return
     max_owned_workspaces = LimitsConfig.from_env().workspace_max_count
-    if _owned_workspace_count(
-        workspaces,
-        owner,
-        exclude_workspace_id=exclude_workspace_id,
-    ) >= max_owned_workspaces:
+    if (
+        _owned_workspace_count(
+            workspaces,
+            owner,
+            exclude_workspace_id=exclude_workspace_id,
+        )
+        >= max_owned_workspaces
+    ):
         raise ValueError("工作空间数量已达上限: {}".format(max_owned_workspaces))
 
 
@@ -766,7 +720,7 @@ def get_workspace_mcp_endpoint_id(workspace_id: str) -> str:
             payload = _read_workspace_metadata_raw(paths.metadata_path)
             _validate_workspace_metadata_identity(resolved_workspace_id, payload)
             endpoint_id = validate_mcp_endpoint_id(payload.get("mcp_endpoint_id"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             raise WorkspaceMCPEndpointError(
                 "WORKSPACE_MCP_ENDPOINT_INVALID",
                 "工作空间 {} 的 mcp_endpoint_id 无效: {}".format(
@@ -784,15 +738,11 @@ def get_workspace_mcp_endpoint_id(workspace_id: str) -> str:
                 "工作空间 MCP Endpoint 元数据读取失败",
                 workspace_id=resolved_workspace_id,
             ) from exc
-        duplicate_error = next(
-            (
-                item
-                for item in endpoint_errors
-                if item["workspace_id"] == resolved_workspace_id
-                and item["code"] == "WORKSPACE_MCP_ENDPOINT_DUPLICATE"
-            ),
-            None,
-        )
+        duplicate_error = None
+        for item in endpoint_errors:
+            if item["workspace_id"] == resolved_workspace_id and item["code"] == "WORKSPACE_MCP_ENDPOINT_DUPLICATE":
+                duplicate_error = item
+                break
         if duplicate_error is not None:
             raise WorkspaceMCPEndpointError(
                 duplicate_error["code"],
@@ -881,9 +831,7 @@ def ensure_all_workspace_mcp_endpoint_ids(
                             workspaces_root=resolved_root / "workspaces",
                         )
                         _validate_workspace_metadata_identity(workspace_id, persisted)
-                        if validate_mcp_endpoint_id(
-                            persisted.get("mcp_endpoint_id")
-                        ) != endpoint_id:
+                        if validate_mcp_endpoint_id(persisted.get("mcp_endpoint_id")) != endpoint_id:
                             raise ValueError("mcp_endpoint_id 写入后校验失败")
                         backup_paths.append(str(backup_path))
                         updated_ids.append(workspace_id)
@@ -915,12 +863,8 @@ def ensure_all_workspace_mcp_endpoint_ids(
                         },
                         "updated_workspace_ids": updated_ids,
                         "backup_paths": backup_paths,
-                        "failed_object_ids": sorted({
-                            item["workspace_id"] for item in persisted_errors
-                        }),
-                        "error_codes": sorted({
-                            item["code"] for item in persisted_errors
-                        }),
+                        "failed_object_ids": sorted({item["workspace_id"] for item in persisted_errors}),
+                        "error_codes": sorted({item["code"] for item in persisted_errors}),
                         "errors": [item["detail"] for item in persisted_errors],
                     }
 
@@ -932,9 +876,7 @@ def ensure_all_workspace_mcp_endpoint_ids(
                     "existing": len(endpoint_owners),
                     "created": len(planned),
                 },
-                "updated_workspace_ids": (
-                    [item[0] for item in planned] if dry_run else updated_ids
-                ),
+                "updated_workspace_ids": [item[0] for item in planned] if dry_run else updated_ids,
                 "backup_paths": backup_paths,
                 "failed_object_ids": [],
                 "error_codes": [],
@@ -942,9 +884,7 @@ def ensure_all_workspace_mcp_endpoint_ids(
             }
 
 
-def _workspace_to_public(
-    data: Dict[str, Any], *, default_workspace_id: Optional[str] = None
-) -> Dict[str, Any]:
+def _workspace_to_public(data: Dict[str, Any], *, default_workspace_id: Optional[str] = None) -> Dict[str, Any]:
     workspace_id = validate_workspace_id(data["id"])
     return {
         "id": workspace_id,
@@ -986,10 +926,7 @@ def _is_security_workspace_catalog_error(exc: Exception) -> bool:
 def _is_transient_workspace_catalog_error(exc: Exception) -> bool:
     if _is_security_workspace_catalog_error(exc):
         return False
-    return (
-        isinstance(exc, OSError)
-        and exc.errno in _TRANSIENT_WORKSPACE_CATALOG_ERRNOS
-    )
+    return isinstance(exc, OSError) and exc.errno in _TRANSIENT_WORKSPACE_CATALOG_ERRNOS
 
 
 def _load_workspace_catalog_data(runtime_root: Path) -> WorkspaceCatalogData:
@@ -1036,10 +973,7 @@ def _get_workspace_catalog_manager_locked() -> WorkspaceCatalogManager:
     global _workspace_catalog_manager_root
 
     runtime_root = get_runtime_root()
-    if (
-        _workspace_catalog_manager is not None
-        and _workspace_catalog_manager_root == runtime_root
-    ):
+    if _workspace_catalog_manager is not None and _workspace_catalog_manager_root == runtime_root:
         return _workspace_catalog_manager
 
     if _workspace_catalog_manager is not None:
@@ -1273,9 +1207,7 @@ def _ensure_workspace_state() -> None:
         workspace_dirs = _list_workspace_dirs()
         settings = _read_workspace_settings()
         default_workspace_id = settings.get("default_workspace_id")
-        default_explicitly_cleared = (
-            "default_workspace_id" in settings and default_workspace_id is None
-        )
+        default_explicitly_cleared = "default_workspace_id" in settings and default_workspace_id is None
 
         if default_workspace_id and _workspace_exists_authoritative(default_workspace_id):
             return
@@ -1361,7 +1293,8 @@ def _list_workspaces_authoritative() -> List[Dict[str, Any]]:
             items.append(_workspace_to_public(payload, default_workspace_id=default_workspace_id))
         except WorkspacePathError:
             raise
-        except Exception:
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logger.warning("Skipping invalid workspace metadata at %s: %s", metadata_path, exc)
             continue
 
     items.sort(key=lambda item: (0 if item.get("is_default") else 1, item["name"].lower(), item["id"]))
@@ -1478,9 +1411,7 @@ def create_workspace(
                 candidate = _slugify_workspace_name(normalized_name)
                 while _workspace_exists_authoritative(candidate):
                     candidate = _with_suffix(candidate, uuid.uuid4().hex[:4])
-            if not allow_reserved_id and _PERSONAL_WORKSPACE_ID_PATTERN.fullmatch(
-                candidate
-            ):
+            if not allow_reserved_id and _PERSONAL_WORKSPACE_ID_PATTERN.fullmatch(candidate):
                 raise ValueError("工作空间 ID 使用了系统保留前缀")
 
             if enforce_workspace_limit:
@@ -1614,11 +1545,7 @@ def delete_workspace(workspace_id: str, *, allow_default: bool = False) -> None:
             raise WorkspaceNotFoundError(resolved_id)
         shutil.rmtree(paths.workspace_dir)
         if os.path.lexists(paths.workspace_dir):
-            raise OSError(
-                "workspace directory still exists after deletion: {}".format(
-                    paths.workspace_dir
-                )
-            )
+            raise OSError("workspace directory still exists after deletion: {}".format(paths.workspace_dir))
         if is_default:
             settings = _read_workspace_settings()
             settings["default_workspace_id"] = None
@@ -2082,16 +2009,10 @@ def _validate_global_runtime_profile_refs(llm_patch: Any) -> None:
     from config.system_config import load_system_config
 
     profiles = load_system_config().get("llm_profiles", {}).get("profiles", [])
-    available_ids = {
-        str(profile.get("id") or "").strip()
-        for profile in profiles
-        if isinstance(profile, Mapping)
-    }
+    available_ids = {str(profile.get("id") or "").strip() for profile in profiles if isinstance(profile, Mapping)}
     missing = sorted(requested_ids - available_ids)
     if missing:
-        raise ValueError(
-            "global model profile {} 不存在".format(", ".join(missing))
-        )
+        raise ValueError("global model profile {} 不存在".format(", ".join(missing)))
 
 
 def _normalize_runtime_config_patch(data: dict, *, strict: bool) -> dict:
@@ -2139,14 +2060,8 @@ def _normalize_runtime_config_patch(data: dict, *, strict: bool) -> dict:
                         raise ValueError(f"Unknown runtime config key: mcp.{mcp_key}")
                     continue
                 if mcp_key == "stream_user_workspace_concurrency":
-                    if (
-                        isinstance(mcp_value, bool)
-                        or not isinstance(mcp_value, int)
-                        or not 1 <= mcp_value <= 32
-                    ):
-                        raise ValueError(
-                            "mcp.stream_user_workspace_concurrency must be an integer between 1 and 32"
-                        )
+                    if isinstance(mcp_value, bool) or not isinstance(mcp_value, int) or not 1 <= mcp_value <= 32:
+                        raise ValueError("mcp.stream_user_workspace_concurrency must be an integer between 1 and 32")
                     normalized_mcp[mcp_key] = mcp_value
             normalized[key] = normalized_mcp
 
@@ -2167,14 +2082,8 @@ def _normalize_runtime_config_patch(data: dict, *, strict: bool) -> dict:
                             llm_value,
                             (str, Mapping, ModelProfileRef),
                         ):
-                            raise ValueError(
-                                f"{llm_key} must be a model profile reference"
-                            )
-                        reference_value = (
-                            dict(llm_value)
-                            if isinstance(llm_value, Mapping)
-                            else llm_value
-                        )
+                            raise ValueError(f"{llm_key} must be a model profile reference")
+                        reference_value = dict(llm_value) if isinstance(llm_value, Mapping) else llm_value
                         try:
                             normalized_llm[llm_key] = model_profile_ref_to_dict(
                                 parse_model_profile_ref(reference_value)
@@ -2200,9 +2109,7 @@ def validate_workspace_runtime_config_document(
         normalized_llm = copy.deepcopy(dict(llm))
         if "default_profile_ref" in normalized_llm:
             if "default_main_profile_ref" not in normalized_llm:
-                normalized_llm["default_main_profile_ref"] = normalized_llm[
-                    "default_profile_ref"
-                ]
+                normalized_llm["default_main_profile_ref"] = normalized_llm["default_profile_ref"]
             normalized_llm.pop("default_profile_ref", None)
         candidate["llm"] = normalized_llm
 

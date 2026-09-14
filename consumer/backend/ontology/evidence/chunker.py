@@ -8,7 +8,6 @@ from typing import Any, Iterable
 from ontology.evidence.identity import EvidenceIdentity, build_evidence_id, normalize_chunk_text
 from ontology.resource_types import ParsedResource, ParsedTable
 
-
 TARGET_CHARS = 1200
 MAX_CHARS = 1800
 SNIPPET_CHARS = 420
@@ -103,8 +102,8 @@ class EvidenceChunker:
                     )
         return tuple(chunks)
 
+    @staticmethod
     def _make_chunk(
-        self,
         parsed: ParsedResource,
         *,
         ontology_epoch: str,

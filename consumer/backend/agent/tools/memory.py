@@ -81,82 +81,48 @@ Schema:
 """
 
 
-_ORDINARY_EXTRACTOR_SYSTEM_PROMPT = """\
-Extract a user-personalization memory item.
-
-Return a single JSON object only.
-
-Schema:
-{
-  "content": "string",
-  "memory_type": "preference" | "profile",
-  "reason": "string"
-}
-
-Rules:
-- Use preference for durable response, workflow, language, or format preferences.
-- Use profile only when the content states a stable, non-sensitive fact about the user, their team, or their long-term work context.
-- Preserve the user's wording closely, but make the content self-contained.
-"""
+_ORDINARY_EXTRACTOR_SYSTEM_PROMPT = (
+    "Extract a user-personalization memory item.\n\nReturn a single JSON object only.\n\nSchema:\n"
+    '{\n  "content": "string",\n  "memory_type": "preference" | "profile",\n  "reason": "string"\n'
+    "}\n\nRules:\n- Use preference for durable response, workflow, language, or format "
+    "preferences.\n- Use profile only when the content states a stable, non-sensitive fact about "
+    "the user, their team, or their long-term work context.\n- Preserve the user's wording closely,"
+    " but make the content self-contained.\n"
+)
 
 
-_OPERATION_EXTRACTOR_SYSTEM_PROMPT = """\
-Extract a reusable ontology operation memory item.
+_OPERATION_EXTRACTOR_SYSTEM_PROMPT = (
+    "Extract a reusable ontology operation memory item.\n\nReturn a single JSON object only.\n\n"
+    'Schema:\n{\n  "content": "string",\n  "kind": "procedure" | "pitfall" | "schema",\n  '
+    '"ontology_id": "string or null",\n  "operation_key": "string or null",\n  "entity_key": '
+    '"string or null",\n  "reason": "string"\n}\n\nUse the provided execution context to fill '
+    "ontology_id, operation_key, and entity_key when there is exactly one clear target.\nFor "
+    "operation_evolution:\n- procedure: reusable steps or future execution rules.\n- pitfall: "
+    "mistakes, warnings, edge cases, or checks to avoid repeat failures.\n- schema: entity field "
+    "names, formats, meanings, or mapping corrections.\n\nScope rules:\n- procedure and pitfall "
+    "are operation-scoped when a clear operation exists; leave operation_key null for "
+    "ontology-level guidance.\n- schema may be object-level; set operation_key to null when the "
+    "schema correction is a generally valid fact about the entity across operations.\n- schema "
+    "should include entity_key whenever the target entity is clear.\n- Only set operation_key for "
+    "schema when the user explicitly limits the correction to a specific operation or the "
+    "correction depends on that operation's context.\n"
+)
 
-Return a single JSON object only.
-
-Schema:
-{
-  "content": "string",
-  "kind": "procedure" | "pitfall" | "schema",
-  "ontology_id": "string or null",
-  "operation_key": "string or null",
-  "entity_key": "string or null",
-  "reason": "string"
-}
-
-Use the provided execution context to fill ontology_id, operation_key, and entity_key when there is exactly one clear target.
-For operation_evolution:
-- procedure: reusable steps or future execution rules.
-- pitfall: mistakes, warnings, edge cases, or checks to avoid repeat failures.
-- schema: entity field names, formats, meanings, or mapping corrections.
-
-Scope rules:
-- procedure and pitfall are operation-scoped when a clear operation exists; leave operation_key null for ontology-level guidance.
-- schema may be object-level; set operation_key to null when the schema correction is a generally valid fact about the entity across operations.
-- schema should include entity_key whenever the target entity is clear.
-- Only set operation_key for schema when the user explicitly limits the correction to a specific operation or the correction depends on that operation's context.
-"""
-
-_ORDINARY_RELATION_SYSTEM_PROMPT = """\
-Compare one new ordinary user-personalization memory item with existing ordinary memories.
-
-Return a single JSON object only.
-
-Schema:
-{
-  "decisions": [
-    {
-      "source_uri": "string",
-      "relation": "duplicate" | "supersedes" | "refines" | "conflicts" | "unrelated",
-      "reason": "string"
-    }
-  ]
-}
-
-Relation rules:
-- duplicate: the new item says the same durable user preference or profile fact as the old item.
-- supersedes: the new item explicitly replaces the old item for the same subject.
-- refines: the new item is a more specific version that should replace the old item in recall.
-- conflicts: both items cannot safely be true at the same time, and the new explicit memory should win.
-- unrelated: both can coexist.
-- A broad default and a narrower exception can coexist; do not replace the default unless the user says the default changed.
-
-Examples:
-- "Use English when answering handling-cost questions" conflicts with "Use Chinese when answering handling-cost questions".
-
-Return one decision for every provided candidate source_uri.
-"""
+_ORDINARY_RELATION_SYSTEM_PROMPT = (
+    "Compare one new ordinary user-personalization memory item with existing ordinary memories.\n\n"
+    'Return a single JSON object only.\n\nSchema:\n{\n  "decisions": [\n    {\n      "source_uri": '
+    '"string",\n      "relation": "duplicate" | "supersedes" | "refines" | "conflicts" | '
+    '"unrelated",\n      "reason": "string"\n    }\n  ]\n}\n\nRelation rules:\n- duplicate: the '
+    "new item says the same durable user preference or profile fact as the old item.\n- "
+    "supersedes: the new item explicitly replaces the old item for the same subject.\n- refines: "
+    "the new item is a more specific version that should replace the old item in recall.\n- "
+    "conflicts: both items cannot safely be true at the same time, and the new explicit memory "
+    "should win.\n- unrelated: both can coexist.\n- A broad default and a narrower exception can "
+    "coexist; do not replace the default unless the user says the default changed.\n\nExamples:\n- "
+    '"Use English when answering handling-cost questions" conflicts with "Use Chinese when '
+    'answering handling-cost questions".\n\nReturn one decision for every provided candidate '
+    "source_uri.\n"
+)
 
 
 @dataclass(frozen=True)
@@ -229,11 +195,7 @@ def _recent_read_context(read_documents: Optional[Dict[str, Any]]) -> List[Dict[
 
 
 def _infer_unique_context_value(rows: List[Dict[str, Any]], key: str) -> Optional[str]:
-    values = {
-        _safe_str(row.get(key))
-        for row in rows
-        if _safe_str(row.get(key))
-    }
+    values = {_safe_str(row.get(key)) for row in rows if _safe_str(row.get(key))}
     if len(values) == 1:
         return next(iter(values))
     return None
@@ -488,9 +450,8 @@ def _route_with_context_defaults(route: Dict[str, Any], context: _MemoryTaskCont
         resolved["operation_key"] = _infer_unique_context_value(read_context, "operation_key")
     else:
         resolved["operation_key"] = None
-    resolved["entity_key"] = (
-        _safe_str(resolved.get("entity_key"))
-        or _infer_unique_context_value(read_context, "entity_key")
+    resolved["entity_key"] = _safe_str(resolved.get("entity_key")) or _infer_unique_context_value(
+        read_context, "entity_key"
     )
     return resolved
 
@@ -577,10 +538,7 @@ def _store_operation_evolution(
 
     if kind not in _EVOLUTION_KINDS:
         kind = "procedure"
-    missing_scope = (
-        not ontology_id
-        or (kind == "schema" and not operation_key and not entity_key)
-    )
+    missing_scope = not ontology_id or (kind == "schema" and not operation_key and not entity_key)
     if missing_scope:
         if context.memory_manager:
             fallback_route = {

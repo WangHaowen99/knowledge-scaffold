@@ -7,21 +7,19 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
-from agent.tools.business_data.adapters import (
-    nl2sql_template_search as nl2sql_template_module,
-)
+from agent.tools.business_data.adapters import nl2sql_template_search as nl2sql_template_module
 from agent.tools.business_data.adapters.nl2sql_template_search import (
     NL2SQLTemplateSearchAdapter,
     _DefaultMatcher,
 )
+from backend_synthetic_credentials import synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 
 
 def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
     config = {
-        "url": "http://nl2sql.test/",
-        "token": "token-x",
+        "url": "https://nl2sql.example.net/",
+        "token": synthetic_secret("nl2sql_template_provider-credential-01"),
         "scene": "scene-x",
         "timeout_seconds": 88,
         "max_retries": 2,
@@ -55,6 +53,7 @@ def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
 # Default matcher — exact match, template hit → SQL direct
 # ---------------------------------------------------------------------------
 
+
 def test_default_matcher_hits_template_and_executes_sql(tmp_path):
     """Built-in matcher: exact key match → SQL execution (not NL2SQL)."""
     ontology_dir = tmp_path / "test-ontology"
@@ -77,6 +76,7 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "sql": "SELECT * FROM Part", "data": [{"id": 1}], "row_count": 1}
 
@@ -91,7 +91,7 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
     events = list(provider.search_stream(query="查询零件", entity="TargetItem"))
 
     # Should call /api/v1/sql (not /api/v1/query)
-    assert captured["url"] == "http://nl2sql.test/api/v1/sql"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/sql"
     assert "SELECT * FROM Part" in captured["json"]["sql"]
 
     assert events[0] == {"type": "start", "content": "开始查询本体数据"}
@@ -109,6 +109,7 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
 # Default matcher — no match → NL2SQL fallback
 # ---------------------------------------------------------------------------
 
+
 def test_default_matcher_falls_back_to_nl2sql(tmp_path):
     """Built-in matcher: no template match → NL2SQL query fallback."""
     ontology_dir = tmp_path / "test-ontology"
@@ -125,6 +126,7 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [], "row_count": 0}
 
@@ -138,7 +140,7 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
     events = list(provider.search_stream(query="查某个不存在的东西", entity=""))
 
     # Should call /api/v1/query (NL2SQL)
-    assert captured["url"] == "http://nl2sql.test/api/v1/query"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/query"
     assert "模板未命中" in events[1]["content"]
     assert events[1]["public_summary"] == "模板未命中，改用自然语言查询"
 
@@ -146,6 +148,7 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
 # ---------------------------------------------------------------------------
 # Default matcher — rich template format with dedupe + group_by
 # ---------------------------------------------------------------------------
+
 
 def test_default_matcher_with_rich_template_dedupes(tmp_path):
     """Built-in matcher: rich template format triggers dedupe post-processing."""
@@ -172,6 +175,7 @@ def test_default_matcher_with_rich_template_dedupes(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {
                 "success": True,
@@ -183,7 +187,10 @@ def test_default_matcher_with_rich_template_dedupes(tmp_path):
                 "row_count": 3,
             }
 
-    provider._session.post = lambda *a, **kw: _FakeResponse()
+    def post_response(*_args, **_kwargs):
+        return _FakeResponse()
+
+    provider._session.post = post_response
 
     events = list(provider.search_stream(query="查询零件", entity=""))
 
@@ -199,6 +206,7 @@ def test_default_matcher_with_rich_template_dedupes(tmp_path):
 # External matcher discovery
 # ---------------------------------------------------------------------------
 
+
 def test_external_matcher_discovered_and_called(tmp_path):
     """If sql_matcher.py exists in ontology_dir/scripts/, it is loaded and called."""
     ontology_dir = tmp_path / "test-ontology"
@@ -206,12 +214,14 @@ def test_external_matcher_discovered_and_called(tmp_path):
     scripts_dir.mkdir(parents=True)
 
     # Write a minimal sql_matcher.py
-    matcher_code = textwrap.dedent("""\
+    matcher_code = textwrap.dedent(
+        """\
         def matcher(query):
             if "零件" in query:
                 return "SELECT * FROM Part", {"from_template": "零件模板"}
             return None, None
-    """)
+    """
+    )
     (scripts_dir / "sql_matcher.py").write_text(matcher_code, encoding="utf-8")
 
     provider = _provider(
@@ -225,6 +235,7 @@ def test_external_matcher_discovered_and_called(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [{"id": 1}], "row_count": 1}
 
@@ -309,10 +320,12 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
     scripts_dir = ontology_dir / "scripts"
     scripts_dir.mkdir(parents=True)
 
-    matcher_code = textwrap.dedent("""\
+    matcher_code = textwrap.dedent(
+        """\
         def matcher(query):
             return None, None
-    """)
+    """
+    )
     (scripts_dir / "sql_matcher.py").write_text(matcher_code, encoding="utf-8")
 
     provider = _provider(
@@ -326,6 +339,7 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [], "row_count": 0}
 
@@ -337,13 +351,14 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
 
     events = list(provider.search_stream(query="随便查", entity=""))
 
-    assert captured["url"] == "http://nl2sql.test/api/v1/query"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/query"
     assert "模板未命中" in events[1]["content"]
 
 
 # ---------------------------------------------------------------------------
 # HTTP error handling
 # ---------------------------------------------------------------------------
+
 
 def test_template_matcher_returns_error_for_http_failure(tmp_path):
     """SQL execution returns HTTP error → final event contains error message."""
@@ -362,10 +377,14 @@ def test_template_matcher_returns_error_for_http_failure(tmp_path):
         status_code = 500
         text = "server failed"
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             raise ValueError("not json")
 
-    provider._session.post = lambda *a, **kw: _FakeResponse()
+    def post_response(*_args, **_kwargs):
+        return _FakeResponse()
+
+    provider._session.post = post_response
 
     events = list(provider.search_stream(query="查询零件", entity=""))
 
@@ -377,6 +396,7 @@ def test_template_matcher_returns_error_for_http_failure(tmp_path):
 # ---------------------------------------------------------------------------
 # Dedupe post-processing
 # ---------------------------------------------------------------------------
+
 
 def test_dedupe_result_keeps_first_per_key():
     """_dedupe_result keeps only the first row per dedupe_key (SQL must pre-sort)."""
@@ -409,6 +429,7 @@ def test_dedupe_result_empty_data_is_noop():
 # ---------------------------------------------------------------------------
 # Default matcher — simple string template format
 # ---------------------------------------------------------------------------
+
 
 def test_default_matcher_simple_string_format(tmp_path):
     """Built-in matcher: simple string format (key → SQL string)."""
@@ -462,6 +483,7 @@ def test_default_matcher_rich_dict_format(tmp_path):
 # ---------------------------------------------------------------------------
 # Template path resolution (fixed: scripts/query_templates.json)
 # ---------------------------------------------------------------------------
+
 
 def test_default_matcher_resolves_template_path(tmp_path):
     """_DefaultMatcher loads scripts/query_templates.json under workspace_root/ontology_id."""
@@ -538,12 +560,14 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
         encoding="utf-8",
     )
 
-    matcher_code = textwrap.dedent("""\
+    matcher_code = textwrap.dedent(
+        """\
         def matcher(query):
             if "零件" in query:
                 return "SELECT * FROM VersionedPart", {"from_template": "零件模板"}
             return None, None
-    """)
+    """
+    )
     (scripts_dir / "sql_matcher.py").write_text(matcher_code, encoding="utf-8")
 
     provider = _provider(
@@ -557,6 +581,7 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
         status_code = 200
         text = ""
 
+        # pylint: disable-next=add-staticmethod-or-classmethod-decorator
         def json(self):
             return {"success": True, "data": [{"id": 1}], "row_count": 1}
 

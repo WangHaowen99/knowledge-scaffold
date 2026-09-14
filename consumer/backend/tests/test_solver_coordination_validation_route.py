@@ -7,16 +7,15 @@ import threading
 import time
 from types import SimpleNamespace
 
-from fastapi.testclient import TestClient
-import pytest
-
 import api.routes.solver_coordination as solver_routes
+import pytest
 from api.auth.auth import AuthManager
 from api.routes.solver_coordination import (
     solver_coordination_public_router,
     solver_coordination_router,
 )
 from api.testing import TestApplication
+from fastapi.testclient import TestClient
 from solver_coordination import (
     CandidateValidationResult,
     CandidateValidationStatus,
@@ -74,9 +73,7 @@ class _SyntheticValidator:
             knowledge_package_revision=candidate_set.knowledge_package_revision,
             fact_snapshot_digest=context.fact_snapshot_digest,
             rules_revision=context.rules_revision,
-            evidence_ref="validation_evidence_synthetic_{}".format(
-                candidate.candidate_id.lower()
-            ),
+            evidence_ref="validation_evidence_synthetic_{}".format(candidate.candidate_id.lower()),
         )
 
 
@@ -113,15 +110,11 @@ def _client(
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
     app = TestApplication()
-    auth_manager = AuthManager(
-        str(tmp_path / "users.json"), secrets.token_urlsafe(32)
-    )
+    auth_manager = AuthManager(str(tmp_path / "users.json"), secrets.token_urlsafe(32))
     initial_credential = secrets.token_urlsafe(32) + "Aa1!"
     replacement_credential = secrets.token_urlsafe(32) + "Bb2!"
     auth_manager.create_user("synthetic_operator", initial_credential, role="admin")
-    user = auth_manager.change_password(
-        "synthetic_operator", initial_credential, replacement_credential
-    )
+    user = auth_manager.change_password("synthetic_operator", initial_credential, replacement_credential)
     validator = _SyntheticValidator(failed_candidate_id, infeasible_candidate_id)
     app.state.services["AUTH_MANAGER"] = auth_manager
     app.state.services["SOLVER_COORDINATION_VALIDATION_SERVICE"] = ValidationRunService(
@@ -134,10 +127,14 @@ def _client(
     )
     app.include_router(solver_coordination_router)
     app.include_router(solver_coordination_public_router)
-    return TestClient(app), {
-        "Authorization": "Bearer {}".format(auth_manager.issue_token(user)),
-        "Content-Type": "application/json",
-    }, validator
+    return (
+        TestClient(app),
+        {
+            "Authorization": "Bearer {}".format(auth_manager.issue_token(user)),
+            "Content-Type": "application/json",
+        },
+        validator,
+    )
 
 
 def _create_candidate_set(client, headers):
@@ -292,9 +289,7 @@ def test_formal_public_paths_preserve_create_and_replay_contract(tmp_path, monke
     assert "created_at" not in run_body
 
 
-def test_equivalent_solve_runs_keep_independent_content_addresses_and_lineage(
-    tmp_path, monkeypatch
-):
+def test_equivalent_solve_runs_keep_independent_content_addresses_and_lineage(tmp_path, monkeypatch):
     client, headers, validator = _client(tmp_path, monkeypatch)
     first = _create_candidate_set(client, headers)
     second = _create_candidate_set(client, headers)
@@ -313,9 +308,7 @@ def test_equivalent_solve_runs_keep_independent_content_addresses_and_lineage(
     assert validator.calls == 18
 
 
-def test_validation_rejects_a_parent_run_that_is_not_bound_to_the_artifact(
-    tmp_path, monkeypatch
-):
+def test_validation_rejects_a_parent_run_that_is_not_bound_to_the_artifact(tmp_path, monkeypatch):
     client, headers, validator = _client(tmp_path, monkeypatch)
     artifact = _create_candidate_set(client, headers)
     payload = _validation_payload(artifact)
@@ -339,9 +332,7 @@ def test_run_lookup_hides_unknown_or_unauthorized_identity(tmp_path, monkeypatch
     initial_credential = secrets.token_urlsafe(32) + "Cc3!"
     replacement_credential = secrets.token_urlsafe(32) + "Dd4!"
     auth_manager.create_user("synthetic_observer", initial_credential, role="admin")
-    observer = auth_manager.change_password(
-        "synthetic_observer", initial_credential, replacement_credential
-    )
+    observer = auth_manager.change_password("synthetic_observer", initial_credential, replacement_credential)
     observer_headers = {
         "Authorization": "Bearer {}".format(auth_manager.issue_token(observer)),
         "Content-Type": "application/json",
@@ -360,9 +351,7 @@ def test_run_lookup_hides_unknown_or_unauthorized_identity(tmp_path, monkeypatch
     assert unauthorized.json() == unknown.json() == {"code": "run_not_found"}
 
 
-def test_validation_route_returns_all_eighteen_and_publishes_only_complete_results(
-    tmp_path, monkeypatch
-):
+def test_validation_route_returns_all_eighteen_and_publishes_only_complete_results(tmp_path, monkeypatch):
     client, headers, validator = _client(tmp_path, monkeypatch)
     candidate_artifact = _create_candidate_set(client, headers)
 
@@ -381,21 +370,15 @@ def test_validation_route_returns_all_eighteen_and_publishes_only_complete_resul
     assert body["selection_status"] == "published"
     assert body["published_candidate_ids"] == body["feasible_candidate_ids"]
     assert validator.calls == 18
-    run = SolverRunLedger("demo").get_run(
-        body["validation_run_id"], owner_id="synthetic_operator"
-    )
+    run = SolverRunLedger("demo").get_run(body["validation_run_id"], owner_id="synthetic_operator")
     assert run is not None
     assert run["run_type"] == "validation"
     assert run["parent_run_id"] == candidate_artifact["source_run_id"]
     assert run["status"] == "completed"
 
 
-def test_mixed_feasible_and_infeasible_results_remain_publishable_at_route_boundary(
-    tmp_path, monkeypatch
-):
-    client, headers, validator = _client(
-        tmp_path, monkeypatch, infeasible_candidate_id="ALL_1"
-    )
+def test_mixed_feasible_and_infeasible_results_remain_publishable_at_route_boundary(tmp_path, monkeypatch):
+    client, headers, validator = _client(tmp_path, monkeypatch, infeasible_candidate_id="ALL_1")
     candidate_artifact = _create_candidate_set(client, headers)
 
     response = client.post(
@@ -413,12 +396,8 @@ def test_mixed_feasible_and_infeasible_results_remain_publishable_at_route_bound
     assert validator.calls == 18
 
 
-def test_one_candidate_failure_keeps_eighteen_results_and_blocks_publish(
-    tmp_path, monkeypatch
-):
-    client, headers, validator = _client(
-        tmp_path, monkeypatch, failed_candidate_id="OPTION_0_TO_OPTION_1_K0003"
-    )
+def test_one_candidate_failure_keeps_eighteen_results_and_blocks_publish(tmp_path, monkeypatch):
+    client, headers, validator = _client(tmp_path, monkeypatch, failed_candidate_id="OPTION_0_TO_OPTION_1_K0003")
     candidate_artifact = _create_candidate_set(client, headers)
 
     response = client.post(
@@ -456,19 +435,11 @@ def test_validation_route_rejects_digest_mismatch_without_running_validator(tmp_
     assert validator.calls == 0
 
 
-def test_validation_route_distinguishes_tampered_artifact_from_missing_reference(
-    tmp_path, monkeypatch
-):
+def test_validation_route_distinguishes_tampered_artifact_from_missing_reference(tmp_path, monkeypatch):
     client, headers, validator = _client(tmp_path, monkeypatch)
     artifact = _create_candidate_set(client, headers)
     artifact_path = (
-        tmp_path
-        / ".onto-runtime"
-        / "workspaces"
-        / "demo"
-        / "runtime"
-        / "solver_coordination"
-        / "candidate_sets"
+        tmp_path / ".onto-runtime" / "workspaces" / "demo" / "runtime" / "solver_coordination" / "candidate_sets"
     )
     files = list(artifact_path.rglob(artifact["candidate_set_ref"] + ".json"))
     assert len(files) == 1
@@ -487,9 +458,7 @@ def test_validation_route_distinguishes_tampered_artifact_from_missing_reference
     assert validator.calls == 0
 
 
-def test_validation_route_accepts_parent_run_and_candidate_digest_contract(
-    tmp_path, monkeypatch
-):
+def test_validation_route_accepts_parent_run_and_candidate_digest_contract(tmp_path, monkeypatch):
     client, headers, validator = _client(tmp_path, monkeypatch)
     artifact = _create_candidate_set(client, headers)
     payload = {
@@ -511,9 +480,7 @@ def test_validation_route_accepts_parent_run_and_candidate_digest_contract(
     assert validator.calls == 18
 
 
-def test_validation_route_rejects_unknown_candidate_digest_as_conflict(
-    tmp_path, monkeypatch
-):
+def test_validation_route_rejects_unknown_candidate_digest_as_conflict(tmp_path, monkeypatch):
     client, headers, validator = _client(tmp_path, monkeypatch)
     artifact = _create_candidate_set(client, headers)
     payload = _validation_payload(artifact)
@@ -530,13 +497,9 @@ def test_validation_route_rejects_unknown_candidate_digest_as_conflict(
     assert validator.calls == 0
 
 
-def test_validation_route_returns_same_404_for_missing_and_path_like_refs(
-    tmp_path, monkeypatch
-):
+def test_validation_route_returns_same_404_for_missing_and_path_like_refs(tmp_path, monkeypatch):
     client, headers, _validator = _client(tmp_path, monkeypatch)
-    for index, candidate_set_ref in enumerate(
-        ("candidate_set_" + "a" * 64, "candidate_set_../synthetic")
-    ):
+    for index, candidate_set_ref in enumerate(("candidate_set_" + "a" * 64, "candidate_set_../synthetic")):
         response = client.post(
             "/api/solver/validations",
             json={
@@ -682,9 +645,7 @@ def test_validation_route_rejects_revision_not_bound_to_server_service(tmp_path,
     assert response.json()["code"] == "validation_input_invalid"
 
 
-def test_validation_route_serializes_same_idempotency_key_before_running_validator(
-    tmp_path, monkeypatch
-):
+def test_validation_route_serializes_same_idempotency_key_before_running_validator(tmp_path, monkeypatch):
     client, headers, validator = _client(tmp_path, monkeypatch)
     candidate_artifact = _create_candidate_set(client, headers)
     payload = _validation_payload(candidate_artifact)

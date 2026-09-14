@@ -580,7 +580,10 @@ def _create_solver_run_through_coordination_service(
     """Adapt the retired manual endpoint to the same Agent Tool service path."""
 
     from agent.tools.solver import build_solver_tool_specs
-    from ontology.ontology_catalog import build_root_payload, get_ontology_manifest
+    from ontology.ontology_catalog import get_ontology_manifest
+    from solver_coordination.capability_catalog import (
+        SolverContractResolver,
+    )
 
     if not isinstance(payload, dict):
         return _response(error_payload("invalid_solver_input"), 400)
@@ -610,12 +613,23 @@ def _create_solver_run_through_coordination_service(
     )
     if error or ontology is None or ontology.version != package_revision:
         return _response(error_payload("solver_unavailable"), 503)
-    root_payload = build_root_payload(
-        ontology=ontology,
-        ontology_dir=Path(ontology.ontology_dir).resolve(),
-    )
-    capabilities = root_payload.get("solver_catalog")
-    if not isinstance(capabilities, list):
+    manifest_path = Path(ontology.manifest_path).resolve()
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        return _response(error_payload("solver_unavailable"), 503)
+    try:
+        import yaml
+
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, yaml.YAMLError):
+        manifest = {}
+    if not isinstance(manifest, Mapping):
+        return _response(error_payload("solver_unavailable"), 503)
+    capabilities = SolverContractResolver(
+        Path(ontology.ontology_dir).resolve(),
+        manifest,
+        package_revision=package_revision,
+    ).load_public()
+    if not capabilities:
         return _response(error_payload("solver_unavailable"), 503)
     specs = list(build_solver_tool_specs(capabilities))
     if requested_operation:

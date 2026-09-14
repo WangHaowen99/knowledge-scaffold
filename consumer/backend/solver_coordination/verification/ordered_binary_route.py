@@ -8,23 +8,22 @@ the verifier must still recalculate the answer from the frozen contracts.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal, DecimalException, ROUND_HALF_EVEN, localcontext
-import re
+from decimal import ROUND_HALF_EVEN, Decimal, DecimalException, localcontext
 from typing import Any
 
 from ..canonical import sha256_digest
 from ..contracts import (
-    FactSnapshot,
     MAX_PLAN_ITEMS,
+    FactSnapshot,
     NormalizedInput,
     ProblemIR,
     SolverResult,
     VerificationResult,
 )
 from ..errors import VerificationDivergenceError, VerificationRuntimeFailure
-
 
 _PROFILE_ID = "ordered_binary_route.v1"
 _FAMILY = "candidate_selection.v1"
@@ -44,10 +43,7 @@ _MAX_DECIMAL_DIGITS = 28
 _MIN_DECIMAL_EXPONENT = -12
 _MAX_DECIMAL_EXPONENT = 18
 _MAX_TEXT_LENGTH = 256
-_DECIMAL_RE = re.compile(
-    r"^[+-]?(?:(?:[0-9]+)(?:\.[0-9]*)?|\.[0-9]+)"
-    r"(?:[eE][+-]?[0-9]+)?$"
-)
+_DECIMAL_RE = re.compile(r"^[+-]?(?:(?:[0-9]+)(?:\.[0-9]*)?|\.[0-9]+)" r"(?:[eE][+-]?[0-9]+)?$")
 
 
 class _MalformedVerification(Exception):
@@ -101,25 +97,17 @@ class OrderedBinaryRouteIndependentVerifier:
             facts = self._parse_facts(normalized_input, fact_snapshot)
             candidates = self._evaluate_all(facts)
             self._validate_candidate_contract(problem, facts, candidates)
-            service_candidate_digest = self._validate_domain_certificate(
-                problem, solver_result
-            )
+            service_candidate_digest = self._validate_domain_certificate(problem, solver_result)
             limit = self._verification_limit(problem)
             if len(candidates) > limit:
-                raise VerificationRuntimeFailure(
-                    "verification candidate count exceeds the locked limit"
-                )
+                raise VerificationRuntimeFailure("verification candidate count exceeds the locked limit")
 
             eligible = tuple(candidate for candidate in candidates if candidate.eligible)
             if not eligible:
                 if solver_result.status != "infeasible":
-                    raise VerificationDivergenceError(
-                        "solver result does not claim infeasibility"
-                    )
+                    raise VerificationDivergenceError("solver result does not claim infeasibility")
                 if solver_result.assignment or solver_result.objective_values:
-                    raise VerificationDivergenceError(
-                        "infeasible solver result contains an assignment"
-                    )
+                    raise VerificationDivergenceError("infeasible solver result contains an assignment")
                 return self._verification_result(
                     problem=problem,
                     fact_snapshot=fact_snapshot,
@@ -130,9 +118,7 @@ class OrderedBinaryRouteIndependentVerifier:
                 )
 
             if solver_result.status not in {"optimal", "feasible"}:
-                raise VerificationDivergenceError(
-                    "solver result status is unsupported for a feasible family"
-                )
+                raise VerificationDivergenceError("solver result status is unsupported for a feasible family")
             selected = min(eligible, key=self._objective_key)
             self._compare_solver_result(solver_result, selected, facts.items)
             return self._verification_result(
@@ -151,9 +137,7 @@ class OrderedBinaryRouteIndependentVerifier:
                 raise
             if isinstance(exc, _MalformedVerification):
                 raise VerificationDivergenceError(str(exc)) from exc
-            raise VerificationDivergenceError(
-                "independent ordered route verification diverged"
-            ) from exc
+            raise VerificationDivergenceError("independent ordered route verification diverged") from exc
 
     @staticmethod
     def _validate_profile(capability: Any) -> None:
@@ -173,11 +157,11 @@ class OrderedBinaryRouteIndependentVerifier:
             # fail-closed rather than silently selecting another profile.
             raise _MalformedVerification("problem family is unsupported")
         objectives = model.get("objectives")
-        if not isinstance(objectives, (list, tuple)) or tuple(
-            (item.get("metric"), item.get("sense"))
-            for item in objectives
-            if isinstance(item, Mapping)
-        ) != _OBJECTIVES:
+        if (
+            not isinstance(objectives, (list, tuple))
+            or tuple((item.get("metric"), item.get("sense")) for item in objectives if isinstance(item, Mapping))
+            != _OBJECTIVES
+        ):
             raise _MalformedVerification("locked objective order is invalid")
 
     @classmethod
@@ -266,18 +250,14 @@ class OrderedBinaryRouteIndependentVerifier:
             raw_candidates = raw.get("candidates")
             assignments = cls._candidate_assignments(len(item_ids))
             expected_ids = tuple(candidate_id for candidate_id, _ in assignments)
-            if (
-                not isinstance(raw_candidates, Mapping)
-                or set(raw_candidates) != set(expected_ids)
-            ):
+            if not isinstance(raw_candidates, Mapping) or set(raw_candidates) != set(expected_ids):
                 raise _MalformedVerification("route candidate facts do not match input")
             candidate_metrics: dict[str, Mapping[str, Any]] = {}
             for candidate_id in expected_ids:
                 values = raw_candidates[candidate_id]
                 if (
                     not isinstance(values, Mapping)
-                    or set(values)
-                    != {"eligible", "primary_score", "safety_margin"}
+                    or set(values) != {"eligible", "primary_score", "safety_margin"}
                     or not isinstance(values.get("eligible"), bool)
                 ):
                     raise _MalformedVerification("route candidate metrics are malformed")
@@ -354,9 +334,7 @@ class OrderedBinaryRouteIndependentVerifier:
 
         evaluations: list[_Evaluation] = []
         for rank, (candidate_id, assignment) in enumerate(assignments):
-            transitions = sum(
-                left != right for left, right in zip(assignment, assignment[1:])
-            )
+            transitions = sum(left != right for left, right in zip(assignment, assignment[1:]))
             if facts.candidate_metrics is not None:
                 values = facts.candidate_metrics[candidate_id]
                 evaluations.append(
@@ -437,10 +415,7 @@ class OrderedBinaryRouteIndependentVerifier:
                 raise _MalformedVerification("candidate assignment keys diverged")
             if tuple(raw_assignment.values()) != evaluation.assignment:
                 raise _MalformedVerification("candidate assignment diverged")
-            expected_assignment = {
-                item_id: option
-                for item_id, option in zip(facts.items, evaluation.assignment)
-            }
+            expected_assignment = {item_id: option for item_id, option in zip(facts.items, evaluation.assignment)}
             expected = {
                 "candidate_id": evaluation.candidate_id,
                 "eligible": evaluation.eligible,
@@ -478,10 +453,7 @@ class OrderedBinaryRouteIndependentVerifier:
         item_ids: tuple[str, ...],
     ) -> None:
         assignment = dict(result.assignment)
-        expected_assignment = {
-            item_id: option
-            for item_id, option in zip(item_ids, selected.assignment)
-        }
+        expected_assignment = {item_id: option for item_id, option in zip(item_ids, selected.assignment)}
         item_keys = tuple(key for key in assignment if key != "candidate_id")
         if item_keys != item_ids:
             raise VerificationDivergenceError("selected assignment keys diverged")
@@ -489,16 +461,12 @@ class OrderedBinaryRouteIndependentVerifier:
             raise VerificationDivergenceError("selected candidate diverged")
         if {item_id: assignment[item_id] for item_id in item_ids} != expected_assignment:
             raise VerificationDivergenceError("selected assignment diverged")
-        expected_objectives = {
-            name: selected.metrics[name] for name, _sense in _OBJECTIVES
-        }
+        expected_objectives = {name: selected.metrics[name] for name, _sense in _OBJECTIVES}
         if dict(result.objective_values) != expected_objectives:
             raise VerificationDivergenceError("objective values diverged")
 
     @staticmethod
-    def _validate_domain_certificate(
-        problem: ProblemIR, result: SolverResult
-    ) -> str | None:
+    def _validate_domain_certificate(problem: ProblemIR, result: SolverResult) -> str | None:
         if "domain_evaluation" not in problem.parameters:
             return None
         assurances: list[Mapping[str, Any]] = []
@@ -509,21 +477,15 @@ class OrderedBinaryRouteIndependentVerifier:
                 continue
             assurances.append(diagnostic)
         if len(assurances) != 1:
-            raise VerificationDivergenceError(
-                "domain candidate evaluation certificate is missing"
-            )
+            raise VerificationDivergenceError("domain candidate evaluation certificate is missing")
         certificate = assurances[0].get("certificate")
         selection = problem.parameters.get("candidate_selection")
         if not isinstance(certificate, Mapping) or not isinstance(selection, Mapping):
-            raise VerificationDivergenceError(
-                "domain candidate evaluation certificate is invalid"
-            )
+            raise VerificationDivergenceError("domain candidate evaluation certificate is invalid")
         expected_count = selection.get("candidate_count")
         raw_candidates = selection.get("candidates")
         if not isinstance(raw_candidates, (list, tuple)):
-            raise VerificationDivergenceError(
-                "domain candidate evaluation certificate is invalid"
-            )
+            raise VerificationDivergenceError("domain candidate evaluation certificate is invalid")
         service_projection: list[dict[str, Any]] = []
         for candidate in raw_candidates:
             metrics: dict[str, Any] = {}
@@ -539,21 +501,13 @@ class OrderedBinaryRouteIndependentVerifier:
             )
         expected_digest = sha256_digest(service_projection)
         if certificate.get("schema_version") != "refinery_route_evaluation.v1":
-            raise VerificationDivergenceError(
-                "domain candidate evaluation certificate diverged"
-            )
+            raise VerificationDivergenceError("domain candidate evaluation certificate diverged")
         if certificate.get("evaluation_source") != "refinery_route.v1":
-            raise VerificationDivergenceError(
-                "domain candidate evaluation certificate diverged"
-            )
+            raise VerificationDivergenceError("domain candidate evaluation certificate diverged")
         if certificate.get("candidate_count") != expected_count:
-            raise VerificationDivergenceError(
-                "domain candidate evaluation certificate diverged"
-            )
+            raise VerificationDivergenceError("domain candidate evaluation certificate diverged")
         if certificate.get("candidate_digest") != expected_digest:
-            raise VerificationDivergenceError(
-                "domain candidate evaluation certificate diverged"
-            )
+            raise VerificationDivergenceError("domain candidate evaluation certificate diverged")
         return str(expected_digest)
 
     @staticmethod
@@ -570,9 +524,7 @@ class OrderedBinaryRouteIndependentVerifier:
             "kind": "verifier_exhaustive_check",
             "candidate_count": len(candidates),
             "eligible_count": len(eligible),
-            "candidate_digest": problem.parameters["candidate_selection"][
-                "candidate_evaluation_digest"
-            ],
+            "candidate_digest": problem.parameters["candidate_selection"]["candidate_evaluation_digest"],
             "facts_digest": fact_snapshot.digest,
         }
         if service_candidate_digest is not None:
@@ -599,7 +551,9 @@ class OrderedBinaryRouteIndependentVerifier:
             raise _MalformedVerification(f"{field_name} is not decimal")
         if isinstance(value, Decimal):
             decimal_value = value
-        elif isinstance(value, (str, int)) and len(str(value)) <= _MAX_TEXT_LENGTH and _DECIMAL_RE.fullmatch(str(value)):
+        elif (
+            isinstance(value, (str, int)) and len(str(value)) <= _MAX_TEXT_LENGTH and _DECIMAL_RE.fullmatch(str(value))
+        ):
             try:
                 decimal_value = Decimal(str(value))
             except (DecimalException, ValueError) as exc:
@@ -610,20 +564,12 @@ class OrderedBinaryRouteIndependentVerifier:
             raise _MalformedVerification(f"{field_name} is not finite")
         sign, digits, exponent = decimal_value.as_tuple()
         del sign
-        if (
-            len(digits) > _MAX_DECIMAL_DIGITS
-            or exponent < _MIN_DECIMAL_EXPONENT
-            or exponent > _MAX_DECIMAL_EXPONENT
-        ):
+        if len(digits) > _MAX_DECIMAL_DIGITS or exponent < _MIN_DECIMAL_EXPONENT or exponent > _MAX_DECIMAL_EXPONENT:
             raise _MalformedVerification(f"{field_name} exceeds decimal bounds")
         try:
             with localcontext() as context:
                 context.prec = max(64, len(digits) + len(str(scale)) + 24)
-                value_int = int(
-                    (decimal_value * Decimal(scale)).quantize(
-                        Decimal("1"), rounding=ROUND_HALF_EVEN
-                    )
-                )
+                value_int = int((decimal_value * Decimal(scale)).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN))
         except (DecimalException, OverflowError, ValueError) as exc:
             raise _MalformedVerification(f"{field_name} exceeds int64") from exc
         if not _INT64_MIN <= value_int <= _INT64_MAX:
