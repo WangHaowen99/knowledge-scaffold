@@ -44,12 +44,32 @@ class Settings:
     # 目标和流程需要生成完整的结构化候选，不能复用短摘要预算。
     goal_output_tokens: int = 8_192
     summary_output_tokens: int = 1_024
+    # 思维链与正文、工具参数共用同一个 max_tokens。上面按角色/阶段设定的预算
+    # 只够正文和工具参数，推理会吃掉多少事先无法预估；不额外留余量时模型会把
+    # 预算全用在推理上，正文和工具调用一个字都吐不出来。该余量只在思维链开启
+    # 时生效，并始终受 llm_max_tokens 约束。
+    reasoning_headroom_tokens: int = 16_384
     context_max_messages: int = 64
     context_window_messages: int = 48
     context_window_rounds: int = 10
     # requiredText 语义守卫支持分阶段上线：off 仅保留兼容行为，observe
     # 记录约束但不阻断，enforce 在模型未确认约束时重新提示并生成可操作卡片。
     required_text_guard_mode: str = "enforce"
+
+    def resolved_output_budget(self, output_tokens: int | None) -> int:
+        """把按角色/阶段设定的输出预算换算成实际请求的 max_tokens。
+
+        思维链模型的推理内容与正文、工具参数共用同一个 max_tokens。阶段预算是
+        给正文和工具参数留的，推理会吃掉多少事先无法预估：不留余量时模型会把
+        预算全部用在推理上，正文和工具调用一个 token 都吐不出来。这种截断在
+        上游表现为 reasoning_tokens 等于 output_tokens 且正文为空，需要运行侧的
+        截断守卫兜底，这里先把发生概率压下去。余量只在思维链开启时追加，并且
+        始终受部署级上限 llm_max_tokens 约束。
+        """
+        budget = min(self.llm_max_tokens, output_tokens or self.llm_max_tokens)
+        if self.llm_thinking_mode != "enabled":
+            return budget
+        return min(self.llm_max_tokens, budget + self.reasoning_headroom_tokens)
 
     @property
     def runtime_db(self) -> Path:
@@ -91,6 +111,9 @@ class Settings:
             script_output_tokens=_integer("MODELING_SCRIPT_OUTPUT_TOKENS", 8_192, 2_048, 32_768),
             goal_output_tokens=_integer("MODELING_GOAL_OUTPUT_TOKENS", 8_192, 2_048, 16_384),
             summary_output_tokens=_integer("MODELING_SUMMARY_OUTPUT_TOKENS", 1_024, 512, 4_096),
+            reasoning_headroom_tokens=_integer(
+                "MODELING_REASONING_HEADROOM_TOKENS", 16_384, 0, 65_536,
+            ),
             context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 200),
             context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 160),
             context_window_rounds=_integer("MODELING_CONTEXT_WINDOW_ROUNDS", 10, 4, 30),
