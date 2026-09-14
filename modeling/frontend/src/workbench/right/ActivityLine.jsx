@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { store, actions } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
+import { elapsedText } from '../lib/mock/stream.js';
 import Icon from '../ui/Icon.jsx';
 import { userFacingText } from '../lib/userFacingText.js';
 
@@ -60,18 +61,22 @@ export function visibleRunActivity({ activity, run, interaction, streaming, trac
   const traceActivity = traceRunActivity(trace, run, executionStart);
   if (traceActivity) return traceActivity;
   if (currentActivity) return currentActivity;
+  let fallbackText = '助手正在处理当前步骤';
+  let fallbackDetail = '正在等待下一项进度，你可以继续输入或停止任务';
+  if (status === 'stopping') {
+    fallbackText = '正在停止任务';
+    fallbackDetail = '正在核对在途修改，确认不会继续写入后才算停止';
+  } else if (status === 'queued') {
+    fallbackText = '任务已提交，等待开始';
+    fallbackDetail = '任务会在服务端开始，你可以继续输入或离开页面';
+  } else if (streaming) {
+    fallbackText = '助手正在生成回复';
+    fallbackDetail = '内容正在实时输出，你可以随时插话';
+  }
   return {
     id: `run:${run?.id || 'active'}`,
-    text: status === 'stopping'
-      ? '正在停止任务'
-      : status === 'queued'
-      ? '任务已提交，等待开始'
-      : streaming ? '助手正在生成回复' : '助手正在处理当前步骤',
-    detail: status === 'stopping'
-      ? '正在核对在途修改，确认不会继续写入后才算停止'
-      : status === 'queued'
-      ? '任务会在服务端开始，你可以继续输入或离开页面'
-      : streaming ? '内容正在实时输出，你可以随时插话' : '正在等待下一项进度，你可以继续输入',
+    text: fallbackText,
+    detail: fallbackDetail,
     progress: {},
     sub: [],
     startedAt: executionStart,
@@ -79,7 +84,7 @@ export function visibleRunActivity({ activity, run, interaction, streaming, trac
 }
 
 /* 三级递进的第一级。不进历史，任务结束后折叠成一条正常消息。
-   展示当前动作和真实进度，不显示累计运行时长。 */
+   两条硬要求：说人话（用 display 文案，不显示工具名）、带耗时。 */
 export default function ActivityLine() {
   const activity = useStore(store, selAct);
   const open = useStore(store, selOpen);
@@ -90,6 +95,15 @@ export default function ActivityLine() {
   const act = useMemo(() => visibleRunActivity({ activity, run, interaction, streaming, trace }), [
     activity, interaction, run, streaming, trace,
   ]);
+  const [, tick] = useState(0);
+
+  // 只在有活动时起秒表，空闲时不跑定时器
+  useEffect(() => {
+    if (!act) return undefined;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [act]);
+
   if (!act) return null;
   const progress = Array.isArray(act.progress)
     ? { current: act.progress[0], total: act.progress[1] }
@@ -98,10 +112,19 @@ export default function ActivityLine() {
   const total = Number(progress.total) || 0;
   const rawPercent = Number(progress.percent);
   const percent = Number.isFinite(rawPercent) ? Math.max(0, Math.min(100, rawPercent)) : undefined;
-  const detail = act.detail || '正在等待下一项进度，你可以继续输入或停止任务';
-  const progressText = total > 0
-    ? `${current}/${total} ${progress.unit || '项'}`
-    : percent !== undefined ? `${Math.round(percent)}%` : '';
+  const reportedElapsed = Number(progress.elapsedSeconds);
+  const hasReportedElapsed = progress.elapsedSeconds !== undefined && progress.elapsedSeconds !== null
+    && Number.isFinite(reportedElapsed) && reportedElapsed >= 0;
+  const startedAt = Number(act.startedAt);
+  const hasStartedAt = Number.isFinite(startedAt) && startedAt > 0 && startedAt <= Date.now();
+  const elapsedSeconds = hasReportedElapsed || hasStartedAt
+    ? Math.max(
+      hasReportedElapsed ? reportedElapsed : 0,
+      hasStartedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0,
+    )
+    : null;
+  const detail = act.detail || ((() => { if ((elapsedSeconds ?? 0) >= 120) return '这一步等待时间较长，你可以继续输入或停止任务'; return (elapsedSeconds ?? 0) >= 30 ? '仍在等待下一项进度，你可以继续输入或离开页面' : '正在处理当前步骤'; })());
+  const progressText = (() => { if (total > 0) return `${current}/${total} ${progress.unit || '项'}`; return percent !== undefined ? `${Math.round(percent)}%` : ''; })();
   const sub = Array.isArray(act.sub) ? act.sub : [];
   const activityText = userFacingText(act.text);
   const runStatus = String(run?.status || '');
@@ -115,6 +138,7 @@ export default function ActivityLine() {
         <span className="tx">
           {activityText}
         </span>
+        {elapsedSeconds !== null && <span className="el">{elapsedText(Date.now() - elapsedSeconds * 1000, Date.now())}</span>}
         <Icon name={open ? 'chevronUp' : 'chevron'} size={13} style={{ color: 'var(--c-muted)' }} />
       </button>
       <div className="wb-act-status">

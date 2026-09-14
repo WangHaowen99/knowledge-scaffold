@@ -74,11 +74,9 @@ export function evaluationProgress(round, history = [], now = Date.now()) {
   const phaseElapsed = Math.max(0, (now - phaseStartedAt) / 1000);
   const phase = round.phase || (round.status === 'running' ? 'workspace' : round.status);
   const setupIndex = SETUP_PHASES.indexOf(phase);
-  const completedUnits = phase === 'done'
-    ? totalUnits
-    : phase === 'cases'
+  const completedUnits = (() => { if (phase === 'done') return totalUnits; return phase === 'cases'
       ? SETUP_PHASES.length + doneCases
-      : Math.max(0, setupIndex);
+      : Math.max(0, setupIndex); })();
   const percent = totalUnits ? Math.round((completedUnits / totalUnits) * 100) : 100;
 
   if (phase === 'done') {

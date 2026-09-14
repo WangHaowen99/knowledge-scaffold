@@ -36,6 +36,18 @@ const selCompletedPackageUploads = (state) => (state.messages || []).flatMap((me
 )).filter((file) => file.kind === 'package' && ['parsed', 'failed'].includes(file.status))
   .map((file) => `${file.id}:${file.status}`).join('|');
 
+function fusionDisposition(entry) {
+  if (entry.fusedKey) return <code className="k">{entry.fusedKey}</code>;
+  if (entry.decision === 'canonicalize') {
+    return <span>归并到 <code className="k">{entry.targetKey}</code></span>;
+  }
+  if (['exclude', 'exclude_scope'].includes(entry.decision)) {
+    return <span className="muted">不生成此项</span>;
+  }
+  if (entry.decision === 'preserve') return <span className="muted">编译时确定名称</span>;
+  return <span className="muted">待确定</span>;
+}
+
 export default function FusionView() {
   const projectId = useStore(store, selProjectId);
   const project = useStore(store, selProject);
@@ -319,9 +331,8 @@ export function FusionBuilder({ sources, selected, setSelected, sourceScopes, se
 
       {error && <InlineError message={error} />}
       <div className="fusion-actions">
-        <span>{!baselineReady ? '正在读取当前知识包，请稍候'
-          : selected.length < 2 ? '再选择至少一份来源包'
-            : scopeProblems.length ? '先处理上方依赖缺口' : '下一步会列出每个元素的去向，不会直接修改当前知识包'}</span>
+        <span>{(() => { if (!baselineReady) return '正在读取当前知识包，请稍候'; return selected.length < 2 ? '再选择至少一份来源包'
+            : (() => { if (scopeProblems.length) return '先处理上方依赖缺口'; return '下一步会列出每个元素的去向，不会直接修改当前知识包'; })(); })()}</span>
         <button className="btn btn-p" disabled={!baselineReady || selected.length < 2 || !scopesReady || scopeProblems.length > 0 || !output.name.trim() || !output.description.trim() || Boolean(busy)} onClick={onCreate}>
           {busy === 'create' ? '正在建立…' : '建立融合方案'}
         </button>
@@ -439,11 +450,7 @@ export function FusionPlan({ plan, plans, sources, busy, error, failedQuality, o
                     <td>{sourceLabel(sourceMap.get(entry.sourceId))}</td>
                     <td><span className="pill pill-plain">{meta.label}</span></td>
                     <td><code className="k">{entry.sourceKey}</code></td>
-                    <td>{entry.fusedKey ? <code className="k">{entry.fusedKey}</code>
-                      : entry.decision === 'canonicalize' ? <span>归并到 <code className="k">{entry.targetKey}</code></span>
-                        : ['exclude', 'exclude_scope'].includes(entry.decision) ? <span className="muted">不生成此项</span>
-                          : entry.decision === 'preserve' ? <span className="muted">编译时确定名称</span>
-                            : <span className="muted">待确定</span>}</td>
+                    <td>{fusionDisposition(entry)}</td>
                     <td><DecisionControl
                       entry={entry}
                       entries={entries}
@@ -467,8 +474,8 @@ export function FusionPlan({ plan, plans, sources, busy, error, failedQuality, o
         <div className="fusion-gates">
           {rows.map((row) => (
             <div className="fusion-gate" key={row.id}>
-              <span className={`fusion-gate-icon ${row.passed === null ? 'pending' : row.passed ? 'pass' : 'fail'}`} aria-hidden="true">
-                {row.passed === null ? '·' : row.passed ? '✓' : '×'}
+              <span className={`fusion-gate-icon ${(() => { if (row.passed === null) return 'pending'; return row.passed ? 'pass' : 'fail'; })()}`} aria-hidden="true">
+                {(() => { if (row.passed === null) return '·'; return row.passed ? '✓' : '×'; })()}
               </span>
               <span><b>{row.label}</b><small>{row.detail}</small></span>
             </div>
@@ -478,18 +485,16 @@ export function FusionPlan({ plan, plans, sources, busy, error, failedQuality, o
 
       {error && <InlineError message={error} onRetry={onRetry} />}
       <div className="fusion-actions">
-        <span>{plan?.status === 'candidate'
-          ? '候选已经生成；确认前当前知识包保持不变'
-          : unresolved.length ? `还需确定 ${unresolved.length} 个元素的去向` : '将从只读来源重新编译并执行全部质量检查'}</span>
-        {plan?.status === 'candidate' ? (
+        <span>{(() => { if (plan?.status === 'candidate') return '候选已经生成；确认前当前知识包保持不变'; return unresolved.length ? `还需确定 ${unresolved.length} 个元素的去向` : '将从只读来源重新编译并执行全部质量检查'; })()}</span>
+        {(() => { if (plan?.status === 'candidate') return (
           <button className="btn" onClick={() => void actions.refreshSnapshot()}>刷新整体变更</button>
-        ) : plan?.status === 'failed' ? (
+        ); return plan?.status === 'failed' ? (
           <button className="btn" onClick={onNew}>调整后重新建立</button>
         ) : (
           <button className="btn btn-p" disabled={Boolean(busy) || unresolved.length > 0 || plan?.status !== 'ready'} onClick={onCompile}>
-            {busy === 'compile' ? '正在检查…' : '生成融合候选'}
+            {(() => { if (busy === 'compile') return '正在检查…'; return '生成融合候选'; })()}
           </button>
-        )}
+        ); })()}
       </div>
     </div>
   );

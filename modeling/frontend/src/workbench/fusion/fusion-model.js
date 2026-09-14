@@ -43,9 +43,7 @@ export function planStage(plan) {
 }
 
 export function ledgerEntries(plan) {
-  const raw = Array.isArray(plan?.ledger)
-    ? plan.ledger
-    : Array.isArray(plan?.ledger?.resources) ? plan.ledger.resources : [];
+  const raw = (() => { if (Array.isArray(plan?.ledger)) return plan.ledger; return Array.isArray(plan?.ledger?.resources) ? plan.ledger.resources : []; })();
   return raw.map((entry) => ({
     sourceId: entry.sourceRecordId || entry.sourceId,
     kind: entry.kind,
@@ -71,11 +69,11 @@ export function dispositionFor(entry, action = 'preserve', details = {}) {
     kind: entry.kind,
     key: entry.sourceKey,
     action,
-    ...(action === 'canonicalize' ? {
+    ...((() => { if (action === 'canonicalize') return {
       targetSourceId: details.targetSourceId,
       targetKey: details.targetKey,
       reason: details.reason,
-    } : action === 'exclude' ? { reason: details.reason } : {}),
+    }; return action === 'exclude' ? { reason: details.reason } : {}; })()),
   };
 }
 
@@ -129,7 +127,7 @@ export function qualityRows(plan, failedQuality = null) {
       id: 'destinations',
       label: '每个来源元素都有明确去向',
       passed: plan ? unresolved === 0 : null,
-      detail: plan ? (unresolved ? `仍有 ${unresolved} 项待确定` : '逐元素去向账本完整') : '建立方案后检查',
+      detail: (() => { if (plan) return ((() => { if (unresolved) return `仍有 ${unresolved} 项待确定`; return '逐元素去向账本完整'; })()); return '建立方案后检查'; })(),
     },
     {
       id: 'compile-checks',

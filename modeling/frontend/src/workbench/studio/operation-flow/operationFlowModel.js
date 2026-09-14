@@ -135,8 +135,8 @@ function diagramPositions(diagram, direction) {
 
 function nodeDimensions(node) {
   const label = String(node.label || '未命名节点');
-  const width = labelUnits(label) > 30 ? 224 : labelUnits(label) > 18 ? 196
-    : node.kind === 'decision' ? 176 : DEFAULT_NODE_WIDTH;
+  const width = (() => { if (labelUnits(label) > 30) return 224; return labelUnits(label) > 18 ? 196
+    : (() => { if (node.kind === 'decision') return 176; return DEFAULT_NODE_WIDTH; })(); })();
   const unitsPerLine = Math.max(8, Math.floor((width - NODE_HORIZONTAL_PADDING) / 12));
   const lines = label.split(/\r?\n/u).reduce((total, line) => (
     total + Math.max(1, Math.ceil(labelUnits(line) / unitsPerLine))
@@ -172,7 +172,7 @@ function savedPositionsAreUsable(nodes, positions) {
 
 function labelUnits(value) {
   return [...String(value || '')].reduce((total, character) => (
-    total + (/\s/u.test(character) ? 0.35 : /[\u0000-\u00ff]/u.test(character) ? 0.58 : 1)
+    total + ((() => { if (/\s/u.test(character)) return 0.35; return /[\u0000-\u00ff]/u.test(character) ? 0.58 : 1; })())
   ), 0);
 }
 

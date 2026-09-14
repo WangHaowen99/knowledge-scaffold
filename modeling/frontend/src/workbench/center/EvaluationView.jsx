@@ -16,7 +16,6 @@ import {
 
 const TABS = [
   ['setup', '准备'], ['cases', '真实用例'], ['runs', '运行结果'],
-  ['diagnose', '失败诊断'], ['optimize', '优化建议'],
 ];
 /* 诊断与优化两个 tab 始终可点：它们的前置是「选中一个已结束的轮次」，
    而这个前置由下方空态引导用户去运行结果页完成。若按 terminalRound 禁用，
@@ -115,7 +114,7 @@ export default function EvaluationView({ focus }) {
         setFollowup((old) => ({
           roundId,
           diagnoses: diagnosisData.diagnoses || [],
-          suggestions: suggestionData ? (suggestionData.suggestions || []) : (old.roundId === roundId ? old.suggestions : []),
+          suggestions: (() => { if (suggestionData) return (suggestionData.suggestions || []); return ((() => { if (old.roundId === roundId) return old.suggestions; return []; })()); })(),
           runningOperation: diagnosisData.runningOperation || suggestionData?.runningOperation || '',
           runningTask: diagnosisData.runningTask || suggestionData?.runningTask || null,
           loading: false,
@@ -256,7 +255,7 @@ function DiagnosisPanel({ projectId, round, diagnoses, runningTask, onTaskStarte
   };
   const confirm = async () => { setBusy('confirm'); setError(''); try { const data = await confirmEvaluationDiagnoses(projectId, round.round.id, [...selected]); onChanged(data.diagnoses || []); } catch (cause) { setError(describeEvaluationFailure(cause, '确认修复范围失败')); } finally { setBusy(''); } };
   if (!round || !['done', 'failed'].includes(round.round.status)) return <div className="wb-eval-empty">请先选择一个已完成的评测轮次 <button className="btn btn-sm" onClick={onGoRuns}>查看结果</button></div>;
-  return <section className="wb-eval-section wide"><StageHeader icon={Search} title="失败根因诊断" detail={`Agent 将读取 ${failedCount} 条失败用例、判定理由和执行 trace，不直接修改知识包。`} action={<button className="btn btn-p" disabled={Boolean(busy) || diagnosing || !failedCount} onClick={() => void diagnose()}>{diagnosing ? <LoaderCircle className="wb-spin" size={14} /> : <Bot size={14} />}{diagnosing ? '诊断中…' : diagnoses.length ? '重新诊断' : '开始诊断'}</button>} />
+  return <section className="wb-eval-section wide"><StageHeader icon={Search} title="失败根因诊断" detail={`Agent 将读取 ${failedCount} 条失败用例、判定理由和执行 trace，不直接修改知识包。`} action={<button className="btn btn-p" disabled={Boolean(busy) || diagnosing || !failedCount} onClick={() => void diagnose()}>{diagnosing ? <LoaderCircle className="wb-spin" size={14} /> : <Bot size={14} />}{(() => { if (diagnosing) return '诊断中…'; return diagnoses.length ? '重新诊断' : '开始诊断'; })()}</button>} />
     {diagnosing && <DiagnosisProgress task={diagnosisTask} />}
     {error && <div className="wb-eval-alert stale">{error}</div>}
     {diagnoses.length > 0 && <div className="wb-diagnosis-list">{diagnoses.map((item) => { const selectable = available.some((entry) => entry.id === item.id) && item.resolutionStatus !== 'confirmed'; return <article className="wb-diagnosis" key={item.id}><label className={selectable ? '' : 'disabled'}><input type="checkbox" disabled={!selectable} checked={selected.has(item.id)} onChange={() => setSelected((old) => toggleSet(old, item.id))} /><span /></label><div><div className="wb-diagnosis-title"><b>{item.title}</b><span className={`pill pill-${item.repairScope === 'package' ? 'wait' : 'plain'}`}>{item.repairScope === 'package' ? '知识包' : item.repairScope}</span><span className="pill">置信度 {item.confidence}</span></div><p>{item.summary}</p>{item.evidence?.length > 0 && <details><summary>查看诊断证据</summary><ul>{item.evidence.map((entry, i) => <li key={i}>{entry}</li>)}</ul></details>}<div className="wb-diagnosis-action"><strong>建议处置</strong>{item.suggestedAction}</div></div>{item.resolutionStatus === 'confirmed' && <span className="wb-confirmed"><Check size={14} /> 已确认</span>}</article>; })}</div>}

@@ -244,9 +244,7 @@ function LlmTab({
           <button type="button" className={scope === 'personal' ? 'on' : ''} onClick={() => onScopeChange('personal')}>我的覆盖</button>
         </div>
       )}
-      {isAdmin && scope === 'platform'
-        ? <AdminLlmDefaults onChanged={onPlatformChanged} />
-        : <>
+      {(() => { if (isAdmin && scope === 'platform') return <AdminLlmDefaults onChanged={onPlatformChanged} />; return <>
       <LlmPurposeTabs purpose={purpose} onChange={onPurposeChange} ariaLabel="个人 LLM 用途" />
       <div className="field">
         <label>Base URL <span className="lbl-src">{{ user: '个人配置', platform_default: '平台默认', default_snapshot: '默认配置快照', main: '使用主模型', settings: '兼容设置', env: '部署配置' }[config.source]}</span></label>
@@ -263,20 +261,18 @@ function LlmTab({
         }} placeholder="例如 deepseek-chat" />
       </div>
       <div className="field">
-        <label>API Key {config.apiKeySet ? <span className="tag tag-ok" style={{ marginLeft: 6 }}>已配置</span> : <span className="tag tag-draft" style={{ marginLeft: 6 }}>未配置</span>}</label>
+        <label>API Key {(() => { if (config.apiKeySet) return <span className="tag tag-ok" style={{ marginLeft: 6 }}>已配置</span>; return <span className="tag tag-draft" style={{ marginLeft: 6 }}>未配置</span>; })()}</label>
         <input type="password" value={field('ApiKey') ?? ''} onChange={(event) => {
           setField('ApiKey')(event);
           setFieldValue('ApiKeyClear', false);
           setFieldValue('ProviderClear', false);
         }}
-          placeholder={config.personalApiKeySet
-            ? '留空 = 保持个人 Key 不变'
-            : (config.apiKeySet ? '已有 Key 不会复制到个人覆盖' : '可选 API Key')} autoComplete="new-password" />
+          placeholder={(() => { if (config.personalApiKeySet) return '留空 = 保持个人 Key 不变'; return ((() => { if (config.apiKeySet) return '已有 Key 不会复制到个人覆盖'; return '可选 API Key'; })()); })()} autoComplete="new-password" />
         {config.personalApiKeySet && (
           <button type="button" className="btn cfg-key-clear"
             disabled={field('ApiKeyClear') === true}
             onClick={() => { setFieldValue('ApiKey', ''); setFieldValue('ApiKeyClear', true); }}>
-            {field('ApiKeyClear') ? '保存后清除个人 Key' : '清除个人 Key'}
+            {(() => { if (field('ApiKeyClear')) return '保存后清除个人 Key'; return '清除个人 Key'; })()}
           </button>
         )}
       </div>
@@ -324,14 +320,14 @@ function LlmTab({
         })}</pre>
       </div>
       <div className="cfg-llm-actions">
-        <button className="btn" disabled={testing || syncing} onClick={test}>{testing ? '测试中…' : '测试有效性'}</button>
+        <button className="btn" disabled={testing || syncing} onClick={test}>{(() => { if (testing) return '测试中…'; return '测试有效性'; })()}</button>
         <span className="cfg-sync-default-group">
           <button type="button" className="btn cfg-sync-default"
             disabled={!config.platformDefaultAvailable || syncing || testing}
             onClick={syncDefault}
-            title={config.platformDefaultAvailable ? '使用对应的平台默认并清除当前用途的个人 LLM 覆盖' : undefined}>
+            title={(() => { if (config.platformDefaultAvailable) return '使用对应的平台默认并清除当前用途的个人 LLM 覆盖'; return undefined; })()}>
             <RefreshCw size={14} aria-hidden="true" />
-            {syncing ? '切换中…' : '使用平台默认配置'}
+            {(() => { if (syncing) return '切换中…'; return '使用平台默认配置'; })()}
           </button>
           <span className="cfg-sync-help" tabIndex={0} aria-label={SYNC_DEFAULT_HELP} data-tooltip={SYNC_DEFAULT_HELP}>
             <CircleHelp size={16} aria-hidden="true" />
@@ -350,26 +346,22 @@ function LlmTab({
               setFieldValue('ExtraBodyJson', '{}');
             }}>
             <RotateCcw size={14} aria-hidden="true" />
-            {field('ProviderClear')
-              ? `保存后${purpose === 'task' ? '使用主模型' : '清除个人覆盖'}`
-              : (purpose === 'task' ? '清除并使用主模型' : '清除个人覆盖')}
+            {(() => { if (field('ProviderClear')) return `保存后${(() => { if (purpose === 'task') return '使用主模型'; return '清除个人覆盖'; })()}`; return ((() => { if (purpose === 'task') return '清除并使用主模型'; return '清除个人覆盖'; })()); })()}
           </button>
         )}
       </div>
       {syncResult && (
-        <div className={`cfg-test ${syncResult.ok ? 'ok' : 'bad'}`}>{syncResult.message}</div>
+        <div className={`cfg-test ${(() => { if (syncResult.ok) return 'ok'; return 'bad'; })()}`}>{syncResult.message}</div>
       )}
       {result && (
-        <div className={`cfg-test ${result.ok ? 'ok' : 'bad'}`}>
-          {result.ok
-            ? <>✅ 有效{result.latencyMs != null ? `（${result.latencyMs}ms）` : ''}{result.detail ? ` · ${result.detail}` : ''}</>
-            : <>
-                <div>❌ 无效{result.status ? `（HTTP ${result.status}）` : ''}{result.latencyMs != null ? ` · ${result.latencyMs}ms` : ''}</div>
+        <div className={`cfg-test ${(() => { if (result.ok) return 'ok'; return 'bad'; })()}`}>
+          {(() => { if (result.ok) return <>✅ 有效{(() => { if (result.latencyMs != null) return `（${result.latencyMs}ms）`; return ''; })()}{(() => { if (result.detail) return ` · ${result.detail}`; return ''; })()}</>; return <>
+                <div>❌ 无效{(() => { if (result.status) return `（HTTP ${result.status}）`; return ''; })()}{(() => { if (result.latencyMs != null) return ` · ${result.latencyMs}ms`; return ''; })()}</div>
                 <pre className="cfg-raw">{result.error}</pre>
-              </>}
+              </>; })()}
         </div>
       )}
-      </>}
+      </>; })()}
     </div>
   );
 }

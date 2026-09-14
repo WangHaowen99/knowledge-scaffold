@@ -134,7 +134,7 @@ export default function EvaluationDatabaseImportPanel({
               }} />
           </label>
           <button className="btn btn-p" disabled={controlsDisabled || !files.length} onClick={requestSubmit}>
-            {targetLoading ? '读取配置中…' : busy ? '提交中…' : running ? '后台导入中…' : '开始导入'}
+            {(() => { if (targetLoading) return '读取配置中…'; return busy ? '提交中…' : (() => { if (running) return '后台导入中…'; return '开始导入'; })(); })()}
           </button>
         </div>
       </div>

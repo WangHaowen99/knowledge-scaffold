@@ -96,9 +96,9 @@ export default function OperationFlowPanel({
           onClick={onClose}><X size={15} /></button>
       </header>
 
-      {state.phase === 'loading' ? (
+      {(() => { if (state.phase === 'loading') return (
         <PanelState icon={<RefreshCw className="spin" size={20} />} title="正在读取操作流程" text="正在同步当前工作修订。" />
-      ) : state.phase === 'error' ? (
+      ); return state.phase === 'error' ? (
         <PanelState icon={<AlertCircle size={21} />} title="操作流程暂时无法读取" text={state.error?.message}
           action={<button type="button" className="btn btn-sm" onClick={() => setReloadToken((value) => value + 1)}><RefreshCw size={13} />重试</button>} />
       ) : (
@@ -106,11 +106,11 @@ export default function OperationFlowPanel({
           {(hasSteps || hasBusinessFlow) && (
             <div className="seg studio-operation-flow-tabs" role="tablist" aria-label="操作流程查看方式">
               {hasSteps && <button type="button" role="tab" aria-selected={mode === 'operation-steps'}
-                className={mode === 'operation-steps' ? 'on' : ''} onClick={() => setMode('operation-steps')}>
+                className={(() => { if (mode === 'operation-steps') return 'on'; return ''; })()} onClick={() => setMode('operation-steps')}>
                 <ListOrdered size={13} />操作步骤
               </button>}
               {hasBusinessFlow && <button type="button" role="tab" aria-selected={mode === 'business-flow'}
-                className={mode === 'business-flow' ? 'on' : ''} onClick={() => setMode('business-flow')}>
+                className={(() => { if (mode === 'business-flow') return 'on'; return ''; })()} onClick={() => setMode('business-flow')}>
                 <GitBranch size={13} />所在业务流程
               </button>}
             </div>
@@ -119,7 +119,7 @@ export default function OperationFlowPanel({
           {mode === 'business-flow' && diagrams.length > 1 && (
             <div className="studio-operation-flow-switcher" role="tablist" aria-label="关联业务流程">
               {diagrams.map((item) => <button type="button" role="tab" key={item.id}
-                aria-selected={item.id === activeDiagram?.id} className={item.id === activeDiagram?.id ? 'on' : ''}
+                aria-selected={item.id === activeDiagram?.id} className={(() => { if (item.id === activeDiagram?.id) return 'on'; return ''; })()}
                 onClick={() => setActiveDiagramId(item.id)}>{item.title}</button>)}
             </div>
           )}
@@ -131,23 +131,21 @@ export default function OperationFlowPanel({
             </details>
           )}
 
-          {diagram?.nodes?.length ? (
+          {(() => { if (diagram?.nodes?.length) return (
             <>
               <div className="studio-operation-flow-caption">
                 <strong>{diagram.title || '操作流程'}</strong>
-                <span>{mode === 'business-flow'
-                  ? '展示操作所在的完整业务流程，引用节点已高亮。'
-                  : '按操作条目中的原始顺序展示内部步骤。'}</span>
+                <span>{(() => { if (mode === 'business-flow') return '展示操作所在的完整业务流程，引用节点已高亮。'; return '按操作条目中的原始顺序展示内部步骤。'; })()}</span>
               </div>
               <OperationFlowCanvas key={`${mode}:${diagram.id}`}
                 diagram={diagram} focusedNodeIds={focusedNodeIds} />
             </>
-          ) : (
-            <PanelState icon={<Workflow size={22} />} title={mode === 'business-flow' ? '业务流程尚未添加节点' : '尚未补充流程'}
-              text={mode === 'business-flow' ? '可以切换其他流程或查看操作步骤。' : '可在操作条目中维护操作步骤。'} />
-          )}
+          ); return (
+            <PanelState icon={<Workflow size={22} />} title={(() => { if (mode === 'business-flow') return '业务流程尚未添加节点'; return '尚未补充流程'; })()}
+              text={(() => { if (mode === 'business-flow') return '可以切换其他流程或查看操作步骤。'; return '可在操作条目中维护操作步骤。'; })()} />
+          ); })()}
         </>
-      )}
+      ); })()}
 
       <footer className="studio-operation-flow-footer">
         <button type="button" className="btn btn-p" onClick={() => onOpen(operation.id, 'graph')}>
@@ -277,7 +275,7 @@ function OperationFlowCanvas({ diagram, focusedNodeIds }) {
   const edges = useMemo(() => displayedGraph.edges.map((edge) => {
     const exception = edge.data.kind === 'exception';
     const dataFlow = edge.data.kind === 'data';
-    const color = exception ? '#b35252' : dataFlow ? '#397888' : '#708094';
+    const color = (() => { if (exception) return '#b35252'; return dataFlow ? '#397888' : '#708094'; })();
     return {
       ...edge,
       markerEnd: { type: MarkerType.ArrowClosed, color, width: 15, height: 15 },
@@ -348,7 +346,7 @@ function OperationFlowCanvas({ diagram, focusedNodeIds }) {
   );
 }
 
-const OperationFlowNode = memo(function OperationFlowNode({ data }) {
+const OperationFlowNode = memo(({ data }) => {
   const { source, target } = handlePositions(data.direction);
   return (
     <div className={`studio-operation-flow-node is-${data.kind}${data.focused ? ' is-focused' : ''}`}

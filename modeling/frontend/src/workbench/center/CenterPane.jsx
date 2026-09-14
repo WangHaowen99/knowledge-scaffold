@@ -54,12 +54,10 @@ export default function CenterPane() {
   const docMaterial = focus.kind === 'doc'
     ? materials.find((item) => item.id === focus.target || item.filename === focus.target)
     : null;
-  const title = loading && focus.kind === 'empty'
-    ? '正在加载项目'
-    : focus.kind === 'doc' && docMaterial
+  const title = (() => { if (loading && focus.kind === 'empty') return '正在加载项目'; return focus.kind === 'doc' && docMaterial
       ? docMaterial.filename
-      : (TITLES[focus.kind] || (() => focus.target))(focus);
-  const sub = demo ? SUBS[focus.kind] : focus.kind === 'conflict' && focus.target === '多来源融合'
+      : (TITLES[focus.kind] || (() => focus.target))(focus); })();
+  const sub = (() => { if (demo) return SUBS[focus.kind]; return focus.kind === 'conflict' && focus.target === '多来源融合'
     ? '来源 / 去向账本 / 质量门禁'
     : {
     flow: '渲染 / 源码', diff: '待确认的修改前后对照', doc: '资料原文与引用',
@@ -68,10 +66,8 @@ export default function CenterPane() {
     progress: '从产物与门禁实时投影 · 只读',
     file: '渲染 / 源码',
     studio: '图 / 表 / 条目',
-  }[focus.kind];
-  const focusReference = focus.source === 'agent'
-    ? focus.kind === 'studio' ? focus.elementId : focus.node
-    : null;
+  }[focus.kind]; })();
+  const focusReference = (() => { if (focus.source === 'agent') return focus.kind === 'studio' ? focus.elementId : focus.node; return null; })();
   const pendingMaterial = pending?.kind === 'doc'
     ? materials.find((item) => item.id === pending.target || item.filename === pending.target)
     : null;

@@ -189,9 +189,7 @@ function progressActivity(event, previous = null) {
     ? undefined
     : Number(counters.elapsedSeconds);
   const eventTime = Date.parse(String(event?.createdAt || ''));
-  const inferredStartedAt = Number.isFinite(elapsedSeconds)
-    ? Date.now() - Math.max(0, elapsedSeconds) * 1000
-    : Number.isFinite(eventTime) ? eventTime : Date.now();
+  const inferredStartedAt = (() => { if (Number.isFinite(elapsedSeconds)) return Date.now() - Math.max(0, elapsedSeconds) * 1000; return Number.isFinite(eventTime) ? eventTime : Date.now(); })();
   const sameActivity = previous?.id === activityId;
   return {
     id: activityId,
@@ -521,9 +519,7 @@ export const actions = {
           plan: event.plan,
           items: (event.plan.tasks || []).map((task) => ({
             t: task.title,
-            st: ['accepted', 'skipped'].includes(task.status)
-              ? 'done'
-              : ['staged', 'validated', 'waiting_user'].includes(task.status) ? 'now' : '',
+            st: (() => { if (['accepted', 'skipped'].includes(task.status)) return 'done'; return ['staged', 'validated', 'waiting_user'].includes(task.status) ? 'now' : ''; })(),
           })),
         }],
       });
@@ -548,13 +544,9 @@ export const actions = {
       const terminal = TERMINAL_TOOL_PHASES.has(event.phase);
       store.set((state) => ({
         // 刷新后的历史回放只重建轨迹，不能清空 state 接口恢复的最新活动。
-        activity: replaying
-          ? state.activity
-          : terminal
+        activity: (() => { if (replaying) return state.activity; return terminal
             ? null
-            : state.activity
-              ? { ...state.activity, sub: [line, ...(state.activity.sub || [])].slice(0, 8) }
-              : state.activity,
+            : (() => { if (state.activity) return { ...state.activity, sub: [line, ...(state.activity.sub || [])].slice(0, 8) }; return state.activity; })(); })(),
         trace: mergeToolTrace(state.trace, event, seq),
       }));
       const resolvedIssueIds = new Set((event.resolvedIssueIds || []).map(String).filter(Boolean));
@@ -581,12 +573,9 @@ export const actions = {
       if (!automaticRecovery && event.code && (!replaying || event.issueId)
         && ['failed', 'blocked', 'rejected', 'waiting'].includes(event.phase)) {
         const issueId = String(event.issueId || '');
-        const recoveryActions = Array.isArray(event.recoveryActions)
-          ? event.recoveryActions.filter((item) => item && typeof item === 'object')
-          : event.recoveryAction && typeof event.recoveryAction === 'object'
+        const recoveryActions = (() => { if (Array.isArray(event.recoveryActions)) return event.recoveryActions.filter((item) => item && typeof item === 'object'); return event.recoveryAction && typeof event.recoveryAction === 'object'
             ? [event.recoveryAction]
-            : event.repairStopped
-              ? [{
+            : (() => { if (event.repairStopped) return [{
                 id: 'review_validation_findings',
                 label: '重新检查并继续',
                 description: '从已保存进展继续，只处理仍未解决的内容。',
@@ -594,8 +583,7 @@ export const actions = {
                 id: 'keep_current_progress',
                 label: '保留当前成果，结束本轮',
                 description: '保留已经完成的候选修改，暂不继续自动修正。',
-              }]
-              : [];
+              }]; return []; })(); })();
         const recoveryProblem = event.problemVisibility === 'recovery'
           || event.phase === 'waiting'
           || event.repairStopped
@@ -756,9 +744,7 @@ export const actions = {
           id: `interaction-${event.id}`,
           role: 'assistant',
           createdAt: event.createdAt,
-          blocks: [{ type: interaction.kind === 'confirmation'
-            ? 'confirm'
-            : interaction.kind === 'release_confirmation' ? 'release' : 'ask',
+          blocks: [{ type: (() => { if (interaction.kind === 'confirmation') return 'confirm'; return interaction.kind === 'release_confirmation' ? 'release' : 'ask'; })(),
           interaction: restoreAsPending ? interaction : { ...interaction, status: 'superseded' } }],
         });
       }
@@ -1535,11 +1521,9 @@ export function mergeToolTrace(trace, event, seq) {
   const traceGroupId = String(event.traceGroupId || (
     legacySubject ? `legacy:${event.name}:${legacySubject}` : legacyStableRead
   ));
-  const id = traceGroupId
-    ? `tool-group:${event.runId || ''}:${traceGroupId}`
-    : toolCallId
+  const id = (() => { if (traceGroupId) return `tool-group:${event.runId || ''}:${traceGroupId}`; return toolCallId
     ? `tool:${event.runId || ''}:${toolCallId}`
-    : seq || `${Date.now()}-${event.name}`;
+    : seq || `${Date.now()}-${event.name}`; })();
   const entry = {
     id,
     seq,
@@ -1643,9 +1627,7 @@ function messageFingerprint(message) {
 
 function enrichInteractionAnswer(interaction, answer) {
   if (!answer || typeof answer !== 'object' || typeof answer.approved === 'boolean' || answer.displayText) return answer;
-  const chosen = Array.isArray(answer.selected) && answer.selected.length
-    ? answer.selected
-    : answer.value ? [answer.value] : [];
+  const chosen = (() => { if (Array.isArray(answer.selected) && answer.selected.length) return answer.selected; return answer.value ? [answer.value] : []; })();
   const options = interaction?.payload?.options || [];
   const labels = chosen.map((value) => options.find((option) => option.value === value)?.label).filter(Boolean);
   return labels.length ? { ...answer, displayText: labels.join('、') } : answer;

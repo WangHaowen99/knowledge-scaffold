@@ -57,7 +57,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
   const selectedBindingKeys = [...selectedBindings];
   const bindingStage = suggestions.length > 0;
   const fieldStage = !bindingStage && fieldSuggestions.length > 0;
-  const activeTotal = bindingStage ? suggestions.length : fieldStage ? fieldSuggestions.length : 0;
+  const activeTotal = (() => { if (bindingStage) return suggestions.length; return fieldStage ? fieldSuggestions.length : 0; })();
   const activeVisibleCount = Math.min(visibleCount, activeTotal);
   const visibleSuggestions = suggestions.slice(0, activeVisibleCount);
   const visibleFieldSuggestions = fieldSuggestions.slice(0, activeVisibleCount);
@@ -193,7 +193,7 @@ export default function SemanticBindingPanel({ projectId, packageRevision, disab
           )}
           {(bindingStage || fieldStage) && (
             <button type="button" className="btn btn-p" disabled={working || (bindingStage ? !selectedBindings.size : !selectedRefPayload.length)} onClick={submit}>
-              {busy ? '确认中...' : bindingStage ? `确认术语绑定 ${selectedBindings.size}` : `确认字段关联 ${selectedRefPayload.length}`}
+              {(() => { if (busy) return '确认中...'; return bindingStage ? `确认术语绑定 ${selectedBindings.size}` : `确认字段关联 ${selectedRefPayload.length}`; })()}
             </button>
           )}
         </div>

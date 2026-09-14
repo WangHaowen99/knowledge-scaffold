@@ -76,14 +76,10 @@ function SuggestionCard({ s, checked, onToggle, onReject }) {
     <div className={`sg-card ${pending ? '' : 'settled'}`}>
       <div className="sg-head" style={{ cursor: overflowing || open ? 'pointer' : 'default' }}
         onClick={() => (overflowing || open) && setOpen((v) => !v)}>
-        {pending
-          ? <input type="checkbox" aria-label={cleanTitle(s.title) || s.title} checked={checked}
-              onClick={(e) => e.stopPropagation()} onChange={onToggle} />
-          : <span className={`tag ${s.status === 'applied' ? 'tag-ok' : 'tag-lang'}`}>
-              {s.status === 'candidate'
-                ? '候选待确认'
-                : s.status === 'applied' ? `已应用 ${s.appliedVersion}` : '已忽略'}
-            </span>}
+        {(() => { if (pending) return <input type="checkbox" aria-label={cleanTitle(s.title) || s.title} checked={checked}
+              onClick={(e) => e.stopPropagation()} onChange={onToggle} />; return <span className={`tag ${(() => { if (s.status === 'applied') return 'tag-ok'; return 'tag-lang'; })()}`}>
+              {(() => { if (s.status === 'candidate') return '候选待确认'; return s.status === 'applied' ? `已应用 ${s.appliedVersion}` : '已忽略'; })()}
+            </span>; })()}
         <span className={`tag sg-kind ${KIND_CLASS[s.kind] || 'sg-kind-mod'}`}>{KIND_LABEL[s.kind] ?? s.kind}</span>
         <span className="sg-title" title={s.title}>{cleanTitle(s.title) || s.title}</span>
         {pending && (
@@ -148,7 +144,7 @@ function DiagnosisCard({
         <span className={`tag ${tone}`}>{SCOPE_LABEL[diagnosis.repairScope] ?? diagnosis.repairScope}</span>
         <span className="sg-title">{diagnosis.title}</span>
         <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>
-          {diagnosis.confidence === 'high' ? '高置信度' : diagnosis.confidence === 'medium' ? '中置信度' : '低置信度'}
+          {(() => { if (diagnosis.confidence === 'high') return '高置信度'; return diagnosis.confidence === 'medium' ? '中置信度' : '低置信度'; })()}
         </span>
       </div>
       <div className="sg-body">
@@ -356,7 +352,7 @@ export function FailureDiagnosisPanel({
           区分运行环境、数据、用例和知识包问题，再决定是否进入优化更新。
         </div>
         <button className="btn btn-p" disabled={!!busy || !targetRound} onClick={diagnose}>
-          {busy === 'diagnose' ? '分析中…' : currentDiagnoses.length ? '重新分析' : '开始诊断'}
+          {(() => { if (busy === 'diagnose') return '分析中…'; return currentDiagnoses.length ? '重新分析' : '开始诊断'; })()}
         </button>
         {diagnosisNotice && <div style={{ marginTop: 9, fontSize: 12.5, color: 'var(--ok, #1a7f37)' }}>{diagnosisNotice}</div>}
         {!diagnosisNotice && latestAnalysisAt && (
@@ -587,7 +583,7 @@ export function OptimizationPanel({
   }, [applyTask?.node?.id, applyTask?.node?.status, load, showCandidate]);
 
   if (!rounds) return <div className="empty">{err || '加载中…'}</div>;
-  const activeBusy = busy || (applyRunning ? 'apply' : applyNeedsExpert ? 'apply_review' : '');
+  const activeBusy = busy || ((() => { if (applyRunning) return 'apply'; return applyNeedsExpert ? 'apply_review' : ''; })());
   const targetRound = loadedTargetRound;
   const currentDiagnoses = diagnoses.filter((diagnosis) => diagnosis.roundId === targetRound?.id);
   const canPropose = diagnosisCanPropose;

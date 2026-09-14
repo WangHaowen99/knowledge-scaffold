@@ -356,7 +356,7 @@ export default function DataSourcePanel({
         )}
         <button type="button" className="btn btn-p" disabled={busy || syncingOntologyId || creatingDatabase}
           onClick={submit}>
-          {busy ? '保存并测试中…' : form.mode === 'connection' ? '保存并测试连接' : '保存并继续'}
+          {(() => { if (busy) return '保存并测试中…'; return form.mode === 'connection' ? '保存并测试连接' : '保存并继续'; })()}
         </button>
       </div>
 

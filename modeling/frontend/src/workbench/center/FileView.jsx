@@ -7,7 +7,7 @@ import { actions, store } from '../lib/appStore.js';
 import {
   displayEvidenceReferences,
   evidenceReferenceFromHref,
-  remarkEvidenceLinks,
+  linkEvidenceReferences,
 } from '../lib/evidence.js';
 import { useStore } from '../lib/store.js';
 import { EvidenceLink } from './EvidenceLinks.jsx';
@@ -40,10 +40,37 @@ export default function FileView({ path }) {
   const files = useStore(store, (state) => state.files);
   const content = demo ? SAMPLE : fileContents[path];
   const normalizedPath = String(path || '');
-  const readableContent = normalizedPath.endsWith('.md') ? stripFrontmatter(content) : content;
+  const readableContent = linkEvidenceReferences(
+    normalizedPath.endsWith('.md') ? stripFrontmatter(content) : content,
+    demo ? [] : materials,
+  );
   const readableSource = displayEvidenceReferences(content, demo ? [] : materials);
   const type = fileType(normalizedPath);
   const renderable = ['markdown', 'yaml', 'json'].includes(type);
+  let fileViewContent;
+  if (content === undefined) {
+    fileViewContent = fileError
+      ? <div className="wb-file-read-error" role="alert">
+        <b>当前文件暂时不可用</b>
+        <span>{fileError}</span>
+        <small>项目其他区域仍可使用；可以重试，也可以在右侧继续询问建模助手。</small>
+        <button type="button" className="btn btn-p btn-sm" onClick={() => void actions.loadFile(path)}>重试</button>
+      </div>
+      : <div className="empty">正在读取文件…</div>;
+  } else if (mode === 'rendered' && type === 'markdown') {
+    fileViewContent = <article className="wb-markdown"><Markdown remarkPlugins={[remarkGfm]} components={{
+      a: ({ node: _node, href, children, ...props }) => (
+        <PackageLink path={normalizedPath} href={href} files={files} {...props}>{children}</PackageLink>
+      ),
+      img: ({ node: _node, alt }) => <span className="wb-markdown-image-note">图片：{alt || '未命名图片'}</span>,
+    }}>{readableContent}</Markdown></article>;
+  } else if (mode === 'rendered' && type === 'yaml') {
+    fileViewContent = <StructuredView value={parseStructured(content, 'yaml', demo ? [] : materials)} format="yaml" />;
+  } else if (mode === 'rendered' && type === 'json') {
+    fileViewContent = <StructuredView value={parseStructured(content, 'json', demo ? [] : materials)} format="json" />;
+  } else {
+    fileViewContent = <pre className="wb-source">{readableSource}</pre>;
+  }
   return (
     <div className={`wb-doc wb-doc-${type}`}>
       <div className="wb-file-toolbar">
@@ -57,28 +84,7 @@ export default function FileView({ path }) {
           </div>
         )}
       </div>
-      {content === undefined
-        ? fileError
-          ? <div className="wb-file-read-error" role="alert">
-              <b>当前文件暂时不可用</b>
-              <span>{fileError}</span>
-              <small>项目其他区域仍可使用；可以重试，也可以在右侧继续询问建模助手。</small>
-              <button type="button" className="btn btn-p btn-sm" onClick={() => void actions.loadFile(path)}>重试</button>
-            </div>
-          : <div className="empty">正在读取文件…</div>
-        : mode === 'rendered' && type === 'markdown'
-          ? <article className="wb-markdown"><Markdown
-            remarkPlugins={[remarkGfm, remarkEvidenceLinks(demo ? [] : materials)]} components={{
-              a: ({ node: _node, href, children, ...props }) => (
-                <PackageLink path={normalizedPath} href={href} files={files} {...props}>{children}</PackageLink>
-              ),
-              img: ({ node: _node, alt }) => <span className="wb-markdown-image-note">图片：{alt || '未命名图片'}</span>,
-            }}>{readableContent}</Markdown></article>
-          : mode === 'rendered' && type === 'yaml'
-            ? <StructuredView value={parseStructured(content, 'yaml', demo ? [] : materials)} format="yaml" />
-            : mode === 'rendered' && type === 'json'
-              ? <StructuredView value={parseStructured(content, 'json', demo ? [] : materials)} format="json" />
-              : <pre className="wb-source">{readableSource}</pre>}
+      {fileViewContent}
     </div>
   );
 }

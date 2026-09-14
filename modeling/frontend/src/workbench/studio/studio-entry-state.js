@@ -62,9 +62,7 @@ export function studioIncompleteDraftField(draft, schema) {
       && !String(value ?? '').trim()) return field.key;
     if (['text_list', 'ordered_text_list'].includes(field.type)
       && Array.isArray(value) && value.some((item) => !String(item ?? '').trim())) return field.key;
-    const columns = field.type === 'key_value_table'
-      ? (field.key === 'nullPolicy' ? ['field', 'handling'] : ['key'])
-      : requiredColumns[field.type];
+    const columns = (() => { if (field.type === 'key_value_table') return ((() => { if (field.key === 'nullPolicy') return ['field', 'handling']; return ['key']; })()); return requiredColumns[field.type]; })();
     if (!columns || !Array.isArray(value)) continue;
     if (value.some((row) => columns.some((column) => !String(row?.[column] ?? '').trim()))) return field.key;
   }
