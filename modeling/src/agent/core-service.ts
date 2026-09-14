@@ -1435,7 +1435,7 @@ export class AgentCoreService {
       const plan = this.changeControl.revisePlan({
         projectId: context.project.id,
         runId: context.runId,
-        planId: args.plan_id,
+        planId: this.resolvePlanId(context, args),
         expectedVersion: args.expected_version,
         reason: args.reason,
         addTasks: args.add_tasks,
@@ -1455,10 +1455,28 @@ export class AgentCoreService {
     return runProjectWriteExclusive(context.project.id, () => this.stageChangeSetExclusive(context, args));
   }
 
+  /* 一个 run 最多一份活跃计划（createPlan 遇到已有活跃计划直接拒绝），所以 plan_id 对模型
+     没有决策空间——服务端一查就知道。让模型填它只会出事：实测模型不知道能省略，编了个
+     "default" 传进来，撞上「建模计划不存在」，据此以为计划没了，于是重建计划，而那份已批准
+     的 13 项计划其实一直活着、17 个任务原封不动等着它（见 #49）。
+     省略即自动解析；显式传入仍然生效，老调用不受影响。 */
+  private resolvePlanId(context: AgentToolContext, args: Record<string, unknown>): string {
+    const explicit = String(args.plan_id ?? '').trim();
+    if (explicit) return explicit;
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (active) return active.id;
+    throw new AgentCoreError(
+      'CHANGE_PLAN_NOT_FOUND',
+      '当前运行还没有受控建模计划',
+      ['先用 create_change_plan 建立计划并等待批准；已有计划时省略 plan_id 即可自动使用当前活跃计划'],
+      404,
+    );
+  }
+
   private async stageChangeSetExclusive(context: AgentToolContext, args: Record<string, unknown>) {
     let changeSetId = '';
     try {
-      const planId = text(args.plan_id, 'plan_id');
+      const planId = this.resolvePlanId(context, args);
       const mutationId = text(args.mutation_id, 'mutation_id');
       const expectedRevision = text(args.expected_revision, 'expected_revision');
       const actions = parseChangeSetActions(args.actions);
@@ -1817,7 +1835,7 @@ export class AgentCoreService {
     args: Record<string, unknown>,
   ) {
     try {
-      const planId = text(args.plan_id, 'plan_id');
+      const planId = this.resolvePlanId(context, args);
       const current = await this.overlay(workspace);
       this.changeControl.readyForValidation(context.project.id, context.runId, planId);
       this.assertSchemaSemantics(workspace, current);
@@ -1866,7 +1884,7 @@ export class AgentCoreService {
     args: Record<string, unknown>,
   ) {
     try {
-      const planId = text(args.plan_id, 'plan_id');
+      const planId = this.resolvePlanId(context, args);
       if (workspace.candidate_id) {
         throw new AgentCoreError('CHANGE_SET_FROZEN', '这批修改已经进入确认，请先在页面退回', ['等用户在页面接受或退回这批修改后再继续；不要重复提交同一批'], 409);
       }
@@ -9144,10 +9162,7 @@ function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Re
       flow: requiredStringArray(args.flow, 'flow'),
       notes: stringArray(args.notes),
       evidence: requiredStringArray(args.evidence, 'evidence'),
-      relations: domainReferenceRelations(
-        'operation',
-        requiredStringArray(args.references ?? [], 'references', true),
-      ),
+      relations: domainReferenceRelations('operation', operationReferences(args)),
     };
   }
   return {
@@ -9171,6 +9186,28 @@ function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Re
       requiredStringArray(args.object_references ?? [], 'object_references', true),
     ),
   };
+}
+
+/* 操作必须就「我读写哪些对象」表态。upsert_operation 一直要求 related_objects 非空，
+   但增量路径的 create_operation 把它写成了 args.references ?? [] + allowEmpty，
+   缺省即放行——于是助手只往 references 里塞规则 ID，九个物理对象里六个成了没人引用的
+   孤儿，操作不知道该查哪张表，脚本只能生成占位模板，评测必挂。
+   这里不强制「必须绑」（真不读写数据的操作被逼着绑，只会造出查不出来的假边），
+   而是强制「必须说清楚」：要么列出对象，要么写明为什么一个都不读写。 */
+function operationReferences(args: Record<string, unknown>): string[] {
+  const references = requiredStringArray(args.references ?? [], 'references', true);
+  if (references.some((item) => item.startsWith('object:'))) return references;
+  const reason = String(args.no_object_reason ?? '').trim();
+  if (reason) return references;
+  throw new AgentCoreError(
+    'OPERATION_OBJECT_BINDING_REQUIRED',
+    '操作没有声明读写的对象',
+    [
+      `把这个操作读写的对象写进 references（形如 object:业务受理），对照 flow 和 inputs/outputs 里提到的业务实体逐个核对`,
+      '确实不读写任何业务数据时（例如纯告知、纯人工协调类操作），用 no_object_reason 写明原因',
+    ],
+    400,
+  );
 }
 
 function domainReferenceRelations(

@@ -136,3 +136,59 @@ test('previous object relations are summarized without restoring them', () => {
   });
   assert.deepEqual(suggested.candidates[0].evidence, ['material:synthetic']);
 });
+
+test('共享键列的星型 schema 能产出关系候选，且方向由唯一性决定', () => {
+  /* 中文业务对象名 + 星型 schema 会让所有基于命名猜测的生成器同时落空：
+     词干取自英文 key（application_no → "application"）而对象叫《业务受理》；
+     改用中文名也不行，判据是「对象名以词干结尾」，而中文是「计量点 + 方案」，
+     关键词在前。再叠一层：共享键既是本表主键又是指向主表的外键，字段匹配那条
+     遇到本表主键直接跳过。实测 9 张表产出 0 条候选（见 #47）。 */
+  const objectOf = (key: string, primaryKey: string, columns: string[]): SpecObject => ({
+    key,
+    title: key,
+    description: `${key} 合成对象`,
+    primaryKey: [primaryKey],
+    fields: columns.map((column) => ({ key: column, type: 'string', required: false, sourceColumn: column })),
+    sourceRefs: [{ kind: 'table' as const, documentId: 'doc_star', table: key }],
+  });
+  const tableOf = (name: string, columns: string[], rowCount: number, distinct: Record<string, number>): DataDictTable => ({
+    name,
+    documentId: 'doc_star',
+    rowCount,
+    fields: columns.map((column) => ({
+      name: column, sourceColumn: column, nonEmptyRatio: 1, distinctRatio: distinct[column] ?? 0.1,
+    })),
+    rows: [],
+  } as unknown as DataDictTable);
+
+  const layout: [string, string, string[], number, Record<string, number>][] = [
+    ['业务受理', 'application_no', ['application_no', 'consumer_name'], 200, { application_no: 1 }],
+    ['接入方案', 'application_no', ['application_no', 'substation'], 200, { application_no: 1 }],
+    ['互感器方案', 'application_no', ['application_no', 'current_ratio'], 664, { application_no: 0.3 }],
+    ['变压器方案', 'equipment_name', ['application_no', 'equipment_name'], 229, { application_no: 0.87, equipment_name: 0.9 }],
+  ];
+  const spec = {
+    id: 'star-package', name: '星型 schema', version: '0.1.0', status: 'draft',
+    description: '共享 application_no 的星型 schema。',
+    objects: layout.map(([key, primaryKey, columns]) => objectOf(key, primaryKey, columns)),
+    rules: [], operations: [], metrics: [],
+  } as unknown as PackageSpec;
+  const tables = layout.map(([key, , columns, rowCount, distinct]) => tableOf(key, columns, rowCount, distinct));
+
+  const result = suggestObjectRelations(spec, tables, { limit: 20 });
+  const shared = result.candidates.filter((item) => item.matchMode === 'shared_key');
+  assert.equal(shared.length, 3, JSON.stringify(result.candidates, null, 1));
+  // 唯一性最高的那张表当枢纽，其余指向它
+  assert.ok(shared.every((item) => item.targetObject === '业务受理'));
+  assert.deepEqual(
+    shared.map((item) => item.sourceObject).sort(),
+    ['互感器方案', '变压器方案', '接入方案'],
+  );
+  // 方向说明来自实测唯一性，不是命名猜测
+  const manyToOne = shared.find((item) => item.sourceObject === '互感器方案');
+  assert.match(manyToOne!.note, /多行对一行/);
+  assert.match(manyToOne!.reason, /sourceUniqueRatio=0\.300/);
+  // 列名用原始写法，不暴露归一化后的内部形态
+  assert.match(manyToOne!.note, /application_no/);
+  assert.doesNotMatch(manyToOne!.note, /applicationno/);
+});

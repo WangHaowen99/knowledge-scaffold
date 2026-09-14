@@ -1,23 +1,42 @@
 import dagre from '@dagrejs/dagre';
 import {
   Background, BaseEdge, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider,
-  useNodesInitialized, useNodesState, useReactFlow,
+  addEdge, useNodesInitialized, useNodesState, useReactFlow,
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './legacy-flow.css';
 
 const NODE_KIND_LABELS = { start: '开始', end: '结束', terminal: '起止', action: '业务步骤', decision: '判断', data: '数据' };
 
+/* 业务流程图的标签常写成「主步骤 副说明」或带括号的补充，拆成两行读起来清楚得多：
+   主标题加粗，副标题小一号灰字，和参考版式一致。拆不出来就整句当主标题。 */
+function splitLabel(raw) {
+  const text = String(raw ?? '').trim();
+  const bracket = text.match(/^(.+?)[（(]([^（()）]+)[)）]\s*$/);
+  if (bracket) return { title: bracket[1].trim(), note: bracket[2].trim() };
+  const broken = text.match(/^(.+?)[\n：:]\s*(.+)$/s);
+  if (broken) return { title: broken[1].trim(), note: broken[2].trim() };
+  return { title: text, note: '' };
+}
+
 function LegacyNode({ data, selected }) {
   const kind = NODE_KIND_LABELS[data.kind] || '业务步骤';
+  const { title, note } = splitLabel(data.label);
   const ports = data.handles || [
     { type: 'target', id: 'in', position: Position.Top },
     { type: 'source', id: 'out', position: Position.Bottom },
   ];
-  return <div className={`fc-node is-${data.kind || 'action'}${selected || data.focused ? ' is-selected' : ''}`}>
-    {ports.map((handle) => <Handle key={handle.id} {...handle} className="fc-handle" isConnectable={false} />)}
-    <span className="fc-node__kind">{kind}</span>
-    <strong className="fc-node__label" title={data.label}>{data.label}</strong>
+  const shell = `fc-node is-${data.kind || 'action'}${selected || data.focused ? ' is-selected' : ''}`;
+  return <div className={shell} data-kind={data.kind || 'action'}>
+    {ports.map((handle) => <Handle key={handle.id} {...handle} isConnectable={!!data.editable}
+      className={`fc-handle${data.editable ? ' connectable' : ''}`} />)}
+    {/* 判断节点用菱形外框，文字保持水平，否则旋转后中文可读性很差 */}
+    <span className="fc-node__shape" aria-hidden="true" />
+    <span className="fc-node__body">
+      <span className="fc-node__kind">{kind}</span>
+      <strong className="fc-node__label" title={data.label}>{title}</strong>
+      {note && <span className="fc-node__note">{note}</span>}
+    </span>
   </div>;
 }
 
@@ -92,7 +111,7 @@ export function layoutLegacyNodes(nodes, edges, direction) {
   });
 }
 
-function Canvas({ graph, focusNode, controller, onZoom }) {
+function Canvas({ graph, focusNode, controller, onZoom, editable = false, onDraftChange }) {
   const [selection, setSelection] = useState(null);
   const [ready, setReady] = useState(false);
   const [routes, setRoutes] = useState({});
@@ -101,15 +120,26 @@ function Canvas({ graph, focusNode, controller, onZoom }) {
   const initialized = useNodesInitialized();
   const [nodes, setNodes, onNodesChange] = useNodesState(graph.nodes.map((node, index) => ({
     id: node.id, type: 'flow', position: { x: 32, y: index * 120 },
-    data: { ...node, handles: [
+    data: { ...node, editable, handles: [
       { type: 'target', id: 'in', position: PORTS[graph.direction][0] },
       { type: 'source', id: 'out', position: PORTS[graph.direction][1] },
       { type: 'source', id: 'outside-out', position: ['LR', 'RL'].includes(graph.direction) ? Position.Bottom : Position.Right },
       { type: 'target', id: 'outside-in', position: ['LR', 'RL'].includes(graph.direction) ? Position.Bottom : Position.Right },
     ] },
   })));
+  /* 编辑态下用户新连的边只存在前端草稿里，点「保存为候选」才走 PUT /package/diagram
+     落盘（服务端带乐观锁和草稿冲突拦截）。不直接改正式包，和其它变更一样要过确认。 */
+  const [draftEdges, setDraftEdges] = useState([]);
+  const handleConnect = useCallback((connection) => {
+    setDraftEdges((current) => addEdge({
+      ...connection,
+      id: `draft-${current.length + 1}-${connection.source}-${connection.target}`,
+      label: '',
+    }, current));
+  }, []);
+
   const edges = useMemo(() => {
-    return graph.edges.map((edge) => {
+    const base = graph.edges.map((edge) => {
       const route = routes[edge.id];
       const marker = { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#8795a9' };
       return {
@@ -125,7 +155,13 @@ function Canvas({ graph, focusNode, controller, onZoom }) {
         labelBgStyle: { fill: '#fbfcfe', fillOpacity: 0.96 },
       };
     });
-  }, [graph, routes]);
+    return base.concat(draftEdges.map((edge) => ({
+      ...edge,
+      type: 'smoothstep',
+      markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#f0a020' },
+      style: { stroke: '#f0a020', strokeWidth: 2, strokeDasharray: '6 4' },
+    })));
+  }, [graph, routes, draftEdges]);
 
   // Reset layout only when measured sizes change, never when the user zooms or selects.
   const sizes = nodes.map((node) => `${node.id}:${node.measured?.width}:${node.measured?.height}`).join('|');
@@ -137,11 +173,14 @@ function Canvas({ graph, focusNode, controller, onZoom }) {
     setReady(true);
   }, [initialized, sizes, graph, setNodes, instance]);
 
+  /* 默认按宽度贴合，纵向可滚动——十几个节点竖排时若强行把高度也装进视口，缩放会掉到
+     三成以下，节点文字直接糊成一团。看全图是「查看全图」按钮的事，默认视图优先保证可读。
+     下限抬到 0.45：再小就读不出字了，宁可让用户滚动。 */
   const fitWidth = useCallback(() => {
     const bounds = instance.getNodesBounds(instance.getNodes());
     if (!bounds.width || !box.current) return;
     const width = box.current.clientWidth;
-    const zoom = Math.max(0.1, Math.min(1, (width - 64) / bounds.width));
+    const zoom = Math.max(0.45, Math.min(1, (width - 64) / bounds.width));
     void instance.setViewport({ x: (width - bounds.width * zoom) / 2 - bounds.x * zoom,
       y: 32 - bounds.y * zoom, zoom });
   }, [instance]);
@@ -151,6 +190,10 @@ function Canvas({ graph, focusNode, controller, onZoom }) {
     const frame = requestAnimationFrame(fitWidth);
     return () => cancelAnimationFrame(frame);
   }, [ready, fitWidth]);
+
+  useEffect(() => {
+    if (onDraftChange) onDraftChange({ edges: draftEdges, dirty: draftEdges.length > 0 });
+  }, [draftEdges, onDraftChange]);
 
   useEffect(() => {
     controller.current = {
@@ -183,10 +226,17 @@ function Canvas({ graph, focusNode, controller, onZoom }) {
     <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={onNodesChange}
       onMove={(_, viewport) => onZoom(viewport.zoom)}
       onNodeClick={(_, node) => setSelection(node.id)} onPaneClick={() => setSelection(null)}
-      nodesDraggable={false} nodesConnectable={false} edgesReconnectable={false}
+      onConnect={editable ? handleConnect : undefined}
+      nodesDraggable={editable} nodesConnectable={editable} edgesReconnectable={false}
       deleteKeyCode={null} minZoom={0.05} maxZoom={1.8} proOptions={{ hideAttribution: true }}>
       <Background color="#dfe4eb" gap={20} size={1} />
     </ReactFlow>
+    <div className="wb-legacy-legend" aria-label="流程图图例">
+      <span className="is-terminal"><i />起止</span>
+      <span><i />业务步骤</span>
+      <span className="is-decision"><i />判断</span>
+      <span className="is-data"><i />数据</span>
+    </div>
     {selected && <aside className="wb-legacy-inspector" aria-label="节点属性">
       <button type="button" aria-label="关闭节点属性" onClick={() => setSelection(null)}>×</button>
       <small>{NODE_KIND_LABELS[selected.kind] || '起止'}</small>

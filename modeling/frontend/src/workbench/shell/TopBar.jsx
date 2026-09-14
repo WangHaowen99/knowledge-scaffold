@@ -124,12 +124,18 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
     <header className="wb-top">
       {!demo && <a className="btn btn-ghost btn-sm" href="/" title="返回项目列表"><Icon name="arrow" size={12} />项目</a>}
       <span className="goal ellip" title={projectName}>{projectName}</span>
-      <span className="sep">·</span>
-      <span className="k">
-        {(() => { if (demo) return ((() => { if (incr) return '1.2.0 · 已发布'; return project.revision; })()); return packageVersion
-            ? `v${String(packageVersion).replace(/^v/i, '')} · ${packageStatusLabel(packageStatus)}`
-            : '准备中'; })()}
-      </span>
+      {/* 版本是个可辨识的标识，独立成带框胶囊；状态是它的说明，跟在后面用弱化文字，
+          原来挤成「v1.0.0-rc.4 · 候选」一串，两者主次不分 */}
+      {(() => {
+        if (demo) return <span className="k">{(() => { if (incr) return '1.2.0 · 已发布'; return project.revision; })()}</span>;
+        if (packageVersion) return (
+          <>
+            <code className="wb-top-version">{`v${String(packageVersion).replace(/^v/i, '')}`}</code>
+            <span className="k">{packageStatusLabel(packageStatus)}</span>
+          </>
+        );
+        return <span className="k">准备中</span>;
+      })()}
 
       {(() => { if (incr) return (
         <>
@@ -203,12 +209,13 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
               </div> : <button className="btn btn-sm" type="button" onClick={() => setPolicyConfirming(true)}>{structuralPolicy.mode === 'auto' ? '撤销自动接受' : '更改为自动接受'}</button>}
             </section>}
           </div>}
-          <button className="btn btn-ghost" onClick={() => void exportPackage()} title="导出当前已确认知识包">
-            <Icon name="download" size={13} />知识包
+          {/* 叫「知识包」和左侧「知识包」标签页重名，实际是下载动作，误点会直接触发导出 */}
+          <button className="btn btn-ghost" onClick={() => void exportPackage()} title="下载当前已确认知识包">
+            <Icon name="download" size={13} />下载包
           </button>
           <button className="btn btn-ghost" disabled={transferProgress !== null}
-            onClick={() => void exportProject()} title="导出完整项目迁移包">
-            <Archive size={13} />{transferProgress === null ? '迁移包' : `${transferProgress}%`}
+            onClick={() => void exportProject()} title="导出完整项目，用于迁移到其他环境">
+            <Archive size={13} />{transferProgress === null ? '迁移项目' : `${transferProgress}%`}
           </button>
           <button className="btn btn-ghost" onClick={actions.openEvaluation} title="打开正式评测">
             <Icon name="check" size={13} />评测

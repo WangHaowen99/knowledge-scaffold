@@ -700,10 +700,16 @@ DOMAIN_FIELD = {
     "required": ["key", "type", "required"],
     "additionalProperties": False,
 }
+# 不暴露 kind：关系类型当前只有 object_relation 一个合法值，服务端本来就会补默认值，
+# create_object 那条路更是直接硬编码、根本不看传入值。把一个只有唯一答案的字段交给模型填，
+# 只会制造错误——实测模型会把推荐接口返回的 belongs_to 抄进 kind，被拒后反复猜、原地打转
+# 数轮，最后整批任务放弃（见 #48）。业务谓词写 label，这才是模型该决定的东西。
 DOMAIN_RELATION = {
     "type": "object",
     "properties": {
-        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING, "description": STRING,
+        "target_id": RESOURCE_ID,
+        "label": {**STRING, "description": "业务谓词，例如「归属于」「适用于」，由你根据证据拟定。"},
+        "description": STRING,
     },
     "required": ["target_id"],
     "additionalProperties": False,
@@ -740,7 +746,9 @@ DOMAIN_ACTION_CHANGES = {
         "required": {"type": "boolean"}, "note": STRING, "alias": STRING,
         "condition": STRING, "conclusion": STRING,
         "param": STRING, "field": STRING, "handling": STRING,
-        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING,
+        # 和 DOMAIN_RELATION 同理：关系类型只有唯一合法值且服务端自带默认，不暴露给模型
+        "target_id": RESOURCE_ID,
+        "label": {**STRING, "description": "业务谓词，例如「归属于」「适用于」，由你根据证据拟定。"},
         "description": STRING,
     },
     "additionalProperties": False,
@@ -974,8 +982,9 @@ CHANGE_SET_CREATE_OPERATION_ARGUMENTS = change_set_arguments({
     "flow": {"type": "array", "minItems": 1, "items": STRING},
     "notes": {"type": "array", "items": STRING},
     "references": {"type": "array", "items": RESOURCE_ID},
+    "no_object_reason": STRING,
     "evidence": {"type": "array", "minItems": 1, "items": STRING},
-}, ["key", "title", "description", "flow", "evidence"])
+}, ["key", "title", "description", "flow", "references", "evidence"])
 CHANGE_SET_CREATE_METRIC_ARGUMENTS = change_set_arguments({
     "key": STRING, "title": STRING, "description": STRING, "unit": STRING, "grain": STRING,
     "caliber": STRING, "boundaries": {"type": "array", "minItems": 1, "items": STRING},
@@ -1195,14 +1204,14 @@ CORE_TOOL_SPECS = (
         "revise_change_plan",
         "记录范围调整、增加任务或跳过可选任务。执行开始后扩大范围必须先得到用户明确决定。",
         {
-            "plan_id": STRING,
+            "plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"},
             "expected_version": {"type": "integer", "minimum": 1},
             "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
             "add_tasks": {"type": "array", "maxItems": 100, "items": CHANGE_PLAN_TASK},
             "skip_task_ids": {"type": "array", "maxItems": 100, "items": STRING},
             "scope_approved": {"type": "boolean"},
         },
-        ("plan_id", "expected_version", "reason"),
+        ("expected_version", "reason"),
         False,
         "正在记录计划调整",
     ),
@@ -1210,12 +1219,12 @@ CORE_TOOL_SPECS = (
         "stage_change_set",
         "把依赖闭合的 1 到 4 个计划任务作为一个小型原子 Change Set 提交。每个 action 只对应一个计划任务和一个目标资源；同一资源需要补多个字段时应放进该 patch 的 actions，一次完成。大计划必须分批读取最新计划和资源快照后继续，最后再整体验证。只能使用白名单领域动作；每批成功或整批不生效。",
         {
-            "plan_id": STRING,
+            "plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"},
             "expected_revision": WORKING_REVISION,
             "mutation_id": MUTATION_ID,
             "actions": {"type": "array", "minItems": 1, "maxItems": 4, "items": CHANGE_SET_ACTION},
         },
-        ("plan_id", "expected_revision", "mutation_id", "actions"),
+        ("expected_revision", "mutation_id", "actions"),
         False,
         "正在原子生成待确认修改",
     ),
@@ -1230,16 +1239,16 @@ CORE_TOOL_SPECS = (
     ToolSpec(
         "validate_change_set",
         "只有计划全部必选任务形成候选后，才对完整批次校验并冻结确认回执。",
-        {"plan_id": STRING, "summary": {"type": "string", "maxLength": 1000}},
-        ("plan_id",),
+        {"plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"}, "summary": {"type": "string", "maxLength": 1000}},
+        (),
         False,
         "正在校验完整建模计划",
     ),
     ToolSpec(
         "discard_change_set",
         "放弃尚未进入确认的当前计划和候选修改，不影响已确认版本。",
-        {"plan_id": STRING, "reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
-        ("plan_id", "reason"),
+        {"plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"}, "reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
+        ("reason"),
         False,
         "正在放弃待确认修改",
     ),
@@ -1377,7 +1386,10 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "create_operation",
-        "创建业务操作。references 使用对象、规则或指标资源 ID；服务端生成详情与索引。",
+        "创建业务操作。references 必须声明这个操作读写的对象（object:key），以及用到的规则和指标；"
+        "对照 flow 和 inputs/outputs 里提到的业务实体逐个核对，不要只填规则。"
+        "确实不读写任何业务数据时（纯告知、纯人工协调类操作），references 只填规则或指标，"
+        "并用 no_object_reason 写明原因。服务端生成详情与索引。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
             "key": STRING, "title": STRING, "description": STRING,
@@ -1395,9 +1407,11 @@ CORE_TOOL_SPECS = (
             "flow": {"type": "array", "minItems": 1, "items": STRING},
             "notes": {"type": "array", "items": STRING},
             "references": {"type": "array", "items": RESOURCE_ID},
+            "no_object_reason": STRING,
             "evidence": {"type": "array", "minItems": 1, "items": STRING},
         },
-        ("expected_revision", "mutation_id", "reason", "key", "title", "description", "flow", "evidence"),
+        ("expected_revision", "mutation_id", "reason", "key", "title", "description",
+         "flow", "references", "evidence"),
         False,
         "正在创建业务操作",
     ),

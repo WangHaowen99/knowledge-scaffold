@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
-import { Maximize2, Scan, ZoomIn, ZoomOut } from 'lucide-react';
+import { Maximize2, Pencil, Scan, ZoomIn, ZoomOut } from 'lucide-react';
 import { displayPackageEntryName } from '../../legacyArchiveFilename.js';
-import { store } from '../lib/appStore.js';
+import { actions, store } from '../lib/appStore.js';
 import { displayEvidenceReferences } from '../lib/evidence.js';
 import { useStore } from '../lib/store.js';
 import { flow as demoFlow } from '../lib/mock/fixtures.js';
@@ -87,6 +87,8 @@ export function MermaidPreview({
     return () => { active = false; };
   }, [source, path]);
   const [zoom, setZoom] = useState(1);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(null);
   const [fitZoom, setFitZoom] = useState(1);
   const flow = fallbackFlow || parseFlow(source, path);
   const box = useRef(null);
@@ -124,12 +126,18 @@ export function MermaidPreview({
               onClick={() => controller.current?.overview()}><Scan size={14} /></button>
             <button className="btn btn-ghost wb-flow-reset" title="原始大小" aria-label="恢复 100%"
               onClick={() => controller.current?.reset()}>100%</button>
+            {/* 编辑只改前端草稿，落盘要另点「保存为候选」，和其它变更一样过确认 */}
+            <button className={`btn btn-ghost${editing ? ' is-on' : ''}`} aria-pressed={editing}
+              title={editing ? '退出编辑' : '编辑流程图'} aria-label="编辑流程图"
+              onClick={() => { setEditing((on) => !on); setDraft(null); }}><Pencil size={14} /></button>
+            {editing && draft?.dirty && <button className="btn btn-p btn-sm" type="button"
+              onClick={() => actions.saveFlowDraft?.(path, draft)}>保存为候选（{draft.edges.length} 条新连线）</button>}
           </>}
         </div>}
       </div>
       {mode === 'diagram' ? <>
         {legacy ? <LegacyFlowView key={`${path}:${source}`} graph={current.graph} focusNode={focusNode}
-          controller={controller} onZoom={setZoom} />
+          controller={controller} onZoom={setZoom} editable={editing} onDraftChange={setDraft} />
           : current?.kind === 'native' ? <>
             <p className="t-sm muted">此图包含特殊结构或样式，保留原始图形展示。</p>
             <MermaidDiagram key={`${path}:${source}`} source={source} flow={flow} focusNode={focusNode}
