@@ -94,6 +94,10 @@ class JiuwenConcurrencyAbilityManager:
     def configure_parallelism(self, max_parallel_workers: int) -> None:
         self._max_parallel_workers = normalize_parallelism_limit(max_parallel_workers)
 
+    def max_parallel_workers_for_test(self) -> int:
+        """Return the normalized worker limit for scheduling contract tests."""
+        return self._max_parallel_workers
+
     async def execute(
         self,
         ctx: Any,

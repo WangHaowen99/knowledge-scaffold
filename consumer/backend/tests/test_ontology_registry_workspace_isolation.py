@@ -139,7 +139,7 @@ def test_cached_registry_refreshes_after_workspace_package_changes(monkeypatch, 
         description="Added after registry initialization",
     )
     # External filesystem edits are observed after the production throttle.
-    registry._next_source_check_at = 0.0
+    registry.expire_source_check_for_test()
 
     refreshed = get_ontology_registry(workspace_id="workspace-a")
     ontology = refreshed.get_ontology("new-ontology")
@@ -222,7 +222,7 @@ def test_registry_refresh_retries_when_sources_change_during_discovery(monkeypat
     ontology_root = get_workspace_paths("workspace-a").ontologies_dir
     manifest_path = ontology_root / "shared-ontology" / "manifest.yaml"
     registry = OntologyRegistry(ontology_dirs=[ontology_root])
-    original_discover = registry._discover_ontologies_snapshot
+    original_discover = registry.discover_ontologies_snapshot
     mutated = False
 
     def discover_then_disable():
@@ -236,7 +236,7 @@ def test_registry_refresh_retries_when_sources_change_during_discovery(monkeypat
             )
         return snapshot
 
-    monkeypatch.setattr(registry, "_discover_ontologies_snapshot", discover_then_disable)
+    monkeypatch.setattr(registry, "discover_ontologies_snapshot", discover_then_disable)
 
     registry.refresh()
 
@@ -260,7 +260,7 @@ def test_registry_external_signature_checks_are_throttled(monkeypatch, tmp_path)
     signature_reads = []
     import ontology.ontologies as ontologies_module
 
-    original_signature = ontologies_module._build_registry_source_signature
+    original_signature = ontologies_module.build_registry_source_signature
 
     def tracked_signature(roots):
         signature_reads.append(now[0])
@@ -268,7 +268,7 @@ def test_registry_external_signature_checks_are_throttled(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
         ontologies_module,
-        "_build_registry_source_signature",
+        "build_registry_source_signature",
         tracked_signature,
     )
 
@@ -331,7 +331,7 @@ def test_preload_and_prompt_cache_are_scoped_by_workspace(monkeypatch, tmp_path)
     assert "Ontology from B" in prompt
     assert "Ontology from A" not in prompt
 
-    subagent_prompt = SubAgent()._build_system_prompt(workspace_id="workspace-b")
+    subagent_prompt = SubAgent().build_system_prompt(workspace_id="workspace-b")
     assert "Ontology from B" in subagent_prompt
     assert "Ontology from A" not in subagent_prompt
 

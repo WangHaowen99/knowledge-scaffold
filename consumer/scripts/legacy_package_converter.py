@@ -164,6 +164,11 @@ def _has_frontmatter(path: Path) -> bool:
         return False
 
 
+def has_frontmatter_for_test(path: Path) -> bool:
+    """Check frontmatter through a public test boundary."""
+    return _has_frontmatter(path)
+
+
 def _has_complete_frontmatter(text: str) -> bool:
     """True when *text* starts with a parseable frontmatter declaring a resource.
 
@@ -2457,6 +2462,11 @@ def _decode_zip_member_name(member: zipfile.ZipInfo) -> str:
         except UnicodeDecodeError:
             continue
     return raw_name
+
+
+def decode_zip_member_name_for_test(member: zipfile.ZipInfo) -> str:
+    """Decode a legacy archive name through a public test boundary."""
+    return _decode_zip_member_name(member)
 
 
 def _extract_zip(zip_path: Path, dest_dir: Path) -> Path:

@@ -215,7 +215,7 @@ def test_llm_retry_wait_honors_cancellation():
         [cancel_then_fail, _FakeOpenAINonStreamCompletion({})],
         max_retries=3,
     )
-    llm._cancel_events["run-cancel"] = cancel_event
+    llm.set_cancel_event_for_test("run-cancel", cancel_event)
 
     with pytest.raises(WorkflowCancelledError):
         llm.call(
@@ -1086,7 +1086,7 @@ def test_collect_stream_response_collects_empty_choices_usage_chunks():
         ]
     )
 
-    collected = llm._collect_stream_response(response)
+    collected = llm.collect_stream_response_for_test(response)
 
     assert collected["message"]["content"] == "Hello"
     assert collected["finish_reason"] == "stop"
@@ -1128,7 +1128,7 @@ def test_collect_non_stream_response_preserves_provider_usage_fields():
         }
     )
 
-    collected = llm._collect_non_stream_response(response)
+    collected = llm.collect_non_stream_response_for_test(response)
 
     assert collected["usage"] == {
         "prompt_tokens": 6250,
@@ -1169,7 +1169,7 @@ def test_collect_stream_response_repairs_cumulative_tool_argument_chunks():
         ]
     )
 
-    collected = llm._collect_stream_response(response)
+    collected = llm.collect_stream_response_for_test(response)
     tool_calls = collected["message"]["tool_calls"]
 
     assert collected["finish_reason"] == "tool_calls"
@@ -1208,7 +1208,7 @@ def test_collect_stream_response_keeps_final_tool_call_fragment_when_finish_reas
         ]
     )
 
-    collected = llm._collect_stream_response(response)
+    collected = llm.collect_stream_response_for_test(response)
     tool_calls = collected["message"]["tool_calls"]
 
     assert collected["finish_reason"] == "stop"
@@ -1245,7 +1245,7 @@ def test_collect_stream_response_emits_closed_tool_calls_as_one_batch_on_finish_
     )
 
     closed_batches = []
-    collected = llm._collect_stream_response(
+    collected = llm.collect_stream_response_for_test(
         response,
         tool_calls_closed_callback=lambda tool_calls: closed_batches.append(tool_calls),
     )
@@ -1283,7 +1283,7 @@ def test_collect_stream_response_emits_remaining_closed_tool_calls_on_finish_rea
     )
 
     closed_batches = []
-    llm._collect_stream_response(
+    llm.collect_stream_response_for_test(
         response,
         tool_calls_closed_callback=lambda tool_calls: closed_batches.append(tool_calls),
     )
@@ -1365,7 +1365,7 @@ def test_collect_stream_response_defers_closed_tool_calls_until_id_and_arguments
     )
 
     closed_batches = []
-    collected = llm._collect_stream_response(
+    collected = llm.collect_stream_response_for_test(
         response,
         tool_calls_closed_callback=lambda tool_calls: closed_batches.append(tool_calls),
     )
@@ -1419,7 +1419,7 @@ def test_collect_non_stream_response_preserves_tool_calls():
         }
     )
 
-    collected = llm._collect_response(response)
+    collected = llm.collect_response_for_test(response)
     tool_calls = collected["message"]["tool_calls"]
 
     assert collected["finish_reason"] == "tool_calls"
@@ -1463,7 +1463,7 @@ def test_collect_non_stream_response_dispatches_reasoning_summary(monkeypatch):
         }
     )
 
-    collected = llm._collect_non_stream_response(
+    collected = llm.collect_non_stream_response_for_test(
         response,
         run_id="run-1",
         reasoning_summary_callback=lambda block_id, summary: None,
@@ -1506,7 +1506,7 @@ def test_collect_stream_response_keeps_reasoning_when_summary_dispatch_fails(mon
         ]
     )
 
-    collected = llm._collect_stream_response(
+    collected = llm.collect_stream_response_for_test(
         response,
         run_id="run-2",
         reasoning_summary_callback=lambda block_id, summary: None,
@@ -1542,7 +1542,7 @@ def test_collect_stream_response_returns_stream_milestones():
         ]
     )
 
-    collected = llm._collect_stream_response(response)
+    collected = llm.collect_stream_response_for_test(response)
 
     assert collected["first_reasoning_ms"] is not None
     assert collected["first_content_ms"] is not None

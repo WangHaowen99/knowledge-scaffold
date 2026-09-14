@@ -669,11 +669,11 @@ def test_concurrent_solver_worker_refresh_keeps_only_latest_worker_running(
     )
 
     first_refresh = threading.Thread(
-        target=app_module._install_solver_recovery_worker,
+        target=app_module.install_solver_recovery_worker,
         args=(application, "service-first"),
     )
     second_refresh = threading.Thread(
-        target=app_module._install_solver_recovery_worker,
+        target=app_module.install_solver_recovery_worker,
         args=(application, "service-second"),
     )
     first_refresh.start()

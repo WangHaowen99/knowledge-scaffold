@@ -73,6 +73,17 @@ class LangfuseExporter:
         else:
             self._trace.flush()
 
+    def run_state_for_test(self) -> dict[str, Any]:
+        """Return isolated run bookkeeping for exporter lifecycle tests."""
+        return {
+            "trace_ids_by_run": dict(self._trace_ids_by_run),
+            "spans_by_run": {
+                run_id: dict(spans)
+                for run_id, spans in self._spans_by_run.items()
+            },
+            "terminal_runs": set(self._terminal_runs),
+        }
+
     def _handle_run_started(self, event) -> None:
         if event.run_id in self._trace_ids_by_run:
             return

@@ -81,6 +81,14 @@ class SkillEvolutionStore:
     def _corrupted_dir(self, workspace_id: str) -> Path:
         return self._workspace_root(workspace_id) / "corrupted"
 
+    def tasks_dir_for_test(self, workspace_id: str) -> Path:
+        """Return the task directory for storage contract assertions."""
+        return self._tasks_dir(workspace_id)
+
+    def corrupted_dir_for_test(self, workspace_id: str) -> Path:
+        """Return the quarantine directory for storage contract assertions."""
+        return self._corrupted_dir(workspace_id)
+
     def task_path(self, workspace_id: str, task_id: str) -> Path:
         """Return the task record path for a workspace and task."""
         return self._tasks_dir(workspace_id) / f"{_safe_segment(task_id)}.json"

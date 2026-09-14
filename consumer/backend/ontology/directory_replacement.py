@@ -16,7 +16,7 @@ class DirectoryReplacementRecoveryError(RuntimeError):
     """Raised when an interrupted replacement cannot be recovered safely."""
 
 
-def _sync_directory(path: Path) -> None:
+def sync_directory(path: Path) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
         descriptor = os.open(path, flags, 0o600)
@@ -42,7 +42,7 @@ def _write_transaction_marker(backup_root: Path) -> None:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-    _sync_directory(backup_root)
+    sync_directory(backup_root)
 
 
 def portable_replace_directory(*, staged_dir: Path, target_dir: Path) -> None:
@@ -62,21 +62,21 @@ def portable_replace_directory(*, staged_dir: Path, target_dir: Path) -> None:
     )
     backup_dir = backup_root / "previous"
     _write_transaction_marker(backup_root)
-    _sync_directory(target_dir.parent)
+    sync_directory(target_dir.parent)
     target_dir.replace(backup_dir)
-    _sync_directory(target_dir.parent)
-    _sync_directory(backup_root)
+    sync_directory(target_dir.parent)
+    sync_directory(backup_root)
     try:
         staged_dir.replace(target_dir)
-        _sync_directory(target_dir.parent)
+        sync_directory(target_dir.parent)
     except BaseException:
         backup_dir.replace(target_dir)
-        _sync_directory(target_dir.parent)
+        sync_directory(target_dir.parent)
         shutil.rmtree(backup_root)
-        _sync_directory(target_dir.parent)
+        sync_directory(target_dir.parent)
         raise
     shutil.rmtree(backup_root)
-    _sync_directory(target_dir.parent)
+    sync_directory(target_dir.parent)
 
 
 def _target_name_from_backup(backup_root: Path) -> str:
@@ -108,16 +108,16 @@ def _recover_backup_root(backup_root: Path) -> bool:
         )
     if target_dir.is_dir():
         shutil.rmtree(backup_root)
-        _sync_directory(target_dir.parent)
+        sync_directory(target_dir.parent)
         return True
     if backup_dir.is_symlink() or not backup_dir.is_dir():
         raise DirectoryReplacementRecoveryError(
             "directory replacement rollback tree is unavailable"
         )
     backup_dir.replace(target_dir)
-    _sync_directory(target_dir.parent)
+    sync_directory(target_dir.parent)
     shutil.rmtree(backup_root)
-    _sync_directory(target_dir.parent)
+    sync_directory(target_dir.parent)
     return True
 
 

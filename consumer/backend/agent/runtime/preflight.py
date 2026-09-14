@@ -67,7 +67,7 @@ def _default_generation_resolver(
     )
 
 
-def _default_package_loader(
+def default_package_loader(
     ontology_manifest: Any,
     workspace_id: str,
 ) -> Mapping[str, Any]:
@@ -399,7 +399,7 @@ def build_run_preflight_snapshot(
         ontology_version or fixed_ontology_version or ""
     ).strip()
     resolve_generations = generation_resolver or _default_generation_resolver
-    load_package = package_loader or _default_package_loader
+    load_package = package_loader or default_package_loader
     selected_cache = cache or _DEFAULT_CACHE
 
     for _attempt in range(_MAX_GENERATION_RETRIES):

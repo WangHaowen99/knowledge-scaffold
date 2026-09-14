@@ -251,6 +251,11 @@ class JiuwenAsyncAgentRuntime:
         self._runs: dict[str, _ActiveJiuwenRun] = {}
         self._runs_lock = threading.Lock()
 
+    def active_run_count(self) -> int:
+        """Return the number of active native runtime runs."""
+        with self._runs_lock:
+            return len(self._runs)
+
     async def arun(
         self,
         context: RuntimeInvocationContext,
@@ -823,6 +828,10 @@ class JiuwenAsyncAgentRuntime:
             state["_solver_direct_arguments"] = copy.deepcopy(solver_requirement.direct_arguments)
         return state
 
+    @staticmethod
+    def build_engine_state_for_test(context: RuntimeInvocationContext) -> dict[str, Any]:
+        return JiuwenAsyncAgentRuntime._build_engine_state(context)
+
     async def _prepare_engine_state(
         self,
         context: RuntimeInvocationContext,
@@ -942,6 +951,10 @@ class JiuwenAsyncAgentRuntime:
 
         history.append({"role": "user", "content": current_query})
         return history
+
+    @staticmethod
+    def history_from_state_for_test(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+        return JiuwenAsyncAgentRuntime._history_from_state(state)
 
     @staticmethod
     def _extract_usage(state: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1074,6 +1087,10 @@ class JiuwenAsyncAgentRuntime:
             source="runtime",
             details={},
         )
+
+    @staticmethod
+    def runtime_error_for_test(exc: Exception) -> RuntimeErrorInfo:
+        return JiuwenAsyncAgentRuntime._runtime_error(exc)
 
     @staticmethod
     def _classify_runtime_error(exc: BaseException) -> tuple[str, int | None]:

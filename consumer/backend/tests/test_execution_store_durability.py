@@ -149,7 +149,7 @@ def test_failed_atomic_commit_never_publishes_uncommitted_cache(
             None,
         )
 
-    assert session_id not in store._cache
+    assert not store.has_cached_session_for_test(session_id)
     session_path = storage_dir / session_id / "execution.json"
     durable = json.loads(session_path.read_text(encoding="utf-8"))
     assert durable["turns"][0]["status"] == durable_status

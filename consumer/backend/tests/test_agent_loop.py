@@ -11,7 +11,7 @@ def test_agent_loop_engine_is_jiuwen_only_facade():
     assert issubclass(AgentLoopEngine, JiuwenReactLoopEngine)
     assert AgentLoopEngine.__init__ is JiuwenReactLoopEngine.__init__
     assert AgentLoopEngine.arun is JiuwenReactLoopEngine.arun
-    assert AgentLoopEngine._VALID_AGENT_MODES is VALID_AGENT_MODES
+    assert AgentLoopEngine.valid_agent_modes is VALID_AGENT_MODES
 
 
 @pytest.mark.parametrize(
@@ -25,7 +25,7 @@ def test_agent_loop_engine_is_jiuwen_only_facade():
     ],
 )
 def test_agent_loop_engine_delegates_mode_resolution(user_context, expected):
-    assert AgentLoopEngine._resolve_agent_mode(user_context) == expected
+    assert AgentLoopEngine.resolve_agent_mode(user_context) == expected
 
 
 def test_agent_loop_engine_propagates_jiuwen_backend_unavailable(monkeypatch):

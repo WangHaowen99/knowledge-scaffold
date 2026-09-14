@@ -64,7 +64,7 @@ def test_runtime_warmup_runs_once_on_supervised_short_io(monkeypatch):
             runtime=runtime,
         )
         assert first.state == "running"
-        await warmup._task
+        await warmup.runtime_warmup_task_for_test()
         second = warmup.start_runtime_warmup(
             agent_config=config,
             runtime=runtime,
@@ -98,7 +98,7 @@ def test_runtime_warmup_failure_is_terminal_without_exception_details(
             agent_config=SimpleNamespace(runtime_warmup_enabled=True),
             runtime=runtime,
         )
-        await warmup._task
+        await warmup.runtime_warmup_task_for_test()
 
     with caplog.at_level(logging.WARNING, logger="warmup"):
         asyncio.run(exercise())
@@ -142,7 +142,7 @@ def test_runtime_warmup_cancel_uses_absolute_deadline(monkeypatch):
     asyncio.run(exercise())
 
     assert warmup.get_runtime_warmup_status().state == "cancelled"
-    assert warmup._task is None
+    assert warmup.runtime_warmup_task_for_test() is None
 
 
 def test_runtime_warmup_requires_lifespan_runtime(monkeypatch):

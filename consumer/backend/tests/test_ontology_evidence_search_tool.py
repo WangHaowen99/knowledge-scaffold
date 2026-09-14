@@ -98,6 +98,7 @@ def _root(pointer, *, epoch=None, revision=None):
 
 
 def _enable(monkeypatch, mode="all"):
+    monkeypatch.setenv("PERF_CONFIG_SNAPSHOT_ENABLED", "false")
     monkeypatch.setenv("ONTOLOGY_EVIDENCE_ENABLED", "true")
     monkeypatch.setenv("ONTOLOGY_EVIDENCE_ROLLOUT_MODE", mode)
     monkeypatch.setattr(
@@ -107,6 +108,7 @@ def _enable(monkeypatch, mode="all"):
 
 
 def test_schema_is_adaptive_and_legacy_context_schema_is_preserved_off(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("PERF_CONFIG_SNAPSHOT_ENABLED", "false")
     monkeypatch.delenv("ONTOLOGY_EVIDENCE_ENABLED", raising=False)
     monkeypatch.delenv("ONTOLOGY_EVIDENCE_ROLLOUT_MODE", raising=False)
     off_schemas = get_tools_schema(
@@ -220,6 +222,7 @@ def test_loaded_before_uses_only_current_epoch_grounding(tmp_path: Path, monkeyp
 
 
 def test_search_fails_closed_when_feature_is_disabled(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("PERF_CONFIG_SNAPSHOT_ENABLED", "false")
     monkeypatch.delenv("ONTOLOGY_EVIDENCE_ENABLED", raising=False)
     monkeypatch.delenv("ONTOLOGY_EVIDENCE_ROLLOUT_MODE", raising=False)
     _manager, pointer = _ready(tmp_path, monkeypatch)

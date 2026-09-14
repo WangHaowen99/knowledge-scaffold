@@ -146,6 +146,33 @@ class SpeedscopeExporter:
     def available(self) -> bool:
         return True
 
+    @property
+    def pending_drop_count(self) -> int:
+        """Return the number of deferred drop notices awaiting reconciliation."""
+        with self._lock:
+            return len(self._pending_drops)
+
+    def has_pending_drop(self, run_id: str) -> bool:
+        """Return whether a run has a deferred drop notice."""
+        with self._lock:
+            return str(run_id or "") in self._pending_drops
+
+    def age_pending_drop_for_test(self, run_id: str, *, seconds: float) -> None:
+        """Age a pending notice for deterministic retention-boundary tests."""
+        with self._lock:
+            pending = self._pending_drops.get(str(run_id or ""))
+            if pending is not None:
+                pending.updated_at -= max(0.0, float(seconds))
+
+    def prune_old_files(self, current_path: Path) -> None:
+        """Run retention cleanup through the supported exporter API."""
+        self._prune_old_files(current_path)
+
+    def export_while_locked(self, event: RuntimeEvent) -> None:
+        """Export one event while retaining the exporter synchronization lock."""
+        with self._lock:
+            self.export(event)
+
     def export(self, event: RuntimeEvent) -> None:
         if not str(event.run_id or "").strip() or not str(event.session_id or "").strip():
             return

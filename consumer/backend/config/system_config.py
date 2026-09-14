@@ -51,6 +51,11 @@ def _resolve_default_runtime_root(backend_root: Path | None = None) -> Path:
     return repo_root / ".onto-runtime"
 
 
+def resolve_default_runtime_root_for_test(backend_root: Path | None = None) -> Path:
+    """Resolve the default runtime root through a public test boundary."""
+    return _resolve_default_runtime_root(backend_root)
+
+
 ONTO_RUNTIME_ROOT = _resolve_default_runtime_root()
 PROJECT_ROOT_ENV = "PROJECT_ROOT"
 SYSTEM_CONFIG_PATH_ENV = "SYSTEM_CONFIG_PATH"
@@ -61,6 +66,11 @@ def _resolve_config_runtime_root() -> Path:
     if configured_root:
         return Path(configured_root).expanduser()
     return ONTO_RUNTIME_ROOT
+
+
+def resolve_config_runtime_root_for_test() -> Path:
+    """Resolve the configured runtime root through a public test boundary."""
+    return _resolve_config_runtime_root()
 
 
 DEFAULT_CONFIG_DIR = _resolve_config_runtime_root() / "config"
@@ -292,6 +302,11 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
     },
 }
 
+
+def section_fields_for_test(section: str) -> dict[str, Any]:
+    """Return the configuration field schema used by configuration tests."""
+    return _SECTION_FIELDS[section]
+
 _CLEAR_FIELDS = {
     "llm": {"clear_api_key": "api_key"},
     "auth": {"clear_auth_secret": "auth_secret"},
@@ -398,6 +413,14 @@ def _get_system_config_snapshot_manager() -> ConfigSnapshotManager:
                 is_transient_error=_is_transient_config_snapshot_error,
             )
         return _CONFIG_SNAPSHOT_MANAGER
+
+
+def get_system_config_snapshot_manager_for_test() -> ConfigSnapshotManager:
+    return _get_system_config_snapshot_manager()
+
+
+def fsync_directory_for_test(path: Path) -> None:
+    _fsync_directory(path)
 
 
 def _record_system_config_generation(manager: ConfigSnapshotManager) -> int:
@@ -1437,6 +1460,9 @@ def _load_system_config_unlocked(
         ) from exc
 
 
+load_system_config_unlocked_for_test = _load_system_config_unlocked
+
+
 def _publicize_fields(specs: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     for field_name, field_spec in specs.items():
@@ -1652,7 +1678,7 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _write_config_document_unlocked(
+def write_config_document_unlocked(
     config: dict[str, dict[str, Any]],
     *,
     source_document: dict[str, Any],
@@ -2061,7 +2087,7 @@ def _update_llm_profiles_section(
                     )
                 _assert_model_profile_reference_precondition(final_precondition, inventory)
             raw_config[_LLM_PROFILES_SECTION] = candidate
-            _write_config_document_unlocked(raw_config, source_document=document)
+            write_config_document_unlocked(raw_config, source_document=document)
     return _public_section(_LLM_PROFILES_SECTION, load_system_config())
 
 
@@ -2092,7 +2118,7 @@ def update_system_config_section(
             data,
             raw_config[normalized_section],
         )
-        _write_config_document_unlocked(raw_config, source_document=document)
+        write_config_document_unlocked(raw_config, source_document=document)
     return _public_section(normalized_section, load_system_config())
 
 
@@ -2149,7 +2175,7 @@ def import_system_config(config_payload: dict[str, Any]) -> tuple[list[str], dic
                     removed_profile_ids,
                     inventory,
                 )
-            _write_config_document_unlocked(raw_config, source_document=document)
+            write_config_document_unlocked(raw_config, source_document=document)
     return imported_sections, get_public_system_config()
 
 
@@ -2529,7 +2555,7 @@ def _agent_config_for_connection_check(effective: dict[str, Any]) -> Any:
     )
 
 
-def _validate_jiuwen_tools_without_runtime_delegates(
+def validate_jiuwen_tools_without_runtime_delegates(
     _agent: Any,
     *,
     tool_infos: list[dict[str, Any]] | None = None,
@@ -2631,7 +2657,7 @@ def test_system_config_connection(section: str, data: dict[str, Any] | None = No
             smoke_result = run_jiuwen_smoke(
                 agent_config=_agent_config_for_connection_check(effective),
                 agent_mode="quick",
-                register_tools=_validate_jiuwen_tools_without_runtime_delegates,
+                register_tools=validate_jiuwen_tools_without_runtime_delegates,
             )
             tool_count = int(smoke_result.get("registered_tool_count") or 0)
             return {

@@ -15,6 +15,9 @@ class MindsDBSearchAdapter:
         self._client = MindsDBProvider(connection)
         self._session = getattr(self._client, "_session", None)
 
+    def set_post_for_test(self, callback) -> None:
+        self._client.set_post_for_test(callback)
+
     def search_stream(
         self,
         *,

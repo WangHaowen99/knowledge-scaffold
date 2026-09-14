@@ -102,7 +102,7 @@ class EvidenceIndexManager:
                     ontology_version=ontology_version,
                 )
                 _validate_source_capacity(sources)
-                plan = _build_plan(
+                plan = build_plan(
                     ontology_id=ontology_id,
                     ontology_version=ontology_version,
                     manifest=manifest,
@@ -126,7 +126,7 @@ class EvidenceIndexManager:
             if expected_index_generation is not None and generation != expected_index_generation:
                 raise EvidenceIndexManagerError("INDEX_STALE", "index generation changed after build planning")
             final_dir = ontology_root / "generations" / generation
-            return self._build_single_flight(
+            return self.build_single_flight(
                 ontology_root=ontology_root,
                 final_dir=final_dir,
                 sources=sources,
@@ -180,7 +180,7 @@ class EvidenceIndexManager:
             # may have superseded this build while failure state was recorded.
             return
 
-    def _build_single_flight(
+    def build_single_flight(
         self,
         *,
         ontology_root: Path,
@@ -259,7 +259,7 @@ class EvidenceIndexManager:
                         "invalid evidence generation could not be quarantined",
                     )
             if not final_dir.is_dir():
-                self._build_generation(
+                self.build_generation(
                     job_id=job_id,
                     final_dir=final_dir,
                     sources=sources,
@@ -358,7 +358,7 @@ class EvidenceIndexManager:
                 payload["error_code"] = error_code
             else:
                 payload.pop("error_code", None)
-            _atomic_json_write(path, payload)
+            atomic_json_write(path, payload)
             return payload
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
@@ -378,7 +378,7 @@ class EvidenceIndexManager:
             ontology_version=ontology_version,
         )
         _validate_source_capacity(sources)
-        return _build_plan(
+        return build_plan(
             ontology_id=ontology_id,
             ontology_version=ontology_version,
             manifest=manifest,
@@ -439,7 +439,7 @@ class EvidenceIndexManager:
                     "updated_at": _utc_now(),
                 }
             )
-            _atomic_json_write(ontology_root / "active.json", pointer)
+            atomic_json_write(ontology_root / "active.json", pointer)
 
     def cleanup(
         self,
@@ -579,7 +579,7 @@ class EvidenceIndexManager:
         }
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
-    def _build_generation(
+    def build_generation(
         self,
         *,
         job_id: str,
@@ -665,7 +665,7 @@ class EvidenceIndexManager:
             raise
 
 
-def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
+def atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -740,7 +740,7 @@ def revoke_active_pointer_snapshot(
                 "updated_at": _utc_now(),
             }
         )
-        _atomic_json_write(path, pointer)
+        atomic_json_write(path, pointer)
         return True
 
 
@@ -777,7 +777,7 @@ def mark_active_pointer_state(
                 "updated_at": _utc_now(),
             }
         )
-        _atomic_json_write(ontology_root / "active.json", pointer)
+        atomic_json_write(ontology_root / "active.json", pointer)
         return True
 
 
@@ -841,7 +841,7 @@ def _validate_source_capacity(sources: Any) -> None:
         )
 
 
-def _build_plan(
+def build_plan(
     *,
     ontology_id: str,
     ontology_version: str,

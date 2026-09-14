@@ -57,7 +57,7 @@ def test_protocol_preflight_uses_summary_metadata_and_turn_count_without_history
         ),
     )
 
-    request, ontology_id, version, profile_id = orchestrator._build_protocol_preflight_request(
+    request, ontology_id, version, profile_id = orchestrator.build_protocol_preflight_request_for_test(
         user_request="run operation",
         user_context={},
         arguments={},

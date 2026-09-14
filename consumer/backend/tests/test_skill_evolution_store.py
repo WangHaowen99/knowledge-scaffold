@@ -117,7 +117,7 @@ def test_corrupt_record_quarantined(tmp_path):
     assert store.get_task("ws1", "t1") is None
     # Original quarantined, corrupted dir holds a copy
     assert not path.exists()
-    quarantined = store._corrupted_dir("ws1") / "t1.json"
+    quarantined = store.corrupted_dir_for_test("ws1") / "t1.json"
     assert quarantined.exists()
 
 
@@ -132,7 +132,7 @@ def test_history_roundtrip(tmp_path):
 def test_atomic_write_does_not_leave_tmp(tmp_path):
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     store.create_task(_make_record())
-    tasks_dir = store._tasks_dir("ws1")
+    tasks_dir = store.tasks_dir_for_test("ws1")
     # No leftover .tmp files after save
     assert list(tasks_dir.glob("*.tmp")) == []
 
@@ -201,4 +201,4 @@ def test_list_tasks_quarantines_corrupt_record(tmp_path):
     tasks = store.list_tasks("ws1")
     assert tasks == []
     assert not path.exists()
-    assert (store._corrupted_dir("ws1") / "t1.json").exists()  # noqa: SLF001
+    assert (store.corrupted_dir_for_test("ws1") / "t1.json").exists()

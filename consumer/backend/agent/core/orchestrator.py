@@ -119,6 +119,10 @@ class AgenticOrchestrator:
         versions = next(iter(ontology_versions.values()))
         return next(iter(versions)) if len(versions) == 1 else None
 
+    infer_toolbased_ontology_version_for_test = staticmethod(
+        _infer_toolbased_ontology_version
+    )
+
     def _get_stores(
         self,
         user_id: Optional[str],
@@ -267,6 +271,13 @@ class AgenticOrchestrator:
             selected_version,
             stored_profile,
         )
+
+    def build_protocol_preflight_request_for_test(
+        self,
+        **kwargs: Any,
+    ) -> tuple[Any | None, str, str, str | None]:
+        """Build protocol preflight state through a public test boundary."""
+        return self._build_protocol_preflight_request(**kwargs)
 
     def _resolve_protocol_preflight(
         self,

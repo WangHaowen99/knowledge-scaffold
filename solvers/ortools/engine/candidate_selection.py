@@ -173,6 +173,9 @@ def _parse_problem(problem: Mapping[str, Any]) -> tuple[list[dict[str, Any]], li
     return parsed, parsed_objectives
 
 
+parse_problem_for_test = _parse_problem
+
+
 def _new_model(
     candidates: list[dict[str, Any]], fixed: list[tuple[str, int]]
 ) -> tuple[cp_model.CpModel, list[cp_model.IntVar]]:

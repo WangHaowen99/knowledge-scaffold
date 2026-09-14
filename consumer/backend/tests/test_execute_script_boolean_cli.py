@@ -144,7 +144,7 @@ def test_optional_runtime_parameter_can_be_omitted_without_context():
 
 
 def test_legacy_runtime_placeholder_cannot_fall_back_to_user_argument():
-    args, missing, invalid = execute_script_module._build_cli_args(
+    args, missing, invalid = execute_script_module.build_cli_args_for_test(
         script_args=["--session-id", "<runtime.session_id>"],
         script_parameters=[],
         arguments={"session_id": "forged"},
@@ -157,7 +157,7 @@ def test_legacy_runtime_placeholder_cannot_fall_back_to_user_argument():
 
 
 def test_legacy_runtime_user_id_uses_backend_context_when_available():
-    args, missing, invalid = execute_script_module._build_cli_args(
+    args, missing, invalid = execute_script_module.build_cli_args_for_test(
         script_args=["--user-id", "<runtime.user_id>"],
         script_parameters=[],
         arguments={"user_id": "forged-user"},

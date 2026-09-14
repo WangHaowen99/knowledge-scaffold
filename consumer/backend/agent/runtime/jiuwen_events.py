@@ -126,6 +126,10 @@ class JiuwenRuntimeEventBridge:
     def overflowed(self) -> bool:
         return self._overflowed
 
+    def loop_for_test(self) -> asyncio.AbstractEventLoop:
+        """Return the owning event loop for scheduling contract tests."""
+        return self._loop
+
     def emit(self, event: Any) -> bool:
         """RuntimeObserver callback used by AgentRuntimeTrace."""
         event_type = str(getattr(event, "type", "") or "").strip().lower()
@@ -483,6 +487,10 @@ class JiuwenRuntimeEventBridge:
             call_index=str(payload.get("call_index") or ""),
             reasoning_block_id=str(payload.get("reasoning_block_id") or ""),
         )
+
+    @staticmethod
+    def coalescing_key_for_test(event: Any) -> _RuntimeEventCoalescingKey | None:
+        return JiuwenRuntimeEventBridge._coalescing_key(event)
 
     @staticmethod
     def _merge_coalesced(previous: RuntimeEvent, current: RuntimeEvent) -> RuntimeEvent:

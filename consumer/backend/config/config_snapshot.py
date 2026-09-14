@@ -39,6 +39,9 @@ def _copy_value(value: Any) -> Any:
     return deepcopy(value)
 
 
+copy_value_for_test = _copy_value
+
+
 @dataclass(frozen=True, slots=True)
 class ConfigSourceSignature:
     """Metadata used to detect an out-of-process config replacement."""
@@ -137,6 +140,16 @@ class ConfigSnapshotManager:
     def generation(self) -> int:
         with self._lock:
             return self._generation
+
+    def has_snapshot_for_test(self) -> bool:
+        """Return whether a snapshot is currently published for test assertions."""
+        with self._lock:
+            return self._snapshot is not None
+
+    def snapshot_for_test(self) -> ConfigSnapshot | None:
+        """Return the published snapshot identity for test assertions."""
+        with self._lock:
+            return self._snapshot
 
     def invalidate(self) -> int:
         with self._lock:

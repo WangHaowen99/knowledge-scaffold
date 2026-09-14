@@ -155,7 +155,7 @@ def test_binding_revision_is_immutable_in_the_store(tmp_path):
 
 def test_service_rejects_legacy_arbitrary_binding_configuration_before_new_run():
     with pytest.raises(SolverServiceError, match="binding"):
-        SolverCoordinationService._binding(
+        SolverCoordinationService.binding_for_test(
             {
                 "binding_revision_id": "legacy-binding",
                 "configuration": {"backend": "local-process"},
@@ -638,7 +638,7 @@ def test_service_binding_validation_accepts_only_explicit_policy_for_private_hos
     configuration["endpoint"] = "https://solver.private.example.com"
     policy = EndpointPolicy(allowed_hosts=("solver.private.example.com",))
 
-    revision, normalized = SolverCoordinationService._binding(
+    revision, normalized = SolverCoordinationService.binding_for_test(
         {
             "binding_revision_id": "binding-revision-a",
             "configuration": configuration,

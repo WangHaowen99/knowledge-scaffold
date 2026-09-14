@@ -40,7 +40,7 @@ def test_loop_stall_error_uses_a_safe_public_message():
 
     assert exception_type is not None
     exc = exception_type("internal script stderr: TOKEN=do-not-expose")
-    public_message = JiuwenAsyncAgentRuntime._runtime_error(exc).message
+    public_message = JiuwenAsyncAgentRuntime.runtime_error_for_test(exc).message
     assert public_message == "Tool execution stopped after a repeated failure."
     assert "TOKEN=do-not-expose" not in public_message
 
@@ -329,8 +329,7 @@ def test_adapter_cancellation_before_serial_execution_skips_registered_call(monk
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(adapter.invoke({"operation_key": "split_material"}))
 
-    assert guard._registered_invocations == set()
-    assert guard._pending_results == {}
+    assert not guard.has_pending_invocations_for_test()
 
 
 def test_context_factory_failure_does_not_block_later_guard_results():
@@ -480,7 +479,10 @@ def test_stall_error_does_not_expose_raw_script_output():
 
     assert "super-secret" not in raised.value.message
     assert "postgres://internal" not in raised.value.message
-    assert JiuwenAsyncAgentRuntime._runtime_error(raised.value).message == raised.value.message
+    assert (
+        JiuwenAsyncAgentRuntime.runtime_error_for_test(raised.value).message
+        == raised.value.message
+    )
 
 
 @pytest.mark.parametrize(

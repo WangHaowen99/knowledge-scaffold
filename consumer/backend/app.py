@@ -132,7 +132,7 @@ def _consume_session_recovery_result(task: asyncio.Future[Any]) -> None:
         pass
 
 
-def _install_solver_recovery_worker(app: FastAPI, solver_service):
+def install_solver_recovery_worker(app: FastAPI, solver_service):
     """Replace the process-local solver recovery worker owned by the app."""
 
     with _solver_recovery_worker_lock:
@@ -181,7 +181,7 @@ def _install_solver_recovery_worker(app: FastAPI, solver_service):
         return worker
 
 
-def _stop_solver_recovery_worker(
+def stop_solver_recovery_worker(
     app: FastAPI,
     *,
     timeout_seconds: float,
@@ -299,7 +299,7 @@ def refresh_runtime_services(app: FastAPI) -> dict[str, Any]:
             )
             if container_runtime is not None:
                 container_runtime.agent_config = refreshed["agent_config"]
-            _install_solver_recovery_worker(app, solver_service)
+            install_solver_recovery_worker(app, solver_service)
             worker_replaced = True
             reset_observer(timeout=1.0)
             refresh_evidence_index_worker()
@@ -328,7 +328,7 @@ def refresh_runtime_services(app: FastAPI) -> dict[str, Any]:
             if worker_replaced:
                 _safe_sync_step(
                     "runtime-refresh-worker-rollback",
-                    _install_solver_recovery_worker,
+                    install_solver_recovery_worker,
                     app,
                     previous_solver_service,
                 )
@@ -350,6 +350,16 @@ def _safe_sync_step(name: str, callback: Callable[..., Any], *args, **kwargs) ->
     except Exception:
         logger.exception("Lifecycle step failed: %s", name)
         return False
+
+
+def safe_sync_step_for_test(
+    name: str,
+    callback: Callable[..., Any],
+    *args,
+    **kwargs,
+) -> bool:
+    """Exercise lifecycle result normalization through a public test boundary."""
+    return _safe_sync_step(name, callback, *args, **kwargs)
 
 
 def create_app() -> FastAPI:
@@ -378,7 +388,7 @@ def create_app() -> FastAPI:
                 services.get("solver_coordination_service")
             )
             await asyncio.to_thread(
-                _install_solver_recovery_worker,
+                install_solver_recovery_worker,
                 app,
                 services.get("solver_coordination_service"),
             )
@@ -465,7 +475,7 @@ def create_app() -> FastAPI:
                     failed.append("session-summary-rebuild")
             try:
                 await asyncio.to_thread(
-                    _stop_solver_recovery_worker,
+                    stop_solver_recovery_worker,
                     app,
                     timeout_seconds=min(
                         5.0,

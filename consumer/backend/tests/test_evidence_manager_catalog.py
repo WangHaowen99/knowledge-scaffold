@@ -153,9 +153,9 @@ def test_manager_single_flight_builds_one_generation_and_persists_transitions(
     package = _package(tmp_path)
     manager_a = EvidenceIndexManager(runtime)
     manager_b = EvidenceIndexManager(runtime)
-    original_build = EvidenceIndexManager._build_generation
+    original_build = EvidenceIndexManager.build_generation
     manager_module = importlib.import_module("ontology.evidence.manager")
-    original_write = manager_module._atomic_json_write
+    original_write = manager_module.atomic_json_write
     entered = threading.Event()
     release = threading.Event()
     calls = 0
@@ -175,8 +175,8 @@ def test_manager_single_flight_builds_one_generation_and_persists_transitions(
             transitions.append(str(payload.get("status") or ""))
         return original_write(path, payload)
 
-    monkeypatch.setattr(EvidenceIndexManager, "_build_generation", delayed_build)
-    monkeypatch.setattr("ontology.evidence.manager._atomic_json_write", capture_pointer)
+    monkeypatch.setattr(EvidenceIndexManager, "build_generation", delayed_build)
+    monkeypatch.setattr("ontology.evidence.manager.atomic_json_write", capture_pointer)
 
     def build(manager):
         return manager.build(
@@ -211,7 +211,7 @@ def test_manager_records_base_failed_without_publishing_partial_generation(
     def fail_build(*_args, **_kwargs):
         raise EvidenceIndexManagerError("INDEX_BUILD_FAILED", "synthetic failure")
 
-    monkeypatch.setattr(manager, "_build_generation", fail_build)
+    monkeypatch.setattr(manager, "build_generation", fail_build)
     with pytest.raises(EvidenceIndexManagerError):
         manager.build(
             workspace_id="workspace-a",
@@ -239,7 +239,7 @@ def test_manager_records_epoch_failed_when_source_planning_fails(
     def fail_plan(**_kwargs):
         raise EvidenceIndexManagerError("INDEX_CAPACITY_EXCEEDED", "synthetic planning failure")
 
-    monkeypatch.setattr("ontology.evidence.manager._build_plan", fail_plan)
+    monkeypatch.setattr("ontology.evidence.manager.build_plan", fail_plan)
     with pytest.raises(EvidenceIndexManagerError):
         manager.build(
             workspace_id="workspace-a",
@@ -307,7 +307,7 @@ def test_cleanup_waits_for_build_and_preserves_newly_published_generation(
 
     build_manager = EvidenceIndexManager(runtime)
     cleanup_manager = EvidenceIndexManager(runtime)
-    original_build = build_manager._build_single_flight
+    original_build = build_manager.build_single_flight
     entered = threading.Event()
     release = threading.Event()
 
@@ -316,7 +316,7 @@ def test_cleanup_waits_for_build_and_preserves_newly_published_generation(
         assert release.wait(timeout=5)
         return original_build(**kwargs)
 
-    monkeypatch.setattr(build_manager, "_build_single_flight", delayed_build)
+    monkeypatch.setattr(build_manager, "build_single_flight", delayed_build)
 
     def rebuild():
         return build_manager.build(

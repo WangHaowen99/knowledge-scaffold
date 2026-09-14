@@ -157,8 +157,10 @@ async def _capture_real_react_model_window(
             ),
         )
     )
+    from agent.core.jiuwen_engine import install_jiuwen_model_for_test
+
     fake_model = _CapturingFakeModel()
-    agent._llm = fake_model
+    install_jiuwen_model_for_test(agent, fake_model)
     preview_messages: list[list] = []
 
     async def capture_preview(ctx):

@@ -134,6 +134,9 @@ def _atomic_write_bytes(
             temporary.unlink(missing_ok=True)
 
 
+atomic_write_bytes_for_test = _atomic_write_bytes
+
+
 def _backup_base(path: Path, backup_root: Path | None = None) -> Path:
     directory = path.parent if backup_root is None else backup_root
     return directory / f"{path.name}.{LLM_MAX_TOKENS_BACKUP_SUFFIX}"

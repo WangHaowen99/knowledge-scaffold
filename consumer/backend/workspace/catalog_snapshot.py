@@ -54,6 +54,9 @@ def _copy_value(value: Any) -> Any:
     return deepcopy(value)
 
 
+copy_value_for_test = _copy_value
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceFileSignature:
     """Stable file-system metadata used for out-of-process drift detection."""
@@ -271,6 +274,10 @@ class WorkspaceCatalogManager:
     def generation(self) -> int:
         with self._lock:
             return self._generation
+
+    @property
+    def snapshot_for_test(self) -> WorkspaceCatalogSnapshot | None:
+        return self._snapshot
 
     def generation_after_drift_check(self) -> int:
         """Refresh a published snapshot when its signature check is due."""

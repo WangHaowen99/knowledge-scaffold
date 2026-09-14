@@ -11,7 +11,7 @@ from typing import Any
 from migrations.system_config_v1_support import (
     MigrationProblem,
     _backup_base,
-    _create_verified_backup,
+    create_verified_backup,
     _discover_backups,
     _ensure_private_file,
     _fsync_directory,
@@ -21,7 +21,7 @@ from migrations.system_config_v1_support import (
     _operation_problem,
     _problem,
     _read_regular_file_bytes,
-    _write_bytes_atomic,
+    write_bytes_atomic,
 )
 
 
@@ -381,9 +381,9 @@ def execute_migration(
     if not changed_plans:
         if not marker and recovery_backup_paths:
             try:
-                from migrations.system_config_v1_support import _write_marker
+                from migrations.system_config_v1_support import write_marker
 
-                _write_marker(
+                write_marker(
                     resolved_root,
                     MIGRATION_ID,
                     backup_paths=recovery_backup_paths,
@@ -442,7 +442,7 @@ def execute_migration(
     for plan in changed_plans:
         object_id = _object_id(plan.path, resolved_root)
         try:
-            backup_path, _ = _create_verified_backup(
+            backup_path, _ = create_verified_backup(
                 plan.path,
                 plan.source_bytes,
                 _backup_base(plan.path, BACKUP_SUFFIX),
@@ -450,7 +450,7 @@ def execute_migration(
             backup_paths.append(backup_path)
             if _read_regular_file_bytes(plan.path) != plan.source_bytes:
                 raise OSError("workspace profile changed during migration")
-            _write_bytes_atomic(plan.path, plan.target_bytes)
+            write_bytes_atomic(plan.path, plan.target_bytes)
             if _read_regular_file_bytes(plan.path) != plan.target_bytes:
                 raise OSError("workspace profile verification failed")
             _ensure_private_file(plan.path)
@@ -488,9 +488,9 @@ def execute_migration(
             merged_backup_paths.append(backup_path)
 
     try:
-        from migrations.system_config_v1_support import _write_marker
+        from migrations.system_config_v1_support import write_marker
 
-        _write_marker(
+        write_marker(
             resolved_root,
             MIGRATION_ID,
             backup_paths=merged_backup_paths,

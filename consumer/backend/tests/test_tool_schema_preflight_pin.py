@@ -251,7 +251,7 @@ def test_default_preflight_package_loader_freezes_dynamic_tool_products(
         lambda _root: "sha256:" + "b" * 64,
     )
 
-    product = preflight_module._default_package_loader(manifest, WORKSPACE_ID)
+    product = preflight_module.default_package_loader(manifest, WORKSPACE_ID)
 
     assert product["execute_script_tool_schema"]["function"]["parameters"]["properties"]["operation_key"]["enum"] == [
         OPERATION_KEY
@@ -272,8 +272,8 @@ def test_matching_snapshot_drives_real_agent_schema_and_solver_lookup_without_li
     _patch_live_package_reads_to_fail(monkeypatch)
 
     with ontology_preflight_tool_context(snapshot):
-        schemas = _engine()._tools_schema_for_state(_state(), caller="main")
-        tool_infos = _engine()._jiuwen_tool_infos_for_state(
+        schemas = _engine().tools_schema_for_state(_state(), caller="main")
+        tool_infos = _engine().jiuwen_tool_infos_for_state(
             _state(),
             caller="main",
         )
@@ -575,7 +575,7 @@ def test_matching_incomplete_snapshot_never_live_loads_solver_root(monkeypatch):
         preflight_snapshot=snapshot,
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(invocation)
+    state = JiuwenAsyncAgentRuntime.build_engine_state_for_test(invocation)
 
     assert state["workspace_id"] == WORKSPACE_ID
 
@@ -614,7 +614,7 @@ def test_manifest_identity_mismatch_preserves_legacy_solver_root_loader(monkeypa
         preflight_snapshot=snapshot,
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(invocation)
+    state = JiuwenAsyncAgentRuntime.build_engine_state_for_test(invocation)
 
     assert live_calls == [
         {

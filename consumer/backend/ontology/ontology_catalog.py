@@ -929,7 +929,7 @@ def _load_object_reference_index_cached(
     del signature
     root = Path(ontology_dir)
     catalog, _has_alias_column, _catalog_warnings = _load_object_catalog(root)
-    definitions = tuple(_load_object_definitions(root / "objects"))
+    definitions = tuple(load_object_definitions(root / "objects"))
     return _ObjectReferenceIndex(
         definitions=definitions,
         matches_by_kind=_build_object_reference_matches(definitions, catalog),
@@ -1064,7 +1064,7 @@ def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
     root = Path(ontology_dir).resolve()
     objects_dir = root / "objects"
     try:
-        definitions = _load_object_definitions(objects_dir)
+        definitions = load_object_definitions(objects_dir)
     except _ObjectDefinitionLoadError as exc:
         return ObjectAliasValidationResult(errors=(str(exc),))
     try:
@@ -1290,7 +1290,7 @@ def _load_object_catalog(
     return entries, has_alias_column, warnings
 
 
-def _load_object_definitions(objects_dir: Path) -> List[_ObjectDefinition]:
+def load_object_definitions(objects_dir: Path) -> List[_ObjectDefinition]:
     definitions: List[_ObjectDefinition] = []
     if not objects_dir.is_dir():
         return definitions
@@ -1891,7 +1891,7 @@ def _script_entry_dedupe_key(entry: Dict[str, Any]) -> str:
     return "{}\n{}".format(operation_key, script_key)
 
 
-def _normalize_script_entrypoint(value: Any) -> Optional[str]:
+def normalize_script_entrypoint(value: Any) -> Optional[str]:
     """Return a portable scripts-relative path, or None for an unsafe path."""
     raw_path = str(value or "").strip().replace("\\", "/")
     if not raw_path or raw_path.startswith("/") or re.match(r"^[A-Za-z]:", raw_path):
@@ -1909,7 +1909,7 @@ def resolve_ontology_script_path(
     entrypoint: Any,
 ) -> Optional[Path]:
     """Resolve an entrypoint while containing scripts and symlinks to one ontology."""
-    normalized = _normalize_script_entrypoint(entrypoint)
+    normalized = normalize_script_entrypoint(entrypoint)
     if normalized is None:
         return None
     ontology_root = Path(ontology_dir).resolve()
@@ -1939,14 +1939,14 @@ def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[D
     if not entrypoint:
         return None
 
-    raw_path = _normalize_script_entrypoint(entrypoint)
+    raw_path = normalize_script_entrypoint(entrypoint)
     if raw_path is None:
         return None
     resolved_script_path = resolve_ontology_script_path(ontology_dir, raw_path)
     if resolved_script_path is None:
         return None
 
-    parameters = _parse_script_parameters_from_markdown(body)
+    parameters = parse_script_parameters_from_markdown(body)
     entry: Dict[str, Any] = {
         "operation_key": operation_key or script_key,
         "script_key": script_key,
@@ -1968,7 +1968,7 @@ def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[D
     return entry
 
 
-def _parse_script_parameters_from_markdown(markdown: str) -> List[Dict[str, Any]]:
+def parse_script_parameters_from_markdown(markdown: str) -> List[Dict[str, Any]]:
     rows = parse_markdown_table(markdown)
     parameters: List[Dict[str, Any]] = []
     for index, row in enumerate(rows):

@@ -215,6 +215,12 @@ class ACPTestRunner:
         resp = self._acp_patch(f"/agentic/workspaces/{WORKSPACE_ID}/runtime-config", data=config)
         return resp.status_code == 200
 
+    def get_runtime_config(self) -> dict:
+        return self._get_runtime_config()
+
+    def set_runtime_config(self, config: dict) -> bool:
+        return self._set_runtime_config(config)
+
     def _set_lang_enabled(self, enabled: bool, default_lang: str = "zh"):
         self._set_runtime_config({"lang": {"enabled": enabled, "default": default_lang}})
 
@@ -1272,7 +1278,7 @@ def main():
         sys.exit(1)
     logger.info("  ✓ 登录成功\n")
 
-    original_config = runner._get_runtime_config()
+    original_config = runner.get_runtime_config()
     original_lang = original_config.get("lang", {})
     original_suppress = original_config.get("acp_suppress_script_patterns", "")
 
@@ -1328,7 +1334,7 @@ def main():
     logger.info(f"\n    {'─' * 50}")
 
     logger.info(f"\n  [3/3] 恢复运行时配置...")
-    runner._set_runtime_config(
+    runner.set_runtime_config(
         {
             "lang": original_lang,
             "acp_suppress_script_patterns": original_suppress,

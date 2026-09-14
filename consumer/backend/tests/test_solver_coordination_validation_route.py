@@ -193,7 +193,7 @@ def test_public_solver_run_uses_tool_pool_with_production_runtime(
     client.app.state.services["SOLVER_COORDINATION_SERVICE"] = object()
 
     def complete(_service, **_kwargs):
-        return solver_routes._response({"status": "completed"}, 200)
+        return solver_routes.response_for_test({"status": "completed"}, 200)
 
     monkeypatch.setattr(
         solver_routes,

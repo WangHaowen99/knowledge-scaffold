@@ -147,7 +147,7 @@ class _CountingManager:
                             payload=payload,
                         )
                     )
-                await self._finish(
+                await self.finish(
                     stored,
                     result=self.completion_result,
                     pending_interaction=self.completion_pending_interaction,
@@ -175,13 +175,13 @@ class _CountingManager:
         if snapshot.status in TERMINAL_RUN_STATUSES:
             return snapshot
         self.cancel_reasons.append(reason)
-        return await self._finish(
+        return await self.finish(
             snapshot,
             result=RuntimeResult(status="cancelled"),
             cancel_reason=reason,
         )
 
-    async def _finish(
+    async def finish(
         self,
         snapshot: RunSnapshot,
         *,
@@ -367,7 +367,7 @@ def test_store_resolution_uses_short_io_without_blocking_event_loop(monkeypatch)
 
         monkeypatch.setattr(workflows, "_get_stores", slow_get_stores)
         runtime = type("Runtime", (), {"short_io": _ThreadedOffloadPool()})()
-        resolution = asyncio.create_task(workflows._resolve_stores(runtime))
+        resolution = asyncio.create_task(workflows.resolve_stores(runtime))
 
         try:
             deadline = asyncio.get_running_loop().time() + 1.0
@@ -1009,7 +1009,7 @@ def test_sse_replays_terminal_event_when_reservation_expires_before_iteration(
             current_user=_USER,
             workspace_id=_WORKSPACE_ID,
         )
-        await harness.manager._finish(
+        await harness.manager.finish(
             snapshot,
             result=RuntimeResult(status="completed", content="done"),
         )

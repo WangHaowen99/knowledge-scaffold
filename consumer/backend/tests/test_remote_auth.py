@@ -219,25 +219,24 @@ def test_jwks_refresh_throttles_unknown_kids_and_drops_removed_key(monkeypatch):
     session = _StubSession(jwks_payload={"keys": []})
     backend = RemoteAuthBackend("https://auth.example.net", session=session)
 
-    assert backend._signing_key("forged-a") is None
-    assert backend._signing_key("forged-b") is None
+    assert backend.signing_key_for_test("forged-a") is None
+    assert backend.signing_key_for_test("forged-b") is None
     assert session.jwks_get_count == 1
 
     old_key = object()
-    with backend._jwks_lock:
-        backend._jwks_keys = {"old": old_key}
-        backend._jwks_fetched_at = 0
-        backend._jwks_last_attempt_at = 0
+    backend.set_jwks_state_for_test(
+        keys={"old": old_key},
+        fetched_at=0,
+        last_attempt_at=0,
+    )
 
     def concurrent_successful_rotation():
-        with backend._jwks_lock:
-            backend._jwks_keys = {}
-            backend._jwks_fetched_at = 1
+        backend.set_jwks_state_for_test(keys={}, fetched_at=1)
         # 模拟另一线程已成功刷新，本线程因节流未再次请求。
         return False
 
     monkeypatch.setattr(backend, "_refresh_jwks", concurrent_successful_rotation)
-    assert backend._signing_key("old") is None
+    assert backend.signing_key_for_test("old") is None
 
 
 def test_cold_jwks_failure_reports_throttling_and_recovers(auth_server, monkeypatch, caplog):

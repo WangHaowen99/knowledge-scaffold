@@ -54,6 +54,17 @@ class OrToolsSolverService:
     def resume_dispatch(self) -> None:
         self._dispatch_paused = False
 
+    def capacity_is_available_for_test(self) -> bool:
+        """Probe capacity while preserving the semaphore count."""
+        acquired = self._capacity.acquire(blocking=False)
+        if acquired:
+            self._capacity.release()
+        return acquired
+
+    def install_capacity_gate_for_test(self, gate: Any) -> None:
+        """Install a synthetic capacity gate for admission tests."""
+        self._capacity = gate
+
     def restart_for_admission(self) -> None:
         with self._lock:
             if self._events or self._held_capacity:

@@ -157,7 +157,7 @@ def _ensure_private_file(path: Path) -> None:
         os.close(descriptor)
 
 
-def _write_bytes_atomic(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
+def write_bytes_atomic(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise OSError("target must not be a symbolic link")
@@ -186,7 +186,7 @@ def _write_bytes_atomic(path: Path, payload: bytes, *, mode: int = 0o600) -> Non
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    _write_bytes_atomic(
+    write_bytes_atomic(
         path,
         (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
@@ -398,7 +398,7 @@ def _workspace_config_path(runtime_root: Path, workspace_id: str) -> Path:
     return runtime_root / "workspaces" / workspace_id / "observability_config.json"
 
 
-def _write_workspace_target(
+def write_workspace_target(
     runtime_root: Path,
     workspace_id: str,
     config: dict[str, Any],
@@ -733,7 +733,7 @@ def _candidate_backup_path(base_path: Path, index: int) -> Path:
     return base_path if index == 0 else base_path.with_name(f"{base_path.name}.{index}")
 
 
-def _create_verified_bytes_backup(
+def create_verified_bytes_backup(
     source_bytes: bytes,
     base_path: Path,
 ) -> Path:
@@ -746,7 +746,7 @@ def _create_verified_bytes_backup(
                 _ensure_private_file(candidate)
                 return candidate
             continue
-        _write_bytes_atomic(candidate, source_bytes)
+        write_bytes_atomic(candidate, source_bytes)
         if candidate.read_bytes() != source_bytes:
             raise OSError("backup verification failed")
         _ensure_private_file(candidate)
@@ -754,7 +754,7 @@ def _create_verified_bytes_backup(
     raise OSError("too many conflicting backup files")
 
 
-def _write_marker(
+def write_marker(
     plan: ConfigPlan,
     *,
     status: str,
@@ -873,7 +873,7 @@ def _apply_config(plan: ConfigPlan) -> StepResult:
                 workspace_ids=list(plan.marker["workspace_ids"]),
             )
         try:
-            _write_marker(
+            write_marker(
                 plan,
                 status=MARKER_COMPLETED,
                 backup_paths=backups,
@@ -908,7 +908,7 @@ def _apply_config(plan: ConfigPlan) -> StepResult:
     problems: list[MigrationProblem] = []
     backup_paths = _marker_backup_paths(plan.runtime_root, plan.marker) if plan.marker else []
     try:
-        progress_marker = _write_marker(
+        progress_marker = write_marker(
             plan,
             status=MARKER_PREPARED,
             backup_paths=backup_paths,
@@ -936,7 +936,7 @@ def _apply_config(plan: ConfigPlan) -> StepResult:
     written: list[str] = []
     for workspace_id in plan.workspace_writes:
         try:
-            _write_workspace_target(
+            write_workspace_target(
                 plan.runtime_root,
                 workspace_id,
                 plan.workspace_config or {},
@@ -990,13 +990,13 @@ def _apply_config(plan: ConfigPlan) -> StepResult:
                         "system config 在迁移提交前发生变化",
                     )
                 )
-            backup_path = _create_verified_bytes_backup(
+            backup_path = create_verified_bytes_backup(
                 latest_bytes,
                 _system_backup_base(plan.source_path),
             )
             if backup_path not in backup_paths:
                 backup_paths.append(backup_path)
-            prepared = _write_marker(
+            prepared = write_marker(
                 plan,
                 status=MARKER_PREPARED,
                 backup_paths=backup_paths,
@@ -1013,7 +1013,7 @@ def _apply_config(plan: ConfigPlan) -> StepResult:
             if persisted != plan.next_document or "observability" in persisted:
                 raise OSError("system config verification failed")
         counts["global_sections_removed"] = 1
-        _write_marker(
+        write_marker(
             plan,
             status=MARKER_COMPLETED,
             backup_paths=backup_paths,

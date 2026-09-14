@@ -22,7 +22,7 @@ def test_sync_directory_opens_with_explicit_restrictive_mode(tmp_path, monkeypat
     monkeypatch.setattr(directory_replacement.os, "fsync", lambda _descriptor: None)
     monkeypatch.setattr(directory_replacement.os, "close", lambda _descriptor: None)
 
-    directory_replacement._sync_directory(tmp_path)
+    directory_replacement.sync_directory(tmp_path)
 
     assert opened == [
         (

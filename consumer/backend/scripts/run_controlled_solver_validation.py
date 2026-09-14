@@ -1042,3 +1042,18 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Explicit test boundaries for validation helpers.
+connector_configuration_from_env_for_test = _connector_configuration_from_env
+unsafe_link_for_test = _unsafe_link
+
+
+def replace_unsafe_link_for_test(monkeypatch: Any, callback: Any) -> None:
+    """Replace the link classifier for the lifetime of a pytest monkeypatch."""
+    monkeypatch.setattr(f"{__name__}._unsafe_link", callback)
+
+
+native_handle_value_for_test = _native_handle_value
+open_windows_no_follow_for_test = _open_windows_no_follow
+read_bounded_file_for_test = _read_bounded_file

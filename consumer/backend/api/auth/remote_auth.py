@@ -364,6 +364,24 @@ class RemoteAuthBackend:
         # 网络故障时沿用旧缓存里的 key（stale 优于验不了）。
         return current_key or key
 
+    def signing_key_for_test(self, kid: Optional[str]) -> Optional[Any]:
+        """Resolve one cached signing key through a public test boundary."""
+        return self._signing_key(kid)
+
+    def set_jwks_state_for_test(
+        self,
+        *,
+        keys: Dict[str, Any],
+        fetched_at: float,
+        last_attempt_at: Optional[float] = None,
+    ) -> None:
+        """Install synthetic JWKS cache state atomically for rotation tests."""
+        with self._jwks_lock:
+            self._jwks_keys = dict(keys)
+            self._jwks_fetched_at = float(fetched_at)
+            if last_attempt_at is not None:
+                self._jwks_last_attempt_at = float(last_attempt_at)
+
     def _refresh_jwks(self) -> bool:
         """Refresh the key set once; return whether a new authoritative set was loaded."""
         with self._jwks_refresh_lock:

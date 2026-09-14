@@ -101,7 +101,7 @@ def _read_json_document(path: Path, *, label: str) -> Dict[str, Any]:
     return payload
 
 
-def _write_bytes_atomic(path: Path, payload: bytes, *, mode: Optional[int] = None) -> None:
+def write_bytes_atomic(path: Path, payload: bytes, *, mode: Optional[int] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name("{}.{}.tmp".format(path.name, uuid.uuid4().hex))
     descriptor: Optional[int] = None
@@ -127,7 +127,7 @@ def _write_bytes_atomic(path: Path, payload: bytes, *, mode: Optional[int] = Non
 
 
 def _write_json_atomic(path: Path, payload: Dict[str, Any], *, mode: Optional[int] = None) -> None:
-    _write_bytes_atomic(
+    write_bytes_atomic(
         path,
         (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
         mode=mode,
@@ -255,7 +255,7 @@ def _create_manual_recovery_backups(paths: WorkspaceMigrationPaths) -> list[Path
                 backup_path.chmod(0o600)
             else:
                 source_bytes = source_path.read_bytes()
-                _write_bytes_atomic(backup_path, source_bytes, mode=0o600)
+                write_bytes_atomic(backup_path, source_bytes, mode=0o600)
                 if backup_path.read_bytes() != source_bytes:
                     raise OSError("备份内容校验失败")
         except OSError as exc:
@@ -418,7 +418,7 @@ def _error_result(
     }
 
 
-def _remove_legacy_files(paths: WorkspaceMigrationPaths) -> int:
+def remove_legacy_files(paths: WorkspaceMigrationPaths) -> int:
     removed = 0
     for path in (paths.bindings, paths.connections):
         if not path.exists():
@@ -660,7 +660,7 @@ def migrate_workspace(
         try:
             _write_json_atomic(paths.sources, canonical_document)
             _verify_canonical_document(paths, canonical_document)
-            removed_legacy_files = _remove_legacy_files(paths)
+            removed_legacy_files = remove_legacy_files(paths)
         except (OSError, OntologyDataSourceMigrationError) as exc:
             return _error_result(
                 dry_run=False,
@@ -818,7 +818,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.report:
-        _write_bytes_atomic(args.report, rendered.encode("utf-8"), mode=0o600)
+        write_bytes_atomic(args.report, rendered.encode("utf-8"), mode=0o600)
     logger.info(rendered.rstrip("\n"))
     return code
 

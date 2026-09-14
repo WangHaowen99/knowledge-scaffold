@@ -213,7 +213,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
             ]
         )
 
-    provider._session.post = _fake_post
+    provider.set_post_for_test(_fake_post)
 
     events = list(provider.search_stream(query="查询快艇 B001", entity="TargetItem"))
 

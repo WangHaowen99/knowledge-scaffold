@@ -151,6 +151,11 @@ def _open_runtime_config_descriptor(path: os.PathLike[str]) -> int:
     raise OSError(errno.ENOTSUP, "secure runtime config open is unavailable")
 
 
+def open_runtime_config_descriptor_for_test(path: os.PathLike[str]) -> int:
+    """Open the runtime config through the production descriptor policy."""
+    return _open_runtime_config_descriptor(path)
+
+
 def read_workspace_runtime_config(workspace_id: str) -> Mapping[str, Any]:
     """Read one workspace runtime-config document without default expansion."""
     workspace_dir = get_workspace_paths(workspace_id).workspace_dir

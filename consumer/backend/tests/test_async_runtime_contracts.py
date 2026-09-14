@@ -181,7 +181,7 @@ def test_default_preflight_package_loader_freezes_content_revision(
         lambda *_args, **_kwargs: (),
     )
 
-    product = preflight_module._default_package_loader(manifest, "workspace-a")
+    product = preflight_module.default_package_loader(manifest, "workspace-a")
 
     assert product["ontology_content_revision"] == (build_package_content_revision(ontology_dir))
 

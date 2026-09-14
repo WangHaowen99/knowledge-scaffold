@@ -62,6 +62,16 @@ _workspace_endpoint_process_lock = threading.Lock()
 _workspace_catalog_manager: WorkspaceCatalogManager | None = None
 _workspace_catalog_manager_root: Path | None = None
 _workspace_catalog_last_generation: int = 0
+
+
+def workspace_metadata_lock_is_available_for_test() -> bool:
+    """Probe metadata-lock availability without exposing the lock object."""
+    available = _workspace_metadata_lock.acquire(blocking=False)
+    if available:
+        _workspace_metadata_lock.release()
+    return available
+
+
 _workspace_config_generations: dict[str, int] = {}
 _TRANSIENT_WORKSPACE_CATALOG_ERRNOS = frozenset({errno.EAGAIN, errno.EINTR, errno.EBUSY, errno.ENOENT})
 _IS_WINDOWS = os.name == "nt"
@@ -672,7 +682,7 @@ def _workspace_metadata_snapshot_for_limit(
     return snapshot
 
 
-def _enforce_workspace_owner_limit_for_update(
+def enforce_workspace_owner_limit_for_update(
     runtime_root: Path,
     workspace_id: str,
     current_owner: Optional[str],
@@ -907,6 +917,24 @@ def _workspace_source_signature(runtime_root: Path) -> WorkspaceSourceSignature:
     return WorkspaceSourceSignature.from_root(runtime_root)
 
 
+workspace_source_signature_for_test = _workspace_source_signature
+write_workspace_metadata_for_test = _write_workspace_metadata
+list_workspace_dirs_for_test = _list_workspace_dirs
+is_link_or_junction_for_test = _is_link_or_junction
+read_workspace_metadata_raw_for_test = _read_workspace_metadata_raw
+
+
+def set_metadata_writer_for_test(
+    monkeypatch: Any, callback: Callable[..., Any]
+) -> None:
+    """Replace the metadata writer with automatic restoration by pytest."""
+    monkeypatch.setattr(f"{__name__}._write_workspace_metadata", callback)
+
+
+def fsync_directory_for_test(path: Path) -> None:
+    _fsync_directory(path)
+
+
 def _is_security_workspace_catalog_error(exc: Exception) -> bool:
     if isinstance(
         exc,
@@ -965,6 +993,9 @@ def _load_workspace_catalog_data(runtime_root: Path) -> WorkspaceCatalogData:
                     items=tuple(items),
                 )
     raise FileNotFoundError("workspace catalog changed while it was being read")
+
+
+load_workspace_catalog_data_for_test = _load_workspace_catalog_data
 
 
 def _get_workspace_catalog_manager_locked() -> WorkspaceCatalogManager:
@@ -1447,7 +1478,7 @@ def update_workspace(
     runtime_root = get_runtime_root()
     with _workspace_endpoint_file_lock(runtime_root):
         with _workspace_metadata_lock:
-            paths = _update_workspace_locked(
+            paths = update_workspace_locked(
                 workspace_id,
                 name=name,
                 description=description,
@@ -1458,7 +1489,7 @@ def update_workspace(
     return get_workspace(paths.workspace_id)
 
 
-def _update_workspace_locked(
+def update_workspace_locked(
     workspace_id: str,
     *,
     name: Optional[str],
@@ -1472,7 +1503,7 @@ def _update_workspace_locked(
         raise WorkspaceNotFoundError(workspace_id)
     payload = _read_workspace_metadata_raw(paths.metadata_path)
     _validate_workspace_metadata_identity(paths.workspace_id, payload)
-    _enforce_workspace_owner_limit_for_update(
+    enforce_workspace_owner_limit_for_update(
         get_runtime_root(),
         paths.workspace_id,
         payload.get("owner"),
@@ -1521,7 +1552,7 @@ def update_workspace_authorized(
                 raise WorkspaceAuthorizationError("workspace mutation is forbidden")
             if normalized_owner is not _UNCHANGED and not is_admin:
                 raise WorkspaceAuthorizationError("only a global admin may change workspace owner")
-            _update_workspace_locked(
+            update_workspace_locked(
                 paths.workspace_id,
                 name=name,
                 description=description,
@@ -1963,7 +1994,7 @@ def _get_workspace_runtime_config_locked(workspace_id: str) -> dict:
 def update_workspace_runtime_config(workspace_id: str, data: dict) -> dict:
     normalized = _normalize_runtime_config_patch(data, strict=True)
     with _model_profile_reference_guard():
-        _validate_global_runtime_profile_refs(normalized.get("llm"))
+        validate_global_runtime_profile_refs(normalized.get("llm"))
         with _workspace_metadata_lock:
             if not workspace_exists(workspace_id):
                 raise WorkspaceNotFoundError(workspace_id)
@@ -1992,7 +2023,7 @@ def _deep_update_runtime_config(target: dict, source: dict) -> None:
             target[key] = value
 
 
-def _validate_global_runtime_profile_refs(llm_patch: Any) -> None:
+def validate_global_runtime_profile_refs(llm_patch: Any) -> None:
     if not isinstance(llm_patch, Mapping):
         return
     requested_ids: set[str] = set()

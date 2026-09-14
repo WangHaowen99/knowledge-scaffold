@@ -55,6 +55,18 @@ def _attest_sandbox_runtime(
         raise SandboxUnavailableError("sandbox runtime revision mismatch")
 
 
+def attest_sandbox_runtime_for_test(
+    registry: Any,
+    sandbox_id: str,
+    *,
+    config: SandboxConfig,
+    timeout_seconds: int,
+) -> None:
+    return _attest_sandbox_runtime(
+        registry, sandbox_id, config=config, timeout_seconds=timeout_seconds
+    )
+
+
 def _resolve_workspace_mount_root(workspace_id: str | None) -> Path:
     """Resolve the only workspace directory that a sandbox may mount."""
     resolved_id = str(workspace_id or "").strip()

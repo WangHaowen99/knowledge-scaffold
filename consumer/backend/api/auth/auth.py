@@ -277,6 +277,10 @@ class AuthManager:
             self._users_mtime = mtime
             return users
 
+    def load_users_for_test(self) -> Dict[str, Dict[str, Any]]:
+        """Load user records through the production cache path for tests."""
+        return self._load_users()
+
     def get_user(self, username: str) -> Optional[AuthUser]:
         users = self._load_users()
         record = users.get(username)
@@ -344,6 +348,10 @@ class AuthManager:
                 json.dump({"users": records}, f, ensure_ascii=False, indent=2)
             self._users_cache = None
             self._users_mtime = None
+
+    def save_users_for_test(self, users: Dict[str, Dict[str, Any]]) -> None:
+        """Persist synthetic user records through the production path."""
+        self._save_users(users)
 
     def list_users(self) -> list:
         users = self._load_users()

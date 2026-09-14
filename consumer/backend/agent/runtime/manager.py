@@ -147,6 +147,10 @@ class AsyncRunManager:
         """Return the number of in-memory run coordination entries."""
         return len(self._entries)
 
+    def has_tracked_run(self, run_id: str) -> bool:
+        """Return whether an in-memory coordination entry exists for a run."""
+        return str(run_id or "") in self._entries
+
     async def create_run(
         self,
         context: RuntimeInvocationContext,

@@ -1146,9 +1146,9 @@ def test_deleted_and_recreated_workspace_does_not_reuse_cached_package_tree(
     recreate_thread = threading.Thread(target=recreate_workspace)
     delete_thread.start()
     assert invalidation_entered.wait(timeout=5)
-    metadata_lock_available = workspaces_module._workspace_metadata_lock.acquire(blocking=False)
-    if metadata_lock_available:
-        workspaces_module._workspace_metadata_lock.release()
+    metadata_lock_available = (
+        workspaces_module.workspace_metadata_lock_is_available_for_test()
+    )
     recreate_thread.start()
     release_invalidation.set()
     delete_thread.join(timeout=5)

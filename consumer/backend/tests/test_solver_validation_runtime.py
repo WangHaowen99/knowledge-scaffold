@@ -202,7 +202,7 @@ def test_refresh_preserves_active_session_store_instances_and_terminal(
     )
     monkeypatch.setattr(
         app_module,
-        "_install_solver_recovery_worker",
+        "install_solver_recovery_worker",
         lambda *_args: None,
     )
     monkeypatch.setattr(
@@ -279,7 +279,7 @@ def test_shutdown_stops_worker_enabled_after_startup(monkeypatch):
     application = app_module.create_app()
 
     with TestClient(application):
-        worker = app_module._install_solver_recovery_worker(
+        worker = app_module.install_solver_recovery_worker(
             application,
             object(),
         )
@@ -325,7 +325,7 @@ def test_shutdown_accepts_worker_disabled_after_startup(monkeypatch):
         worker = application.state.solver_recovery_worker
         assert worker.running is True
         assert (
-            app_module._install_solver_recovery_worker(
+            app_module.install_solver_recovery_worker(
                 application,
                 None,
             )
@@ -361,7 +361,7 @@ def test_install_refuses_to_replace_unterminated_worker(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="did not stop before replacement"):
-        app_module._install_solver_recovery_worker(
+        app_module.install_solver_recovery_worker(
             application,
             object(),
         )
@@ -385,7 +385,7 @@ def test_shutdown_retains_ownership_of_unterminated_worker():
     application.state.solver_recovery_worker = worker
 
     with pytest.raises(RuntimeError, match="did not stop during shutdown"):
-        app_module._stop_solver_recovery_worker(
+        app_module.stop_solver_recovery_worker(
             application,
             timeout_seconds=0.01,
         )
@@ -636,7 +636,7 @@ def test_refresh_replaces_validation_service_only_after_success(monkeypatch):
     )
     monkeypatch.setattr(app_module, "update_runtime_dependencies", lambda *args, **kwargs: None)
     monkeypatch.setattr(app_module, "configure_solver_tool_service", lambda _service: None)
-    monkeypatch.setattr(app_module, "_install_solver_recovery_worker", lambda *args: None)
+    monkeypatch.setattr(app_module, "install_solver_recovery_worker", lambda *args: None)
     monkeypatch.setattr(app_module, "reset_observer", lambda **kwargs: None)
 
     app_module.refresh_runtime_services(application)

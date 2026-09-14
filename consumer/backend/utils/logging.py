@@ -52,6 +52,35 @@ _LOG_CONTEXT_FIELDS = (
     "parent_tool_call_id",
 )
 
+
+def logging_state_for_test() -> dict[str, Any]:
+    """Capture mutable module logging state for isolated configuration tests."""
+    return {
+        "configured": _LOGGING_CONFIGURED,
+        "configured_level": _CONFIGURED_LOG_LEVEL,
+        "runtime_level": _CURRENT_RUNTIME_LOG_LEVEL,
+        "ops_config_signature": _OPS_CONFIG_SIGNATURE,
+        "ops_config_level": _LOG_LEVEL_FROM_OPS_CONFIG,
+    }
+
+
+def restore_logging_state_for_test(state: dict[str, Any]) -> None:
+    """Restore state captured by :func:`logging_state_for_test`."""
+    global _LOGGING_CONFIGURED, _CONFIGURED_LOG_LEVEL
+    global _CURRENT_RUNTIME_LOG_LEVEL, _OPS_CONFIG_SIGNATURE
+    global _LOG_LEVEL_FROM_OPS_CONFIG
+    _LOGGING_CONFIGURED = bool(state["configured"])
+    _CONFIGURED_LOG_LEVEL = int(state["configured_level"])
+    _CURRENT_RUNTIME_LOG_LEVEL = state["runtime_level"]
+    _OPS_CONFIG_SIGNATURE = state["ops_config_signature"]
+    _LOG_LEVEL_FROM_OPS_CONFIG = state["ops_config_level"]
+
+
+def mark_logging_unconfigured_for_test() -> None:
+    """Allow an isolated test to configure the root logger from a clean state."""
+    global _LOGGING_CONFIGURED
+    _LOGGING_CONFIGURED = False
+
 _RESERVED_RECORD_KEYS = {
     "name",
     "msg",

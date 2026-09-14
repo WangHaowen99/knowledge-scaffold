@@ -146,9 +146,9 @@ def test_non_admin_on_admin_route_returns_403(client, auth_manager):
 
 
 def test_password_change_required_state_does_not_block_routes(client, auth_manager):
-    users = auth_manager._load_users()
+    users = auth_manager.load_users_for_test()
     users["admin"]["must_change_password"] = True
-    auth_manager._save_users(users)
+    auth_manager.save_users_for_test(users)
     token = _login(client).json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
 

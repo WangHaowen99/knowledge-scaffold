@@ -1325,7 +1325,7 @@ def test_owner_transfer_and_former_owner_update_are_one_serializable_transaction
 
     entered_transfer = threading.Event()
     release_transfer = threading.Event()
-    original_update_locked = workspace_module._update_workspace_locked
+    original_update_locked = workspace_module.update_workspace_locked
 
     def blocking_update_locked(workspace_id, **fields):
         if fields.get("owner") == "carol":
@@ -1335,7 +1335,7 @@ def test_owner_transfer_and_former_owner_update_are_one_serializable_transaction
 
     monkeypatch.setattr(
         workspace_module,
-        "_update_workspace_locked",
+        "update_workspace_locked",
         blocking_update_locked,
     )
     admin = AuthUser(username="admin", role="admin")

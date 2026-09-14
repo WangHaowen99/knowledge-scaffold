@@ -147,6 +147,9 @@ class DurableJobOrchestrator:
         self.lease_seconds = lease_seconds
         self._clock = clock or _utc_now
 
+    def set_clock_for_test(self, clock: Callable[[], datetime]) -> None:
+        self._clock = clock
+
     def _now(self) -> datetime:
         value = self._clock()
         if not isinstance(value, datetime) or value.tzinfo is None:

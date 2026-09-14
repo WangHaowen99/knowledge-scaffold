@@ -13,7 +13,7 @@ from agent.tools.execute_script import (
     _BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE,
     _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR,
     _WORKSPACE_PROVIDER_DATA_ACCESS,
-    _build_script_env_overrides,
+    build_script_env_overrides,
     handle_execute_script_path,
 )
 from utils.logging import get_logger
@@ -212,7 +212,7 @@ def run_direct_script(
                     == _WORKSPACE_PROVIDER_DATA_ACCESS
                 )
                 try:
-                    env_overrides = _build_script_env_overrides(
+                    env_overrides = build_script_env_overrides(
                         workspace_id=runtime_context.workspace_id,
                         ontology_id=ontology_id,
                         required=requires_business_data,

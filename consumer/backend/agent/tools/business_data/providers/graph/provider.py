@@ -30,6 +30,10 @@ class GraphSearchProvider:
             graph_agent=graph_agent,
         )
 
+    def runtime_provider_for_test(self) -> str:
+        """Expose the bound runtime provider name for wrapper contract tests."""
+        return self._runtime.provider
+
     async def asearch_stream(
         self,
         *,

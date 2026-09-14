@@ -155,7 +155,7 @@ def test_member_write_and_user_delete_cannot_leave_orphan_reference(
 
     monkeypatch.setattr(
         user_deletion,
-        "_cleanup_deleted_user_artifacts",
+        "cleanup_deleted_user_artifacts",
         cleanup_only_workspace_members,
     )
 
@@ -305,6 +305,11 @@ def test_personal_workspace_creation_and_user_delete_preserve_identity_invariant
     monkeypatch.setattr(
         "api.workspace_acl_service.identity_reference_guard",
         observed_guard,
+    )
+    monkeypatch.setattr(
+        user_deletion,
+        "revoke_all_mcp_tokens_for_user",
+        lambda **_kwargs: 0,
     )
 
     def delete_user():

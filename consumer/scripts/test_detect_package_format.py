@@ -24,7 +24,7 @@ _CONVERTER = importlib.util.module_from_spec(_CONVERTER_SPEC)
 sys.modules[_CONVERTER_SPEC.name] = _CONVERTER
 _CONVERTER_SPEC.loader.exec_module(_CONVERTER)
 PackageFormatProfile = _CONVERTER.PackageFormatProfile
-_has_frontmatter = _CONVERTER._has_frontmatter
+has_frontmatter_for_test = _CONVERTER.has_frontmatter_for_test
 detect_package_format = _CONVERTER.detect_package_format
 
 
@@ -38,25 +38,25 @@ class TestHasFrontmatter:
 
     @staticmethod
     def test_returns_false_for_nonexistent_file(tmp_path: Path) -> None:
-        assert _has_frontmatter(tmp_path / "nonexistent.md") is False
+        assert has_frontmatter_for_test(tmp_path / "nonexistent.md") is False
 
     @staticmethod
     def test_returns_true_for_frontmatter_file(tmp_path: Path) -> None:
         f = tmp_path / "test.md"
         f.write_text("---\nkey: value\n---\nbody", encoding="utf-8")
-        assert _has_frontmatter(f) is True
+        assert has_frontmatter_for_test(f) is True
 
     @staticmethod
     def test_returns_false_for_plain_markdown(tmp_path: Path) -> None:
         f = tmp_path / "test.md"
         f.write_text("# Title\n\nbody", encoding="utf-8")
-        assert _has_frontmatter(f) is False
+        assert has_frontmatter_for_test(f) is False
 
     @staticmethod
     def test_returns_false_for_empty_file(tmp_path: Path) -> None:
         f = tmp_path / "empty.md"
         f.write_text("", encoding="utf-8")
-        assert _has_frontmatter(f) is False
+        assert has_frontmatter_for_test(f) is False
 
 
 # --------------------------------------------------------------------------- #

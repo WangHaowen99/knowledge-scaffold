@@ -164,6 +164,12 @@ class ValidationRunStore:
             raise ValidationRunStoreError("validation_run_id resolves outside storage") from exc
         return target
 
+    def run_path_for_test(self, run_id: str, *, owner_id: str) -> Path:
+        return self._run_path(run_id, owner_id=owner_id)
+
+    def owner_runs_root_for_test(self, owner_id: str) -> Path:
+        return self._runs_root / self._owner_digest(owner_id)
+
     def _idempotency_path(self, key: str, *, owner_id: str) -> Path:
         try:
             normalized = validate_session_id(key)

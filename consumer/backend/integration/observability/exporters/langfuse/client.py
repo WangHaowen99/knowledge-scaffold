@@ -185,6 +185,19 @@ class LangfuseTraceAdapter:
             entry = self._active_traces.get(trace_id)
             return entry["trace"] if entry else None
 
+    def seed_trace_for_test(self, trace_id: str, trace: Any) -> None:
+        with self._active_traces_lock:
+            self._active_traces[trace_id] = {"trace": trace, "spans": {}}
+
+    def trace_span_ids_for_test(self, trace_id: str) -> set[str]:
+        with self._active_traces_lock:
+            entry = self._active_traces.get(trace_id)
+            return set((entry or {}).get("spans", {}))
+
+    def has_trace_for_test(self, trace_id: str) -> bool:
+        with self._active_traces_lock:
+            return trace_id in self._active_traces
+
     def update_trace_output(self, trace_id: str, output: Dict[str, Any]) -> None:
         try:
             with self._active_traces_lock:

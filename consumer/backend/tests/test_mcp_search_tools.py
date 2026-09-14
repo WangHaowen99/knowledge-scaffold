@@ -88,7 +88,7 @@ def test_mcp_server_registers_exactly_fourteen_private_search_tools():
 
             return decorate
 
-    mcp_server._register_search_tools(
+    mcp_server.register_search_tools(
         FakeMCP(),
         call_with_scope=lambda *_args, **_kwargs: {},
     )

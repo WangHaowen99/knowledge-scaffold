@@ -68,6 +68,14 @@ def _response(payload: Mapping[str, object] | list[object], status_code: int = 2
     return JSONResponse(content=payload, status_code=status_code)
 
 
+def response_for_test(
+    payload: Mapping[str, object] | list[object],
+    status_code: int = 200,
+):
+    """Build an HTTP response through the production serialization path."""
+    return _response(payload, status_code)
+
+
 def _service(request: Request, key: str):
     services = getattr(request.app.state, "services", {})
     return services.get(key) if isinstance(services, Mapping) else None

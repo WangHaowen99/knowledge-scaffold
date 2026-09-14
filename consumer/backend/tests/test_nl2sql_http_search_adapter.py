@@ -67,7 +67,7 @@ def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
     def post_response(*_args, **_kwargs):
         return _Response()
 
-    adapter._session.post = post_response
+    adapter.set_post_for_test(post_response)
 
     events = list(adapter.search_stream(query="查询零件", entity="TargetItem"))
 
@@ -92,7 +92,7 @@ def test_nl2sql_value_lookup_returns_structured_content():
     def post_response(*_args, **_kwargs):
         return _Response()
 
-    adapter._session.post = post_response
+    adapter.set_post_for_test(post_response)
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -111,7 +111,7 @@ def test_nl2sql_value_lookup_preserves_text_answer_when_no_rows():
     def post_response(*_args, **_kwargs):
         return _TextAnswerResponse()
 
-    adapter._session.post = post_response
+    adapter.set_post_for_test(post_response)
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -127,7 +127,7 @@ def test_nl2sql_value_lookup_emits_provider_failure_in_final():
     def post_response(*_args, **_kwargs):
         return _FailureResponse()
 
-    adapter._session.post = post_response
+    adapter.set_post_for_test(post_response)
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 

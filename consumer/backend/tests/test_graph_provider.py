@@ -119,7 +119,7 @@ def test_neo4j_provider_wrapper_binds_scoped_config(monkeypatch):
 
     assert provider.name == "neo4j"
     assert captured == [{"workspace_id": "workspace-a", "ontology_id": "ontology-a"}]
-    assert provider._runtime.provider == "neo4j"
+    assert provider.runtime_provider_for_test() == "neo4j"
 
 
 def test_hugegraph_provider_wrapper_binds_scoped_config(monkeypatch):
@@ -136,4 +136,4 @@ def test_hugegraph_provider_wrapper_binds_scoped_config(monkeypatch):
 
     assert provider.name == "hugegraph"
     assert captured == [{"workspace_id": "workspace-a", "ontology_id": "ontology-a"}]
-    assert provider._runtime.provider == "hugegraph"
+    assert provider.runtime_provider_for_test() == "hugegraph"

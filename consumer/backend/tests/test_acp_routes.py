@@ -115,8 +115,8 @@ def _app(store, manager):
         event_hub=_EventHub(manager),
     )
     app.include_router(acp_server.acp_router)
-    app.dependency_overrides[acp_server._acp_principal] = principal_override
-    app.dependency_overrides[acp_server._acp_workspace_id] = workspace_id_override
+    app.dependency_overrides[acp_server.acp_principal] = principal_override
+    app.dependency_overrides[acp_server.acp_workspace_id] = workspace_id_override
     return app
 
 

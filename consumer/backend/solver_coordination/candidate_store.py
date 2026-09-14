@@ -52,6 +52,9 @@ class CandidateSetStore:
         self._root.mkdir(parents=True, exist_ok=True)
         self._ledger = ledger or SolverRunLedger(workspace_id)
 
+    def artifact_record_for_test(self, digest: str, *, owner_id: str):
+        return self._ledger.get_artifact(digest, owner_id=owner_id)
+
     @staticmethod
     def _owner_namespace(owner_id: str) -> str:
         return hashlib.sha256(owner_id.encode("utf-8")).hexdigest()

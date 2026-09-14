@@ -281,6 +281,10 @@ class DeterministicExecutionService:
                 raise OSError("deterministic artifact staging lease is invalid") from exc
             os.utime(path)
 
+    artifact_staging_parent_for_test = staticmethod(_artifact_staging_parent)
+    cleanup_stale_artifact_staging_for_test = staticmethod(_cleanup_stale_artifact_staging)
+    refresh_artifact_staging_lease_for_test = staticmethod(_refresh_artifact_staging_lease)
+
     def execute(
         self,
         request: DeterministicRequest,

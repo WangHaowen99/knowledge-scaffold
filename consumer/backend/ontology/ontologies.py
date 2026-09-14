@@ -509,7 +509,7 @@ class OntologyRegistry:
     def ontologies(self) -> Dict[str, OntologyManifest]:
         return dict(self._ontologies)
 
-    def _discover_ontologies_snapshot(self) -> Tuple[Dict[str, OntologyManifest], int]:
+    def discover_ontologies_snapshot(self) -> Tuple[Dict[str, OntologyManifest], int]:
         ontologies: Dict[str, OntologyManifest] = {}
         loaded_count = 0
 
@@ -540,9 +540,9 @@ class OntologyRegistry:
             ontologies: Dict[str, OntologyManifest] = {}
             loaded_count = 0
             for _attempt in range(3):
-                before_signature = _build_registry_source_signature(self.ontology_dirs)
-                ontologies, loaded_count = self._discover_ontologies_snapshot()
-                after_signature = _build_registry_source_signature(self.ontology_dirs)
+                before_signature = build_registry_source_signature(self.ontology_dirs)
+                ontologies, loaded_count = self.discover_ontologies_snapshot()
+                after_signature = build_registry_source_signature(self.ontology_dirs)
                 if before_signature == after_signature:
                     stable_signature = after_signature
                     break
@@ -566,12 +566,17 @@ class OntologyRegistry:
             now = self._clock()
             if self._source_signature is not None and now < self._next_source_check_at:
                 return False
-            current_signature = _build_registry_source_signature(self.ontology_dirs)
+            current_signature = build_registry_source_signature(self.ontology_dirs)
             self._next_source_check_at = now + self._check_interval_seconds
             return self._source_signature != current_signature
 
     def get_ontology(self, ontology_id: str) -> Optional[OntologyManifest]:
         return self._ontologies.get(ontology_id)
+
+    def expire_source_check_for_test(self) -> None:
+        """Expire the discovery throttle for filesystem-change tests."""
+        with self._refresh_lock:
+            self._next_source_check_at = 0.0
 
     def list_ontologies(self) -> List[str]:
         return list(self._ontologies.keys())
@@ -585,6 +590,13 @@ _registry_lock = threading.RLock()
 _registries: Dict[Tuple[Any, ...], OntologyRegistry] = {}
 
 
+def clear_global_registry_for_test() -> None:
+    """Clear the compatibility registry pointer for isolated tests."""
+    global _global_registry
+    with _registry_lock:
+        _global_registry = None
+
+
 def _file_stat_signature(path: Path) -> Tuple[bool, int, int]:
     try:
         stat = path.stat()
@@ -593,7 +605,7 @@ def _file_stat_signature(path: Path) -> Tuple[bool, int, int]:
     return True, int(stat.st_mtime_ns), int(stat.st_size)
 
 
-def _build_registry_source_signature(ontology_dirs: List[Path]) -> Tuple[Any, ...]:
+def build_registry_source_signature(ontology_dirs: List[Path]) -> Tuple[Any, ...]:
     """Build a cheap cross-process change marker for ontology discovery roots."""
     signature: List[Any] = []
     for root in ontology_dirs:

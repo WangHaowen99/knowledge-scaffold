@@ -36,7 +36,7 @@ def _aggregate(fp: str) -> Aggregate:
 def test_normalize_merged_fps_accepts_unique_visible_prefixes():
     agg = _aggregate("abcdef1234567890abcdef1234567890abcdef12")
 
-    merged = OperationPatcher._normalize_merged_fps(
+    merged = OperationPatcher.normalize_merged_fps_for_test(
         ["abcdef123456"],
         [agg],
     )
@@ -48,7 +48,7 @@ def test_normalize_merged_fps_rejects_ambiguous_prefixes():
     first = _aggregate("abcdef1234567890abcdef1234567890abcdef12")
     second = _aggregate("abcdef1234560000abcdef1234567890abcdef12")
 
-    merged = OperationPatcher._normalize_merged_fps(
+    merged = OperationPatcher.normalize_merged_fps_for_test(
         ["abcdef123456"],
         [first, second],
     )
@@ -91,7 +91,7 @@ def test_llm_merge_requests_json_object_response(monkeypatch):
     )
     agg = _aggregate("abcdef1234567890abcdef1234567890abcdef12")
 
-    result = patcher._llm_merge(
+    result = patcher.llm_merge_for_test(
         ontology_id="example",
         operation_key="OP_A",
         current_md="# OP_A",
@@ -122,7 +122,7 @@ def test_update_config_changes_threshold_decisions():
         ),
     )
 
-    assert patcher._collect_actionable("example", "OP_A") == []
+    assert patcher.collect_actionable_for_test("example", "OP_A") == []
 
     patcher.update_config(
         PatcherConfig(
@@ -131,7 +131,7 @@ def test_update_config_changes_threshold_decisions():
         )
     )
 
-    assert patcher._collect_actionable("example", "OP_A") == [agg]
+    assert patcher.collect_actionable_for_test("example", "OP_A") == [agg]
 
 
 def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):

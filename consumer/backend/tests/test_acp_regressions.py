@@ -116,7 +116,7 @@ def test_acp_forwards_explicit_deterministic_operation_and_arguments(
             return SimpleNamespace(), store
 
         monkeypatch.setattr(acp_server, "_stores", stores)
-        created = await acp_server._create_from_payload(
+        created = await acp_server.create_from_payload_for_test(
             request,
             {
                 "messages": [
@@ -170,7 +170,7 @@ def test_acp_builds_one_dynamic_preflight_before_each_durable_turn(tmp_path):
         store.create_turn_for_run = tracked_create_turn
         user = AuthUser(username="operator_a", role="user")
         for index in range(2):
-            await acp_server._admit_run(
+            await acp_server.admit_run_for_test(
                 request,
                 user=user,
                 workspace_id="workspace_demo",
@@ -269,7 +269,7 @@ def test_acp_public_event_keeps_external_id_as_metadata_only():
         created_at="2026-01-01T00:00:01Z",
     )
 
-    mapped = list(acp_server._map_public_event(event, "external_run_demo"))
+    mapped = list(acp_server.map_public_event_for_test(event, "external_run_demo"))
 
     assert mapped[-1] == (
         "run.completed",
@@ -282,7 +282,7 @@ def test_acp_public_event_keeps_external_id_as_metadata_only():
 
 
 def test_acp_interaction_option_maps_to_canonical_value():
-    interaction_id, value, option_id = acp_server._interaction_response_values(
+    interaction_id, value, option_id = acp_server.interaction_response_values_for_test(
         {"await_id": "interaction_demo", "option_id": "option_a"},
         {
             "id": "interaction_demo",
@@ -298,7 +298,7 @@ def test_acp_interaction_option_maps_to_canonical_value():
 
 
 def test_acp_await_projection_preserves_prompt_and_interaction_id():
-    awaiting = acp_server._build_await_response(
+    awaiting = acp_server.build_await_response_for_test(
         {
             "question": "Choose a synthetic option",
             "tool_call_id": "interaction_demo",
@@ -316,7 +316,7 @@ def test_acp_hitl_answer_allocates_a_new_canonical_run(tmp_path):
         request = _request(manager)
         store = ExecutionStore(str(tmp_path / "executions"))
         user = AuthUser(username="operator_a", role="user")
-        first = await acp_server._admit_run(
+        first = await acp_server.admit_run_for_test(
             request,
             user=user,
             workspace_id="workspace_demo",
@@ -338,7 +338,7 @@ def test_acp_hitl_answer_allocates_a_new_canonical_run(tmp_path):
             first.turn_id,
             final_output={"type": "user_interaction", "interaction": interaction},
         )
-        second = await acp_server._admit_run(
+        second = await acp_server.admit_run_for_test(
             request,
             user=user,
             workspace_id="workspace_demo",
@@ -389,11 +389,11 @@ def test_acp_response_exposes_external_id_and_canonical_metadata():
         created_at="2026-01-01T00:00:00Z",
         updated_at="2026-01-01T00:00:01Z",
         last_seq=1,
-        scope=acp_server._scope(AuthUser("operator_a", "user"), "workspace_demo"),
+        scope=acp_server.scope_for_test(AuthUser("operator_a", "user"), "workspace_demo"),
         context=context,
     )
 
-    response = acp_server._response_from_snapshot(
+    response = acp_server.response_from_snapshot_for_test(
         snapshot,
         external_run_id="external_run_demo",
     )

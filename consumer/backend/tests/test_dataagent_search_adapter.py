@@ -88,7 +88,7 @@ def test_dataagent_agent_output_preserves_baseline_structured_presentation():
             "'rows_preview': [('华东',)], 'confidence': 0.95, 'error': None}"
         )
 
-    adapter._client._session.post = post_response
+    adapter.post_callback_for_test = post_response
 
     events = list(adapter.search_stream(query="查询销售区域", entity="Sales"))
     output = json.loads(events[1]["content"])
@@ -109,7 +109,7 @@ def test_dataagent_agent_output_preserves_baseline_literal_failure_presentation(
     def post_response(*_args, **_kwargs):
         return _Response(r"{'sql': '\x', 'columns': [invalid], 'confidence': None, 'error': None}")
 
-    adapter._client._session.post = post_response
+    adapter.post_callback_for_test = post_response
 
     events = list(adapter.search_stream(query="查询异常结果", entity="Sales"))
     output = json.loads(events[1]["content"])
@@ -134,7 +134,7 @@ def test_dataagent_non_structured_response_preserves_full_provider_text():
     def post_response(*_args, **_kwargs):
         return _Response(provider_text)
 
-    adapter._client._session.post = post_response
+    adapter.post_callback_for_test = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -153,7 +153,7 @@ def test_dataagent_non_structured_response_truncates_oversized_text():
     def post_response(*_args, **_kwargs):
         return _Response(oversized)
 
-    adapter._client._session.post = post_response
+    adapter.post_callback_for_test = post_response
 
     events = list(adapter.search_stream(query="查询", entity="flight"))
     output = json.loads(events[1]["content"])

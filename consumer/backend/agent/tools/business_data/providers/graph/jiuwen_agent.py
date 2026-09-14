@@ -134,7 +134,7 @@ class JiuwenGraphQueryAgent:
             tool_schemas=tool_schemas,
         )
         attempt = 1
-        final_message = await self._ainvoke_once(
+        final_message = await self.ainvoke_once(
             context=context,
             tool_schemas=tool_schemas,
             adapter=adapter,
@@ -150,7 +150,7 @@ class JiuwenGraphQueryAgent:
                     "summary": "上一轮未调用内部图工具，使用隔离会话重试",
                 }
             )
-            final_message = await self._ainvoke_once(
+            final_message = await self.ainvoke_once(
                 context=context,
                 tool_schemas=tool_schemas,
                 adapter=adapter,
@@ -172,7 +172,7 @@ class JiuwenGraphQueryAgent:
                     "summary": "关系/路径意图尚未尝试 pattern_search，追加一次路径检索修正",
                 }
             )
-            final_message = await self._ainvoke_once(
+            final_message = await self.ainvoke_once(
                 context=context,
                 tool_schemas=tool_schemas,
                 adapter=adapter,
@@ -197,7 +197,7 @@ class JiuwenGraphQueryAgent:
             last_error = "GraphQueryAgent 未调用内部图检索工具: {}".format(final_message.strip()[:200])
         raise GraphAgentError(last_error or "GraphQueryAgent 未调用可用图检索工具")
 
-    async def _ainvoke_once(
+    async def ainvoke_once(
         self,
         *,
         context: GraphSearchRuntimeContext,
@@ -379,6 +379,9 @@ class GraphJiuwenToolAdapter:
             task_name="graph-data-tool",
             offload_kind="tool",
         )
+
+    def invoke_sync_for_test(self, tool_name: str, tool_args: Any) -> str:
+        return self._invoke_sync(tool_name, tool_args)
 
     def _invoke_sync(self, tool_name: str, tool_args: Any) -> str:
         name = str(tool_name or "").strip()

@@ -34,9 +34,9 @@ def test_jiuwen_tool_batches_share_one_stable_invocation_index():
         invocation_index_provider=counter.next,
     )
 
-    assert first._next_invocation_index() == 1
-    assert second._next_invocation_index() == 2
-    assert first._next_invocation_index() == 3
+    assert first.next_invocation_index_for_test() == 1
+    assert second.next_invocation_index_for_test() == 2
+    assert first.next_invocation_index_for_test() == 3
 
 
 def test_traceparent_parser_normalizes_valid_w3c_context():
@@ -161,12 +161,12 @@ def test_observability_close_flushes_and_closes_after_timeout():
 
         assert exporter.close_count == 0
         release_export.set()
-        bus._worker.join(timeout=1)
+        bus.wait_for_worker(timeout=1)
 
-        assert not bus._worker.is_alive()
+        assert not bus.worker_is_alive()
         assert exporter.close_count == 1
         assert exporter.flush_count >= 1
     finally:
         release_export.set()
-        bus._worker.join(timeout=1)
+        bus.wait_for_worker(timeout=1)
         bus.close(timeout=1)

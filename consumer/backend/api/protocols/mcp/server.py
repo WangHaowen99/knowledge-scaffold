@@ -66,6 +66,16 @@ _SSE_SESSION_ID_PATTERN = re.compile(
 logger = logging.getLogger(__name__)
 
 
+def mcp_endpoint_state_key() -> str:
+    return _MCP_ENDPOINT_STATE_KEY
+
+
+def mcp_session_idle_timeout_seconds() -> int:
+    return _MCP_SESSION_IDLE_TIMEOUT_SECONDS
+
+
+
+
 @dataclass
 class _WorkspaceEndpointSessionBinding:
     endpoint_id: str
@@ -429,7 +439,7 @@ def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = 
                     "retriable": False,
                 },
             }
-        return _invoke_mcp_with_observation(
+        return invoke_mcp_with_observation(
             scope,
             required_scope=required_scope,
             caller=caller,
@@ -462,13 +472,13 @@ def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = 
         )
 
     if normalized_toolset in {"search", "all"}:
-        _register_search_tools(mcp, call_with_scope=_with_scope)
+        register_search_tools(mcp, call_with_scope=_with_scope)
     if normalized_toolset in {"chat", "all"}:
-        _register_chat_tool(mcp, call_with_scope=_with_scope_async)
+        register_chat_tool(mcp, call_with_scope=_with_scope_async)
     return mcp
 
 
-def _invoke_mcp_with_observation(
+def invoke_mcp_with_observation(
     scope: MCPRequestScope,
     *,
     required_scope: str,
@@ -594,7 +604,7 @@ def _mark_mcp_span_error(
         logger.warning("Failed to mark MCP OpenTelemetry span as error", exc_info=True)
 
 
-def _register_search_tools(
+def register_search_tools(
     mcp: Any, *, call_with_scope: Callable[[str, Callable[[MCPRequestScope], dict[str, Any]]], dict[str, Any]]
 ) -> None:
     @mcp.tool()
@@ -892,7 +902,7 @@ def _register_search_tools(
         )
 
 
-def _register_chat_tool(
+def register_chat_tool(
     mcp: Any,
     *,
     call_with_scope: Callable[
@@ -1246,3 +1256,13 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# Public test boundaries
+WorkspaceEndpointBindingApp = _WorkspaceEndpointBindingApp
+WorkspaceEndpointSessionBindings = _WorkspaceEndpointSessionBindings
+MCPActiveSessionLimitError = _MCPActiveSessionLimitError
+request_mcp_session_id = _request_mcp_session_id
+configure_streamable_http_session_idle_timeout = _configure_streamable_http_session_idle_timeout
+
+resolve_scope = _resolve_scope
+get_request_mcp_endpoint_id_best_effort = _get_request_mcp_endpoint_id_best_effort

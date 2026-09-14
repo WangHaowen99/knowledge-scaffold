@@ -35,6 +35,11 @@ _RECOVERY_DISCOVERY_PENDING = object()
 _RECOVERY_TARGET_PENDING = object()
 
 
+def recovery_scan_tick_for_test() -> object:
+    """Return the scan tick sentinel used by recovery boundary tests."""
+    return _RECOVERY_SCAN_TICK
+
+
 class _RecoveryWorker:
     """One daemon worker for deadline-aware recovery operations."""
 
@@ -390,6 +395,9 @@ class UserStoreManager:
                     )
             deferred_users = pending_users
             retry_delay = min(0.08, retry_delay * 2)
+
+    def iter_recovery_targets_for_test(self) -> Iterator[object | tuple[str, str, str]]:
+        return self._iter_recovery_targets()
 
     @staticmethod
     def _recovery_sessions_for_user(

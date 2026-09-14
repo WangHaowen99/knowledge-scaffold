@@ -311,7 +311,7 @@ def build_execute_script_tool_schema_from_catalog(
             parameter_names.append(name)
             if bool(parameter.get("required", True)):
                 operation_required.add(name)
-            argument_properties[name] = _merge_script_parameter_property_schema(
+            argument_properties[name] = merge_script_parameter_property_schema(
                 argument_properties.get(name),
                 _script_parameter_property_schema(parameter),
             )
@@ -405,7 +405,7 @@ def _script_parameter_property_schema(parameter: Mapping[str, Any]) -> Dict[str,
     return property_schema
 
 
-def _merge_script_parameter_property_schema(
+def merge_script_parameter_property_schema(
     existing: Optional[Dict[str, Any]],
     incoming: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -757,6 +757,11 @@ def _validated_python_argv(command: Sequence[str]) -> list[str]:
     return argv
 
 
+def validated_python_argv_for_test(command: Sequence[str]) -> list[str]:
+    """Validate a sandbox command through a public test boundary."""
+    return _validated_python_argv(command)
+
+
 def _run_with_bounded_output(
     cmd: List[str],
     *,
@@ -966,7 +971,7 @@ def _spawn_with_args_file(
             pass
 
 
-def _build_script_env_overrides(
+def build_script_env_overrides(
     *,
     workspace_id: Optional[str],
     ontology_id: str,
@@ -2461,7 +2466,7 @@ def handle_execute_script(
         str(script_entry.get("data_access") or "none").strip().casefold() == _WORKSPACE_PROVIDER_DATA_ACCESS
     )
     try:
-        env_overrides = _build_script_env_overrides(
+        env_overrides = build_script_env_overrides(
             workspace_id=workspace_id,
             ontology_id=ontology_id,
             required=requires_business_data,
@@ -2488,6 +2493,22 @@ def handle_execute_script(
     )
     consistency_error = _validate_structured_result_consistency(result)
     return consistency_error or result
+
+
+def build_cli_args_for_test(
+    *,
+    script_args: Sequence[str],
+    script_parameters: Sequence[Mapping[str, Any]],
+    arguments: Mapping[str, Any],
+    runtime_context: Optional[Mapping[str, Any]] = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Build CLI arguments through the production path for contract tests."""
+    return _build_cli_args(
+        script_args=script_args,
+        script_parameters=script_parameters,
+        arguments=arguments,
+        runtime_context=runtime_context,
+    )
 
 
 def _build_cli_args(

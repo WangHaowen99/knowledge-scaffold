@@ -2455,14 +2455,14 @@ def test_artifact_staging_cleans_only_stale_owned_directories(tmp_path, monkeypa
     stale_timestamp = time.time() - direct_execution_service_module.STALE_ARTIFACT_STAGING_SECONDS - 1
     os.utime(stale, (stale_timestamp, stale_timestamp))
     os.utime(leased, (stale_timestamp, stale_timestamp))
-    DeterministicExecutionService._refresh_artifact_staging_lease(leased)
+    DeterministicExecutionService.refresh_artifact_staging_lease_for_test(leased)
     monkeypatch.setenv(
         "DETERMINISTIC_ARTIFACT_STAGING_ROOT",
         str(shared_root),
     )
 
-    parent = DeterministicExecutionService._artifact_staging_parent()
-    DeterministicExecutionService._cleanup_stale_artifact_staging(parent)
+    parent = DeterministicExecutionService.artifact_staging_parent_for_test()
+    DeterministicExecutionService.cleanup_stale_artifact_staging_for_test(parent)
 
     assert not stale.exists()
     assert leased.is_dir()
@@ -2491,7 +2491,7 @@ def test_artifact_staging_lease_uses_windows_compatible_utime_fallback(
         windows_compatible_utime,
     )
 
-    DeterministicExecutionService._refresh_artifact_staging_lease(staging_dir)
+    DeterministicExecutionService.refresh_artifact_staging_lease_for_test(staging_dir)
 
     assert calls == [{"follow_symlinks": False}, {}]
 

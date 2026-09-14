@@ -59,6 +59,10 @@ class RunSandboxRegistry:
         self._parent_to_companions: dict[str, set[str]] = {}
         self._companion_to_parent: dict[str, str] = {}
 
+    def set_client_for_test(self, client: object) -> None:
+        """Install an isolated control-plane client for lifecycle tests."""
+        self._client = client
+
     def register_companion(self, parent_run_id: str, companion_run_id: str) -> None:
         """Reserve an internal sandbox run id under its owning workflow run."""
         parent = str(parent_run_id or "").strip()

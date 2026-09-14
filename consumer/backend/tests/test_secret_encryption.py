@@ -47,7 +47,7 @@ def test_key_file_first_create_is_atomic_under_concurrency(tmp_path, monkeypatch
 
     def load_key() -> None:
         try:
-            results.append(secrets_module._load_key())
+            results.append(secrets_module.load_key_for_test())
         except Exception as exc:  # pragma: no cover - surfaced by assertion below
             errors.append(exc)
 

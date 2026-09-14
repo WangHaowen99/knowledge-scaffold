@@ -126,6 +126,7 @@ class SolverCoordinationService:
     def __post_init__(self) -> None:
         if self.endpoint_policy is None:
             self.endpoint_policy = EndpointPolicy()
+
         elif not isinstance(self.endpoint_policy, EndpointPolicy):
             raise TypeError("endpoint_policy must be an EndpointPolicy")
         if not isinstance(getattr(self.job_orchestrator, "store", None), SolverJobStore):
@@ -188,6 +189,27 @@ class SolverCoordinationService:
     @property
     def store(self) -> SolverJobStore:
         return self.job_orchestrator.store
+
+    def set_persist_frozen_inputs_for_test(self, callback: Callable[..., Any] | None) -> None:
+        self._persist_frozen_inputs_for_test = callback
+
+    def set_write_tool_result_for_test(self, callback: Callable[..., Any] | None) -> None:
+        self._write_tool_result_for_test = callback
+
+    def set_load_frozen_artifact_for_test(self, callback: Callable[..., Any] | None) -> None:
+        self._load_frozen_artifact_for_test = callback
+
+    def persist_frozen_inputs_for_test(self, **kwargs: Any) -> None:
+        """Run the durable writer without changing concurrent test hooks."""
+        self._persist_frozen_inputs_impl(**kwargs)
+
+    def write_tool_result_for_test(self, **kwargs: Any) -> None:
+        """Run the durable result writer without changing test hooks."""
+        self.store.write_tool_result(**kwargs)
+
+    def load_frozen_artifact_for_test(self, **kwargs: Any) -> Mapping[str, Any]:
+        """Run the artifact reader without changing concurrent test hooks."""
+        return self._load_frozen_artifact_impl(**kwargs)
 
     def retry_job(
         self,
@@ -3120,6 +3142,29 @@ class SolverCoordinationService:
         job_id: str,
         artifact_type: str,
     ) -> Mapping[str, Any]:
+        callback = getattr(self, "_load_frozen_artifact_for_test", None)
+        if callback is not None:
+            return callback(
+                workspace_id=workspace_id,
+                owner_id=owner_id,
+                job_id=job_id,
+                artifact_type=artifact_type,
+            )
+        return self._load_frozen_artifact_impl(
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            job_id=job_id,
+            artifact_type=artifact_type,
+        )
+
+    def _load_frozen_artifact_impl(
+        self,
+        *,
+        workspace_id: str,
+        owner_id: str,
+        job_id: str,
+        artifact_type: str,
+    ) -> Mapping[str, Any]:
         try:
             records: list[Mapping[str, Any]] = []
             for record in self.store.list_artifacts(
@@ -3253,6 +3298,47 @@ class SolverCoordinationService:
         )
 
     def _persist_frozen_inputs(
+        self,
+        *,
+        workspace_id: str,
+        owner_id: str,
+        job_id: str,
+        attempt_id: str | None,
+        normalized_input: Mapping[str, Any],
+        fact_snapshot: Mapping[str, Any],
+        problem: Mapping[str, Any],
+        lease_owner: str | None = None,
+        fencing_token: int | None = None,
+        lease_seconds: int | None = None,
+    ) -> None:
+        callback = getattr(self, "_persist_frozen_inputs_for_test", None)
+        if callback is not None:
+            return callback(
+                workspace_id=workspace_id,
+                owner_id=owner_id,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                normalized_input=normalized_input,
+                fact_snapshot=fact_snapshot,
+                problem=problem,
+                lease_owner=lease_owner,
+                fencing_token=fencing_token,
+                lease_seconds=lease_seconds,
+            )
+        self._persist_frozen_inputs_impl(
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            job_id=job_id,
+            attempt_id=attempt_id,
+            normalized_input=normalized_input,
+            fact_snapshot=fact_snapshot,
+            problem=problem,
+            lease_owner=lease_owner,
+            fencing_token=fencing_token,
+            lease_seconds=lease_seconds,
+        )
+
+    def _persist_frozen_inputs_impl(
         self,
         *,
         workspace_id: str,
@@ -3567,6 +3653,9 @@ class SolverCoordinationService:
         )
 
     def _write_tool_result(self, *, result: Mapping[str, Any], **identity: Any) -> None:
+        callback = getattr(self, "_write_tool_result_for_test", None)
+        if callback is not None:
+            return callback(result=result, **identity)
         self.store.write_tool_result(result=result, **identity)
 
     def _best_effort_stop_attempt(
@@ -3784,6 +3873,18 @@ class SolverCoordinationService:
                 "model_compile_failed", "compile", "locked decision model is invalid"
             ) from exc
         return resolved, required
+
+    @staticmethod
+    def binding_for_test(
+        payload: Any,
+        *,
+        endpoint_policy: EndpointPolicy | None = None,
+    ) -> tuple[str, Mapping[str, Any]]:
+        """Validate a binding through the production path for contract tests."""
+        return SolverCoordinationService._binding(
+            payload,
+            endpoint_policy=endpoint_policy,
+        )
 
     @staticmethod
     def _binding(

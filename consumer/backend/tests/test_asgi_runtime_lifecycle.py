@@ -77,8 +77,8 @@ def _build_lifespan_test_app(monkeypatch, manager):
     monkeypatch.setattr(app_module, "initialize_open_telemetry", lambda _app: None)
     monkeypatch.setattr(app_module, "configure_llm_router", lambda _router: None)
     monkeypatch.setattr(app_module, "configure_solver_tool_service", lambda _service: None)
-    monkeypatch.setattr(app_module, "_install_solver_recovery_worker", lambda *_args: None)
-    monkeypatch.setattr(app_module, "_stop_solver_recovery_worker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app_module, "install_solver_recovery_worker", lambda *_args: None)
+    monkeypatch.setattr(app_module, "stop_solver_recovery_worker", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         app_module,
         "initialize_runtime_dependencies",
@@ -497,5 +497,5 @@ def test_runtime_container_closes_the_process_level_event_bus():
 
 
 def test_safe_sync_step_propagates_explicit_incomplete_result():
-    assert app_module._safe_sync_step("synthetic", lambda: False) is False
-    assert app_module._safe_sync_step("synthetic", lambda: None) is True
+    assert app_module.safe_sync_step_for_test("synthetic", lambda: False) is False
+    assert app_module.safe_sync_step_for_test("synthetic", lambda: None) is True
