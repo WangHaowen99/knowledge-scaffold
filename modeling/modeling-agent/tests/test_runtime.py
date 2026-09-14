@@ -2716,7 +2716,7 @@ async def test_repeated_read_table_rows_uses_run_cache(settings) -> None:
 async def test_free_input_while_waiting_resumes_as_interjection(settings) -> None:
     original_question = {
         "question": "请选择业务范围",
-        "kind": "scope_confirmation",
+        "kind": "business_decision",
         "options": [
             {"label": "范围 A", "description": "只覆盖 A", "value": "a"},
             {"label": "范围 B", "description": "覆盖 A 和 B", "value": "b"},
@@ -2751,7 +2751,7 @@ async def test_free_input_while_waiting_resumes_as_interjection(settings) -> Non
 async def test_interjection_restores_question_when_model_only_answers(settings) -> None:
     original_question = {
         "question": "补货申请按哪条路径建模？",
-        "kind": "scope_confirmation",
+        "kind": "business_decision",
         "options": [
             {"label": "常规补货", "description": "按规程口径", "value": "standard"},
             {"label": "保留两条", "description": "记录证据冲突", "value": "both"},
@@ -2828,7 +2828,7 @@ async def test_interjection_restores_question_when_model_only_answers(settings) 
 async def test_interjection_cannot_mutate_candidate_before_question_is_restored(settings) -> None:
     original_question = {
         "question": "请选择补货申请适用路径",
-        "kind": "scope_confirmation",
+        "kind": "business_decision",
         "options": [
             {"label": "路径 A", "description": "候选路径 A", "value": "a"},
             {"label": "路径 B", "description": "候选路径 B", "value": "b"},
@@ -4091,7 +4091,7 @@ async def test_agent_continues_after_progress_until_next_interaction(settings) -
         })],
         [ToolTurn("ask", {
             "question": "目标范围是否包含历史数据？",
-            "kind": "scope_confirmation",
+            "kind": "business_decision",
             "options": [
                 {"label": "包含", "description": "覆盖历史数据", "value": "yes"},
                 {"label": "不包含", "description": "只覆盖当前数据", "value": "no"},
@@ -5764,3 +5764,245 @@ def test_repeated_tool_failure_counts_as_loop() -> None:
         _record_tool_outcome(live, "put_goal_section", True)
     _record_tool_outcome(live, "create_rule", True)
     assert _detect_loop(live) == ""
+
+
+async def test_approved_plan_execution_intent_requires_plan_chain() -> None:
+    chain = {"stage_change_set", "validate_change_set", "request_confirmation"}
+    approval_messages = [
+        "我已在页面批准当前建模计划。请继续执行已批准的建模计划：完成候选预检，候选修订写入后执行完整校验，校验通过后生成统一确认卡；不要重复已经完成的任务。",
+        "我已在页面批准当前建模计划。请从计划第一项继续，先核对当前状态和写入回执，不要重复已经完成的任务。",
+        "请按已批准的 5 项修复计划继续执行，完成候选预检、完整校验并生成确认卡",
+        "批准这份计划，开始执行",
+    ]
+    for message in approval_messages:
+        assert chain <= _required_tools_for_user_intent(message), message
+    rejected = _required_tools_for_user_intent(
+        "我已在页面拒绝当前建模计划。请读取计划的最终状态并停止这份计划，不要产生任何候选修改"
+    )
+    assert chain.isdisjoint(rejected)
+    non_intent = [
+        "不要按已批准计划继续执行",
+        "不是根据已批准计划推进",
+        "确认这份计划已完成",
+        "检查这份计划是否已经完成",
+    ]
+    for message in non_intent:
+        assert chain.isdisjoint(_required_tools_for_user_intent(message)), message
+
+
+async def test_progress_only_final_text_detection() -> None:
+    from modeling_agent.service import _progress_only_final_text
+
+    assert _progress_only_final_text("正在执行候选预检，下一步展示统一确认卡")
+    assert _progress_only_final_text("下一步将展示统一确认卡")
+    assert not _progress_only_final_text("确认卡已生成，等待您确认。")
+
+
+async def test_approved_plan_progress_text_is_not_settled_completed(settings) -> None:
+    model = ScriptedModel(
+        [[]],
+        final="正在执行候选预检，下一步展示统一确认卡",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_approved_plan_progress",
+            token="token_approved_plan_progress",
+            message="请按已批准的 5 项修复计划继续执行，完成候选预检、完整校验并生成确认卡",
+        )
+        settled = await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "suspended"}, timeout=15,
+        )
+        assert settled["status"] != "completed", settled
+        events = runtime.store.events_after("project_approved_plan_progress", 0)
+        assert not any(
+            event.kind == "status" and event.payload.get("text") == "本轮完成"
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_progress_only_text_without_approved_plan_settles_normally(settings) -> None:
+    model = ScriptedModel(
+        [[]],
+        final="正在执行候选预检，下一步展示统一确认卡",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_plain_progress",
+            token="token_plain_progress",
+            message="继续处理当前内容",
+        )
+        settled = await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "suspended"}, timeout=15,
+        )
+        assert settled["status"] == "completed", settled
+    finally:
+        await runtime.shutdown()
+
+
+def test_completed_tool_names_restores_observed_tools(tmp_path) -> None:
+    from modeling_agent.store import RuntimeStore
+
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.append_event(
+        "project_restore_tools", "run_restore_tools", "tool",
+        {"name": "analyze_deterministic_capabilities", "phase": "completed"},
+    )
+    store.append_event(
+        "project_restore_tools", "run_restore_tools", "tool",
+        {"name": "read_document", "phase": "failed"},
+    )
+    assert store.completed_tool_names("run_restore_tools") == {"analyze_deterministic_capabilities"}
+
+
+async def test_approved_plan_plain_text_is_not_settled_completed(settings) -> None:
+    model = ScriptedModel(
+        [[]],
+        final="修改计划已处理完毕，本轮结束。",
+    )
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_approved_plan_plain_text",
+            token="token_approved_plan_plain_text",
+            message=("我已在页面批准当前建模计划。请从计划第一项继续，先核对当前状态和写入回执，不要重复已经完成的任务。"),
+        )
+        settled = await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "suspended"}, timeout=15,
+        )
+        assert settled["status"] != "completed", settled
+    finally:
+        await runtime.shutdown()
+
+
+async def test_rejected_confirmation_requires_completion_chain(settings) -> None:
+    groups = [{"id": "goal", "tier": "caliber", "title": "建模目标确认", "impact": []}]
+    model = ScriptedModel(
+        [[ToolTurn("request_confirmation", {"summary": "确认建模目标"})], []],
+        final="已按反馈调整完毕。",
+    )
+    gateway = FakeGateway({
+        "prepare_confirmation_groups": {"change_groups": groups},
+        "request_confirmation_preflight": {
+            "candidate_revision": "candidate_goal",
+            "validation_receipt": {
+                "candidateHash": "sha256:goal",
+                "validatorVersion": "package-contract-v2",
+            },
+            "auto_approved": False,
+            "change_groups": groups,
+            "focus": {"kind": "diff", "target": ".modeling/goal.md"},
+        },
+        "request_confirmation_rejected": {
+            "rejected": True,
+            "candidateRevision": "candidate_goal",
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_rejected_confirmation_chain",
+            token="token_confirm_1",
+            message="开始",
+        )
+        await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        interaction = runtime.store.pending_interaction("project_rejected_confirmation_chain")
+        assert interaction is not None
+        await runtime.answer_interaction(
+            project_id="project_rejected_confirmation_chain",
+            interaction_id=interaction.id,
+            token="token_confirm_2",
+            answer={"approved": False, "feedback": "补充来源依据后重新生成候选"},
+        )
+        settled = await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "suspended", "waiting"}, timeout=15,
+        )
+        assert settled["status"] != "completed", settled
+    finally:
+        await runtime.shutdown()
+
+
+async def test_scope_confirmation_without_analysis_is_rejected(settings) -> None:
+    question = {
+        "question": "4 个操作是否需要生成自动化脚本？",
+        "kind": "scope_confirmation",
+        "options": [
+            {"label": "本轮不生成脚本", "description": "操作作为业务规范文档使用", "value": "no_scripts"},
+            {
+                "label": "调整范围",
+                "description": "指定需要生成脚本的操作名称",
+                "value": "custom",
+                "requiresText": True,
+                "textPrompt": "请列出操作名称",
+            },
+        ],
+    }
+    model = ScriptedModel([[ToolTurn("ask", question)]], final="本轮未形成脚本范围决定，已停止。")
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_scope_gate_blocked",
+            token="token_scope_gate",
+            message="进入验证阶段，确认脚本范围",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        assert completed["status"] == "completed", completed["error"]
+        assert runtime.store.pending_interaction("project_scope_gate_blocked") is None
+        events = runtime.store.events_after("project_scope_gate_blocked", 0)
+        assert not any(event.kind == "interaction" for event in events)
+    finally:
+        await runtime.shutdown()
+
+
+async def test_scope_confirmation_allowed_after_analysis(settings) -> None:
+    question = {
+        "question": "4 个操作是否需要生成自动化脚本？",
+        "kind": "scope_confirmation",
+        "options": [
+            {"label": "为 2 个操作生成脚本", "description": "基于分析结论的推荐范围", "value": "recommended"},
+            {"label": "本轮不生成脚本", "description": "操作作为业务规范文档使用", "value": "no_scripts"},
+            {
+                "label": "调整范围",
+                "description": "指定需要生成脚本的操作名称",
+                "value": "custom",
+                "requiresText": True,
+                "textPrompt": "请列出操作名称",
+            },
+        ],
+    }
+    model = ScriptedModel([
+        [ToolTurn("analyze_deterministic_capabilities")],
+        [ToolTurn("ask", question)],
+    ], final="等待专家决定。")
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        state = runtime.store.project_state("project_scope_gate_allowed")
+        runtime.store.transition_project_state(
+            "project_scope_gate_allowed",
+            expected_revision=state.revision,
+            next_state="validation:completed",
+            cause="test_fixture",
+            actor_run_id="",
+        )
+        started = await runtime.start_run(
+            project_id="project_scope_gate_allowed",
+            token="token_scope_gate",
+            message="进入验证阶段，确认脚本范围",
+        )
+        waiting = await wait_for_status(runtime, started["id"], {"waiting", "failed"})
+        assert waiting["status"] == "waiting", waiting["error"]
+        interaction = runtime.store.pending_interaction("project_scope_gate_allowed")
+        assert interaction is not None
+        assert interaction.kind == "scope_confirmation"
+        assert interaction.payload["question"] == question["question"]
+    finally:
+        await runtime.shutdown()

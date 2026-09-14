@@ -1034,6 +1034,23 @@ class RuntimeStore:
                 cleared += 1
         return cleared
 
+    def completed_tool_names(self, run_id: str) -> set[str]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT payload_json FROM agent_events
+                WHERE run_id = ? AND kind = 'tool' ORDER BY seq""",
+                (run_id,),
+            ).fetchall()
+        names: set[str] = set()
+        for row in rows:
+            payload = _object(row["payload_json"])
+            if str(payload.get("phase") or "") != "completed":
+                continue
+            name = str(payload.get("name") or "").strip()
+            if name:
+                names.add(name)
+        return names
+
     def tool_receipt(
         self,
         run_id: str,
