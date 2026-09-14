@@ -41,6 +41,18 @@ export interface RenderPackageOptions {
   validateScripts?: boolean;
 }
 
+export const ROOT_INDEX_PATH = 'index.md';
+export const DIAGRAM_INDEX_PATH = 'diagrams/index.md';
+
+/**
+ * 根索引「业务数据查询」能力与 mappings/object-data-mappings.json 的对象集合同源：
+ * 两边都只认绑定了物理数据表的对象。校验器据此判断二者是否自相矛盾。
+ */
+export function businessDataQueryEnabled(spec: PackageSpec): boolean {
+  // 校验器会拿未规格化的存量 spec 调用，objects 可能缺失。
+  return (spec.objects ?? []).some((object) => !!tableSourceFor(object));
+}
+
 // YAML 标量转义：含特殊字符 / 首尾空白 / 空串时用 JSON 双引号形式（JSON 字符串是合法 YAML 标量）。
 const yamlEscape = (s: string) =>
   (/[:#'"\n\r\t\\]|^[\s\-?*&!|>%@`[\]{},]|\s$|^$/.test(s) ? JSON.stringify(s) : s);
@@ -347,7 +359,7 @@ function rootIndex(spec: PackageSpec, includeDiagrams = false): string {
     '| 对象语义理解 | enabled | 通过 objects/index.md 和对象详情加载业务对象、字段和查询边界。 |',
     '| 操作流程理解 | enabled | 通过 operations/index.md 加载输入、输出、流程和关联对象。 |',
     `| 受控脚本执行 | ${spec.scripts?.length ? 'enabled' : 'disabled'} | ${spec.scripts?.length ? '通过 operation.script 绑定 scripts/ 中的结构化计算脚本。' : '当前包未注册计算脚本。'} |`,
-    `| 业务数据查询 | ${spec.objects.some((object) => !!tableSourceFor(object)) ? 'enabled' : 'disabled'} | ${spec.objects.some((object) => !!tableSourceFor(object)) ? '通过 mappings/object-data-mappings.json 将对象映射到数据源和字段。' : '当前包没有绑定业务数据表。'} |`, '',
+    `| 业务数据查询 | ${businessDataQueryEnabled(spec) ? 'enabled' : 'disabled'} | ${businessDataQueryEnabled(spec) ? '通过 mappings/object-data-mappings.json 将对象映射到数据源和字段。' : '当前包没有绑定业务数据表。'} |`, '',
     '# 消费边界', '',
     // 规范 §7 原文表述：判断类优先 rule、计算类优先 metric，无对应目录时按规范回退
     '查询真实数据前必须先加载相关 object；判断类问题优先加载相关 rule，没有规则目录时回到 operation 的业务说明；计算类问题优先加载相关 metric，没有指标目录时不得编造指标口径。', '',
@@ -435,6 +447,14 @@ export function renderPackage(spec: PackageSpec, options: RenderPackageOptions =
   }
   for (const op of s.operations) files[`operations/${op.key}.md`] = operationMd(op);
   return files;
+}
+
+/**
+ * Render only the root index. Its 目录 / 典型问题 / Runtime 能力 derive from the whole spec,
+ * so incremental writers that only touch one resource still have to refresh it.
+ */
+export function renderRootIndex(spec: PackageSpec, includeDiagrams = false): string {
+  return rootIndex(validateSpecKeys(canonicalizePackageSpec(spec)), includeDiagrams);
 }
 
 /** Render only the deterministic object/index/mapping projection used by Schema no-change checks. */
