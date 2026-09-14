@@ -42,6 +42,7 @@ from .project_transfer import (
     export_project_transfer,
     import_project_transfer,
 )
+from .rails import claims_confirmation_card
 from .tools import CandidateValidationRepairState, EVALUATION_PENDING_MESSAGE, ToolContext
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 from .workflows import (
@@ -125,6 +126,7 @@ MAX_STALLED_CONTINUATIONS = 2
 # 但它们是写入前的正常准备，用 2 轮上限会让计划刚起步就被判成本轮完成。
 MAX_STALLED_PLAN_CONTINUATIONS = 5
 MAX_DECISION_CARD_RETRIES = 2
+MAX_PROGRESS_ONLY_CONTINUATIONS = 2
 MAX_VISIBLE_REASONING_CHARS = 12_000
 REASONING_EVENT_BATCH_CHARS = 160
 COMPACT_SUMMARY_MAX_TOKENS = 4_096
@@ -214,6 +216,9 @@ def _confirmation_review_actions() -> list[dict[str, str]]:
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
+# 已批准计划执行与候选退回后的修补都必须走完整闭环：候选写入、完整校验、
+# 统一确认卡；只输出进度文字不能把 Run 结算为完成。
+APPROVED_PLAN_REQUIRED_TOOLS = frozenset({"stage_change_set", "validate_change_set", "request_confirmation"})
 PURPOSE_REVIEW_ALLOWED_TOOLS = frozenset({
     "get_project_state", "list_documents", "read_document", "list_tables", "describe_table",
     "set_material_directive", "read_file", "list_skill", "focus", "notify",
@@ -2109,6 +2114,7 @@ class AgentService:
                             ),
                         }},
                         autonomous_seed=True,
+                        required_tools=APPROVED_PLAN_REQUIRED_TOOLS,
                     )
                 failed_interaction = self.store.set_interaction_submission_error(interaction.id, reason)
                 if failed_interaction is not None:
@@ -2193,6 +2199,8 @@ class AgentService:
                 required_tools.add("stage_product_ledger")
         if direct_confirmation:
             approved = answer.get("approved") is True
+            if not approved:
+                required_tools = required_tools | APPROVED_PLAN_REQUIRED_TOOLS
             prompt = (
                 "用户已经正式接受了候选修改，服务端已将该卡片绑定的候选写入当前修订。"
                 if approved else
@@ -3226,6 +3234,30 @@ class AgentService:
             f"最新交互事实：{json.dumps(facts, ensure_ascii=False)}"
         )
 
+    def _plan_execution_boundary_reached(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        output: str,
+    ) -> bool:
+        """是否已经形成候选/确认卡等真实完成边界。"""
+        if live.observed_tools & {"stage_change_set", "validate_change_set", "request_confirmation"}:
+            return True
+        if claims_confirmation_card(output):
+            return True
+        pending = self.store.pending_interaction(run.project_id)
+        return pending is not None and pending.run_id == run.id
+
+    @staticmethod
+    def _retry_continuation(
+        retries: int,
+        max_retries: int,
+        retry_query: str,
+    ) -> tuple[int, str] | None:
+        if retries < max_retries:
+            return retries + 1, retry_query
+        return None
+
     async def _resume(
         self,
         run: RunRecord,
@@ -3271,6 +3303,7 @@ class AgentService:
             project_id=run.project_id,
             token=token,
             tool_profile=run.tool_profile,
+            observed_tools=self.store.completed_tool_names(run.id),
             restore_interaction=restore_interaction,
             required_tools=set(required_tools or ()) | {
                 str(item.get("requiredTool") or "")
@@ -3330,6 +3363,7 @@ class AgentService:
             project_id=run.project_id,
             token=token,
             tool_profile=run.tool_profile,
+            observed_tools=self.store.completed_tool_names(run.id),
             required_tools=set(required_tools or ()) | {
                 str(item.get("requiredTool") or "")
                 for item in technical_recoveries.values()
@@ -3438,6 +3472,7 @@ class AgentService:
             continuations = 0
             decision_card_retries = 0
             confirmation_card_retries = 0
+            progress_only_retries = 0
             model_operation_seq = 0
             current_query = query
             active_phase = initial_phase
@@ -3496,6 +3531,9 @@ class AgentService:
                     confirmation_guard=lambda: (
                         not live.confirmation_required
                         or not _missing_required_tools(live)
+                    ),
+                    scope_confirmation_gate=lambda: (
+                        "analyze_deterministic_capabilities" in live.observed_tools
                     ),
                     tool_receipt_lookup=lambda name, call_id, arguments: self.store.tool_receipt(
                         live.run_id, call_id, name, arguments,
@@ -3692,9 +3730,10 @@ class AgentService:
                     and not context.interjection_reply_required
                     and live.restore_interaction is None
                 ):
-                    if decision_card_retries < MAX_DECISION_CARD_RETRIES:
-                        decision_card_retries += 1
-                        current_query = (
+                    next_retry = self._retry_continuation(
+                        decision_card_retries,
+                        MAX_DECISION_CARD_RETRIES,
+                        (
                             "你刚才在普通文字里要求用户从业务选项中选择，但尚未生成可操作的问题卡。"
                             "立即调用 ask，把同一问题整理成少量互斥选项并保留自由输入；"
                             "不要改用 request_confirmation，也不要再次只输出文字选项。"
@@ -3702,7 +3741,10 @@ class AgentService:
                             "你刚才在普通文字里要求用户补充描述，但尚未生成可输入的问题卡。"
                             "立即调用 ask，把同一补充请求放入问题卡；可以不提供选项，并保留自由输入。"
                             "不要继续执行项目、转换阶段，也不要再次只用普通文字索要输入。"
-                        )
+                        ),
+                    )
+                    if next_retry is not None:
+                        decision_card_retries, current_query = next_retry
                         continue
                     result = {
                         "result_type": "error",
@@ -3710,15 +3752,41 @@ class AgentService:
                         "streamed": False,
                     }
                 if result.get("result_type") == "success" and live.confirmation_required:
-                    if confirmation_card_retries < 2:
-                        confirmation_card_retries += 1
-                        current_query = (
+                    next_retry = self._retry_continuation(
+                        confirmation_card_retries,
+                        MAX_DECISION_CARD_RETRIES,
+                        (
                             "整体差异已经核对，但页面上尚未形成需要专家处理的真实确认卡。"
                             "立即发起整体确认；不得替专家批准，也不得只用文字询问。"
-                        )
+                        ),
+                    )
+                    if next_retry is not None:
+                        confirmation_card_retries, current_query = next_retry
                         continue
                     self._suspend_confirmation_review(live, run)
                     return
+                if (
+                    result.get("result_type") == "success"
+                    and _progress_only_final_text(str(result.get("output") or ""))
+                    and not self._plan_execution_boundary_reached(
+                        live, run, str(result.get("output") or ""),
+                    )
+                    and APPROVED_PLAN_REQUIRED_TOOLS <= live.required_tools
+                ):
+                    next_retry = self._retry_continuation(
+                        progress_only_retries,
+                        MAX_PROGRESS_ONLY_CONTINUATIONS,
+                        self._progress_only_continuation_prompt(run.project_id),
+                    )
+                    if next_retry is not None:
+                        progress_only_retries, current_query = next_retry
+                        continue
+                    result = {
+                        "result_type": "error",
+                        "output": "助手只输出了执行进度，未形成候选修订、校验回执或确认卡；本轮已停止，已保留当前成果。",
+                        "streamed": True,
+                        "errorCode": "PROGRESS_ONLY_COMPLETION",
+                    }
                 if result.get("result_type") == "interrupt" or live.restore_interaction:
                     self._settle(live, run, result)
                     return
@@ -4132,6 +4200,17 @@ class AgentService:
             "planNextTask": live.situation.plan_next_task,
             "stalledRounds": stalled,
         })
+
+    def _progress_only_continuation_prompt(self, project_id: str) -> str:
+        state = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
+        return (
+            "你刚才只输出了执行进度，尚未形成候选修订、校验回执或确认卡。"
+            "不要再次只描述下一步；立即调用 get_project_state 读取最新状态，"
+            "再按已批准计划调用 stage_change_set 与 validate_change_set，"
+            "完整校验通过后调用 request_confirmation 生成统一确认卡。\n\n"
+            "# 项目唯一 Agent 状态快照\n"
+            f"{state}"
+        )
 
     async def _ensure_visible_result(
         self,
@@ -4818,6 +4897,44 @@ _AUTONOMOUS_WORK_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+_APPROVED_PLAN_EXECUTION_INTENT = re.compile(
+    r"(?:按|根据|依照).{0,16}(?:已批准|已审批|已同意|批准后?|审批后?)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,16}(?:继续|执行|推进|完成)|"
+    r"(?<![不未])(?:已批准|已审批|已同意|批准后?|审批后?)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,20}(?:继续|执行|推进|完成|开始)|"
+    r"(?<![不未])(?:批准|同意|确认)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,24}(?:继续|执行|推进|完成|开始)|"
+    r"(?:修复计划|变更计划|已批准计划).{0,12}(?:继续|执行|推进|完成)|"
+    r"(?:候选预检|完整校验|统一确认卡).{0,12}(?:继续|执行|完成|生成)|"
+    r"(?:继续|执行|完成|生成).{0,12}(?:候选预检|完整校验|统一确认卡)",
+    re.IGNORECASE,
+)
+
+_APPROVED_PLAN_NEGATION = re.compile(
+    r"(?:不|未|没有|无需|不用|别|不是).{0,8}(?:按|根据|依照|继续|执行|推进|完成|开始)|"
+    r"(?:确认|核对|检查|查看).{0,16}(?:计划).{0,16}(?:已完成|已执行|已处理|完成情况|执行情况|状态)|"
+    r"(?:计划|任务).{0,8}(?:已完成|已执行|已处理|完成情况|执行情况)",
+    re.IGNORECASE,
+)
+
+
+def _approved_plan_execution_requested(text: str) -> bool:
+    value = str(text or "")
+    if _APPROVED_PLAN_NEGATION.search(value):
+        return False
+    return bool(_APPROVED_PLAN_EXECUTION_INTENT.search(value))
+
+
+_PROGRESS_ONLY_FINAL_TEXT = re.compile(
+    r"正在执行(?:候选)?预检|"
+    r"正在(?:准备|进行|执行)(?:候选)?预检|"
+    r"下一步(?:将|会|就)?(?:展示|生成|执行|进入)|"
+    r"(?:尚未|还未|没有)(?:展示|生成|形成).{0,12}(?:确认卡|候选)|"
+    r"(?:即将|准备)(?:展示|生成).{0,12}(?:确认卡|候选)|"
+    r"预检通过后.{0,16}(?:展示|生成)",
+)
+
+
+def _progress_only_final_text(text: str) -> bool:
+    return bool(_PROGRESS_ONLY_FINAL_TEXT.search(str(text or "")))
+
 
 def _release_reentry_requested(text: str) -> bool:
     return bool(_RELEASE_REENTRY_INTENT.search(str(text or "")))
@@ -5005,6 +5122,8 @@ def _required_tools_for_user_intent(
         # 台账先作为一个确定性工具结果取得；产品台账模式为 advisory 时不阻断，
         # 切换为 enforce 后由核心门禁阻止正式规则批次继续生成。
         required.add("stage_product_ledger")
+    if _approved_plan_execution_requested(value):
+        required.update(APPROVED_PLAN_REQUIRED_TOOLS)
     return required
 
 
