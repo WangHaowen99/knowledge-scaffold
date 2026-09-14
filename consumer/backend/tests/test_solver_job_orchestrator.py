@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.contracts import ProblemIR, SolverResult
 from solver_coordination.job_orchestrator import DurableJobOrchestrator
 from solver_coordination.job_store import JobStoreConflict, LeaseConflict, SolverJobStore
+from internal_access import internal
 
 WORKSPACE_ID = "workspace_synthetic"
 OWNER_ID = "owner_synthetic"

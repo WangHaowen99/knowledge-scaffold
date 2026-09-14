@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import os
 import stat
@@ -20,6 +19,7 @@ from ontology.view_cache import (
     invalidate_ontology_views,
 )
 from starlette.requests import Request
+from internal_access import internal
 
 
 def test_package_tree_cache_reuses_build_and_returns_defensive_copies(monkeypatch):

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import textwrap
 from pathlib import Path
@@ -16,6 +15,7 @@ from agent.tools.business_data.adapters.nl2sql_template_search import (
 )
 from backend_synthetic_credentials import synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
+from internal_access import internal
 
 
 def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 
 from agent.evolution import registry
@@ -16,6 +15,7 @@ from agent.runtime.async_utils import (
 from agent.runtime.offload import BoundedOffloadPool
 from agent.runtime.supervisor import RunTaskSupervisor
 from llm import LLMPurpose
+from internal_access import internal
 
 
 def _aggregate(fp: str) -> Aggregate:

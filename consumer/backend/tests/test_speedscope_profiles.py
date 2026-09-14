@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import json
 import multiprocessing
 import os
@@ -19,6 +18,7 @@ from integration.observability.speedscope_io import speedscope_session_lock_path
 from integration.observability.stack_profiler import _RunStackProfile, _write_stack_profile
 from integration.observability.traces.run import RunRuntimeTrace
 from utils.identifiers import safe_user_storage_key
+from internal_access import internal
 
 
 def test_stack_profiler_merges_sampled_profile_into_evented_session(tmp_path):

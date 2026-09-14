@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import os
 import stat
@@ -12,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
+from internal_access import internal
 
 SECRET_TEST_KEY = ENCRYPTION_KEY
 

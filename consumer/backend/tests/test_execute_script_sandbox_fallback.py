@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import logging
 import subprocess
@@ -18,6 +17,7 @@ from integration.sandbox.errors import (
     SandboxUnavailableError,
     SandboxUnsupportedProviderError,
 )
+from internal_access import internal
 
 
 def _write_script(tmp_path):

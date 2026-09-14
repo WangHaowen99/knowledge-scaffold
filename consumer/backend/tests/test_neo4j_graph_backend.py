@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import pytest
 from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
 from agent.tools.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
 from agent.tools.business_data.providers.graph.models import GraphScope
 from backend_synthetic_credentials import synthetic_invalid_password
+from internal_access import internal
 
 
 class _FakeNode:

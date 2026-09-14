@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import base64
 import hashlib
 import json
@@ -35,6 +34,7 @@ from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 from shared_capabilities.ontology_script_sdk.deterministic_provider import (
     DETERMINISTIC_PROVIDER_SOCKET_ENV,
 )
+from internal_access import internal
 
 
 def _write_package(root: Path, *, parser=False, data_access="none") -> Path:

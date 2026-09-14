@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import logging
 import sys
 import threading
@@ -10,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
+from internal_access import internal
 
 
 @pytest.fixture(autouse=True)

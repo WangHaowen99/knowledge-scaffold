@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import hashlib
 import json
 import stat
@@ -10,6 +9,7 @@ from pathlib import Path
 from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 from utils.security.secrets import encrypt_secret
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 SECRET_TEST_KEY = ENCRYPTION_KEY
 

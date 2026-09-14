@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 from operator import getitem
 from types import SimpleNamespace
@@ -22,6 +21,7 @@ from agent.direct_execution.models import RouteDecision, RuntimeContext
 from agent.direct_execution.router import OperationDirectRouter
 from agent.tools.business_data.resolver import BusinessDataConnectionError
 from agent.tools.script_parameters import is_runtime_parameter, runtime_parameter_field
+from internal_access import internal
 
 
 def test_extract_runtime_argument_keys_covers_structured_and_legacy_aliases():

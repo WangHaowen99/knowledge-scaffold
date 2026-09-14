@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import socket
 import threading
 import importlib
@@ -41,6 +40,7 @@ from backend_synthetic_credentials import (
 )
 from fastapi.testclient import TestClient
 from werkzeug.serving import make_server
+from internal_access import internal
 
 # 测试专用例外：决策 D4 禁止 consumer 与 auth-server 之间任何生产代码 Python import
 # （唯一接口是 HTTP）。集成测试为了进程内起真实 server 而 import auth_server，
@@ -249,7 +249,7 @@ def test_cold_jwks_failure_reports_throttling_and_recovers(auth_server, monkeypa
     # Keep the refresh interval deterministic without changing JWT/server clocks.
     monkeypatch.setattr(remote_auth_module, "time", SimpleNamespace(time=lambda: 1000.0))
     backend = RemoteAuthBackend(auth_server.base_url)
-    real_get = backend._session.get
+    real_get = internal(backend).session.get
     attempts = []
 
     def fail_first_get(*args, **kwargs):
@@ -258,7 +258,7 @@ def test_cold_jwks_failure_reports_throttling_and_recovers(auth_server, monkeypa
             raise requests.ReadTimeout("synthetic JWKS timeout")
         return real_get(*args, **kwargs)
 
-    monkeypatch.setattr(backend._session, "get", fail_first_get)
+    monkeypatch.setattr(internal(backend).session, "get", fail_first_get)
     client = TestClient(_build_consumer_app(backend))
     credentials = {"username": "admin", "password": BOOTSTRAP_ADMIN_PASSWORD}
     with client:
@@ -266,8 +266,8 @@ def test_cold_jwks_failure_reports_throttling_and_recovers(auth_server, monkeypa
         assert client.post("/auth/login", json=credentials).status_code == 503
         assert len(attempts) == 1
         # Advance only the refresh gate; JWT validity still uses the real clock.
-        with backend._jwks_lock:
-            backend._jwks_last_attempt_at = 0
+        with internal(backend).jwks_lock:
+            internal(backend).jwks_last_attempt_at = 0
         assert client.post("/auth/login", json=credentials).status_code == 200
     records = [record for record in caplog.records if record.name == "auth.diagnostics"]
     assert [(record.auth_stage, record.auth_reason) for record in records] == [

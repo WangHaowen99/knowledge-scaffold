@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -30,6 +29,7 @@ from persistence.session_summary_index import (
     SessionSummaryIndex,
     SessionSummaryIndexWriteError,
 )
+from internal_access import internal
 
 
 def _create_reserved_protocol_turn(

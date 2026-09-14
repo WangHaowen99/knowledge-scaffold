@@ -7,7 +7,6 @@ owner/members 管理端点权限、以及无 owner 字段旧数据的兼容性�
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +28,7 @@ from backend_synthetic_credentials import (
     STRONG_PASSWORD_3,
 )
 from fastapi.testclient import TestClient
+from internal_access import internal
 
 FORBIDDEN_BODY = {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
 

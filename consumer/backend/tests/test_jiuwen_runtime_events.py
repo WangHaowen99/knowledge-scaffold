@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import threading
 import unittest
@@ -27,6 +26,7 @@ from agent.runtime.jiuwen import _build_resumable_llm_context
 from agent.runtime.lifecycle import JiuwenRuntimeLifecycleError
 from agent.runtime.mock import ListRuntimeEventSink
 from backend_synthetic_credentials import synthetic_invalid_password, synthetic_secret
+from internal_access import internal
 
 
 def _context(

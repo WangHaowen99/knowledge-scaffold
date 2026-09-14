@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -26,6 +25,7 @@ from api.testing import TestApplication
 from llm import LLMPurpose
 from persistence.execution_store import ExecutionStore
 from utils.lang import _detect_language_via_llm, detect_language, translate_text
+from internal_access import internal
 
 
 class _InlinePool:

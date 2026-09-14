@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import threading
 import time
 from types import SimpleNamespace
@@ -12,6 +11,7 @@ from backend_synthetic_credentials import ADMIN_API_TOKEN
 from fastapi.testclient import TestClient
 from solver_coordination import OperationValidationRunService, SyntheticValidationService
 from solver_coordination.runtime import build_operation_validation_service
+from internal_access import internal
 
 
 def _runtime_bundle(validation_service):

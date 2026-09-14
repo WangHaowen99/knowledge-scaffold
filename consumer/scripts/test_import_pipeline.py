@@ -6,7 +6,6 @@ Run with:
 
 from __future__ import annotations
 
-from internal_access import internal
 import importlib.util
 import json
 import sys
@@ -15,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from internal_access import internal
 
 # Ensure the module under test is importable.
 SCRIPT_DIR = Path(__file__).resolve().parent

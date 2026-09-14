@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import inspect
 import json
 import threading
@@ -10,6 +9,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from integration.observability import RuntimeEvent, RuntimeEventType
+from internal_access import internal
 
 
 def _event(index: int) -> RuntimeEvent:

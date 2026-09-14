@@ -17,6 +17,7 @@ from api.routes.auth import auth_router
 from api.testing import TestApplication
 from backend_synthetic_credentials import synthetic_secret
 from utils.logging import ContextFormatter, JsonFormatter, bind_log_context
+from internal_access import internal
 
 
 _BASE_URL = "http://auth.example.net"
@@ -237,7 +238,7 @@ def test_concurrent_auth_attempts_keep_diagnostics_isolated_across_runtime_pool(
     def unavailable_response(*_args, **_kwargs):
         return _Response(502)
 
-    backend._session.post = unavailable_response
+    internal(backend).session.post = unavailable_response
     with pytest.raises(ValueError):
         backend.login("operator_a", _PASSWORD)
     assert len({record.auth_attempt_id for record in _diagnostic_records(caplog)}) == 3

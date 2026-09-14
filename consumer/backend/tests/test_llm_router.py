@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -16,6 +15,7 @@ from llm import LLMPurpose, LLMRouter
 from llm.service import LLMService
 from system_config_migration_helpers import apply_test_system_config_migrations
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 def _agent_config() -> AgentConfig:

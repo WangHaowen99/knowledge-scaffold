@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for ontology management routes."""
 
-from internal_access import internal
 import io
 import json
 import shutil
@@ -26,6 +25,7 @@ from backend_synthetic_credentials import (
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace
+from internal_access import internal
 
 EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
 

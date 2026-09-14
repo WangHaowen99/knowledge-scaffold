@@ -1,11 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import asyncio
 import logging
 from types import SimpleNamespace
 
 import agent.core.warmup as warmup
 import pytest
+from internal_access import internal
 
 
 class _InlineShortIO:

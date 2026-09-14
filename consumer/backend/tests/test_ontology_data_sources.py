@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import stat
 from types import SimpleNamespace
@@ -23,6 +22,7 @@ from backend_synthetic_credentials import (
 )
 from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace, workspace_scope
+from internal_access import internal
 
 
 def _create_workspace_with_ontology(

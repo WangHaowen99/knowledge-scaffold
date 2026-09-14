@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the openJiuwen ReAct adapter boundary."""
 
-from internal_access import internal
 import asyncio
 import importlib
 import importlib.util
@@ -45,6 +44,7 @@ from agent.tools.registry import get_tool_schema, get_tool_spec
 from backend_synthetic_credentials import synthetic_secret
 from config.settings import AgentConfig, LimitsConfig, WebSearchConfig
 from llm import LLMPurpose
+from internal_access import internal
 
 _REAL_IMPORT_MODULE = importlib.import_module
 

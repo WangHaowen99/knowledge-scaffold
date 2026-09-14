@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import ast
 import inspect
 import textwrap
@@ -14,6 +13,7 @@ from workspace.workspaces import (
     get_workspace_runtime_config,
     update_workspace_runtime_config,
 )
+from internal_access import internal
 
 
 def _create_workspace(tmp_path, monkeypatch):

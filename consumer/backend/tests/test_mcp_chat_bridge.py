@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import threading
 from contextlib import asynccontextmanager
@@ -39,6 +38,7 @@ from backend_synthetic_credentials import synthetic_secret
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import MCPRequestScope
 from persistence.execution_store import ExecutionStore
+from internal_access import internal
 
 
 class _InlinePool:

@@ -13,6 +13,7 @@ from integration.sandbox.executor import SandboxScriptExecutor
 from integration.sandbox.policy_builder import OntoSandboxPolicyBuilder
 import integration.sandbox.executor as executor_module
 import integration.sandbox.package_revision as revisions
+from internal_access import internal
 
 
 @pytest.fixture
@@ -75,7 +76,7 @@ def test_verified_copy_mounts_only_the_admitted_package_and_releases_each_call(s
         assert str(fixture.root.parent) not in paths
         assert str(fixture.root.parent.parent) not in paths
     assert [value for kind, value in fixture.calls if kind == "release"] == [ctx.run_id for ctx in contexts]
-    assert revisions._VERIFIED_PACKAGE.get() is None
+    assert internal(revisions).VERIFIED_PACKAGE.get() is None
 
 
 def test_unscoped_staging_path_still_cannot_escape_workspace(staged_package):
@@ -121,7 +122,7 @@ def test_failed_exec_releases_companion_and_clears_scope(staged_package):
         with _scope(staged_package):
             staged_package.executor.run_script(**staged_package.kwargs)
     assert staged_package.calls[-1][0] == "release"
-    assert revisions._VERIFIED_PACKAGE.get() is None
+    assert internal(revisions).VERIFIED_PACKAGE.get() is None
 
 
 @pytest.mark.parametrize("parent_depth", [0, 1, 2])
@@ -150,7 +151,7 @@ def test_handoff_rejects_missing_execution_identity(staged_package, field, value
         with revisions.verified_package_execution(staged_package.root, **kwargs):
             pytest.fail("incomplete scope admitted")
     assert staged_package.calls == []
-    assert revisions._VERIFIED_PACKAGE.get() is None
+    assert internal(revisions).VERIFIED_PACKAGE.get() is None
 
 
 @pytest.mark.parametrize("relative_path,create", [
@@ -167,7 +168,7 @@ def test_handoff_rejects_invalid_staging_paths(staged_package, relative_path, cr
         with _scope(staged_package):
             pytest.fail("unsafe scope admitted")
     assert staged_package.calls == []
-    assert revisions._VERIFIED_PACKAGE.get() is None
+    assert internal(revisions).VERIFIED_PACKAGE.get() is None
 
 
 def _admission(fixture):
@@ -213,8 +214,8 @@ def test_admitted_parser_and_handler_have_separate_bounded_mounts(staged_package
     assert handler.read_only_paths == (fixture.root, *read_only)
     assert handler.writable_paths == (artifact_directory,)
     assert all(value[0] == "run_demo" for kind, value in fixture.calls if kind == "register")
-    assert revisions._ADMITTED_PACKAGE.get() is None
-    assert revisions._VERIFIED_PACKAGE.get() is None
+    assert internal(revisions).ADMITTED_PACKAGE.get() is None
+    assert internal(revisions).VERIFIED_PACKAGE.get() is None
 
 
 @pytest.mark.parametrize("field,value", [
@@ -276,8 +277,8 @@ def test_cleanup_failure_rejects_deterministic_output_and_restores_scope(
         with pytest.raises(SandboxUnavailableError, match="sandbox cleanup failed"):
             with _deterministic_scope(staged_package):
                 staged_package.executor.run_script(**staged_package.kwargs)
-        assert revisions._VERIFIED_PACKAGE.get() is None
-    assert revisions._ADMITTED_PACKAGE.get() is None
+        assert internal(revisions).VERIFIED_PACKAGE.get() is None
+    assert internal(revisions).ADMITTED_PACKAGE.get() is None
 
 
 @pytest.mark.parametrize("parser", [False, True])
@@ -289,7 +290,7 @@ def test_deterministic_script_boundary_uses_admitted_copy_and_finishes_cleanup(
     import agent.tools.execute_script as scripts
 
     fixture = staged_package
-    monkeypatch.setattr(scripts, "load_sandbox_config", lambda: fixture.executor._config)
+    monkeypatch.setattr(scripts, "load_sandbox_config", lambda: internal(fixture.executor).config)
     monkeypatch.setattr(scripts, "SandboxScriptExecutor", lambda: fixture.executor)
     monkeypatch.setattr(executor_module, "sandbox_runtime_revision", lambda: "synthetic_revision")
 
@@ -308,7 +309,7 @@ def test_deterministic_script_boundary_uses_admitted_copy_and_finishes_cleanup(
         run_id="run_demo", session_id="session_demo", turn_id=1,
     ))
     with _admission(fixture):
-        result = DeterministicExecutionService._run_script(
+        result = internal(DeterministicExecutionService).run_script(
             script_relative="scripts/run.py", cli_args=[], ontology_dir=fixture.root,
             project_root=fixture.kwargs["project_root"], request=request, timeout_seconds=5,
             env_overrides={"DETERMINISTIC_EXECUTION": "1"},
@@ -322,5 +323,5 @@ def test_deterministic_script_boundary_uses_admitted_copy_and_finishes_cleanup(
         assert json.loads(result) == {"value": "synthetic_value"}
         assert fixture.calls[-1][0] == "release"
     assert any(kind == "policy" for kind, _value in fixture.calls)
-    assert revisions._ADMITTED_PACKAGE.get() is None
-    assert revisions._VERIFIED_PACKAGE.get() is None
+    assert internal(revisions).ADMITTED_PACKAGE.get() is None
+    assert internal(revisions).VERIFIED_PACKAGE.get() is None

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import logging
 import os
@@ -45,6 +44,7 @@ from integration.sandbox.policy_builder import (
     extract_port_from_url,
 )
 from integration.sandbox.registry import RunSandboxRegistry, sandbox_id_for_run
+from internal_access import internal
 
 
 def _resolved_source(*, ontology_id: str, name: str, provider: str, config: dict):

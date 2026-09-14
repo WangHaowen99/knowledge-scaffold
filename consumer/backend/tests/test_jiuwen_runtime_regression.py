@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import unittest
 from types import SimpleNamespace
@@ -16,6 +15,7 @@ from agent.runtime import (
     RuntimeInvocationContext,
 )
 from agent.runtime.mock import FixedAsyncAgentRuntime
+from internal_access import internal
 
 
 def _context(run_id: str, **arguments) -> RuntimeInvocationContext:

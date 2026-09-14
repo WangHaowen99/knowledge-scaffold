@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
@@ -19,6 +18,7 @@ from api.protocols.acp import server as acp_server
 from api.testing import TestApplication
 from fastapi.testclient import TestClient
 from persistence.execution_store import ExecutionStore
+from internal_access import internal
 
 
 class _InlinePool:

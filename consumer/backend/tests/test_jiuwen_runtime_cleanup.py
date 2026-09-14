@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import importlib
 import threading
@@ -13,6 +12,7 @@ import agent.core.jiuwen_engine as jiuwen_engine
 import pytest
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 from agent.exceptions import WorkflowCancelledError
+from internal_access import internal
 
 _REAL_IMPORT_MODULE = importlib.import_module
 

@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import json
 import os
 import stat
@@ -12,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 
 class _CatalogSnapshot:

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import json
 
@@ -12,6 +11,7 @@ import agent.tools.business_data.providers.graph.neo4j_provider as neo4j_module
 from agent.tools.business_data.providers.graph.models import GraphAgentResult, GraphBackendResult
 from agent.tools.business_data.providers.graph.provider import GraphSearchProvider
 from agent.tools.business_data.providers.graph.runtime import _graph_plan_public_summary
+from internal_access import internal
 
 
 def _collect(stream):

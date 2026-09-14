@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 from concurrent.futures import ThreadPoolExecutor
 from operator import getitem
@@ -21,6 +20,7 @@ from agent.tools.registry import get_tool_schema, get_tools_schema, validate_too
 from config.settings import AgentConfig
 from ontology.ontology_catalog import find_script_entry
 from workspace.workspaces import get_workspace_paths
+from internal_access import internal
 
 
 def test_execute_script_runtime_context_uses_backend_identity(monkeypatch):

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import threading
 
 import pytest
@@ -17,6 +16,7 @@ from integration.observability.trace_context import (
     normalize_traceparent,
     parse_traceparent,
 )
+from internal_access import internal
 
 VALID_TRACEPARENT = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import os
 from pathlib import Path
+from internal_access import internal
 
 DEPLOY_DIR = Path(__file__).resolve().parents[1]
 from deploy import migrate_system_config as migration_module

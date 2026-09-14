@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -11,6 +10,7 @@ from agent.skill_evolution.models import TaskRecord
 from agent.skill_evolution.service import SkillEvolutionService
 from agent.skill_evolution.store import SkillEvolutionStore
 from agent.skill_evolution.worker import SkillEvolutionWorker
+from internal_access import internal
 
 
 def _enabled_config():

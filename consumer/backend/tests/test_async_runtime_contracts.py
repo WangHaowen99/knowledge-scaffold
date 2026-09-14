@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 from types import SimpleNamespace
 
@@ -33,6 +32,7 @@ from ontology.view_cache import (
     get_ontology_mutation_revision,
 )
 from pydantic import ValidationError
+from internal_access import internal
 
 
 def _context(run_id: str = "run-01", **arguments) -> RuntimeInvocationContext:

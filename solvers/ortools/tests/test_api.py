@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from solvers.ortools.tests.internal_access import internal
 import json
 import threading
 import time
@@ -16,6 +15,7 @@ from solvers.ortools.config import OrToolsSolverConfig
 from solvers.ortools.service import OrToolsSolverService
 from solvers.ortools.tests.ortools_synthetic_credentials import INVALID_TOKEN, SERVICE_TOKEN
 from solvers.ortools.tests.test_process_runner import _domain_request
+from solvers.ortools.tests.internal_access import internal
 
 
 def _config(tmp_path, **overrides):

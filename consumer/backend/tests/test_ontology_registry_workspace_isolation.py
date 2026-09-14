@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 from concurrent.futures import ThreadPoolExecutor
 
 from agent.core.shared.ontology_context import get_selected_ontology_context
@@ -23,6 +22,7 @@ from ontology.ontologies import (
 )
 from ontology.ontology_catalog import get_ontology_manifest
 from workspace.workspaces import create_workspace, delete_workspace, get_workspace_paths
+from internal_access import internal
 
 
 def _write_ontology(

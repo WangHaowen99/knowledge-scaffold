@@ -9,7 +9,6 @@ exactly once.
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import importlib.util
 import sys
@@ -40,6 +39,7 @@ from api.auth.auth import AuthUser
 from fastapi import FastAPI
 from persistence.execution_store import ExecutionStore
 from starlette.requests import Request
+from internal_access import internal
 
 # Load the focused router without importing the aggregate ``api.routes``
 # package.  During the staged ASGI migration, an unrelated router can be

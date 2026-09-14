@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import pytest
 from agent.direct_execution import audit
 from agent.direct_execution.build_revision import calculate_application_build_revision
@@ -13,6 +12,7 @@ from integration.sandbox.runtime_contract import (
     sandbox_runtime_revision_file,
     shared_sandbox_runtime_revision_file,
 )
+from internal_access import internal
 
 
 def test_sandbox_runtime_contract_is_pinned_and_architecture_specific():

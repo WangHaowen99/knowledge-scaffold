@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import json
 import threading
@@ -30,6 +29,7 @@ from agent.tools.base import (
 )
 from agent.tools.executor import aexecute_tool_batch
 from agent.tools.registry import TOOL_SPECS
+from internal_access import internal
 
 
 def _context(

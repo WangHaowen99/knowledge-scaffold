@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 from pathlib import Path
+from internal_access import internal
 
 
 def _workspace_dir(runtime_root: Path, workspace_id: str = "demo") -> Path:

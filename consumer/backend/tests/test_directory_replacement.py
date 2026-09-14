@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import pytest
 from ontology import directory_replacement
 from ontology.directory_replacement import (
@@ -11,6 +10,7 @@ from ontology.directory_replacement import (
     recover_directory_replacements,
     recover_workspace_ontology_replacements,
 )
+from internal_access import internal
 
 
 def test_sync_directory_opens_with_explicit_restrictive_mode(tmp_path, monkeypatch):

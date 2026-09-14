@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import threading
 import unittest
@@ -17,6 +16,7 @@ from agent.core.jiuwen_engine import (
     JiuwenReactLoopEngine,
 )
 from agent.runtime.async_utils import run_sync_compat
+from internal_access import internal
 
 
 def _agent_config():

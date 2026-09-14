@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from solvers.ortools.tests.internal_access import internal
 import time
 from copy import deepcopy
 
@@ -14,6 +13,7 @@ from solvers.ortools.engine.candidate_selection import (
     solve_candidate_selection,
 )
 from solvers.ortools.result_serializer import serialize_result
+from solvers.ortools.tests.internal_access import internal
 
 
 def test_cp_sat_selects_candidates_by_all_lexicographic_objectives(submit_request):

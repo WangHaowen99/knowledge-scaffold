@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import importlib
 import json
 import os
@@ -16,6 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 
 def _write_manifest(

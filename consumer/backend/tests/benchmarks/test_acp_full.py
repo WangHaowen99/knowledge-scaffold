@@ -29,7 +29,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import logging
 import os
@@ -42,6 +41,7 @@ from typing import Any
 
 import requests
 from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger(__name__)

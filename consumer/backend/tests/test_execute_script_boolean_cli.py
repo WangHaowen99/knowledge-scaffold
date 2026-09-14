@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 from operator import getitem
 from types import SimpleNamespace
 
 import agent.tools.execute_script as execute_script_module
 import pytest
 from agent.tools.execute_script import _build_cli_args_from_parameters
+from internal_access import internal
 
 
 @pytest.mark.parametrize(

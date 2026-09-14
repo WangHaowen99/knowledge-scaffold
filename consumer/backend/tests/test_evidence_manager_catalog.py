@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import importlib
 import json
 import os
@@ -21,6 +20,7 @@ from ontology.evidence.manager import (
 from ontology.evidence.resolver import EvidenceResolver
 from ontology.evidence.service import EvidenceSearchService
 from persistence.runtime_facts import RuntimeFactsStore
+from internal_access import internal
 
 
 def _package(root: Path) -> Path:
