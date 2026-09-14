@@ -599,7 +599,10 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
 
     _write_v01_ontology_package(tmp_path)
     _patch_test_ontology_registry(monkeypatch, tmp_path)
-    context = _make_context(project_root=str(tmp_path))
+    context = _make_context(
+        project_root=str(tmp_path),
+        messages=[{"role": "user", "content": "Use synthetic change order CHANGE_ORDER-001."}],
+    )
 
     root_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "root"})],
@@ -1138,7 +1141,10 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
 
     root_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "root"})],
-        _make_context(project_root=str(tmp_path)),
+        _make_context(
+            project_root=str(tmp_path),
+            messages=[{"role": "user", "content": "Synthetic inputs: MP-001, ITEM-001, EQ-100, F001, F002."}],
+        ),
     )
     root_content = root_result.messages[0]["content"]
     assert (
@@ -1166,7 +1172,10 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
                 },
             )
         ],
-        _make_context(project_root=str(tmp_path)),
+        _make_context(
+            project_root=str(tmp_path),
+            messages=[{"role": "user", "content": "Synthetic inputs: MP-001, ITEM-001, EQ-100, F001, F002."}],
+        ),
     )
 
     assert json.loads(result.messages[0]["content"]) == [
@@ -1193,7 +1202,10 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
                 },
             )
         ],
-        _make_context(project_root=str(tmp_path)),
+        _make_context(
+            project_root=str(tmp_path),
+            messages=[{"role": "user", "content": "Synthetic inputs: MP-001, ITEM-001, EQ-100, F001, F002."}],
+        ),
     )
 
     assert json.loads(result_with_optional.messages[0]["content"]) == [
@@ -1509,13 +1521,31 @@ def test_execute_script_tool_overwrites_server_owned_context_even_without_regist
     assert getitem(captured, "session_id") == context.session_id
 
 
-def test_execute_script_tool_blocks_cross_item_values_before_running_script(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        "agent.tools.execute_script.handle_execute_script",
-        lambda **kwargs: called.append(kwargs) or "ok",
+@pytest.fixture
+def bound_registry_script(tmp_path, monkeypatch):
+    """Synthetic package retaining the real tool validation and script binding."""
+    _write_scripted_ontology(tmp_path, operation_key="process_records")
+    descriptor = tmp_path / "ontologies" / "demo" / "scripts" / "hello.md"
+    descriptor.write_text(
+        "---\nresource: script\nkey: hello\nbound_operation: process_records\nentrypoint: hello.py\n---\n"
+        "| name | flag | type | required |\n| --- | --- | --- | --- |\n"
+        "| records | --records | object | false |\n| payload | --payload | object | false |\n",
+        encoding="utf-8",
     )
+    _patch_test_ontology_registry(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or "synthetic execution succeeded",
+    )
+    monkeypatch.setattr("agent.tools.execute_script._build_script_env_overrides", lambda **_kwargs: {})
+    return SimpleNamespace(root=tmp_path, calls=calls)
+
+
+def test_execute_script_tool_blocks_cross_item_values_before_running_script(bound_registry_script):
+    called = bound_registry_script.calls
     context = _make_context(
+        project_root=str(bound_registry_script.root),
         messages=[
             {
                 "role": "user",
@@ -1545,10 +1575,10 @@ def test_execute_script_tool_blocks_cross_item_values_before_running_script(monk
     )
 
     assert called == []
-    assert "argument consistency check failed" in outcome.content
-    assert "item 2" in outcome.content
-    assert "The script did not run" in outcome.content
-    assert "Do not provide computed results or claim success" in outcome.content
+    error = json.loads(outcome.content)["error"]
+    assert error["code"] == "SCRIPT_ARGUMENT_VALIDATION_FAILED"
+    assert error["correctable"] is True
+    assert any(issue["code"] == "request_field_mismatch" for issue in error["issues"])
 
 
 def test_execute_script_allows_ordered_items_in_one_request_segment(monkeypatch):
@@ -1589,13 +1619,10 @@ def test_execute_script_allows_ordered_items_in_one_request_segment(monkeypatch)
     assert len(called) == 1
 
 
-def test_execute_script_rejects_reordered_items_across_request_segments(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        "agent.tools.execute_script.handle_execute_script",
-        lambda **kwargs: called.append(kwargs) or "ok",
-    )
+def test_execute_script_rejects_reordered_items_across_request_segments(bound_registry_script):
+    called = bound_registry_script.calls
     context = _make_context(
+        project_root=str(bound_registry_script.root),
         messages=[
             {
                 "role": "user",
@@ -1622,7 +1649,10 @@ def test_execute_script_rejects_reordered_items_across_request_segments(monkeypa
     )
 
     assert called == []
-    assert "item order conflicts with the current request" in outcome.content
+    error = json.loads(outcome.content)["error"]
+    assert error["code"] == "SCRIPT_ARGUMENT_VALIDATION_FAILED"
+    assert error["correctable"] is True
+    assert any(issue["code"] == "request_item_order" for issue in error["issues"])
 
 
 def test_execute_script_allows_structured_rows_from_current_business_query(monkeypatch):
@@ -1737,13 +1767,12 @@ def test_execute_script_operation_selection_failure_remains_correctable(monkeypa
     assert "has no registered script implementation" in outcome.content
 
 
-def test_execute_script_argument_consistency_failure_remains_correctable(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        "agent.tools.execute_script.handle_execute_script",
-        lambda **kwargs: called.append(kwargs) or "unexpected",
+def test_execute_script_argument_consistency_failure_remains_correctable(bound_registry_script):
+    called = bound_registry_script.calls
+    context = _make_context(
+        project_root=str(bound_registry_script.root),
+        messages=[{"role": "user", "content": "Use synthetic unit-01 for this run."}],
     )
-    context = _make_context(messages=[{"role": "user", "content": "Use unit-01 for this run."}])
 
     outcome = TOOL_SPECS["execute_script"].execute(
         args={
@@ -1756,17 +1785,28 @@ def test_execute_script_argument_consistency_failure_remains_correctable(monkeyp
     )
 
     assert outcome.terminal is False
-    assert "argument consistency check failed" in outcome.content
     assert called == []
+    error = json.loads(outcome.content)["error"]
+    assert error["code"] == "SCRIPT_ARGUMENT_VALIDATION_FAILED"
+    assert error["correctable"] is True
+    assert any(issue["code"] == "ungrounded_identity" for issue in error["issues"])
 
-
-def test_execute_script_still_rejects_mixed_user_rows_with_business_query_evidence(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        "agent.tools.execute_script.handle_execute_script",
-        lambda **kwargs: called.append(kwargs) or "ok",
+    corrected = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo", "operation_key": "process_records",
+            "arguments": {"payload": {"unit_no": "unit-01"}},
+        },
+        context=context,
+        tool_call_id="call-corrected-identity",
     )
+    assert corrected.content == "synthetic execution succeeded"
+    assert len(called) == 1
+
+
+def test_execute_script_still_rejects_mixed_user_rows_with_business_query_evidence(bound_registry_script):
+    called = bound_registry_script.calls
     context = _make_context(
+        project_root=str(bound_registry_script.root),
         messages=[
             {
                 "role": "user",
@@ -1779,7 +1819,7 @@ def test_execute_script_still_rejects_mixed_user_rows_with_business_query_eviden
             {
                 "role": "tool",
                 "name": "business_data_search",
-                "content": '[{"ProductName":"常一线","Yield_1_Percent":1.81}]',
+                "content": '[{"record_id":"record_synthetic_0001","score":5}]',
             },
         ]
     )
@@ -1801,7 +1841,10 @@ def test_execute_script_still_rejects_mixed_user_rows_with_business_query_eviden
     )
 
     assert called == []
-    assert "argument consistency check failed" in outcome.content
+    error = json.loads(outcome.content)["error"]
+    assert error["code"] == "SCRIPT_ARGUMENT_VALIDATION_FAILED"
+    assert error["correctable"] is True
+    assert any(issue["code"] == "request_field_mismatch" for issue in error["issues"])
 
 
 def test_terminal_interaction_skips_later_tool_calls(monkeypatch):

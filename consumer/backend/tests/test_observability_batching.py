@@ -800,28 +800,23 @@ def test_workspace_router_close_drains_bus_before_metric_shutdown(monkeypatch):
     )
 
     workspace_id = "workspace_synthetic_close_gate"
-    router = WorkspaceObservabilityRouter()
-    otel.record_observability_batch_metric(
-        "accepted",
-        1,
-        exporter="local",
-        result="success",
-        router_id=router.router_id,
-        workspace_id=workspace_id,
-    )
-    initial_recorder = otel._batch_metric_recorders[router.router_id]
-    initial_reader_thread = initial_recorder._reader._daemon_thread
-
     gauge_entered = threading.Event()
     release_gauge = threading.Event()
+    gauge_completed = threading.Event()
+    bus_close_entered = threading.Event()
     shutdown_called = threading.Event()
     close_errors: list[BaseException] = []
+    close_results: list[bool] = []
+    shutdown_before_gauge_completion: list[bool] = []
+    close_thread = None
 
     def gated_recorder(name, value, **labels):
         if name == "current_depth":
             gauge_entered.set()
-            assert release_gauge.wait(timeout=2.0)
+            assert release_gauge.wait(timeout=10.0)
         otel.record_observability_batch_metric(name, value, **labels)
+        if name == "current_depth":
+            gauge_completed.set()
 
     class Exporter:
         metric_name = "local"
@@ -838,59 +833,82 @@ def test_workspace_router_close_drains_bus_before_metric_shutdown(monkeypatch):
         def close(self):
             return None
 
-    bus = ObservabilityBus(
-        Exporter(),
-        metric_recorder=gated_recorder,
-        router_id=router.router_id,
-        workspace_id=workspace_id,
-        flush_interval_seconds=10,
-    )
-    router._observers_by_workspace[workspace_id] = bus
-    real_shutdown = workspace_router_module.shutdown_runtime_metrics
+    router = WorkspaceObservabilityRouter()
+    try:
+        otel.record_observability_batch_metric(
+            "accepted",
+            1,
+            exporter="local",
+            result="success",
+            router_id=router.router_id,
+            workspace_id=workspace_id,
+        )
+        initial_recorder = otel._batch_metric_recorders[router.router_id]
+        initial_reader_thread = initial_recorder._reader._daemon_thread
 
-    def tracked_shutdown(*args, **kwargs):
-        shutdown_called.set()
-        return real_shutdown(*args, **kwargs)
+        bus = ObservabilityBus(
+            Exporter(),
+            metric_recorder=gated_recorder,
+            router_id=router.router_id,
+            workspace_id=workspace_id,
+            flush_interval_seconds=10,
+        )
+        router._observers_by_workspace[workspace_id] = bus
+        real_bus_close = bus.close
+        real_shutdown = workspace_router_module.shutdown_runtime_metrics
 
-    monkeypatch.setattr(
-        workspace_router_module,
-        "force_flush_open_telemetry",
-        lambda *args, **kwargs: True,
-    )
-    monkeypatch.setattr(
-        workspace_router_module,
-        "force_flush_runtime_metrics",
-        lambda *args, **kwargs: True,
-    )
-    monkeypatch.setattr(
-        workspace_router_module,
-        "shutdown_runtime_metrics",
-        tracked_shutdown,
-    )
+        def tracked_bus_close(*args, **kwargs):
+            bus_close_entered.set()
+            return real_bus_close(*args, **kwargs)
 
-    assert bus.emit(_event(901)) is True
-    assert gauge_entered.wait(timeout=1.0)
+        def tracked_shutdown(*args, **kwargs):
+            shutdown_before_gauge_completion.append(not gauge_completed.is_set())
+            shutdown_called.set()
+            return real_shutdown(*args, **kwargs)
 
-    def close_router():
-        try:
-            router.close(timeout=1.0)
-        except BaseException as exc:  # pragma: no cover - surfaced below
-            close_errors.append(exc)
+        monkeypatch.setattr(bus, "close", tracked_bus_close)
+        monkeypatch.setattr(
+            workspace_router_module,
+            "force_flush_open_telemetry",
+            lambda *args, **kwargs: True,
+        )
+        monkeypatch.setattr(
+            workspace_router_module,
+            "force_flush_runtime_metrics",
+            lambda *args, **kwargs: True,
+        )
+        monkeypatch.setattr(workspace_router_module, "shutdown_runtime_metrics", tracked_shutdown)
 
-    close_thread = threading.Thread(target=close_router)
-    close_thread.start()
-    shutdown_before_gauge_release = shutdown_called.wait(timeout=0.1)
-    release_gauge.set()
-    close_thread.join(timeout=2.0)
+        assert bus.emit(_event(901)) is True
+        assert gauge_entered.wait(timeout=5.0)
 
-    assert not close_thread.is_alive()
-    assert close_errors == []
-    assert shutdown_before_gauge_release is False
-    assert shutdown_called.is_set()
-    assert resolve_workspace_router(router.router_id) is None
-    assert router.router_id not in otel._router_metric_recorders
-    assert router.router_id not in otel._batch_metric_recorders
-    assert initial_reader_thread is None or not initial_reader_thread.is_alive()
+        def close_router():
+            try:
+                close_results.append(router.close(timeout=5.0))
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                close_errors.append(exc)
+
+        close_thread = threading.Thread(target=close_router)
+        close_thread.start()
+        assert bus_close_entered.wait(timeout=5.0)
+        assert not shutdown_called.is_set()
+        release_gauge.set()
+        close_thread.join(timeout=5.0)
+
+        assert not close_thread.is_alive()
+        assert close_errors == []
+        assert close_results == [True]
+        assert shutdown_before_gauge_completion == [False]
+        assert shutdown_called.is_set()
+        assert resolve_workspace_router(router.router_id) is None
+        assert router.router_id not in otel._router_metric_recorders
+        assert router.router_id not in otel._batch_metric_recorders
+        assert initial_reader_thread is None or not initial_reader_thread.is_alive()
+    finally:
+        release_gauge.set()
+        if close_thread is not None and close_thread.ident is not None:
+            close_thread.join(timeout=5.0)
+        assert router.close(timeout=5.0) is True, "Test router cleanup did not complete"
 
 
 def test_repeated_observer_reset_does_not_accumulate_metric_readers(monkeypatch):

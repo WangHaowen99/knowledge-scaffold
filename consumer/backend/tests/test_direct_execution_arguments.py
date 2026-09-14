@@ -429,6 +429,7 @@ def test_direct_explicit_runtime_ontology_uses_selected_ontology_context():
     [
         ("selected_ontology_version", "--selected-ontology-version"),
         ("ontology_version", "--ontology-version"),
+        ("selected_version", "--selected-version"),
     ],
 )
 def test_direct_explicit_runtime_ontology_version_uses_selected_version_context(

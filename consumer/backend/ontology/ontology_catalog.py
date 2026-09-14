@@ -1869,6 +1869,7 @@ def public_script_catalog(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                     "script_key": str(entry.get("script_key") or ""),
                     "title": str(entry.get("title") or ""),
                     "parameters": _public_script_parameters(entry.get("parameters") or []),
+                    "generated_identifiers": entry.get("generated_identifiers") or None,
                 }
             )
         )
@@ -1958,6 +1959,12 @@ def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[D
         "_is_bound_operation": is_bound_operation,
         "data_access": str(frontmatter.get("data_access") or "").strip().casefold(),
     }
+    generated_identifiers = frontmatter.get("generated_identifiers")
+    if isinstance(generated_identifiers, dict):
+        entry["generated_identifiers"] = {
+            str(field): rule for field, rule in generated_identifiers.items()
+            if isinstance(field, str) and rule == "uuid4"
+        }
     return entry
 
 

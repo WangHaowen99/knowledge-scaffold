@@ -25,6 +25,7 @@ import jwt
 import requests
 
 from .auth import AuthUser, LoginResult, PasswordPolicyError
+from .diagnostics import auth_diagnostic_context, record_auth_failure
 
 # 连接 3s / 读取 10s：与注册 BFF 代理保持一致
 _TIMEOUT = (3, 10)
@@ -69,6 +70,10 @@ class RemoteAuthBackend:
 
     def login(self, username: str, password: str) -> Optional[LoginResult]:
         """Authenticate and return this request's token pair atomically."""
+        with auth_diagnostic_context("login"):
+            return self._login(username, password)
+
+    def _login(self, username: str, password: str) -> Optional[LoginResult]:
         if not username or not password:
             return None
         response = self._post_token(
@@ -78,6 +83,7 @@ class RemoteAuthBackend:
             # 预置 server 对无效凭据返回 400 invalid_grant；401 同义处理
             if response.status_code in (400, 401):
                 return None
+            record_auth_failure("token_request", "upstream_status", upstream_status=response.status_code)
             raise ValueError(_UNAVAILABLE_MESSAGE)
         payload = self._json_or_unavailable(response)
         access_token, refresh_token, expires_in = self._validated_token_pair(payload)
@@ -85,6 +91,7 @@ class RemoteAuthBackend:
         # 避免“签发即不可验”的配置错误（iss/aud 不匹配）拖到首个业务请求才暴露
         user = self._verify_access_token_locally(access_token)
         if user is None:
+            record_auth_failure("jwt_validation", "verification_failed", replace=False)
             raise ValueError(_UNAVAILABLE_MESSAGE)
         return LoginResult(
             user=user,
@@ -95,6 +102,10 @@ class RemoteAuthBackend:
 
     def refresh_tokens(self, refresh_token: str) -> Optional[Dict[str, Any]]:
         """用 refresh_token 换新 token 对；无效/已吊销 → None（路由据此返回 401）。"""
+        with auth_diagnostic_context("refresh"):
+            return self._refresh_tokens(refresh_token)
+
+    def _refresh_tokens(self, refresh_token: str) -> Optional[Dict[str, Any]]:
         if not refresh_token:
             return None
         response = self._post_token(
@@ -103,12 +114,14 @@ class RemoteAuthBackend:
         if response.status_code != 200:
             if response.status_code in (400, 401):
                 return None
+            record_auth_failure("token_request", "upstream_status", upstream_status=response.status_code)
             raise ValueError(_UNAVAILABLE_MESSAGE)
         payload = self._json_or_unavailable(response)
         access_token, renewed_refresh_token, expires_in = self._validated_token_pair(
             payload
         )
         if self._verify_access_token_locally(access_token) is None:
+            record_auth_failure("jwt_validation", "verification_failed", replace=False)
             raise ValueError(_UNAVAILABLE_MESSAGE)
         return {
             "access_token": access_token,
@@ -217,6 +230,7 @@ class RemoteAuthBackend:
                 self._base_url + "/token", json=payload, timeout=_TIMEOUT
             )
         except requests.RequestException as exc:
+            record_auth_failure("token_request", "request_failed", error=exc)
             raise ValueError(_UNAVAILABLE_MESSAGE) from exc
 
     def _admin_request(
@@ -240,6 +254,7 @@ class RemoteAuthBackend:
         try:
             payload = response.json()
         except ValueError as exc:
+            record_auth_failure("token_response", "invalid_json", error=exc, upstream_status=response.status_code)
             raise ValueError(_UNAVAILABLE_MESSAGE) from exc
         return payload if isinstance(payload, dict) else {}
 
@@ -250,8 +265,10 @@ class RemoteAuthBackend:
         try:
             expires_in = int(payload.get("expires_in"))
         except (TypeError, ValueError) as exc:
+            record_auth_failure("token_response", "invalid_token_pair", error=exc, upstream_status=200)
             raise ValueError(_UNAVAILABLE_MESSAGE) from exc
         if not access_token or not refresh_token or expires_in <= 0:
+            record_auth_failure("token_response", "invalid_token_pair", upstream_status=200)
             raise ValueError(_UNAVAILABLE_MESSAGE)
         return access_token, refresh_token, expires_in
 
@@ -288,13 +305,16 @@ class RemoteAuthBackend:
             return None
         try:
             header = jwt.get_unverified_header(token)
-        except jwt.PyJWTError:
+        except jwt.PyJWTError as exc:
             # 非 JWT（无法解析头部）→ 验签失败
+            record_auth_failure("jwt_validation", "invalid_header", error=exc)
             return None
         if header.get("alg") != "RS256":
+            record_auth_failure("jwt_validation", "unsupported_algorithm")
             return None
         key = self._signing_key(header.get("kid"))
         if key is None:
+            record_auth_failure("jwks", "signing_key_unavailable", replace=False)
             return None
         try:
             claims = jwt.decode(
@@ -305,13 +325,16 @@ class RemoteAuthBackend:
                 issuer=self._issuer,
                 options={"require": ["exp", "iss", "aud", "sub"]},
             )
-        except jwt.PyJWTError:
+        except jwt.PyJWTError as exc:
+            record_auth_failure("jwt_validation", "invalid_claims_or_signature", error=exc)
             return None
         # 只接受 access token：refresh token 不能当访问凭据使用
         if claims.get("typ") != "access":
+            record_auth_failure("jwt_validation", "invalid_token_type")
             return None
         username = str(claims.get("sub") or "").strip()
         if not username:
+            record_auth_failure("jwt_validation", "missing_subject")
             return None
         return AuthUser(
             username=username,
@@ -321,6 +344,7 @@ class RemoteAuthBackend:
 
     def _signing_key(self, kid: Optional[str]) -> Optional[Any]:
         if not kid:
+            record_auth_failure("jwt_validation", "missing_key_id")
             return None
         now = time.time()
         with self._jwks_lock:
@@ -349,6 +373,7 @@ class RemoteAuthBackend:
                     now - self._jwks_last_attempt_at
                     < _JWKS_REFRESH_MIN_INTERVAL_SECONDS
                 ):
+                    record_auth_failure("jwks", "refresh_throttled")
                     return False
                 self._jwks_last_attempt_at = now
             try:
@@ -356,11 +381,20 @@ class RemoteAuthBackend:
                     self._base_url + "/jwks.json", timeout=_TIMEOUT
                 )
                 if response.status_code != 200:
+                    record_auth_failure("jwks", "upstream_status", upstream_status=response.status_code)
                     return False
                 payload = response.json()
-            except (requests.RequestException, ValueError):
+            except requests.exceptions.JSONDecodeError as exc:
+                record_auth_failure("jwks", "invalid_json", error=exc, upstream_status=200)
+                return False
+            except requests.RequestException as exc:
+                record_auth_failure("jwks", "request_failed", error=exc)
+                return False
+            except ValueError as exc:
+                record_auth_failure("jwks", "invalid_json", error=exc, upstream_status=200)
                 return False
             if not isinstance(payload, dict):
+                record_auth_failure("jwks", "invalid_key_set", upstream_status=200)
                 return False
             keys: Dict[str, Any] = {}
             for jwk_data in payload.get("keys") or []:

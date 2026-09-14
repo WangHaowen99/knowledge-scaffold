@@ -1,12 +1,13 @@
 import asyncio
 import logging
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from agent.runtime.adapter import PublicEventAdapter
@@ -2173,6 +2174,81 @@ def test_deterministic_artifact_rollback_deletes_every_reserved_ref():
     assert execution_store.released == execution_store.reserved
 
 
+def test_deterministic_preflight_receives_only_business_arguments(
+    tmp_path,
+    monkeypatch,
+):
+    import ontology.ontologies as ontologies_module
+
+    requests = []
+
+    class _DeterministicService:
+        def is_potentially_applicable(self, request):
+            requests.append(request)
+            return True
+
+    deterministic_module = ModuleType("agent.direct_execution.service")
+    deterministic_module.DeterministicExecutionService = _DeterministicService
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.direct_execution.service",
+        deterministic_module,
+    )
+    selected_ontology = SimpleNamespace(
+        id="ontology_demo",
+        version="v1",
+        active_version="v1",
+        name="Synthetic ontology",
+        enabled=True,
+    )
+    monkeypatch.setattr(
+        ontologies_module,
+        "get_runtime_ontology_manifest",
+        lambda *_args, **_kwargs: selected_ontology,
+    )
+
+    chat_store = ChatStore(str(tmp_path / "chat"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+    class _Orchestrator:
+        @staticmethod
+        def _get_stores(username, workspace_id):
+            assert username == "operator_a"
+            assert workspace_id == "workspace_demo"
+            return chat_store, execution_store
+
+    context = _context("run_deterministic_preflight").model_copy(
+        update={
+            "arguments": {
+                "selected_ontology_id": "ontology_demo",
+                "selected_ontology_version": "v1",
+                "selected_version": "v1",
+                "synthetic_argument": "synthetic_value",
+            }
+        }
+    )
+    adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
+
+    prepared = adapter._prepare_sync_impl(
+        context,
+        {"quick"},
+        lambda value: value,
+        lambda *_args, **_kwargs: pytest.fail(
+            "deterministic preflight must defer model profile resolution"
+        ),
+    )
+
+    assert requests[-1].arguments == {"synthetic_argument": "synthetic_value"}
+    assert requests[-1].runtime_context.selected_ontology_id == "ontology_demo"
+    assert requests[-1].runtime_context.selected_ontology_version == "v1"
+    assert prepared.arguments == {
+        "selected_ontology_id": "ontology_demo",
+        "selected_ontology_version": "v1",
+        "selected_version": "v1",
+        "synthetic_argument": "synthetic_value",
+    }
+
+
 def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     from agent.direct_execution.contracts import Completed, NotApplicable
 
@@ -2227,8 +2303,10 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
         outcome = NotApplicable("synthetic-fallback")
         calls = 0
         staged_manifests = []
+        requests = []
 
-        def execute(self, *_args, **kwargs):
+        def execute(self, request, **kwargs):
+            type(self).requests.append(request)
             type(self).calls += 1
             manifest = kwargs.get("ontology_manifest")
             if manifest is not None:
@@ -2291,6 +2369,7 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
             "arguments": {
                 "selected_ontology_id": "ontology_demo",
                 "selected_ontology_version": "v1",
+                "synthetic_argument": "synthetic_value",
             }
         }
     )
@@ -2316,6 +2395,10 @@ def test_direct_execution_routes_and_preserves_runtime_scope(tmp_path):
     assert deterministic[-1].payload["structured_content"]["execution"] == {
         "type": "deterministic",
         "authoritative": True,
+    }
+
+    assert _DeterministicService.requests[-1].arguments == {
+        "synthetic_argument": "synthetic_value"
     }
 
     ontology_dir = tmp_path / "workspaces" / "workspace_demo" / "ontologies" / "ontology_demo"
