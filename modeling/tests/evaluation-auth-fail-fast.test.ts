@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'evaluation-auth-fail-fast-'));
+// 用例并发执行，凭据失效时最多波及“已在途”的那一批，不会继续领取后面的用例。
+const CASE_CONCURRENCY = 4;
+process.env.MODELING_EVALUATION_CASE_CONCURRENCY = String(CASE_CONCURRENCY);
 
 test('认证失败会立即终止整轮，不为剩余用例重复记录凭据错误', async (t) => {
   const requests: string[] = [];
@@ -82,6 +85,9 @@ test('认证失败会立即终止整轮，不为剩余用例重复记录凭据�
   assert.equal(round.status, 'failed');
   assert.equal(round.progressDone, 0);
   assert.equal(m3repo.listResults(roundId).length, 0);
-  assert.equal(requests.filter((item) => item === 'POST /agentic/runs/sync').length, 1);
+  // 17 条用例只会打出「一批」请求：证明凭据失效后没有继续往下跑，而不是逐条重试。
+  const syncRequests = requests.filter((item) => item === 'POST /agentic/runs/sync').length;
+  assert.ok(syncRequests >= 1 && syncRequests <= CASE_CONCURRENCY,
+    `凭据失效后发出的用例请求应不超过并发上限，实际 ${syncRequests}`);
   assert.equal((round.log.match(/评测访问凭据已过期/gu) ?? []).length, 1);
 });

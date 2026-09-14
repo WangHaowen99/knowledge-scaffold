@@ -3,6 +3,8 @@ import { consumerFetch } from '../consumer/client.js';
 import { zipPackage } from '../workflow/export.js';
 import { publicKnowledgePackageFiles } from '../workflow/package-file-scope.js';
 import { judge, type Verdict } from './judge.js';
+import { runCasesWithLimit } from './case-runner.js';
+import { config } from '../config.js';
 import * as repo from '../workflow/m3-repo.js';
 import { getProjectDataSource, type ProjectDataSource } from './data-source-repo.js';
 import { prepareProjectDataSourceForEvaluation } from './data-source-evaluation-service.js';
@@ -452,45 +454,67 @@ async function runRound(
     log('已按数据源配置清除本体数据源（判断类问题仍可评测）');
   }
 
-  // 5. 逐用例串行运行 + judge
+  // 5. 用例按有界并发运行 + judge；结果仍按用例顺序落库
   repo.roundPhase(roundId, 'cases');
+  const concurrency = Math.min(config.evaluationCaseConcurrency, testcases.length || 1);
+  if (concurrency > 1) log(`并发运行评测用例：${concurrency} 条并行`);
   let done = 0;
   let pass = 0;
-  for (const tc of testcases) {
-    assertEvaluationNotCancelled(signal);
-    repo.roundCaseStarted(roundId);
-    let finalAnswer = '';
-    let trace: EvaluationExecutionTrace | undefined;
-    let verdict: 'pass' | 'partial' | 'fail' | 'error' = 'error';
-    let reason = '';
-    try {
+
+  type CaseOutcome = {
+    finalAnswer: string;
+    trace?: EvaluationExecutionTrace;
+    verdict: 'pass' | 'partial' | 'fail' | 'error';
+    reason: string;
+    traceWarning?: string;
+  };
+
+  await runCasesWithLimit<typeof testcases[number], CaseOutcome>(testcases, concurrency, {
+    onStart: () => repo.roundCaseStarted(roundId),
+    run: async (tc) => {
+      assertEvaluationNotCancelled(signal);
       const run = await runCase(request, ws, tc.question, signal);
       assertEvaluationNotCancelled(signal);
-      finalAnswer = run.finalAnswer;
-      trace = run.trace;
-      if (trace.status === 'unavailable') {
-        log(`⚠ [${done + 1}/${testcases.length}] Trace 不可用：${trace.error ?? '未知错误'}`);
-      }
-      const v = await judgeEvaluationAnswer(tc.question, tc.groundTruth, finalAnswer, judge, signal);
+      const v = await judgeEvaluationAnswer(tc.question, tc.groundTruth, run.finalAnswer, judge, signal);
       assertEvaluationNotCancelled(signal);
-      verdict = v.verdict;
-      reason = v.reason;
-      repo.addResult(roundId, {
-        testcaseId: tc.id, question: tc.question, groundTruth: tc.groundTruth,
-        finalAnswer, verdict, reason, trace,
-      });
-    } catch (e) {
+      return {
+        finalAnswer: run.finalAnswer,
+        trace: run.trace,
+        verdict: v.verdict,
+        reason: v.reason,
+        traceWarning: run.trace.status === 'unavailable'
+          ? `Trace 不可用：${run.trace.error ?? '未知错误'}`
+          : undefined,
+      };
+    },
+    // 单条用例失败只记一条 error 判定；鉴权失败和取消属于致命错误，向上抛出终止整轮。
+    recover: (tc, _index, error) => {
       if (signal.aborted) throw signal.reason;
-      if (e instanceof EvaluationAuthenticationError) throw e;
-      reason = `运行失败：${e instanceof Error ? e.message : e}`;
-      repo.addResult(roundId, { testcaseId: tc.id, question: tc.question, groundTruth: tc.groundTruth, finalAnswer, verdict, reason, trace });
-    }
-    assertEvaluationNotCancelled(signal);
-    done++;
-    if (verdict === 'pass') pass++;
-    repo.roundProgress(roundId, done, pass);
-    log(`[${done}/${testcases.length}] ${verdict} · ${tc.question.slice(0, 40)}`);
-  }
+      if (error instanceof EvaluationAuthenticationError) throw error;
+      return {
+        finalAnswer: '',
+        verdict: 'error',
+        reason: `运行失败：${error instanceof Error ? error.message : error}`,
+      };
+    },
+    commit: (tc, _index, outcome) => {
+      done += 1;
+      if (outcome.verdict === 'pass') pass += 1;
+      if (outcome.traceWarning) log(`⚠ [${done}/${testcases.length}] ${outcome.traceWarning}`);
+      repo.addResult(roundId, {
+        testcaseId: tc.id,
+        question: tc.question,
+        groundTruth: tc.groundTruth,
+        finalAnswer: outcome.finalAnswer,
+        verdict: outcome.verdict,
+        reason: outcome.reason,
+        trace: outcome.trace,
+      });
+      repo.roundProgress(roundId, done, pass);
+      log(`[${done}/${testcases.length}] ${outcome.verdict} · ${tc.question.slice(0, 40)}`);
+    },
+  }, signal);
+  assertEvaluationNotCancelled(signal);
 
   assertEvaluationNotCancelled(signal);
   repo.finishRound(roundId, 'done');
