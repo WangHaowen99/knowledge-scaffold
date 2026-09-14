@@ -14,7 +14,7 @@ export function Block({ block }) {
     case 'plan':      return <PlanBlock b={block} />;
     case 'ask':       return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : <AskBlock b={block} />;
     case 'material':  return <MaterialRequest />;
-    case 'confirm':   return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : block.interaction ? <LiveConfirm interaction={block.interaction} /> : <ConfirmBlock />;
+    case 'confirm':   return (() => { if (block.interaction && block.interaction.status !== 'pending') return <AnsweredInteraction interaction={block.interaction} />; return block.interaction ? <LiveConfirm interaction={block.interaction} /> : <ConfirmBlock />; })();
     case 'release':   return block.interaction && block.interaction.status !== 'pending' ? <AnsweredInteraction interaction={block.interaction} /> : <LiveRelease interaction={block.interaction} />;
     case 'policy':    return <PolicyBlock />;
     case 'preview':   return <PreviewBlock b={block} />;
@@ -143,14 +143,13 @@ function PlanBlock({ b }) {
   return (
     <div className="card">
       <div className="card-h">当前计划<span className="spacer" />
-        {plan.approval_status === 'pending' ? '等待批准'
-          : plan.approval_status === 'rejected' ? '已拒绝' : plan.id ? '已批准' : ''}
+        {(() => { if (plan.approval_status === 'pending') return '等待批准'; return plan.approval_status === 'rejected' ? '已拒绝' : (() => { if (plan.id) return '已批准'; return ''; })(); })()}
       </div>
       <div className="card-b">
         <ul className="wb-plan">
           {items.map((it) => (
             <li key={it.t} className={it.st || ''}>
-              <span className="bx">{it.st === 'done' ? '[x]' : it.st === 'now' ? '[>]' : '[ ]'}</span>
+              <span className="bx">{(() => { if (it.st === 'done') return '[x]'; return it.st === 'now' ? '[>]' : '[ ]'; })()}</span>
               <span className="tx">{userFacingText(it.t)}</span>
             </li>
           ))}
@@ -229,9 +228,7 @@ function LiveAsk({ interaction }) {
   };
   return (
     <div className={`card ${material ? 'card-accent' : 'card-wait'}`} data-pending-interaction={interaction.id}>
-      <div className="card-h">{material
-        ? <><Icon name="upload" size={12} />需要补充资料</>
-        : options.length ? '需要你决定' : '需要你补充'}</div>
+      <div className="card-h">{(() => { if (material) return <><Icon name="upload" size={12} />需要补充资料</>; return options.length ? '需要你决定' : '需要你补充'; })()}</div>
       <div className="card-b">
         <div className="wb-text" style={{ marginBottom: 'var(--s-3)' }}>
           <MarkdownContent>{userFacingText(payload.question)}</MarkdownContent>
@@ -262,7 +259,7 @@ function LiveAsk({ interaction }) {
             <span className="t2">选择文件，或拖到输入框</span>
           </button>
         )}
-        {followUpOption ? (
+        {(() => { if (followUpOption) return (
           <form className="wb-ask-followup" onSubmit={(event) => {
             event.preventDefault();
             const value = followUpOption.value || followUpOption.label;
@@ -270,7 +267,7 @@ function LiveAsk({ interaction }) {
               value,
               selected: [value],
               text: manual.trim(),
-              ...(material && value === 'oral' ? { action: 'oral' } : {}),
+              ...((() => { if (material && value === 'oral') return { action: 'oral' }; return {}; })()),
             });
           }}>
             <label htmlFor={`ask-followup-${interaction.id}`}>
@@ -284,7 +281,7 @@ function LiveAsk({ interaction }) {
               <button type="submit" className="btn btn-p btn-sm" disabled={sending || !manual.trim()}>提交</button>
             </div>
           </form>
-        ) : (
+        ); return (
           <form className="wb-ask-manual wb-ask-decision" onSubmit={(event) => {
             event.preventDefault();
             if (selectedOption) {
@@ -295,19 +292,17 @@ function LiveAsk({ interaction }) {
               void submit({ value, selected: [value] });
               return;
             }
-            void submit({ value: manual.trim(), action: material ? 'oral' : 'manual' });
+            void submit({ value: manual.trim(), action: (() => { if (material) return 'oral'; return 'manual'; })() });
           }}>
             <input ref={manualInput} className="input" value={manual} onChange={(event) => setManual(event.target.value)}
               disabled={Boolean(selectedOption)}
-              placeholder={selectedOption
-                ? `已选择：${userFacingText(selectedOption.label)}`
-                : material ? '也可以直接口述内容…' : '或者直接说明你们的口径…'} />
+              placeholder={(() => { if (selectedOption) return `已选择：${userFacingText(selectedOption.label)}`; return material ? '也可以直接口述内容…' : '或者直接说明你们的口径…'; })()} />
             {selectedOption && <button type="button" className="btn btn-sm" disabled={sending}
               onClick={() => setSelectedOption(null)}>重选</button>}
             <button type="submit" className="btn btn-p btn-sm"
-              disabled={sending || (!selectedOption && !manual.trim())}>{sending ? '提交中…' : '确认提交'}</button>
+              disabled={sending || (!selectedOption && !manual.trim())}>{(() => { if (sending) return '提交中…'; return '确认提交'; })()}</button>
           </form>
-        )}
+        ); })()}
       </div>
     </div>
   );
@@ -358,7 +353,7 @@ function LiveConfirm({ interaction }) {
               aria-label={`选择${userFacingText(group.title)}`}
               onChange={() => setSelected((items) => items.includes(group.id)
                 ? items.filter((id) => id !== group.id) : [...items, group.id])} />
-            <span><b>{userFacingText(group.title)}</b><span className="gm">{group.tier === 'caliber' ? '业务口径' : group.tier === 'structural' ? '结构变更' : group.tier === 'script' ? '脚本' : '自动同步'}{group.warning ? ` · ${userFacingText(group.warning)}` : ''}</span>
+            <span><b>{userFacingText(group.title)}</b><span className="gm">{(() => { if (group.tier === 'caliber') return '业务口径'; return group.tier === 'structural' ? '结构变更' : (() => { if (group.tier === 'script') return '脚本'; return '自动同步'; })(); })()}{group.warning ? ` · ${userFacingText(group.warning)}` : ''}</span>
               {impact.length > 0 && <span className="gi" title={impact.join('\n')}>
                 涉及 {impact.slice(0, 2).join('、')}{impact.length > 2 ? ` 等 ${impact.length} 处` : ''}
               </span>}
@@ -369,7 +364,7 @@ function LiveConfirm({ interaction }) {
             </button>
           </div>;
         })}
-        {returning ? <>
+        {(() => { if (returning) return <>
           <textarea ref={feedbackInput} className="input" rows={3} aria-label="调整要求"
             style={{ width: '100%', marginTop: 'var(--s-4)' }} value={feedback}
             onChange={(event) => setFeedback(event.target.value)}
@@ -381,7 +376,7 @@ function LiveConfirm({ interaction }) {
             </button>
             <button className="btn" disabled={sending} onClick={() => setReturning(false)}>取消</button>
           </div>
-        </> : <>
+        </>; return <>
           <div className="wb-confirm-summary" role="status">
             将接受 {selectedForSubmit.length} 组，暂不接受 {heldCount} 组，自动同步 {autoApprovedCount} 组。
             {!allReviewed && reviewRequired.length > 0 && <b> 请先查看所有将接受的变更。</b>}
@@ -392,11 +387,11 @@ function LiveConfirm({ interaction }) {
               approved: true,
               review_mode: reviewMode,
               selected_groups: selectedForSubmit,
-              sampled_groups: reviewMode === 'sampled' ? sampled : [],
+              sampled_groups: (() => { if (reviewMode === 'sampled') return sampled; return []; })(),
             })}>
-            {sending ? '正在接受…' : reviewMode === 'sampled'
+            {(() => { if (sending) return '正在接受…'; return reviewMode === 'sampled'
               ? `接受已查看的前 ${sampled.length} 组`
-              : `接受已选（${selectedForSubmit.length}）`}
+              : `接受已选（${selectedForSubmit.length}）`; })()}
           </button>
           {!atomicSelection && selectable.length > 3 && <button className="btn" disabled={sending}
             onClick={() => {
@@ -411,7 +406,7 @@ function LiveConfirm({ interaction }) {
               requestAnimationFrame(() => feedbackInput.current?.focus());
             }}>退回调整</button>
           </div>
-        </>}
+        </>; })()}
       </div>
     </div>
   );
@@ -472,26 +467,21 @@ function UploadBlock({ block }) {
   const parsed = block.files.filter((file) => file.status === 'parsed').length;
   const failed = block.files.filter((file) => !['uploading', 'parsing', 'parsed'].includes(file.status)).length;
   const completed = parsed + failed;
-  const title = uploading
-    ? `正在上传 ${block.files.length - uploading}/${block.files.length}`
-    : completed < block.files.length
+  const title = (() => { if (uploading) return `正在上传 ${block.files.length - uploading}/${block.files.length}`; return completed < block.files.length
     ? `后台解析 ${completed}/${block.files.length}`
-    : failed
-      ? `解析结果 ${parsed} 成功 / ${failed} 失败`
-      : `解析成功 ${parsed}/${block.files.length}`;
+    : (() => { if (failed) return `解析结果 ${parsed} 成功 / ${failed} 失败`; return `解析成功 ${parsed}/${block.files.length}`; })(); })();
   return <div className={`card${failed ? ' card-stale' : ''}`}><div className="card-h"><Icon name="upload" size={12} />{title}</div>
     <div className="card-b">{block.files.map((file) => {
       const readable = file.status === 'parsed';
       const unavailable = !['uploading', 'parsing', 'parsed'].includes(file.status);
-      const status = file.status === 'uploading' ? '正在上传'
-        : readable ? '可读取'
-          : unavailable ? '无法解析' : '已上传，后台解析中';
+      const status = (() => { if (file.status === 'uploading') return '正在上传'; return readable ? '可读取'
+          : (() => { if (unavailable) return '无法解析'; return '已上传，后台解析中'; })(); })();
       const purpose = file.purpose || 'auto';
       const readingMode = file.readingMode || 'on_demand';
       const canConfigure = Boolean(file.documentId && !unavailable);
       const table = ['excel', 'csv'].includes(file.kind) || /\.(?:xlsx?|csv)$/i.test(file.name);
       return <div className="wb-upload-file" key={file.id}>
-        <div className="wb-file"><span className={`dot dot-${readable ? 'ok' : unavailable ? 'stale' : 'new'}`} /><span className="fn">{file.name}</span><span className="fs">{file.error || status}</span></div>
+        <div className="wb-file"><span className={`dot dot-${(() => { if (readable) return 'ok'; return unavailable ? 'stale' : 'new'; })()}`} /><span className="fn">{file.name}</span><span className="fs">{file.error || status}</span></div>
         {canConfigure && <div className="wb-material-directives">
           <label><span>用途</span><select className="input" aria-label={`${file.name}的资料用途`} value={purpose}
             onChange={(event) => void actions.setMaterialDirectives(file.documentId, { purpose: event.target.value })}>

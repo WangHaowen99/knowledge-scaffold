@@ -146,9 +146,8 @@ export function ReviewPanel({
       setErr('');
       const editableFiles = next.files.filter((item) => !(next.binaryPaths ?? []).includes(item));
       setPath((current) => (
-        (dirtyRef.current || diagramDirtyRef.current) && current ? current
-          : current && editableFiles.includes(current) ? current
-          : editableFiles.includes('index.md') ? 'index.md' : editableFiles[0]
+        (() => { if ((dirtyRef.current || diagramDirtyRef.current) && current) return current; return current && editableFiles.includes(current) ? current
+          : (() => { if (editableFiles.includes('index.md')) return 'index.md'; return editableFiles[0]; })(); })()
       ));
       return next;
     } catch (error) {
@@ -627,9 +626,9 @@ export function ReviewPanel({
       {!wideStage && <PaneResizeHandle label="调整知识包结构栏宽度" value={leftWidth} min={220} max={leftMax}
         defaultValue={280} onChange={setLeftWidth} />}
       <div className="rv-view">
-        {stageContent ? (
+        {(() => { if (stageContent) return (
           <div className="rv-stage">{stageContent}</div>
-        ) : <>
+        ); return <>
         {reviewBanner}
         {err && (
           <div className="lerr" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
@@ -639,20 +638,18 @@ export function ReviewPanel({
         )}
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
           <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: 'var(--muted)' }}>
-            {path}{file?.draftFile?.changed
-              ? <span className="tag tag-draft" style={{ marginLeft: 8 }}>人工编辑草稿</span>
-              : null}
+            {path}{(() => { if (file?.draftFile?.changed) return <span className="tag tag-draft" style={{ marginLeft: 8 }}>人工编辑草稿</span>; return null; })()}
           </span>
-          {diagramTarget ? (
+          {(() => { if (diagramTarget) return (
             // .mmd 由源文档渲染而来，直接改文本会在下次保存时被覆盖，这里只给只读源码视图
             <span className="viewtog" style={{ marginLeft: 'auto' }}>
-              <button className={diagramView === 'graph' ? 'on' : ''} onClick={() => setDiagramView('graph')}>图形</button>
-              <button className={diagramView === 'source' ? 'on' : ''} onClick={() => setDiagramView('source')}>源码</button>
+              <button className={(() => { if (diagramView === 'graph') return 'on'; return ''; })()} onClick={() => setDiagramView('graph')}>图形</button>
+              <button className={(() => { if (diagramView === 'source') return 'on'; return ''; })()} onClick={() => setDiagramView('source')}>源码</button>
             </span>
-          ) : editable ? (
+          ); return editable ? (
             <span className="viewtog" style={{ marginLeft: 'auto' }}>
-              <button className={view === 'view' ? 'on' : ''} onClick={() => setView('view')}>查看</button>
-              <button className={view === 'edit' ? 'on' : ''}
+              <button className={(() => { if (view === 'view') return 'on'; return ''; })()} onClick={() => setView('view')}>查看</button>
+              <button className={(() => { if (view === 'edit') return 'on'; return ''; })()}
                 disabled={repairInProgress || !editable || actionBusy === 'create'}
                 onClick={() => { setDraft(content); setView('edit'); }}>编辑</button>
             </span>
@@ -660,21 +657,17 @@ export function ReviewPanel({
             <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12 }}>
               派生或配置文件只读
             </span>
-          )}
+          ); })()}
         </div>
         {isProcessDiagramPath(path) && !diagramTarget && !diagramLoading && (
           <div className="lerr" style={{ marginBottom: 10 }}>
-            {diagramErr
-              ? `流程图源文档读取失败：${diagramErr}，已回退到源码视图`
-              : hasDiagramDocument(pkg?.files)
+            {(() => { if (diagramErr) return `流程图源文档读取失败：${diagramErr}，已回退到源码视图`; return hasDiagramDocument(pkg?.files)
                 ? '该 Mermaid 文件未关联到结构化流程图，暂不支持图形编辑'
-                : '该流程图缺少配套的结构化源文档（diagrams/processes.json），暂不支持图形编辑'}
+                : '该流程图缺少配套的结构化源文档（diagrams/processes.json），暂不支持图形编辑'; })()}
           </div>
         )}
-        {diagramTarget ? (
-          diagramView === 'source'
-            ? <pre className="srcview">{content}</pre>
-            : <div className="rv-flowchart">
+        {(() => { if (diagramTarget) return (
+          (() => { if (diagramView === 'source') return <pre className="srcview">{content}</pre>; return <div className="rv-flowchart">
               <FlowchartEditor
                 key={`${projectId}:${path}`}
                 document={diagramTarget.document}
@@ -683,8 +676,8 @@ export function ReviewPanel({
                 onSave={saveDiagramDocument}
                 onStateChange={(state) => { setDiagramDraftDirty(Boolean(state?.dirty)); }}
               />
-            </div>
-        ) : fileLoading || diagramLoading ? <div className="empty">文件加载中…</div> : view === 'edit' ? (
+            </div>; })()
+        ); return fileLoading || diagramLoading ? <div className="empty">文件加载中…</div> : (() => { if (view === 'edit') return (
           <div>
               <textarea className="rv-editor" value={draft} spellCheck={false}
               disabled={repairInProgress || !!revisionConflict}
@@ -692,12 +685,12 @@ export function ReviewPanel({
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
               <button className="btn btn-p"
                 disabled={repairInProgress || !!revisionConflict || !!actionBusy || saveState === 'saving'}
-                onClick={save}>{actionBusy === 'save' || saveState === 'saving' ? '保存中…' : '保存修改'}</button>
+                onClick={save}>{(() => { if (actionBusy === 'save' || saveState === 'saving') return '保存中…'; return '保存修改'; })()}</button>
               {(packageDraft?.changedFileCount > 0 || draft !== content) && (
                 <BusyButton busy={actionBusy === 'publish'} busyText="保存并检查中" expect="约 1~3 分钟" className="btn"
                   disabled={repairInProgress || !!revisionConflict || !!actionBusy || saveState === 'saving'}
                   onClick={publishRevision}>
-                  发布草稿并生成{pkg.nextCandidateVersion ? ` v${pkg.nextCandidateVersion}` : '新版本'}
+                  发布草稿并生成{(() => { if (pkg.nextCandidateVersion) return ` v${pkg.nextCandidateVersion}`; return '新版本'; })()}
                 </BusyButton>
               )}
               {file?.draftFile?.changed && (
@@ -716,11 +709,11 @@ export function ReviewPanel({
               带“草稿”标记的派生文件将在发布后一起生成新的知识包版本。
             </p>
           </div>
-        ) : isMd
+        ); return isMd
           ? <div className="mdv"><ReactMarkdown remarkPlugins={[remarkGfm]}
               components={{ a: renderPackageMarkdownLink }}>{stripFrontmatter(content)}</ReactMarkdown></div>
-          : <pre className="srcview">{content}</pre>}
-        </>}
+          : <pre className="srcview">{content}</pre>; })(); })()}
+        </>; })()}
       </div>
     </div>
     </div>

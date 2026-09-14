@@ -239,17 +239,17 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
     return result;
   }, [active.edges, filtered.edges, filtered.nodes.length, hoveredEdgeIds, isNodeDragging, isViewportMoving, motionEnabled, session.graphHighlight, visibleSelectedElementId, webglUnavailable, zoomTier]);
 
-  const projectedNodes = useMemo(() => webglUnavailable ? arrangedNodes.map((node) => {
+  const projectedNodes = useMemo(() => (() => { if (webglUnavailable) return arrangedNodes.map((node) => {
     const meta = studioGraphKindMeta(node.kind);
     const selected = node.id === visibleSelectedElementId;
     return {
       ...node,
       id: node.id,
       type: 'studio',
-      className: selected ? 'selected-node-glow' : '',
+      className: (() => { if (selected) return 'selected-node-glow'; return ''; })(),
       position: session.nodePositions[node.id] || node.position,
       style: { width: node.width, height: node.height, '--node-glow': meta.glow },
-      zIndex: selected ? 14 : active.nodes.has(node.id) ? 13 : 12,
+      zIndex: (() => { if (selected) return 14; return active.nodes.has(node.id) ? 13 : 12; })(),
       data: {
         id: node.id,
         label: node.label,
@@ -263,7 +263,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
       },
       ariaLabel: `${meta.label || node.kind}：${node.label}`,
     };
-  }) : [], [active.nodes, arrangedNodes, degreeById, hasHighlight, onOpen, selectGraphElement, session.nodePositions, visibleSelectedElementId, webglUnavailable]);
+  }); return []; })(), [active.nodes, arrangedNodes, degreeById, hasHighlight, onOpen, selectGraphElement, session.nodePositions, visibleSelectedElementId, webglUnavailable]);
   const [nodes, setNodes] = useState(projectedNodes);
   const graphScrollDecorations = useMemo(() => {
     if (!webglUnavailable) return [];
@@ -292,7 +292,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
     canvas.scrollLeft = Math.max(0, (canvas.scrollWidth - canvas.clientWidth) / 2);
     canvas.scrollTop = Math.max(0, (canvas.scrollHeight - canvas.clientHeight) / 2);
   }, []);
-  const edges = useMemo(() => webglUnavailable ? filtered.edges.map((edge) => {
+  const edges = useMemo(() => (() => { if (webglUnavailable) return filtered.edges.map((edge) => {
     const visual = studioGraphEdgeStyle(edge, nodesById);
     const dimmed = hasHighlight && !active.edges.has(edge.id);
     const route = displayedRoutes[edge.id] || [];
@@ -312,12 +312,12 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
         active: active.edges.has(edge.id),
         hovered: hoveredEdgeIds.has(edge.id),
         labelAnchor: routePresentation.labelAnchors[edge.id],
-        particleCount: particleEdgeIds.has(edge.id) ? (active.edges.has(edge.id) ? 2 : 1) : 0,
+        particleCount: (() => { if (particleEdgeIds.has(edge.id)) return ((() => { if (active.edges.has(edge.id)) return 2; return 1; })()); return 0; })(),
         dimmed,
       },
-      zIndex: active.edges.has(edge.id) ? 1 : 0,
+      zIndex: (() => { if (active.edges.has(edge.id)) return 1; return 0; })(),
     };
-  }) : [], [active.edges, displayedRoutes, filtered.edges, hasHighlight, hoveredEdgeIds, nodesById, particleEdgeIds, positionedNodesById, routePresentation.labelAnchors, webglUnavailable]);
+  }); return []; })(), [active.edges, displayedRoutes, filtered.edges, hasHighlight, hoveredEdgeIds, nodesById, particleEdgeIds, positionedNodesById, routePresentation.labelAnchors, webglUnavailable]);
   const selectedNode = nodesById.get(visibleSelectedElementId);
   const selectedElement = session.details?.[session.selectedElementId]
     || session.elements.find((element) => element.id === session.selectedElementId);
@@ -672,9 +672,9 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
           {selectedNode.kind === 'object' && (
             <section className="studio-object-attributes" aria-label="完整属性列表">
               <header><b>属性</b><small>{selectedObjectAttributes.length} 项</small></header>
-              {session.detailLoading && !session.details?.[selectedNode.id] ? (
+              {(() => { if (session.detailLoading && !session.details?.[selectedNode.id]) return (
                 <div className="studio-object-attributes-state">正在读取属性…</div>
-              ) : selectedObjectAttributes.length ? (
+              ); return selectedObjectAttributes.length ? (
                 <div className="studio-object-attribute-list">
                   {selectedObjectAttributes.map((field, index) => {
                     const key = field.key || field.name || `field_${index + 1}`;
@@ -684,7 +684,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
                     </div>;
                   })}
                 </div>
-              ) : <div className="studio-object-attributes-state">暂无属性</div>}
+              ) : <div className="studio-object-attributes-state">暂无属性</div>; })()}
             </section>
           )}
           <button type="button" className="btn btn-p" onClick={() => onOpen(selectedNode.id, 'graph')}>
@@ -771,7 +771,7 @@ function StudioGraphScrollMiniMap({ nodes, routes, zoom, surface, viewport, scro
   );
 }
 
-const StudioNode = memo(function StudioNode({ data }) {
+const StudioNode = memo(({ data }) => {
   const Icon = KIND_ICON[data.kind] || Boxes;
   const meta = studioGraphKindMeta(data.kind);
   return (
@@ -795,7 +795,7 @@ const StudioNode = memo(function StudioNode({ data }) {
   );
 });
 
-const StudioEdge = memo(function StudioEdge({ id, sourceX, sourceY, targetX, targetY, markerEnd, data }) {
+const StudioEdge = memo(({ id, sourceX, sourceY, targetX, targetY, markerEnd, data }) => {
   const points = studioRoutePoints(data.points, sourceX, sourceY, targetX, targetY);
   const path = studioRoundedPath(points);
   const { x: labelX, y: labelY } = studioLabelPosition(points, data.labelAnchor);
@@ -809,7 +809,7 @@ const StudioEdge = memo(function StudioEdge({ id, sourceX, sourceY, targetX, tar
         stroke: data.color,
         strokeWidth: emphasized ? 2.6 : 1.35,
         strokeDasharray: data.dash,
-        opacity: dimmed ? 0.1 : emphasized ? 1 : 0.72,
+        opacity: (() => { if (dimmed) return 0.1; return emphasized ? 1 : 0.72; })(),
       }} />
     {Array.from({ length: data.particleCount || 0 }, (_, index) => {
       const begin = -(particleDuration / data.particleCount) * index;
@@ -823,7 +823,7 @@ const StudioEdge = memo(function StudioEdge({ id, sourceX, sourceY, targetX, tar
     {data.label && (
       <EdgeLabelRenderer>
         <span className={`studio-edge-label${data.active ? ' active' : ''}${data.hovered ? ' hovered' : ''}`}
-          style={{ color: data.labelColor, opacity: dimmed ? 0.58 : emphasized ? 1 : 0.94, transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
+          style={{ color: data.labelColor, opacity: (() => { if (dimmed) return 0.58; return emphasized ? 1 : 0.94; })(), transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
           {data.label}
         </span>
       </EdgeLabelRenderer>

@@ -8,11 +8,9 @@ const PHASES = {
   },
   revision: {
     completedSteps: 1,
-    current: (state) => state.protocol === 'targeted_incremental'
-      ? state.shardCount
-        ? `${state.shardOrdering === 'dependency_serial' ? '正在按依赖顺序生成' : '正在并行生成'} ${state.shardCount} 个目标符号补丁（第 ${state.attempt}/${state.maxAttempts} 次）`
-        : `正在生成 ${state.changeSetCount || 1} 个目标资源变更组（第 ${state.attempt}/${state.maxAttempts} 次）`
-      : `模型正在修改知识包（第 ${state.attempt}/${state.maxAttempts} 次）`,
+    current: (state) => (() => { if (state.protocol === 'targeted_incremental') return state.shardCount
+        ? `${(() => { if (state.shardOrdering === 'dependency_serial') return '正在按依赖顺序生成'; return '正在并行生成'; })()} ${state.shardCount} 个目标符号补丁（第 ${state.attempt}/${state.maxAttempts} 次）`
+        : `正在生成 ${state.changeSetCount || 1} 个目标资源变更组（第 ${state.attempt}/${state.maxAttempts} 次）`; return `模型正在修改知识包（第 ${state.attempt}/${state.maxAttempts} 次）`; })(),
     next: ['校验修改结果', '保存待确认的修改'],
   },
   validation: {

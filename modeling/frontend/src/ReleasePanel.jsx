@@ -147,7 +147,7 @@ export default function ReleasePanel({ projectId, release, steps = [], onRelease
           <strong>发布已知限制</strong>
           {(warningReview.items ?? []).map((item) => (
             <div key={item.fingerprint} style={styles.limitItem}>
-              {item.finding.releaseBlocking ? '必须修复' : item.releaseConfirmed ? '已确认' : '待确认'} · {item.finding.category} · {item.finding.target}<br />
+              {(() => { if (item.finding.releaseBlocking) return '必须修复'; return item.releaseConfirmed ? '已确认' : '待确认'; })()} · {item.finding.category} · {item.finding.target}<br />
               {item.finding.message}
             </div>
           ))}
@@ -162,7 +162,7 @@ export default function ReleasePanel({ projectId, release, steps = [], onRelease
       )}
       <div style={styles.action}>
         <button type="button" className="btn btn-p" disabled={!ready || busy} onClick={publish}>
-          {busy ? '发布中…' : released ? '已发布' : ready ? '发布' : '暂不可发布'}
+          {(() => { if (busy) return '发布中…'; return released ? '已发布' : (() => { if (ready) return '发布'; return '暂不可发布'; })(); })()}
         </button>
         <button type="button" className="btn" disabled={auditBusy} onClick={downloadAudit}>
           {auditBusy ? '导出中…' : '导出建模审计包'}

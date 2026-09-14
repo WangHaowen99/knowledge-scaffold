@@ -148,7 +148,7 @@ export default function DocView() {
 
 function RefIcon({ path }) {
   const ext = (path || '').split('.').pop();
-  const name = ext === 'mmd' ? 'layers' : ext === 'xlsx' || ext === 'csv' ? 'sheet' : 'file';
+  const name = (() => { if (ext === 'mmd') return 'layers'; return ext === 'xlsx' || ext === 'csv' ? 'sheet' : 'file'; })();
   return <Icon name={name} size={15} className="ref-icon" />;
 }
 
@@ -348,13 +348,9 @@ function MaterialPurposeReviewPanel({ material }) {
 
   const ordered = material.tables.map((table) => decisions[table.name]).filter(Boolean);
   const hasSchemaSheet = ordered.some((item) => item.semanticRole === 'schema');
-  const validationError = ordered.length !== material.tables.length
-    ? '仍有 Sheet 未分类'
-    : hasSchemaSheet && purpose !== 'schema'
+  const validationError = (() => { if (ordered.length !== material.tables.length) return '仍有 Sheet 未分类'; return hasSchemaSheet && purpose !== 'schema'
       ? '包含实体、关系或汇总 Sheet 时，文件用途必须是数据 Schema'
-      : purpose === 'schema' && !hasSchemaSheet
-        ? '数据 Schema 至少需要一个实体、关系或汇总 Sheet'
-        : '';
+      : (() => { if (purpose === 'schema' && !hasSchemaSheet) return '数据 Schema 至少需要一个实体、关系或汇总 Sheet'; return ''; })(); })();
   const analysisPending = review.status !== 'confirmed' && review.suggestedBy !== 'agent';
   const reviewable = projectMaterials.filter((item) => item.purposeReview);
   const confirmedCount = reviewable.filter((item) => item.purposeReview.status === 'confirmed').length;
@@ -383,7 +379,7 @@ function MaterialPurposeReviewPanel({ material }) {
         <b>{tabular ? '文件及 Sheet 用途' : '资料用途确认'}</b>
         {reviewable.length > 1 && <span className="muted">{confirmedCount}/{reviewable.length}</span>}
         <span className={`pill ${review.status === 'confirmed' ? 'ok' : 'wait'}`}>
-          {analysisPending ? '助手轻量分析中' : review.status === 'confirmed' ? '已确认' : '待确认'}
+          {(() => { if (analysisPending) return '助手轻量分析中'; return review.status === 'confirmed' ? '已确认' : '待确认'; })()}
         </span>
       </div>
       <label className="wb-purpose-file">
@@ -415,7 +411,7 @@ function MaterialPurposeReviewPanel({ material }) {
       {(error || validationError) && <div className="wb-purpose-error" role="alert">{error || validationError}</div>}
       <button className="btn btn-p btn-sm" type="button" disabled={saving || analysisPending || Boolean(validationError)}
         onClick={() => void confirm()}>
-        {saving ? '确认中…' : review.status === 'confirmed' ? '更新确认' : tabular ? '确认文件及全部 Sheet' : '确认资料用途'}
+        {(() => { if (saving) return '确认中…'; return review.status === 'confirmed' ? '更新确认' : (() => { if (tabular) return '确认文件及全部 Sheet'; return '确认资料用途'; })(); })()}
       </button>
     </section>
   );

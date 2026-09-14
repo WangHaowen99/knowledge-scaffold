@@ -24,14 +24,14 @@ export function ScenarioPanel({ projectId, step, progress, onChanged, onOpenColl
     <div className="workflow-extra">
       <div className="workflow-extra-actions">
         <button type="button" className="btn btn-p" disabled={busy} onClick={start}>
-          {busy ? '准备中…' : scenarios.length ? '重新推演' : '开始推演'}
+          {(() => { if (busy) return '准备中…'; return scenarios.length ? '重新推演' : '开始推演'; })()}
         </button>
         {step?.status === 'waiting_review' && (
           <button type="button" className="btn" onClick={onOpenCollaboration}>去确认</button>
         )}
       </div>
       <StepMessage error={error}>
-        {step?.status === 'completed' ? '已通过' : step?.status === 'failed' ? '需调整' : ''}
+        {(() => { if (step?.status === 'completed') return '已通过'; return step?.status === 'failed' ? '需调整' : ''; })()}
       </StepMessage>
       {scenarios.length > 0 && (
         <div className="scenario-list">

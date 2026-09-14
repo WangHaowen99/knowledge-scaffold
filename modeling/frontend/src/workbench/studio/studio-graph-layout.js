@@ -92,7 +92,7 @@ export function studioBackendPositionsUsable(nodes) {
 export function studioNodeSize(node, degree = 0) {
   const base = NODE_SIZES[node.kind] || DEFAULT_NODE_SIZE;
   const maxWidth = NODE_MAX_WIDTHS[node.kind] || DEFAULT_NODE_MAX_WIDTH;
-  const degreeBoost = degree >= 5 ? 18 : degree >= 3 ? 10 : degree >= 1 ? 4 : 0;
+  const degreeBoost = (() => { if (degree >= 5) return 18; return degree >= 3 ? 10 : (() => { if (degree >= 1) return 4; return 0; })(); })();
   const titleWidth = estimateStudioTextWidth(node.label, NODE_TITLE_FONT_SIZE);
   const contentWidth = Math.ceil(titleWidth / NODE_TITLE_WIDTH_RATIO);
   const width = Math.round(Math.min(maxWidth, Math.max(base.width + degreeBoost, contentWidth)));

@@ -898,7 +898,7 @@ test('验证改进交付阶段复用统一三栏工作台而不是替换知识�
     reviewPanelSource,
     /export function ReviewPanel\(\{[\s\S]*?projectId,[\s\S]*?stageContent = null,[\s\S]*?onDirtyChange,[\s\S]*?packageCheck = null,[\s\S]*?\}\)/,
   );
-  assert.match(reviewPanelSource, /stageContent \? \(/);
+  assert.match(reviewPanelSource, /if \(stageContent\) return \(/);
   assert.match(stylesSource, /\.mwr \.rv-stage/);
 });
 

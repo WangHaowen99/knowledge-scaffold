@@ -6,7 +6,7 @@ import { impact } from '../lib/mock/fixtures.js';
    把「保持有效」做成绿色大数放在左边，比任何图表都有效。 */
 export default function ImpactView({ data, demo = false }) {
   const [tab, setTab] = useState(0);
-  const view = data?.intact && data?.todo ? data : demo ? impact : null;
+  const view = (() => { if (data?.intact && data?.todo) return data; return demo ? impact : null; })();
   if (!view) {
     return (
       <div className="empty" role="status">
