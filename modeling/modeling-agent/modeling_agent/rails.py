@@ -1608,8 +1608,7 @@ def check_write_safety(tool: str, arguments: dict[str, Any]) -> list[str]:
     entrypoint = str(arguments.get("entrypoint") or "")
 
     if path:
-        parts = path.split("/")
-        if path.startswith("/") or "\\" in path or ".." in parts or any(not part for part in parts):
+        if _is_unsafe_relative_path(path):
             problems.append("path 必须是没有空段、反斜杠或 .. 的包内相对路径")
         if any(ord(char) < 32 for char in path):
             problems.append("path 不能包含控制字符")
@@ -1620,13 +1619,23 @@ def check_write_safety(tool: str, arguments: dict[str, Any]) -> list[str]:
         entries = arguments.get("entries") or []
         for entry in entries if isinstance(entries, list) else []:
             name = str(entry)
-            parts = name.split("/")
-            if name.startswith("/") or "\\" in name or ".." in parts or any(not part for part in parts):
+            if _is_unsafe_relative_path(name):
                 problems.append(f"zip 条目路径不安全：{name}")
                 break
     if entrypoint and (not entrypoint.endswith(".py") or ".." in entrypoint):
         problems.append("脚本 entrypoint 必须是包内 .py 文件且不能包含 ..")
     return problems
+
+
+def _is_unsafe_relative_path(value: str) -> bool:
+    if value.startswith("/"):
+        return True
+    if "\\" in value:
+        return True
+    parts = value.split("/")
+    if ".." in parts:
+        return True
+    return any(not part for part in parts)
 
 
 def _write_problem_rule_id(problem: str, *, unsafe: bool) -> str:

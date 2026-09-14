@@ -1271,10 +1271,10 @@ table.grid tr:hover td{background:#fbfbf9}
   </div>
 </section>
 <script>
-document.querySelectorAll('.proto button').forEach(function(b){
-  b.addEventListener('click', function(){
-    document.querySelectorAll('.proto button').forEach(function(x){x.classList.remove('on')});
-    document.querySelectorAll('.screen').forEach(function(x){x.classList.remove('on')});
+document.querySelectorAll('.proto button').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.proto button').forEach((x) => {x.classList.remove('on')});
+    document.querySelectorAll('.screen').forEach((x) => {x.classList.remove('on')});
     b.classList.add('on');
     document.getElementById(b.dataset.s).classList.add('on');
     window.scrollTo(0,0);

@@ -229,7 +229,7 @@ export function IngestView({ project, documents, onChanged }) {
             <div key={revision.id} className="material-revision-row">
               <span>修订 {revision.revisionNo}</span>
               <span className={`tag ${revision.lifecycleStatus === 'active' ? 'tag-ok' : 'tag-lang'}`}>
-                {revision.lifecycleStatus === 'active' ? '当前' : revision.lifecycleStatus === 'deleted' ? '已停用' : '历史'}
+                {(() => { if (revision.lifecycleStatus === 'active') return '当前'; return revision.lifecycleStatus === 'deleted' ? '已停用' : '历史'; })()}
               </span>
               <time>{new Date(revision.createdAt).toLocaleString()}</time>
             </div>

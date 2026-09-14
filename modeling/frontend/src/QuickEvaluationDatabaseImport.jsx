@@ -59,7 +59,7 @@ export default function QuickEvaluationDatabaseImport({ projectId, onConfigured,
     <div className="edi-quick-copy"><Database size={20} /><div><b>一键导入 Excel 数据源</b><span>自动创建项目专属数据库并完成连接配置；每个 Sheet 写入一张表，同名表会被替换。</span></div></div>
     <label className={`btn btn-p ${busy || running || loading ? 'disabled' : ''}`}>
       {busy || running ? <LoaderCircle className="wb-spin" size={15} /> : <Upload size={15} />}
-      {busy ? '正在提交…' : running ? '后台导入中…' : '选择 Excel 并导入'}
+      {(() => { if (busy) return '正在提交…'; return running ? '后台导入中…' : '选择 Excel 并导入'; })()}
       <input ref={inputRef} hidden type="file" accept=".xlsx,.xls" multiple disabled={busy || running || loading}
         onChange={(event) => void select(Array.from(event.target.files || []))} />
     </label>

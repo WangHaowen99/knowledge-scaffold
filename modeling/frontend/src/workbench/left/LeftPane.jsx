@@ -149,7 +149,7 @@ export function displayName(path) {
   return displayPackageEntryName(path);
 }
 
-const Row = memo(function Row({ item, depth, ariaLevel, active, heat, hitPaths = [], fresh }) {
+const Row = memo(({ item, depth, ariaLevel, active, heat, hitPaths = [], fresh }) => {
   const hit = heat && hitPaths.includes(item.path);
   const dim = heat && !hit && !fresh;
   const name = displayName(item.path);
@@ -253,14 +253,14 @@ function MaterialList() {
   const cur = useStore(store, selMat);
   const demo = useStore(store, selDemo);
   const realMaterials = useStore(store, selMaterials);
-  const materials = demo ? F.materials : realMaterials.map((item) => ({
+  const materials = (() => { if (demo) return F.materials; return realMaterials.map((item) => ({
     id: item.id,
     name: item.filename,
     v: item.revisionNo,
     refs: item.refs || 0,
-    st: item.parseStatus === 'parsed' ? 'ok' : item.parseStatus === 'failed' ? 'stale' : 'new',
-    meta: item.parseError || `${item.chars || 0} 字符${item.tableCount ? ` · ${item.tableCount} 张表` : ''}`,
-  }));
+    st: (() => { if (item.parseStatus === 'parsed') return 'ok'; return item.parseStatus === 'failed' ? 'stale' : 'new'; })(),
+    meta: item.parseError || `${item.chars || 0} 字符${(() => { if (item.tableCount) return ` · ${item.tableCount} 张表`; return ''; })()}`,
+  })); })();
   return (
     <>
       <div className="wb-scroll">

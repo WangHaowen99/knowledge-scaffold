@@ -1,6 +1,8 @@
 /* 冒烟：把每个场景 SSR 渲染一遍，抓组件未定义 / 渲染期异常。不参与生产构建。 */
 globalThis.window = globalThis.window || { location: { hash: '' }, addEventListener() {}, removeEventListener() {} };
 
+const nearlyEqual = (actual, expected, epsilon = 1e-9) => Math.abs(actual - expected) <= epsilon;
+
 import { readFileSync } from 'node:fs';
 import { renderToString } from 'react-dom/server';
 import App from './App.jsx';
@@ -264,10 +266,10 @@ try {
     || scrollCanvas.width !== 1600
     || Math.min(...scrollCanvas.nodes.map((node) => node.position.x)) < 600
     || scrollCanvas.nodes.some((node) => node.position.x < 0 || node.position.y < 0)
-    || operationFlowZoom(0.1) !== 0.5
+    || !nearlyEqual(operationFlowZoom(0.1), 0.5)
     || operationFlowZoom(2.4) !== 2
-    || operationFlowWheelZoom(1, -100) !== 1.25
-    || operationFlowWheelZoom(1, 100) !== 0.75
+    || !nearlyEqual(operationFlowWheelZoom(1, -100), 1.25)
+    || !nearlyEqual(operationFlowWheelZoom(1, 100), 0.75)
     || !flowPanelSource.includes("addEventListener('wheel', handleFullscreenWheel, { passive: false })")
     || !flowPanelSource.includes("removeEventListener('wheel', handleFullscreenWheel)")
     || flowPanelSource.includes('onWheel={(event) =>')
@@ -395,7 +397,7 @@ try {
     || !studioSummaryVisible('operation:a', '', { activeKind: '', selectedKind: 'operation' })
     || scrollSurface.width <= 2000
     || scrollSurface.height <= 1500
-    || scrollSurface.viewport.zoom !== 1.5
+    || !nearlyEqual(scrollSurface.viewport.zoom, 1.5)
     || scrollSurface.viewport.x <= 0
     || decoratedSurface.height < 3800
     || !clustered.clustered || clustered.nodes.length >= largeSource.nodes.length
@@ -757,16 +759,16 @@ try {
 } catch (e) { console.log('✗ 评测回答展示:', e.message); bad++; }
 
 try {
-  if (fitMermaidZoom(8_000, 1_040) !== 0.25
-    || fitMermaidZoom(1_000, 640) !== 0.64
-    || fitMermaidZoom(480, 960) !== 1.8
+  if (!nearlyEqual(fitMermaidZoom(8_000, 1_040), 0.25)
+    || !nearlyEqual(fitMermaidZoom(1_000, 640), 0.64)
+    || !nearlyEqual(fitMermaidZoom(480, 960), 1.8)
     || fitMermaidZoom(0, 960) !== 1
     // 小图按宽度能放到 6 倍，但视口高度只够 1.5 倍，取较紧的一档
-    || fitMermaidZoom(160, 960, 400, 600) !== 1.5
+    || !nearlyEqual(fitMermaidZoom(160, 960, 400, 600), 1.5)
     // 长图高度装不下也不缩小：视口纵向可滚动，压扁了反而看不清
     || fitMermaidZoom(160, 960, 900, 600) !== 1
     // 高度未知时退回只看宽度，行为与改动前一致
-    || fitMermaidZoom(1_000, 640, 0, 0) !== 0.64) {
+    || !nearlyEqual(fitMermaidZoom(1_000, 640, 0, 0), 0.64)) {
     throw new Error('流程图自动适配没有按宽度贴合、按高度限制放大');
   }
   console.log('✓ Mermaid 按宽度贴合视口，高度只限制放大不造成缩小');
@@ -785,7 +787,7 @@ try {
     ['process_confirmed', { id: 'process_confirmed', pass: false, blockers: ['形成并确认至少 1 条业务流程'] }],
   ]);
   // 当前停在"目标确认"：只有紧接其后的那道闸算挡路，更远的那道不该也亮起来
-  const atGoal = (index) => (index < 1 ? 'passed' : index > 1 ? 'future' : 'current');
+  const atGoal = (index) => ((() => { if (index < 1) return 'passed'; return index > 1 ? 'future' : 'current'; })());
   if (blockingGateIndex(steps, gateById, atGoal) !== 2) {
     throw new Error('挡路的闸没有取当前步之后的第一道');
   }
@@ -894,7 +896,7 @@ try {
   const restored = restoreStudioHistory(createStudioSession(), snapshot);
   const legacyKind = restoreStudioHistory(createStudioSession(), { kind: 'concept' });
   if (restored.view !== 'entry' || restored.returnView !== 'table'
-    || restored.graphViewport.zoom !== 1.2 || restored.tableScrollTop !== 420
+    || !nearlyEqual(restored.graphViewport.zoom, 1.2) || restored.tableScrollTop !== 420
     || restored.expandedClusterIds[0] !== 'cluster:rule:1'
     || fromUrl.selectedElementId !== 'rule:safety-stock' || fromUrl.query !== '库存'
     || routeFocus.view !== 'entry' || routeFocus.elementId !== 'rule:safety-stock'

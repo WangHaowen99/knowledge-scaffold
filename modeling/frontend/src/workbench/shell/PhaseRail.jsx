@@ -174,13 +174,13 @@ export default function PhaseRail() {
 }
 
 function GateMark({ step, gate, blocking, opened, onOpen }) {
-  const tone = !gate ? 'far' : gate.pass ? 'ok' : blocking ? 'shut' : 'far';
+  const tone = (() => { if (!gate) return 'far'; return gate.pass ? 'ok' : (() => { if (blocking) return 'shut'; return 'far'; })(); })();
   return (
     <button type="button" className={`wb-rail-gate ${tone}${opened ? ' on' : ''}`}
       aria-expanded={opened}
       title={gate ? `闸 · ${gate.label}` : `进入「${step.label}」的门禁`}
       onClick={onOpen}>
-      <i>{tone === 'ok' ? '' : tone === 'shut' ? <>⦸<b>{gate.blockers.length}</b></> : ''}</i>
+      <i>{(() => { if (tone === 'ok') return ''; return tone === 'shut' ? <>⦸<b>{gate.blockers.length}</b></> : ''; })()}</i>
     </button>
   );
 }
@@ -226,9 +226,8 @@ function StepCard({
 }) {
   const counts = stepCounts(step.phase, files, materials);
   const exitGate = exit ? gateById.get(exit.gate) : null;
-  const statusText = status === 'passed' ? '已通过'
-    : status.startsWith('current') ? (status.endsWith('wait') ? '进行中 · 等你' : '进行中')
-      : '未开始';
+  const statusText = (() => { if (status === 'passed') return '已通过'; return status.startsWith('current') ? ((() => { if (status.endsWith('wait')) return '进行中 · 等你'; return '进行中'; })())
+      : '未开始'; })();
   return (
     <>
       <header>

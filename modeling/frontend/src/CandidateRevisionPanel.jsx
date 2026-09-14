@@ -63,7 +63,7 @@ export function candidateRevisionAcceptedNotice(response = {}) {
 
 export function candidateRevisionVisibilityKey(candidates = [], error = '', noticeKey = '') {
   const ids = candidates.map((candidate) => String(candidate?.id ?? '')).filter(Boolean);
-  const base = ids.length ? `candidates:${ids.join(',')}` : (error ? `error:${error}` : '');
+  const base = (() => { if (ids.length) return `candidates:${ids.join(',')}`; return ((() => { if (error) return `error:${error}`; return ''; })()); })();
   return noticeKey ? `${base ? `${base}|` : ''}notice:${noticeKey}` : base;
 }
 

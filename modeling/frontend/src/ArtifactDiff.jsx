@@ -140,7 +140,7 @@ export default function ArtifactDiff({
                     <div key={line.key} style={{ ...styles.line, ...LINE_STYLE[line.type] }}>
                       <span style={styles.lineNo}>{line.oldNumber}</span>
                       <span style={styles.lineNo}>{line.newNumber}</span>
-                      <span style={styles.mark}>{line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ''}</span>
+                      <span style={styles.mark}>{(() => { if (line.type === 'add') return '+'; return line.type === 'remove' ? '-' : ''; })()}</span>
                       <pre style={styles.content}>{line.content || ' '}</pre>
                     </div>
                   ))}

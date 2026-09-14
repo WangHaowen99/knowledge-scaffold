@@ -60,7 +60,7 @@ export default function PendingInteractionQueue({
                   title={canOpen ? queueTitle(interaction) : '请先完成前面的待办'}
                   onClick={() => onSelect?.(interaction)}>
                   <span className={`pchat-pending-queue__state ${isCurrent ? 'is-current' : ''}`}>
-                    {isCurrent ? '当前' : independent(interaction) ? '可并行查看' : '排队'}
+                    {(() => { if (isCurrent) return '当前'; return independent(interaction) ? '可并行查看' : '排队'; })()}
                   </span>
                   <span className="pchat-pending-queue__title">{queueTitle(interaction)}</span>
                   {canOpen

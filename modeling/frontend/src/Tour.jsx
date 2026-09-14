@@ -123,11 +123,9 @@ export default function Tour({ scene, steps, autoStart = true }) {
   // 气泡放高亮区右侧，空间不足放左侧/下方
   const bubbleW = 340;
   const spaceRight = window.innerWidth - rect.right;
-  const bubbleStyle = spaceRight > bubbleW + 40
-    ? { left: rect.right + 18, top: Math.max(16, Math.min(rect.top, window.innerHeight - 260)) }
-    : rect.left > bubbleW + 40
+  const bubbleStyle = (() => { if (spaceRight > bubbleW + 40) return { left: rect.right + 18, top: Math.max(16, Math.min(rect.top, window.innerHeight - 260)) }; return rect.left > bubbleW + 40
       ? { left: rect.left - bubbleW - 18, top: Math.max(16, Math.min(rect.top, window.innerHeight - 260)) }
-      : { left: Math.max(16, Math.min(rect.left, window.innerWidth - bubbleW - 16)), top: Math.min(rect.bottom + 14, window.innerHeight - 240) };
+      : { left: Math.max(16, Math.min(rect.left, window.innerWidth - bubbleW - 16)), top: Math.min(rect.bottom + 14, window.innerHeight - 240) }; })();
 
   return (
     <div className="tour-ov" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>

@@ -178,21 +178,21 @@ export default function AiConstructionWorkbench({ projectId, session, onProjectC
           </button>
         </header>
         <div className={`acw-stage-body focus-${focus}`}>
-          {materialsOpen ? (
+          {(() => { if (materialsOpen) return (
             <IngestView
               project={session.project}
               documents={session.documents ?? []}
               onChanged={onProjectChanged}
             />
-          ) : focus === 'project_setup' ? (
+          ); return focus === 'project_setup' ? (
             <ProjectSetupView project={session.project} onChanged={onProjectChanged} />
-          ) : focus === 'ingest' ? (
+          ) : (() => { if (focus === 'ingest') return (
             <IngestView
               project={session.project}
               documents={session.documents ?? []}
               onChanged={onProjectChanged}
             />
-          ) : (
+          ); return (
             <PackageWorkspace
               projectId={projectId}
               initialSession={session}
@@ -201,7 +201,7 @@ export default function AiConstructionWorkbench({ projectId, session, onProjectC
               onNavigate={navigateFromWorkspace}
               onUnsavedChange={reportWorkspaceDirty}
             />
-          )}
+          ); })(); })()}
         </div>
       </main>
     </div>

@@ -70,7 +70,7 @@ function StatusBlock({
   const reportedTaskProgress = taskProgressMessage && Number.isFinite(Number(block.progress))
     ? Math.max(0, Math.min(100, Math.round(Number(block.progress))))
     : null;
-  const progress = taskCompleted ? 100 : (runtime ? runtimeProgress : reportedTaskProgress);
+  const progress = (() => { if (taskCompleted) return 100; return ((() => { if (runtime) return runtimeProgress; return reportedTaskProgress; })()); })();
   const title = taskCompleted
     ? completedTitle(block.title, task?.title)
     : (runtime?.title ?? friendlyRepairText(block.title));

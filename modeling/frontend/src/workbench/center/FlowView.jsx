@@ -241,7 +241,7 @@ function parseFlow(source = '', path = '') {
   for (const match of source.matchAll(nodePattern)) {
     const id = match[1];
     const text = (match[3] || match[4] || match[5] || id).replace(/^"|"$/g, '');
-    const kind = match[4] ? 'decision' : match[5] ? 'terminal' : 'step';
+    const kind = (() => { if (match[4]) return 'decision'; return match[5] ? 'terminal' : 'step'; })();
     nodes.set(id, { id, text, kind, tag: match[4] ? id : undefined });
   }
   // Mermaid 允许在连线两端直接写节点定义。先规整为节点 ID，避免

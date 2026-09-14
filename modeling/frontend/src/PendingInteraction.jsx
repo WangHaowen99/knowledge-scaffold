@@ -231,7 +231,7 @@ function initialDraft(interaction) {
     for (const question of questionsFrom(payload, interaction)) {
       const id = String(question.id ?? question.key ?? Object.keys(answers).length);
       const defaultValue = question.defaultValue ?? question.default_value ?? question.selected;
-      const defaults = Array.isArray(defaultValue) ? defaultValue : defaultValue == null ? [] : [defaultValue];
+      const defaults = (() => { if (Array.isArray(defaultValue)) return defaultValue; return defaultValue == null ? [] : [defaultValue]; })();
       answers[id] = {
         selected: defaults.map(String),
         other: asText(question.other),
@@ -513,11 +513,9 @@ function ReviewContent({ payload, onOpenFile }) {
 
 function ThreeWayReview({ interaction, draft, setDraft, busy, submit, mode, onOpenFile }) {
   const payload = interaction.payload || {};
-  const labels = mode === 'finding'
-    ? { accept: '采用建议', revise: '请调整', reject: '暂缓并记录理由' }
-    : mode === 'scenario' || mode === 'flowchart'
+  const labels = (() => { if (mode === 'finding') return { accept: '采用建议', revise: '请调整', reject: '暂缓并记录理由' }; return mode === 'scenario' || mode === 'flowchart'
       ? { accept: '通过', revise: '需调整', reject: '不通过' }
-      : { accept: '通过', revise: '请修改', reject: '不采用' };
+      : { accept: '通过', revise: '请修改', reject: '不采用' }; })();
   const actions = mode === 'finding'
     ? { accept: 'apply', revise: 'revise', reject: 'dismiss' }
     : { accept: 'accept', revise: 'revise', reject: 'reject' };
@@ -562,13 +560,18 @@ function FlowchartDraftReview({ draft, setDraft, busy, submit, flowchartDraftSta
   const canSubmit = Number.isInteger(revision) && revision > 0
     && diagramCount > 0
     && !dirty && !saving && !loading && !flowchartDraftState?.error && warningsAcknowledged;
-  const status = loading
-    ? '正在加载流程图草稿…'
-    : dirty
-      ? '中间画布还有未保存修改，请先保存草稿。'
-      : diagramCount < 1
-        ? '当前没有业务流程，请新建并保存至少一个流程后再提交。'
-        : Number.isInteger(revision) ? `流程图草稿 v${revision} 已保存` : '流程图草稿尚未保存';
+  let status;
+  if (loading) {
+    status = '正在加载流程图草稿…';
+  } else if (dirty) {
+    status = '中间画布还有未保存修改，请先保存草稿。';
+  } else if (diagramCount < 1) {
+    status = '当前没有业务流程，请新建并保存至少一个流程后再提交。';
+  } else if (Number.isInteger(revision)) {
+    status = `流程图草稿 v${revision} 已保存`;
+  } else {
+    status = '流程图草稿尚未保存';
+  }
   return (
     <>
       <div style={styles.section}>

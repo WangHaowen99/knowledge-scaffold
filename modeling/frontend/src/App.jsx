@@ -234,11 +234,9 @@ export default function App() {
       <div className="topbar">
         <div className="logo"><span className="mk">知</span>知识包建模工具</div>
         <span className="crumb">
-          {acceptanceOpen
-            ? '项目 / 浏览器验收场景'
-            : projectId
+          {(() => { if (acceptanceOpen) return '项目 / 浏览器验收场景'; return projectId
             ? <><button type="button" className="crumb-link" onClick={closeProject}>项目</button> / 统一建模工作台</>
-            : '项目'}
+            : '项目'; })()}
         </span>
         <div className="right">
           {!projectId && !acceptanceOpen && (
@@ -304,13 +302,11 @@ export default function App() {
       {importNotice && <div className="app-global-notice">{importNotice}<button onClick={() => setImportNotice('')}>✕</button></div>}
       {projectAccessNotice && <div className="app-global-notice">{projectAccessNotice}<button onClick={() => setProjectAccessNotice('')}>✕</button></div>}
       <div className="main">
-        {acceptanceOpen
-          ? <AcceptancePage onOpenProject={openProject} onBack={closeAcceptance} />
-          : projectId
+        {(() => { if (acceptanceOpen) return <AcceptancePage onOpenProject={openProject} onBack={closeAcceptance} />; return projectId
           ? <ProjectWorkbenchRouter projectId={projectId} onUnsavedChange={setWorkspaceDirty}
               onProjectUnavailable={handleProjectUnavailable}
               onAuthenticationRequired={handleAuthenticationRequired} />
-          : <ProjectList onOpen={openProject} />}
+          : <ProjectList onOpen={openProject} />; })()}
       </div>
       {!projectId && !acceptanceOpen && <Tour scene="projects" steps={PROJECT_STEPS} />}
       {packageNameConflict && <PackageNameConflictDialog

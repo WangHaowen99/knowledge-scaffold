@@ -255,7 +255,7 @@ export function ProjectMemberDialog({ project, onClose }) {
       <h3 id="project-member-title">项目成员</h3>
       <p>添加成员后，对方会在项目列表直接看到这个项目。</p>
       <div className="pj-member-list">{members.map((member) => <div key={member.username}>
-        <b>{member.username}</b><span>{member.role === 'owner' ? '项目负责人' : member.role === 'modeler' ? '建模成员' : '只读成员'}</span>
+        <b>{member.username}</b><span>{(() => { if (member.role === 'owner') return '项目负责人'; return member.role === 'modeler' ? '建模成员' : '只读成员'; })()}</span>
       </div>)}</div>
       <label><span>成员用户名</span><input className="input" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
       <label><span>权限</span><select className="input" value={role} onChange={(event) => setRole(event.target.value)}>

@@ -93,9 +93,7 @@ export function normalizeVersions(input) {
 }
 
 const normalizeLine = (line = {}) => ({
-  type: ['context', 'add', 'remove'].includes(line.type)
-    ? line.type
-    : line.type === 'added' ? 'add' : line.type === 'deleted' ? 'remove' : 'context',
+  type: (() => { if (['context', 'add', 'remove'].includes(line.type)) return line.type; return line.type === 'added' ? 'add' : (() => { if (line.type === 'deleted') return 'remove'; return 'context'; })(); })(),
   content: asText(firstDefined(line, ['content', 'text'])),
 });
 

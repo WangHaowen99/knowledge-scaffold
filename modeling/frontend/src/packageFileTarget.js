@@ -9,11 +9,7 @@ export function resolvePackageFileTarget(files = [], target = '') {
     typed?.[2]?.trim(),
     semanticRoot !== value ? semanticRoot : '',
   ].filter(Boolean))];
-  const group = typed?.[1]
-    ? `${typed[1].toLowerCase()}${typed[1].toLowerCase().endsWith('s') ? '' : 's'}`
-    : (/^(objects|operations|rules|metrics|scripts|mappings)$/i.test(value)
-      ? value.toLowerCase()
-      : '');
+  const group = (() => { if (typed?.[1]) return `${typed[1].toLowerCase()}${(() => { if (typed[1].toLowerCase().endsWith('s')) return ''; return 's'; })()}`; return ((() => { if (/^(objects|operations|rules|metrics|scripts|mappings)$/i.test(value)) return value.toLowerCase(); return ''; })()); })();
 
   return files.find((path) => path === value)
     ?? keys.flatMap((key) => [

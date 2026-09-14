@@ -126,31 +126,25 @@ export default function TopBar({ onOpenMcpSettings, settingsLoading = false }) {
       <span className="goal ellip" title={projectName}>{projectName}</span>
       <span className="sep">·</span>
       <span className="k">
-        {demo
-          ? (incr ? '1.2.0 · 已发布' : project.revision)
-          : packageVersion
+        {(() => { if (demo) return ((() => { if (incr) return '1.2.0 · 已发布'; return project.revision; })()); return packageVersion
             ? `v${String(packageVersion).replace(/^v/i, '')} · ${packageStatusLabel(packageStatus)}`
-            : '准备中'}
+            : '准备中'; })()}
       </span>
 
-      {incr ? (
+      {(() => { if (incr) return (
         <>
           <span className="pill pill-ok">11 项保持有效</span>
           <span className="pill pill-stale">4 项需处理</span>
         </>
-      ) : (
+      ); return (
         <button type="button" className="pill pill-wait wb-pending-pill"
           disabled={!counts.pending} onClick={openPending}
-          title={interaction ? '查看建模助手中的待确认事项' : counts.pending ? '查看 Studio 中待检查并应用的工作草稿' : '当前没有待处理内容'}>
-          {counts.pending
-            ? interaction
-              ? counts.pendingGroups
-                ? `${counts.pending} 个决定 · ${counts.pendingGroups} 组变更`
-                : `${counts.pending} 个决定待处理`
-              : `${counts.pending} 项 Studio 修改待应用`
-            : '没有待处理决定'}
+          title={(() => { if (interaction) return '查看建模助手中的待确认事项'; return counts.pending ? '查看 Studio 中待检查并应用的工作草稿' : '当前没有待处理内容'; })()}>
+          {(() => { if (counts.pending) return interaction
+              ? (() => { if (counts.pendingGroups) return `${counts.pending} 个决定 · ${counts.pendingGroups} 组变更`; return `${counts.pending} 个决定待处理`; })()
+              : `${counts.pending} 项 Studio 修改待应用`; return '没有待处理决定'; })()}
         </button>
-      )}
+      ); })()}
 
       {!interaction && showRunningStatus && (
         <span className="pill pill-agent wb-priority-status"><i className="dot-pulse" />{run?.status === 'stopping' ? '正在停止' : '助手运行中'}</span>
