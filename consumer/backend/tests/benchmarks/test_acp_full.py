@@ -34,12 +34,12 @@ import os
 import sys
 import time
 import uuid
-import requests
-
-from backend_synthetic_credentials import synthetic_secret
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from dataclasses import dataclass, field
+
+import requests
+from backend_synthetic_credentials import synthetic_secret
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger(__name__)
@@ -167,7 +167,8 @@ class ACPTestRunner:
             return resp.json()
         return None
 
-    def _collect_sse_events(self, resp: requests.Response) -> list[dict]:
+    @staticmethod
+    def _collect_sse_events(resp: requests.Response) -> list[dict]:
         events = []
         for line in resp.iter_lines(decode_unicode=True):
             if not line:
@@ -184,7 +185,8 @@ class ACPTestRunner:
                 pass
         return events
 
-    def _collect_typed_sse_events(self, resp: requests.Response) -> list[dict]:
+    @staticmethod
+    def _collect_typed_sse_events(resp: requests.Response) -> list[dict]:
         events = []
         current_event = None
         for line in resp.iter_lines(decode_unicode=True):

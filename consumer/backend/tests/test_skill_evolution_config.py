@@ -44,8 +44,9 @@ def test_max_iterations_accepts_bounds_rejects_out_of_range():
 
 
 def test_max_iterations_zero_falls_back_to_default():
-    """0 is falsy → `or 15` fallback (NOT rejected). Pin current behavior: a
-    user submitting 0 gets the default 15, not a validation error."""
+    """0 is falsy → `or 15` fallback (NOT rejected). Pin current behavior: a."""
+    # Details: 0 is falsy → `or 15` fallback (NOT rejected). Pin current behavior: a user submitting 0 gets the
+    # default 15, not a validation error.
     c = _base()
     c["max_iterations"] = 0
     assert _normalize_skill_evolution_effective(c)["max_iterations"] == 15

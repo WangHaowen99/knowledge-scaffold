@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from operator import getitem
 from types import SimpleNamespace
 
 import agent.tools.execute_script as execute_script_module
@@ -714,7 +715,7 @@ def test_handle_execute_script_discards_success_stderr(monkeypatch, tmp_path):
     )
 
     assert result == "ok"
-    assert captured["include_stderr_on_success"] is False
+    assert getitem(captured, "include_stderr_on_success") is False
 
 
 @pytest.mark.parametrize(

@@ -1138,8 +1138,9 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
 
 
 def test_skill_evolution_connection_test_probes_runs_endpoint(monkeypatch):
-    """A real (lightweight) reachability probe replaces the old fall-through
-    '配置校验通过' that reported success for an unreachable skill-evolver."""
+    """A real (lightweight) reachability probe replaces the old fall-through."""
+    # Details: A real (lightweight) reachability probe replaces the old fall-through '配置校验通过' that reported success
+    # for an unreachable skill-evolver.
     import config.system_config as system_config_module
 
     captured = {}

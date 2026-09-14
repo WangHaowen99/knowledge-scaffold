@@ -6,6 +6,7 @@ import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from operator import getitem
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -480,7 +481,7 @@ def test_ontology_registry_summary_is_scoped_by_workspace_generation(
     monkeypatch.setattr(
         ontologies_module,
         "get_workspace_ontologies_root",
-        lambda workspace_id: roots[workspace_id],
+        lambda workspace_id: getitem(roots, workspace_id),
     )
     monkeypatch.setattr(
         ontologies_module,

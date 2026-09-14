@@ -4,6 +4,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+from operator import getitem
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -216,7 +217,7 @@ def test_inventory_filters_by_canonical_profile_ref_without_changing_generation(
     monkeypatch.setattr(
         references,
         "read_workspace_runtime_config",
-        lambda workspace_id: runtime_by_workspace[workspace_id],
+        lambda workspace_id: getitem(runtime_by_workspace, workspace_id),
     )
     monkeypatch.setattr(references, "get_workspace_config_generation", lambda _workspace_id: 0)
 

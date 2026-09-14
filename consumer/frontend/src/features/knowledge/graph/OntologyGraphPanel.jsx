@@ -418,11 +418,9 @@ export default function OntologyGraphPanel({
                 <path
                   key={`${edge.source}-${edge.target}-${edge.type}-${index}`}
                   d={`M${x1},${y1} C${bend},${y1} ${bend},${y2} ${x2},${y2}`}
-                  className={
-                    'ontology-runtime-edge ' +
-                    (edge.confidence === 'explicit' ? 'explicit ' : 'inferred ') +
-                    (hit ? `hit-${hit.state}` : '')
-                  }
+                  className={`ontology-runtime-edge ${
+                    edge.confidence === 'explicit' ? 'explicit ' : 'inferred '
+                  }${hit ? `hit-${hit.state}` : ''}`}
                   markerEnd={`url(#mwr-arrow${hit ? `-${hit.state}` : ''})`}
                   vectorEffect="non-scaling-stroke"
                 />
@@ -438,13 +436,9 @@ export default function OntologyGraphPanel({
               return (
                 <g
                   key={node.id}
-                  className={
-                    'ontology-runtime-node ' +
-                    node.type +
-                    ' ' +
-                    (interactive ? 'has-source ' : '') +
-                    (hit ? `hit-${hit.state}` : '')
-                  }
+                  className={`ontology-runtime-node ${node.type} ${
+                    interactive ? 'has-source ' : ''
+                  }${hit ? `hit-${hit.state}` : ''}`}
                   tabIndex={interactive ? 0 : undefined}
                   role={interactive ? 'button' : undefined}
                   aria-label={nodeAriaLabel(node, hit)}

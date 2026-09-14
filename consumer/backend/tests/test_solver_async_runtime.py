@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from operator import getitem
 from types import SimpleNamespace
 
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
@@ -118,7 +119,7 @@ def test_native_runtime_seeds_exact_preflight_products(monkeypatch):
 
     state = JiuwenAsyncAgentRuntime._build_engine_state(context)
 
-    assert captured["root_payload"] is snapshot.root_payload
+    assert getitem(captured, "root_payload") is snapshot.root_payload
     assert state["_selected_ontology_context_cache"] == "<Selected-Ontology />"
     assert state["_preflight_selected_ontology_preload_records"] == (
         tuple(dict(record) for record in snapshot.preload_records)
@@ -251,7 +252,7 @@ def test_preflight_preload_records_skip_second_package_read(monkeypatch):
 
     hydrate_selected_ontology_read_documents(state)
 
-    assert state["read_documents"]["by_path"][path]["turn_id"] == 7
+    assert getitem(getitem(getitem(getitem(state, "read_documents"), "by_path"), path), "turn_id") == 7
 
 
 def test_native_runtime_suppresses_solver_tools_for_current_evaluation(monkeypatch):

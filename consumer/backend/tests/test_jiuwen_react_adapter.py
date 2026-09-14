@@ -6,6 +6,7 @@ import importlib.util
 import json
 import threading
 import time
+from operator import getitem
 from types import SimpleNamespace
 
 import pytest
@@ -235,7 +236,7 @@ def test_jiuwen_loop_engine_accepts_agent_factory(monkeypatch):
     _run_engine(engine, state, caller="main")
 
     assert isinstance(engine, JiuwenReactLoopEngine)
-    assert state["final_output"] == "factory answer"
+    assert getitem(state, "final_output") == "factory answer"
 
 
 def test_jiuwen_loop_engine_invokes_agent_and_updates_current_state(monkeypatch):
@@ -274,7 +275,7 @@ def test_jiuwen_loop_engine_invokes_agent_and_updates_current_state(monkeypatch)
     assert "Ontology-Driven Intelligent Agent" in state["messages"][0]["content"]
     assert state["messages"][1] == {"role": "user", "content": "请分析这个本体"}
     assert state["messages"][-1] == {"role": "assistant", "content": "jiuwen answer"}
-    assert state["final_output"] == "jiuwen answer"
+    assert getitem(state, "final_output") == "jiuwen answer"
     assert state["results"]["output"] == "jiuwen answer"
     assert snapshots[-1]["final_output"] == "jiuwen answer"
     event = events[-1]["data"]
@@ -927,7 +928,7 @@ def test_jiuwen_model_trace_stashes_assistant_context_for_tool_calls():
     asyncio.run(bridge._on_before_model_call(ctx))
     asyncio.run(bridge._on_after_model_call(ctx))
 
-    assert state["_jiuwen_pending_assistant_context"] == {
+    assert getitem(state, "_jiuwen_pending_assistant_context") == {
         "content": "需要先查询业务数据。",
         "reasoning_content": "用户问题需要工具补充事实。",
     }
@@ -1435,7 +1436,7 @@ def test_jiuwen_loop_engine_streams_llm_output_as_token_delta(monkeypatch):
             "iteration": 1,
         },
     ]
-    assert state["final_output"] == "最终答案"
+    assert getitem(state, "final_output") == "最终答案"
     assert state["messages"][-1] == {"role": "assistant", "content": "最终答案"}
 
 
@@ -1525,7 +1526,7 @@ def test_jiuwen_loop_engine_does_not_duplicate_streamed_answer_chunk(monkeypatch
 
     token_events = [event["data"] for event in events if event["data"]["type"] == "token.delta"]
     assert [event["payload"]["text"] for event in token_events] == ["最终答案"]
-    assert state["final_output"] == "最终答案"
+    assert getitem(state, "final_output") == "最终答案"
 
 
 def test_jiuwen_loop_engine_streams_answer_chunk_as_content_delta(monkeypatch):
@@ -1562,7 +1563,7 @@ def test_jiuwen_loop_engine_streams_answer_chunk_as_content_delta(monkeypatch):
         "text": "最终答案",
         "iteration": 1,
     }
-    assert state["final_output"] == "最终答案"
+    assert getitem(state, "final_output") == "最终答案"
 
 
 def test_jiuwen_loop_engine_uses_last_user_message_when_user_request_missing(monkeypatch):
@@ -1732,7 +1733,7 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
     assert "old system prompt" not in [message.get("content") for message in dumped]
     assert [message.get("content") for message in dumped].count("继续分析") == 0
     assert fake_agent.inputs["query"].startswith("继续分析\n\n<system-reminder>")
-    assert state["final_output"] == "from restored history"
+    assert getitem(state, "final_output") == "from restored history"
 
 
 def test_suppressed_solver_turn_removes_the_complete_solver_history_turn():
@@ -2025,9 +2026,9 @@ def test_jiuwen_loop_engine_injects_selected_ontology_context_into_inputs(monkey
 
 
 def test_jiuwen_loop_engine_falls_back_to_sole_enabled_ontology(monkeypatch):
-    """No explicit selection + exactly one enabled ontology → attach its
-    preload context (including the value-domain hint) with the same
-    constraint wording, without writing the selection back into state."""
+    """Verify the sole enabled ontology fallback."""
+    # The preload context, including its value-domain hint, must use the same
+    # constraint wording without writing the selection back into state.
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
         "agent.core.shared.ontology_context.get_sole_enabled_ontology_id",
@@ -2143,8 +2144,9 @@ def test_jiuwen_checkpoint_tool_requires_explicit_ontology_selection(monkeypatch
 
 
 def test_active_ontology_version_mirrors_the_sole_enabled_fallback(monkeypatch):
-    """A session that never pinned a revision still gets one, and a session
-    that did pin one is never silently upgraded to the active version."""
+    """A session that never pinned a revision still gets one, and a session."""
+    # Details: A session that never pinned a revision still gets one, and a session that did pin one is never silently
+    # upgraded to the active version.
     from agent.core.shared.ontology_context import active_ontology_version_from_state
 
     monkeypatch.setattr(
@@ -2185,9 +2187,9 @@ def test_active_ontology_version_mirrors_the_sole_enabled_fallback(monkeypatch):
 
 
 def test_auto_selected_package_still_exposes_solver_cards(monkeypatch):
-    """Solver cards are revision-bound, so an auto-selected package used to
-    lose them entirely; the resolved active revision must reach both the tool
-    schema and the ToolContext."""
+    """Solver cards are revision-bound, so an auto-selected package used to."""
+    # Details: Solver cards are revision-bound, so an auto-selected package used to lose them entirely; the resolved
+    # active revision must reach both the tool schema and the ToolContext.
     import agent.tools.registry as tool_registry
     from agent.core.shared.tool_context import build_tool_context
     from agent.tools.solver import build_solver_tool_specs
@@ -2268,8 +2270,8 @@ def test_auto_selected_package_still_exposes_solver_cards(monkeypatch):
 
 
 def test_jiuwen_loop_engine_no_fallback_with_multiple_ontologies(monkeypatch):
-    """No explicit selection + multiple (or zero) enabled ontologies → the
-    query is returned unchanged."""
+    """No explicit selection + multiple (or zero) enabled ontologies → the."""
+    # Details: No explicit selection + multiple (or zero) enabled ontologies → the query is returned unchanged.
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
         "agent.core.shared.ontology_context.get_sole_enabled_ontology_id",
@@ -3037,7 +3039,7 @@ def test_jiuwen_loop_engine_uses_invoke_when_request_mode_is_sync(monkeypatch):
     _run_engine(engine, state, caller="main")
 
     assert fake_agent.invoked is True
-    assert state["final_output"] == "sync answer"
+    assert getitem(state, "final_output") == "sync answer"
 
 
 def test_jiuwen_loop_engine_passes_full_history_to_context_engine(monkeypatch):
@@ -3107,7 +3109,7 @@ def test_jiuwen_loop_engine_passes_full_history_to_context_engine(monkeypatch):
     assert create_calls and create_calls[-1]["context_max_rounds"] == 1
     assert fake_agent.inputs["query"].startswith(current_message["content"])
     assert state["messages"][:3] == persisted_messages
-    assert state["final_output"] == "invoked with full history"
+    assert getitem(state, "final_output") == "invoked with full history"
 
 
 def test_jiuwen_loop_engine_exposes_web_search_only_when_enabled(monkeypatch):
@@ -3290,7 +3292,7 @@ def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):
 
     token_texts = [event["data"]["payload"]["text"] for event in events if event["data"]["type"] == "token.delta"]
     assert token_texts == ["first"]
-    assert "final_output" not in state or state["final_output"] in (None, "")
+    assert "final_output" not in state or getitem(state, "final_output") in (None, "")
     loop_finished = [event for event in observer.events if event.type == RuntimeEventType.AGENT_LOOP_FINISHED]
     assert loop_finished[-1].payload["status"] == RuntimeStatus.CANCELLED
 
@@ -3363,7 +3365,7 @@ def test_jiuwen_loop_engine_resolves_current_workspace(monkeypatch):
 
     _run_engine(engine, state, caller="main")
 
-    assert state["workspace_id"] == "ws-current"
+    assert getitem(state, "workspace_id") == "ws-current"
     assert calls["state_workspace_id"] == "ws-current"
     assert calls["context"].workspace_id == "ws-current"
     assert calls["context"].project_root == "/workspace/ws-current"
@@ -4019,7 +4021,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
     tool_message = next(message for message in state["messages"] if message.get("role") == "tool")
     assert tool_message["name"] == "ontology_context"
     assert state["messages"].index(assistant_tool_message) < state["messages"].index(tool_message)
-    assert state["final_output"] == "agent saw registered tool response"
+    assert getitem(state, "final_output") == "agent saw registered tool response"
     assert created["tool_calls"][0].name == "ontology_context"
     assert created["tool_calls"][0].arguments == {"resource": "root"}
     assert created["context"].caller == "main"
@@ -4072,6 +4074,7 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
 
     class FakeResourceMgr(_RemovableFakeResourceManager):
         def __init__(self):
+            super().__init__()
             self.registered_tools = {}
 
         def add_tool(self, tool, *, tag=None, refresh=False):
@@ -4265,6 +4268,7 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
 
     class FakeResourceMgr(_RemovableFakeResourceManager):
         def __init__(self):
+            super().__init__()
             self.registered_tools = {}
 
         def add_tool(self, tool, *, tag=None, refresh=False):
@@ -5834,9 +5838,9 @@ def test_create_agent_normal_turn_keeps_automatic_tool_choice(monkeypatch):
 
 
 def test_history_messages_uses_same_normalization_as_factory(monkeypatch):
-    """Both _build_jiuwen_history_messages and factory must fall back to 10
-    (not 50) when context_max_rounds is None/invalid, proving the
-    normalization path is unified."""
+    """Both _build_jiuwen_history_messages and factory must fall back to 10."""
+    # Details: Both _build_jiuwen_history_messages and factory must fall back to 10 (not 50) when context_max_rounds
+    # is None/invalid, proving the normalization path is unified.
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     captured: dict = {}
 
@@ -5879,8 +5883,9 @@ def test_history_messages_uses_same_normalization_as_factory(monkeypatch):
 
 
 def test_factory_does_not_truncate_messages_under_two_hundred(monkeypatch):
-    """With max_context_message_num=None, a single round with >200 messages
-    must not be truncated by the Jiuwen message buffer."""
+    """With max_context_message_num=None, a single round with >200 messages."""
+    # Details: With max_context_message_num=None, a single round with >200 messages must not be truncated by the
+    # Jiuwen message buffer.
     created: dict = {}
     _install_fake_jiuwen_modules(monkeypatch, created)
 

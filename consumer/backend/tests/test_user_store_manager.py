@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from operator import getitem
 from types import SimpleNamespace
 
 import pytest
@@ -623,7 +624,7 @@ def test_recovery_discovery_defers_unready_index_and_continues_other_users(
         lambda *, safe_user, workspace_id: (
             SimpleNamespace(list_sessions=lambda: ()),
             object(),
-            indexes[safe_user],
+            getitem(indexes, safe_user),
         ),
     )
 

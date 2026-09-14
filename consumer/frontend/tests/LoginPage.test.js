@@ -241,7 +241,9 @@ test('register form still submits valid input to /auth/register', async () => {
 
 test('login failures use safe Chinese copy and expose an accessible alert', async () => {
   globalThis.fetch = async (url) => {
-    if (url === '/auth/capabilities') { return jsonResponse({ registration_enabled: false }); }
+    if (url === '/auth/capabilities') {
+      return jsonResponse({ registration_enabled: false });
+    }
     throw new Error(`Unexpected URL: ${url}`);
   };
 

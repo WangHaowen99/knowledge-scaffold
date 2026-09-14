@@ -14,6 +14,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta
+from operator import getitem
 from typing import Any, Optional
 
 LOG_DIR = "logs"
@@ -389,7 +390,7 @@ class DatePartitionedRotatingFileHandler(logging.Handler):
             keep_groups = max(self.backup_count + 1, 1)
             stale_dates = sorted(date_groups)[:-keep_groups]
         for stale_date in stale_dates:
-            for stale_path in date_groups[stale_date]:
+            for stale_path in getitem(date_groups, stale_date):
                 try:
                     os.remove(stale_path)
                 except FileNotFoundError:

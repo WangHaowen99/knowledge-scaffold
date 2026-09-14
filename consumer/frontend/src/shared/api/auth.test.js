@@ -143,9 +143,13 @@ test('an account switch during proactive refresh aborts the original protected r
   installWindow();
   await setAuthToken(jwtWithExpiry(Math.floor(Date.now() / 1000) - 1), 'old-refresh');
   let releaseRefresh;
-  const refreshReady = new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshReady = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
   let refreshStarted;
-  const started = new Promise((resolve) => { refreshStarted = resolve; });
+  const started = new Promise((resolve) => {
+    refreshStarted = resolve;
+  });
   let protectedCalls = 0;
 
   globalThis.fetch = async (url) => {
@@ -180,9 +184,13 @@ test('an account switch discards an old successful response before its body is e
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseRequest;
-  const requestReady = new Promise((resolve) => { releaseRequest = resolve; });
+  const requestReady = new Promise((resolve) => {
+    releaseRequest = resolve;
+  });
   let requestStarted;
-  const started = new Promise((resolve) => { requestStarted = resolve; });
+  const started = new Promise((resolve) => {
+    requestStarted = resolve;
+  });
 
   globalThis.fetch = async (url) => {
     assert.equal(url, '/protected');
@@ -210,7 +218,9 @@ test('an account switch after response headers prevents reading the old response
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseBody;
-  const bodyReady = new Promise((resolve) => { releaseBody = resolve; });
+  const bodyReady = new Promise((resolve) => {
+    releaseBody = resolve;
+  });
 
   globalThis.fetch = async () => new Response(new ReadableStream({
     async pull(controller) {
@@ -275,9 +285,13 @@ test('logout revoke and a new login are serialized before the new credentials co
   await setAuthToken('old-access', 'old-refresh');
   const sequence = [];
   let releaseLogout;
-  const logoutReady = new Promise((resolve) => { releaseLogout = resolve; });
+  const logoutReady = new Promise((resolve) => {
+    releaseLogout = resolve;
+  });
   let logoutStarted;
-  const started = new Promise((resolve) => { logoutStarted = resolve; });
+  const started = new Promise((resolve) => {
+    logoutStarted = resolve;
+  });
 
   globalThis.fetch = async (url) => {
     if (url === '/auth/logout') {
@@ -327,13 +341,17 @@ test('a stalled login times out and releases the credential lock for logout', as
     ...args,
   );
   let loginStarted;
-  const started = new Promise((resolve) => { loginStarted = resolve; });
+  const started = new Promise((resolve) => {
+    loginStarted = resolve;
+  });
   globalThis.fetch = async (url) => {
     if (url === '/auth/login') {
       loginStarted();
       return new Promise(() => {});
     }
-    if (url === '/auth/logout') { return new Response('', { status: 200 }); }
+    if (url === '/auth/logout') {
+      return new Response('', { status: 200 });
+    }
     throw new Error(`Unexpected URL: ${url}`);
   };
 
@@ -364,7 +382,9 @@ test('a transient proactive refresh failure keeps a still-valid access token usa
   await setAuthToken(accessToken, 'old-refresh');
   let protectedCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
-    if (url === '/auth/refresh') { return new Response('', { status: 503 }); }
+    if (url === '/auth/refresh') {
+      return new Response('', { status: 503 });
+    }
     protectedCalls += 1;
     return new Response('', {
       status: new Headers(options.headers).get('Authorization') === `Bearer ${accessToken}` ? 200 : 401,
@@ -385,7 +405,9 @@ test('a proactive refresh network error still attempts the protected request', a
   await setAuthToken(accessToken, 'old-refresh');
   let protectedCalls = 0;
   globalThis.fetch = async (url, options = {}) => {
-    if (url === '/auth/refresh') { throw new TypeError('network unavailable'); }
+    if (url === '/auth/refresh') {
+      throw new TypeError('network unavailable');
+    }
     protectedCalls += 1;
     return new Response('', {
       status: new Headers(options.headers).get('Authorization') === `Bearer ${accessToken}` ? 200 : 401,
@@ -436,7 +458,9 @@ test('failed refresh clears both credentials and emits the logout signal', async
   const target = installWindow();
   await setAuthToken('expired-access', 'expired-refresh');
   let cleared = 0;
-  target.addEventListener(AUTH_CLEARED_EVENT, () => { cleared += 1; });
+  target.addEventListener(AUTH_CLEARED_EVENT, () => {
+    cleared += 1;
+  });
   globalThis.fetch = async (url) => (
     new Response('', { status: url === '/auth/refresh' ? 401 : 401 })
   );
@@ -555,12 +579,18 @@ test('logout during refresh cannot restore stale credentials', async () => {
   installWindow();
   await setAuthToken('old-access', 'old-refresh');
   let releaseRefresh;
-  const refreshReady = new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshReady = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
   let refreshStarted;
-  const started = new Promise((resolve) => { refreshStarted = resolve; });
+  const started = new Promise((resolve) => {
+    refreshStarted = resolve;
+  });
 
   globalThis.fetch = async (url) => {
-    if (url !== '/auth/refresh') { return new Response('', { status: 401 }); }
+    if (url !== '/auth/refresh') {
+      return new Response('', { status: 401 });
+    }
     refreshStarted();
     await refreshReady;
     return new Response(JSON.stringify({ token: 'stale-access', refresh_token: 'stale-refresh' }), {
@@ -584,11 +614,17 @@ test('a new login during refresh cannot be cleared by the stale 401 request', as
   installWindow();
   await setAuthToken('old-token', 'old-refresh');
   let releaseRefresh;
-  const refreshReady = new Promise((resolve) => { releaseRefresh = resolve; });
+  const refreshReady = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
   let refreshStarted;
-  const started = new Promise((resolve) => { refreshStarted = resolve; });
+  const started = new Promise((resolve) => {
+    refreshStarted = resolve;
+  });
   globalThis.fetch = async (url) => {
-    if (url === '/protected') { return new Response('', { status: 401 }); }
+    if (url === '/protected') {
+      return new Response('', { status: 401 });
+    }
     if (url === '/auth/refresh') {
       refreshStarted();
       await refreshReady;
@@ -627,7 +663,9 @@ test('refresh and logout send the HttpOnly cookie without exposing its value to 
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (url === '/protected') { return new Response('', { status: 401 }); }
+    if (url === '/protected') {
+      return new Response('', { status: 401 });
+    }
     if (url === '/auth/logout') {
       logoutOptions = options;
       return new Response('', { status: 200 });

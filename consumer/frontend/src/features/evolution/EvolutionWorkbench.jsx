@@ -1622,13 +1622,15 @@ function SkillApprovalControls({
       setError(approvalError.message);
     }
   };
-  let approveTitle = '';
+  let approveTitle;
   if (disabled) {
     approveTitle = '历史版本下不会修改激活版本';
   } else if (drifted) {
     approveTitle = '当前版本已漂移，无法批准';
   } else if (!ready) {
     approveTitle = '等待差异和 drift 校验';
+  } else {
+    approveTitle = '';
   }
 
   return (

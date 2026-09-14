@@ -125,8 +125,9 @@ def test_dataagent_agent_output_preserves_baseline_literal_failure_presentation(
 
 
 def test_dataagent_non_structured_response_preserves_full_provider_text():
-    """When DataAgent returns non-structured text, the full text is preserved
-    (no 500-char truncation) in the final JSON payload's message field."""
+    """When DataAgent returns non-structured text, the full text is preserved."""
+    # Details: When DataAgent returns non-structured text, the full text is preserved (no 500-char truncation) in the
+    # final JSON payload's message field.
     adapter = DataAgentSearchAdapter(_connection())
     provider_text = "值域结果\n" + ("合成映射行\n" * 120)
 
@@ -144,8 +145,8 @@ def test_dataagent_non_structured_response_preserves_full_provider_text():
 
 
 def test_dataagent_non_structured_response_truncates_oversized_text():
-    """Free-text answers exceeding the budget are truncated, not passed
-    through unbounded."""
+    """Free-text answers exceeding the budget are truncated, not passed."""
+    # Details: Free-text answers exceeding the budget are truncated, not passed through unbounded.
     adapter = DataAgentSearchAdapter(_connection())
     oversized = "x" * 20000
 

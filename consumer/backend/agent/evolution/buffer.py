@@ -476,9 +476,9 @@ class ProposalBuffer:
         *,
         workspace_id: Optional[str] = None,
     ) -> Optional[Aggregate]:
-        """Replace canonical_content; recompute fingerprint. The old
-        aggregate is removed and a new one (preserving counters) takes its
-        place, so downstream consumers always key by fingerprint."""
+        """Replace canonical_content; recompute fingerprint. The old."""
+        # Details: Replace canonical_content; recompute fingerprint. The old aggregate is removed and a new one
+        # (preserving counters) takes its place, so downstream consumers always key by fingerprint.
         new_content = str(new_content or "").strip()
         if len(new_content) < 4:
             raise ValueError("content too short")
@@ -541,10 +541,10 @@ class ProposalBuffer:
         *,
         workspace_id: Optional[str] = None,
     ) -> List[str]:
-        """Patcher-side: flip status to `promoted` for fps included in the
-        current staged file. Promoted aggregates remain in the buffer so the
-        recall path keeps surfacing them, but the patcher's threshold gate
-        treats them as already in-flight."""
+        """Patcher-side: flip status to `promoted` for fps included in the."""
+        # Details: Patcher-side: flip status to `promoted` for fps included in the current staged file. Promoted
+        # aggregates remain in the buffer so the recall path keeps surfacing them, but the patcher's threshold gate
+        # treats them as already in-flight.
         fps = [fp for fp in (fingerprints or []) if fp]
         if not fps:
             return []
@@ -572,8 +572,9 @@ class ProposalBuffer:
         *,
         workspace_id: Optional[str] = None,
     ) -> List[str]:
-        """Patcher-side: undo a promotion. Used when staged write fails or
-        admin rejects the staged patch but we want to re-evaluate later."""
+        """Patcher-side: undo a promotion. Used when staged write fails or."""
+        # Details: Patcher-side: undo a promotion. Used when staged write fails or admin rejects the staged patch but
+        # we want to re-evaluate later.
         fps = [fp for fp in (fingerprints or []) if fp]
         if not fps:
             return []
@@ -599,8 +600,9 @@ class ProposalBuffer:
         *,
         workspace_id: Optional[str] = None,
     ) -> None:
-        """Called by patcher after a successful apply. Marks aggregates as
-        `applied` and writes a snapshot to the applied/ dir."""
+        """Called by patcher after a successful apply. Marks aggregates as."""
+        # Details: Called by patcher after a successful apply. Marks aggregates as `applied` and writes a snapshot to
+        # the applied/ dir.
         fps = list(fingerprints or [])
         if not fps:
             return
@@ -762,8 +764,8 @@ class ProposalBuffer:
         self,
         listener: Optional[Callable[[str, Optional[str], str, Optional[str], str], None]],
     ) -> None:
-        """Allow late-binding (orchestrator constructs the patcher after the
-        buffer singleton already exists)."""
+        """Allow late-binding (orchestrator constructs the patcher after the."""
+        # Details: Allow late-binding (orchestrator constructs the patcher after the buffer singleton already exists).
         self._listener = listener
 
     # --------------------------------------------------------------- helpers

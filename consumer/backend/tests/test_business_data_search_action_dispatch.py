@@ -142,9 +142,9 @@ def test_query_action_rejects_value_inputs(monkeypatch):
 
 @pytest.mark.parametrize("include_action", [True, False])
 def test_query_path_allows_empty_value_inputs(monkeypatch, include_action):
-    """Empty or null value_inputs with action='query' should be treated as
-    omitted and proceed to the query path, not rejected.  Some providers inject
-    null / [] defaults for optional parameters."""
+    """Empty or null value_inputs with action='query' should be treated as."""
+    # Details: Empty or null value_inputs with action='query' should be treated as omitted and proceed to the query
+    # path, not rejected. Some providers inject null / [] defaults for optional parameters.
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
     args = {
@@ -167,8 +167,9 @@ def test_query_path_allows_empty_value_inputs(monkeypatch, include_action):
 
 @pytest.mark.parametrize("value_inputs", [None, [], "not-a-list", {}])
 def test_query_path_allows_non_array_or_null_value_inputs(monkeypatch, value_inputs):
-    """Non-array or null value_inputs must not trip the combination check when
-    action defaults to 'query' — they are treated as omitted."""
+    """Non-array or null value_inputs must not trip the combination check when."""
+    # Details: Non-array or null value_inputs must not trip the combination check when action defaults to 'query' —
+    # they are treated as omitted.
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
 
@@ -187,8 +188,9 @@ def test_query_path_allows_non_array_or_null_value_inputs(monkeypatch, value_inp
 
 
 def test_value_inputs_rejection_message_is_actionable(monkeypatch):
-    """The error message for query+value_inputs must mention action='lookup_values'
-    so the model can self-correct without guessing."""
+    """The error message for query+value_inputs must mention action='lookup_values'."""
+    # Details: The error message for query+value_inputs must mention action='lookup_values' so the model can
+    # self-correct without guessing.
     _install_common_fakes(monkeypatch)
     handle_calls = _patch_handle(monkeypatch)
     outcome = _execute(

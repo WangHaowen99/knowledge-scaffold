@@ -110,7 +110,9 @@ test('blob download helper clicks a temporary link and defers object URL revocat
   const scheduled = [];
   const fakeLink = {
     parentNode: null,
-    click: () => { clicks.push('clicked'); },
+    click: () => {
+      clicks.push('clicked');
+    },
   };
   const fakeDocument = {
     body: {

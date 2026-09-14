@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from operator import getitem
 from pathlib import Path
 
 import persistence.chat_store as chat_store_module
@@ -163,7 +164,7 @@ def test_chat_projection_crash_marker_repairs_valid_index_after_restart(tmp_path
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -192,7 +193,7 @@ def test_chat_projection_failure_rebuilds_in_same_process(tmp_path, monkeypatch)
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -221,7 +222,7 @@ def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -247,7 +248,7 @@ def test_marker_publish_failure_does_not_abort_source_fact_before_restart(
     holder = {}
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -282,7 +283,7 @@ def test_marker_directory_fsync_failure_does_not_abort_source_fact(
     holder = {}
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store

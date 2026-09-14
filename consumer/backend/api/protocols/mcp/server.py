@@ -408,9 +408,9 @@ class _WorkspaceEndpointBindingApp:
 def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = "search") -> Any:
     cfg = config or load_mcp_runtime_config()
     validate_mcp_runtime_config(cfg)
-    FastMCP = _load_fastmcp()
+    fast_mcp_class = _load_fastmcp()
     normalized_toolset = _normalize_toolset(toolset)
-    mcp = FastMCP("meta-wise-{}".format(normalized_toolset))
+    mcp = fast_mcp_class("meta-wise-{}".format(normalized_toolset))
 
     def _with_scope(required_scope: str, caller: Callable[[MCPRequestScope], dict[str, Any]]) -> dict[str, Any]:
         try:

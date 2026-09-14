@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from operator import getitem
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1502,10 +1503,10 @@ def test_execute_script_tool_overwrites_server_owned_context_even_without_regist
         tool_call_id="call-trusted",
     )
 
-    assert captured["workspace_id"] == "trusted-workspace"
-    assert captured["timeout_seconds"] == context.agent_config.execute_script_timeout
-    assert str(captured["base_path"]) == "/trusted/project"
-    assert captured["session_id"] == context.session_id
+    assert getitem(captured, "workspace_id") == "trusted-workspace"
+    assert getitem(captured, "timeout_seconds") == context.agent_config.execute_script_timeout
+    assert str(getitem(captured, "base_path")) == "/trusted/project"
+    assert getitem(captured, "session_id") == context.session_id
 
 
 def test_execute_script_tool_blocks_cross_item_values_before_running_script(monkeypatch):

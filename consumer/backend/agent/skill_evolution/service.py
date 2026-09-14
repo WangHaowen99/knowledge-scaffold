@@ -757,9 +757,9 @@ class SkillEvolutionService:
 
     # ------------------------------------------------------------------- diff
     def get_diff(self, record: TaskRecord) -> DiffResult:
-        """Return the diff for a task. For terminal tasks (approved/rejected/
-        cancelled) temp+baseline are cleaned, so serve the diff persisted in
-        history; otherwise compute from temp vs baseline."""
+        """Return the diff for a task. For terminal tasks (approved/rejected/."""
+        # Details: Return the diff for a task. For terminal tasks (approved/rejected/ cancelled) temp+baseline are
+        # cleaned, so serve the diff persisted in history; otherwise compute from temp vs baseline.
         if record.status in TERMINAL_STATUSES:
             hist = self._store.get_history(record.workspace_id, record.task_id)
             stored = (hist or {}).get("diff")
@@ -1061,8 +1061,9 @@ class SkillEvolutionService:
 
     # ----------------------------------------------------------------- delete
     def delete_task(self, record: TaskRecord) -> None:
-        """Delete a terminal task's record + history. Does not revert applied
-        ontology changes (an approved task's version stays on the ontology)."""
+        """Delete a terminal task's record + history. Does not revert applied."""
+        # Details: Delete a terminal task's record + history. Does not revert applied ontology changes (an approved
+        # task's version stays on the ontology).
         if record.status not in TERMINAL_STATUSES:
             raise ValueError("仅终态任务可删除；进行中的任务请先取消")
         self._store.delete_task(record.workspace_id, record.task_id)

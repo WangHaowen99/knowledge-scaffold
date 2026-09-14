@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import glob
 import logging
-import subprocess
-import sys
 import os
 import re
-import time
-import glob
+import subprocess
+import sys
 import threading
+import time
 from datetime import datetime, timezone
+from operator import getitem
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_PATH = os.path.join(_SCRIPT_DIR, "test_benchmark_suite.py")
@@ -148,7 +149,7 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
     questions_completed: set[str] = set()
     question_start_times: dict[str, float] = {}
 
-    _ERROR_KEYWORDS = ("❌", "执行异常", "连接失败", "超时", "Traceback", "Error:", "ERROR")
+    error_keywords = ("❌", "执行异常", "连接失败", "超时", "Traceback", "Error:", "ERROR")
 
     def _on_line(line: str):
         stripped = line.rstrip("\n")
@@ -191,7 +192,7 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
             sys.stdout.flush()
             return
 
-        if any(kw in stripped for kw in _ERROR_KEYWORDS):
+        if any(keyword in stripped for keyword in error_keywords):
             logger.info(f"  ⚠ {stripped}")
             sys.stdout.flush()
             return
@@ -835,7 +836,7 @@ def _generate_multilang_charts(results: list[dict], output_dir: str):
         avg_tools[stats_key] = sum(tool_lists[stats_key]) / len(tool_lists[stats_key])
 
     labels = ["LLM 时间"] + [tl for _, tl, _ in tool_keys]
-    vals = [avg_llm] + [avg_tools[k] for k, _, _ in tool_keys]
+    vals = [avg_llm] + [getitem(avg_tools, k) for k, _, _ in tool_keys]
     colors = ["#4C72B0"] + [c for _, _, c in tool_keys]
 
     bars = ax_sum.barh(labels, vals, color=colors)

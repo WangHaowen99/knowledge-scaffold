@@ -7,6 +7,7 @@ import hashlib
 import os
 import pickle
 from dataclasses import replace
+from operator import getitem
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -696,11 +697,11 @@ def test_execute_script_passes_matching_private_binding_to_handler(
     outcome = _execute_tool(context)
 
     assert outcome.content == "pinned"
-    assert captured["preflight_ontology_manifest"]["id"] == _ONTOLOGY_ID
-    assert captured["preflight_ontology_script_entry"]["operation_key"] == (_OPERATION_KEY)
-    assert captured["preflight_ontology_source_signature"] == (snapshot.ontology_source_signature)
-    assert captured["preflight_ontology_content_revision"] == (snapshot.ontology_content_revision)
-    assert captured["preflight_ontology_mutation_revision"] == 7
+    assert getitem(getitem(captured, "preflight_ontology_manifest"), "id") == _ONTOLOGY_ID
+    assert getitem(getitem(captured, "preflight_ontology_script_entry"), "operation_key") == (_OPERATION_KEY)
+    assert getitem(captured, "preflight_ontology_source_signature") == (snapshot.ontology_source_signature)
+    assert getitem(captured, "preflight_ontology_content_revision") == (snapshot.ontology_content_revision)
+    assert getitem(captured, "preflight_ontology_mutation_revision") == 7
 
 
 def test_execute_script_revision_drift_is_terminal_and_never_runs_live_metadata(
