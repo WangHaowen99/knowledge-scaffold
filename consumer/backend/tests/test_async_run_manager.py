@@ -2185,7 +2185,8 @@ def test_deterministic_preflight_receives_only_business_arguments(
     requests = []
 
     class _DeterministicService:
-        def is_potentially_applicable(self, request):
+        @staticmethod
+        def is_potentially_applicable(request):
             requests.append(request)
             return True
 

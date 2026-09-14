@@ -204,8 +204,8 @@ def _run_benchmark(lang_code: str, lang_name: str) -> dict:
         try:
             for line in iter(proc.stderr.readline, ""):
                 stderr_chunks.append(line)
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.warning("Unable to drain benchmark stderr: %s", exc)
 
     stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
     stderr_thread.start()
@@ -485,8 +485,8 @@ def _print_final_report(results: list[dict]):
                 )
                 if m:
                     return m.group(1).rstrip()
-            except Exception:
-                pass
+            except (OSError, UnicodeError) as exc:
+                logger.warning("Unable to read benchmark report section: %s", exc)
             break
         return ""
 

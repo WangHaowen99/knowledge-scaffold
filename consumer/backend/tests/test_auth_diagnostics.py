@@ -234,6 +234,7 @@ def test_concurrent_auth_attempts_keep_diagnostics_isolated_across_runtime_pool(
     }
     assert all(not record.exc_info for record in records)
     # A later direct call starts a fresh context instead of reusing a failed one.
+
     def unavailable_response(*_args, **_kwargs):
         return _Response(502)
 

@@ -400,10 +400,7 @@ def _run_acp_structural_check(group_flag: str, sid: str, name: str, result_dir: 
     wall_seconds = time.perf_counter() - start_ts
 
     stderr_output = ""
-    try:
-        stderr_output = proc.stderr.read()
-    except Exception:
-        pass
+    stderr_output = proc.stderr.read()
 
     combined = "\n".join(output_lines)
     if stderr_output.strip():

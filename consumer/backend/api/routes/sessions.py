@@ -400,10 +400,10 @@ def _bounded_authoritative_sessions(chat_store, *, requested_limit: int | None):
     if requested_limit is not None:
         read_limit = min(_SESSION_INDEX_FALLBACK_MAX, max(1, int(requested_limit)))
     read_limit += 1
-    list_sessions = getattr(chat_store, "list_sessions", None)
-    if not callable(list_sessions):
+    session_lister = getattr(chat_store, "list_sessions", None)
+    if not callable(session_lister):
         raise RuntimeError("authoritative session listing is unavailable")
-    sessions = list_sessions(limit=read_limit)
+    sessions = session_lister(limit=read_limit)
     sessions = list(sessions or [])
     return sessions[:read_limit - 1], len(sessions) >= read_limit
 
