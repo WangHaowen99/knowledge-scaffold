@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Streaming helpers for the agent-stream.v2 protocol."""
 
 from __future__ import annotations

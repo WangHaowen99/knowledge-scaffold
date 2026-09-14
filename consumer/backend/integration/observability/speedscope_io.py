@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared I/O coordination for Speedscope session files."""
 
 from __future__ import annotations

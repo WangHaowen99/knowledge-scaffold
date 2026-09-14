@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP API for the operation-evolution buffer and staged patches.
 
 Routes (all under `/agentic/operations`):

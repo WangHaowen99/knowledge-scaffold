@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export type AgentMode = 'quick' | 'thinking' | 'multi_agent';
 
 export interface AgenticRunContext {

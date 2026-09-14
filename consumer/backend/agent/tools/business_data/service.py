@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Business data search service backed by ontology data sources."""
 
 from __future__ import annotations

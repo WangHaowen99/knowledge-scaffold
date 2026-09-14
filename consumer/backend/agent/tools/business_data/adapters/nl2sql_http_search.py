@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """NL2SQL HTTP ontology search provider adapter."""
 
 from __future__ import annotations

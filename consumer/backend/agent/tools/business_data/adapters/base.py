@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Agent-side adapters for the public business_data_search tool."""
 
 from __future__ import annotations

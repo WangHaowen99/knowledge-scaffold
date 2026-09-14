@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """MCP service catalog used by the management API."""
 
 from __future__ import annotations

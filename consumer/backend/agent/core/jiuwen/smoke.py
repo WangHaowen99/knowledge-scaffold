@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Smoke checks for the Jiuwen ReAct runtime."""
 
 from __future__ import annotations

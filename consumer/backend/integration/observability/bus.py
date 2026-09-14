@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Non-blocking observability event bus."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Bounded public execution summaries for MCP chat responses."""
 
 from __future__ import annotations

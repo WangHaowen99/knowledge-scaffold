@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Consumer execution service over the native openJiuwen runtime contract."""
 
 from __future__ import annotations

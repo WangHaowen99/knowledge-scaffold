@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """JWT HS256 helpers for MCP tokens."""
 
 from __future__ import annotations

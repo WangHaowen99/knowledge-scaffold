@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Narrow deterministic capability for publishing text artifacts."""
 
 from __future__ import annotations

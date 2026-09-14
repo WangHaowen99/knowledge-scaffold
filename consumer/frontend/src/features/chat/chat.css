@@ -1,3 +1,4 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved. */
 /* 侧栏历史对话工作区：占满导航与版本信息之外的剩余高度。 */
 .mwr .side-hist { flex: 1 1 280px; display: flex; flex-direction: column; min-height: 180px;
   margin: 0 12px; padding-top: 10px; border-top: 1px solid var(--border-subtle); overflow: hidden; }

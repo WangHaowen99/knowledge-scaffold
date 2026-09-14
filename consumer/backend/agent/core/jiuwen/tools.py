@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tool binding and state helpers for the Jiuwen runtime."""
 
 from __future__ import annotations

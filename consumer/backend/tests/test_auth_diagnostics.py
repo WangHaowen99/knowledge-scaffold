@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Authentication failure diagnostics use synthetic data only."""
 
 import asyncio

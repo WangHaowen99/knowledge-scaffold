@@ -149,6 +149,12 @@ Base64、URL 编码、压缩、加密、Hash、拆分文件、改变大小写、
 
 安全检查是任务完成条件的一部分，不是可选的后续工作。
 
+### 12. 知识消费范围代码版权头规则
+
+适用目录：`consumer/`、`auth-server/`、`solvers/`、`contracts/`。其中人工编写的生产代码和测试代码必须添加一行版权声明：Python 使用 `# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.`；JavaScript、TypeScript、MJS 使用 `// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.`；CSS 使用 `/* Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved. */`；HTML 使用 `<!-- Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved. -->`。Shebang 和编码声明等语言要求的首行须保留在版权声明之前。
+
+文档、脚本、部署/构建/打包工具、纯配置文件、数据/协议文件、依赖锁文件和生成文件不添加版权头；可执行的 JavaScript/TypeScript 配置模块按代码处理。`consumer/scripts/`、`consumer/deploy/`、`consumer/tools/`、`consumer/backend/scripts/`、`consumer/frontend/scripts/`、SDK `examples/` 及 `contracts/solver/tck/__main__.py` 按脚本或工具处理，其他应用包内的源码模块按代码处理。新增文件必须遵循同样的目录和文件角色规则，提交前检查新增或修改的代码文件是否包含对应语言的版权声明。
+
 ---
 
 ## 0.1 本地调试与提交检查时机

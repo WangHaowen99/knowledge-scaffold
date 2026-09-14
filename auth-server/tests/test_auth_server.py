@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """auth server v1 端到端测试（Flask test client，不起真服务）。"""
 
 from __future__ import annotations

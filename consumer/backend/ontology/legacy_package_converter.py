@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """One-release converter from the legacy ontology layout to package schema v0.1.
 
 This module is intentionally isolated from runtime loading.  It is called only

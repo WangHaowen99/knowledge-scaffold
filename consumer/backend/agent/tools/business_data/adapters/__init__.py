@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Agent-side business data search adapters."""
 
 from agent.tools.business_data.adapters.dataagent_search import DataAgentSearchAdapter

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """
 ==========================================================================
   test_acp_full.py — ACP 协议全端点自动化测试

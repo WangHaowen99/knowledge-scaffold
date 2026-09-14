@@ -1,3 +1,4 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved. */
 /* ---- 登录页 ---- */
 .mwr.login { display: flex; min-height: 100vh; min-height: 100dvh; background: var(--surface-page); }
 .mwr .lbrand { position: relative; isolation: isolate; overflow: hidden; width: 40%; min-width: 400px; background: linear-gradient(145deg, var(--blue-dd) 0%, var(--blue) 72%, var(--blue-l) 135%); color: #fff; padding: 64px 60px; display: flex; flex-direction: column; }

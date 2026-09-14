@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Runtime Fact persistence and Grounding lookup tests."""
 
 from __future__ import annotations

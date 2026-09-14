@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Stable platform-side error categories for the OR-Tools service connector."""
 
 from __future__ import annotations

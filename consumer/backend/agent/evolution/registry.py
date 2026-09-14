@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Process-wide singleton accessor for the proposal buffer.
 
 Multiple subsystems share one ProposalBuffer instance so its in-process thread

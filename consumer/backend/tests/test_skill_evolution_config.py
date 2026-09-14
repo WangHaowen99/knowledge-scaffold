@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Boundary tests for skill_evolution config normalization.
 
 Covers the validation gates in _normalize_skill_evolution_effective that the

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Runtime and public event models shared by the async integration lines."""
 
 from __future__ import annotations

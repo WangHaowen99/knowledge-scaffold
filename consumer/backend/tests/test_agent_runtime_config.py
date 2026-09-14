@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from internal_access import internal
 import config.settings as settings
 import config.system_config as system_config

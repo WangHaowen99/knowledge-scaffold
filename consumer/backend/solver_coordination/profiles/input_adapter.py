@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Profile-scoped canonicalization of schema-bound solver input."""
 
 from __future__ import annotations

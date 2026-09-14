@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const WINDOW_PRESETS = Object.freeze({
   '1h': 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,

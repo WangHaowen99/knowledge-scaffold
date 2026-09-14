@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """注册 BFF 代理测试：consumer 不实现注册，仅向 auth server 透明转发。
 
 注册一步直接建号（无邮箱验证码），BFF 只保留 /auth/register 一个代理端点。

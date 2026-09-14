@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Crash recovery tests for portable ontology directory publication."""
 
 from __future__ import annotations

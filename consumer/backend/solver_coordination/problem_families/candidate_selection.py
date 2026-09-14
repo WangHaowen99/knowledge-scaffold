@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Immutable contract for selecting one pre-evaluated candidate."""
 
 from __future__ import annotations

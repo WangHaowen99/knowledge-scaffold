@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Concrete AsyncAgentRuntime backed by the native-async Jiuwen Engine."""
 
 from __future__ import annotations

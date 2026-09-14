@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared loop helper contracts used by Jiuwen runtime code."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { mapAbortableStream, type AbortableAsyncIterable } from '../../streams/sse.js';
 import { HttpClient } from '../../transport/http.js';
 import { normalizeA2ASseMessage, type NormalizedStreamEvent } from '../../types/events.js';

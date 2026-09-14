@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Small cross-process advisory locks for workspace-local coordination."""
 
 from __future__ import annotations

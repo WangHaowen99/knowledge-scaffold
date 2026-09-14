@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Build whitelisted environment variables for sandbox script execution."""
 
 from __future__ import annotations

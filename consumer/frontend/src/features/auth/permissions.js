@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 // 权限点注册表（前端镜像，仅做 UI 门控；后端是唯一强制点）。
 // 权限模型：permission = action × resource × scope（全局 / 空间 / 个人）。
 // 现阶段角色只有 admin / user；结构上为 workspace 级角色（workspace_admin）预留了 wsRoles 位。

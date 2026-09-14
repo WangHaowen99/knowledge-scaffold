@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-0 contract tests for the A/B async Runtime boundary."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Canonical asyncio Task ownership for runs and derived work."""
 
 from __future__ import annotations

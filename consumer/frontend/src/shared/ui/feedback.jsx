@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { useEffect, useId, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Info, KeyRound, X } from 'lucide-react';
 

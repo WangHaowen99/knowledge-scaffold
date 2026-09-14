@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """ASGI route contracts for lifespan-owned bounded blocking work."""
 
 from types import SimpleNamespace

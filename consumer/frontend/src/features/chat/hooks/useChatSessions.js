@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 /**
  * Owns session listing, selection, hydration and durable session metadata.
  * StreamManager remains the owner of active transports and per-session message caches.

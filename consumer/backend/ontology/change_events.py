@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Validated ``OntologyChanged/v1`` event envelopes.
 
 The event is an invalidation hint, not an authoritative ontology snapshot.  The

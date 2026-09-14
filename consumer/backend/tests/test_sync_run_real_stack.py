@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Real-stack regression gates for the synchronous compatibility Run API."""
 
 from __future__ import annotations

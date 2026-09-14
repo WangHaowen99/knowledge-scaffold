@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """DataAgent control-plane schema tests; protocol tests live in shared providers."""
 
 from internal_access import internal

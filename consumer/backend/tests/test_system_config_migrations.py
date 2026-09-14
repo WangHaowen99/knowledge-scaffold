@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Issue #14 model/profile and secret-encryption migration coverage."""
 
 from __future__ import annotations

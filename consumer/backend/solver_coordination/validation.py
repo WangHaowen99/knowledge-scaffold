@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Integrity checks and aggregate status for candidate batch validation."""
 
 from __future__ import annotations

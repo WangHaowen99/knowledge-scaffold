@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Provider registry for ontology-scoped business data sources."""
 
 from __future__ import annotations

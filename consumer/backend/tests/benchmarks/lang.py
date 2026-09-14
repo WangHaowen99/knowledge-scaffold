@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Benchmark language helpers.
 
 This module keeps the benchmark-local ``.env`` lookup contract, but delegates

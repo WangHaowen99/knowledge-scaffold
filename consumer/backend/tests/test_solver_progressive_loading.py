@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Progressive loading contract for solver capability discovery."""
 
 from __future__ import annotations

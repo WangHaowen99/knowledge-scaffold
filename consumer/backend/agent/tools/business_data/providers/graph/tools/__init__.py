@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Internal graph tool adapters used by GraphSearchRuntime."""
 
 from .aggregate import aggregate_search, count_search, sorted_search

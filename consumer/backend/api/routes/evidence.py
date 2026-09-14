@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Workspace-scoped ontology evidence lookup and management APIs.
 
 ``evidence_router`` is the FastAPI router mounted by

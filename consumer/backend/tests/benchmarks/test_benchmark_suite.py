@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """
 ==========================================================================
   test_benchmark_suite.py — Benchmark 自动化测试 (独立版)

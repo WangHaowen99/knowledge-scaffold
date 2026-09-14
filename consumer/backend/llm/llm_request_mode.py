@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Helpers for session-level LLM request streaming mode."""
 
 from __future__ import annotations

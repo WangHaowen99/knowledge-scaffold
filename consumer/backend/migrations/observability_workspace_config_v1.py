@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Forward-only migration from global to workspace observability configuration.
 
 The migration is startup-safe and deliberately non-blocking in the shared

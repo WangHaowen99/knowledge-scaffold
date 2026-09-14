@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Explicit white-box access helpers for solver tests."""
 
 from __future__ import annotations

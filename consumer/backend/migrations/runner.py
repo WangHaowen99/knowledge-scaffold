@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared registry and execution entry point for removable backend migrations.
 
 Application startup and deployment both invoke this module. Concrete migration

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Verifier-backed candidate results prepared for deterministic presentation."""
 
 from __future__ import annotations

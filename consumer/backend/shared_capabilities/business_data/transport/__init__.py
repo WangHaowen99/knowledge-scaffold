@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared HTTP and SSE transport helpers."""
 
 from .http import create_retry_session, extract_error_detail, sanitize_public_text

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Flask adapter for the standalone ``ortools.solver.v1`` service."""
 
 from __future__ import annotations

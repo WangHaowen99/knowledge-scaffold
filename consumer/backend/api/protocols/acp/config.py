@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """ACP 配置管理模块."""
 
 from __future__ import annotations

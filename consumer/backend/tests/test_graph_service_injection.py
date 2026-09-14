@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Service-bound scope and runtime metadata for graph providers."""
 
 from __future__ import annotations

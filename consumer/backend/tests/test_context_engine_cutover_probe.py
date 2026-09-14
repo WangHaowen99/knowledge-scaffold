@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase A regression probes for the OpenJiuwen ContextEngine cutover.
 
 These tests validate the cutover-specific behaviour introduced in Phase A

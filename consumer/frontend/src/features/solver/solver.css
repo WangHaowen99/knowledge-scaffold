@@ -1,3 +1,4 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved. */
 .mwr .solver-workbench { height: 100%; overflow: auto; padding: 26px 30px 34px; }
 .mwr .solver-workbench > .ui-page-header, .mwr .solver-history-shell, .mwr .solver-history-error { width: min(1240px, 100%); margin-inline: auto; }
 .mwr .solver-workbench .ui-eyebrow { letter-spacing: 0; }

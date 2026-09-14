@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """RS256 密钥对管理 + JWKS。
 
 - 私钥 PEM 首启自动生成（RSA 2048），存 <DATA_DIR>/keys/private.pem，0600 原子写

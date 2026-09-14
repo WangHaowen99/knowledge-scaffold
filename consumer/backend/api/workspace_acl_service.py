@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Application service for workspace ACL identity references.
 
 Workspace metadata stores usernames, while the auth server owns identities.

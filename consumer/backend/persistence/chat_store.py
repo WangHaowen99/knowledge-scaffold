@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Chat history storage for frontend display and conversation rendering.
 
 This store is responsible ONLY for:

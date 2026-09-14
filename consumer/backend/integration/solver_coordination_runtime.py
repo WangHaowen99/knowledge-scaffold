@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Application adapters and assembly for the solver-coordination core."""
 
 from __future__ import annotations

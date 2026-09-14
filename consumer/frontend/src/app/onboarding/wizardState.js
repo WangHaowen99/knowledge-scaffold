@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 // 操作向导的会话级“已看过”标记：每次新登录（新会话）都会重新弹出。
 const SEEN_KEY = 'mw_wizard_seen';
 

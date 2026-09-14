@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Workspace 水平越权（horizontal authorization）测试。
 
 覆盖：resolve_workspace_id 的访问强制、列表可见性过滤、

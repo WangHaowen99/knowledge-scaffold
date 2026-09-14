@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export function canLoadProtectedData(status, user) {
   return status === 'authenticated' && Boolean(user);
 }

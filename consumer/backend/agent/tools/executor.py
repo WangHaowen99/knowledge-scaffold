@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tool batch execution: parallel and sequential dispatch over ToolOutcome."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared HTTP paths for the MCP backend bridge."""
 
 MCP_API_PREFIX = "/agentic/mcp"

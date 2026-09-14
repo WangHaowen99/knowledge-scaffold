@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """ACP protocol regressions for canonical Run identity and one-run HITL."""
 
 from __future__ import annotations

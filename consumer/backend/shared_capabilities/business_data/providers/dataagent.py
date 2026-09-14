@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """DataAgent A2A REST protocol implementation."""
 
 from __future__ import annotations

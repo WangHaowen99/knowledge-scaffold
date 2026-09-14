@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Workspace-aware store manager for chat and execution history."""
 
 from __future__ import annotations

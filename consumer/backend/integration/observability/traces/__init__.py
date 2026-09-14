@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Semantic trace facades for runtime observability."""
 
 from integration.observability.traces.agent import AgentRuntimeTrace

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """State definitions for the agentic workflow."""
 
 from typing import Any, Dict, List, NotRequired, Optional, TypedDict

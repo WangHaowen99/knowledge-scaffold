@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Immutable component contracts for locked solver profiles."""
 
 from __future__ import annotations

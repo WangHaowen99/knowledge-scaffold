@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """MCP search adapter backed by GraphToolExecutor."""
 
 from __future__ import annotations

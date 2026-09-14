@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const SCHEMA_VERSION = 'solver.candidate-results.v1';
 const OPTIONS = Object.freeze(['OPTION_0', 'OPTION_1']);
 const REQUIRED_TOP_LEVEL_FIELDS = Object.freeze([

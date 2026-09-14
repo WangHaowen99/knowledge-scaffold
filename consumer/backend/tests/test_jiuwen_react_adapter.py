@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the openJiuwen ReAct adapter boundary."""
 
 from internal_access import internal

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase A offline regression baseline for the OpenJiuwen ContextEngine.
 
 These tests use the real ``openjiuwen==0.1.17`` ContextEngine and ReActAgent.

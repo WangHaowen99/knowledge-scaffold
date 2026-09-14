@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for Neo4j graph scope migration helper."""
 
 from __future__ import annotations

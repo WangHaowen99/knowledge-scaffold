@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """OperationDirectRouter — entry point for the direct execution branch.
 
 Called by the orchestrator when ``direct_execution.enabled`` is true. Returns a

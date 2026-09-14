@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Script SDK exception exports."""
 
 from shared_capabilities.business_data import (

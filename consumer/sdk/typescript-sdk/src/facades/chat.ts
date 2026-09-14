@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { AgenticRunsApi } from '../protocols/agentic/runs.js';
 import { AgenticSessionsApi } from '../protocols/agentic/sessions.js';
 import type { AbortableAsyncIterable } from '../streams/sse.js';

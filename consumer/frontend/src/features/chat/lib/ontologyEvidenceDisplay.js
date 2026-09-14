@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const EVIDENCE_TOOL_NAME = 'ontology_evidence_search';
 const CONTEXT_TOOL_NAME = 'ontology_context';
 const BUSINESS_DATA_TOOL_NAME = 'business_data_search';

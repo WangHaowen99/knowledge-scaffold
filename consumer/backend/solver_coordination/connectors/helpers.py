@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Protocol-neutral helpers shared by Consumer solver connectors."""
 
 from __future__ import annotations

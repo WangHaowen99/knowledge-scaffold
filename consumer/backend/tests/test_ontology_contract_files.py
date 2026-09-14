@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Versioned JSON Schema, fixture, and independent HashFrame checks."""
 
 from __future__ import annotations

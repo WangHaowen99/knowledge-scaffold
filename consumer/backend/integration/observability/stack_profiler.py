@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Request-scoped sampled Python stack profiler that writes Speedscope files."""
 
 from __future__ import annotations

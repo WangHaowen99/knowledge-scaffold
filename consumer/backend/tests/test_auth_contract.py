@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """认证对外契约测试。
 
 锁定 docs/decisions/2026-07-09-decoupled-auth-architecture.md D4 冻结的对外契约：

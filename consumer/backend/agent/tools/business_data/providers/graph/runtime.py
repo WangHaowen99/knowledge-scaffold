@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Runtime orchestration for graph business data search."""
 
 from __future__ import annotations

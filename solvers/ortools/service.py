@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Job lifecycle service for the ``ortools.solver.v1`` Solver Service."""
 
 from __future__ import annotations

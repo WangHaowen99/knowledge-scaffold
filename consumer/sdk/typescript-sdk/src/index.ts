@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export { createOntoAgentClient } from './client/createClient.js';
 export { OntoAgentClient } from './client/OntoAgentClient.js';
 export { ApiError } from './errors/ApiError.js';

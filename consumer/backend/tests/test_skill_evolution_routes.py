@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for skill-evolution HTTP routes: auth, admin gating, drift field."""
 
 from __future__ import annotations

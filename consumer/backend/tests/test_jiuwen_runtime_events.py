@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-4 tests for real Jiuwen RuntimeEvent and public draft adaptation."""
 
 from __future__ import annotations

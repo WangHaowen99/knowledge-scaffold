@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Problem-family implementations supported by solver coordination."""
 
 from .binary_ordered_route import (

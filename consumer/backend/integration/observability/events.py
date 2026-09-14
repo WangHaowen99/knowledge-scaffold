@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Runtime observability event contract.
 
 Core agent code emits these vendor-neutral events. Exporters translate them to

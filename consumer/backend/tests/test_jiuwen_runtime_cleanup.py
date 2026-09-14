@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Focused lifecycle tests for the owned OpenJiuwen runtime boundary."""
 
 from __future__ import annotations

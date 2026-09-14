@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Explicit white-box access helpers for implementation-level tests.
 
 Tests should prefer public behavior. These helpers keep unavoidable internal

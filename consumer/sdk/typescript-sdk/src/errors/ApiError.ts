@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export interface ApiErrorOptions {
   status: number;
   data?: unknown;

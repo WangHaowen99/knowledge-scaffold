@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Compatibility tests for the Agent-facing NL2SQL HTTP presentation."""
 
 from __future__ import annotations

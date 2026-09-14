@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Value-domain lookup pipeline for ``business_data_search(action="lookup_values")``.
 
 Groups user-submitted raw values by their Data Mapping binding, appends the

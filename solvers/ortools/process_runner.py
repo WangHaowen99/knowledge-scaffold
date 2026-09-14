@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Spawn-isolated execution for one OR-Tools solve attempt."""
 
 from __future__ import annotations

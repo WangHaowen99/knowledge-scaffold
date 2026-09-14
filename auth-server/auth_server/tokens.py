@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """access/refresh JWT 签发与校验（RS256，基于 Authlib，不手写 JOSE）。"""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Route integration tests for the shared ontology package browser."""
 
 from __future__ import annotations

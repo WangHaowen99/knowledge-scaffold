@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-3 tests for async tools and structured internal concurrency."""
 
 from __future__ import annotations

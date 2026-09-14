@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Independent refinery-route candidate evaluation for the OR-Tools service."""
 
 from __future__ import annotations

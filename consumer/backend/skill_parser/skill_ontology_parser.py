@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Entrypoint for converting modeling-template ontology sources."""
 
 from __future__ import annotations

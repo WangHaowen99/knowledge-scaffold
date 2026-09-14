@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Local JSONL performance exporter for runtime observability events."""
 
 from __future__ import annotations

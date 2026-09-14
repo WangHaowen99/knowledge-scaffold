@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the skill-evolution service: gates, diff, poll, approve, drift.
 
 Uses a real temp ontology fixture + a fake skill-evolver HTTP client (no network).

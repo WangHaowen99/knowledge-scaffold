@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Durable solver submission, polling, cancellation, and recovery orchestration."""
 
 from __future__ import annotations

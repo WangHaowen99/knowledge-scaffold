@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Cross-thread and cross-process serialization for ontology mutations."""
 
 from __future__ import annotations

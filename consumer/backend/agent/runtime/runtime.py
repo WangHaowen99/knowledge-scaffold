@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """ASGI-lifespan composition root for the B asynchronous runtime."""
 
 from __future__ import annotations

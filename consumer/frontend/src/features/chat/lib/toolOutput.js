@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const OPAQUE_OUTPUT_REF = /^[0-9a-f]{32}$/i;
 
 export const resolveToolOutputUrl = (value, sessionId, runId) => {

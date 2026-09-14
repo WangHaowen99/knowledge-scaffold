@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { ApiError } from '../errors/ApiError.js';
 import { streamSse, type AbortableAsyncIterable, type SseEventMessage } from '../streams/sse.js';
 import type { ClientOptions, RequestOptions, ValueProvider } from '../types/common.js';

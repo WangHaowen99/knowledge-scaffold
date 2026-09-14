@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const VALID_AGENT_MODES = new Set(['quick', 'thinking', 'multi_agent']);
 
 export const normalizeAgentMode = (mode) => {

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import pytest
 from backend_synthetic_credentials import BOOTSTRAP_ADMIN_PASSWORD, ENCRYPTION_KEY, synthetic_secret
 

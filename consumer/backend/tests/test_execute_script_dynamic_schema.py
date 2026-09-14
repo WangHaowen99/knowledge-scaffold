@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression tests for request-scoped ``execute_script`` schemas."""
 
 from __future__ import annotations

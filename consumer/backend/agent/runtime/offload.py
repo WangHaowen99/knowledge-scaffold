@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Lifespan-owned bounded adapters for unavoidable synchronous I/O."""
 
 from __future__ import annotations

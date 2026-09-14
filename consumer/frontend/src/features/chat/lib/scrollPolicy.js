@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const DEFAULT_BOTTOM_THRESHOLD_PX = 72;
 
 export function distanceFromScrollBottom(metrics = {}) {

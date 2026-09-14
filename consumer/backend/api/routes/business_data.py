@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Business data provider schema and ontology data source endpoints."""
 
 from __future__ import annotations

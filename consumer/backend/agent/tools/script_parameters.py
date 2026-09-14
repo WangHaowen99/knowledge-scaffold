@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared CLI normalization helpers for structured script parameters."""
 
 from __future__ import annotations

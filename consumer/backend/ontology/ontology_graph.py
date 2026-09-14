@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Build display-ready ontology graph snapshots from ontology files."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Independent onto-platform exporter lifecycle management."""
 
 from __future__ import annotations

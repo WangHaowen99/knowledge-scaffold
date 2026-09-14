@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Skill-evolution subsystem: external skill-evolver integration for ontologies.
 
 See docs/ontology-skill-evolution.md for the full design. Independent of the

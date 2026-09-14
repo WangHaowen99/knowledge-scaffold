@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for filesystem-backed memory manager behavior."""
 
 from pathlib import Path

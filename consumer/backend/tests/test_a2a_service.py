@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """A2A adapter contract tests over canonical Runs and durable Turns."""
 
 from __future__ import annotations

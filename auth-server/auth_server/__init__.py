@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """预置 auth server v1：标准 OAuth2/OIDC 子集（密码模式 + refresh + revoke + JWKS + discovery）。
 
 与 consumer 之间禁止任何 Python import，唯一接口是 HTTP（见

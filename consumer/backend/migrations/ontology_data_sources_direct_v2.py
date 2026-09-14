@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Forward-only migration from shared connection references to direct ontology data sources.
 
 This module intentionally lives outside the runtime store. Deployment and the
