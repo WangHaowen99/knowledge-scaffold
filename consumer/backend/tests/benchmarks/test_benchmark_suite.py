@@ -2891,9 +2891,12 @@ def _analyze_think_process(run_ids: list[str], log_baseline: int):
                 collected = []
                 for j in range(idx, min(idx + 80, len(lines))):
                     _, text = lines[j]
-                    if j > idx and (
-                        "executor:execute:" in text or "app.api.consume" in text or "app.agent.nodes" in text
-                    ):
+                    is_boundary = (
+                        "executor:execute:" in text
+                        or "app.api.consume" in text
+                        or "app.agent.nodes" in text
+                    )
+                    if j > idx and is_boundary:
                         break
                     collected.append(text)
                 full_text = "\n".join(collected)
