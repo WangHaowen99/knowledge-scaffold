@@ -951,7 +951,7 @@ export class AiConstructionOrchestrator {
           {
             type: 'text',
             text: [
-              `已生成 operation ${input.counts.operations} 个、对象 ${input.counts.objects} 个、关系 ${input.counts.relations} 条、规则 ${input.counts.rules} 条、指标 ${input.counts.metrics} 个。`,
+              `已生成 operation ${input.counts.operations} 个、对象 ${input.counts.objects} 个、关系 ${input.counts.relations} 条（已写入知识结构，不代表待确认候选）、规则 ${input.counts.rules} 条、指标 ${input.counts.metrics} 个。`,
               `知识包校验结果：${validationSummary}。`,
               input.validation.errors === 0
                 ? '请在中间工作区逐文件审阅；确认后再进入确定性脚本判断。'

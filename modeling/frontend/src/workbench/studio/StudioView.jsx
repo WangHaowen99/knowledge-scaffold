@@ -86,12 +86,14 @@ import './studio.css';
 
 const selProjectId = (state) => state.projectId;
 const selMaterials = (state) => state.materials;
+const selObjectRelationReview = (state) => state.objectRelationReview;
 const KIND_ICON = { object: Boxes, operation: Workflow, rule: Scale, metric: Gauge, script: FileCode2 };
 const STUDIO_REFRESH_DEBOUNCE_MS = 200;
 
 export default function StudioView({ focus }) {
   const projectId = useStore(store, selProjectId);
   const materials = useStore(store, selMaterials);
+  const objectRelationReview = useStore(store, selObjectRelationReview);
   const [session, setSession] = useState(() => initialStudioSession(projectId));
   const [createKind, setCreateKind] = useState('');
   const [deleteIds, setDeleteIds] = useState([]);
@@ -664,7 +666,8 @@ export default function StudioView({ focus }) {
         <StudioPendingReviewBanner state={reviewSubmitState} onSubmit={submitPendingReview}
             blocked={entryDraftDirty} />
         )}
-        <StudioToolbar session={session} update={update} navigate={navigate} onRefresh={reloadStudio} />
+        <StudioToolbar session={session} update={update} navigate={navigate} onRefresh={reloadStudio}
+          objectRelationReview={objectRelationReview} />
         {mainContent}
         {createKind && (
           <StudioCreateDialog kind={createKind} session={session} projectId={projectId}
@@ -726,7 +729,7 @@ function writeBrowserHistory(session, mode, projectId) {
   else window.history.replaceState(state, '', url);
 }
 
-function StudioToolbar({ session, update, navigate, onRefresh }) {
+function StudioToolbar({ session, update, navigate, onRefresh, objectRelationReview }) {
   const inEntry = session.view === 'entry';
   const searchDraft = studioSearchDraft(session);
   const submitSearch = () => update(submitStudioSearch);
@@ -770,6 +773,16 @@ function StudioToolbar({ session, update, navigate, onRefresh }) {
           })} />
       </>}
       <span className="spacer" />
+      {objectRelationReview?.available && objectRelationReview?.status === 'pending' && (
+        <button type="button" className="btn btn-p btn-sm studio-review-relations"
+          onClick={() => store.set({
+            focus: { kind: 'relations', target: '对象间关系' },
+            follow: false,
+            pendingFocus: null,
+          })}>
+          审阅关系
+        </button>
+      )}
       <span className="studio-count">{session.elements.length}/{session.total || session.elements.length} 项</span>
       <button className="btn btn-ghost studio-refresh" title="刷新 Studio" aria-label="刷新 Studio"
         onClick={onRefresh} disabled={session.phase === 'refreshing'}>

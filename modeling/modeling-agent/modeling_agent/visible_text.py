@@ -64,6 +64,7 @@ _TOKEN_LABELS = {
     "revise_change_plan": "调整建模计划",
     "stage_change_set": "原子生成待确认修改",
     "get_change_set_receipt": "核对修改回执",
+    "review_object_relations": "审阅对象关系候选",
     "validate_change_set": "校验完整建模计划",
     "discard_change_set": "放弃待确认修改",
     "list_domain_resources": "查看领域资源",
@@ -77,7 +78,6 @@ _TOKEN_LABELS = {
     "patch_operation": "增量修改操作",
     "patch_metric": "增量修改指标",
     "sync_schema_objects": "按数据 Schema 同步对象",
-    "suggest_object_relations": "推荐对象关系",
     "patch_object_source_binding": "更新对象数据绑定",
     "preview_domain_delete": "核对删除影响",
     "delete_domain_resource": "删除领域资源",
@@ -144,6 +144,17 @@ _TOKEN_LABELS = {
 
 def _is_token_character(character: str) -> bool:
     return character.isascii() and (character.isalnum() or character in _TOKEN_CHARACTERS)
+
+
+def _has_cjk(text: str) -> bool:
+    """Return whether *text* contains a CJK ideograph.
+
+    Ambiguous tool names are only translated when they occur in Chinese
+    prose (or explicit backticks).  Keep this small predicate local to the
+    sanitizer so streaming output does not expose implementation labels or
+    raise while deciding how to render them.
+    """
+    return any("\u3400" <= character <= "\u9fff" for character in text)
 
 
 def _sanitize_token(token: str, *, prev: str = "", nxt: str = "") -> str:

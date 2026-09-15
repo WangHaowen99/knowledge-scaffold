@@ -1,5 +1,6 @@
 import type { DataDictTable, PackageSpec, SpecObject } from '../types.js';
 import { buildPhysicalSchemaObjects, type PhysicalSchemaObject } from './schema-manifest.js';
+import { applyAuthoritativeObjectRelations } from './relationship-template.js';
 import { mappingFieldName, mappingObjectName } from './mapping-contract.js';
 import { tableSourceFor, tableSourcesFor } from './source-references.js';
 
@@ -25,7 +26,7 @@ export function objectSourceMode(tables: DataDictTable[]): ObjectSourceMode {
 }
 
 export function expectedSchemaObjects(tables: DataDictTable[]): PhysicalSchemaObject[] {
-  return buildPhysicalSchemaObjects(schemaTables(tables), tables);
+  return applyAuthoritativeObjectRelations(buildPhysicalSchemaObjects(schemaTables(tables), tables), tables);
 }
 
 export function packageNeedsObjectDataMapping(spec: PackageSpec): boolean {

@@ -23,6 +23,33 @@ const SHEET_DISPOSITIONS = [
   { value: 'reference', label: '业务依据', semanticRole: 'evidence' },
   { value: 'ignore', label: '忽略', semanticRole: 'ignore' },
 ];
+const RELATIONSHIP_TEMPLATE_SHEET_NAME = '主外键映射';
+const RELATIONSHIP_TEMPLATE_HEADERS = ['table_name', 'column_name', 'constraint_type', 'referenced_table', 'referenced_column'];
+
+function relationshipTemplateStatus(table, tables = []) {
+  if (String(table.name || '').trim() !== RELATIONSHIP_TEMPLATE_SHEET_NAME) return { matched: false, text: '模板未匹配' };
+  const headers = (table.fields || []).map((field) => String(field.name || '').trim());
+  const headerMatched = headers.length === RELATIONSHIP_TEMPLATE_HEADERS.length
+    && RELATIONSHIP_TEMPLATE_HEADERS.every((header, index) => headers[index] === header);
+  if (!headerMatched) return { matched: false, text: '模板未匹配' };
+  const names = new Set((tables || []).map((item) => String(item.name || '').trim()).filter(Boolean));
+  let foreignKeyCount = 0;
+  for (const row of table.rows || []) {
+    const values = RELATIONSHIP_TEMPLATE_HEADERS.map((_, index) => String(row?.[index] || '').trim());
+    const [tableName, columnName, constraintType, referencedTable, referencedColumn] = values;
+    if (!values.some(Boolean)) continue;
+    if (!tableName || !columnName || (names.size && !names.has(tableName))) return { matched: false, text: '模板未匹配' };
+    if (constraintType === 'PRIMARY_KEY') {
+      if (referencedTable || referencedColumn) return { matched: false, text: '模板未匹配' };
+    } else if (constraintType === 'FOREIGN_KEY') {
+      if (!referencedTable || !referencedColumn || (names.size && !names.has(referencedTable))) return { matched: false, text: '模板未匹配' };
+      foreignKeyCount += 1;
+    } else {
+      return { matched: false, text: '模板未匹配' };
+    }
+  }
+  return { matched: true, text: foreignKeyCount ? `模板已匹配：${foreignKeyCount} 条外键关系` : '模板已匹配：暂无外键关系' };
+}
 
 function decisionForSheet(sheet, disposition = 'reference', reason = '') {
   const option = SHEET_DISPOSITIONS.find((item) => item.value === disposition)
@@ -360,6 +387,10 @@ function MaterialPurposeReviewPanel({ material }) {
   const reviewable = projectMaterials.filter((item) => item.purposeReview);
   const confirmedCount = reviewable.filter((item) => item.purposeReview.status === 'confirmed').length;
   const tabular = ['excel', 'csv'].includes(material.kind) && material.tables.length > 0;
+  const relationshipStatuses = useMemo(() => Object.fromEntries(material.tables.map((table) => [
+    table.name,
+    relationshipTemplateStatus(table, material.tables),
+  ])), [material.tables]);
 
   const changeDisposition = (sheet, disposition) => {
     setDecisions((current) => ({
@@ -397,6 +428,9 @@ function MaterialPurposeReviewPanel({ material }) {
           ))}
         </select>
       </label>
+      {tabular && <div className="t-xs muted">
+        关系数据模板：Sheet 名固定为「主外键映射」，表头为 {RELATIONSHIP_TEMPLATE_HEADERS.join('、')}。
+      </div>}
       <div className="wb-purpose-sheets">
         {material.tables.map((table) => (
           <label key={table.name} className="wb-purpose-sheet">
@@ -410,6 +444,9 @@ function MaterialPurposeReviewPanel({ material }) {
               ))}
             </select>
             {decisions[table.name]?.reason && <small>{decisions[table.name].reason}</small>}
+            {decisions[table.name]?.importDisposition === 'relationship' && (
+              <small>{relationshipStatuses[table.name]?.text || '模板未匹配'}</small>
+            )}
           </label>
         ))}
       </div>

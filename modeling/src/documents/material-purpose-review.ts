@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { getDb, nowIso } from '../db/index.js';
 import type {
+  DataDictTable,
   DocumentRecord,
   MaterialPurpose,
   MaterialPurposeReview,
@@ -11,6 +12,7 @@ import type {
   MaterialSheetSemanticRole,
   PackageSpec,
 } from '../types.js';
+import { isRelationshipTemplateTable } from '../workflow/relationship-template.js';
 import { tableSourcesFor } from '../workflow/source-references.js';
 
 const PURPOSES = new Set<MaterialPurpose>(['auto', 'goal', 'schema', 'evidence', 'term']);
@@ -84,11 +86,26 @@ function defaultPurpose(document: DocumentRecord): MaterialPurpose {
     : 'evidence';
 }
 
-function decisionForPurpose(sheet: string, purpose: MaterialPurpose): MaterialSheetPurposeDecision {
+function decisionForPurpose(
+  table: Pick<DataDictTable, 'name' | 'fields' | 'rows'>,
+  purpose: MaterialPurpose,
+  allTables: ReadonlyArray<Pick<DataDictTable, 'name'>> = [],
+): MaterialSheetPurposeDecision {
   if (purpose === 'schema') {
-    return { sheet, semanticRole: 'schema', importDisposition: 'object' };
+    if (isRelationshipTemplateTable(
+      table,
+      allTables.map((item) => item.name),
+    )) {
+      return {
+        sheet: table.name,
+        semanticRole: 'schema',
+        importDisposition: 'relationship',
+        reason: '匹配主外键映射模板',
+      };
+    }
+    return { sheet: table.name, semanticRole: 'schema', importDisposition: 'object' };
   }
-  return { sheet, semanticRole: 'evidence', importDisposition: 'reference' };
+  return { sheet: table.name, semanticRole: 'evidence', importDisposition: 'reference' };
 }
 
 function normalizeReason(value: unknown): string | undefined {
@@ -163,7 +180,7 @@ function normalizeSheetDecisions(
   }
   if (options.fillMissing) {
     for (const table of tables) {
-      if (!seen.has(table.name)) decisions.push(decisionForPurpose(table.name, purpose));
+      if (!seen.has(table.name)) decisions.push(decisionForPurpose(table, purpose, tables));
     }
   } else {
     const missing = tables.filter((table) => !seen.has(table.name)).map((table) => table.name);

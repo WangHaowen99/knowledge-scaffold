@@ -83,3 +83,10 @@ def test_visible_text_hides_internal_http_and_https_links() -> None:
     visible = sanitize_visible_text(text)
 
     assert visible == "请查看 内部链接 和 内部链接。"
+
+
+def test_visible_text_translates_ambiguous_tool_name_in_chinese_context() -> None:
+    visible = sanitize_visible_text("请 focus 当前对象。")
+
+    assert visible == "请 定位内容 当前对象。"
+    assert sanitize_visible_text("keep focus unchanged.") == "keep focus unchanged."

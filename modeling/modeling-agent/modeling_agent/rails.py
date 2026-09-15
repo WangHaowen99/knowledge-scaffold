@@ -234,6 +234,7 @@ class WriteSafetyRail(AgentRail):
     priority = 100
     WRITE_TOOLS = frozenset({
         "create_change_plan", "revise_change_plan", "stage_change_set",
+        "review_object_relations",
         "validate_change_set", "discard_change_set",
         "write_file", "delete_file", "import_zip", "stage_package_merge",
         "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",

@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { displayPackageEntryName } from '../../legacyArchiveFilename.js';
 import { store, actions } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
@@ -10,6 +10,7 @@ import GateView from './GateView.jsx';
 import ProgressView from './ProgressView.jsx';
 import EvaluationView from './EvaluationView.jsx';
 import DocView from './DocView.jsx';
+import RelationReviewView from './RelationReviewView.jsx';
 import Icon from '../ui/Icon.jsx';
 
 /* Markdown 渲染要拖 react-markdown + remark-gfm（约 120KB），
@@ -23,6 +24,8 @@ const selPending = (s) => s.pendingFocus;
 const selDemo = (s) => s.demo;
 const selLoading = (s) => s.loading;
 const selMaterials = (s) => s.materials;
+const selObjectRelationReview = (s) => s.objectRelationReview;
+const selOpenedObjectRelationTaskId = (s) => s.openedObjectRelationTaskId;
 
 const NODE_LABEL = { D2: '安全库存判断', B: '查询可用库存', E: '生成采购建议', A: '校验备件编码' };
 
@@ -37,6 +40,7 @@ const TITLES = {
   evaluation: () => '正式评测',
   file: (f) => displayPackageEntryName(f.target),
   studio: () => '知识包 Studio',
+  relations: () => '确认对象间关系',
 };
 const SUBS = {
   flow: '渲染 / 源码 / 历史', diff: '1 / 2 需要你判断的', doc: 'v2 · 42 页 · 替换 / 历史 / 删除',
@@ -51,6 +55,18 @@ export default function CenterPane() {
   const demo = useStore(store, selDemo);
   const loading = useStore(store, selLoading);
   const materials = useStore(store, selMaterials);
+  const objectRelationReview = useStore(store, selObjectRelationReview);
+  const openedObjectRelationTaskId = useStore(store, selOpenedObjectRelationTaskId);
+  useEffect(() => {
+    const taskId = objectRelationReview?.task_id || '';
+    if (!objectRelationReview?.ready || !taskId || openedObjectRelationTaskId === taskId) return;
+    store.set({
+      openedObjectRelationTaskId: taskId,
+      focus: { kind: 'relations', target: '对象间关系' },
+      follow: false,
+      pendingFocus: null,
+    });
+  }, [objectRelationReview, openedObjectRelationTaskId]);
   const docMaterial = focus.kind === 'doc'
     ? materials.find((item) => item.id === focus.target || item.filename === focus.target)
     : null;
@@ -66,8 +82,11 @@ export default function CenterPane() {
     progress: '从产物与门禁实时投影 · 只读',
     file: '渲染 / 源码',
     studio: '图 / 表 / 条目',
+    relations: '分页审阅 / 一次写入',
   }[focus.kind]; })();
-  const focusReference = (() => { if (focus.source === 'agent') return focus.kind === 'studio' ? focus.elementId : focus.node; return null; })();
+  const focusReference = focus.source === 'agent'
+    ? focus.kind === 'studio' ? focus.elementId : focus.node
+    : null;
   const pendingMaterial = pending?.kind === 'doc'
     ? materials.find((item) => item.id === pending.target || item.filename === pending.target)
     : null;
@@ -99,6 +118,16 @@ export default function CenterPane() {
               pendingFocus: null,
             })}>
             <Icon name="layers" size={13} />Studio
+          </button>
+        )}
+        {!demo && objectRelationReview?.ready && (
+          <button className={`btn btn-sm${focus.kind === 'relations' ? ' btn-p' : ''}`}
+            onClick={() => store.set({
+              focus: { kind: 'relations', target: '对象间关系' },
+              follow: false,
+              pendingFocus: null,
+            })}>
+            <Icon name="layers" size={13} />审阅关系
           </button>
         )}
         <span className="t-xs">{sub}</span>
@@ -149,6 +178,7 @@ function Body({ kind, focus, demo }) {
     case 'gates': return <GateView data={demo ? undefined : focus.data} />;
     case 'progress': return <ProgressView />;
     case 'evaluation': return <EvaluationView focus={focus} />;
+    case 'relations': return <RelationReviewView />;
     case 'studio':
       return (
         <Suspense fallback={<PaneSkeleton />}>
