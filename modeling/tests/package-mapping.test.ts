@@ -124,6 +124,7 @@ test('package mapping：中文名缺失或重复时稳定 key 不变', () => {
 test('package mapping：新生成规格允许多类来源且仍要求字段中文名', async () => {
   const { specObjectSchema } = await import('../src/workflow/tools.js');
   const schema = specObjectSchema() as any;
+  const initialGenerationSchema = specObjectSchema([], { allowRelations: false }) as any;
   const fieldSchema = schema.properties.fields.items;
   assert.equal(schema.required.includes('sourceTable'), false);
   assert.ok(schema.properties.sourceTable);
@@ -133,6 +134,7 @@ test('package mapping：新生成规格允许多类来源且仍要求字段中�
   assert.match(relationSchema.description, /模型根据材料证据生成.*中文谓词/);
   assert.match(relationSchema.description, /不得包含源对象或目标对象.*连读/);
   assert.equal(relationSchema.enum, undefined);
+  assert.equal(initialGenerationSchema.properties.relations, undefined);
 });
 
 test('package mapping：同一来源 Sheet 可以支持多个实体，并写入对象索引', () => {

@@ -2,6 +2,7 @@ import { api } from '../../api.js';
 
 const P = (projectId) => `/api/projects/${encodeURIComponent(projectId)}/studio`;
 const S = (projectId) => `/api/projects/${encodeURIComponent(projectId)}/schema-semantics`;
+const R = (projectId) => `/api/projects/${encodeURIComponent(projectId)}/object-relations/review`;
 const STUDIO_BOOTSTRAP_CACHE_TTL_MS = 15_000;
 const STUDIO_BOOTSTRAP_CACHE_LIMIT = 4;
 const bootstrapRequests = new Map();
@@ -25,6 +26,20 @@ export const getSchemaSemanticItems = (projectId, options = {}, requestOptions =
   `${S(projectId)}/items${queryString(options)}`,
   requestOptions,
 );
+
+export const getObjectRelationReview = (projectId, options = {}, requestOptions = {}) => api(
+  `${R(projectId)}${queryString(options)}`,
+  requestOptions,
+);
+
+export const applyObjectRelationReview = async (projectId, input) => {
+  const response = await api(R(projectId), {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  invalidateStudioBootstrap(projectId);
+  return response;
+};
 
 export function getStudioBootstrap(projectId, options = {}, requestOptions = {}) {
   const { signal, cache = 'default', ...apiOptions } = requestOptions;

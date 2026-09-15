@@ -85,10 +85,10 @@ import {
   type SchemaSemanticStatus,
 } from '../workflow/schema-semantics.js';
 import {
-  collectPreviousObjectRelations,
   suggestObjectRelations as suggestObjectRelationsFromSpec,
-  type PreviousObjectRelation,
+  type ObjectRelationSuggestion,
 } from '../workflow/object-relation-suggestions.js';
+import { hasAuthoritativeObjectRelationSource } from '../workflow/relationship-template.js';
 import { normalizeRelationName, relationNameProblem } from '../workflow/relation-name.js';
 import { tableSourcesFor } from '../workflow/source-references.js';
 import { validateKey, validateSpecKeys } from '../workflow/keys.js';
@@ -176,6 +176,8 @@ import {
   ChangeControlStore,
   CHANGE_PLAN_DIRECT_TOOLS,
   CHANGE_SET_DOMAIN_TOOLS,
+  OBJECT_RELATION_REVIEW_TARGET_KEY,
+  OBJECT_RELATION_REVIEW_TOOL,
   parseChangeSetActions,
   type ChangeSetActionInput,
 } from './change-control.js';
@@ -203,13 +205,13 @@ const DOMAIN_TOOL_NAMES = new Set([
   'create_object', 'create_rule', 'create_operation', 'create_metric',
   'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
   'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
-  'suggest_object_relations',
   'patch_object_source_binding',
   'preview_domain_delete', 'delete_domain_resource',
 ]);
 const CHANGE_CONTROL_TOOLS = new Set([
   'create_change_plan', 'get_change_plan', 'revise_change_plan',
   'stage_change_set', 'get_change_set_receipt', 'validate_change_set', 'discard_change_set',
+  OBJECT_RELATION_REVIEW_TOOL,
 ]);
 const MANAGED_DOMAIN_MARKDOWN = /^(?:objects|operations|rules|metrics)\/(?:index|[^/]+)\.md$/u;
 const MANAGED_SCRIPT_PATH = /^scripts\/(?:index\.md|[^/]+\.md|[A-Za-z0-9_.-]+\.py)$/u;
@@ -230,6 +232,44 @@ type GateResult = {
    *  应当结束本轮等待外部事件，而不是一轮轮重复同一段话（见 #39）。 */
   awaitingUser?: boolean;
 };
+
+interface ObjectRelationReviewRow {
+  id: string;
+  project_id: string;
+  plan_id: string;
+  task_id: string;
+  working_revision: string;
+  schema_input_hash: string;
+  status: 'open' | 'applied' | 'stale';
+  applied_revision: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ObjectRelationReviewCandidateRow {
+  review_id: string;
+  fingerprint: string;
+  ordinal: number;
+  source_object: string;
+  target_object: string;
+  relation: string;
+  note: string;
+  reason: string;
+  evidence_json: string;
+  default_selected: number;
+  selected: number;
+  error_json: string | null;
+}
+
+interface ReviewedRelationError {
+  fingerprint: string;
+  ordinal: number;
+  source_object: string;
+  target_object: string;
+  relation: string;
+  code: string;
+  message: string;
+}
 type GateResults = Record<string, GateResult>;
 
 const GATE_LABELS: Record<string, string> = {
@@ -412,6 +452,7 @@ export class AgentCoreService {
       confirmPolicy: this.workbenchConfirmPolicy(project.id),
       packageDataSource: getProjectPackageDataSourceSelection(project.id),
       changePlan: pendingChangePlan,
+      objectRelationReview: this.changeControl.objectRelationReviewState(project.id),
     };
   }
 
@@ -452,6 +493,407 @@ export class AgentCoreService {
     }, args);
   }
 
+  async workbenchObjectRelationReview(
+    project: Project,
+    username: string,
+    args: Record<string, unknown> = {},
+  ) {
+    await this.artifacts.ensureProject(project.id);
+    const state = this.changeControl.objectRelationReviewState(project.id);
+    if (!state.available) return { ...state, candidates: [], total: 0, offset: 0, next_offset: null };
+    const existing = this.db.prepare(`SELECT * FROM agent_object_relation_reviews
+      WHERE project_id = ? AND task_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .get(project.id, state.task_id) as ObjectRelationReviewRow | undefined;
+    if (!state.ready) {
+      return existing
+        ? this.objectRelationReviewPage(existing, args, state)
+        : { ...state, candidates: [], total: 0, offset: 0, next_offset: null };
+    }
+
+    let review = existing;
+    const working = await this.workbenchStudioFiles(project, username);
+    if (review?.status === 'open') {
+      this.pruneObjectRelationReviewCandidates(review.id, working.spec);
+    }
+    if (review?.status === 'open' && review.working_revision !== working.workingRevision) {
+      this.db.prepare(`UPDATE agent_object_relation_reviews SET status = 'stale', updated_at = ? WHERE id = ?`)
+        .run(nowIso(), review.id);
+      review = undefined;
+    }
+    // An earlier bootstrap may have persisted an empty review while the
+    // working schema was still being materialized. Re-evaluate that open
+    // review against the current spec so a transient zero does not become a
+    // permanent, empty review after refresh.
+    if (review?.status === 'open' && this.objectRelationReviewCandidates(review.id).length === 0) {
+      const probe = allObjectRelationSuggestions(working.spec, this.tables(project.id));
+      const hasCandidates = probe.candidates.some((candidate) => !hasEquivalentObjectRelation(working.spec, candidate));
+      if (hasCandidates) {
+        this.db.prepare(`UPDATE agent_object_relation_reviews SET status = 'stale', updated_at = ? WHERE id = ?`)
+          .run(nowIso(), review.id);
+        review = undefined;
+      }
+    }
+    if (!review || review.status === 'stale') {
+      const spec = working.spec;
+      const suggested = allObjectRelationSuggestions(spec, this.tables(project.id));
+      const candidates = suggested.candidates
+        .filter((candidate) => !hasEquivalentObjectRelation(spec, candidate))
+        .map((candidate) => ({
+          ...candidate,
+          relation: objectRelationChineseName(candidate.relation),
+          reason: objectRelationReason(candidate),
+        }));
+      const reviewId = `orr_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+      const timestamp = nowIso();
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.prepare(`INSERT INTO agent_object_relation_reviews (
+          id, project_id, plan_id, task_id, working_revision, schema_input_hash,
+          status, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,'open',?,?)`).run(
+          reviewId,
+          project.id,
+          state.plan_id,
+          state.task_id,
+          working.workingRevision,
+          suggested.schemaInputHash,
+          timestamp,
+          timestamp,
+        );
+        const insert = this.db.prepare(`INSERT INTO agent_object_relation_review_candidates (
+          review_id, fingerprint, ordinal, source_object, target_object, relation,
+          note, reason, evidence_json, default_selected, selected
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+        candidates.forEach((candidate, index) => {
+          const selected = candidate.confidence === 'high' ? 1 : 0;
+          insert.run(
+            reviewId,
+            candidate.candidateFingerprint,
+            index,
+            candidate.sourceObject,
+            candidate.targetObject,
+            candidate.relation,
+            candidate.note,
+            candidate.reason,
+            JSON.stringify(candidate.evidence ?? []),
+            selected,
+            selected,
+          );
+        });
+        this.db.exec('COMMIT');
+      } catch (error) {
+        if (this.db.isTransaction) this.db.exec('ROLLBACK');
+        throw error;
+      }
+      review = this.db.prepare('SELECT * FROM agent_object_relation_reviews WHERE id = ?')
+        .get(reviewId) as unknown as ObjectRelationReviewRow;
+    }
+    // Keep an empty review open. Candidate derivation can legitimately return
+    // no rows while upstream object/operation work is still settling; marking
+    // the plan task applied here permanently hides the review after refresh
+    // and leaves behind a misleading completed review with total=0. The task
+    // is completed only by the explicit apply endpoint (or an orchestrator
+    // path that has a stable, persisted empty result).
+    return this.objectRelationReviewPage(review, args, state);
+  }
+
+  async applyWorkbenchObjectRelationReview(
+    project: Project,
+    username: string,
+    rawBody: unknown,
+  ) {
+    const body = object(rawBody);
+    const reviewId = text(body.review_id ?? body.reviewId, 'review_id');
+    const expectedRevision = text(body.expected_revision ?? body.expectedRevision, 'expected_revision');
+    const selectedFingerprints = new Set(requiredStringArray(
+      body.selected_fingerprints ?? body.selectedFingerprints ?? [],
+      'selected_fingerprints',
+      true,
+    ));
+    const relationEdits = relationReviewEdits(body.relation_edits ?? body.relationEdits);
+    const review = this.db.prepare(`SELECT * FROM agent_object_relation_reviews
+      WHERE id = ? AND project_id = ?`).get(reviewId, project.id) as ObjectRelationReviewRow | undefined;
+    if (!review) throw new AgentCoreError('RELATION_REVIEW_NOT_FOUND', '对象关系审阅已经失效', [], 404);
+    if (review.status === 'applied') {
+      return {
+        applied: true,
+        replayed: true,
+        working_revision: review.applied_revision,
+        review_id: review.id,
+        display: { text: '对象关系已经写入工作版本' },
+      };
+    }
+    if (review.status !== 'open') {
+      throw new AgentCoreError('RELATION_REVIEW_STALE', '对象或业务操作已经变化，请刷新关系候选', [], 409, {
+        review_id: review.id,
+      });
+    }
+    const state = this.changeControl.objectRelationReviewState(project.id);
+    if (!state.available || state.task_id !== review.task_id) {
+      throw new AgentCoreError('RELATION_REVIEW_STALE', '当前建模计划已经变化，请刷新关系候选', [], 409);
+    }
+    try {
+      this.changeControl.authorizeDirectTask({
+        projectId: project.id,
+        runId: String(state.run_id),
+        taskId: String(state.task_id),
+        tool: OBJECT_RELATION_REVIEW_TOOL,
+        targetKey: OBJECT_RELATION_REVIEW_TARGET_KEY,
+      });
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+    const working = await this.workbenchStudioFiles(project, username);
+    if (expectedRevision !== working.workingRevision || review.working_revision !== working.workingRevision) {
+      throw new AgentCoreError('RELATION_REVIEW_STALE', '对象或业务操作已经变化，请刷新关系候选', [], 409, {
+        expectedRevision,
+        actualRevision: working.workingRevision,
+        review_id: review.id,
+      });
+    }
+    const rows = this.objectRelationReviewCandidates(review.id);
+    const known = new Set(rows.map((row) => row.fingerprint));
+    const unknown = [...new Set([...selectedFingerprints, ...relationEdits.keys()])]
+      .filter((fingerprint) => !known.has(fingerprint));
+    if (unknown.length) {
+      throw new AgentCoreError('RELATION_REVIEW_SELECTION_INVALID', '提交中包含不属于当前页面的关系', [], 400, {
+        fingerprints: unknown,
+      });
+    }
+    this.persistObjectRelationReviewSelection(review.id, selectedFingerprints, relationEdits);
+    const selected = this.objectRelationReviewCandidates(review.id)
+      .filter((row) => selectedFingerprints.has(row.fingerprint));
+    const spec = working.spec;
+    const errors = validateReviewedObjectRelations(spec, selected);
+    if (errors.length) {
+      this.persistObjectRelationReviewErrors(review.id, errors);
+      throw new AgentCoreError(
+        'RELATION_REVIEW_INVALID',
+        `有 ${errors.length} 条对象关系需要调整`,
+        [],
+        422,
+        { review_id: review.id, relations: errors },
+      );
+    }
+
+    let resultingRevision = working.workingRevision;
+    if (selected.length) {
+      const patches = reviewedRelationPatches(spec, selected);
+      try {
+        const response = await this.studioWrites.batchDomainModel(
+          project,
+          username,
+          {
+            expectedRevision: working.workingRevision,
+            clientMutationId: `relation-review:${review.id}`,
+            editSessionId: review.id,
+            creates: [],
+            patches,
+          },
+          createHash('sha256').update(JSON.stringify({ reviewId: review.id, selected: [...selectedFingerprints].sort() })).digest('hex'),
+        );
+        resultingRevision = response.workingRevision;
+      } catch (error) {
+        if (error instanceof StudioWriteError) {
+          const relationErrors = studioRelationReviewErrors(error, selected);
+          this.persistObjectRelationReviewErrors(review.id, relationErrors);
+          throw new AgentCoreError(
+            'RELATION_REVIEW_INVALID',
+            relationErrors.length ? `有 ${relationErrors.length} 条对象关系需要调整` : error.message,
+            [],
+            error.statusCode,
+            { review_id: review.id, relations: relationErrors, fieldErrors: error.details.fieldErrors ?? {} },
+          );
+        }
+        throw error;
+      }
+    }
+    try {
+      const plan = this.changeControl.completeDirectTask({
+        projectId: project.id,
+        runId: String(state.run_id),
+        taskId: String(state.task_id),
+        tool: OBJECT_RELATION_REVIEW_TOOL,
+        receiptId: review.id,
+        resultingRevision,
+      });
+      this.db.prepare(`UPDATE agent_object_relation_reviews
+        SET status = 'applied', applied_revision = ?, updated_at = ? WHERE id = ?`)
+        .run(resultingRevision, nowIso(), review.id);
+      return {
+        applied: true,
+        review_id: review.id,
+        working_revision: resultingRevision,
+        selected_count: selected.length,
+        plan,
+        display: { text: `已将 ${selected.length} 条对象关系写入工作版本` },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async reviewObjectRelations(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const taskId = text(args.plan_task_id ?? args.planTaskId, 'plan_task_id');
+    const expectedRevision = text(args.expected_revision ?? args.expectedRevision, 'expected_revision');
+    const state = this.changeControl.objectRelationReviewState(context.project.id);
+    if (!state.available || state.task_id !== taskId) {
+      throw new AgentCoreError(
+        'CHANGE_SET_OUT_OF_SCOPE',
+        '对象关系审阅任务不属于当前建模计划',
+        ['先调用 get_change_plan，使用其中对象关系任务的 task_id 重试'],
+        409,
+        { task_id: taskId, current_task_id: state.available ? state.task_id : null },
+      );
+    }
+    const apply = args.apply === true;
+    if (!apply) {
+      return this.workbenchObjectRelationReview(context.project, context.username, args);
+    }
+    const reviewId = text(args.review_id ?? args.reviewId, 'review_id');
+    const selected = Array.isArray(args.selected_fingerprints)
+      ? args.selected_fingerprints
+      : [];
+    const relationEdits = Array.isArray(args.relation_edits)
+      ? args.relation_edits
+      : [];
+    return this.applyWorkbenchObjectRelationReview(
+      context.project,
+      context.username,
+      {
+        review_id: reviewId,
+        expected_revision: expectedRevision,
+        selected_fingerprints: selected,
+        relation_edits: relationEdits,
+      },
+    );
+  }
+
+  private objectRelationReviewPage(
+    review: ObjectRelationReviewRow,
+    args: Record<string, unknown>,
+    state: ReturnType<ChangeControlStore['objectRelationReviewState']>,
+  ) {
+    const rows = this.objectRelationReviewCandidates(review.id);
+    const offset = boundedInteger(args.offset, 0, 100_000, 0);
+    const limit = boundedInteger(args.limit, 1, 100, 10);
+    const page = rows.slice(offset, offset + limit);
+    const nextOffset = offset + page.length;
+    return {
+      ...state,
+      ready: state.available && state.ready && review.status === 'open',
+      review_id: review.id,
+      review_status: review.status,
+      working_revision: review.working_revision,
+      applied_revision: review.applied_revision,
+      total: rows.length,
+      all_fingerprints: rows.map((row) => row.fingerprint),
+      selected_count: rows.filter((row) => row.selected).length,
+      selected_fingerprints: rows.filter((row) => row.selected).map((row) => row.fingerprint),
+      auto_completed: review.status === 'applied' && rows.length === 0,
+      offset,
+      next_offset: nextOffset < rows.length ? nextOffset : null,
+      candidates: page.map((row) => ({
+        fingerprint: row.fingerprint,
+        source_object: row.source_object,
+        target_object: row.target_object,
+        relation: row.relation,
+        note: row.note,
+        reason: row.reason,
+        evidence: parseArray(row.evidence_json),
+        default_selected: Boolean(row.default_selected),
+        selected: Boolean(row.selected),
+        error: row.error_json ? JSON.parse(row.error_json) : null,
+      })),
+    };
+  }
+
+  private objectRelationReviewCandidates(reviewId: string): ObjectRelationReviewCandidateRow[] {
+    return this.db.prepare(`SELECT * FROM agent_object_relation_review_candidates
+      WHERE review_id = ? ORDER BY ordinal`).all(reviewId) as unknown as ObjectRelationReviewCandidateRow[];
+  }
+
+  private pruneObjectRelationReviewCandidates(reviewId: string, spec: PackageSpec): void {
+    const seen = new Set<string>();
+    const removable = new Set<string>();
+    for (const row of this.objectRelationReviewCandidates(reviewId)) {
+      const relationKey = [
+        row.source_object,
+        row.target_object,
+        objectRelationCanonicalName(row.relation),
+      ].join('\0');
+      if (seen.has(relationKey) || hasEquivalentObjectRelation(spec, {
+        sourceObject: row.source_object,
+        targetObject: row.target_object,
+        relation: row.relation,
+      })) {
+        removable.add(row.fingerprint);
+      } else {
+        seen.add(relationKey);
+      }
+    }
+    if (!removable.size) return;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const remove = this.db.prepare(
+        'DELETE FROM agent_object_relation_review_candidates WHERE review_id = ? AND fingerprint = ?',
+      );
+      for (const fingerprint of removable) remove.run(reviewId, fingerprint);
+      this.db.prepare('UPDATE agent_object_relation_reviews SET updated_at = ? WHERE id = ?')
+        .run(nowIso(), reviewId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private persistObjectRelationReviewSelection(
+    reviewId: string,
+    selected: Set<string>,
+    relationEdits: Map<string, string>,
+  ): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const update = this.db.prepare(`UPDATE agent_object_relation_review_candidates
+        SET selected = ?, error_json = NULL WHERE review_id = ? AND fingerprint = ?`);
+      for (const row of this.objectRelationReviewCandidates(reviewId)) {
+        update.run(selected.has(row.fingerprint) ? 1 : 0, reviewId, row.fingerprint);
+      }
+      const updateRelation = this.db.prepare(`UPDATE agent_object_relation_review_candidates
+        SET relation = ? WHERE review_id = ? AND fingerprint = ?`);
+      for (const [fingerprint, relation] of relationEdits) {
+        updateRelation.run(relation, reviewId, fingerprint);
+      }
+      this.db.prepare('UPDATE agent_object_relation_reviews SET updated_at = ? WHERE id = ?')
+        .run(nowIso(), reviewId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private persistObjectRelationReviewErrors(reviewId: string, errors: ReviewedRelationError[]): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`UPDATE agent_object_relation_review_candidates
+        SET error_json = NULL WHERE review_id = ?`).run(reviewId);
+      const update = this.db.prepare(`UPDATE agent_object_relation_review_candidates
+        SET error_json = ? WHERE review_id = ? AND fingerprint = ?`);
+      for (const error of errors) update.run(JSON.stringify(error), reviewId, error.fingerprint);
+      this.db.prepare('UPDATE agent_object_relation_reviews SET updated_at = ? WHERE id = ?')
+        .run(nowIso(), reviewId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async workbenchStudioFiles(project: Project, username: string) {
     await this.artifacts.ensureProject(project.id);
     let current = await this.artifacts.current(project.id);
@@ -475,6 +917,13 @@ export class AgentCoreService {
       const effectiveSpec = resolveStudioWorkingSpec(packageFiles.spec, studioFiles);
       studioFiles[INTERNAL_SPEC_CHANGE_PATH] = `${JSON.stringify(effectiveSpec, null, 2)}\n`;
     }
+    // The overlay's `packageFiles.spec` describes the base revision. Rebuild
+    // the effective spec from the overlaid rendered files so staged object
+    // and operation documents are visible to relation suggestions as well.
+    // In particular, a schema sync may stage an internal compiled spec that
+    // contains objects but omits pre-existing operations; using that internal
+    // JSON alone would make operation co-reference candidates disappear.
+    const workingSpec = resolveStudioWorkingSpec(packageFiles.spec, studioFiles);
     return {
       workingRevision: workspaceChanges.length
         ? workingContentRevision(current.revision.oid, studioFiles)
@@ -482,6 +931,7 @@ export class AgentCoreService {
       baseRevision: current.revision.oid,
       candidateRevision: readableWorkspace?.candidate_id ?? null,
       hasReviewableChanges: workspaceChanges.some((change) => !isHiddenCandidateGroup(change.group_id)),
+      spec: workingSpec,
       files: studioFiles,
     };
   }
@@ -737,6 +1187,7 @@ export class AgentCoreService {
       case 'get_change_plan': return this.getChangePlan(context, args);
       case 'revise_change_plan': return this.reviseChangePlan(context, args);
       case 'get_change_set_receipt': return this.getChangeSetReceipt(context, args);
+      case 'review_object_relations': return this.reviewObjectRelations(context, args);
       case 'list_domain_resources': return this.listDomainResources(context, args);
       case 'get_domain_resource': return this.getDomainResource(context, args);
       case 'get_schema_semantics': return this.getSchemaSemantics(context, args);
@@ -801,7 +1252,6 @@ export class AgentCoreService {
         '__schema__',
         () => this.confirmSchemaSemantics(context, args),
       );
-      case 'suggest_object_relations': return this.suggestObjectRelations(workspace, context, args);
       case 'delete_domain_resource': return this.runPlannedDirectTask(
         context,
         tool,
@@ -1203,6 +1653,7 @@ export class AgentCoreService {
         workingSpec,
         working.files,
       );
+      const projectTables = this.tables(context.project.id);
       const plan = this.changeControl.createPlan({
         projectId: context.project.id,
         runId: context.runId,
@@ -1211,6 +1662,7 @@ export class AgentCoreService {
         expectedRevision: args.expected_revision,
         currentRevision: working.workingRevision,
         tasks: sourcePolicy.tasks,
+        objectRelationReview: !hasAuthoritativeObjectRelationSource(projectTables),
       });
       return {
         plan,
@@ -2273,10 +2725,6 @@ export class AgentCoreService {
       expectedSchemaObjects(projectTables),
       current.spec.objects ?? [],
     );
-    const previousRelations = collectPreviousObjectRelations(
-      current.spec.objects ?? [],
-      physical.map((item) => item.object),
-    );
     const nextSpec = validateSpecKeys(canonicalizePackageSpec({
       ...current.spec,
       objects: physical.map((item) => item.object),
@@ -2358,7 +2806,6 @@ export class AgentCoreService {
       schema_table_count: tables.length,
       object_count: physical.length,
       removed_derived_object_count: staleObjectPaths.length,
-      previousRelations,
       objects: physical.map(({ table, object }) => ({
         resource_id: `object:${object.key}`,
         key: object.key,
@@ -2536,39 +2983,6 @@ export class AgentCoreService {
     };
     this.saveStructuredMutation(context, tool, mutationId, requestHash, result);
     return result;
-  }
-
-  private async suggestObjectRelations(
-    workspace: WorkspaceRow,
-    context: AgentToolContext,
-    args: Record<string, unknown>,
-  ) {
-    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
-    const requestedRevision = String(args.working_revision ?? args.workingRevision ?? args.expected_revision ?? '').trim();
-    if (requestedRevision) new StudioReadService(workingPackage).assertRevision(requestedRevision);
-    const current = await this.overlay(workspace);
-    const result = suggestObjectRelationsFromSpec(
-      current.spec,
-      schemaTables(this.tables(context.project.id)),
-      {
-        limit: integer(args.limit, 10, 1, 20),
-        cursor: optionalInputText(args.cursor),
-        includeLowConfidence: args.includeLowConfidence === true || args.include_low_confidence === true,
-        previousRelations: optionalPreviousObjectRelations(args.previousRelations ?? args.previous_relations),
-        rejectedFingerprints: optionalStringArray(args.rejectedFingerprints ?? args.rejected_fingerprints),
-        scope: optionalSuggestionScope(args.scope),
-      },
-    );
-    return {
-      ok: true,
-      deterministic: true,
-      working_revision: workingPackage.workingRevision,
-      ...result,
-      candidate: false,
-      display: {
-        text: `Suggested ${result.returnedCount} object relation candidate(s); ${result.totalCandidateCount} candidate(s) after filters.`,
-      },
-    };
   }
 
   private async previewDomainDelete(context: AgentToolContext, args: Record<string, unknown>) {
@@ -4527,6 +4941,7 @@ export class AgentCoreService {
           ...table,
           documentId: document.id,
           materialPurpose,
+          ...(decision ? { materialImportDisposition: decision.importDisposition } : {}),
         };
       });
     });
@@ -9769,46 +10184,6 @@ function optionalStringArray(value: unknown): string[] | undefined {
   return result.length ? [...new Set(result)] : undefined;
 }
 
-function optionalPreviousObjectRelations(value: unknown): PreviousObjectRelation[] | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (!Array.isArray(value) || value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
-    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'previousRelations must be an object array', ['previousRelations 传对象数组，每项形如 {kind, targetId}'], 400);
-  }
-  const result = (value as Array<Record<string, unknown>>).flatMap((item) => {
-    const sourceObject = String(item.sourceObject ?? item.source_object ?? '').trim();
-    const targetObject = String(item.targetObject ?? item.target_object ?? '').trim();
-    const relation = String(item.relation ?? '').trim();
-    if (!sourceObject || !targetObject || !relation) return [];
-    const statusValue = String(item.status ?? 'previous').trim();
-    const status = ['previous', 'discarded', 'needs_review'].includes(statusValue)
-      ? statusValue as PreviousObjectRelation['status']
-      : 'needs_review';
-    const note = optionalInputText(item.note);
-    const evidence = optionalStringArray(item.evidence);
-    return [{
-      sourceObject,
-      targetObject,
-      relation,
-      ...(note ? { note } : {}),
-      ...(evidence ? { evidence } : {}),
-      status,
-    } satisfies PreviousObjectRelation];
-  });
-  return result.length ? result : undefined;
-}
-
-function optionalSuggestionScope(value: unknown): { affectedObjects?: string[]; affectedOperations?: string[] } | undefined {
-  if (value === undefined || value === null) return undefined;
-  const input = object(value);
-  const affectedObjects = optionalStringArray(input.affectedObjects ?? input.affected_objects);
-  const affectedOperations = optionalStringArray(input.affectedOperations ?? input.affected_operations);
-  if (!affectedObjects && !affectedOperations) return undefined;
-  return {
-    ...(affectedObjects ? { affectedObjects } : {}),
-    ...(affectedOperations ? { affectedOperations } : {}),
-  };
-}
-
 function requiredStringArray(value: unknown, field: string, allowEmpty = false): string[] {
   if (value === undefined && allowEmpty) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) {
@@ -10426,6 +10801,206 @@ function coveredCharacters(chunks: Array<{
     if (start >= 0) total += Math.max(0, end - start);
   }
   return total;
+}
+
+function allObjectRelationSuggestions(spec: PackageSpec, tables: DataDictTable[]): {
+  schemaInputHash: string;
+  candidates: ObjectRelationSuggestion[];
+} {
+  if (hasAuthoritativeObjectRelationSource(tables)) {
+    const schemaInputHash = createHash('sha256')
+      .update('authoritative-object-relations-v1')
+      .update(JSON.stringify(tables.map((table) => ({
+        documentId: table.documentId ?? '',
+        name: table.name,
+        disposition: table.materialImportDisposition ?? '',
+        fields: table.fields.map((field) => field.name),
+        rows: table.rows ?? [],
+      }))))
+      .digest('hex');
+    return { schemaInputHash, candidates: [] };
+  }
+  const candidates: ObjectRelationSuggestion[] = [];
+  let cursor: string | undefined;
+  let schemaInputHash = '';
+  do {
+    const page = suggestObjectRelationsFromSpec(spec, tables, {
+      limit: 20,
+      ...(cursor ? { cursor } : {}),
+    });
+    schemaInputHash = page.schemaInputHash;
+    candidates.push(...page.candidates);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return { schemaInputHash, candidates };
+}
+
+function objectRelationChineseName(value: string): string {
+  const normalized = normalizeRelationName(value).toLocaleLowerCase('en-US');
+  return ({
+    belongs_to: '属于',
+    related_to: '关联',
+    references: '引用',
+  } as Record<string, string>)[normalized] ?? normalizeRelationName(value);
+}
+
+function objectRelationCanonicalName(value: string): string {
+  const normalized = normalizeRelationName(value).toLocaleLowerCase('zh-CN').replace(/[\s_-]+/gu, '');
+  if (['belongsto', '属于', '隶属于'].includes(normalized)) return 'belongs_to';
+  if (['relatedto', '关联', '相关'].includes(normalized)) return 'related_to';
+  if (['references', '引用'].includes(normalized)) return 'references';
+  return normalized;
+}
+
+function hasEquivalentObjectRelation(
+  spec: PackageSpec,
+  candidate: Pick<ObjectRelationSuggestion, 'sourceObject' | 'targetObject' | 'relation'>,
+): boolean {
+  const source = spec.objects.find((object) => object.key === candidate.sourceObject);
+  if (!source) return true;
+  const relation = objectRelationCanonicalName(candidate.relation);
+  return (source.relations ?? []).some((existing) => (
+    relationTargetKey(existing.target) === candidate.targetObject
+    && objectRelationCanonicalName(existing.relation) === relation
+  ));
+}
+
+function relationTargetKey(value: string): string {
+  const normalized = normalizeRelationName(value);
+  return normalized.startsWith('object:') ? normalized.slice('object:'.length) : normalized;
+}
+
+function objectRelationReason(candidate: ObjectRelationSuggestion): string {
+  if (candidate.sourceField && candidate.targetField) {
+    return `字段 ${candidate.sourceObject}.${candidate.sourceField} 可以匹配 ${candidate.targetObject}.${candidate.targetField}`;
+  }
+  if (candidate.matchMode === 'same_row') return '两个对象来自同一份数据的同一行';
+  if (candidate.relation === 'related_to') return '两个对象被相同的业务操作共同引用';
+  if (/previous|historical/iu.test(candidate.reason)) return '已有关系的两个对象在当前模型中仍然存在';
+  return '对象名称、来源和字段结构支持这条关系';
+}
+
+function validateReviewedObjectRelations(
+  spec: PackageSpec,
+  selected: ObjectRelationReviewCandidateRow[],
+): ReviewedRelationError[] {
+  const objects = new Map(spec.objects.map((object) => [object.key, object]));
+  const seen = new Set<string>();
+  for (const object of spec.objects) {
+    for (const relation of object.relations ?? []) {
+      seen.add(`${object.key}\0${relationTargetKey(relation.target)}\0${objectRelationCanonicalName(relation.relation)}`);
+    }
+  }
+  const errors: ReviewedRelationError[] = [];
+  for (const relation of selected) {
+    const source = objects.get(relation.source_object);
+    const target = objects.get(relation.target_object);
+    const base = {
+      fingerprint: relation.fingerprint,
+      ordinal: relation.ordinal,
+      source_object: relation.source_object,
+      target_object: relation.target_object,
+      relation: relation.relation,
+    };
+    if (!source) {
+      errors.push({ ...base, code: 'RELATION_SOURCE_NOT_FOUND', message: '源对象已经不存在' });
+      continue;
+    }
+    if (!target) {
+      errors.push({ ...base, code: 'RELATION_TARGET_NOT_FOUND', message: '目标对象已经不存在' });
+      continue;
+    }
+    if (source.key === target.key) {
+      errors.push({ ...base, code: 'RELATION_SELF_REFERENCE', message: '对象不能关联自身' });
+      continue;
+    }
+    if (Array.from(relation.relation).length > 80) {
+      errors.push({ ...base, code: 'RELATION_NAME_TOO_LONG', message: '关系名称不能超过 80 个字符' });
+      continue;
+    }
+    const problem = relationNameProblem(relation.relation, { source, target });
+    if (problem) {
+      errors.push({ ...base, code: 'RELATION_NAME_INVALID', message: problem });
+      continue;
+    }
+    const key = `${source.key}\0${target.key}\0${objectRelationCanonicalName(relation.relation)}`;
+    if (seen.has(key)) {
+      errors.push({ ...base, code: 'RELATION_DUPLICATE', message: '当前工作版本已经存在等价关系' });
+      continue;
+    }
+    seen.add(key);
+  }
+  return errors;
+}
+
+function relationReviewEdits(value: unknown): Map<string, string> {
+  const edits = new Map<string, string>();
+  if (value === undefined || value === null) return edits;
+  if (!Array.isArray(value)) {
+    throw new AgentCoreError('RELATION_REVIEW_SELECTION_INVALID', '关系修改必须是数组', [], 400);
+  }
+  for (const [index, item] of value.entries()) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new AgentCoreError('RELATION_REVIEW_SELECTION_INVALID', `第 ${index + 1} 条关系修改格式不正确`, [], 400);
+    }
+    const fingerprint = normalizeRelationName((item as Record<string, unknown>).fingerprint);
+    if (!fingerprint) {
+      throw new AgentCoreError('RELATION_REVIEW_SELECTION_INVALID', `第 ${index + 1} 条关系缺少候选标识`, [], 400);
+    }
+    edits.set(fingerprint, normalizeRelationName((item as Record<string, unknown>).relation));
+  }
+  return edits;
+}
+
+function reviewedRelationPatches(spec: PackageSpec, selected: ObjectRelationReviewCandidateRow[]) {
+  const bySource = new Map<string, ObjectRelationReviewCandidateRow[]>();
+  for (const relation of selected) {
+    const values = bySource.get(relation.source_object) ?? [];
+    values.push(relation);
+    bySource.set(relation.source_object, values);
+  }
+  return [...bySource.entries()].map(([sourceKey, additions]) => {
+    const object = spec.objects.find((item) => item.key === sourceKey)!;
+    return {
+      elementId: `object:${sourceKey}`,
+      changes: {
+        relations: [
+          ...(object.relations ?? []).map((relation) => ({
+            kind: 'object_relation',
+            targetId: relation.target.includes(':') ? relation.target : `object:${relation.target}`,
+            label: relation.relation,
+            ...(relation.note ? { description: relation.note } : {}),
+            ...(relation.evidence?.length ? { evidence: relation.evidence } : {}),
+          })),
+          ...additions.map((relation) => ({
+            kind: 'object_relation',
+            targetId: `object:${relation.target_object}`,
+            label: relation.relation,
+            ...(relation.note ? { description: relation.note } : {}),
+            ...(parseArray(relation.evidence_json).length
+              ? { evidence: parseArray(relation.evidence_json) }
+              : {}),
+          })),
+        ],
+      },
+    };
+  });
+}
+
+function studioRelationReviewErrors(
+  error: StudioWriteError,
+  selected: ObjectRelationReviewCandidateRow[],
+): ReviewedRelationError[] {
+  if (!selected.length) return [];
+  return selected.map((relation) => ({
+    fingerprint: relation.fingerprint,
+    ordinal: relation.ordinal,
+    source_object: relation.source_object,
+    target_object: relation.target_object,
+    relation: relation.relation,
+    code: error.code,
+    message: error.message,
+  }));
 }
 
 async function parallelMap<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {

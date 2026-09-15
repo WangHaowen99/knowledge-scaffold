@@ -31,7 +31,6 @@ import { getAuthoringState } from '../authoring/state.js';
 import { createSourceCatalog } from './source-catalog.js';
 import type { FlowchartOutput } from '../authoring/workflow-extras.js';
 import { attachGeneratedKnowledgeEvidence } from './knowledge-evidence.js';
-import { RELATION_NAME_GENERATION_GUIDANCE } from './relation-name.js';
 import { tableSourcesFor } from './source-references.js';
 import {
   GenerationGateDecisionRequired,
@@ -146,6 +145,13 @@ function appendUnique<T extends { key: string }>(target: T[], incoming: T[], kin
     keys.add(item.key);
     target.push(item);
   }
+}
+
+function stripGeneratedObjectRelations(objects: SpecObject[]): SpecObject[] {
+  return objects.map((object) => {
+    const { relations: _relations, ...withoutRelations } = object;
+    return withoutRelations;
+  });
 }
 
 function artifactSummary(items: ArtifactCandidate[]): string {
@@ -509,7 +515,7 @@ export async function generatePackage(
           '有资料来源时应给出 sourceRefs：数据对象引用真实 Sheet 和字段；产品、场景、需求等语义对象引用原始文档及章节或偏移。外部输入可以暂不绑定来源。',
           '候选中的 materialEvidence 来自已完成全文覆盖的材料分析，必须用于补充文档来源和正文证据；不得只重新读取文档首页后丢弃这些证据。',
           '数据对象还要给出字段中文名、类型、真实 sourceColumn 和主键；不得虚构数据字典中不存在的字段。',
-          `补充查询边界、别名和有材料依据的对象关系。${RELATION_NAME_GENERATION_GUIDANCE}对象别名在整个知识包内必须唯一：忽略 ASCII 大小写和首尾空格后，不得与其他对象的别名、key 或 title 重复。`,
+          '补充查询边界和别名；本阶段不生成对象关系，关系将在对象和业务操作就绪后由统一审阅流程提取。对象别名在整个知识包内必须唯一：忽略 ASCII 大小写和首尾空格后，不得与其他对象的别名、key 或 title 重复。',
           '每个对象必须用 candidateId 认领当前批次中的一个候选，候选名称只用于理解，不用于绑定。',
           `当前批次有 ${hints.length} 个逻辑对象候选。所有候选均已通过服务端筛选，必须逐项生成，不得省略。`,
           '用 submit_objects 一次提交当前批次全部对象，最多 12 个。',
@@ -546,7 +552,9 @@ export async function generatePackage(
           continue;
         }
         messages.push(...stageMessages);
-        const submitted = sourceCatalog.canonicalizeObjects((cap.objects ?? []) as SpecObject[]);
+        const submitted = sourceCatalog.canonicalizeObjects(
+          stripGeneratedObjectRelations((cap.objects ?? []) as SpecObject[]),
+        );
         const normalizedObjects = attachVerifiedDocumentReadCoverage(
           attachObjectMaterialSources(
             normalizeObjectDataMappingsForObjects(submitted.value, ctx.tables),
@@ -632,7 +640,7 @@ export async function generatePackage(
       });
       return acceptedObjects;
     });
-    for (const output of objectUnitOutputs) appendUnique(objects, output, '对象');
+    for (const output of objectUnitOutputs) appendUnique(objects, stripGeneratedObjectRelations(output), '对象');
 
     const rules: SpecRule[] = [];
     const metrics: SpecMetric[] = [];

@@ -9,7 +9,6 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
-import modeling_agent.service as service_module
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from modeling_agent.agent import _system_prompt, build_model, context_engine_config, output_budget_for_phase
 from modeling_agent.rails import (
@@ -48,57 +47,6 @@ from conftest import FakeGateway, ScriptedModel, ToolTurn, service
 pytestmark = pytest.mark.asyncio
 
 
-async def test_schema_semantic_confirmation_does_not_require_relation_suggestion() -> None:
-    live = SimpleNamespace(
-        required_tools=set(),
-        attempted_tools={"suggest_object_relations"},
-        observed_tools={"suggest_object_relations"},
-        stable_read_cache={"stale": {"ok": True}},
-        situation=service_module.RunSituation(),
-        recent_tool_calls=[],
-        recent_outputs=[],
-    )
-    result = {"ok": True}
-
-    await AgentService._after_core_tool(  # noqa: SLF001
-        None,
-        live,
-        "confirm_schema_semantics",
-        {},
-        result,
-    )
-
-    assert live.required_tools == set()
-    assert live.attempted_tools == {"suggest_object_relations"}
-    assert live.observed_tools == {"suggest_object_relations"}
-    assert live.stable_read_cache == {"stale": {"ok": True}}
-
-
-async def test_explicit_relation_suggestion_does_not_become_required() -> None:
-    live = SimpleNamespace(
-        required_tools=set(),
-        attempted_tools={"suggest_object_relations"},
-        observed_tools={"suggest_object_relations"},
-        stable_read_cache={"stale": {"ok": True}},
-        situation=service_module.RunSituation(),
-        recent_tool_calls=[],
-        recent_outputs=[],
-    )
-
-    await AgentService._after_core_tool(  # noqa: SLF001
-        None,
-        live,
-        "suggest_object_relations",
-        {},
-        {"ok": True, "hasMore": True, "nextCursor": "synthetic-next-page"},
-    )
-
-    assert live.required_tools == set()
-    assert live.attempted_tools == {"suggest_object_relations"}
-    assert live.observed_tools == {"suggest_object_relations"}
-    assert live.stable_read_cache == {"stale": {"ok": True}}
-
-
 async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: float = 15) -> dict:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -126,9 +74,11 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     validation = {spec.name for spec in core_tool_specs_for_phase("validation")}
     increment = {spec.name for spec in core_tool_specs_for_phase("increment")}
 
+    assert "suggest_object_relations" not in knowledge | validation | increment
+    assert "review_object_relations" in knowledge
     assert {
         "list_domain_resources", "stage_change_set", "sync_schema_objects",
-        "suggest_object_relations", "patch_object_source_binding",
+        "patch_object_source_binding",
     } <= knowledge
     assert not {"write_file", "delete_file", "patch_object", "create_metric", "upsert_object"} & knowledge
     assert "update_work_notes" in knowledge and "update_plan" not in knowledge
@@ -145,7 +95,7 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert not {"analyze_deterministic_capabilities", "confirm_deterministic_scope"} & knowledge
     assert "stage_script_source" not in validation
     assert {
-        "stage_change_set", "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
+        "stage_change_set", "sync_schema_objects", "patch_object_source_binding",
         "analyze_material_impact", "compile_package_fusion_plan",
     } <= increment
     assert not {"patch_operation", "upsert_operation", "bind_object_source"} & increment
@@ -181,6 +131,33 @@ async def test_script_tool_schema_preserves_boolean_action_and_forbids_test_bypa
     assert case_schema["additionalProperties"] is False
     assert "argv" not in case_schema["properties"]
     assert "function" not in case_schema["properties"]
+
+
+async def test_goal_section_schema_exposes_section_specific_data_contract() -> None:
+    specs = {spec.name: spec for spec in CORE_TOOL_SPECS}
+    data_schema = specs["put_goal_section"].properties["data"]
+
+    variants = data_schema["oneOf"]
+    assert all("summary" not in variant["properties"] for variant in variants)
+    objective = next(
+        variant for variant in variants
+        if "success_criteria" in variant["properties"]
+    )
+    assert objective["properties"]["success_criteria"] == tools_module.STRING
+    assert objective["required"] == [
+        "problem", "target_users", "success_criteria", "evidence",
+    ]
+    assert objective["additionalProperties"] is False
+
+    item_sections = [
+        variant for variant in variants
+        if set(variant["properties"]) == {"items", "evidence"}
+    ]
+    assert item_sections
+    assert all(
+        variant["properties"]["items"]["items"] == tools_module.STRING
+        for variant in item_sections
+    )
 
 
 async def test_schema_semantic_tool_uses_dedicated_field_update_contract() -> None:
@@ -6043,3 +6020,28 @@ async def test_scope_confirmation_allowed_after_analysis(settings) -> None:
         assert interaction.payload["question"] == question["question"]
     finally:
         await runtime.shutdown()
+async def test_repeated_core_tool_failure_aborts_during_tool_callback() -> None:
+    """#40：流式运行期间就要打断重复失败，不能等到模型迭代上限。"""
+    from modeling_agent.service import AgentService, LOOP_TOOL_FAILURE_THRESHOLD, LiveRun
+
+    live = LiveRun(run_id="run_f", project_id="project_f", token="token")
+    for index in range(LOOP_TOOL_FAILURE_THRESHOLD - 1):
+        await AgentService._after_core_tool(
+            None,
+            live,
+            "put_goal_section",
+            {"request_id": f"request_{index}"},
+            {"error": "INVALID_INPUT"},
+        )
+
+    with pytest.raises(AgentRuntimeError) as caught:
+        await AgentService._after_core_tool(
+            None,
+            live,
+            "put_goal_section",
+            {"request_id": "request_final"},
+            {"error": "INVALID_INPUT"},
+        )
+
+    assert caught.value.code == "AGENT_TOOL_LOOP_DETECTED"
+    assert "put_goal_section 连续失败" in caught.value.message
