@@ -102,6 +102,34 @@ export function MermaidPreview({
     el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [focusNode]);
 
+  let diagramContent;
+  if (legacy) {
+    diagramContent = <LegacyFlowView key={`${path}:${source}`} graph={current.graph} focusNode={focusNode}
+      controller={controller} onZoom={setZoom} />;
+  } else if (current?.kind === 'native') {
+    diagramContent = <>
+      <p className="t-sm muted">此图包含特殊结构或样式，保留原始图形展示。</p>
+      <MermaidDiagram key={`${path}:${source}`} source={source} flow={flow} focusNode={focusNode}
+        zoom={zoom} box={box} onFit={handleFit} />
+    </>;
+  } else {
+    let fallbackContent;
+    if (current?.kind === 'error') {
+      fallbackContent = <div className="wb-flow-error" role="alert"><b>流程图暂时无法渲染</b>
+        <span>请切换到源码检查语法。</span><span>{current.message}</span></div>;
+    } else {
+      fallbackContent = <><span className="t-sm muted" role="status">正在读取流程图…</span>
+        <div className="wb-flow">{flow.nodes.map((node) => <Node key={node.id} node={node} first focus={focusNode} />)}</div></>;
+    }
+    diagramContent = <div className="wb-mermaid-viewport" ref={box}>{fallbackContent}</div>;
+  }
+  let sourceContent = sourceView;
+  if (!sourceContent) {
+    sourceContent = <pre className="wb-flow-source">
+      {source === undefined ? '正在读取流程源码…' : readableSource}
+    </pre>;
+  }
+
   return (
     <>
       <div className="wb-flow-toolbar">
@@ -128,23 +156,9 @@ export function MermaidPreview({
         </div>}
       </div>
       {mode === 'diagram' ? <>
-        {legacy ? <LegacyFlowView key={`${path}:${source}`} graph={current.graph} focusNode={focusNode}
-          controller={controller} onZoom={setZoom} />
-          : current?.kind === 'native' ? <>
-            <p className="t-sm muted">此图包含特殊结构或样式，保留原始图形展示。</p>
-            <MermaidDiagram key={`${path}:${source}`} source={source} flow={flow} focusNode={focusNode}
-              zoom={zoom} box={box} onFit={handleFit} />
-          </> : <div className="wb-mermaid-viewport" ref={box}>
-            {current?.kind === 'error'
-              ? <div className="wb-flow-error" role="alert"><b>流程图暂时无法渲染</b>
-                <span>请切换到源码检查语法。</span><span>{current.message}</span></div>
-              : <><span className="t-sm muted" role="status">正在读取流程图…</span>
-                <div className="wb-flow">{flow.nodes.map((node) => <Node key={node.id} node={node} first focus={focusNode} />)}</div></>}
-          </div>}
+        {diagramContent}
         {note && <p className="t-sm muted" style={{ textAlign: 'center', marginTop: 'var(--s-6)' }}>{note}</p>}
-      </> : (
-        sourceView || <pre className="wb-flow-source">{source === undefined ? '正在读取流程源码…' : readableSource}</pre>
-      )}
+      </> : sourceContent}
     </>
   );
 }

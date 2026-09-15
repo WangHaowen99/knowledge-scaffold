@@ -47,7 +47,7 @@ export function ReviewPanel({
   const [pkg, setPkg] = useState(null);
   const [err, setErr] = useState('');
   const [path, setPath] = useState(null);
-  const [file, setFile] = useState(null); // { content, overridden, rendered }
+  const [file, setFile] = useState(null); // 当前打开的资料文件
   const [fileLoading, setFileLoading] = useState(false);
   const [view, setView] = useState('view'); // view | edit（查看：md 渲染 / 其他文件原文）
   const [draft, setDraft] = useState('');

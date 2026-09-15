@@ -74,7 +74,6 @@ export default function DocView() {
 
   if (mat.st === 'stale') return <Unparsed mat={mat} />;
 
-  let hlIndex = -1;
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 268px', gap: 'var(--s-5)', alignItems: 'start' }}>
       <div className="wb-doc">
@@ -189,6 +188,16 @@ function RealDocument({ material, referrers, location }) {
     body.current?.querySelector('.wb-evidence-mark, .wb-evidence-table')
       ?.scrollIntoView({ block: 'center', inline: 'nearest' });
   }, [selection]);
+  let documentContent;
+  if (paragraphs.length === 0) {
+    documentContent = <div className="empty">这份资料没有可显示的正文{material.tables.length ? `，包含 ${material.tables.length} 张数据表` : ''}</div>;
+  } else if (isMarkdownMaterial(material.filename)) {
+    documentContent = <MaterialMarkdown content={material.textContent} ranges={selection.ranges} />;
+  } else {
+    documentContent = paragraphs.map((paragraph) => (
+      <DocumentParagraph key={paragraph.start} paragraph={paragraph} ranges={selection.ranges} />
+    ));
+  }
   const locateReferrer = async (item) => {
     const current = ++request.current;
     setLoadingPath(item.path);
@@ -252,11 +261,7 @@ function RealDocument({ material, referrers, location }) {
           }}>清除定位</button>
         </div>
       )}
-      {paragraphs.length
-        ? isMarkdownMaterial(material.filename)
-          ? <MaterialMarkdown content={material.textContent} ranges={selection.ranges} />
-          : paragraphs.map((paragraph) => <DocumentParagraph key={paragraph.start} paragraph={paragraph} ranges={selection.ranges} />)
-        : <div className="empty">这份资料没有可显示的正文{material.tables.length ? `，包含 ${material.tables.length} 张数据表` : ''}</div>}
+      {documentContent}
       {material.tables.map((table) => (
         <div className={`card${selection.tableNames.includes(table.name) ? ' wb-evidence-table' : ''}`} key={table.name} style={{ marginTop: 'var(--s-4)' }}>
           <div className="card-h">{table.name}<span className="spacer" />{table.rowCount} 行</div>

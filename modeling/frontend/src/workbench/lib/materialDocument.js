@@ -64,8 +64,12 @@ export function materialEvidenceSelection(material, locations = []) {
     }
     const numeric = anchor.match(/^(?:offset[=:]|@)(\d+)$/iu)?.[1];
     const explicitOffset = location?.offset;
-    const offset = numeric !== undefined ? Number(numeric)
-      : !anchor && explicitOffset !== undefined && explicitOffset !== null ? Number(explicitOffset) : null;
+    let offset = null;
+    if (numeric !== undefined) {
+      offset = Number(numeric);
+    } else if (!anchor && explicitOffset !== undefined && explicitOffset !== null) {
+      offset = Number(explicitOffset);
+    }
     if (!anchor && offset === null) { wholeDocument = true; continue; }
     if (offset !== null) {
       if (Number.isInteger(offset) && offset >= 0 && offset < text.length && text.slice(offset).trim()) {
