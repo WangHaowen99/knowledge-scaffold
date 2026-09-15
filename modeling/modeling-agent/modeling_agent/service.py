@@ -154,6 +154,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "transition_project_state",
     "create_change_plan",
     "revise_change_plan",
+    "review_object_relations",
     "stage_change_set",
     "validate_change_set",
     "discard_change_set",
@@ -2953,6 +2954,14 @@ class AgentService:
         _record_tool_outcome(live, name, failed)
         _record_tool_call(live, name, arguments)
         if failed:
+            loop_reason = _detect_loop(live)
+            if loop_reason:
+                raise AgentRuntimeError(
+                    "AGENT_TOOL_LOOP_DETECTED",
+                    f"连续工具失败，已停止自动重试：{loop_reason}。之前已保存的进展已保留，请修正失败原因后从当前进展重试。",
+                    status=409,
+                    details={"loop_reason": loop_reason, "tool": name},
+                )
             # 失败结果不代表状态，不能拿去回填快照
             return
         _absorb_plan_progress(live, result)
@@ -4365,7 +4374,7 @@ class AgentService:
             self._publish_state(run.project_id, run.id)
             visible_error = (
                 error.message
-                if isinstance(error, AgentRuntimeError) and error.code == "LLM_NOT_CONFIGURED"
+                if isinstance(error, AgentRuntimeError) and error.code in {"LLM_NOT_CONFIGURED", "AGENT_TOOL_LOOP_DETECTED"}
                 else (
                     "模型上下文超过本轮可用范围；之前已经完成的处理和候选修改均已保留，请从当前进展重试。"
                     if _is_context_limit_exception(error)

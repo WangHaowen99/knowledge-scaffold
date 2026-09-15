@@ -214,6 +214,48 @@ test('批量接受文件用途建议时任一版本冲突都会整批回滚', ()
   assert.deepEqual(new Set(confirmed.map((item) => item.document.purpose)), new Set(['goal', 'evidence']));
 });
 
+test('主外键映射模板默认建议为关系数据', () => {
+  const { documents, reviews } = setup();
+  const document = documents.insert({
+    projectId: 'project-purpose',
+    filename: 'synthetic-schema-with-meta.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: '主外键映射',
+      rowCount: 3,
+      fields: ['table_name', 'column_name', 'constraint_type', 'referenced_table', 'referenced_column']
+        .map((name) => ({ name, inferredType: 'string' as const, sampleValues: [], distinctRatio: 0 })),
+      rows: [
+        ['customer_sheet', 'customer_id', 'PRIMARY_KEY', '', ''],
+        ['order_sheet', 'order_id', 'PRIMARY_KEY', '', ''],
+        ['order_sheet', 'customer_id', 'FOREIGN_KEY', 'customer_sheet', 'customer_id'],
+      ],
+    }, {
+      name: 'customer_sheet',
+      rowCount: 1,
+      fields: [{ name: 'customer_id', inferredType: 'string', sampleValues: ['synthetic-customer'], distinctRatio: 1 }],
+      rows: [['synthetic-customer']],
+    }, {
+      name: 'order_sheet',
+      rowCount: 1,
+      fields: [
+        { name: 'order_id', inferredType: 'string', sampleValues: ['synthetic-order'], distinctRatio: 1 },
+        { name: 'customer_id', inferredType: 'string', sampleValues: ['synthetic-customer'], distinctRatio: 1 },
+      ],
+      rows: [['synthetic-order', 'synthetic-customer']],
+    }],
+  }).document;
+
+  const review = reviews.ensure(document)!;
+  assert.equal(review.suggestedPurpose, 'schema');
+  assert.deepEqual(review.sheetSuggestions.map((item) => [item.sheet, item.importDisposition]), [
+    ['主外键映射', 'relationship'],
+    ['customer_sheet', 'object'],
+    ['order_sheet', 'object'],
+  ]);
+});
+
 test('上传新修订不会继承旧修订的 Sheet 确认', () => {
   const { documents, reviews } = setup();
   const first = documents.insert({

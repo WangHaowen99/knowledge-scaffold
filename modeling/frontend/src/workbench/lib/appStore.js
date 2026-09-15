@@ -68,6 +68,8 @@ const initial = {
   progressError: '',
   changePlan: null,
   pausedPlan: null,
+  objectRelationReview: null,
+  openedObjectRelationTaskId: '',
   files: [],
   fileContents: {},
   fileErrors: {},

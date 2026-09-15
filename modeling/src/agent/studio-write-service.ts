@@ -1079,7 +1079,7 @@ function normalizeValues(
         value,
         `${path}.relations`,
         schemaFor(kind).legalRelations,
-        { maxListItems: MAX_LIST_ITEMS },
+        { maxListItems: MAX_LIST_ITEMS, preserveEvidence: options.allowEvidence },
       );
       applyValidationIssues(errors, normalized.issues);
       if (normalized.relations) result.relations = normalized.relations;

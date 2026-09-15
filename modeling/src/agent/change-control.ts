@@ -12,6 +12,21 @@ import {
 
 export const CHANGE_PLAN_CONTRACT_VERSION = 'change-plan-v1';
 export const CHANGE_SET_CONTRACT_VERSION = 'change-set-v1';
+export const OBJECT_RELATION_REVIEW_CLIENT_KEY = '__object_relation_review__';
+export const OBJECT_RELATION_REVIEW_TARGET_KEY = '__object_relations__';
+export const OBJECT_RELATION_REVIEW_TOOL = 'review_object_relations';
+
+export type ObjectRelationReviewState =
+  | { available: false; ready: false; status: 'unavailable' }
+  | {
+    available: true;
+    ready: boolean;
+    status: TaskStatus;
+    plan_id: string;
+    run_id: string;
+    task_id: string;
+    unresolved: string[];
+  };
 
 const PLAN_MODES = new Set(['expert_edit', 'generation']);
 const RESOURCE_KINDS = new Set(['object', 'rule', 'operation', 'metric', 'script', 'binding', 'other']);
@@ -27,6 +42,7 @@ export const CHANGE_PLAN_DIRECT_TOOLS = new Set([
 const CHANGE_PLAN_ALLOWED_TOOLS = new Set([
   ...CHANGE_SET_DOMAIN_TOOLS,
   ...CHANGE_PLAN_DIRECT_TOOLS,
+  OBJECT_RELATION_REVIEW_TOOL,
 ]);
 const MUTATION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const CLIENT_KEY = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u;
@@ -149,6 +165,7 @@ export class ChangeControlStore {
     expectedRevision: unknown;
     currentRevision: string;
     tasks: unknown;
+    objectRelationReview?: boolean;
   }) {
     const existing = this.activePlan(input.projectId, input.runId);
     if (existing) {
@@ -179,7 +196,10 @@ export class ChangeControlStore {
         retryable: false,
       });
     }
-    const tasks = parseTasks(input.tasks);
+    const parsedTasks = parseTasks(input.tasks);
+    const tasks = input.objectRelationReview === false
+      ? parsedTasks
+      : injectObjectRelationReviewTask(parsedTasks);
     const planId = `cp_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
     const idsByClientKey = new Map(tasks.map((task, index) => [task.clientKey, `${planId}_t${index + 1}`]));
     const timestamp = nowIso();
@@ -422,6 +442,33 @@ export class ChangeControlStore {
       .run(nextRunId, nowIso(), plan.id, previousRunId);
     this.db.prepare('UPDATE agent_change_control_events SET run_id = ? WHERE plan_id = ? AND run_id = ?')
       .run(nextRunId, plan.id, previousRunId);
+  }
+
+  objectRelationReviewState(projectId: string): ObjectRelationReviewState {
+    const plan = (this.db.prepare(`SELECT * FROM agent_change_plans
+      WHERE project_id = ? AND status = 'active'
+      ORDER BY created_at DESC LIMIT 1`).get(projectId) as PlanRow | undefined) ?? null;
+    if (!plan) return { available: false, ready: false, status: 'unavailable' };
+    const tasks = this.taskRows(plan.id);
+    const task = tasks.find((item) => item.client_key === OBJECT_RELATION_REVIEW_CLIENT_KEY);
+    if (!task) return { available: false, ready: false, status: 'unavailable' };
+    const taskById = new Map(tasks.map((item) => [item.id, item]));
+    const unresolved = parseStringArray(task.depends_on_json).filter((dependencyId) => {
+      const dependency = taskById.get(dependencyId);
+      return dependency && !['staged', 'validated', 'waiting_user', 'accepted', 'skipped'].includes(dependency.status);
+    });
+    const ready = plan.approval_status === 'approved'
+      && task.status === 'pending'
+      && unresolved.length === 0;
+    return {
+      available: true,
+      ready,
+      status: task.status,
+      plan_id: plan.id,
+      run_id: plan.run_id,
+      task_id: task.id,
+      unresolved,
+    };
   }
 
   authorizeDirectTask(input: {
@@ -1280,6 +1327,30 @@ function parseTasks(value: unknown, allowEmpty = false): TaskInput[] {
   }
   assertAcyclic(tasks);
   return tasks;
+}
+
+function injectObjectRelationReviewTask(tasks: TaskInput[]): TaskInput[] {
+  if (tasks.some((task) => task.clientKey === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
+    throw invalid('tasks.client_key', `任务标识 ${OBJECT_RELATION_REVIEW_CLIENT_KEY} 由平台保留`);
+  }
+  const dependencies = tasks.filter(isObjectRelationDependencyTask);
+  if (!dependencies.length) return tasks;
+  return [...tasks, {
+    clientKey: OBJECT_RELATION_REVIEW_CLIENT_KEY,
+    title: '确认对象间关系',
+    resourceKind: 'other',
+    targetKey: OBJECT_RELATION_REVIEW_TARGET_KEY,
+    allowedTools: [OBJECT_RELATION_REVIEW_TOOL],
+    dependsOn: [...new Set(dependencies.map((task) => task.clientKey))],
+    acceptance: '审阅本次对象和业务操作形成的关系候选，并将接受的中文关系一次性写入工作版本',
+    required: true,
+  }];
+}
+
+function isObjectRelationDependencyTask(task: TaskInput): boolean {
+  return task.resourceKind === 'object'
+    || task.resourceKind === 'operation'
+    || task.allowedTools.some((tool) => ['sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics'].includes(tool));
 }
 
 function assertAcyclic(tasks: TaskInput[]) {

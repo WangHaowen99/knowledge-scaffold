@@ -744,6 +744,49 @@ MUTATION_ID = {
     "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
     "description": "同一业务修改重试时保持不变的幂等标识",
 }
+GOAL_EVIDENCE = {
+    **STRING,
+    "description": "material:<资料 id>#<原文锚点> 或 user-decision:<说明>",
+}
+GOAL_SECTION_DATA = {
+    "description": (
+        "必须与 section 匹配：objective 使用 problem/target_users/success_criteria/evidence；"
+        "scope 使用 included/excluded/evidence；constraints、outputs 和 open_questions 使用 items/evidence。"
+        "不要提交 summary、title 或其它未列出的字段；success_criteria 必须是字符串，不是数组。"
+    ),
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "problem": STRING,
+                "target_users": STRING,
+                "success_criteria": STRING,
+                "evidence": {"type": "array", "items": GOAL_EVIDENCE, "minItems": 1, "maxItems": 30},
+            },
+            "required": ["problem", "target_users", "success_criteria", "evidence"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "included": {"type": "array", "items": STRING, "maxItems": 30},
+                "excluded": {"type": "array", "items": STRING, "maxItems": 30},
+                "evidence": {"type": "array", "items": GOAL_EVIDENCE, "minItems": 1, "maxItems": 30},
+            },
+            "required": ["included", "excluded", "evidence"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": STRING, "minItems": 1, "maxItems": 30},
+                "evidence": {"type": "array", "items": GOAL_EVIDENCE, "minItems": 1, "maxItems": 30},
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        },
+    ],
+}
 DOMAIN_FIELD = {
     "type": "object",
     "properties": {
@@ -759,31 +802,6 @@ DOMAIN_RELATION = {
         "kind": STRING, "target_id": RESOURCE_ID, "label": STRING, "description": STRING,
     },
     "required": ["target_id"],
-    "additionalProperties": False,
-}
-PREVIOUS_OBJECT_RELATION = {
-    "type": "object",
-    "properties": {
-        "sourceObject": STRING,
-        "source_object": STRING,
-        "targetObject": STRING,
-        "target_object": STRING,
-        "relation": STRING,
-        "note": STRING,
-        "evidence": {"type": "array", "items": STRING, "maxItems": 20},
-        "status": {"type": "string", "enum": ["previous", "discarded", "needs_review"]},
-    },
-    "required": ["relation"],
-    "additionalProperties": False,
-}
-OBJECT_RELATION_SUGGESTION_SCOPE = {
-    "type": "object",
-    "properties": {
-        "affectedObjects": {"type": "array", "items": STRING, "maxItems": 100},
-        "affected_objects": {"type": "array", "items": STRING, "maxItems": 100},
-        "affectedOperations": {"type": "array", "items": STRING, "maxItems": 100},
-        "affected_operations": {"type": "array", "items": STRING, "maxItems": 100},
-    },
     "additionalProperties": False,
 }
 DOMAIN_ACTION_CHANGES = {
@@ -958,6 +976,7 @@ CHANGE_PLAN_TASK = {
                 "patch_object", "patch_rule", "patch_operation", "patch_metric",
                 "sync_schema_objects", "stage_schema_semantic_changes", "confirm_schema_semantics",
                 "patch_object_source_binding", "delete_domain_resource", "stage_script_patch",
+                "review_object_relations",
             ]},
         },
         "depends_on": {"type": "array", "maxItems": 100, "items": STRING},
@@ -1083,7 +1102,7 @@ CORE_TOOL_SPECS = (
         {
             "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
             "section": {"type": "string", "enum": ["objective", "scope", "constraints", "outputs", "open_questions"]},
-            "data": {"type": "object"},
+            "data": GOAL_SECTION_DATA,
             "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
             "base_revision": {"type": "string", "minLength": 1, "maxLength": 200},
         },
@@ -1225,7 +1244,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "create_change_plan",
-        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；Schema 模式的物理同步及其末尾业务语义阶段由 Core 合并为同一项 Schema 任务。要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
+        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；Schema 模式的物理同步及其末尾业务语义阶段由 Core 合并为同一项 Schema 任务。若平台会自动注入对象关系任务（包含候选审阅和确认写入），不要自行创建关系审阅、关系确认或对象间关系等同义任务。要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
         {
             "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
             "mode": {"type": "string", "enum": ["expert_edit", "generation"]},
@@ -1281,6 +1300,28 @@ CORE_TOOL_SPECS = (
         "正在核对修改回执",
     ),
     ToolSpec(
+        "review_object_relations",
+        "读取当前建模计划的对象关系候选；传 apply=true 时将选中的候选写入工作版本。候选必须来自当前关系审阅页。",
+        {
+            "plan_task_id": PLAN_TASK_ID,
+            "expected_revision": WORKING_REVISION,
+            "apply": {"type": "boolean", "default": False},
+            "review_id": STRING,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "offset": {"type": "integer", "minimum": 0},
+            "selected_fingerprints": {"type": "array", "items": STRING},
+            "relation_edits": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"fingerprint": STRING, "relation": STRING},
+                "required": ["fingerprint", "relation"],
+                "additionalProperties": False,
+            }},
+        },
+        ("plan_task_id", "expected_revision"),
+        False,
+        "正在读取对象关系候选",
+    ),
+    ToolSpec(
         "validate_change_set",
         "只有计划全部必选任务形成候选后，才对完整批次校验并冻结确认回执。",
         {"plan_id": STRING, "summary": {"type": "string", "maxLength": 1000}},
@@ -1327,26 +1368,6 @@ CORE_TOOL_SPECS = (
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         },
         display="正在检查 Schema 对象业务语义",
-    ),
-    ToolSpec(
-        "suggest_object_relations",
-        "仅在需要补齐对象间语义关系时调用，返回基于当前对象、字段、主键、来源、已有关系和操作引用的确定性只读候选；不需要补齐时无需调用。该工具不写知识包或 mapping。调用时可用 scope 收敛增量范围；不要把完整候选列表展示给专家。高置信候选可起草进 Change Set 摘要确认，方向不清的候选只转成少量具体业务问题。",
-        {
-            "working_revision": WORKING_REVISION,
-            "expected_revision": WORKING_REVISION,
-            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
-            "cursor": STRING,
-            "includeLowConfidence": {"type": "boolean"},
-            "include_low_confidence": {"type": "boolean"},
-            "previousRelations": {"type": "array", "items": PREVIOUS_OBJECT_RELATION, "maxItems": 500},
-            "previous_relations": {"type": "array", "items": PREVIOUS_OBJECT_RELATION, "maxItems": 500},
-            "rejectedFingerprints": {"type": "array", "items": STRING, "maxItems": 500},
-            "rejected_fingerprints": {"type": "array", "items": STRING, "maxItems": 500},
-            "scope": OBJECT_RELATION_SUGGESTION_SCOPE,
-        },
-        (),
-        True,
-        "Suggesting object relations",
     ),
     ToolSpec(
         "sync_schema_objects",
@@ -2971,11 +2992,12 @@ def build_tools(context: ToolContext) -> list[Tool]:
 DOMAIN_PHASE_TOOLS = frozenset({
     "create_change_plan", "get_change_plan", "revise_change_plan",
     "stage_change_set", "get_change_set_receipt", "validate_change_set", "discard_change_set",
+    "review_object_relations",
     "list_domain_resources", "get_domain_resource",
     "create_object", "create_rule", "create_operation", "create_metric",
     "patch_object", "patch_rule", "patch_operation", "patch_metric",
     "sync_schema_objects", "get_schema_semantics", "stage_schema_semantic_changes",
-    "confirm_schema_semantics", "suggest_object_relations", "patch_object_source_binding",
+    "confirm_schema_semantics", "patch_object_source_binding",
     "preview_domain_delete", "delete_domain_resource",
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
     "stage_tabular_dataset",
@@ -2986,6 +3008,7 @@ DOMAIN_READ_TOOLS = frozenset({
     "get_domain_resource",
     "get_product_ledger",
     "get_schema_semantics",
+    "review_object_relations",
 })
 FUSION_PHASE_TOOLS = frozenset({
     "analyze_material_impact", "list_package_sources", "list_package_fusion_plans",

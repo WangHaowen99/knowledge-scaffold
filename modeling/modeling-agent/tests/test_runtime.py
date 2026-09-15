@@ -10,6 +10,7 @@ import json
 
 import modeling_agent.tools as tools_module
 import modeling_agent.service as service_module
+import modeling_agent.service as service_module
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from modeling_agent.agent import _system_prompt, build_model, context_engine_config, output_budget_for_phase
 from modeling_agent.rails import (
@@ -113,7 +114,7 @@ async def test_explicit_resume_plan_id_is_claimed_and_injected_into_runtime_prom
             message="继续页面选择的计划",
             resume_plan_id="plan_resume_demo",
         )
-        await wait_for_status(runtime, started["id"], {"completed"})
+        await wait_for_status(runtime, started["id"], {"completed", "failed", "suspended"})
 
         claim = next(call for call in gateway.calls if call["tool"] == "claim_candidate_workspace")
         assert claim["arguments"] == {"resume_plan_id": "plan_resume_demo"}

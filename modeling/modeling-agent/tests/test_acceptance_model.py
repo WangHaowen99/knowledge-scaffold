@@ -13,7 +13,7 @@ TOOL_NAMES = {
     "list_domain_resources", "get_domain_resource", "create_change_plan", "get_change_plan",
     "stage_change_set", "get_change_set_receipt", "validate_change_set", "request_confirmation",
     "sync_schema_objects", "get_schema_semantics", "stage_schema_semantic_changes",
-    "confirm_schema_semantics", "suggest_object_relations", "patch_object_source_binding",
+    "confirm_schema_semantics", "patch_object_source_binding",
     "define_script_contract", "get_script_contract",
     "get_script_edit_context", "stage_script_patch", "run_script_test", "ask",
     "discard_rejected_candidate_changes",
