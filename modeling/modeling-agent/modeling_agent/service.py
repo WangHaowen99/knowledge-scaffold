@@ -313,6 +313,12 @@ class RunSituation:
     awaiting_user_action: bool = False
     awaiting_user_reason: str = ""
 
+    # 门禁未过，但服务端明确标注这道门禁没有助手能独立推进的事项。
+    # 和 awaiting_user_action 同义，来源不同：那个来自模型自己调门禁的返回值，
+    # 四小时里只发生过一次；这个来自每轮续跑前的目标指派，每轮都会算。
+    no_actionable_gate: str = ""
+    no_actionable_reason: str = ""
+
     def has_full_read_materials(self) -> Verdict:
         if not self.materials_observed:
             return Verdict.UNKNOWN
@@ -2962,11 +2968,18 @@ class AgentService:
         提升为本轮的指派目标，交给 system 段常驻。
 
         只看前进方向的门禁：退回目标阶段的门禁不代表本轮该做什么。
+
+        两种返回都有意义，不能混用：有可推进项时返回那一项，门禁未过但服务端
+        明确标注助手无可推进项时返回一段「说明并收尾」的指令，并在 situation
+        上记下门禁名，让续跑判定收掉本轮。只有确实拿不到门禁结论时才返回空串。
         """
+        live.situation.no_actionable_gate = ""
+        live.situation.no_actionable_reason = ""
         phase = self.store.project_state(live.project_id).state.partition(":")[0]
         if phase not in PHASE_ORDER:
             return ""
         current_index = PHASE_ORDER.index(phase)
+        blocked: tuple[str, str] | None = None
         for target in PHASE_EDGES.get(phase, ()):
             if target not in PHASE_ORDER or PHASE_ORDER.index(target) <= current_index:
                 continue
@@ -2999,6 +3012,11 @@ class AgentService:
                 # 此时不能退回 blockers，否则又会把用户的事派给助手。
                 items = _string_list(raw_actionable, 30)
             if not items:
+                if raw_actionable is not None and blocked is None:
+                    # 明确标注为空：这道门禁助手推不动。先记下来继续看后面的
+                    # 前向门禁——增量轮次这类阶段有不止一条前向边，不能因为
+                    # 第一道卡住就放弃第二道确实有活的那道。
+                    blocked = (gate, "；".join(_string_list(result.get("blockers"), 3)))
                 continue
             remaining = (
                 f"，该门禁共 {len(items)} 项待推进" if len(items) > 1 else ""
@@ -3009,6 +3027,22 @@ class AgentService:
                 "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
                 "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
                 "不要反复读取资料试图自行补齐前提。"
+            )
+        if blocked is not None:
+            # 「算出来助手没事做」和「没算出来」必须给出不同指令。过去两者都是
+            # 返回空串，模型这一轮就完全没有目标——而没有目标正是空转的起点，
+            # 它会自己找活，再读一份资料永远算得上可执行动作。
+            gate, reason = blocked
+            live.situation.no_actionable_gate = gate
+            live.situation.no_actionable_reason = reason
+            detail = f"当前卡在：{reason}\n\n" if reason else ""
+            return (
+                "本轮没有你能独立推进的事项。\n\n"
+                f"{detail}"
+                f"门禁 {gate} 还没通过，但它剩下的事要由用户或专家在别处完成，"
+                "你再宣告多少遍也推不动。请用一段话向专家说明卡在哪一项、"
+                "需要他做什么，然后结束本轮。不要自行改换目标去做别的事，"
+                "也不要反复读取资料等它变化——外部事件会重新唤醒你。"
             )
         return ""
 
@@ -4020,6 +4054,13 @@ class AgentService:
                 # 只会一轮轮重复同一段话。结束本轮，等外部事件把它唤醒。
                 if live.situation.awaiting_user_action:
                     loop_reason = loop_reason or "剩余事项需要用户在其它界面完成"
+                # 指派目标时就算出这道门禁没有助手能推的事。不收尾的话，下一轮
+                # 仍然拿不到目标，模型又会退回「自己找活」——空转就是这么起来的。
+                if live.situation.no_actionable_gate:
+                    loop_reason = loop_reason or (
+                        f"门禁 {live.situation.no_actionable_gate} 的剩余事项"
+                        "需要用户或专家完成"
+                    )
                 can_continue_autonomously = autonomous and not loop_reason
                 has_continuation_budget = continuations < MAX_AUTONOMOUS_CONTINUATIONS
                 has_stall_budget = stalled < stall_budget

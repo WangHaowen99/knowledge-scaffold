@@ -392,6 +392,20 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
   }, runId);
   assert.equal(script.statusCode, 409, script.body);
   assert.equal(script.json().gate, 'knowledge_confirmed');
+  const pendingKnowledgeGate = await tool(app, project.id, 'gate_status', {
+    gate: 'knowledge_confirmed',
+  }, runId);
+  assert.equal(pendingKnowledgeGate.json().pass, false);
+  // 「确认」在专家手上，但把待确认内容整理成确认卡是助手的活。这里不能给空数组：
+  // 知识建模阶段只看这一道门禁，判成「助手无事可做」等于整个阶段拿不到指派目标。
+  assert.ok(
+    pendingKnowledgeGate.json().blockers.some((item: string) => item.includes('确认知识条目')),
+    '面向用户的说法不变',
+  );
+  assert.ok(
+    pendingKnowledgeGate.json().agentActionable.some((item: string) => item.includes('发起确认卡')),
+    '知识条目待确认时助手的活是发确认卡',
+  );
 
   const pendingGoal = await tool(app, project.id, 'write_file', {
     path: '.modeling/goal.md', content: '# 调整中的建模目标\n',
@@ -3359,6 +3373,11 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
   assert.equal(blocked.statusCode, 200, blocked.body);
   assert.equal(blocked.json().pass, false);
   assert.match(blocked.json().blockers[0], /确认当前确定性计算候选/u);
+  // 等专家拍板不等于助手没事做：发 scope_confirmation 确认卡本来就是 SKILL
+  // 要求助手做的动作，禁止的只是代替专家调用 confirm_deterministic_scope。
+  assert.equal(blocked.json().agentActionable.length, 1);
+  assert.match(blocked.json().agentActionable[0], /scope_confirmation/u);
+  assert.match(blocked.json().agentActionable[0], /不得代替专家/u);
 
   const stale = await tool(app, project.id, 'confirm_deterministic_scope', {
     expected_scope_hash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',

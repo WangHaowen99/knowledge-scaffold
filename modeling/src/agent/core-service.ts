@@ -7804,6 +7804,10 @@ export class AgentCoreService {
     const diagramPaths = Object.keys(files).filter((path) => path.startsWith('diagrams/') && path.endsWith('.mmd'));
     const knowledgePaths = Object.keys(files).filter((path) => /^(objects|operations|rules|metrics)\/.+\.md$/.test(path)
       && !path.endsWith('/index.md'));
+    // 还没确认、或者有未确认改动的知识条目。blockers 逐条列给用户看，
+    // 助手侧只要个数——它一次发一张卡覆盖一组改动，不是一条一张。
+    const unconfirmedKnowledgePaths = knowledgePaths
+      .filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path));
     const trustedProcessBaseline = Object.keys(base.files).some((path) => (
       /^(objects|operations|rules|metrics|scripts)\/.+/u.test(path) && !path.endsWith('/index.md')
     ));
@@ -7899,8 +7903,7 @@ export class AgentCoreService {
         pass: knowledgeConfirmed && !deterministic.missing_operation_inputs.length,
         blockers: [
           ...(knowledgeFilesConfirmed ? [] : knowledgePaths.length
-            ? knowledgePaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
-              .map((path) => `确认知识条目 ${path}`)
+            ? unconfirmedKnowledgePaths.map((path) => `确认知识条目 ${path}`)
             : ['形成并确认对象、操作或规则知识']),
           ...(schemaSemanticsConfirmed ? [] : [
             `补全并确认 Schema 对象业务语义（${schemaSemantics.errorCount} 项阻断问题）`,
@@ -7910,8 +7913,11 @@ export class AgentCoreService {
           ...deterministic.missing_operation_inputs
             .map((key) => `补全业务操作“${key}”的输入定义，确定性计算的脚本参数只能来自它`),
         ],
-        // 知识条目的「确认」由专家在确认卡上完成，助手只能起草和发卡，不列为
-        // 可独立推进项；补语义、补输入这两类是助手自己能写完的。
+        // 「确认」是专家在卡上的动作，但把待确认内容整理成确认卡是助手的动作——
+        // 口径和 process_confirmed / modeling_complete 一致，不能因为终点在专家
+        // 手上就判成「助手无事可做」，那会让整个知识建模阶段拿不到指派目标。
+        // 顺序和 blockers 有意不同：先补内容再发卡，否则卡上带的还是缺语义、
+        // 缺输入的版本，专家确认完门禁照样过不了，白白多打断一次。
         agentActionable: [
           ...(schemaSemanticsConfirmed ? [] : [
             `补全 Schema 对象的业务语义，当前有 ${schemaSemantics.errorCount} 项阻断问题`,
@@ -7919,6 +7925,12 @@ export class AgentCoreService {
           ...deterministic.missing_operation_inputs
             .map((key) => `补全业务操作“${key}”的输入定义（参数名、类型、是否必填），`
               + '确定性计算的脚本参数只能来自它'),
+          ...(knowledgeFilesConfirmed ? [] : knowledgePaths.length
+            ? (unconfirmedKnowledgePaths.length
+              ? [`核对尚未确认的 ${unconfirmedKnowledgePaths.length} 个知识条目并发起确认卡，`
+                + '一次覆盖一组相关改动']
+              : [])
+            : ['依据已读资料形成对象、操作或规则知识，完成后发起确认卡']),
         ],
       },
       modeling_complete: {
@@ -7942,9 +7954,15 @@ export class AgentCoreService {
             ...deterministic.missing_script_tests
               .map((key) => `让业务操作“${key}”的当前脚本通过已确认契约的隔离测试`),
           ],
-        // decision_required 是在等专家拍板范围，助手只能发范围确认卡，不列为
-        // 可独立推进项；否则它会去「替专家确认」，而那是明令禁止的。
-        agentActionable: deterministic.status === 'decision_required' ? [] : [
+        // decision_required 在等专家拍板范围，但「等」不等于助手没事做：把候选
+        // 整理成 scope_confirmation 确认卡本来就是 SKILL 要求助手做的动作，
+        // 禁止的只是代替专家调用 confirm_deterministic_scope。先查有没有已有
+        // 答复再决定发卡还是落盘，否则会把专家已经答过的问题再问一遍。
+        agentActionable: deterministic.status === 'decision_required' ? [
+          '核对专家是否已经答复过确定性计算范围：答复过就据此调用 '
+          + 'confirm_deterministic_scope 落盘；没答复过就整理 2 至 4 个互斥范围方案，'
+          + '发起 scope_confirmation 确认卡。任何情况下都不得代替专家选定范围',
+        ] : [
           ...deterministic.missing_script_bindings
             .map((key) => `完成业务操作“${key}”的脚本：定义契约、提交源码、绑定到该操作`),
           ...deterministic.missing_script_tests

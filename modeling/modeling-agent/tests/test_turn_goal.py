@@ -192,25 +192,28 @@ async def test_agent_actionable_wins_over_user_facing_blockers(settings) -> None
         await runtime.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_empty_agent_actionable_means_no_goal(settings) -> None:
-    """明确标注为空时不指派，不能退回 blockers。
+BLOCKED_GATEWAY = {
+    "gate_status": {
+        "pass": False,
+        "blockers": ["先在评测界面录入至少 1 条用户真实场景用例"],
+        "agentActionable": [],
+    },
+}
 
-    空数组的语义是「这道门禁当前没有助手能独立推进的事」，退回 blockers
-    等于又把用户的事派给了助手，整改就白做了。
+
+@pytest.mark.asyncio
+async def test_blocked_gate_assigns_a_stop_and_report_goal(settings) -> None:
+    """明确标注为空时指派的是「说明并收尾」，不是什么都不指派。
+
+    空数组的语义是「这道门禁当前没有助手能独立推进的事」，所以既不能退回
+    blockers 把用户的事派给助手，也不能就此返回空串——没有目标的那一轮正是
+    空转的起点：模型会自己找活，而「再读一份资料」永远算得上可执行动作。
     """
     model = ScriptedModel(
         [[ToolTurn("update_work_notes", {"markdown": "# 进展"})], []],
         final="本轮已完成。",
     )
-    gateway = FakeGateway({
-        "gate_status": {
-            "pass": False,
-            "blockers": ["先在评测界面录入至少 1 条用户真实场景用例"],
-            "agentActionable": [],
-        },
-    })
-    runtime = service(settings, model, gateway)
+    runtime = service(settings, model, FakeGateway(dict(BLOCKED_GATEWAY)))
     await runtime.startup()
     try:
         started = await runtime.start_run(
@@ -219,10 +222,47 @@ async def test_empty_agent_actionable_means_no_goal(settings) -> None:
         await wait_for_status(
             runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
         )
-        # 没有目标段就等于没有指派——不必再去整段搜 blocker 原文，
-        # 那些措辞和 skill 正文会重叠，搜出来的是误命中。
-        for text in system_texts(model):
-            assert GOAL_HEADING not in text
+        goals = [t for t in system_texts(model) if GOAL_HEADING in t]
+        assert goals, "推不动也要给指令，不能让这一轮完全没有目标"
+        goal = goal_section(goals[0])
+        assert "没有你能独立推进的事项" in goal
+        assert "结束本轮" in goal
+        # 门禁名和卡住的原话都要带上，模型才说得清在等什么
+        assert "materials_ready" in goal
+        assert "先在评测界面录入至少 1 条用户真实场景用例" in goal
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_blocked_gate_stops_autonomous_continuation(settings) -> None:
+    """推不动就收尾，不能接着一轮轮转。
+
+    只把指令写进 system 段还不够：不收掉续跑，下一轮照样进来，指派的又是
+    同一段「我推不动」，等于把重复劳动换了个说法。gate_status 每个续跑轮恰好
+    调一次，所以它的调用次数就是续跑轮数。
+    """
+    model = ScriptedModel(
+        [
+            [ToolTurn("update_work_notes", {"markdown": "# 进展"})],
+            [ToolTurn("update_work_notes", {"markdown": "# 进展 2"})],
+            [ToolTurn("update_work_notes", {"markdown": "# 进展 3"})],
+            [],
+        ],
+        final="本轮已完成。",
+    )
+    gateway = FakeGateway(dict(BLOCKED_GATEWAY))
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_blocked_stop", token="token_1", message="继续",
+        )
+        await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
+        )
+        goal_turns = [item for item in gateway.calls if item["tool"] == "gate_status"]
+        assert len(goal_turns) == 1, f"推不动却续跑了 {len(goal_turns)} 轮"
     finally:
         await runtime.shutdown()
 
