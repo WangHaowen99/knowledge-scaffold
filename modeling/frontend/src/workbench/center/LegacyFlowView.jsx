@@ -35,7 +35,8 @@ function OutsideEdge({ sourceX, sourceY, targetX, targetY, data, ...props }) {
   let path = `M ${points[0].join(' ')}`;
   for (let i = 1; i < points.length - 1; i++) {
     const [x, y] = points[i];
-    const before = points[i - 1], after = points[i + 1];
+    const before = points[i - 1];
+    const after = points[i + 1];
     const radius = Math.min(8, Math.hypot(x - before[0], y - before[1]) / 2,
       Math.hypot(x - after[0], y - after[1]) / 2);
     path += ` L ${x + Math.sign(before[0] - x) * radius} ${y + Math.sign(before[1] - y) * radius}`;
@@ -59,7 +60,8 @@ function outsideRoutes(nodes, edges, direction) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   let offset = 0;
   return Object.fromEntries(edges.flatMap((edge) => {
-    const from = byId.get(edge.from), to = byId.get(edge.to);
+    const from = byId.get(edge.from);
+    const to = byId.get(edge.to);
     const start = from.position[axis] + from.measured[size] / 2;
     const end = to.position[axis] + to.measured[size] / 2;
     const skipsNode = nodes.some((node) => node !== from && node !== to

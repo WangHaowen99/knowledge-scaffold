@@ -616,6 +616,21 @@ export default function StudioView({ focus }) {
     </>;
   }
 
+  let mainContent;
+  if (session.elements.length === 0) {
+    mainContent = <StudioEmpty schema={session.schema} onCreate={setCreateKind} onRefresh={reloadStudio} />;
+  } else if (session.view === 'graph') {
+    mainContent = <StudioGraph projectId={projectId} session={session} update={update} onOpen={openDetail} focus={focus} />;
+  } else if (session.view === 'table') {
+    mainContent = <StudioTable session={session} update={update} onOpen={openDetail} onLoadMore={loadMore}
+      onCreate={setCreateKind} onDelete={setDeleteIds} onMutation={applyMutation} projectId={projectId} focus={focus} />;
+  } else {
+    mainContent = <StudioEntry session={session} update={update} onBack={() => navigate(session.returnView || 'graph')}
+      onOpenRelation={(elementId) => openDetail(elementId, session.returnView)}
+      onDelete={(elementId) => setDeleteIds([elementId])}
+      onMutation={applyMutation} onIncompleteDraft={probeStudioRevision} projectId={projectId} />;
+  }
+
   return (
     <>
       {projectEvents}
@@ -638,23 +653,11 @@ export default function StudioView({ focus }) {
         )}
         <StudioAccessBanner access={session.schema?.access} />
         {session.studioPendingReview && (
-          <StudioPendingReviewBanner state={reviewSubmitState} onSubmit={submitPendingReview}
+        <StudioPendingReviewBanner state={reviewSubmitState} onSubmit={submitPendingReview}
             blocked={entryDraftDirty} />
         )}
         <StudioToolbar session={session} update={update} navigate={navigate} onRefresh={reloadStudio} />
-        {session.elements.length === 0 ? (
-          <StudioEmpty schema={session.schema} onCreate={setCreateKind} onRefresh={reloadStudio} />
-        ) : session.view === 'graph' ? (
-          <StudioGraph projectId={projectId} session={session} update={update} onOpen={openDetail} focus={focus} />
-        ) : session.view === 'table' ? (
-          <StudioTable session={session} update={update} onOpen={openDetail} onLoadMore={loadMore}
-            onCreate={setCreateKind} onDelete={setDeleteIds} onMutation={applyMutation} projectId={projectId} focus={focus} />
-        ) : (
-          <StudioEntry session={session} update={update} onBack={() => navigate(session.returnView || 'graph')}
-            onOpenRelation={(elementId) => openDetail(elementId, session.returnView)}
-            onDelete={(elementId) => setDeleteIds([elementId])}
-            onMutation={applyMutation} onIncompleteDraft={probeStudioRevision} projectId={projectId} />
-        )}
+        {mainContent}
         {createKind && (
           <StudioCreateDialog kind={createKind} session={session} projectId={projectId}
             materials={materials}
@@ -1265,11 +1268,10 @@ function StudioEntry({
         {(kindSchema?.fields || []).map((field) => (
           <section key={field.key}>
             <h3>{field.label}</h3>
-            {!studioFieldEditable(kindSchema, field) ? (
-              field.type === 'evidence_list'
-                ? <EvidenceLinks references={detail.values[field.key]} />
-                : <FieldValue value={studioDraftFieldValue(draft, detail.values, field.key)} />
-            ) : (
+            {!studioFieldEditable(kindSchema, field) ? (() => {
+              if (field.type === 'evidence_list') return <EvidenceLinks references={detail.values[field.key]} />;
+              return <FieldValue value={studioDraftFieldValue(draft, detail.values, field.key)} />;
+            })() : (
               <StudioFieldEditor field={field} value={draft[field.key]}
                 error={fieldErrorFor(saveState.fieldErrors, field.key)}
                 onChange={(value) => remember({ ...draftRef.current, [field.key]: value }, field.key)} />
@@ -1310,9 +1312,17 @@ function StudioSaveState({ state, onRetry, onReload, onPause }) {
     error: '保存失败',
     paused: '本地修改已保留',
   }[state.phase] || '';
+  let saveIcon;
+  if (['idle', 'saved'].includes(state.phase)) {
+    saveIcon = <Check size={13} />;
+  } else if (state.phase === 'saving') {
+    saveIcon = <RefreshCw className="spin" size={13} />;
+  } else {
+    saveIcon = <Save size={13} />;
+  }
   return (
     <div className={`studio-save-state ${state.phase}`} aria-live="polite">
-      {['idle', 'saved'].includes(state.phase) ? <Check size={13} /> : state.phase === 'saving' ? <RefreshCw className="spin" size={13} /> : <Save size={13} />}
+      {saveIcon}
       <span>{label}</span>
       {state.message && ['error', 'conflict', 'paused'].includes(state.phase) && <small>{state.message}</small>}
       {state.phase === 'error' && <button className="btn btn-sm" onClick={onRetry}>重试</button>}
@@ -1410,6 +1420,14 @@ function StudioDeleteDialog({ projectId, session, elementIds, onClose, onMutatio
     ? session.elements.find((element) => element.id === elementIds[0])
     : null;
   const deleteCopy = studioDeleteCopy(selectedElement?.kind, selectedElement?.title, elementIds.length);
+  let deleteButtonText;
+  if (state.phase === 'saving') {
+    deleteButtonText = '正在删除…';
+  } else if (state.preview?.cleanupRequired) {
+    deleteButtonText = `${deleteCopy.button}并清理关系`;
+  } else {
+    deleteButtonText = `确认${deleteCopy.button}`;
+  }
 
   useEffect(() => {
     let active = true;
@@ -1484,11 +1502,7 @@ function StudioDeleteDialog({ projectId, session, elementIds, onClose, onMutatio
         <footer>
           <button className="btn" onClick={onClose} disabled={state.phase === 'saving'}>取消</button>
           <button className="btn btn-danger" disabled={!state.preview || state.preview.blocked || state.phase === 'saving'} onClick={apply}>
-            <Trash2 size={13} />{state.phase === 'saving'
-              ? '正在删除…'
-              : state.preview?.cleanupRequired
-                ? `${deleteCopy.button}并清理关系`
-                : `确认${deleteCopy.button}`}
+            <Trash2 size={13} />{deleteButtonText}
           </button>
         </footer>
       </section>
@@ -1773,6 +1787,22 @@ function StudioSchemaSemanticBanner({ summary, onOpen }) {
 
 function StudioSchemaSemanticIssuesDialog({ state, blocking, onClose, onPage, onOpenObject }) {
   const pageEnd = Math.min(state.total, state.offset + state.items.length);
+  let issueContent;
+  if (state.phase === 'loading') {
+    issueContent = <div className="studio-dialog-message">正在读取问题…</div>;
+  } else if (state.phase === 'error') {
+    issueContent = <div className="studio-dialog-message error" role="alert">{state.message}</div>;
+  } else {
+    issueContent = <div className="studio-semantic-issue-list">
+      {state.items.map((issue) => <button type="button" key={issue.id}
+        className="studio-semantic-issue" onClick={() => onOpenObject(issue.objectKey)}>
+        <span><b>{issue.objectKey}</b>{issue.fieldKey ? <code>{issue.fieldKey}</code> : null}
+          <em>{issue.table}{issue.sourceColumn ? `.${issue.sourceColumn}` : ''}</em></span>
+        <strong>{issue.message}</strong>
+        <small>{issue.suggestion}</small>
+      </button>)}
+    </div>;
+  }
   return <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => {
     if (event.target === event.currentTarget) onClose();
   }}>
@@ -1782,17 +1812,7 @@ function StudioSchemaSemanticIssuesDialog({ state, blocking, onClose, onPage, on
         <small>{blocking ? '阻断项' : '待完善项'} · {state.total} 项</small></div>
         <button type="button" className="btn btn-ghost" aria-label="关闭" onClick={onClose}><X size={15} /></button>
       </header>
-      {state.phase === 'loading' ? <div className="studio-dialog-message">正在读取问题…</div>
-        : state.phase === 'error' ? <div className="studio-dialog-message error" role="alert">{state.message}</div>
-          : <div className="studio-semantic-issue-list">
-            {state.items.map((issue) => <button type="button" key={issue.id}
-              className="studio-semantic-issue" onClick={() => onOpenObject(issue.objectKey)}>
-              <span><b>{issue.objectKey}</b>{issue.fieldKey ? <code>{issue.fieldKey}</code> : null}
-                <em>{issue.table}{issue.sourceColumn ? `.${issue.sourceColumn}` : ''}</em></span>
-              <strong>{issue.message}</strong>
-              <small>{issue.suggestion}</small>
-            </button>)}
-          </div>}
+      {issueContent}
       <footer>
         <span className="studio-semantic-page">{state.total ? `${state.offset + 1}-${pageEnd} / ${state.total}` : '0 项'}</span>
         <button type="button" className="btn" disabled={state.phase === 'loading' || state.offset === 0}

@@ -141,9 +141,10 @@ function MarkdownCandidatePreview({ file, materials, sourceDiff }) {
             remarkPlugins={[remarkGfm, remarkEvidenceLinks(materials)]} components={{
               a: ({ node: _node, href, children, ...props }) => {
                 const reference = evidenceReferenceFromHref(href);
-                return reference
-                  ? <EvidenceLink reference={reference} materials={materials}>{children}</EvidenceLink>
-                  : <a href={href} {...props}>{children}</a>;
+                if (reference) {
+                  return <EvidenceLink reference={reference} materials={materials}>{children}</EvidenceLink>;
+                }
+                return <a href={href} {...props}>{children}</a>;
               },
             }}>{content}</Markdown></article>
           : sourceDiff}
@@ -156,18 +157,26 @@ function DiffSource({ file, materials, className = '' }) {
   return (
     <pre className={className}>{diffLines(file).map(([kind, line], index) => (
       <span className={`l ${kind}`} key={`${index}-${line}`}>
-        {kind === 'add' ? '+ ' : kind === 'del' ? '- ' : '  '}{displayEvidenceReferences(line, materials)}{'\n'}
+        {diffLinePrefix(kind)}{displayEvidenceReferences(line, materials)}{'\n'}
       </span>
     ))}</pre>
   );
 }
 
+function diffLinePrefix(kind) {
+  if (kind === 'add') return '+ ';
+  if (kind === 'del') return '- ';
+  return '  ';
+}
+
 export function diffLines(file) {
   if (Array.isArray(file.hunks)) {
-    return file.hunks.flatMap((hunk) => (hunk.lines || []).map((line) => [
-      line.type === 'remove' ? 'del' : line.type === 'add' ? 'add' : 'ctx',
-      line.content || '',
-    ]));
+    return file.hunks.flatMap((hunk) => (hunk.lines || []).map((line) => {
+      let kind = 'ctx';
+      if (line.type === 'remove') kind = 'del';
+      else if (line.type === 'add') kind = 'add';
+      return [kind, line.content || ''];
+    }));
   }
   const beforeText = String(file.before || '');
   const afterText = String(file.after || '');

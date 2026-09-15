@@ -7,7 +7,7 @@ import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .errors import AgentRuntimeError
 from .schemas import (
@@ -1463,24 +1463,43 @@ def _object(raw: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _run_values(run: RunRecord) -> tuple[Any, ...]:
-    return (
-        run.id,
-        run.project_id,
-        run.session_id,
-        run.status,
-        run.prompt,
-        run.token_fingerprint,
-        run.tool_profile,
-        run.run_credential,
-        run.baseline_revision,
-        run.candidate_revision,
-        run.interaction_id,
-        _json(run.latest_interaction),
-        run.result,
-        run.error,
-        run.created_at,
-        run.updated_at,
+class RunValues(NamedTuple):
+    id: str
+    project_id: str
+    session_id: str
+    status: str
+    prompt: str
+    token_fingerprint: str
+    tool_profile: str
+    run_credential: str
+    baseline_revision: str
+    candidate_revision: str
+    interaction_id: str
+    latest_interaction_json: str
+    result: str
+    error: str
+    created_at: str
+    updated_at: str
+
+
+def _run_values(run: RunRecord) -> RunValues:
+    return RunValues(
+        id=run.id,
+        project_id=run.project_id,
+        session_id=run.session_id,
+        status=run.status,
+        prompt=run.prompt,
+        token_fingerprint=run.token_fingerprint,
+        tool_profile=run.tool_profile,
+        run_credential=run.run_credential,
+        baseline_revision=run.baseline_revision,
+        candidate_revision=run.candidate_revision,
+        interaction_id=run.interaction_id,
+        latest_interaction_json=_json(run.latest_interaction),
+        result=run.result,
+        error=run.error,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
     )
 
 
@@ -1571,22 +1590,39 @@ def _validate_state(value: str) -> None:
         raise AgentRuntimeError("STATE_INVALID", f"无效的项目 Agent 状态：{value}", status=400)
 
 
-def _project_state_values(state: ProjectAgentState) -> tuple[Any, ...]:
-    return (
-        state.project_id,
-        state.state,
-        state.revision,
-        state.round_mode,
-        state.round_id,
-        state.baseline_revision,
-        state.run_id,
-        state.interaction_id,
-        state.checkpoint_id,
-        state.summary,
-        _json(state.open_questions),
-        state.error,
-        state.recovery_status,
-        state.updated_at,
+class ProjectStateValues(NamedTuple):
+    project_id: str
+    state: str
+    revision: int
+    round_mode: str
+    round_id: str
+    baseline_revision: str
+    run_id: str
+    interaction_id: str
+    checkpoint_id: str
+    summary: str
+    open_questions_json: str
+    error: str
+    recovery_status: str
+    updated_at: str
+
+
+def _project_state_values(state: ProjectAgentState) -> ProjectStateValues:
+    return ProjectStateValues(
+        project_id=state.project_id,
+        state=state.state,
+        revision=state.revision,
+        round_mode=state.round_mode,
+        round_id=state.round_id,
+        baseline_revision=state.baseline_revision,
+        run_id=state.run_id,
+        interaction_id=state.interaction_id,
+        checkpoint_id=state.checkpoint_id,
+        summary=state.summary,
+        open_questions_json=_json(state.open_questions),
+        error=state.error,
+        recovery_status=state.recovery_status,
+        updated_at=state.updated_at,
     )
 
 

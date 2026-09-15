@@ -821,15 +821,17 @@ export const actions = {
       // 决定已经生效，只是指令没发出去；此时说“计划仍保持原状态”是假的，
       // 会把用户引去重新批准（见 #30）。
       const settled = Boolean(error?.planSettled);
+      let recoveryMessage = '计划仍保持原状态，请在当前计划卡重试。';
+      if (staleRun) {
+        recoveryMessage = '当前运行还没有接续服务重启前的建模计划，请先安全终止失效计划后重新规划。';
+      } else if (settled) {
+        recoveryMessage = '决定已经生效，只是助手当时仍在收尾、没有收到开工指令。等助手空闲后点「继续执行」即可。';
+      }
       store.set({
         error: {
           scope: 'change_plan',
           message: error instanceof Error ? error.message : '计划决定提交失败',
-          recovery: staleRun
-            ? '当前运行还没有接续服务重启前的建模计划，请先安全终止失效计划后重新规划。'
-            : settled
-              ? '决定已经生效，只是助手当时仍在收尾、没有收到开工指令。等助手空闲后点「继续执行」即可。'
-              : '计划仍保持原状态，请在当前计划卡重试。',
+          recovery: recoveryMessage,
           ...(staleRun ? { staleRun: true } : {}),
           ...(settled ? { resumePlan: { planId, approved } } : {}),
         },

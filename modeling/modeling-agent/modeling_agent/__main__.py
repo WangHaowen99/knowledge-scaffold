@@ -10,7 +10,6 @@ from .settings import Settings
 
 
 def configure_logging(log_dir: Path) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     for logger_name in ("openjiuwen", "openai", "httpx", "httpcore", "alembic"):
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
