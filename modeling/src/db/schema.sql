@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS projects (
   target_users  TEXT,
   glossary_prefs TEXT,
   sensitivity_level TEXT NOT NULL DEFAULT 'standard',
+  -- 当前项目是否由用户明确要求先完成产品/规则大清单台账。
+  -- 该标志独立于全局 advisory/enforce 配置，作为计划和写入门禁的事实来源。
+  product_ledger_required INTEGER NOT NULL DEFAULT 0 CHECK (product_ledger_required IN (0, 1)),
   workflow_profile_json TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}',
   stage         TEXT NOT NULL DEFAULT 'project_setup',
   created_at    TEXT NOT NULL,
@@ -255,6 +258,40 @@ CREATE TABLE IF NOT EXISTS product_ledger_v2_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_product_ledger_v2_project
   ON product_ledger_v2_snapshots(project_id, scope, updated_at DESC);
+
+-- 可恢复的产品台账草稿；条目按批次保存，支持幂等重放和服务重启后续跑。
+CREATE TABLE IF NOT EXISTS product_ledger_drafts (
+  project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  ledger_id        TEXT NOT NULL,
+  source_revision  TEXT NOT NULL,
+  analysis_revision TEXT,
+  scope            TEXT NOT NULL,
+  raw_count        INTEGER,
+  canonical_count  INTEGER,
+  merged_group_count INTEGER,
+  status           TEXT NOT NULL DEFAULT 'draft'
+                   CHECK (status IN ('draft', 'finalized', 'needs_review', 'stale')),
+  next_batch_no    INTEGER NOT NULL DEFAULT 1,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, ledger_id)
+);
+CREATE TABLE IF NOT EXISTS product_ledger_batches (
+  project_id       TEXT NOT NULL,
+  ledger_id        TEXT NOT NULL,
+  batch_no         INTEGER NOT NULL,
+  request_hash     TEXT NOT NULL,
+  source_cursor    TEXT,
+  entries_json     TEXT NOT NULL,
+  entry_count      INTEGER NOT NULL,
+  created_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, ledger_id, batch_no),
+  UNIQUE (project_id, ledger_id, request_hash),
+  FOREIGN KEY (project_id, ledger_id)
+    REFERENCES product_ledger_drafts(project_id, ledger_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_product_ledger_batches_progress
+  ON product_ledger_batches(project_id, ledger_id, batch_no);
 
 -- 资料用途建议与用户确认分离；表格额外保存逐 Sheet 处置。审查绑定不可变资料修订。
 CREATE TABLE IF NOT EXISTS material_purpose_reviews (

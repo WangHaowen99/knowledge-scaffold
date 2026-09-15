@@ -45,6 +45,16 @@ function RecoveryBlock({ block }) {
         <div className="wb-text" style={{ marginBottom: 'var(--s-3)' }}>
           <MarkdownContent>{userFacingText(block.text)}</MarkdownContent>
         </div>
+        {(block.missingRequiredTools?.length || block.ledgerStatus || block.processed != null || block.missingConstraintItems?.length || block.constraintStatus) && (
+          <div className="wb-recovery-diagnostics" role="status">
+            {block.missingRequiredTools?.length > 0 && <div>缺失步骤：{block.missingRequiredTools.map(userFacingText).join('、')}</div>}
+            {block.ledgerStatus && <div>台账状态：{userFacingText(block.ledgerStatus)}</div>}
+            {block.processed != null && <div>进度：已处理 {block.processed}{block.remaining != null ? `，剩余 ${block.remaining}` : ''}</div>}
+            {block.failureReason && <div>原因：{userFacingText(block.failureReason)}</div>}
+            {block.constraintStatus && <div>补充说明：{userFacingText(block.constraintStatus === 'acknowledged' ? '已确认' : '尚未逐项确认')}</div>}
+            {block.missingConstraintItems?.length > 0 && <div>未满足约束：{block.missingConstraintItems.map(userFacingText).join('、')}</div>}
+          </div>
+        )}
         {(block.actions || []).map((action) => (
           <button key={action.id || action.label} type="button" className="wb-opt"
             disabled={Boolean(busy)} onClick={() => void run(action)}>
@@ -107,7 +117,22 @@ function ReasoningBlock({ block }) {
 
 function AnsweredInteraction({ interaction }) {
   const cancelled = ['cancelled', 'superseded'].includes(interaction?.status);
-  return <div className="card"><div className="card-h">{cancelled ? '已关闭' : '已处理'}</div><div className="card-b t-sm muted"><MarkdownContent>{userFacingText(interaction.payload?.question || (cancelled ? '这项决定已随运行结束关闭' : '这项确认已经提交'))}</MarkdownContent></div></div>;
+  const answer = interaction?.answer && typeof interaction.answer === 'object' ? interaction.answer : {};
+  const options = Array.isArray(interaction?.payload?.options) ? interaction.payload.options : [];
+  const selected = Array.isArray(answer.selected) && answer.selected.length
+    ? answer.selected
+    : answer.value ? [answer.value] : [];
+  const labels = selected.map((value) => options.find((option) => option.value === value)?.label).filter(Boolean);
+  const label = answer.displayText || labels.join('、');
+  const supplement = typeof answer.text === 'string' ? answer.text.trim() : '';
+  return <div className="card">
+    <div className="card-h">{cancelled ? '已关闭' : '已处理'}</div>
+    <div className="card-b t-sm muted">
+      <MarkdownContent>{userFacingText(interaction.payload?.question || (cancelled ? '这项决定已随运行结束关闭' : '这项确认已经提交'))}</MarkdownContent>
+      {!cancelled && label && <div className="wb-answer-choice">已选：{userFacingText(label)}</div>}
+      {!cancelled && supplement && <div className="wb-answer-text">补充说明：{userFacingText(supplement)}</div>}
+    </div>
+  </div>;
 }
 
 /* ---------- 计划：渲染 .modeling/plan.md，因此天然有版本和回退 ---------- */
@@ -233,6 +258,16 @@ function LiveAsk({ interaction }) {
         <div className="wb-text" style={{ marginBottom: 'var(--s-3)' }}>
           <MarkdownContent>{userFacingText(payload.question)}</MarkdownContent>
         </div>
+        {(payload.missingRequiredTools?.length || payload.ledgerStatus || payload.processed != null || payload.failureReason || payload.missingConstraintItems?.length || payload.constraintStatus) && (
+          <div className="wb-recovery-diagnostics" role="status">
+            {payload.missingRequiredTools?.length > 0 && <div>缺失步骤：{payload.missingRequiredTools.map(userFacingText).join('、')}</div>}
+            {payload.ledgerStatus && <div>台账状态：{userFacingText(payload.ledgerStatus)}</div>}
+            {payload.processed != null && <div>进度：已处理 {payload.processed}{payload.remaining != null ? `，剩余 ${payload.remaining}` : ''}</div>}
+            {payload.failureReason && <div>原因：{userFacingText(payload.failureReason)}</div>}
+            {payload.constraintStatus && <div>补充说明：{userFacingText(payload.constraintStatus === 'acknowledged' ? '已确认' : '尚未逐项确认')}</div>}
+            {payload.missingConstraintItems?.length > 0 && <div>未满足约束：{payload.missingConstraintItems.map(userFacingText).join('、')}</div>}
+          </div>
+        )}
         {options.map((option) => (
           <button key={option.value || option.label}
             type="button"
