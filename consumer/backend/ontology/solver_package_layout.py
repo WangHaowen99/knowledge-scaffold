@@ -774,7 +774,7 @@ def _migrate_solver_package_layout_locked(
                 if build_package_content_revision(source) != source_content_revision:
                     raise SolverPackageLayoutError(
                         "Source solver package changed during migration"
-                    )
+                    ) from None
                 os.replace(str(target_stage), str(target))
             except (OSError, SolverPackageLayoutError):
                 if target_stage.exists():

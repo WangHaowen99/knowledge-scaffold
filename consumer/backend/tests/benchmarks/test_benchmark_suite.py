@@ -176,7 +176,8 @@ def _llm_check_chinese_intrusion(text: str, target_lang: str) -> dict | None:
             return None
         client = OpenAI(api_key=llm_config["api_key"], base_url=llm_config["base_url"])
         model_name = llm_config["model_name"]
-    except Exception:
+    except (ImportError, AttributeError, KeyError, TypeError) as exc:
+        logger.warning("Unable to initialize language detector: %s", exc)
         return None
 
     lang_name = {"ja": "Japanese", "ko": "Korean"}.get(target_lang, target_lang)
@@ -214,8 +215,8 @@ def _llm_check_chinese_intrusion(text: str, target_lang: str) -> dict | None:
                 "confidence": float(result.get("confidence", 0.5)),
                 "reason": result.get("reason", ""),
             }
-    except Exception:
-        pass
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to classify CJK output with the model: %s", exc)
     return None
 
 
@@ -615,8 +616,8 @@ def _get_acp_suppress_patterns() -> str:
         )
         if resp.status_code == 200:
             return resp.json().get("acp_suppress_script_patterns", "")
-    except Exception:
-        pass
+    except requests.RequestException as exc:
+        logger.warning("Unable to read ACP suppression patterns: %s", exc)
     return ""
 
 
@@ -673,12 +674,12 @@ def _extract_kg_input_from_text(text: str, kg_tool_inputs: list) -> None:
         candidate = text[brace_start:end]
         try:
             params = json.loads(candidate)
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError):
             try:
                 import ast
 
                 params = ast.literal_eval(candidate)
-            except Exception:
+            except (ValueError, SyntaxError):
                 continue
         if not isinstance(params, dict):
             continue
@@ -1093,13 +1094,13 @@ def _consume_sse_stream(resp: requests.Response) -> str:
                 current_event = line[len("event:") :].strip()
             elif not line and current_event in terminal_events:
                 break
-    except Exception:
-        pass
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        logger.warning("Unable to consume ACP SSE stream: %s", exc)
     finally:
         try:
             resp.close()
-        except Exception:
-            pass
+        except (AttributeError, OSError) as exc:
+            logger.warning("Unable to close ACP response: %s", exc)
     return buf
 
 
@@ -1930,7 +1931,7 @@ def _llm_detect_language(text: str, target_lang: str) -> dict | None:
             return None
         client = OpenAI(api_key=llm_config["api_key"], base_url=llm_config["base_url"])
         model_name = llm_config["model_name"]
-    except Exception:
+    except (ImportError, AttributeError, KeyError, TypeError):
         return None
 
     lang_name = _LANG_DISPLAY_NAMES.get(target_lang, target_lang)
@@ -1962,8 +1963,8 @@ def _llm_detect_language(text: str, target_lang: str) -> dict | None:
                 "confidence": float(result.get("confidence", 0.5)),
                 "reason": result.get("reason", ""),
             }
-    except Exception:
-        pass
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to detect output language: %s", exc)
     return None
 
 
@@ -2723,7 +2724,7 @@ def _read_snapshot_failures(session_id: str) -> list[dict]:
     try:
         with open(snap_path, "r", encoding="utf-8") as f:
             snap = json.load(f)
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError):
         return []
     failures = []
     events = snap.get("events", [])
@@ -2890,9 +2891,12 @@ def _analyze_think_process(run_ids: list[str], log_baseline: int):
                 collected = []
                 for j in range(idx, min(idx + 80, len(lines))):
                     _, text = lines[j]
-                    if j > idx and (
-                        "executor:execute:" in text or "app.api.consume" in text or "app.agent.nodes" in text
-                    ):
+                    is_boundary = (
+                        "executor:execute:" in text
+                        or "app.api.consume" in text
+                        or "app.agent.nodes" in text
+                    )
+                    if j > idx and is_boundary:
                         break
                     collected.append(text)
                 full_text = "\n".join(collected)
@@ -2966,8 +2970,8 @@ def _get_system_info() -> dict:
         info["llm_provider_id"] = get_env("LLM_PROVIDER", "custom")
         info["llm_base_url"] = llm_config.get("base_url", "N/A")
         info["llm_model"] = llm_config.get("model_name", "N/A")
-    except Exception:
-        pass
+    except (ImportError, AttributeError, KeyError, TypeError) as exc:
+        logger.warning("Unable to collect LLM system information: %s", exc)
 
     info["base_url"] = BASE_URL
     info["test_language"] = TEST_LANGUAGE

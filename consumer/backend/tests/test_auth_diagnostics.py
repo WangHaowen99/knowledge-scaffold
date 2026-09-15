@@ -28,6 +28,16 @@ _PRIVATE_BODY = "synthetic-private-response-body"
 _PRIVATE_ERROR = f"{_BASE_URL} {_PASSWORD} {_ACCESS_TOKEN} {_PRIVATE_BODY}"
 
 
+class _AuthFailureCase:
+    def __init__(self, operation, case, stage, reason, error_type, upstream_status):
+        self.operation = operation
+        self.case = case
+        self.stage = stage
+        self.reason = reason
+        self.error_type = error_type
+        self.upstream_status = upstream_status
+
+
 class _Response:
     def __init__(self, status_code=200, payload=None, error=None):
         self.status_code = status_code
@@ -234,6 +244,7 @@ def test_concurrent_auth_attempts_keep_diagnostics_isolated_across_runtime_pool(
     }
     assert all(not record.exc_info for record in records)
     # A later direct call starts a fresh context instead of reusing a failed one.
+
     def unavailable_response(*_args, **_kwargs):
         return _Response(502)
 
