@@ -197,6 +197,9 @@ export class ChangeControlStore {
       });
     }
     const parsedTasks = parseTasks(input.tasks);
+    if (input.objectRelationReview !== false && parsedTasks.some(isRelationReviewLikeTask)) {
+      throw invalid('tasks', '对象关系任务由平台自动注入；请删除“关系审阅/关系确认/对象间关系”任务，保留对象和业务操作任务即可');
+    }
     const tasks = input.objectRelationReview === false
       ? parsedTasks
       : injectObjectRelationReviewTask(parsedTasks);
@@ -268,9 +271,16 @@ export class ChangeControlStore {
     if (additions.some((task) => task.clientKey === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
       throw invalid('add_tasks.client_key', `任务标识 ${OBJECT_RELATION_REVIEW_CLIENT_KEY} 由平台保留`);
     }
+    if (additions.some((task) => task.clientKey === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
+      throw invalid('add_tasks.client_key', `任务标识 ${OBJECT_RELATION_REVIEW_CLIENT_KEY} 由平台保留`);
+    }
     const skipIds = stringArray(input.skipTaskIds, 'skip_task_ids', 100);
     if (!additions.length && !skipIds.length) throw invalid('revision', '至少新增一项任务或跳过一项可选任务');
     const currentTasks = this.taskRows(plan.id);
+    if (additions.some(isRelationReviewLikeTask)
+      && currentTasks.some((task) => task.client_key === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
+      throw invalid('add_tasks', '对象关系任务由平台自动注入；当前计划已有该任务，不能重复添加关系审阅或关系确认任务');
+    }
     if (additions.some(isRelationReviewLikeTask)
       && currentTasks.some((task) => task.client_key === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
       throw invalid('add_tasks', '对象关系任务由平台自动注入；当前计划已有该任务，不能重复添加关系审阅或关系确认任务');
@@ -283,16 +293,7 @@ export class ChangeControlStore {
           .map((task) => task.client_key),
         ...additions.filter(isObjectRelationDependencyTask).map((task) => task.clientKey),
       ];
-      additions = [...additions, {
-        clientKey: OBJECT_RELATION_REVIEW_CLIENT_KEY,
-        title: '确认对象间关系',
-        resourceKind: 'other',
-        targetKey: OBJECT_RELATION_REVIEW_TARGET_KEY,
-        allowedTools: [OBJECT_RELATION_REVIEW_TOOL],
-        dependsOn: [...new Set(dependencyKeys)],
-        acceptance: '审阅本次对象和业务操作形成的关系候选，并将接受的中文关系一次性写入工作版本',
-        required: true,
-      }];
+      additions = [...additions, objectRelationReviewTask(dependencyKeys)];
     }
     if (additions.length && currentTasks.some((task) => task.status !== 'pending') && input.scopeApproved !== true) {
       throw new ChangeControlError(
@@ -1374,22 +1375,24 @@ function injectObjectRelationReviewTask(tasks: TaskInput[]): TaskInput[] {
   }
   const dependencies = tasks.filter(isObjectRelationDependencyTask);
   if (!dependencies.length) return tasks;
-  return [...tasks, {
+  return [...tasks, objectRelationReviewTask(dependencies.map((task) => task.clientKey))];
+}
+
+function isObjectRelationDependencyTask(task: TaskInput): boolean {
+  return isObjectRelationDependency(task.resourceKind, task.allowedTools);
+}
+
+function objectRelationReviewTask(dependencyKeys: string[]): TaskInput {
+  return {
     clientKey: OBJECT_RELATION_REVIEW_CLIENT_KEY,
     title: '确认对象间关系',
     resourceKind: 'other',
     targetKey: OBJECT_RELATION_REVIEW_TARGET_KEY,
     allowedTools: [OBJECT_RELATION_REVIEW_TOOL],
-    dependsOn: [...new Set(dependencies.map((task) => task.clientKey))],
+    dependsOn: [...new Set(dependencyKeys)],
     acceptance: '审阅本次对象和业务操作形成的关系候选，并将接受的中文关系一次性写入工作版本',
     required: true,
-  }];
-}
-
-function isObjectRelationDependencyTask(task: TaskInput): boolean {
-  return task.resourceKind === 'object'
-    || task.resourceKind === 'operation'
-    || task.allowedTools.some((tool) => ['sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics'].includes(tool));
+  };
 }
 
 function isRelationReviewLikeTask(task: TaskInput): boolean {
