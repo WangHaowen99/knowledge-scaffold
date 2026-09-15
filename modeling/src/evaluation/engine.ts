@@ -522,6 +522,27 @@ async function runRound(
 }
 
 // runs/sync：429/503 退避重试
+/**
+ * 上游模型端点的限流不一定体现为 HTTP 429：agent 在 consumer 内部调模型被限流时，
+ * 错误会包在响应体里带上来（例如 OpenAI SDK 的「429 status code (no body)」）。
+ * 并发跑用例后这类错误明显变多，必须一并当作可重试，否则一条用例会直接判 error。
+ */
+export function isRateLimitedFailure(status: number, message: unknown): boolean {
+  if (status === 429 || status === 503) return true;
+  const text = String(message ?? '');
+  return /(^|\D)429(\D|$)/u.test(text)
+    || /rate[\s_-]?limit/iu.test(text)
+    || /too many requests/iu.test(text);
+}
+
+/** 指数退避 + 抖动：并发下固定退避会让多条用例同时重试、再次撞限流。 */
+export function rateLimitBackoffMs(attempt: number, random: () => number = Math.random): number {
+  const base = Math.min(2000 * (2 ** Math.max(0, attempt - 1)), 30_000);
+  return Math.round(base * (0.8 + (0.4 * random())));
+}
+
+const RATE_LIMIT_MAX_ATTEMPTS = 6;
+
 async function runCase(
   request: ConsumerRequest,
   ws: string,
@@ -530,17 +551,22 @@ async function runCase(
 ): Promise<{ finalAnswer: string; trace: EvaluationExecutionTrace }> {
   const sessionId = `mw-eval-${randomUUID().slice(0, 8)}`;
   let rateLimitAttempts = 0;
-  while (rateLimitAttempts < 4) {
+  for (;;) {
     assertEvaluationNotCancelled(signal);
     const res = await request('', '/agentic/runs/sync', {
       method: 'POST', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ request: question, session_id: sessionId, include_trace: true }),
       signal,
     });
-    if (res.status === 429 || res.status === 503) {
-      rateLimitAttempts++;
+    const data = (await res.json().catch(() => ({}))) as any;
+    const failure = res.ok ? '' : (data.error || data.detail || `runs/sync ${res.status}`);
+    if (!res.ok && isRateLimitedFailure(res.status, failure)) {
+      rateLimitAttempts += 1;
+      if (rateLimitAttempts >= RATE_LIMIT_MAX_ATTEMPTS) {
+        throw new Error(`runs/sync 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍被限流：${failure}`);
+      }
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, rateLimitAttempts * 3000);
+        const timer = setTimeout(resolve, rateLimitBackoffMs(rateLimitAttempts));
         signal.addEventListener('abort', () => {
           clearTimeout(timer);
           reject(new Error('本轮评测已由用户停止'));
@@ -548,8 +574,7 @@ async function runCase(
       });
       continue;
     }
-    const data = (await res.json().catch(() => ({}))) as any;
-    if (!res.ok) throw new Error(data.error || data.detail || `runs/sync ${res.status}`);
+    if (!res.ok) throw new Error(failure);
     const resolvedSessionId = String(data.session_id || sessionId);
     const runId = String(data.run_id || '');
     const trace = traceFromSyncResponse(data) ?? await fetchEvaluationRunTrace({
@@ -558,7 +583,6 @@ async function runCase(
     });
     return { finalAnswer: evaluationFinalAnswer(data), trace };
   }
-  throw new Error('runs/sync 重试后仍被限流');
 }
 
 async function authenticatedConsumerRequest(
