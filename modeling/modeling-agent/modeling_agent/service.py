@@ -2953,6 +2953,55 @@ class AgentService:
         public["phaseLabel"] = PHASE_LABELS.get(target, target)
         self.events.publish(live.project_id, live.run_id, "state", public)
 
+    async def _turn_goal(self, live: LiveRun) -> str:
+        """从当前阶段「向前推进」那个门禁的未完成项里，派生本轮要完成的单一目标。
+
+        门禁 blockers 本来就是服务端算出来的任务清单，只是过去它只作为
+        get_project_state 的一个字段返回——和文件正文一样是普通工具返回值，
+        很快被后续读取挤出窗口，模型于是自己另找事做。这里把清单的第一项
+        提升为本轮的指派目标，交给 system 段常驻。
+
+        只看前进方向的门禁：退回目标阶段的门禁不代表本轮该做什么。
+        """
+        phase = self.store.project_state(live.project_id).state.partition(":")[0]
+        if phase not in PHASE_ORDER:
+            return ""
+        current_index = PHASE_ORDER.index(phase)
+        for target in PHASE_EDGES.get(phase, ()):
+            if target not in PHASE_ORDER or PHASE_ORDER.index(target) <= current_index:
+                continue
+            gate = PHASE_GATES.get(target)
+            if not gate:
+                continue
+            try:
+                result = await self._gateway.call(
+                    project_id=live.project_id,
+                    run_id=live.run_id,
+                    token=live.token,
+                    tool="gate_status",
+                    arguments={"gate": gate},
+                )
+            except Exception:
+                # 目标只是引导，取不到不该影响本轮执行。
+                logger.warning("turn goal gate lookup failed run=%s gate=%s", live.run_id, gate)
+                return ""
+            if result.get("error") or result.get("pass"):
+                continue
+            blockers = _string_list(result.get("blockers") or result.get("next"), 30)
+            if not blockers:
+                continue
+            remaining = (
+                f"，该门禁共 {len(blockers)} 项未完成" if len(blockers) > 1 else ""
+            )
+            return (
+                f"{blockers[0]}\n\n"
+                f"这一项来自门禁 {gate}{remaining}。本轮只推进这一项，完成后即可结束本轮；"
+                "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
+                "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
+                "不要反复读取资料试图自行补齐前提。"
+            )
+        return ""
+
     async def _state_for_agent(self, live: LiveRun) -> dict[str, Any]:
         state = self.store.project_state(live.project_id)
         public = state.public()
@@ -3704,6 +3753,10 @@ class AgentService:
                     model=model,
                     analyst_model=analyst_model,
                     package_contract=live.package_contract,
+                    # 用户刚下达指令或刚回答完问题时，指令本身就是本轮目标，
+                    # 不需要服务端再指派。只有模型自己决定下一步时才需要——
+                    # 那正是过去它漫无目的地反复取证的地方。
+                    turn_goal=await self._turn_goal(live) if continuations else "",
                 )
                 boundary = self.events.publish(
                     run.project_id,
