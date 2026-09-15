@@ -883,20 +883,17 @@ class AgentService:
                         "建模服务持久化自检未通过，已暂停自动恢复，请核对数据卷",
                     )
                 return
-            interrupted_cancellations = [
-                recovered for recovered in recovered_runs
-                if recovered.error in {
-                    INTERRUPTED_CANCELLATION_REASON,
-                    CANCELLATION_PENDING_REASON,
-                }
-            ]
-            resumable_runs = [
-                recovered for recovered in recovered_runs
-                if recovered.error not in {
-                    INTERRUPTED_CANCELLATION_REASON,
-                    CANCELLATION_PENDING_REASON,
-                }
-            ]
+            interrupted_cancellations = []
+            resumable_runs = []
+            cancellation_reasons = {
+                INTERRUPTED_CANCELLATION_REASON,
+                CANCELLATION_PENDING_REASON,
+            }
+            for recovered in recovered_runs:
+                if recovered.error in cancellation_reasons:
+                    interrupted_cancellations.append(recovered)
+                else:
+                    resumable_runs.append(recovered)
             await asyncio.gather(*(
                 self._resume_interrupted_cancellation(recovered)
                 for recovered in interrupted_cancellations
@@ -3325,12 +3322,12 @@ class AgentService:
             return {"quiescent": True, "compatibility": "legacy_core"}
         restore = getattr(self._gateway, "restore_run_credential", None)
         current_credential = getattr(self._gateway, "run_credential", None)
-        if (
-            callable(restore)
-            and run.run_credential
-            and (not callable(current_credential) or not current_credential(run.id))
-        ):
-            restore(run.id, run.run_credential)
+        if callable(restore) and run.run_credential:
+            has_current_credential = (
+                callable(current_credential) and current_credential(run.id)
+            )
+            if not has_current_credential:
+                restore(run.id, run.run_credential)
         authorization = live.token if live else token
         try:
             try:
@@ -3375,12 +3372,11 @@ class AgentService:
             mutation_id = str(started.get("mutationId") or "").strip()
             event_phase = phase
             event_summary = summary
-            if (
-                mutation_id
-                and settled_mutations
-                and mutation_id in settled_mutations
-                and str(started.get("name") or "") == "stage_change_set"
-            ):
+            mutation_was_settled = False
+            if mutation_id and settled_mutations:
+                mutation_was_settled = mutation_id in settled_mutations
+            is_stage_change_set = str(started.get("name") or "") == "stage_change_set"
+            if mutation_was_settled and is_stage_change_set:
                 event_phase = "completed"
                 event_summary = "已核对在途修改回执，候选内容已保留"
             if str(started.get("phase") or "") == event_phase:
