@@ -169,6 +169,7 @@ def build_agent(
     model: Any | None = None,
     analyst_model: Any | None = None,
     package_contract: dict[str, Any] | None = None,
+    turn_goal: str = "",
 ) -> AgentBundle:
     resolved_model = model or build_model(settings)
     workspace = settings.data_dir / "runtime-workspaces" / context.run_id
@@ -205,7 +206,7 @@ def build_agent(
             description="主动推进知识包建模、协调专家决定并控制工作台焦点",
         ),
         tool_owner_id=context.run_id,
-        system_prompt=_system_prompt(leader_skill, package_contract or {}),
+        system_prompt=_system_prompt(leader_skill, package_contract or {}, turn_goal),
         tools=build_tools(context),
         subagents=_subagents(settings, context, analyst_model or resolved_model),
         rails=rails,
@@ -226,14 +227,22 @@ def build_agent(
     return AgentBundle(agent=agent, model=resolved_model)
 
 
-def _system_prompt(leader_skill: str, package_contract: dict[str, Any]) -> str:
+def _system_prompt(
+    leader_skill: str,
+    package_contract: dict[str, Any],
+    turn_goal: str = "",
+) -> str:
     contract = json.dumps(package_contract, ensure_ascii=False, sort_keys=True, indent=2)
+    # 本轮目标放在 system 段：上下文窗口截断时 system 消息优先保留，
+    # 而普通消息会被工具返回值挤掉——目标一旦被挤掉，模型就会自己另找事做。
+    goal_section = f"\n\n# 本轮目标（服务端指派）\n\n{turn_goal}\n" if turn_goal.strip() else ""
     return (
         f"{SYSTEM_PROMPT}\n\n"
         "# 本轮知识包生成契约（来自核心确定性校验器）\n\n"
         f"```json\n{contract}\n```\n\n"
         "生成、修正和确认候选都必须以这份带 validatorVersion 的契约为准。\n\n"
         f"# 建模方法 Skill\n\n{leader_skill}"
+        f"{goal_section}"
     )
 
 
