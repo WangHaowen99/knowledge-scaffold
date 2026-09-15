@@ -48,7 +48,14 @@ from .project_transfer import (
     import_project_transfer,
 )
 from .rails import claims_confirmation_card
-from .tools import CandidateValidationRepairState, EVALUATION_PENDING_MESSAGE, ToolContext
+from .tools import (
+    BUSINESS_PHASE_EDGES,
+    BUSINESS_PHASE_LABELS,
+    CandidateValidationRepairState,
+    EVALUATION_PENDING_MESSAGE,
+    PHASE_CAPABILITY_STRATEGY,
+    ToolContext,
+)
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 from .workflows import (
     build_execution_brief_workflow,
@@ -84,27 +91,8 @@ def _object(raw: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-PHASE_LABELS = {
-    "intake": "资料与目标准备",
-    "goal": "目标确认",
-    "process": "流程建模",
-    "knowledge": "知识建模",
-    "increment": "增量建模",
-    "validation": "确定性验证",
-    "evaluation": "评测",
-    "release": "发布交付",
-}
-PHASE_EDGES = {
-    "intake": ("goal",),
-    "goal": ("process",),
-    "process": ("goal", "knowledge"),
-    "knowledge": ("goal", "process", "validation"),
-    # 增量轮次在同一阶段内完成影响分析和受控修改，不能重新退回全量建模链路。
-    "increment": ("validation", "evaluation"),
-    "validation": ("goal", "process", "knowledge", "evaluation"),
-    "evaluation": ("goal", "process", "knowledge", "validation", "release"),
-    "release": ("goal", "process", "knowledge"),
-}
+PHASE_LABELS = BUSINESS_PHASE_LABELS
+PHASE_EDGES = BUSINESS_PHASE_EDGES
 PHASE_GATES = {
     "goal": "materials_ready",
     "process": "goal_confirmed",
@@ -489,6 +477,12 @@ def _parse_evidence_anchors(evidence: str) -> list[tuple[str, str]]:
         if match:
             anchors.append((match.group(1).lower(), match.group(2).strip()))
     return anchors
+
+def _is_blocked_phase_capability(recovery: dict[str, Any]) -> bool:
+    """判断这条恢复是否为已被门禁挡死、需要恢复卡兜底的阶段能力写入。"""
+    if recovery.get("strategy") != PHASE_CAPABILITY_STRATEGY:
+        return False
+    return recovery.get("blocked") is True
 
 
 def _interaction_requires_artifact(interaction: InteractionRecord) -> bool:
@@ -3124,6 +3118,35 @@ class AgentService:
                     "页面请求从当前进展继续。不要把它当成用户业务发言；"
                     + TRUNCATION_RECOVERY_PROMPT
                 )
+            elif technical.get("strategy") == PHASE_CAPABILITY_STRATEGY:
+                required_phase = str(technical.get("requiredPhase") or "").strip()
+                required_label = str(
+                    technical.get("requiredPhaseLabel")
+                    or PHASE_LABELS.get(required_phase, required_phase)
+                )
+                if technical.get("blocked") is True:
+                    # 这一跳已经被门禁或阶段边挡回来过。还让模型重提同一次转换，
+                    # 用户点「继续」只会回到同一个循环，所以改成先读状态、按真正的
+                    # 未满足项推进，拿不定主意时回到用户，而不是继续空转。
+                    blockers = _string_list(technical.get("blockers"), 10)
+                    blocker_text = "；".join(blockers) if blockers else "前置条件尚未满足"
+                    required_tools = {"get_project_state"}
+                    recovery_prompt = (
+                        "页面请求继续上一轮没有落盘的修改。不要把它当成用户业务发言，"
+                        "也不要向用户解释平台能力或要求用户等待。"
+                        f"这次修改由「{required_label}」阶段承载，但上一次转换被前置条件挡回："
+                        f"{blocker_text}。先调用 get_project_state 读取最新状态和可走的转换，"
+                        "再针对未满足项推进；需要用户拿主意时用 ask 或 request_confirmation "
+                        "给出具体选项，不要重复尝试同一次转换。"
+                    )
+                else:
+                    required_tools = {"transition_project_state"}
+                    recovery_prompt = (
+                        "页面请求继续上一轮没有落盘的修改。不要把它当成用户业务发言，"
+                        "也不要向用户解释平台能力或要求用户等待。"
+                        f"先调用 transition_project_state 转到 {required_phase} 阶段，"
+                        "工具面重新加载后按已经确认的修复方案原样重提同一次修改，再完成候选确认。"
+                    )
             else:
                 recovery_prompt = (
                     "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
@@ -4711,6 +4734,65 @@ class AgentService:
             "text": "整体复核卡未形成，待确认修改已保留，请选择后续处理",
         })
 
+    def _suspend_technical_recovery(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        issue_id: str,
+    ) -> None:
+        """把未完成的系统恢复转成用户可操作的选择。
+
+        自动恢复用尽后，整轮不能只留下一句「已停止」。界面需要 issueId、
+        问题码和恢复动作才能渲染出可点的出口，否则用户只能被动等待。
+        """
+        recovery = live.technical_recoveries.get(issue_id) or {}
+        actions = [
+            dict(item) for item in recovery.get("recoveryActions") or []
+            if isinstance(item, dict)
+        ] or _confirmation_review_actions()
+        try:
+            attempt = max(1, int(recovery.get("maxAttempts") or 1))
+        except (TypeError, ValueError):
+            attempt = 1
+        updated = {
+            **recovery,
+            "actionId": str(recovery.get("actionId") or "retry_from_latest"),
+            "recoveryActions": actions,
+            "attempt": attempt,
+            "exhausted": True,
+        }
+        live.technical_recoveries[issue_id] = updated
+        self.store.save_technical_recovery(run.id, issue_id, updated)
+        live.required_tools.discard(str(recovery.get("requiredTool") or "").strip())
+        summary = str(
+            recovery.get("stoppedSummary")
+            or "这一步还没有完成，已保留当前成果，请选择后续处理"
+        )
+        # 未满足项是用户唯一能据以行动的信息。卡片上只写「已停止」，用户仍然不知道
+        # 差什么，也就还是只能等平台。
+        blockers = _string_list(recovery.get("blockers"), 10)
+        self.store.update_run(run.id, status=RUN_SUSPENDED, result="", error="")
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": str(recovery.get("sourceTool") or "issue_recovery"),
+            "phase": "waiting",
+            "summary": summary,
+            "code": str(recovery.get("code") or "RECOVERY_NOT_COMPLETED"),
+            "issueId": issue_id,
+            "issueStatus": "awaiting_user",
+            "problemVisibility": "recovery",
+            "recoveryActions": actions,
+            **({"blockers": blockers} if blockers else {}),
+        })
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_SUSPENDED,
+            "text": summary,
+        })
+
     @staticmethod
     def _confirmation_review_prompt(run: RunRecord) -> str:
         snapshot = run.latest_interaction or {}
@@ -5073,17 +5155,21 @@ class AgentService:
                             live.observed_tools.add(name)
                     self.events.publish(live.project_id, live.run_id, kind, payload)
 
+                def save_recovery(issue_id: str, recovery: dict[str, Any]) -> None:
+                    normalized = str(issue_id or "").strip()
+                    if not normalized:
+                        return
+                    live.technical_recoveries[normalized] = dict(recovery)
+                    self.store.save_technical_recovery(
+                        live.run_id, normalized, dict(recovery),
+                    )
+
                 def require_tool(name: str, recovery: dict[str, Any]) -> None:
                     normalized = str(name or "").strip()
                     if not normalized:
                         return
                     live.required_tools.add(normalized)
-                    issue_id = str(recovery.get("issueId") or "").strip()
-                    if issue_id:
-                        live.technical_recoveries[issue_id] = dict(recovery)
-                        self.store.save_technical_recovery(
-                            live.run_id, issue_id, dict(recovery),
-                        )
+                    save_recovery(str(recovery.get("issueId") or ""), recovery)
 
                 context = ToolContext(
                     project_id=live.project_id,
@@ -5101,6 +5187,7 @@ class AgentService:
                     resolve_issues=lambda issue_ids: self.store.resolve_technical_recoveries(
                         live.run_id, issue_ids,
                     ),
+                    save_recovery=save_recovery,
                     technical_recoveries=live.technical_recoveries,
                     state_action=lambda name, arguments: self._state_action(live, name, arguments),
                     after_core_tool=lambda name, arguments, result: self._after_core_tool(
@@ -5253,6 +5340,19 @@ class AgentService:
                     self._settle(live, run, result)
                     return
                 if context.recovery_waiting or result.get("recovery_wait") is True:
+                    # 承载阶段被门禁挡住的写入已经没有自愈路径，只把本轮挂起会让用户
+                    # 回到「没有任何可操作入口」的老问题；这里补一张带未满足项的恢复卡。
+                    blocked_issue = next(
+                        (
+                            issue_id
+                            for issue_id, recovery in live.technical_recoveries.items()
+                            if _is_blocked_phase_capability(recovery)
+                        ),
+                        "",
+                    )
+                    if blocked_issue:
+                        self._suspend_technical_recovery(live, run, blocked_issue)
+                        return
                     self.store.update_run(
                         run.id,
                         status=RUN_SUSPENDED,
@@ -5315,6 +5415,21 @@ class AgentService:
                         for recovery in live.technical_recoveries.values()
                     ):
                         self._suspend_confirmation_review(live, run)
+                        return
+                    # 阶段能力这类恢复自带承载阶段和重提指引，交给通用的必需工具卡会丢掉
+                    # requiredPhase，用户点「继续」后模型就不知道该切回哪个阶段重提修改。
+                    phase_capability_issue = next(
+                        (
+                            issue_id
+                            for issue_id, recovery in live.technical_recoveries.items()
+                            if recovery.get("strategy") == PHASE_CAPABILITY_STRATEGY
+                        ),
+                        "",
+                    )
+                    if phase_capability_issue:
+                        self._suspend_technical_recovery(
+                            live, run, phase_capability_issue,
+                        )
                         return
                     self._suspend_required_tool_review(live, run, missing_tools)
                     return

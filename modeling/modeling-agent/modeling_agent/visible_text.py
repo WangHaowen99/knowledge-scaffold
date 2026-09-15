@@ -26,6 +26,44 @@ _PRIVATE_REASONING = re.compile(
 )
 _REASONING_BOUNDARY = frozenset("\n。！？；")
 
+# 模型声称平台缺少某项能力的措辞。工具面按阶段收敛，不属于当前阶段的能力
+# 缺席是内部边界，不是可以摊给用户的事实；一旦这类推理流到工作台，用户只能
+# 被动等待平台。清单同时供 rails 的能力声明门禁使用，避免两处措辞各自漂移。
+#
+# 这一族措辞本身已经点名平台、工具或会话环境，单独出现即可判定。
+PLATFORM_CAPABILITY_CLAIM_PHRASES = (
+    "环境无法", "当前环境不能", "平台无法", "无法补写", "人工补写",
+    "等待管理员", "管理员处理", "系统不支持", "没有权限修改",
+    "工具集中没有", "工具集没有", "没有该读取能力", "没有读取能力",
+    "本会话工具", "平台侧能力缺口", "平台能力缺口", "平台是否开放",
+    "平台开放", "等待平台", "平台侧环境边界", "环境边界", "工具未注册",
+)
+# 「未注册」「不可用」「缺失」这类词单独看是正常业务表述——建模对象本来就包含
+# 「该企业尚未注册」「该流程存在能力缺失」这种正文。裸短语匹配会把业务内容误判成
+# 平台能力声明，害得整轮被强制纠偏、可见推理还被整段隐藏。所以只在这些词挂到
+# 平台/工具/写入这类主语上时才算数。
+PLATFORM_CAPABILITY_CLAIM_PATTERNS = (
+    # 写入能力……仍未注册 / 读取能力暂不可用 / 受控写入能力缺失
+    re.compile(
+        r"(?:平台|工具|环境|写入|读取|落盘|受控)[^。！？；]{0,8}能力"
+        r"[^。！？；]{0,8}(?:不可用|未注册|没有注册|未开放|缺失|不存在|没有提供)"
+    ),
+    # 写入尚未注册 / 工具不可用 / 落盘未开放
+    re.compile(
+        r"(?:平台|工具|环境|写入|读取|落盘|受控写入)"
+        r"[^。！？；]{0,4}(?:不可用|未注册|没有注册|未开放|不存在)"
+    ),
+)
+
+
+def claims_platform_capability_gap(text: str) -> bool:
+    """Tell whether the text blames a missing platform capability."""
+    normalized = re.sub(r"\s+", "", str(text or "")).lower()
+    if any(phrase in normalized for phrase in PLATFORM_CAPABILITY_CLAIM_PHRASES):
+        return True
+    return any(pattern.search(normalized) for pattern in PLATFORM_CAPABILITY_CLAIM_PATTERNS)
+
+
 _PHASE_LABELS = {
     "intake": "资料准备",
     "goal": "目标确认",
@@ -289,6 +327,9 @@ def _sanitize_reasoning_segment(segment: str) -> str:
     if not segment:
         return ""
     if _PRIVATE_REASONING.search(segment):
+        suffix = "\n" if segment.endswith("\n") else ""
+        return f"（内部配置已隐藏）{suffix}"
+    if claims_platform_capability_gap(segment):
         suffix = "\n" if segment.endswith("\n") else ""
         return f"（内部配置已隐藏）{suffix}"
     if len(segment) > 600:

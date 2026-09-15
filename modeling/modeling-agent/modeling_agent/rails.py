@@ -23,9 +23,12 @@ from .tools import (
     ToolContext,
     call_core,
     input_dict,
+    phase_capability_host,
+    phase_capability_redirect,
     tool_spec,
     tool_work_detail,
 )
+from .visible_text import claims_platform_capability_gap
 
 
 _EXPLICIT_DECISION_REQUESTS = (
@@ -329,8 +332,17 @@ class WriteSafetyRail(AgentRail):
         unsafe = bool(problems)
         if not problems and not repair_recovery and self._context.state_action is not None:
             state = await self._context.state_action("get_project_state", {})
-            phase_problem = _phase_write_problem(name, args, str(state.get("phase") or ""))
+            live_phase = str(state.get("phase") or "")
+            phase_problem = _phase_write_problem(name, args, live_phase)
             if phase_problem:
+                # 受控写入链路有明确的承载阶段：不要停在「阶段不对」上等人工确认，
+                # 直接把切阶段交给自动恢复，恢复预算用尽后再交给用户选择。
+                host_phase = phase_capability_host(name, live_phase)
+                if host_phase and host_phase != live_phase:
+                    _skip_tool(ctx, phase_capability_redirect(
+                        name, args, host_phase, self._context, current_phase=live_phase,
+                    ))
+                    return
                 problems.append(phase_problem)
         if not problems:
             return
@@ -598,10 +610,21 @@ class PhaseTransitionRail(AgentRail):
             return
         result = _result_dict(getattr(ctx.inputs, "tool_result", None))
         next_phase = str(result.get("phase") or "").strip()
-        if result.get("error") or not next_phase or next_phase == self._context.phase:
+        if result.get("error"):
+            # 转换被门禁或阶段边挡回来时，挂起的写入已经没有自愈路径了。继续放模型回去
+            # 重提写入只会把剩余预算烧完，用户点「继续」还是回到同一个循环；这里立刻把
+            # issue 标成 blocked 并带上真正的未满足项，交给服务端渲染成可操作的恢复卡。
+            target_phase = str(_call_args(ctx).get("to_phase") or "").strip()
+            if target_phase:
+                self._context.block_phase_capability_issues(target_phase, result)
+            return
+        if not next_phase or next_phase == self._context.phase:
             return
         previous_phase = self._context.phase
         self._context.phase = next_phase
+        # 之前因为阶段不承载而挂起的写入，现在有落盘路径了，先把 issue 关掉，
+        # 否则本轮结算时它仍然是一条未完成的系统恢复。
+        self._context.resolve_phase_capability_issues(next_phase)
         ctx.request_force_finish({
             "result_type": "answer",
             "output": "",
@@ -844,17 +867,9 @@ class AskRail(BaseInterruptRail):
 
 
 def _claims_missing_capability(text: str) -> bool:
-    normalized = re.sub(r"\s+", "", str(text or "")).lower()
-    phrases = (
-        "环境无法", "当前环境不能", "平台无法", "无法补写", "人工补写",
-        "等待管理员", "管理员处理", "系统不支持", "没有权限修改",
-        "工具集中没有", "工具集没有", "没有该读取能力", "没有读取能力",
-        "本会话工具", "平台侧能力缺口", "平台能力缺口", "平台是否开放",
-    )
-    for phrase in phrases:
-        if phrase in normalized:
-            return True
-    return False
+    # 措辞清单与可见推理脱敏共用：同一件事换个说法就绕开门禁，
+    # 真实停滞会话里模型说的是「能力不可用」「写入能力未注册」「等待平台开放写入能力」。
+    return claims_platform_capability_gap(text)
 
 
 def _is_business_ambiguity(question: str, evidence: list[Any]) -> bool:
