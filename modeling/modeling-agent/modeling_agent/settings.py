@@ -55,6 +55,18 @@ class Settings:
     # requiredText 语义守卫支持分阶段上线：off 仅保留兼容行为，observe
     # 记录约束但不阻断，enforce 在模型未确认约束时重新提示并生成可操作卡片。
     required_text_guard_mode: str = "enforce"
+    # 是否启用框架的上下文处理器预设链（卸载+摘要、对话/轮次压缩）。
+    # 关闭时只有最基础的窗口滚动截断：超出窗口的消息被直接丢弃且无法找回，
+    # 读取密集的运行会把用户决策挤出上下文。开启会带来额外的模型调用开销，
+    # 因此默认关闭，按部署逐步放开。
+    context_processor_preset: bool = False
+    # 模型上下文窗口（输入+输出）。上下文处理器按「占用达到窗口的百分之多少」
+    # 决定何时压缩，不配的话框架算不出这个比例，整条预设链等于不触发。
+    # 0 表示不显式声明，交给框架按模型名推断。
+    context_window_tokens: int = 0
+    # 免卸载的工具返回值。判据是「丢了能不能重新拿到」：专家的回答只有一份，
+    # 丢了只能再问一次；而知识包文件随时能重读，不该常驻上下文。
+    context_protected_tools: tuple[str, ...] = ("ask", "request_confirmation")
 
     def resolved_output_budget(self, output_tokens: int | None) -> int:
         """把按角色/阶段设定的输出预算换算成实际请求的 max_tokens。
@@ -117,6 +129,20 @@ class Settings:
             context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 200),
             context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 160),
             context_window_rounds=_integer("MODELING_CONTEXT_WINDOW_ROUNDS", 10, 4, 30),
+            context_processor_preset=(
+                os.getenv("MODELING_CONTEXT_PROCESSOR_PRESET", "").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ),
+            context_window_tokens=_integer(
+                "MODELING_CONTEXT_WINDOW_TOKENS", 0, 0, 2_000_000,
+            ),
+            context_protected_tools=tuple(
+                item.strip()
+                for item in os.getenv(
+                    "MODELING_CONTEXT_PROTECTED_TOOLS", "ask,request_confirmation",
+                ).split(",")
+                if item.strip()
+            ),
             required_text_guard_mode=(
                 os.getenv("MODELING_REQUIRED_TEXT_GUARD_MODE", "enforce").strip().lower()
                 if os.getenv("MODELING_REQUIRED_TEXT_GUARD_MODE", "enforce").strip().lower()

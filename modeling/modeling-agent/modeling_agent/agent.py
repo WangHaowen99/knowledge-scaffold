@@ -155,10 +155,17 @@ def context_engine_config(settings: Settings) -> ContextEngineConfig:
             settings.context_max_messages,
         ),
         default_window_round_num=settings.context_window_rounds,
-        # 业务记忆来自 Change Plan、回执和 Execution Brief；卸载的长历史不自动回灌。
-        enable_reload=False,
+        # 不启用预设链时没有卸载，保持原样；启用后必须允许回灌，否则模型会看到
+        # 句柄却取不回原文——那比直接截断更糟。
+        enable_reload=settings.context_processor_preset,
         enable_tiktoken_counter=False,
         model_name=settings.llm_model or None,
+        # 压缩器按「占用达到窗口的百分之多少」触发，不告诉它窗口多大就永远不触发。
+        **(
+            {"context_window_tokens": settings.context_window_tokens}
+            if settings.context_window_tokens > 0
+            else {}
+        ),
     )
 
 
@@ -198,6 +205,30 @@ def build_agent(
             validation_repair=context.validation_repair,
         ),
     ]
+    if settings.context_processor_preset:
+        # 不配这条 Rail 时，上下文只有最基础的窗口滚动截断：超出窗口的消息被
+        # 直接丢弃且无法找回。预设链提供卸载（超长消息搬到外部、原位留摘要与
+        # 句柄）和分级压缩，代价是压缩器会产生额外的模型调用。
+        from openjiuwen.core.context_engine.processor.forked.offloader.message_offloader import (
+            MessageSummaryOffloaderConfig,
+        )
+        from openjiuwen.harness.rails.context_engineer.context_processor_rail import (
+            ContextProcessorRail,
+        )
+        # 覆盖框架默认的免卸载名单。默认只保护 read_file，但实测它读的全是
+        # 知识包内部制品（对象、规则、操作、计划、索引），随时能重新读回来，
+        # 而且 87% 是重复读取——保护它等于让重复内容常驻。真正不可重获的是
+        # 专家的回答：那只有一份，丢了只能再问一次。
+        rails.append(
+            ContextProcessorRail(
+                processors=[(
+                    "MessageSummaryOffloader",
+                    MessageSummaryOffloaderConfig(
+                        protected_tool_names=list(settings.context_protected_tools),
+                    ),
+                )],
+            )
+        )
     agent = create_deep_agent(
         resolved_model,
         card=AgentCard(
