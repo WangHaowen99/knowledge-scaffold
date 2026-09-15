@@ -473,7 +473,11 @@ async function runRound(
     onStart: () => repo.roundCaseStarted(roundId),
     run: async (tc) => {
       assertEvaluationNotCancelled(signal);
-      const run = await runCase(request, ws, tc.question, signal);
+      const run = await runCase(request, ws, tc.question, signal, {
+        onRateLimited: (attempt, waitMs, failure) => {
+          log(`⏳ 被限流，${Math.round(waitMs / 1000)} 秒后重试（第 ${attempt} 次）：${failure.slice(0, 80)}`);
+        },
+      });
       assertEvaluationNotCancelled(signal);
       const v = await judgeEvaluationAnswer(tc.question, tc.groundTruth, run.finalAnswer, judge, signal);
       assertEvaluationNotCancelled(signal);
@@ -543,11 +547,20 @@ export function rateLimitBackoffMs(attempt: number, random: () => number = Math.
 
 const RATE_LIMIT_MAX_ATTEMPTS = 6;
 
-async function runCase(
+export interface RunCaseHooks {
+  /** 每次因限流而等待前回调，用于把重试写进轮次日志。 */
+  onRateLimited?: (attempt: number, waitMs: number, failure: string) => void;
+  /** 退避时长，仅测试会覆盖，避免真的等满一轮指数退避。 */
+  backoffMs?: (attempt: number) => number;
+}
+
+/** 导出供测试直接驱动限流重试循环；生产路径只由 runRound 调用。 */
+export async function runCase(
   request: ConsumerRequest,
   ws: string,
   question: string,
   signal: AbortSignal,
+  hooks: RunCaseHooks = {},
 ): Promise<{ finalAnswer: string; trace: EvaluationExecutionTrace }> {
   const sessionId = `mw-eval-${randomUUID().slice(0, 8)}`;
   let rateLimitAttempts = 0;
@@ -565,8 +578,10 @@ async function runCase(
       if (rateLimitAttempts >= RATE_LIMIT_MAX_ATTEMPTS) {
         throw new Error(`runs/sync 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍被限流：${failure}`);
       }
+      const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(rateLimitAttempts);
+      hooks.onRateLimited?.(rateLimitAttempts, waitMs, String(failure));
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, rateLimitBackoffMs(rateLimitAttempts));
+        const timer = setTimeout(resolve, waitMs);
         signal.addEventListener('abort', () => {
           clearTimeout(timer);
           reject(new Error('本轮评测已由用户停止'));
