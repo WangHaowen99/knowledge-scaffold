@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -25,6 +24,7 @@ from solver_coordination.verification.service import (
     ContentAddressedSolverArtifactStore,
     IndependentVerificationService,
 )
+from internal_access import internal
 
 WORKSPACE = "workspace-synthetic"
 OWNER = "owner-synthetic"

@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import importlib
 import json
 import sys
@@ -24,6 +23,7 @@ from solver_coordination.contracts import NormalizedInput, SolverResult
 from solver_coordination.errors import VerificationDivergenceError
 from solver_coordination.fact_snapshot import FactSnapshotInvalidError
 from solver_coordination.job_store import SolverJobStore
+from internal_access import internal
 
 
 def _capability(*, objectives=()):

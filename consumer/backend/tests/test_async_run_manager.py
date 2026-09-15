@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import asyncio
 import logging
 import os
@@ -50,6 +49,7 @@ from ontology.view_cache import (
 )
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
+from internal_access import internal
 
 
 def _context(run_id="run_demo"):
@@ -2232,7 +2232,7 @@ def test_deterministic_preflight_receives_only_business_arguments(
     )
     adapter = OrchestratorSessionAdapter(lambda: _Orchestrator())
 
-    prepared = adapter._prepare_sync_impl(
+    prepared = internal(adapter).prepare_sync_impl(
         context,
         {"quick"},
         lambda value: value,

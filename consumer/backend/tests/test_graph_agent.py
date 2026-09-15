@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import json
 import time
@@ -40,6 +39,7 @@ from openjiuwen.core.foundation.llm import ToolCall
 from openjiuwen.core.session.agent import create_agent_session
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+from internal_access import internal
 
 
 class JiuwenGraphQueryAgent(NativeJiuwenGraphQueryAgent):

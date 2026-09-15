@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import inspect
 import json
 import threading
@@ -18,6 +17,7 @@ from persistence.session_summary_index import (
     SessionSummaryIndexWriteError,
     session_summary_index_enabled,
 )
+from internal_access import internal
 
 
 def _capture_thread_error(errors, operation):

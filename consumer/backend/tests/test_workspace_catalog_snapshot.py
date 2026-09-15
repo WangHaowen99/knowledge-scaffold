@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import errno
 import importlib
 import json
@@ -15,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 import workspace.workspaces as workspaces
+from internal_access import internal
 
 
 def _catalog_module():

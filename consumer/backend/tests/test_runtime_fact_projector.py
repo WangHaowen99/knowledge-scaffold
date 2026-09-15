@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import sqlite3
 import threading
@@ -24,6 +23,7 @@ from config import AgentConfig
 from ontology.evidence.manager import EvidenceIndexManager
 from persistence.runtime_facts import RuntimeFactsStore, RuntimeFactsStoreError
 from utils.read_docs import build_grounding_subject_key, merge_read_documents_registry
+from internal_access import internal
 
 
 def _package(tmp_path: Path) -> Path:

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 from agent.tools.base import ToolContext
 from agent.tools.business_data.adapters.mindsdb_search import MindsDBSearchAdapter
 from agent.tools.business_data_search import (
@@ -18,6 +17,7 @@ from shared_capabilities.business_data.providers.mindsdb import (
     _THOUGHT_MARKER,
     _parse_mindsdb_chunk_to_events,
 )
+from internal_access import internal
 
 
 def _fake_ontology(ontology_id):

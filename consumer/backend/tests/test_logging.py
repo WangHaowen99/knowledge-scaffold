@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for date-partitioned backend logging."""
 
-from internal_access import internal
 import gzip
 import json
 import logging
@@ -11,6 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pytest
+from internal_access import internal
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 import utils.logging as logging_utils
@@ -67,11 +67,14 @@ def _restore_root_logging(tmp_path, monkeypatch):
     try:
         yield
     finally:
-        for handler in list(root_logger.handlers):
-            root_logger.removeHandler(handler)
-            handler.close()
-        for handler in original_handlers:
-            root_logger.addHandler(handler)
+        active_handlers = tuple(root_logger.handlers)
+        for active_handler in active_handlers:
+            root_logger.removeHandler(active_handler)
+            active_handler.close()
+
+        for saved_handler in original_handlers:
+            if saved_handler not in root_logger.handlers:
+                root_logger.addHandler(saved_handler)
         root_logger.setLevel(original_level)
         internal(logging_utils).LOGGING_CONFIGURED = original_configured
         internal(logging_utils).CONFIGURED_LOG_LEVEL = original_configured_level

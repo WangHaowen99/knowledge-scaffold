@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for chat session persistence."""
 
-from internal_access import internal
 import hashlib
 import json
 from operator import getitem
@@ -16,6 +15,7 @@ from persistence.session_summary_index import (
     SessionSummaryIndexWriteError,
 )
 from utils.streaming import build_agent_event
+from internal_access import internal
 
 
 def _only_summary(index: SessionSummaryIndex):

@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import json
 import os
 from datetime import datetime, timezone
@@ -10,6 +9,7 @@ from persistence.execution_store import (
     ExecutionStore,
     ExecutionStoreCorruptionError,
 )
+from internal_access import internal
 
 
 def _seed_checkpoint(

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import importlib
 from types import SimpleNamespace
@@ -20,6 +19,7 @@ from agent.runtime.jiuwen import JiuwenAsyncAgentRuntime
 from agent.tools.base import ToolBatchResult, ToolInvocation
 from config.settings import AgentConfig
 from integration.observability import RuntimeEventType, RuntimeStatus
+from internal_access import internal
 
 _REAL_IMPORT_MODULE = importlib.import_module
 

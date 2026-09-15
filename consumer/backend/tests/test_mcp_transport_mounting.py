@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import asyncio
 import json
 import re
@@ -17,6 +16,7 @@ from backend_synthetic_credentials import synthetic_secret
 from integration.mcp.scope import MCPRequestScope
 from integration.mcp.service_catalog import list_mcp_service_cards
 from integration.mcp.token_service import MCPTokenAuthError
+from internal_access import internal
 
 ENDPOINT_ID = "cdd181f5b6cb47a9"
 OTHER_ENDPOINT_ID = "a" * 16

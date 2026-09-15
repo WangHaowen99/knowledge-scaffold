@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP route tests for chat session management."""
 
-from internal_access import internal
 import asyncio
 import json
 import threading
@@ -27,6 +26,7 @@ from persistence.session_summary_index import SessionSummary, SessionSummaryInde
 from utils.streaming import build_agent_event
 from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 class _FakeSession:

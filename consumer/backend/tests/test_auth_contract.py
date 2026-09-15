@@ -7,7 +7,6 @@
 消息一旦改变即破坏三类外部消费方。
 """
 
-from internal_access import internal
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +24,7 @@ from backend_synthetic_credentials import (
     synthetic_secret,
 )
 from fastapi.testclient import TestClient
+from internal_access import internal
 
 
 def _build_app(auth_manager):

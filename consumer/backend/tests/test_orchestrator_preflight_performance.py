@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 from agent.core.orchestrator import AgenticOrchestrator
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
 from persistence.session_summary_index import SessionSummaryIndex
+from internal_access import internal
 
 
 def test_protocol_preflight_uses_summary_metadata_and_turn_count_without_history_replay(

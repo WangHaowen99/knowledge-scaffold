@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import threading
 from types import SimpleNamespace
@@ -13,6 +12,7 @@ from agent.runtime.event_bus import AsyncEventBus, EventBusClosedError
 from agent.runtime.runtime import RuntimeContainer, RuntimeState
 from agent.runtime.store import InMemoryRunRepository
 from app import _run_session_recovery_batches, _stop_session_recovery
+from internal_access import internal
 
 
 class _LifecycleRecoveryManager:

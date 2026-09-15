@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 
 import pytest
@@ -12,6 +11,7 @@ from agent.tools.business_data.providers.graph.backends.base import GraphBackend
 from agent.tools.business_data.providers.graph.backends.hugegraph import HugeGraphBackend
 from agent.tools.business_data.providers.graph.models import GraphScope
 from backend_synthetic_credentials import synthetic_invalid_password, synthetic_secret
+from internal_access import internal
 
 
 def _scope():

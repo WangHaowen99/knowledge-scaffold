@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for LLM service behavior."""
 
-from internal_access import internal
 import json
 import logging
 import threading
@@ -17,6 +16,7 @@ from llm import LLMService
 from llm.transport import _retry_delay_seconds
 from openai import APIStatusError, InternalServerError
 from pydantic import BaseModel
+from internal_access import internal
 
 
 class _FakeStreamingResponse:

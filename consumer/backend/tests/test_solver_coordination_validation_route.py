@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import json
 import secrets
@@ -26,6 +25,7 @@ from solver_coordination import (
 )
 from solver_coordination.run_ledger import SolverRunLedger
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 def _payload(item_count: int = 9):

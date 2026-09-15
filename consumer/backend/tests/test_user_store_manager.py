@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import json
 import threading
 import time
@@ -11,6 +10,7 @@ import workspace.user_store_manager as user_store_manager_module
 from utils.streaming import build_agent_event
 from workspace.user_store_manager import SessionPruneResult, UserStoreManager
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 def _set_session_updated_at(storage_dir, session_id, updated_at):

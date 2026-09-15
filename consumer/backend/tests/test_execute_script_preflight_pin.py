@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import hashlib
 import os
@@ -28,6 +27,7 @@ from ontology.view_cache import (
     build_package_content_revision,
     build_package_revision_source_signature,
 )
+from internal_access import internal
 
 _ONTOLOGY_ID = "synthetic-ontology"
 _ONTOLOGY_VERSION = "1.0.0"

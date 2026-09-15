@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for Consumer-owned openJiuwen tool scheduling."""
 
-from internal_access import internal
 import asyncio
 import json
 import threading
@@ -37,6 +36,7 @@ from agent.tools.scheduling import (
     normalize_parallelism_limit,
     plan_barriered_tool_batches,
 )
+from internal_access import internal
 
 
 @pytest.fixture(autouse=True)

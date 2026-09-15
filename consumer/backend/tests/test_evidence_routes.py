@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +17,7 @@ from ontology.evidence.manager import EvidenceIndexManager
 from ontology.evidence.worker import EvidenceIndexWorker
 from persistence.runtime_facts import RuntimeFactsStore
 from workspace.workspaces import create_workspace, get_workspace_paths
+from internal_access import internal
 
 
 class _RecordingPool:

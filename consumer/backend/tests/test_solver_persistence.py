@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import sqlite3
 import threading
@@ -12,6 +11,7 @@ from solver_coordination.candidate_store import CandidateSetNotFoundError, Candi
 from solver_coordination.run_ledger import SolverRunLedger
 from solver_coordination.validation_store import ValidationRunStore, ValidationRunStoreError
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 def _validation_payload(run_id: str, marker: str) -> dict:

@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for lightweight task LLM configuration and routing."""
 
-from internal_access import internal
 import threading
 from types import SimpleNamespace
 
@@ -14,6 +13,7 @@ from fastapi.testclient import TestClient
 from llm import LLMPurpose, LLMService, configure_llm_router, reset_llm_router_for_tests
 from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 class _FakeStreamingResponse:

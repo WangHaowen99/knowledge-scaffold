@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +15,7 @@ from workspace.workspaces import (
     delete_workspace,
     get_workspace_paths,
 )
+from internal_access import internal
 
 
 def _write_skill(skill_root, name: str, description: str) -> None:

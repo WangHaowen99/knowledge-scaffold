@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 from pathlib import Path
 
 import pytest
 from agent.skill_evolution.models import TaskRecord
 from agent.skill_evolution.store import SkillEvolutionStore
+from internal_access import internal
 
 
 def _make_record(task_id="t1", workspace_id="ws1", ontology_id="onto1", status="submitted"):

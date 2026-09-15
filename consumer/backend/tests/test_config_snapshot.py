@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import errno
 import json
 import os
@@ -17,6 +16,7 @@ from config.config_snapshot import (
     ConfigSnapshotManager,
     ConfigSourceSignature,
 )
+from internal_access import internal
 
 
 class FakeClock:

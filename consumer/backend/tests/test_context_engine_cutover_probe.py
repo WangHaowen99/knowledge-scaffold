@@ -16,7 +16,6 @@ without requiring a live LLM:
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import inspect
 from types import SimpleNamespace
@@ -30,6 +29,7 @@ from agent.core.jiuwen_engine import (
 )
 from backend_synthetic_credentials import synthetic_secret
 from config.settings import AgentConfig
+from internal_access import internal
 
 
 def _agent_config(**overrides):

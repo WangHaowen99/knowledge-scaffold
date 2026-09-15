@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 from operator import getitem
 from types import SimpleNamespace
@@ -20,6 +19,7 @@ from agent.tools.base import ToolBatchResult
 from backend_synthetic_credentials import synthetic_secret
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
+from internal_access import internal
 
 
 def _context(

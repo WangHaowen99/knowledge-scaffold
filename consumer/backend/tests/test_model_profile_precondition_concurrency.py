@@ -1,5 +1,4 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from threading import Event
@@ -16,6 +15,7 @@ from workspace.workspaces import (
     get_workspace_runtime_config,
     update_workspace_runtime_config,
 )
+from internal_access import internal
 
 
 def _profile(profile_id):

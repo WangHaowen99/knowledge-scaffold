@@ -6,7 +6,6 @@ Uses a real temp ontology fixture + a fake skill-evolver HTTP client (no network
 
 from __future__ import annotations
 
-from internal_access import internal
 import io
 import json
 import zipfile
@@ -25,6 +24,7 @@ from agent.skill_evolution.service import (
     _strip_archive_root,
 )
 from agent.skill_evolution.store import SkillEvolutionStore
+from internal_access import internal
 
 
 # --------------------------------------------------------------------------- #

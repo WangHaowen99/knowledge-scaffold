@@ -1,12 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import json
 from types import SimpleNamespace
 
 from scripts import benchmark_metadata_reads as benchmark
 from scripts.benchmark_metadata_reads import evaluate_thresholds, percentile
+from internal_access import internal
 
 
 def _report(

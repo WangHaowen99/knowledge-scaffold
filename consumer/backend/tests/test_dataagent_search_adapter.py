@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """DataAgent control-plane schema tests; protocol tests live in shared providers."""
 
-from internal_access import internal
 import json
 
 import pytest
@@ -15,6 +14,7 @@ from agent.tools.business_data.provider_registry import (
 )
 from backend_synthetic_credentials import API_KEY, synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
+from internal_access import internal
 
 
 def _connection() -> EffectiveConnection:

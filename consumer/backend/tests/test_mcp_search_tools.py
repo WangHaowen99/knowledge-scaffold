@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 from api.protocols.mcp import server as mcp_server
 from api.protocols.mcp.tool_contracts import normalize_search_tool_args
 from integration.mcp.service_catalog import list_search_tools, load_mcp_service_catalog
+from internal_access import internal
 
 
 def test_mcp_search_extra_tools_are_advertised_as_supported():

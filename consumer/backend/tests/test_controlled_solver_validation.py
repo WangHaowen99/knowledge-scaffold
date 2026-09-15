@@ -1,7 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
-from internal_access import internal
 import ctypes
 import hashlib
 import json
@@ -21,6 +20,7 @@ from scripts.run_controlled_solver_validation import (
     main,
     run_bundle,
 )
+from internal_access import internal
 
 
 def test_windows_handle_conversion_reads_ctypes_value_instead_of_int():

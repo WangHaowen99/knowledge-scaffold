@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import inspect
 import json
@@ -16,6 +15,7 @@ from agent.tools.base import ToolContext
 from agent.tools.spawn_sub_agent import SpawnSubAgentTool
 from config import AgentConfig
 from workspace.workspaces import create_workspace, get_workspace_paths
+from internal_access import internal
 
 
 def _agent_config(**overrides):

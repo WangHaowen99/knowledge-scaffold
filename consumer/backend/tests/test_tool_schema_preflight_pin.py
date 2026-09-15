@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import json
 import threading
@@ -30,6 +29,7 @@ from agent.runtime.offload import BoundedOffloadPool
 from agent.tools.base import ToolInvocation
 from agent.tools.executor import aexecute_tool_batch
 from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 WORKSPACE_ID = "workspace-admitted"
 ONTOLOGY_ID = "ontology-admitted"

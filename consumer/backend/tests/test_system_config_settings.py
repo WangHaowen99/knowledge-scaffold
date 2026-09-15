@@ -1,11 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
-from internal_access import internal
 import hashlib
 import json
 
 import pytest
 from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 from config.settings import AgentConfig, AppConfig, LimitsConfig
+from internal_access import internal
 
 SECRET_TEST_KEY = ENCRYPTION_KEY
 

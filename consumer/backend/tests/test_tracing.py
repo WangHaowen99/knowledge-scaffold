@@ -1,13 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the low-level Langfuse client adapter."""
 
-from internal_access import internal
 import builtins
 import importlib
 from unittest.mock import MagicMock
 
 import integration.observability.exporters.langfuse.client as langfuse_client
 from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 
 def test_langfuse_client_module_does_not_import_langfuse_during_module_load(monkeypatch):

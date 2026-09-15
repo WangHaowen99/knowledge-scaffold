@@ -16,7 +16,6 @@ Test matrix:
 
 from __future__ import annotations
 
-from internal_access import internal
 import asyncio
 import importlib.metadata
 from typing import List
@@ -36,6 +35,7 @@ from openjiuwen.core.session.agent import create_agent_session
 from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig
 from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+from internal_access import internal
 
 
 def test_phase_a_uses_requirements_pinned_openjiuwen_version():

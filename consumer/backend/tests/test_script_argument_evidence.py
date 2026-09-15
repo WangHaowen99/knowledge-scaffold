@@ -21,6 +21,7 @@ from agent.script_argument_errors import safe_script_argument_error
 from agent.tools.base import ToolBatchResult, ToolContext, ToolInvocation
 import agent.tools.execute_script as scripts
 from ontology.ontology_catalog import load_script_catalog, public_script_catalog
+from internal_access import internal
 
 
 SYNTHETIC_UUID = "00000000-0000-4000-8000-000000000001"
@@ -147,7 +148,7 @@ def test_declared_identifier_rejects_empty_or_container_values(bound_script, val
 
 def test_generated_identifier_rule_supports_explicit_array_paths():
     issues = []
-    assert scripts._validate_structured_arguments_against_request(
+    assert internal(scripts).validate_structured_arguments_against_request(
         {"rows_json": json.dumps([{"calculation_result_id": SYNTHETIC_UUID}])}, REQUEST,
         generated_identifiers={"rows_json[].calculation_result_id": "uuid4"}, issues=issues,
     ) == []
@@ -241,7 +242,7 @@ def test_tool_evidence_does_not_override_current_request_field_pairings():
         {"name": "sample-b", "quantity": 7.25, "category": "red"},
     ]
     issues = []
-    errors = scripts._validate_structured_arguments_against_request(
+    errors = internal(scripts).validate_structured_arguments_against_request(
         {"rows": rows}, request, json.dumps(rows), issues=issues,
     )
     assert errors
@@ -311,7 +312,7 @@ def test_changed_values_with_same_validation_cause_stop_and_preserve_safe_reason
         else:
             with pytest.raises(AgentLoopStalledError) as raised:
                 guard.record(invocation, batch)
-    error = JiuwenAsyncAgentRuntime._runtime_error(raised.value)
+    error = internal(JiuwenAsyncAgentRuntime).runtime_error(raised.value)
     assert error.error_code == "AGENT_LOOP_STALLED"
     assert error.retriable is False
     validation = error.details["last_argument_validation"]
@@ -361,7 +362,7 @@ def test_actual_tool_to_runtime_public_failure_retains_validation(bound_script, 
 
 def test_mixed_unknown_exception_group_keeps_runtime_fallback():
     group = ExceptionGroup("synthetic group", [AgentLoopStalledError(), RuntimeError("synthetic unknown")])
-    assert JiuwenAsyncAgentRuntime._runtime_error(group).error_code == "INTERNAL_ERROR"
+    assert internal(JiuwenAsyncAgentRuntime).runtime_error(group).error_code == "INTERNAL_ERROR"
 
 
 def test_multiple_known_stall_causes_keep_classification_and_last_reason():
@@ -370,7 +371,7 @@ def test_multiple_known_stall_causes_keep_classification_and_last_reason():
         "issues": [{"code": "ungrounded_identity", "path": "arguments.device_id"}],
     }})
     group = ExceptionGroup("synthetic group", [AgentLoopStalledError(), latest])
-    error = JiuwenAsyncAgentRuntime._runtime_error(group)
+    error = internal(JiuwenAsyncAgentRuntime).runtime_error(group)
     assert error.error_code == "AGENT_LOOP_STALLED"
     assert error.details["last_argument_validation"]["issues"][0]["path"] == "arguments.device_id"
 
@@ -423,7 +424,7 @@ def test_restored_engine_history_gets_a_current_turn_boundary(bound_script, requ
     if request_already_seeded:
         state["messages"].append({"role": "user", "content": request})
     engine = object.__new__(JiuwenReactLoopEngine)
-    engine._seed_initial_messages(state, system_prompt="Synthetic system instruction.")
+    internal(engine).seed_initial_messages(state, system_prompt="Synthetic system instruction.")
     assert state["messages"] == [*history, {"role": "user", "content": request}]
     assert _build_jiuwen_history_source_messages(state) == history
     bound_script.context.messages = state["messages"]

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from internal_access import internal
 import json
 import os
 from pathlib import Path
@@ -28,6 +27,7 @@ from ontology.package_import import (
     validate_imported_field_aliases,
     validate_imported_object_aliases,
 )
+from internal_access import internal
 
 V01_MANIFEST = """\
 kind: ontology-package
