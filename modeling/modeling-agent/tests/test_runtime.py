@@ -1520,6 +1520,89 @@ async def test_structured_issue_can_keep_progress_and_end_suspended_run(settings
         await runtime.shutdown()
 
 
+async def test_required_tool_recovery_card_answer_enters_issue_recovery_path(settings) -> None:
+    """技术恢复卡虽复用 clarification UI，也必须走 resume_issue。"""
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_required_tool_card",
+            project_id="project_required_tool_card",
+            session_id="required-tool-card-session",
+            status="queued",
+            prompt="建立结构化产品台账",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+        live = LiveRun(
+            run_id=run.id,
+            project_id=run.project_id,
+            token="token_required_tool_card",
+            required_tools={"begin_product_ledger", "append_product_ledger_batch"},
+        )
+        runtime._suspend_required_tool_review(  # noqa: SLF001
+            live,
+            run,
+            {"begin_product_ledger", "append_product_ledger_batch"},
+        )
+        interaction = runtime.store.pending_interaction(run.project_id)
+        assert interaction is not None
+        assert interaction.payload["recovery"]["requiredTools"] == [
+            "append_product_ledger_batch", "begin_product_ledger",
+        ]
+
+        kept = await runtime.answer_interaction(
+            project_id=run.project_id,
+            interaction_id=interaction.id,
+            token="token_required_tool_card",
+            answer={"value": "keep_current_progress", "selected": ["keep_current_progress"]},
+        )
+        assert kept["mode"] == "kept"
+        assert kept["run"]["status"] == "cancelled"
+    finally:
+        await runtime.shutdown()
+
+
+async def test_required_tool_recovery_retry_restores_all_missing_tools(settings) -> None:
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    captured: list[set[str]] = []
+
+    async def continue_stub(run, token, prompt, **kwargs):
+        captured.append(set(kwargs.get("required_tools") or ()))
+        return run.public()
+
+    runtime._continue = continue_stub  # type: ignore[method-assign]
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_required_tool_retry",
+            project_id="project_required_tool_retry",
+            session_id="required-tool-retry-session",
+            status="queued",
+            prompt="建立结构化产品台账",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+        issue_id = "required-tool-retry"
+        runtime.store.save_technical_recovery(run.id, issue_id, {
+            "issueId": issue_id,
+            "requiredTool": "begin_product_ledger",
+            "requiredTools": ["begin_product_ledger", "append_product_ledger_batch"],
+            "actionId": "retry_required_tools",
+            "recoveryActions": [{"id": "retry_required_tools"}],
+        })
+        resumed = await runtime.resume_issue(
+            project_id=run.project_id,
+            token="token_required_tool_retry",
+            issue_id=issue_id,
+            action_id="retry_required_tools",
+        )
+        assert resumed["mode"] == "checkpoint_resume"
+        assert captured == [{"begin_product_ledger", "append_product_ledger_batch"}]
+    finally:
+        await runtime.shutdown()
+
+
 async def test_validation_issue_resume_preserves_report_locator_and_has_fallback(settings) -> None:
     runtime = service(settings, ScriptedModel([]), FakeGateway())
     captured: list[dict] = []
@@ -5544,9 +5627,77 @@ def test_full_read_requirement_follows_saved_reading_mode() -> None:
         {"filename": "规则.md", "readingMode": "on_demand"},
     ]})
     assert live.situation.full_read_materials == ("导则.md",)
-    assert "read_documents_fully" in _required_tools_for_user_intent(
+    required = _required_tools_for_user_intent(
         text, situation=live.situation,
     )
+    assert "read_documents_fully" in required
+    assert "set_material_directive" not in required
+
+    _absorb_reading_modes(live, {
+        "documents": [{"filename": "导则.md", "id": "doc-1", "readingMode": "full"}],
+        "coverage": [{"filename": "导则.md", "documentId": "doc-1", "complete": True}],
+    })
+    assert live.situation.has_completed_full_read() is True
+    assert "read_documents_fully" not in _required_tools_for_user_intent(
+        text, situation=live.situation,
+    )
+
+
+def test_full_read_prohibition_and_completed_result_override_positive_wording() -> None:
+    from modeling_agent.service import _required_tools_for_user_intent
+
+    prohibited = _required_tools_for_user_intent(
+        "本轮需要产品台账，但禁止再次全文精读，复用已经完成的全文分析结果；不要修改知识包。",
+    )
+    assert "read_documents_fully" not in prohibited
+    assert "set_material_directive" not in prohibited
+    satisfied = _required_tools_for_user_intent(
+        "全文精读已经完成，请复用已完成结果继续整理产品台账。",
+    )
+    assert "read_documents_fully" not in satisfied
+
+
+def test_full_read_completion_is_invalidated_when_document_revision_changes() -> None:
+    from modeling_agent.service import LiveRun, _absorb_reading_modes, _required_tools_for_user_intent
+
+    live = LiveRun(run_id="run_revision", project_id="project_revision", token="token")
+    _absorb_reading_modes(live, {
+        "documents": [{
+            "id": "doc-1", "filename": "synthetic.md", "readingMode": "full",
+            "revisionFingerprint": "doc-1:1:hash-a",
+        }],
+        "coverage": [{
+            "documentId": "doc-1", "filename": "synthetic.md",
+            "revisionFingerprint": "doc-1:1:hash-a", "complete": True,
+        }],
+    })
+    assert "read_documents_fully" not in _required_tools_for_user_intent(
+        "请全文精读 synthetic.md", situation=live.situation,
+    )
+
+    _absorb_reading_modes(live, {"documents": [{
+        "id": "doc-1", "filename": "synthetic.md", "readingMode": "full",
+        "revisionFingerprint": "doc-1:2:hash-b",
+    }]})
+    assert live.situation.has_completed_full_read() is False
+    assert "read_documents_fully" in _required_tools_for_user_intent(
+        "请全文精读 synthetic.md", situation=live.situation,
+    )
+
+
+def test_required_text_receipt_reports_missing_exact_constraints() -> None:
+    from modeling_agent.service import _required_text_constraint_status
+
+    constraint = {"text": "保留 198 条与 3 组归并，不修改知识包"}
+    acknowledged, missing = _required_text_constraint_status(
+        "已按补充说明处理，保留 198 条与 3 组归并，知识包保持不变。", constraint,
+    )
+    assert acknowledged is True
+    assert missing == []
+    acknowledged, missing = _required_text_constraint_status("已按要求处理。", constraint)
+    assert acknowledged is False
+    assert "count:198" in missing and "count:3" in missing
+    assert "preserve_knowledge_package" in missing
 
 
 def test_purpose_review_continuation_avoids_full_read_wording() -> None:

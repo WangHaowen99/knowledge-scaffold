@@ -202,6 +202,34 @@ export interface ArtifactCandidate {
   readiness: 'extractable' | 'needs_clarification';
 }
 
+/**
+ * Structured product facts are deliberately separate from model-generated
+ * artifact candidates.  The product-ledger gate may only use this source;
+ * candidateArtifacts are suggestions for later rule drafting and do not carry
+ * enough provenance to close a 201/198/3 inventory reconciliation.
+ */
+export interface ProductInventoryItem {
+  canonicalItemId: string;
+  name: string;
+  applicableSubjects: string[];
+  triggerScenarios: string[];
+  businessNeeds: string[];
+  sourceRecordIds: string[];
+  sourceLocator: string;
+  ruleRefs: string[];
+  mergeGroupId?: string;
+  evidenceStatus: 'complete' | 'insufficient';
+  processingStatus?: 'pending' | 'ready' | 'generated' | 'blocked';
+  structuredGaps?: string[];
+  insufficiencyReason?: string;
+}
+
+export interface ProductInventorySummary {
+  rawCount: number;
+  canonicalCount: number;
+  mergedGroupCount: number;
+}
+
 export type CandidateDispositionStatus =
   | 'generated'
   | 'merged'
@@ -269,6 +297,9 @@ export interface AnalysisResult {
   candidateProcesses?: CandidateBusinessProcess[];
   materialAssessments?: MaterialAssessment[];
   candidateArtifacts?: ArtifactCandidate[];
+  /** Authoritative, itemized product facts used by the product ledger gate. */
+  productInventory?: ProductInventoryItem[];
+  productInventorySummary?: ProductInventorySummary;
   documentReadCoverage?: DocumentReadCoverage[];
 }
 

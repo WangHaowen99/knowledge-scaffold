@@ -629,6 +629,13 @@ export const actions = {
               status: event.issueStatus || event.phase,
               text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
               actions: recoveryActions,
+              missingRequiredTools: event.missingRequiredTools || event.missing_required_tools || [],
+              ledgerId: event.ledgerId || event.ledger_id || '',
+              ledgerStatus: event.ledgerStatus || event.ledger_status || '',
+              processed: event.processed ?? null,
+              remaining: event.remaining ?? null,
+              analysisRevision: event.analysisRevision || event.analysis_revision || '',
+              failureReason: event.failureReason || event.failure_reason || '',
             }],
           });
         }
@@ -1660,6 +1667,9 @@ function enrichInteractionAnswer(interaction, answer) {
   const chosen = (() => { if (Array.isArray(answer.selected) && answer.selected.length) return answer.selected; return answer.value ? [answer.value] : []; })();
   const options = interaction?.payload?.options || [];
   const labels = chosen.map((value) => options.find((option) => option.value === value)?.label).filter(Boolean);
+  // Keep the raw text separate from the option label. The server persists the
+  // answer and replay may not have the original interaction payload, so the
+  // label is a convenience field rather than a replacement for answer.text.
   return labels.length ? { ...answer, displayText: labels.join('、') } : answer;
 }
 

@@ -292,6 +292,21 @@ class RunSituation:
 
     materials_observed: bool = False
     full_read_materials: tuple[str, ...] = ()
+    # 资料修订级别的全文覆盖事实。仅在核心返回 coverage=100% 后回填，
+    # 不能把“readingMode=full”误当作已经完成全文分析。
+    completed_full_read_materials: tuple[str, ...] = ()
+    # filename -> revision fingerprint for the authoritative 100% coverage.
+    # A filename alone is not sufficient: replacing a document must invalidate
+    # the previous completion and require a fresh analysis.
+    completed_full_read_fingerprints: dict[str, str] = field(default_factory=dict)
+    # 台账工具返回的确定性校验快照，供恢复和回执守卫使用。
+    product_ledger_status: str = ""
+    product_ledger_counts: dict[str, int] = field(default_factory=dict)
+    product_ledger_id: str = ""
+    product_ledger_last_batch: int | None = None
+    product_ledger_processed: int = 0
+    product_ledger_remaining: int | None = None
+    product_ledger_analysis_revision: str = ""
 
     plan_observed: bool = False
     plan_remaining: int = 0
@@ -309,6 +324,9 @@ class RunSituation:
         if not self.materials_observed:
             return Verdict.UNKNOWN
         return Verdict.ALLOW if self.full_read_materials else Verdict.DENY
+
+    def has_completed_full_read(self) -> bool:
+        return bool(self.completed_full_read_materials)
 
 
 @dataclass
@@ -455,6 +473,7 @@ def _required_text_constraint(
     if not text:
         return None
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    contract = _parse_required_text_contract(text)
     return {
         **inherited,
         "required": True,
@@ -465,6 +484,42 @@ def _required_text_constraint(
         )[:4_000],
         "text": text[:8_000],
         "textHash": str(inherited.get("textHash") or f"sha256:{digest}"),
+        "contract": contract,
+    }
+
+
+def _parse_required_text_contract(text: str) -> dict[str, Any]:
+    """Extract a small, auditable contract from free-form requiredText.
+
+    This is deliberately additive: the original Chinese text remains the
+    authority, while common count/preservation/prohibition clauses become
+    machine-checkable fields for recovery receipts.
+    """
+    count_tokens = re.findall(
+        r"(?<![A-Za-z0-9])\d+\s*(?:条|项|组|个|份|张|件|条目)", text,
+    )
+    expected_counts = []
+    for token in count_tokens:
+        expected_counts.append(int(re.sub(r"\D", "", token)))
+    preserve_ids = bool(re.search(
+        r"(?:保留|沿用|不修改|不得修改).{0,40}(?:既有|现有|已有)?\s*(?:产品\s*)?(?:ID|id|标识)|"
+        r"(?:ID|id|标识).{0,20}(?:保留|沿用|不修改|不得修改)",
+        text,
+    ))
+    preserve_package = bool(re.search(r"(?:不修改|不得修改|不改动).{0,12}知识包", text))
+    prohibited_clauses = re.findall(
+        r"(?:禁止|不要|不再|无需|不用|不必|不得|避免)([^，。；\n]{1,80})", text,
+    )
+    prohibited_actions = []
+    for clause in prohibited_clauses:
+        normalized_clause = re.sub(r"\s+", "", clause).strip("，。；、,; ")
+        if normalized_clause:
+            prohibited_actions.append(normalized_clause)
+    return {
+        "expectedCounts": list(dict.fromkeys(expected_counts)),
+        "preserveIds": preserve_ids,
+        "preserveKnowledgePackage": preserve_package,
+        "prohibitedActions": list(dict.fromkeys(prohibited_actions)),
     }
 
 
@@ -491,6 +546,7 @@ def _required_text_constraint_from_snapshot(
     }
     digest = hashlib.sha256(normalized["text"].encode("utf-8")).hexdigest()
     normalized["textHash"] = f"sha256:{digest}"
+    normalized["contract"] = _parse_required_text_contract(normalized["text"])
     return normalized
 
 
@@ -500,6 +556,7 @@ def _required_text_prompt(constraint: dict[str, Any]) -> str:
         "本轮必须遵守用户在决策卡中填写的补充说明。以下内容是用户原文，"
         "不得丢弃、改写为模糊要求或用旧计划替代：\n"
         f"【{text}】\n"
+        f"结构化回执契约：{json.dumps(constraint.get('contract') or _parse_required_text_contract(text), ensure_ascii=False, sort_keys=True)}\n"
         "请逐项核对并执行；最终回复必须明确说明每项已满足，或指出具体无法满足的原因。"
         "如果当前资料或工具不足以满足任一项，必须调用 ask 生成下一张可操作的问题卡，"
         "不能只在自然语言中写“待专家明确后继续”。"
@@ -532,13 +589,18 @@ def _required_text_response_acknowledged(
     normalized = re.sub(r"\s+", "", str(output or ""))
     if not normalized:
         return False
-    if _contains_any_token(normalized, ("无法", "不能", "缺少", "不足以", "未能")):
+    # “不能修改/不能创建/不能重读” can be the user's prohibition being
+    # correctly honored. Only treat negative wording as failure when it
+    # describes an inability or missing evidence, not a prohibited action.
+    if re.search(r"(?:无法|缺少|不足以|未能|信息不足|尚未提供)|不能(?!修改|创建|删除|重读|再次|全文|绕过|改动)", normalized):
         return False
     if not _contains_any_token(normalized, (
         "已收到", "已按你的补充", "已按补充说明", "已按要求",
         "已逐项", "已保留", "不会修改", "不修改知识包", "已核对",
         "已根据", "已记录", "已采用", "按口述", "无需修改", "无需调整",
         "保持当前", "补充说明已", "约束已",
+        "遵守", "禁止", "不会创建", "不会修改", "不能修改", "不得修改",
+        "不会删除", "不会重读",
     )):
         return False
     # 用户给出两个以上精确数量时，至少要在回执中逐项回显这些数量，
@@ -558,6 +620,32 @@ def _required_text_response_acknowledged(
     ):
         return False
     return True
+
+
+def _required_text_constraint_status(
+    output: str,
+    constraint: dict[str, Any],
+) -> tuple[bool, list[str]]:
+    """Return an auditable response status instead of treating one keyword as proof.
+
+    The guard remains intentionally conservative: exact counts and explicit
+    prohibitions must be echoed in a successful receipt; otherwise the run is
+    routed to a review card and cannot silently proceed to generation.
+    """
+    missing: list[str] = []
+    normalized = re.sub(r"\s+", "", str(output or ""))
+    text = re.sub(r"\s+", "", str(constraint.get("text") or ""))
+    if not normalized:
+        missing.append("response")
+    if re.search(r"(?:无法|缺少|不足以|未能|信息不足|尚未提供)|不能(?!修改|创建|删除|重读|再次|全文|绕过|改动)", normalized):
+        missing.append("reason_for_unmet_constraint")
+    for item in re.findall(r"(?<![A-Za-z0-9])\d+\s*(?:条|项|组|个|份|张|件|条目)", str(constraint.get("text") or "")):
+        number = re.sub(r"\D", "", item)
+        if number and number not in normalized:
+            missing.append(f"count:{number}")
+    if "不修改知识包" in text and not _contains_any_token(normalized, ("不修改知识包", "知识包保持不变", "不改动知识包")):
+        missing.append("preserve_knowledge_package")
+    return not missing and _required_text_response_acknowledged(output, constraint), missing
 
 
 def _required_text_interrupt_acknowledged(
@@ -604,10 +692,11 @@ def _required_text_response_requires_review(
     constraint = live.required_text_constraint
     if not constraint or guard_mode == "off":
         return False
-    return not _required_text_response_acknowledged(
+    acknowledged, _missing = _required_text_constraint_status(
         str(result.get("output") or ""),
         constraint,
     )
+    return not acknowledged
 
 
 def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
@@ -1229,6 +1318,27 @@ class AgentService:
             if required_tools is not None
             else _required_tools_for_user_intent(prompt)
         )
+        # Persist the workflow policy before the model gets a chance to create
+        # a plan. Core remains the authority, but this early call closes the
+        # advisory-mode race between user intent and the first tool call.
+        if _product_ledger_requested(prompt):
+            try:
+                await self._gateway.call(
+                    project_id=project_id,
+                    run_id=run_id,
+                    token=token,
+                    tool="require_product_ledger",
+                    arguments={"required": True},
+                )
+            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
+                # The required tool remains in the run contract; a later
+                # recovery will expose the failure rather than silently
+                # allowing formal generation.
+                logger.warning(
+                    "Could not persist the product-ledger requirement for run %s: %s",
+                    run_id,
+                    type(error).__name__,
+                )
         live = LiveRun(
             run_id=run_id,
             project_id=project_id,
@@ -2064,6 +2174,34 @@ class AgentService:
                 status=400,
             )
         required_text_constraint = _required_text_constraint(interaction, answer)
+        # Technical recovery cards are rendered as ordinary decision cards by
+        # the workbench, but their answer must enter the issue-recovery path.
+        # Otherwise the answer is treated as a new business prompt and the
+        # persisted required tools are silently dropped on resume.
+        recovery_payload = interaction.payload.get("recovery")
+        recovery_action = ""
+        if isinstance(recovery_payload, dict):
+            recovery_action = str(
+                answer.get("action") or answer.get("value") or ""
+            ).strip()
+            allowed_actions = {
+                str(item).strip()
+                for item in recovery_payload.get("allowedActions") or []
+                if str(item).strip()
+            }
+            allowed_actions.update({
+                str(item.get("id") or "").strip()
+                for item in recovery_payload.get("recoveryActions") or []
+                if isinstance(item, dict)
+            })
+            if recovery_payload.get("actionId"):
+                allowed_actions.add(str(recovery_payload.get("actionId")).strip())
+            if not recovery_action or recovery_action not in allowed_actions:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_INVALID",
+                    "请选择当前恢复卡提供的有效动作",
+                    status=400,
+                )
         if (
             interaction.payload.get("requiredTextConstraint")
             and str(answer.get("value") or "").strip() == "edit_required_text"
@@ -2211,6 +2349,28 @@ class AgentService:
         run = self.store.require_run(interaction.run_id)
         self.events.publish(run.project_id, run.id, "interaction", {"id": interaction.id, "status": "answered", "answer": answer})
         self.events.publish(run.project_id, run.id, "message", {"role": "user", "blocks": [{"type": "answer", "interactionId": interaction.id, "answer": answer}]})
+        if isinstance(recovery_payload, dict):
+            # The interaction is marked answered before delegating so
+            # resume_issue does not reject the request as "still waiting for
+            # an interaction". The recovery record itself remains active until
+            # the selected action settles it.
+            issue_id = str(
+                recovery_payload.get("issueId")
+                or interaction.payload.get("issueId")
+                or ""
+            ).strip()
+            if not issue_id:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_INVALID",
+                    "恢复卡缺少问题标识，请刷新当前运行状态后重试",
+                    status=409,
+                )
+            return await self.resume_issue(
+                project_id=project_id,
+                token=token,
+                issue_id=issue_id,
+                action_id=recovery_action,
+            )
         answer_text = json.dumps(answer, ensure_ascii=False)
         live_for_answer = self._live.get(interaction.run_id)
         required_tools = _required_tools_for_user_intent(
@@ -2230,13 +2390,19 @@ class AgentService:
                 "summary": "补充说明已绑定到恢复任务",
                 "constraintHash": required_text_constraint.get("textHash"),
             })
-        if required_text_constraint:
-            # 语义守卫需要在恢复时强制读取该工具结果，台账模式为 advisory 时
-            # 仍会形成确定性观测，但不会阻断普通建模流程。
-            if _PRODUCT_LEDGER_INTENT.search(
-                f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}"
-            ):
-                required_tools.add("stage_product_ledger")
+        if required_text_constraint and _product_ledger_requested(
+            f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}",
+        ):
+            # The decision card is itself an explicit workflow policy. Require
+            # the policy write and source/ledger evidence, independent of the
+            # deployment's advisory setting.
+            required_tools.update({
+                "require_product_ledger",
+                "get_product_inventory_source",
+                "begin_product_ledger",
+                "append_product_ledger_batch",
+                "finalize_product_ledger",
+            })
         if direct_confirmation:
             approved = answer.get("approved") is True
             if not approved:
@@ -2470,6 +2636,21 @@ class AgentService:
         live.required_tools.update(_required_tools_for_user_intent(
             message, situation=live.situation, notes=live.intent_notes,
         ))
+        if _product_ledger_requested(message):
+            try:
+                await self._gateway.call(
+                    project_id=project_id,
+                    run_id=run.id,
+                    token=token,
+                    tool="require_product_ledger",
+                    arguments={"required": True},
+                )
+            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
+                logger.warning(
+                    "Could not persist the product-ledger requirement for run %s: %s",
+                    run.id,
+                    type(error).__name__,
+                )
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
         )
@@ -2531,7 +2712,13 @@ class AgentService:
             if live is not None:
                 live.technical_recoveries.pop(normalized_issue, None)
                 if technical is not None:
-                    live.required_tools.discard(str(technical.get("requiredTool") or ""))
+                    required_from_recovery = {
+                        str(item).strip()
+                        for item in technical.get("requiredTools") or []
+                        if str(item).strip()
+                    }
+                    required_from_recovery.add(str(technical.get("requiredTool") or "").strip())
+                    live.required_tools.difference_update(required_from_recovery)
             if execution in {RUN_QUEUED, RUN_RUNNING, RUN_STOPPING}:
                 settled_run = await self.cancel(project_id=project_id)
             else:
@@ -2577,8 +2764,14 @@ class AgentService:
             if normalized_action == "retry_from_latest":
                 technical.update({"attempt": 0, "exhausted": False})
                 self.store.save_technical_recovery(run.id, normalized_issue, technical)
-            required_tools = {str(technical.get("requiredTool") or "").strip()}
-            required_tools.discard("")
+            required_tools = {
+                str(item).strip()
+                for item in technical.get("requiredTools") or []
+                if str(item).strip()
+            }
+            required_tool = str(technical.get("requiredTool") or "").strip()
+            if required_tool:
+                required_tools.add(required_tool)
             if technical.get("strategy") == CONFIRMATION_REVIEW_STRATEGY:
                 recovery_prompt = self._confirmation_review_prompt(run)
             else:
@@ -2830,6 +3023,11 @@ class AgentService:
             return
         _absorb_plan_progress(live, result)
         _absorb_reading_modes(live, result)
+        if name in {
+            "get_product_ledger", "stage_product_ledger", "finalize_product_ledger",
+            "get_product_ledger_progress",
+        }:
+            _absorb_product_ledger(live, result)
         _absorb_stage_delivery(live, name, result)
         _absorb_awaiting_user(live, result)
         if name == "create_change_plan":
@@ -3165,6 +3363,15 @@ class AgentService:
             for key, value in dict(answer).items()
         }
         required_text_constraint = _required_text_constraint(interaction, answer)
+        if required_text_constraint:
+            # Store a machine-readable receipt alongside the raw answer so
+            # recovery can distinguish an acknowledged constraint from a
+            # merely echoed sentence.
+            acknowledged, missing_constraints = _required_text_constraint_status(
+                str(answer.get("text") or ""), required_text_constraint,
+            )
+            answer_snapshot["constraintStatus"] = "acknowledged" if acknowledged else "unconfirmed"
+            answer_snapshot["missingConstraintItems"] = missing_constraints
         snapshot = {
             "interactionId": interaction.id,
             "kind": interaction.kind,
@@ -3205,6 +3412,7 @@ class AgentService:
         这条出口不修改知识包，也不把“之后再明确”当作完成；用户可以直接
         让助手按原说明重试，或在卡片中替换补充说明。
         """
+        _, missing_constraints = _required_text_constraint_status("", constraint)
         interaction_id = f"interaction_{uuid.uuid4().hex}"
         interaction = InteractionRecord(
             id=interaction_id,
@@ -3230,6 +3438,8 @@ class AgentService:
                 ],
                 "allowFreeText": True,
                 "requiredTextConstraint": constraint,
+                "missingConstraintItems": missing_constraints,
+                "constraintStatus": "unconfirmed",
             },
         )
         self.store.create_interaction(interaction)
@@ -3243,6 +3453,97 @@ class AgentService:
         self.events.publish(run.project_id, run.id, "status", {
             "status": RUN_WAITING,
             "text": "等待你确认补充说明后继续",
+        })
+
+    def _suspend_required_tool_review(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        missing_tools: set[str],
+    ) -> None:
+        """Expose an actionable, diagnostic card instead of a generic stop."""
+        issue_id = f"required-tool-review-{run.id}"
+        constraint = live.required_text_constraint or {}
+        recovery = {
+            "issueId": issue_id,
+            "requiredTool": sorted(missing_tools)[0] if missing_tools else "",
+            "requiredTools": sorted(missing_tools),
+            "missingRequiredTools": sorted(missing_tools),
+            "actionId": "retry_required_tools",
+            "recoveryActions": [
+                {
+                    "id": "retry_required_tools",
+                    "label": "从当前进度继续",
+                    "description": "从最后已保存的步骤重试缺失工具，不生成正式规则候选。",
+                },
+                {
+                    "id": "keep_current_progress",
+                    "label": "保留成果并停止",
+                    "description": "保留当前成果并结束本轮，不产生新的规则、指标或操作候选。",
+                },
+            ],
+            "strategy": "required_tools",
+            "ledgerId": live.situation.product_ledger_id or None,
+            "ledgerStatus": live.situation.product_ledger_status or "unknown",
+            "lastSuccessfulBatch": live.situation.product_ledger_last_batch,
+            "processed": live.situation.product_ledger_processed,
+            "remaining": live.situation.product_ledger_remaining,
+            "analysisRevision": live.situation.product_ledger_analysis_revision or None,
+            "failureReason": "必需工具在重试后仍未完成",
+            "constraintStatus": "unconfirmed" if constraint else "not_applicable",
+            "missingConstraintItems": (
+                _required_text_constraint_status("", constraint)[1] if constraint else []
+            ),
+            "allowedActions": ["retry_required_tools", "keep_current_progress"],
+            "constraintHash": constraint.get("textHash"),
+        }
+        live.technical_recoveries[issue_id] = recovery
+        self.store.save_technical_recovery(run.id, issue_id, recovery)
+        interaction = InteractionRecord(
+            id=f"interaction_{uuid.uuid4().hex}",
+            project_id=run.project_id,
+            run_id=run.id,
+            tool_call_id=f"required-tool-review:{run.id}",
+            kind="clarification",
+            payload={
+                "question": "本轮必需步骤尚未完成，请选择恢复方式",
+                "summary": "必需工具未完成",
+                "options": [
+                    {
+                        "label": "从当前进度继续",
+                        "description": "从最后已保存的步骤重试缺失工具",
+                        "value": "retry_required_tools",
+                    },
+                    {
+                        "label": "保留成果并停止",
+                        "description": "不产生新的规则、指标或操作候选",
+                        "value": "keep_current_progress",
+                    },
+                ],
+                "allowFreeText": False,
+                "recovery": recovery,
+                "missingRequiredTools": recovery["missingRequiredTools"],
+                "ledgerId": recovery["ledgerId"],
+                "ledgerStatus": recovery["ledgerStatus"],
+                "processed": recovery["processed"],
+                "remaining": recovery["remaining"],
+                "analysisRevision": recovery["analysisRevision"],
+                "failureReason": recovery["failureReason"],
+                "constraintStatus": recovery["constraintStatus"],
+                "missingConstraintItems": recovery["missingConstraintItems"],
+            },
+        )
+        self.store.create_interaction(interaction)
+        self.store.update_run(run.id, status=RUN_WAITING, result="", error="")
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "interaction", interaction.public())
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_WAITING,
+            "text": "必需步骤未完成，等待你选择恢复方式",
         })
 
     def _suspend_confirmation_review(self, live: LiveRun, run: RunRecord) -> None:
@@ -3762,11 +4063,8 @@ class AgentService:
                     ):
                         self._suspend_confirmation_review(live, run)
                         return
-                    result = {
-                        "result_type": "error",
-                        "output": "助手没有完成这项明确要求，本轮已停止；已经确认的内容保持不变。",
-                        "streamed": False,
-                    }
+                    self._suspend_required_tool_review(live, run, missing_tools)
+                    return
                 if _required_text_response_requires_review(
                     result,
                     live,
@@ -3971,7 +4269,7 @@ class AgentService:
                         publish_user_message=False,
                     )
                     self.store.mark_steering_delivered(steering_id)
-                except Exception as error:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
                     logger.exception(
                         "Could not start post-purpose-review run for project %s",
                         run.project_id,
@@ -4918,6 +5216,34 @@ _FULL_READ_INTENT = re.compile(
     r"全文.{0,6}(?:精读|阅读|通读)|(?:精读|通读).{0,12}(?:文档|文件|资料|材料)",
 )
 
+# Full-read wording can occur in a prohibition or in a statement that the
+# result already exists. Those meanings must win over the positive keyword.
+_FULL_READ_PROHIBITED = re.compile(
+    r"(?:禁止|不要|不再|无需|不用|不必|不得|别再|避免).{0,16}(?:全文\s*(?:精读|阅读|通读)|(?:精读|通读).{0,8}(?:文档|文件|资料|材料))|"
+    r"(?:全文\s*(?:精读|阅读|通读)|(?:精读|通读).{0,8}(?:文档|文件|资料|材料)).{0,16}(?:禁止|不要|不再|无需|不用|不必|不得|别再|避免)",
+    re.IGNORECASE,
+)
+# Covers the common Chinese order “不要再次全文阅读/无需继续全文分析”，where
+# an adverb sits between the negation and the full-read phrase.
+_FULL_READ_PROHIBITED_BROAD = re.compile(
+    r"(?:禁止|不要|不再|无需|不用|不必|不得|别再|避免).{0,40}(?:全文\s*(?:精读|阅读|通读)|(?:精读|通读).{0,12}(?:文档|文件|资料|材料))",
+    re.IGNORECASE,
+)
+_FULL_READ_ALREADY_SATISFIED = re.compile(
+    r"(?:已经|已|此前|先前|复用|沿用|基于).{0,20}(?:完成|读完|分析完成|覆盖完成|全文\s*(?:精读|阅读|通读))|"
+    r"(?:全文\s*(?:精读|阅读|通读)|分析).{0,16}(?:已经|已)完成",
+    re.IGNORECASE,
+)
+
+
+def _full_read_state(situation: RunSituation) -> str:
+    """Classify full-read state before mapping intent to tools."""
+    if situation.has_completed_full_read():
+        return "already_satisfied"
+    if not situation.materials_observed:
+        return "unknown"
+    return "requested" if situation.has_full_read_materials() is Verdict.ALLOW else "not_configured"
+
 _DOCUMENT_REFERENCE_INTENT = re.compile(
     r"《[^》]{1,200}》|"
     r"[\w\u4e00-\u9fff][\w\u4e00-\u9fff ._-]{0,120}\.(?:docx?|pdf|xlsx?|csv|md|txt)|"
@@ -4949,6 +5275,7 @@ _PACKAGE_FUSION_INTENT = re.compile(
 _PRODUCT_LEDGER_INTENT = re.compile(
     r"(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
     r"(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)|"
+    r"(?:产品|商品).{0,20}(?:台账|清单)|(?:台账|清单).{0,20}(?:产品|商品)|"
     r"规则.{0,220}(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
     r"(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}规则",
     re.IGNORECASE,
@@ -5022,6 +5349,11 @@ def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
 
 
+def _product_ledger_requested(text: str) -> bool:
+    """Return whether the user explicitly asks for a large, itemized ledger."""
+    return bool(_PRODUCT_LEDGER_INTENT.search(str(text or "")))
+
+
 # 会形成本阶段交付物的工具。阶段切换后重新计数，用来区分
 # 「刚进新阶段还没产出」和「本阶段做完了、确实没事可做」（见 #35）。
 _STAGE_DELIVERY_TOOLS = frozenset(
@@ -5066,20 +5398,139 @@ def _absorb_reading_modes(live: LiveRun, result: Any) -> None:
     if not isinstance(result, dict):
         return
     documents = result.get("documents")
-    if not isinstance(documents, list) or not documents:
+    coverage = result.get("coverage")
+    if not isinstance(documents, list):
+        single = result.get("document")
+        documents = [single] if isinstance(single, dict) else []
+    if not documents:
         return
     names: list[str] = []
+    current_fingerprints: dict[str, str] = {}
     for item in documents:
         if not isinstance(item, dict):
-            return
-        if "readingMode" not in item and "reading_mode" not in item:
-            return
+            continue
         mode = str(item.get("readingMode") or item.get("reading_mode") or "").strip()
         filename = str(item.get("filename") or "").strip()
         if mode == "full" and filename:
             names.append(filename)
+            fingerprint = str(
+                item.get("revisionFingerprint")
+                or item.get("revision_fingerprint")
+                or ""
+            ).strip()
+            if fingerprint:
+                current_fingerprints[filename] = fingerprint
     live.situation.full_read_materials = tuple(dict.fromkeys(names))
+    # Invalidate a previously complete result as soon as the same filename is
+    # observed with another revision. This keeps a completed read tied to the
+    # exact document revision instead of a mutable filename.
+    if live.situation.completed_full_read_materials:
+        valid_completed = []
+        valid_fingerprints: dict[str, str] = {}
+        for filename in live.situation.completed_full_read_materials:
+            previous = live.situation.completed_full_read_fingerprints.get(filename, "")
+            current = current_fingerprints.get(filename, "")
+            # If the previous completion has no fingerprint, it predates the
+            # revision-bound protocol and cannot be trusted after a fresh
+            # revision-bearing listing. Treat it as stale rather than reusing
+            # an unverifiable result.
+            if current and (not previous or previous != current):
+                continue
+            valid_completed.append(filename)
+            if previous:
+                valid_fingerprints[filename] = previous
+        live.situation.completed_full_read_materials = tuple(valid_completed)
+        live.situation.completed_full_read_fingerprints = valid_fingerprints
+    completed: list[str] = []
+    if isinstance(coverage, list):
+        complete_ids: set[str] = set()
+        complete_names: set[str] = set()
+        for coverage_item in coverage:
+            if not isinstance(coverage_item, dict) or coverage_item.get("complete") is not True:
+                continue
+            complete_ids.add(str(coverage_item.get("documentId") or "").strip())
+            complete_names.add(str(coverage_item.get("filename") or "").strip())
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+            filename = str(item.get("filename") or "").strip()
+            document_id = str(item.get("documentId") or item.get("id") or "").strip()
+            if filename and (filename in complete_names or document_id in complete_ids):
+                completed.append(filename)
+                fingerprint = str(
+                    item.get("revisionFingerprint")
+                    or item.get("revision_fingerprint")
+                    or ""
+                ).strip()
+                if not fingerprint:
+                    for coverage_item in coverage:
+                        if not isinstance(coverage_item, dict):
+                            continue
+                        coverage_filename = str(
+                            coverage_item.get("filename") or "",
+                        ).strip()
+                        coverage_document_id = str(
+                            coverage_item.get("documentId") or "",
+                        ).strip()
+                        if coverage_filename != filename and coverage_document_id != document_id:
+                            continue
+                        fingerprint = str(
+                            coverage_item.get("revisionFingerprint")
+                            or coverage_item.get("revision_fingerprint")
+                            or "",
+                        ).strip()
+                        break
+                if fingerprint:
+                    live.situation.completed_full_read_fingerprints[filename] = fingerprint
+        # Only a coverage-bearing response is authoritative for completion.
+        # list_documents/get_project_state responses must not erase a prior
+        # revision-bound 100% result.
+        if completed:
+            live.situation.completed_full_read_materials = tuple(dict.fromkeys(completed))
     live.situation.materials_observed = True
+
+
+def _absorb_product_ledger(live: LiveRun, result: Any) -> None:
+    """将台账工具的结构化状态保留在本轮快照中，供诊断回执使用。"""
+    if not isinstance(result, dict):
+        return
+    validation = result.get("validation")
+    counts = validation.get("counts") if isinstance(validation, dict) else result.get("counts")
+    if isinstance(counts, dict):
+        aliases = {
+            "raw": ("raw", "rawCount"),
+            "canonical": ("canonical", "canonicalCount"),
+            "mergedGroups": ("mergedGroups", "mergedGroupCount"),
+            "complete": ("complete", "completeCount"),
+            "insufficient": ("insufficient", "insufficientCount"),
+        }
+        normalized: dict[str, int] = {}
+        for target, keys in aliases.items():
+            for key in keys:
+                value = counts.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    normalized[target] = value
+                    break
+        if normalized:
+            live.situation.product_ledger_counts = normalized
+    status = str(result.get("status") or "").strip()
+    if not status and isinstance(validation, dict):
+        status = "finalized" if validation.get("pass") is True else "needs_review"
+    if status:
+        live.situation.product_ledger_status = status
+    for key, attr in (
+        ("ledgerId", "product_ledger_id"),
+        ("analysisRevision", "product_ledger_analysis_revision"),
+    ):
+        value = str(result.get(key) or "").strip()
+        if value:
+            setattr(live.situation, attr, value)
+    if isinstance(result.get("lastSuccessfulBatch"), int):
+        live.situation.product_ledger_last_batch = int(result["lastSuccessfulBatch"])
+    if isinstance(result.get("processed"), int):
+        live.situation.product_ledger_processed = max(0, int(result["processed"]))
+    if isinstance(result.get("remaining"), int):
+        live.situation.product_ledger_remaining = max(0, int(result["remaining"]))
 
 
 def _absorb_plan_progress(live: LiveRun, result: Any) -> None:
@@ -5148,6 +5599,18 @@ _FULL_READ_RULE = IntentRule(
 )
 
 
+def _full_read_required_tools(situation: RunSituation) -> set[str]:
+    """Return only the still-missing full-read steps for the observed state."""
+    if situation.has_completed_full_read():
+        return set()
+    if not situation.materials_observed:
+        return set(_FULL_READ_RULE.requires)
+    if situation.has_full_read_materials() is Verdict.ALLOW:
+        # The directive is already an observed fact; only coverage remains.
+        return {"read_documents_fully"}
+    return set()
+
+
 def _required_tools_for_user_intent(
     text: str,
     *,
@@ -5175,12 +5638,17 @@ def _required_tools_for_user_intent(
         required.add("run_evaluation")
     if _EVALUATION_RESULT_INTENT.search(value):
         required.add("get_evaluation_results")
-    if _FULL_READ_INTENT.search(full_read_value):
+    full_read_prohibited = bool(
+        _FULL_READ_PROHIBITED.search(full_read_value)
+        or _FULL_READ_PROHIBITED_BROAD.search(full_read_value)
+    )
+    full_read_satisfied = bool(_FULL_READ_ALREADY_SATISFIED.search(full_read_value))
+    if _FULL_READ_INTENT.search(full_read_value) and not full_read_prohibited and not full_read_satisfied:
         if _FULL_READ_RULE.verdict(situation or RunSituation()) is Verdict.DENY:
             if notes is not None:
                 notes.append(_FULL_READ_RULE.unmet_note)
         else:
-            required.update(_FULL_READ_RULE.requires)
+            required.update(_full_read_required_tools(situation or RunSituation()))
     elif _MATERIAL_DIRECTIVE_INTENT.search(value):
         required.add("set_material_directive")
     if _document_rule_change_requested(value):
@@ -5189,10 +5657,14 @@ def _required_tools_for_user_intent(
         required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
-    if _PRODUCT_LEDGER_INTENT.search(value):
+    if _product_ledger_requested(value):
         # 台账先作为一个确定性工具结果取得；产品台账模式为 advisory 时不阻断，
         # 切换为 enforce 后由核心门禁阻止正式规则批次继续生成。
-        required.add("stage_product_ledger")
+        required.update({
+            "require_product_ledger", "get_product_inventory_source",
+            "begin_product_ledger", "append_product_ledger_batch",
+            "finalize_product_ledger",
+        })
     if _approved_plan_execution_requested(value):
         required.update(APPROVED_PLAN_REQUIRED_TOOLS)
     return required
