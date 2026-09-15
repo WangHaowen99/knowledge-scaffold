@@ -99,6 +99,11 @@
 .wb-trace-status.is-waiting { background: var(--c-wait-bg); color: var(--c-wait); }
 .wb-trace-status.is-failed { background: var(--c-stale-bg); color: var(--c-stale); }
 .wb-trace-summary { margin-top: var(--s-1); color: var(--c-ink-2); font-size: var(--t-md); line-height: 1.6; overflow-wrap: anywhere; }
+.wb-trace-disclosure { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: var(--c-ink-2); font: inherit; text-align: left; cursor: pointer; }
+.wb-trace-disclosure:hover { color: var(--c-accent); }
+.wb-trace-details { display: grid; gap: 4px; margin-top: var(--s-2); padding: var(--s-2) var(--s-3); border-left: 2px solid var(--c-line); background: var(--c-surface-2); }
+.wb-trace-detail { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--s-3); color: var(--c-muted); font-size: var(--t-xs); }
+.wb-trace-detail span:first-child { overflow: hidden; color: var(--c-ink-2); text-overflow: ellipsis; white-space: nowrap; }
 .wb-trace-empty { padding: 56px var(--s-5); color: var(--c-faint); text-align: center; }
 .wb-trace-note { padding: var(--s-4) var(--s-6) var(--s-6); border-top: 1px solid var(--c-line-soft); color: var(--c-muted); font-size: var(--t-sm); line-height: 1.7; }
 

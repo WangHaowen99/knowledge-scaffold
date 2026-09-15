@@ -17,6 +17,8 @@ from .schemas import (
     RECOVERY_NONE,
     RECOVERY_STALE_RUN,
     RUN_CANCELLED,
+    RUN_COMPLETED,
+    RUN_FAILED,
     RUN_QUEUED,
     RUN_RUNNING,
     RUN_STOPPING,
@@ -34,6 +36,10 @@ def now_iso() -> str:
 
 def token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+INTERRUPTED_CANCELLATION_REASON = "停止结算被服务重启中断，正在重新核对"
+CANCELLATION_PENDING_REASON = "仍有在途修改未取得明确回执，已暂停自动继续"
 
 
 SCHEMA = """
@@ -617,6 +623,7 @@ class RuntimeStore:
         return self.get_run(state.run_id) if state.run_id and execution in ACTIVE_RUN_STATUSES else None
 
     def update_run(self, run_id: str, **changes: Any) -> RunRecord:
+        allow_status_regression = bool(changes.pop("_allow_status_regression", False))
         allowed = {
             "session_id",
             "status",
@@ -640,6 +647,34 @@ class RuntimeStore:
         clean["updated_at"] = now_iso()
         assignments = ", ".join(f"{key} = ?" for key in clean)
         with self._lock, self._db:
+            current_row = self._db.execute(
+                "SELECT status, project_id FROM agent_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if current_row is None:
+                raise AgentRuntimeError("RUN_NOT_FOUND", "找不到这次 Agent 运行", status=404)
+            requested_status = str(changes.get("status") or "")
+            current_status = str(current_row["status"] or "")
+            # Cancellation is monotonic. A late model callback must not
+            # overwrite stopping/cancelled with running/completed/failed.
+            if current_status == RUN_CANCELLED and requested_status and requested_status != RUN_CANCELLED:
+                return _run_from_row(self._db.execute(
+                    "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+                ).fetchone())
+            if current_status == RUN_STOPPING and requested_status in {
+                RUN_QUEUED, RUN_RUNNING, RUN_WAITING, RUN_COMPLETED, RUN_FAILED,
+            }:
+                return _run_from_row(self._db.execute(
+                    "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+                ).fetchone())
+            if (
+                current_status == RUN_SUSPENDED
+                and requested_status in {RUN_QUEUED, RUN_RUNNING, RUN_WAITING, RUN_COMPLETED, RUN_FAILED}
+                and not allow_status_regression
+            ):
+                return _run_from_row(self._db.execute(
+                    "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+                ).fetchone())
             cursor = self._db.execute(
                 f"UPDATE agent_runs SET {assignments} WHERE id = ?",
                 (*clean.values(), run_id),
@@ -919,6 +954,7 @@ class RuntimeStore:
             recovered: list[RunRecord] = []
             for state_row in state_rows:
                 state = _project_state_from_row(state_row)
+                phase, _separator, execution = state.state.partition(":")
                 row = self._db.execute(
                     "SELECT * FROM agent_runs WHERE id = ?", (state.run_id,)
                 ).fetchone()
@@ -936,12 +972,19 @@ class RuntimeStore:
                     )
                     continue
                 if row and not state.interaction_id:
+                    reason = (
+                        INTERRUPTED_CANCELLATION_REASON
+                        if execution == RUN_STOPPING
+                        else str(row["error"])
+                        if execution == RUN_SUSPENDED and str(row["error"] or "")
+                        else "Agent 服务重启，已停在最近检查点"
+                    )
                     self._db.execute(
                         """UPDATE agent_runs SET status = ?, error = ?, updated_at = ?
                         WHERE id = ?""",
                         (
                             RUN_SUSPENDED,
-                            "Agent 服务重启，已停在最近检查点",
+                            reason,
                             timestamp,
                             state.run_id,
                         ),
@@ -949,14 +992,19 @@ class RuntimeStore:
                     recovered.append(_run_from_row(self._db.execute(
                         "SELECT * FROM agent_runs WHERE id = ?", (state.run_id,)
                     ).fetchone()))
-                phase, _separator, execution = state.state.partition(":")
                 if execution in {RUN_RUNNING, RUN_STOPPING, RUN_QUEUED}:
                     self._transition_project_state_locked(
                         state,
                         next_state=f"{phase}:{RUN_SUSPENDED}",
                         cause="service_restarted",
                         actor_run_id=str(row["id"]) if row else state.run_id,
-                        error="Agent 服务重启，已停在最近检查点",
+                        error=(
+                            INTERRUPTED_CANCELLATION_REASON
+                            if execution == RUN_STOPPING
+                            else str(row["error"])
+                            if execution == RUN_SUSPENDED and row and str(row["error"] or "")
+                            else "Agent 服务重启，已停在最近检查点"
+                        ),
                     )
         return recovered
 
@@ -1436,7 +1484,7 @@ class RuntimeStore:
             )
             phase = str(event.payload.get("phase") or "")
             identity = _tool_event_identity(event)
-            if phase in {"started", "repairing"}:
+            if phase in {"started", "repairing", "cancel_pending"}:
                 active[identity] = event
             elif phase in {"completed", "failed", "blocked", "rejected", "waiting", "cancelled"}:
                 active.pop(identity, None)

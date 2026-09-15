@@ -74,6 +74,59 @@ async def test_schema_semantic_confirmation_does_not_require_relation_suggestion
     assert live.stable_read_cache == {"stale": {"ok": True}}
 
 
+async def test_explicit_resume_plan_id_is_claimed_and_injected_into_runtime_prompt(settings) -> None:
+    resumed_plan = {
+        "id": "plan_resume_demo",
+        "goal": "完成尚未提取的规则",
+        "status": "active",
+        "approval_status": "approved",
+        "version": 4,
+        "remaining_count": 2,
+        "tasks": [
+            {"id": "task-a", "title": "信号匹配规则", "status": "pending", "required": True},
+            {"id": "task-b", "title": "客户分层规则", "status": "pending", "required": True},
+        ],
+    }
+    model = ScriptedModel(
+        [[ToolTurn("get_change_plan", {"plan_id": "plan_resume_demo"})], []],
+        final="已读取原计划，等待继续执行。",
+    )
+    gateway = FakeGateway({
+        "claim_candidate_workspace": {
+            "resumedPlan": resumed_plan,
+            "packageContract": {
+                "validatorVersion": "package-format-test-v1",
+                "manifest": {"requiredFields": [], "platformManagedFields": []},
+            },
+        },
+        "get_change_plan": {
+            "plan": resumed_plan,
+            "display": {"text": "建模计划还有 2 项必选任务待完成"},
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_resume_plan",
+            token="token_1",
+            message="继续页面选择的计划",
+            resume_plan_id="plan_resume_demo",
+        )
+        await wait_for_status(runtime, started["id"], {"completed"})
+
+        claim = next(call for call in gateway.calls if call["tool"] == "claim_candidate_workspace")
+        assert claim["arguments"] == {"resume_plan_id": "plan_resume_demo"}
+        runtime_prompt = str(model.stream_inputs[0])
+        assert "页面显式恢复的暂停计划" in runtime_prompt
+        assert "plan_resume_demo" in runtime_prompt
+        assert "信号匹配规则" in runtime_prompt
+        assert "计划完成前不得" in runtime_prompt
+        assert any(call["tool"] == "get_change_plan" for call in gateway.calls)
+    finally:
+        await runtime.shutdown()
+
+
 async def test_explicit_relation_suggestion_does_not_become_required() -> None:
     live = SimpleNamespace(
         required_tools=set(),
@@ -3360,6 +3413,85 @@ async def test_failed_run_settles_unfinished_tool_activity(settings) -> None:
         assert [event.payload.get("phase") for event in tool_events] == ["started", "failed"]
         assert tool_events[-1].payload["summary"] == "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
         assert runtime.store.unfinished_tool_events(run.id) == []
+    finally:
+        await runtime.shutdown()
+
+
+async def test_cancel_run_enters_suspended_when_core_receipt_is_unknown(settings) -> None:
+    class UnknownCancellationGateway(FakeGateway):
+        async def cancel_run(self, **_kwargs):
+            return {"quiescent": False, "error": "CORE_CANCELLATION_UNAVAILABLE"}
+
+    runtime = service(settings, ScriptedModel([]), UnknownCancellationGateway())
+    run = runtime.store.create_run(RunRecord(
+        id="run_cancel_unknown_receipt",
+        project_id="project_cancel_unknown_receipt",
+        session_id="session_cancel_unknown_receipt",
+        status=RUN_RUNNING,
+        prompt="继续知识建模",
+        token_fingerprint="000000000000",
+    ))
+    runtime.store.update_run(run.id, status=RUN_RUNNING)
+    runtime._live[run.id] = LiveRun(
+        run_id=run.id,
+        project_id=run.project_id,
+        token="token_cancel_unknown_receipt",
+    )
+    runtime.events.publish(run.project_id, run.id, "tool", {
+        "name": "stage_change_set",
+        "phase": "started",
+        "summary": "正在原子生成待确认修改",
+        "toolCallId": "call_cancel_unknown_receipt",
+    })
+    try:
+        suspended = await runtime.cancel(project_id=run.project_id)
+        assert suspended["status"] == "suspended"
+        events = runtime.store.events_after(run.project_id, 0)
+        tool_events = [
+            event.payload for event in events
+            if event.kind == "tool"
+            and event.payload.get("toolCallId") == "call_cancel_unknown_receipt"
+        ]
+        assert tool_events[-1]["phase"] == "cancel_pending"
+        assert not any(
+            event.kind == "status" and event.payload.get("status") == "cancelled"
+            for event in events
+        )
+    finally:
+        await runtime.shutdown()
+
+
+async def test_repeated_cancel_restores_credential_and_uses_latest_user_token(settings) -> None:
+    class RecoveringCancellationGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.cancel_calls = []
+
+        async def cancel_run(self, **kwargs):
+            self.cancel_calls.append({
+                "token": kwargs.get("token"),
+                "credential": self.run_credential(str(kwargs.get("run_id") or "")),
+            })
+            return {"quiescent": len(self.cancel_calls) > 1}
+
+    gateway = RecoveringCancellationGateway()
+    runtime = service(settings, ScriptedModel([]), gateway)
+    run = runtime.store.create_run(RunRecord(
+        id="run_repeated_cancel",
+        project_id="project_repeated_cancel",
+        session_id="session_repeated_cancel",
+        status=RUN_RUNNING,
+        prompt="继续知识建模",
+        token_fingerprint="000000000000",
+        run_credential="arc_persisted_test_credential",
+    ))
+    runtime.store.update_run(run.id, status=RUN_RUNNING)
+    try:
+        result = await runtime.cancel(project_id=run.project_id, token="latest_user_token")
+        assert result["status"] == "cancelled"
+        assert gateway.cancel_calls
+        assert all(call["token"] == "latest_user_token" for call in gateway.cancel_calls)
+        assert all(call["credential"] == "arc_persisted_test_credential" for call in gateway.cancel_calls)
     finally:
         await runtime.shutdown()
 

@@ -60,6 +60,7 @@ export default function CreatePage() {
         revision: null,
         workflow: null,
         changePlan: null,
+        pausedPlan: null,
         files: [],
         materials: [],
         messages: [],

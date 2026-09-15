@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { nowIso } from '../db/index.js';
+import {
+  getRunCancellation,
+  isRunCancellationRequested,
+  requestRunCancellation,
+  clearRunCancellation,
+  type RunCancellation,
+} from './run-cancellation.js';
 
 export const CHANGE_PLAN_CONTRACT_VERSION = 'change-plan-v1';
 export const CHANGE_SET_CONTRACT_VERSION = 'change-set-v1';
@@ -24,7 +31,7 @@ const CHANGE_PLAN_ALLOWED_TOOLS = new Set([
 const MUTATION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const CLIENT_KEY = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u;
 
-type PlanStatus = 'active' | 'completed' | 'failed' | 'cancelled';
+type PlanStatus = 'active' | 'paused' | 'completed' | 'failed' | 'cancelled';
 type TaskStatus = 'pending' | 'staged' | 'validated' | 'waiting_user'
   | 'accepted' | 'rejected' | 'failed' | 'cancelled' | 'skipped';
 type ChangeSetStatus = 'staging' | 'staged' | 'validated' | 'waiting_user'
@@ -82,6 +89,19 @@ interface ChangeSetRow {
   updated_at: string;
 }
 
+export interface RunCancellationReconciliation {
+  projectId: string;
+  runId: string;
+  requested: RunCancellation | null;
+  quiescent: boolean;
+  pendingChangeSets: Array<{ id: string; mutationId: string; status: string }>;
+  settledChangeSets: string[];
+  settledMutations: string[];
+  pausedPlanIds: string[];
+  /** @deprecated 保留响应兼容；正常停止不再取消计划。 */
+  cancelledPlanIds: string[];
+}
+
 export interface ChangeSetActionInput {
   taskId: string;
   tool: string;
@@ -137,6 +157,15 @@ export class ChangeControlStore {
         '当前运行已经有一份进行中的建模计划，请读取或修订原计划',
         409,
         { plan_id: existing.id },
+      );
+    }
+    const paused = this.pausedPlanForProject(input.projectId);
+    if (paused) {
+      throw new ChangeControlError(
+        'PAUSED_CHANGE_PLAN_DECISION_REQUIRED',
+        '当前项目还有暂停的建模计划，请先继续该计划或明确结束后重新规划',
+        409,
+        { plan_id: paused.id, retryable: false, requires_user_decision: true },
       );
     }
     const goal = requiredText(input.goal, 'goal', 4_000);
@@ -291,6 +320,95 @@ export class ChangeControlStore {
     return (this.db.prepare(`SELECT * FROM agent_change_plans
       WHERE project_id = ? AND status = 'active' AND run_id <> ?
       ORDER BY created_at DESC LIMIT 1`).get(projectId, excludeRunId) as PlanRow | undefined) ?? null;
+  }
+
+  pausedPlanForProject(projectId: string): PlanRow | null {
+    return (this.db.prepare(`SELECT * FROM agent_change_plans
+      WHERE project_id = ? AND status = 'paused'
+      ORDER BY updated_at DESC LIMIT 1`).get(projectId) as PlanRow | undefined) ?? null;
+  }
+
+  pausedPlanSnapshot(projectId: string) {
+    const plan = this.pausedPlanForProject(projectId);
+    return plan ? this.snapshot(projectId, plan.run_id, plan.id) : null;
+  }
+
+  incompleteRequiredPlanTasks(projectId: string): Array<{
+    planId: string;
+    planStatus: PlanStatus;
+    taskId: string;
+    title: string;
+    taskStatus: TaskStatus;
+  }> {
+    return (this.db.prepare(`SELECT
+        plan.id AS plan_id, plan.status AS plan_status,
+        task.id AS task_id, task.title, task.status AS task_status
+      FROM agent_change_plans plan
+      JOIN agent_change_plan_tasks task ON task.plan_id = plan.id
+      WHERE plan.project_id = ?
+        AND plan.status IN ('active', 'paused')
+        AND task.required = 1
+        AND task.status NOT IN ('accepted', 'skipped')
+      ORDER BY plan.created_at, task.ordinal`).all(projectId) as Array<{
+        plan_id: string;
+        plan_status: PlanStatus;
+        task_id: string;
+        title: string;
+        task_status: TaskStatus;
+      }>).map((row) => ({
+        planId: row.plan_id,
+        planStatus: row.plan_status,
+        taskId: row.task_id,
+        title: row.title,
+        taskStatus: row.task_status,
+      }));
+  }
+
+  resumePausedPlan(input: {
+    projectId: string;
+    planId: string;
+    previousRunId: string;
+    nextRunId: string;
+    actor: string;
+  }): void {
+    const plan = this.db.prepare(`SELECT * FROM agent_change_plans
+      WHERE id = ? AND project_id = ?`).get(input.planId, input.projectId) as PlanRow | undefined;
+    if (!plan) throw new ChangeControlError('CHANGE_PLAN_NOT_FOUND', '暂停的建模计划不存在', 404);
+    if (plan.status === 'active' && plan.run_id === input.nextRunId) return;
+    if (plan.status !== 'paused' || plan.run_id !== input.previousRunId) {
+      throw new ChangeControlError(
+        'PAUSED_CHANGE_PLAN_STALE',
+        '暂停计划状态已经变化，请刷新后再操作',
+        409,
+        { plan_id: plan.id, plan_status: plan.status, plan_run_id: plan.run_id },
+      );
+    }
+    const active = this.activePlanForProject(input.projectId);
+    if (active) {
+      throw new ChangeControlError(
+        'CHANGE_PLAN_ALREADY_ACTIVE',
+        '当前项目已经有另一份进行中的建模计划',
+        409,
+        { plan_id: active.id },
+      );
+    }
+    const timestamp = nowIso();
+    this.db.prepare(`UPDATE agent_change_plans
+      SET status = 'active', run_id = ?, version = version + 1, updated_at = ?
+      WHERE id = ? AND status = 'paused' AND run_id = ?`)
+      .run(input.nextRunId, timestamp, plan.id, input.previousRunId);
+    this.db.prepare(`UPDATE agent_change_sets SET run_id = ?, updated_at = ?
+      WHERE plan_id = ? AND run_id = ?`)
+      .run(input.nextRunId, timestamp, plan.id, input.previousRunId);
+    this.db.prepare(`UPDATE agent_change_control_events SET run_id = ?
+      WHERE plan_id = ? AND run_id = ?`)
+      .run(input.nextRunId, plan.id, input.previousRunId);
+    this.event(input.projectId, input.nextRunId, plan.id, null, 'plan.resumed',
+      '已从停止点继续未完成建模计划', {
+        actor: input.actor,
+        previous_run_id: input.previousRunId,
+        next_run_id: input.nextRunId,
+      });
   }
 
   transferActiveRun(projectId: string, previousRunId: string, nextRunId: string): void {
@@ -843,14 +961,14 @@ export class ChangeControlStore {
     const plan = this.db.prepare(`SELECT * FROM agent_change_plans
       WHERE id = ? AND project_id = ?`).get(input.planId, input.projectId) as PlanRow | undefined;
     if (!plan) throw new ChangeControlError('CHANGE_PLAN_NOT_FOUND', '建模计划不存在', 404);
-    if (plan.status !== 'active') {
+    if (!['active', 'paused'].includes(plan.status)) {
       throw new ChangeControlError('CHANGE_PLAN_CLOSED', '这份建模计划已经结束，无需终止', 409);
     }
     const timestamp = nowIso();
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare(`UPDATE agent_change_plans SET status = 'cancelled', version = version + 1,
-        updated_at = ? WHERE id = ? AND status = 'active'`).run(timestamp, plan.id);
+        updated_at = ? WHERE id = ? AND status IN ('active', 'paused')`).run(timestamp, plan.id);
       this.db.prepare(`UPDATE agent_change_plan_tasks SET status = 'cancelled', updated_at = ?
         WHERE plan_id = ? AND status NOT IN ('accepted', 'skipped', 'cancelled')`).run(timestamp, plan.id);
       // 候选修改与回执不删除，仅把未结算批次标记为取消，保留审计链。
@@ -880,10 +998,10 @@ export class ChangeControlStore {
   }): { terminated: number; planIds: string[] } {
     const plans = (input.runId
       ? this.db.prepare(`SELECT * FROM agent_change_plans
-          WHERE project_id = ? AND status = 'active' AND run_id = ? ORDER BY created_at`)
+          WHERE project_id = ? AND status IN ('active', 'paused') AND run_id = ? ORDER BY created_at`)
           .all(input.projectId, input.runId)
       : this.db.prepare(`SELECT * FROM agent_change_plans
-          WHERE project_id = ? AND status = 'active' ORDER BY created_at`)
+          WHERE project_id = ? AND status IN ('active', 'paused') ORDER BY created_at`)
           .all(input.projectId)) as unknown as PlanRow[];
     const planIds = plans.map((plan) => plan.id);
     if (!planIds.length) return { terminated: 0, planIds };
@@ -892,7 +1010,7 @@ export class ChangeControlStore {
     try {
       for (const plan of plans) {
         this.db.prepare(`UPDATE agent_change_plans SET status = 'cancelled', version = version + 1,
-          updated_at = ? WHERE id = ? AND status = 'active'`).run(timestamp, plan.id);
+          updated_at = ? WHERE id = ? AND status IN ('active', 'paused')`).run(timestamp, plan.id);
         this.db.prepare(`UPDATE agent_change_plan_tasks SET status = 'cancelled', updated_at = ?
           WHERE plan_id = ? AND status NOT IN ('accepted', 'skipped', 'cancelled')`).run(timestamp, plan.id);
         this.db.prepare(`UPDATE agent_change_sets SET status = 'cancelled', updated_at = ?
@@ -913,6 +1031,170 @@ export class ChangeControlStore {
       throw error;
     }
     return { terminated: planIds.length, planIds };
+  }
+
+  /**
+   * Record the cancellation fence before the Python runtime starts draining
+   * its tasks. StudioWriteService checks the same row inside its write
+   * transaction, so either the write commits before the fence or is rejected.
+   */
+  requestRunCancellation(projectId: string, runId: string, reason = '用户已停止运行'): RunCancellation {
+    return requestRunCancellation(this.db, projectId, runId, reason);
+  }
+
+  isRunCancellationRequested(projectId: string, runId: string): boolean {
+    return isRunCancellationRequested(this.db, projectId, runId);
+  }
+
+  getRunCancellation(projectId: string, runId: string): RunCancellation | null {
+    return getRunCancellation(this.db, projectId, runId);
+  }
+
+  resumeRunAfterCancellation(
+    projectId: string,
+    runId: string,
+    actor = 'modeling-agent',
+  ): RunCancellationReconciliation {
+    // Recovery is allowed to continue the same plan after an unknown write
+    // has been reconciled; plan cancellation belongs to the terminal cancel
+    // path, not the resume path.
+    const reconciliation = this.reconcileRunCancellation(projectId, runId, actor, false);
+    if (reconciliation.quiescent) clearRunCancellation(this.db, projectId, runId);
+    return reconciliation;
+  }
+
+  /**
+   * Reconcile Change Sets which were marked staging when the caller lost its
+   * HTTP response. A receipt already committed by Studio is promoted to
+   * staged; an absent receipt remains pending and keeps cancellation honest.
+   */
+  reconcileRunCancellation(
+    projectId: string,
+    runId: string,
+    actor = 'modeling-agent',
+    finalizePlans = true,
+  ): RunCancellationReconciliation {
+    const requested = this.getRunCancellation(projectId, runId);
+    const pendingChangeSets: RunCancellationReconciliation['pendingChangeSets'] = [];
+    const settledChangeSets: string[] = [];
+    const settledMutations: string[] = [];
+    const rows = this.db.prepare(`SELECT * FROM agent_change_sets
+      WHERE project_id = ? AND run_id = ? AND status = 'staging'
+      ORDER BY created_at`).all(projectId, runId) as unknown as ChangeSetRow[];
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const row of rows) {
+        const receiptRow = this.db.prepare(`SELECT request_hash, response_json
+          FROM studio_mutation_receipts
+          WHERE project_id = ? AND client_mutation_id = ?`)
+          .get(projectId, row.mutation_id) as { request_hash: string; response_json: string } | undefined;
+        if (!receiptRow || receiptRow.request_hash !== row.request_hash) {
+          pendingChangeSets.push({ id: row.id, mutationId: row.mutation_id, status: row.status });
+          continue;
+        }
+        let response: Record<string, unknown>;
+        try {
+          response = JSON.parse(receiptRow.response_json) as Record<string, unknown>;
+        } catch {
+          pendingChangeSets.push({ id: row.id, mutationId: row.mutation_id, status: row.status });
+          continue;
+        }
+        const workingRevision = String(response.workingRevision || response.working_revision || '');
+        const changedPathsValue = response.changedPaths ?? response.changed_paths;
+        const changedPaths = Array.isArray(changedPathsValue)
+          ? changedPathsValue.map(String)
+          : [];
+        if (!workingRevision) {
+          pendingChangeSets.push({ id: row.id, mutationId: row.mutation_id, status: row.status });
+          continue;
+        }
+        const group = response.changeGroup && typeof response.changeGroup === 'object'
+          ? response.changeGroup as Record<string, unknown>
+          : {};
+        const timestamp = nowIso();
+        this.db.prepare(`UPDATE agent_change_sets SET status = 'staged',
+          resulting_revision = ?, group_id = ?, receipt_json = ?, error_json = NULL,
+          updated_at = ? WHERE id = ? AND status IN ('staging', 'staged')`).run(
+          workingRevision,
+          String(group.id || ''),
+          JSON.stringify({
+            ...response,
+            working_revision: workingRevision,
+            changed_paths: changedPaths,
+            change_group: group,
+          }),
+          timestamp,
+          row.id,
+        );
+        const taskIds = parseActions(row.actions_json).map((action) => action.taskId);
+        const updateTask = this.db.prepare(`UPDATE agent_change_plan_tasks
+          SET status = 'staged', change_set_id = ?, updated_at = ?
+          WHERE plan_id = ? AND id = ? AND status = 'pending'`);
+        for (const taskId of taskIds) updateTask.run(row.id, timestamp, row.plan_id, taskId);
+        this.db.prepare(`UPDATE agent_change_plans SET version = version + 1,
+          expected_revision = CASE WHEN ? <> '' THEN ? ELSE expected_revision END,
+          updated_at = ? WHERE id = ?`).run(workingRevision, workingRevision, timestamp, row.plan_id);
+        this.event(projectId, runId, row.plan_id, row.id, 'change_set.reconciled',
+          '已核对在途修改回执并保留候选', {
+            actor,
+            workingRevision,
+            changedPaths,
+          });
+        settledChangeSets.push(row.id);
+        settledMutations.push(row.mutation_id);
+      }
+      const alreadySettled = this.db.prepare(`SELECT id, mutation_id FROM agent_change_sets
+        WHERE project_id = ? AND run_id = ? AND status = 'staged' ORDER BY created_at`)
+        .all(projectId, runId) as Array<{ id: string; mutation_id: string }>;
+      for (const row of alreadySettled) {
+        if (!settledChangeSets.includes(row.id)) settledChangeSets.push(row.id);
+        if (!settledMutations.includes(row.mutation_id)) settledMutations.push(row.mutation_id);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+
+    const quiescent = pendingChangeSets.length === 0;
+    const pausedPlanIds: string[] = [];
+    if (quiescent && requested && finalizePlans) {
+      const plans = this.db.prepare(`SELECT id FROM agent_change_plans
+        WHERE project_id = ? AND run_id = ? AND status = 'active' ORDER BY created_at`)
+        .all(projectId, runId) as Array<{ id: string }>;
+      if (plans.length) {
+        const timestamp = nowIso();
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          for (const plan of plans) {
+            // 停止的是本次执行，不是用户已批准的业务目标。任务与候选回执保持原状，
+            // 由显式 resumePlanId 迁移到下一次 run 后继续。
+            this.db.prepare(`UPDATE agent_change_plans SET status = 'paused',
+              version = version + 1, updated_at = ? WHERE id = ? AND status = 'active'`)
+              .run(timestamp, plan.id);
+            this.event(projectId, runId, plan.id, null, 'plan.paused',
+              '运行已停止，未完成计划已暂停，候选内容与任务进度保留', { actor });
+            pausedPlanIds.push(plan.id);
+          }
+          this.db.exec('COMMIT');
+        } catch (error) {
+          if (this.db.isTransaction) this.db.exec('ROLLBACK');
+          throw error;
+        }
+      }
+    }
+    return {
+      projectId,
+      runId,
+      requested,
+      quiescent,
+      pendingChangeSets,
+      settledChangeSets,
+      settledMutations,
+      pausedPlanIds,
+      cancelledPlanIds: [],
+    };
   }
 
   private taskRows(planId: string): TaskRow[] {

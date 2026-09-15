@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -249,22 +250,30 @@ def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[Sub
         "list_package_sources", "list_package_fusion_plans", "get_package_fusion_plan",
         "analyze_package_merge", "read_package_source_file",
     }
+    try:
+        supports_parallel_tool_calls = (
+            "parallel_tool_calls" in inspect.signature(SubAgentConfig).parameters
+        )
+    except (TypeError, ValueError):
+        supports_parallel_tool_calls = False
 
     def config(agent_id: str, description: str, skill: str, tools: list[Any]) -> SubAgentConfig:
-        return SubAgentConfig(
-            agent_card=AgentCard(id=agent_id, name=agent_id, description=description),
-            system_prompt=(
+        config_kwargs: dict[str, Any] = {
+            "agent_card": AgentCard(id=agent_id, name=agent_id, description=description),
+            "system_prompt": (
                 "你是建模 Leader 派出的只读分析员。只完成分配给你的范围，逐条给出可定位证据，"
                 "明确区分原文、推断和开放问题；不得宣称已经写入或确认任何知识包内容。\n\n"
                 f"# 工作方法\n\n{_skill_body(settings.skills_dir / skill / 'SKILL.md')}"
             ),
-            tools=tools,
-            model=model,
-            rails=[ToolBoundaryRail(context), ActivityRail(context.emit, actor=agent_id)],
-            max_iterations=min(60, settings.max_iterations),
-            parallel_tool_calls=True,
-            restrict_to_work_dir=True,
-        )
+            "tools": tools,
+            "model": model,
+            "rails": [ToolBoundaryRail(context), ActivityRail(context.emit, actor=agent_id)],
+            "max_iterations": min(60, settings.max_iterations),
+            "restrict_to_work_dir": True,
+        }
+        if supports_parallel_tool_calls:
+            config_kwargs["parallel_tool_calls"] = True
+        return SubAgentConfig(**config_kwargs)
 
     return [
         config("material_analyst", "全文阅读指定资料并提炼来源、冲突和缺口", "material-analysis", material_tools),

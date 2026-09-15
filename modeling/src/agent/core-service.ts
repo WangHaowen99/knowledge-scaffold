@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
 import { mapArtifactHttpError } from '../artifacts/http-error.js';
+import { isRunCancellationRequested } from './run-cancellation.js';
 import {
   backgroundAuthSessions,
   type BackgroundAuthSessionRegistry,
@@ -211,6 +212,27 @@ const CHANGE_CONTROL_TOOLS = new Set([
   'create_change_plan', 'get_change_plan', 'revise_change_plan',
   'stage_change_set', 'get_change_set_receipt', 'validate_change_set', 'discard_change_set',
 ]);
+export const RUN_CANCELLATION_MUTATION_TOOLS = new Set([
+  'claim_candidate_workspace',
+  'set_material_directive', 'stage_product_ledger',
+  ...CHANGE_SET_DOMAIN_TOOLS,
+  ...CHANGE_PLAN_DIRECT_TOOLS,
+  'apply_ontology_object_patch', 'submit_ontology_object_review',
+  'stage_tabular_dataset', 'upsert_object', 'upsert_rule', 'upsert_operation',
+  'bind_object_source', 'bind_object_sources',
+  'create_change_plan', 'revise_change_plan', 'stage_change_set',
+  'validate_change_set', 'discard_change_set',
+  'write_file', 'delete_file', 'discard_rejected_candidate_changes',
+  'import_zip', 'regroup_changes', 'update_work_notes', 'update_plan',
+  'stage_package_merge', 'compile_package_fusion_plan',
+  'create_package_fusion_plan', 'update_package_fusion_plan',
+  'stage_script_source', 'stage_script_patch',
+  'define_script_contract', 'confirm_deterministic_scope', 'run_script_test',
+  'prepare_confirmation_groups', 'request_confirmation_preflight',
+  'ask', 'request_confirmation', 'request_confirmation_rejected', 'request_release',
+  'run_evaluation',
+  'update_project_context', 'transition_project_state',
+]);
 const MANAGED_DOMAIN_MARKDOWN = /^(?:objects|operations|rules|metrics)\/(?:index|[^/]+)\.md$/u;
 const MANAGED_SCRIPT_PATH = /^scripts\/(?:index\.md|[^/]+\.md|[A-Za-z0-9_.-]+\.py)$/u;
 const MANAGED_SCRIPT_SOURCE_PATH = /^scripts\/[A-Za-z0-9_.-]+\.py$/u;
@@ -409,6 +431,7 @@ export class AgentCoreService {
       files: Object.keys(packageFiles.files).sort(),
       binaryFiles: packageFiles.binaryFiles,
       materials,
+      pausedPlan: this.changeControl.pausedPlanSnapshot(project.id),
       confirmPolicy: this.workbenchConfirmPolicy(project.id),
       packageDataSource: getProjectPackageDataSourceSelection(project.id),
       changePlan: pendingChangePlan,
@@ -529,6 +552,58 @@ export class AgentCoreService {
           text: '已安全终止失效建模计划，候选内容与审计记录保留，可以重新规划',
         },
       };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  requestRunCancellation(project: Project, _username: string, runId: string, finalizePlans = true) {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      throw new AgentCoreError('INVALID_AGENT_CONTEXT', '缺少 Agent 运行标识', [], 400);
+    }
+    try {
+      this.changeControl.requestRunCancellation(project.id, normalizedRunId, '用户请求停止运行');
+      const reconciliation = this.changeControl.reconcileRunCancellation(
+        project.id,
+        normalizedRunId,
+        'modeling-agent',
+        finalizePlans,
+      );
+      return {
+        ...reconciliation,
+        display: {
+          text: reconciliation.quiescent
+            ? '已记录停止请求，Core 没有未结算的在途修改'
+            : '已记录停止请求，仍有在途修改正在核对',
+        },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  resumeRunAfterCancellation(project: Project, _username: string, runId: string) {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      throw new AgentCoreError('INVALID_AGENT_CONTEXT', '缺少 Agent 运行标识', [], 400);
+    }
+    try {
+      const reconciliation = this.changeControl.resumeRunAfterCancellation(
+        project.id,
+        normalizedRunId,
+        'modeling-agent',
+      );
+      if (!reconciliation.quiescent) {
+        throw new AgentCoreError(
+          'RUN_CANCELLATION_PENDING',
+          '仍有在途修改没有取得明确回执，暂不能继续运行',
+          ['继续核对 Change Set 回执后再恢复'],
+          409,
+          { ...reconciliation },
+        );
+      }
+      return { ...reconciliation, resumed: true, display: { text: '停止栅栏已结算，可以从最近进展继续' } };
     } catch (error) {
       throw normalizeChangeControlError(error);
     }
@@ -711,6 +786,16 @@ export class AgentCoreService {
   }
 
   private async invokeRaw(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
+    if (RUN_CANCELLATION_MUTATION_TOOLS.has(tool)
+      && isRunCancellationRequested(this.db, context.project.id, context.runId)) {
+      throw new AgentCoreError(
+        'RUN_CANCELLING',
+        '当前运行正在停止，新的修改不会继续写入',
+        ['等待停止结算完成后再从当前进展继续'],
+        409,
+        { retryable: false, runId: context.runId },
+      );
+    }
     if (DOMAIN_TOOL_NAMES.has(tool) || CHANGE_CONTROL_TOOLS.has(tool)) this.adoptDomainToolContract(context);
     this.assertObjectSourceToolMode(context.project.id, tool, args);
     if (CHANGE_SET_DOMAIN_TOOLS.has(tool)
@@ -723,7 +808,7 @@ export class AgentCoreService {
         { retryable: false, required_tool: 'stage_change_set' },
       );
     }
-    if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
+    if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context, args);
     if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'project_data_source_status') return this.projectDataSourceStatus(context.project.id);
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
@@ -2069,6 +2154,7 @@ export class AgentCoreService {
         expectedRevision,
         clientMutationId: mutationId,
         ...(editSessionId ? { editSessionId } : {}),
+        runId: context.runId,
         kind,
         key: text(args.key, 'key'),
         values: domainCreateValues(kind, args),
@@ -2122,6 +2208,7 @@ export class AgentCoreService {
           expectedRevision: workingPackage.workingRevision,
           clientMutationId: mutationId,
           ...(editSessionId ? { editSessionId } : {}),
+          runId: context.runId,
           changes: compiled.changes,
         },
         requestHash,
@@ -2188,6 +2275,7 @@ export class AgentCoreService {
           expectedRevision: workingPackage.workingRevision,
           clientMutationId: mutationId,
           ...(editSessionId ? { editSessionId } : {}),
+          runId: context.runId,
           changes: preview.patchChanges,
         },
         requestHash,
@@ -2463,6 +2551,7 @@ export class AgentCoreService {
           expectedRevision: workingPackage.workingRevision,
           clientMutationId: mutationId,
           editSessionId: mutationId,
+          runId: context.runId,
           creates: [],
           patches,
         },
@@ -2613,6 +2702,7 @@ export class AgentCoreService {
         expectedRevision,
         clientMutationId: mutationId,
         ...(editSessionId ? { editSessionId } : {}),
+        runId: context.runId,
         elementIds: resourceIds,
         previewToken: text(args.preview_token ?? args.previewToken, 'preview_token'),
         cleanupReferences: args.cleanup_references === true,
@@ -3448,6 +3538,7 @@ export class AgentCoreService {
           expectedRevision: workingPackage.workingRevision,
           clientMutationId,
           ...(editSessionId ? { editSessionId } : {}),
+          runId: context.runId,
           changes: preview.patchChanges,
         },
       );
@@ -3888,10 +3979,58 @@ export class AgentCoreService {
     return listDocuments(projectId).flatMap((document) => document.tables ?? []);
   }
 
-  private async claimCandidateWorkspace(context: AgentToolContext) {
+  private async claimCandidateWorkspace(context: AgentToolContext, args: Record<string, unknown> = {}) {
+    const resumePlanId = String(args.resume_plan_id ?? '').trim();
+    const pausedPlan = this.changeControl.pausedPlanForProject(context.project.id);
+    if (pausedPlan && !resumePlanId) {
+      throw new AgentCoreError(
+        'PAUSED_CHANGE_PLAN_DECISION_REQUIRED',
+        '当前项目还有暂停的建模计划，请通过页面选择继续该计划或结束后重新规划',
+        ['使用暂停计划卡继续或结束计划'],
+        409,
+        {
+          retryable: false,
+          requires_user_decision: true,
+          plan_id: pausedPlan.id,
+          pausedPlan: this.changeControl.pausedPlanSnapshot(context.project.id),
+        },
+      );
+    }
+    if (resumePlanId && (!pausedPlan || pausedPlan.id !== resumePlanId)) {
+      throw new AgentCoreError(
+        'PAUSED_CHANGE_PLAN_STALE',
+        '暂停计划状态已经变化，请刷新页面后再操作',
+        ['刷新项目状态'],
+        409,
+        { retryable: false, plan_id: resumePlanId },
+      );
+    }
     const existing = this.workspace(context.project.id);
     const current = await this.artifacts.current(context.project.id);
+    if (resumePlanId && (!existing || existing.run_id !== pausedPlan!.run_id)) {
+      throw new AgentCoreError(
+        'PAUSED_CHANGE_PLAN_WORKSPACE_MISMATCH',
+        '暂停计划的候选工作区已经变化，不能自动恢复',
+        ['保留审计记录并明确结束旧计划后重新规划'],
+        409,
+        {
+          retryable: false,
+          plan_id: resumePlanId,
+          plan_run_id: pausedPlan!.run_id,
+          workspace_run_id: existing?.run_id ?? '',
+        },
+      );
+    }
     if (existing && current && existing.base_revision_oid !== current.revision.oid) {
+      if (resumePlanId) {
+        throw new AgentCoreError(
+          'PAUSED_CHANGE_PLAN_BASE_CHANGED',
+          '知识包正式版本已变化，暂停计划不能直接恢复',
+          ['结束暂停计划后基于最新版本重新规划'],
+          409,
+          { retryable: false, plan_id: resumePlanId },
+        );
+      }
       if (existing.owner !== context.username) {
         throw new AgentCoreError(
           'LEASE_LOST',
@@ -3952,22 +4091,40 @@ export class AgentCoreService {
           existing.run_id,
           context.username,
         );
-      this.changeControl.transferActiveRun(context.project.id, existing.run_id, context.runId);
+      if (resumePlanId) {
+        try {
+          this.changeControl.resumePausedPlan({
+            projectId: context.project.id,
+            planId: resumePlanId,
+            previousRunId: existing.run_id,
+            nextRunId: context.runId,
+            actor: context.username,
+          });
+        } catch (error) {
+          throw normalizeChangeControlError(error);
+        }
+      } else {
+        this.changeControl.transferActiveRun(context.project.id, existing.run_id, context.runId);
+      }
       this.db.exec('COMMIT');
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
+    const resumedPlan = resumePlanId
+      ? this.changeControl.snapshot(context.project.id, context.runId, resumePlanId)
+      : null;
     return {
       projectId: context.project.id,
       runId: context.runId,
       previousRunId: existing.run_id,
       resumed: true,
+      ...(resumedPlan ? { resumedPlan } : {}),
       preservedChanges: this.changes(this.workspace(context.project.id)!).length,
       runCredential: issueAgentRunCredential(context.project.id, context.runId, context.username),
       packageContract: packageGenerationContract(),
       packageDataSource: { dataSourceType: this.workspace(context.project.id)?.package_data_source_type ?? 'neo4j' },
-      display: { text: '已继续上次未完成的修改' },
+      display: { text: resumedPlan ? '已恢复暂停计划和未完成任务' : '已继续上次未完成的修改' },
     };
   }
 
@@ -7802,8 +7959,12 @@ export class AgentCoreService {
     const schemaSemanticsEnforced = this.schemaSemanticEnforcementEnabled(workspace.project_id);
     const schemaSemanticsConfirmed = !schemaSemanticsEnforced
       || this.schemaSemanticConfirmationMatches(workspace.project_id, schemaSemantics);
+    const incompletePlanTasks = this.changeControl.incompleteRequiredPlanTasks(workspace.project_id);
+    const pausedPlanTasks = incompletePlanTasks.filter((item) => item.planStatus === 'paused');
+    const activePlanTasks = incompletePlanTasks.filter((item) => item.planStatus === 'active');
     const knowledgeConfirmed = knowledgeFilesConfirmed
-      && schemaSemanticsConfirmed;
+      && schemaSemanticsConfirmed
+      && incompletePlanTasks.length === 0;
     const pendingBusiness = workspaceChanges.filter((item) => (
       item.group_id !== RUNTIME_GROUP && item.group_id !== LEGACY_RUNTIME_GROUP
     )).length;
@@ -7869,13 +8030,21 @@ export class AgentCoreService {
           ...(schemaSemanticsConfirmed ? [] : [
             `补全并确认 Schema 对象业务语义（${schemaSemantics.errorCount} 项阻断问题）`,
           ]),
+          ...(pausedPlanTasks.length ? [
+            `继续或结束暂停的建模计划（还有 ${pausedPlanTasks.length} 项必选任务未完成）`,
+          ] : []),
+          ...(activePlanTasks.length ? [
+            `完成当前建模计划的 ${activePlanTasks.length} 项必选任务`,
+          ] : []),
         ],
       },
       modeling_complete: {
-        pass: pendingBusiness === 0 && pendingCandidates === 0,
+        pass: pendingBusiness === 0 && pendingCandidates === 0 && incompletePlanTasks.length === 0,
         blockers: [
           ...(pendingBusiness ? [`还有 ${pendingBusiness} 个候选文件未确认`] : []),
           ...(pendingCandidates ? [`还有 ${pendingCandidates} 个确认请求待处理`] : []),
+          ...(pausedPlanTasks.length ? [`还有 ${pausedPlanTasks.length} 项暂停计划任务待处理`] : []),
+          ...(activePlanTasks.length ? [`还有 ${activePlanTasks.length} 项计划任务未完成`] : []),
         ],
       },
       deterministic_confirmed: {

@@ -29,6 +29,23 @@ class CoreGateway(Protocol):
         arguments: dict[str, Any],
     ) -> dict[str, Any]: ...
 
+    async def cancel_run(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+        drain: bool = False,
+    ) -> dict[str, Any]: ...
+
+    async def resume_run(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+    ) -> dict[str, Any]: ...
+
     async def acceptance_fault(
         self,
         *,
@@ -184,6 +201,106 @@ class HttpCoreGateway:
                 "next": payload.get("next") or [],
                 "display": payload.get("display") or {"text": reason},
             }
+        return payload
+
+    async def cancel_run(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+        drain: bool = False,
+    ) -> dict[str, Any]:
+        """Install the Core-side cancellation fence and reconcile known receipts."""
+        headers = {
+            "X-Modeling-Project": project_id,
+            "X-Modeling-Run": run_id,
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        credential = self._run_credentials.get(run_id)
+        if credential:
+            headers["X-Modeling-Agent-Credential"] = credential
+        try:
+            response = await self._client.post(
+                f"{self._base_url}/internal/agent/runs/{run_id}/cancel",
+                json={"drain": drain},
+                headers=headers,
+            )
+        except httpx.HTTPError as error:
+            logger.warning(
+                "Core cancellation fence was unavailable (run=%s, error=%s)",
+                run_id,
+                type(error).__name__,
+            )
+            return {
+                "quiescent": False,
+                "error": "CORE_CANCELLATION_UNAVAILABLE",
+                "reason": "建模核心停止栅栏暂时不可用",
+            }
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if response.status_code == 404:
+            return {"quiescent": True, "compatibility": "legacy_core"}
+        if not isinstance(payload, dict):
+            return {
+                "quiescent": False,
+                "error": "CORE_CANCELLATION_PROTOCOL_INVALID",
+                "reason": "建模核心停止回执格式异常",
+            }
+        if response.is_error:
+            return {
+                **payload,
+                "quiescent": False,
+                "error": str(payload.get("code") or "CORE_CANCELLATION_FAILED"),
+            }
+        return payload
+
+    async def resume_run(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+    ) -> dict[str, Any]:
+        headers = {
+            "X-Modeling-Project": project_id,
+            "X-Modeling-Run": run_id,
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        credential = self._run_credentials.get(run_id)
+        if credential:
+            headers["X-Modeling-Agent-Credential"] = credential
+        try:
+            response = await self._client.post(
+                f"{self._base_url}/internal/agent/runs/{run_id}/resume",
+                json={},
+                headers=headers,
+            )
+        except httpx.HTTPError as error:
+            raise AgentRuntimeError(
+                "CORE_CANCELLATION_UNAVAILABLE",
+                "建模核心停止栅栏暂时不可用",
+                status=503,
+            ) from error
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if response.status_code == 404:
+            return {"quiescent": True, "compatibility": "legacy_core"}
+        if not isinstance(payload, dict):
+            raise AgentRuntimeError("CORE_CANCELLATION_PROTOCOL_INVALID", "建模核心恢复回执格式异常", status=502)
+        if response.is_error:
+            raise AgentRuntimeError(
+                str(payload.get("code") or "RUN_CANCELLATION_PENDING"),
+                str(payload.get("error") or payload.get("reason") or "停止栅栏尚未结算"),
+                status=response.status_code,
+                details=payload,
+            )
         return payload
 
     async def acceptance_fault(

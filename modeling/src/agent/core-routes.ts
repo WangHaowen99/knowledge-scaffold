@@ -12,7 +12,11 @@ import {
   normalizePackageDataSourceSelection,
   saveProjectPackageDataSourceSelection,
 } from '../workflow/package-data-source-selection.js';
-import { AgentCoreError, AgentCoreService } from './core-service.js';
+import {
+  AgentCoreError,
+  AgentCoreService,
+  RUN_CANCELLATION_MUTATION_TOOLS,
+} from './core-service.js';
 import { deliverAgentProjectEvents } from './project-event-outbox.js';
 import {
   STUDIO_SCHEMA,
@@ -35,6 +39,7 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
   const studioWrites = new StudioWriteService();
   const studioReviews = new StudioReviewService();
   const artifacts = getPackageArtifactStore();
+  const inFlightAgentTools = new Map<string, Set<Promise<unknown>>>();
   const studioReadCache = new Map<string, StudioReadService>();
   const studioReadInFlight = new Map<string, Promise<{
     workingPackage: Awaited<ReturnType<AgentCoreService['workbenchStudioFiles']>>;
@@ -117,6 +122,70 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     }
     try {
       return await service.workbenchProgress(project);
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.post('/internal/agent/runs/:runId/cancel', async (request, reply) => {
+    const projectId = String(request.headers['x-modeling-project'] ?? '').trim();
+    const headerRunId = String(request.headers['x-modeling-run'] ?? '').trim();
+    const runId = String((request.params as any).runId ?? '').trim();
+    if (!projectId || !runId || (headerRunId && headerRunId !== runId)) {
+      return reply.code(400).send({
+        code: 'INVALID_AGENT_CONTEXT',
+        reason: '缺少或不一致的 Agent 项目/运行标识',
+        next: [],
+      });
+    }
+    const project = getProject(projectId);
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ code: 'FORBIDDEN', reason: '项目不存在或当前用户无权访问', next: [] });
+    }
+    try {
+      const initial = service.requestRunCancellation(project, request.user!.username, runId, false);
+      const drain = (request.body as any)?.drain === true;
+      const drained = !drain || await waitForInFlightAgentTools(inFlightAgentTools, runId);
+      if (!drained) {
+        return reply.code(409).send({
+          ...service.requestRunCancellation(project, request.user!.username, runId, false),
+          code: 'RUN_CANCELLATION_PENDING',
+          reason: '仍有 Core 调用正在退出，停止请求尚未结算',
+          quiescent: false,
+          inFlight: true,
+        });
+      }
+      const reconciliation = drain
+        ? service.requestRunCancellation(project, request.user!.username, runId, true)
+        : initial;
+      return drain ? { ...reconciliation, initial } : reconciliation;
+    } catch (error) {
+      return sendAgentCoreError(reply, error);
+    }
+  });
+
+  app.post('/internal/agent/runs/:runId/resume', async (request, reply) => {
+    const projectId = String(request.headers['x-modeling-project'] ?? '').trim();
+    const headerRunId = String(request.headers['x-modeling-run'] ?? '').trim();
+    const runId = String((request.params as any).runId ?? '').trim();
+    if (!projectId || !runId || (headerRunId && headerRunId !== runId)) {
+      return reply.code(400).send({ code: 'INVALID_AGENT_CONTEXT', reason: '缺少或不一致的 Agent 项目/运行标识' });
+    }
+    const project = getProject(projectId);
+    if (!project || !canWriteProject(project.id, request.user!.username)) {
+      return reply.code(404).send({ code: 'FORBIDDEN', reason: '项目不存在或当前用户无权访问' });
+    }
+    try {
+      const drained = await waitForInFlightAgentTools(inFlightAgentTools, runId);
+      if (!drained) {
+        return reply.code(409).send({
+          code: 'RUN_CANCELLATION_PENDING',
+          reason: '仍有 Core 调用正在退出，暂不能恢复运行',
+          quiescent: false,
+          inFlight: true,
+        });
+      }
+      return service.resumeRunAfterCancellation(project, request.user!.username, runId);
     } catch (error) {
       return sendAgentCoreError(reply, error);
     }
@@ -641,18 +710,48 @@ export function registerAgentCoreRoutes(app: FastifyInstance): void {
     try {
       const before = acceptanceAgentToolBefore(request.user!.username, runId, String((request.params as any).tool ?? ''));
       if (before) return reply.code(before.statusCode).send(before.payload);
-      const result = await service.invoke({
+      const tool = String((request.params as any).tool ?? '');
+      const invocation = service.invoke({
         project,
         runId,
         username: request.user!.username,
-      }, String((request.params as any).tool ?? ''), args);
-      const after = acceptanceAgentToolAfter(request.user!.username, runId, String((request.params as any).tool ?? ''));
+      }, tool, args);
+      const tracked = invocation.then((value) => value);
+      if (RUN_CANCELLATION_MUTATION_TOOLS.has(tool)) {
+        const calls = inFlightAgentTools.get(runId) ?? new Set<Promise<unknown>>();
+        calls.add(tracked);
+        inFlightAgentTools.set(runId, calls);
+        tracked.finally(() => {
+          calls.delete(tracked);
+          if (!calls.size) inFlightAgentTools.delete(runId);
+        }).catch(() => undefined);
+      }
+      const result = await tracked;
+      const after = acceptanceAgentToolAfter(request.user!.username, runId, tool);
       if (after) return reply.code(after.statusCode).send(after.payload);
       return result;
     } catch (error) {
       return sendAgentCoreError(reply, error);
     }
   });
+}
+
+async function waitForInFlightAgentTools(
+  callsByRun: Map<string, Set<Promise<unknown>>>,
+  runId: string,
+  timeoutMs = 3_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const pending = [...(callsByRun.get(runId) ?? [])];
+    if (!pending.length) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await Promise.race([
+      Promise.allSettled(pending).then(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, Math.min(remaining, 100))),
+    ]);
+  }
 }
 
 function studioSchemaForRole(

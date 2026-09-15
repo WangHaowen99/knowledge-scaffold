@@ -22,6 +22,7 @@ const selDemo = (s) => s.demo;
 const selMessages = (s) => s.messages;
 const selError = (s) => s.error;
 const selRecovery = (s) => s.recovery;
+const selPausedPlan = (s) => s.pausedPlan;
 const selLoading = (s) => s.loading;
 const selActivity = (s) => s.activity;
 const selInteraction = (s) => s.interaction;
@@ -50,6 +51,7 @@ export default function RightPane() {
   const messages = useStore(store, selMessages);
   const error = useStore(store, selError);
   const recovery = useStore(store, selRecovery);
+  const pausedPlan = useStore(store, selPausedPlan);
   const loading = useStore(store, selLoading);
   const activity = useStore(store, selActivity);
   const interaction = useStore(store, selInteraction);
@@ -63,6 +65,7 @@ export default function RightPane() {
   const interactionId = useStore(store, selPendingInteractionMessageId);
   const [candidateAttentionKey, setCandidateAttentionKey] = useState('');
   const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [pausedPlanBusy, setPausedPlanBusy] = useState('');
   const scroller = useRef(null);
   const stream = useRef(null);
   const followingTail = useRef(true);
@@ -103,6 +106,16 @@ export default function RightPane() {
     } finally {
       setRecoveryBusy(false);
     }
+  };
+  const resumePausedPlan = async () => {
+    if (!pausedPlan?.id || pausedPlanBusy) return;
+    setPausedPlanBusy('resume');
+    try { await actions.resumePausedPlan(pausedPlan.id); } finally { setPausedPlanBusy(''); }
+  };
+  const endPausedPlan = async () => {
+    if (!pausedPlan?.id || pausedPlanBusy) return;
+    setPausedPlanBusy('end');
+    try { await actions.endPausedPlan(pausedPlan.id); } finally { setPausedPlanBusy(''); }
   };
   const focusPendingInteraction = (behavior = 'smooth') => {
     const element = scroller.current;
@@ -261,6 +274,34 @@ export default function RightPane() {
                       onClick={() => void runRecovery()}>安全终止失效计划后重新规划</button>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+          {pausedPlan && (
+            <div className="card card-wait" role="status">
+              <div className="card-h">
+                <b>未完成的建模计划已暂停</b>
+                <span className="spacer" />
+                {Number(pausedPlan.remaining_count) || 0} 项待完成
+              </div>
+              <div className="card-b t-sm">
+                <div>{userFacingText(pausedPlan.goal || '计划进度和候选内容已保留。')}</div>
+                <ul style={{ margin: 'var(--s-2) 0 0', paddingLeft: 'var(--s-3)' }}>
+                  {(pausedPlan.tasks || [])
+                    .filter((task) => task.required && !['accepted', 'skipped'].includes(task.status))
+                    .slice(0, 6)
+                    .map((task) => <li key={task.id}>{userFacingText(task.title)}</li>)}
+                </ul>
+                <div className="btn-row" style={{ marginTop: 'var(--s-3)' }}>
+                  <button type="button" className="btn btn-p btn-sm" disabled={Boolean(pausedPlanBusy)}
+                    onClick={() => void resumePausedPlan()}>
+                    {pausedPlanBusy === 'resume' ? '正在恢复…' : '继续未完成计划'}
+                  </button>
+                  <button type="button" className="btn btn-danger btn-sm" disabled={Boolean(pausedPlanBusy)}
+                    onClick={() => void endPausedPlan()}>
+                    {pausedPlanBusy === 'end' ? '正在结束…' : '结束该计划并重新规划'}
+                  </button>
+                </div>
               </div>
             </div>
           )}

@@ -116,6 +116,51 @@ test('终止接口只取消被终止 run 的活动计划', async (t) => {
   );
 });
 
+test('暂停计划阻断任意普通消息，只有显式恢复接口携带 planId', async (t) => {
+  const project = createProject({ owner: 'alice', name: '显式恢复计划', runtime: 'agent' });
+  const app = appFor(t);
+  const store = new ChangeControlStore(getDb());
+  const plan = store.createPlan(planArgs(project.id, 'run-paused', 'paused'));
+  store.requestRunCancellation(project.id, 'run-paused', 'synthetic stop');
+  store.reconcileRunCancellation(project.id, 'run-paused', 'test', true);
+  const upstreamBodies: Record<string, unknown>[] = [];
+  t.mock.method(globalThis, 'fetch', async (_input, init) => {
+    upstreamBodies.push(JSON.parse(String(init?.body || '{}')));
+    return new Response(JSON.stringify({ run: { id: 'run-resumed', status: 'queued' } }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  for (const payload of [{ message: '继续' }, { message: '接着处理规则' }]) {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${project.id}/agent/steer`,
+      payload,
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal(response.json().code, 'PAUSED_CHANGE_PLAN_DECISION_REQUIRED');
+    assert.equal(response.json().pausedPlan.id, plan.id);
+  }
+  const directRun = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/runs`,
+    payload: { message: '换一种说法继续处理' },
+  });
+  assert.equal(directRun.statusCode, 409, directRun.body);
+  assert.equal(directRun.json().code, 'PAUSED_CHANGE_PLAN_DECISION_REQUIRED');
+  assert.equal(upstreamBodies.length, 0);
+
+  const resumed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/resume`,
+    payload: {},
+  });
+  assert.equal(resumed.statusCode, 202, resumed.body);
+  assert.equal(upstreamBodies.length, 1);
+  assert.equal(upstreamBodies[0].resumePlanId, plan.id);
+});
+
 test('只有明确执行意图才会触发增量轮次入口', () => {
   assert.equal(incrementRoundRequested('开始增量建模'), true);
   assert.equal(incrementRoundRequested('请进入新一轮增量迭代'), true);
