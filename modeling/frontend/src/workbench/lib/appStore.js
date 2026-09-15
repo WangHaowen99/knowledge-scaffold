@@ -352,6 +352,7 @@ export const actions = {
         studioPendingCount: Number(snapshot.studioPendingCount) || 0,
         confirmPolicy: snapshot.confirmPolicy || [],
         packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
+        objectRelationReview: snapshot.objectRelationReview || null,
         selectedMaterial: snapshot.materials[0]?.id || '',
         run: agent.run,
         terminalRunIds: agent.run && TERMINAL_RUN_STATUSES.has(String(agent.run.status || ''))
@@ -423,6 +424,7 @@ export const actions = {
       studioPendingCount: Number(snapshot.studioPendingCount) || 0,
       confirmPolicy: snapshot.confirmPolicy || [],
       packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
+      objectRelationReview: snapshot.objectRelationReview || null,
     });
     if (options.openPurposeReview && store.get().follow) {
       const material = nextReadyMaterialPurposeReview(snapshot.materials, store.get().selectedMaterial);

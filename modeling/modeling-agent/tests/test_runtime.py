@@ -10,7 +10,6 @@ import json
 
 import modeling_agent.tools as tools_module
 import modeling_agent.service as service_module
-import modeling_agent.service as service_module
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from modeling_agent.agent import _system_prompt, build_model, context_engine_config, output_budget_for_phase
 from modeling_agent.rails import (
@@ -73,6 +72,20 @@ async def test_schema_semantic_confirmation_does_not_require_relation_suggestion
     assert live.attempted_tools == {"suggest_object_relations"}
     assert live.observed_tools == {"suggest_object_relations"}
     assert live.stable_read_cache == {"stale": {"ok": True}}
+
+
+async def test_goal_section_schema_exposes_section_specific_data_contract() -> None:
+    specs = {spec.name: spec for spec in CORE_TOOL_SPECS}
+    data_schema = specs["put_goal_section"].properties["data"]
+    variants = data_schema["oneOf"]
+    assert all("summary" not in variant["properties"] for variant in variants)
+    objective = next(variant for variant in variants if "success_criteria" in variant["properties"])
+    assert objective["properties"]["success_criteria"] == tools_module.STRING
+    assert objective["required"] == ["problem", "target_users", "success_criteria", "evidence"]
+    assert objective["additionalProperties"] is False
+    item_sections = [variant for variant in variants if set(variant["properties"]) == {"items", "evidence"}]
+    assert item_sections
+    assert all(variant["properties"]["items"]["items"] == tools_module.STRING for variant in item_sections)
 
 
 async def test_explicit_resume_plan_id_is_claimed_and_injected_into_runtime_prompt(settings) -> None:
@@ -6176,3 +6189,19 @@ async def test_scope_confirmation_allowed_after_analysis(settings) -> None:
         assert interaction.payload["question"] == question["question"]
     finally:
         await runtime.shutdown()
+
+
+async def test_repeated_core_tool_failure_aborts_during_tool_callback() -> None:
+    from modeling_agent.service import AgentService, LOOP_TOOL_FAILURE_THRESHOLD, LiveRun
+
+    live = LiveRun(run_id="run_f", project_id="project_f", token="token")
+    for index in range(LOOP_TOOL_FAILURE_THRESHOLD - 1):
+        await AgentService._after_core_tool(
+            None, live, "put_goal_section", {"request_id": f"request_{index}"}, {"error": "INVALID_INPUT"},
+        )
+    with pytest.raises(AgentRuntimeError) as caught:
+        await AgentService._after_core_tool(
+            None, live, "put_goal_section", {"request_id": "request_final"}, {"error": "INVALID_INPUT"},
+        )
+    assert caught.value.code == "AGENT_TOOL_LOOP_DETECTED"
+    assert "put_goal_section 连续失败" in caught.value.message

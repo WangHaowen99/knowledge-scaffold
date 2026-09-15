@@ -264,10 +264,36 @@ export class ChangeControlStore {
       });
     }
     const reason = requiredText(input.reason, 'reason', 1_000);
-    const additions = input.addTasks === undefined ? [] : parseTasks(input.addTasks, true);
+    let additions = input.addTasks === undefined ? [] : parseTasks(input.addTasks, true);
+    if (additions.some((task) => task.clientKey === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
+      throw invalid('add_tasks.client_key', `任务标识 ${OBJECT_RELATION_REVIEW_CLIENT_KEY} 由平台保留`);
+    }
     const skipIds = stringArray(input.skipTaskIds, 'skip_task_ids', 100);
     if (!additions.length && !skipIds.length) throw invalid('revision', '至少新增一项任务或跳过一项可选任务');
     const currentTasks = this.taskRows(plan.id);
+    if (additions.some(isRelationReviewLikeTask)
+      && currentTasks.some((task) => task.client_key === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
+      throw invalid('add_tasks', '对象关系任务由平台自动注入；当前计划已有该任务，不能重复添加关系审阅或关系确认任务');
+    }
+    if (!currentTasks.some((task) => task.client_key === OBJECT_RELATION_REVIEW_CLIENT_KEY)
+      && additions.some(isObjectRelationDependencyTask)) {
+      const dependencyKeys = [
+        ...currentTasks
+          .filter((task) => isObjectRelationDependency(task.resource_kind, parseStringArray(task.allowed_tools_json)))
+          .map((task) => task.client_key),
+        ...additions.filter(isObjectRelationDependencyTask).map((task) => task.clientKey),
+      ];
+      additions = [...additions, {
+        clientKey: OBJECT_RELATION_REVIEW_CLIENT_KEY,
+        title: '确认对象间关系',
+        resourceKind: 'other',
+        targetKey: OBJECT_RELATION_REVIEW_TARGET_KEY,
+        allowedTools: [OBJECT_RELATION_REVIEW_TOOL],
+        dependsOn: [...new Set(dependencyKeys)],
+        acceptance: '审阅本次对象和业务操作形成的关系候选，并将接受的中文关系一次性写入工作版本',
+        required: true,
+      }];
+    }
     if (additions.length && currentTasks.some((task) => task.status !== 'pending') && input.scopeApproved !== true) {
       throw new ChangeControlError(
         'CHANGE_PLAN_SCOPE_APPROVAL_REQUIRED',
@@ -313,6 +339,19 @@ export class ChangeControlStore {
         JSON.stringify(task.dependsOn.map((key) => idByKey.get(key)!)), task.acceptance,
         task.required ? 1 : 0, timestamp,
       ));
+      const relationTask = allTasks.find((task) => task.client_key === OBJECT_RELATION_REVIEW_CLIENT_KEY);
+      const addedRelationDependencies = additions
+        .filter(isObjectRelationDependencyTask)
+        .map((task) => idByKey.get(task.clientKey)!);
+      if (relationTask && addedRelationDependencies.length) {
+        const dependencies = new Set([
+          ...parseStringArray(relationTask.depends_on_json),
+          ...addedRelationDependencies,
+        ]);
+        this.db.prepare(`UPDATE agent_change_plan_tasks
+          SET depends_on_json = ?, updated_at = ? WHERE id = ?`)
+          .run(JSON.stringify([...dependencies]), timestamp, relationTask.id);
+      }
       this.db.prepare(`UPDATE agent_change_plans SET version = version + 1,
         approval_status = CASE WHEN ? > 0 THEN 'pending' ELSE approval_status END,
         approved_by = CASE WHEN ? > 0 THEN NULL ELSE approved_by END,
@@ -1351,6 +1390,23 @@ function isObjectRelationDependencyTask(task: TaskInput): boolean {
   return task.resourceKind === 'object'
     || task.resourceKind === 'operation'
     || task.allowedTools.some((tool) => ['sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics'].includes(tool));
+}
+
+function isRelationReviewLikeTask(task: TaskInput): boolean {
+  if (task.targetKey === OBJECT_RELATION_REVIEW_TARGET_KEY
+    || task.allowedTools.includes(OBJECT_RELATION_REVIEW_TOOL)) return true;
+  const title = task.title.toLowerCase().replaceAll(/\s+/g, '');
+  return /(?:对象间?关系|关系(?:候选)?(?:审阅|确认)|(?:object)?relation(?:review|confirmation|confirm))/.test(title);
+}
+
+function isObjectRelationDependency(resourceKind: string, allowedTools: string[]): boolean {
+  return resourceKind === 'object'
+    || resourceKind === 'operation'
+    || allowedTools.some((tool) => (
+      tool === 'sync_schema_objects'
+      || tool === 'stage_schema_semantic_changes'
+      || tool === 'confirm_schema_semantics'
+    ));
 }
 
 function assertAcyclic(tasks: TaskInput[]) {
