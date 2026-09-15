@@ -145,7 +145,7 @@ export const SNAPSHOT_NEUTRAL_TOOLS = new Set([
   'list_dir', 'read_file', 'grep_package', 'diff',
   'get_project_state', 'gate_status', 'who_references',
   'list_domain_resources', 'get_domain_resource', 'preview_domain_delete',
-  'suggest_object_relations', 'get_schema_semantics', 'get_schema_mapping_plan',
+  'get_schema_semantics', 'get_schema_mapping_plan',
   'get_change_plan', 'get_change_set_receipt',
   'analyze_deterministic_capabilities', 'analyze_material_impact', 'analyze_package_merge',
   'list_package_sources', 'read_package_source_file',

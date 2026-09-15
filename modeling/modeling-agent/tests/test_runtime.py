@@ -9,7 +9,6 @@ import pytest
 import json
 
 import modeling_agent.tools as tools_module
-import modeling_agent.service as service_module
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from modeling_agent.agent import _system_prompt, build_model, context_engine_config, output_budget_for_phase
 from modeling_agent.rails import (
@@ -46,32 +45,6 @@ from conftest import FakeGateway, ScriptedModel, ToolTurn, service
 
 
 pytestmark = pytest.mark.asyncio
-
-
-async def test_schema_semantic_confirmation_does_not_require_relation_suggestion() -> None:
-    live = SimpleNamespace(
-        required_tools=set(),
-        attempted_tools={"suggest_object_relations"},
-        observed_tools={"suggest_object_relations"},
-        stable_read_cache={"stale": {"ok": True}},
-        situation=service_module.RunSituation(),
-        recent_tool_calls=[],
-        recent_outputs=[],
-    )
-    result = {"ok": True}
-
-    await AgentService._after_core_tool(  # noqa: SLF001
-        None,
-        live,
-        "confirm_schema_semantics",
-        {},
-        result,
-    )
-
-    assert live.required_tools == set()
-    assert live.attempted_tools == {"suggest_object_relations"}
-    assert live.observed_tools == {"suggest_object_relations"}
-    assert live.stable_read_cache == {"stale": {"ok": True}}
 
 
 async def test_goal_section_schema_exposes_section_specific_data_contract() -> None:
@@ -141,31 +114,6 @@ async def test_explicit_resume_plan_id_is_claimed_and_injected_into_runtime_prom
         await runtime.shutdown()
 
 
-async def test_explicit_relation_suggestion_does_not_become_required() -> None:
-    live = SimpleNamespace(
-        required_tools=set(),
-        attempted_tools={"suggest_object_relations"},
-        observed_tools={"suggest_object_relations"},
-        stable_read_cache={"stale": {"ok": True}},
-        situation=service_module.RunSituation(),
-        recent_tool_calls=[],
-        recent_outputs=[],
-    )
-
-    await AgentService._after_core_tool(  # noqa: SLF001
-        None,
-        live,
-        "suggest_object_relations",
-        {},
-        {"ok": True, "hasMore": True, "nextCursor": "synthetic-next-page"},
-    )
-
-    assert live.required_tools == set()
-    assert live.attempted_tools == {"suggest_object_relations"}
-    assert live.observed_tools == {"suggest_object_relations"}
-    assert live.stable_read_cache == {"stale": {"ok": True}}
-
-
 async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: float = 15) -> dict:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -193,9 +141,11 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     validation = {spec.name for spec in core_tool_specs_for_phase("validation")}
     increment = {spec.name for spec in core_tool_specs_for_phase("increment")}
 
+    assert "suggest_object_relations" not in knowledge | validation | increment
+    assert "review_object_relations" in knowledge
     assert {
         "list_domain_resources", "stage_change_set", "sync_schema_objects",
-        "suggest_object_relations", "patch_object_source_binding",
+        "patch_object_source_binding",
     } <= knowledge
     assert not {"write_file", "delete_file", "patch_object", "create_metric", "upsert_object"} & knowledge
     assert "update_work_notes" in knowledge and "update_plan" not in knowledge
@@ -212,7 +162,7 @@ async def test_core_tool_surface_is_filtered_by_business_phase() -> None:
     assert not {"analyze_deterministic_capabilities", "confirm_deterministic_scope"} & knowledge
     assert "stage_script_source" not in validation
     assert {
-        "stage_change_set", "sync_schema_objects", "suggest_object_relations", "patch_object_source_binding",
+        "stage_change_set", "sync_schema_objects", "patch_object_source_binding",
         "analyze_material_impact", "compile_package_fusion_plan",
     } <= increment
     assert not {"patch_operation", "upsert_operation", "bind_object_source"} & increment
