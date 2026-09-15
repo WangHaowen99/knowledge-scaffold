@@ -231,6 +231,12 @@ type GateResult = {
   /** 只剩用户要在别的界面自己完成的事情。助手再宣告多少遍也推不动，
    *  应当结束本轮等待外部事件，而不是一轮轮重复同一段话（见 #39）。 */
   awaitingUser?: boolean;
+  /** blockers 里助手能自己动手推进的那些，措辞按「助手要做的动作」写。
+   *  blockers 面向用户，说的是「还差什么」；助手需要的是「现在该干什么」，
+   *  两者主语经常不同——「确认建模目标」是用户的事，助手能做的是起草并发卡。
+   *  单轮目标只从这里挑，避免把「由项目负责人完成发布」指派给助手。
+   *  为空表示这道门禁当前没有助手能独立推进的事。 */
+  agentActionable?: string[];
 };
 type GateResults = Record<string, GateResult>;
 
@@ -7864,11 +7870,19 @@ export class AgentCoreService {
         blockers: [
           ...(parsed || importedPackageBaseline ? [] : ['至少上传并成功解析 1 份资料']),
         ],
+        // 上传由用户完成，助手能做的是把缺口说清楚再请求资料。
+        agentActionable: parsed || importedPackageBaseline
+          ? []
+          : ['向用户发起资料请求，说明需要哪类资料以及它影响哪个环节'],
         warnings: failed.map((item) => `资料无法解析：${item.filename}`),
       },
       goal_confirmed: {
         pass: goalConfirmed,
         blockers: goalConfirmed ? [] : ['确认当前建模目标'],
+        // 「确认」是专家的动作，助手能做的是把目标写出来再发确认卡。
+        agentActionable: goalConfirmed
+          ? []
+          : ['依据已读资料起草或修订建模目标，完成后发起目标确认卡'],
       },
       process_confirmed: {
         pass: processConfirmed,
@@ -7876,6 +7890,10 @@ export class AgentCoreService {
           ? diagramPaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
             .map((path) => `确认流程 ${path}`)
           : ['形成并确认至少 1 条业务流程'],
+        agentActionable: processConfirmed ? [] : diagramPaths.length
+          ? diagramPaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
+            .map((path) => `核对流程 ${path} 并发起确认卡`)
+          : ['依据已读资料形成至少 1 条业务流程，完成后发起确认卡'],
       },
       knowledge_confirmed: {
         pass: knowledgeConfirmed && !deterministic.missing_operation_inputs.length,
@@ -7892,6 +7910,16 @@ export class AgentCoreService {
           ...deterministic.missing_operation_inputs
             .map((key) => `补全业务操作“${key}”的输入定义，确定性计算的脚本参数只能来自它`),
         ],
+        // 知识条目的「确认」由专家在确认卡上完成，助手只能起草和发卡，不列为
+        // 可独立推进项；补语义、补输入这两类是助手自己能写完的。
+        agentActionable: [
+          ...(schemaSemanticsConfirmed ? [] : [
+            `补全 Schema 对象的业务语义，当前有 ${schemaSemantics.errorCount} 项阻断问题`,
+          ]),
+          ...deterministic.missing_operation_inputs
+            .map((key) => `补全业务操作“${key}”的输入定义（参数名、类型、是否必填），`
+              + '确定性计算的脚本参数只能来自它'),
+        ],
       },
       modeling_complete: {
         pass: pendingBusiness === 0 && pendingCandidates === 0,
@@ -7899,6 +7927,10 @@ export class AgentCoreService {
           ...(pendingBusiness ? [`还有 ${pendingBusiness} 个候选文件未确认`] : []),
           ...(pendingCandidates ? [`还有 ${pendingCandidates} 个确认请求待处理`] : []),
         ],
+        // 确认动作在专家手上；助手能做的是把待确认的内容整理成确认卡。
+        agentActionable: pendingBusiness
+          ? [`为尚未确认的 ${pendingBusiness} 个候选文件发起确认卡，一次覆盖一组相关改动`]
+          : [],
       },
       deterministic_confirmed: {
         pass: !['decision_required', 'implementation_required'].includes(deterministic.status),
@@ -7910,6 +7942,14 @@ export class AgentCoreService {
             ...deterministic.missing_script_tests
               .map((key) => `让业务操作“${key}”的当前脚本通过已确认契约的隔离测试`),
           ],
+        // decision_required 是在等专家拍板范围，助手只能发范围确认卡，不列为
+        // 可独立推进项；否则它会去「替专家确认」，而那是明令禁止的。
+        agentActionable: deterministic.status === 'decision_required' ? [] : [
+          ...deterministic.missing_script_bindings
+            .map((key) => `完成业务操作“${key}”的脚本：定义契约、提交源码、绑定到该操作`),
+          ...deterministic.missing_script_tests
+            .map((key) => `让业务操作“${key}”的当前脚本通过已确认契约的隔离测试`),
+        ],
         warnings: deterministic.skipped_operation_keys.length
           ? [`专家已明确跳过 ${deterministic.skipped_operation_keys.length} 个确定性计算候选`]
           : [],
@@ -7918,6 +7958,12 @@ export class AgentCoreService {
         pass: evaluationMatchesCurrentFacts,
         blockers: evaluationMatchesCurrentFacts ? [] : [
           '确保当前知识包的每条真实用例都有最新有效结果，且问题、参考答案和结果保持一致并通过',
+        ],
+        // 原 blocker 一句话塞了三件事，当目标会让助手同时开几个头。
+        // 这里只给一个入口动作：先读结果，再按失败原因决定改什么。
+        agentActionable: evaluationMatchesCurrentFacts ? [] : [
+          '读取最新评测结果，按失败原因修复知识包或脚本；'
+          + '结果与当前知识包事实不一致时重新运行评测',
         ],
       },
     };
@@ -7934,6 +7980,13 @@ export class AgentCoreService {
           : productLedger.sourceRevision !== workspace.base_revision_oid
             ? ['台账对应的资料修订已变化，请重新核对当前清单']
             : (productLedgerValidation?.errors ?? []).slice(0, 8),
+        // 台账的重新核对和校验错误都是助手自己能改的。
+        agentActionable: !productLedgerEnforced
+          ? []
+          : productLedger.sourceRevision !== workspace.base_revision_oid
+            ? ['按当前资料修订重新核对产品清单台账并提交']
+            : (productLedgerValidation?.errors ?? []).slice(0, 8)
+              .map((item: string) => `修正产品清单台账的校验问题：${item}`),
         warnings: config.productLedger.mode === 'advisory' && productLedgerValidation?.pass !== true
           ? ['产品清单台账目前处于观测阶段，当前问题不会阻断普通建模']
           : [],
@@ -7962,6 +8015,8 @@ export class AgentCoreService {
         ...userSideBlockers,
         ...(runningImport ? [`评测库数据仍在后台导入：${runningImport.filename}`] : []),
       ],
+      // 录用例、配数据源、等导入都不是助手能代劳的，只继承前面那些建模门禁。
+      agentActionable: modelingReady.agentActionable,
       awaitingUser: !modelingReady.blockers.length
         && userSideBlockers.length > 0
         && !runningImport,
@@ -7972,6 +8027,8 @@ export class AgentCoreService {
       blockers: releasedContent && pendingBusiness === 0 && pendingCandidates === 0
         ? []
         : ['由项目负责人确认真实用例覆盖和稳定版本号，并完成正式发布'],
+      // 发布必须由项目负责人在确认卡上完成，助手没有可独立推进的事。
+      agentActionable: [],
     };
     return gates;
   }
@@ -10159,11 +10216,13 @@ function normalizeReviewMode(value: unknown, automatic: boolean): 'full' | 'sequ
 }
 
 function combine(
-  gates: Record<string, { pass: boolean; blockers: string[] }>,
+  gates: Record<string, { pass: boolean; blockers: string[]; agentActionable?: string[] }>,
   names: string[],
-): { pass: boolean; blockers: string[] } {
+): { pass: boolean; blockers: string[]; agentActionable: string[] } {
   const blockers = names.flatMap((name) => gates[name]?.pass ? [] : gates[name]?.blockers ?? [`门禁 ${name} 未通过`]);
-  return { pass: blockers.length === 0, blockers };
+  // 组合门禁的可推进项按子门禁顺序汇总，顺序即优先级：靠前的阶段先做完。
+  const agentActionable = names.flatMap((name) => gates[name]?.pass ? [] : gates[name]?.agentActionable ?? []);
+  return { pass: blockers.length === 0, blockers, agentActionable };
 }
 
 function locateAnchor(content: string, anchor: string): number {

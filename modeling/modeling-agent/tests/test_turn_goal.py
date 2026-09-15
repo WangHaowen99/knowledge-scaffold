@@ -31,6 +31,19 @@ async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: flo
     raise AssertionError(f"run {run_id} did not reach {statuses}")
 
 
+GOAL_HEADING = "本轮目标（服务端指派）"
+
+
+def goal_section(text: str) -> str:
+    """只取目标那一段。
+
+    system prompt 里还有 SYSTEM_PROMPT 与 SKILL 全文，直接在整段上断言
+    「不包含某词」会误命中 skill 正文——比如「项目负责人」在发布说明里就有。
+    """
+    index = text.find(GOAL_HEADING)
+    return text[index:] if index >= 0 else ""
+
+
 def system_texts(model) -> list[str]:
     """取出每次模型调用的 system 段正文。
 
@@ -108,7 +121,7 @@ async def test_autonomous_continuation_receives_a_single_assigned_goal(settings)
         goal_texts = [text for text in texts if "本轮目标（服务端指派）" in text]
         assert goal_texts, "自主续跑轮没有收到服务端指派的目标"
 
-        goal = goal_texts[0]
+        goal = goal_section(goal_texts[0])
         assert "demo-operation-alpha" in goal
         # 只指派第一项，不把整张清单倒给模型
         assert "demo-operation-beta" not in goal
@@ -139,5 +152,102 @@ async def test_passed_gate_produces_no_goal(settings) -> None:
 
         for text in system_texts(model):
             assert "本轮目标（服务端指派）" not in text
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_actionable_wins_over_user_facing_blockers(settings) -> None:
+    """有 agentActionable 时用它，而不是面向用户的 blockers。
+
+    blockers 说的是「还差什么」，主语常常是用户；助手需要的是「现在该干什么」。
+    把「由项目负责人完成发布」指派给助手只会让它困惑或越界。
+    """
+    model = ScriptedModel(
+        [[ToolTurn("update_work_notes", {"markdown": "# 进展"})], []],
+        final="本轮已完成。",
+    )
+    gateway = FakeGateway({
+        "gate_status": {
+            "pass": False,
+            "blockers": ["由项目负责人确认真实用例覆盖和稳定版本号，并完成正式发布"],
+            "agentActionable": ["完成业务操作「demo-operation-alpha」的脚本：定义契约、提交源码、绑定"],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_actionable", token="token_1", message="继续",
+        )
+        await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
+        )
+        goals = [t for t in system_texts(model) if GOAL_HEADING in t]
+        assert goals, "没有指派目标"
+        goal = goal_section(goals[0])
+        assert "demo-operation-alpha" in goal
+        assert "项目负责人" not in goal, "用了面向用户的 blockers，没用 agentActionable"
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_empty_agent_actionable_means_no_goal(settings) -> None:
+    """明确标注为空时不指派，不能退回 blockers。
+
+    空数组的语义是「这道门禁当前没有助手能独立推进的事」，退回 blockers
+    等于又把用户的事派给了助手，整改就白做了。
+    """
+    model = ScriptedModel(
+        [[ToolTurn("update_work_notes", {"markdown": "# 进展"})], []],
+        final="本轮已完成。",
+    )
+    gateway = FakeGateway({
+        "gate_status": {
+            "pass": False,
+            "blockers": ["先在评测界面录入至少 1 条用户真实场景用例"],
+            "agentActionable": [],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_no_actionable", token="token_1", message="继续",
+        )
+        await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
+        )
+        # 没有目标段就等于没有指派——不必再去整段搜 blocker 原文，
+        # 那些措辞和 skill 正文会重叠，搜出来的是误命中。
+        for text in system_texts(model):
+            assert GOAL_HEADING not in text
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_missing_field_falls_back_to_blockers(settings) -> None:
+    """服务端还没标注这道门禁时，退回 blockers 保持兼容。"""
+    model = ScriptedModel(
+        [[ToolTurn("update_work_notes", {"markdown": "# 进展"})], []],
+        final="本轮已完成。",
+    )
+    gateway = FakeGateway({
+        "gate_status": {"pass": False, "blockers": ["补全业务操作「demo-op」的输入定义"]},
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_fallback", token="token_1", message="继续",
+        )
+        await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
+        )
+        goals = [t for t in system_texts(model) if GOAL_HEADING in t]
+        assert goals, "未标注时应退回 blockers"
+        assert "demo-op" in goal_section(goals[0])
     finally:
         await runtime.shutdown()

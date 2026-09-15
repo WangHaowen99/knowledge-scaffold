@@ -402,6 +402,19 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
     gate: 'goal_confirmed',
   }, runId);
   assert.equal(pendingGoalGate.json().pass, false);
+  // 门禁要分清这一条是谁的活：blockers 面向用户说「还差什么」，
+  // agentActionable 说「助手现在该干什么」，两者主语经常不同。
+  assert.deepEqual(pendingGoalGate.json().blockers, ['确认当前建模目标']);
+  assert.ok(
+    pendingGoalGate.json().agentActionable.some((item: string) => item.includes('起草')),
+    '目标确认的助手动作应当是起草并发卡，而不是替专家确认',
+  );
+  const releasableGate = await tool(app, project.id, 'gate_status', {
+    gate: 'releasable',
+  }, runId);
+  // 发布只能由项目负责人完成，助手没有可独立推进的事，必须是空数组而不是缺字段——
+  // 缺字段会让调用方退回 blockers，又把用户的活派给助手。
+  assert.deepEqual(releasableGate.json().agentActionable, []);
   const staleGoalCannotAuthorizeProcess = await tool(app, project.id, 'write_file', {
     path: 'diagrams/stale-goal.mmd', content: 'flowchart TD\nA --> B\n',
     change_group: 'stale-goal-process', evidence: [],

@@ -2987,14 +2987,24 @@ class AgentService:
                 return ""
             if result.get("error") or result.get("pass"):
                 continue
-            blockers = _string_list(result.get("blockers") or result.get("next"), 30)
-            if not blockers:
+            # 优先用服务端标注的「助手可独立推进项」。blockers 面向用户，说的是
+            # 「还差什么」，其中不少条目的主语是用户——把「由项目负责人完成发布」
+            # 指派给助手只会让它困惑或越界。
+            raw_actionable = result.get("agentActionable")
+            if raw_actionable is None:
+                # 服务端还没标注这道门禁，退回 blockers 保持兼容。
+                items = _string_list(result.get("blockers") or result.get("next"), 30)
+            else:
+                # 已标注：空表示这道门禁当前没有助手能独立推进的事，
+                # 此时不能退回 blockers，否则又会把用户的事派给助手。
+                items = _string_list(raw_actionable, 30)
+            if not items:
                 continue
             remaining = (
-                f"，该门禁共 {len(blockers)} 项未完成" if len(blockers) > 1 else ""
+                f"，该门禁共 {len(items)} 项待推进" if len(items) > 1 else ""
             )
             return (
-                f"{blockers[0]}\n\n"
+                f"{items[0]}\n\n"
                 f"这一项来自门禁 {gate}{remaining}。本轮只推进这一项，完成后即可结束本轮；"
                 "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
                 "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
