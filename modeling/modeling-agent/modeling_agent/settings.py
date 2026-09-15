@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+import logging
 import os
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 
 def _integer(name: str, default: int, minimum: int, maximum: int) -> int:
     raw = os.getenv(name, "").strip()
     value = int(raw) if raw else default
-    return min(maximum, max(minimum, value))
+    clamped = min(maximum, max(minimum, value))
+    if raw and clamped != value:
+        # 静默夹取会让「配了没生效」看起来像「改了没用」。窗口类参数尤其危险：
+        # 运维在 .env 里写了 800、实际只生效上限值，排查时无从发现。
+        logger.warning(
+            "%s=%s out of range [%s, %s], clamped to %s", name, value, minimum, maximum, clamped,
+        )
+    return clamped
 
 
 def _number(name: str, default: float, minimum: float, maximum: float) -> float:
@@ -126,9 +136,13 @@ class Settings:
             reasoning_headroom_tokens=_integer(
                 "MODELING_REASONING_HEADROOM_TOKENS", 16_384, 0, 65_536,
             ),
-            context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 200),
-            context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 160),
-            context_window_rounds=_integer("MODELING_CONTEXT_WINDOW_ROUNDS", 10, 4, 30),
+            # 上限从 200/160/30 放开。故障现场专家的首次回答和第五次重复提问之间
+            # 隔了约五百条消息，原来的上限即使拉满也留不住它——「放开窗口」这件事
+            # 在旧上限下根本做不到。默认值不动：窗口越大单次输入越贵，该由部署按
+            # 模型的上下文规模用环境变量决定，不让所有部署默认承担。
+            context_max_messages=_integer("MODELING_CONTEXT_MAX_MESSAGES", 64, 16, 4000),
+            context_window_messages=_integer("MODELING_CONTEXT_WINDOW_MESSAGES", 48, 8, 4000),
+            context_window_rounds=_integer("MODELING_CONTEXT_WINDOW_ROUNDS", 10, 4, 400),
             context_processor_preset=(
                 os.getenv("MODELING_CONTEXT_PROCESSOR_PRESET", "").strip().lower()
                 in {"1", "true", "yes", "on"}
