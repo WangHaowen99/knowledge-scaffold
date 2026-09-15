@@ -543,9 +543,13 @@ async function runRound(
 export function isRateLimitedFailure(status: number, message: unknown): boolean {
   if (status === 429 || status === 503) return true;
   const text = String(message ?? '');
+  // 中文文案来自网关而不是模型 SDK（「模型服务请求过于频繁」），
+  // 同仓 material-analysis-map-reduce 早已覆盖，评测这条路径先前漏了。
   return /(^|\D)429(\D|$)/u.test(text)
     || /rate[\s_-]?limit/iu.test(text)
-    || /too many requests/iu.test(text);
+    || /too many requests/iu.test(text)
+    || /请求过于频繁/u.test(text)
+    || /限流/u.test(text);
 }
 
 /** 指数退避 + 抖动：并发下固定退避会让多条用例同时重试、再次撞限流。 */

@@ -16,6 +16,14 @@ test('上游模型限流包在错误体里也要判为限流', () => {
   assert.equal(isRateLimitedFailure(502, 'Too Many Requests'), true);
 });
 
+test('网关返回的中文限流文案也要判为限流', () => {
+  // 实测 38 条并发评测时踩到的：5 条用例记成 error，文案是中文，
+  // 原正则只认 429 / rate limit / too many requests，一条都没匹配上。
+  assert.equal(isRateLimitedFailure(500, '模型服务请求过于频繁'), true);
+  assert.equal(isRateLimitedFailure(500, '运行失败：模型请求过于频繁，请稍后重试'), true);
+  assert.equal(isRateLimitedFailure(500, '上游已限流'), true);
+});
+
 test('普通失败不得误判为限流', () => {
   assert.equal(isRateLimitedFailure(500, 'internal server error'), false);
   assert.equal(isRateLimitedFailure(400, '知识包规格不完整'), false);
