@@ -271,16 +271,9 @@ export class ChangeControlStore {
     if (additions.some((task) => task.clientKey === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
       throw invalid('add_tasks.client_key', `任务标识 ${OBJECT_RELATION_REVIEW_CLIENT_KEY} 由平台保留`);
     }
-    if (additions.some((task) => task.clientKey === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
-      throw invalid('add_tasks.client_key', `任务标识 ${OBJECT_RELATION_REVIEW_CLIENT_KEY} 由平台保留`);
-    }
     const skipIds = stringArray(input.skipTaskIds, 'skip_task_ids', 100);
     if (!additions.length && !skipIds.length) throw invalid('revision', '至少新增一项任务或跳过一项可选任务');
     const currentTasks = this.taskRows(plan.id);
-    if (additions.some(isRelationReviewLikeTask)
-      && currentTasks.some((task) => task.client_key === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
-      throw invalid('add_tasks', '对象关系任务由平台自动注入；当前计划已有该任务，不能重复添加关系审阅或关系确认任务');
-    }
     if (additions.some(isRelationReviewLikeTask)
       && currentTasks.some((task) => task.client_key === OBJECT_RELATION_REVIEW_CLIENT_KEY)) {
       throw invalid('add_tasks', '对象关系任务由平台自动注入；当前计划已有该任务，不能重复添加关系审阅或关系确认任务');
