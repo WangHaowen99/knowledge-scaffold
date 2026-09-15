@@ -97,3 +97,16 @@ test('判分重试耗尽后报错点明是判分环节', async () => {
     /评测判分 重试 6 次后仍被限流：429 status code \(no body\)/,
   );
 });
+
+test('用例执行抛出的限流异常也要重试——内层只认非 2xx 响应', async () => {
+  // 网关限流是直接抛异常的，runCase 内层的 !res.ok 分支根本走不到。
+  let calls = 0;
+  const run = await withRateLimitRetry('用例执行', async () => {
+    calls += 1;
+    if (calls <= 2) throw new Error('模型服务请求过于频繁');
+    return { finalAnswer: '答案', trace: { status: 'ok' } };
+  }, { backoffMs: () => 1 }, new AbortController().signal);
+
+  assert.equal(calls, 3);
+  assert.equal(run.finalAnswer, '答案');
+});

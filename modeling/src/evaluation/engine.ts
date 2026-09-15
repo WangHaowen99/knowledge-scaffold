@@ -473,11 +473,19 @@ async function runRound(
     onStart: () => repo.roundCaseStarted(roundId),
     run: async (tc) => {
       assertEvaluationNotCancelled(signal);
-      const run = await runCase(request, ws, tc.question, signal, {
+      // runCase 内部只处理「响应返回了非 2xx」；网关限流是直接抛异常的，
+      // 那条路径绕过了内层重试，外面再包一层才兜得住。
+      const runHooks: RunCaseHooks = {
         onRateLimited: (attempt, waitMs, failure) => {
           log(`⏳ 被限流，${Math.round(waitMs / 1000)} 秒后重试（第 ${attempt} 次）：${failure.slice(0, 80)}`);
         },
-      });
+      };
+      const run = await withRateLimitRetry(
+        '用例执行',
+        () => runCase(request, ws, tc.question, signal, runHooks),
+        runHooks,
+        signal,
+      );
       assertEvaluationNotCancelled(signal);
       const v = await withRateLimitRetry(
         '评测判分',
