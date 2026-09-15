@@ -3327,6 +3327,43 @@ async def test_cancel_run_settles_unfinished_tool_activity(settings) -> None:
         await runtime.shutdown()
 
 
+async def test_failed_run_settles_unfinished_tool_activity(settings) -> None:
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    run = runtime.store.create_run(RunRecord(
+        id="run_failed_change_set",
+        project_id="project_failed_change_set",
+        session_id="session_failed_change_set",
+        status=RUN_RUNNING,
+        prompt="继续知识建模",
+        token_fingerprint="000000000000",
+    ))
+    runtime.store.update_run(run.id, status=RUN_RUNNING)
+    runtime.events.publish(run.project_id, run.id, "tool", {
+        "name": "stage_change_set",
+        "phase": "started",
+        "summary": "正在原子生成待确认修改",
+        "toolCallId": "call_failed_change_set",
+    })
+    try:
+        runtime._settle_failed_tool_events(  # noqa: SLF001 - failure settlement invariant
+            run.project_id,
+            run.id,
+            "这次处理没有完成，之前已经确认的内容和候选修改都已保留。",
+        )
+
+        events = runtime.store.events_after(run.project_id, 0)
+        tool_events = [
+            event for event in events
+            if event.kind == "tool"
+            and event.payload.get("toolCallId") == "call_failed_change_set"
+        ]
+        assert [event.payload.get("phase") for event in tool_events] == ["started", "failed"]
+        assert tool_events[-1].payload["summary"] == "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
+        assert runtime.store.unfinished_tool_events(run.id) == []
+    finally:
+        await runtime.shutdown()
+
+
 async def test_failed_required_tool_counts_as_attempt_and_is_not_repeated(settings) -> None:
     model = ScriptedModel(
         [[ToolTurn("run_evaluation", {})], []],

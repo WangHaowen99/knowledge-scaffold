@@ -135,6 +135,7 @@ import {
 } from './product-ledger.js';
 import { issueAgentRunCredential } from './run-credential.js';
 import { runScriptCasesInJiuwenbox } from './sandbox.js';
+import { isNoOpCandidateChange, removeNoOpCandidateChanges } from './effective-changes.js';
 import {
   StudioReadError,
   StudioReadService,
@@ -6430,25 +6431,24 @@ export class AgentCoreService {
     const changes = this.changes(workspace);
     if (!changes.length) return changes;
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
-    const noOpPaths = changes.filter((change) => (
-      change.kind === 'write'
-        ? base.files[change.path] === change.content
-        : !Object.hasOwn(base.files, change.path)
-    )).map((change) => change.path);
-    if (!noOpPaths.length) return changes;
 
-    this.db.exec('BEGIN IMMEDIATE');
+    // 只在确认需要删除 no-op 行时才升级为写锁，读快照保持事务内一致性。
+    this.db.exec('BEGIN');
     try {
-      const remove = this.db.prepare(`DELETE FROM agent_candidate_changes
-        WHERE project_id = ? AND run_id = ? AND path = ?`);
-      for (const path of noOpPaths) remove.run(workspace.project_id, workspace.run_id, path);
+      const latestChanges = this.changes(workspace);
+      const effective = removeNoOpCandidateChanges(
+        this.db,
+        workspace.project_id,
+        workspace.run_id,
+        latestChanges,
+        base.files,
+      );
       this.db.exec('COMMIT');
+      return effective;
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
-    const removed = new Set(noOpPaths);
-    return changes.filter((change) => !removed.has(change.path));
   }
 
   private async grepPackage(workspace: WorkspaceRow, args: Record<string, unknown>) {

@@ -3065,19 +3065,50 @@ class AgentService:
         self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
         return self._run_public(updated, self.store.project_state(project_id))
 
-    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
+    def _settle_tool_events(
+        self,
+        project_id: str,
+        run_id: str,
+        *,
+        phase: str,
+        summary: str,
+        code: str | None = None,
+        retryable: bool | None = None,
+    ) -> None:
         for event in self.store.unfinished_tool_events(run_id):
             started = event.payload
             payload = {
                 "name": str(started.get("name") or ""),
-                "phase": "cancelled",
-                "summary": "运行已停止，当前操作已取消",
+                "phase": phase,
+                "summary": summary,
                 "toolCallId": str(started.get("toolCallId") or ""),
             }
+            if code is not None:
+                payload["code"] = code
+            if retryable is not None:
+                payload["retryable"] = retryable
             trace_group_id = str(started.get("traceGroupId") or "")
             if trace_group_id:
                 payload["traceGroupId"] = trace_group_id
             self.events.publish(project_id, run_id, "tool", payload)
+
+    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
+        self._settle_tool_events(
+            project_id,
+            run_id,
+            phase="cancelled",
+            summary="运行已停止，当前操作已取消",
+        )
+
+    def _settle_failed_tool_events(self, project_id: str, run_id: str, summary: str) -> None:
+        self._settle_tool_events(
+            project_id,
+            run_id,
+            phase="failed",
+            summary=summary or "本次操作未完成，已保留当前成果",
+            code="RUN_FAILED",
+            retryable=False,
+        )
 
     async def safe_terminate_stale(self, *, project_id: str) -> dict[str, Any]:
         state = self.store.project_state(project_id)
@@ -3154,7 +3185,6 @@ class AgentService:
             return True
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
-
     def _suspend_required_text_review(
         self,
         live: LiveRun,
@@ -3896,8 +3926,6 @@ class AgentService:
             raise
         except Exception as error:  # noqa: BLE001
             logger.exception("Agent run %s failed", run.id)
-            self.store.update_run(run.id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
-            self._publish_state(run.project_id, run.id)
             visible_error = (
                 error.message
                 if isinstance(error, AgentRuntimeError) and error.code == "LLM_NOT_CONFIGURED"
@@ -3909,6 +3937,12 @@ class AgentService:
                     else "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
                 )
             )
+            try:
+                self._settle_failed_tool_events(run.project_id, run.id, visible_error)
+            except Exception:
+                logger.exception("Failed to settle unfinished tool events for run %s", run.id)
+            self.store.update_run(run.id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
+            self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "message", {"role": "assistant", "blocks": [{"type": "error", "text": visible_error, "actions": [{"id": "retry", "label": "从当前进展重试"}]}]})
             if live.restore_interaction:
                 self._restore_interaction(run, live.restore_interaction)
