@@ -120,7 +120,10 @@ import {
 } from '../workflow/package-version-lifecycle.js';
 import { ensureFullDocumentSummaries } from '../workflow/material-analysis-map-reduce.js';
 import { buildTaskLlm } from '../llm/provider.js';
-import { identifyScriptCandidates } from '../ai-construction/deterministic-capability.js';
+import {
+  identifyScriptCandidates,
+  operationsMissingInputs,
+} from '../ai-construction/deterministic-capability.js';
 import {
   getRound,
   latestEffectiveEvaluation,
@@ -306,6 +309,10 @@ interface DeterministicCapabilityView {
   skipped_operation_keys: string[];
   missing_script_bindings: string[];
   missing_script_tests: string[];
+  // 被识别为脚本候选、却还没声明输入的业务操作。脚本契约的参数只能来自业务
+  // 操作的输入定义；缺了它，写契约时既无处可查，也没有工具可补——确定性验证
+  // 阶段拿不到领域写工具，只能自己编数据从哪来。必须在知识阶段就补齐。
+  missing_operation_inputs: string[];
   decision: null | {
     reason: string;
     decided_by: string;
@@ -2753,6 +2760,10 @@ export class AgentCoreService {
     const skipped = currentDecision
       ? uncovered.map((candidate) => candidate.operation_key).filter((key) => !selectedSet.has(key))
       : [];
+    const missingOperationInputs = operationsMissingInputs(
+      candidates.map((candidate) => candidate.operation_key),
+      spec.operations ?? [],
+    );
     let status: DeterministicCapabilityView['status'];
     let displayText: string;
     if (!candidates.length) {
@@ -2783,6 +2794,7 @@ export class AgentCoreService {
       skipped_operation_keys: skipped,
       missing_script_bindings: missingBindings,
       missing_script_tests: missingTests,
+      missing_operation_inputs: missingOperationInputs,
       decision: currentDecision ? {
         reason: currentDecision.reason,
         decided_by: currentDecision.decided_by,
@@ -7866,7 +7878,7 @@ export class AgentCoreService {
           : ['形成并确认至少 1 条业务流程'],
       },
       knowledge_confirmed: {
-        pass: knowledgeConfirmed,
+        pass: knowledgeConfirmed && !deterministic.missing_operation_inputs.length,
         blockers: [
           ...(knowledgeFilesConfirmed ? [] : knowledgePaths.length
             ? knowledgePaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
@@ -7875,6 +7887,10 @@ export class AgentCoreService {
           ...(schemaSemanticsConfirmed ? [] : [
             `补全并确认 Schema 对象业务语义（${schemaSemantics.errorCount} 项阻断问题）`,
           ]),
+          // 缺输入定义要在这里拦下：确定性验证阶段只剩领域只读工具，到那时
+          // 既查不到也补不了，模型只能自己编数据来源。
+          ...deterministic.missing_operation_inputs
+            .map((key) => `补全业务操作“${key}”的输入定义，确定性计算的脚本参数只能来自它`),
         ],
       },
       modeling_complete: {

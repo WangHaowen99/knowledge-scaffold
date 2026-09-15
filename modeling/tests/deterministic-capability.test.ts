@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildScriptGenerationRequirement,
   identifyScriptCandidates,
+  operationsMissingInputs,
   parseScriptContractResponse,
   parseScriptDecisionResponse,
   ScriptDecisionInputError,
@@ -126,4 +127,36 @@ test('脚本生成前必须为每个 operation 明确输入输出契约和测试
   assert.throws(() => parseScriptContractResponse({
     answers: [{ questionId: 'script_contract_1', other: '只有第一项' }],
   }, selected), /AllocateVolume/);
+});
+
+test('脚本候选缺少输入定义时被单独挑出来', () => {
+  // 脚本参数只能来自业务操作的输入定义。缺了它，写契约时既查不到也补不了——
+  // 确定性验证阶段只剩领域只读工具，模型就会自行编造数据来源。
+  const operations = [
+    operation('CalculateYield', '计算产品收率', ['按公式计算收率'], {
+      inputs: [{ param: 'input_volume', cnName: '投入量', type: 'number', required: true }],
+    }),
+    operation('AllocateVolume', '分配批次加工量', ['按产能排序分配加工量']),
+  ];
+
+  assert.deepEqual(
+    operationsMissingInputs(['CalculateYield', 'AllocateVolume'], operations),
+    ['AllocateVolume'],
+  );
+});
+
+test('输入齐备或候选为空时不产生阻断项', () => {
+  const operations = [
+    operation('CalculateYield', '计算产品收率', ['按公式计算收率'], {
+      inputs: [{ param: 'input_volume', cnName: '投入量', type: 'number', required: true }],
+    }),
+  ];
+
+  assert.deepEqual(operationsMissingInputs(['CalculateYield'], operations), []);
+  assert.deepEqual(operationsMissingInputs([], operations), []);
+});
+
+test('候选指向不存在的业务操作时同样算缺输入', () => {
+  // 操作被删掉但候选还在时不能默认放行，否则又会退回“无处可查只能自己编”。
+  assert.deepEqual(operationsMissingInputs(['Vanished'], []), ['Vanished']);
 });

@@ -105,7 +105,7 @@ def build_model(settings: Settings, *, output_tokens: int | None = None) -> Any:
         "model": settings.llm_model,
         "temperature": 0.2,
         "top_p": 0.1,
-        "max_tokens": min(settings.llm_max_tokens, output_tokens or settings.llm_max_tokens),
+        "max_tokens": settings.resolved_output_budget(output_tokens),
     }
     extra_body = settings.llm_request_extra_body()
     if extra_body:

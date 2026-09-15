@@ -162,6 +162,10 @@ MAX_STALLED_CONTINUATIONS = 2
 # 但它们是写入前的正常准备，用 2 轮上限会让计划刚起步就被判成本轮完成。
 MAX_STALLED_PLAN_CONTINUATIONS = 5
 MAX_DECISION_CARD_RETRIES = 2
+# 思维链吃光输出预算导致本轮零产出时的重试上限。截断不是“没事可做”，
+# 换一次更克制的推理方式往往就能出结果；连着两次仍然截断说明当前任务
+# 在这个预算下想不完，交给用户处理比继续空转有意义。
+MAX_TRUNCATION_RETRIES = 2
 MAX_VISIBLE_REASONING_CHARS = 12_000
 REASONING_EVENT_BATCH_CHARS = 160
 COMPACT_SUMMARY_MAX_TOKENS = 4_096
@@ -227,10 +231,20 @@ SCRIPT_ARTIFACT_TOOLS = frozenset({
     "run_script_test",
     "bind_object_sources",
 })
+# 专家已经批准契约之后，重新定义一遍契约不算交付物——define_script_contract
+# 产出的正是被批准的那个对象本身。把它留在期望产物里，等于允许“确认完再原地
+# 重定义一次契约”通过检查：线上实测正是这条路把一个没有任何后续产物的运行
+# 判成了成功完成，页面上待办消失、也没有下一张卡。
+CONTRACT_ACCEPTED_ARTIFACT_TOOLS = SCRIPT_ARTIFACT_TOOLS - {"define_script_contract"}
+# 表示“按当前契约继续实现”的交互动作。这些动作之后必须出现新的脚本产物。
+CONTRACT_ACCEPTED_ACTION_KEYS = frozenset({"accept_contract"})
 # 整体确认卡连续未形成时，候选修改仍然是可恢复的中间状态。
 # 该恢复不依赖用户重新描述业务，也不把内部工具参数暴露给用户。
 CONFIRMATION_REVIEW_STRATEGY = "confirmation_review"
 CONFIRMATION_REVIEW_REQUIRED_TOOL = "list_domain_resources"
+# 思维链占满输出预算导致零产出时的恢复策略。它没有 requiredTool——要换的是
+# 推进方式，不是补一次工具调用，因此需要一条自己的续跑提示。
+MODEL_TRUNCATION_STRATEGY = "model_truncation"
 
 
 def _confirmation_review_actions() -> list[dict[str, str]]:
@@ -355,6 +369,12 @@ class LiveRun:
     # 可从 RunRecord.latest_interaction 重新装载，避免只依赖框架的 tool result。
     required_text_constraint: dict[str, Any] | None = None
     required_text_guard_retries: int = 0
+    # 最近一次主模型调用的度量。ActivityRail 把 model_call 事件发到同一个 emit，
+    # 这里顺手留存，用于判断本轮是不是被思维链吃光了输出预算。
+    last_model_call: dict[str, Any] = field(default_factory=dict)
+    # 本轮实际生效的模型配置（平台下发的运行时配置优先）。紧凑摘要直接调用
+    # model.stream 覆盖 max_tokens，需要按同一份配置换算预算。
+    model_settings: Settings | None = None
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -713,6 +733,36 @@ def _detect_loop(live: LiveRun) -> str:
         if near >= LOOP_OUTPUT_REPEAT_THRESHOLD:
             return f"最近 {near + 1} 轮在重复同样的内容"
     return ""
+
+
+def _model_output_truncated(metrics: dict[str, Any]) -> bool:
+    """这次主模型调用是否被思维链吃光了输出预算。
+
+    判据是「推理 token 用满了全部输出 token，且一个正文字符都没有」：这说明
+    预算全被思维链占掉，正文和工具调用都没来得及产生。
+
+    两个条件缺一不可。只看「输出预算用满」会误判——线上实测有多次调用把预算
+    全部用掉，却仍然正常吐出了 tool_calls。只看字符数更不行：截断轮与成功轮的
+    推理字符数互有高低（成功轮到过 14655 字符，截断轮是 15568 字符），真正的
+    分界线在 token 上。
+    """
+    if not metrics or metrics.get("outcome") == "tool_calls":
+        return False
+    output_tokens = int(metrics.get("outputTokens") or 0)
+    reasoning_tokens = int(metrics.get("reasoningTokens") or 0)
+    if output_tokens <= 0 or reasoning_tokens < output_tokens:
+        return False
+    return not int(metrics.get("contentChars") or 0)
+
+
+# 截断后的续跑提示。截断的成因是模型想在一次思考里把整套方案推演完，
+# 因此这里要求它把问题切小、用工具取证代替空想，而不是简单地重试一遍。
+TRUNCATION_RECOVERY_PROMPT = (
+    "上一轮你把全部输出预算都用在了推理上，没有产出任何工具调用或正文，本轮必须换一种做法。"
+    "不要试图在一次思考里把整套方案想完：只做下一步最小的一件事，"
+    "先用一次工具调用去取证或落地，拿到真实结果再决定下一步。"
+    "如果关键前提还不确定，直接调用 ask 把问题交给专家，不要自己反复推演。"
+)
 
 
 def _with_intent_notes(live: LiveRun, query: Any) -> Any:
@@ -2572,6 +2622,13 @@ class AgentService:
             required_tools.discard("")
             if technical.get("strategy") == CONFIRMATION_REVIEW_STRATEGY:
                 recovery_prompt = self._confirmation_review_prompt(run)
+            elif technical.get("strategy") == MODEL_TRUNCATION_STRATEGY:
+                # 这条恢复没有 required tool：上一轮之所以零产出，是模型想在一次
+                # 思考里把整套方案推演完，要换的是推进方式而不是补一次工具调用。
+                recovery_prompt = (
+                    "页面请求从当前进展继续。不要把它当成用户业务发言；"
+                    + TRUNCATION_RECOVERY_PROMPT
+                )
             else:
                 recovery_prompt = (
                     "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
@@ -3141,8 +3198,18 @@ class AgentService:
         self.store.update_run(run.id, latest_interaction=snapshot)
 
     def _script_artifact_produced(self, live: LiveRun, run: RunRecord) -> bool:
-        """本轮是否已经形成脚本产物或下一张确认卡。"""
-        if live.observed_tools & SCRIPT_ARTIFACT_TOOLS:
+        """本轮是否已经形成脚本产物或下一张确认卡。
+
+        专家批准契约后，重新定义一遍契约不算交付物：define_script_contract
+        产出的正是被批准的那个对象本身。线上现场就是这样——确认后模型只是把
+        契约又定义了一遍，随后几轮被思维链吃光预算、零产出，却因为这次调用
+        被判成「本轮有产物」，Run 被结算成成功完成。
+        """
+        snapshot = run.latest_interaction or {}
+        expected = SCRIPT_ARTIFACT_TOOLS
+        if str(snapshot.get("actionKey") or "") in CONTRACT_ACCEPTED_ACTION_KEYS:
+            expected = CONTRACT_ACCEPTED_ARTIFACT_TOOLS
+        if live.observed_tools & expected:
             return True
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
@@ -3196,6 +3263,64 @@ class AgentService:
         self.events.publish(run.project_id, run.id, "status", {
             "status": RUN_WAITING,
             "text": "等待你确认补充说明后继续",
+        })
+
+    def _suspend_model_truncation(self, live: LiveRun, run: RunRecord) -> None:
+        """连续截断后落一张可操作的复核卡，而不是悄悄结算成功。
+
+        截断意味着本轮完全没有产出，既不是完成也不是失败。原先它会沿着自主
+        续跑分支耗完停滞预算、再被结算成「成功但没话说」——页面上表现为待办
+        消失、没有新卡也没有报错。这条出口保留已有成果，把下一步交还给用户。
+        """
+        issue_id = f"model-truncation-{run.id}"
+        state = self.store.project_state(run.project_id).public()
+        recovery_actions = [
+            {
+                # 复用通用的「从最新进展重试」动作 id：恢复入口据此重置重试计数。
+                "id": "retry_from_latest",
+                "label": "拆小步骤继续",
+                "description": "从当前进展继续，一次只推进一小步。",
+            },
+            {
+                "id": "keep_current_progress",
+                "label": "保留当前成果，结束本轮",
+                "description": "保留已经形成的内容，暂不继续本轮处理。",
+            },
+        ]
+        recovery = {
+            "issueId": issue_id,
+            "strategy": MODEL_TRUNCATION_STRATEGY,
+            "actionId": "retry_from_latest",
+            "recoveryActions": recovery_actions,
+            "projectPhase": str(state.get("phase") or ""),
+            "toolProfile": run.tool_profile,
+            "attempt": MAX_TRUNCATION_RETRIES,
+            "maxAttempts": MAX_TRUNCATION_RETRIES,
+            "exhausted": True,
+        }
+        live.technical_recoveries[issue_id] = recovery
+        self.store.save_technical_recovery(run.id, issue_id, recovery)
+        self.store.update_run(run.id, status=RUN_SUSPENDED, result="", error="")
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": "model_output_truncated",
+            "phase": "waiting",
+            "summary": "助手连续几轮都没能在预算内给出结论，已有成果已保留",
+            "code": "MODEL_OUTPUT_TRUNCATED",
+            "issueId": issue_id,
+            "issueStatus": "awaiting_user",
+            "problemVisibility": "recovery",
+            "projectPhase": recovery["projectPhase"],
+            "toolProfile": recovery["toolProfile"],
+            "recoveryActions": recovery_actions,
+        })
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_SUSPENDED,
+            "text": "助手这一步没能得出结论，已有成果已保留，请选择后续处理",
         })
 
     def _suspend_confirmation_review(self, live: LiveRun, run: RunRecord) -> None:
@@ -3472,16 +3597,26 @@ class AgentService:
             self.store.update_run(run.id, status=RUN_RUNNING)
             self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})
+            live.model_settings = model_settings
             autonomous = live.autonomous_seed
             stalled = 0
             continuations = 0
             decision_card_retries = 0
             confirmation_card_retries = 0
+            truncation_retries = 0
             model_operation_seq = 0
             current_query = query
             active_phase = initial_phase
             while True:
                 def emit(kind: str, payload: dict[str, Any]) -> None:
+                    if kind == "model_call":
+                        # ActivityRail 的度量事件走的是同一个 emit。主模型调用完成时
+                        # 留存最后一次度量，供截断守卫判断本轮是不是零产出。
+                        if (
+                            payload.get("phase") == "completed"
+                            and payload.get("actor") == "modeling_leader"
+                        ):
+                            live.last_model_call = dict(payload)
                     if kind == "tool":
                         phase = str(payload.get("phase") or "")
                         name = str(payload.get("name") or "")
@@ -3577,6 +3712,7 @@ class AgentService:
                     {"status": RUN_RUNNING, "text": "助手正在执行下一步" if continuations else "助手正在建模"},
                 )
                 model_operation_seq += 1
+                live.last_model_call = {}
                 result = await self._run_model_operation(
                     live,
                     run,
@@ -3584,6 +3720,39 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                # 截断守卫必须排在最前面：本轮模型一个 token 都没吐出来，
+                # 后面所有「模型说了什么/做了什么」的判断都无从谈起。尤其不能
+                # 让它掉进自主续跑分支——那里会把零产出当成停滞，扣完预算后
+                # 直接结算成功，页面上就是待办消失、没有下文。
+                if (
+                    result.get("result_type") == "success"
+                    and not str(result.get("output") or "").strip()
+                    and _model_output_truncated(live.last_model_call)
+                ):
+                    metrics = live.last_model_call
+                    logger.warning(
+                        "model output truncated by reasoning run=%s attempt=%s "
+                        "outputTokens=%s reasoningTokens=%s",
+                        run.id,
+                        truncation_retries + 1,
+                        metrics.get("outputTokens"),
+                        metrics.get("reasoningTokens"),
+                    )
+                    if truncation_retries < MAX_TRUNCATION_RETRIES:
+                        truncation_retries += 1
+                        self.events.publish(run.project_id, run.id, "tool", {
+                            "name": "model_output_truncated",
+                            "phase": "repairing",
+                            "summary": "本轮推理占满了输出预算，正在换一种更小步的做法重试",
+                            "code": "MODEL_OUTPUT_TRUNCATED",
+                            "attempt": truncation_retries,
+                            "maxAttempts": MAX_TRUNCATION_RETRIES,
+                            "problemVisibility": "internal",
+                        })
+                        current_query = TRUNCATION_RECOVERY_PROMPT
+                        continue
+                    self._suspend_model_truncation(live, run)
+                    return
                 if _required_text_interrupt_requires_review(
                     result,
                     live,
@@ -4296,7 +4465,9 @@ class AgentService:
                 async for chunk in live.bundle.model.stream(
                     messages,
                     tools=None,
-                    max_tokens=min(COMPACT_SUMMARY_MAX_TOKENS, self.settings.llm_max_tokens),
+                    max_tokens=(live.model_settings or self.settings).resolved_output_budget(
+                        COMPACT_SUMMARY_MAX_TOKENS,
+                    ),
                     timeout=COMPACT_SUMMARY_TIMEOUT_SECONDS,
                 ):
                     chunks += 1
