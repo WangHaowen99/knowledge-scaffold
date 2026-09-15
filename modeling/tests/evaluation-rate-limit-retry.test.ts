@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isRateLimitedFailure, rateLimitBackoffMs } from '../src/evaluation/engine.js';
+import { isRateLimitedFailure, rateLimitBackoffMs, withRateLimitRetry } from '../src/evaluation/engine.js';
 
 test('HTTP 429/503 判为限流', () => {
   assert.equal(isRateLimitedFailure(429, ''), true);
@@ -49,4 +49,43 @@ test('抖动落在基准值的 ±20% 内', () => {
         `attempt=${attempt} 退避 ${value} 超出 ${base} 的 ±20%`);
     }
   }
+});
+
+test('判分被限流也会重试——限流只在异常文案里，没有 HTTP 状态码', async () => {
+  // 实测踩到的：被测 agent 跑完了，卡在判分调用上，整条用例记成 error。
+  let calls = 0;
+  const waits: number[] = [];
+  const verdict = await withRateLimitRetry('评测判分', async () => {
+    calls += 1;
+    if (calls <= 2) throw new Error('429 status code (no body)');
+    return { verdict: 'pass' as const, reason: '一致' };
+  }, {
+    backoffMs: (attempt) => attempt,
+    onRateLimited: (_attempt, waitMs) => waits.push(waitMs),
+  }, new AbortController().signal);
+
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [1, 2], '两次限流各等一次，退避递增');
+  assert.equal(verdict.verdict, 'pass');
+});
+
+test('判分的非限流失败不重试，原样抛出', async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => withRateLimitRetry('评测判分', async () => {
+      calls += 1;
+      throw new Error('评测判分服务未按协议提交结论');
+    }, { backoffMs: () => 1 }, new AbortController().signal),
+    /未按协议提交结论/,
+  );
+  assert.equal(calls, 1, '协议错误重试也没用，不该浪费配额');
+});
+
+test('判分重试耗尽后报错点明是判分环节', async () => {
+  await assert.rejects(
+    () => withRateLimitRetry('评测判分', async () => {
+      throw new Error('429 status code (no body)');
+    }, { backoffMs: () => 1 }, new AbortController().signal),
+    /评测判分 重试 6 次后仍被限流：429 status code \(no body\)/,
+  );
 });

@@ -479,7 +479,16 @@ async function runRound(
         },
       });
       assertEvaluationNotCancelled(signal);
-      const v = await judgeEvaluationAnswer(tc.question, tc.groundTruth, run.finalAnswer, judge, signal);
+      const v = await withRateLimitRetry(
+        '评测判分',
+        () => judgeEvaluationAnswer(tc.question, tc.groundTruth, run.finalAnswer, judge, signal),
+        {
+          onRateLimited: (attempt, waitMs, failure) => {
+            log(`⏳ 判分被限流，${Math.round(waitMs / 1000)} 秒后重试（第 ${attempt} 次）：${failure.slice(0, 80)}`);
+          },
+        },
+        signal,
+      );
       assertEvaluationNotCancelled(signal);
       return {
         finalAnswer: run.finalAnswer,
@@ -546,6 +555,38 @@ export function rateLimitBackoffMs(attempt: number, random: () => number = Math.
 }
 
 const RATE_LIMIT_MAX_ATTEMPTS = 6;
+
+/** 限流重试包装：runs/sync 与判分调用共用同一套退避策略。 */
+export async function withRateLimitRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  hooks: RunCaseHooks,
+  signal: AbortSignal,
+): Promise<T> {
+  let attempts = 0;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // 判分走的是 LLM SDK，限流只会以异常文本出现，没有 HTTP 状态码可查。
+      if (!isRateLimitedFailure(0, message) || signal.aborted) throw error;
+      attempts += 1;
+      if (attempts >= RATE_LIMIT_MAX_ATTEMPTS) {
+        throw new Error(`${label} 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍被限流：${message}`);
+      }
+      const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(attempts);
+      hooks.onRateLimited?.(attempts, waitMs, message);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, waitMs);
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new Error('本轮评测已由用户停止'));
+        }, { once: true });
+      });
+    }
+  }
+}
 
 export interface RunCaseHooks {
   /** 每次因限流而等待前回调，用于把重试写进轮次日志。 */
