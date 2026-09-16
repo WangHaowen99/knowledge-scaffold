@@ -76,7 +76,10 @@ class Settings:
     context_window_tokens: int = 0
     # 免卸载的工具返回值。判据是「丢了能不能重新拿到」：专家的回答只有一份，
     # 丢了只能再问一次；而知识包文件随时能重读，不该常驻上下文。
-    context_protected_tools: tuple[str, ...] = ("ask", "request_confirmation")
+    # task_tool 是子代理派遣的统一入口，返回值是分析员整轮工作的结论——
+    # 理论上可重获，但重跑一次是几分钟加几十万 token 的代价，在按档分级
+    # 落地前先按不可重获对待（代价分级方案 D 的零代码过渡）。
+    context_protected_tools: tuple[str, ...] = ("ask", "request_confirmation", "task_tool")
 
     def resolved_output_budget(self, output_tokens: int | None) -> int:
         """把按角色/阶段设定的输出预算换算成实际请求的 max_tokens。
@@ -153,7 +156,7 @@ class Settings:
             context_protected_tools=tuple(
                 item.strip()
                 for item in os.getenv(
-                    "MODELING_CONTEXT_PROTECTED_TOOLS", "ask,request_confirmation",
+                    "MODELING_CONTEXT_PROTECTED_TOOLS", "ask,request_confirmation,task_tool",
                 ).split(",")
                 if item.strip()
             ),

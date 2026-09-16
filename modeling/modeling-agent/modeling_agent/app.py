@@ -34,6 +34,10 @@ class ResumeIssueBody(BaseModel):
     actionId: str = Field(min_length=1, max_length=100)
 
 
+class RevokeConstraintBody(BaseModel):
+    reason: str = Field(default="", max_length=2_000)
+
+
 class AnswerBody(BaseModel):
     answer: dict[str, Any]
 
@@ -153,6 +157,34 @@ def create_app(service: AgentService) -> Starlette:
         )
         return JSONResponse(result, status_code=202)
 
+    async def constraints(request: Request) -> JSONResponse:
+        _require_token(request)
+        return JSONResponse(service.project_constraints(request.path_params["project_id"]))
+
+    async def revoke_constraint(request: Request) -> JSONResponse:
+        _require_token(request)
+        payload = await request.body()
+        raw: dict[str, Any] = {}
+        if payload.strip():
+            try:
+                parsed = json.loads(payload)
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                raise AgentRuntimeError("INVALID_JSON", "请求体不是合法 JSON") from error
+            if not isinstance(parsed, dict):
+                raise AgentRuntimeError("INVALID_INPUT", "请求体必须是对象")
+            raw = parsed
+        body = _validate(RevokeConstraintBody, raw)
+        try:
+            constraint_id = int(request.path_params["constraint_id"])
+        except (TypeError, ValueError) as error:
+            raise AgentRuntimeError("INVALID_INPUT", "约束编号必须是整数") from error
+        result = service.revoke_project_constraint(
+            project_id=request.path_params["project_id"],
+            constraint_id=constraint_id,
+            reason=body.reason,
+        )
+        return JSONResponse(result)
+
     async def answer(request: Request) -> JSONResponse:
         body = _validate(AnswerBody, await _body(request))
         run = await service.answer_interaction(
@@ -271,6 +303,8 @@ def create_app(service: AgentService) -> Starlette:
         Route("/v1/projects/{project_id}/increment/start", start_increment_round, methods=["POST"]),
         Route("/v1/projects/{project_id}/steer", steer, methods=["POST"]),
         Route("/v1/projects/{project_id}/issues/{issue_id}/resume", resume_issue, methods=["POST"]),
+        Route("/v1/projects/{project_id}/constraints", constraints, methods=["GET"]),
+        Route("/v1/projects/{project_id}/constraints/{constraint_id}/revoke", revoke_constraint, methods=["POST"]),
         Route("/v1/projects/{project_id}/cancel", cancel, methods=["POST"]),
         Route("/v1/projects/{project_id}/recovery/terminate-stale", terminate_stale, methods=["POST"]),
         Route("/v1/projects/{project_id}/stream", stream, methods=["GET"]),

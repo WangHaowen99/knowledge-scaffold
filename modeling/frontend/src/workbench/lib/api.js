@@ -23,6 +23,11 @@ export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent
   method: 'PUT', body: JSON.stringify({ dataSourceType }),
 });
 export const getAgentState = (id) => api(`${P(id)}/agent/state`);
+export const getConstraints = (id) => api(`${P(id)}/agent/constraints`);
+export const revokeConstraint = (id, constraintId, reason = '') => api(
+  `${P(id)}/agent/constraints/${encodeURIComponent(constraintId)}/revoke`,
+  { method: 'POST', body: JSON.stringify({ reason }) },
+);
 export const getProgress = (id) => api(`${P(id)}/agent/progress`);
 export const listPerformanceRuns = (id, limit = 20) => api(
   `${P(id)}/agent/performance/runs?limit=${encodeURIComponent(limit)}`,
