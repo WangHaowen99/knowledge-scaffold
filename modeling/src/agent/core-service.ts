@@ -757,6 +757,7 @@ export class AgentCoreService {
       case 'get_product_ledger': return this.getProductLedger(workspace);
       case 'stage_product_ledger': return this.stageProductLedger(workspace, args);
       case 'read_document': return this.readDocument(context.project.id, args);
+      case 'list_document_outline': return this.listDocumentOutline(context.project.id, args);
       case 'set_material_directive': return this.setMaterialDirective(context.project.id, args);
       case 'read_documents_fully': return this.readDocumentsFully(context, args);
       case 'search_documents': return this.searchDocuments(context.project.id, args);
@@ -4225,6 +4226,96 @@ export class AgentCoreService {
     };
   }
 
+  /** Markdown 标题切出的章节目录。资料正文都是 md，标题是现成的结构信号，
+   *  而按字符分页只认 offset——实测会把收率表从中间劈成两半，模型第一页拿到
+   *  有表头没数据、第二页有数据没表头，只能自己在上下文里拼回去。 */
+  private documentOutline(content: string) {
+    const pattern = /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
+    const heads: { level: number; title: string; offset: number }[] = [];
+    for (let match = pattern.exec(content); match; match = pattern.exec(content)) {
+      heads.push({ level: match[1].length, title: match[2].trim(), offset: match.index });
+    }
+    return heads.map((head, index) => {
+      const endOffset = heads[index + 1]?.offset ?? content.length;
+      return {
+        index,
+        level: head.level,
+        title: head.title,
+        offset: head.offset,
+        endOffset,
+        chars: endOffset - head.offset,
+      };
+    });
+  }
+
+  /** 把分页终点吸到块边界。空行是 Markdown 里最可靠的边界——表格内部不允许
+   *  出现空行，所以吸到空行就一定不会把表格切断。先往后找，超出容差就往前退：
+   *  宁可这一页少给一点，也不要交给模型半张表。 */
+  private snapToBlockBoundary(content: string, start: number, rawEnd: number, tolerance: number) {
+    if (rawEnd >= content.length) return content.length;
+    const lineStart = content.lastIndexOf('\n', Math.max(0, rawEnd - 1)) + 1;
+    const lineBreak = content.indexOf('\n', rawEnd);
+    const line = content.slice(lineStart, lineBreak < 0 ? content.length : lineBreak);
+    if (line.trimStart().startsWith('|')) {
+      // 切点落在表格行上。表格必须整张交付：半张表（有表头没数据、或有数据
+      // 没表头）对模型几乎没有价值，还要它自己跨页拼回去。容差在这里不适用，
+      // 改用一个硬上限防止超长表格把单页撑爆。
+      const blockEnd = content.indexOf('\n\n', rawEnd);
+      const hardCap = start + Math.max(tolerance * 10, 4_000);
+      if (blockEnd >= 0 && blockEnd <= hardCap) return blockEnd + 2;
+      const rowEnd = content.indexOf('\n', rawEnd);
+      // 表格本身超过硬上限，至少切在行边界，不要把一行劈开。
+      return rowEnd > start ? rowEnd + 1 : rawEnd;
+    }
+    const forward = content.indexOf('\n\n', rawEnd);
+    if (forward >= 0 && forward - rawEnd <= tolerance) return Math.min(content.length, forward + 2);
+    const backward = content.lastIndexOf('\n\n', rawEnd);
+    if (backward > start) return backward + 2;
+    const rowEnd = content.indexOf('\n', rawEnd);
+    return rowEnd > start ? rowEnd + 1 : rawEnd;
+  }
+
+  private resolveDocumentSection(
+    outline: ReturnType<AgentCoreService['documentOutline']>,
+    requested: unknown,
+  ) {
+    if (typeof requested === 'number' && Number.isSafeInteger(requested)) {
+      return outline[requested] ?? null;
+    }
+    const wanted = String(requested ?? '').trim();
+    if (!wanted) return null;
+    const asIndex = Number(wanted);
+    if (Number.isSafeInteger(asIndex) && String(asIndex) === wanted) return outline[asIndex] ?? null;
+    return outline.find((item) => item.title === wanted)
+      ?? outline.find((item) => item.title.includes(wanted))
+      ?? null;
+  }
+
+  private listDocumentOutline(projectId: string, args: Record<string, unknown>) {
+    const filename = text(args.filename, 'filename');
+    const document = listDocuments(projectId).find((item) => item.filename === filename || item.id === filename);
+    if (!document?.textContent) {
+      throw new AgentCoreError(
+        'DOCUMENT_UNREADABLE',
+        `未找到可读取正文的资料：${filename}`,
+        ['调用 list_documents 核对文件名和解析状态'],
+        404,
+      );
+    }
+    const sections = this.documentOutline(document.textContent);
+    return {
+      filename: document.filename,
+      totalChars: document.textContent.length,
+      sectionCount: sections.length,
+      sections,
+      display: {
+        text: sections.length
+          ? `《${document.filename}》共 ${sections.length} 节`
+          : `《${document.filename}》没有标题分节`,
+      },
+    };
+  }
+
   private readDocument(projectId: string, args: Record<string, unknown>) {
     const filename = text(args.filename, 'filename');
     const document = listDocuments(projectId).find((item) => item.filename === filename || item.id === filename);
@@ -4236,18 +4327,50 @@ export class AgentCoreService {
         404,
       );
     }
-    const offset = integer(args.offset, 0, 0, document.textContent.length);
-    const limit = integer(args.limit, 6_000, 1, 20_000);
-    const endOffset = Math.min(document.textContent.length, offset + limit);
+    const content = document.textContent;
+    const outline = this.documentOutline(content);
+    const wantsSection = args.section !== undefined && args.section !== null && args.section !== '';
+    let offset: number;
+    let endOffset: number;
+    let boundarySnapped = false;
+    if (wantsSection) {
+      const section = this.resolveDocumentSection(outline, args.section);
+      if (!section) {
+        throw new AgentCoreError(
+          'DOCUMENT_SECTION_NOT_FOUND',
+          `资料《${document.filename}》里没有这一节：${String(args.section)}`,
+          ['调用 list_document_outline 查看可用章节的序号和标题'],
+          404,
+        );
+      }
+      offset = section.offset;
+      endOffset = section.endOffset;
+    } else {
+      offset = integer(args.offset, 0, 0, content.length);
+      const limit = integer(args.limit, 6_000, 1, 20_000);
+      const rawEnd = Math.min(content.length, offset + limit);
+      endOffset = this.snapToBlockBoundary(content, offset, rawEnd, Math.ceil(limit * 0.3));
+      boundarySnapped = endOffset !== rawEnd;
+    }
+    // 这一页开头落在哪一节。模型过去只拿得到 offset 这种位置信息，
+    // 一个结构信息都没有，读到哪一章全靠自己猜。
+    const current = outline.filter((item) => item.offset <= offset).pop() ?? null;
     return {
       filename: document.filename,
-      content: document.textContent.slice(offset, endOffset),
+      content: content.slice(offset, endOffset),
       offset,
       endOffset,
-      nextOffset: endOffset < document.textContent.length ? endOffset : null,
-      totalChars: document.textContent.length,
-      eof: endOffset >= document.textContent.length,
-      display: { text: `正在读《${document.filename}》` },
+      nextOffset: endOffset < content.length ? endOffset : null,
+      totalChars: content.length,
+      eof: endOffset >= content.length,
+      section: current && { index: current.index, level: current.level, title: current.title },
+      sectionCount: outline.length,
+      boundarySnapped,
+      display: {
+        text: current
+          ? `正在读《${document.filename}》· ${current.title}`
+          : `正在读《${document.filename}》`,
+      },
     };
   }
 

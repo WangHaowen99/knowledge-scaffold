@@ -108,6 +108,7 @@ VALIDATION_REPAIR_RESOLUTION_TOOLS = VALIDATION_REPAIR_RESET_TOOLS | {
 TOOL_WORK_DETAILS = {
     "list_documents": "先盘点可用资料，再确定需要精读的范围",
     "read_document": "正在从原文提取与当前任务相关的事实和依据",
+    "list_document_outline": "正在查看资料的章节目录，确定该读哪几节",
     "read_documents_fully": "正在核对全文覆盖范围，并整理可引用的事实",
     "search_documents": "正在定位相关原文，再与当前建模内容交叉核对",
     "list_tables": "先盘点可用数据表，再选择需要核对的字段范围",
@@ -1110,9 +1111,26 @@ CORE_TOOL_SPECS = (
         display="正在核对数据 Schema 映射计划",
     ),
     ToolSpec(
+        "list_document_outline",
+        "读取资料的章节目录：返回每一节的序号、层级、标题、起止 offset 和字符数。"
+        "要定位某一部分内容时先调它，再用 read_document 的 section 参数直接取那一节，"
+        "不要从头一页页翻。没有标题分节的资料返回空目录。",
+        {"filename": STRING},
+        ("filename",),
+        display="正在查看资料目录",
+    ),
+    ToolSpec(
         "read_document",
-        "按需分页读取资料正文。局部核对先检索再读取命中范围；需要全文覆盖时必须改用 read_documents_fully，禁止串行翻页替代。",
-        {"filename": STRING, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 20000}},
+        "按需读取资料正文。优先用 section 按章节取（配合 list_document_outline）；"
+        "不给 section 时按 offset/limit 分页，终点会自动吸附到块边界，所以实际 endOffset "
+        "可能和 offset+limit 不一致，续读一律以返回的 nextOffset 为准。"
+        "局部核对先检索再读取命中范围；需要全文覆盖时必须改用 read_documents_fully，禁止串行翻页替代。",
+        {
+            "filename": STRING,
+            "section": {"type": ["string", "integer"], "description": "章节标题或目录里的序号"},
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20000},
+        },
         ("filename",),
         display="正在读取资料",
     ),

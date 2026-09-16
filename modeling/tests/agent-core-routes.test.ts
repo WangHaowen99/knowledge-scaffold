@@ -4431,3 +4431,85 @@ test('表头第二行的中文名直接种进 cnName，不再全量触发语义�
   assert.match(source, /\[。；;，,：:！!？\?\\n\]/u);
   assert.match(source, /\\u4e00-\\u9fff/);
 });
+
+test('资料按章节读取，分页终点吸附到块边界不切断表格', async (t) => {
+  const project = createProject({ owner: 'alice', name: '资料章节读取' });
+  const table = [
+    '| 产品 | 收率 |',
+    '|------|------|',
+    '| 航煤 | 8.81% |',
+    '| 燃料油DMB | 14.81% |',
+    '| 燃料油DMX | 14.51% |',
+    '| 加氢尾油 | 32.43% |',
+  ].join('\n');
+  const textContent = [
+    '# 全流程业务判决逻辑',
+    '',
+    '总纲部分，描述原油进厂到终产品的整体链路。'.repeat(4),
+    '',
+    '## 产品线7：减压渣油路线',
+    '',
+    '减压渣油走 DCC 与溶脱两条支线。'.repeat(4),
+    '',
+    table,
+    '',
+    '## 8.2 能源成本计算',
+    '',
+    'energy 表关键字段说明。'.repeat(4),
+    '',
+  ].join('\n');
+  const document = insertDocumentRevision({
+    projectId: project.id,
+    filename: '业务流程梳理.md',
+    kind: 'text',
+    parseStatus: 'parsed',
+    textContent,
+  }).document;
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+
+  const outline = await tool(app, project.id, 'list_document_outline', {
+    filename: document.filename,
+  }, runId);
+  assert.equal(outline.statusCode, 200, outline.body);
+  assert.deepEqual(outline.json().sections.map((item: any) => item.title), [
+    '全流程业务判决逻辑', '产品线7：减压渣油路线', '8.2 能源成本计算',
+  ]);
+  assert.equal(outline.json().sections[0].offset, 0);
+  assert.equal(outline.json().totalChars, textContent.length);
+
+  // 按章节取：正好是那一节，不多不少
+  const section = await tool(app, project.id, 'read_document', {
+    filename: document.filename, section: '产品线7：减压渣油路线',
+  }, runId);
+  assert.equal(section.statusCode, 200, section.body);
+  assert.ok(section.json().content.startsWith('## 产品线7'));
+  assert.ok(section.json().content.includes('| 加氢尾油 | 32.43% |'), '整张表都要在这一节里');
+  assert.ok(!section.json().content.includes('8.2 能源成本计算'), '不能串到下一节');
+  assert.equal(section.json().section.title, '产品线7：减压渣油路线');
+
+  // 序号取法等价
+  const byIndex = await tool(app, project.id, 'read_document', {
+    filename: document.filename, section: 1,
+  }, runId);
+  assert.equal(byIndex.json().content, section.json().content);
+
+  // 分页：终点落在表格中间时要吸附到块边界，不能把表劈开
+  const tableStart = textContent.indexOf('| 产品 | 收率 |');
+  const cut = await tool(app, project.id, 'read_document', {
+    filename: document.filename, offset: tableStart, limit: 40,
+  }, runId);
+  assert.equal(cut.statusCode, 200, cut.body);
+  const content = cut.json().content;
+  assert.equal(cut.json().boundarySnapped, true);
+  const openedTable = content.includes('| 产品 | 收率 |');
+  assert.ok(openedTable, '这一页应当从表头开始');
+  assert.ok(content.includes('| 加氢尾油 | 32.43% |'), '开了表头就要把整张表给完，不能只给前两行');
+  assert.equal(cut.json().section.title, '产品线7：减压渣油路线', '要告诉模型这一页属于哪一节');
+
+  const missing = await tool(app, project.id, 'read_document', {
+    filename: document.filename, section: '不存在的章节',
+  }, runId);
+  assert.equal(missing.statusCode, 404, missing.body);
+  assert.equal(missing.json().code, 'DOCUMENT_SECTION_NOT_FOUND');
+});

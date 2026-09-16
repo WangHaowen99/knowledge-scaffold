@@ -1574,7 +1574,7 @@ def tool_trace_group_id(name: str, arguments: dict[str, Any]) -> str:
         digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
         return f"snapshot:{name}:{digest}"
     paged_arguments = {
-        "read_document": {"offset", "limit"},
+        "read_document": {"offset", "limit", "section"},
         "read_table_rows": {"offset", "limit"},
     }.get(name)
     if not paged_arguments:

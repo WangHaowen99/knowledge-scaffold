@@ -52,6 +52,7 @@ _AMBIGUOUS_TOKEN_LABELS = {
 _TOKEN_LABELS = {
     "list_documents": "查看资料清单",
     "read_document": "读取资料",
+    "list_document_outline": "查看资料目录",
     "set_material_directive": "保存资料设置",
     "read_documents_fully": "全文精读资料",
     "search_documents": "检索资料",

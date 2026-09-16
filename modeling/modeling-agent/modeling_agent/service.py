@@ -266,7 +266,8 @@ def _confirmation_review_actions() -> list[dict[str, str]]:
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
 PURPOSE_REVIEW_ALLOWED_TOOLS = frozenset({
-    "get_project_state", "list_documents", "read_document", "list_tables", "describe_table",
+    "get_project_state", "list_documents", "list_document_outline", "read_document",
+    "list_tables", "describe_table",
     "set_material_directive", "read_file", "list_skill", "focus", "notify",
 })
 PHASE_ORDER = tuple(PHASE_LABELS)
