@@ -262,6 +262,12 @@ export function resolveWorkbenchBootstrapResults(results) {
   };
 }
 
+// 运行重新跑起来、或者停下来等用户之后，「需要恢复」这件事就不成立了。
+// 后端此时不再下发 recovery 字段（state.public() 只在 recovery_status 非空时带它），
+// 而字段缺席过去被当成「保持原值」，于是恢复成功后红框一直挂着，只能手动点刷新。
+// 挂起/失败这些状态不清：那时 REST 侧的 _recovery_diagnostic 可能还有更细的诊断。
+const RECOVERED_EXECUTIONS = new Set(['queued', 'running', 'waiting', 'completed']);
+
 export function shouldUseStaleRunTermination(recovery) {
   return Boolean(recovery && ['stale_run', 'plan_unreadable'].includes(recovery.status));
 }
@@ -535,7 +541,7 @@ export const actions = {
         progress: null,
         recovery: event.recovery
           ? { ...(state.recovery || {}), ...event.recovery }
-          : state.recovery,
+          : (RECOVERED_EXECUTIONS.has(event.execution) ? null : state.recovery),
       }));
     }
     if (eventType === 'change_plan' && event.plan) {
