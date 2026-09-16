@@ -1125,6 +1125,42 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
+        "require_product_ledger",
+        "将用户明确要求的产品/规则大清单台账写入当前项目策略；启用后，在台账 finalized 前禁止建立正式规则、指标、操作计划或写入资源。",
+        {"required": {"type": "boolean"}},
+        display="正在启用产品清单台账门禁",
+    ),
+    ToolSpec(
+        "get_product_inventory_source",
+        "分页读取产品清单结构化事实来源；游标绑定资料分析修订，不能用有界目标上下文或 candidateArtifacts 规则候选替代。若分析没有完整 productInventory，必须返回缺失来源错误。",
+        {
+        "analysis_revision": STRING,
+            "cursor": {"oneOf": [
+                {"type": "integer", "minimum": 0},
+                {"type": "string", "minLength": 1},
+            ]},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "scope": STRING,
+        },
+        display="正在分页读取产品清单来源",
+    ),
+    ToolSpec("begin_product_ledger", "创建或恢复产品清单台账草稿。", {
+        "ledger_id": STRING, "source_revision": STRING, "analysis_revision": STRING,
+        "scope": STRING, "raw_count": {"type": "integer", "minimum": 0},
+        "canonical_count": {"type": "integer", "minimum": 0},
+        "merged_group_count": {"type": "integer", "minimum": 0},
+    }, display="正在创建产品清单台账草稿"),
+    ToolSpec("append_product_ledger_batch", "向台账草稿追加一个可幂等重放的条目批次。", {
+        "ledger_id": STRING, "batch_no": {"type": "integer", "minimum": 1},
+        "source_cursor": STRING, "entries": {"type": "array", "items": {"type": "object"}},
+    }, ("ledger_id", "batch_no", "entries"), False, "正在保存产品清单台账批次"),
+    ToolSpec("get_product_ledger_progress", "读取台账草稿的批次、已处理和剩余进度。", {
+        "ledger_id": STRING,
+    }, ("ledger_id",), display="正在读取产品清单台账进度"),
+    ToolSpec("finalize_product_ledger", "合并全部批次并由服务端重新计算台账统计。", {
+        "ledger_id": STRING,
+    }, ("ledger_id",), False, "正在完成产品清单台账校验"),
+    ToolSpec(
         "get_product_ledger",
         "读取当前产品/规则大清单的逐项对账台账和确定性校验结果；没有台账时返回未建立状态。",
         {},
@@ -1132,7 +1168,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "stage_product_ledger",
-        "提交产品/规则大清单的结构化台账。sourceRevision 可留空，由核心绑定当前工作区修订；必须提供每个 canonical item 的唯一 ID、rule ID、原始记录定位、归并组、证据覆盖状态和处理状态；核心会确定性校验数量闭合和 ID 唯一性。",
+        "兼容旧 v1/v2 快照的直接提交接口。新项目或已启用产品台账门禁时不得使用；必须改用 begin_product_ledger → append_product_ledger_batch → finalize_product_ledger。",
         {
             "schemaVersion": {"type": "string", "enum": ["product-ledger-v1", "product-ledger-v2"]},
             "sourceRevision": STRING,
@@ -1152,6 +1188,11 @@ CORE_TOOL_SPECS = (
                         "ruleRefs": {"type": "array", "items": STRING, "minItems": 1, "uniqueItems": True},
                         "sourceRecordIds": {"type": "array", "items": STRING, "minItems": 1},
                         "sourceLocator": STRING,
+                        "name": STRING,
+                        "applicableSubjects": {"type": "array", "items": STRING},
+                        "triggerScenarios": {"type": "array", "items": STRING},
+                        "businessNeeds": {"type": "array", "items": STRING},
+                        "structuredGaps": {"type": "array", "items": STRING},
                         "mergeGroupId": STRING,
                         "evidenceStatus": {"type": "string", "enum": ["complete", "insufficient"]},
                         "processingStatus": {"type": "string", "enum": ["pending", "ready", "generated", "blocked"]},
@@ -3001,12 +3042,15 @@ DOMAIN_PHASE_TOOLS = frozenset({
     "preview_domain_delete", "delete_domain_resource",
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
     "stage_tabular_dataset",
+    "require_product_ledger", "get_product_inventory_source", "begin_product_ledger",
+    "append_product_ledger_batch", "get_product_ledger_progress", "finalize_product_ledger",
     "get_product_ledger", "stage_product_ledger",
 })
 DOMAIN_READ_TOOLS = frozenset({
     "list_domain_resources",
     "get_domain_resource",
-    "get_product_ledger",
+    "require_product_ledger", "get_product_inventory_source", "begin_product_ledger",
+    "append_product_ledger_batch", "get_product_ledger_progress", "finalize_product_ledger", "get_product_ledger",
     "get_schema_semantics",
     "review_object_relations",
 })

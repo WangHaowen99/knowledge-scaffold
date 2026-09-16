@@ -10,6 +10,12 @@ export interface ProductLedgerEntry {
   ruleId?: string;
   sourceRecordIds: string[];
   sourceLocator: string;
+  /** 业务台账字段；旧 v1/v2 快照没有这些字段时保持只读兼容。 */
+  name?: string;
+  applicableSubjects?: string[];
+  triggerScenarios?: string[];
+  businessNeeds?: string[];
+  structuredGaps?: string[];
   mergeGroupId?: string;
   evidenceStatus: ProductLedgerEvidenceStatus;
   processingStatus: ProductLedgerProcessingStatus;
@@ -25,6 +31,9 @@ export interface ProductLedger {
   mergedGroupCount: number;
   entries: ProductLedgerEntry[];
   required?: boolean;
+  /** Optional source identity for revision-safe v2 snapshots. */
+  sourceAnalysisRevision?: string;
+  sourceFingerprint?: string;
 }
 
 export interface ProductLedgerValidation {
@@ -72,6 +81,10 @@ export function validateProductLedger(input: unknown): ProductLedgerValidation {
     const ruleRefs = stringArray(entry.ruleRefs ?? (text(entry.ruleId) ? [entry.ruleId] : []));
     const sourceLocator = text(entry.sourceLocator);
     const sourceRecordIds = stringArray(entry.sourceRecordIds);
+    const name = text(entry.name);
+    const applicableSubjects = entry.applicableSubjects;
+    const triggerScenarios = entry.triggerScenarios;
+    const businessNeeds = entry.businessNeeds;
     const evidenceStatus = text(entry.evidenceStatus);
     const processingStatus = text(entry.processingStatus);
     const mergeGroupId = text(entry.mergeGroupId);
@@ -83,6 +96,16 @@ export function validateProductLedger(input: unknown): ProductLedgerValidation {
     for (const ruleId of ruleRefs) ruleIds.add(ruleId);
     if (!sourceLocator) errors.push(`${prefix}.sourceLocator 不能为空`);
     if (!sourceRecordIds.length) errors.push(`${prefix}.sourceRecordIds 不能为空`);
+    if (ledger.schemaVersion === 'product-ledger-v2' && !name) {
+      errors.push(`${prefix}.name 不能为空`);
+    }
+    for (const [field, value] of [
+      ['applicableSubjects', applicableSubjects],
+      ['triggerScenarios', triggerScenarios],
+      ['businessNeeds', businessNeeds],
+    ] as const) {
+      if (value !== undefined && !Array.isArray(value)) errors.push(`${prefix}.${field} 必须是数组`);
+    }
     for (const sourceId of sourceRecordIds) {
       if (sourceIds.has(sourceId)) errors.push(`${prefix}.sourceRecordIds 包含重复原始记录：${sourceId}`);
       sourceIds.add(sourceId);

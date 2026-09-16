@@ -7,6 +7,7 @@ import type {
   DataDictTable,
   MaterialAssessment,
   ModelingBrief,
+  ProductInventoryItem,
 } from '../types.js';
 import { throwIfCancelled } from '../cancellation.js';
 import { makeAgent, runAgentCaptured } from './agent.js';
@@ -538,6 +539,46 @@ interface DomainReducePayload extends Pick<AnalysisResult,
   'domainOverview' | 'candidateObjects' | 'candidateGoals' | 'candidateProcesses' | 'openQuestions'> {
   tableMaterialAssessments?: MaterialAssessment[];
   tableCandidateArtifacts?: ArtifactCandidate[];
+  productInventory?: ProductInventoryItem[];
+  productInventorySummary?: AnalysisResult['productInventorySummary'];
+}
+
+function normalizeProductInventory(value: unknown): ProductInventoryItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+    const item = raw as Record<string, unknown>;
+    const text = (input: unknown) => String(input ?? '').trim();
+    const array = (input: unknown) => Array.isArray(input)
+      ? input.map(text).filter(Boolean).slice(0, 40)
+      : [];
+    const canonicalItemId = text(item.canonicalItemId ?? item.canonical_item_id);
+    const name = text(item.name);
+    const sourceRecordIds = array(item.sourceRecordIds ?? item.source_record_ids);
+    const sourceLocator = text(item.sourceLocator ?? item.source_locator);
+    if (!canonicalItemId || !name || !sourceRecordIds.length || !sourceLocator) return [];
+    const evidenceStatus = item.evidenceStatus === 'insufficient' ? 'insufficient' : 'complete';
+    return [{
+      canonicalItemId,
+      name,
+      applicableSubjects: array(item.applicableSubjects ?? item.applicable_subjects),
+      triggerScenarios: array(item.triggerScenarios ?? item.trigger_scenarios),
+      businessNeeds: array(item.businessNeeds ?? item.business_needs),
+      sourceRecordIds,
+      sourceLocator,
+      ruleRefs: array(item.ruleRefs ?? item.rule_refs ?? (item.ruleId ? [item.ruleId] : [])),
+      ...(text(item.mergeGroupId ?? item.merge_group_id) ? {
+        mergeGroupId: text(item.mergeGroupId ?? item.merge_group_id),
+      } : {}),
+      evidenceStatus,
+      ...(array(item.structuredGaps ?? item.structured_gaps).length ? {
+        structuredGaps: array(item.structuredGaps ?? item.structured_gaps),
+      } : {}),
+      ...(text(item.insufficiencyReason ?? item.insufficiency_reason) ? {
+        insufficiencyReason: text(item.insufficiencyReason ?? item.insufficiency_reason),
+      } : {}),
+    } as ProductInventoryItem];
+  });
 }
 
 function normalizeDomainTableArtifacts(
@@ -612,6 +653,27 @@ async function reduceDomain(input: {
         kind: artifactKind, name: Type.String(), rationale: Type.String(), sources: Type.Array(Type.String()),
         evidence: Type.Optional(Type.String()), readiness,
       })),
+      // This is the authoritative itemized product fact source for the
+      // ledger gate. It is intentionally separate from candidateArtifacts:
+      // candidates are suggestions and may not be used to close inventory
+      // counts or provenance.
+      productInventory: Type.Optional(Type.Array(Type.Object({
+        canonicalItemId: Type.String(), name: Type.String(),
+        applicableSubjects: Type.Array(Type.String()),
+        triggerScenarios: Type.Array(Type.String()),
+        businessNeeds: Type.Array(Type.String()),
+        sourceRecordIds: Type.Array(Type.String(), { minItems: 1 }),
+        sourceLocator: Type.String(), ruleRefs: Type.Array(Type.String()),
+        mergeGroupId: Type.Optional(Type.String()),
+        evidenceStatus: Type.Union([Type.Literal('complete'), Type.Literal('insufficient')]),
+        structuredGaps: Type.Optional(Type.Array(Type.String())),
+        insufficiencyReason: Type.Optional(Type.String()),
+      }), { maxItems: 10000 })),
+      productInventorySummary: Type.Optional(Type.Object({
+        rawCount: Type.Number({ minimum: 0 }),
+        canonicalCount: Type.Number({ minimum: 0 }),
+        mergedGroupCount: Type.Number({ minimum: 0 }),
+      })),
     }),
     async execute(_id: string, params: unknown) {
       capture.value = params;
@@ -628,6 +690,8 @@ async function reduceDomain(input: {
       '基于文档汇总与数据表结构形成领域概览、最多 3 个目标和流程、对象候选及开放问题。',
       'candidateObjects.sourceTables 和表格材料 source 必须精确使用输入中的真实表名。',
       '表格缺少业务口径时标记 needs_clarification，不得根据样例值编造规则阈值。',
+      '当任务涉及产品手册/产品清单台账时，必须额外提交 productInventory 和 productInventorySummary。productInventory 是逐项事实源，不是 candidateArtifacts 的复制；每项必须有稳定 canonicalItemId、ruleRefs、原始记录 ID、精确证据定位、名称、适用主体、触发场景、业务需求和 evidenceStatus。无法从资料确认的字段写入 structuredGaps/insufficiencyReason。',
+      'productInventorySummary 的 rawCount、canonicalCount、mergedGroupCount 必须由逐项 sourceRecordIds 和 mergeGroupId 闭合计算；无法确定时不要猜数，留空并让台账门禁阻断。',
       '最后调用 submit_material_analysis_result。',
       `已确认建模目标：${goal}`,
       `项目上下文：${input.projectContext}`,
@@ -644,7 +708,18 @@ async function reduceDomain(input: {
   );
   if (!capture.value) throw new Error('领域汇总未提交结构化结果');
   const domain = capture.value as DomainReducePayload;
-  return { ...domain, ...normalizeDomainTableArtifacts(input.tables, domain) };
+  return {
+    ...domain,
+    productInventory: normalizeProductInventory(domain.productInventory),
+    ...(domain.productInventorySummary ? {
+      productInventorySummary: {
+        rawCount: Number(domain.productInventorySummary.rawCount) || 0,
+        canonicalCount: Number(domain.productInventorySummary.canonicalCount) || 0,
+        mergedGroupCount: Number(domain.productInventorySummary.mergedGroupCount) || 0,
+      },
+    } : {}),
+    ...normalizeDomainTableArtifacts(input.tables, domain),
+  };
 }
 
 interface AdaptiveQueueResult<T> {
@@ -1019,6 +1094,10 @@ async function runMaterialAnalysisMapReduceOnce(
       ...(Array.isArray(domain.tableCandidateArtifacts) ? domain.tableCandidateArtifacts : []),
       ...documentArtifacts.flatMap((item) => item.candidates),
     ],
+    ...(Array.isArray(domain.productInventory) && domain.productInventory.length
+      ? { productInventory: domain.productInventory }
+      : {}),
+    ...(domain.productInventorySummary ? { productInventorySummary: domain.productInventorySummary } : {}),
     documentReadCoverage: coverageFromPlan(plan),
     };
     const finalizedAnalysis = input.finalizeAnalysis?.(analysis) ?? analysis;

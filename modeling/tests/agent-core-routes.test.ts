@@ -518,6 +518,100 @@ test('enforce 模式下产品台账未通过会阻断规则 Change Set', async (
   assert.equal(blocked.json().gate, 'product_ledger_verified');
 });
 
+test('项目要求产品台账时，advisory 模式也会在计划和旧写入路径前置阻断', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品台账前置门禁', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const revision = claimed.json().baseRevision;
+
+  const required = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
+  assert.equal(required.statusCode, 200, required.body);
+  assert.equal(required.json().required, true);
+
+  const plan = await tool(app, project.id, 'create_change_plan', {
+    goal: '完成产品清单规则生成', mode: 'generation', expected_revision: revision,
+    tasks: [{
+      client_key: 'rule-a', title: '生成规则 A', resource_kind: 'rule', target_key: 'rule-a',
+      allowed_tools: ['create_rule'], depends_on: [], acceptance: '规则具备来源证据', required: true,
+    }],
+  }, runId);
+  assert.equal(plan.statusCode, 409, plan.body);
+  assert.equal(plan.json().code, 'PRODUCT_LEDGER_REQUIRED');
+  assert.deepEqual(plan.json().allowedActions, ['get_product_inventory_source', 'get_product_ledger', 'stage_product_ledger']);
+  assert.deepEqual(plan.json().protocolActions, [
+    'get_product_inventory_source', 'begin_product_ledger', 'append_product_ledger_batch',
+    'get_product_ledger_progress', 'finalize_product_ledger',
+  ]);
+
+  const legacy = await tool(app, project.id, 'upsert_rule', {
+    key: 'rule-a', title: '规则 A', applies_to: { objects: ['object-a'] },
+    conditions: [{ condition: '条件', conclusion: '结论' }], conclusion: '结论', evidence: ['user-decision:synthetic'],
+  }, runId);
+  assert.equal(legacy.statusCode, 409, legacy.body);
+  assert.equal(legacy.json().code, 'PRODUCT_LEDGER_REQUIRED');
+});
+
+test('产品台账草稿按顺序分批、跨批次去重并由 finalize 重算统计', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品台账批次协议', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const revision = claimed.json().baseRevision;
+  const begun = await tool(app, project.id, 'begin_product_ledger', {
+    ledger_id: 'ledger-batch', source_revision: revision,
+  }, runId);
+  assert.equal(begun.statusCode, 200, begun.body);
+  const entryA = {
+    canonicalItemId: 'product-a', name: '合成产品 A', ruleRefs: ['rule-a'], sourceRecordIds: ['source-a'],
+    sourceLocator: 'synthetic#1', evidenceStatus: 'complete', processingStatus: 'ready',
+  };
+  const entryB = {
+    canonicalItemId: 'product-b', name: '合成产品 B', ruleRefs: ['rule-b'], sourceRecordIds: ['source-b', 'source-c'],
+    sourceLocator: 'synthetic#2', mergeGroupId: 'merge-1', evidenceStatus: 'insufficient',
+    insufficiencyReason: '合成缺口', processingStatus: 'blocked',
+  };
+  const outOfOrder = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 2, entries: [entryB],
+  }, runId);
+  assert.equal(outOfOrder.statusCode, 409, outOfOrder.body);
+  assert.equal(outOfOrder.json().code, 'PRODUCT_LEDGER_BATCH_ORDER');
+  const first = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 1, entries: [entryA],
+  }, runId);
+  assert.equal(first.statusCode, 200, first.body);
+  const duplicate = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 2, entries: [{ ...entryB, canonicalItemId: 'product-a' }],
+  }, runId);
+  assert.equal(duplicate.statusCode, 409, duplicate.body);
+  assert.equal(duplicate.json().code, 'PRODUCT_LEDGER_DUPLICATE_CANONICAL_ID');
+  const second = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 2, entries: [entryB],
+  }, runId);
+  assert.equal(second.statusCode, 200, second.body);
+  const finalized = await tool(app, project.id, 'finalize_product_ledger', {
+    ledger_id: 'ledger-batch',
+  }, runId);
+  assert.equal(finalized.statusCode, 200, finalized.body);
+  assert.equal(finalized.json().status, 'finalized');
+  assert.deepEqual(finalized.json().counts, {
+    raw: 3, canonical: 2, mergedGroups: 1, complete: 1, insufficient: 1,
+  });
+  const progress = await tool(app, project.id, 'get_product_ledger_progress', {
+    ledger_id: 'ledger-batch',
+  }, runId);
+  assert.equal(progress.statusCode, 200, progress.body);
+  assert.equal(progress.json().processed, 2);
+  assert.equal(progress.json().remaining, 0);
+  const appendAfterFinalize = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 3, entries: [],
+  }, runId);
+  assert.equal(appendAfterFinalize.statusCode, 409, appendAfterFinalize.body);
+  assert.equal(appendAfterFinalize.json().code, 'PRODUCT_LEDGER_FINALIZED');
+});
+
 test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Mermaid 源码契约', runtime: 'agent' });
   const app = appFor(t);
