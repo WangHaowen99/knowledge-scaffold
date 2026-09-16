@@ -1234,6 +1234,7 @@ export class AgentCoreService {
     switch (tool) {
       case 'list_documents': return this.listDocuments(context.project.id);
       case 'get_goal_context': return this.goalContext(context.project.id, workspace);
+      case 'get_material_context': return this.materialContext(context.project.id, args);
       case 'require_product_ledger': return this.requireProductLedger(context, workspace, args);
       case 'get_product_inventory_source': return this.productInventorySource(context, args);
       case 'begin_product_ledger': return runProjectWriteExclusive(
@@ -4830,6 +4831,133 @@ export class AgentCoreService {
       candidates,
       openQuestions,
       display: { text: row ? '已整理可用于目标生成的结构化资料依据' : '当前没有已完成的资料分析，目标只可依据用户明确说明生成' },
+    };
+  }
+
+  /** 资料档案查询面：全文精读已按分块提取并三层落库（分块事实、文档摘要、
+   *  项目汇总），此前唯一的消费方是进度条——细粒度事实躺在库里没有出口，
+   *  后续阶段只能回原文重读。这里把档案按资料/主题/类型开放为只读查询，
+   *  返回形态遵守「结论+锚点+句柄」：档案是缓存不是事实源，写入知识包的
+   *  数字和口径必须按 filename+offset 回原文核对。 */
+  private materialContext(projectId: string, args: Record<string, unknown>) {
+    const documentFilter = String(args.document ?? '').trim();
+    const topic = String(args.topic ?? '').trim();
+    const kindFilter = String(args.kind ?? '').trim();
+    const allowedKinds = ['object', 'rule', 'operation', 'metric', 'process', 'fact'];
+    if (kindFilter && !allowedKinds.includes(kindFilter)) {
+      throw new AgentCoreError('INVALID_INPUT', `kind 只能是 ${allowedKinds.join('/')}`, ['修正 kind 后重试'], 400);
+    }
+    const run = this.db.prepare(`SELECT id, updated_at FROM material_analysis_runs
+      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
+      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(projectId) as
+      | { id: string; updated_at: string }
+      | undefined;
+    if (!run) {
+      return {
+        version: 'material-context-v1',
+        available: false,
+        documents: [], facts: [], candidates: [],
+        instruction: '当前没有已完成的资料分析；先完成全文精读建立档案，或直接用 search_documents 定位原文。',
+        display: { text: '资料档案尚未建立' },
+      };
+    }
+    const current = new Map(listDocuments(projectId).flatMap((document) => {
+      const fingerprint = documentRevisionFingerprint(document);
+      return [[document.id, fingerprint], [document.filename, fingerprint]] as const;
+    }));
+    const matchesDocument = (row: { document_id?: string | null; filename: string }) => (
+      !documentFilter || row.filename === documentFilter || row.document_id === documentFilter
+    );
+    // 主题按 OR 匹配子串，与 search_documents 同一口径；档案负责"找到"，
+    // 不负责"引用"，召回宽一点、由锚点核对兜住准确性。
+    const terms = topic.split(/\s+/).map((item) => item.trim().toLocaleLowerCase('zh-CN'))
+      .filter((item) => item.length >= 2);
+    const matchesTopic = (...texts: Array<string | undefined>) => (
+      !terms.length || texts.some((value) => {
+        const lower = String(value ?? '').toLocaleLowerCase('zh-CN');
+        return terms.some((term) => lower.includes(term));
+      })
+    );
+    const stale = (row: { document_id?: string | null; filename: string; revision_fingerprint: string }) => {
+      const fingerprint = current.get(String(row.document_id ?? '')) ?? current.get(row.filename);
+      return fingerprint !== row.revision_fingerprint;
+    };
+    const parse = (raw: string | null) => {
+      try { return raw ? JSON.parse(raw) as Record<string, any> : {}; } catch { return {}; }
+    };
+    const compact = (value: unknown, limit: number) => String(value ?? '').trim().slice(0, limit);
+
+    const summaryRows = this.db.prepare(`SELECT document_id, filename, revision_fingerprint, payload_json
+      FROM material_analysis_document_summaries WHERE run_id = ? AND status = 'completed'
+      ORDER BY document_key`).all(run.id) as Array<{
+        document_id: string | null; filename: string; revision_fingerprint: string; payload_json: string | null;
+      }>;
+    const documents = summaryRows.filter(matchesDocument).flatMap((row) => {
+      const payload = parse(row.payload_json);
+      if (!matchesTopic(payload.summary, row.filename)) return [];
+      return [{
+        documentId: row.document_id ?? null,
+        filename: row.filename,
+        summary: compact(payload.summary, 2_000),
+        suitableFor: Array.isArray(payload.suitableFor) ? payload.suitableFor.slice(0, 6) : [],
+        stale: stale(row),
+      }];
+    }).slice(0, 20);
+
+    const chunkRows = this.db.prepare(`SELECT document_id, filename, revision_fingerprint, payload_json
+      FROM material_analysis_chunks WHERE run_id = ? AND status = 'completed'
+      ORDER BY document_key, chunk_index`).all(run.id) as Array<{
+        document_id: string | null; filename: string; revision_fingerprint: string; payload_json: string | null;
+      }>;
+    const facts: Array<{ filename: string; offset: number; kind: string; note: string; stale?: boolean }> = [];
+    const candidates: Array<Record<string, unknown>> = [];
+    for (const row of chunkRows) {
+      if (!matchesDocument(row)) continue;
+      const payload = parse(row.payload_json);
+      const rowStale = stale(row);
+      for (const item of Array.isArray(payload.evidence) ? payload.evidence : []) {
+        if (facts.length >= 30) break;
+        const kind = compact(item?.kind, 20) || 'fact';
+        const note = compact(item?.note, 500);
+        if (!note || !Number.isFinite(item?.offset)) continue;
+        if (kindFilter && kind !== kindFilter) continue;
+        if (!matchesTopic(note)) continue;
+        facts.push({
+          filename: row.filename, offset: Math.floor(Number(item.offset)), kind, note,
+          ...(rowStale ? { stale: true } : {}),
+        });
+      }
+      for (const item of Array.isArray(payload.candidates) ? payload.candidates : []) {
+        if (candidates.length >= 20) break;
+        const kind = compact(item?.kind, 20);
+        const name = compact(item?.name, 200);
+        if (!name) continue;
+        if (kindFilter && kind !== kindFilter) continue;
+        if (!matchesTopic(name, item?.rationale)) continue;
+        candidates.push({
+          filename: row.filename, kind, name,
+          rationale: compact(item?.rationale, 600),
+          evidenceOffsets: (Array.isArray(item?.evidenceOffsets) ? item.evidenceOffsets : [])
+            .filter((offset: unknown) => Number.isFinite(offset)).slice(0, 8),
+          ...(item?.readiness ? { readiness: compact(item.readiness, 40) } : {}),
+          ...(rowStale ? { stale: true } : {}),
+        });
+      }
+      if (facts.length >= 30 && candidates.length >= 20) break;
+    }
+
+    const hasStale = documents.some((item) => item.stale)
+      || facts.some((item) => item.stale) || candidates.some((item) => item.stale);
+    return {
+      version: 'material-context-v1',
+      available: true,
+      analysisUpdatedAt: run.updated_at,
+      documents, facts, candidates,
+      instruction: [
+        '档案是缓存不是事实源：写入知识包的数字和口径，必须按 filename+offset 用 read_document 核对原文后引用。',
+        ...(hasStale ? ['标记 stale 的条目来自已更新的资料旧版本，先对该资料重新全文精读再使用。'] : []),
+      ].join(''),
+      display: { text: `资料档案：${documents.length} 份摘要、${facts.length} 条事实、${candidates.length} 个候选` },
     };
   }
 

@@ -167,6 +167,7 @@ Follow these general standards until language-specific rules are added:
 - Do not add comments for obvious code.
 - Add comments only for non-obvious decisions, constraints, or tradeoffs.
 - Keep public APIs stable once introduced.
+- Agent tool results must return conclusions, evidence anchors, and retrieval handles instead of raw bulk content. When adding or changing an agent tool, state its worst-case result size, cap it, and page or reference persisted data for anything larger. Do not inline content that already has a durable source of truth; return an anchor or ID instead. See `modeling/docs/decisions/instruction-lifetime-and-context-tier-governance.md`.
 
 When a language or framework is selected, update this section with specific conventions.
 

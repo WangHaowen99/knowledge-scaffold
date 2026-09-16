@@ -112,6 +112,7 @@ TOOL_WORK_DETAILS = {
     "list_document_outline": "正在查看资料的章节目录，确定该读哪几节",
     "read_documents_fully": "正在核对全文覆盖范围，并整理可引用的事实",
     "search_documents": "正在定位相关原文，再与当前建模内容交叉核对",
+    "get_material_context": "先查已提取的资料档案，再按锚点定位需要核对的原文",
     "list_tables": "先盘点可用数据表，再选择需要核对的字段范围",
     "describe_table": "正在核对字段含义、类型和样例，避免只按名称推断",
     "read_table_rows": "正在用真实样例值复核字段口径和数据关系",
@@ -1228,6 +1229,19 @@ CORE_TOOL_SPECS = (
         "正在并行全文精读资料",
     ),
     ToolSpec("search_documents", "跨资料搜索原文，query 中的词按 OR 匹配。", {"query": STRING}, ("query",), display="正在检索资料"),
+    ToolSpec(
+        "get_material_context",
+        "查询资料档案：全文精读后持久化的结构化提取结果（文档摘要、带原文 offset 的业务事实、知识候选）。"
+        "按 document（资料名或 ID）、topic（关键词，OR 匹配）、kind（object/rule/operation/metric/process/fact）过滤。"
+        "优先用它代替重读原文；档案是缓存不是事实源，写入知识包的数字和口径必须按返回的 filename+offset 用 read_document 核对原文，"
+        "标记 stale 的资料需先重新全文精读。",
+        {
+            "document": STRING,
+            "topic": STRING,
+            "kind": {"type": "string", "enum": ["object", "rule", "operation", "metric", "process", "fact"]},
+        },
+        display="正在查询资料档案",
+    ),
     ToolSpec("list_tables", "列出从表格资料解析出的数据字典。", {}, display="正在查看数据表"),
     ToolSpec(
         "get_schema_overview",

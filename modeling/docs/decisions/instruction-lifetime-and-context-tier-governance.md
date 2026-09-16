@@ -40,3 +40,14 @@ system 段自此按寿命分四槽位：契约（项目寿命，随管辖工具�
 - 专家插话处置在预算耗尽时仍可能未完成，但必然可见（事件 + 下一轮重新成为目标），不再有静默丢弃路径。
 - 已知边界：交互卡内的插话回答（interject 通道）不经 steering 表，暂无处置生命周期；首轮原始 query 无 turn_goal 保护（既有弱点，与本决策正交）。
 - 本地测试环境（PyPI 版 openjiuwen）存在 7 个与本改动无关的既有失败，提交前后失败集合一致，已逐一比对基线确认。
+
+## 补充（2026-09-17）：资料档案查询面与工具返回形态规约
+
+**Context**：跨阶段重复全文读取原始资料成本高；核实发现全文精读的分块提取结果早已三层落库（`material_analysis_chunks` 分块事实带原文 offset、`material_analysis_document_summaries` 文档摘要、`material_analysis_runs.result_json` 项目汇总），且按修订指纹可复用，但消费方只有进度条——细粒度事实没有查询出口，后续阶段只能回原文重读。同时，大工具返回值直接进上下文只有逐工具的手工约定（search_documents 限 8 条命中、校验报告分页、全文精读只回摘要），无成文规约。
+
+**Decision**：(1) 新增只读工具 `get_material_context(document/topic/kind)`（core-service 从三层落库结果组装，条数与字符上限，返回带 filename+offset 锚点，按当前修订指纹标注 stale），并加入 material_analyst / knowledge_extractor / merge_analyst 子代理工具集；(2) process-modeling、knowledge-extraction、incremental-intake 三个阶段手册写死工作序「先查档案 → search 定位锚点 → 按锚点核对原文 → 仅点名或 stale 时全文精读」，并强调档案是缓存、写入知识包必须经锚点核对；(3) 「结论+锚点+句柄」返回形态规约写入根 CLAUDE.md 第 6 节，作为新增/修改 agent 工具的评审判据。
+
+**Alternatives considered**：扩展提取 schema 重跑分析（不必要——细粒度事实已在 chunk payload 里，缺的只是读取面）；上 FTS/向量检索（现有子串检索加档案层可能已够，不见失败证据不上贵机制）；把档案做成常驻 system 段（体积不可控，且档案是按需查询型信息，不满足特权区「当下相关」准入）。
+
+**Consequences**：后期阶段的原文全文重读预期显著下降（验收看活动日志中 `read_documents_fully` 调用次数对比基线）；档案摘要有丢承重细节的固有风险，由「写入前锚点核对原文」纪律兜底而非摘要质量兜底；卸载链开关仍是部署侧动作，本补充不改默认值。
+
