@@ -97,6 +97,11 @@ services:
       - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-}
       - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
       - MODELING_LLM_MAX_TOKENS=${MODELING_AGENT_LLM_MAX_TOKENS:-32768}
+      # 思维链与正文共用 max_tokens。模型默认就推理时（如 glm 系列）配置侧看不出来，
+      # 阶段预算会被推理占满、正文一个 token 都吐不出来；显式设为 enabled 才会追加余量。
+      - MODELING_LLM_THINKING_MODE=${MODELING_LLM_THINKING_MODE:-}
+      - MODELING_REASONING_HEADROOM_TOKENS=${MODELING_REASONING_HEADROOM_TOKENS:-}
+      - MODELING_LEADER_OUTPUT_TOKENS=${MODELING_LEADER_OUTPUT_TOKENS:-}
       - MODELING_AGENT_MAX_ITERATIONS=${MODELING_AGENT_MAX_ITERATIONS:-200}
       # 上下文治理。默认值与 deploy/docker-compose.modeling.yml 保持一致，两条部署
       # 路径的行为必须对齐：条数是安全网，窗口 token 才是主控，预设链不开则超窗
