@@ -135,6 +135,11 @@ services:
       - MODELING_CONTEXT_WINDOW_MESSAGES=${MODELING_CONTEXT_WINDOW_MESSAGES:-}
       - MODELING_CONTEXT_MAX_MESSAGES=${MODELING_CONTEXT_MAX_MESSAGES:-}
       - MODELING_CONTEXT_WINDOW_ROUNDS=${MODELING_CONTEXT_WINDOW_ROUNDS:-}
+      # 卸载+摘要+回灌预设链。不开时超窗消息直接丢弃且找不回；开了才有句柄回灌。
+      # 压缩按「占用达到窗口的百分之多少」触发，所以必须和下面的窗口 token 数一起配，
+      # 只设其中一个等于没配：缺 token 数算不出比例，缺预设链则没有卸载和回灌。
+      - MODELING_CONTEXT_PROCESSOR_PRESET=${MODELING_CONTEXT_PROCESSOR_PRESET:-}
+      - MODELING_CONTEXT_WINDOW_TOKENS=${MODELING_CONTEXT_WINDOW_TOKENS:-}
       - MODELING_SERVICE_TOKEN=${MODELING_SERVICE_TOKEN:-}
     volumes:
       - modeling-agent-data:/data
