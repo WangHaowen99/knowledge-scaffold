@@ -25,7 +25,10 @@ import { getPiAuthoringAdapter } from '../authoring/pi-adapter.js';
 import { attachKnowledgeChangeEvidence } from './knowledge-evidence.js';
 import { renderPackage } from './package-render.js';
 import { canonicalizePackageSpec } from './package-spec.js';
-import { DATA_PROVIDER_SCRIPT_CONTRACT } from './script-safety.js';
+import {
+  SCRIPT_PURE_COMPUTATION_GUIDANCE,
+  validateScriptComputationPurity,
+} from './script-safety.js';
 import { buildScriptCliArguments } from './script-cli.js';
 import { recordScriptTestReceipt, scriptTestSourceHash } from './script-test-receipts.js';
 import { runScriptCasesInJiuwenbox } from '../agent/sandbox.js';
@@ -860,6 +863,7 @@ export function compileAtomicModelSubmission(
       }),
     });
   }
+  for (const script of scripts) validateScriptComputationPurity(script);
   if (expectedAdditions.size) {
     throw new Error(`模型遗漏新增脚本：${[...expectedAdditions].join('、')}`);
   }
@@ -881,6 +885,7 @@ export function compileAtomicModelSubmission(
         requireNodeHashes: true,
       }),
     });
+    validateScriptComputationPurity(scripts[scripts.length - 1]!, existing.sourceCode);
   }
   if (expectedModifications.size) {
     throw new Error(`模型遗漏脚本补丁：${[...expectedModifications].join('、')}`);
@@ -1329,7 +1334,7 @@ export async function packageChatApply(
     '新增 script 时通过 newScripts 提交结构化契约、run_business_logic 和必要辅助函数；CLI、JSON 输出和 main 由 Core 脚手架生成。',
     '修改 script 时先调用 read_script_symbols 读取目标函数及直接依赖，再通过 scriptPatches 提交带整源哈希和节点哈希的符号补丁。',
     '任何路径都禁止返回、重传或重写完整 Python 文件；不得修改未授权的函数、CLI 外壳或入口。',
-    DATA_PROVIDER_SCRIPT_CONTRACT,
+    SCRIPT_PURE_COMPUTATION_GUIDANCE,
     '脚本与 operation 必须双向绑定：script.boundOperation 指向 operation，operation.script.key 指回 script，并在 flow 中明确调用。',
     '每个物理数据对象都必须保留资料来源：sourceRefs 只能引用一张真实 Sheet，字段通过 sourceColumn 对应真实列；产品、场景、跨表汇总等派生业务对象引用原始文档、逐来源明细对象及证据位置。',
     '不得把来源表名、文件名或摄取来源标识伪装成每张来源表都存在的业务字段（例如 evt_src_table/source_table）。',

@@ -2061,7 +2061,8 @@ CORE_TOOL_SPECS = (
     ToolSpec("update_plan", "仅供历史 checkpoint 恢复：更新 .modeling/plan.md 工作笔记。新运行使用 update_work_notes。", {"markdown": STRING}, ("markdown",), False, "正在恢复历史工作笔记"),
     ToolSpec(
         "define_script_contract",
-        "先定义脚本的绑定操作、CLI 参数、结构化输出、超时和执行边界；这一步不写源码或候选文件。",
+        "先定义脚本的绑定操作、CLI 参数、结构化输出、超时和执行边界；这一步不写源码或候选文件。"
+        "脚本是纯计算，业务数据一律由调用方取好后经 CLI 参数传入，参数只能来自该操作已声明的输入定义。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
             "script_key": STRING,
@@ -2122,7 +2123,9 @@ CORE_TOOL_SPECS = (
     ToolSpec(
         "stage_script_patch",
         "按当前源码、契约和目标节点哈希提交 Python 顶层符号补丁。Core 只替换授权节点，"
-        "其余源码保持不变，并复用脚本安全、绑定和候选门禁。",
+        "其余源码保持不变，并复用脚本安全、绑定和候选门禁。"
+        "补丁里不得出现连数据库、调接口、读本地文件或使用平台数据源客户端的代码，"
+        "业务数据从 run_business_logic 的 inputs 读取；写了会被 Core 退回，按 findings 删掉取数再提交同一补丁。",
         {
             "script_key": STRING,
             "plan_task_id": PLAN_TASK_ID,
@@ -2159,7 +2162,8 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "stage_script_source",
-        "仅供历史 checkpoint 恢复：按已定义契约提交完整 Python 源码。新运行必须使用 stage_script_patch。",
+        "仅供历史 checkpoint 恢复：按已定义契约提交完整 Python 源码。新运行必须使用 stage_script_patch。"
+        "源码不得包含取数代码，业务数据从 CLI 参数传入；写了会被 Core 退回，按 findings 修正后重新提交。",
         {
             "script_key": STRING,
             "plan_task_id": PLAN_TASK_ID,

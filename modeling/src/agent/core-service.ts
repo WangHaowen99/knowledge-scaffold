@@ -109,6 +109,11 @@ import {
   isCoreManagedPythonScaffold,
 } from '../workflow/python-script-scaffold.js';
 import {
+  SCRIPT_PURE_COMPUTATION_GUIDANCE,
+  SCRIPT_PURITY_VALIDATOR_VERSION,
+  newScriptDataAccessPoints,
+} from '../workflow/script-safety.js';
+import {
   applyPythonSourceEdits,
   selectPythonSourceSymbols,
   type PythonSourceEdit,
@@ -3298,6 +3303,34 @@ export class AgentCoreService {
         `操作 ${contract.boundOperation} 已绑定脚本 ${conflicting.key}`,
         ['先由专家决定保留哪一个脚本契约，不要静默覆盖绑定'],
         409,
+      );
+    }
+    // 提交即拦：脚本在沙箱里按 CLI 执行，取数代码在那里根本跑不通，放过去只会让
+    // 模型在后续沙箱测试里反复猜数据从哪来。基线取存量源码，存量已有的取数不追溯。
+    // 标成 retryable：改掉源码重新提交就能过，交给 Agent 的受控修复轮次收敛；
+    // 真改不动（业务数据没有契约入口）时由修复轮次耗尽升级给专家，不在这里堵死。
+    const addedDataAccess = newScriptDataAccessPoints(existing?.sourceCode, sourceCode);
+    if (addedDataAccess.length) {
+      throw new AgentCoreError(
+        'SCRIPT_DATA_ACCESS_FORBIDDEN',
+        `脚本源码新增了${addedDataAccess.join('、')}：${SCRIPT_PURE_COMPUTATION_GUIDANCE}`,
+        [
+          '删除脚本里的取数代码，改为从 run_business_logic 的 inputs 读取已传入的业务数据，然后重新提交',
+          '业务数据没有契约入口时，先按操作已声明的输入补齐脚本契约参数；操作本身没有声明输入的，回到知识阶段请专家补齐，不要在脚本里自行取数',
+        ],
+        409,
+        {
+          retryable: true,
+          validatorVersion: SCRIPT_PURITY_VALIDATOR_VERSION,
+          findingCount: addedDataAccess.length,
+          findings: addedDataAccess.map((label) => ({
+            ruleId: 'script.pure-computation',
+            path: `scripts/${contract.entrypoint}`,
+            message: `脚本新增了${label}`,
+            suggestion: '删除该取数代码，改用契约参数传入的业务数据',
+          })),
+          data_access_points: addedDataAccess,
+        },
       );
     }
     const scripts = [...(spec.scripts ?? [])];

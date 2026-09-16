@@ -3507,6 +3507,32 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
   );
   assert.ok(businessNode);
 
+  const dataAccessPatch = await tool(app, project.id, 'stage_script_patch', {
+    script_key: 'calculate_device_load',
+    expected_revision: defined.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    base_source_hash: editContext.json().base_source_hash,
+    mutation_id: 'stage-device-load-script-patch-data-access',
+    reason: '尝试在脚本里自行取数',
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: businessNode.node_hash,
+      source: `def run_business_logic(inputs):
+    from shared_capabilities.ontology_script_sdk import DataProviderClient
+    client = DataProviderClient()
+    result = client.query("device")
+    return {"load_rate": len(result.data)}
+`,
+    }],
+  }, nextRunId);
+  assert.equal(dataAccessPatch.statusCode, 409, dataAccessPatch.body);
+  assert.equal(dataAccessPatch.json().code, 'SCRIPT_DATA_ACCESS_FORBIDDEN');
+  // 模型改掉源码就能过，必须进 Agent 的受控修复轮次，而不是标成不可重试堵死。
+  assert.equal(dataAccessPatch.json().retryable, true);
+  assert.equal(dataAccessPatch.json().findings.length, dataAccessPatch.json().findingCount);
+  assert.equal(dataAccessPatch.json().findings[0].ruleId, 'script.pure-computation');
+
   const businessSource = `def run_business_logic(inputs):
     days = inputs["days"]
     if days <= 0:

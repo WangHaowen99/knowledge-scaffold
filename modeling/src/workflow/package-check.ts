@@ -416,7 +416,7 @@ export function runFormatChecks(spec: PackageSpec, inputFiles: PackageFiles): Ch
         '脚本执行契约',
         script.key,
         error instanceof Error ? error.message : String(error),
-        `修正 script ${script.key} 的 sourceCode，使其符合 DataProviderClient SDK、结构化输入输出和安全执行契约；不得修改无关业务知识。`,
+        `修正 script ${script.key} 的 sourceCode，使其符合结构化输入输出和安全执行契约；脚本是纯计算，不要新增取数代码；不得修改无关业务知识。`,
         true,
       );
     }

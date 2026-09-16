@@ -73,12 +73,8 @@ export function buildPythonScriptScaffold(contract: ScriptContract): string {
     'import json',
   ];
   const blocks: string[] = [imports.join('\n')];
-  blocks.push([
-    'class DataProviderClient:',
-    '    def __new__(cls, *args, **kwargs):',
-    '        from shared_capabilities.ontology_script_sdk import DataProviderClient as _DataProviderClient',
-    '        return _DataProviderClient(*args, **kwargs)',
-  ].join('\n'));
+  // 脚手架不提供任何取数能力：脚本是纯计算，业务数据由调用方取好后经 CLI 参数传入。
+  // 这里一旦给出数据源客户端，模型就会顺着模板把取数写进脚本里。
   if (hasExplicitBoolean) {
     blocks.push([
       'def parse_boolean(value):',
