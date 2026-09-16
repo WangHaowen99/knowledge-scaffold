@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """
 ==========================================================================
   test_benchmark_suite.py — Benchmark 自动化测试 (独立版)
@@ -38,22 +39,23 @@ from __future__ import annotations
 
 import json
 import logging
-import time
-import re
-import random
-import uuid
-import requests
-import openpyxl
-from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-from copy import copy
 import os
+import random
+import re
 import sys
 import threading
+import time
+import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import copy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from lang import translate_text, get_lang_display_name, SUPPORTED_LANGUAGES, get_env, _LANG_DISPLAY_NAMES
+import openpyxl
+import requests
+from lang import _LANG_DISPLAY_NAMES, SUPPORTED_LANGUAGES, get_env, get_lang_display_name, translate_text
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger(__name__)
@@ -166,15 +168,16 @@ def _char_count(text: str, lo: int, hi: int) -> int:
 
 def _llm_check_chinese_intrusion(text: str, target_lang: str) -> dict | None:
     try:
-        from openai import OpenAI
         from lang import _get_llm_config_from_env
+        from openai import OpenAI
 
         llm_config = _get_llm_config_from_env()
         if not llm_config.get("api_key"):
             return None
         client = OpenAI(api_key=llm_config["api_key"], base_url=llm_config["base_url"])
         model_name = llm_config["model_name"]
-    except Exception:
+    except (ImportError, AttributeError, KeyError, TypeError) as exc:
+        logger.warning("Unable to initialize language detector: %s", exc)
         return None
 
     lang_name = {"ja": "Japanese", "ko": "Korean"}.get(target_lang, target_lang)
@@ -212,8 +215,8 @@ def _llm_check_chinese_intrusion(text: str, target_lang: str) -> dict | None:
                 "confidence": float(result.get("confidence", 0.5)),
                 "reason": result.get("reason", ""),
             }
-    except Exception:
-        pass
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to classify CJK output with the model: %s", exc)
     return None
 
 
@@ -613,8 +616,8 @@ def _get_acp_suppress_patterns() -> str:
         )
         if resp.status_code == 200:
             return resp.json().get("acp_suppress_script_patterns", "")
-    except Exception:
-        pass
+    except requests.RequestException as exc:
+        logger.warning("Unable to read ACP suppression patterns: %s", exc)
     return ""
 
 
@@ -671,12 +674,12 @@ def _extract_kg_input_from_text(text: str, kg_tool_inputs: list) -> None:
         candidate = text[brace_start:end]
         try:
             params = json.loads(candidate)
-        except Exception:
+        except (json.JSONDecodeError, TypeError, ValueError):
             try:
                 import ast
 
                 params = ast.literal_eval(candidate)
-            except Exception:
+            except (ValueError, SyntaxError):
                 continue
         if not isinstance(params, dict):
             continue
@@ -1091,13 +1094,13 @@ def _consume_sse_stream(resp: requests.Response) -> str:
                 current_event = line[len("event:") :].strip()
             elif not line and current_event in terminal_events:
                 break
-    except Exception:
-        pass
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        logger.warning("Unable to consume ACP SSE stream: %s", exc)
     finally:
         try:
             resp.close()
-        except Exception:
-            pass
+        except (AttributeError, OSError) as exc:
+            logger.warning("Unable to close ACP response: %s", exc)
     return buf
 
 
@@ -1638,11 +1641,10 @@ def _should_report_finding(severity: str) -> bool:
 
 
 def _detect_chinese_in_events(raw_events: list[dict], target_lang: str) -> dict:
-    _THINKING_TYPES_ACP = {"thinking"}
-    _OUTPUT_TYPES_ACP = {"answer", "result"}
-    _THINKING_TYPES_AGENTIC = {"reasoning.delta", "thinking"}
-    _OUTPUT_TYPES_AGENTIC = {"token.delta"}
-    _TEXT_FIELDS_AGENTIC = {
+    thinking_types_acp = {"thinking"}
+    output_types_acp = {"answer", "result"}
+    thinking_types_agentic = {"reasoning.delta", "thinking"}
+    text_fields_agentic = {
         "reasoning.delta": ["payload.text"],
         "token.delta": ["payload.text"],
         "thinking": ["payload.text", "payload.message"],
@@ -1658,9 +1660,9 @@ def _detect_chinese_in_events(raw_events: list[dict], target_lang: str) -> dict:
             if not text:
                 continue
             event_type = event_name
-            if event_name in _THINKING_TYPES_ACP:
+            if event_name in thinking_types_acp:
                 pass
-            elif event_name in _OUTPUT_TYPES_ACP:
+            elif event_name in output_types_acp:
                 if event_name == "answer" and target_lang not in ("zh", "zh-cn"):
                     continue
                 pass
@@ -1682,13 +1684,13 @@ def _detect_chinese_in_events(raw_events: list[dict], target_lang: str) -> dict:
                 "severity": classification["severity"],
                 "description": classification["description"],
             }
-            if event_name in _THINKING_TYPES_ACP:
+            if event_name in thinking_types_acp:
                 thinking_findings.append(finding)
             else:
                 output_findings.append(finding)
         else:
             event_type = evt.get("type", "")
-            paths = _TEXT_FIELDS_AGENTIC.get(event_type)
+            paths = text_fields_agentic.get(event_type)
             if not paths:
                 continue
             for path in paths:
@@ -1718,7 +1720,7 @@ def _detect_chinese_in_events(raw_events: list[dict], target_lang: str) -> dict:
                     "severity": classification["severity"],
                     "description": classification["description"],
                 }
-                if event_type in _THINKING_TYPES_AGENTIC:
+                if event_type in thinking_types_agentic:
                     thinking_findings.append(finding)
                 else:
                     output_findings.append(finding)
@@ -1890,8 +1892,8 @@ def _validate_kg_language_param(kg_tool_inputs: list[dict], expected_lang: str) 
             "exec_cmd": search_text,
         }
 
-    _ZH_VARIANTS = {"zh", "zh-cn", "zh-tw"}
-    if parsed_lang == expected_lang or (parsed_lang in _ZH_VARIANTS and expected_lang in _ZH_VARIANTS):
+    zh_variants = {"zh", "zh-cn", "zh-tw"}
+    if parsed_lang == expected_lang or (parsed_lang in zh_variants and expected_lang in zh_variants):
         return {
             "status": "ok",
             "parsed_lang": parsed_lang,
@@ -1899,9 +1901,9 @@ def _validate_kg_language_param(kg_tool_inputs: list[dict], expected_lang: str) 
             "description": f"language参数正确: {parsed_lang}",
         }
 
-    _LANG_DISPLAY_VALUES = set(_LANG_DISPLAY_NAMES.values())
+    lang_display_values = set(_LANG_DISPLAY_NAMES.values())
 
-    if parsed_lang in _LANG_DISPLAY_VALUES:
+    if parsed_lang in lang_display_values:
         return {
             "status": "is_display_name",
             "parsed_lang": parsed_lang,
@@ -1921,15 +1923,15 @@ def _validate_kg_language_param(kg_tool_inputs: list[dict], expected_lang: str) 
 
 def _llm_detect_language(text: str, target_lang: str) -> dict | None:
     try:
-        from openai import OpenAI
         from lang import _get_llm_config_from_env
+        from openai import OpenAI
 
         llm_config = _get_llm_config_from_env()
         if not llm_config.get("api_key"):
             return None
         client = OpenAI(api_key=llm_config["api_key"], base_url=llm_config["base_url"])
         model_name = llm_config["model_name"]
-    except Exception:
+    except (ImportError, AttributeError, KeyError, TypeError):
         return None
 
     lang_name = _LANG_DISPLAY_NAMES.get(target_lang, target_lang)
@@ -1961,8 +1963,8 @@ def _llm_detect_language(text: str, target_lang: str) -> dict | None:
                 "confidence": float(result.get("confidence", 0.5)),
                 "reason": result.get("reason", ""),
             }
-    except Exception:
-        pass
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        logger.warning("Unable to detect output language: %s", exc)
     return None
 
 
@@ -2341,15 +2343,25 @@ def format_duration(seconds: float) -> str:
     return f"{m}m{s}s"
 
 
-def _save_run_log(
-    sheet_name: str,
-    run_index: int,
-    message: str,
-    session_id: str,
-    elapsed: float,
-    result: dict,
-    start_time: datetime,
-):
+@dataclass(frozen=True)
+class _RunLogInput:
+    sheet_name: str
+    run_index: int
+    message: str
+    session_id: str
+    elapsed: float
+    result: dict
+    start_time: datetime
+
+
+def _save_run_log(run_input: _RunLogInput):
+    sheet_name = run_input.sheet_name
+    run_index = run_input.run_index
+    message = run_input.message
+    session_id = run_input.session_id
+    elapsed = run_input.elapsed
+    result = run_input.result
+    start_time = run_input.start_time
     log_dir = os.path.join(_current_run_dir or _RESULT_BASE_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
     ts = start_time.strftime("%Y%m%d_%H%M%S")
@@ -2712,7 +2724,7 @@ def _read_snapshot_failures(session_id: str) -> list[dict]:
     try:
         with open(snap_path, "r", encoding="utf-8") as f:
             snap = json.load(f)
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError):
         return []
     failures = []
     events = snap.get("events", [])
@@ -2879,9 +2891,12 @@ def _analyze_think_process(run_ids: list[str], log_baseline: int):
                 collected = []
                 for j in range(idx, min(idx + 80, len(lines))):
                     _, text = lines[j]
-                    if j > idx and (
-                        "executor:execute:" in text or "app.api.consume" in text or "app.agent.nodes" in text
-                    ):
+                    is_boundary = (
+                        "executor:execute:" in text
+                        or "app.api.consume" in text
+                        or "app.agent.nodes" in text
+                    )
+                    if j > idx and is_boundary:
                         break
                     collected.append(text)
                 full_text = "\n".join(collected)
@@ -2955,8 +2970,8 @@ def _get_system_info() -> dict:
         info["llm_provider_id"] = get_env("LLM_PROVIDER", "custom")
         info["llm_base_url"] = llm_config.get("base_url", "N/A")
         info["llm_model"] = llm_config.get("model_name", "N/A")
-    except Exception:
-        pass
+    except (ImportError, AttributeError, KeyError, TypeError) as exc:
+        logger.warning("Unable to collect LLM system information: %s", exc)
 
     info["base_url"] = BASE_URL
     info["test_language"] = TEST_LANGUAGE
@@ -3573,15 +3588,25 @@ def _generate_md_report(
     return filepath
 
 
-def _execute_single_run(
-    message: str,
-    sheet_name: str,
-    lang_code: str,
-    lang_display: str,
-    run_index: int,
-    total_runs: int,
-    question_idx: int,
-) -> dict:
+@dataclass(frozen=True)
+class _SingleRunInput:
+    message: str
+    sheet_name: str
+    lang_code: str
+    lang_display: str
+    run_index: int
+    total_runs: int
+    question_idx: int
+
+
+def _execute_single_run(run_input: _SingleRunInput) -> dict:
+    message = run_input.message
+    sheet_name = run_input.sheet_name
+    lang_code = run_input.lang_code
+    lang_display = run_input.lang_display
+    run_index = run_input.run_index
+    total_runs = run_input.total_runs
+    question_idx = run_input.question_idx
     logger.info(f"\n--- 第 {run_index}/{total_runs} 次执行 ---")
 
     if API_MODE == "acp":
@@ -3892,13 +3917,15 @@ def _execute_single_run(
     rd["duration_str"] = format_duration(rd["elapsed"])
 
     _save_run_log(
-        sheet_name=sheet_name,
-        run_index=run_index,
-        message=message,
-        session_id=session_id,
-        elapsed=rd["elapsed"],
-        result=rd["result"] or {},
-        start_time=start_time,
+        _RunLogInput(
+            sheet_name=sheet_name,
+            run_index=run_index,
+            message=message,
+            session_id=session_id,
+            elapsed=rd["elapsed"],
+            result=rd["result"] or {},
+            start_time=start_time,
+        )
     )
 
     return rd
@@ -4204,13 +4231,15 @@ def run_tests():
             for i in range(1, RUNS_PER_QUESTION + 1):
                 row_idx = start_row + i - 1
                 rd = _execute_single_run(
-                    message,
-                    sheet_name,
-                    lang_code,
-                    lang_display,
-                    i,
-                    RUNS_PER_QUESTION,
-                    question_idx,
+                    _SingleRunInput(
+                        message=message,
+                        sheet_name=sheet_name,
+                        lang_code=lang_code,
+                        lang_display=lang_display,
+                        run_index=i,
+                        total_runs=RUNS_PER_QUESTION,
+                        question_idx=question_idx,
+                    )
                 )
 
                 elapsed = rd["elapsed"]

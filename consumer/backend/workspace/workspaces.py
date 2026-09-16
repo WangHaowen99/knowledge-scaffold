@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Workspace metadata and path resolution helpers."""
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ from workspace.catalog_snapshot import (
     WorkspaceCatalogSnapshot,
     WorkspaceSourceSignature,
 )
+
+logger = logging.getLogger(__name__)
 
 try:
     import fcntl

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the business_data_search tool backed by the MindsDB streaming API."""
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from shared_capabilities.business_data.providers.mindsdb import (
     _THOUGHT_MARKER,
     _parse_mindsdb_chunk_to_events,
 )
+from internal_access import internal
 
 
 def _fake_ontology(ontology_id):
@@ -163,7 +165,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
         EffectiveConnection(
             version=1,
             provider="mindsdb",
-            endpoint="http://unit.example.net",
+            endpoint="https://unit.example.net",
             auth=AuthSpec(type="none"),
             options={
                 "default_database": "",
@@ -201,7 +203,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
 
     def _fake_post(url, headers=None, json=None, timeout=None, stream=None):
         del headers, json, timeout, stream
-        assert url == "http://unit.example.net/api/projects/project_x/agents/agent_x/completions/stream"
+        assert url == "https://unit.example.net/api/projects/project_x/agents/agent_x/completions/stream"
         return _FakeResponse(
             [
                 'data: {"type":"start","prompt":"开始执行本体探索"}',
@@ -213,7 +215,7 @@ def test_mindsdb_adapter_query_stream_parses_sse_events():
             ]
         )
 
-    provider._session.post = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查询快艇 B001", entity="TargetItem"))
 

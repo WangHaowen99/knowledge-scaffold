@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Recoverable digest snapshots for ontology evidence epoch reconciliation."""
 
 from __future__ import annotations

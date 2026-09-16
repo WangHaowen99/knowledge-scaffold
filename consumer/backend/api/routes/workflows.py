@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Canonical FastAPI endpoints for asynchronous workflow Runs."""
 
 from __future__ import annotations

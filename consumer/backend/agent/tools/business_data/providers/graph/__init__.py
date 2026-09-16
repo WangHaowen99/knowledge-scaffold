@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Graph search providers for business_data_search."""
 
 from .hugegraph_provider import HugeGraphSearchProvider

@@ -1,10 +1,18 @@
 import { createHash } from 'node:crypto';
 
-import type { DataDictTable, PackageSpec, SpecField, SpecObject, SpecRelation } from '../types.js';
+import type {
+  DataDictTable,
+  PackageSpec,
+  SpecField,
+  SpecObject,
+  SpecOperation,
+  SpecRelation,
+  SpecRule,
+} from '../types.js';
 import { tableSourceFor } from './source-references.js';
 
 export type ObjectRelationSuggestionConfidence = 'high' | 'medium' | 'low';
-export type ObjectRelationSuggestionMatchMode = 'field_match' | 'same_row' | 'shared_key';
+export type ObjectRelationSuggestionMatchMode = 'field_match' | 'same_row' | 'shared_key' | 'semantic_text';
 export type PreviousObjectRelationStatus = 'previous' | 'discarded' | 'needs_review';
 
 export interface PreviousObjectRelation {
@@ -98,10 +106,6 @@ export function suggestObjectRelations(
     if (!relation) return;
     const existingKey = relationKey(draft.sourceObject, draft.targetObject, relation);
     if (existing.has(existingKey)) return;
-    /* 指纹不含 matchMode：同一条关系可能被多个生成器各发现一次（共享键列和字段名匹配
-       经常指向同一对字段）。把发现方式算进身份，会让同一条关系出现两个候选，专家看到
-       重复项；而且两者评分随行数据此消彼长时，排序会无谓地翻转，指纹跟着变，之前的
-       「已拒绝」记录就失效了。身份只由关系本身决定，发现方式只影响评分。 */
     const candidateFingerprint = candidateHash({
       sourceObject: draft.sourceObject,
       targetObject: draft.targetObject,
@@ -135,7 +139,6 @@ export function suggestObjectRelations(
     });
   }
 
-  addSharedKeyCandidates(contexts, addDraft);
   for (const source of contexts) {
     for (const target of contexts) {
       if (source.object.key === target.object.key) continue;
@@ -145,6 +148,8 @@ export function suggestObjectRelations(
     }
   }
 
+  addSharedKeyCandidates(contexts, addDraft);
+  addSemanticTextCandidates(spec, contexts, addDraft);
   addOperationCoReferenceCandidates(spec, addDraft);
 
   let candidates = [...drafts.values()]
@@ -182,12 +187,13 @@ export function collectPreviousObjectRelations(
   } satisfies PreviousObjectRelation)));
 }
 
-/* 星型 schema：多张表共享同一个键列，这是最强的关联证据，而且只看数据事实——
-   不依赖任何命名习惯。逐对的字段名猜测在中文对象名上必然落空：词干取自英文 key
-   （application_no → "application"），而对象叫《业务受理》；就算改用中文名，判据是
-   「对象名以词干结尾」，可中文命名是「计量点 + 方案」，关键词在前、后面缀「方案」，
-   照样不中。再叠加一层：共享键在星型结构里既是本表主键又是指向主表的外键，
-   而字段匹配那条遇到本表主键直接跳过，最明显的线索被两道关卡一前一后挡死（见 #47）。 */
+interface KeyHolder {
+  context: ObjectContext;
+  field: SpecField;
+  label: string;
+}
+
+/* 多张表复用同一个标识列是跨表关系的结构事实，不依赖对象名称。 */
 function addSharedKeyCandidates(
   contexts: ObjectContext[],
   addDraft: (draft: CandidateDraft) => void,
@@ -204,12 +210,11 @@ function addSharedKeyCandidates(
       byColumn.set(column, holders);
     }
   }
-  for (const [column, holders] of byColumn) {
+  for (const holders of byColumn.values()) {
     if (holders.length < 2) continue;
     const ranked = [...holders].sort(compareKeyHolders);
     const hub = ranked[0];
     const hubUnique = keyUniqueRatio(hub);
-    // 唯一性并列时不假装知道谁是主表，降级为 medium 并把并列写进 reason，由专家改指向
     const tied = ranked.filter((item) => Math.abs(keyUniqueRatio(item) - hubUnique) < 0.02).length > 1;
     for (const holder of ranked.slice(1)) {
       const stats = fieldMatchStats(holder.context, holder.field, hub.context, hub.field);
@@ -218,8 +223,7 @@ function addSharedKeyCandidates(
         sourceObject: holder.context.object.key,
         targetObject: hub.context.object.key,
         relation: 'belongs_to',
-        note: `${holder.context.object.key} 和 ${hub.context.object.key} 共用键列 ${hub.label}，`
-          + `${oneToOne ? '一行对一行' : '多行对一行'}。`,
+        note: `${holder.context.object.key} 和 ${hub.context.object.key} 共用键列 ${hub.label}，${oneToOne ? '一行对一行' : '多行对一行'}。`,
         confidence: hubUnique >= 0.95 && !tied ? 'high' : 'medium',
         reason: [
           `Objects share key column ${hub.label}.`,
@@ -238,13 +242,11 @@ function addSharedKeyCandidates(
   }
 }
 
-/** 声明为主键，或名字带 id/no/编号 这类标识后缀，才算键列——避免把 business_type 之类拉进来 */
+/** 主键或带有常见标识后缀的字段才参与 shared-key，避免普通属性列制造关系。 */
 function isKeyLikeField(object: SpecObject, field: SpecField): boolean {
   if (isPrimaryField(object, field)) return true;
   return fieldNameTokens(field).some((token) => idStem(token).length >= 2);
 }
-
-interface KeyHolder { context: ObjectContext; field: SpecField; label: string }
 
 function keyUniqueRatio(holder: KeyHolder): number {
   const profile = holder.context.table ? tableFieldProfile(holder.context.table, holder.field) : undefined;
@@ -255,6 +257,174 @@ function compareKeyHolders(left: KeyHolder, right: KeyHolder): number {
   return keyUniqueRatio(right) - keyUniqueRatio(left)
     || (right.context.table?.rowCount ?? 0) - (left.context.table?.rowCount ?? 0)
     || left.context.object.key.localeCompare(right.context.object.key);
+}
+
+interface SemanticRelationSource {
+  kind: 'object' | 'operation' | 'rule' | 'package';
+  key: string;
+  text: string;
+  objectKeys: string[];
+}
+
+/*
+ * 规则和业务描述是关系证据，不应只用于生成规则/操作。这里只提取明确的
+ * “关联、引用、匹配、外键、关联键”等关系语句，并保留来源 key 供审阅追溯。
+ */
+function addSemanticTextCandidates(
+  spec: PackageSpec,
+  contexts: ObjectContext[],
+  addDraft: (draft: CandidateDraft) => void,
+): void {
+  const contextByKey = new Map(contexts.map((context) => [context.object.key, context]));
+  const sources: SemanticRelationSource[] = [];
+  const packageText = [spec.name, spec.description].filter(Boolean).join('\n');
+  if (packageText) sources.push({ kind: 'package', key: spec.id, text: packageText, objectKeys: [] });
+
+  for (const object of spec.objects ?? []) {
+    sources.push({
+      kind: 'object',
+      key: object.key,
+      text: [object.title, object.description, object.queryBoundary, ...(object.aliases ?? [])]
+        .filter(Boolean).join('\n'),
+      objectKeys: [object.key],
+    });
+  }
+  for (const operation of spec.operations ?? []) {
+    sources.push({
+      kind: 'operation',
+      key: operation.key,
+      text: operationText(operation),
+      objectKeys: operation.relatedObjects ?? [],
+    });
+  }
+  for (const rule of spec.rules ?? []) {
+    sources.push({
+      kind: 'rule',
+      key: rule.key,
+      text: ruleText(rule),
+      objectKeys: [
+        ...(rule.appliesToObjects ?? []),
+        ...objectsFromOperations(spec, rule.appliesToOperations ?? []),
+      ],
+    });
+  }
+
+  for (const source of sources) {
+    if (!relationLanguage(source.text)) continue;
+    const explicitKeys = new Set(source.objectKeys.filter((key) => contextByKey.has(key)));
+    for (const context of contexts) {
+      if (textMentionsObject(source.text, context.object)) explicitKeys.add(context.object.key);
+    }
+    const objectKeys = [...explicitKeys];
+    if (objectKeys.length < 2) continue;
+    for (let i = 0; i < objectKeys.length; i += 1) {
+      for (let j = i + 1; j < objectKeys.length; j += 1) {
+        const left = contextByKey.get(objectKeys[i]);
+        const right = contextByKey.get(objectKeys[j]);
+        if (!left || !right) continue;
+        const shared = sharedFields(left, right);
+        const sourceObject = semanticSourceObject(left, right, source.text);
+        const targetObject = sourceObject === left.object.key ? right : left;
+        const relation = semanticRelationName(source.text);
+        const evidence = `${source.kind}:${source.key}`;
+        addDraft({
+          sourceObject,
+          targetObject: targetObject.object.key,
+          relation,
+          note: `${left.object.key} 与 ${right.object.key} 在${sourceLabel(source)}中被描述为${relation === 'related_to' ? '关联' : relation === 'belongs_to' ? '从属' : '引用'}。`,
+          confidence: shared.length ? 'high' : 'medium',
+          reason: [
+            `Semantic text ${evidence} describes a relation between ${left.object.key} and ${right.object.key}.`,
+            ...(shared.length ? [`sharedFields=${shared.map((item) => item.label).join(',')}`] : []),
+            `relationSignal=${relationLanguage(source.text)}`,
+          ].join('; '),
+          evidence: [evidence],
+          ...(shared[0] ? { sourceField: shared[0].source.key, targetField: shared[0].target.key } : {}),
+          matchMode: 'semantic_text',
+          score: shared.length ? 96 : 88,
+        });
+      }
+    }
+  }
+}
+
+function operationText(operation: SpecOperation): string {
+  return [
+    operation.title,
+    operation.description,
+    ...(operation.flow ?? []),
+    ...(operation.notes ?? []),
+  ].filter(Boolean).join('\n');
+}
+
+function ruleText(rule: SpecRule): string {
+  return [
+    rule.title,
+    rule.description,
+    rule.content,
+    ...(rule.conditions ?? []).flatMap((item) => [item.condition, item.conclusion]),
+    ...(rule.exceptions ?? []),
+  ].filter(Boolean).join('\n');
+}
+
+function objectsFromOperations(spec: PackageSpec, keys: string[]): string[] {
+  const wanted = new Set(keys);
+  return (spec.operations ?? [])
+    .filter((operation) => wanted.has(operation.key))
+    .flatMap((operation) => operation.relatedObjects ?? []);
+}
+
+function sourceLabel(source: SemanticRelationSource): string {
+  if (source.kind === 'rule') return `规则 ${source.key}`;
+  if (source.kind === 'operation') return `操作 ${source.key}`;
+  if (source.kind === 'object') return `对象说明 ${source.key}`;
+  return '知识包业务说明';
+}
+
+function relationLanguage(text: string): string {
+  const normalizedText = String(text ?? '').toLocaleLowerCase('zh-CN');
+  const match = normalizedText.match(/关联键|关联|外键|主键|引用|属于|隶属|匹配|连接|join|对应|映射/iu);
+  return match?.[0] ?? '';
+}
+
+function semanticRelationName(text: string): string {
+  const normalizedText = String(text ?? '').toLocaleLowerCase('zh-CN');
+  if (/(?:引用|依赖|使用)/u.test(normalizedText)) return 'references';
+  if (/(?:属于|隶属)/u.test(normalizedText)) return 'belongs_to';
+  return 'related_to';
+}
+
+function semanticSourceObject(left: ObjectContext, right: ObjectContext, text: string): string {
+  const normalizedText = String(text ?? '').toLocaleLowerCase('zh-CN');
+  if (/(?:引用|依赖|使用)/u.test(normalizedText)) {
+    const leftMention = objectTokens(left.object).some((token) => normalizedText.includes(token));
+    const rightMention = objectTokens(right.object).some((token) => normalizedText.includes(token));
+    if (leftMention && rightMention) return left.object.key;
+  }
+  return left.object.key.localeCompare(right.object.key) <= 0 ? left.object.key : right.object.key;
+}
+
+function textMentionsObject(text: string, object: SpecObject): boolean {
+  const normalizedText = normalized(text);
+  return objectTokens(object).some((token) => token.length >= 2 && normalizedText.includes(token));
+}
+
+function sharedFields(
+  left: ObjectContext,
+  right: ObjectContext,
+): Array<{ source: SpecField; target: SpecField; label: string }> {
+  const rightByColumn = new Map<string, SpecField>();
+  for (const field of right.object.fields ?? []) {
+    const column = normalized(field.sourceColumn || field.key);
+    if (column) rightByColumn.set(column, field);
+  }
+  return (left.object.fields ?? []).flatMap((field) => {
+    const column = normalized(field.sourceColumn || field.key);
+    const target = column ? rightByColumn.get(column) : undefined;
+    return target && isKeyLikeField(left.object, field) && isKeyLikeField(right.object, target)
+      ? [{ source: field, target, label: String(field.sourceColumn || field.key) }]
+      : [];
+  });
 }
 
 function addFieldMatchCandidates(
@@ -556,7 +726,6 @@ function candidateHash(value: Record<string, string>): string {
     value.relation,
     value.sourceField,
     value.targetField,
-    value.matchMode,
   ].join('\u0000');
   return `rel:${createHash('sha256').update(payload).digest('hex').slice(0, 24)}`;
 }
@@ -565,6 +734,10 @@ function schemaHash(spec: PackageSpec, tables: DataDictTable[]): string {
   return `sha256:${createHash('sha256').update(JSON.stringify({
     objects: (spec.objects ?? []).map((object) => ({
       key: object.key,
+      title: object.title,
+      description: object.description,
+      aliases: object.aliases ?? [],
+      queryBoundary: object.queryBoundary ?? '',
       fields: (object.fields ?? []).map((field) => ({
         key: field.key,
         sourceColumn: field.sourceColumn ?? '',
@@ -580,8 +753,23 @@ function schemaHash(spec: PackageSpec, tables: DataDictTable[]): string {
     })),
     operations: (spec.operations ?? []).map((operation) => ({
       key: operation.key,
+      title: operation.title,
+      description: operation.description,
+      flow: operation.flow ?? [],
+      notes: operation.notes ?? [],
       relatedObjects: operation.relatedObjects ?? [],
     })),
+    rules: (spec.rules ?? []).map((rule) => ({
+      key: rule.key,
+      title: rule.title,
+      description: rule.description ?? '',
+      content: rule.content,
+      appliesToObjects: rule.appliesToObjects ?? [],
+      appliesToOperations: rule.appliesToOperations ?? [],
+      conditions: rule.conditions ?? [],
+      exceptions: rule.exceptions ?? [],
+    })),
+    packageDescription: spec.description ?? '',
     tables: tables.map((table) => ({
       documentId: table.documentId ?? '',
       name: table.name,

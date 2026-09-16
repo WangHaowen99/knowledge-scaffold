@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import importlib
@@ -22,6 +23,7 @@ from solver_coordination.contracts import NormalizedInput, SolverResult
 from solver_coordination.errors import VerificationDivergenceError
 from solver_coordination.fact_snapshot import FactSnapshotInvalidError
 from solver_coordination.job_store import SolverJobStore
+from internal_access import internal
 
 
 def _capability(*, objectives=()):
@@ -669,11 +671,11 @@ def test_concurrent_solver_worker_refresh_keeps_only_latest_worker_running(
     )
 
     first_refresh = threading.Thread(
-        target=app_module._install_solver_recovery_worker,
+        target=internal(app_module).install_solver_recovery_worker,
         args=(application, "service-first"),
     )
     second_refresh = threading.Thread(
-        target=app_module._install_solver_recovery_worker,
+        target=internal(app_module).install_solver_recovery_worker,
         args=(application, "service-second"),
     )
     first_refresh.start()

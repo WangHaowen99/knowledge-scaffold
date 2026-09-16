@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Contract gates for the canonical native-ASGI Run API.
 
 The tests intentionally combine the real durable ExecutionStore with a small
@@ -38,6 +39,7 @@ from api.auth.auth import AuthUser
 from fastapi import FastAPI
 from persistence.execution_store import ExecutionStore
 from starlette.requests import Request
+from internal_access import internal
 
 # Load the focused router without importing the aggregate ``api.routes``
 # package.  During the staged ASGI migration, an unrelated router can be
@@ -147,7 +149,7 @@ class _CountingManager:
                             payload=payload,
                         )
                     )
-                await self._finish(
+                await internal(self).finish(
                     stored,
                     result=self.completion_result,
                     pending_interaction=self.completion_pending_interaction,
@@ -175,7 +177,7 @@ class _CountingManager:
         if snapshot.status in TERMINAL_RUN_STATUSES:
             return snapshot
         self.cancel_reasons.append(reason)
-        return await self._finish(
+        return await internal(self).finish(
             snapshot,
             result=RuntimeResult(status="cancelled"),
             cancel_reason=reason,
@@ -344,7 +346,7 @@ def _ordinary_payload(
 async def _client_for(app: FastAPI):
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
-        base_url="http://testserver",
+        base_url="https://testserver",
     )
 
 
@@ -367,7 +369,7 @@ def test_store_resolution_uses_short_io_without_blocking_event_loop(monkeypatch)
 
         monkeypatch.setattr(workflows, "_get_stores", slow_get_stores)
         runtime = type("Runtime", (), {"short_io": _ThreadedOffloadPool()})()
-        resolution = asyncio.create_task(workflows._resolve_stores(runtime))
+        resolution = asyncio.create_task(internal(workflows).resolve_stores(runtime))
 
         try:
             deadline = asyncio.get_running_loop().time() + 1.0
@@ -1009,7 +1011,7 @@ def test_sse_replays_terminal_event_when_reservation_expires_before_iteration(
             current_user=_USER,
             workspace_id=_WORKSPACE_ID,
         )
-        await harness.manager._finish(
+        await internal(harness.manager).finish(
             snapshot,
             result=RuntimeResult(status="completed", content="done"),
         )

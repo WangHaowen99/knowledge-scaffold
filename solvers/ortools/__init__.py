@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Independent OR-Tools ``ortools.solver.v1`` Solver Service."""
 
 # Pytest may prepend this directory to ``sys.path`` because its basename is

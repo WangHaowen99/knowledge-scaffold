@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from internal_access import internal
 
 # Ensure the module under test is importable.
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -26,7 +27,7 @@ if _CONVERTER_SPEC is None or _CONVERTER_SPEC.loader is None:
 _CONVERTER = importlib.util.module_from_spec(_CONVERTER_SPEC)
 sys.modules[_CONVERTER_SPEC.name] = _CONVERTER
 _CONVERTER_SPEC.loader.exec_module(_CONVERTER)
-_decode_zip_member_name = _CONVERTER._decode_zip_member_name
+_decode_zip_member_name = internal(_CONVERTER).decode_zip_member_name
 convert_package = _CONVERTER.convert_package
 import_package = _CONVERTER.import_package
 import_package_from_zip = _CONVERTER.import_package_from_zip

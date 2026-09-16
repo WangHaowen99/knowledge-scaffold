@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 
 import { isNearScrollBottom } from '../lib/scrollPolicy';

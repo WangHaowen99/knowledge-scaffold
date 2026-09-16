@@ -1,14 +1,15 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Filesystem-backed memory manager with zero external dependencies."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
-from pathlib import Path
 import threading
+from datetime import datetime, timezone
+from operator import getitem
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from utils.logging import get_logger
 from agent.memory.models import (
     MEMORY_TYPE_TO_DIR,
     MemoryHit,
@@ -22,6 +23,7 @@ from agent.memory.utils import (
     render_memory_note,
     utc_now_iso,
 )
+from utils.logging import get_logger
 
 logger = get_logger("memory.filesystem")
 
@@ -396,7 +398,7 @@ class FileSystemMemoryManager:
             if lines:
                 lines.append("")
             lines.append("### {}".format(memory_type))
-            lines.extend(grouped[memory_type])
+            lines.extend(getitem(grouped, memory_type))
 
         self._index_path.write_text("\n".join(lines).strip() + ("\n" if lines else ""), encoding="utf-8")
 

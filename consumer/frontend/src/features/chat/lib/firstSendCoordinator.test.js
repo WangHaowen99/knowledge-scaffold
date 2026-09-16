@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -100,11 +101,17 @@ test('failed first send restores focus only while the blank chat remains selecte
   let currentChatId = null;
   let scheduled = null;
   let focusCalls = 0;
-  const input = { focus: () => { focusCalls += 1; } };
+  const input = {
+    focus: () => {
+      focusCalls += 1;
+    },
+  };
   const schedule = () => scheduleBlankChatFocus({
     getCurrentChatId: () => currentChatId,
     getInput: () => input,
-    scheduleFrame: (callback) => { scheduled = callback; },
+    scheduleFrame: (callback) => {
+      scheduled = callback;
+    },
   });
 
   assert.equal(schedule(), true);

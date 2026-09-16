@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Async reflection worker that derives procedural memories from completed turns.
 
 Design invariants (see plan section 8.1):

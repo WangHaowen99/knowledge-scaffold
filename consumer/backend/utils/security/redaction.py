@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared redaction helpers for externally observable runtime data."""
 
 from __future__ import annotations

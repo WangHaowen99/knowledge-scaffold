@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Generate concise reasoning-intent summaries for UI display."""
 
 from __future__ import annotations

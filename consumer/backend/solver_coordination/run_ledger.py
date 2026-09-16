@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Durable run and artifact lineage for solver coordination.
 
 The coordination endpoints deliberately keep the candidate and validation

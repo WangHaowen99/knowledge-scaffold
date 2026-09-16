@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Shared graph-query agent helpers for business_data_search."""
 
 from __future__ import annotations

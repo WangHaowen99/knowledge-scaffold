@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import json
@@ -5,6 +6,7 @@ from types import SimpleNamespace
 
 from scripts import benchmark_metadata_reads as benchmark
 from scripts.benchmark_metadata_reads import evaluate_thresholds, percentile
+from internal_access import internal
 
 
 def _report(
@@ -85,7 +87,7 @@ def test_frontend_contract_uses_executable_behavior_probe():
             + "\n",
         )
 
-    assert benchmark._frontend_request_contract(runner=run) == {
+    assert internal(benchmark).frontend_request_contract(runner=run) == {
         "ontology_list_requests": 1,
         "non_knowledge_tree_requests": 0,
     }

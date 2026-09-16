@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Validation and filesystem-safe keys for externally controlled identifiers."""
 
 from __future__ import annotations

@@ -545,6 +545,100 @@ test('enforce 模式下产品台账未通过会阻断规则 Change Set', async (
   assert.equal(blocked.json().gate, 'product_ledger_verified');
 });
 
+test('项目要求产品台账时，advisory 模式也会在计划和旧写入路径前置阻断', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品台账前置门禁', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const revision = claimed.json().baseRevision;
+
+  const required = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
+  assert.equal(required.statusCode, 200, required.body);
+  assert.equal(required.json().required, true);
+
+  const plan = await tool(app, project.id, 'create_change_plan', {
+    goal: '完成产品清单规则生成', mode: 'generation', expected_revision: revision,
+    tasks: [{
+      client_key: 'rule-a', title: '生成规则 A', resource_kind: 'rule', target_key: 'rule-a',
+      allowed_tools: ['create_rule'], depends_on: [], acceptance: '规则具备来源证据', required: true,
+    }],
+  }, runId);
+  assert.equal(plan.statusCode, 409, plan.body);
+  assert.equal(plan.json().code, 'PRODUCT_LEDGER_REQUIRED');
+  assert.deepEqual(plan.json().allowedActions, ['get_product_inventory_source', 'get_product_ledger', 'stage_product_ledger']);
+  assert.deepEqual(plan.json().protocolActions, [
+    'get_product_inventory_source', 'begin_product_ledger', 'append_product_ledger_batch',
+    'get_product_ledger_progress', 'finalize_product_ledger',
+  ]);
+
+  const legacy = await tool(app, project.id, 'upsert_rule', {
+    key: 'rule-a', title: '规则 A', applies_to: { objects: ['object-a'] },
+    conditions: [{ condition: '条件', conclusion: '结论' }], conclusion: '结论', evidence: ['user-decision:synthetic'],
+  }, runId);
+  assert.equal(legacy.statusCode, 409, legacy.body);
+  assert.equal(legacy.json().code, 'PRODUCT_LEDGER_REQUIRED');
+});
+
+test('产品台账草稿按顺序分批、跨批次去重并由 finalize 重算统计', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品台账批次协议', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const revision = claimed.json().baseRevision;
+  const begun = await tool(app, project.id, 'begin_product_ledger', {
+    ledger_id: 'ledger-batch', source_revision: revision,
+  }, runId);
+  assert.equal(begun.statusCode, 200, begun.body);
+  const entryA = {
+    canonicalItemId: 'product-a', name: '合成产品 A', ruleRefs: ['rule-a'], sourceRecordIds: ['source-a'],
+    sourceLocator: 'synthetic#1', evidenceStatus: 'complete', processingStatus: 'ready',
+  };
+  const entryB = {
+    canonicalItemId: 'product-b', name: '合成产品 B', ruleRefs: ['rule-b'], sourceRecordIds: ['source-b', 'source-c'],
+    sourceLocator: 'synthetic#2', mergeGroupId: 'merge-1', evidenceStatus: 'insufficient',
+    insufficiencyReason: '合成缺口', processingStatus: 'blocked',
+  };
+  const outOfOrder = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 2, entries: [entryB],
+  }, runId);
+  assert.equal(outOfOrder.statusCode, 409, outOfOrder.body);
+  assert.equal(outOfOrder.json().code, 'PRODUCT_LEDGER_BATCH_ORDER');
+  const first = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 1, entries: [entryA],
+  }, runId);
+  assert.equal(first.statusCode, 200, first.body);
+  const duplicate = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 2, entries: [{ ...entryB, canonicalItemId: 'product-a' }],
+  }, runId);
+  assert.equal(duplicate.statusCode, 409, duplicate.body);
+  assert.equal(duplicate.json().code, 'PRODUCT_LEDGER_DUPLICATE_CANONICAL_ID');
+  const second = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 2, entries: [entryB],
+  }, runId);
+  assert.equal(second.statusCode, 200, second.body);
+  const finalized = await tool(app, project.id, 'finalize_product_ledger', {
+    ledger_id: 'ledger-batch',
+  }, runId);
+  assert.equal(finalized.statusCode, 200, finalized.body);
+  assert.equal(finalized.json().status, 'finalized');
+  assert.deepEqual(finalized.json().counts, {
+    raw: 3, canonical: 2, mergedGroups: 1, complete: 1, insufficient: 1,
+  });
+  const progress = await tool(app, project.id, 'get_product_ledger_progress', {
+    ledger_id: 'ledger-batch',
+  }, runId);
+  assert.equal(progress.statusCode, 200, progress.body);
+  assert.equal(progress.json().processed, 2);
+  assert.equal(progress.json().remaining, 0);
+  const appendAfterFinalize = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-batch', batch_no: 3, entries: [],
+  }, runId);
+  assert.equal(appendAfterFinalize.statusCode, 409, appendAfterFinalize.body);
+  assert.equal(appendAfterFinalize.json().code, 'PRODUCT_LEDGER_FINALIZED');
+});
+
 test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Mermaid 源码契约', runtime: 'agent' });
   const app = appFor(t);
@@ -1070,7 +1164,7 @@ test('物理对象 mapping 是编译产物，Agent 不能按路径删除', async
   assert.equal(after.json().content, before.json().content);
 });
 
-test('suggest_object_relations 只读推荐对象关系并支持稳定过滤', async (t) => {
+test('关系审阅依赖对象和 Operation 任务并直接写入中文关系', async (t) => {
   const project = createProject({ owner: 'alice', name: 'synthetic relation suggestions', runtime: 'agent' });
   const artifacts = getPackageArtifactStore();
   const initial = await artifacts.initializeDraftPackage(project.id, {
@@ -1135,62 +1229,164 @@ test('suggest_object_relations 只读推荐对象关系并支持稳定过滤', a
   const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
   assert.equal(listed.statusCode, 200, listed.body);
 
-  const suggested = await tool(app, project.id, 'suggest_object_relations', {
-    working_revision: listed.json().working_revision,
-    limit: 20,
-  }, runId);
-  assert.equal(suggested.statusCode, 200, suggested.body);
-  const candidates = suggested.json().candidates;
-  assert.ok(candidates.some((candidate: any) => (
-    candidate.sourceObject === 'invoice'
-    && candidate.targetObject === 'customer'
-    && candidate.relation === 'belongs_to'
-    && candidate.sourceField === 'customer_id'
-    && candidate.targetField === 'customer_id'
-    && candidate.confidence === 'high'
-  )));
-  assert.ok(!candidates.some((candidate: any) => (
-    candidate.sourceObject === 'order'
-    && candidate.targetObject === 'customer'
-    && candidate.relation === 'belongs_to'
-  )));
-  const invoiceCandidate = candidates.find((candidate: any) => (
-    candidate.sourceObject === 'invoice'
-    && candidate.targetObject === 'customer'
-    && candidate.relation === 'belongs_to'
-  ));
-  assert.ok(invoiceCandidate?.candidateFingerprint);
-  assert.equal(invoiceCandidate.evidence, undefined);
-  assert.equal(String(invoiceCandidate.candidateFingerprint).startsWith('rel:'), true);
-  assert.ok(!String(invoiceCandidate.candidateFingerprint).includes(suggested.json().schemaInputHash));
-  assert.ok(!JSON.stringify(candidates).includes('C-001'));
-
-  const rejected = await tool(app, project.id, 'suggest_object_relations', {
-    working_revision: listed.json().working_revision,
-    limit: 20,
-    rejectedFingerprints: [invoiceCandidate.candidateFingerprint],
-  }, runId);
-  assert.equal(rejected.statusCode, 200, rejected.body);
-  assert.ok(!rejected.json().candidates.some((candidate: any) => (
-    candidate.sourceObject === 'invoice'
-    && candidate.targetObject === 'customer'
-    && candidate.relation === 'belongs_to'
-  )));
-
-  const scoped = await tool(app, project.id, 'suggest_object_relations', {
-    working_revision: listed.json().working_revision,
-    limit: 20,
-    scope: { affectedObjects: ['order'] },
-  }, runId);
-  assert.equal(scoped.statusCode, 200, scoped.body);
-  assert.ok(!scoped.json().candidates.some((candidate: any) => (
-    candidate.sourceObject === 'invoice'
-    || candidate.targetObject === 'invoice'
-  )));
-
   const pending = getDb().prepare(`SELECT COUNT(*) AS count FROM agent_candidate_changes
     WHERE project_id = ? AND run_id = ?`).get(project.id, runId) as { count: number };
   assert.equal(pending.count, 0);
+
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '统一审阅对象和业务操作形成的关系',
+    mode: 'expert_edit',
+    expected_revision: listed.json().working_revision,
+    tasks: [{
+      client_key: 'objects-ready',
+      title: '确认对象',
+      resource_kind: 'object',
+      target_key: 'invoice',
+      allowed_tools: ['patch_object'],
+      acceptance: '对象已就绪',
+    }, {
+      client_key: 'operations-ready',
+      title: '确认业务操作',
+      resource_kind: 'operation',
+      target_key: 'review_invoice',
+      allowed_tools: ['patch_operation'],
+      acceptance: '业务操作已就绪',
+    }],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const relationTask = planResponse.json().plan.tasks.find((task: any) => (
+    task.client_key === '__object_relation_review__'
+  ));
+  assert.ok(relationTask);
+  assert.equal(relationTask.allowed_tools[0], 'review_object_relations');
+  assert.deepEqual(relationTask.depends_on.sort(), planResponse.json().plan.tasks
+    .filter((task: any) => ['objects-ready', 'operations-ready'].includes(task.client_key))
+    .map((task: any) => task.id)
+    .sort());
+
+  const revisedPlan = await tool(app, project.id, 'revise_change_plan', {
+    plan_id: planResponse.json().plan.id,
+    expected_version: planResponse.json().plan.version,
+    reason: '补充后续业务操作',
+    add_tasks: [{
+      client_key: 'followup-operation',
+      title: '确认后续业务操作',
+      resource_kind: 'operation',
+      target_key: 'approve_invoice',
+      allowed_tools: ['create_operation'],
+      acceptance: '后续业务操作已就绪',
+    }],
+  }, runId);
+  assert.equal(revisedPlan.statusCode, 200, revisedPlan.body);
+  const revisedRelationTask = revisedPlan.json().plan.tasks.find((task: any) => (
+    task.client_key === '__object_relation_review__'
+  ));
+  const followupOperation = revisedPlan.json().plan.tasks.find((task: any) => (
+    task.client_key === 'followup-operation'
+  ));
+  assert.ok(revisedRelationTask.depends_on.includes(followupOperation.id));
+  const approvedRevision = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/change-plans/${revisedPlan.json().plan.id}/respond`,
+    payload: { approved: true },
+  });
+  assert.equal(approvedRevision.statusCode, 200, approvedRevision.body);
+  getDb().prepare(`UPDATE agent_change_plan_tasks SET status = 'staged'
+    WHERE plan_id = ? AND client_key = 'objects-ready'`)
+    .run(planResponse.json().plan.id);
+
+  const waitingReview = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/object-relations/review`,
+  });
+  assert.equal(waitingReview.statusCode, 200, waitingReview.body);
+  assert.equal(waitingReview.json().ready, false);
+  getDb().prepare(`UPDATE agent_change_plan_tasks SET status = 'staged'
+    WHERE plan_id = ? AND client_key IN ('objects-ready', 'operations-ready', 'followup-operation')`)
+    .run(planResponse.json().plan.id);
+
+  const reviewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/object-relations/review?limit=10`,
+  });
+  assert.equal(reviewResponse.statusCode, 200, reviewResponse.body);
+  assert.equal(reviewResponse.json().ready, true);
+  assert.ok(reviewResponse.json().candidates.every((candidate: any) => !Object.hasOwn(candidate, 'confidence')));
+  const reviewedInvoice = reviewResponse.json().candidates.find((candidate: any) => (
+    candidate.source_object === 'invoice'
+    && candidate.target_object === 'customer'
+    && candidate.relation === '属于'
+  ));
+  assert.ok(reviewedInvoice, reviewResponse.body);
+  assert.equal(reviewedInvoice.default_selected, true);
+  assert.equal(reviewedInvoice.selected, true);
+  assert.equal(reviewResponse.json().all_fingerprints.length, reviewResponse.json().total);
+  assert.equal(reviewResponse.json().candidates.some((candidate: any) => (
+    candidate.source_object === 'order'
+    && candidate.target_object === 'customer'
+    && candidate.relation === '属于'
+  )), false);
+
+  const agentReview = await tool(app, project.id, 'review_object_relations', {
+    plan_task_id: relationTask.id,
+    expected_revision: reviewResponse.json().working_revision,
+    review_id: reviewResponse.json().review_id,
+    limit: 20,
+  }, runId);
+  assert.equal(agentReview.statusCode, 200, agentReview.body);
+  assert.equal(agentReview.json().review_id, reviewResponse.json().review_id);
+  assert.ok(agentReview.json().candidates.some((candidate: any) => (
+    candidate.fingerprint === reviewedInvoice.fingerprint
+  )));
+
+  const invalidRelations = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/object-relations/review`,
+    payload: {
+      review_id: reviewResponse.json().review_id,
+      expected_revision: reviewResponse.json().working_revision,
+      selected_fingerprints: [reviewedInvoice.fingerprint],
+      relation_edits: [{ fingerprint: reviewedInvoice.fingerprint, relation: '1:N' }],
+    },
+  });
+  assert.equal(invalidRelations.statusCode, 422, invalidRelations.body);
+  assert.equal(invalidRelations.json().relations[0].fingerprint, reviewedInvoice.fingerprint);
+  assert.match(invalidRelations.json().relations[0].message, /关系基数/u);
+  const retainedReview = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/object-relations/review?limit=20`,
+  });
+  assert.equal(retainedReview.statusCode, 200, retainedReview.body);
+  const retainedInvoice = retainedReview.json().candidates.find((candidate: any) => (
+    candidate.fingerprint === reviewedInvoice.fingerprint
+  ));
+  assert.equal(retainedInvoice.relation, '1:N');
+  assert.equal(retainedInvoice.selected, true);
+  assert.match(retainedInvoice.error.message, /关系基数/u);
+
+  const applied = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/object-relations/review`,
+    payload: {
+      review_id: reviewResponse.json().review_id,
+      expected_revision: reviewResponse.json().working_revision,
+      selected_fingerprints: [reviewedInvoice.fingerprint],
+      relation_edits: [{ fingerprint: reviewedInvoice.fingerprint, relation: '属于' }],
+    },
+  });
+  assert.equal(applied.statusCode, 200, applied.body);
+  assert.equal(applied.json().selected_count, 1);
+  const writtenObject = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/studio/elements/${encodeURIComponent('object:invoice')}`
+      + `?workingRevision=${encodeURIComponent(applied.json().working_revision)}`,
+  });
+  assert.equal(writtenObject.statusCode, 200, writtenObject.body);
+  assert.ok(writtenObject.json().element.relations.some((relation: any) => (
+    relation.kind === 'object_relation'
+    && relation.targetId === 'object:customer'
+    && relation.label === '属于'
+  )));
 });
 
 test('虚拟对象模式缺失 mapping 是合法状态', async (t) => {
@@ -2665,6 +2861,23 @@ test('逐 Sheet 用途确认与对象来源映射共同阻断不完整知识候�
   assert.equal(completePlan.statusCode, 200, completePlan.body);
   assert.equal(completePlan.json().complete, true);
   assert.deepEqual(completePlan.json().sheets[0].mappedObjects, ['records']);
+  const relationReview = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/object-relations/review`,
+  });
+  assert.equal(relationReview.statusCode, 200, relationReview.body);
+  assert.equal(relationReview.json().ready, true);
+  assert.deepEqual(relationReview.json().unresolved, []);
+  const appliedRelations = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/object-relations/review`,
+    payload: {
+      review_id: relationReview.json().review_id,
+      expected_revision: relationReview.json().working_revision,
+      selected_fingerprints: [],
+    },
+  });
+  assert.equal(appliedRelations.statusCode, 200, appliedRelations.body);
   const ready = await tool(app, project.id, 'request_confirmation_preflight', {
     summary: '按已确认用途同步 records 对象',
     change_groups: [{ id: 'schema_objects', tier: 'structural', title: 'Schema 对象同步' }],

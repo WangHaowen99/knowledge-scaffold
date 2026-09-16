@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Coarse, public MCP chat progress projection."""
 
 from __future__ import annotations

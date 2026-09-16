@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import time
@@ -12,6 +13,7 @@ from solvers.ortools.engine.candidate_selection import (
     solve_candidate_selection,
 )
 from solvers.ortools.result_serializer import serialize_result
+from solvers.ortools.tests.internal_access import internal
 
 
 def test_cp_sat_selects_candidates_by_all_lexicographic_objectives(submit_request):
@@ -150,7 +152,7 @@ def test_lexicographic_phases_share_one_total_deadline(submit_request, monkeypat
 
 def test_total_deadline_also_includes_problem_translation(submit_request, monkeypatch):
     now = [20.0]
-    original_parse = engine_module._parse_problem
+    original_parse = internal(engine_module).parse_problem
 
     def delayed_parse(problem):
         parsed = original_parse(problem)

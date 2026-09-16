@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """ACP protocol regressions for canonical Run identity and one-run HITL."""
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from api.testing import TestApplication
 from llm import LLMPurpose
 from persistence.execution_store import ExecutionStore
 from utils.lang import _detect_language_via_llm, detect_language, translate_text
+from internal_access import internal
 
 
 class _InlinePool:
@@ -116,7 +118,7 @@ def test_acp_forwards_explicit_deterministic_operation_and_arguments(
             return SimpleNamespace(), store
 
         monkeypatch.setattr(acp_server, "_stores", stores)
-        created = await acp_server._create_from_payload(
+        created = await internal(acp_server).create_from_payload(
             request,
             {
                 "messages": [
@@ -170,7 +172,7 @@ def test_acp_builds_one_dynamic_preflight_before_each_durable_turn(tmp_path):
         store.create_turn_for_run = tracked_create_turn
         user = AuthUser(username="operator_a", role="user")
         for index in range(2):
-            await acp_server._admit_run(
+            await internal(acp_server).admit_run(
                 request,
                 user=user,
                 workspace_id="workspace_demo",
@@ -269,7 +271,7 @@ def test_acp_public_event_keeps_external_id_as_metadata_only():
         created_at="2026-01-01T00:00:01Z",
     )
 
-    mapped = list(acp_server._map_public_event(event, "external_run_demo"))
+    mapped = list(internal(acp_server).map_public_event(event, "external_run_demo"))
 
     assert mapped[-1] == (
         "run.completed",
@@ -282,7 +284,7 @@ def test_acp_public_event_keeps_external_id_as_metadata_only():
 
 
 def test_acp_interaction_option_maps_to_canonical_value():
-    interaction_id, value, option_id = acp_server._interaction_response_values(
+    interaction_id, value, option_id = internal(acp_server).interaction_response_values(
         {"await_id": "interaction_demo", "option_id": "option_a"},
         {
             "id": "interaction_demo",
@@ -298,7 +300,7 @@ def test_acp_interaction_option_maps_to_canonical_value():
 
 
 def test_acp_await_projection_preserves_prompt_and_interaction_id():
-    awaiting = acp_server._build_await_response(
+    awaiting = internal(acp_server).build_await_response(
         {
             "question": "Choose a synthetic option",
             "tool_call_id": "interaction_demo",
@@ -316,7 +318,7 @@ def test_acp_hitl_answer_allocates_a_new_canonical_run(tmp_path):
         request = _request(manager)
         store = ExecutionStore(str(tmp_path / "executions"))
         user = AuthUser(username="operator_a", role="user")
-        first = await acp_server._admit_run(
+        first = await internal(acp_server).admit_run(
             request,
             user=user,
             workspace_id="workspace_demo",
@@ -338,7 +340,7 @@ def test_acp_hitl_answer_allocates_a_new_canonical_run(tmp_path):
             first.turn_id,
             final_output={"type": "user_interaction", "interaction": interaction},
         )
-        second = await acp_server._admit_run(
+        second = await internal(acp_server).admit_run(
             request,
             user=user,
             workspace_id="workspace_demo",
@@ -389,11 +391,11 @@ def test_acp_response_exposes_external_id_and_canonical_metadata():
         created_at="2026-01-01T00:00:00Z",
         updated_at="2026-01-01T00:00:01Z",
         last_seq=1,
-        scope=acp_server._scope(AuthUser("operator_a", "user"), "workspace_demo"),
+        scope=internal(acp_server).scope(AuthUser("operator_a", "user"), "workspace_demo"),
         context=context,
     )
 
-    response = acp_server._response_from_snapshot(
+    response = internal(acp_server).response_from_snapshot(
         snapshot,
         external_run_id="external_run_demo",
     )

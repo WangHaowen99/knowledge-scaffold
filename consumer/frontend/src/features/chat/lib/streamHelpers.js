@@ -1,347 +1,31 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 /**
  * Project canonical PublicEvent records into chat UI state.
  */
 
 import { isPublicEvent, publicEventTimestamp } from './publicEvent.js';
+import {
+  BUSINESS_DATA_SEARCH_EVENT_TYPES,
+  DATA_SEARCH_TOOL_NAMES,
+  extractTurnFinishedOutput,
+  friendlyRuntimeError,
+  hasPublicErrorValue,
+  hasToolLocator,
+  mergeSolverEventMeta,
+  mergeToolMeta,
+  normalizeSpanId,
+  normalizeToolStatus,
+  projectSolverEvent,
+  publicErrorMessage,
+  resolveToolLocator,
+  segmentMatchesToolLocator,
+  SOLVER_EVENT_TYPES,
+  toolNameFromPayload,
+  WEB_SEARCH_EVENT_TYPES,
+  withPublicToolInput,
+} from './streamProtocolHelpers.js';
 
-const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set([
-  'start',
-  'intermediate',
-  'final',
-  'error',
-]);
-const WEB_SEARCH_EVENT_TYPES = new Set(['start', 'final', 'error']);
-const DATA_SEARCH_TOOL_NAMES = new Set(['business_data_search']);
-const SOLVER_EVENT_TYPES = new Set([
-  'solver.input.awaiting_confirmation',
-  'solver.progress',
-  'solver.verification.completed',
-  'solver.verification.rejected',
-  'solver.result.authoritative',
-]);
-const SOLVER_PUBLIC_FIELDS = new Set([
-  'run_id',
-  'job_id',
-  'attempt_id',
-  'event_seq',
-  'phase',
-  'status',
-  'message',
-  'elapsed_ms',
-  'percent',
-  'authoritative',
-  'feasibility',
-  'optimality',
-  'proof_kind',
-  'summary',
-  'result_artifact_ref',
-  'verification_evidence_ref',
-  'candidate_results_artifact_ref',
-  'candidate_results_artifact_digest',
-  'knowledge_revision_id',
-  'fact_snapshot_digest',
-  'problem_digest',
-  'code',
-  'retryable',
-  'missing',
-  'questions',
-  'tool_call_id',
-  'tool_name',
-]);
-
-const RUNTIME_ERROR_PRESENTATION = Object.freeze({
-  RUNTIME_EVENT_BUFFER_FULL: {
-    message: '执行中断，当前结果不完整，请重试。',
-    incomplete: true,
-  },
-  BUSINESS_SUMMARY_INCONSISTENT: {
-    message: '结果口径不一致，当前结论未通过校验，请检查调整项后重试。',
-    incomplete: true,
-  },
-});
-
-export const friendlyRuntimeError = (code) => {
-  const normalized = String(code || '').trim().toUpperCase();
-  const presentation = RUNTIME_ERROR_PRESENTATION[normalized];
-  return presentation ? { ...presentation } : null;
-};
-
-export const publicErrorMessage = (value, fallback = '') => {
-  const visited = new Set();
-  const extract = (candidate, depth = 0) => {
-    if (candidate == null || depth > 4) {
-      return '';
-    }
-    if (typeof candidate === 'string') {
-      return candidate.trim();
-    }
-    if (typeof candidate === 'number') {
-      return String(candidate);
-    }
-    if (Array.isArray(candidate)) {
-      for (const item of candidate) {
-        const message = extract(item, depth + 1);
-        if (message) {
-          return message;
-        }
-      }
-      return '';
-    }
-    if (typeof candidate !== 'object' || visited.has(candidate)) {
-      return '';
-    }
-    visited.add(candidate);
-    for (const key of ['message', 'detail', 'error', 'reason', 'description']) {
-      const message = extract(candidate[key], depth + 1);
-      if (message) {
-        return message;
-      }
-    }
-    return extract(candidate.error_code ?? candidate.code, depth + 1);
-  };
-  const extracted = extract(value);
-  const code =
-    typeof value === 'object' && value ?
-      value.error_code ?? value.code :
-      extracted;
-  return (
-    friendlyRuntimeError(code)?.message ||
-    extracted ||
-    (typeof fallback === 'string' ? fallback : '')
-  );
-};
-
-const hasPublicErrorValue = (value) =>
-  value != null && (typeof value !== 'string' || Boolean(value.trim()));
-
-const TOOL_STATUS_ICON_MAP = {
-  completed: 'completed',
-  complete: 'completed',
-  done: 'completed',
-  success: 'completed',
-  succeeded: 'completed',
-  ok: 'completed',
-  error: 'error',
-  failed: 'error',
-  fail: 'error',
-  cancelled: 'cancelled',
-  canceled: 'cancelled',
-  aborted: 'cancelled',
-  abort: 'cancelled',
-};
-
-const normalizeToolStatus = (value) => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  return TOOL_STATUS_ICON_MAP[value.trim().toLowerCase()] || null;
-};
-
-const normalizeToolCallId = (value) =>
-  typeof value === 'string' ? value.trim() : '';
-
-const normalizeToolName = (value) =>
-  typeof value === 'string' ? value.trim() : '';
-
-const normalizeSpanId = (value) =>
-  typeof value === 'string' ? value.trim() : '';
-
-const toolNameFromPayload = (payload = {}) =>
-  normalizeToolName(payload?.tool_name) || normalizeToolName(payload?.name);
-
-const extractToolQuery = (meta = {}) =>
-  String(
-    meta?.input?.query ??
-      meta?.input_preview?.query ??
-      meta?.tool_input?.query ??
-      meta?.tool_args?.query ??
-      meta?.query ??
-      '',
-  ).trim();
-
-const withPublicToolInput = (payload = {}) =>
-  payload?.input == null && payload?.input_preview != null ?
-    { ...payload, input: payload.input_preview } :
-    payload;
-
-const resolveToolLocator = (payload = {}) => {
-  const spanId = normalizeSpanId(payload?.span_id);
-  const toolCallId = normalizeToolCallId(payload?.tool_call_id);
-  const toolName = toolNameFromPayload(payload);
-  const query = extractToolQuery(payload);
-
-  return {
-    spanId,
-    toolCallId,
-    toolName,
-    query,
-    isOntology: DATA_SEARCH_TOOL_NAMES.has(toolName),
-  };
-};
-
-const hasToolLocator = (locator = {}) => {
-  if (locator?.spanId) {
-    return true;
-  }
-  if (locator?.toolCallId) {
-    return true;
-  }
-  if (locator?.isOntology) {
-    return Boolean(locator?.query);
-  }
-  return Boolean(locator?.toolName);
-};
-
-const segmentMatchesToolLocator = (segment, locator = {}) => {
-  if (!segment || segment.type !== 'tool') {
-    return false;
-  }
-
-  const segmentMeta = segment?.meta || {};
-  const segmentSpanId = normalizeSpanId(
-    segment?.spanId || segmentMeta?.span_id,
-  );
-  if (locator.spanId) {
-    return segmentSpanId === locator.spanId;
-  }
-
-  const segmentToolCallId = normalizeToolCallId(segmentMeta?.tool_call_id);
-  if (locator.toolCallId) {
-    return segmentToolCallId === locator.toolCallId;
-  }
-
-  const segmentToolName = toolNameFromPayload(segmentMeta);
-  if (locator.isOntology && locator.query) {
-    if (!DATA_SEARCH_TOOL_NAMES.has(segmentToolName)) {
-      return false;
-    }
-    return extractToolQuery(segmentMeta) === locator.query;
-  }
-  if (locator.isOntology) {
-    return false;
-  }
-
-  if (locator.toolName) {
-    return segmentToolName === locator.toolName;
-  }
-
-  return false;
-};
-
-const mergeToolMeta = (baseMeta = {}, incomingMeta = {}) => {
-  const merged = {
-    ...(baseMeta || {}),
-    ...(incomingMeta || {}),
-  };
-
-  const existingQuery = extractToolQuery(baseMeta);
-  const incomingQuery = extractToolQuery(incomingMeta);
-  const resolvedQuery = incomingQuery || existingQuery;
-  if (resolvedQuery) {
-    const baseInput =
-      baseMeta?.input && typeof baseMeta.input === 'object' ?
-        baseMeta.input :
-        {};
-    const incomingInput =
-      incomingMeta?.input && typeof incomingMeta.input === 'object' ?
-        incomingMeta.input :
-        {};
-    merged.query = resolvedQuery;
-    merged.input = {
-      ...baseInput,
-      ...incomingInput,
-      query: resolvedQuery,
-    };
-  }
-
-  const existingToolCallId = normalizeToolCallId(baseMeta?.tool_call_id);
-  const incomingToolCallId = normalizeToolCallId(incomingMeta?.tool_call_id);
-  if (!incomingToolCallId && existingToolCallId) {
-    merged.tool_call_id = existingToolCallId;
-  }
-
-  return merged;
-};
-
-const solverValueIsSafe = (value, depth = 0) => {
-  if (depth > 6) {
-    return null;
-  }
-  if (value == null || ['string', 'number', 'boolean'].includes(typeof value)) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value
-      .slice(0, 100)
-      .map((item) => solverValueIsSafe(item, depth + 1));
-  }
-  if (typeof value !== 'object') {
-    return null;
-  }
-  const safe = {};
-  Object.entries(value).forEach(([key, item]) => {
-    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (
-      /(?:token|secret|password|credential|endpoint|internalpath|problemir)/.test(
-        normalized,
-      )
-    ) {
-      return;
-    }
-    if (normalized === 'factsnapshot' || normalized === 'factsnapshotpayload') {
-      return;
-    }
-    safe[key] = solverValueIsSafe(item, depth + 1);
-  });
-  return safe;
-};
-
-const projectSolverEvent = (type, payload = {}) => {
-  const projected = { type };
-  Object.entries(payload || {}).forEach(([key, value]) => {
-    if (SOLVER_PUBLIC_FIELDS.has(key)) {
-      projected[key] = solverValueIsSafe(value);
-    }
-  });
-  return projected;
-};
-
-const mergeSolverEventMeta = (baseMeta = {}, event = {}) => {
-  const existing = Array.isArray(baseMeta?.solver_events) ?
-    baseMeta.solver_events :
-    [];
-  const eventSeq = Number(event?.event_seq);
-  const isReplay =
-    Number.isFinite(eventSeq) &&
-    existing.some(
-      (item) =>
-        Number(item?.event_seq) === eventSeq && item?.job_id === event?.job_id,
-    );
-  const solverEvents = isReplay ?
-    existing :
-    [...existing, event].sort((left, right) => {
-      const leftSeq = Number(left?.event_seq);
-      const rightSeq = Number(right?.event_seq);
-      if (Number.isFinite(leftSeq) && Number.isFinite(rightSeq)) {
-        return leftSeq - rightSeq;
-      }
-      return 0;
-    });
-  const merged = {
-    ...mergeToolMeta(baseMeta, event),
-    solver_events: solverEvents,
-  };
-  if (
-    event.type === 'solver.result.authoritative' &&
-    event.authoritative === true
-  ) {
-    merged.solver_result = event;
-  }
-  if (event.type === 'solver.verification.rejected') {
-    merged.solver_rejection = event;
-  }
-  return merged;
-};
+export { friendlyRuntimeError, publicErrorMessage };
 
 const closeOpenNonToolSegment = (segments = []) => {
   if (!Array.isArray(segments) || segments.length === 0) {
@@ -482,6 +166,75 @@ const findLastSegmentIndex = (segments, predicate) => {
   return -1;
 };
 
+const inlineSegmentSpanMatches = (last, spanId, spanKey, parentKey) => {
+  if (spanId || last?.spanId) {
+    return Boolean(spanId && last?.spanId === spanId);
+  }
+  return (
+    (last?.spanKey || '') === spanKey &&
+    (last?.parentKey || '') === parentKey
+  );
+};
+
+const inlineSegmentMergeKeyMatches = (last, meta, mergeKey) => {
+  if (!mergeKey) {
+    return true;
+  }
+  return (
+    typeof last?.meta?.[mergeKey] === 'string' &&
+    typeof meta?.[mergeKey] === 'string' &&
+    last.meta[mergeKey] === meta[mergeKey]
+  );
+};
+
+const inlineSegmentCanMerge = (last, options) => {
+  const {
+    type,
+    state,
+    node,
+    meta,
+    mergeKey,
+    spanId,
+    spanKey,
+    parentKey,
+  } = options;
+  return Boolean(
+    last &&
+      !last.finished &&
+      last.type === type &&
+      last.state === state &&
+      (last.node || '') === (node || '') &&
+      inlineSegmentSpanMatches(last, spanId, spanKey, parentKey) &&
+      inlineSegmentMergeKeyMatches(last, meta, mergeKey),
+  );
+};
+
+const mergedInlineSegment = (last, options) => ({
+  ...last,
+  text: `${last.text || ''}${options.text}`,
+  meta: options.meta || last.meta,
+  traceId: options.traceId || last.traceId,
+  spanId: options.spanId || last.spanId,
+  parentSpanId: options.parentSpanId || last.parentSpanId,
+  endTs: options.ts || Date.now(),
+});
+
+const newInlineSegment = (options) => ({
+  type: options.type,
+  state: options.state,
+  text: options.text,
+  node: options.node,
+  meta: options.meta,
+  traceId: options.traceId || undefined,
+  spanId: options.spanId || undefined,
+  parentSpanId: options.parentSpanId || undefined,
+  spanKey: options.spanKey || undefined,
+  parentKey: options.parentKey || undefined,
+  finished: false,
+  startTs: options.ts || Date.now(),
+  endTs: options.ts || Date.now(),
+});
+
 const appendInlineTextSegment = (
   segments,
   {
@@ -498,7 +251,6 @@ const appendInlineTextSegment = (
     spanKey = '',
     parentKey = '',
   },
-// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 ) => {
   if (!text) {
     return segments;
@@ -506,43 +258,36 @@ const appendInlineTextSegment = (
 
   const next = Array.isArray(segments) ? segments.slice() : [];
   const last = next[next.length - 1];
-  const usesSpanIdentity = Boolean(spanId || last?.spanId);
-  const canMerge = Boolean(
-    last &&
-      !last.finished &&
-      last.type === type &&
-      last.state === state &&
-      (last.node || '') === (node || '') &&
-      (usesSpanIdentity ?
-        Boolean(spanId && last?.spanId === spanId) :
-        (last.spanKey || '') === spanKey &&
-          (last.parentKey || '') === parentKey) &&
-      (!mergeKey ||
-        (typeof last?.meta?.[mergeKey] === 'string' &&
-          typeof meta?.[mergeKey] === 'string' &&
-          last.meta[mergeKey] === meta[mergeKey])),
-  );
+  const canMerge = inlineSegmentCanMerge(last, {
+    type,
+    state,
+    node,
+    meta,
+    mergeKey,
+    spanId,
+    spanKey,
+    parentKey,
+  });
 
   if (!canMerge && String(text).trim().length === 0) {
     return next;
   }
 
   if (canMerge) {
-    next[next.length - 1] = {
-      ...last,
-      text: `${last.text || ''}${text}`,
-      meta: meta || last.meta,
-      traceId: traceId || last.traceId,
-      spanId: spanId || last.spanId,
-      parentSpanId: parentSpanId || last.parentSpanId,
-      endTs: ts || Date.now(),
-    };
+    next[next.length - 1] = mergedInlineSegment(last, {
+      text,
+      meta,
+      traceId,
+      spanId,
+      parentSpanId,
+      ts,
+    });
     return next;
   }
 
   return [
     ...closeOpenSegment(next),
-    {
+    newInlineSegment({
       type,
       state,
       text,
@@ -551,12 +296,10 @@ const appendInlineTextSegment = (
       traceId: traceId || undefined,
       spanId: spanId || undefined,
       parentSpanId: parentSpanId || undefined,
-      spanKey: spanKey || undefined,
-      parentKey: parentKey || undefined,
-      finished: false,
-      startTs: ts || Date.now(),
-      endTs: ts || Date.now(),
-    },
+      spanKey,
+      parentKey,
+      ts,
+    }),
   ];
 };
 
@@ -566,95 +309,6 @@ const iterationParentKeyFromPayload = (payload = {}) => {
     return '';
   }
   return `iteration:main:${Math.floor(iteration)}`;
-};
-
-const extractTurnFinishedOutput = (
-  payload = {},
-  publicStatus = 'completed',
-// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
-) => {
-  let status = publicStatus;
-  if (publicStatus === 'completed') {
-    status = 'success';
-  } else if (publicStatus === 'failed') {
-    status = 'error';
-  }
-
-  const result =
-    payload.final_output ??
-    payload.structured_content ??
-    payload.result ??
-    payload.content;
-  let content = '';
-  let options = null;
-  let messageType = 'text';
-  let interaction = null;
-  let artifacts = [];
-  const errorCode =
-    typeof payload?.error === 'object' && payload.error ?
-      String(payload.error.error_code ?? payload.error.code ?? '').trim() :
-      '';
-  const runtimeError = friendlyRuntimeError(errorCode);
-
-  if (typeof result === 'string') {
-    content = result;
-  } else if (result && typeof result === 'object') {
-    content = result.text || result.formatted_result || '';
-    if (
-      !content &&
-      result.structured_result &&
-      typeof result.structured_result === 'object'
-    ) {
-      const structured = result.structured_result;
-      content =
-        structured.text ||
-        structured.formatted_result ||
-        structured.message ||
-        '';
-      if (!content) {
-        try {
-          content = JSON.stringify(structured, null, 2);
-        } catch {
-          content = '';
-        }
-      }
-    }
-    options = Array.isArray(result.options) ? result.options : null;
-    messageType = typeof result.type === 'string' ? result.type : 'text';
-    interaction =
-      result.interaction && typeof result.interaction === 'object' ?
-        result.interaction :
-        null;
-    artifacts = Array.isArray(result.artifacts) ?
-      result.artifacts.filter(
-        (item) => item && typeof item === 'object' && item.output_ref,
-      ) :
-      [];
-  }
-
-  return {
-    status,
-    content,
-    options,
-    messageType,
-    interaction,
-    artifacts,
-    error:
-      runtimeError?.message ||
-      (hasPublicErrorValue(payload.error) ?
-        publicErrorMessage(payload.error, '运行失败') :
-        null),
-    errorCode,
-    errorRetriable:
-      payload.error && typeof payload.error === 'object' ?
-        payload.error.retriable === true :
-        false,
-    cancelReason: payload.cancel_reason || null,
-    recovery:
-      payload.recovery && typeof payload.recovery === 'object' ?
-        payload.recovery :
-        null,
-  };
 };
 
 const getTrailingContentText = (segments = []) => {
@@ -696,7 +350,55 @@ const shouldAppendFinalContent = (segments = [], finalContent = '') => {
   );
 };
 
-// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
+const applyTerminalStatus = (next, status) => {
+  if (status === 'success') {
+    next.status = 'finished';
+  } else if (status === 'awaiting_input') {
+    next.status = 'awaiting';
+  } else if (status === 'cancelled') {
+    next.status = 'aborted';
+    next.error = true;
+  } else {
+    next.status = 'error';
+    next.error = true;
+  }
+};
+
+const applyTerminalOutput = (next, terminal) => {
+  if (terminal.content && !next.content) {
+    next.content = terminal.content;
+  }
+  if (terminal.options) {
+    next.options = terminal.options;
+  }
+  if (terminal.interaction) {
+    next.interaction = terminal.interaction;
+  }
+  if (terminal.messageType) {
+    next.messageType = terminal.messageType;
+  }
+};
+
+const setTerminalMeta = (next, key, value) => {
+  if (value) {
+    next.meta = { ...(next.meta || {}), [key]: value };
+  }
+};
+
+const applyTerminalMetadata = (next, terminal) => {
+  setTerminalMeta(next, 'error', terminal.error);
+  setTerminalMeta(next, 'error_code', terminal.errorCode);
+  const runtimeError = friendlyRuntimeError(terminal.errorCode);
+  if (runtimeError?.incomplete) {
+    setTerminalMeta(next, 'incomplete', true);
+  }
+  if (terminal.errorRetriable) {
+    setTerminalMeta(next, 'error_retriable', true);
+  }
+  setTerminalMeta(next, 'cancel_reason', terminal.cancelReason);
+  setTerminalMeta(next, 'recovery', terminal.recovery);
+};
+
 const finalizeTurnState = (next, publicStatus, payload, eventTs) => {
   const terminal = extractTurnFinishedOutput(payload, publicStatus);
   next.streamSegments = closeUnfinishedSegmentsForTerminalTurn(
@@ -730,53 +432,14 @@ const finalizeTurnState = (next, publicStatus, payload, eventTs) => {
     });
   }
 
-  if (terminal.status === 'success') {
-    next.status = 'finished';
-  } else if (terminal.status === 'awaiting_input') {
-    next.status = 'awaiting';
-  } else if (terminal.status === 'cancelled') {
-    next.status = 'aborted';
-    next.error = true;
-  } else {
-    next.status = 'error';
-    next.error = true;
-  }
+  applyTerminalStatus(next, terminal.status);
 
   next.isLoading = false;
   next.endTs = eventTs;
   next.currentSegmentType = null;
 
-  if (terminal.content && !next.content) {
-    next.content = terminal.content;
-  }
-  if (terminal.options) {
-    next.options = terminal.options;
-  }
-  if (terminal.interaction) {
-    next.interaction = terminal.interaction;
-  }
-  if (terminal.messageType) {
-    next.messageType = terminal.messageType;
-  }
-  if (terminal.error) {
-    next.meta = { ...(next.meta || {}), error: terminal.error };
-  }
-  if (terminal.errorCode) {
-    next.meta = { ...(next.meta || {}), error_code: terminal.errorCode };
-  }
-  const runtimeError = friendlyRuntimeError(terminal.errorCode);
-  if (runtimeError?.incomplete) {
-    next.meta = { ...(next.meta || {}), incomplete: true };
-  }
-  if (terminal.errorRetriable) {
-    next.meta = { ...(next.meta || {}), error_retriable: true };
-  }
-  if (terminal.cancelReason) {
-    next.meta = { ...(next.meta || {}), cancel_reason: terminal.cancelReason };
-  }
-  if (terminal.recovery) {
-    next.meta = { ...(next.meta || {}), recovery: terminal.recovery };
-  }
+  applyTerminalOutput(next, terminal);
+  applyTerminalMetadata(next, terminal);
 
   return next;
 };
@@ -1199,223 +862,225 @@ const ensureSubagentChild = (group, subagentId, meta = {}) => {
   };
 };
 
-// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
+const finiteEventOrder = (value) =>
+  value != null && value !== '' && Number.isFinite(Number(value)) ?
+    Number(value) :
+    null;
+
+const tokenInterruptedByChildGroup = (child, last) => {
+  const lastStartedAt = Number(last?.startTs ?? last?.ts);
+  const lastSourceOrder = finiteEventOrder(
+    last?.endSourceOrder ?? last?.sourceOrder,
+  );
+  const latestGroupSourceOrder = Math.max(
+    ...getChildGroups(child)
+      .map((group) => finiteEventOrder(group?.sourceOrder))
+      .filter((value) => value != null),
+    Number.NEGATIVE_INFINITY,
+  );
+  const latestGroupStartedAt = Math.max(
+    ...getChildGroups(child)
+      .map((group) => Number(group?.startTs))
+      .filter(Number.isFinite),
+    Number.NEGATIVE_INFINITY,
+  );
+  if (Number.isFinite(latestGroupSourceOrder) && lastSourceOrder != null) {
+    return latestGroupSourceOrder > lastSourceOrder;
+  }
+  return Number.isFinite(lastStartedAt) && latestGroupStartedAt > lastStartedAt;
+};
+
+const childTokenCanMerge = (child, event, last) => {
+  if (!last || last.kind !== 'token' || last.channel !== event.channel) {
+    return false;
+  }
+  const usesSpanIdentity = Boolean(event.spanId || last?.spanId);
+  const sameSpan = usesSpanIdentity ?
+    Boolean(event.spanId && last?.spanId === event.spanId) :
+    true;
+  return sameSpan && !tokenInterruptedByChildGroup(child, last);
+};
+
+const appendChildTokenEvent = (child, event) => {
+  const last = child.events[child.events.length - 1];
+  if (childTokenCanMerge(child, event, last)) {
+    child.events[child.events.length - 1] = {
+      ...last,
+      text: `${last.text || ''}${event.text || ''}`,
+      startTs: last.startTs ?? last.ts,
+      endTs: event.ts || last.endTs || last.ts,
+      sourceOrder: last.sourceOrder ?? event.sourceOrder,
+      endSourceOrder:
+        event.sourceOrder ?? last.endSourceOrder ?? last.sourceOrder,
+    };
+  } else {
+    child.events.push({
+      ...event,
+      startTs: event.startTs ?? event.ts,
+      endTs: event.endTs ?? event.ts,
+      endSourceOrder: event.endSourceOrder ?? event.sourceOrder,
+    });
+  }
+  return child;
+};
+
+const childToolEventIndex = (events, event) => {
+  const spanId = event.spanId || '';
+  if (spanId) {
+    return findLastSegmentIndex(
+      events,
+      (item) => item?.kind === 'tool' && item?.spanId === spanId,
+    );
+  }
+  const toolCallId = event.toolCallId || '';
+  if (!toolCallId) {
+    return -1;
+  }
+  return findLastSegmentIndex(
+    events,
+    (item) => item?.kind === 'tool' && item?.toolCallId === toolCallId,
+  );
+};
+
+const newChildToolEvent = (event) => ({
+  kind: 'tool',
+  toolCallId: event.toolCallId || '',
+  toolName: event.toolName || '',
+  input: event.input || null,
+  status: event.finishedStatus || 'running',
+  finished: Boolean(event.finishedStatus),
+  progress: event.progressEntry ? [event.progressEntry] : [],
+  output: event.output || '',
+  outputRef: event.outputRef || '',
+  outputSize: event.outputSize ?? null,
+  outputTruncated: Boolean(event.outputTruncated),
+  outputProjection: event.outputProjection || null,
+  elapsedMs: event.elapsedMs ?? null,
+  error: event.error || '',
+  traceId: event.traceId || '',
+  spanId: event.spanId || '',
+  parentSpanId: event.parentSpanId || '',
+  sourceOrder: event.sourceOrder ?? null,
+  endSourceOrder: event.sourceOrder ?? null,
+  startTs: event.ts,
+  endTs: event.finishedStatus ? event.ts : null,
+});
+
+const mergeChildToolEvent = (previous, event) => ({
+  ...previous,
+  toolName: event.toolName || previous.toolName,
+  input: event.input || previous.input,
+  status: event.finishedStatus || previous.status,
+  finished: event.finishedStatus ? true : previous.finished,
+  progress: event.progressEntry ?
+    [...(previous.progress || []), event.progressEntry] :
+    previous.progress,
+  output: event.output || previous.output,
+  outputRef: event.outputRef || previous.outputRef,
+  outputSize: event.outputSize ?? previous.outputSize,
+  outputTruncated: event.outputTruncated ?? previous.outputTruncated,
+  outputProjection: event.outputProjection || previous.outputProjection,
+  elapsedMs: event.elapsedMs ?? previous.elapsedMs,
+  error: event.error || previous.error,
+  traceId: event.traceId || previous.traceId,
+  spanId: event.spanId || previous.spanId,
+  parentSpanId: event.parentSpanId || previous.parentSpanId,
+  endSourceOrder:
+    event.sourceOrder ?? previous.endSourceOrder ?? previous.sourceOrder,
+  endTs: event.finishedStatus ? event.ts : previous.endTs,
+});
+
+const appendChildToolEvent = (child, event) => {
+  const index = childToolEventIndex(child.events, event);
+  if (index === -1) {
+    child.events.push(newChildToolEvent(event));
+  } else {
+    child.events[index] = mergeChildToolEvent(child.events[index], event);
+  }
+  return child;
+};
+
 const appendChildEvent = (child, event) => {
   const next = cloneChild(child);
-  const last = next.events[next.events.length - 1];
-
   if (event.kind === 'token') {
-    const finiteOrder = (value) =>
-      value != null && value !== '' && Number.isFinite(Number(value)) ?
-        Number(value) :
-        null;
-    const lastStartedAt = Number(last?.startTs ?? last?.ts);
-    const lastSourceOrder = finiteOrder(
-      last?.endSourceOrder ?? last?.sourceOrder,
-    );
-    const latestGroupSourceOrder = Math.max(
-      ...getChildGroups(next)
-        .map((group) => finiteOrder(group?.sourceOrder))
-        .filter((value) => value != null),
-      Number.NEGATIVE_INFINITY,
-    );
-    const latestGroupStartedAt = Math.max(
-      ...getChildGroups(next)
-        .map((group) => Number(group?.startTs))
-        .filter(Number.isFinite),
-      Number.NEGATIVE_INFINITY,
-    );
-    const groupInterruptedToken =
-      Number.isFinite(latestGroupSourceOrder) && lastSourceOrder != null ?
-        latestGroupSourceOrder > lastSourceOrder :
-        Number.isFinite(lastStartedAt) &&
-          latestGroupStartedAt > lastStartedAt;
-    const usesSpanIdentity = Boolean(event.spanId || last?.spanId);
-    const sameSpan = usesSpanIdentity ?
-      Boolean(event.spanId && last?.spanId === event.spanId) :
-      true;
-    const canMergeToken =
-      last &&
-      last.kind === 'token' &&
-      last.channel === event.channel &&
-      sameSpan &&
-      !groupInterruptedToken;
-    if (canMergeToken) {
-      next.events[next.events.length - 1] = {
-        ...last,
-        text: `${last.text || ''}${event.text || ''}`,
-        startTs: last.startTs ?? last.ts,
-        endTs: event.ts || last.endTs || last.ts,
-        sourceOrder: last.sourceOrder ?? event.sourceOrder,
-        endSourceOrder:
-          event.sourceOrder ?? last.endSourceOrder ?? last.sourceOrder,
-      };
-    } else {
-      next.events.push({
-        ...event,
-        startTs: event.startTs ?? event.ts,
-        endTs: event.endTs ?? event.ts,
-        endSourceOrder: event.endSourceOrder ?? event.sourceOrder,
-      });
-    }
-    return next;
+    return appendChildTokenEvent(next, event);
   }
-
   if (event.kind === 'tool') {
-    const spanId = event.spanId || '';
-    const tcid = event.toolCallId || '';
-    let idx = -1;
-    if (spanId) {
-      for (let i = next.events.length - 1; i >= 0; i -= 1) {
-        if (
-          next.events[i]?.kind === 'tool' &&
-          next.events[i]?.spanId === spanId
-        ) {
-          idx = i;
-          break;
-        }
-      }
-    } else if (tcid) {
-      for (let i = next.events.length - 1; i >= 0; i -= 1) {
-        if (
-          next.events[i]?.kind === 'tool' &&
-          next.events[i]?.toolCallId === tcid
-        ) {
-          idx = i;
-          break;
-        }
-      }
-    }
-    if (idx === -1) {
-      next.events.push({
-        kind: 'tool',
-        toolCallId: tcid,
-        toolName: event.toolName || '',
-        input: event.input || null,
-        status: event.finishedStatus || 'running',
-        finished: Boolean(event.finishedStatus),
-        progress: event.progressEntry ? [event.progressEntry] : [],
-        output: event.output || '',
-        outputRef: event.outputRef || '',
-        outputSize: event.outputSize ?? null,
-        outputTruncated: Boolean(event.outputTruncated),
-        outputProjection: event.outputProjection || null,
-        elapsedMs: event.elapsedMs ?? null,
-        error: event.error || '',
-        traceId: event.traceId || '',
-        spanId: event.spanId || '',
-        parentSpanId: event.parentSpanId || '',
-        sourceOrder: event.sourceOrder ?? null,
-        endSourceOrder: event.sourceOrder ?? null,
-        startTs: event.ts,
-        endTs: event.finishedStatus ? event.ts : null,
-      });
-    } else {
-      const prev = next.events[idx];
-      next.events[idx] = {
-        ...prev,
-        toolName: event.toolName || prev.toolName,
-        input: event.input || prev.input,
-        status: event.finishedStatus || prev.status,
-        finished: event.finishedStatus ? true : prev.finished,
-        progress: event.progressEntry ?
-          [...(prev.progress || []), event.progressEntry] :
-          prev.progress,
-        output: event.output || prev.output,
-        outputRef: event.outputRef || prev.outputRef,
-        outputSize: event.outputSize ?? prev.outputSize,
-        outputTruncated: event.outputTruncated ?? prev.outputTruncated,
-        outputProjection: event.outputProjection || prev.outputProjection,
-        elapsedMs: event.elapsedMs ?? prev.elapsedMs,
-        error: event.error || prev.error,
-        traceId: event.traceId || prev.traceId,
-        spanId: event.spanId || prev.spanId,
-        parentSpanId: event.parentSpanId || prev.parentSpanId,
-        endSourceOrder:
-          event.sourceOrder ?? prev.endSourceOrder ?? prev.sourceOrder,
-        endTs: event.finishedStatus ? event.ts : prev.endTs,
-      };
-    }
-    return next;
+    return appendChildToolEvent(next, event);
   }
-
   next.events.push(event);
   return next;
 };
 
-// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
-const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
-  const toolCallId =
-    typeof payload?.tool_call_id === 'string' ? payload.tool_call_id : '';
-  const toolName =
-    typeof payload?.tool_name === 'string' ? payload.tool_name : '';
-  if (type === 'tool.started') {
-    return {
-      kind: 'tool',
-      toolCallId,
-      toolName,
-      traceId: payload?.trace_id || '',
-      spanId: payload?.span_id || '',
-      parentSpanId: payload?.parent_span_id || '',
-      input: payload?.input || null,
-      sourceOrder,
+const toolEventBase = (payload, ts, sourceOrder) => ({
+  kind: 'tool',
+  toolCallId:
+    typeof payload?.tool_call_id === 'string' ? payload.tool_call_id : '',
+  toolName: typeof payload?.tool_name === 'string' ? payload.tool_name : '',
+  traceId: payload?.trace_id || '',
+  spanId: payload?.span_id || '',
+  parentSpanId: payload?.parent_span_id || '',
+  sourceOrder,
+  ts,
+});
+
+const startedToolEvent = (payload, ts, sourceOrder) => ({
+  ...toolEventBase(payload, ts, sourceOrder),
+  input: payload?.input || null,
+});
+
+const progressToolEvent = (payload, ts, sourceOrder) => {
+  const ontologyEvent = payload?.progress?.business_data_search_event || null;
+  const webSearchEvent = payload?.progress?.web_search_event || null;
+  const text =
+    payload?.message ||
+    (ontologyEvent?.content ? String(ontologyEvent.content) : '') ||
+    (webSearchEvent?.content ? String(webSearchEvent.content) : '');
+  return {
+    ...toolEventBase(payload, ts, sourceOrder),
+    progressEntry: {
+      text,
+      ontology: ontologyEvent,
+      web: webSearchEvent,
       ts,
-    };
+    },
+  };
+};
+
+const legacyToolOutput = (payload) => {
+  if (payload?.output_preview || payload?.output == null) {
+    return '';
+  }
+  try {
+    return typeof payload.output === 'string' ?
+      payload.output :
+      JSON.stringify(payload.output);
+  } catch {
+    return '';
+  }
+};
+
+const finishedToolEvent = (payload, ts, sourceOrder) => ({
+  ...toolEventBase(payload, ts, sourceOrder),
+  finishedStatus: normalizeToolStatus(payload?.status) || 'completed',
+  output: payload?.output_preview || legacyToolOutput(payload),
+  outputRef: payload?.output_ref || '',
+  outputSize: payload?.output_size ?? null,
+  outputTruncated: Boolean(payload?.output_truncated),
+  outputProjection: payload?.output_projection || null,
+  elapsedMs: payload?.elapsed_ms ?? null,
+  error: payload?.error || '',
+});
+
+const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
+  if (type === 'tool.started') {
+    return startedToolEvent(payload, ts, sourceOrder);
   }
   if (type === 'tool.progress') {
-    const ontologyEvent = payload?.progress?.business_data_search_event || null;
-    const webSearchEvent = payload?.progress?.web_search_event || null;
-    const text =
-      payload?.message ||
-      (ontologyEvent?.content ? String(ontologyEvent.content) : '') ||
-      (webSearchEvent?.content ? String(webSearchEvent.content) : '');
-    return {
-      kind: 'tool',
-      toolCallId,
-      toolName,
-      traceId: payload?.trace_id || '',
-      spanId: payload?.span_id || '',
-      parentSpanId: payload?.parent_span_id || '',
-      progressEntry: {
-        text,
-        ontology: ontologyEvent,
-        web: webSearchEvent,
-        ts,
-      },
-      sourceOrder,
-      ts,
-    };
+    return progressToolEvent(payload, ts, sourceOrder);
   }
   if (type === 'tool.finished') {
-    let legacyOutput = '';
-    if (!payload?.output_preview && payload?.output != null) {
-      try {
-        legacyOutput =
-          typeof payload.output === 'string' ?
-            payload.output :
-            JSON.stringify(payload.output);
-      } catch {
-        legacyOutput = '';
-      }
-    }
-    return {
-      kind: 'tool',
-      toolCallId,
-      toolName,
-      traceId: payload?.trace_id || '',
-      spanId: payload?.span_id || '',
-      parentSpanId: payload?.parent_span_id || '',
-      finishedStatus: normalizeToolStatus(payload?.status) || 'completed',
-      output: payload?.output_preview || legacyOutput,
-      outputRef: payload?.output_ref || '',
-      outputSize: payload?.output_size ?? null,
-      outputTruncated: Boolean(payload?.output_truncated),
-      outputProjection: payload?.output_projection || null,
-      elapsedMs: payload?.elapsed_ms ?? null,
-      error: payload?.error || '',
-      sourceOrder,
-      ts,
-    };
+    return finishedToolEvent(payload, ts, sourceOrder);
   }
   return null;
 };

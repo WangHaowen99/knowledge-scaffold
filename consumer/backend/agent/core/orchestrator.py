@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Business/context services used by the canonical async runtime.
 
 Run and Turn lifecycle ownership intentionally lives in ``agent.runtime`` and
@@ -21,6 +22,7 @@ from agent.evolution import (
 from agent.memory import MemoryFactory
 from agent.runtime.async_utils import run_sync_compat
 from agent.runtime.preflight_cache import ImmutablePreflightCache
+from agent.runtime_fields import deterministic_business_arguments
 from config import AgentConfig, AppConfig
 from persistence.chat_store import ChatStore, ToolOutputLimits
 from persistence.execution_store import ExecutionStore
@@ -247,7 +249,7 @@ class AgenticOrchestrator:
         request = DeterministicRequest(
             user_request=str(user_request or ""),
             context=context,
-            arguments=request_arguments,
+            arguments=deterministic_business_arguments(request_arguments),
             runtime_context=RuntimeContext(
                 session_id=normalized_session_id,
                 run_id="protocol-preflight",

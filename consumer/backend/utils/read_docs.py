@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Structured read-document registry helpers for ontology-driven execution."""
 
 from __future__ import annotations

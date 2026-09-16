@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const DEFAULT_WORKSPACE_PAGE_SIZE = 8;
 
 function text(value) {

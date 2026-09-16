@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-3 tests for async tools and structured internal concurrency."""
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from agent.tools.base import (
 )
 from agent.tools.executor import aexecute_tool_batch
 from agent.tools.registry import TOOL_SPECS
+from internal_access import internal
 
 
 def _context(
@@ -442,16 +444,16 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                     context,
                 )
                 self.assertIn("工具执行超时", result.messages[0]["content"])
-                state = executor_module._background_sync_tool_state()
+                state = internal(executor_module).background_sync_tool_state()
                 self.assertEqual(len(state.tasks), 1)
             finally:
                 release.set()
                 await asyncio.wait_for(run_sync_compat(finished.wait), timeout=2)
                 async with asyncio.timeout(1):
-                    while executor_module._background_sync_tool_state().tasks:
+                    while internal(executor_module).background_sync_tool_state().tasks:
                         await asyncio.sleep(0.005)
 
-        self.assertEqual(len(executor_module._background_sync_tool_state().tasks), 0)
+        self.assertEqual(len(internal(executor_module).background_sync_tool_state().tasks), 0)
 
     async def test_repeated_failure_guard_still_stops_the_tool_loop(self):
         iteration = 0
@@ -638,7 +640,7 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
                 }
 
         manager = SubAgentManager(max_concurrency=1, max_depth=3)
-        semaphore = manager._get_async_semaphore()
+        semaphore = internal(manager).get_async_semaphore()
         await semaphore.acquire()
         tasks = [
             SubAgentTaskSpec(id="first", task="first-result", context={}),
@@ -688,7 +690,7 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
                     cancelled += 1
 
         manager = SubAgentManager(max_concurrency=3, max_depth=3)
-        semaphore = manager._get_async_semaphore()
+        semaphore = internal(manager).get_async_semaphore()
         await semaphore.acquire()
         tasks = [
             SubAgentTaskSpec(id="first", task="first", context={}),
@@ -715,12 +717,12 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(asyncio.CancelledError):
                     await group
 
-            self.assertEqual(semaphore._value, manager.max_concurrency - 1)
+            self.assertEqual(internal(semaphore).value, manager.max_concurrency - 1)
             self.assertEqual(cancelled, len(tasks))
         finally:
             semaphore.release()
 
-        self.assertEqual(semaphore._value, manager.max_concurrency)
+        self.assertEqual(internal(semaphore).value, manager.max_concurrency)
 
 
 if __name__ == "__main__":

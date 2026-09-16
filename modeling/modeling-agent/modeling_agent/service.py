@@ -42,6 +42,7 @@ from .project_transfer import (
     export_project_transfer,
     import_project_transfer,
 )
+from .rails import claims_confirmation_card
 from .tools import CandidateValidationRepairState, EVALUATION_PENDING_MESSAGE, ToolContext
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 from .workflows import (
@@ -166,6 +167,8 @@ MAX_DECISION_CARD_RETRIES = 2
 # 换一次更克制的推理方式往往就能出结果；连着两次仍然截断说明当前任务
 # 在这个预算下想不完，交给用户处理比继续空转有意义。
 MAX_TRUNCATION_RETRIES = 2
+
+MAX_PROGRESS_ONLY_CONTINUATIONS = 2
 MAX_VISIBLE_REASONING_CHARS = 12_000
 REASONING_EVENT_BATCH_CHARS = 160
 COMPACT_SUMMARY_MAX_TOKENS = 4_096
@@ -181,6 +184,7 @@ AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "transition_project_state",
     "create_change_plan",
     "revise_change_plan",
+    "review_object_relations",
     "stage_change_set",
     "validate_change_set",
     "discard_change_set",
@@ -265,6 +269,9 @@ def _confirmation_review_actions() -> list[dict[str, str]]:
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
+# 已批准计划执行与候选退回后的修补都必须走完整闭环：候选写入、完整校验、
+# 统一确认卡；只输出进度文字不能把 Run 结算为完成。
+APPROVED_PLAN_REQUIRED_TOOLS = frozenset({"stage_change_set", "validate_change_set", "request_confirmation"})
 PURPOSE_REVIEW_ALLOWED_TOOLS = frozenset({
     "get_project_state", "list_documents", "list_document_outline", "read_document",
     "list_tables", "describe_table",
@@ -301,6 +308,21 @@ class RunSituation:
 
     materials_observed: bool = False
     full_read_materials: tuple[str, ...] = ()
+    # 资料修订级别的全文覆盖事实。仅在核心返回 coverage=100% 后回填，
+    # 不能把“readingMode=full”误当作已经完成全文分析。
+    completed_full_read_materials: tuple[str, ...] = ()
+    # filename -> revision fingerprint for the authoritative 100% coverage.
+    # A filename alone is not sufficient: replacing a document must invalidate
+    # the previous completion and require a fresh analysis.
+    completed_full_read_fingerprints: dict[str, str] = field(default_factory=dict)
+    # 台账工具返回的确定性校验快照，供恢复和回执守卫使用。
+    product_ledger_status: str = ""
+    product_ledger_counts: dict[str, int] = field(default_factory=dict)
+    product_ledger_id: str = ""
+    product_ledger_last_batch: int | None = None
+    product_ledger_processed: int = 0
+    product_ledger_remaining: int | None = None
+    product_ledger_analysis_revision: str = ""
 
     plan_observed: bool = False
     plan_remaining: int = 0
@@ -324,6 +346,9 @@ class RunSituation:
         if not self.materials_observed:
             return Verdict.UNKNOWN
         return Verdict.ALLOW if self.full_read_materials else Verdict.DENY
+
+    def has_completed_full_read(self) -> bool:
+        return bool(self.completed_full_read_materials)
 
 
 @dataclass
@@ -476,6 +501,7 @@ def _required_text_constraint(
     if not text:
         return None
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    contract = _parse_required_text_contract(text)
     return {
         **inherited,
         "required": True,
@@ -486,6 +512,42 @@ def _required_text_constraint(
         )[:4_000],
         "text": text[:8_000],
         "textHash": str(inherited.get("textHash") or f"sha256:{digest}"),
+        "contract": contract,
+    }
+
+
+def _parse_required_text_contract(text: str) -> dict[str, Any]:
+    """Extract a small, auditable contract from free-form requiredText.
+
+    This is deliberately additive: the original Chinese text remains the
+    authority, while common count/preservation/prohibition clauses become
+    machine-checkable fields for recovery receipts.
+    """
+    count_tokens = re.findall(
+        r"(?<![A-Za-z0-9])\d+\s*(?:条|项|组|个|份|张|件|条目)", text,
+    )
+    expected_counts = []
+    for token in count_tokens:
+        expected_counts.append(int(re.sub(r"\D", "", token)))
+    preserve_ids = bool(re.search(
+        r"(?:保留|沿用|不修改|不得修改).{0,40}(?:既有|现有|已有)?\s*(?:产品\s*)?(?:ID|id|标识)|"
+        r"(?:ID|id|标识).{0,20}(?:保留|沿用|不修改|不得修改)",
+        text,
+    ))
+    preserve_package = bool(re.search(r"(?:不修改|不得修改|不改动).{0,12}知识包", text))
+    prohibited_clauses = re.findall(
+        r"(?:禁止|不要|不再|无需|不用|不必|不得|避免)([^，。；\n]{1,80})", text,
+    )
+    prohibited_actions = []
+    for clause in prohibited_clauses:
+        normalized_clause = re.sub(r"\s+", "", clause).strip("，。；、,; ")
+        if normalized_clause:
+            prohibited_actions.append(normalized_clause)
+    return {
+        "expectedCounts": list(dict.fromkeys(expected_counts)),
+        "preserveIds": preserve_ids,
+        "preserveKnowledgePackage": preserve_package,
+        "prohibitedActions": list(dict.fromkeys(prohibited_actions)),
     }
 
 
@@ -512,6 +574,7 @@ def _required_text_constraint_from_snapshot(
     }
     digest = hashlib.sha256(normalized["text"].encode("utf-8")).hexdigest()
     normalized["textHash"] = f"sha256:{digest}"
+    normalized["contract"] = _parse_required_text_contract(normalized["text"])
     return normalized
 
 
@@ -521,6 +584,7 @@ def _required_text_prompt(constraint: dict[str, Any]) -> str:
         "本轮必须遵守用户在决策卡中填写的补充说明。以下内容是用户原文，"
         "不得丢弃、改写为模糊要求或用旧计划替代：\n"
         f"【{text}】\n"
+        f"结构化回执契约：{json.dumps(constraint.get('contract') or _parse_required_text_contract(text), ensure_ascii=False, sort_keys=True)}\n"
         "请逐项核对并执行；最终回复必须明确说明每项已满足，或指出具体无法满足的原因。"
         "如果当前资料或工具不足以满足任一项，必须调用 ask 生成下一张可操作的问题卡，"
         "不能只在自然语言中写“待专家明确后继续”。"
@@ -553,13 +617,18 @@ def _required_text_response_acknowledged(
     normalized = re.sub(r"\s+", "", str(output or ""))
     if not normalized:
         return False
-    if _contains_any_token(normalized, ("无法", "不能", "缺少", "不足以", "未能")):
+    # “不能修改/不能创建/不能重读” can be the user's prohibition being
+    # correctly honored. Only treat negative wording as failure when it
+    # describes an inability or missing evidence, not a prohibited action.
+    if re.search(r"(?:无法|缺少|不足以|未能|信息不足|尚未提供)|不能(?!修改|创建|删除|重读|再次|全文|绕过|改动)", normalized):
         return False
     if not _contains_any_token(normalized, (
         "已收到", "已按你的补充", "已按补充说明", "已按要求",
         "已逐项", "已保留", "不会修改", "不修改知识包", "已核对",
         "已根据", "已记录", "已采用", "按口述", "无需修改", "无需调整",
         "保持当前", "补充说明已", "约束已",
+        "遵守", "禁止", "不会创建", "不会修改", "不能修改", "不得修改",
+        "不会删除", "不会重读",
     )):
         return False
     # 用户给出两个以上精确数量时，至少要在回执中逐项回显这些数量，
@@ -579,6 +648,32 @@ def _required_text_response_acknowledged(
     ):
         return False
     return True
+
+
+def _required_text_constraint_status(
+    output: str,
+    constraint: dict[str, Any],
+) -> tuple[bool, list[str]]:
+    """Return an auditable response status instead of treating one keyword as proof.
+
+    The guard remains intentionally conservative: exact counts and explicit
+    prohibitions must be echoed in a successful receipt; otherwise the run is
+    routed to a review card and cannot silently proceed to generation.
+    """
+    missing: list[str] = []
+    normalized = re.sub(r"\s+", "", str(output or ""))
+    text = re.sub(r"\s+", "", str(constraint.get("text") or ""))
+    if not normalized:
+        missing.append("response")
+    if re.search(r"(?:无法|缺少|不足以|未能|信息不足|尚未提供)|不能(?!修改|创建|删除|重读|再次|全文|绕过|改动)", normalized):
+        missing.append("reason_for_unmet_constraint")
+    for item in re.findall(r"(?<![A-Za-z0-9])\d+\s*(?:条|项|组|个|份|张|件|条目)", str(constraint.get("text") or "")):
+        number = re.sub(r"\D", "", item)
+        if number and number not in normalized:
+            missing.append(f"count:{number}")
+    if "不修改知识包" in text and not _contains_any_token(normalized, ("不修改知识包", "知识包保持不变", "不改动知识包")):
+        missing.append("preserve_knowledge_package")
+    return not missing and _required_text_response_acknowledged(output, constraint), missing
 
 
 def _required_text_interrupt_acknowledged(
@@ -625,10 +720,11 @@ def _required_text_response_requires_review(
     constraint = live.required_text_constraint
     if not constraint or guard_mode == "off":
         return False
-    return not _required_text_response_acknowledged(
+    acknowledged, _missing = _required_text_constraint_status(
         str(result.get("output") or ""),
         constraint,
     )
+    return not acknowledged
 
 
 def _purpose_review_suggestions_complete(live: LiveRun) -> bool:
@@ -1280,6 +1376,27 @@ class AgentService:
             if required_tools is not None
             else _required_tools_for_user_intent(prompt)
         )
+        # Persist the workflow policy before the model gets a chance to create
+        # a plan. Core remains the authority, but this early call closes the
+        # advisory-mode race between user intent and the first tool call.
+        if _product_ledger_requested(prompt):
+            try:
+                await self._gateway.call(
+                    project_id=project_id,
+                    run_id=run_id,
+                    token=token,
+                    tool="require_product_ledger",
+                    arguments={"required": True},
+                )
+            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
+                # The required tool remains in the run contract; a later
+                # recovery will expose the failure rather than silently
+                # allowing formal generation.
+                logger.warning(
+                    "Could not persist the product-ledger requirement for run %s: %s",
+                    run_id,
+                    type(error).__name__,
+                )
         live = LiveRun(
             run_id=run_id,
             project_id=project_id,
@@ -2115,6 +2232,34 @@ class AgentService:
                 status=400,
             )
         required_text_constraint = _required_text_constraint(interaction, answer)
+        # Technical recovery cards are rendered as ordinary decision cards by
+        # the workbench, but their answer must enter the issue-recovery path.
+        # Otherwise the answer is treated as a new business prompt and the
+        # persisted required tools are silently dropped on resume.
+        recovery_payload = interaction.payload.get("recovery")
+        recovery_action = ""
+        if isinstance(recovery_payload, dict):
+            recovery_action = str(
+                answer.get("action") or answer.get("value") or ""
+            ).strip()
+            allowed_actions = {
+                str(item).strip()
+                for item in recovery_payload.get("allowedActions") or []
+                if str(item).strip()
+            }
+            allowed_actions.update({
+                str(item.get("id") or "").strip()
+                for item in recovery_payload.get("recoveryActions") or []
+                if isinstance(item, dict)
+            })
+            if recovery_payload.get("actionId"):
+                allowed_actions.add(str(recovery_payload.get("actionId")).strip())
+            if not recovery_action or recovery_action not in allowed_actions:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_INVALID",
+                    "请选择当前恢复卡提供的有效动作",
+                    status=400,
+                )
         if (
             interaction.payload.get("requiredTextConstraint")
             and str(answer.get("value") or "").strip() == "edit_required_text"
@@ -2205,6 +2350,7 @@ class AgentService:
                             ),
                         }},
                         autonomous_seed=True,
+                        required_tools=APPROVED_PLAN_REQUIRED_TOOLS,
                     )
                 failed_interaction = self.store.set_interaction_submission_error(interaction.id, reason)
                 if failed_interaction is not None:
@@ -2261,6 +2407,28 @@ class AgentService:
         run = self.store.require_run(interaction.run_id)
         self.events.publish(run.project_id, run.id, "interaction", {"id": interaction.id, "status": "answered", "answer": answer})
         self.events.publish(run.project_id, run.id, "message", {"role": "user", "blocks": [{"type": "answer", "interactionId": interaction.id, "answer": answer}]})
+        if isinstance(recovery_payload, dict):
+            # The interaction is marked answered before delegating so
+            # resume_issue does not reject the request as "still waiting for
+            # an interaction". The recovery record itself remains active until
+            # the selected action settles it.
+            issue_id = str(
+                recovery_payload.get("issueId")
+                or interaction.payload.get("issueId")
+                or ""
+            ).strip()
+            if not issue_id:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_INVALID",
+                    "恢复卡缺少问题标识，请刷新当前运行状态后重试",
+                    status=409,
+                )
+            return await self.resume_issue(
+                project_id=project_id,
+                token=token,
+                issue_id=issue_id,
+                action_id=recovery_action,
+            )
         answer_text = json.dumps(answer, ensure_ascii=False)
         live_for_answer = self._live.get(interaction.run_id)
         required_tools = _required_tools_for_user_intent(
@@ -2280,15 +2448,23 @@ class AgentService:
                 "summary": "补充说明已绑定到恢复任务",
                 "constraintHash": required_text_constraint.get("textHash"),
             })
-        if required_text_constraint:
-            # 语义守卫需要在恢复时强制读取该工具结果，台账模式为 advisory 时
-            # 仍会形成确定性观测，但不会阻断普通建模流程。
-            if _PRODUCT_LEDGER_INTENT.search(
-                f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}"
-            ):
-                required_tools.add("stage_product_ledger")
+        if required_text_constraint and _product_ledger_requested(
+            f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}",
+        ):
+            # The decision card is itself an explicit workflow policy. Require
+            # the policy write and source/ledger evidence, independent of the
+            # deployment's advisory setting.
+            required_tools.update({
+                "require_product_ledger",
+                "get_product_inventory_source",
+                "begin_product_ledger",
+                "append_product_ledger_batch",
+                "finalize_product_ledger",
+            })
         if direct_confirmation:
             approved = answer.get("approved") is True
+            if not approved:
+                required_tools = required_tools | APPROVED_PLAN_REQUIRED_TOOLS
             prompt = (
                 "用户已经正式接受了候选修改，服务端已将该卡片绑定的候选写入当前修订。"
                 if approved else
@@ -2518,6 +2694,21 @@ class AgentService:
         live.required_tools.update(_required_tools_for_user_intent(
             message, situation=live.situation, notes=live.intent_notes,
         ))
+        if _product_ledger_requested(message):
+            try:
+                await self._gateway.call(
+                    project_id=project_id,
+                    run_id=run.id,
+                    token=token,
+                    tool="require_product_ledger",
+                    arguments={"required": True},
+                )
+            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
+                logger.warning(
+                    "Could not persist the product-ledger requirement for run %s: %s",
+                    run.id,
+                    type(error).__name__,
+                )
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
         )
@@ -2579,7 +2770,13 @@ class AgentService:
             if live is not None:
                 live.technical_recoveries.pop(normalized_issue, None)
                 if technical is not None:
-                    live.required_tools.discard(str(technical.get("requiredTool") or ""))
+                    required_from_recovery = {
+                        str(item).strip()
+                        for item in technical.get("requiredTools") or []
+                        if str(item).strip()
+                    }
+                    required_from_recovery.add(str(technical.get("requiredTool") or "").strip())
+                    live.required_tools.difference_update(required_from_recovery)
             if execution in {RUN_QUEUED, RUN_RUNNING, RUN_STOPPING}:
                 settled_run = await self.cancel(project_id=project_id)
             else:
@@ -2625,8 +2822,14 @@ class AgentService:
             if normalized_action == "retry_from_latest":
                 technical.update({"attempt": 0, "exhausted": False})
                 self.store.save_technical_recovery(run.id, normalized_issue, technical)
-            required_tools = {str(technical.get("requiredTool") or "").strip()}
-            required_tools.discard("")
+            required_tools = {
+                str(item).strip()
+                for item in technical.get("requiredTools") or []
+                if str(item).strip()
+            }
+            required_tool = str(technical.get("requiredTool") or "").strip()
+            if required_tool:
+                required_tools.add(required_tool)
             if technical.get("strategy") == CONFIRMATION_REVIEW_STRATEGY:
                 recovery_prompt = self._confirmation_review_prompt(run)
             elif technical.get("strategy") == MODEL_TRUNCATION_STRATEGY:
@@ -2873,10 +3076,23 @@ class AgentService:
         _record_tool_outcome(live, name, failed)
         _record_tool_call(live, name, arguments)
         if failed:
+            loop_reason = _detect_loop(live)
+            if loop_reason:
+                raise AgentRuntimeError(
+                    "AGENT_TOOL_LOOP_DETECTED",
+                    f"连续工具失败，已停止自动重试：{loop_reason}。之前已保存的进展已保留，请修正失败原因后从当前进展重试。",
+                    status=409,
+                    details={"loop_reason": loop_reason, "tool": name},
+                )
             # 失败结果不代表状态，不能拿去回填快照
             return
         _absorb_plan_progress(live, result)
         _absorb_reading_modes(live, result)
+        if name in {
+            "get_product_ledger", "stage_product_ledger", "finalize_product_ledger",
+            "get_product_ledger_progress",
+        }:
+            _absorb_product_ledger(live, result)
         _absorb_stage_delivery(live, name, result)
         _absorb_awaiting_user(live, result)
         if name == "create_change_plan":
@@ -3208,19 +3424,50 @@ class AgentService:
         self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
         return self._run_public(updated, self.store.project_state(project_id))
 
-    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
+    def _settle_tool_events(
+        self,
+        project_id: str,
+        run_id: str,
+        *,
+        phase: str,
+        summary: str,
+        code: str | None = None,
+        retryable: bool | None = None,
+    ) -> None:
         for event in self.store.unfinished_tool_events(run_id):
             started = event.payload
             payload = {
                 "name": str(started.get("name") or ""),
-                "phase": "cancelled",
-                "summary": "运行已停止，当前操作已取消",
+                "phase": phase,
+                "summary": summary,
                 "toolCallId": str(started.get("toolCallId") or ""),
             }
+            if code is not None:
+                payload["code"] = code
+            if retryable is not None:
+                payload["retryable"] = retryable
             trace_group_id = str(started.get("traceGroupId") or "")
             if trace_group_id:
                 payload["traceGroupId"] = trace_group_id
             self.events.publish(project_id, run_id, "tool", payload)
+
+    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
+        self._settle_tool_events(
+            project_id,
+            run_id,
+            phase="cancelled",
+            summary="运行已停止，当前操作已取消",
+        )
+
+    def _settle_failed_tool_events(self, project_id: str, run_id: str, summary: str) -> None:
+        self._settle_tool_events(
+            project_id,
+            run_id,
+            phase="failed",
+            summary=summary or "本次操作未完成，已保留当前成果",
+            code="RUN_FAILED",
+            retryable=False,
+        )
 
     async def safe_terminate_stale(self, *, project_id: str) -> dict[str, Any]:
         state = self.store.project_state(project_id)
@@ -3268,6 +3515,15 @@ class AgentService:
             for key, value in dict(answer).items()
         }
         required_text_constraint = _required_text_constraint(interaction, answer)
+        if required_text_constraint:
+            # Store a machine-readable receipt alongside the raw answer so
+            # recovery can distinguish an acknowledged constraint from a
+            # merely echoed sentence.
+            acknowledged, missing_constraints = _required_text_constraint_status(
+                str(answer.get("text") or ""), required_text_constraint,
+            )
+            answer_snapshot["constraintStatus"] = "acknowledged" if acknowledged else "unconfirmed"
+            answer_snapshot["missingConstraintItems"] = missing_constraints
         snapshot = {
             "interactionId": interaction.id,
             "kind": interaction.kind,
@@ -3307,7 +3563,6 @@ class AgentService:
             return True
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
-
     def _suspend_required_text_review(
         self,
         live: LiveRun,
@@ -3319,6 +3574,7 @@ class AgentService:
         这条出口不修改知识包，也不把“之后再明确”当作完成；用户可以直接
         让助手按原说明重试，或在卡片中替换补充说明。
         """
+        _, missing_constraints = _required_text_constraint_status("", constraint)
         interaction_id = f"interaction_{uuid.uuid4().hex}"
         interaction = InteractionRecord(
             id=interaction_id,
@@ -3344,6 +3600,8 @@ class AgentService:
                 ],
                 "allowFreeText": True,
                 "requiredTextConstraint": constraint,
+                "missingConstraintItems": missing_constraints,
+                "constraintStatus": "unconfirmed",
             },
         )
         self.store.create_interaction(interaction)
@@ -3417,6 +3675,97 @@ class AgentService:
             "text": "助手这一步没能得出结论，已有成果已保留，请选择后续处理",
         })
 
+    def _suspend_required_tool_review(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        missing_tools: set[str],
+    ) -> None:
+        """Expose an actionable, diagnostic card instead of a generic stop."""
+        issue_id = f"required-tool-review-{run.id}"
+        constraint = live.required_text_constraint or {}
+        recovery = {
+            "issueId": issue_id,
+            "requiredTool": sorted(missing_tools)[0] if missing_tools else "",
+            "requiredTools": sorted(missing_tools),
+            "missingRequiredTools": sorted(missing_tools),
+            "actionId": "retry_required_tools",
+            "recoveryActions": [
+                {
+                    "id": "retry_required_tools",
+                    "label": "从当前进度继续",
+                    "description": "从最后已保存的步骤重试缺失工具，不生成正式规则候选。",
+                },
+                {
+                    "id": "keep_current_progress",
+                    "label": "保留成果并停止",
+                    "description": "保留当前成果并结束本轮，不产生新的规则、指标或操作候选。",
+                },
+            ],
+            "strategy": "required_tools",
+            "ledgerId": live.situation.product_ledger_id or None,
+            "ledgerStatus": live.situation.product_ledger_status or "unknown",
+            "lastSuccessfulBatch": live.situation.product_ledger_last_batch,
+            "processed": live.situation.product_ledger_processed,
+            "remaining": live.situation.product_ledger_remaining,
+            "analysisRevision": live.situation.product_ledger_analysis_revision or None,
+            "failureReason": "必需工具在重试后仍未完成",
+            "constraintStatus": "unconfirmed" if constraint else "not_applicable",
+            "missingConstraintItems": (
+                _required_text_constraint_status("", constraint)[1] if constraint else []
+            ),
+            "allowedActions": ["retry_required_tools", "keep_current_progress"],
+            "constraintHash": constraint.get("textHash"),
+        }
+        live.technical_recoveries[issue_id] = recovery
+        self.store.save_technical_recovery(run.id, issue_id, recovery)
+        interaction = InteractionRecord(
+            id=f"interaction_{uuid.uuid4().hex}",
+            project_id=run.project_id,
+            run_id=run.id,
+            tool_call_id=f"required-tool-review:{run.id}",
+            kind="clarification",
+            payload={
+                "question": "本轮必需步骤尚未完成，请选择恢复方式",
+                "summary": "必需工具未完成",
+                "options": [
+                    {
+                        "label": "从当前进度继续",
+                        "description": "从最后已保存的步骤重试缺失工具",
+                        "value": "retry_required_tools",
+                    },
+                    {
+                        "label": "保留成果并停止",
+                        "description": "不产生新的规则、指标或操作候选",
+                        "value": "keep_current_progress",
+                    },
+                ],
+                "allowFreeText": False,
+                "recovery": recovery,
+                "missingRequiredTools": recovery["missingRequiredTools"],
+                "ledgerId": recovery["ledgerId"],
+                "ledgerStatus": recovery["ledgerStatus"],
+                "processed": recovery["processed"],
+                "remaining": recovery["remaining"],
+                "analysisRevision": recovery["analysisRevision"],
+                "failureReason": recovery["failureReason"],
+                "constraintStatus": recovery["constraintStatus"],
+                "missingConstraintItems": recovery["missingConstraintItems"],
+            },
+        )
+        self.store.create_interaction(interaction)
+        self.store.update_run(run.id, status=RUN_WAITING, result="", error="")
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "interaction", interaction.public())
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_WAITING,
+            "text": "必需步骤未完成，等待你选择恢复方式",
+        })
+
     def _suspend_confirmation_review(self, live: LiveRun, run: RunRecord) -> None:
         """把未形成确认卡的终态转换为可恢复的用户选择。"""
         issue_id = f"confirmation-review-{run.id}"
@@ -3484,6 +3833,30 @@ class AgentService:
             f"最新交互事实：{json.dumps(facts, ensure_ascii=False)}"
         )
 
+    def _plan_execution_boundary_reached(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        output: str,
+    ) -> bool:
+        """是否已经形成候选/确认卡等真实完成边界。"""
+        if live.observed_tools & {"stage_change_set", "validate_change_set", "request_confirmation"}:
+            return True
+        if claims_confirmation_card(output):
+            return True
+        pending = self.store.pending_interaction(run.project_id)
+        return pending is not None and pending.run_id == run.id
+
+    @staticmethod
+    def _retry_continuation(
+        retries: int,
+        max_retries: int,
+        retry_query: str,
+    ) -> tuple[int, str] | None:
+        if retries < max_retries:
+            return retries + 1, retry_query
+        return None
+
     async def _resume(
         self,
         run: RunRecord,
@@ -3529,6 +3902,7 @@ class AgentService:
             project_id=run.project_id,
             token=token,
             tool_profile=run.tool_profile,
+            observed_tools=self.store.completed_tool_names(run.id),
             restore_interaction=restore_interaction,
             required_tools=set(required_tools or ()) | {
                 str(item.get("requiredTool") or "")
@@ -3588,6 +3962,7 @@ class AgentService:
             project_id=run.project_id,
             token=token,
             tool_profile=run.tool_profile,
+            observed_tools=self.store.completed_tool_names(run.id),
             required_tools=set(required_tools or ()) | {
                 str(item.get("requiredTool") or "")
                 for item in technical_recoveries.values()
@@ -3698,6 +4073,7 @@ class AgentService:
             decision_card_retries = 0
             confirmation_card_retries = 0
             truncation_retries = 0
+            progress_only_retries = 0
             model_operation_seq = 0
             current_query = query
             active_phase = initial_phase
@@ -3764,6 +4140,9 @@ class AgentService:
                     confirmation_guard=lambda: (
                         not live.confirmation_required
                         or not _missing_required_tools(live)
+                    ),
+                    scope_confirmation_gate=lambda: (
+                        "analyze_deterministic_capabilities" in live.observed_tools
                     ),
                     tool_receipt_lookup=lambda name, call_id, arguments: self.store.tool_receipt(
                         live.run_id, call_id, name, arguments,
@@ -3952,11 +4331,8 @@ class AgentService:
                     ):
                         self._suspend_confirmation_review(live, run)
                         return
-                    result = {
-                        "result_type": "error",
-                        "output": "助手没有完成这项明确要求，本轮已停止；已经确认的内容保持不变。",
-                        "streamed": False,
-                    }
+                    self._suspend_required_tool_review(live, run, missing_tools)
+                    return
                 if _required_text_response_requires_review(
                     result,
                     live,
@@ -3987,9 +4363,10 @@ class AgentService:
                 if _confirmation_claimed_without_pending_interaction(result, context, live):
                     live.confirmation_required = True
                 if _user_input_requested_without_decision_card(result, context, live):
-                    if decision_card_retries < MAX_DECISION_CARD_RETRIES:
-                        decision_card_retries += 1
-                        current_query = (
+                    next_retry = self._retry_continuation(
+                        decision_card_retries,
+                        MAX_DECISION_CARD_RETRIES,
+                        (
                             "你刚才在普通文字里要求用户从业务选项中选择，但尚未生成可操作的问题卡。"
                             "立即调用 ask，把同一问题整理成少量互斥选项并保留自由输入；"
                             "不要改用 request_confirmation，也不要再次只输出文字选项。"
@@ -3997,7 +4374,10 @@ class AgentService:
                             "你刚才在普通文字里要求用户补充描述，但尚未生成可输入的问题卡。"
                             "立即调用 ask，把同一补充请求放入问题卡；可以不提供选项，并保留自由输入。"
                             "不要继续执行项目、转换阶段，也不要再次只用普通文字索要输入。"
-                        )
+                        ),
+                    )
+                    if next_retry is not None:
+                        decision_card_retries, current_query = next_retry
                         continue
                     result = {
                         "result_type": "error",
@@ -4005,15 +4385,41 @@ class AgentService:
                         "streamed": False,
                     }
                 if result.get("result_type") == "success" and live.confirmation_required:
-                    if confirmation_card_retries < 2:
-                        confirmation_card_retries += 1
-                        current_query = (
+                    next_retry = self._retry_continuation(
+                        confirmation_card_retries,
+                        MAX_DECISION_CARD_RETRIES,
+                        (
                             "整体差异已经核对，但页面上尚未形成需要专家处理的真实确认卡。"
                             "立即发起整体确认；不得替专家批准，也不得只用文字询问。"
-                        )
+                        ),
+                    )
+                    if next_retry is not None:
+                        confirmation_card_retries, current_query = next_retry
                         continue
                     self._suspend_confirmation_review(live, run)
                     return
+                if (
+                    result.get("result_type") == "success"
+                    and _progress_only_final_text(str(result.get("output") or ""))
+                    and not self._plan_execution_boundary_reached(
+                        live, run, str(result.get("output") or ""),
+                    )
+                    and APPROVED_PLAN_REQUIRED_TOOLS <= live.required_tools
+                ):
+                    next_retry = self._retry_continuation(
+                        progress_only_retries,
+                        MAX_PROGRESS_ONLY_CONTINUATIONS,
+                        self._progress_only_continuation_prompt(run.project_id),
+                    )
+                    if next_retry is not None:
+                        progress_only_retries, current_query = next_retry
+                        continue
+                    result = {
+                        "result_type": "error",
+                        "output": "助手只输出了执行进度，未形成候选修订、校验回执或确认卡；本轮已停止，已保留当前成果。",
+                        "streamed": True,
+                        "errorCode": "PROGRESS_ONLY_COMPLETION",
+                    }
                 if result.get("result_type") == "interrupt" or live.restore_interaction:
                     self._settle(live, run, result)
                     return
@@ -4102,11 +4508,9 @@ class AgentService:
             raise
         except Exception as error:  # noqa: BLE001
             logger.exception("Agent run %s failed", run.id)
-            self.store.update_run(run.id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
-            self._publish_state(run.project_id, run.id)
             visible_error = (
                 error.message
-                if isinstance(error, AgentRuntimeError) and error.code == "LLM_NOT_CONFIGURED"
+                if isinstance(error, AgentRuntimeError) and error.code in {"LLM_NOT_CONFIGURED", "AGENT_TOOL_LOOP_DETECTED"}
                 else (
                     "模型上下文超过本轮可用范围；之前已经完成的处理和候选修改均已保留，请从当前进展重试。"
                     if _is_context_limit_exception(error)
@@ -4115,6 +4519,12 @@ class AgentService:
                     else "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
                 )
             )
+            try:
+                self._settle_failed_tool_events(run.project_id, run.id, visible_error)
+            except Exception:
+                logger.exception("Failed to settle unfinished tool events for run %s", run.id)
+            self.store.update_run(run.id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
+            self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "message", {"role": "assistant", "blocks": [{"type": "error", "text": visible_error, "actions": [{"id": "retry", "label": "从当前进展重试"}]}]})
             if live.restore_interaction:
                 self._restore_interaction(run, live.restore_interaction)
@@ -4134,7 +4544,7 @@ class AgentService:
                         publish_user_message=False,
                     )
                     self.store.mark_steering_delivered(steering_id)
-                except Exception as error:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
                     logger.exception(
                         "Could not start post-purpose-review run for project %s",
                         run.project_id,
@@ -4434,6 +4844,17 @@ class AgentService:
             "planNextTask": live.situation.plan_next_task,
             "stalledRounds": stalled,
         })
+
+    def _progress_only_continuation_prompt(self, project_id: str) -> str:
+        state = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
+        return (
+            "你刚才只输出了执行进度，尚未形成候选修订、校验回执或确认卡。"
+            "不要再次只描述下一步；立即调用 get_project_state 读取最新状态，"
+            "再按已批准计划调用 stage_change_set 与 validate_change_set，"
+            "完整校验通过后调用 request_confirmation 生成统一确认卡。\n\n"
+            "# 项目唯一 Agent 状态快照\n"
+            f"{state}"
+        )
 
     async def _ensure_visible_result(
         self,
@@ -5072,6 +5493,34 @@ _FULL_READ_INTENT = re.compile(
     r"全文.{0,6}(?:精读|阅读|通读)|(?:精读|通读).{0,12}(?:文档|文件|资料|材料)",
 )
 
+# Full-read wording can occur in a prohibition or in a statement that the
+# result already exists. Those meanings must win over the positive keyword.
+_FULL_READ_PROHIBITED = re.compile(
+    r"(?:禁止|不要|不再|无需|不用|不必|不得|别再|避免).{0,16}(?:全文\s*(?:精读|阅读|通读)|(?:精读|通读).{0,8}(?:文档|文件|资料|材料))|"
+    r"(?:全文\s*(?:精读|阅读|通读)|(?:精读|通读).{0,8}(?:文档|文件|资料|材料)).{0,16}(?:禁止|不要|不再|无需|不用|不必|不得|别再|避免)",
+    re.IGNORECASE,
+)
+# Covers the common Chinese order “不要再次全文阅读/无需继续全文分析”，where
+# an adverb sits between the negation and the full-read phrase.
+_FULL_READ_PROHIBITED_BROAD = re.compile(
+    r"(?:禁止|不要|不再|无需|不用|不必|不得|别再|避免).{0,40}(?:全文\s*(?:精读|阅读|通读)|(?:精读|通读).{0,12}(?:文档|文件|资料|材料))",
+    re.IGNORECASE,
+)
+_FULL_READ_ALREADY_SATISFIED = re.compile(
+    r"(?:已经|已|此前|先前|复用|沿用|基于).{0,20}(?:完成|读完|分析完成|覆盖完成|全文\s*(?:精读|阅读|通读))|"
+    r"(?:全文\s*(?:精读|阅读|通读)|分析).{0,16}(?:已经|已)完成",
+    re.IGNORECASE,
+)
+
+
+def _full_read_state(situation: RunSituation) -> str:
+    """Classify full-read state before mapping intent to tools."""
+    if situation.has_completed_full_read():
+        return "already_satisfied"
+    if not situation.materials_observed:
+        return "unknown"
+    return "requested" if situation.has_full_read_materials() is Verdict.ALLOW else "not_configured"
+
 _DOCUMENT_REFERENCE_INTENT = re.compile(
     r"《[^》]{1,200}》|"
     r"[\w\u4e00-\u9fff][\w\u4e00-\u9fff ._-]{0,120}\.(?:docx?|pdf|xlsx?|csv|md|txt)|"
@@ -5103,6 +5552,7 @@ _PACKAGE_FUSION_INTENT = re.compile(
 _PRODUCT_LEDGER_INTENT = re.compile(
     r"(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
     r"(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)|"
+    r"(?:产品|商品).{0,20}(?:台账|清单)|(?:台账|清单).{0,20}(?:产品|商品)|"
     r"规则.{0,220}(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
     r"(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}规则",
     re.IGNORECASE,
@@ -5122,6 +5572,44 @@ _AUTONOMOUS_WORK_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+_APPROVED_PLAN_EXECUTION_INTENT = re.compile(
+    r"(?:按|根据|依照).{0,16}(?:已批准|已审批|已同意|批准后?|审批后?)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,16}(?:继续|执行|推进|完成)|"
+    r"(?<![不未])(?:已批准|已审批|已同意|批准后?|审批后?)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,20}(?:继续|执行|推进|完成|开始)|"
+    r"(?<![不未])(?:批准|同意|确认)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,24}(?:继续|执行|推进|完成|开始)|"
+    r"(?:修复计划|变更计划|已批准计划).{0,12}(?:继续|执行|推进|完成)|"
+    r"(?:候选预检|完整校验|统一确认卡).{0,12}(?:继续|执行|完成|生成)|"
+    r"(?:继续|执行|完成|生成).{0,12}(?:候选预检|完整校验|统一确认卡)",
+    re.IGNORECASE,
+)
+
+_APPROVED_PLAN_NEGATION = re.compile(
+    r"(?:不|未|没有|无需|不用|别|不是).{0,8}(?:按|根据|依照|继续|执行|推进|完成|开始)|"
+    r"(?:确认|核对|检查|查看).{0,16}(?:计划).{0,16}(?:已完成|已执行|已处理|完成情况|执行情况|状态)|"
+    r"(?:计划|任务).{0,8}(?:已完成|已执行|已处理|完成情况|执行情况)",
+    re.IGNORECASE,
+)
+
+
+def _approved_plan_execution_requested(text: str) -> bool:
+    value = str(text or "")
+    if _APPROVED_PLAN_NEGATION.search(value):
+        return False
+    return bool(_APPROVED_PLAN_EXECUTION_INTENT.search(value))
+
+
+_PROGRESS_ONLY_FINAL_TEXT = re.compile(
+    r"正在执行(?:候选)?预检|"
+    r"正在(?:准备|进行|执行)(?:候选)?预检|"
+    r"下一步(?:将|会|就)?(?:展示|生成|执行|进入)|"
+    r"(?:尚未|还未|没有)(?:展示|生成|形成).{0,12}(?:确认卡|候选)|"
+    r"(?:即将|准备)(?:展示|生成).{0,12}(?:确认卡|候选)|"
+    r"预检通过后.{0,16}(?:展示|生成)",
+)
+
+
+def _progress_only_final_text(text: str) -> bool:
+    return bool(_PROGRESS_ONLY_FINAL_TEXT.search(str(text or "")))
+
 
 def _release_reentry_requested(text: str) -> bool:
     return bool(_RELEASE_REENTRY_INTENT.search(str(text or "")))
@@ -5136,6 +5624,11 @@ def _document_rule_change_requested(text: str) -> bool:
 
 def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
+
+
+def _product_ledger_requested(text: str) -> bool:
+    """Return whether the user explicitly asks for a large, itemized ledger."""
+    return bool(_PRODUCT_LEDGER_INTENT.search(str(text or "")))
 
 
 # 会形成本阶段交付物的工具。阶段切换后重新计数，用来区分
@@ -5182,20 +5675,139 @@ def _absorb_reading_modes(live: LiveRun, result: Any) -> None:
     if not isinstance(result, dict):
         return
     documents = result.get("documents")
-    if not isinstance(documents, list) or not documents:
+    coverage = result.get("coverage")
+    if not isinstance(documents, list):
+        single = result.get("document")
+        documents = [single] if isinstance(single, dict) else []
+    if not documents:
         return
     names: list[str] = []
+    current_fingerprints: dict[str, str] = {}
     for item in documents:
         if not isinstance(item, dict):
-            return
-        if "readingMode" not in item and "reading_mode" not in item:
-            return
+            continue
         mode = str(item.get("readingMode") or item.get("reading_mode") or "").strip()
         filename = str(item.get("filename") or "").strip()
         if mode == "full" and filename:
             names.append(filename)
+            fingerprint = str(
+                item.get("revisionFingerprint")
+                or item.get("revision_fingerprint")
+                or ""
+            ).strip()
+            if fingerprint:
+                current_fingerprints[filename] = fingerprint
     live.situation.full_read_materials = tuple(dict.fromkeys(names))
+    # Invalidate a previously complete result as soon as the same filename is
+    # observed with another revision. This keeps a completed read tied to the
+    # exact document revision instead of a mutable filename.
+    if live.situation.completed_full_read_materials:
+        valid_completed = []
+        valid_fingerprints: dict[str, str] = {}
+        for filename in live.situation.completed_full_read_materials:
+            previous = live.situation.completed_full_read_fingerprints.get(filename, "")
+            current = current_fingerprints.get(filename, "")
+            # If the previous completion has no fingerprint, it predates the
+            # revision-bound protocol and cannot be trusted after a fresh
+            # revision-bearing listing. Treat it as stale rather than reusing
+            # an unverifiable result.
+            if current and (not previous or previous != current):
+                continue
+            valid_completed.append(filename)
+            if previous:
+                valid_fingerprints[filename] = previous
+        live.situation.completed_full_read_materials = tuple(valid_completed)
+        live.situation.completed_full_read_fingerprints = valid_fingerprints
+    completed: list[str] = []
+    if isinstance(coverage, list):
+        complete_ids: set[str] = set()
+        complete_names: set[str] = set()
+        for coverage_item in coverage:
+            if not isinstance(coverage_item, dict) or coverage_item.get("complete") is not True:
+                continue
+            complete_ids.add(str(coverage_item.get("documentId") or "").strip())
+            complete_names.add(str(coverage_item.get("filename") or "").strip())
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+            filename = str(item.get("filename") or "").strip()
+            document_id = str(item.get("documentId") or item.get("id") or "").strip()
+            if filename and (filename in complete_names or document_id in complete_ids):
+                completed.append(filename)
+                fingerprint = str(
+                    item.get("revisionFingerprint")
+                    or item.get("revision_fingerprint")
+                    or ""
+                ).strip()
+                if not fingerprint:
+                    for coverage_item in coverage:
+                        if not isinstance(coverage_item, dict):
+                            continue
+                        coverage_filename = str(
+                            coverage_item.get("filename") or "",
+                        ).strip()
+                        coverage_document_id = str(
+                            coverage_item.get("documentId") or "",
+                        ).strip()
+                        if coverage_filename != filename and coverage_document_id != document_id:
+                            continue
+                        fingerprint = str(
+                            coverage_item.get("revisionFingerprint")
+                            or coverage_item.get("revision_fingerprint")
+                            or "",
+                        ).strip()
+                        break
+                if fingerprint:
+                    live.situation.completed_full_read_fingerprints[filename] = fingerprint
+        # Only a coverage-bearing response is authoritative for completion.
+        # list_documents/get_project_state responses must not erase a prior
+        # revision-bound 100% result.
+        if completed:
+            live.situation.completed_full_read_materials = tuple(dict.fromkeys(completed))
     live.situation.materials_observed = True
+
+
+def _absorb_product_ledger(live: LiveRun, result: Any) -> None:
+    """将台账工具的结构化状态保留在本轮快照中，供诊断回执使用。"""
+    if not isinstance(result, dict):
+        return
+    validation = result.get("validation")
+    counts = validation.get("counts") if isinstance(validation, dict) else result.get("counts")
+    if isinstance(counts, dict):
+        aliases = {
+            "raw": ("raw", "rawCount"),
+            "canonical": ("canonical", "canonicalCount"),
+            "mergedGroups": ("mergedGroups", "mergedGroupCount"),
+            "complete": ("complete", "completeCount"),
+            "insufficient": ("insufficient", "insufficientCount"),
+        }
+        normalized: dict[str, int] = {}
+        for target, keys in aliases.items():
+            for key in keys:
+                value = counts.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    normalized[target] = value
+                    break
+        if normalized:
+            live.situation.product_ledger_counts = normalized
+    status = str(result.get("status") or "").strip()
+    if not status and isinstance(validation, dict):
+        status = "finalized" if validation.get("pass") is True else "needs_review"
+    if status:
+        live.situation.product_ledger_status = status
+    for key, attr in (
+        ("ledgerId", "product_ledger_id"),
+        ("analysisRevision", "product_ledger_analysis_revision"),
+    ):
+        value = str(result.get(key) or "").strip()
+        if value:
+            setattr(live.situation, attr, value)
+    if isinstance(result.get("lastSuccessfulBatch"), int):
+        live.situation.product_ledger_last_batch = int(result["lastSuccessfulBatch"])
+    if isinstance(result.get("processed"), int):
+        live.situation.product_ledger_processed = max(0, int(result["processed"]))
+    if isinstance(result.get("remaining"), int):
+        live.situation.product_ledger_remaining = max(0, int(result["remaining"]))
 
 
 def _absorb_plan_progress(live: LiveRun, result: Any) -> None:
@@ -5264,6 +5876,18 @@ _FULL_READ_RULE = IntentRule(
 )
 
 
+def _full_read_required_tools(situation: RunSituation) -> set[str]:
+    """Return only the still-missing full-read steps for the observed state."""
+    if situation.has_completed_full_read():
+        return set()
+    if not situation.materials_observed:
+        return set(_FULL_READ_RULE.requires)
+    if situation.has_full_read_materials() is Verdict.ALLOW:
+        # The directive is already an observed fact; only coverage remains.
+        return {"read_documents_fully"}
+    return set()
+
+
 def _required_tools_for_user_intent(
     text: str,
     *,
@@ -5291,12 +5915,17 @@ def _required_tools_for_user_intent(
         required.add("run_evaluation")
     if _EVALUATION_RESULT_INTENT.search(value):
         required.add("get_evaluation_results")
-    if _FULL_READ_INTENT.search(full_read_value):
+    full_read_prohibited = bool(
+        _FULL_READ_PROHIBITED.search(full_read_value)
+        or _FULL_READ_PROHIBITED_BROAD.search(full_read_value)
+    )
+    full_read_satisfied = bool(_FULL_READ_ALREADY_SATISFIED.search(full_read_value))
+    if _FULL_READ_INTENT.search(full_read_value) and not full_read_prohibited and not full_read_satisfied:
         if _FULL_READ_RULE.verdict(situation or RunSituation()) is Verdict.DENY:
             if notes is not None:
                 notes.append(_FULL_READ_RULE.unmet_note)
         else:
-            required.update(_FULL_READ_RULE.requires)
+            required.update(_full_read_required_tools(situation or RunSituation()))
     elif _MATERIAL_DIRECTIVE_INTENT.search(value):
         required.add("set_material_directive")
     if _document_rule_change_requested(value):
@@ -5305,10 +5934,16 @@ def _required_tools_for_user_intent(
         required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
-    if _PRODUCT_LEDGER_INTENT.search(value):
+    if _product_ledger_requested(value):
         # 台账先作为一个确定性工具结果取得；产品台账模式为 advisory 时不阻断，
         # 切换为 enforce 后由核心门禁阻止正式规则批次继续生成。
-        required.add("stage_product_ledger")
+        required.update({
+            "require_product_ledger", "get_product_inventory_source",
+            "begin_product_ledger", "append_product_ledger_batch",
+            "finalize_product_ledger",
+        })
+    if _approved_plan_execution_requested(value):
+        required.update(APPROVED_PLAN_REQUIRED_TOOLS)
     return required
 
 

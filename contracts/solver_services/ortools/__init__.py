@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Public ``ortools.solver.v1`` HTTP contract."""
 
 from .validation import (

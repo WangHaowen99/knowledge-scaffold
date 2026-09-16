@@ -302,7 +302,15 @@ const EvidenceList = () => Type.Array(Type.String({
 
 // spec 的 objects/operations/rules/metrics schema——submit_package_spec 与
 // optimizer 的 submit_revised_spec 共用，保证两处捕获的字段一致。
-export const specObjectSchema = (candidateIds: string[] = []) => Type.Object({
+export interface ObjectSchemaOptions {
+  /** 对象初次生成阶段由统一关系审阅在 Operation 就绪后补充关系。 */
+  allowRelations?: boolean;
+}
+
+export const specObjectSchema = (
+  candidateIds: string[] = [],
+  options: ObjectSchemaOptions = {},
+) => Type.Object({
   candidateId: candidateIds.length
     ? literalString(candidateIds)
     : Type.Optional(Type.String()),
@@ -311,12 +319,12 @@ export const specObjectSchema = (candidateIds: string[] = []) => Type.Object({
     description: '用户可能使用的自然语言别名；在整个知识包内不得与其他对象的 alias、key 或 title 重复（英文忽略大小写）',
   }))),
   queryBoundary: Type.Optional(Type.String({ description: '查询边界：查询该对象前的前置条件与不得推断的事项' })),
-  relations: Type.Optional(Type.Array(Type.Object({
+  ...(options.allowRelations === false ? {} : { relations: Type.Optional(Type.Array(Type.Object({
     relation: Type.String({ description: RELATION_NAME_GENERATION_GUIDANCE }),
     target: KeyString(),
     note: Type.Optional(Type.String()),
     evidence: Type.Optional(EvidenceList()),
-  }, { description: '对象间关系（目标对象须是包内已声明的对象 key）' }))),
+  }, { description: '对象间关系（目标对象须是包内已声明的对象 key）' }))) }),
   sourceRefs: Type.Optional(Type.Array(Type.Union([
     Type.Object({
       kind: Type.Literal('table'),
@@ -455,7 +463,10 @@ export function buildObjectGenerateTools(
     label: '提交业务对象',
     description: '提交当前批次的完整业务对象规格；每个对象必须用 candidateId 认领一个给定候选，只提交对象，不提交规则或操作。',
     parameters: Type.Object({
-      objects: Type.Array(specObjectSchema(candidates.map((candidate) => candidate.id)), { minItems: 1, maxItems: 12 }),
+      objects: Type.Array(specObjectSchema(
+        candidates.map((candidate) => candidate.id),
+        { allowRelations: false },
+      ), { minItems: 1, maxItems: 12 }),
     }),
     async execute(_id: string, params: { objects: unknown[] }) {
       cap.objects = params.objects;

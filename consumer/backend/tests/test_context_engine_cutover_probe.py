@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase A regression probes for the OpenJiuwen ContextEngine cutover.
 
 These tests validate the cutover-specific behaviour introduced in Phase A
@@ -28,6 +29,7 @@ from agent.core.jiuwen_engine import (
 )
 from backend_synthetic_credentials import synthetic_secret
 from config.settings import AgentConfig
+from internal_access import internal
 
 
 def _agent_config(**overrides):
@@ -90,8 +92,9 @@ class TestResolveEffectiveContextMaxRounds:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_empty_dict_interaction_response_is_normal(self):
-        """An empty dict interaction_response is falsy, so treated as normal.
-        This matches the orchestrator's own truthiness check."""
+        """An empty dict interaction_response is falsy, so treated as normal."""
+        # Details: An empty dict interaction_response is falsy, so treated as normal. This matches the orchestrator's
+        # own truthiness check.
         state = {"user_context": {"interaction_response": {}}}
         assert _resolve_effective_context_max_rounds(1, state) == 1
 
@@ -241,8 +244,8 @@ class TestEngineDoesNotImportSlidingWindow:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_build_history_messages_does_not_call_sliding_window(self, monkeypatch):
-        """_build_jiuwen_history_messages must forward full history without
-        calling apply_sliding_window."""
+        """_build_jiuwen_history_messages must forward full history without."""
+        # Details: _build_jiuwen_history_messages must forward full history without calling apply_sliding_window.
         calls = []
 
         def fail_if_called(messages, max_rounds):
@@ -263,8 +266,8 @@ class TestEngineDoesNotImportSlidingWindow:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_build_context_messages_does_not_call_sliding_window(self, monkeypatch):
-        """_build_jiuwen_context_messages must forward full history without
-        calling apply_sliding_window."""
+        """_build_jiuwen_context_messages must forward full history without."""
+        # Details: _build_jiuwen_context_messages must forward full history without calling apply_sliding_window.
         calls = []
 
         def fail_if_called(messages, max_rounds):
@@ -333,21 +336,21 @@ class TestCreateAgentEffectiveRounds:
     def test_normal_request_uses_configured_rounds(self, monkeypatch):
         captured = self._setup_factory_spy(monkeypatch)
         engine = JiuwenReactLoopEngine(agent_config=_agent_config(context_max_rounds=5))
-        engine._create_agent(max_iterations=10, system_prompt="p", caller="main")
+        internal(engine).create_agent(max_iterations=10, system_prompt="p", caller="main")
         assert captured["context_max_rounds"] == 5
 
     def test_resume_request_clamps_to_at_least_two(self, monkeypatch):
         captured = self._setup_factory_spy(monkeypatch)
         engine = JiuwenReactLoopEngine(agent_config=_agent_config(context_max_rounds=1))
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
-        engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
+        internal(engine).create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert captured["context_max_rounds"] == 2
 
     def test_resume_request_keeps_configured_when_above_two(self, monkeypatch):
         captured = self._setup_factory_spy(monkeypatch)
         engine = JiuwenReactLoopEngine(agent_config=_agent_config(context_max_rounds=7))
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
-        engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
+        internal(engine).create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert captured["context_max_rounds"] == 7
 
 
@@ -362,7 +365,7 @@ class TestFactoryAgentCapabilityValidation:
             agent_factory=lambda: created,
         )
         state = {"messages": [{"role": "user", "content": "hello"}]}
-        result = engine._create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
+        result = internal(engine).create_agent(max_iterations=10, system_prompt="p", caller="main", state=state)
         assert result is created
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator

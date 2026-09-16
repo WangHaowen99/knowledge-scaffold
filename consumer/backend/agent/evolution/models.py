@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Typed models for operation-evolution proposals and aggregates."""
 
 from __future__ import annotations

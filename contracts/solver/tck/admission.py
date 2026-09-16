@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Strict TCK admission helpers and an out-of-band HTTP fault driver.
 
 The public TCK data plane is deliberately limited to ``solver.job.v1``

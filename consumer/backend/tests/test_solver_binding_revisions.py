@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import hashlib
@@ -13,6 +14,7 @@ from solver_coordination.canonical import canonical_json_bytes
 from solver_coordination.connectors.endpoint_policy import EndpointPolicy
 from solver_coordination.job_store import JobStoreConflict, SolverJobStore
 from solver_coordination.service import SolverCoordinationService, SolverServiceError
+from internal_access import internal
 
 
 def _endpoint_policy() -> EndpointPolicy:
@@ -155,7 +157,7 @@ def test_binding_revision_is_immutable_in_the_store(tmp_path):
 
 def test_service_rejects_legacy_arbitrary_binding_configuration_before_new_run():
     with pytest.raises(SolverServiceError, match="binding"):
-        SolverCoordinationService._binding(
+        internal(SolverCoordinationService).binding(
             {
                 "binding_revision_id": "legacy-binding",
                 "configuration": {"backend": "local-process"},
@@ -638,7 +640,7 @@ def test_service_binding_validation_accepts_only_explicit_policy_for_private_hos
     configuration["endpoint"] = "https://solver.private.example.com"
     policy = EndpointPolicy(allowed_hosts=("solver.private.example.com",))
 
-    revision, normalized = SolverCoordinationService._binding(
+    revision, normalized = internal(SolverCoordinationService).binding(
         {
             "binding_revision_id": "binding-revision-a",
             "configuration": configuration,

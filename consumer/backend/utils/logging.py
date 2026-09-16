@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Unified logging configuration for agentic."""
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta
+from operator import getitem
 from typing import Any, Optional
 
 LOG_DIR = "logs"
@@ -73,6 +75,7 @@ _RESERVED_RECORD_KEYS = {
     "processName",
     "process",
     "message",
+    "suppress_log_context",
 }
 
 
@@ -170,6 +173,9 @@ def _format_agent_context(context: dict[str, Any]) -> str:
 
 
 def _enrich_record_with_log_context(record: logging.LogRecord) -> dict[str, Any]:
+    if getattr(record, "suppress_log_context", False):
+        record.__dict__.setdefault("agent_context", "")
+        return {}
     context = get_log_context()
     if context:
         for key, value in context.items():
@@ -389,7 +395,7 @@ class DatePartitionedRotatingFileHandler(logging.Handler):
             keep_groups = max(self.backup_count + 1, 1)
             stale_dates = sorted(date_groups)[:-keep_groups]
         for stale_date in stale_dates:
-            for stale_path in date_groups[stale_date]:
+            for stale_path in getitem(date_groups, stale_date):
                 try:
                     os.remove(stale_path)
                 except FileNotFoundError:

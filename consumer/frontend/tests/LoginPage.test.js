@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -241,7 +242,9 @@ test('register form still submits valid input to /auth/register', async () => {
 
 test('login failures use safe Chinese copy and expose an accessible alert', async () => {
   globalThis.fetch = async (url) => {
-    if (url === '/auth/capabilities') { return jsonResponse({ registration_enabled: false }); }
+    if (url === '/auth/capabilities') {
+      return jsonResponse({ registration_enabled: false });
+    }
     throw new Error(`Unexpected URL: ${url}`);
   };
 

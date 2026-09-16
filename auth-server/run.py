@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """开发启动入口：默认 127.0.0.1:5056，可用 AUTH_SERVER_HOST/PORT 覆盖。"""
 
 from __future__ import annotations

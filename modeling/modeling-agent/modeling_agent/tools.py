@@ -19,6 +19,7 @@ EventSink = Callable[[str, dict[str, Any]], None]
 StateAction = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 AfterCoreTool = Callable[[str, dict[str, Any], dict[str, Any]], Awaitable[None]]
 ConfirmationGuard = Callable[[], bool]
+ScopeConfirmationGate = Callable[[], bool]
 ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 ValidationRepairSave = Callable[[dict[str, Any]], None]
@@ -157,6 +158,7 @@ class ToolContext:
     state_action: StateAction | None = None
     after_core_tool: AfterCoreTool | None = None
     confirmation_guard: ConfirmationGuard | None = None
+    scope_confirmation_gate: ScopeConfirmationGate | None = None
     tool_receipt_lookup: ToolReceiptLookup | None = None
     tool_receipt_save: ToolReceiptSave | None = None
     stable_read_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -692,6 +694,49 @@ MUTATION_ID = {
     "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
     "description": "同一业务修改重试时保持不变的幂等标识",
 }
+GOAL_EVIDENCE = {
+    **STRING,
+    "description": "material:<资料 id>#<原文锚点> 或 user-decision:<说明>",
+}
+GOAL_SECTION_DATA = {
+    "description": (
+        "必须与 section 匹配：objective 使用 problem/target_users/success_criteria/evidence；"
+        "scope 使用 included/excluded/evidence；constraints、outputs 和 open_questions 使用 items/evidence。"
+        "不要提交 summary、title 或其它未列出的字段；success_criteria 必须是字符串，不是数组。"
+    ),
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {
+                "problem": STRING,
+                "target_users": STRING,
+                "success_criteria": STRING,
+                "evidence": {"type": "array", "items": GOAL_EVIDENCE, "minItems": 1, "maxItems": 30},
+            },
+            "required": ["problem", "target_users", "success_criteria", "evidence"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "included": {"type": "array", "items": STRING, "maxItems": 30},
+                "excluded": {"type": "array", "items": STRING, "maxItems": 30},
+                "evidence": {"type": "array", "items": GOAL_EVIDENCE, "minItems": 1, "maxItems": 30},
+            },
+            "required": ["included", "excluded", "evidence"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": STRING, "minItems": 1, "maxItems": 30},
+                "evidence": {"type": "array", "items": GOAL_EVIDENCE, "minItems": 1, "maxItems": 30},
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        },
+    ],
+}
 DOMAIN_FIELD = {
     "type": "object",
     "properties": {
@@ -713,31 +758,6 @@ DOMAIN_RELATION = {
         "description": STRING,
     },
     "required": ["target_id"],
-    "additionalProperties": False,
-}
-PREVIOUS_OBJECT_RELATION = {
-    "type": "object",
-    "properties": {
-        "sourceObject": STRING,
-        "source_object": STRING,
-        "targetObject": STRING,
-        "target_object": STRING,
-        "relation": STRING,
-        "note": STRING,
-        "evidence": {"type": "array", "items": STRING, "maxItems": 20},
-        "status": {"type": "string", "enum": ["previous", "discarded", "needs_review"]},
-    },
-    "required": ["relation"],
-    "additionalProperties": False,
-}
-OBJECT_RELATION_SUGGESTION_SCOPE = {
-    "type": "object",
-    "properties": {
-        "affectedObjects": {"type": "array", "items": STRING, "maxItems": 100},
-        "affected_objects": {"type": "array", "items": STRING, "maxItems": 100},
-        "affectedOperations": {"type": "array", "items": STRING, "maxItems": 100},
-        "affected_operations": {"type": "array", "items": STRING, "maxItems": 100},
-    },
     "additionalProperties": False,
 }
 DOMAIN_ACTION_CHANGES = {
@@ -914,6 +934,7 @@ CHANGE_PLAN_TASK = {
                 "patch_object", "patch_rule", "patch_operation", "patch_metric",
                 "sync_schema_objects", "stage_schema_semantic_changes", "confirm_schema_semantics",
                 "patch_object_source_binding", "delete_domain_resource", "stage_script_patch",
+                "review_object_relations",
             ]},
         },
         "depends_on": {"type": "array", "maxItems": 100, "items": STRING},
@@ -1040,7 +1061,7 @@ CORE_TOOL_SPECS = (
         {
             "draft_id": {"type": "string", "minLength": 1, "maxLength": 80},
             "section": {"type": "string", "enum": ["objective", "scope", "constraints", "outputs", "open_questions"]},
-            "data": {"type": "object"},
+            "data": GOAL_SECTION_DATA,
             "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
             "base_revision": {"type": "string", "minLength": 1, "maxLength": 200},
         },
@@ -1063,6 +1084,42 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
+        "require_product_ledger",
+        "将用户明确要求的产品/规则大清单台账写入当前项目策略；启用后，在台账 finalized 前禁止建立正式规则、指标、操作计划或写入资源。",
+        {"required": {"type": "boolean"}},
+        display="正在启用产品清单台账门禁",
+    ),
+    ToolSpec(
+        "get_product_inventory_source",
+        "分页读取产品清单结构化事实来源；游标绑定资料分析修订，不能用有界目标上下文或 candidateArtifacts 规则候选替代。若分析没有完整 productInventory，必须返回缺失来源错误。",
+        {
+        "analysis_revision": STRING,
+            "cursor": {"oneOf": [
+                {"type": "integer", "minimum": 0},
+                {"type": "string", "minLength": 1},
+            ]},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "scope": STRING,
+        },
+        display="正在分页读取产品清单来源",
+    ),
+    ToolSpec("begin_product_ledger", "创建或恢复产品清单台账草稿。", {
+        "ledger_id": STRING, "source_revision": STRING, "analysis_revision": STRING,
+        "scope": STRING, "raw_count": {"type": "integer", "minimum": 0},
+        "canonical_count": {"type": "integer", "minimum": 0},
+        "merged_group_count": {"type": "integer", "minimum": 0},
+    }, display="正在创建产品清单台账草稿"),
+    ToolSpec("append_product_ledger_batch", "向台账草稿追加一个可幂等重放的条目批次。", {
+        "ledger_id": STRING, "batch_no": {"type": "integer", "minimum": 1},
+        "source_cursor": STRING, "entries": {"type": "array", "items": {"type": "object"}},
+    }, ("ledger_id", "batch_no", "entries"), False, "正在保存产品清单台账批次"),
+    ToolSpec("get_product_ledger_progress", "读取台账草稿的批次、已处理和剩余进度。", {
+        "ledger_id": STRING,
+    }, ("ledger_id",), display="正在读取产品清单台账进度"),
+    ToolSpec("finalize_product_ledger", "合并全部批次并由服务端重新计算台账统计。", {
+        "ledger_id": STRING,
+    }, ("ledger_id",), False, "正在完成产品清单台账校验"),
+    ToolSpec(
         "get_product_ledger",
         "读取当前产品/规则大清单的逐项对账台账和确定性校验结果；没有台账时返回未建立状态。",
         {},
@@ -1070,7 +1127,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "stage_product_ledger",
-        "提交产品/规则大清单的结构化台账。sourceRevision 可留空，由核心绑定当前工作区修订；必须提供每个 canonical item 的唯一 ID、rule ID、原始记录定位、归并组、证据覆盖状态和处理状态；核心会确定性校验数量闭合和 ID 唯一性。",
+        "兼容旧 v1/v2 快照的直接提交接口。新项目或已启用产品台账门禁时不得使用；必须改用 begin_product_ledger → append_product_ledger_batch → finalize_product_ledger。",
         {
             "schemaVersion": {"type": "string", "enum": ["product-ledger-v1", "product-ledger-v2"]},
             "sourceRevision": STRING,
@@ -1090,6 +1147,11 @@ CORE_TOOL_SPECS = (
                         "ruleRefs": {"type": "array", "items": STRING, "minItems": 1, "uniqueItems": True},
                         "sourceRecordIds": {"type": "array", "items": STRING, "minItems": 1},
                         "sourceLocator": STRING,
+                        "name": STRING,
+                        "applicableSubjects": {"type": "array", "items": STRING},
+                        "triggerScenarios": {"type": "array", "items": STRING},
+                        "businessNeeds": {"type": "array", "items": STRING},
+                        "structuredGaps": {"type": "array", "items": STRING},
                         "mergeGroupId": STRING,
                         "evidenceStatus": {"type": "string", "enum": ["complete", "insufficient"]},
                         "processingStatus": {"type": "string", "enum": ["pending", "ready", "generated", "blocked"]},
@@ -1199,7 +1261,7 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "create_change_plan",
-        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；Schema 模式的物理同步及其末尾业务语义阶段由 Core 合并为同一项 Schema 任务。要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
+        "写入任何领域资源前，把用户目标或正常生成范围冻结成可逐项验收的任务。每项任务只能对应一个具体目标资源；Schema 模式的物理同步及其末尾业务语义阶段由 Core 合并为同一项 Schema 任务。若平台会自动注入对象关系任务（包含候选审阅和确认写入），不要自行创建关系审阅、关系确认或对象间关系等同义任务。要修改多个对象、规则、操作或指标时必须逐资源拆成多项。generation 计划必须等待页面批准；任务 ID 和批准状态都由 Core 返回，模型不能自行标记。",
         {
             "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
             "mode": {"type": "string", "enum": ["expert_edit", "generation"]},
@@ -1255,6 +1317,28 @@ CORE_TOOL_SPECS = (
         "正在核对修改回执",
     ),
     ToolSpec(
+        "review_object_relations",
+        "读取当前建模计划的对象关系候选；传 apply=true 时将选中的候选写入工作版本。候选必须来自当前关系审阅页。",
+        {
+            "plan_task_id": PLAN_TASK_ID,
+            "expected_revision": WORKING_REVISION,
+            "apply": {"type": "boolean", "default": False},
+            "review_id": STRING,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "offset": {"type": "integer", "minimum": 0},
+            "selected_fingerprints": {"type": "array", "items": STRING},
+            "relation_edits": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"fingerprint": STRING, "relation": STRING},
+                "required": ["fingerprint", "relation"],
+                "additionalProperties": False,
+            }},
+        },
+        ("plan_task_id", "expected_revision"),
+        False,
+        "正在读取对象关系候选",
+    ),
+    ToolSpec(
         "validate_change_set",
         "只有计划全部必选任务形成候选后，才对完整批次校验并冻结确认回执。",
         {"plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"}, "summary": {"type": "string", "maxLength": 1000}},
@@ -1301,26 +1385,6 @@ CORE_TOOL_SPECS = (
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         },
         display="正在检查 Schema 对象业务语义",
-    ),
-    ToolSpec(
-        "suggest_object_relations",
-        "仅在需要补齐对象间语义关系时调用，返回基于当前对象、字段、主键、来源、已有关系和操作引用的确定性只读候选；不需要补齐时无需调用。该工具不写知识包或 mapping。调用时可用 scope 收敛增量范围；不要把完整候选列表展示给专家。高置信候选可起草进 Change Set 摘要确认，方向不清的候选只转成少量具体业务问题。",
-        {
-            "working_revision": WORKING_REVISION,
-            "expected_revision": WORKING_REVISION,
-            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
-            "cursor": STRING,
-            "includeLowConfidence": {"type": "boolean"},
-            "include_low_confidence": {"type": "boolean"},
-            "previousRelations": {"type": "array", "items": PREVIOUS_OBJECT_RELATION, "maxItems": 500},
-            "previous_relations": {"type": "array", "items": PREVIOUS_OBJECT_RELATION, "maxItems": 500},
-            "rejectedFingerprints": {"type": "array", "items": STRING, "maxItems": 500},
-            "rejected_fingerprints": {"type": "array", "items": STRING, "maxItems": 500},
-            "scope": OBJECT_RELATION_SUGGESTION_SCOPE,
-        },
-        (),
-        True,
-        "Suggesting object relations",
     ),
     ToolSpec(
         "sync_schema_objects",
@@ -2942,21 +3006,26 @@ def build_tools(context: ToolContext) -> list[Tool]:
 DOMAIN_PHASE_TOOLS = frozenset({
     "create_change_plan", "get_change_plan", "revise_change_plan",
     "stage_change_set", "get_change_set_receipt", "validate_change_set", "discard_change_set",
+    "review_object_relations",
     "list_domain_resources", "get_domain_resource",
     "create_object", "create_rule", "create_operation", "create_metric",
     "patch_object", "patch_rule", "patch_operation", "patch_metric",
     "sync_schema_objects", "get_schema_semantics", "stage_schema_semantic_changes",
-    "confirm_schema_semantics", "suggest_object_relations", "patch_object_source_binding",
+    "confirm_schema_semantics", "patch_object_source_binding",
     "preview_domain_delete", "delete_domain_resource",
     "upsert_object", "upsert_rule", "upsert_operation", "bind_object_source",
     "stage_tabular_dataset",
+    "require_product_ledger", "get_product_inventory_source", "begin_product_ledger",
+    "append_product_ledger_batch", "get_product_ledger_progress", "finalize_product_ledger",
     "get_product_ledger", "stage_product_ledger",
 })
 DOMAIN_READ_TOOLS = frozenset({
     "list_domain_resources",
     "get_domain_resource",
-    "get_product_ledger",
+    "require_product_ledger", "get_product_inventory_source", "begin_product_ledger",
+    "append_product_ledger_batch", "get_product_ledger_progress", "finalize_product_ledger", "get_product_ledger",
     "get_schema_semantics",
+    "review_object_relations",
 })
 FUSION_PHASE_TOOLS = frozenset({
     "analyze_material_impact", "list_package_sources", "list_package_fusion_plans",

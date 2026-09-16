@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Normalized provider results, events, and structural protocols."""
 
 from __future__ import annotations

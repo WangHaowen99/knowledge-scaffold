@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """RemoteAuthBackend 集成测试：进程内起真实 auth server（真 HTTP，无 mock）。
 
 覆盖施工步骤 4（docs/decisions/2026-07-09-decoupled-auth-architecture.md 方案 a）：
@@ -39,6 +40,7 @@ from backend_synthetic_credentials import (
 )
 from fastapi.testclient import TestClient
 from werkzeug.serving import make_server
+from internal_access import internal
 
 # 测试专用例外：决策 D4 禁止 consumer 与 auth-server 之间任何生产代码 Python import
 # （唯一接口是 HTTP）。集成测试为了进程内起真实 server 而 import auth_server，
@@ -192,14 +194,14 @@ def test_concurrent_same_username_logins_keep_token_pairs_isolated(backend):
 
 def test_token_endpoint_200_requires_complete_verified_token_pair(monkeypatch):
     incomplete = RemoteAuthBackend(
-        "http://auth.example.net",
+        "https://auth.example.net",
         session=_StubSession(token_payload={"refresh_token": ACCESS_KEY_SECRET, "expires_in": 60}),
     )
     with pytest.raises(ValueError, match="认证服务暂不可用"):
         incomplete.login("admin", INVALID_PASSWORD)
 
     malformed = RemoteAuthBackend(
-        "http://auth.example.net",
+        "https://auth.example.net",
         session=_StubSession(
             token_payload={
                 "access_token": API_KEY,
@@ -217,27 +219,62 @@ def test_token_endpoint_200_requires_complete_verified_token_pair(monkeypatch):
 
 def test_jwks_refresh_throttles_unknown_kids_and_drops_removed_key(monkeypatch):
     session = _StubSession(jwks_payload={"keys": []})
-    backend = RemoteAuthBackend("http://auth.example.net", session=session)
+    backend = RemoteAuthBackend("https://auth.example.net", session=session)
 
-    assert backend._signing_key("forged-a") is None
-    assert backend._signing_key("forged-b") is None
+    assert internal(backend).signing_key("forged-a") is None
+    assert internal(backend).signing_key("forged-b") is None
     assert session.jwks_get_count == 1
 
     old_key = object()
-    with backend._jwks_lock:
-        backend._jwks_keys = {"old": old_key}
-        backend._jwks_fetched_at = 0
-        backend._jwks_last_attempt_at = 0
+    with internal(backend).jwks_lock:
+        internal(backend).jwks_keys = {"old": old_key}
+        internal(backend).jwks_fetched_at = 0
+        internal(backend).jwks_last_attempt_at = 0
 
     def concurrent_successful_rotation():
-        with backend._jwks_lock:
-            backend._jwks_keys = {}
-            backend._jwks_fetched_at = 1
+        with internal(backend).jwks_lock:
+            internal(backend).jwks_keys = {}
+            internal(backend).jwks_fetched_at = 1
         # 模拟另一线程已成功刷新，本线程因节流未再次请求。
         return False
 
     monkeypatch.setattr(backend, "_refresh_jwks", concurrent_successful_rotation)
-    assert backend._signing_key("old") is None
+    assert internal(backend).signing_key("old") is None
+
+
+def test_cold_jwks_failure_reports_throttling_and_recovers(auth_server, monkeypatch, caplog):
+    import requests
+    from api.auth import remote_auth as remote_auth_module
+
+    # Keep the refresh interval deterministic without changing JWT/server clocks.
+    monkeypatch.setattr(remote_auth_module, "time", SimpleNamespace(time=lambda: 1000.0))
+    backend = RemoteAuthBackend(auth_server.base_url)
+    real_get = internal(backend).session.get
+    attempts = []
+
+    def fail_first_get(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise requests.ReadTimeout("synthetic JWKS timeout")
+        return real_get(*args, **kwargs)
+
+    monkeypatch.setattr(internal(backend).session, "get", fail_first_get)
+    client = TestClient(_build_consumer_app(backend))
+    credentials = {"username": "admin", "password": BOOTSTRAP_ADMIN_PASSWORD}
+    with client:
+        assert client.post("/auth/login", json=credentials).status_code == 503
+        assert client.post("/auth/login", json=credentials).status_code == 503
+        assert len(attempts) == 1
+        # Advance only the refresh gate; JWT validity still uses the real clock.
+        with internal(backend).jwks_lock:
+            internal(backend).jwks_last_attempt_at = 0
+        assert client.post("/auth/login", json=credentials).status_code == 200
+    records = [record for record in caplog.records if record.name == "auth.diagnostics"]
+    assert [(record.auth_stage, record.auth_reason) for record in records] == [
+        ("jwks", "request_failed"), ("jwks", "refresh_throttled"),
+    ]
+    assert records[0].auth_attempt_id != records[1].auth_attempt_id
+    assert len(attempts) == 2
 
 
 def test_verify_token_rejects_non_access_tokens(backend):

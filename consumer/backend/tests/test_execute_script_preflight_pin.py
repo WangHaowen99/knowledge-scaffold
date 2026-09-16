@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression tests for run-admission ontology execution pinning."""
 
 from __future__ import annotations
@@ -7,6 +8,7 @@ import hashlib
 import os
 import pickle
 from dataclasses import replace
+from operator import getitem
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +27,7 @@ from ontology.view_cache import (
     build_package_content_revision,
     build_package_revision_source_signature,
 )
+from internal_access import internal
 
 _ONTOLOGY_ID = "synthetic-ontology"
 _ONTOLOGY_VERSION = "1.0.0"
@@ -537,7 +540,7 @@ def test_tool_context_receives_private_snapshot_without_state_or_repr_leak(tmp_p
         preflight_snapshot=snapshot,
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(runtime_context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(runtime_context)
     assert secret not in repr(state)
     assert "preflight_snapshot" not in state
 
@@ -600,7 +603,7 @@ def test_preflight_engine_state_is_pickle_safe_for_openjiuwen_checkpoint(tmp_pat
         preflight_snapshot=snapshot,
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(runtime_context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(runtime_context)
     restored = pickle.loads(pickle.dumps(state))
     state["_preflight_selected_ontology_preload_records"][0]["metadata"]["section"] = "run-local-change"
 
@@ -696,11 +699,11 @@ def test_execute_script_passes_matching_private_binding_to_handler(
     outcome = _execute_tool(context)
 
     assert outcome.content == "pinned"
-    assert captured["preflight_ontology_manifest"]["id"] == _ONTOLOGY_ID
-    assert captured["preflight_ontology_script_entry"]["operation_key"] == (_OPERATION_KEY)
-    assert captured["preflight_ontology_source_signature"] == (snapshot.ontology_source_signature)
-    assert captured["preflight_ontology_content_revision"] == (snapshot.ontology_content_revision)
-    assert captured["preflight_ontology_mutation_revision"] == 7
+    assert getitem(getitem(captured, "preflight_ontology_manifest"), "id") == _ONTOLOGY_ID
+    assert getitem(getitem(captured, "preflight_ontology_script_entry"), "operation_key") == (_OPERATION_KEY)
+    assert getitem(captured, "preflight_ontology_source_signature") == (snapshot.ontology_source_signature)
+    assert getitem(captured, "preflight_ontology_content_revision") == (snapshot.ontology_content_revision)
+    assert getitem(captured, "preflight_ontology_mutation_revision") == 7
 
 
 def test_execute_script_revision_drift_is_terminal_and_never_runs_live_metadata(

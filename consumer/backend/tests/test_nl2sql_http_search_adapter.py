@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Compatibility tests for the Agent-facing NL2SQL HTTP presentation."""
 
 from __future__ import annotations
@@ -9,13 +10,14 @@ from agent.tools.business_data.adapters.nl2sql_http_search import (
 )
 from backend_synthetic_credentials import synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
+from internal_access import internal
 
 
 def _connection() -> EffectiveConnection:
     return EffectiveConnection(
         version=1,
         provider="nl2sql_http",
-        endpoint="http://nl2sql.example.net",
+        endpoint="https://nl2sql.example.net",
         auth=AuthSpec(type="bearer", token=synthetic_secret("nl2sql_http_search_adapter-credential-01")),
         options={"scene": "scene-x", "timeout_seconds": 88},
     )
@@ -67,7 +69,7 @@ def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
     def post_response(*_args, **_kwargs):
         return _Response()
 
-    adapter._session.post = post_response
+    internal(adapter).session.post = post_response
 
     events = list(adapter.search_stream(query="查询零件", entity="TargetItem"))
 
@@ -92,7 +94,7 @@ def test_nl2sql_value_lookup_returns_structured_content():
     def post_response(*_args, **_kwargs):
         return _Response()
 
-    adapter._session.post = post_response
+    internal(adapter).session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -111,7 +113,7 @@ def test_nl2sql_value_lookup_preserves_text_answer_when_no_rows():
     def post_response(*_args, **_kwargs):
         return _TextAnswerResponse()
 
-    adapter._session.post = post_response
+    internal(adapter).session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -127,7 +129,7 @@ def test_nl2sql_value_lookup_emits_provider_failure_in_final():
     def post_response(*_args, **_kwargs):
         return _FailureResponse()
 
-    adapter._session.post = post_response
+    internal(adapter).session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 

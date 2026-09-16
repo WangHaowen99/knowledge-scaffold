@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Data models for the direct execution branch."""
 
 from dataclasses import dataclass, field

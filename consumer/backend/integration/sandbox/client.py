@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP/UDS client for the JiuwenBox sandbox API."""
 
 from __future__ import annotations

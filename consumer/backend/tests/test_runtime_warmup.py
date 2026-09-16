@@ -1,9 +1,11 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import asyncio
 import logging
 from types import SimpleNamespace
 
 import agent.core.warmup as warmup
 import pytest
+from internal_access import internal
 
 
 class _InlineShortIO:
@@ -64,7 +66,7 @@ def test_runtime_warmup_runs_once_on_supervised_short_io(monkeypatch):
             runtime=runtime,
         )
         assert first.state == "running"
-        await warmup._task
+        await internal(warmup).task
         second = warmup.start_runtime_warmup(
             agent_config=config,
             runtime=runtime,
@@ -98,7 +100,7 @@ def test_runtime_warmup_failure_is_terminal_without_exception_details(
             agent_config=SimpleNamespace(runtime_warmup_enabled=True),
             runtime=runtime,
         )
-        await warmup._task
+        await internal(warmup).task
 
     with caplog.at_level(logging.WARNING, logger="warmup"):
         asyncio.run(exercise())
@@ -142,7 +144,7 @@ def test_runtime_warmup_cancel_uses_absolute_deadline(monkeypatch):
     asyncio.run(exercise())
 
     assert warmup.get_runtime_warmup_status().state == "cancelled"
-    assert warmup._task is None
+    assert internal(warmup).task is None
 
 
 def test_runtime_warmup_requires_lifespan_runtime(monkeypatch):

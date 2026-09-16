@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Administrator-controlled endpoint policy for the Connector boundary.
 
 The platform never accepts a Connector URL from a knowledge package or a user

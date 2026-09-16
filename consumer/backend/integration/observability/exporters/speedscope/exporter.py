@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Write session-scoped Speedscope evented profiles from runtime events."""
 
 from __future__ import annotations

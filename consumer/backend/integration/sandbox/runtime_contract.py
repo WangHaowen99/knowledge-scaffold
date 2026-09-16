@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Single source of truth for the deterministic JiuwenBox runtime contract."""
 
 from __future__ import annotations

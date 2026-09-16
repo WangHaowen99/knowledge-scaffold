@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Helpers for ontology context loading and script catalog resolution."""
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
+from operator import getitem
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -1232,7 +1234,7 @@ def validate_field_aliases(ontology_dir: Path) -> FieldAliasValidationResult:
             display_claim = min(
                 claims,
                 key=lambda claim: (
-                    claim_priority[claim[0]],
+                    getitem(claim_priority, getitem(claim, 0)),
                     normalize_object_identifier(claim[1]),
                 ),
             )
@@ -1688,11 +1690,11 @@ def _highest_priority_identity_claims(
     by_object: Dict[str, str] = {}
     for object_key, kind in claims:
         current = by_object.get(object_key)
-        if current is None or priority[kind] < priority[current]:
+        if current is None or getitem(priority, kind) < getitem(priority, current):
             by_object[object_key] = kind
     return sorted(
         by_object.items(),
-        key=lambda item: (normalize_object_identifier(item[0]), priority[item[1]]),
+        key=lambda item: (normalize_object_identifier(getitem(item, 0)), getitem(priority, getitem(item, 1))),
     )
 
 
@@ -1737,7 +1739,7 @@ def _duplicate_field_alias_warnings(
         "对象“{}”的字段“{}”存在重复别名“{}”".format(
             object_name,
             field_key,
-            duplicates[compare],
+            getitem(duplicates, compare),
         )
         for compare in sorted(duplicates)
     ]
@@ -1868,6 +1870,7 @@ def public_script_catalog(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                     "script_key": str(entry.get("script_key") or ""),
                     "title": str(entry.get("title") or ""),
                     "parameters": _public_script_parameters(entry.get("parameters") or []),
+                    "generated_identifiers": entry.get("generated_identifiers") or None,
                 }
             )
         )
@@ -1957,6 +1960,12 @@ def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[D
         "_is_bound_operation": is_bound_operation,
         "data_access": str(frontmatter.get("data_access") or "").strip().casefold(),
     }
+    generated_identifiers = frontmatter.get("generated_identifiers")
+    if isinstance(generated_identifiers, dict):
+        entry["generated_identifiers"] = {
+            str(field): rule for field, rule in generated_identifiers.items()
+            if isinstance(field, str) and rule == "uuid4"
+        }
     return entry
 
 

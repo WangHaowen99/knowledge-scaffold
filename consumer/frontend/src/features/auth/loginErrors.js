@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const LOGIN_ERROR_MESSAGES = Object.freeze({
   invalidCredentials: '账号或密码错误，请重新输入。',
   rateLimited: '登录尝试过于频繁，请稍后再试。',
@@ -15,9 +16,15 @@ const LOGIN_ERROR_MESSAGES = Object.freeze({
  */
 export const getLoginErrorMessage = ({ status, error, name, code } = {}) => {
   const rawMessage = typeof error === 'string' ? error : '';
-  if (status === 401 || status === 403) { return LOGIN_ERROR_MESSAGES.invalidCredentials; }
-  if (status === 429) { return LOGIN_ERROR_MESSAGES.rateLimited; }
-  if (status === 503) { return LOGIN_ERROR_MESSAGES.unavailable; }
+  if (status === 401 || status === 403) {
+    return LOGIN_ERROR_MESSAGES.invalidCredentials;
+  }
+  if (status === 429) {
+    return LOGIN_ERROR_MESSAGES.rateLimited;
+  }
+  if (status === 503) {
+    return LOGIN_ERROR_MESSAGES.unavailable;
+  }
   if (
     name === 'AuthRequestTimeoutError' ||
     code === 'AUTH_REQUEST_TIMEOUT' ||
@@ -28,7 +35,9 @@ export const getLoginErrorMessage = ({ status, error, name, code } = {}) => {
   if (name === 'TypeError' || code === 'ERR_NETWORK' || code === 'ECONNRESET') {
     return LOGIN_ERROR_MESSAGES.network;
   }
-  if (Number.isInteger(status) && status >= 500) { return LOGIN_ERROR_MESSAGES.server; }
+  if (Number.isInteger(status) && status >= 500) {
+    return LOGIN_ERROR_MESSAGES.server;
+  }
   return LOGIN_ERROR_MESSAGES.generic;
 };
 

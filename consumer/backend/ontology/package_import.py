@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Validate ontology packages and normalize supported package schemas."""
 
 from __future__ import annotations

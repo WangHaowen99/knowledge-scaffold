@@ -1,5 +1,7 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import base64
 import threading
+from internal_access import internal
 
 
 def _test_key() -> str:
@@ -47,7 +49,7 @@ def test_key_file_first_create_is_atomic_under_concurrency(tmp_path, monkeypatch
 
     def load_key() -> None:
         try:
-            results.append(secrets_module._load_key())
+            results.append(internal(secrets_module).load_key())
         except Exception as exc:  # pragma: no cover - surfaced by assertion below
             errors.append(exc)
 

@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { ChatFacade } from '../facades/chat.js';
 import { AgenticOntologiesApi } from '../protocols/agentic/ontologies.js';
 import { AgenticRunsApi } from '../protocols/agentic/runs.js';

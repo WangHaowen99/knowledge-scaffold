@@ -1,9 +1,11 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP route tests for chat session management."""
 
 import asyncio
 import json
 import threading
 from contextlib import asynccontextmanager, contextmanager
+from operator import getitem
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +26,7 @@ from persistence.session_summary_index import SessionSummary, SessionSummaryInde
 from utils.streaming import build_agent_event
 from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 class _FakeSession:
@@ -1274,7 +1277,7 @@ def test_index_rebuild_failure_returns_bounded_authoritative_legacy_list(
     client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "legacy-fallback-chats"))
     chat_store.create_session(session_id="legacy-fallback", title="Legacy fallback")
-    chat_store._summary_index = _FaultingSummaryIndex("rebuild")
+    internal(chat_store).summary_index = _FaultingSummaryIndex("rebuild")
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, _FakeExecutionStore()),
@@ -1298,7 +1301,7 @@ def test_index_failure_returns_bounded_authoritative_page_for_paginated_requests
     client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "paged-index-failure" / failure_stage))
     chat_store.create_session(session_id="paged-session", title="Paged")
-    chat_store._summary_index = _FaultingSummaryIndex(failure_stage)
+    internal(chat_store).summary_index = _FaultingSummaryIndex(failure_stage)
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, _FakeExecutionStore()),
@@ -1411,7 +1414,7 @@ def test_empty_authoritative_store_publishes_empty_index_on_first_request(
     holder = {}
     index = SessionSummaryIndex(
         tmp_path / "empty-session-summary-index.json",
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     chat_store = ChatStore(
         str(tmp_path / "empty-chats"),

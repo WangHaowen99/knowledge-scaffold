@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from pathlib import Path
 
 from scripts.native_async_restart_experiments import run_experiments

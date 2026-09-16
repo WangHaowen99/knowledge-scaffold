@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import json
@@ -6,6 +7,7 @@ import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from operator import getitem
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +19,7 @@ from ontology.view_cache import (
     invalidate_ontology_views,
 )
 from starlette.requests import Request
+from internal_access import internal
 
 
 def test_package_tree_cache_reuses_build_and_returns_defensive_copies(monkeypatch):
@@ -480,7 +483,7 @@ def test_ontology_registry_summary_is_scoped_by_workspace_generation(
     monkeypatch.setattr(
         ontologies_module,
         "get_workspace_ontologies_root",
-        lambda workspace_id: roots[workspace_id],
+        lambda workspace_id: getitem(roots, workspace_id),
     )
     monkeypatch.setattr(
         ontologies_module,
@@ -1145,9 +1148,9 @@ def test_deleted_and_recreated_workspace_does_not_reuse_cached_package_tree(
     recreate_thread = threading.Thread(target=recreate_workspace)
     delete_thread.start()
     assert invalidation_entered.wait(timeout=5)
-    metadata_lock_available = workspaces_module._workspace_metadata_lock.acquire(blocking=False)
+    metadata_lock_available = internal(workspaces_module).workspace_metadata_lock.acquire(blocking=False)
     if metadata_lock_available:
-        workspaces_module._workspace_metadata_lock.release()
+        internal(workspaces_module).workspace_metadata_lock.release()
     recreate_thread.start()
     release_invalidation.set()
     delete_thread.join(timeout=5)

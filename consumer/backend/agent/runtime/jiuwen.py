@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Concrete AsyncAgentRuntime backed by the native-async Jiuwen Engine."""
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from agent.exceptions import (
     WorkflowCancelledError,
 )
 from utils.security.redaction import redact_sensitive_text
+from agent.script_argument_errors import safe_script_argument_error
 
 from .adapter import PublicEventAdapter
 from .async_utils import call_async_or_thread
@@ -965,6 +967,8 @@ class JiuwenAsyncAgentRuntime:
                 if isinstance(child, Exception)
             ]
             if child_errors and all(error.error_code != "INTERNAL_ERROR" for error in child_errors):
+                if all(error.error_code == "AGENT_LOOP_STALLED" for error in child_errors):
+                    return child_errors[-1]
                 first = child_errors[0]
                 first_payload = first.model_dump(mode="json")
                 if all(item.model_dump(mode="json") == first_payload for item in child_errors[1:]):
@@ -988,12 +992,15 @@ class JiuwenAsyncAgentRuntime:
                 details=details,
             )
         if isinstance(exc, AgentLoopStalledError):
+            validation_error = safe_script_argument_error(
+                exc.details.get("last_argument_validation")
+            )
             return RuntimeErrorInfo(
                 error_code="AGENT_LOOP_STALLED",
                 message=redact_sensitive_text(exc.public_message).strip()[:1000],
                 retriable=False,
                 source="tool",
-                details={},
+                details={"last_argument_validation": validation_error} if validation_error else {},
             )
         if isinstance(exc, ModelInvocationError):
             category, status_code = JiuwenAsyncAgentRuntime._classify_runtime_error(exc.cause)

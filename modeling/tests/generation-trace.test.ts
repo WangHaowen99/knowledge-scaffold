@@ -665,6 +665,8 @@ test('文档对象生成继承材料分析证据和后端全文覆盖记录', as
   }, llm, flowchart);
 
   assert.match(objectPrompt, /服务渠道和竞品章节证据位于 offset~12000/u);
+  assert.match(objectPrompt, /本阶段不生成对象关系/u);
+  assert.equal(result.spec.objects[0].relations, undefined);
   const source = result.spec.objects[0].sourceRefs?.[0];
   assert.equal(source?.kind, 'document');
   assert.deepEqual(source?.kind === 'document' ? source.readCoverage : undefined, {

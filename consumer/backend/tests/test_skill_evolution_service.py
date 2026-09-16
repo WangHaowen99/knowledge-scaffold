@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the skill-evolution service: gates, diff, poll, approve, drift.
 
 Uses a real temp ontology fixture + a fake skill-evolver HTTP client (no network).
@@ -23,6 +24,7 @@ from agent.skill_evolution.service import (
     _strip_archive_root,
 )
 from agent.skill_evolution.store import SkillEvolutionStore
+from internal_access import internal
 
 
 # --------------------------------------------------------------------------- #
@@ -94,7 +96,7 @@ class FakeClient:
 
 class FakeExecutionStore:
     def __init__(self, turns: List[Dict[str, Any]]):
-        self._history = {
+        internal(self).history = {
             "session_id": "sess1",
             "turns": turns,
             "session_history": [],
@@ -102,7 +104,7 @@ class FakeExecutionStore:
         }
 
     def get_session_history(self, session_id):
-        return self._history
+        return internal(self).history
 
 
 def _service_config(max_iterations=15):
@@ -120,7 +122,7 @@ def _make_service(tmp_path, client=None):
     store = SkillEvolutionStore(runtime_root=str(tmp_path))
     service = SkillEvolutionService(store, client=client)
     # Enable the feature for tests and provide a base_url.
-    service._config = _service_config  # noqa: SLF001
+    internal(service).config = _service_config  # noqa: SLF001
     return store, service
 
 
@@ -249,11 +251,10 @@ def test_compute_diff_empty_when_identical(tmp_path):
 
 
 def test_compute_diff_normalizes_crlf_vs_lf(tmp_path):
-    """Baseline (Windows disk → CRLF) vs evolved (skill-evolver Linux → LF)
-    must NOT register as a change when content is identical, and a real
-    1-line change must count as +1 -1, not a full-file rewrite. Regression
-    for the CRLF/LF mismatch that made unchanged files show as modified and
-    made real changes render as full delete+add."""
+    """Baseline (Windows disk → CRLF) vs evolved (skill-evolver Linux → LF)."""
+    # Details: Baseline (Windows disk → CRLF) vs evolved (skill-evolver Linux → LF) must NOT register as a change when
+    # content is identical, and a real 1-line change must count as +1 -1, not a full-file rewrite. Regression for the
+    # CRLF/LF mismatch that made unchanged files show as modified and made real changes render as full delete+add.
     store, service = _make_service(tmp_path)
     rec = _make_record(store)
     # Baseline stored with CRLF (as _build_ontology_zip_buffer would from disk).
@@ -293,7 +294,7 @@ def _patch_ontology(service, onto_dir, monkeypatch):
 
 def _stamp_real_sha(service, store, rec, onto_dir, version="1.0.0"):
     """Set the record's version_sha to the real sha of a version dir."""
-    rec.version_sha = service._compute_version_sha(onto_dir / "versions" / version)  # noqa: SLF001
+    rec.version_sha = internal(service).compute_version_sha(onto_dir / "versions" / version)  # noqa: SLF001
     store.save_task(rec)
 
 
@@ -341,8 +342,9 @@ def test_gate_cross_version_blocked(tmp_path, monkeypatch):
 
 
 def test_gate_stale_version_distinct_message(tmp_path, monkeypatch):
-    """All turns stamped with the same version, but ≠ current active (stale
-    after approval). Must say '基于版本 X，当前激活为 Y', not '跨多个版本'."""
+    """All turns stamped with the same version, but ≠ current active (stale."""
+    # Details: All turns stamped with the same version, but ≠ current active (stale after approval). Must say '基于版本
+    # X，当前激活为 Y', not '跨多个版本'.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"}, active_version="1.0.1", versions=["1.0.0", "1.0.1"])
     store, service = _make_service(tmp_path)
@@ -393,9 +395,9 @@ def test_gate_single_version_allows_missing_stamp(tmp_path, monkeypatch):
 
 
 def test_gate_multi_version_allows_no_stamps(tmp_path, monkeypatch):
-    """Tool-based sessions (agent loaded ontology via ontology_context) have no
-    per-turn version stamps. Gate 3 must NOT block them on multi-version
-    ontologies — only enforce strict alignment when stamps are present."""
+    """Tool-based sessions (agent loaded ontology via ontology_context) have no."""
+    # Details: Tool-based sessions (agent loaded ontology via ontology_context) have no per-turn version stamps. Gate
+    # 3 must NOT block them on multi-version ontologies — only enforce strict alignment when stamps are present.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"}, versions=["1.0.0", "1.1.0"])
     store, service = _make_service(tmp_path, client=FakeClient({"status": "running"}, b""))
@@ -413,8 +415,9 @@ def test_gate_multi_version_allows_no_stamps(tmp_path, monkeypatch):
 
 
 def test_start_infers_ontology_from_trace(tmp_path, monkeypatch):
-    """When ontology_id is not provided (tool-based session, no UI selection),
-    infer the target ontology from read_documents in the trace."""
+    """When ontology_id is not provided (tool-based session, no UI selection),."""
+    # Details: When ontology_id is not provided (tool-based session, no UI selection), infer the target ontology from
+    # read_documents in the trace.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     store, service = _make_service(tmp_path, client=FakeClient({"status": "running"}, b""))
@@ -425,7 +428,7 @@ def test_start_infers_ontology_from_trace(tmp_path, monkeypatch):
             {"turn_id": 2, "user_request": "q2"},
         ]
     )
-    exec_store._history["read_documents"] = {
+    internal(exec_store).history["read_documents"] = {
         "by_path": {"x": {"ontology_id": "onto1"}, "y": {"ontology_id": "onto1"}},
         "recent_paths": [],
         "active_object_docs": [],
@@ -437,9 +440,9 @@ def test_start_infers_ontology_from_trace(tmp_path, monkeypatch):
 
 
 def test_gate_excludes_running_turn(tmp_path, monkeypatch):
-    """A mid-stream click leaves the current turn status='running' (user
-    question, no answer). gate 2 must count only completed turns so a partial
-    trace is never sent."""
+    """A mid-stream click leaves the current turn status='running' (user."""
+    # Details: A mid-stream click leaves the current turn status='running' (user question, no answer). gate 2 must
+    # count only completed turns so a partial trace is never sent.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     store, service = _make_service(tmp_path, client=FakeClient({"status": "running"}, b""))
@@ -462,14 +465,13 @@ def test_gate_excludes_running_turn(tmp_path, monkeypatch):
 
 
 def test_infer_toolbased_ontology_version(tmp_path, monkeypatch):
-    """The orchestrator helper stamps tool-based sessions' turns with the
-    ontology_version the agent actually read — taken from the read-document
-    records' ``ontology_version`` field (written at read time), NOT by
-    re-reading the manifest at turn completion (which races when active is
-    switched mid-turn)."""
+    """The orchestrator helper stamps tool-based sessions' turns with the."""
+    # Details: The orchestrator helper stamps tool-based sessions' turns with the ontology_version the agent actually
+    # read — taken from the read-document records' ``ontology_version`` field (written at read time), NOT by
+    # re-reading the manifest at turn completion (which races when active is switched mid-turn).
     from agent.core.orchestrator import AgenticOrchestrator
 
-    infer = AgenticOrchestrator._infer_toolbased_ontology_version
+    infer = internal(AgenticOrchestrator).infer_toolbased_ontology_version
     # single ontology, all reads agree on version → that version
     rd = {
         "by_path": {
@@ -510,8 +512,9 @@ def test_infer_toolbased_ontology_version(tmp_path, monkeypatch):
 
 
 def test_read_document_record_carries_ontology_version():
-    """build_read_document_record stores the read-time ontology_version so the
-    tool-based stamp captures the version actually served, not a later one."""
+    """build_read_document_record stores the read-time ontology_version so the."""
+    # Details: build_read_document_record stores the read-time ontology_version so the tool-based stamp captures the
+    # version actually served, not a later one.
     from utils.read_docs import build_read_document_record, merge_read_documents_registry
 
     record = build_read_document_record(
@@ -538,7 +541,7 @@ def test_read_document_record_carries_ontology_version():
     assert by_path[record["normalized_path"]]["ontology_version"] == "1.0.0"
     from agent.core.orchestrator import AgenticOrchestrator
 
-    assert AgenticOrchestrator._infer_toolbased_ontology_version("ws", merged) == "1.0.0"
+    assert internal(AgenticOrchestrator).infer_toolbased_ontology_version("ws", merged) == "1.0.0"
 
 
 def test_start_blocks_when_ontology_not_inferrable(tmp_path, monkeypatch):
@@ -633,8 +636,9 @@ class _DownloadClient:
 
 
 def test_poll_download_failure_marks_failed_no_temp(tmp_path, monkeypatch):
-    """skill-evolver reports completed but artifact download fails → failed at
-    stage=download. No temp dir is created (download happens before extract)."""
+    """skill-evolver reports completed but artifact download fails → failed at."""
+    # Details: skill-evolver reports completed but artifact download fails → failed at stage=download. No temp dir is
+    # created (download happens before extract).
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     client = _DownloadClient(download_raises=RuntimeError("HTTP 502"))
@@ -649,8 +653,9 @@ def test_poll_download_failure_marks_failed_no_temp(tmp_path, monkeypatch):
 
 
 def test_poll_extract_failure_cleans_temp(tmp_path, monkeypatch):
-    """Artifact downloads but is not a valid zip → failed at stage=extract, and
-    the half-created temp dir is cleaned (no residue left for a retry)."""
+    """Artifact downloads but is not a valid zip → failed at stage=extract, and."""
+    # Details: Artifact downloads but is not a valid zip → failed at stage=extract, and the half-created temp dir is
+    # cleaned (no residue left for a retry).
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     client = _DownloadClient(artifact_bytes=b"this is not a zip")
@@ -664,8 +669,8 @@ def test_poll_extract_failure_cleans_temp(tmp_path, monkeypatch):
 
 
 def test_poll_artifact_missing_operations_marks_failed(tmp_path, monkeypatch):
-    """A valid zip with no operations/ dir → structure mismatch → failed at
-    stage=extract, temp cleaned."""
+    """A valid zip with no operations/ dir → structure mismatch → failed at."""
+    # Details: A valid zip with no operations/ dir → structure mismatch → failed at stage=extract, temp cleaned.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     buf = io.BytesIO()
@@ -683,9 +688,9 @@ def test_poll_artifact_missing_operations_marks_failed(tmp_path, monkeypatch):
 
 
 def test_poll_artifact_path_traversal_blocked(tmp_path, monkeypatch):
-    """A zip whose member escapes the extract root is refused by
-    _safe_extract_zip → failed at stage=extract. Regression for the
-    skill-evolution extract entry (the shared helper, but invoked here)."""
+    """A zip whose member escapes the extract root is refused by."""
+    # Details: A zip whose member escapes the extract root is refused by _safe_extract_zip → failed at stage=extract.
+    # Regression for the skill-evolution extract entry (the shared helper, but invoked here).
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     buf = io.BytesIO()
@@ -792,10 +797,10 @@ def test_drift_active_version_switched(tmp_path, monkeypatch):
 
 
 def test_drift_detects_objects_edit(tmp_path, monkeypatch):
-    """Whole-version sha must catch edits to non-operations files (objects/),
-    not just operations. Regression for the operations-only sha under-scope:
-    once skill-evolver evolves objects/scripts, an operations-only sha would
-    miss approval-time edits to those files."""
+    """Whole-version sha must catch edits to non-operations files (objects/),."""
+    # Details: Whole-version sha must catch edits to non-operations files (objects/), not just operations. Regression
+    # for the operations-only sha under-scope: once skill-evolver evolves objects/scripts, an operations-only sha
+    # would miss approval-time edits to those files.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo\nstep1\n"})
     # Add an objects/ file to the active version (skill-evolver may evolve this).
@@ -818,9 +823,9 @@ def test_drift_detects_objects_edit(tmp_path, monkeypatch):
 
 
 def test_approve_rejects_partial_snapshot(tmp_path, monkeypatch):
-    """If the evolved artifact omits a component the active version has
-    (e.g. skill-evolver returned only operations, no objects/), approve must
-    abort rather than rmtree+copy and silently delete objects/."""
+    """If the evolved artifact omits a component the active version has."""
+    # Details: If the evolved artifact omits a component the active version has (e.g. skill-evolver returned only
+    # operations, no objects/), approve must abort rather than rmtree+copy and silently delete objects/.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo\nstep1\n"})
     objects_dir = onto_dir / "versions" / "1.0.0" / "objects"
@@ -846,9 +851,10 @@ def test_approve_rejects_partial_snapshot(tmp_path, monkeypatch):
 
 
 def test_get_diff_serves_from_history_after_approve(tmp_path, monkeypatch):
-    """Terminal tasks have temp+baseline cleaned; get_diff must return the diff
-    persisted in history (not an empty recompute). Regression: approved tasks
-    showed 'no changes' because compute_diff read deleted temp/baseline."""
+    """Terminal tasks have temp+baseline cleaned; get_diff must return the diff."""
+    # Details: Terminal tasks have temp+baseline cleaned; get_diff must return the diff persisted in history (not an
+    # empty recompute). Regression: approved tasks showed 'no changes' because compute_diff read deleted
+    # temp/baseline.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo\nstep1\n"})
     evolved_zip = _build_ontology_zip("onto1", {"foo.md": "# foo\nstep1\nstep2\n"}, "- foo\n")
@@ -898,8 +904,9 @@ def test_reject_and_cancel(tmp_path, monkeypatch):
 # Overwrite approve / rejected diff / max_iterations forwarding
 # --------------------------------------------------------------------------- #
 def test_approve_overwrite_replaces_active_version(tmp_path, monkeypatch):
-    """Overwrite mode replaces the active version's contents in place — version
-    number unchanged, no new version dir, manifest untouched, temp cleaned."""
+    """Overwrite mode replaces the active version's contents in place — version."""
+    # Details: Overwrite mode replaces the active version's contents in place — version number unchanged, no new
+    # version dir, manifest untouched, temp cleaned.
     import ontology.view_cache as view_cache_module
     from ontology.view_cache import OntologyViewCache, get_ontology_mutation_revision
 
@@ -955,8 +962,9 @@ def test_approve_overwrite_replaces_active_version(tmp_path, monkeypatch):
 
 
 def test_get_diff_serves_from_history_after_reject(tmp_path, monkeypatch):
-    """Reject also persists the full diff to history; get_diff must return the
-    non-empty diff for a rejected task after temp+baseline are finalized away."""
+    """Reject also persists the full diff to history; get_diff must return the."""
+    # Details: Reject also persists the full diff to history; get_diff must return the non-empty diff for a rejected
+    # task after temp+baseline are finalized away.
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo\nstep1\n"})
     evolved_zip = _build_ontology_zip("onto1", {"foo.md": "# foo\nstep1\nstep2\n"}, "- foo\n")
@@ -976,8 +984,9 @@ def test_get_diff_serves_from_history_after_reject(tmp_path, monkeypatch):
 
 
 def test_max_iterations_forwarded_from_config(tmp_path, monkeypatch):
-    """A non-default max_iterations from config must be forwarded to skill-evolver
-    in request.evolution.max_iterations (not just the default 15)."""
+    """A non-default max_iterations from config must be forwarded to skill-evolver."""
+    # Details: A non-default max_iterations from config must be forwarded to skill-evolver in
+    # request.evolution.max_iterations (not just the default 15).
     onto_dir = tmp_path / "ontologies" / "onto1"
     _write_ontology(onto_dir, {"foo.md": "# foo"})
     client = FakeClient({"status": "running"}, b"")
@@ -987,7 +996,7 @@ def test_max_iterations_forwarded_from_config(tmp_path, monkeypatch):
     def service_config():
         return _service_config(max_iterations=25)
 
-    service._config = service_config  # noqa: SLF001
+    internal(service).config = service_config  # noqa: SLF001
     _patch_ontology(service, onto_dir, monkeypatch)
     exec_store = FakeExecutionStore(
         [

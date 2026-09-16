@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """ACP 数据模型定义
 
 基于 ACP (Agent Communication Protocol) 规范定义核心数据结构。

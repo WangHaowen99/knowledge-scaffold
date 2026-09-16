@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Contract tests for the shared ontology resource parser."""
 
 from __future__ import annotations

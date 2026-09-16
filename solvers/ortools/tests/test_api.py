@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import json
@@ -14,6 +15,7 @@ from solvers.ortools.config import OrToolsSolverConfig
 from solvers.ortools.service import OrToolsSolverService
 from solvers.ortools.tests.ortools_synthetic_credentials import INVALID_TOKEN, SERVICE_TOKEN
 from solvers.ortools.tests.test_process_runner import _domain_request
+from solvers.ortools.tests.internal_access import internal
 
 
 def _config(tmp_path, **overrides):
@@ -69,8 +71,8 @@ def test_submit_releases_capacity_when_attempt_persistence_fails(tmp_path, submi
     try:
         with pytest.raises(RuntimeError, match="synthetic persistence failure"):
             service.submit(idempotency_key="capacity-release-key-0001", document=submit_request)
-        assert service._capacity.acquire(blocking=False) is True
-        service._capacity.release()
+        assert internal(service).capacity.acquire(blocking=False) is True
+        internal(service).capacity.release()
     finally:
         service.close()
 
@@ -334,7 +336,7 @@ def test_capacity_rejection_does_not_consume_the_idempotency_key(tmp_path, submi
     app = create_app(_config(tmp_path, max_concurrent_jobs=1))
     service = app.extensions["ortools_solver"]
     gate = CapacityGate()
-    service._capacity = gate
+    internal(service).capacity = gate
     client = app.test_client()
 
     rejected = _post(client, submit_request)

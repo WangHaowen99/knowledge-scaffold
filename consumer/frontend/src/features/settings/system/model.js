@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const SYSTEM_CONFIG_SECTIONS = Object.freeze([
   'llm',
   'llm_profiles',
@@ -244,87 +245,84 @@ export function createSystemConfigModuleState(data = {}, readOnly = false) {
   };
 }
 
-// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
+const resetSystemConfigFeedback = (current, draft) => ({
+  ...current,
+  draft,
+  error: '',
+  success: '',
+  testStatus: { ...EMPTY_TEST_STATUS },
+});
+
+const SYSTEM_CONFIG_STATE_REDUCERS = {
+  SOURCE_CHANGED: (current, event) => createSystemConfigModuleState(
+    event.data,
+    event.readOnly ?? current.readOnly,
+  ),
+  READ_ONLY_CHANGED: (current, event) => ({
+    ...current,
+    readOnly: Boolean(event.value),
+  }),
+  PATCH_DRAFT: (current, event) => resetSystemConfigFeedback(current, {
+    ...current.draft,
+    ...(event.data || {}),
+  }),
+  REPLACE_DRAFT: (current, event) => resetSystemConfigFeedback(
+    current,
+    cloneJsonValue(event.data || {}),
+  ),
+  RESET_DRAFT: (current) => resetSystemConfigFeedback(
+    current,
+    cloneJsonValue(current.baseline),
+  ),
+  BEGIN_ACTION: (current, event) => {
+    if (current.readOnly) {
+      return current;
+    }
+    return {
+      ...current,
+      busyAction: String(event.action || ''),
+      error: '',
+      success: '',
+    };
+  },
+  SAVE_SUCCEEDED: (current, event) => {
+    const saved = cloneJsonValue(event.data || {});
+    return {
+      ...current,
+      baseline: saved,
+      draft: cloneJsonValue(saved),
+      busyAction: '',
+      error: '',
+      success: String(event.message || '配置已保存'),
+      testStatus: { ...EMPTY_TEST_STATUS },
+    };
+  },
+  TEST_FINISHED: (current, event) => {
+    const status = {
+      success: Boolean(event.result?.success),
+      message: String(event.result?.message || ''),
+      tested_at: event.result?.tested_at || new Date().toISOString(),
+    };
+    return {
+      ...current,
+      busyAction: '',
+      error: status.success ? '' : status.message || '连接测试失败',
+      success: status.success ? status.message || '连接测试成功' : '',
+      testStatus: status,
+    };
+  },
+  ACTION_FAILED: (current, event) => ({
+    ...current,
+    busyAction: '',
+    error: String(event.error || '操作失败'),
+    success: '',
+  }),
+};
+
 export function reduceSystemConfigModuleState(state, event) {
   const current = state || createSystemConfigModuleState();
-  switch (event?.type) {
-    case 'SOURCE_CHANGED':
-      return createSystemConfigModuleState(
-        event.data,
-        event.readOnly ?? current.readOnly,
-      );
-    case 'READ_ONLY_CHANGED':
-      return { ...current, readOnly: Boolean(event.value) };
-    case 'PATCH_DRAFT':
-      return {
-        ...current,
-        draft: { ...current.draft, ...(event.data || {}) },
-        error: '',
-        success: '',
-        testStatus: { ...EMPTY_TEST_STATUS },
-      };
-    case 'REPLACE_DRAFT':
-      return {
-        ...current,
-        draft: cloneJsonValue(event.data || {}),
-        error: '',
-        success: '',
-        testStatus: { ...EMPTY_TEST_STATUS },
-      };
-    case 'RESET_DRAFT':
-      return {
-        ...current,
-        draft: cloneJsonValue(current.baseline),
-        error: '',
-        success: '',
-        testStatus: { ...EMPTY_TEST_STATUS },
-      };
-    case 'BEGIN_ACTION':
-      if (current.readOnly) {
-        return current;
-      }
-      return {
-        ...current,
-        busyAction: String(event.action || ''),
-        error: '',
-        success: '',
-      };
-    case 'SAVE_SUCCEEDED': {
-      const saved = cloneJsonValue(event.data || {});
-      return {
-        ...current,
-        baseline: saved,
-        draft: cloneJsonValue(saved),
-        busyAction: '',
-        error: '',
-        success: String(event.message || '配置已保存'),
-        testStatus: { ...EMPTY_TEST_STATUS },
-      };
-    }
-    case 'TEST_FINISHED': {
-      const status = {
-        success: Boolean(event.result?.success),
-        message: String(event.result?.message || ''),
-        tested_at: event.result?.tested_at || new Date().toISOString(),
-      };
-      return {
-        ...current,
-        busyAction: '',
-        error: status.success ? '' : status.message || '连接测试失败',
-        success: status.success ? status.message || '连接测试成功' : '',
-        testStatus: status,
-      };
-    }
-    case 'ACTION_FAILED':
-      return {
-        ...current,
-        busyAction: '',
-        error: String(event.error || '操作失败'),
-        success: '',
-      };
-    default:
-      return current;
-  }
+  const reducer = SYSTEM_CONFIG_STATE_REDUCERS[event?.type];
+  return reducer ? reducer(current, event) : current;
 }
 
 export function formatSystemConfigTestTime(value, locale = 'zh-CN') {

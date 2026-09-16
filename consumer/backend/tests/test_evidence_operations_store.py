@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Evidence operation persistence and idempotency contracts."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for ontology-scoped business data source storage."""
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from backend_synthetic_credentials import (
 )
 from fastapi.testclient import TestClient
 from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace, workspace_scope
+from internal_access import internal
 
 
 def _create_workspace_with_ontology(
@@ -805,7 +807,7 @@ def test_manual_backup_failure_blocks_source_mutation(tmp_path, monkeypatch):
     )
     connection_bytes = connection_path.read_bytes()
     bindings_bytes = bindings_path.read_bytes()
-    original_write = migration_module._write_bytes_atomic
+    original_write = internal(migration_module).write_bytes_atomic
 
     def fail_backup(path, payload, *, mode=None):
         if path.name.endswith(migration_module.MANUAL_BACKUP_SUFFIX):
@@ -842,7 +844,7 @@ def test_forward_only_cleanup_failure_blocks_completion_and_is_retryable(tmp_pat
         encoding="utf-8",
     )
     bindings_bytes = bindings_path.read_bytes()
-    original_remove = migration_module._remove_legacy_files
+    original_remove = internal(migration_module).remove_legacy_files
 
     def fail_cleanup(_paths):
         raise OSError("cleanup denied")

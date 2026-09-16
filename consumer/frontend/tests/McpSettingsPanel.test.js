@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -302,7 +303,9 @@ test('platform admin can save the workspace MCP streaming concurrency', async ()
     if (url === '/agentic/mcp/runtime/status') {
       return jsonResponse(statusPayload('ws-a', '000000000000000a'));
     }
-    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
+    if (url === '/agentic/mcp/tokens') {
+      return jsonResponse({ items: [] });
+    }
     if (url === '/agentic/mcp/runtime/concurrency' && !options.method) {
       return jsonResponse(concurrencyPayload(concurrency));
     }
@@ -350,8 +353,12 @@ test('missing concurrency endpoint does not hide the rest of the MCP panel', asy
     if (url === '/agentic/mcp/runtime/status') {
       return jsonResponse(statusPayload('ws-a', '000000000000000a'));
     }
-    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
-    if (url === '/agentic/mcp/runtime/concurrency') { return jsonResponse({ detail: 'Not Found' }, 404); }
+    if (url === '/agentic/mcp/tokens') {
+      return jsonResponse({ items: [] });
+    }
+    if (url === '/agentic/mcp/runtime/concurrency') {
+      return jsonResponse({ detail: 'Not Found' }, 404);
+    }
     throw new Error(`Unexpected request: ${url}`);
   };
 
@@ -399,12 +406,18 @@ test('workspace switch blocks a stale concurrency draft until the new scope load
     if (requestWorkspace === 'ws-a' && url === '/agentic/mcp/runtime/concurrency') {
       return Promise.resolve(jsonResponse(concurrencyPayload(11)));
     }
-    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/runtime/status') { return workspaceBStatus.promise; }
-    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/tokens') { return workspaceBTokens.promise; }
+    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/runtime/status') {
+      return workspaceBStatus.promise;
+    }
+    if (requestWorkspace === 'ws-b' && url === '/agentic/mcp/tokens') {
+      return workspaceBTokens.promise;
+    }
     if (
       requestWorkspace === 'ws-b' &&
       url === '/agentic/mcp/runtime/concurrency'
-    ) { return workspaceBConcurrency.promise; }
+    ) {
+      return workspaceBConcurrency.promise;
+    }
     throw new Error(`Unexpected request for ${requestWorkspace}: ${url}`);
   };
 
@@ -455,8 +468,12 @@ test('non-admin can inspect but cannot change MCP streaming concurrency', async 
     if (url === '/agentic/mcp/runtime/status') {
       return jsonResponse(statusPayload('ws-a', '000000000000000a'));
     }
-    if (url === '/agentic/mcp/tokens') { return jsonResponse({ items: [] }); }
-    if (url === '/agentic/mcp/runtime/concurrency') { return jsonResponse(concurrencyPayload(9)); }
+    if (url === '/agentic/mcp/tokens') {
+      return jsonResponse({ items: [] });
+    }
+    if (url === '/agentic/mcp/runtime/concurrency') {
+      return jsonResponse(concurrencyPayload(9));
+    }
     throw new Error(`Unexpected request: ${url}`);
   };
 

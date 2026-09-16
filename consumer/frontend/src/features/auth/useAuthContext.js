@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { createContext, useContext } from 'react';
 
 // Context 对象与消费 hook 单独成文件（满足 react-refresh 的组件文件纯度要求）。

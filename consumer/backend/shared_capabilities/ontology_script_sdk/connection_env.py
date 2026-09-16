@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Versioned connection envelope loading for ontology scripts."""
 
 from __future__ import annotations

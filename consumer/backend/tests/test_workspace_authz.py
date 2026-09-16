@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Workspace 水平越权（horizontal authorization）测试。
 
 覆盖：resolve_workspace_id 的访问强制、列表可见性过滤、
@@ -27,6 +28,7 @@ from backend_synthetic_credentials import (
     STRONG_PASSWORD_3,
 )
 from fastapi.testclient import TestClient
+from internal_access import internal
 
 FORBIDDEN_BODY = {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
 
@@ -1325,7 +1327,7 @@ def test_owner_transfer_and_former_owner_update_are_one_serializable_transaction
 
     entered_transfer = threading.Event()
     release_transfer = threading.Event()
-    original_update_locked = workspace_module._update_workspace_locked
+    original_update_locked = internal(workspace_module).update_workspace_locked
 
     def blocking_update_locked(workspace_id, **fields):
         if fields.get("owner") == "carol":

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Observer protocol and no-op implementation."""
 
 from __future__ import annotations

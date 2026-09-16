@@ -468,7 +468,9 @@ export function preservePhysicalSchemaSemantics(
           : {}),
         ...(!object.aliases?.length && previous.aliases?.length ? { aliases: [...previous.aliases] } : {}),
         ...(normalize(previous.queryBoundary) ? { queryBoundary: previous.queryBoundary } : {}),
-        ...(previous.relations?.length ? { relations: structuredClone(previous.relations) } : {}),
+        ...(object.relations !== undefined
+          ? { relations: structuredClone(object.relations) }
+          : previous.relations?.length ? { relations: structuredClone(previous.relations) } : {}),
         fields: object.fields.map((field) => mergeFieldSemantics(
           field,
           previousFields.get(normalize(field.sourceColumn || field.key)),

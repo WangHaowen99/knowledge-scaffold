@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Native-async A2A projection over canonical Runs and durable Turns."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Execution-boundary tests for explicitly selected ontology isolation."""
 
 from __future__ import annotations

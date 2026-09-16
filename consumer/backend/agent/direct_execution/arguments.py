@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Business and runtime parameter handling for the direct execution branch.
 
 Responsible for:
@@ -44,6 +45,7 @@ _RUNTIME_KEY_TO_CTX_FIELD: Dict[str, str] = {
     "ontology_id": "selected_ontology_id",
     "selected_ontology_version": "selected_ontology_version",
     "ontology_version": "selected_ontology_version",
+    "selected_version": "selected_ontology_version",
 }
 
 

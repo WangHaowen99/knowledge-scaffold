@@ -1,6 +1,8 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import asyncio
+from operator import getitem
 from types import SimpleNamespace
 
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
@@ -17,6 +19,7 @@ from agent.tools.base import ToolBatchResult
 from backend_synthetic_credentials import synthetic_secret
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
+from internal_access import internal
 
 
 def _context(
@@ -68,7 +71,7 @@ def test_native_runtime_binds_solver_route_from_current_request(monkeypatch):
         ],
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(context)
 
     assert captured == {
         "user_request": "solve synthetic route plan",
@@ -116,9 +119,9 @@ def test_native_runtime_seeds_exact_preflight_products(monkeypatch):
     )
     context = _context("run-preflight-products").model_copy(update={"preflight_snapshot": snapshot})
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(context)
 
-    assert captured["root_payload"] is snapshot.root_payload
+    assert getitem(captured, "root_payload") is snapshot.root_payload
     assert state["_selected_ontology_context_cache"] == "<Selected-Ontology />"
     assert state["_preflight_selected_ontology_preload_records"] == (
         tuple(dict(record) for record in snapshot.preload_records)
@@ -251,7 +254,7 @@ def test_preflight_preload_records_skip_second_package_read(monkeypatch):
 
     hydrate_selected_ontology_read_documents(state)
 
-    assert state["read_documents"]["by_path"][path]["turn_id"] == 7
+    assert getitem(getitem(getitem(getitem(state, "read_documents"), "by_path"), path), "turn_id") == 7
 
 
 def test_native_runtime_suppresses_solver_tools_for_current_evaluation(monkeypatch):
@@ -286,7 +289,7 @@ def test_native_runtime_suppresses_solver_tools_for_current_evaluation(monkeypat
         ],
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(context)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(context)
 
     assert solver_route_requirement_from_state(state) is None
     assert solver_tools_suppressed_from_state(state) is True

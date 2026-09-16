@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +25,7 @@ from solver_coordination import (
 )
 from solver_coordination.run_ledger import SolverRunLedger
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 def _payload(item_count: int = 9):
@@ -193,7 +195,7 @@ def test_public_solver_run_uses_tool_pool_with_production_runtime(
     client.app.state.services["SOLVER_COORDINATION_SERVICE"] = object()
 
     def complete(_service, **_kwargs):
-        return solver_routes._response({"status": "completed"}, 200)
+        return internal(solver_routes).response({"status": "completed"}, 200)
 
     monkeypatch.setattr(
         solver_routes,

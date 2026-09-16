@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Run-scoped port for validating one immutable candidate-set batch."""
 
 from __future__ import annotations

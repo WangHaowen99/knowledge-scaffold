@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """DataAgent control-plane schema tests; protocol tests live in shared providers."""
 
 import json
@@ -13,6 +14,7 @@ from agent.tools.business_data.provider_registry import (
 )
 from backend_synthetic_credentials import API_KEY, synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
+from internal_access import internal
 
 
 def _connection() -> EffectiveConnection:
@@ -88,7 +90,7 @@ def test_dataagent_agent_output_preserves_baseline_structured_presentation():
             "'rows_preview': [('华东',)], 'confidence': 0.95, 'error': None}"
         )
 
-    adapter._client._session.post = post_response
+    internal(internal(adapter).client).session.post = post_response
 
     events = list(adapter.search_stream(query="查询销售区域", entity="Sales"))
     output = json.loads(events[1]["content"])
@@ -109,7 +111,7 @@ def test_dataagent_agent_output_preserves_baseline_literal_failure_presentation(
     def post_response(*_args, **_kwargs):
         return _Response(r"{'sql': '\x', 'columns': [invalid], 'confidence': None, 'error': None}")
 
-    adapter._client._session.post = post_response
+    internal(internal(adapter).client).session.post = post_response
 
     events = list(adapter.search_stream(query="查询异常结果", entity="Sales"))
     output = json.loads(events[1]["content"])
@@ -125,15 +127,16 @@ def test_dataagent_agent_output_preserves_baseline_literal_failure_presentation(
 
 
 def test_dataagent_non_structured_response_preserves_full_provider_text():
-    """When DataAgent returns non-structured text, the full text is preserved
-    (no 500-char truncation) in the final JSON payload's message field."""
+    """When DataAgent returns non-structured text, the full text is preserved."""
+    # Details: When DataAgent returns non-structured text, the full text is preserved (no 500-char truncation) in the
+    # final JSON payload's message field.
     adapter = DataAgentSearchAdapter(_connection())
     provider_text = "值域结果\n" + ("合成映射行\n" * 120)
 
     def post_response(*_args, **_kwargs):
         return _Response(provider_text)
 
-    adapter._client._session.post = post_response
+    internal(internal(adapter).client).session.post = post_response
 
     events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
 
@@ -144,15 +147,15 @@ def test_dataagent_non_structured_response_preserves_full_provider_text():
 
 
 def test_dataagent_non_structured_response_truncates_oversized_text():
-    """Free-text answers exceeding the budget are truncated, not passed
-    through unbounded."""
+    """Free-text answers exceeding the budget are truncated, not passed."""
+    # Details: Free-text answers exceeding the budget are truncated, not passed through unbounded.
     adapter = DataAgentSearchAdapter(_connection())
     oversized = "x" * 20000
 
     def post_response(*_args, **_kwargs):
         return _Response(oversized)
 
-    adapter._client._session.post = post_response
+    internal(internal(adapter).client).session.post = post_response
 
     events = list(adapter.search_stream(query="查询", entity="flight"))
     output = json.loads(events[1]["content"])

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import asyncio
 import json
 import re
@@ -15,6 +16,7 @@ from backend_synthetic_credentials import synthetic_secret
 from integration.mcp.scope import MCPRequestScope
 from integration.mcp.service_catalog import list_mcp_service_cards
 from integration.mcp.token_service import MCPTokenAuthError
+from internal_access import internal
 
 ENDPOINT_ID = "cdd181f5b6cb47a9"
 OTHER_ENDPOINT_ID = "a" * 16
@@ -114,7 +116,8 @@ def test_mcp_http_root_app_mounts_only_streamable_http_when_transport_is_http(mo
     captured_transports: list[str] = []
 
     class FakeMcpServer:
-        def http_app(self, *, path: str, transport: str):
+        @staticmethod
+        def http_app(*, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
 
@@ -144,7 +147,8 @@ def test_mcp_http_root_app_mounts_only_sse_when_transport_is_sse(monkeypatch, tm
     captured_transports: list[str] = []
 
     class FakeMcpServer:
-        def http_app(self, *, path: str, transport: str):
+        @staticmethod
+        def http_app(*, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
 
@@ -198,7 +202,8 @@ def test_mcp_http_root_app_mounts_all_four_endpoints_for_both_transport(monkeypa
     captured_transports: list[str] = []
 
     class FakeMcpServer:
-        def http_app(self, *, path: str, transport: str):
+        @staticmethod
+        def http_app(*, path: str, transport: str):
             captured_transports.append(transport)
             return Starlette()
 
@@ -324,7 +329,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
-                base_url="http://testserver",
+                base_url="https://testserver",
                 follow_redirects=False,
             ) as client:
                 old_route = await client.post("/chat/mcp")
@@ -473,13 +478,13 @@ def test_workspace_endpoint_binding_app_validates_and_resets_context():
 
         seen_endpoint_ids.append(mcp_server.get_bound_mcp_endpoint_id())
         seen_state_endpoint_ids.append(
-            scope["state"][mcp_server._MCP_ENDPOINT_STATE_KEY],
+            scope["state"][internal(mcp_server).MCP_ENDPOINT_STATE_KEY],
         )
         await JSONResponse({"ok": True})(scope, receive, send)
 
-    binding_app = mcp_server._WorkspaceEndpointBindingApp(
+    binding_app = internal(mcp_server).WorkspaceEndpointBindingApp(
         child_app,
-        session_bindings=mcp_server._WorkspaceEndpointSessionBindings(),
+        session_bindings=internal(mcp_server).WorkspaceEndpointSessionBindings(),
     )
 
     async def invoke(endpoint_id):
@@ -504,7 +509,7 @@ def test_workspace_endpoint_binding_app_validates_and_resets_context():
                 "client": ("test", 1),
                 "server": ("test", 80),
                 "path_params": {"mcp_endpoint_id": endpoint_id},
-                "state": {mcp_server._MCP_ENDPOINT_STATE_KEY: "f" * 16},
+                "state": {internal(mcp_server).MCP_ENDPOINT_STATE_KEY: "f" * 16},
             },
             receive,
             send,
@@ -527,20 +532,20 @@ def test_workspace_endpoint_binding_app_validates_and_resets_context():
 
 def test_workspace_endpoint_binding_app_pins_and_releases_http_session():
     seen_endpoint_ids: list[str] = []
-    bindings = mcp_server._WorkspaceEndpointSessionBindings()
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings()
 
     async def child_app(scope, receive, send):
         from starlette.responses import JSONResponse
 
         seen_endpoint_ids.append(
-            scope["state"][mcp_server._MCP_ENDPOINT_STATE_KEY],
+            scope["state"][internal(mcp_server).MCP_ENDPOINT_STATE_KEY],
         )
         response = JSONResponse({"ok": True})
-        if not mcp_server._request_mcp_session_id(scope):
+        if not internal(mcp_server).request_mcp_session_id(scope):
             response.headers["mcp-session-id"] = "session-a"
         await response(scope, receive, send)
 
-    binding_app = mcp_server._WorkspaceEndpointBindingApp(
+    binding_app = internal(mcp_server).WorkspaceEndpointBindingApp(
         child_app,
         session_bindings=bindings,
     )
@@ -613,7 +618,7 @@ def test_workspace_endpoint_binding_app_pins_and_releases_http_session():
 
 def test_workspace_endpoint_session_bindings_expire_after_idle_timeout():
     now = [0.0]
-    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=10,
         max_active_sessions=2,
         clock=lambda: now[0],
@@ -635,7 +640,7 @@ def test_workspace_endpoint_session_bindings_expire_after_idle_timeout():
 
 def test_workspace_endpoint_session_bindings_expire_in_last_seen_order():
     now = [0.0]
-    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=10,
         max_active_sessions=3,
         clock=lambda: now[0],
@@ -654,15 +659,15 @@ def test_workspace_endpoint_session_bindings_expire_in_last_seen_order():
 
 
 def test_workspace_endpoint_session_bindings_reject_capacity_without_eviction():
-    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=60,
         max_active_sessions=1,
     )
 
     assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
-    with pytest.raises(mcp_server._MCPActiveSessionLimitError):
+    with pytest.raises(internal(mcp_server).MCPActiveSessionLimitError):
         bindings.reserve_new_session(ENDPOINT_ID)
-    with pytest.raises(mcp_server._MCPActiveSessionLimitError):
+    with pytest.raises(internal(mcp_server).MCPActiveSessionLimitError):
         bindings.bind_or_validate("session-b", ENDPOINT_ID)
 
     assert bindings.bind_or_validate("session-a", OTHER_ENDPOINT_ID) is False
@@ -671,7 +676,7 @@ def test_workspace_endpoint_session_bindings_reject_capacity_without_eviction():
 
 def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
     child_calls: list[str] = []
-    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=60,
         max_active_sessions=1,
     )
@@ -680,7 +685,7 @@ def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
     async def child_app(scope, receive, send):
         child_calls.append(scope["path"])
 
-    binding_app = mcp_server._WorkspaceEndpointBindingApp(
+    binding_app = internal(mcp_server).WorkspaceEndpointBindingApp(
         child_app,
         session_bindings=bindings,
     )
@@ -721,7 +726,7 @@ def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
 
 
 def test_workspace_endpoint_binding_tracks_session_from_error_response():
-    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+    bindings = internal(mcp_server).WorkspaceEndpointSessionBindings(
         idle_timeout_seconds=60,
         max_active_sessions=1,
     )
@@ -733,7 +738,7 @@ def test_workspace_endpoint_binding_tracks_session_from_error_response():
         response.headers["mcp-session-id"] = "session-from-error"
         await response(scope, receive, send)
 
-    binding_app = mcp_server._WorkspaceEndpointBindingApp(
+    binding_app = internal(mcp_server).WorkspaceEndpointBindingApp(
         child_app,
         session_bindings=bindings,
     )
@@ -770,7 +775,7 @@ def test_workspace_endpoint_binding_tracks_session_from_error_response():
     asyncio.run(exercise_binding())
 
     assert bindings.active_count() == 1
-    with pytest.raises(mcp_server._MCPActiveSessionLimitError):
+    with pytest.raises(internal(mcp_server).MCPActiveSessionLimitError):
         bindings.reserve_new_session(ENDPOINT_ID)
 
 
@@ -780,9 +785,9 @@ def test_configure_streamable_http_session_idle_timeout():
         routes=[SimpleNamespace(app=SimpleNamespace(session_manager=session_manager))],
     )
 
-    mcp_server._configure_streamable_http_session_idle_timeout(
+    internal(mcp_server).configure_streamable_http_session_idle_timeout(
         app,
-        mcp_server._MCP_SESSION_IDLE_TIMEOUT_SECONDS,
+        internal(mcp_server).MCP_SESSION_IDLE_TIMEOUT_SECONDS,
     )
 
     assert session_manager.session_idle_timeout == 1800.0
@@ -821,7 +826,7 @@ def test_resolve_scope_prefers_current_http_request_endpoint(monkeypatch, tmp_pa
     monkeypatch.setattr(mcp_server, "resolve_mcp_scope_from_token", resolve_scope)
 
     with mcp_server.bind_mcp_endpoint_id(OTHER_ENDPOINT_ID):
-        scope = mcp_server._resolve_scope(
+        scope = internal(mcp_server).resolve_scope(
             _config(tmp_path, "streamable-http"),
             required_scope="mcp:chat",
         )
@@ -838,7 +843,7 @@ def test_current_http_request_without_endpoint_state_fails_closed(monkeypatch):
     )
 
     with pytest.raises(MCPTokenAuthError) as exc_info:
-        mcp_server._get_request_mcp_endpoint_id_best_effort()
+        internal(mcp_server).get_request_mcp_endpoint_id_best_effort()
 
     assert exc_info.value.code == "MCP_WORKSPACE_ENDPOINT_INVALID"
 
@@ -966,7 +971,7 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
 
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
-                base_url="http://testserver",
+                base_url="https://testserver",
             ) as client:
                 headers = {"content-type": "application/json"}
                 initialized = await client.post(
@@ -1225,7 +1230,8 @@ def test_mcp_cli_stdio_migrates_before_loading_dotenv_backed_config(
     )
 
     class FakeServer:
-        def run(self, *, transport=None):
+        @staticmethod
+        def run(*, transport=None):
             calls.append("run:{}".format(transport))
 
     monkeypatch.setattr(

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import base64
 import hashlib
 import json
@@ -33,6 +34,7 @@ from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 from shared_capabilities.ontology_script_sdk.deterministic_provider import (
     DETERMINISTIC_PROVIDER_SOCKET_ENV,
 )
+from internal_access import internal
 
 
 def _write_package(root: Path, *, parser=False, data_access="none") -> Path:
@@ -2455,14 +2457,14 @@ def test_artifact_staging_cleans_only_stale_owned_directories(tmp_path, monkeypa
     stale_timestamp = time.time() - direct_execution_service_module.STALE_ARTIFACT_STAGING_SECONDS - 1
     os.utime(stale, (stale_timestamp, stale_timestamp))
     os.utime(leased, (stale_timestamp, stale_timestamp))
-    DeterministicExecutionService._refresh_artifact_staging_lease(leased)
+    internal(DeterministicExecutionService).refresh_artifact_staging_lease(leased)
     monkeypatch.setenv(
         "DETERMINISTIC_ARTIFACT_STAGING_ROOT",
         str(shared_root),
     )
 
-    parent = DeterministicExecutionService._artifact_staging_parent()
-    DeterministicExecutionService._cleanup_stale_artifact_staging(parent)
+    parent = internal(DeterministicExecutionService).artifact_staging_parent()
+    internal(DeterministicExecutionService).cleanup_stale_artifact_staging(parent)
 
     assert not stale.exists()
     assert leased.is_dir()
@@ -2491,7 +2493,7 @@ def test_artifact_staging_lease_uses_windows_compatible_utime_fallback(
         windows_compatible_utime,
     )
 
-    DeterministicExecutionService._refresh_artifact_staging_lease(staging_dir)
+    internal(DeterministicExecutionService).refresh_artifact_staging_lease(staging_dir)
 
     assert calls == [{"follow_symlinks": False}, {}]
 
@@ -2997,6 +2999,136 @@ def test_runtime_owned_checkpoint_argument_is_rejected_as_stale(tmp_path, monkey
 
     assert isinstance(resumed, Failed)
     assert resumed.code == "stale_checkpoint"
+    assert calls == []
+
+
+def test_matching_legacy_routing_checkpoint_arguments_are_migrated(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = _write_package(tmp_path)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "ok"}),
+    )
+    service = DeterministicExecutionService()
+
+    awaiting = service.execute(
+        _request(context={"supports_user_interaction": True}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+    assert isinstance(awaiting, AwaitingInput)
+    checkpoint = dict(awaiting.checkpoint)
+    checkpoint["arguments"] = {
+        **dict(awaiting.checkpoint["arguments"]),
+        "selected_ontology_id": "test-ontology",
+        "selected_ontology_version": "1.0.0",
+        "selected_version": "1.0.0",
+    }
+
+    resumed = service.execute(
+        _request(checkpoint=checkpoint, response={"value": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(resumed, Completed)
+    assert calls[0]["args"] == ["--code", "A"]
+    assert resumed.envelope["execution"]["arguments_sha256"] == canonical_sha256(
+        {"code": "A"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("selected_ontology_id", "other-ontology"),
+        ("selected_ontology_version", "2.0.0"),
+        ("selected_version", "2.0.0"),
+    ],
+)
+def test_mismatched_legacy_routing_checkpoint_argument_is_stale(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+):
+    ontology_dir = _write_package(tmp_path)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "unexpected"}),
+    )
+    service = DeterministicExecutionService()
+
+    awaiting = service.execute(
+        _request(context={"supports_user_interaction": True}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+    assert isinstance(awaiting, AwaitingInput)
+    checkpoint = dict(awaiting.checkpoint)
+    checkpoint["arguments"] = {field: value}
+
+    resumed = service.execute(
+        _request(checkpoint=checkpoint, response={"value": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(resumed, Failed)
+    assert resumed.code == "stale_checkpoint"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "selected_ontology_id",
+        "selected_ontology_version",
+        "selected_version",
+    ],
+)
+def test_routing_field_in_input_schema_is_rejected_as_runtime_owned(
+    tmp_path,
+    monkeypatch,
+    field,
+):
+    ontology_dir = _write_package(tmp_path)
+    schema_path = ontology_dir / "schemas" / "query.input.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"][field] = {"type": "string"}
+    schema["required"].append(field)
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    validate_and_lock_deterministic_operations(ontology_dir)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    calls = []
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "unexpected"}),
+    )
+
+    outcome = DeterministicExecutionService().execute(
+        _request(arguments={"code": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Failed)
+    assert outcome.code == "execution_schema_invalid"
+    assert outcome.internal_detail == field
     assert calls == []
 
 

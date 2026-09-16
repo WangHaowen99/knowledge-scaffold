@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the supported ontology import boundary."""
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from ontology.package_import import (
     validate_imported_field_aliases,
     validate_imported_object_aliases,
 )
+from internal_access import internal
 
 V01_MANIFEST = """\
 kind: ontology-package
@@ -927,7 +929,7 @@ def test_object_reference_uses_versioned_in_memory_index(tmp_path, monkeypatch):
         key="ObjectA",
         aliases=("AliasA",),
     )
-    original_loader = catalog_module._load_object_definitions
+    original_loader = internal(catalog_module).load_object_definitions
     load_count = 0
 
     def counting_loader(path):

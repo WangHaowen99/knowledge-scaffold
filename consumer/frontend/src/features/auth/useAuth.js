@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   authFetch,
@@ -45,17 +46,25 @@ const useAuth = () => {
           throw new Error(`Auth check failed: ${res.status}`);
         }
         const data = await res.json();
-        if (authOperationEpochRef.current !== operationEpoch) { return; }
+        if (authOperationEpochRef.current !== operationEpoch) {
+          return;
+        }
         setUser(data.user || null);
         setStatus('authenticated');
         setError(null);
         return;
       } catch (err) {
-        if (authOperationEpochRef.current !== operationEpoch) { return; }
+        if (authOperationEpochRef.current !== operationEpoch) {
+          return;
+        }
         logger.warn('Auth check failed', { error: err.message });
         const cleared = await clearAuthToken(undefined, { broadcast: false });
-        if (authOperationEpochRef.current !== operationEpoch) { return; }
-        if (!cleared && attempt === 0 && getAuthToken()) { continue; }
+        if (authOperationEpochRef.current !== operationEpoch) {
+          return;
+        }
+        if (!cleared && attempt === 0 && getAuthToken()) {
+          continue;
+        }
         setUser(null);
         setStatus('unauthenticated');
         return;
@@ -71,7 +80,9 @@ const useAuth = () => {
           logger.warn('Legacy auth migration failed', { error: migrationError.message });
         })
         .then(() => {
-          if (!cancelled) { return verify(); }
+          if (!cancelled) {
+            return verify();
+          }
           return undefined;
         });
     }, 0);
@@ -83,14 +94,18 @@ const useAuth = () => {
 
   useEffect(() => {
     const handleAuthEvent = (type) => {
-      if (type !== 'login' && type !== 'logout') { return; }
+      if (type !== 'login' && type !== 'logout') {
+        return;
+      }
       const operationEpoch = authOperationEpochRef.current + 1;
       authOperationEpochRef.current = operationEpoch;
       setUser(null);
       setError(null);
       setStatus('checking');
       void clearAuthToken(undefined, { broadcast: false }).then(() => {
-        if (authOperationEpochRef.current !== operationEpoch) { return; }
+        if (authOperationEpochRef.current !== operationEpoch) {
+          return;
+        }
         if (type === 'logout') {
           setStatus('unauthenticated');
           return;
@@ -115,7 +130,9 @@ const useAuth = () => {
       if (
         localAuthOperationRef.current.id !== localOperation.id ||
         localAuthOperationRef.current.kind !== 'login'
-      ) { return { success: false, stale: true }; }
+      ) {
+        return { success: false, stale: true };
+      }
 
       if (!result.ok) {
         if (authOperationEpochRef.current !== operationEpoch) {
@@ -148,7 +165,9 @@ const useAuth = () => {
     } catch (err) {
       const ownsLocalOperation = localAuthOperationRef.current.id === localOperation.id &&
         localAuthOperationRef.current.kind === 'login';
-      if (!ownsLocalOperation) { return { success: false, stale: true }; }
+      if (!ownsLocalOperation) {
+        return { success: false, stale: true };
+      }
       if (authOperationEpochRef.current !== operationEpoch) {
         localAuthOperationRef.current = { id: localOperation.id, kind: 'idle' };
         return { success: false, stale: true };
@@ -206,11 +225,15 @@ const useAuth = () => {
     // old refresh-token revoke and atomically clears the envelope.
     setStatus('checking');
     const { cleared, revokeError, state } = await logoutAuthSession();
-    if (revokeError) { logger.warn('Logout revoke request failed', { error: revokeError.message }); }
+    if (revokeError) {
+      logger.warn('Logout revoke request failed', { error: revokeError.message });
+    }
     if (
       localAuthOperationRef.current.id !== localOperation.id ||
       localAuthOperationRef.current.kind !== 'logout'
-    ) { return; }
+    ) {
+      return;
+    }
     localAuthOperationRef.current = { id: localOperation.id, kind: 'idle' };
     if (!cleared && state.accessToken) {
       setStatus('checking');

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Small request parsers for endpoints that must authenticate before body reads."""
 
 from __future__ import annotations

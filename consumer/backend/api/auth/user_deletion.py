@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Crash-safe consumer cleanup for deleting an identity.
 
 The auth server owns identities.  The consumer owns workspace memberships,

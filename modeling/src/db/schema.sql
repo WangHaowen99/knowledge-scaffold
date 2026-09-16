@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS projects (
   target_users  TEXT,
   glossary_prefs TEXT,
   sensitivity_level TEXT NOT NULL DEFAULT 'standard',
+  -- 当前项目是否由用户明确要求先完成产品/规则大清单台账。
+  -- 该标志独立于全局 advisory/enforce 配置，作为计划和写入门禁的事实来源。
+  product_ledger_required INTEGER NOT NULL DEFAULT 0 CHECK (product_ledger_required IN (0, 1)),
   workflow_profile_json TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}',
   stage         TEXT NOT NULL DEFAULT 'project_setup',
   created_at    TEXT NOT NULL,
@@ -255,6 +258,40 @@ CREATE TABLE IF NOT EXISTS product_ledger_v2_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_product_ledger_v2_project
   ON product_ledger_v2_snapshots(project_id, scope, updated_at DESC);
+
+-- 可恢复的产品台账草稿；条目按批次保存，支持幂等重放和服务重启后续跑。
+CREATE TABLE IF NOT EXISTS product_ledger_drafts (
+  project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  ledger_id        TEXT NOT NULL,
+  source_revision  TEXT NOT NULL,
+  analysis_revision TEXT,
+  scope            TEXT NOT NULL,
+  raw_count        INTEGER,
+  canonical_count  INTEGER,
+  merged_group_count INTEGER,
+  status           TEXT NOT NULL DEFAULT 'draft'
+                   CHECK (status IN ('draft', 'finalized', 'needs_review', 'stale')),
+  next_batch_no    INTEGER NOT NULL DEFAULT 1,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, ledger_id)
+);
+CREATE TABLE IF NOT EXISTS product_ledger_batches (
+  project_id       TEXT NOT NULL,
+  ledger_id        TEXT NOT NULL,
+  batch_no         INTEGER NOT NULL,
+  request_hash     TEXT NOT NULL,
+  source_cursor    TEXT,
+  entries_json     TEXT NOT NULL,
+  entry_count      INTEGER NOT NULL,
+  created_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, ledger_id, batch_no),
+  UNIQUE (project_id, ledger_id, request_hash),
+  FOREIGN KEY (project_id, ledger_id)
+    REFERENCES product_ledger_drafts(project_id, ledger_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_product_ledger_batches_progress
+  ON product_ledger_batches(project_id, ledger_id, batch_no);
 
 -- 资料用途建议与用户确认分离；表格额外保存逐 Sheet 处置。审查绑定不可变资料修订。
 CREATE TABLE IF NOT EXISTS material_purpose_reviews (
@@ -754,6 +791,40 @@ CREATE TABLE IF NOT EXISTS agent_change_plan_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_change_plan_tasks_plan
   ON agent_change_plan_tasks(plan_id, ordinal);
+
+CREATE TABLE IF NOT EXISTS agent_object_relation_reviews (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  plan_id           TEXT NOT NULL REFERENCES agent_change_plans(id) ON DELETE CASCADE,
+  task_id           TEXT NOT NULL REFERENCES agent_change_plan_tasks(id) ON DELETE CASCADE,
+  working_revision  TEXT NOT NULL,
+  schema_input_hash TEXT NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN ('open', 'applied', 'stale')),
+  applied_revision  TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_object_relation_reviews_task
+  ON agent_object_relation_reviews(project_id, task_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_object_relation_review_candidates (
+  review_id          TEXT NOT NULL REFERENCES agent_object_relation_reviews(id) ON DELETE CASCADE,
+  fingerprint        TEXT NOT NULL,
+  ordinal            INTEGER NOT NULL,
+  source_object      TEXT NOT NULL,
+  target_object      TEXT NOT NULL,
+  relation           TEXT NOT NULL,
+  note               TEXT NOT NULL,
+  reason             TEXT NOT NULL,
+  evidence_json      TEXT NOT NULL DEFAULT '[]',
+  default_selected   INTEGER NOT NULL CHECK (default_selected IN (0, 1)),
+  selected           INTEGER NOT NULL CHECK (selected IN (0, 1)),
+  error_json         TEXT,
+  PRIMARY KEY (review_id, fingerprint),
+  UNIQUE (review_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_object_relation_review_candidates_page
+  ON agent_object_relation_review_candidates(review_id, ordinal);
 
 -- staging 表示结果尚待结算；同一 mutation_id + request_hash 可安全重放或查询。
 CREATE TABLE IF NOT EXISTS agent_change_sets (

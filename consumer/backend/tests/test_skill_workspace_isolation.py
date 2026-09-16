@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression tests for workspace-scoped skill discovery and execution."""
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from workspace.workspaces import (
     delete_workspace,
     get_workspace_paths,
 )
+from internal_access import internal
 
 
 def _write_skill(skill_root, name: str, description: str) -> None:
@@ -191,7 +193,7 @@ def test_subagent_prompt_uses_explicit_workspace_skill_registry(tmp_path, monkey
 
     from agent.sub_agents.base import SubAgent
 
-    prompt = SubAgent()._build_system_prompt(workspace_id="workspace-a")
+    prompt = internal(SubAgent()).build_system_prompt(workspace_id="workspace-a")
 
     assert "only-a" in prompt
     assert "only-b" not in prompt

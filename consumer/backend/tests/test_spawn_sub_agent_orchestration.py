@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for spawn_sub_agent orchestration behavior."""
 
 from __future__ import annotations
@@ -5,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from operator import getitem
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,7 @@ from agent.tools.base import ToolContext
 from agent.tools.spawn_sub_agent import SpawnSubAgentTool
 from config import AgentConfig
 from workspace.workspaces import create_workspace, get_workspace_paths
+from internal_access import internal
 
 
 def _agent_config(**overrides):
@@ -381,9 +384,9 @@ def test_sub_agent_task_context_cannot_define_selected_ontology_scope(monkeypatc
     )
 
     assert result["_success"] is True
-    assert calls["state"]["user_context"].get("selected_ontology_id") is None
+    assert getitem(getitem(calls, "state"), "user_context").get("selected_ontology_id") is None
     assert calls["prompt_scope"]["selected_ontology_id"] is None
-    assert "task-controlled-ontology" not in calls["state"]["user_request"]
+    assert "task-controlled-ontology" not in getitem(getitem(calls, "state"), "user_request")
 
 
 def test_sub_agent_parent_workspace_locks_scope_with_task_context_fallback(monkeypatch):
@@ -649,7 +652,7 @@ def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkey
     tool = SpawnSubAgentTool()
 
     async def exercise():
-        semaphore = manager._get_async_semaphore()
+        semaphore = internal(manager).get_async_semaphore()
         await semaphore.acquire()
         try:
             return await tool.aexecute(

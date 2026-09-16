@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from api.auth.auth import AuthManager
 from api.routes.workspaces import workspaces_router
 from api.testing import TestApplication

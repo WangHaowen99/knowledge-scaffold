@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Focused lifecycle tests for the owned OpenJiuwen runtime boundary."""
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import agent.core.jiuwen_engine as jiuwen_engine
 import pytest
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 from agent.exceptions import WorkflowCancelledError
+from internal_access import internal
 
 _REAL_IMPORT_MODULE = importlib.import_module
 
@@ -24,8 +26,8 @@ class _FakeAgentCallbackEvent:
 
 class _FakeCallbackFramework:
     def __init__(self) -> None:
-        self._callbacks = {}
-        self._metrics = {}
+        internal(self).callbacks = {}
+        internal(self).metrics = {}
 
 
 class _FakeCallbackManager:
@@ -54,7 +56,7 @@ class _FakeCallbackManager:
             _FakeAgentCallbackEvent.ON_MODEL_EXCEPTION,
             _FakeAgentCallbackEvent.AFTER_TOOL_CALL,
         ):
-            self.framework._callbacks.pop(self._get_agent_event(event), None)
+            internal(self.framework).callbacks.pop(internal(self).get_agent_event(event), None)
 
 
 def _install_fake_runner(monkeypatch, framework, released_sessions):
@@ -86,28 +88,28 @@ def test_owned_runtime_cleanup_removes_only_owned_callbacks_metrics_and_session(
         card=SimpleNamespace(id="agent-a"),
         agent_callback_manager=manager,
     )
-    owned_event = manager._get_agent_event(_FakeAgentCallbackEvent.BEFORE_MODEL_CALL)
+    owned_event = internal(manager).get_agent_event(_FakeAgentCallbackEvent.BEFORE_MODEL_CALL)
     unrelated_event = "agent-b_before_model_call"
-    framework._callbacks = {
+    internal(framework).callbacks = {
         owned_event: [object()],
         unrelated_event: [object()],
     }
-    framework._metrics = {
+    internal(framework).metrics = {
         "{}:_on_before_model_call".format(owned_event): object(),
         "{}:_on_before_model_call".format(unrelated_event): object(),
     }
     _install_fake_runner(monkeypatch, framework, released_sessions)
 
     asyncio.run(
-        jiuwen_engine._dispose_owned_jiuwen_runtime(
+        internal(jiuwen_engine).dispose_owned_jiuwen_runtime(
             agent,
             session_id="agent-a.session.1",
         )
     )
 
     assert manager.clear_calls == 1
-    assert framework._callbacks == {unrelated_event: framework._callbacks[unrelated_event]}
-    assert list(framework._metrics) == ["{}:_on_before_model_call".format(unrelated_event)]
+    assert internal(framework).callbacks == {unrelated_event: internal(framework).callbacks[unrelated_event]}
+    assert list(internal(framework).metrics) == ["{}:_on_before_model_call".format(unrelated_event)]
     assert released_sessions == ["agent-a.session.1"]
 
 
@@ -123,8 +125,8 @@ def test_owned_runtime_cleanup_releases_session_when_callback_clear_fails(monkey
         card=SimpleNamespace(id="agent-failing-clear"),
         agent_callback_manager=manager,
     )
-    owned_event = manager._get_agent_event(_FakeAgentCallbackEvent.AFTER_MODEL_CALL)
-    framework._metrics = {
+    owned_event = internal(manager).get_agent_event(_FakeAgentCallbackEvent.AFTER_MODEL_CALL)
+    internal(framework).metrics = {
         "{}:_on_after_model_call".format(owned_event): object(),
         "agent-unrelated_after_model_call:_on_after_model_call": object(),
     }
@@ -132,13 +134,13 @@ def test_owned_runtime_cleanup_releases_session_when_callback_clear_fails(monkey
 
     with pytest.raises(RuntimeError, match="clear failed"):
         asyncio.run(
-            jiuwen_engine._dispose_owned_jiuwen_runtime(
+            internal(jiuwen_engine).dispose_owned_jiuwen_runtime(
                 agent,
                 session_id="agent-failing-clear.session.1",
             )
         )
 
-    assert list(framework._metrics) == ["agent-unrelated_after_model_call:_on_after_model_call"]
+    assert list(internal(framework).metrics) == ["agent-unrelated_after_model_call:_on_after_model_call"]
     assert released_sessions == ["agent-failing-clear.session.1"]
 
 
@@ -441,7 +443,7 @@ def test_managed_stream_cancellation_waits_for_child_producer_cleanup(monkeypatc
 
     async def exercise():
         task = asyncio.create_task(
-            engine._consume_managed_agent_stream(
+            internal(engine).consume_managed_agent_stream(
                 agent,
                 {"query": "offline", "conversation_id": "managed-cancel-session"},
                 session=session,

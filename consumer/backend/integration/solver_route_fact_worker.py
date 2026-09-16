@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Evaluate every ordered route candidate with one knowledge-package evaluator."""
 
 from __future__ import annotations

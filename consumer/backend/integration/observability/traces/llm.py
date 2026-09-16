@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Semantic observer facade for standalone LLM requests."""
 
 from __future__ import annotations

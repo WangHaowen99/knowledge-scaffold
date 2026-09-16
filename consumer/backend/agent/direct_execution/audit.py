@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Canonical hashing and authoritative result envelope construction."""
 
 from __future__ import annotations

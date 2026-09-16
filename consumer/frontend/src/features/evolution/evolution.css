@@ -1,3 +1,4 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved. */
 .mwr .evo-notice { margin-top: 10px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--blue) 38%, var(--hair)); border-radius: 8px; background: color-mix(in srgb, var(--blue) 10%, var(--surface-card)); color: color-mix(in srgb, var(--blue) 58%, var(--ink)); font-size: 12px; line-height: 1.5; }
 .mwr .evo-notice.error { border-color: color-mix(in srgb, var(--crit) 42%, var(--hair)); background: color-mix(in srgb, var(--crit) 11%, var(--surface-card)); color: color-mix(in srgb, var(--crit) 65%, var(--ink)); }
 .mwr .evo-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }

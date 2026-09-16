@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """认证对外契约测试。
 
 锁定 docs/decisions/2026-07-09-decoupled-auth-architecture.md D4 冻结的对外契约：
@@ -23,6 +24,7 @@ from backend_synthetic_credentials import (
     synthetic_secret,
 )
 from fastapi.testclient import TestClient
+from internal_access import internal
 
 
 def _build_app(auth_manager):
@@ -146,9 +148,9 @@ def test_non_admin_on_admin_route_returns_403(client, auth_manager):
 
 
 def test_password_change_required_state_does_not_block_routes(client, auth_manager):
-    users = auth_manager._load_users()
+    users = internal(auth_manager).load_users()
     users["admin"]["must_change_password"] = True
-    auth_manager._save_users(users)
+    internal(auth_manager).save_users(users)
     token = _login(client).json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
 

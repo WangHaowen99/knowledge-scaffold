@@ -1,9 +1,11 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression coverage for workspace-private model-profile budgets."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from internal_access import internal
 
 
 def _workspace_dir(runtime_root: Path, workspace_id: str = "demo") -> Path:
@@ -169,7 +171,7 @@ def test_workspace_partial_apply_is_retryable_and_retains_previous_backup(
 
     import migrations.workspace_model_profile_output_budget_v1 as migration
 
-    original_writer = migration._write_bytes_atomic
+    original_writer = internal(migration).write_bytes_atomic
 
     def fail_beta_target(path, payload):
         if path == beta_path:

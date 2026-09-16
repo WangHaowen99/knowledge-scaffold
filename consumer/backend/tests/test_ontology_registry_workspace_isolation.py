@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression tests for workspace-scoped ontology discovery."""
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from ontology.ontologies import (
 )
 from ontology.ontology_catalog import get_ontology_manifest
 from workspace.workspaces import create_workspace, delete_workspace, get_workspace_paths
+from internal_access import internal
 
 
 def _write_ontology(
@@ -139,7 +141,7 @@ def test_cached_registry_refreshes_after_workspace_package_changes(monkeypatch, 
         description="Added after registry initialization",
     )
     # External filesystem edits are observed after the production throttle.
-    registry._next_source_check_at = 0.0
+    internal(registry).next_source_check_at = 0.0
 
     refreshed = get_ontology_registry(workspace_id="workspace-a")
     ontology = refreshed.get_ontology("new-ontology")
@@ -222,7 +224,7 @@ def test_registry_refresh_retries_when_sources_change_during_discovery(monkeypat
     ontology_root = get_workspace_paths("workspace-a").ontologies_dir
     manifest_path = ontology_root / "shared-ontology" / "manifest.yaml"
     registry = OntologyRegistry(ontology_dirs=[ontology_root])
-    original_discover = registry._discover_ontologies_snapshot
+    original_discover = internal(registry).discover_ontologies_snapshot
     mutated = False
 
     def discover_then_disable():
@@ -260,7 +262,7 @@ def test_registry_external_signature_checks_are_throttled(monkeypatch, tmp_path)
     signature_reads = []
     import ontology.ontologies as ontologies_module
 
-    original_signature = ontologies_module._build_registry_source_signature
+    original_signature = internal(ontologies_module).build_registry_source_signature
 
     def tracked_signature(roots):
         signature_reads.append(now[0])
@@ -331,7 +333,7 @@ def test_preload_and_prompt_cache_are_scoped_by_workspace(monkeypatch, tmp_path)
     assert "Ontology from B" in prompt
     assert "Ontology from A" not in prompt
 
-    subagent_prompt = SubAgent()._build_system_prompt(workspace_id="workspace-b")
+    subagent_prompt = internal(SubAgent()).build_system_prompt(workspace_id="workspace-b")
     assert "Ontology from B" in subagent_prompt
     assert "Ontology from A" not in subagent_prompt
 

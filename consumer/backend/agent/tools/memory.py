@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Unified model-facing memory capture tool."""
 
 from __future__ import annotations

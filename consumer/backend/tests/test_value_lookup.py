@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the value-domain lookup pipeline."""
 
 from __future__ import annotations
@@ -109,7 +110,7 @@ def _make_connection(provider="nl2sql_http") -> ResolvedBusinessDataSource:
         ontology_id="demo",
         provider=provider,
         mode="direct_provider",
-        config={"url": "http://example.com", "token": synthetic_secret("value_lookup-credential-01"), "scene": "s"},
+        config={"url": "https://example.com", "token": synthetic_secret("value_lookup-credential-01"), "scene": "s"},
     )
 
 
@@ -613,8 +614,9 @@ def _make_ontology_dir_no_bindings(tmp_path: Path) -> Path:
 
 
 def test_execute_value_lookups_unknown_field_when_no_bindings(monkeypatch, tmp_path):
-    """When the object has fields but no bound fields, a non-existent field
-    must still be classified as UNKNOWN, not UNBOUND."""
+    """When the object has fields but no bound fields, a non-existent field."""
+    # Details: When the object has fields but no bound fields, a non-existent field must still be classified as
+    # UNKNOWN, not UNBOUND.
     ontology_dir = _make_ontology_dir_no_bindings(tmp_path)
     _patch_stream(monkeypatch, ["x"])
     response = execute_value_lookups(
@@ -631,8 +633,9 @@ def test_execute_value_lookups_unknown_field_when_no_bindings(monkeypatch, tmp_p
 
 
 def test_execute_value_lookups_unbound_field_when_no_bindings(monkeypatch, tmp_path):
-    """When the object has fields but no bound fields, a real field without
-    value_binding_ref must be classified as UNBOUND."""
+    """When the object has fields but no bound fields, a real field without."""
+    # Details: When the object has fields but no bound fields, a real field without value_binding_ref must be
+    # classified as UNBOUND.
     ontology_dir = _make_ontology_dir_no_bindings(tmp_path)
     _patch_stream(monkeypatch, ["x"])
     response = execute_value_lookups(

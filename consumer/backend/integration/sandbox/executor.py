@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Execute ontology scripts inside jiuwenbox sandboxes."""
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from .data_proxy import PreparedDataConnection, get_data_connection_secret_manag
 from .env_allowlist import build_script_env
 from .errors import SandboxExecError, SandboxUnavailableError
 from .paths import posix_path_string, to_sandbox_script_path
+from .package_revision import current_verified_package_execution
 from .policy_builder import PolicyContext
 from .registry import get_run_sandbox_registry
 from .runtime_contract import sandbox_runtime_revision, sandbox_runtime_revision_file
@@ -128,7 +130,21 @@ class SandboxScriptExecutor:
         cancel_event: Any = None,
         restrict_filesystem_to_ontology: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        workspace_root = _resolve_workspace_mount_root(workspace_id)
+        verified_package = current_verified_package_execution(
+            workspace_id=workspace_id, ontology_id=ontology_id,
+            run_id=run_id, ontology_dir=ontology_dir,
+        )
+        if verified_package is not None:
+            if (
+                tuple(read_only_paths) != verified_package.read_only_paths
+                or tuple(writable_paths) != verified_package.writable_paths
+            ):
+                raise SandboxUnavailableError("verified package cannot add filesystem mounts")
+            workspace_root = verified_package.package_root
+            run_id = verified_package.sandbox_run_id
+            restrict_filesystem_to_ontology = True
+        else:
+            workspace_root = _resolve_workspace_mount_root(workspace_id)
         sandbox_script_path = Path(
             to_sandbox_script_path(
                 script_path,
@@ -183,6 +199,11 @@ class SandboxScriptExecutor:
                     "sandbox read-only path must be a regular directory"
                 )
             resolved_read_only_paths.append(path.resolve())
+        if verified_package is not None and (
+            tuple(resolved_read_only_paths) != verified_package.read_only_paths
+            or tuple(resolved_writable_paths) != verified_package.writable_paths
+        ):
+            raise SandboxUnavailableError("verified package filesystem mounts changed")
         if restrict_filesystem_to_ontology and resolved_ontology_dir is not None:
             resolved_read_only_paths.insert(0, resolved_ontology_dir)
         else:

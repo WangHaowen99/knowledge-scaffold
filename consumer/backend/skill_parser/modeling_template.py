@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Compiler for the modeling-template ontology source layout.
 
 The source layout is intentionally narrow:

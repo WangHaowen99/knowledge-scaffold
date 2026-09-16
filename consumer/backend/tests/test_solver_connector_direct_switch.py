@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]

@@ -1,9 +1,11 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import hashlib
 import json
 
 import pytest
 from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 from config.settings import AgentConfig, AppConfig, LimitsConfig
+from internal_access import internal
 
 SECRET_TEST_KEY = ENCRYPTION_KEY
 
@@ -40,10 +42,10 @@ def test_limits_config_uses_current_builtin_defaults(tmp_path, monkeypatch):
 def test_resolve_default_runtime_root_handles_flat_container_layout():
     import config.system_config as system_config_module
 
-    assert system_config_module._resolve_default_runtime_root(
+    assert internal(system_config_module).resolve_default_runtime_root(
         system_config_module.Path("/app")
     ) == system_config_module.Path("/app/.onto-runtime")
-    assert system_config_module._resolve_default_runtime_root(
+    assert internal(system_config_module).resolve_default_runtime_root(
         system_config_module.Path("/repo/backend")
     ) == system_config_module.Path("/repo/.onto-runtime")
 
@@ -54,7 +56,7 @@ def test_config_runtime_root_can_follow_project_root_env(tmp_path, monkeypatch):
     runtime_root = tmp_path / "custom-runtime"
     monkeypatch.setenv(system_config_module.PROJECT_ROOT_ENV, str(runtime_root))
 
-    assert system_config_module._resolve_config_runtime_root() == runtime_root
+    assert internal(system_config_module).resolve_config_runtime_root() == runtime_root
 
 
 def test_system_config_ignores_legacy_backend_config_when_new_config_is_missing(tmp_path, monkeypatch):
@@ -1138,8 +1140,9 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
 
 
 def test_skill_evolution_connection_test_probes_runs_endpoint(monkeypatch):
-    """A real (lightweight) reachability probe replaces the old fall-through
-    '配置校验通过' that reported success for an unreachable skill-evolver."""
+    """A real (lightweight) reachability probe replaces the old fall-through."""
+    # Details: A real (lightweight) reachability probe replaces the old fall-through '配置校验通过' that reported success
+    # for an unreachable skill-evolver.
     import config.system_config as system_config_module
 
     captured = {}
@@ -1156,11 +1159,11 @@ def test_skill_evolution_connection_test_probes_runs_endpoint(monkeypatch):
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": True, "base_url": "http://evolver.example.net", "timeout_seconds": 30},
+        {"enabled": True, "base_url": "https://evolver.example.net", "timeout_seconds": 30},
     )
     assert result["success"] is True
     assert "skill-evolver 连接成功" in result["message"]
-    assert captured["url"] == "http://evolver.example.net/api/status"
+    assert captured["url"] == "https://evolver.example.net/api/status"
     assert captured["headers"]["Accept"] == "application/json"
     # probe timeout is capped short (<=5) regardless of the configured HTTP timeout
     assert captured["timeout"] <= 5
@@ -1177,7 +1180,7 @@ def test_skill_evolution_connection_test_reports_unreachable(monkeypatch):
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": True, "base_url": "http://evolver.example.net", "timeout_seconds": 30},
+        {"enabled": True, "base_url": "https://evolver.example.net", "timeout_seconds": 30},
     )
     assert result["success"] is False
     assert "无法连接" in result["message"]
@@ -1188,7 +1191,7 @@ def test_skill_evolution_connection_test_disabled_is_success():
 
     result = system_config_module.test_system_config_connection(
         "skill_evolution",
-        {"enabled": False, "base_url": "http://evolver.example.net"},
+        {"enabled": False, "base_url": "https://evolver.example.net"},
     )
     assert result["success"] is True
     assert "关闭" in result["message"]

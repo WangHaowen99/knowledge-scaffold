@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import errno
@@ -15,6 +16,7 @@ from config.config_snapshot import (
     ConfigSnapshotManager,
     ConfigSourceSignature,
 )
+from internal_access import internal
 
 
 class FakeClock:
@@ -169,7 +171,7 @@ def test_snapshot_manager_section_copy_runs_outside_manager_lock(tmp_path, monke
         clock=clock,
     )
     manager.refresh_generation()
-    original_copy = snapshot_module._copy_value
+    original_copy = internal(snapshot_module).copy_value
     first_copy_started = threading.Event()
     second_copy_started = threading.Event()
     release_first_copy = threading.Event()
@@ -361,7 +363,7 @@ def test_system_config_section_warm_read_copies_only_requested_subtree(
     )
 
     first = system_config_module.load_system_config_section("storage")
-    manager = system_config_module._get_system_config_snapshot_manager()
+    manager = internal(system_config_module).get_system_config_snapshot_manager()
     probe.calls = 0
     first["project_root"] = "/mutated"
     second = system_config_module.load_system_config_section("storage")
@@ -440,7 +442,7 @@ def test_system_config_snapshot_loads_authoritatively_once_per_generation(
     monkeypatch,
 ):
     system_config_module, _ = _prepare_system_config(monkeypatch, tmp_path)
-    original_loader = system_config_module._load_system_config_unlocked
+    original_loader = internal(system_config_module).load_system_config_unlocked
     calls = {"load": 0}
 
     def counting_loader(*args, **kwargs):
@@ -565,7 +567,7 @@ def test_system_config_security_signature_errors_fail_closed(
         "llm",
         {"api_key": synthetic_secret("config_snapshot-credential-04")},
     )
-    manager = system_config_module._get_system_config_snapshot_manager()
+    manager = internal(system_config_module).get_system_config_snapshot_manager()
 
     def fail_signature_check(_path):
         raise signature_error
@@ -592,7 +594,7 @@ def test_system_config_transient_signature_error_keeps_last_good_snapshot(
         {"api_key": synthetic_secret("config_snapshot-credential-04")},
     )
     generation = system_config_module.get_system_config_generation()
-    manager = system_config_module._get_system_config_snapshot_manager()
+    manager = internal(system_config_module).get_system_config_snapshot_manager()
 
     def fail_signature_check(_path):
         raise _os_error_with_errno(errno.EAGAIN)
@@ -618,7 +620,7 @@ def test_system_config_transient_loader_io_error_keeps_last_good_snapshot(
         "llm",
         {"api_key": synthetic_secret("config_snapshot-credential-04")},
     )
-    manager = system_config_module._get_system_config_snapshot_manager()
+    manager = internal(system_config_module).get_system_config_snapshot_manager()
     generation = manager.generation
     config_path.write_text(
         config_path.read_text(encoding="utf-8") + "\n",
@@ -633,7 +635,7 @@ def test_system_config_transient_loader_io_error_keeps_last_good_snapshot(
     config = system_config_module.load_system_config()
     assert config["llm"]["api_key"] == synthetic_secret("config_snapshot-credential-04")
     assert manager.generation == generation
-    assert manager._snapshot is not None
+    assert internal(manager).snapshot is not None
 
 
 def test_system_config_secret_error_with_transient_cause_still_fails_closed(
@@ -650,7 +652,7 @@ def test_system_config_secret_error_with_transient_cause_still_fails_closed(
         "llm",
         {"api_key": synthetic_secret("config_snapshot-credential-04")},
     )
-    manager = system_config_module._get_system_config_snapshot_manager()
+    manager = internal(system_config_module).get_system_config_snapshot_manager()
     config_path.write_text(
         config_path.read_text(encoding="utf-8") + "\n",
         encoding="utf-8",
@@ -667,7 +669,7 @@ def test_system_config_secret_error_with_transient_cause_still_fails_closed(
     with pytest.raises(system_config_module.SystemConfigReadError) as exc_info:
         system_config_module.load_system_config()
     assert exc_info.value.code == "SYSTEM_CONFIG_SECRET_UNSAFE"
-    assert manager._snapshot is None
+    assert internal(manager).snapshot is None
 
 
 @pytest.mark.parametrize(
@@ -690,14 +692,14 @@ def test_system_config_programming_error_propagates_without_discarding_last_good
         "agent",
         {"context_max_rounds": 10},
     )
-    manager = system_config_module._get_system_config_snapshot_manager()
-    healthy_snapshot = manager._snapshot
+    manager = internal(system_config_module).get_system_config_snapshot_manager()
+    healthy_snapshot = internal(manager).snapshot
     generation = manager.generation
     config_path.write_text(
         config_path.read_text(encoding="utf-8") + "\n",
         encoding="utf-8",
     )
-    original_loader = system_config_module._load_system_config_unlocked
+    original_loader = internal(system_config_module).load_system_config_unlocked
 
     def fail_loader(*_args, **_kwargs):
         raise program_error
@@ -707,7 +709,7 @@ def test_system_config_programming_error_propagates_without_discarding_last_good
     with pytest.raises(type(program_error)) as exc_info:
         system_config_module.load_system_config()
     assert exc_info.value is program_error
-    assert manager._snapshot is healthy_snapshot
+    assert internal(manager).snapshot is healthy_snapshot
     assert manager.generation == generation
 
     monkeypatch.setattr(
@@ -744,7 +746,7 @@ def test_disabled_system_config_snapshot_uses_authoritative_load_path(
 ):
     system_config_module, _ = _prepare_system_config(monkeypatch, tmp_path)
     monkeypatch.setenv("PERF_CONFIG_SNAPSHOT_ENABLED", "false")
-    original_loader = system_config_module._load_system_config_unlocked
+    original_loader = internal(system_config_module).load_system_config_unlocked
     calls = {"load": 0}
 
     def counting_loader(*args, **kwargs):
@@ -854,7 +856,7 @@ def test_config_directory_fsync_uses_directory_descriptor_on_posix(
     monkeypatch.setattr(system_config_module.os, "fsync", fsynced.append)
     monkeypatch.setattr(system_config_module.os, "close", closed.append)
 
-    system_config_module._fsync_directory(tmp_path)
+    internal(system_config_module).fsync_directory(tmp_path)
 
     assert opened == [(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0), 0o700)]
     assert fsynced == [73]
@@ -874,7 +876,7 @@ def test_config_directory_fsync_does_not_open_directory_on_windows(
 
     monkeypatch.setattr(system_config_module.os, "open", fail_open)
 
-    system_config_module._fsync_directory(tmp_path)
+    internal(system_config_module).fsync_directory(tmp_path)
 
 
 def test_update_directory_fsync_failure_reports_committed_and_publishes_generation(

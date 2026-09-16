@@ -1,14 +1,17 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import json
 import os
 import stat
 import subprocess
 import sys
 import textwrap
+from operator import getitem
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 
 class _CatalogSnapshot:
@@ -216,7 +219,7 @@ def test_inventory_filters_by_canonical_profile_ref_without_changing_generation(
     monkeypatch.setattr(
         references,
         "read_workspace_runtime_config",
-        lambda workspace_id: runtime_by_workspace[workspace_id],
+        lambda workspace_id: getitem(runtime_by_workspace, workspace_id),
     )
     monkeypatch.setattr(references, "get_workspace_config_generation", lambda _workspace_id: 0)
 
@@ -502,7 +505,7 @@ def test_secure_open_uses_windows_no_follow_fallback_without_posix_flags(
 
     monkeypatch.setattr(os, "open", fail_blocking_open)
 
-    descriptor = references._open_runtime_config_descriptor(config_path)
+    descriptor = internal(references).open_runtime_config_descriptor(config_path)
 
     assert descriptor == 41
     assert calls == [config_path]

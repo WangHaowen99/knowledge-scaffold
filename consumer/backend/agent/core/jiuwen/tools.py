@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tool binding and state helpers for the Jiuwen runtime."""
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from ...exceptions import (
     WorkflowCancelledError,
 )
 from ...runtime.async_utils import call_async_or_thread
+from ...script_argument_errors import safe_script_argument_error
 from ...tools.base import ToolBatchResult, ToolInvocation
 from ...tools.executor import aexecute_tool_batch
 from ..shared.state_updates import apply_tool_batch_result_to_state
@@ -123,10 +125,14 @@ class ConsecutiveToolFailureGuard:
             self._last_failure_iteration = None
             return
 
+        validation_error = _script_argument_failure(batch_result)
         fingerprint = (
             str(tool_call.name or "").strip().lower(),
-            _canonical_tool_arguments(tool_call.arguments),
-            error,
+            _canonical_tool_arguments({
+                key: tool_call.arguments.get(key)
+                for key in ("ontology_id", "operation_key")
+            } if validation_error else tool_call.arguments),
+            _canonical_json(validation_error) if validation_error else error,
         )
         repeated = fingerprint == self._last_failure and (
             agent_iteration is None
@@ -142,7 +148,8 @@ class ConsecutiveToolFailureGuard:
             raise AgentLoopStalledError(
                 "Repeated failure for tool '{}'".format(
                     str(tool_call.name or "").strip() or "unknown",
-                )
+                ),
+                details={"last_argument_validation": validation_error} if validation_error else None,
             )
 
     def _ensure_next_invocation_locked(self, index: int) -> None:
@@ -533,6 +540,16 @@ def _canonical_tool_error(batch_result: Any) -> Optional[str]:
     ):
         return normalized
     return None
+
+
+def _script_argument_failure(batch_result: Any) -> Optional[Dict[str, Any]]:
+    try:
+        payload = json.loads(first_tool_message_content(batch_result))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping) or payload.get("ok") is not False:
+        return None
+    return safe_script_argument_error(payload.get("error"))
 
 
 def _canonical_json(value: Any) -> str:

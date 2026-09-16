@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Golden and safety tests for ontology HashFrame/v1."""
 
 import pytest

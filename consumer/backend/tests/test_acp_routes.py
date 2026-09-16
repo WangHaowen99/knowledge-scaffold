@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """ASGI contract tests for ACP canonical Run admission and HITL answers."""
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from api.protocols.acp import server as acp_server
 from api.testing import TestApplication
 from fastapi.testclient import TestClient
 from persistence.execution_store import ExecutionStore
+from internal_access import internal
 
 
 class _InlinePool:
@@ -115,8 +117,8 @@ def _app(store, manager):
         event_hub=_EventHub(manager),
     )
     app.include_router(acp_server.acp_router)
-    app.dependency_overrides[acp_server._acp_principal] = principal_override
-    app.dependency_overrides[acp_server._acp_workspace_id] = workspace_id_override
+    app.dependency_overrides[internal(acp_server).acp_principal] = principal_override
+    app.dependency_overrides[internal(acp_server).acp_workspace_id] = workspace_id_override
     return app
 
 

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression coverage for legacy model-profile output budgets."""
 
 from __future__ import annotations
@@ -458,6 +459,11 @@ def test_legacy_task_profile_invalid_budget_is_rejected(tmp_path, monkeypatch):
 def test_startup_resolves_migrated_profile_with_current_budget(tmp_path, monkeypatch):
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
     _write_config(runtime_root, max_tokens=4096)
+    import config.system_config as system_config_module
+
+    # Prime the old value and prevent polling from masking missing publication.
+    monkeypatch.setattr(system_config_module, "CONFIG_SNAPSHOT_CHECK_INTERVAL_SECONDS", 3600)
+    assert system_config_module.resolve_role_config("main")["max_tokens"] == 4096
 
     from migrations.runner import run_startup_migrations
 

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-2 tests for the native async Jiuwen Engine entry points."""
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from agent.core.jiuwen_engine import (
     JiuwenReactLoopEngine,
 )
 from agent.runtime.async_utils import run_sync_compat
+from internal_access import internal
 
 
 def _agent_config():
@@ -120,7 +122,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
             ],
         }
 
-        history = jiuwen_engine._build_jiuwen_history_source_messages(state)
+        history = internal(jiuwen_engine).build_jiuwen_history_source_messages(state)
 
         self.assertEqual(len(history), 4)
         self.assertEqual(history[1]["reasoning_content"], "previous reasoning")
@@ -326,7 +328,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
             buffer = _JiuwenEngineEventBuffer(max_buffer_size=1)
             scheduled = 0
             scheduled_lock = threading.Lock()
-            real_call_soon_threadsafe = buffer._loop.call_soon_threadsafe
+            real_call_soon_threadsafe = internal(buffer).loop.call_soon_threadsafe
 
             def counted_call_soon_threadsafe(callback, *args):
                 nonlocal scheduled
@@ -342,7 +344,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
                         continue
 
             with patch.object(
-                buffer._loop,
+                internal(buffer).loop,
                 "call_soon_threadsafe",
                 side_effect=counted_call_soon_threadsafe,
             ):

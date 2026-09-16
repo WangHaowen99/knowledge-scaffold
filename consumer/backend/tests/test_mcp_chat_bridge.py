@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """MCP unary projection tests on the native ASGI event loop."""
 
 from __future__ import annotations
@@ -6,6 +7,7 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from operator import getitem
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,6 +38,7 @@ from backend_synthetic_credentials import synthetic_secret
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import MCPRequestScope
 from persistence.execution_store import ExecutionStore
+from internal_access import internal
 
 
 class _InlinePool:
@@ -301,7 +304,7 @@ def _config(path: Path) -> MCPRuntimeConfig:
         server_host="127.0.0.1",
         server_port=7488,
         public_base_url="",
-        agentic_base_url="http://service.example.net",
+        agentic_base_url="https://service.example.net",
         token_secret=synthetic_secret("mcp_chat_bridge-credential-01"),
         token_algorithm="HS256",
         token_issuer="synthetic-issuer",
@@ -521,7 +524,7 @@ def test_mcp_chat_tool_exposes_selected_ontology_and_forwards_context(monkeypatc
     async def call_with_scope(_required_scope, callback):
         return await callback(scope)
 
-    mcp_server._register_chat_tool(
+    internal(mcp_server).register_chat_tool(
         _FakeMCP(),
         call_with_scope=call_with_scope,
     )
@@ -587,7 +590,7 @@ def test_chat_tool_reports_progress_when_context_has_progress_token(
     async def call_with_scope(_required_scope, callback):
         return await callback(scope)
 
-    mcp_server._register_chat_tool(
+    internal(mcp_server).register_chat_tool(
         _FakeMCP(),
         call_with_scope=call_with_scope,
     )
@@ -686,7 +689,8 @@ def test_async_chat_adapter_consumes_internal_progress_stream(
             return None
 
         # pylint: disable-next=add-staticmethod-or-classmethod-decorator
-        def stream(self, method, url, *, headers, json):
+        @staticmethod
+        def stream(method, url, *, headers, json):
             captured.update(
                 method=method,
                 url=url,
@@ -751,7 +755,8 @@ def test_async_chat_adapter_propagates_progress_cancellation(
         async def __aexit__(self, *_args):
             return None
 
-        def stream(self, method, url, *, headers, json):
+        @staticmethod
+        def stream(method, url, *, headers, json):
             del method, url, headers, json
             return _StreamResponse()
 
@@ -897,7 +902,7 @@ def test_workflow_bridge_rebinds_and_revalidates_token_ontology(
 
     assert status_code == 200
     assert body["ok"] is True
-    assert captured["ontology_id"] == "knowledge_package_demo"
+    assert getitem(captured, "ontology_id") == "knowledge_package_demo"
     assert manager.context.arguments["selected_ontology_id"] == "knowledge_package_demo"
     assert manager.context.arguments["selected_ontology_version"] == "1.0.0"
     assert manager.context.arguments["selected_version"] == "1.0.0"
@@ -1104,7 +1109,7 @@ def test_mcp_timeout_cancels_the_same_canonical_run(tmp_path):
     assert status_code == 504
     assert body["error"]["error_code"] == "MCP_CHAT_EXECUTION_TIMEOUT"
     assert manager.cancelled == [(manager.context.run_id, "mcp_chat_execution_timeout")]
-    assert captured["runtime"].event_hub.released_reservations == ["reservation_1"]
+    assert getitem(captured, "runtime").event_hub.released_reservations == ["reservation_1"]
 
 
 def test_mcp_rejects_run_before_start_when_subscriber_capacity_is_exhausted(
@@ -1135,7 +1140,7 @@ def test_mcp_reattaches_after_slow_subscriber_detach(tmp_path):
         detach_once=True,
         runtime_capture=captured,
     )
-    runtime = captured["runtime"]
+    runtime = getitem(captured, "runtime")
 
     assert status_code == 200
     assert body["result"]["content"] == "synthetic answer"
@@ -1162,7 +1167,7 @@ def test_mcp_replays_public_events_when_detach_races_terminal(tmp_path):
         detach_terminal_once=True,
         runtime_capture=captured,
     )
-    runtime = captured["runtime"]
+    runtime = getitem(captured, "runtime")
 
     assert status_code == 200
     assert body["result"]["authoritative_solver_result"]["authoritative"] is True
@@ -1181,7 +1186,7 @@ def test_mcp_replays_after_terminal_invalidates_lazy_reservation(tmp_path):
         invalidate_reservation_once=True,
         runtime_capture=captured,
     )
-    runtime = captured["runtime"]
+    runtime = getitem(captured, "runtime")
 
     assert status_code == 200
     assert body["result"]["content"] == "synthetic answer"
@@ -1330,7 +1335,7 @@ def test_mcp_stream_failure_cancels_started_canonical_run(tmp_path):
     assert status_code == 500
     assert body["error"]["error_code"] == "MCP_CHAT_WORKFLOW_FAILED"
     assert manager.cancelled == [(manager.context.run_id, "mcp_chat_workflow_failed")]
-    assert captured["runtime"].event_hub.released_reservations == ["reservation_1"]
+    assert getitem(captured, "runtime").event_hub.released_reservations == ["reservation_1"]
 
 
 def test_mcp_maps_runtime_admission_timeout(tmp_path):

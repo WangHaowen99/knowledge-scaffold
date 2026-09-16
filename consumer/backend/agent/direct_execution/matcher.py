@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Deterministic operation matching for the direct execution branch.
 
 Phase 1 uses only deterministic rules — no LLM preflight — to decide whether

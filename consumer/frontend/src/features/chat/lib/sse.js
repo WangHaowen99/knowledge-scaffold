@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const takeSSEFrames = (buffer, { done = false } = {}) => {
   const parts = String(buffer || '').split(/\r?\n\r?\n/);
   const trailing = parts.pop() || '';

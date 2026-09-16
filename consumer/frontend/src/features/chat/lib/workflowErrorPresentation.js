@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const CANCELLED_STATUSES = new Set(['aborted', 'cancelled', 'canceled']);
 
 const includesAny = (value, fragments) =>

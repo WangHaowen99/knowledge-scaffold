@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Bounded public execution summaries for MCP chat responses."""
 
 from __future__ import annotations
@@ -9,10 +10,11 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from operator import getitem
 from typing import Any, Mapping
 
-from utils.security.redaction import redact_sensitive_text
 from integration.observability.events import RuntimeEvent, RuntimeEventType
+from utils.security.redaction import redact_sensitive_text
 
 _TIMING_FIELDS = (
     "total_elapsed_ms",
@@ -983,7 +985,7 @@ def _compact_iteration_timing(payload: Mapping[str, Any]) -> dict[str, int]:
         "tools_elapsed_ms": tools_ms,
         "setup_elapsed_ms": setup_ms,
     }
-    return {key: values[key] for key in _TIMING_FIELDS}
+    return {key: getitem(values, key) for key in _TIMING_FIELDS}
 
 
 def _query_digest(query: str) -> str:

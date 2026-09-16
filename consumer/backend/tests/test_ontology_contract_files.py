@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Versioned JSON Schema, fixture, and independent HashFrame checks."""
 
 from __future__ import annotations
@@ -5,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
+from operator import getitem
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -126,10 +128,10 @@ def test_normative_fixtures_validate_schemas_and_production_readers():
             format_checker=FormatChecker(),
         ).validate(fixture)
         loaded[fixture_name] = fixture
-    validate_ontology_changed_event(loaded["ontology_changed.v1.json"])
-    validate_epoch_state(loaded["ontology_epoch_state.v1.json"])
+    validate_ontology_changed_event(getitem(loaded, "ontology_changed.v1.json"))
+    validate_epoch_state(getitem(loaded, "ontology_epoch_state.v1.json"))
 
-    parsed_fixture = loaded["parsed_resource.v1.json"]
+    parsed_fixture = getitem(loaded, "parsed_resource.v1.json")
     source_text = parsed_fixture["display_text"]
     parsed = ResourceParser().parse(
         ResourceSource(

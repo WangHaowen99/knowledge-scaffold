@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Sandbox integration configuration loaded from cold-start environment and defaults."""
 
 from __future__ import annotations

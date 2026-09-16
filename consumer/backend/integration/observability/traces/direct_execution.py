@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Semantic observer facade for direct execution workflow.
 
 Encapsulates all trace/span emission logic for the Direct Execution branch,

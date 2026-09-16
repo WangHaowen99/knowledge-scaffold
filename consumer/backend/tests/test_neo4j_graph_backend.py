@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for Neo4J backend query safety."""
 
 from __future__ import annotations
@@ -7,6 +8,7 @@ from agent.tools.business_data.providers.graph.backends.base import GraphBackend
 from agent.tools.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
 from agent.tools.business_data.providers.graph.models import GraphScope
 from backend_synthetic_credentials import synthetic_invalid_password
+from internal_access import internal
 
 
 class _FakeNode:
@@ -575,9 +577,9 @@ def test_neo4j_resolver_uses_pinned_ip_and_keeps_original_tls_uri(monkeypatch):
         }
     )
 
-    backend._get_driver()
+    internal(backend).get_driver()
 
     assert captured["uri"] == "neo4j+s://snapshot.example.com:7687"
     resolved = captured["resolver"](("snapshot.example.com", 7687))
     assert resolved == [("192.0.2.24", 7687)]
-    assert resolved[0]._host_name == "snapshot.example.com"
+    assert internal(resolved[0]).host_name == "snapshot.example.com"

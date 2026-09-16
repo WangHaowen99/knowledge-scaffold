@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Persist-first, per-run ordered event fan-out with bounded subscribers."""
 
 from __future__ import annotations

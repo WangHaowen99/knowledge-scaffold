@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 export const MARKDOWN_UPLOAD_CANCEL_NOTICE = '已取消选择 Markdown 文件';

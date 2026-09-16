@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Boundary tests for skill_evolution config normalization.
 
 Covers the validation gates in _normalize_skill_evolution_effective that the
@@ -17,7 +18,7 @@ from config.system_config import (
 def _base() -> dict:
     return {
         "enabled": True,
-        "base_url": "http://x:8765/",
+        "base_url": "https://x:8765/",
         "timeout_seconds": 30,
         "poll_interval_seconds": 10,
         "task_timeout_seconds": 1800,
@@ -27,7 +28,7 @@ def _base() -> dict:
 
 def test_normalizes_base_url_trailing_slash_and_enabled_bool():
     n = _normalize_skill_evolution_effective(_base())
-    assert n["base_url"] == "http://x:8765"  # rstrip("/")
+    assert n["base_url"] == "https://x:8765"  # rstrip("/")
     assert n["enabled"] is True
 
 
@@ -44,8 +45,9 @@ def test_max_iterations_accepts_bounds_rejects_out_of_range():
 
 
 def test_max_iterations_zero_falls_back_to_default():
-    """0 is falsy → `or 15` fallback (NOT rejected). Pin current behavior: a
-    user submitting 0 gets the default 15, not a validation error."""
+    """0 is falsy → `or 15` fallback (NOT rejected). Pin current behavior: a."""
+    # Details: 0 is falsy → `or 15` fallback (NOT rejected). Pin current behavior: a user submitting 0 gets the
+    # default 15, not a validation error.
     c = _base()
     c["max_iterations"] = 0
     assert _normalize_skill_evolution_effective(c)["max_iterations"] == 15

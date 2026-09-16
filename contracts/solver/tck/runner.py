@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Endpoint-only conformance runner for the public solver Connector contract."""
 
 from __future__ import annotations

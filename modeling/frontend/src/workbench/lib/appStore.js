@@ -67,6 +67,8 @@ const initial = {
   progress: null,
   progressError: '',
   changePlan: null,
+  objectRelationReview: null,
+  openedObjectRelationTaskId: '',
   files: [],
   fileContents: {},
   fileErrors: {},
@@ -135,7 +137,7 @@ export const SNAPSHOT_NEUTRAL_TOOLS = new Set([
   'list_dir', 'read_file', 'grep_package', 'diff',
   'get_project_state', 'gate_status', 'who_references',
   'list_domain_resources', 'get_domain_resource', 'preview_domain_delete',
-  'suggest_object_relations', 'get_schema_semantics', 'get_schema_mapping_plan',
+  'get_schema_semantics', 'get_schema_mapping_plan',
   'get_change_plan', 'get_change_set_receipt',
   'analyze_deterministic_capabilities', 'analyze_material_impact', 'analyze_package_merge',
   'list_package_sources', 'read_package_source_file',
@@ -224,8 +226,21 @@ function rejectedMessage(result, fallback) {
 
 function planContinuationPrompt(approved) {
   return approved
-    ? '我已在页面批准当前建模计划。请从计划第一项继续，先核对当前状态和写入回执，不要重复已经完成的任务。'
+    ? '我已在页面批准当前建模计划。请继续执行已批准的建模计划：完成候选预检，候选修订写入后执行完整校验，校验通过后生成统一确认卡；不要重复已经完成的任务。'
     : '我已在页面拒绝当前建模计划。请读取计划的最终状态并停止这份计划，不要产生任何候选修改。';
+}
+
+function planCardBlocks(plan) {
+  return [{
+    type: 'plan',
+    plan,
+    items: (plan.tasks || []).map((task) => ({
+      t: task.title,
+      st: ['accepted', 'skipped'].includes(task.status)
+        ? 'done'
+        : ['staged', 'validated', 'waiting_user'].includes(task.status) ? 'now' : '',
+    })),
+  }];
 }
 
 async function waitForPlanContinuationBoundary(projectId, timeoutMs = 20_000) {
@@ -302,6 +317,9 @@ export const actions = {
         || snapshot.files[0]
         || '';
       const activity = agent.activity ? progressActivity(agent.activity) : null;
+      const pendingChangePlan = snapshot.changePlan && snapshot.changePlan.approval_status === 'pending'
+        ? snapshot.changePlan
+        : null;
       const restoredAgentFocus = agent.focus && availableFocusTarget(agent.focus, {
         files: snapshot.files,
         fileErrors: {},
@@ -326,13 +344,14 @@ export const actions = {
         phases: Array.isArray(agent.phases) ? agent.phases : [],
         progress: null,
         progressError: '',
-        changePlan: null,
+        changePlan: pendingChangePlan,
         files: snapshot.files,
         materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
         candidateDiff: candidate.files || [],
         studioPendingCount: Number(snapshot.studioPendingCount) || 0,
         confirmPolicy: snapshot.confirmPolicy || [],
         packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
+        objectRelationReview: snapshot.objectRelationReview || null,
         selectedMaterial: snapshot.materials[0]?.id || '',
         run: agent.run,
         recovery: agent.state?.recovery || null,
@@ -345,6 +364,21 @@ export const actions = {
         focus,
         replayUntilSeq: Number(agent.lastSeq) || 0,
       });
+      if (pendingChangePlan) {
+        const planMessageId = `change-plan-${pendingChangePlan.id}`;
+        const existingPlanMessage = store.get().messages.find((message) => message.id === planMessageId);
+        const existingPlan = existingPlanMessage?.blocks?.[0]?.plan;
+        if (!existingPlan
+          || existingPlan.version !== pendingChangePlan.version
+          || existingPlan.updated_at !== pendingChangePlan.updated_at) {
+          actions.appendMessage({
+            id: planMessageId,
+            role: 'assistant',
+            createdAt: pendingChangePlan.updated_at,
+            blocks: planCardBlocks(pendingChangePlan),
+          });
+        }
+      }
       if (initialPath) void actions.loadFile(initialPath);
       if (snapshot.materials[0]?.id) void actions.loadMaterial(snapshot.materials[0].id);
       return { snapshot, agent, agentAvailable };
@@ -383,6 +417,7 @@ export const actions = {
       studioPendingCount: Number(snapshot.studioPendingCount) || 0,
       confirmPolicy: snapshot.confirmPolicy || [],
       packageDataSource: snapshot.packageDataSource || { dataSourceType: 'neo4j' },
+      objectRelationReview: snapshot.objectRelationReview || null,
     });
     if (options.openPurposeReview && store.get().follow) {
       const material = nextReadyMaterialPurposeReview(snapshot.materials, store.get().selectedMaterial);
@@ -550,14 +585,7 @@ export const actions = {
         id: `change-plan-${event.plan.id}`,
         role: 'assistant',
         createdAt: event.createdAt,
-        blocks: [{
-          type: 'plan',
-          plan: event.plan,
-          items: (event.plan.tasks || []).map((task) => ({
-            t: task.title,
-            st: (() => { if (['accepted', 'skipped'].includes(task.status)) return 'done'; return ['staged', 'validated', 'waiting_user'].includes(task.status) ? 'now' : ''; })(),
-          })),
-        }],
+        blocks: planCardBlocks(event.plan),
       });
     }
     if (eventType === 'change_set' && !replaying) {
@@ -637,6 +665,13 @@ export const actions = {
               status: event.issueStatus || event.phase,
               text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
               actions: recoveryActions,
+              missingRequiredTools: event.missingRequiredTools || event.missing_required_tools || [],
+              ledgerId: event.ledgerId || event.ledger_id || '',
+              ledgerStatus: event.ledgerStatus || event.ledger_status || '',
+              processed: event.processed ?? null,
+              remaining: event.remaining ?? null,
+              analysisRevision: event.analysisRevision || event.analysis_revision || '',
+              failureReason: event.failureReason || event.failure_reason || '',
             }],
           });
         }
@@ -857,15 +892,17 @@ export const actions = {
       // 决定已经生效，只是指令没发出去；此时说“计划仍保持原状态”是假的，
       // 会把用户引去重新批准（见 #30）。
       const settled = Boolean(error?.planSettled);
+      let recoveryMessage = '计划仍保持原状态，请在当前计划卡重试。';
+      if (staleRun) {
+        recoveryMessage = '当前运行还没有接续服务重启前的建模计划，请先安全终止失效计划后重新规划。';
+      } else if (settled) {
+        recoveryMessage = '决定已经生效，只是助手当时仍在收尾、没有收到开工指令。等助手空闲后点「继续执行」即可。';
+      }
       store.set({
         error: {
           scope: 'change_plan',
           message: error instanceof Error ? error.message : '计划决定提交失败',
-          recovery: staleRun
-            ? '当前运行还没有接续服务重启前的建模计划，请先安全终止失效计划后重新规划。'
-            : settled
-              ? '决定已经生效，只是助手当时仍在收尾、没有收到开工指令。等助手空闲后点「继续执行」即可。'
-              : '计划仍保持原状态，请在当前计划卡重试。',
+          recovery: recoveryMessage,
           ...(staleRun ? { staleRun: true } : {}),
           ...(settled ? { resumePlan: { planId, approved } } : {}),
         },
@@ -1666,6 +1703,9 @@ function enrichInteractionAnswer(interaction, answer) {
   const chosen = (() => { if (Array.isArray(answer.selected) && answer.selected.length) return answer.selected; return answer.value ? [answer.value] : []; })();
   const options = interaction?.payload?.options || [];
   const labels = chosen.map((value) => options.find((option) => option.value === value)?.label).filter(Boolean);
+  // Keep the raw text separate from the option label. The server persists the
+  // answer and replay may not have the original interaction payload, so the
+  // label is a convenience field rather than a replacement for answer.text.
   return labels.length ? { ...answer, displayText: labels.join('、') } : answer;
 }
 

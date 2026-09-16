@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const LIVE_STATUSES = new Set([
   'running',
   'streaming',
@@ -449,7 +450,7 @@ const collectMessage = (message, units, rootOntologyId = '') => {
 const collectTraceUnits = (input) => {
   const units = [];
   const rootOntologyId = ontologyIdFrom(input);
-  let values = [];
+  let values;
   if (Array.isArray(input)) {
     values = input;
   } else if (Array.isArray(input?.messages)) {
@@ -458,6 +459,8 @@ const collectTraceUnits = (input) => {
     values = input.envelopes;
   } else if (plainObject(input)) {
     values = [input];
+  } else {
+    values = [];
   }
   values.forEach((value) => {
     const kind = stringValue(value?.kind ?? value?.type).toLocaleLowerCase();

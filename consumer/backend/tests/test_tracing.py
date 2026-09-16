@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the low-level Langfuse client adapter."""
 
 import builtins
@@ -6,6 +7,7 @@ from unittest.mock import MagicMock
 
 import integration.observability.exporters.langfuse.client as langfuse_client
 from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 
 def test_langfuse_client_module_does_not_import_langfuse_during_module_load(monkeypatch):
@@ -102,7 +104,7 @@ def test_trace_adapter_creates_and_ends_spans():
     mock_span.id = "span-1"
     mock_trace.span.return_value = mock_span
     adapter = langfuse_client.LangfuseTraceAdapter(None)
-    adapter._active_traces["trace-1"] = {"trace": mock_trace, "spans": {}}
+    internal(adapter).active_traces["trace-1"] = {"trace": mock_trace, "spans": {}}
 
     span_id = adapter.create_span("trace-1", "tool:test", tags=["tool"])
 
@@ -119,7 +121,7 @@ def test_trace_adapter_creates_and_ends_spans():
     adapter.end_observation("trace-1", "span-1", status="success", output={"ok": True})
 
     mock_span.end.assert_called_once_with(output={"ok": True})
-    assert adapter._active_traces["trace-1"]["spans"] == {}
+    assert internal(adapter).active_traces["trace-1"]["spans"] == {}
 
 
 def test_trace_adapter_releases_terminal_trace_after_spans_finish():
@@ -128,16 +130,16 @@ def test_trace_adapter_releases_terminal_trace_after_spans_finish():
     mock_span.id = "span-1"
     mock_trace.generation.return_value = mock_span
     adapter = langfuse_client.LangfuseTraceAdapter(None)
-    adapter._active_traces["trace-1"] = {"trace": mock_trace, "spans": {}}
+    internal(adapter).active_traces["trace-1"] = {"trace": mock_trace, "spans": {}}
 
     span_id = adapter.create_llm_span("trace-1", "llm:test")
     adapter.update_trace_output("trace-1", {"status": "success", "final_answer": "done"})
-    assert "trace-1" in adapter._active_traces
+    assert "trace-1" in internal(adapter).active_traces
 
     adapter.update_llm_span_tokens("trace-1", span_id, {"prompt_tokens": 1, "completion_tokens": 2})
 
     mock_span.end.assert_called_once_with(usage={"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3})
-    assert "trace-1" not in adapter._active_traces
+    assert "trace-1" not in internal(adapter).active_traces
 
 
 def test_trace_adapter_ends_llm_span_with_output_when_provided():
@@ -146,7 +148,7 @@ def test_trace_adapter_ends_llm_span_with_output_when_provided():
     mock_span.id = "span-1"
     mock_trace.generation.return_value = mock_span
     adapter = langfuse_client.LangfuseTraceAdapter(None)
-    adapter._active_traces["trace-1"] = {"trace": mock_trace, "spans": {}}
+    internal(adapter).active_traces["trace-1"] = {"trace": mock_trace, "spans": {}}
 
     span_id = adapter.create_llm_span("trace-1", "llm:test")
     adapter.update_llm_span_tokens(

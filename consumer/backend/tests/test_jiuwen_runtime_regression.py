@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-5 compatibility, load, cleanup, and fixed-flow integration tests."""
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from agent.runtime import (
     RuntimeInvocationContext,
 )
 from agent.runtime.mock import FixedAsyncAgentRuntime
+from internal_access import internal
 
 
 def _context(run_id: str, **arguments) -> RuntimeInvocationContext:
@@ -123,7 +125,7 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
             ["evt-{:04d}".format(index) for index in range(1, 7)],
         )
         self.assertEqual(sink.events[-1].status, "completed")
-        self.assertEqual(runtime._runs, {})
+        self.assertEqual(internal(runtime).runs, {})
 
     async def test_repeated_mock_runs_do_not_retain_run_state(self):
         runtime = FixedAsyncAgentRuntime()
@@ -135,7 +137,7 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
                 sink,
             )
             self.assertEqual(result.status, "completed")
-            self.assertEqual(runtime._runs, {})
+            self.assertEqual(internal(runtime).runs, {})
 
     async def test_many_concurrent_native_runs_are_isolated_and_leave_no_tasks(self):
         runtime = JiuwenAsyncAgentRuntime(
@@ -153,7 +155,7 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
         outputs = await asyncio.gather(*(execute(index) for index in range(50)))
         await asyncio.sleep(0)
 
-        self.assertEqual(runtime._runs, {})
+        self.assertEqual(internal(runtime).runs, {})
         pending_runtime_tasks = []
         for task in asyncio.all_tasks():
             is_pending_runtime_task = (
@@ -205,7 +207,7 @@ class JiuwenRuntimeRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await runtime.cancel("duplicate-run", "load test cleanup"))
         result = await asyncio.wait_for(owner, timeout=2)
         self.assertEqual(result.status, "cancelled")
-        self.assertEqual(runtime._runs, {})
+        self.assertEqual(internal(runtime).runs, {})
 
 
 if __name__ == "__main__":

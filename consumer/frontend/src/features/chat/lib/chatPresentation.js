@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 // 对话展示相关的纯工具函数：侧边栏历史列表、消息线程与 Trace 共用。
 
 export function groupSessions(sessions, search) {

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Crash recovery tests for portable ontology directory publication."""
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from ontology.directory_replacement import (
     recover_directory_replacements,
     recover_workspace_ontology_replacements,
 )
+from internal_access import internal
 
 
 def test_sync_directory_opens_with_explicit_restrictive_mode(tmp_path, monkeypatch):
@@ -22,7 +24,7 @@ def test_sync_directory_opens_with_explicit_restrictive_mode(tmp_path, monkeypat
     monkeypatch.setattr(directory_replacement.os, "fsync", lambda _descriptor: None)
     monkeypatch.setattr(directory_replacement.os, "close", lambda _descriptor: None)
 
-    directory_replacement._sync_directory(tmp_path)
+    internal(directory_replacement).sync_directory(tmp_path)
 
     assert opened == [
         (

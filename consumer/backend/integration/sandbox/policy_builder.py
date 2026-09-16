@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Generate JiuwenBox security policies for onto-agent script sandboxes."""
 
 from __future__ import annotations
@@ -164,9 +165,13 @@ class OntoSandboxPolicyBuilder:
         read_only_paths = tuple(
             dict.fromkeys(Path(path).resolve() for path in configured_read_only_paths)
         )
+        runtime_contract_path = (
+            ctx.sandbox_runtime_python_dir.parent / "runtime-contract.json"
+        )
         bind_mounts: list[dict[str, str]] = [
             *(_read_only_bind(path) for path in read_only_paths),
             _read_only_bind(ctx.sandbox_runtime_python_dir),
+            _read_only_bind(runtime_contract_path),
         ]
         writable_paths = tuple(Path(path).resolve() for path in ctx.writable_paths)
         bind_mounts.extend(_read_write_bind(path) for path in writable_paths)
@@ -198,6 +203,7 @@ class OntoSandboxPolicyBuilder:
                     "/opt",
                     *(_as_container_path(path) for path in read_only_paths),
                     _as_container_path(ctx.sandbox_runtime_python_dir),
+                    _as_container_path(runtime_contract_path),
                 ],
                 "read_write": [
                     "/tmp",

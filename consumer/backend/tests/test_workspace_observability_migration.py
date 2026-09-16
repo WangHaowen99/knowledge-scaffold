@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import hashlib
@@ -8,6 +9,7 @@ from pathlib import Path
 from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
 from utils.security.secrets import encrypt_secret
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 SECRET_TEST_KEY = ENCRYPTION_KEY
 
@@ -353,7 +355,7 @@ def test_partial_workspace_failure_keeps_source_and_restart_retries_safely(tmp_p
     _write_global_config(config_path, _local_observability(retention_days=12))
     from migrations import observability_workspace_config_v1 as migration
 
-    original_write = migration._write_workspace_target
+    original_write = internal(migration).write_workspace_target
 
     def fail_for_beta(target_root, workspace_id, config):
         if workspace_id == "beta":
@@ -387,7 +389,7 @@ def test_retry_blocks_when_retained_source_diverges_from_owned_target(
     _write_global_config(config_path, _local_observability(retention_days=12))
     from migrations import observability_workspace_config_v1 as migration
 
-    original_write = migration._write_workspace_target
+    original_write = internal(migration).write_workspace_target
 
     def fail_for_beta(target_root, workspace_id, config):
         if workspace_id == "beta":
@@ -435,7 +437,7 @@ def test_retry_never_overwrites_workspace_config_changed_after_partial_failure(
     _write_global_config(config_path, _local_observability(retention_days=12))
     from migrations import observability_workspace_config_v1 as migration
 
-    original_write = migration._write_workspace_target
+    original_write = internal(migration).write_workspace_target
 
     def fail_for_beta(target_root, workspace_id, config):
         if workspace_id == "beta":
@@ -494,7 +496,7 @@ def test_failed_source_survives_unrelated_system_config_rewrite(tmp_path, monkey
     from migrations import observability_workspace_config_v1 as migration
     from system_config_migration_helpers import apply_test_system_config_migrations
 
-    original_write = migration._write_workspace_target
+    original_write = internal(migration).write_workspace_target
 
     def fail_for_beta(target_root, workspace_id, config):
         if workspace_id == "beta":
@@ -541,7 +543,7 @@ def test_progress_marker_failure_happens_before_any_workspace_write(
     _write_global_config(config_path, _local_observability())
     from migrations import observability_workspace_config_v1 as migration
 
-    original_write_marker = migration._write_marker
+    original_write_marker = internal(migration).write_marker
 
     def fail_prepared(plan, *, status, backup_paths, existing=None):
         if status == migration.MARKER_PREPARED:
@@ -580,7 +582,7 @@ def test_backup_creation_failure_never_removes_source_and_retry_succeeds(tmp_pat
     _write_global_config(config_path, _local_observability())
     from migrations import observability_workspace_config_v1 as migration
 
-    original_backup = migration._create_verified_bytes_backup
+    original_backup = internal(migration).create_verified_bytes_backup
     monkeypatch.setattr(
         migration,
         "_create_verified_bytes_backup",
@@ -608,7 +610,7 @@ def test_atomic_source_rewrite_failure_leaves_prepared_marker_and_is_retryable(
     _write_global_config(config_path, _local_observability())
     from migrations import observability_workspace_config_v1 as migration
 
-    original_atomic = migration._write_bytes_atomic
+    original_atomic = internal(migration).write_bytes_atomic
 
     def fail_source(path, payload, *, mode=0o600):
         if Path(path) == config_path:
@@ -638,7 +640,7 @@ def test_marker_finalize_failure_is_recovered_without_using_backup_as_rollback(
     _write_global_config(config_path, _local_observability())
     from migrations import observability_workspace_config_v1 as migration
 
-    original_write_marker = migration._write_marker
+    original_write_marker = internal(migration).write_marker
 
     def fail_completed(plan, *, status, backup_paths, existing=None):
         if status == migration.MARKER_COMPLETED:

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Immutable, public-safe catalog of ontology solver capabilities."""
 
 from __future__ import annotations

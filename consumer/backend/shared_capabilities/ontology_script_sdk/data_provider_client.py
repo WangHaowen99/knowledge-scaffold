@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Parameterless business-data facade for local and sandbox scripts."""
 
 from __future__ import annotations

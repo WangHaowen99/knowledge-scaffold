@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for the NL2SQL Template search adapter."""
 
 from __future__ import annotations
@@ -14,11 +15,12 @@ from agent.tools.business_data.adapters.nl2sql_template_search import (
 )
 from backend_synthetic_credentials import synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
+from internal_access import internal
 
 
 def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
     config = {
-        "url": "http://nl2sql.example.net/",
+        "url": "https://nl2sql.example.net/",
         "token": synthetic_secret("nl2sql_template_provider-credential-01"),
         "scene": "scene-x",
         "timeout_seconds": 88,
@@ -86,12 +88,12 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
         captured["timeout"] = timeout
         return _FakeResponse()
 
-    provider._session.post = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查询零件", entity="TargetItem"))
 
     # Should call /api/v1/sql (not /api/v1/query)
-    assert captured["url"] == "http://nl2sql.example.net/api/v1/sql"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/sql"
     assert "SELECT * FROM Part" in captured["json"]["sql"]
 
     assert events[0] == {"type": "start", "content": "开始查询本体数据"}
@@ -135,12 +137,12 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
         captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
-    provider._session.post = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查某个不存在的东西", entity=""))
 
     # Should call /api/v1/query (NL2SQL)
-    assert captured["url"] == "http://nl2sql.example.net/api/v1/query"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/query"
     assert "模板未命中" in events[1]["content"]
     assert events[1]["public_summary"] == "模板未命中，改用自然语言查询"
 
@@ -190,7 +192,7 @@ def test_default_matcher_with_rich_template_dedupes(tmp_path):
     def post_response(*_args, **_kwargs):
         return _FakeResponse()
 
-    provider._session.post = post_response
+    internal(provider).session.post = post_response
 
     events = list(provider.search_stream(query="查询零件", entity=""))
 
@@ -243,7 +245,7 @@ def test_external_matcher_discovered_and_called(tmp_path):
         captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
-    provider._session.post = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查询零件信息", entity=""))
 
@@ -347,11 +349,11 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
         captured["url"] = url
         return _FakeResponse()
 
-    provider._session.post = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="随便查", entity=""))
 
-    assert captured["url"] == "http://nl2sql.example.net/api/v1/query"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/query"
     assert "模板未命中" in events[1]["content"]
 
 
@@ -384,7 +386,7 @@ def test_template_matcher_returns_error_for_http_failure(tmp_path):
     def post_response(*_args, **_kwargs):
         return _FakeResponse()
 
-    provider._session.post = post_response
+    internal(provider).session.post = post_response
 
     events = list(provider.search_stream(query="查询零件", entity=""))
 
@@ -410,7 +412,7 @@ def test_dedupe_result_keeps_first_per_key():
         ],
     }
 
-    deduped = NL2SQLTemplateSearchAdapter._dedupe_result(result, dedupe_key="id")
+    deduped = internal(NL2SQLTemplateSearchAdapter).dedupe_result(result, dedupe_key="id")
 
     assert len(deduped["data"]) == 2
     row_a = next(r for r in deduped["data"] if r["id"] == "A")
@@ -422,7 +424,7 @@ def test_dedupe_result_keeps_first_per_key():
 def test_dedupe_result_empty_data_is_noop():
     """_dedupe_result with empty data returns the result unchanged."""
     result = {"success": True, "data": []}
-    deduped = NL2SQLTemplateSearchAdapter._dedupe_result(result, dedupe_key="id")
+    deduped = internal(NL2SQLTemplateSearchAdapter).dedupe_result(result, dedupe_key="id")
     assert len(deduped["data"]) == 0
 
 
@@ -589,7 +591,7 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
         captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
-    provider._session.post = _fake_post
+    internal(provider).session.post = _fake_post
 
     events = list(provider.search_stream(query="查询零件信息", entity=""))
 

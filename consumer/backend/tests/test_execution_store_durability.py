@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import json
 import os
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from persistence.execution_store import (
     ExecutionStore,
     ExecutionStoreCorruptionError,
 )
+from internal_access import internal
 
 
 def _seed_checkpoint(
@@ -149,7 +151,7 @@ def test_failed_atomic_commit_never_publishes_uncommitted_cache(
             None,
         )
 
-    assert session_id not in store._cache
+    assert session_id not in internal(store).cache
     session_path = storage_dir / session_id / "execution.json"
     durable = json.loads(session_path.read_text(encoding="utf-8"))
     assert durable["turns"][0]["status"] == durable_status

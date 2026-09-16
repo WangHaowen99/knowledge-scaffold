@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """FastAPI route tests for the A2A canonical Run projection."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase A offline regression baseline for the OpenJiuwen ContextEngine.
 
 These tests use the real ``openjiuwen==0.1.17`` ContextEngine and ReActAgent.
@@ -34,6 +35,7 @@ from openjiuwen.core.session.agent import create_agent_session
 from openjiuwen.core.single_agent import ReActAgent, ReActAgentConfig
 from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+from internal_access import internal
 
 
 def test_phase_a_uses_requirements_pinned_openjiuwen_version():
@@ -158,7 +160,7 @@ async def _capture_real_react_model_window(
         )
     )
     fake_model = _CapturingFakeModel()
-    agent._llm = fake_model
+    internal(agent).llm = fake_model
     preview_messages: list[list] = []
 
     async def capture_preview(ctx):
@@ -440,9 +442,10 @@ class TestAskUserRecoveryEffectiveRounds:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_configured_one_becomes_two_for_resume(self):
-        """When configured_rounds=1 and resume is active, the ContextEngine
-        must receive default_window_round_num=2 (via _resolve_effective_context_max_rounds).
-        Here we verify that ContextEngineConfig(2) retains 2 rounds."""
+        """When configured_rounds=1 and resume is active, the ContextEngine."""
+        # Details: When configured_rounds=1 and resume is active, the ContextEngine must receive
+        # default_window_round_num=2 (via _resolve_effective_context_max_rounds). Here we verify that
+        # ContextEngineConfig(2) retains 2 rounds.
         from agent.core.jiuwen_engine import _resolve_effective_context_max_rounds
 
         state = {"user_context": {"interaction_response": {"choice": "A"}}}
@@ -527,8 +530,8 @@ class TestNoHardMessageLimit:
 
     # pylint: disable-next=add-staticmethod-or-classmethod-decorator
     def test_large_history_within_single_round_not_truncated(self):
-        """A single round with >200 messages must not be truncated when
-        max_context_message_num=None."""
+        """A single round with >200 messages must not be truncated when."""
+        # Details: A single round with >200 messages must not be truncated when max_context_message_num=None.
         config = ContextEngineConfig(
             max_context_message_num=None,
             default_window_round_num=1,

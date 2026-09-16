@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for ontology-scoped business data provider APIs and probes."""
 
 from __future__ import annotations
@@ -270,7 +271,7 @@ def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkey
             "mode": "direct_provider",
             "provider": "nl2sql_http",
             "config": {
-                "url": "http://nl2sql:5600",
+                "url": "https://nl2sql:5600",
                 "token": synthetic_secret("business_data_connections-credential-06"),
                 "scene": "mw_proj_demo",
             },

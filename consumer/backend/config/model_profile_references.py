@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Aggregate workspace model-profile references without exposing runtime config."""
 
 from __future__ import annotations

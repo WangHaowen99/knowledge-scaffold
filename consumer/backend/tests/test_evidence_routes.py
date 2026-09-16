@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP contracts for ontology evidence management and lookup."""
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from ontology.evidence.manager import EvidenceIndexManager
 from ontology.evidence.worker import EvidenceIndexWorker
 from persistence.runtime_facts import RuntimeFactsStore
 from workspace.workspaces import create_workspace, get_workspace_paths
+from internal_access import internal
 
 
 class _RecordingPool:
@@ -146,7 +148,7 @@ def _workspace(tmp_path: Path, monkeypatch):
         "---\nresource: object\nkey: eco\ntitle: 工程更改指令\n---\n# 工程更改指令\n\n## 字段\nECO编号。\n",
         encoding="utf-8",
     )
-    ontologies_module._global_registry = None
+    internal(ontologies_module).global_registry = None
     return paths
 
 

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Internal models for GraphSearchProvider."""
 
 from __future__ import annotations

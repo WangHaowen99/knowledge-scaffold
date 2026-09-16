@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { useAuthContext } from '../auth';
 import { authFetch } from '../../shared/api/auth';
@@ -464,7 +465,6 @@ function PlatformAccess() {
 }
 
 /* ---------------- L2 · 工作空间各面板 ---------------- */
-
 function WorkspaceInfo() {
   const { can, workspaceId, workspaces, reloadWorkspaces } = useAuthContext();
   const canEdit = can('ws.info.write');
@@ -1025,7 +1025,6 @@ function WorkspaceObservability() {
 }
 
 /* ---------------- L3 · 个人设置 ---------------- */
-
 function PersonalPrefs() {
   const { workspaces, workspaceId, switchWorkspace } = useAuthContext();
   const [lang, setLang] = useState(
@@ -1331,7 +1330,6 @@ function AccountSecurity({ user, changePassword }) {
 }
 
 /* ---------------- 小组件 ---------------- */
-
 function Toggle({ on, disabled, onChange, ...accessibilityProps }) {
   return (
     <button

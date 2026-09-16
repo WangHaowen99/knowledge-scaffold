@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Application adapter from neutral operation requests to the script tool runtime."""
 
 from __future__ import annotations

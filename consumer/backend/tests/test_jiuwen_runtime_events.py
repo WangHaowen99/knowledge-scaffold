@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Phase-4 tests for real Jiuwen RuntimeEvent and public draft adaptation."""
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from agent.runtime.jiuwen import _build_resumable_llm_context
 from agent.runtime.lifecycle import JiuwenRuntimeLifecycleError
 from agent.runtime.mock import ListRuntimeEventSink
 from backend_synthetic_credentials import synthetic_invalid_password, synthetic_secret
+from internal_access import internal
 
 
 def _context(
@@ -193,7 +195,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
 
         for exc, code, source, retriable, status_code in cases:
             with self.subTest(code=code, status_code=status_code):
-                error = JiuwenAsyncAgentRuntime._runtime_error(exc)
+                error = internal(JiuwenAsyncAgentRuntime).runtime_error(exc)
                 self.assertEqual(error.error_code, code)
                 self.assertEqual(error.source, source)
                 self.assertEqual(error.retriable, retriable)
@@ -206,7 +208,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
 
         for exc in (httpx.ConnectError("offline"), httpx.NetworkError("offline")):
             with self.subTest(provider_exception=type(exc).__name__):
-                error = JiuwenAsyncAgentRuntime._runtime_error(ModelInvocationError(exc))
+                error = internal(JiuwenAsyncAgentRuntime).runtime_error(ModelInvocationError(exc))
                 self.assertEqual(error.error_code, "MODEL_CONNECTION_ERROR")
                 self.assertEqual(error.source, "model")
                 self.assertTrue(error.retriable)
@@ -227,7 +229,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             parent_span_id="parent-span-id",
         )
 
-        key = JiuwenRuntimeEventBridge._coalescing_key(event)
+        key = internal(JiuwenRuntimeEventBridge).coalescing_key(event)
 
         self.assertIsNotNone(key)
         self.assertIsInstance(key, tuple)
@@ -363,7 +365,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             except TimeoutError as cause:
                 raise ModelInvocationError(cause) from cause
         except ModelInvocationError as wrapped:
-            error = JiuwenAsyncAgentRuntime._runtime_error(wrapped)
+            error = internal(JiuwenAsyncAgentRuntime).runtime_error(wrapped)
 
         self.assertEqual(error.error_code, "MODEL_TIMEOUT")
         self.assertTrue(error.retriable)
@@ -374,13 +376,13 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             except TimeoutError as cause:
                 raise ModelInvocationError(cause) from cause
         except ModelInvocationError as wrapped_with_code:
-            wrapped_error = JiuwenAsyncAgentRuntime._runtime_error(wrapped_with_code)
+            wrapped_error = internal(JiuwenAsyncAgentRuntime).runtime_error(wrapped_with_code)
 
         self.assertEqual(wrapped_error.error_code, "MODEL_TIMEOUT")
         self.assertEqual(wrapped_error.source, "model")
 
         self.assertEqual(
-            JiuwenAsyncAgentRuntime._runtime_error(TimeoutError("tool timeout")).error_code,
+            internal(JiuwenAsyncAgentRuntime).runtime_error(TimeoutError("tool timeout")).error_code,
             "INTERNAL_ERROR",
         )
 
@@ -390,7 +392,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             public_message = "Tool execution failed."
             retriable = False
 
-        error = JiuwenAsyncAgentRuntime._runtime_error(ExplicitToolError("private"))
+        error = internal(JiuwenAsyncAgentRuntime).runtime_error(ExplicitToolError("private"))
 
         self.assertEqual(error.error_code, "TOOL_EXECUTION_FAILED")
         self.assertEqual(error.message, "Tool execution failed.")
@@ -402,7 +404,9 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             public_message = "Tool execution timed out."
             retriable = True
 
-        timeout_error = JiuwenAsyncAgentRuntime._runtime_error(ExplicitToolTimeoutError("private tool timeout"))
+        timeout_error = internal(JiuwenAsyncAgentRuntime).runtime_error(
+            ExplicitToolTimeoutError("private tool timeout")
+        )
         self.assertEqual(timeout_error.error_code, "TOOL_TIMEOUT")
         self.assertEqual(timeout_error.source, "tool")
         self.assertTrue(timeout_error.retriable)
@@ -410,7 +414,9 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         class PrivateSdkError(RuntimeError):
             error_code = "SDK_RUNTIME_ERROR"
 
-        private_error = JiuwenAsyncAgentRuntime._runtime_error(PrivateSdkError("token=private-provider-detail"))
+        private_error = internal(JiuwenAsyncAgentRuntime).runtime_error(
+            PrivateSdkError("token=private-provider-detail")
+        )
         self.assertEqual(private_error.error_code, "SDK_RUNTIME_ERROR")
         self.assertEqual(private_error.message, "Agent Runtime 执行失败")
         self.assertNotIn("private-provider-detail", private_error.message)
@@ -422,7 +428,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             tool_name="execute_script",
         )
 
-        error = JiuwenAsyncAgentRuntime._runtime_error(ExceptionGroup("agent task failed", [terminal_error]))
+        error = internal(JiuwenAsyncAgentRuntime).runtime_error(ExceptionGroup("agent task failed", [terminal_error]))
 
         self.assertEqual(error.error_code, "EXECUTE_SCRIPT_FAILED")
         self.assertEqual(error.message, "The deterministic operation failed.")
@@ -457,7 +463,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        state = JiuwenAsyncAgentRuntime._build_engine_state(context)
+        state = internal(JiuwenAsyncAgentRuntime).build_engine_state(context)
 
         self.assertEqual(state["user_request"], "current question")
         self.assertEqual(
@@ -484,14 +490,14 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        state = JiuwenAsyncAgentRuntime._build_engine_state(context)
+        state = internal(JiuwenAsyncAgentRuntime).build_engine_state(context)
 
         self.assertEqual(context.query, "继续")
         self.assertIn("<user-interaction-response>", state["user_request"])
         self.assertIn('"option_id": "option_a"', state["user_request"])
         self.assertNotIn("<user-interaction-response>", context.query)
 
-        history = JiuwenAsyncAgentRuntime._history_from_state(
+        history = internal(JiuwenAsyncAgentRuntime).history_from_state(
             {
                 **state,
                 "messages": [{"role": "user", "content": "继续"}],
@@ -758,7 +764,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             for _ in range(100):
-                active = runtime._runs.get("run-cancel-before-start")
+                active = internal(runtime).runs.get("run-cancel-before-start")
                 if active is not None and active.task is not None:
                     break
                 await asyncio.sleep(0)
@@ -777,7 +783,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "cancelled")
         self.assertEqual(result.error.message, "early cancel")
-        self.assertEqual(runtime._runs, {})
+        self.assertEqual(internal(runtime).runs, {})
 
     async def test_cancel_returns_false_after_terminal_is_committed(self):
         class ImmediateEngine:
@@ -1175,7 +1181,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
         )
         scheduled = 0
         scheduled_lock = threading.Lock()
-        real_call_soon_threadsafe = bridge._loop.call_soon_threadsafe
+        real_call_soon_threadsafe = internal(bridge).loop.call_soon_threadsafe
 
         def counted_call_soon_threadsafe(callback, *args):
             nonlocal scheduled
@@ -1197,7 +1203,7 @@ class JiuwenRuntimeEventTests(unittest.IsolatedAsyncioTestCase):
                 pass
 
         with patch.object(
-            bridge._loop,
+            internal(bridge).loop,
             "call_soon_threadsafe",
             side_effect=counted_call_soon_threadsafe,
         ):

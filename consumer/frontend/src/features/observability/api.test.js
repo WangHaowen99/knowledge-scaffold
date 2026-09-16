@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -30,7 +31,9 @@ test('request adapter supplies a stable fallback for non-JSON failures', async (
   const request = async () => ({
     ok: false,
     status: 502,
-    json: async () => { throw new Error('invalid json'); },
+    json: async () => {
+      throw new Error('invalid json');
+    },
   });
   await assert.rejects(
     () => requestObservabilityJson(request, '/overview', {}, '加载失败'),

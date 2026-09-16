@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Automatically derive Neo4j bindings for deterministic handlers.
 
 The provider configuration stores connection and graph-scope information only.

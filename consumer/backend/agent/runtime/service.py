@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Consumer execution service over the native openJiuwen runtime contract."""
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from agent.runtime.contracts import (
     RuntimeResult,
 )
 from agent.runtime.events import RuntimeEvent
+from agent.runtime_fields import deterministic_business_arguments
 
 try:
     from agent.tools.events import tool_output_artifact_writer_context
@@ -1764,7 +1766,7 @@ class OrchestratorSessionAdapter:
                             "supports_user_interaction": context.supports_user_interaction,
                             **arguments,
                         },
-                        arguments=arguments,
+                        arguments=deterministic_business_arguments(arguments),
                         runtime_context=RuntimeContext(
                             session_id=context.session_id,
                             run_id=context.run_id,
@@ -2210,7 +2212,7 @@ class OrchestratorSessionAdapter:
                     "supports_user_interaction": context.supports_user_interaction,
                     **arguments,
                 },
-                arguments=arguments,
+                arguments=deterministic_business_arguments(arguments),
                 runtime_context=runtime_context,
                 checkpoint=checkpoint,
                 interaction_response=(dict(context.interaction_response) if context.interaction_response else None),
@@ -2321,7 +2323,20 @@ class OrchestratorSessionAdapter:
                             pinned_ontology_manifest = SimpleNamespace(**staged_manifest)
                         except (OSError, TypeError, ValueError) as exc:
                             raise OntologyPackageRevisionError("admitted ontology manifest paths are unsafe") from exc
-                        outcome = execute_deterministic(pinned_ontology_manifest)
+                        from integration.sandbox.errors import SandboxError
+                        from integration.sandbox.package_revision import admitted_package_revision
+
+                        try:
+                            with admitted_package_revision(
+                                staged_ontology_dir, workspace_id=context.workspace_id,
+                                ontology_id=selected_ontology_id, run_id=context.run_id,
+                            ):
+                                outcome = execute_deterministic(pinned_ontology_manifest)
+                        except SandboxError:
+                            outcome = Failed(
+                                "deterministic_isolation_unavailable",
+                                "The admitted package could not be isolated safely.",
+                            )
                     except OntologyPackageRevisionError:
                         outcome = Failed(
                             "ontology_revision_changed",

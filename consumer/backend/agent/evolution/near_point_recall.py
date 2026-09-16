@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Near-point recall attached to ontology-context reads.
 
 Source of truth: the operation-evolution proposal buffer. Procedures, pitfalls

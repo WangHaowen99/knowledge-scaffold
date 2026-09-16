@@ -1,6 +1,9 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP route tests for local observability performance analysis."""
 
 from __future__ import annotations
+
+from operator import getitem
 
 from api.auth.auth import AuthManager
 from api.routes.performance import performance_router
@@ -87,9 +90,9 @@ def test_session_performance_returns_current_session_analysis(tmp_path, monkeypa
 
     assert response.status_code == 200
     assert response.json()["summary"]["run_count"] == 1
-    assert captured["end_ms"] == 1_000_000_000
-    assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
-    assert captured["workspace_id"] == "ws-a"
+    assert getitem(captured, "end_ms") == 1_000_000_000
+    assert getitem(captured, "start_ms") == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
+    assert getitem(captured, "workspace_id") == "ws-a"
 
 
 def test_session_performance_availability_uses_lightweight_probe(tmp_path, monkeypatch):
@@ -113,9 +116,9 @@ def test_session_performance_availability_uses_lightweight_probe(tmp_path, monke
 
     assert response.status_code == 200
     assert response.json()["available"] is True
-    assert captured["end_ms"] == 1_000_000_000
-    assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
-    assert captured["workspace_id"] == "ws-a"
+    assert getitem(captured, "end_ms") == 1_000_000_000
+    assert getitem(captured, "start_ms") == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
+    assert getitem(captured, "workspace_id") == "ws-a"
 
 
 def test_session_performance_availability_requires_existing_session(tmp_path, monkeypatch):
@@ -237,8 +240,8 @@ def test_user_run_detail_requires_current_session_ownership(tmp_path, monkeypatc
     assert missing_owner.status_code == 404
     assert owned.status_code == 200
     assert owned.json()["run"]["run_id"] == "run-a"
-    assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
-    assert captured["workspace_id"] == "ws-a"
+    assert getitem(captured, "start_ms") == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
+    assert getitem(captured, "workspace_id") == "ws-a"
 
 
 def test_modeling_service_can_read_run_trace_without_user_access_token(tmp_path, monkeypatch):
@@ -263,7 +266,7 @@ def test_modeling_service_can_read_run_trace_without_user_access_token(tmp_path,
     )
 
     assert response.status_code == 200
-    assert captured["workspace_id"] == "demo"
+    assert getitem(captured, "workspace_id") == "demo"
 
 
 def test_modeling_trace_endpoint_rejects_an_invalid_service_token(tmp_path, monkeypatch):
@@ -303,4 +306,4 @@ def test_local_observability_overview_passes_workspace_filter(tmp_path, monkeypa
     )
 
     assert response.status_code == 200
-    assert captured["workspace_id"] == "ws-a"
+    assert getitem(captured, "workspace_id") == "ws-a"

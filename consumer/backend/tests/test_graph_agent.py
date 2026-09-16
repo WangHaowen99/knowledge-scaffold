@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for JiuwenGraphQueryAgent internal graph tool loop."""
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from openjiuwen.core.foundation.llm import ToolCall
 from openjiuwen.core.session.agent import create_agent_session
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+from internal_access import internal
 
 
 class JiuwenGraphQueryAgent(NativeJiuwenGraphQueryAgent):
@@ -316,7 +318,7 @@ def test_jiuwen_graph_query_agent_executes_private_graph_tool_adapter():
     def fake_invoker(payload):
         invocations.append(payload)
         assert payload["attempt"] == 1
-        return payload["adapter"]._invoke_sync(
+        return internal(payload["adapter"]).invoke_sync(
             "property_filter",
             {
                 "queries": [
@@ -374,7 +376,7 @@ def test_jiuwen_graph_query_agent_retries_when_model_does_not_call_tool():
         invocations.append(payload)
         if payload["attempt"] == 1:
             return "查询完成，但没有调用内部图工具"
-        return payload["adapter"]._invoke_sync(
+        return internal(payload["adapter"]).invoke_sync(
             "property_filter",
             {
                 "queries": [
@@ -417,7 +419,7 @@ def test_jiuwen_graph_query_agent_retries_pattern_search_for_path_intent():
     def fake_invoker(payload):
         invocations.append(payload)
         if payload["attempt"] == 1:
-            return payload["adapter"]._invoke_sync(
+            return internal(payload["adapter"]).invoke_sync(
                 "property_filter",
                 {
                     "queries": [
@@ -430,7 +432,7 @@ def test_jiuwen_graph_query_agent_retries_pattern_search_for_path_intent():
                     ]
                 },
             )
-        return payload["adapter"]._invoke_sync(
+        return internal(payload["adapter"]).invoke_sync(
             "pattern_search",
             {
                 "path_pattern": [
@@ -508,7 +510,7 @@ def test_jiuwen_graph_query_agent_retries_pattern_search_for_path_intent():
 
 def test_jiuwen_graph_query_agent_skips_pattern_search_after_sufficient_record_hit():
     def fake_invoker(payload):
-        property_payload = payload["adapter"]._invoke_sync(
+        property_payload = internal(payload["adapter"]).invoke_sync(
             "property_filter",
             {
                 "queries": [
@@ -521,7 +523,7 @@ def test_jiuwen_graph_query_agent_skips_pattern_search_after_sufficient_record_h
                 ]
             },
         )
-        skipped_payload = payload["adapter"]._invoke_sync(
+        skipped_payload = internal(payload["adapter"]).invoke_sync(
             "pattern_search",
             {
                 "path_pattern": [
@@ -569,7 +571,7 @@ def test_jiuwen_graph_query_agent_uses_isolated_conversation_for_each_run():
 
         def invoke(self, inputs):
             self.inputs.append(inputs)
-            return self.adapter._invoke_sync(
+            return internal(self.adapter).invoke_sync(
                 "property_filter",
                 {
                     "queries": [
@@ -633,8 +635,8 @@ def test_jiuwen_graph_query_agent_skips_duplicate_property_filter_after_hit():
     }
 
     def fake_invoker(payload):
-        payload["adapter"]._invoke_sync("property_filter", args)
-        return payload["adapter"]._invoke_sync("property_filter", args)
+        internal(payload["adapter"]).invoke_sync("property_filter", args)
+        return internal(payload["adapter"]).invoke_sync("property_filter", args)
 
     context = _context()
     mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
@@ -671,7 +673,7 @@ def test_jiuwen_graph_query_agent_skips_duplicate_property_filter_query_in_same_
     }
 
     def fake_invoker(payload):
-        return payload["adapter"]._invoke_sync("property_filter", args)
+        return internal(payload["adapter"]).invoke_sync("property_filter", args)
 
     context = _context()
     mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
@@ -712,8 +714,8 @@ def test_jiuwen_graph_query_agent_skips_broader_fuzzy_property_filter_after_exac
     }
 
     def fake_invoker(payload):
-        payload["adapter"]._invoke_sync("property_filter", exact_args)
-        return payload["adapter"]._invoke_sync("property_filter", fuzzy_args)
+        internal(payload["adapter"]).invoke_sync("property_filter", exact_args)
+        return internal(payload["adapter"]).invoke_sync("property_filter", fuzzy_args)
 
     context = _context()
     mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
@@ -754,8 +756,8 @@ def test_jiuwen_graph_query_agent_keeps_narrower_property_filter_after_exact_hit
     }
 
     def fake_invoker(payload):
-        payload["adapter"]._invoke_sync("property_filter", exact_args)
-        return payload["adapter"]._invoke_sync("property_filter", narrower_args)
+        internal(payload["adapter"]).invoke_sync("property_filter", exact_args)
+        return internal(payload["adapter"]).invoke_sync("property_filter", narrower_args)
 
     context = _context()
     mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
@@ -773,7 +775,7 @@ def test_jiuwen_graph_query_agent_keeps_narrower_property_filter_after_exact_hit
 
 def test_jiuwen_graph_query_agent_deduplicates_overlapping_data_tool_results():
     def fake_invoker(payload):
-        payload["adapter"]._invoke_sync(
+        internal(payload["adapter"]).invoke_sync(
             "property_filter",
             {
                 "queries": [
@@ -787,7 +789,7 @@ def test_jiuwen_graph_query_agent_deduplicates_overlapping_data_tool_results():
                 ]
             },
         )
-        return payload["adapter"]._invoke_sync(
+        return internal(payload["adapter"]).invoke_sync(
             "sorted_search",
             {
                 "element_class": "TargetItem",
@@ -885,8 +887,8 @@ def test_graph_adapter_latches_non_retryable_backend_error():
         ]
     }
 
-    first = adapter._invoke_sync("property_filter", arguments)
-    second = adapter._invoke_sync("property_filter", arguments)
+    first = internal(adapter).invoke_sync("property_filter", arguments)
+    second = internal(adapter).invoke_sync("property_filter", arguments)
 
     assert json.loads(first)["error_code"] == "GRAPH_BACKEND_TIMEOUT"
     assert second == first
@@ -905,7 +907,7 @@ def test_jiuwen_graph_query_agent_preserves_backend_timeout_from_private_tool():
 
         async def invoke(self, inputs):
             del inputs
-            _result, tool_message = await self.ability_manager._execute_single_tool_call(
+            _result, tool_message = await internal(self.ability_manager).execute_single_tool_call(
                 ToolCall(
                     id="graph-timeout-call",
                     type="function",
@@ -1198,7 +1200,7 @@ def test_graph_agent_trace_bridge_sliding_window_applied_is_false():
     assert "sliding_window_applied" in source
 
     # Verify the graph agent native async invocation disables sliding windows.
-    agent_source = inspect.getsource(JiuwenGraphQueryAgent._ainvoke_once)
+    agent_source = inspect.getsource(internal(JiuwenGraphQueryAgent).ainvoke_once)
     assert "sliding_window_applied=False" in agent_source
 
 
@@ -1209,7 +1211,7 @@ def test_graph_agent_iteration_limit_does_not_return_partial_tool_results():
 
         def invoke(self, inputs):
             del inputs
-            self.adapter._invoke_sync(
+            internal(self.adapter).invoke_sync(
                 "property_filter",
                 {
                     "queries": [

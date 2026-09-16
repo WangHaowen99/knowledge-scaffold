@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Connection policy applied at the Agent model-client boundary."""
 
 from __future__ import annotations

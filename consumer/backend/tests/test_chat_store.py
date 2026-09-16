@@ -1,7 +1,9 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for chat session persistence."""
 
 import hashlib
 import json
+from operator import getitem
 from pathlib import Path
 
 import persistence.chat_store as chat_store_module
@@ -13,6 +15,7 @@ from persistence.session_summary_index import (
     SessionSummaryIndexWriteError,
 )
 from utils.streaming import build_agent_event
+from internal_access import internal
 
 
 def _only_summary(index: SessionSummaryIndex):
@@ -92,7 +95,7 @@ def test_get_session_metadata_uses_ready_summary_without_full_session_read(
         ),
     )
     monkeypatch.setattr(
-        store._store,
+        internal(store).store,
         "get_session",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("ready metadata lookup must not replay chat events")
@@ -124,7 +127,7 @@ def test_get_session_metadata_cold_index_schedules_rebuild_and_reads_snapshot_on
     )
     reader = ChatStore(str(storage_dir), summary_index=index)
     monkeypatch.setattr(
-        reader._store,
+        internal(reader).store,
         "_replay_event_log_unlocked",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("cold metadata fallback must not replay chat events")
@@ -163,7 +166,7 @@ def test_chat_projection_crash_marker_repairs_valid_index_after_restart(tmp_path
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -192,7 +195,7 @@ def test_chat_projection_failure_rebuilds_in_same_process(tmp_path, monkeypatch)
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
@@ -205,12 +208,12 @@ def test_chat_projection_failure_rebuilds_in_same_process(tmp_path, monkeypatch)
     )
     store.create_session(session_id="after-fact", title="After")
 
-    assert index._dirty_path.exists() is True
+    assert internal(index).dirty_path.exists() is True
     assert {item.session_id for item in index.list_all()} == {
         "before-failure",
         "after-fact",
     }
-    assert index._dirty_path.exists() is False
+    assert internal(index).dirty_path.exists() is False
 
 
 def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
@@ -221,13 +224,13 @@ def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
     path = tmp_path / "session-summary-index.json"
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
     store.create_session(session_id="stable", title="Stable")
     monkeypatch.setattr(
-        store._store,
+        internal(store).store,
         "create_session",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic source failure")),
     )
@@ -236,7 +239,7 @@ def test_chat_source_failure_abandons_projection_for_same_process_rebuild(
         store.create_session(session_id="failed", title="Failed")
 
     assert [item.session_id for item in index.list_all()] == ["stable"]
-    assert index._dirty_path.exists() is False
+    assert internal(index).dirty_path.exists() is False
 
 
 def test_marker_publish_failure_does_not_abort_source_fact_before_restart(
@@ -247,12 +250,12 @@ def test_marker_publish_failure_does_not_abort_source_fact_before_restart(
     holder = {}
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
     store.create_session(session_id="stable", title="Stable")
-    original_write = summary_index_module._write_atomic_json
+    original_write = internal(summary_index_module).write_atomic_json
 
     def fail_dirty_marker(target, document):
         if str(target).endswith(".dirty"):
@@ -282,13 +285,13 @@ def test_marker_directory_fsync_failure_does_not_abort_source_fact(
     holder = {}
     index = SessionSummaryIndex(
         path,
-        rebuild_loader=lambda: holder["store"].rebuild_session_summaries(),
+        rebuild_loader=lambda: getitem(holder, "store").rebuild_session_summaries(),
     )
     store = ChatStore(str(tmp_path / "chats"), summary_index=index)
     holder["store"] = store
     index.rebuild()
     store.create_session(session_id="stable", title="Stable")
-    original_write = summary_index_module._write_atomic_json
+    original_write = internal(summary_index_module).write_atomic_json
 
     def fail_after_marker_replace(target, document):
         if str(target).endswith(".dirty"):
@@ -708,7 +711,7 @@ def test_chat_store_recovery_skips_pre_compaction_generation_after_truncate_fail
         raise RuntimeError("injected failure before event-log truncate")
 
     monkeypatch.setattr(
-        store._store,
+        internal(store).store,
         "_truncate_event_log_unlocked",
         fail_before_truncate,
     )

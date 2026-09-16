@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 const SOLVER_STORAGE_PREFIX = 'mw_solver_';
 const SUPPORTED_OPTIONS = Object.freeze(['OPTION_0', 'OPTION_1']);
 

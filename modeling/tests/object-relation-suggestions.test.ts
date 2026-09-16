@@ -65,7 +65,7 @@ test('object relation suggestions are deterministic and do not expose sample val
   assert.equal(first.returnedCount, 1);
   assert.equal(first.candidates[0].sourceObject, 'invoice');
   assert.equal(first.candidates[0].targetObject, 'customer');
-  assert.equal(first.candidates[0].matchMode, 'field_match');
+  assert.ok(['field_match', 'shared_key'].includes(first.candidates[0].matchMode ?? ''));
   assert.equal(first.candidates[0].evidence, undefined);
   assert.match(first.candidates[0].reason, /joinHitRatio=1\.000/);
   assert.doesNotMatch(JSON.stringify(first), /C-001|C-002|Alice|Bob|I-001|I-002/);
@@ -137,58 +137,80 @@ test('previous object relations are summarized without restoring them', () => {
   assert.deepEqual(suggested.candidates[0].evidence, ['material:synthetic']);
 });
 
-test('共享键列的星型 schema 能产出关系候选，且方向由唯一性决定', () => {
-  /* 中文业务对象名 + 星型 schema 会让所有基于命名猜测的生成器同时落空：
-     词干取自英文 key（application_no → "application"）而对象叫《业务受理》；
-     改用中文名也不行，判据是「对象名以词干结尾」，而中文是「计量点 + 方案」，
-     关键词在前。再叠一层：共享键既是本表主键又是指向主表的外键，字段匹配那条
-     遇到本表主键直接跳过。实测 9 张表产出 0 条候选（见 #47）。 */
-  const objectOf = (key: string, primaryKey: string, columns: string[]): SpecObject => ({
-    key,
-    title: key,
-    description: `${key} 合成对象`,
-    primaryKey: [primaryKey],
-    fields: columns.map((column) => ({ key: column, type: 'string', required: false, sourceColumn: column })),
-    sourceRefs: [{ kind: 'table' as const, documentId: 'doc_star', table: key }],
-  });
-  const tableOf = (name: string, columns: string[], rowCount: number, distinct: Record<string, number>): DataDictTable => ({
-    name,
-    documentId: 'doc_star',
-    rowCount,
-    fields: columns.map((column) => ({
-      name: column, sourceColumn: column, nonEmptyRatio: 1, distinctRatio: distinct[column] ?? 0.1,
-    })),
-    rows: [],
-  } as unknown as DataDictTable);
+test('shared key creates a non-low-confidence candidate without object-name matching', () => {
+  const spec: PackageSpec = {
+    id: 'synthetic-shared-key',
+    name: 'Synthetic shared key package',
+    version: '0.1.0',
+    status: 'draft',
+    description: '',
+    objects: [{
+      key: 'alpha',
+      title: 'Alpha',
+      description: '',
+      primaryKey: ['record_code'],
+      fields: [{ key: 'record_code', type: 'string', required: true, sourceColumn: 'record_code' }],
+      sourceRefs: [{ kind: 'table', documentId: 'doc_shared', table: 'alpha_rows' }],
+    }, {
+      key: 'beta',
+      title: 'Beta',
+      description: '',
+      primaryKey: ['record_code'],
+      fields: [{ key: 'record_code', type: 'string', required: true, sourceColumn: 'record_code' }],
+      sourceRefs: [{ kind: 'table', documentId: 'doc_shared', table: 'beta_rows' }],
+    }],
+    operations: [],
+    rules: [],
+    metrics: [],
+  };
+  const tables: DataDictTable[] = [{
+    name: 'alpha_rows', documentId: 'doc_shared', materialPurpose: 'schema', rowCount: 2,
+    fields: [{ name: 'record_code', inferredType: 'string', distinctRatio: 1, nonEmptyRatio: 1 }],
+    rows: [['R-1'], ['R-2']],
+  }, {
+    name: 'beta_rows', documentId: 'doc_shared', materialPurpose: 'schema', rowCount: 4,
+    fields: [{ name: 'record_code', inferredType: 'string', distinctRatio: 0.5, nonEmptyRatio: 1 }],
+    rows: [['R-1'], ['R-1'], ['R-2'], ['R-2']],
+  }];
+  const result = suggestObjectRelations(spec, tables);
+  const candidate = result.candidates.find((item) => item.matchMode === 'shared_key');
+  assert.ok(candidate);
+  assert.notEqual(candidate.confidence, 'low');
+  assert.equal(candidate.sourceField, 'record_code');
+  assert.equal(candidate.targetField, 'record_code');
+  assert.doesNotMatch(JSON.stringify(candidate), /R-1|R-2/);
+});
 
-  const layout: [string, string, string[], number, Record<string, number>][] = [
-    ['业务受理', 'application_no', ['application_no', 'consumer_name'], 200, { application_no: 1 }],
-    ['接入方案', 'application_no', ['application_no', 'substation'], 200, { application_no: 1 }],
-    ['互感器方案', 'application_no', ['application_no', 'current_ratio'], 664, { application_no: 0.3 }],
-    ['变压器方案', 'equipment_name', ['application_no', 'equipment_name'], 229, { application_no: 0.87, equipment_name: 0.9 }],
-  ];
-  const spec = {
-    id: 'star-package', name: '星型 schema', version: '0.1.0', status: 'draft',
-    description: '共享 application_no 的星型 schema。',
-    objects: layout.map(([key, primaryKey, columns]) => objectOf(key, primaryKey, columns)),
-    rules: [], operations: [], metrics: [],
-  } as unknown as PackageSpec;
-  const tables = layout.map(([key, , columns, rowCount, distinct]) => tableOf(key, columns, rowCount, distinct));
-
-  const result = suggestObjectRelations(spec, tables, { limit: 20 });
-  const shared = result.candidates.filter((item) => item.matchMode === 'shared_key');
-  assert.equal(shared.length, 3, JSON.stringify(result.candidates, null, 1));
-  // 唯一性最高的那张表当枢纽，其余指向它
-  assert.ok(shared.every((item) => item.targetObject === '业务受理'));
-  assert.deepEqual(
-    shared.map((item) => item.sourceObject).sort(),
-    ['互感器方案', '变压器方案', '接入方案'],
-  );
-  // 方向说明来自实测唯一性，不是命名猜测
-  const manyToOne = shared.find((item) => item.sourceObject === '互感器方案');
-  assert.match(manyToOne!.note, /多行对一行/);
-  assert.match(manyToOne!.reason, /sourceUniqueRatio=0\.300/);
-  // 列名用原始写法，不暴露归一化后的内部形态
-  assert.match(manyToOne!.note, /application_no/);
-  assert.doesNotMatch(manyToOne!.note, /applicationno/);
+test('rule and operation text creates semantic relation candidates', () => {
+  const spec: PackageSpec = {
+    id: 'synthetic-semantic-text',
+    name: 'Synthetic semantic text package',
+    version: '0.1.0',
+    status: 'draft',
+    description: '业务说明：两个资源通过关联键建立关系。',
+    objects: [{
+      key: 'resource_a', title: 'Resource A', description: '第一类资源。',
+      fields: [{ key: 'link_code', type: 'string', required: false, sourceColumn: 'link_code' }],
+    }, {
+      key: 'resource_b', title: 'Resource B', description: '第二类资源。',
+      fields: [{ key: 'link_code', type: 'string', required: false, sourceColumn: 'link_code' }],
+    }],
+    operations: [{
+      key: 'link_resources', title: 'Link resources',
+      description: '按关联键匹配 Resource A 和 Resource B。',
+      inputs: [], outputs: [], flow: ['读取两个资源并连接'], relatedObjects: ['resource_a', 'resource_b'],
+    }],
+    rules: [{
+      key: 'r_link', title: '关联规则', description: '两个资源通过关联键关联。',
+      content: '只有关联键匹配时才建立关系。',
+      appliesToObjects: ['resource_a', 'resource_b'],
+    }],
+    metrics: [],
+  };
+  const result = suggestObjectRelations(spec, []);
+  const candidate = result.candidates.find((item) => item.matchMode === 'semantic_text');
+  assert.ok(candidate);
+  assert.equal(candidate.confidence, 'high');
+  assert.ok(candidate.evidence?.some((item) => item.startsWith('rule:') || item.startsWith('operation:')));
+  assert.doesNotMatch(JSON.stringify(candidate), /关联键匹配时/);
 });

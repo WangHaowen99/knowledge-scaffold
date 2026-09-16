@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """users.json 存储：从 consumer AuthManager 平移存储/凭据部分（不含 token 逻辑）。
 
 文件格式与 consumer 完全兼容：

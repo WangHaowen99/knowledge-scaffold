@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for lightweight task LLM configuration and routing."""
 
 import threading
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 from llm import LLMPurpose, LLMService, configure_llm_router, reset_llm_router_for_tests
 from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
+from internal_access import internal
 
 
 class _FakeStreamingResponse:
@@ -208,7 +210,7 @@ def test_reasoning_summary_uses_task_llm_when_configured(monkeypatch):
 
     summaries = []
     summary_ready = threading.Event()
-    main_llm._collect_stream_response(
+    internal(main_llm).collect_stream_response(
         response,
         reasoning_summary_callback=lambda block_id, summary: (
             summaries.append((block_id, summary)),
@@ -259,7 +261,7 @@ def test_reasoning_summary_falls_back_to_primary_llm(monkeypatch):
 
     summaries = []
     summary_ready = threading.Event()
-    llm._collect_stream_response(
+    internal(llm).collect_stream_response(
         response,
         reasoning_summary_callback=lambda block_id, summary: (
             summaries.append((block_id, summary)),

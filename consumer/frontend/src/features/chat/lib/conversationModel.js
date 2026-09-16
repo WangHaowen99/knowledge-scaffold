@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { publicErrorMessage } from './streamHelpers.js';
 import {
   getWorkflowErrorPresentation,
@@ -499,24 +500,15 @@ const segmentIdentity = (segment, kind, index) => {
   );
 };
 
-// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
-const normalizeSegment = (segment, index, messageKey, occurrences) => {
-  const kind = conversationKindForSegment(segment);
-  const key = uniqueKey(
-    `${messageKey}:block:${segmentIdentity(segment, kind, index)}`,
-    occurrences,
-  );
-  const startedAt = timestampValue(segment?.startTs ?? segment?.ts);
-  const endedAt = timestampValue(segment?.endTs);
-  const meta = segment?.meta || {};
-  const toolName = stringValue(meta.tool_name || meta.name);
-  let progress = [];
+const segmentProgress = (kind, meta, key) => {
   if (kind === 'business_data') {
-    progress = normalizeProgress(meta.db_events, kind, key);
-  } else if (kind === 'web_search') {
-    progress = normalizeProgress(meta.web_search_events, kind, key);
-  } else if (kind === 'solver') {
-    progress = (Array.isArray(meta.solver_events) ? meta.solver_events : []).map(
+    return normalizeProgress(meta.db_events, kind, key);
+  }
+  if (kind === 'web_search') {
+    return normalizeProgress(meta.web_search_events, kind, key);
+  }
+  if (kind === 'solver') {
+    return (Array.isArray(meta.solver_events) ? meta.solver_events : []).map(
       (event, progressIndex) => ({
         key: `${key}:solver-progress:${event?.job_id || 'job'}:${event?.event_seq ?? progressIndex}`,
         type: stringValue(event?.type),
@@ -527,7 +519,10 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
       }),
     );
   }
-  const progressError = progressErrorText(progress);
+  return [];
+};
+
+const segmentStatus = (kind, segment, progressError) => {
   const toolKinds = ['tool', 'business_data', 'web_search', 'solver'];
   let status = toolKinds.includes(kind) ?
     normalizeToolStatus(segment) :
@@ -541,12 +536,92 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
   ) {
     status = 'finished';
   }
-  const block = {
+  return status;
+};
+
+const applyToolDetails = (block, meta, progressError) => {
+  block.toolName = stringValue(meta.tool_name || meta.name);
+  block.toolCallId = stringValue(meta.tool_call_id);
+  block.input = meta.input ?? null;
+  block.output = stringValue(meta.output ?? meta.output_preview);
+  block.outputRef = stringValue(meta.output_ref);
+  block.outputSize = numberValue(meta.output_size);
+  block.outputTruncated = Boolean(meta.output_truncated);
+  block.outputProjection = plainObject(meta.output_projection) ?
+    meta.output_projection :
+    null;
+  block.parsedOutput =
+    block.outputProjection || parseOutput(meta.output ?? meta.output_preview);
+  block.error = publicErrorMessage(meta.error) || progressError;
+  block.durationMs = numberValue(meta.elapsed_ms) ?? block.durationMs;
+};
+
+const applySolverDetails = (block, meta) => {
+  block.solverResult =
+    plainObject(meta.solver_result) && meta.solver_result.authoritative === true ?
+      meta.solver_result :
+      null;
+  block.solverRejection = plainObject(meta.solver_rejection) ?
+    meta.solver_rejection :
+    null;
+};
+
+const applyArtifactDetails = (block, meta) => {
+  block.artifacts = (Array.isArray(meta.artifacts) ? meta.artifacts : [])
+    .filter(plainObject)
+    .map((artifact, artifactIndex) => ({
+      key: stringValue(artifact.output_ref || artifact.name || artifactIndex),
+      name: stringValue(artifact.name || `artifact-${artifactIndex + 1}`),
+      mediaType: stringValue(artifact.media_type || artifact.content_type),
+      size: numberValue(artifact.size),
+      sha256: stringValue(artifact.sha256),
+      outputRef: stringValue(artifact.output_ref),
+    }));
+};
+
+const applyWebSearchDetails = (block, meta, progress) => {
+  const parsedOutput = plainObject(block.parsedOutput) ?
+    block.parsedOutput :
+    {};
+  block.query = stringValue(
+    meta?.input?.query ??
+      meta?.tool_args?.query ??
+      meta?.tool_input?.query ??
+      meta?.query ??
+      parsedOutput.query,
+  ).trim();
+  block.sources = normalizeWebSources(parsedOutput);
+  block.resultCount =
+    numberValue(parsedOutput.result_count ?? parsedOutput.resultCount) ??
+    (Array.isArray(parsedOutput.results) || Array.isArray(parsedOutput.sources) ?
+      block.sources.length :
+      resultCountFromProgress(progress)) ??
+    0;
+  block.provider = stringValue(parsedOutput.provider).trim();
+  block.responseTime = numberValue(
+    parsedOutput.response_time ?? parsedOutput.responseTime,
+  );
+};
+
+const applySubagentDetails = (block, segment, meta, key, kind) => {
+  if (segment?.type === 'subagent_group') {
+    block.subtype = 'group';
+    block.group = normalizeSubagentGroup(segment, key);
+  } else if (kind === 'subagent') {
+    block.subtype = 'event';
+    block.subagentId = stringValue(meta.subagent_id);
+    block.taskId = stringValue(meta.task_id);
+  }
+};
+
+const baseSegmentBlock = (segment, index, key, kind, meta, progress) => {
+  const startedAt = timestampValue(segment?.startTs ?? segment?.ts);
+  const endedAt = timestampValue(segment?.endTs);
+  return {
     key,
     kind,
     segmentType: stringValue(segment?.type) || 'unknown',
     order: index,
-    status,
     terminal: Boolean(segment?.finished),
     text: stringValue(segment?.text),
     summary: stringValue(meta.reasoning_summary),
@@ -562,82 +637,33 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     durationMs: elapsedValue(startedAt, endedAt),
     progress,
   };
+};
 
-  const isToolKind =
-    kind === 'tool' ||
-    kind === 'business_data' ||
-    kind === 'web_search' ||
-    kind === 'solver';
-  if (isToolKind) {
-    block.toolName = toolName;
-    block.toolCallId = stringValue(meta.tool_call_id);
-    block.input = meta.input ?? null;
-    block.output = stringValue(meta.output ?? meta.output_preview);
-    block.outputRef = stringValue(meta.output_ref);
-    block.outputSize = numberValue(meta.output_size);
-    block.outputTruncated = Boolean(meta.output_truncated);
-    block.outputProjection = plainObject(meta.output_projection) ?
-      meta.output_projection :
-      null;
-    block.parsedOutput =
-      block.outputProjection || parseOutput(meta.output ?? meta.output_preview);
-    block.error = publicErrorMessage(meta.error) || progressError;
-    block.durationMs = numberValue(meta.elapsed_ms) ?? block.durationMs;
+const normalizeSegment = (segment, index, messageKey, occurrences) => {
+  const kind = conversationKindForSegment(segment);
+  const key = uniqueKey(
+    `${messageKey}:block:${segmentIdentity(segment, kind, index)}`,
+    occurrences,
+  );
+  const meta = segment?.meta || {};
+  const progress = segmentProgress(kind, meta, key);
+  const progressError = progressErrorText(progress);
+  const block = baseSegmentBlock(segment, index, key, kind, meta, progress);
+  block.status = segmentStatus(kind, segment, progressError);
+
+  if (['tool', 'business_data', 'web_search', 'solver'].includes(kind)) {
+    applyToolDetails(block, meta, progressError);
   }
   if (kind === 'solver') {
-    block.solverResult =
-      plainObject(meta.solver_result) &&
-      meta.solver_result.authoritative === true ?
-        meta.solver_result :
-        null;
-    block.solverRejection = plainObject(meta.solver_rejection) ?
-      meta.solver_rejection :
-      null;
+    applySolverDetails(block, meta);
   }
   if (kind === 'artifacts') {
-    block.artifacts = (Array.isArray(meta.artifacts) ? meta.artifacts : [])
-      .filter(plainObject)
-      .map((artifact, artifactIndex) => ({
-        key: stringValue(artifact.output_ref || artifact.name || artifactIndex),
-        name: stringValue(artifact.name || `artifact-${artifactIndex + 1}`),
-        mediaType: stringValue(artifact.media_type || artifact.content_type),
-        size: numberValue(artifact.size),
-        sha256: stringValue(artifact.sha256),
-        outputRef: stringValue(artifact.output_ref),
-      }));
+    applyArtifactDetails(block, meta);
   }
   if (kind === 'web_search') {
-    const parsedOutput = plainObject(block.parsedOutput) ?
-      block.parsedOutput :
-      {};
-    block.query = stringValue(
-      meta?.input?.query ??
-        meta?.tool_args?.query ??
-        meta?.tool_input?.query ??
-        meta?.query ??
-        parsedOutput.query,
-    ).trim();
-    block.sources = normalizeWebSources(parsedOutput);
-    block.resultCount =
-      numberValue(parsedOutput.result_count ?? parsedOutput.resultCount) ??
-      (Array.isArray(parsedOutput.results) ||
-      Array.isArray(parsedOutput.sources) ?
-        block.sources.length :
-        resultCountFromProgress(progress)) ??
-      0;
-    block.provider = stringValue(parsedOutput.provider).trim();
-    block.responseTime = numberValue(
-      parsedOutput.response_time ?? parsedOutput.responseTime,
-    );
+    applyWebSearchDetails(block, meta, progress);
   }
-  if (segment?.type === 'subagent_group') {
-    block.subtype = 'group';
-    block.group = normalizeSubagentGroup(segment, key);
-  } else if (kind === 'subagent') {
-    block.subtype = 'event';
-    block.subagentId = stringValue(meta.subagent_id);
-    block.taskId = stringValue(meta.task_id);
-  }
+  applySubagentDetails(block, segment, meta, key, kind);
   return block;
 };
 
@@ -668,30 +694,49 @@ const messageIdentity = (message, index) =>
   (message?.runId ? `run:${message.runId}` : '') ||
   `${stringValue(message?.role) || 'message'}:${hashText(`${message?.content || ''}|${message?.ts || ''}`)}:${index}`;
 
-// eslint-disable-next-line complexity, max-lines-per-function -- Preserve established boundary.
-const normalizeMessage = (message, index, occurrences) => {
-  const key = uniqueKey(
-    `message:${messageIdentity(message, index)}`,
-    occurrences,
-  );
-  const role = stringValue(message?.role).trim() || 'assistant';
-  const status = normalizeConversationStatus(
-    message?.status,
-    message?.isLoading,
-  );
+const messageErrorDetails = (message, status) => {
   const rawError = publicErrorMessage(message?.meta?.error);
   const errorCode = stringValue(message?.meta?.error_code).trim();
   const errorRetriable = message?.meta?.error_retriable === true;
   const cancelReason = stringValue(message?.meta?.cancel_reason);
-  const errorPresentation =
-    rawError || status === 'error' || status === 'cancelled' ?
-      getWorkflowErrorPresentation(rawError, {
-        status,
-        errorCode,
-        retriable: errorRetriable,
-        cancelReason,
-      }) :
-      null;
+  return {
+    rawError,
+    errorCode,
+    cancelReason,
+    errorPresentation:
+      rawError || status === 'error' || status === 'cancelled' ?
+        getWorkflowErrorPresentation(rawError, {
+          status,
+          errorCode,
+          retriable: errorRetriable,
+          cancelReason,
+        }) :
+        null,
+  };
+};
+
+const contentBlock = (message, key, status, order) => ({
+  key: `${key}:content`,
+  kind: 'content',
+  segmentType: 'content',
+  order,
+  status: TERMINAL_STATUSES.has(status) ? 'finished' : status,
+  terminal: TERMINAL_STATUSES.has(status),
+  text: stringValue(message.content),
+  summary: '',
+  node: '',
+  spanKey: '',
+  parentKey: '',
+  traceId: '',
+  spanId: '',
+  parentSpanId: '',
+  startedAt: timestampValue(message?.ts),
+  endedAt: timestampValue(message?.endTs),
+  durationMs: null,
+  progress: [],
+});
+
+const messageBlocks = (message, key, role, status) => {
   const recovery = normalizeWorkflowRecovery(message?.meta?.recovery);
   const blockOccurrences = new Map();
   const segments = Array.isArray(message?.streamSegments) ?
@@ -702,26 +747,7 @@ const normalizeMessage = (message, index, occurrences) => {
   );
   const hasContentBlock = blocks.some((block) => block.kind === 'content');
   if (stringValue(message?.content) && !hasContentBlock) {
-    blocks.push({
-      key: `${key}:content`,
-      kind: 'content',
-      segmentType: 'content',
-      order: blocks.length,
-      status: TERMINAL_STATUSES.has(status) ? 'finished' : status,
-      terminal: TERMINAL_STATUSES.has(status),
-      text: stringValue(message.content),
-      summary: '',
-      node: '',
-      spanKey: '',
-      parentKey: '',
-      traceId: '',
-      spanId: '',
-      parentSpanId: '',
-      startedAt: timestampValue(message?.ts),
-      endedAt: timestampValue(message?.endTs),
-      durationMs: null,
-      progress: [],
-    });
+    blocks.push(contentBlock(message, key, status, blocks.length));
   }
   if (
     role === 'assistant' ||
@@ -730,7 +756,10 @@ const normalizeMessage = (message, index, occurrences) => {
   ) {
     blocks.push(lifecycleBlock(message, key, status, blocks.length));
   }
+  return { blocks, recovery };
+};
 
+const messageTiming = (message, blocks, status) => {
   const blockStarts = blocks
     .map((block) => block.startedAt)
     .filter((value) => value != null);
@@ -745,6 +774,27 @@ const normalizeMessage = (message, index, occurrences) => {
     (TERMINAL_STATUSES.has(status) && blockEnds.length ?
       Math.max(...blockEnds) :
       null);
+  return { startedAt, endedAt };
+};
+
+const normalizeMessage = (message, index, occurrences) => {
+  const key = uniqueKey(
+    `message:${messageIdentity(message, index)}`,
+    occurrences,
+  );
+  const role = stringValue(message?.role).trim() || 'assistant';
+  const status = normalizeConversationStatus(
+    message?.status,
+    message?.isLoading,
+  );
+  const {
+    rawError,
+    errorCode,
+    cancelReason,
+    errorPresentation,
+  } = messageErrorDetails(message, status);
+  const { blocks, recovery } = messageBlocks(message, key, role, status);
+  const { startedAt, endedAt } = messageTiming(message, blocks, status);
   return {
     key,
     id: stringValue(message?.id),

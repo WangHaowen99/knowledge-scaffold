@@ -57,6 +57,7 @@ import type {
   SpecScript,
   TableSourceRef,
   MaterialPurpose,
+  ProductInventoryItem,
 } from '../types.js';
 import {
   KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
@@ -85,10 +86,10 @@ import {
   type SchemaSemanticStatus,
 } from '../workflow/schema-semantics.js';
 import {
-  collectPreviousObjectRelations,
   suggestObjectRelations as suggestObjectRelationsFromSpec,
-  type PreviousObjectRelation,
+  type ObjectRelationSuggestion,
 } from '../workflow/object-relation-suggestions.js';
+import { hasAuthoritativeObjectRelationSource } from '../workflow/relationship-template.js';
 import { normalizeRelationName, relationNameProblem } from '../workflow/relation-name.js';
 import { tableSourcesFor } from '../workflow/source-references.js';
 import { validateKey, validateSpecKeys } from '../workflow/keys.js';
@@ -143,6 +144,7 @@ import {
 } from './product-ledger.js';
 import { issueAgentRunCredential } from './run-credential.js';
 import { runScriptCasesInJiuwenbox } from './sandbox.js';
+import { isNoOpCandidateChange, removeNoOpCandidateChanges } from './effective-changes.js';
 import {
   StudioReadError,
   StudioReadService,
@@ -183,6 +185,8 @@ import {
   ChangeControlStore,
   CHANGE_PLAN_DIRECT_TOOLS,
   CHANGE_SET_DOMAIN_TOOLS,
+  OBJECT_RELATION_REVIEW_TARGET_KEY,
+  OBJECT_RELATION_REVIEW_TOOL,
   parseChangeSetActions,
   type ChangeSetActionInput,
 } from './change-control.js';
@@ -210,13 +214,19 @@ const DOMAIN_TOOL_NAMES = new Set([
   'create_object', 'create_rule', 'create_operation', 'create_metric',
   'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
   'sync_schema_objects', 'stage_schema_semantic_changes', 'confirm_schema_semantics',
-  'suggest_object_relations',
   'patch_object_source_binding',
   'preview_domain_delete', 'delete_domain_resource',
 ]);
 const CHANGE_CONTROL_TOOLS = new Set([
   'create_change_plan', 'get_change_plan', 'revise_change_plan',
   'stage_change_set', 'get_change_set_receipt', 'validate_change_set', 'discard_change_set',
+  OBJECT_RELATION_REVIEW_TOOL,
+]);
+const PRODUCT_LEDGER_GATED_MUTATION_TOOLS = new Set([
+  'create_object', 'create_rule', 'create_operation', 'create_metric',
+  'patch_object', 'patch_rule', 'patch_operation', 'patch_metric',
+  'upsert_object', 'upsert_rule', 'upsert_operation', 'upsert_metric',
+  'bind_object_source', 'bind_object_sources', 'write_file', 'delete_file',
 ]);
 const MANAGED_DOMAIN_MARKDOWN = /^(?:objects|operations|rules|metrics)\/(?:index|[^/]+)\.md$/u;
 const MANAGED_SCRIPT_PATH = /^scripts\/(?:index\.md|[^/]+\.md|[A-Za-z0-9_.-]+\.py)$/u;
@@ -243,6 +253,44 @@ type GateResult = {
    *  为空表示这道门禁当前没有助手能独立推进的事。 */
   agentActionable?: string[];
 };
+
+interface ObjectRelationReviewRow {
+  id: string;
+  project_id: string;
+  plan_id: string;
+  task_id: string;
+  working_revision: string;
+  schema_input_hash: string;
+  status: 'open' | 'applied' | 'stale';
+  applied_revision: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ObjectRelationReviewCandidateRow {
+  review_id: string;
+  fingerprint: string;
+  ordinal: number;
+  source_object: string;
+  target_object: string;
+  relation: string;
+  note: string;
+  reason: string;
+  evidence_json: string;
+  default_selected: number;
+  selected: number;
+  error_json: string | null;
+}
+
+interface ReviewedRelationError {
+  fingerprint: string;
+  ordinal: number;
+  source_object: string;
+  target_object: string;
+  relation: string;
+  code: string;
+  message: string;
+}
 type GateResults = Record<string, GateResult>;
 
 const GATE_LABELS: Record<string, string> = {
@@ -405,6 +453,17 @@ export class AgentCoreService {
       const document = documents.find((item) => item.id === summary.id)!;
       return { ...summary, refs: referringFiles(packageFiles.files, document).length };
     });
+    // 待批准计划必须随快照返回：计划卡只在 change_plan 事件到达时渲染，
+    // 刷新或恢复后会话里没有这条事件，用户就再也找不到批准入口。
+    let pendingChangePlan: ReturnType<ChangeControlStore['snapshot']> | null = null;
+    const activePlanRow = this.changeControl.activePlanForProject(project.id);
+    if (activePlanRow && activePlanRow.status === 'active' && activePlanRow.approval_status === 'pending') {
+      pendingChangePlan = this.changeControl.snapshot(
+        activePlanRow.project_id,
+        activePlanRow.run_id,
+        activePlanRow.id,
+      );
+    }
     return {
       project,
       revision: packageFiles.revision.oid,
@@ -417,6 +476,8 @@ export class AgentCoreService {
       materials,
       confirmPolicy: this.workbenchConfirmPolicy(project.id),
       packageDataSource: getProjectPackageDataSourceSelection(project.id),
+      changePlan: pendingChangePlan,
+      objectRelationReview: this.changeControl.objectRelationReviewState(project.id),
     };
   }
 
@@ -457,6 +518,407 @@ export class AgentCoreService {
     }, args);
   }
 
+  async workbenchObjectRelationReview(
+    project: Project,
+    username: string,
+    args: Record<string, unknown> = {},
+  ) {
+    await this.artifacts.ensureProject(project.id);
+    const state = this.changeControl.objectRelationReviewState(project.id);
+    if (!state.available) return { ...state, candidates: [], total: 0, offset: 0, next_offset: null };
+    const existing = this.db.prepare(`SELECT * FROM agent_object_relation_reviews
+      WHERE project_id = ? AND task_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .get(project.id, state.task_id) as ObjectRelationReviewRow | undefined;
+    if (!state.ready) {
+      return existing
+        ? this.objectRelationReviewPage(existing, args, state)
+        : { ...state, candidates: [], total: 0, offset: 0, next_offset: null };
+    }
+
+    let review = existing;
+    const working = await this.workbenchStudioFiles(project, username);
+    if (review?.status === 'open') {
+      this.pruneObjectRelationReviewCandidates(review.id, working.spec);
+    }
+    if (review?.status === 'open' && review.working_revision !== working.workingRevision) {
+      this.db.prepare(`UPDATE agent_object_relation_reviews SET status = 'stale', updated_at = ? WHERE id = ?`)
+        .run(nowIso(), review.id);
+      review = undefined;
+    }
+    // An earlier bootstrap may have persisted an empty review while the
+    // working schema was still being materialized. Re-evaluate that open
+    // review against the current spec so a transient zero does not become a
+    // permanent, empty review after refresh.
+    if (review?.status === 'open' && this.objectRelationReviewCandidates(review.id).length === 0) {
+      const probe = allObjectRelationSuggestions(working.spec, this.tables(project.id));
+      const hasCandidates = probe.candidates.some((candidate) => !hasEquivalentObjectRelation(working.spec, candidate));
+      if (hasCandidates) {
+        this.db.prepare(`UPDATE agent_object_relation_reviews SET status = 'stale', updated_at = ? WHERE id = ?`)
+          .run(nowIso(), review.id);
+        review = undefined;
+      }
+    }
+    if (!review || review.status === 'stale') {
+      const spec = working.spec;
+      const suggested = allObjectRelationSuggestions(spec, this.tables(project.id));
+      const candidates = suggested.candidates
+        .filter((candidate) => !hasEquivalentObjectRelation(spec, candidate))
+        .map((candidate) => ({
+          ...candidate,
+          relation: objectRelationChineseName(candidate.relation),
+          reason: objectRelationReason(candidate),
+        }));
+      const reviewId = `orr_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+      const timestamp = nowIso();
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db.prepare(`INSERT INTO agent_object_relation_reviews (
+          id, project_id, plan_id, task_id, working_revision, schema_input_hash,
+          status, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,'open',?,?)`).run(
+          reviewId,
+          project.id,
+          state.plan_id,
+          state.task_id,
+          working.workingRevision,
+          suggested.schemaInputHash,
+          timestamp,
+          timestamp,
+        );
+        const insert = this.db.prepare(`INSERT INTO agent_object_relation_review_candidates (
+          review_id, fingerprint, ordinal, source_object, target_object, relation,
+          note, reason, evidence_json, default_selected, selected
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+        candidates.forEach((candidate, index) => {
+          const selected = candidate.confidence === 'high' ? 1 : 0;
+          insert.run(
+            reviewId,
+            candidate.candidateFingerprint,
+            index,
+            candidate.sourceObject,
+            candidate.targetObject,
+            candidate.relation,
+            candidate.note,
+            candidate.reason,
+            JSON.stringify(candidate.evidence ?? []),
+            selected,
+            selected,
+          );
+        });
+        this.db.exec('COMMIT');
+      } catch (error) {
+        if (this.db.isTransaction) this.db.exec('ROLLBACK');
+        throw error;
+      }
+      review = this.db.prepare('SELECT * FROM agent_object_relation_reviews WHERE id = ?')
+        .get(reviewId) as unknown as ObjectRelationReviewRow;
+    }
+    // Keep an empty review open. Candidate derivation can legitimately return
+    // no rows while upstream object/operation work is still settling; marking
+    // the plan task applied here permanently hides the review after refresh
+    // and leaves behind a misleading completed review with total=0. The task
+    // is completed only by the explicit apply endpoint (or an orchestrator
+    // path that has a stable, persisted empty result).
+    return this.objectRelationReviewPage(review, args, state);
+  }
+
+  async applyWorkbenchObjectRelationReview(
+    project: Project,
+    username: string,
+    rawBody: unknown,
+  ) {
+    const body = object(rawBody);
+    const reviewId = text(body.review_id ?? body.reviewId, 'review_id');
+    const expectedRevision = text(body.expected_revision ?? body.expectedRevision, 'expected_revision');
+    const selectedFingerprints = new Set(requiredStringArray(
+      body.selected_fingerprints ?? body.selectedFingerprints ?? [],
+      'selected_fingerprints',
+      true,
+    ));
+    const relationEdits = relationReviewEdits(body.relation_edits ?? body.relationEdits);
+    const review = this.db.prepare(`SELECT * FROM agent_object_relation_reviews
+      WHERE id = ? AND project_id = ?`).get(reviewId, project.id) as ObjectRelationReviewRow | undefined;
+    if (!review) throw new AgentCoreError('RELATION_REVIEW_NOT_FOUND', '对象关系审阅已经失效', [], 404);
+    if (review.status === 'applied') {
+      return {
+        applied: true,
+        replayed: true,
+        working_revision: review.applied_revision,
+        review_id: review.id,
+        display: { text: '对象关系已经写入工作版本' },
+      };
+    }
+    if (review.status !== 'open') {
+      throw new AgentCoreError('RELATION_REVIEW_STALE', '对象或业务操作已经变化，请刷新关系候选', [], 409, {
+        review_id: review.id,
+      });
+    }
+    const state = this.changeControl.objectRelationReviewState(project.id);
+    if (!state.available || state.task_id !== review.task_id) {
+      throw new AgentCoreError('RELATION_REVIEW_STALE', '当前建模计划已经变化，请刷新关系候选', [], 409);
+    }
+    try {
+      this.changeControl.authorizeDirectTask({
+        projectId: project.id,
+        runId: String(state.run_id),
+        taskId: String(state.task_id),
+        tool: OBJECT_RELATION_REVIEW_TOOL,
+        targetKey: OBJECT_RELATION_REVIEW_TARGET_KEY,
+      });
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+    const working = await this.workbenchStudioFiles(project, username);
+    if (expectedRevision !== working.workingRevision || review.working_revision !== working.workingRevision) {
+      throw new AgentCoreError('RELATION_REVIEW_STALE', '对象或业务操作已经变化，请刷新关系候选', [], 409, {
+        expectedRevision,
+        actualRevision: working.workingRevision,
+        review_id: review.id,
+      });
+    }
+    const rows = this.objectRelationReviewCandidates(review.id);
+    const known = new Set(rows.map((row) => row.fingerprint));
+    const unknown = [...new Set([...selectedFingerprints, ...relationEdits.keys()])]
+      .filter((fingerprint) => !known.has(fingerprint));
+    if (unknown.length) {
+      throw new AgentCoreError('RELATION_REVIEW_SELECTION_INVALID', '提交中包含不属于当前页面的关系', [], 400, {
+        fingerprints: unknown,
+      });
+    }
+    this.persistObjectRelationReviewSelection(review.id, selectedFingerprints, relationEdits);
+    const selected = this.objectRelationReviewCandidates(review.id)
+      .filter((row) => selectedFingerprints.has(row.fingerprint));
+    const spec = working.spec;
+    const errors = validateReviewedObjectRelations(spec, selected);
+    if (errors.length) {
+      this.persistObjectRelationReviewErrors(review.id, errors);
+      throw new AgentCoreError(
+        'RELATION_REVIEW_INVALID',
+        `有 ${errors.length} 条对象关系需要调整`,
+        [],
+        422,
+        { review_id: review.id, relations: errors },
+      );
+    }
+
+    let resultingRevision = working.workingRevision;
+    if (selected.length) {
+      const patches = reviewedRelationPatches(spec, selected);
+      try {
+        const response = await this.studioWrites.batchDomainModel(
+          project,
+          username,
+          {
+            expectedRevision: working.workingRevision,
+            clientMutationId: `relation-review:${review.id}`,
+            editSessionId: review.id,
+            creates: [],
+            patches,
+          },
+          createHash('sha256').update(JSON.stringify({ reviewId: review.id, selected: [...selectedFingerprints].sort() })).digest('hex'),
+        );
+        resultingRevision = response.workingRevision;
+      } catch (error) {
+        if (error instanceof StudioWriteError) {
+          const relationErrors = studioRelationReviewErrors(error, selected);
+          this.persistObjectRelationReviewErrors(review.id, relationErrors);
+          throw new AgentCoreError(
+            'RELATION_REVIEW_INVALID',
+            relationErrors.length ? `有 ${relationErrors.length} 条对象关系需要调整` : error.message,
+            [],
+            error.statusCode,
+            { review_id: review.id, relations: relationErrors, fieldErrors: error.details.fieldErrors ?? {} },
+          );
+        }
+        throw error;
+      }
+    }
+    try {
+      const plan = this.changeControl.completeDirectTask({
+        projectId: project.id,
+        runId: String(state.run_id),
+        taskId: String(state.task_id),
+        tool: OBJECT_RELATION_REVIEW_TOOL,
+        receiptId: review.id,
+        resultingRevision,
+      });
+      this.db.prepare(`UPDATE agent_object_relation_reviews
+        SET status = 'applied', applied_revision = ?, updated_at = ? WHERE id = ?`)
+        .run(resultingRevision, nowIso(), review.id);
+      return {
+        applied: true,
+        review_id: review.id,
+        working_revision: resultingRevision,
+        selected_count: selected.length,
+        plan,
+        display: { text: `已将 ${selected.length} 条对象关系写入工作版本` },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  private async reviewObjectRelations(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ) {
+    const taskId = text(args.plan_task_id ?? args.planTaskId, 'plan_task_id');
+    const expectedRevision = text(args.expected_revision ?? args.expectedRevision, 'expected_revision');
+    const state = this.changeControl.objectRelationReviewState(context.project.id);
+    if (!state.available || state.task_id !== taskId) {
+      throw new AgentCoreError(
+        'CHANGE_SET_OUT_OF_SCOPE',
+        '对象关系审阅任务不属于当前建模计划',
+        ['先调用 get_change_plan，使用其中对象关系任务的 task_id 重试'],
+        409,
+        { task_id: taskId, current_task_id: state.available ? state.task_id : null },
+      );
+    }
+    const apply = args.apply === true;
+    if (!apply) {
+      return this.workbenchObjectRelationReview(context.project, context.username, args);
+    }
+    const reviewId = text(args.review_id ?? args.reviewId, 'review_id');
+    const selected = Array.isArray(args.selected_fingerprints)
+      ? args.selected_fingerprints
+      : [];
+    const relationEdits = Array.isArray(args.relation_edits)
+      ? args.relation_edits
+      : [];
+    return this.applyWorkbenchObjectRelationReview(
+      context.project,
+      context.username,
+      {
+        review_id: reviewId,
+        expected_revision: expectedRevision,
+        selected_fingerprints: selected,
+        relation_edits: relationEdits,
+      },
+    );
+  }
+
+  private objectRelationReviewPage(
+    review: ObjectRelationReviewRow,
+    args: Record<string, unknown>,
+    state: ReturnType<ChangeControlStore['objectRelationReviewState']>,
+  ) {
+    const rows = this.objectRelationReviewCandidates(review.id);
+    const offset = boundedInteger(args.offset, 0, 100_000, 0);
+    const limit = boundedInteger(args.limit, 1, 100, 10);
+    const page = rows.slice(offset, offset + limit);
+    const nextOffset = offset + page.length;
+    return {
+      ...state,
+      ready: state.available && state.ready && review.status === 'open',
+      review_id: review.id,
+      review_status: review.status,
+      working_revision: review.working_revision,
+      applied_revision: review.applied_revision,
+      total: rows.length,
+      all_fingerprints: rows.map((row) => row.fingerprint),
+      selected_count: rows.filter((row) => row.selected).length,
+      selected_fingerprints: rows.filter((row) => row.selected).map((row) => row.fingerprint),
+      auto_completed: review.status === 'applied' && rows.length === 0,
+      offset,
+      next_offset: nextOffset < rows.length ? nextOffset : null,
+      candidates: page.map((row) => ({
+        fingerprint: row.fingerprint,
+        source_object: row.source_object,
+        target_object: row.target_object,
+        relation: row.relation,
+        note: row.note,
+        reason: row.reason,
+        evidence: parseArray(row.evidence_json),
+        default_selected: Boolean(row.default_selected),
+        selected: Boolean(row.selected),
+        error: row.error_json ? JSON.parse(row.error_json) : null,
+      })),
+    };
+  }
+
+  private objectRelationReviewCandidates(reviewId: string): ObjectRelationReviewCandidateRow[] {
+    return this.db.prepare(`SELECT * FROM agent_object_relation_review_candidates
+      WHERE review_id = ? ORDER BY ordinal`).all(reviewId) as unknown as ObjectRelationReviewCandidateRow[];
+  }
+
+  private pruneObjectRelationReviewCandidates(reviewId: string, spec: PackageSpec): void {
+    const seen = new Set<string>();
+    const removable = new Set<string>();
+    for (const row of this.objectRelationReviewCandidates(reviewId)) {
+      const relationKey = [
+        row.source_object,
+        row.target_object,
+        objectRelationCanonicalName(row.relation),
+      ].join('\0');
+      if (seen.has(relationKey) || hasEquivalentObjectRelation(spec, {
+        sourceObject: row.source_object,
+        targetObject: row.target_object,
+        relation: row.relation,
+      })) {
+        removable.add(row.fingerprint);
+      } else {
+        seen.add(relationKey);
+      }
+    }
+    if (!removable.size) return;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const remove = this.db.prepare(
+        'DELETE FROM agent_object_relation_review_candidates WHERE review_id = ? AND fingerprint = ?',
+      );
+      for (const fingerprint of removable) remove.run(reviewId, fingerprint);
+      this.db.prepare('UPDATE agent_object_relation_reviews SET updated_at = ? WHERE id = ?')
+        .run(nowIso(), reviewId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private persistObjectRelationReviewSelection(
+    reviewId: string,
+    selected: Set<string>,
+    relationEdits: Map<string, string>,
+  ): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const update = this.db.prepare(`UPDATE agent_object_relation_review_candidates
+        SET selected = ?, error_json = NULL WHERE review_id = ? AND fingerprint = ?`);
+      for (const row of this.objectRelationReviewCandidates(reviewId)) {
+        update.run(selected.has(row.fingerprint) ? 1 : 0, reviewId, row.fingerprint);
+      }
+      const updateRelation = this.db.prepare(`UPDATE agent_object_relation_review_candidates
+        SET relation = ? WHERE review_id = ? AND fingerprint = ?`);
+      for (const [fingerprint, relation] of relationEdits) {
+        updateRelation.run(relation, reviewId, fingerprint);
+      }
+      this.db.prepare('UPDATE agent_object_relation_reviews SET updated_at = ? WHERE id = ?')
+        .run(nowIso(), reviewId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  private persistObjectRelationReviewErrors(reviewId: string, errors: ReviewedRelationError[]): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`UPDATE agent_object_relation_review_candidates
+        SET error_json = NULL WHERE review_id = ?`).run(reviewId);
+      const update = this.db.prepare(`UPDATE agent_object_relation_review_candidates
+        SET error_json = ? WHERE review_id = ? AND fingerprint = ?`);
+      for (const error of errors) update.run(JSON.stringify(error), reviewId, error.fingerprint);
+      this.db.prepare('UPDATE agent_object_relation_reviews SET updated_at = ? WHERE id = ?')
+        .run(nowIso(), reviewId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async workbenchStudioFiles(project: Project, username: string) {
     await this.artifacts.ensureProject(project.id);
     let current = await this.artifacts.current(project.id);
@@ -480,6 +942,13 @@ export class AgentCoreService {
       const effectiveSpec = resolveStudioWorkingSpec(packageFiles.spec, studioFiles);
       studioFiles[INTERNAL_SPEC_CHANGE_PATH] = `${JSON.stringify(effectiveSpec, null, 2)}\n`;
     }
+    // The overlay's `packageFiles.spec` describes the base revision. Rebuild
+    // the effective spec from the overlaid rendered files so staged object
+    // and operation documents are visible to relation suggestions as well.
+    // In particular, a schema sync may stage an internal compiled spec that
+    // contains objects but omits pre-existing operations; using that internal
+    // JSON alone would make operation co-reference candidates disappear.
+    const workingSpec = resolveStudioWorkingSpec(packageFiles.spec, studioFiles);
     return {
       workingRevision: workspaceChanges.length
         ? workingContentRevision(current.revision.oid, studioFiles)
@@ -487,6 +956,7 @@ export class AgentCoreService {
       baseRevision: current.revision.oid,
       candidateRevision: readableWorkspace?.candidate_id ?? null,
       hasReviewableChanges: workspaceChanges.some((change) => !isHiddenCandidateGroup(change.group_id)),
+      spec: workingSpec,
       files: studioFiles,
     };
   }
@@ -717,6 +1187,7 @@ export class AgentCoreService {
 
   private async invokeRaw(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
     if (DOMAIN_TOOL_NAMES.has(tool) || CHANGE_CONTROL_TOOLS.has(tool)) this.adoptDomainToolContract(context);
+    this.assertProductLedgerBeforeMutation(context, tool, args);
     this.assertObjectSourceToolMode(context.project.id, tool, args);
     if (CHANGE_SET_DOMAIN_TOOLS.has(tool)
       && this.changeControl.activePlan(context.project.id, context.runId)) {
@@ -742,6 +1213,7 @@ export class AgentCoreService {
       case 'get_change_plan': return this.getChangePlan(context, args);
       case 'revise_change_plan': return this.reviseChangePlan(context, args);
       case 'get_change_set_receipt': return this.getChangeSetReceipt(context, args);
+      case 'review_object_relations': return this.reviewObjectRelations(context, args);
       case 'list_domain_resources': return this.listDomainResources(context, args);
       case 'get_domain_resource': return this.getDomainResource(context, args);
       case 'get_schema_semantics': return this.getSchemaSemantics(context, args);
@@ -759,6 +1231,21 @@ export class AgentCoreService {
     switch (tool) {
       case 'list_documents': return this.listDocuments(context.project.id);
       case 'get_goal_context': return this.goalContext(context.project.id, workspace);
+      case 'require_product_ledger': return this.requireProductLedger(context, workspace, args);
+      case 'get_product_inventory_source': return this.productInventorySource(context, args);
+      case 'begin_product_ledger': return runProjectWriteExclusive(
+        workspace.project_id,
+        async () => this.beginProductLedger(this.workspace(workspace.project_id) ?? workspace, args),
+      );
+      case 'append_product_ledger_batch': return runProjectWriteExclusive(
+        workspace.project_id,
+        async () => this.appendProductLedgerBatch(this.workspace(workspace.project_id) ?? workspace, args),
+      );
+      case 'get_product_ledger_progress': return this.getProductLedgerProgress(workspace, args);
+      case 'finalize_product_ledger': return runProjectWriteExclusive(
+        workspace.project_id,
+        async () => this.finalizeProductLedger(this.workspace(workspace.project_id) ?? workspace, args),
+      );
       case 'get_product_ledger': return this.getProductLedger(workspace);
       case 'stage_product_ledger': return this.stageProductLedger(workspace, args);
       case 'read_document': return this.readDocument(context.project.id, args);
@@ -807,7 +1294,6 @@ export class AgentCoreService {
         '__schema__',
         () => this.confirmSchemaSemantics(context, args),
       );
-      case 'suggest_object_relations': return this.suggestObjectRelations(workspace, context, args);
       case 'delete_domain_resource': return this.runPlannedDirectTask(
         context,
         tool,
@@ -1200,6 +1686,7 @@ export class AgentCoreService {
 
   private async createChangePlan(context: AgentToolContext, args: Record<string, unknown>) {
     try {
+      this.assertProductLedgerBeforePlan(context, args);
       const working = await this.workbenchStudioFiles(context.project, context.username);
       const workingSpec = parseWorkingPackageSpec(working.files);
       const sourcePolicy = this.normalizeObjectSourcePlan(
@@ -1209,6 +1696,7 @@ export class AgentCoreService {
         workingSpec,
         working.files,
       );
+      const projectTables = this.tables(context.project.id);
       const plan = this.changeControl.createPlan({
         projectId: context.project.id,
         runId: context.runId,
@@ -1217,6 +1705,7 @@ export class AgentCoreService {
         expectedRevision: args.expected_revision,
         currentRevision: working.workingRevision,
         tasks: sourcePolicy.tasks,
+        objectRelationReview: !hasAuthoritativeObjectRelationSource(projectTables),
       });
       return {
         plan,
@@ -1238,6 +1727,122 @@ export class AgentCoreService {
     } catch (error) {
       throw normalizeChangeControlError(error);
     }
+  }
+
+  private assertProductLedgerBeforeMutation(
+    context: AgentToolContext,
+    tool: string,
+    args: Record<string, unknown> = {},
+  ): void {
+    if (!PRODUCT_LEDGER_GATED_MUTATION_TOOLS.has(tool)) return;
+    // write_file/delete_file are also used for goals, diagrams and runtime
+    // metadata. Only formal managed resources belong behind the product-ledger
+    // gate; broad gating here would make an unfinished ledger block harmless
+    // workflow bookkeeping and even recovery artifacts.
+    if (tool === 'write_file' || tool === 'delete_file') {
+      const path = String(args.path ?? '').trim();
+      if (!MANAGED_DOMAIN_MARKDOWN.test(path) && !MANAGED_SCRIPT_PATH.test(path)) return;
+    }
+    if (!this.productLedgerRequired(context.project.id)) return;
+    const workspace = this.workspace(context.project.id);
+    const ledger = workspace ? this.getProductLedger(workspace) : null;
+    const passed = Boolean(ledger?.available === true
+      && ledger.sourceRevision === workspace?.base_revision_oid
+      && ledger.validation?.pass === true
+      && ledger.status === 'finalized');
+    if (passed) return;
+    const status = ledger?.available !== true
+      ? 'absent'
+      : ledger.sourceRevision !== workspace?.base_revision_oid
+        ? 'stale'
+        : ledger.validation?.pass === true ? 'finalized' : 'needs_review';
+    throw new AgentCoreError(
+      'PRODUCT_LEDGER_REQUIRED',
+      '当前运行已要求先完成产品清单台账，台账通过前不能写入正式建模资源',
+      ['先读取产品清单来源并完成结构化台账；台账 finalized 后再继续资源写入'],
+      409,
+      {
+        gate: 'product_ledger_verified',
+        ledgerStatus: status,
+        ledgerId: this.latestProductLedgerId(context.project.id),
+        allowedActions: ['get_product_inventory_source', 'get_product_ledger', 'stage_product_ledger'],
+        protocolActions: ['get_product_inventory_source', 'begin_product_ledger', 'append_product_ledger_batch', 'get_product_ledger_progress', 'finalize_product_ledger'],
+        productLedgerRequired: true,
+      },
+    );
+  }
+
+  /**
+   * A user decision to build a full product/rule ledger is a workflow policy,
+   * not merely a hint for the model. Persist it before accepting a generation
+   * plan so advisory mode cannot be used to cross the same-run gate.
+   */
+  private assertProductLedgerBeforePlan(
+    context: AgentToolContext,
+    args: Record<string, unknown>,
+  ): void {
+    const goal = String(args.goal ?? '').trim();
+    const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+    const text = [goal, ...tasks.map((task) => (
+      task && typeof task === 'object' && !Array.isArray(task)
+        ? JSON.stringify(task)
+        : String(task ?? '')
+    ))].join('\n');
+    const explicitLedger = /(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)/iu.test(text);
+    if (explicitLedger) {
+      this.db.prepare(`UPDATE projects SET product_ledger_required = 1, updated_at = ? WHERE id = ?`)
+        .run(nowIso(), context.project.id);
+    }
+    const required = this.productLedgerRequired(context.project.id) || explicitLedger;
+    if (!required) return;
+    const hasFormalGeneration = tasks.some((task) => {
+        if (!task || typeof task !== 'object' || Array.isArray(task)) return false;
+        const value = task as Record<string, unknown>;
+        const kind = String(value.resource_kind ?? '').trim();
+        const tools = Array.isArray(value.allowed_tools) ? value.allowed_tools.map(String) : [];
+        return ['rule', 'operation', 'metric'].includes(kind)
+          || tools.some((tool) => ['create_rule', 'patch_rule', 'create_operation', 'patch_operation', 'create_metric', 'patch_metric', 'upsert_rule', 'upsert_operation', 'upsert_metric'].includes(tool));
+      });
+    if (!hasFormalGeneration) return;
+    const workspace = this.workspace(context.project.id);
+    const ledger = workspace ? this.getProductLedger(workspace) : null;
+    const validation = ledger?.validation ?? null;
+    const finalized = Boolean(ledger?.available === true
+      && ledger.sourceRevision === workspace?.base_revision_oid
+      && validation?.pass === true
+      && ledger.status === 'finalized');
+    if (finalized) return;
+    throw new AgentCoreError(
+      'PRODUCT_LEDGER_REQUIRED',
+      '当前运行已要求先完成产品清单台账，台账通过前不能建立正式规则、指标或业务操作计划',
+      ['先读取产品清单来源并完成结构化台账；台账 finalized 后再创建正式生成计划'],
+      409,
+      {
+        gate: 'product_ledger_verified',
+        ledgerStatus: ledger?.available !== true ? 'absent'
+          : ledger.sourceRevision !== workspace?.base_revision_oid ? 'stale'
+            : validation?.pass === true ? 'finalized' : 'needs_review',
+        ledgerId: this.latestProductLedgerId(context.project.id),
+        allowedActions: ['get_product_inventory_source', 'get_product_ledger', 'stage_product_ledger'],
+        protocolActions: ['get_product_inventory_source', 'begin_product_ledger', 'append_product_ledger_batch', 'get_product_ledger_progress', 'finalize_product_ledger'],
+        productLedgerRequired: true,
+      },
+    );
+  }
+
+  private productLedgerRequired(projectId: string): boolean {
+    const row = this.db.prepare(`SELECT product_ledger_required FROM projects WHERE id = ?`).get(projectId) as
+      | { product_ledger_required?: number }
+      | undefined;
+    return row?.product_ledger_required === 1;
+  }
+
+  private latestProductLedgerId(projectId: string): string | null {
+    const row = this.db.prepare(`SELECT ledger_id FROM product_ledger_drafts
+      WHERE project_id = ? ORDER BY updated_at DESC LIMIT 1`).get(projectId) as
+      | { ledger_id?: string }
+      | undefined;
+    return row?.ledger_id ? String(row.ledger_id) : null;
   }
 
   private normalizeObjectSourcePlan(
@@ -1428,6 +2033,13 @@ export class AgentCoreService {
     try {
       const active = this.changeControl.activePlan(context.project.id, context.runId);
       const additions = Array.isArray(args.add_tasks) ? args.add_tasks : [];
+      // A plan can be revised after the initial gate. Re-run the same
+      // project-level ledger check for newly added formal generation tasks so
+      // a later add_tasks call cannot bypass the pre-plan guard.
+      this.assertProductLedgerBeforePlan(context, {
+        mode: active?.mode ?? 'expert_edit',
+        tasks: additions,
+      });
       const addedTools = additions.flatMap((task) => (
         task && typeof task === 'object' && !Array.isArray(task)
           && Array.isArray((task as Record<string, unknown>).allowed_tools)
@@ -1615,7 +2227,6 @@ export class AgentCoreService {
     context: AgentToolContext,
     actions: ChangeSetActionInput[],
   ): void {
-    if (config.productLedger.mode !== 'enforce') return;
     const touchesRuleBatch = actions.some((action) => (
       action.tool === 'create_rule' || action.tool === 'patch_rule'
     ));
@@ -1624,10 +2235,14 @@ export class AgentCoreService {
     if (!workspace) return;
     const ledger = this.getProductLedger(workspace);
     const validation = ledger.validation;
+    const requiredByProject = this.productLedgerRequired(context.project.id);
+    const requiredByLegacyEnforce = config.productLedger.mode === 'enforce' && ledger.required === true;
+    if (!requiredByProject && !requiredByLegacyEnforce) return;
+    const ledgerRequired = requiredByProject || requiredByLegacyEnforce;
     const ruleActionCount = actions.filter((action) => (
       action.tool === 'create_rule' || action.tool === 'patch_rule'
     )).length;
-    if (ledger.required === true && ruleActionCount > 10) {
+    if (ledgerRequired && ruleActionCount > 10) {
       throw new AgentCoreError(
         'PRODUCT_LEDGER_BATCH_TOO_LARGE',
         `产品清单规则批次包含 ${ruleActionCount} 项，单批最多 10 项`,
@@ -1643,8 +2258,9 @@ export class AgentCoreService {
     const hasCurrentLedger = ledger.available === true;
     const ledgerMatchesWorkspace = ledger.sourceRevision === workspace.base_revision_oid;
     const ledgerPassed = validation?.pass === true;
-    const ledgerGatePassed = hasCurrentLedger && ledgerMatchesWorkspace && ledgerPassed;
-    if (ledger.required !== true || ledgerGatePassed) return;
+    const ledgerGatePassed = hasCurrentLedger && ledgerMatchesWorkspace && ledgerPassed
+      && ledger.status === 'finalized';
+    if (!ledgerRequired || ledgerGatePassed) return;
     const blockers = ledger.available !== true
       ? ['先提交当前产品大清单的结构化台账']
       : ledger.sourceRevision !== workspace.base_revision_oid
@@ -2297,10 +2913,6 @@ export class AgentCoreService {
       expectedSchemaObjects(projectTables),
       current.spec.objects ?? [],
     );
-    const previousRelations = collectPreviousObjectRelations(
-      current.spec.objects ?? [],
-      physical.map((item) => item.object),
-    );
     const nextSpec = validateSpecKeys(canonicalizePackageSpec({
       ...current.spec,
       objects: physical.map((item) => item.object),
@@ -2382,7 +2994,6 @@ export class AgentCoreService {
       schema_table_count: tables.length,
       object_count: physical.length,
       removed_derived_object_count: staleObjectPaths.length,
-      previousRelations,
       objects: physical.map(({ table, object }) => ({
         resource_id: `object:${object.key}`,
         key: object.key,
@@ -2560,39 +3171,6 @@ export class AgentCoreService {
     };
     this.saveStructuredMutation(context, tool, mutationId, requestHash, result);
     return result;
-  }
-
-  private async suggestObjectRelations(
-    workspace: WorkspaceRow,
-    context: AgentToolContext,
-    args: Record<string, unknown>,
-  ) {
-    const workingPackage = await this.workbenchStudioFiles(context.project, context.username);
-    const requestedRevision = String(args.working_revision ?? args.workingRevision ?? args.expected_revision ?? '').trim();
-    if (requestedRevision) new StudioReadService(workingPackage).assertRevision(requestedRevision);
-    const current = await this.overlay(workspace);
-    const result = suggestObjectRelationsFromSpec(
-      current.spec,
-      schemaTables(this.tables(context.project.id)),
-      {
-        limit: integer(args.limit, 10, 1, 20),
-        cursor: optionalInputText(args.cursor),
-        includeLowConfidence: args.includeLowConfidence === true || args.include_low_confidence === true,
-        previousRelations: optionalPreviousObjectRelations(args.previousRelations ?? args.previous_relations),
-        rejectedFingerprints: optionalStringArray(args.rejectedFingerprints ?? args.rejected_fingerprints),
-        scope: optionalSuggestionScope(args.scope),
-      },
-    );
-    return {
-      ok: true,
-      deterministic: true,
-      working_revision: workingPackage.workingRevision,
-      ...result,
-      candidate: false,
-      display: {
-        text: `Suggested ${result.returnedCount} object relation candidate(s); ${result.totalCandidateCount} candidate(s) after filters.`,
-      },
-    };
   }
 
   private async previewDomainDelete(context: AgentToolContext, args: Record<string, unknown>) {
@@ -4203,6 +4781,7 @@ export class AgentCoreService {
         parseStatus: document.parseStatus,
         parseError: document.parseError ?? null,
         revisionNo: document.revisionNo ?? 1,
+        revisionFingerprint: documentRevisionFingerprint(document),
         purpose: document.purpose ?? 'auto',
         readingMode: document.readingMode ?? 'on_demand',
         directiveRevision: document.directiveRevision ?? 0,
@@ -4346,6 +4925,549 @@ export class AgentCoreService {
           ? `《${document.filename}》共 ${sections.length} 节`
           : `《${document.filename}》没有标题分节`,
       },
+    };
+  }
+
+  private requireProductLedger(
+    context: AgentToolContext,
+    workspace: WorkspaceRow,
+    args: Record<string, unknown>,
+  ) {
+    const required = args.required !== false;
+    this.db.prepare(`UPDATE projects SET product_ledger_required = ?, updated_at = ? WHERE id = ?`)
+      .run(required ? 1 : 0, nowIso(), context.project.id);
+    const ledger = this.getProductLedger(workspace);
+    return {
+      ok: true,
+      required,
+      sourceRevision: workspace.base_revision_oid,
+      ledgerStatus: ledger.available === true
+        ? ledger.status
+        : 'absent',
+      allowedActions: required
+        ? ['get_product_inventory_source', 'get_product_ledger', 'stage_product_ledger']
+        : [],
+      protocolActions: required
+        ? ['get_product_inventory_source', 'begin_product_ledger', 'append_product_ledger_batch', 'get_product_ledger_progress', 'finalize_product_ledger']
+        : [],
+      display: { text: required ? '已启用产品清单台账前置门禁' : '已取消产品清单台账前置门禁' },
+    };
+  }
+
+  private beginProductLedger(workspace: WorkspaceRow, args: Record<string, unknown>) {
+    const ledgerId = text(args.ledger_id || `ledger_${randomUUID().slice(0, 12)}`, 'ledger_id');
+    const sourceRevision = text(args.source_revision || workspace.base_revision_oid, 'source_revision');
+    const scope = text(args.scope || 'product_catalog', 'scope');
+    const existing = this.db.prepare(`SELECT status, source_revision, analysis_revision, next_batch_no
+      FROM product_ledger_drafts WHERE project_id = ? AND ledger_id = ?`)
+      .get(workspace.project_id, ledgerId) as any;
+    const analysisRevision = String(args.analysis_revision ?? '').trim() || existing?.analysis_revision || null;
+    const sourceAnalysis = analysisRevision
+      ? this.productInventoryAnalysis(workspace.project_id, analysisRevision)
+      : null;
+    if (!analysisRevision && this.productLedgerRequired(workspace.project_id)) {
+      throw new AgentCoreError(
+        'PRODUCT_LEDGER_ANALYSIS_REVISION_REQUIRED',
+        '当前项目要求产品台账，草稿必须绑定资料分析修订',
+        ['先调用 get_product_inventory_source 获取 analysisRevision，再用它创建台账草稿'],
+        400,
+      );
+    }
+    if (analysisRevision && !sourceAnalysis) {
+      throw new AgentCoreError(
+        'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
+        '指定的资料分析修订不存在或没有结构化产品事实',
+        ['重新读取当前产品清单来源并使用返回的 analysisRevision'],
+        409,
+      );
+    }
+    if (existing?.status === 'finalized') {
+      if (existing.source_revision !== sourceRevision
+        || (analysisRevision && existing.analysis_revision && existing.analysis_revision !== analysisRevision)) {
+        throw new AgentCoreError('PRODUCT_LEDGER_REVISION_CONFLICT', '已完成的台账绑定了另一份资料修订', ['使用新的 ledger_id 重新建立当前修订的台账'], 409);
+      }
+      return {
+        ok: true, ledgerId, status: 'finalized', nextBatchNo: Number(existing.next_batch_no),
+        sourceRevision: existing.source_revision, analysisRevision: existing.analysis_revision,
+        display: { text: `产品清单台账 ${ledgerId} 已完成，无需重复建立` },
+      };
+    }
+    if (existing && (existing.source_revision !== sourceRevision
+      || (analysisRevision && existing.analysis_revision && existing.analysis_revision !== analysisRevision))) {
+      throw new AgentCoreError('PRODUCT_LEDGER_REVISION_CONFLICT', '已有台账草稿绑定了另一份资料修订', ['使用新的 ledger_id 或从当前修订重新开始'], 409);
+    }
+    if (sourceRevision !== workspace.base_revision_oid) {
+      throw new AgentCoreError('PRODUCT_LEDGER_REVISION_CONFLICT', '台账资料修订必须绑定当前工作区修订', ['使用当前工作区 revision 重新开始台账'], 409);
+    }
+    const timestamp = nowIso();
+    this.db.prepare(`INSERT INTO product_ledger_drafts
+      (project_id, ledger_id, source_revision, analysis_revision, scope, raw_count, canonical_count,
+       merged_group_count, status, next_batch_no, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)
+      ON CONFLICT(project_id, ledger_id) DO UPDATE SET
+        source_revision = excluded.source_revision,
+        analysis_revision = excluded.analysis_revision,
+        scope = excluded.scope,
+        raw_count = excluded.raw_count,
+        canonical_count = excluded.canonical_count,
+        merged_group_count = excluded.merged_group_count,
+        updated_at = excluded.updated_at`).run(
+      workspace.project_id,
+      ledgerId,
+      sourceRevision,
+      analysisRevision,
+      scope,
+      Number.isSafeInteger(Number(args.raw_count)) ? Number(args.raw_count) : null,
+      Number.isSafeInteger(Number(args.canonical_count)) ? Number(args.canonical_count) : null,
+      Number.isSafeInteger(Number(args.merged_group_count)) ? Number(args.merged_group_count) : null,
+      timestamp,
+      timestamp,
+    );
+    return {
+      ok: true,
+      ledgerId,
+      status: existing?.status ?? 'draft',
+      nextBatchNo: Number(existing?.next_batch_no ?? 1),
+      sourceRevision: sourceRevision,
+      analysisRevision,
+      ...(sourceAnalysis ? { sourceFingerprint: sourceAnalysis.sourceSetFingerprint } : {}),
+      display: { text: `已开始产品清单台账 ${ledgerId}，等待分批追加` },
+    };
+  }
+
+  private appendProductLedgerBatch(workspace: WorkspaceRow, args: Record<string, unknown>) {
+    const ledgerId = text(args.ledger_id, 'ledger_id');
+    const batchNo = Number(args.batch_no);
+    if (!Number.isSafeInteger(batchNo) || batchNo < 1) {
+      throw new AgentCoreError('PRODUCT_LEDGER_BATCH_INVALID', 'batch_no 必须是正整数', ['使用下一个未提交的批次号'], 400);
+    }
+    const draft = this.db.prepare(`SELECT * FROM product_ledger_drafts WHERE project_id = ? AND ledger_id = ?`)
+      .get(workspace.project_id, ledgerId) as any;
+    if (!draft) throw new AgentCoreError('PRODUCT_LEDGER_NOT_FOUND', '产品台账草稿不存在', ['先调用 begin_product_ledger'], 404);
+    if (draft.status === 'finalized') {
+      throw new AgentCoreError('PRODUCT_LEDGER_FINALIZED', '台账已经完成，不能追加批次', ['读取已完成台账，或为新资料修订使用新的 ledger_id'], 409);
+    }
+    if (draft.source_revision !== workspace.base_revision_oid) {
+      throw new AgentCoreError('PRODUCT_LEDGER_REVISION_CONFLICT', '台账资料修订已变化，不能追加旧批次', ['重新开始当前资料修订的台账'], 409);
+    }
+    const entries = Array.isArray(args.entries) ? args.entries : [];
+    const payload = JSON.stringify(entries);
+    const requestHash = `sha256:${createHash('sha256').update(JSON.stringify({ ledgerId, batchNo, entries, sourceCursor: args.source_cursor ?? null })).digest('hex')}`;
+    const existing = this.db.prepare(`SELECT request_hash, entry_count FROM product_ledger_batches WHERE project_id = ? AND ledger_id = ? AND batch_no = ?`)
+      .get(workspace.project_id, ledgerId, batchNo) as any;
+    if (existing) {
+      if (existing.request_hash !== requestHash) {
+        throw new AgentCoreError('PRODUCT_LEDGER_BATCH_CONFLICT', '相同批次号已经提交了不同内容', ['使用新的批次号或重放完全相同的请求'], 409);
+      }
+      return { ok: true, replayed: true, ledgerId, batchNo, entryCount: existing.entry_count, nextBatchNo: Number(draft.next_batch_no), display: { text: `台账批次 ${batchNo} 已幂等接收` } };
+    }
+    if (batchNo !== Number(draft.next_batch_no)) {
+      throw new AgentCoreError('PRODUCT_LEDGER_BATCH_ORDER', `台账应提交第 ${Number(draft.next_batch_no)} 批，不能提交第 ${batchNo} 批`, ['按 nextBatchNo 顺序提交；如需重放只能提交完全相同的既有批次'], 409, {
+        expectedBatchNo: Number(draft.next_batch_no), receivedBatchNo: batchNo,
+      });
+    }
+    const priorRows = this.db.prepare(`SELECT entries_json FROM product_ledger_batches WHERE project_id = ? AND ledger_id = ?`)
+      .all(workspace.project_id, ledgerId) as any[];
+    const priorCanonicalIds = new Set<string>();
+    const priorSourceIds = new Set<string>();
+    for (const row of priorRows) {
+      let prior: unknown = [];
+      try { prior = JSON.parse(row.entries_json); } catch { /* finalize 会给出校验错误 */ }
+      if (!Array.isArray(prior)) continue;
+      for (const raw of prior) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const value = raw as Record<string, unknown>;
+        const canonical = String(value.canonicalItemId ?? value.canonical_item_id ?? '').trim();
+        if (canonical) priorCanonicalIds.add(canonical);
+        const sources = Array.isArray(value.sourceRecordIds) ? value.sourceRecordIds : value.source_record_ids;
+        if (Array.isArray(sources)) for (const source of sources) {
+          const normalized = String(source ?? '').trim();
+          if (normalized) priorSourceIds.add(normalized);
+        }
+      }
+    }
+    const currentCanonicalIds = new Set<string>();
+    const currentSourceIds = new Set<string>();
+    for (const [index, raw] of entries.entries()) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new AgentCoreError('PRODUCT_LEDGER_BATCH_INVALID', `entries[${index}] 必须是对象`, ['修正当前批次后重试'], 400);
+      }
+      const value = raw as Record<string, unknown>;
+      const canonical = String(value.canonicalItemId ?? value.canonical_item_id ?? '').trim();
+      if (canonical && (priorCanonicalIds.has(canonical) || currentCanonicalIds.has(canonical))) {
+        throw new AgentCoreError('PRODUCT_LEDGER_DUPLICATE_CANONICAL_ID', `canonicalItemId 重复：${canonical}`, ['移除重复条目后重试'], 409);
+      }
+      if (canonical) currentCanonicalIds.add(canonical);
+      const sources = Array.isArray(value.sourceRecordIds) ? value.sourceRecordIds : value.source_record_ids;
+      if (Array.isArray(sources)) for (const source of sources) {
+        const normalized = String(source ?? '').trim();
+        if (normalized && (priorSourceIds.has(normalized) || currentSourceIds.has(normalized))) {
+          throw new AgentCoreError('PRODUCT_LEDGER_DUPLICATE_SOURCE_ID', `sourceRecordId 重复：${normalized}`, ['每条原始记录只能归入一个 canonical 条目'], 409);
+        }
+        if (normalized) currentSourceIds.add(normalized);
+      }
+    }
+    this.db.prepare(`INSERT INTO product_ledger_batches
+      (project_id, ledger_id, batch_no, request_hash, source_cursor, entries_json, entry_count, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      workspace.project_id, ledgerId, batchNo, requestHash,
+      String(args.source_cursor ?? ''), payload, entries.length, nowIso(),
+    );
+    this.db.prepare(`UPDATE product_ledger_drafts SET next_batch_no = ?, updated_at = ?
+      WHERE project_id = ? AND ledger_id = ?`).run(batchNo + 1, nowIso(), workspace.project_id, ledgerId);
+    return { ok: true, replayed: false, ledgerId, batchNo, entryCount: entries.length, nextBatchNo: batchNo + 1, display: { text: `已保存台账第 ${batchNo} 批，共 ${entries.length} 项` } };
+  }
+
+  private getProductLedgerProgress(workspace: WorkspaceRow, args: Record<string, unknown>) {
+    const ledgerId = text(args.ledger_id, 'ledger_id');
+    const draft = this.db.prepare(`SELECT * FROM product_ledger_drafts WHERE project_id = ? AND ledger_id = ?`)
+      .get(workspace.project_id, ledgerId) as any;
+    if (!draft) throw new AgentCoreError('PRODUCT_LEDGER_NOT_FOUND', '产品台账草稿不存在', ['先调用 begin_product_ledger'], 404);
+    const row = this.db.prepare(`SELECT COUNT(*) AS batches, COALESCE(SUM(entry_count), 0) AS processed,
+      MAX(batch_no) AS last_batch FROM product_ledger_batches WHERE project_id = ? AND ledger_id = ?`)
+      .get(workspace.project_id, ledgerId) as any;
+    const expected = draft.canonical_count !== null
+      && Number.isSafeInteger(Number(draft.canonical_count))
+      ? Number(draft.canonical_count)
+      : this.productInventoryCandidateCount(workspace.project_id, draft.analysis_revision);
+    const processed = Number(row?.processed ?? 0);
+    return {
+      ledgerId, status: draft.status, sourceRevision: draft.source_revision,
+      analysisRevision: draft.analysis_revision, batches: Number(row?.batches ?? 0),
+      lastSuccessfulBatch: row?.last_batch == null ? null : Number(row.last_batch),
+      processed,
+      expectedCanonicalCount: expected,
+      remaining: Math.max(0, expected - processed),
+      remainingKnown: (draft.canonical_count !== null
+        && Number.isSafeInteger(Number(draft.canonical_count))) || expected > 0,
+      nextBatchNo: Number(draft.next_batch_no),
+      display: { text: `台账已处理 ${processed} 项${expected > 0 ? `，剩余 ${Math.max(0, expected - processed)} 项` : ''}` },
+    };
+  }
+
+  private finalizeProductLedger(workspace: WorkspaceRow, args: Record<string, unknown>) {
+    const ledgerId = text(args.ledger_id, 'ledger_id');
+    const draft = this.db.prepare(`SELECT * FROM product_ledger_drafts WHERE project_id = ? AND ledger_id = ?`)
+      .get(workspace.project_id, ledgerId) as any;
+    if (!draft) throw new AgentCoreError('PRODUCT_LEDGER_NOT_FOUND', '产品台账草稿不存在', ['先调用 begin_product_ledger'], 404);
+    if (draft.status === 'finalized') {
+      return { ...this.getProductLedger(workspace), ledgerId, status: 'finalized', replayed: true };
+    }
+    if (draft.source_revision !== workspace.base_revision_oid) {
+      throw new AgentCoreError('PRODUCT_LEDGER_REVISION_CONFLICT', '台账资料修订已变化，不能完成旧草稿', ['使用当前工作区修订重新建立台账'], 409);
+    }
+    const batches = this.db.prepare(`SELECT entries_json FROM product_ledger_batches WHERE project_id = ? AND ledger_id = ? ORDER BY batch_no`)
+      .all(workspace.project_id, ledgerId) as any[];
+    const entries = batches.flatMap((row) => {
+      try { const value = JSON.parse(row.entries_json); return Array.isArray(value) ? value : []; } catch { return []; }
+    });
+    // Finalize is authoritative: ignore model-supplied expected counts and
+    // derive all four counts from the persisted entries in one pass.
+    const rawCount = entries.reduce((sum, item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return sum;
+      const value = item as Record<string, unknown>;
+      const ids = Array.isArray(value.sourceRecordIds) ? value.sourceRecordIds : value.source_record_ids;
+      return sum + (Array.isArray(ids) ? ids.length : 0);
+    }, 0);
+    const canonicalCount = entries.length;
+    const mergedGroupCount = new Set(entries.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const value = item as Record<string, unknown>;
+      const group = String(value.mergeGroupId ?? value.merge_group_id ?? '').trim();
+      return group ? [group] : [];
+    })).size;
+    const declaredMismatches: string[] = [];
+    if (draft.raw_count != null && Number(draft.raw_count) !== rawCount) declaredMismatches.push(`原始条数 ${rawCount} 与草稿声明 ${Number(draft.raw_count)} 不一致`);
+    if (draft.canonical_count != null && Number(draft.canonical_count) !== canonicalCount) declaredMismatches.push(`去重条数 ${canonicalCount} 与草稿声明 ${Number(draft.canonical_count)} 不一致`);
+    if (draft.merged_group_count != null && Number(draft.merged_group_count) !== mergedGroupCount) declaredMismatches.push(`归并组数 ${mergedGroupCount} 与草稿声明 ${Number(draft.merged_group_count)} 不一致`);
+    // New resumable ledgers are source-bound and must close against the
+    // authoritative productInventory. Keep the old direct staging path
+    // readable for v1/v2 compatibility when no analysis_revision was given.
+    if (draft.analysis_revision) {
+    const sourceCanonicalCount = this.productInventoryCandidateCount(
+        workspace.project_id,
+        draft.analysis_revision,
+      );
+      const sourceAnalysis = this.productInventoryAnalysis(workspace.project_id, draft.analysis_revision);
+      if (sourceCanonicalCount === 0 || !sourceAnalysis) {
+        declaredMismatches.push('结构化产品来源不存在或没有可审计条目，不能完成台账');
+      } else if (canonicalCount !== sourceCanonicalCount) {
+        declaredMismatches.push(`台账条目 ${canonicalCount} 与结构化来源 ${sourceCanonicalCount} 项不一致，仍有 ${Math.max(0, sourceCanonicalCount - canonicalCount)} 项未处理`);
+      }
+    if (sourceAnalysis) {
+        if (sourceAnalysis.summary) {
+          if (sourceAnalysis.summary.canonicalCount !== canonicalCount) {
+            declaredMismatches.push(`去重条数 ${canonicalCount} 与来源声明 ${sourceAnalysis.summary.canonicalCount} 不一致`);
+          }
+          if (sourceAnalysis.summary.rawCount !== rawCount) {
+            declaredMismatches.push(`原始条数 ${rawCount} 与来源声明 ${sourceAnalysis.summary.rawCount} 不一致`);
+          }
+          if (sourceAnalysis.summary.mergedGroupCount !== mergedGroupCount) {
+            declaredMismatches.push(`归并组数 ${mergedGroupCount} 与来源声明 ${sourceAnalysis.summary.mergedGroupCount} 不一致`);
+          }
+        }
+        const expectedCanonicalIds = new Set(sourceAnalysis.items.map((item) => item.canonicalItemId));
+        const actualCanonicalIds = new Set(entries.flatMap((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+          const id = String((item as Record<string, unknown>).canonicalItemId ?? (item as Record<string, unknown>).canonical_item_id ?? '').trim();
+          return id ? [id] : [];
+        }));
+        const missingIds = [...expectedCanonicalIds].filter((id) => !actualCanonicalIds.has(id));
+        const unexpectedIds = [...actualCanonicalIds].filter((id) => !expectedCanonicalIds.has(id));
+        if (missingIds.length) declaredMismatches.push(`缺少来源 canonicalItemId：${missingIds.slice(0, 8).join('、')}`);
+        if (unexpectedIds.length) declaredMismatches.push(`存在来源之外的 canonicalItemId：${unexpectedIds.slice(0, 8).join('、')}`);
+        const expectedSourceIds = new Set(sourceAnalysis.items.flatMap((item) => item.sourceRecordIds));
+        const actualSourceIds = new Set(entries.flatMap((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+          const ids = (item as Record<string, unknown>).sourceRecordIds ?? (item as Record<string, unknown>).source_record_ids;
+          return Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
+        }));
+        const missingSourceIds = [...expectedSourceIds].filter((id) => !actualSourceIds.has(id));
+        const unexpectedSourceIds = [...actualSourceIds].filter((id) => !expectedSourceIds.has(id));
+        if (missingSourceIds.length) declaredMismatches.push(`缺少来源 sourceRecordId：${missingSourceIds.slice(0, 8).join('、')}`);
+        if (unexpectedSourceIds.length) declaredMismatches.push(`存在来源之外的 sourceRecordId：${unexpectedSourceIds.slice(0, 8).join('、')}`);
+        const expectedSourceToCanonical = new Map(
+          sourceAnalysis.items.flatMap((item) => item.sourceRecordIds.map((sourceId) => [sourceId, item.canonicalItemId] as const)),
+        );
+        const actualSourceToCanonical = new Map<string, string>();
+        for (const item of entries) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+          const value = item as Record<string, unknown>;
+          const canonical = String(value.canonicalItemId ?? value.canonical_item_id ?? '').trim();
+          const sourceIds = value.sourceRecordIds ?? value.source_record_ids;
+          if (!canonical || !Array.isArray(sourceIds)) continue;
+          for (const sourceId of sourceIds.map(String).filter(Boolean)) actualSourceToCanonical.set(sourceId, canonical);
+        }
+        const remappedSources = [...expectedSourceToCanonical.entries()]
+          .filter(([sourceId, canonical]) => actualSourceToCanonical.get(sourceId) !== canonical)
+          .map(([sourceId, canonical]) => `${sourceId}→${canonical}`);
+        if (remappedSources.length) declaredMismatches.push(`归并映射与来源不一致：${remappedSources.slice(0, 8).join('、')}`);
+      }
+      if (sourceAnalysis) {
+        const actualById = new Map(entries.flatMap((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+          const value = item as Record<string, unknown>;
+          const id = String(value.canonicalItemId ?? value.canonical_item_id ?? '').trim();
+          return id ? [[id, value] as const] : [];
+        }));
+        for (const expected of sourceAnalysis.items) {
+          if (expected.evidenceStatus !== 'insufficient') continue;
+          const actual = actualById.get(expected.canonicalItemId);
+          if (actual && actual.evidenceStatus !== 'insufficient') {
+            declaredMismatches.push(`资料不足条目 ${expected.canonicalItemId} 未保留 insufficient 状态`);
+          }
+        }
+      }
+    }
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = this.stageProductLedger(workspace, {
+        schemaVersion: 'product-ledger-v2', sourceRevision: draft.source_revision, scope: draft.scope,
+        rawCount, canonicalCount, mergedGroupCount, required: true, entries,
+        sourceAnalysisRevision: draft.analysis_revision,
+        ...(draft.analysis_revision ? {
+          sourceFingerprint: this.productInventoryAnalysis(workspace.project_id, draft.analysis_revision)?.sourceSetFingerprint,
+        } : {}),
+      }, true);
+      const validation = declaredMismatches.length && result.validation
+        ? { ...result.validation, pass: false, errors: [...declaredMismatches, ...result.validation.errors] }
+        : result.validation;
+      const status = validation?.pass === true ? 'finalized' : 'needs_review';
+      if (declaredMismatches.length && validation) {
+        const validationJson = JSON.stringify(validation);
+        const updatedAt = nowIso();
+        this.db.prepare(`UPDATE product_ledger_snapshots SET validation_json = ?, updated_at = ?
+          WHERE project_id = ? AND source_revision = ?`)
+          .run(validationJson, updatedAt, workspace.project_id, draft.source_revision);
+        this.db.prepare(`UPDATE product_ledger_v2_snapshots SET validation_json = ?, updated_at = ?
+          WHERE project_id = ? AND scope = ? AND source_revision = ?`)
+          .run(validationJson, updatedAt, workspace.project_id, draft.scope, draft.source_revision);
+      }
+      this.db.prepare(`UPDATE product_ledger_drafts SET raw_count = ?, canonical_count = ?, merged_group_count = ?, status = ?, updated_at = ? WHERE project_id = ? AND ledger_id = ?`)
+        .run(rawCount, canonicalCount, mergedGroupCount, status, nowIso(), workspace.project_id, ledgerId);
+      this.db.exec('COMMIT');
+      return { ...result, validation, ledgerId, status };
+    } catch (error) {
+      try { this.db.exec('ROLLBACK'); } catch { /* no active transaction */ }
+      throw error;
+    }
+  }
+
+  private productInventoryCandidateCount(projectId: string, analysisRevision?: string | null): number {
+    return this.productInventoryAnalysis(projectId, analysisRevision)?.items.length ?? 0;
+  }
+
+  private productInventoryAnalysis(projectId: string, analysisRevision?: string | null): {
+    id: string;
+    sourceSetFingerprint: string;
+    items: ProductInventoryItem[];
+    summary?: { rawCount: number; canonicalCount: number; mergedGroupCount: number };
+  } | null {
+    const row = this.db.prepare(`SELECT id, source_set_fingerprint, result_json
+      FROM material_analysis_runs
+      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
+        AND result_json LIKE '%"productInventory"%'
+        AND (? = '' OR id = ?)
+      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(
+      projectId,
+      String(analysisRevision ?? ''),
+      String(analysisRevision ?? ''),
+    ) as { id?: string; source_set_fingerprint?: string; result_json?: string } | undefined;
+    if (!row?.id || !row.result_json) return null;
+    let analysis: Record<string, unknown> = {};
+    try { analysis = JSON.parse(row.result_json) as Record<string, unknown>; } catch { return null; }
+    const raw = analysis.productInventory;
+    if (!Array.isArray(raw)) return null;
+    const items = raw.filter((item): item is ProductInventoryItem => (
+      Boolean(item && typeof item === 'object' && !Array.isArray(item))
+      && String((item as Record<string, unknown>).canonicalItemId ?? '').trim() !== ''
+      && String((item as Record<string, unknown>).name ?? '').trim() !== ''
+      && Array.isArray((item as Record<string, unknown>).ruleRefs)
+      && ((item as Record<string, unknown>).ruleRefs as unknown[]).length > 0
+      && Array.isArray((item as Record<string, unknown>).sourceRecordIds)
+      && ((item as Record<string, unknown>).sourceRecordIds as unknown[]).length > 0
+      && String((item as Record<string, unknown>).sourceLocator ?? '').trim() !== ''
+    )).map((item) => ({
+      ...item,
+      canonicalItemId: String(item.canonicalItemId).trim(),
+      name: String(item.name).trim(),
+      applicableSubjects: Array.isArray(item.applicableSubjects) ? item.applicableSubjects.map(String).filter(Boolean) : [],
+      triggerScenarios: Array.isArray(item.triggerScenarios) ? item.triggerScenarios.map(String).filter(Boolean) : [],
+      businessNeeds: Array.isArray(item.businessNeeds) ? item.businessNeeds.map(String).filter(Boolean) : [],
+      sourceRecordIds: item.sourceRecordIds.map(String).filter(Boolean),
+      sourceLocator: String(item.sourceLocator).trim(),
+      ruleRefs: Array.isArray(item.ruleRefs) ? item.ruleRefs.map(String).filter(Boolean) : [],
+      evidenceStatus: (item.evidenceStatus === 'insufficient' ? 'insufficient' : 'complete') as ProductInventoryItem['evidenceStatus'],
+      processingStatus: item.processingStatus && ['pending', 'ready', 'generated', 'blocked'].includes(item.processingStatus)
+        ? item.processingStatus : 'pending',
+    }));
+    // A source page must be lossless. Silently dropping malformed facts would
+    // make a partial source appear complete and could produce false 201/198/3
+    // reconciliation results.
+    if (items.length !== raw.length) return null;
+    const canonicalIds = new Set(items.map((item) => item.canonicalItemId));
+    const sourceIds = new Set(items.flatMap((item) => item.sourceRecordIds));
+    const rawCount = items.reduce((sum, item) => sum + item.sourceRecordIds.length, 0);
+    const mergedGroupCount = new Set(items.map((item) => item.mergeGroupId).filter(Boolean)).size;
+    if (canonicalIds.size !== items.length || sourceIds.size !== rawCount) return null;
+    const declaredSummary = analysis.productInventorySummary;
+    if (declaredSummary && typeof declaredSummary === 'object' && !Array.isArray(declaredSummary)) {
+      const summary = declaredSummary as Record<string, unknown>;
+      if (Number(summary.rawCount) !== rawCount
+        || Number(summary.canonicalCount) !== items.length
+        || Number(summary.mergedGroupCount) !== mergedGroupCount) return null;
+    }
+    return {
+      id: row.id,
+      sourceSetFingerprint: String(row.source_set_fingerprint ?? ''),
+      items,
+      summary: {
+        rawCount,
+        canonicalCount: items.length,
+        mergedGroupCount,
+      },
+    };
+  }
+
+  /**
+   * Return the complete analysis candidate set page by page. This endpoint is
+   * intentionally independent from get_goal_context: goal drafting remains
+   * compact, while ledger construction receives a stable, revision-bound source.
+   */
+  private productInventorySource(context: AgentToolContext, args: Record<string, unknown>) {
+    const projectId = context.project.id;
+    const workspaceRevision = this.workspace(projectId)?.base_revision_oid ?? '';
+    const row = this.db.prepare(`SELECT id, source_set_fingerprint, result_json
+      FROM material_analysis_runs
+      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
+      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(projectId) as
+      | { id: string; source_set_fingerprint: string; result_json: string }
+      | undefined;
+    if (!row) {
+      throw new AgentCoreError(
+        'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
+        '当前没有已完成的结构化资料分析，无法建立产品清单台账',
+        ['先完成资料分析，或通过可操作问题卡补充缺失的产品清单来源'],
+        409,
+        { analysisRevision: null, processed: 0, remaining: 0 },
+      );
+    }
+    const requestedRevision = String(args.analysis_revision ?? '').trim();
+    if (requestedRevision && requestedRevision !== row.id) {
+      throw new AgentCoreError(
+        'PRODUCT_INVENTORY_REVISION_CONFLICT',
+        '产品清单来源分析修订已经变化，请从新修订的第一页重新读取',
+        ['清空旧游标，并使用返回的 analysisRevision 重新开始'],
+        409,
+        { expectedAnalysisRevision: requestedRevision, currentAnalysisRevision: row.id },
+      );
+    }
+    const scope = String(args.scope ?? 'product_catalog').trim() || 'product_catalog';
+    const source = this.productInventoryAnalysis(projectId, row.id);
+    if (!source || !source.items.length) {
+      throw new AgentCoreError(
+        'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
+        '当前资料分析没有提交可审计的结构化产品事实，不能把规则候选当作产品台账来源',
+        ['重新运行资料分析并提交 productInventory；完成前不能建立产品清单台账'],
+        409,
+        { analysisRevision: row.id, sourceFingerprint: row.source_set_fingerprint, productInventory: false },
+      );
+    }
+    const items = source.items;
+    // Scope is part of the ledger identity, but the analysis result is already
+    // project-scoped. Do not guess-filter by a free-form scope string: doing so
+    // could silently drop products and make counts appear complete.
+    const scopedItems = items;
+    const limitValue = Number(args.limit ?? 50);
+    const limit = Number.isSafeInteger(limitValue) ? Math.max(1, Math.min(limitValue, 100)) : 50;
+    const rawCursor = args.cursor;
+    let offset = 0;
+    if (typeof rawCursor === 'string' && rawCursor.trim()) {
+      const token = rawCursor.trim();
+      const separator = token.lastIndexOf(':');
+      if (separator > 0) {
+        const cursorRevision = token.slice(0, separator);
+        if (cursorRevision !== row.id) {
+          throw new AgentCoreError('PRODUCT_INVENTORY_CURSOR_INVALID', '产品清单来源游标属于另一份分析修订', ['使用当前 analysisRevision 返回的 nextCursor 继续读取'], 409, {
+            expectedAnalysisRevision: row.id, cursorAnalysisRevision: cursorRevision,
+          });
+        }
+        const parsed = Number(token.slice(separator + 1));
+        if (!Number.isSafeInteger(parsed) || parsed < 0) {
+          throw new AgentCoreError('PRODUCT_INVENTORY_CURSOR_INVALID', '产品清单来源游标格式不正确', ['从第一页重新读取'], 400);
+        }
+        offset = parsed;
+      } else {
+        const parsed = Number(token);
+        if (!Number.isSafeInteger(parsed) || parsed < 0) {
+          throw new AgentCoreError('PRODUCT_INVENTORY_CURSOR_INVALID', '产品清单来源游标格式不正确', ['从第一页重新读取'], 400);
+        }
+        offset = parsed;
+      }
+    } else {
+      const cursorValue = Number(rawCursor ?? 0);
+      offset = Number.isSafeInteger(cursorValue) && cursorValue >= 0 ? cursorValue : 0;
+    }
+    if (offset > scopedItems.length) {
+      throw new AgentCoreError('PRODUCT_INVENTORY_CURSOR_INVALID', '产品清单来源游标超出当前数据范围', ['从第一页重新读取'], 400);
+    }
+    const page = scopedItems.slice(offset, offset + limit);
+    const next = offset + page.length;
+    return {
+      scope,
+      total: scopedItems.length,
+      items: page,
+      cursor: offset,
+      nextCursor: next < scopedItems.length ? `${row.id}:${next}` : null,
+      hasMore: next < scopedItems.length,
+      // The ledger gate is bound to the package/workspace revision. Keep the
+      // analysis fingerprint as a separate fact so callers cannot accidentally
+      // submit an analysis hash where a package revision is required.
+      sourceRevision: workspaceRevision,
+      sourceFingerprint: row.source_set_fingerprint,
+      analysisRevision: row.id,
+      ...(source.summary ? { sourceSummary: source.summary } : {}),
+      display: { text: `已读取产品清单来源 ${next}/${scopedItems.length} 项` },
     };
   }
 
@@ -4599,6 +5721,7 @@ export class AgentCoreService {
     const textCoverage = textResult.coverage.map((item) => ({
       documentId: item.documentId,
       filename: item.filename,
+      revisionFingerprint: item.revisionFingerprint,
       unit: 'characters',
       coveredChars: item.contiguousEnd,
       totalChars: item.totalChars,
@@ -4706,6 +5829,7 @@ export class AgentCoreService {
           ...table,
           documentId: document.id,
           materialPurpose,
+          ...(decision ? { materialImportDisposition: decision.importDisposition } : {}),
         };
       });
     });
@@ -5638,10 +6762,11 @@ export class AgentCoreService {
     if (!row) {
       return {
         available: false,
-        required: false,
+        required: this.productLedgerRequired(workspace.project_id),
         mode: config.productLedger.mode,
         sourceRevision: workspace.base_revision_oid,
         validation: null,
+        status: this.productLedgerRequired(workspace.project_id) ? 'absent' : 'not_required',
         display: { text: '当前没有产品清单对账台账' },
       };
     }
@@ -5649,9 +6774,34 @@ export class AgentCoreService {
     let validation: ProductLedgerValidation | null = null;
     try { ledger = JSON.parse(row.ledger_json) as Record<string, unknown>; } catch { ledger = {}; }
     try { validation = JSON.parse(row.validation_json) as ProductLedgerValidation; } catch { validation = null; }
+    const entries = Array.isArray(ledger.entries) ? ledger.entries : [];
+    const ledgerAnalysisRevision = String(ledger.sourceAnalysisRevision ?? '').trim();
+    const currentAnalysis = ledgerAnalysisRevision
+      ? this.productInventoryAnalysis(workspace.project_id, ledgerAnalysisRevision)
+      : null;
+    const analysisRevisionStale = Boolean(ledgerAnalysisRevision && !currentAnalysis);
+    const sourceFingerprintStale = Boolean(
+      ledger.sourceFingerprint && currentAnalysis
+      && ledger.sourceFingerprint !== currentAnalysis.sourceSetFingerprint,
+    );
+    // A project-level gate cannot be satisfied by a legacy snapshot that has
+    // no analysis revision binding. Keep old snapshots readable, but require
+    // migration/rebuild before allowing formal generation.
+    const sourceBindingMissing = this.productLedgerRequired(workspace.project_id)
+      && !ledgerAnalysisRevision;
+    const migrationNeedsReview = entries.some((entry) => (
+      !entry || typeof entry !== 'object' || Array.isArray(entry)
+      || !String((entry as Record<string, unknown>).name ?? '').trim()
+    ));
     return {
       available: true,
-      required: row.required === 1,
+      required: row.required === 1 || this.productLedgerRequired(workspace.project_id),
+      status: validation?.pass === true && !migrationNeedsReview
+        && !analysisRevisionStale && !sourceFingerprintStale && !sourceBindingMissing ? 'finalized' : 'needs_review',
+      migrationNeedsReview,
+      analysisRevisionStale,
+      sourceFingerprintStale,
+      sourceBindingMissing,
       mode: config.productLedger.mode,
       sourceRevision: row.source_revision,
       scope: row.scope,
@@ -5665,14 +6815,27 @@ export class AgentCoreService {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       display: {
-        text: validation?.pass === true
+        text: validation?.pass === true && !migrationNeedsReview
+          && !analysisRevisionStale && !sourceFingerprintStale && !sourceBindingMissing
           ? `产品清单台账已校验：${validation.counts.raw} 条原始项，${validation.counts.canonical} 条去重项`
           : `产品清单台账校验未通过：${validation?.errors?.length ?? 0} 项待处理`,
       },
     };
   }
 
-  private stageProductLedger(workspace: WorkspaceRow, args: Record<string, unknown>) {
+  private stageProductLedger(
+    workspace: WorkspaceRow,
+    args: Record<string, unknown>,
+    allowInvalidForFinalize = false,
+  ) {
+    if (this.productLedgerRequired(workspace.project_id) && !allowInvalidForFinalize) {
+      throw new AgentCoreError(
+        'PRODUCT_LEDGER_BATCH_PROTOCOL_REQUIRED',
+        '当前项目必须使用可恢复的 begin/append/finalize 台账协议，不能直接覆盖完整快照',
+        ['调用 begin_product_ledger、append_product_ledger_batch 和 finalize_product_ledger'],
+        409,
+      );
+    }
     const raw = args.ledger && typeof args.ledger === 'object' && !Array.isArray(args.ledger)
       ? args.ledger as Record<string, unknown>
       : args;
@@ -5686,6 +6849,11 @@ export class AgentCoreService {
         ruleId: item.ruleId ?? item.rule_id,
         sourceRecordIds: item.sourceRecordIds ?? item.source_record_ids,
         sourceLocator: item.sourceLocator ?? item.source_locator,
+        name: item.name,
+        applicableSubjects: item.applicableSubjects ?? item.applicable_subjects,
+        triggerScenarios: item.triggerScenarios ?? item.trigger_scenarios,
+        businessNeeds: item.businessNeeds ?? item.business_needs,
+        structuredGaps: item.structuredGaps ?? item.structured_gaps,
         mergeGroupId: item.mergeGroupId ?? item.merge_group_id,
         evidenceStatus: item.evidenceStatus ?? item.evidence_status,
         processingStatus: item.processingStatus ?? item.processing_status,
@@ -5702,7 +6870,19 @@ export class AgentCoreService {
       mergedGroupCount: Number(raw.mergedGroupCount ?? raw.merged_group_count ?? 0),
       entries: (Array.isArray(raw.entries) ? raw.entries : []).map(normalizeEntry),
       required: raw.required === true,
+      ...(String(raw.sourceAnalysisRevision ?? raw.source_analysis_revision ?? '').trim() ? {
+        sourceAnalysisRevision: String(raw.sourceAnalysisRevision ?? raw.source_analysis_revision).trim(),
+      } : {}),
+      ...(String(raw.sourceFingerprint ?? raw.source_fingerprint ?? '').trim() ? {
+        sourceFingerprint: String(raw.sourceFingerprint ?? raw.source_fingerprint).trim(),
+      } : {}),
     };
+    if (ledger.sourceRevision !== workspace.base_revision_oid) {
+      throw new AgentCoreError('PRODUCT_LEDGER_REVISION_CONFLICT', '产品台账必须绑定当前工作区资料修订', ['重新读取当前工作区 revision 后提交'], 409, {
+        expectedSourceRevision: workspace.base_revision_oid,
+        receivedSourceRevision: ledger.sourceRevision,
+      });
+    }
     const required = ledger.required === true
       || ledger.rawCount >= 100
       || /(?:product|catalog|产品|商品|规则|手册|台账|清单)/iu.test(ledger.scope);
@@ -5738,7 +6918,7 @@ export class AgentCoreService {
         .run(workspace.project_id, ledger.scope, dependencyFingerprint, ledger.sourceRevision, required ? 1 : 0,
           JSON.stringify(ledger), JSON.stringify(validation), timestamp, timestamp);
     }
-    if (!validation.pass && config.productLedger.mode === 'enforce' && required) {
+    if (!validation.pass && config.productLedger.mode === 'enforce' && required && !allowInvalidForFinalize) {
       throw new AgentCoreError(
         'PRODUCT_LEDGER_INVALID',
         `产品清单台账校验未通过：${validation.errors.slice(0, 8).join('；')}`,
@@ -6610,25 +7790,24 @@ export class AgentCoreService {
     const changes = this.changes(workspace);
     if (!changes.length) return changes;
     const base = await this.artifacts.readPackageFiles(workspace.project_id, workspace.base_revision_oid);
-    const noOpPaths = changes.filter((change) => (
-      change.kind === 'write'
-        ? base.files[change.path] === change.content
-        : !Object.hasOwn(base.files, change.path)
-    )).map((change) => change.path);
-    if (!noOpPaths.length) return changes;
 
-    this.db.exec('BEGIN IMMEDIATE');
+    // 只在确认需要删除 no-op 行时才升级为写锁，读快照保持事务内一致性。
+    this.db.exec('BEGIN');
     try {
-      const remove = this.db.prepare(`DELETE FROM agent_candidate_changes
-        WHERE project_id = ? AND run_id = ? AND path = ?`);
-      for (const path of noOpPaths) remove.run(workspace.project_id, workspace.run_id, path);
+      const latestChanges = this.changes(workspace);
+      const effective = removeNoOpCandidateChanges(
+        this.db,
+        workspace.project_id,
+        workspace.run_id,
+        latestChanges,
+        base.files,
+      );
       this.db.exec('COMMIT');
+      return effective;
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
-    const removed = new Set(noOpPaths);
-    return changes.filter((change) => !removed.has(change.path));
   }
 
   private async grepPackage(workspace: WorkspaceRow, args: Record<string, unknown>) {
@@ -7999,8 +9178,13 @@ export class AgentCoreService {
     );
     const productLedger = this.getProductLedger(workspace);
     const productLedgerValidation = productLedger.validation;
-    const productLedgerEnforced = config.productLedger.mode === 'enforce'
-      && productLedger.required === true;
+    const productLedgerDeclared = this.productLedgerRequired(workspace.project_id)
+      || productLedger.required === true;
+    // `ledger.required` is a legacy snapshot hint. It must not silently turn
+    // advisory deployments into an enforce gate; only the project decision or
+    // explicit enforce configuration can block progress.
+    const productLedgerEnforced = this.productLedgerRequired(workspace.project_id)
+      || config.productLedger.mode === 'enforce';
     const manualCases = listTestcases(workspace.project_id).filter((item) => item.source === 'manual');
     const { latestRound: latestEval, results: latestResults } = latestEffectiveEvaluation(
       workspace.project_id,
@@ -8143,11 +9327,12 @@ export class AgentCoreService {
     };
     // 只有明确提交过产品大清单台账时才把它显示为独立门禁；普通对象/规则
     // 建模不会因为新增的观测能力多出一条视觉闸位。
-    if (productLedger.available === true) {
+    if (productLedger.available === true || productLedgerDeclared) {
       gates.product_ledger_verified = {
         pass: !productLedgerEnforced || (
           productLedger.sourceRevision === workspace.base_revision_oid
           && productLedgerValidation?.pass === true
+          && productLedger.status === 'finalized'
         ),
         blockers: !productLedgerEnforced
           ? []
@@ -8171,7 +9356,7 @@ export class AgentCoreService {
       'goal_confirmed',
       'process_confirmed',
       'knowledge_confirmed',
-      ...(productLedger.available === true ? ['product_ledger_verified'] : []),
+      ...(productLedger.available === true || productLedgerDeclared ? ['product_ledger_verified'] : []),
       'modeling_complete',
       'deterministic_confirmed',
     ]);
@@ -10041,46 +11226,6 @@ function optionalStringArray(value: unknown): string[] | undefined {
   return result.length ? [...new Set(result)] : undefined;
 }
 
-function optionalPreviousObjectRelations(value: unknown): PreviousObjectRelation[] | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (!Array.isArray(value) || value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
-    throw new AgentCoreError('INVALID_DOMAIN_PAYLOAD', 'previousRelations must be an object array', ['previousRelations 传对象数组，每项形如 {kind, targetId}'], 400);
-  }
-  const result = (value as Array<Record<string, unknown>>).flatMap((item) => {
-    const sourceObject = String(item.sourceObject ?? item.source_object ?? '').trim();
-    const targetObject = String(item.targetObject ?? item.target_object ?? '').trim();
-    const relation = String(item.relation ?? '').trim();
-    if (!sourceObject || !targetObject || !relation) return [];
-    const statusValue = String(item.status ?? 'previous').trim();
-    const status = ['previous', 'discarded', 'needs_review'].includes(statusValue)
-      ? statusValue as PreviousObjectRelation['status']
-      : 'needs_review';
-    const note = optionalInputText(item.note);
-    const evidence = optionalStringArray(item.evidence);
-    return [{
-      sourceObject,
-      targetObject,
-      relation,
-      ...(note ? { note } : {}),
-      ...(evidence ? { evidence } : {}),
-      status,
-    } satisfies PreviousObjectRelation];
-  });
-  return result.length ? result : undefined;
-}
-
-function optionalSuggestionScope(value: unknown): { affectedObjects?: string[]; affectedOperations?: string[] } | undefined {
-  if (value === undefined || value === null) return undefined;
-  const input = object(value);
-  const affectedObjects = optionalStringArray(input.affectedObjects ?? input.affected_objects);
-  const affectedOperations = optionalStringArray(input.affectedOperations ?? input.affected_operations);
-  if (!affectedObjects && !affectedOperations) return undefined;
-  return {
-    ...(affectedObjects ? { affectedObjects } : {}),
-    ...(affectedOperations ? { affectedOperations } : {}),
-  };
-}
-
 function requiredStringArray(value: unknown, field: string, allowEmpty = false): string[] {
   if (value === undefined && allowEmpty) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) {
@@ -10700,6 +11845,206 @@ function coveredCharacters(chunks: Array<{
     if (start >= 0) total += Math.max(0, end - start);
   }
   return total;
+}
+
+function allObjectRelationSuggestions(spec: PackageSpec, tables: DataDictTable[]): {
+  schemaInputHash: string;
+  candidates: ObjectRelationSuggestion[];
+} {
+  if (hasAuthoritativeObjectRelationSource(tables)) {
+    const schemaInputHash = createHash('sha256')
+      .update('authoritative-object-relations-v1')
+      .update(JSON.stringify(tables.map((table) => ({
+        documentId: table.documentId ?? '',
+        name: table.name,
+        disposition: table.materialImportDisposition ?? '',
+        fields: table.fields.map((field) => field.name),
+        rows: table.rows ?? [],
+      }))))
+      .digest('hex');
+    return { schemaInputHash, candidates: [] };
+  }
+  const candidates: ObjectRelationSuggestion[] = [];
+  let cursor: string | undefined;
+  let schemaInputHash = '';
+  do {
+    const page = suggestObjectRelationsFromSpec(spec, tables, {
+      limit: 20,
+      ...(cursor ? { cursor } : {}),
+    });
+    schemaInputHash = page.schemaInputHash;
+    candidates.push(...page.candidates);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return { schemaInputHash, candidates };
+}
+
+function objectRelationChineseName(value: string): string {
+  const normalized = normalizeRelationName(value).toLocaleLowerCase('en-US');
+  return ({
+    belongs_to: '属于',
+    related_to: '关联',
+    references: '引用',
+  } as Record<string, string>)[normalized] ?? normalizeRelationName(value);
+}
+
+function objectRelationCanonicalName(value: string): string {
+  const normalized = normalizeRelationName(value).toLocaleLowerCase('zh-CN').replace(/[\s_-]+/gu, '');
+  if (['belongsto', '属于', '隶属于'].includes(normalized)) return 'belongs_to';
+  if (['relatedto', '关联', '相关'].includes(normalized)) return 'related_to';
+  if (['references', '引用'].includes(normalized)) return 'references';
+  return normalized;
+}
+
+function hasEquivalentObjectRelation(
+  spec: PackageSpec,
+  candidate: Pick<ObjectRelationSuggestion, 'sourceObject' | 'targetObject' | 'relation'>,
+): boolean {
+  const source = spec.objects.find((object) => object.key === candidate.sourceObject);
+  if (!source) return true;
+  const relation = objectRelationCanonicalName(candidate.relation);
+  return (source.relations ?? []).some((existing) => (
+    relationTargetKey(existing.target) === candidate.targetObject
+    && objectRelationCanonicalName(existing.relation) === relation
+  ));
+}
+
+function relationTargetKey(value: string): string {
+  const normalized = normalizeRelationName(value);
+  return normalized.startsWith('object:') ? normalized.slice('object:'.length) : normalized;
+}
+
+function objectRelationReason(candidate: ObjectRelationSuggestion): string {
+  if (candidate.sourceField && candidate.targetField) {
+    return `字段 ${candidate.sourceObject}.${candidate.sourceField} 可以匹配 ${candidate.targetObject}.${candidate.targetField}`;
+  }
+  if (candidate.matchMode === 'same_row') return '两个对象来自同一份数据的同一行';
+  if (candidate.relation === 'related_to') return '两个对象被相同的业务操作共同引用';
+  if (/previous|historical/iu.test(candidate.reason)) return '已有关系的两个对象在当前模型中仍然存在';
+  return '对象名称、来源和字段结构支持这条关系';
+}
+
+function validateReviewedObjectRelations(
+  spec: PackageSpec,
+  selected: ObjectRelationReviewCandidateRow[],
+): ReviewedRelationError[] {
+  const objects = new Map(spec.objects.map((object) => [object.key, object]));
+  const seen = new Set<string>();
+  for (const object of spec.objects) {
+    for (const relation of object.relations ?? []) {
+      seen.add(`${object.key}\0${relationTargetKey(relation.target)}\0${objectRelationCanonicalName(relation.relation)}`);
+    }
+  }
+  const errors: ReviewedRelationError[] = [];
+  for (const relation of selected) {
+    const source = objects.get(relation.source_object);
+    const target = objects.get(relation.target_object);
+    const base = {
+      fingerprint: relation.fingerprint,
+      ordinal: relation.ordinal,
+      source_object: relation.source_object,
+      target_object: relation.target_object,
+      relation: relation.relation,
+    };
+    if (!source) {
+      errors.push({ ...base, code: 'RELATION_SOURCE_NOT_FOUND', message: '源对象已经不存在' });
+      continue;
+    }
+    if (!target) {
+      errors.push({ ...base, code: 'RELATION_TARGET_NOT_FOUND', message: '目标对象已经不存在' });
+      continue;
+    }
+    if (source.key === target.key) {
+      errors.push({ ...base, code: 'RELATION_SELF_REFERENCE', message: '对象不能关联自身' });
+      continue;
+    }
+    if (Array.from(relation.relation).length > 80) {
+      errors.push({ ...base, code: 'RELATION_NAME_TOO_LONG', message: '关系名称不能超过 80 个字符' });
+      continue;
+    }
+    const problem = relationNameProblem(relation.relation, { source, target });
+    if (problem) {
+      errors.push({ ...base, code: 'RELATION_NAME_INVALID', message: problem });
+      continue;
+    }
+    const key = `${source.key}\0${target.key}\0${objectRelationCanonicalName(relation.relation)}`;
+    if (seen.has(key)) {
+      errors.push({ ...base, code: 'RELATION_DUPLICATE', message: '当前工作版本已经存在等价关系' });
+      continue;
+    }
+    seen.add(key);
+  }
+  return errors;
+}
+
+function relationReviewEdits(value: unknown): Map<string, string> {
+  const edits = new Map<string, string>();
+  if (value === undefined || value === null) return edits;
+  if (!Array.isArray(value)) {
+    throw new AgentCoreError('RELATION_REVIEW_SELECTION_INVALID', '关系修改必须是数组', [], 400);
+  }
+  for (const [index, item] of value.entries()) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new AgentCoreError('RELATION_REVIEW_SELECTION_INVALID', `第 ${index + 1} 条关系修改格式不正确`, [], 400);
+    }
+    const fingerprint = normalizeRelationName((item as Record<string, unknown>).fingerprint);
+    if (!fingerprint) {
+      throw new AgentCoreError('RELATION_REVIEW_SELECTION_INVALID', `第 ${index + 1} 条关系缺少候选标识`, [], 400);
+    }
+    edits.set(fingerprint, normalizeRelationName((item as Record<string, unknown>).relation));
+  }
+  return edits;
+}
+
+function reviewedRelationPatches(spec: PackageSpec, selected: ObjectRelationReviewCandidateRow[]) {
+  const bySource = new Map<string, ObjectRelationReviewCandidateRow[]>();
+  for (const relation of selected) {
+    const values = bySource.get(relation.source_object) ?? [];
+    values.push(relation);
+    bySource.set(relation.source_object, values);
+  }
+  return [...bySource.entries()].map(([sourceKey, additions]) => {
+    const object = spec.objects.find((item) => item.key === sourceKey)!;
+    return {
+      elementId: `object:${sourceKey}`,
+      changes: {
+        relations: [
+          ...(object.relations ?? []).map((relation) => ({
+            kind: 'object_relation',
+            targetId: relation.target.includes(':') ? relation.target : `object:${relation.target}`,
+            label: relation.relation,
+            ...(relation.note ? { description: relation.note } : {}),
+            ...(relation.evidence?.length ? { evidence: relation.evidence } : {}),
+          })),
+          ...additions.map((relation) => ({
+            kind: 'object_relation',
+            targetId: `object:${relation.target_object}`,
+            label: relation.relation,
+            ...(relation.note ? { description: relation.note } : {}),
+            ...(parseArray(relation.evidence_json).length
+              ? { evidence: parseArray(relation.evidence_json) }
+              : {}),
+          })),
+        ],
+      },
+    };
+  });
+}
+
+function studioRelationReviewErrors(
+  error: StudioWriteError,
+  selected: ObjectRelationReviewCandidateRow[],
+): ReviewedRelationError[] {
+  if (!selected.length) return [];
+  return selected.map((relation) => ({
+    fingerprint: relation.fingerprint,
+    ordinal: relation.ordinal,
+    source_object: relation.source_object,
+    target_object: relation.target_object,
+    relation: relation.relation,
+    code: error.code,
+    message: error.message,
+  }));
 }
 
 async function parallelMap<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {

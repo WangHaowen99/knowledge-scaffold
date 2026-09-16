@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for MCP search tool catalog compatibility."""
 
 from __future__ import annotations
@@ -5,6 +6,7 @@ from __future__ import annotations
 from api.protocols.mcp import server as mcp_server
 from api.protocols.mcp.tool_contracts import normalize_search_tool_args
 from integration.mcp.service_catalog import list_search_tools, load_mcp_service_catalog
+from internal_access import internal
 
 
 def test_mcp_search_extra_tools_are_advertised_as_supported():
@@ -88,7 +90,7 @@ def test_mcp_server_registers_exactly_fourteen_private_search_tools():
 
             return decorate
 
-    mcp_server._register_search_tools(
+    internal(mcp_server).register_search_tools(
         FakeMCP(),
         call_with_scope=lambda *_args, **_kwargs: {},
     )

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Sandbox selection and explicit local-fallback tests for execute_script."""
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from integration.sandbox.errors import (
     SandboxUnavailableError,
     SandboxUnsupportedProviderError,
 )
+from internal_access import internal
 
 
 def _write_script(tmp_path):
@@ -53,7 +55,9 @@ def _completed(
 
 def test_bounded_runner_rejects_non_python_executable():
     with pytest.raises(ValueError, match="trusted Python interpreter"):
-        execute_script_module._validated_python_argv([execute_script_module.sys.executable + ".untrusted", "--version"])
+        internal(execute_script_module).validated_python_argv(
+            [execute_script_module.sys.executable + ".untrusted", "--version"]
+        )
 
 
 def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):

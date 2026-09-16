@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """全部 HTTP 端点：标准协议侧 + Admin API。
 
 Admin API 的中文错误消息与 violations 结构与 consumer 现有 /auth/users* 响应保持一致，

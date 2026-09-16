@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression tests for request-admitted dynamic tool products."""
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from agent.runtime.offload import BoundedOffloadPool
 from agent.tools.base import ToolInvocation
 from agent.tools.executor import aexecute_tool_batch
 from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 WORKSPACE_ID = "workspace-admitted"
 ONTOLOGY_ID = "ontology-admitted"
@@ -251,7 +253,7 @@ def test_default_preflight_package_loader_freezes_dynamic_tool_products(
         lambda _root: "sha256:" + "b" * 64,
     )
 
-    product = preflight_module._default_package_loader(manifest, WORKSPACE_ID)
+    product = internal(preflight_module).default_package_loader(manifest, WORKSPACE_ID)
 
     assert product["execute_script_tool_schema"]["function"]["parameters"]["properties"]["operation_key"]["enum"] == [
         OPERATION_KEY
@@ -272,8 +274,8 @@ def test_matching_snapshot_drives_real_agent_schema_and_solver_lookup_without_li
     _patch_live_package_reads_to_fail(monkeypatch)
 
     with ontology_preflight_tool_context(snapshot):
-        schemas = _engine()._tools_schema_for_state(_state(), caller="main")
-        tool_infos = _engine()._jiuwen_tool_infos_for_state(
+        schemas = internal(_engine()).tools_schema_for_state(_state(), caller="main")
+        tool_infos = internal(_engine()).jiuwen_tool_infos_for_state(
             _state(),
             caller="main",
         )
@@ -575,7 +577,7 @@ def test_matching_incomplete_snapshot_never_live_loads_solver_root(monkeypatch):
         preflight_snapshot=snapshot,
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(invocation)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(invocation)
 
     assert state["workspace_id"] == WORKSPACE_ID
 
@@ -614,7 +616,7 @@ def test_manifest_identity_mismatch_preserves_legacy_solver_root_loader(monkeypa
         preflight_snapshot=snapshot,
     )
 
-    state = JiuwenAsyncAgentRuntime._build_engine_state(invocation)
+    state = internal(JiuwenAsyncAgentRuntime).build_engine_state(invocation)
 
     assert live_calls == [
         {

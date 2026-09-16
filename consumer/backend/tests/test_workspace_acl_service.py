@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import json
@@ -305,6 +306,11 @@ def test_personal_workspace_creation_and_user_delete_preserve_identity_invariant
     monkeypatch.setattr(
         "api.workspace_acl_service.identity_reference_guard",
         observed_guard,
+    )
+    monkeypatch.setattr(
+        user_deletion,
+        "revoke_all_mcp_tokens_for_user",
+        lambda **_kwargs: 0,
     )
 
     def delete_user():

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """
 ==========================================================================
   test_acp_full.py — ACP 协议全端点自动化测试
@@ -34,12 +35,13 @@ import os
 import sys
 import time
 import uuid
-import requests
-
-from backend_synthetic_credentials import synthetic_secret
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from dataclasses import dataclass, field
+
+import requests
+from backend_synthetic_credentials import synthetic_secret
+from internal_access import internal
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 logger = logging.getLogger(__name__)
@@ -167,7 +169,8 @@ class ACPTestRunner:
             return resp.json()
         return None
 
-    def _collect_sse_events(self, resp: requests.Response) -> list[dict]:
+    @staticmethod
+    def _collect_sse_events(resp: requests.Response) -> list[dict]:
         events = []
         for line in resp.iter_lines(decode_unicode=True):
             if not line:
@@ -184,7 +187,8 @@ class ACPTestRunner:
                 pass
         return events
 
-    def _collect_typed_sse_events(self, resp: requests.Response) -> list[dict]:
+    @staticmethod
+    def _collect_typed_sse_events(resp: requests.Response) -> list[dict]:
         events = []
         current_event = None
         for line in resp.iter_lines(decode_unicode=True):
@@ -214,10 +218,10 @@ class ACPTestRunner:
         return resp.status_code == 200
 
     def _set_lang_enabled(self, enabled: bool, default_lang: str = "zh"):
-        self._set_runtime_config({"lang": {"enabled": enabled, "default": default_lang}})
+        internal(self).set_runtime_config({"lang": {"enabled": enabled, "default": default_lang}})
 
     def _set_suppress_patterns(self, patterns: str):
-        self._set_runtime_config({"acp_suppress_script_patterns": patterns})
+        internal(self).set_runtime_config({"acp_suppress_script_patterns": patterns})
 
     # ═══════════════════════════════════════════
     # Test Group 1: API 端点基础功能
@@ -1270,7 +1274,7 @@ def main():
         sys.exit(1)
     logger.info("  ✓ 登录成功\n")
 
-    original_config = runner._get_runtime_config()
+    original_config = internal(runner).get_runtime_config()
     original_lang = original_config.get("lang", {})
     original_suppress = original_config.get("acp_suppress_script_patterns", "")
 
@@ -1326,7 +1330,7 @@ def main():
     logger.info(f"\n    {'─' * 50}")
 
     logger.info(f"\n  [3/3] 恢复运行时配置...")
-    runner._set_runtime_config(
+    internal(runner).set_runtime_config(
         {
             "lang": original_lang,
             "acp_suppress_script_patterns": original_suppress,

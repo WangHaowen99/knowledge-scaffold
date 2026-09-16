@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { authFetch } from '../../shared/api/auth.js';
 
 const cleanText = (value) => String(value ?? '').trim();

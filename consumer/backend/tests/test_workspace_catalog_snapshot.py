@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import errno
@@ -8,10 +9,12 @@ import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import workspace.workspaces as workspaces
+from internal_access import internal
 
 
 def _catalog_module():
@@ -98,9 +101,9 @@ def test_workspaces_root_symlink_is_rejected_by_signature_list_and_catalog(
     _enable_snapshot(monkeypatch, runtime_root)
 
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._workspace_source_signature(runtime_root)
+        internal(workspaces).workspace_source_signature(runtime_root)
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._list_workspace_dirs()
+        internal(workspaces).list_workspace_dirs()
     with pytest.raises(ValueError, match="symlink|junction"):
         workspaces.list_workspaces()
 
@@ -127,9 +130,9 @@ def test_workspace_directory_symlink_never_enters_catalog_or_mutation_paths(
     original_external_bytes = external_metadata.read_bytes()
 
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._workspace_source_signature(runtime_root)
+        internal(workspaces).workspace_source_signature(runtime_root)
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._list_workspace_dirs()
+        internal(workspaces).list_workspace_dirs()
     with pytest.raises(ValueError, match="symlink|junction"):
         workspaces.get_workspace_paths("evil")
     with pytest.raises(ValueError, match="symlink|junction"):
@@ -141,7 +144,7 @@ def test_workspace_directory_symlink_never_enters_catalog_or_mutation_paths(
     assert decision.allowed is False
     assert decision.reason == "workspace_metadata_invalid"
     assert external_metadata.read_bytes() == original_external_bytes
-    assert workspaces._is_link_or_junction(linked_workspace)
+    assert internal(workspaces).is_link_or_junction(linked_workspace)
 
 
 def test_workspace_metadata_symlink_is_rejected_across_all_catalog_paths(
@@ -167,11 +170,11 @@ def test_workspace_metadata_symlink_is_rejected_across_all_catalog_paths(
     original_external_bytes = external_metadata.read_bytes()
 
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._workspace_source_signature(runtime_root)
+        internal(workspaces).workspace_source_signature(runtime_root)
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._list_workspace_dirs()
+        internal(workspaces).list_workspace_dirs()
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._read_workspace_metadata_raw(linked_metadata)
+        internal(workspaces).read_workspace_metadata_raw(linked_metadata)
     with pytest.raises(ValueError, match="symlink|junction"):
         workspaces.get_workspace_paths("evil")
     with pytest.raises(ValueError, match="symlink|junction"):
@@ -200,9 +203,9 @@ def test_metadata_link_detection_is_wired_into_signature_list_and_paths(
     monkeypatch.setattr(workspaces, "_is_link_or_junction", metadata_is_link)
 
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._workspace_source_signature(runtime_root)
+        internal(workspaces).workspace_source_signature(runtime_root)
     with pytest.raises(ValueError, match="symlink|junction"):
-        workspaces._list_workspace_dirs()
+        internal(workspaces).list_workspace_dirs()
     with pytest.raises(ValueError, match="symlink|junction"):
         workspaces.get_workspace_paths("alpha")
 
@@ -224,7 +227,7 @@ def test_metadata_reader_rejects_paths_outside_direct_trusted_child(
 
     for metadata_path in (external_metadata, nested_metadata):
         with pytest.raises(ValueError, match="trusted|direct child"):
-            workspaces._read_workspace_metadata_raw(metadata_path)
+            internal(workspaces).read_workspace_metadata_raw(metadata_path)
 
 
 def test_acl_fails_closed_when_workspace_path_validation_fails(monkeypatch):
@@ -432,8 +435,8 @@ def test_security_drift_failure_is_fail_closed(tmp_path, monkeypatch):
     _enable_snapshot(monkeypatch, runtime_root)
     workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     before = workspaces.get_workspace_catalog_snapshot()
-    original_signature = workspaces._workspace_source_signature
-    original_loader = workspaces._load_workspace_catalog_data
+    original_signature = internal(workspaces).workspace_source_signature
+    original_loader = internal(workspaces).load_workspace_catalog_data
 
     monkeypatch.setattr(
         workspaces,
@@ -480,8 +483,8 @@ def test_feature_flag_false_uses_original_authoritative_scan(tmp_path, monkeypat
     workspaces.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
 
     calls = {"dirs": 0, "json": 0}
-    original_dirs = workspaces._list_workspace_dirs
-    original_json = workspaces._read_workspace_metadata_raw
+    original_dirs = internal(workspaces).list_workspace_dirs
+    original_json = internal(workspaces).read_workspace_metadata_raw
 
     def count_dirs():
         calls["dirs"] += 1
@@ -641,7 +644,7 @@ def test_directory_fsync_uses_and_closes_directory_descriptor_on_posix(
         lambda descriptor: calls.append(("close", descriptor)),
     )
 
-    workspaces._fsync_directory(tmp_path)
+    internal(workspaces).fsync_directory(tmp_path)
 
     assert calls == [
         ("open", tmp_path, expected_flags, 0o700),
@@ -658,7 +661,7 @@ def test_directory_fsync_is_a_noop_on_windows(tmp_path, monkeypatch):
 
     monkeypatch.setattr(workspaces.os, "open", unexpected_open)
 
-    workspaces._fsync_directory(tmp_path)
+    internal(workspaces).fsync_directory(tmp_path)
 
 
 def test_pre_replace_failure_and_cleanup_failure_preserve_primary_error(
@@ -900,7 +903,7 @@ def test_user_cleanup_member_write_invalidates_catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(user_deletion, "revoke_all_mcp_tokens_for_user", lambda **_kwargs: None)
     monkeypatch.setattr(user_deletion, "_write_deletion_manifest", lambda **_kwargs: None)
 
-    completed, errors = user_deletion._cleanup_deleted_user_artifacts(
+    completed, errors = internal(user_deletion).cleanup_deleted_user_artifacts(
         "alice",
         operation_id="a" * 32,
     )
@@ -927,7 +930,7 @@ def test_user_cleanup_boundary_backstops_member_catalog_invalidation(
         lambda _username: ["private"],
     )
 
-    updated = user_deletion._remove_user_from_workspace_members_and_invalidate("alice")
+    updated = internal(user_deletion).remove_user_from_workspace_members_and_invalidate("alice")
 
     assert updated == ["private"]
     assert workspaces.get_workspace_catalog_generation() > before
@@ -970,7 +973,7 @@ def test_catalog_publication_has_no_stale_window_during_metadata_write(
     workspaces.get_workspace_catalog_snapshot()
     persisted = threading.Event()
     allow_return = threading.Event()
-    original_write = workspaces._write_workspace_metadata
+    original_write = internal(workspaces).write_workspace_metadata
 
     def blocking_write(paths, payload):
         original_write(paths, payload)

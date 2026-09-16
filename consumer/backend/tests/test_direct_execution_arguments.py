@@ -1,8 +1,10 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression tests for direct-execution script argument normalization."""
 
 from __future__ import annotations
 
 import json
+from operator import getitem
 from types import SimpleNamespace
 
 import agent.direct_execution.router as direct_router_module
@@ -19,6 +21,7 @@ from agent.direct_execution.models import RouteDecision, RuntimeContext
 from agent.direct_execution.router import OperationDirectRouter
 from agent.tools.business_data.resolver import BusinessDataConnectionError
 from agent.tools.script_parameters import is_runtime_parameter, runtime_parameter_field
+from internal_access import internal
 
 
 def test_extract_runtime_argument_keys_covers_structured_and_legacy_aliases():
@@ -280,7 +283,7 @@ def test_structured_runtime_requirement_is_checked_with_canonical_context_field(
     assert extract_runtime_requirements(
         script_parameters=[{"name": "session_id", "flag": "--session-id", "required": True}]
     ) == ["session_id"]
-    assert router._check_runtime_requirements(["session_id"], context) == ["session_id"]
+    assert internal(router).check_runtime_requirements(["session_id"], context) == ["session_id"]
 
 
 def test_direct_business_parameter_is_not_overridden_by_runtime_context():
@@ -428,6 +431,7 @@ def test_direct_explicit_runtime_ontology_uses_selected_ontology_context():
     [
         ("selected_ontology_version", "--selected-ontology-version"),
         ("ontology_version", "--ontology-version"),
+        ("selected_version", "--selected-version"),
     ],
 )
 def test_direct_explicit_runtime_ontology_version_uses_selected_version_context(
@@ -632,7 +636,7 @@ def test_direct_runner_uses_pinned_manifest_without_live_lookup(monkeypatch, tmp
     )
 
     assert result.status == "success"
-    assert captured["ontology_dir"] == ontology_dir.resolve()
+    assert getitem(captured, "ontology_dir") == ontology_dir.resolve()
 
 
 def test_direct_router_allows_missing_optional_runtime_context(monkeypatch):
@@ -946,7 +950,7 @@ def test_direct_runner_discards_success_stderr_from_model_output(monkeypatch, tm
     )
 
     assert result.status == "success"
-    assert captured["include_stderr_on_success"] is False
+    assert getitem(captured, "include_stderr_on_success") is False
 
 
 def test_direct_runner_env_failure_preserves_tool_started_and_span_identity(

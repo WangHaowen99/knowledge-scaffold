@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Filesystem store for skill-evolution tasks, temp artifacts, and history.
 
 Layout (mirrors operations-evolution, project-root level, workspace-isolated):
@@ -116,15 +117,12 @@ class SkillEvolutionStore:
         return record
 
     def create_task_if_no_pending(self, record: TaskRecord) -> TaskRecord:
-        """Atomically (under the store lock) refuse if a pending task already
-        exists for this ontology, else create the task.
-
-        The service-layer gate-4 ``has_pending`` check is a fast-fail to avoid a
-        wasted skill-evolver submit; this is the authoritative check that closes
-        the check-then-act race between has_pending and create_task — two
-        concurrent /start calls can both pass gate4 then both reach create_task.
-        On collision the later one raises (its skill-evolver run is abandoned,
-        same as a local cancel)."""
+        """Atomically (under the store lock) refuse if a pending task already."""
+        # Details: Atomically (under the store lock) refuse if a pending task already exists for this ontology, else
+        # create the task. The service-layer gate-4 ``has_pending`` check is a fast-fail to avoid a wasted
+        # skill-evolver submit; this is the authoritative check that closes the check-then-act race between
+        # has_pending and create_task — two concurrent /start calls can both pass gate4 then both reach create_task.
+        # On collision the later one raises (its skill-evolver run is abandoned, same as a local cancel).
         with self._lock:
             if self.has_pending(record.workspace_id, record.ontology_id):
                 raise PendingTaskExists(

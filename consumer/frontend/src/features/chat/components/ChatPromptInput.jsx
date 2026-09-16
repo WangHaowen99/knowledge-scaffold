@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { useLayoutEffect } from 'react';
 
 const MAX_PROMPT_HEIGHT = 240;

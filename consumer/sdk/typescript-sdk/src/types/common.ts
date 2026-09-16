@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export type MaybePromise<T> = T | Promise<T>;
 
 export type JsonPrimitive = string | number | boolean | null;

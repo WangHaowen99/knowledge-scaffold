@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Process-level singletons for the skill-evolution subsystem."""
 
 from __future__ import annotations

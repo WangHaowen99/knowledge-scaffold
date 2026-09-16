@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import { normalizeAgentMode } from './workspacePreferences.js';
 
 const RESUMABLE_STATUSES = new Set(['queued', 'running']);

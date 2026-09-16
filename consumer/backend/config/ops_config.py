@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Deployment operations configuration for onto-agent.
 
 This module holds runtime policy that is intentionally not exposed through the

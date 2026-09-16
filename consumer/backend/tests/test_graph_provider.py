@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for GraphSearchProvider wrapper behavior."""
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import agent.tools.business_data.providers.graph.neo4j_provider as neo4j_module
 from agent.tools.business_data.providers.graph.models import GraphAgentResult, GraphBackendResult
 from agent.tools.business_data.providers.graph.provider import GraphSearchProvider
 from agent.tools.business_data.providers.graph.runtime import _graph_plan_public_summary
+from internal_access import internal
 
 
 def _collect(stream):
@@ -119,7 +121,7 @@ def test_neo4j_provider_wrapper_binds_scoped_config(monkeypatch):
 
     assert provider.name == "neo4j"
     assert captured == [{"workspace_id": "workspace-a", "ontology_id": "ontology-a"}]
-    assert provider._runtime.provider == "neo4j"
+    assert internal(provider).runtime.provider == "neo4j"
 
 
 def test_hugegraph_provider_wrapper_binds_scoped_config(monkeypatch):
@@ -136,4 +138,4 @@ def test_hugegraph_provider_wrapper_binds_scoped_config(monkeypatch):
 
     assert provider.name == "hugegraph"
     assert captured == [{"workspace_id": "workspace-a", "ontology_id": "ontology-a"}]
-    assert provider._runtime.provider == "hugegraph"
+    assert internal(provider).runtime.provider == "hugegraph"

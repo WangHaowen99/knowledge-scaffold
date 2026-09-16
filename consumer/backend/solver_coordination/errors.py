@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Stable error vocabulary for the solver-coordination HTTP contract.
 
 The route layer deliberately exposes these lower-case, machine-readable codes

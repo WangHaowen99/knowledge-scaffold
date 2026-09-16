@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Append-only local OTel partitions with rebuildable sidecar indexes."""
 
 from __future__ import annotations

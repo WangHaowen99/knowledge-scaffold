@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Credential-safe parsing helpers for business-data service endpoints."""
 
 from __future__ import annotations

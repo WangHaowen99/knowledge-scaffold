@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const clampSpotlightRect = (rect, viewport, padding = 8) => {
   const width = Math.max(0, Number(viewport?.width) || 0);
   const height = Math.max(0, Number(viewport?.height) || 0);

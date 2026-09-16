@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ from persistence.session_summary_index import (
     SessionSummaryIndex,
     SessionSummaryIndexWriteError,
 )
+from internal_access import internal
 
 
 def _create_reserved_protocol_turn(
@@ -300,7 +302,7 @@ def test_execution_projection_failure_rebuilds_runtime_in_same_process(
             )
         ]
 
-    index._rebuild_loader = rebuild_summaries
+    internal(index).rebuild_loader = rebuild_summaries
     monkeypatch.setattr(
         index,
         "update_runtime",
@@ -316,7 +318,7 @@ def test_execution_projection_failure_rebuilds_runtime_in_same_process(
     repaired = _summary(index, "runtime-same-process")
     assert repaired.active_run_id == "run-same-process"
     assert repaired.last_run_status == "running"
-    assert index._dirty_path.exists() is False
+    assert internal(index).dirty_path.exists() is False
 
 
 def test_execution_source_failure_abandons_projection_for_rebuild(
@@ -331,7 +333,7 @@ def test_execution_source_failure_abandons_projection_for_rebuild(
     def rebuild_summaries():
         return [base_summary]
 
-    index._rebuild_loader = rebuild_summaries
+    internal(index).rebuild_loader = rebuild_summaries
     store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
     original_replace = execution_store_module.os.replace
 
@@ -350,7 +352,7 @@ def test_execution_source_failure_abandons_projection_for_rebuild(
         )
 
     assert _summary(index, "runtime-write-failure").last_run_status == "idle"
-    assert index._dirty_path.exists() is False
+    assert internal(index).dirty_path.exists() is False
 
 
 def test_execution_marker_failure_does_not_abort_durable_turn(tmp_path, monkeypatch):
@@ -359,7 +361,7 @@ def test_execution_marker_failure_does_not_abort_durable_turn(tmp_path, monkeypa
     _seed_session_summary(index, "execution-marker-failure")
     base_summary = _summary(index, "execution-marker-failure")
     store = ExecutionStore(str(tmp_path / "executions"), summary_index=index)
-    original_write = summary_index_module._write_atomic_json
+    original_write = internal(summary_index_module).write_atomic_json
 
     def fail_dirty_marker(target, document):
         if str(target).endswith(".dirty"):
@@ -1268,7 +1270,7 @@ def test_protocol_run_id_reservation_is_released_when_durable_write_fails(
     store = ExecutionStore(str(tmp_path / "executions"))
     reservation_id = store.reserve_protocol_run_id("a2a", "external-task-retry")
     assert reservation_id is not None
-    save_session = store._save_session
+    save_session = internal(store).save_session
 
     def fail_save(*_args, **_kwargs):
         raise OSError("synthetic durable write failure")

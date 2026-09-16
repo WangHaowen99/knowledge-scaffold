@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """User memory management endpoints.
 
 Exposes the current user's ordinary long-term memories (preferences and

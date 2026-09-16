@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """User-facing final_output coercion helpers for protocol adapters."""
 
 from __future__ import annotations

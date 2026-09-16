@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Test helpers for bringing legacy system_config fixtures to startup state."""
 
 from __future__ import annotations

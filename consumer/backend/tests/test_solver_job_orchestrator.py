@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import threading
@@ -10,6 +11,7 @@ from backend_synthetic_credentials import synthetic_secret
 from solver_coordination.contracts import ProblemIR, SolverResult
 from solver_coordination.job_orchestrator import DurableJobOrchestrator
 from solver_coordination.job_store import JobStoreConflict, LeaseConflict, SolverJobStore
+from internal_access import internal
 
 WORKSPACE_ID = "workspace_synthetic"
 OWNER_ID = "owner_synthetic"
@@ -70,17 +72,17 @@ class _DurableFakeBackend:
             self.poll_hook(job_id)
         if job_id in self.poll_failures:
             raise RuntimeError("synthetic backend poll failure")
-        entry = self._entry_by_job_id(job_id)
+        entry = internal(self).entry_by_job_id(job_id)
         return {"job_id": job_id, "status": entry.status, "progress": {"percent": 50}}
 
     def cancel(self, *, job_id, binding=None):
         if self.cancel_observer is not None:
             self.cancel_observer()
         self.cancel_calls.append(job_id)
-        self._entry_by_job_id(job_id).status = "cancelled"
+        internal(self).entry_by_job_id(job_id).status = "cancelled"
 
     def result(self, *, job_id, binding=None):
-        entry = self._entry_by_job_id(job_id)
+        entry = internal(self).entry_by_job_id(job_id)
         if entry.status != "completed_optimal":
             raise RuntimeError("result is not ready")
         return SolverResult(
@@ -497,7 +499,7 @@ def test_retry_requires_a_retryable_terminal_failure(tmp_path):
             attempt_id="attempt_synthetic_rejected",
         )
 
-    backend._entry_by_job_id(first["backend_job_id"]).status = "failed"
+    internal(backend).entry_by_job_id(first["backend_job_id"]).status = "failed"
     failed = orchestrator.poll_once(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert failed["status"] == "failed"
     retried = orchestrator.retry(
@@ -523,7 +525,7 @@ def test_retry_requires_a_retryable_terminal_failure(tmp_path):
     replay = _start(orchestrator, run_suffix="a")
     assert replay["attempt_id"] == retried["attempt_id"]
 
-    backend._entry_by_job_id(retried["backend_job_id"]).status = "failed"
+    internal(backend).entry_by_job_id(retried["backend_job_id"]).status = "failed"
     orchestrator.poll_once(first["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     with pytest.raises(JobStoreConflict, match="attempt|max"):
         orchestrator.retry(
@@ -646,7 +648,7 @@ def test_cancelling_before_first_submit_does_not_create_backend_job(tmp_path):
 def test_cancellation_waits_for_an_inflight_retry_submit(tmp_path):
     orchestrator, store, backend = _orchestrator(tmp_path)
     started = _start(orchestrator, run_suffix="cancel_inflight_retry")
-    backend._entry_by_job_id(started["backend_job_id"]).status = "unsupported"
+    internal(backend).entry_by_job_id(started["backend_job_id"]).status = "unsupported"
     failed = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert failed["status"] == "failed"
 
@@ -751,7 +753,7 @@ def test_timeout_cancels_backend_before_terminalization_and_late_poll_is_ignored
     assert observed_statuses == ["waiting_solver"]
     assert timed_out["status"] == "timed_out"
 
-    backend._entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
+    internal(backend).entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
     late = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert late["status"] == "timed_out"
 
@@ -771,7 +773,7 @@ def test_new_orchestrator_reconstructs_running_and_completed_backend_job(tmp_pat
     running = recovered.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert running["status"] == "waiting_solver"
 
-    backend._entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
+    internal(backend).entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
     completed = recovered.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert completed["status"] == "solver_completed"
     restored_attempt = reopened_store.get_attempt(started["attempt_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
@@ -781,7 +783,7 @@ def test_new_orchestrator_reconstructs_running_and_completed_backend_job(tmp_pat
 def test_cancelling_after_backend_completion_does_not_mutate_completed_attempt(tmp_path):
     orchestrator, store, backend = _orchestrator(tmp_path)
     started = _start(orchestrator)
-    backend._entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
+    internal(backend).entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
     completed = orchestrator.poll_once(started["job_id"], workspace_id=WORKSPACE_ID, owner_id=OWNER_ID)
     assert completed["status"] == "solver_completed"
 
@@ -797,7 +799,7 @@ def test_cancelling_after_backend_completion_does_not_mutate_completed_attempt(t
 def test_recovery_scan_polls_persisted_nonterminal_jobs(tmp_path):
     orchestrator, store, backend = _orchestrator(tmp_path)
     started = _start(orchestrator)
-    backend._entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
+    internal(backend).entry_by_job_id(started["backend_job_id"]).status = "completed_optimal"
 
     recovered = DurableJobOrchestrator(
         store=SolverJobStore(store.database_path),

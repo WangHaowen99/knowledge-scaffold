@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export { default as AuthProvider } from './AuthProvider';
 export { default as ChangePasswordDialog } from './ChangePasswordDialog';
 export { default as LoginPage } from './LoginPage';

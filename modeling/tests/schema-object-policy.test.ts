@@ -42,6 +42,37 @@ test('Schema 模式逐 Sheet 生成对象并包含只有表头的空 Sheet', () 
   assert.deepEqual(schemaObjectPolicyIssues(packageSpec, renderPackage(packageSpec), tables), []);
 });
 
+test('关系数据模板按外键生成对象级关系且不生成关系 Sheet 对象', () => {
+  const tables: DataDictTable[] = [
+    {
+      name: '主外键映射',
+      documentId: 'doc-schema',
+      materialPurpose: 'evidence',
+      materialImportDisposition: 'relationship',
+      rowCount: 3,
+      fields: ['table_name', 'column_name', 'constraint_type', 'referenced_table', 'referenced_column']
+        .map((field) => ({ name: field, inferredType: 'string', sampleValues: [], distinctRatio: 0 })),
+      rows: [
+        ['customer_sheet', 'customer_id', 'PRIMARY_KEY', '', ''],
+        ['order_sheet', 'order_id', 'PRIMARY_KEY', '', ''],
+        ['order_sheet', 'customer_id', 'FOREIGN_KEY', 'customer_sheet', 'customer_id'],
+      ],
+    },
+    schemaTable('customer_sheet', ['customer_id', 'customer_name']),
+    schemaTable('order_sheet', ['order_id', 'customer_id']),
+  ];
+  const objects = expectedSchemaObjects(tables).map((item) => item.object);
+
+  assert.deepEqual(objects.map((object) => object.key), ['customer_sheet', 'order_sheet']);
+  assert.deepEqual(objects.find((object) => object.key === 'order_sheet')?.relations, [{
+    relation: 'references',
+    target: 'customer_sheet',
+    note: '主外键映射：order_sheet.customer_id → customer_sheet.customer_id',
+    evidence: ['material:doc-schema#主外键映射!4'],
+  }]);
+  assert.deepEqual(objects.find((object) => object.key === 'customer_sheet')?.relations, []);
+});
+
 test('Schema 物理策略允许业务语义和明确必填决定独立演进', () => {
   const tables = [schemaTable('record_sheet', ['record_id', 'status_code'])];
   const object = expectedSchemaObjects(tables)[0].object;

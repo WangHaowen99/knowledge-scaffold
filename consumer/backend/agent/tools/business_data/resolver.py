@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Resolve the effective business data source for an ontology."""
 
 from __future__ import annotations

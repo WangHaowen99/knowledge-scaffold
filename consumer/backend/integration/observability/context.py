@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Context helpers for background callbacks that need the current observer."""
 
 from __future__ import annotations

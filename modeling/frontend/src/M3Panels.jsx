@@ -365,7 +365,7 @@ export function EvaluatePanel({ projectId, onProjectChanged, onRoundFinished }) 
   const [rounds, setRounds] = useState([]);
   const [roundsLoaded, setRoundsLoaded] = useState(false);
   const [selectedRoundId, setSelectedRoundId] = useState(null);
-  const [current, setCurrent] = useState(null); // { round, results }
+  const [current, setCurrent] = useState(null); // 当前选中的评测轮次
   const [actionError, setActionError] = useState('');
   const [dataSourceError, setDataSourceError] = useState('');
   const [roundsError, setRoundsError] = useState('');

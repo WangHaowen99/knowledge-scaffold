@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Uniform event adaptation for native and blocking providers."""
 
 from __future__ import annotations

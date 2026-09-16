@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 import logging
 import sys
 import threading
@@ -8,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 from backend_synthetic_credentials import ENCRYPTION_KEY, synthetic_secret
+from internal_access import internal
 
 
 @pytest.fixture(autouse=True)
@@ -164,9 +166,9 @@ def test_observability_bus_close_exits_after_full_queue_drains():
 
         bus.close(timeout=0.01)
         release_first_export.set()
-        bus._worker.join(timeout=0.2)
+        internal(bus).worker.join(timeout=0.2)
 
-        assert not bus._worker.is_alive()
+        assert not internal(bus).worker.is_alive()
     finally:
         release_first_export.set()
         bus.close(timeout=1)
@@ -1387,11 +1389,11 @@ def test_retired_run_metrics_stay_on_the_original_workspace_router():
 
     old_exporter.export.side_effect = export_old_metric
     old_router = WorkspaceObservabilityRouter()
-    old_router._build_exporter = build_old_exporter
+    internal(old_router).build_exporter = build_old_exporter
     new_router = None
     try:
         assert old_router.reserve_run("run-before-refresh", "demo") is True
-        assert "demo" in old_router._observers_by_workspace
+        assert "demo" in internal(old_router).observers_by_workspace
         assert (
             old_router.emit(
                 RuntimeEvent(
@@ -1406,7 +1408,7 @@ def test_retired_run_metrics_stay_on_the_original_workspace_router():
 
         old_router.retire()
         new_router = WorkspaceObservabilityRouter()
-        new_router._build_exporter = build_new_exporter
+        internal(new_router).build_exporter = build_new_exporter
         assert new_router.reserve_run("run-after-refresh", "demo") is True
 
         assert (
@@ -1469,15 +1471,15 @@ def test_workspace_router_pending_span_buffer_is_bounded():
             router.export_otel_span(span("run-b", index + 200))
         router.export_otel_span(span("run-b", 300, name="agent.run"))
 
-        assert router._pending_span_count == 4
-        assert sum(len(items) for items in router._pending_spans_by_run.values()) == 4
-        assert len(router._pending_spans_by_run["run-a"]) == 3
-        assert len(router._pending_spans_by_run["run-b"]) == 1
-        assert router._pending_spans_by_run["run-b"][0].name == "agent.run"
-        assert router._pending_span_drop_count == 6
+        assert internal(router).pending_span_count == 4
+        assert sum(len(items) for items in internal(router).pending_spans_by_run.values()) == 4
+        assert len(internal(router).pending_spans_by_run["run-a"]) == 3
+        assert len(internal(router).pending_spans_by_run["run-b"]) == 1
+        assert internal(router).pending_spans_by_run["run-b"][0].name == "agent.run"
+        assert internal(router).pending_span_drop_count == 6
 
-        router._flush_run("run-a")
-        assert router._pending_span_count == 1
+        internal(router).flush_run("run-a")
+        assert internal(router).pending_span_count == 1
     finally:
         router.close(timeout=1)
 
@@ -1496,7 +1498,7 @@ def test_workspace_router_exports_large_run_as_one_queue_batch(monkeypatch):
     bus = ObservabilityBus(exporter, queue_size=1, flush_interval_seconds=10)
     router = WorkspaceObservabilityRouter(max_pending_spans_per_run=600)
     monkeypatch.setattr(router, "_get_observer", lambda *args, **kwargs: bus)
-    router._run_workspaces["run-large"] = "workspace_demo"
+    internal(router).run_workspaces["run-large"] = "workspace_demo"
 
     try:
         root_span_id = "1" * 16
@@ -1536,7 +1538,7 @@ def test_workspace_router_exports_large_run_as_one_queue_batch(monkeypatch):
 
         assert len(exported) == 1200
         assert sum(event.type == RuntimeEventType.RUN_FINISHED for event in exported) == 1
-        assert router._pending_span_count == 0
+        assert internal(router).pending_span_count == 0
     finally:
         bus.close(timeout=2)
         router.close(timeout=1)
@@ -1604,8 +1606,8 @@ def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_field
             "agent.tool_name": "business_data_search",
             "agent.message": "private-message",
             "agent.error_message": "private-error",
-            "http.url": "http://hugegraph.example.net/vertices?properties=private-property",
-            "url.full": "http://service.example.net/search?q=private-query#fragment",
+            "http.url": "https://hugegraph.example.net/vertices?properties=private-property",
+            "url.full": "https://service.example.net/search?q=private-query#fragment",
             "http.request.method": "GET",
         },
         events=(
@@ -1624,8 +1626,8 @@ def test_local_otel_records_keep_histogram_buckets_and_crop_sensitive_span_field
     record = span_record(span)
     serialized = json.dumps(record)
 
-    assert record["labels"]["http.url"] == "http://hugegraph.example.net/vertices"
-    assert record["labels"]["url.full"] == "http://service.example.net/search"
+    assert record["labels"]["http.url"] == "https://hugegraph.example.net/vertices"
+    assert record["labels"]["url.full"] == "https://service.example.net/search"
     assert record["labels"]["agent.tool_name"] == "business_data_search"
     assert record["events"][0]["event"] == "tool.progress"
     assert record["events"][0]["labels"] == {
@@ -1672,7 +1674,7 @@ def test_mcp_false_result_marks_request_span_as_error(monkeypatch):
         yield span
 
     monkeypatch.setattr(server_mod, "_mcp_request_observation", fake_observation)
-    result = server_mod._invoke_mcp_with_observation(
+    result = internal(server_mod).invoke_mcp_with_observation(
         MCPRequestScope("alice", "workspace-a", ["mcp:search"]),
         required_scope="mcp:search",
         caller=lambda _scope: {
@@ -2728,8 +2730,8 @@ def test_langfuse_exporter_releases_run_bookkeeping_after_terminal_spans_finish(
         )
     )
 
-    assert exporter._trace_ids_by_run == {"run-1": "trace-1"}
-    assert exporter._spans_by_run == {"run-1": {"loop:main": "span-1"}}
+    assert internal(exporter).trace_ids_by_run == {"run-1": "trace-1"}
+    assert internal(exporter).spans_by_run == {"run-1": {"loop:main": "span-1"}}
 
     exporter.export(
         RuntimeEvent(
@@ -2740,9 +2742,9 @@ def test_langfuse_exporter_releases_run_bookkeeping_after_terminal_spans_finish(
         )
     )
 
-    assert exporter._trace_ids_by_run == {}
-    assert exporter._spans_by_run == {}
-    assert exporter._terminal_runs == set()
+    assert internal(exporter).trace_ids_by_run == {}
+    assert internal(exporter).spans_by_run == {}
+    assert internal(exporter).terminal_runs == set()
 
 
 def test_langfuse_trace_id_is_stable_for_the_same_run_identity():

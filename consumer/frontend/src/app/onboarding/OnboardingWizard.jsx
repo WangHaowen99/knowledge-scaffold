@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 /* eslint-disable react-refresh/only-export-components -- colocated focus helpers are direct unit-test seams. */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
@@ -16,7 +17,6 @@ import './onboarding.css';
 
 // 蒙版聚光灯式操作向导：每步跳转到真实页面并高亮 [data-wiz=...] 元素。
 // 每次新登录弹出（sessionStorage 标记），可随时跳过，顶栏 ❓ 重开。
-
 const WIZARD_FOCUSABLE_SELECTOR = [
   'button:not([disabled])',
   'input:not([disabled])',
@@ -126,173 +126,182 @@ export function dismissWizardAsSeen(onClose) {
   onClose();
 }
 
-// eslint-disable-next-line max-lines-per-function -- Preserve established boundary.
-function stepsFor(isAdmin, hasNoWorkspace) {
-  if (isAdmin && hasNoWorkspace) {
-    return [
-      {
-        ic: Sparkles,
-        t: '欢迎使用知识工程工具',
-        d: (
-          <>
+function adminWithoutWorkspaceSteps() {
+  return [
+    {
+      ic: Sparkles,
+      t: '欢迎使用知识工程工具',
+      d: (
+        <>
             当前平台尚无可用工作空间。先完成<b>创建工作空间</b>
             ，再继续模型、知识包和数据源初始化。
-          </>
-        ),
-      },
-      {
-        ic: FolderKanban,
-        t: '第 1 步 · 创建工作空间',
-        d: (
-          <>
+        </>
+      ),
+    },
+    {
+      ic: FolderKanban,
+      t: '第 1 步 · 创建工作空间',
+      d: (
+        <>
             创建首个工作空间并填写名称与 ID。创建成功后，顶栏会自动选中该空间。
-          </>
-        ),
-        nav: { surface: 'config', scope: 'global', sec: 'wsmgmt' },
-        target: 'cfg-wsmgmt',
-      },
-      {
-        ic: BrainCircuit,
-        t: '第 2 步 · 配置模型',
-        d: (
-          <>
+        </>
+      ),
+      nav: { surface: 'config', scope: 'global', sec: 'wsmgmt' },
+      target: 'cfg-wsmgmt',
+    },
+    {
+      ic: BrainCircuit,
+      t: '第 2 步 · 配置模型',
+      d: (
+        <>
             在<b>全局模型池</b>添加模型 profile
             并设置默认模型。密钥只保存在全局层。
-          </>
-        ),
-        nav: { surface: 'config', scope: 'global', sec: 'llm' },
-        target: 'cfg-llm',
-      },
-      {
-        ic: PackageOpen,
-        t: '第 3 步 · 导入知识包',
-        d: <>导入 .zip 知识包，在工作台查看业务对象、操作和映射。</>,
-        nav: { surface: 'kb' },
-        target: 'kb-import',
-      },
-      {
-        ic: PlugZap,
-        t: '第 4 步 · 配置数据源',
-        d: (
-          <>
+        </>
+      ),
+      nav: { surface: 'config', scope: 'global', sec: 'llm' },
+      target: 'cfg-llm',
+    },
+    {
+      ic: PackageOpen,
+      t: '第 3 步 · 导入知识包',
+      d: <>导入 .zip 知识包，在工作台查看业务对象、操作和映射。</>,
+      nav: { surface: 'kb' },
+      target: 'kb-import',
+    },
+    {
+      ic: PlugZap,
+      t: '第 4 步 · 配置数据源',
+      d: (
+        <>
             在知识包的<b>数据源</b>页签填写 Provider
             与连接参数；配置只属于当前知识包。
-          </>
-        ),
-        nav: { surface: 'kb', tab: 'data' },
-        target: 'kb-data-source',
-      },
-      {
-        ic: MessageSquarePlus,
-        t: '一切就绪',
-        d: <>从高亮入口新建对话，开始验证知识与数据能力。</>,
-        target: 'nav-chat',
-      },
-    ];
-  }
-  return isAdmin ?
-    [
-      {
-        ic: Sparkles,
-        t: '欢迎使用知识工程工具',
-        d: (
-          <>
+        </>
+      ),
+      nav: { surface: 'kb', tab: 'data' },
+      target: 'kb-data-source',
+    },
+    {
+      ic: MessageSquarePlus,
+      t: '一切就绪',
+      d: <>从高亮入口新建对话，开始验证知识与数据能力。</>,
+      target: 'nav-chat',
+    },
+  ];
+}
+
+function adminSteps() {
+  return [
+    {
+      ic: Sparkles,
+      t: '欢迎使用知识工程工具',
+      d: (
+        <>
               接下来用几步蒙版引导带你完成平台初始化：
-            <b>配置模型 → 导入知识包 → 配置数据源</b>
+          <b>配置模型 → 导入知识包 → 配置数据源</b>
               。可随时跳过，之后从顶栏向导按钮重新打开。
-          </>
-        ),
-      },
-      {
-        ic: BrainCircuit,
-        t: '第 1 步 · 配置模型',
-        d: (
-          <>
+        </>
+      ),
+    },
+    {
+      ic: BrainCircuit,
+      t: '第 1 步 · 配置模型',
+      d: (
+        <>
               高亮处是<b>全局模型池</b>：添加模型
               profile、设置全局默认。密钥只保存在全局层，各工作空间通过“模型选用”引用。
-          </>
-        ),
-        nav: { surface: 'config', scope: 'global', sec: 'llm' },
-        target: 'cfg-llm',
-      },
-      {
-        ic: PackageOpen,
-        t: '第 2 步 · 导入知识包',
-        d: (
-          <>
+        </>
+      ),
+      nav: { surface: 'config', scope: 'global', sec: 'llm' },
+      target: 'cfg-llm',
+    },
+    {
+      ic: PackageOpen,
+      t: '第 2 步 · 导入知识包',
+      d: (
+        <>
               点高亮的按钮导入 .zip 知识包，左侧树会出现包内的
-            <b>业务对象 / 操作</b>，右侧可逐个查看内容。
-          </>
-        ),
-        nav: { surface: 'kb' },
-        target: 'kb-import',
-      },
-      {
-        ic: PlugZap,
-        t: '第 3 步 · 配置数据源',
-        d: (
-          <>
+          <b>业务对象 / 操作</b>，右侧可逐个查看内容。
+        </>
+      ),
+      nav: { surface: 'kb' },
+      target: 'kb-import',
+    },
+    {
+      ic: PlugZap,
+      t: '第 3 步 · 配置数据源',
+      d: (
+        <>
               在知识包的<b>数据源</b>页签填写 Provider
               与连接参数；配置只属于当前知识包，保存时覆盖原配置。
-          </>
-        ),
-        nav: { surface: 'kb', tab: 'data' },
-        target: 'kb-data-source',
-      },
-      {
-        ic: MessageSquarePlus,
-        t: '一切就绪',
-        d: (
-          <>
+        </>
+      ),
+      nav: { surface: 'kb', tab: 'data' },
+      target: 'kb-data-source',
+    },
+    {
+      ic: MessageSquarePlus,
+      t: '一切就绪',
+      d: (
+        <>
               从高亮的入口<b>新建对话</b>，试试知识包的典型问题。
-          </>
-        ),
-        target: 'nav-chat',
-      },
-    ] :
-    [
-      {
-        ic: Sparkles,
-        t: '欢迎使用知识工程工具',
-        d: (
-          <>
+        </>
+      ),
+      target: 'nav-chat',
+    },
+  ];
+}
+
+function memberSteps() {
+  return [
+    {
+      ic: Sparkles,
+      t: '欢迎使用知识工程工具',
+      d: (
+        <>
               用几步蒙版引导快速了解三个区域：
-            <b>新建对话、知识包工作台、配置中心</b>
+          <b>新建对话、知识包工作台、配置中心</b>
               （对你只读开放）。可随时跳过。
-          </>
-        ),
-      },
-      {
-        ic: PackageOpen,
-        t: '知识包工作台',
-        d: (
-          <>
+        </>
+      ),
+    },
+    {
+      ic: PackageOpen,
+      t: '知识包工作台',
+      d: (
+        <>
               高亮入口进入<b>知识包工作台</b>
               ：查看已导入知识包的业务对象、操作和典型问题。
-          </>
-        ),
-        nav: { surface: 'kb' },
-        target: 'nav-kb',
-      },
-      {
-        ic: Settings2,
-        t: '个人设置',
-        d: (
-          <>
+        </>
+      ),
+      nav: { surface: 'kb' },
+      target: 'nav-kb',
+    },
+    {
+      ic: Settings2,
+      t: '个人设置',
+      d: (
+        <>
               配置中心对你只读；但高亮处的<b>个人偏好</b>
               （默认工作空间、回复语言）可以自己修改。
-          </>
-        ),
-        nav: { surface: 'config', scope: 'personal', sec: 'prefs' },
-        target: 'cfg-prefs',
-      },
-      {
-        ic: MessageSquarePlus,
-        t: '开始对话',
-        d: <>选好工作空间后从高亮入口直接提问，例如知识包里的典型问题。</>,
-        target: 'nav-chat',
-      },
-    ];
+        </>
+      ),
+      nav: { surface: 'config', scope: 'personal', sec: 'prefs' },
+      target: 'cfg-prefs',
+    },
+    {
+      ic: MessageSquarePlus,
+      t: '开始对话',
+      d: <>选好工作空间后从高亮入口直接提问，例如知识包里的典型问题。</>,
+      target: 'nav-chat',
+    },
+  ];
+}
+
+function stepsFor(isAdmin, hasNoWorkspace) {
+  if (isAdmin && hasNoWorkspace) {
+    return adminWithoutWorkspaceSteps();
+  }
+  return isAdmin ? adminSteps() : memberSteps();
 }
 
 // eslint-disable-next-line max-lines-per-function -- Preserve established boundary.

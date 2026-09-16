@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import threading
@@ -10,6 +11,7 @@ from backend_synthetic_credentials import ADMIN_API_TOKEN
 from fastapi.testclient import TestClient
 from solver_coordination import OperationValidationRunService, SyntheticValidationService
 from solver_coordination.runtime import build_operation_validation_service
+from internal_access import internal
 
 
 def _runtime_bundle(validation_service):
@@ -279,7 +281,7 @@ def test_shutdown_stops_worker_enabled_after_startup(monkeypatch):
     application = app_module.create_app()
 
     with TestClient(application):
-        worker = app_module._install_solver_recovery_worker(
+        worker = internal(app_module).install_solver_recovery_worker(
             application,
             object(),
         )
@@ -325,7 +327,7 @@ def test_shutdown_accepts_worker_disabled_after_startup(monkeypatch):
         worker = application.state.solver_recovery_worker
         assert worker.running is True
         assert (
-            app_module._install_solver_recovery_worker(
+            internal(app_module).install_solver_recovery_worker(
                 application,
                 None,
             )
@@ -361,7 +363,7 @@ def test_install_refuses_to_replace_unterminated_worker(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="did not stop before replacement"):
-        app_module._install_solver_recovery_worker(
+        internal(app_module).install_solver_recovery_worker(
             application,
             object(),
         )
@@ -385,7 +387,7 @@ def test_shutdown_retains_ownership_of_unterminated_worker():
     application.state.solver_recovery_worker = worker
 
     with pytest.raises(RuntimeError, match="did not stop during shutdown"):
-        app_module._stop_solver_recovery_worker(
+        internal(app_module).stop_solver_recovery_worker(
             application,
             timeout_seconds=0.01,
         )

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Finite-TTL durable job mapping for the OR-Tools Solver Service."""
 
 from __future__ import annotations

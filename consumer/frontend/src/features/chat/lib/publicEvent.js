@@ -1,3 +1,4 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 export const PUBLIC_EVENT_SCHEMA_VERSION = '1.0';
 
 const PUBLIC_EVENT_STATUSES = new Set([
@@ -30,6 +31,53 @@ const isPlainObject = (value) =>
 
 const isPositiveInteger = (value) => Number.isInteger(value) && value > 0;
 
+const hasCanonicalRequiredFields = (value) =>
+  value.schema_version === PUBLIC_EVENT_SCHEMA_VERSION &&
+  Boolean(String(value.event_id || '').trim()) &&
+  Boolean(String(value.run_id || '').trim()) &&
+  isPositiveInteger(value.seq) &&
+  Boolean(String(value.event_type || '').trim()) &&
+  PUBLIC_EVENT_STATUSES.has(value.status) &&
+  isPlainObject(value.payload);
+
+const hasValidOptionalSource = (value) =>
+  value.source == null || isPlainObject(value.source);
+
+const OPTIONAL_TRACE_FIELDS = [
+  'span_key',
+  'parent_key',
+  'trace_id',
+  'span_id',
+  'parent_span_id',
+];
+
+const hasValidOptionalIdentifiers = (value) => {
+  const traceFieldsValid = OPTIONAL_TRACE_FIELDS.every(
+    (key) => value[key] == null || typeof value[key] === 'string',
+  );
+  const sessionIdValid =
+    value.session_id == null || typeof value.session_id === 'string';
+  const turnIdValid = value.turn_id == null || isPositiveInteger(value.turn_id);
+  return traceFieldsValid && sessionIdValid && turnIdValid;
+};
+
+const hasValidCreatedAt = (value) =>
+  typeof value.created_at === 'string' &&
+  Number.isFinite(Date.parse(value.created_at));
+
+const hasValidTerminalStatus = (value) => {
+  if (value.event_type !== 'turn.finished') {
+    return true;
+  }
+  if (!TERMINAL_PUBLIC_EVENT_STATUSES.has(value.status)) {
+    return false;
+  }
+  if (value.payload.status == null) {
+    return true;
+  }
+  return normalizePublicEventStatus(value.payload.status) === value.status;
+};
+
 export const normalizePublicEventStatus = (value, fallback = '') => {
   const normalized = String(value || '')
     .trim()
@@ -41,71 +89,17 @@ export const normalizePublicEventStatus = (value, fallback = '') => {
   return PUBLIC_EVENT_STATUSES.has(fallback) ? fallback : '';
 };
 
-// eslint-disable-next-line complexity -- Preserve this established UI, hook, or event-contract boundary.
 export const isPublicEvent = (value) => {
   if (!isPlainObject(value)) {
     return false;
   }
-  if (value.schema_version !== PUBLIC_EVENT_SCHEMA_VERSION) {
-    return false;
-  }
-  if (!String(value.event_id || '').trim()) {
-    return false;
-  }
-  if (!String(value.run_id || '').trim()) {
-    return false;
-  }
-  if (!isPositiveInteger(value.seq)) {
-    return false;
-  }
-  if (!String(value.event_type || '').trim()) {
-    return false;
-  }
-  if (!PUBLIC_EVENT_STATUSES.has(value.status)) {
-    return false;
-  }
-  if (!isPlainObject(value.payload)) {
-    return false;
-  }
-  if (value.source != null && !isPlainObject(value.source)) {
-    return false;
-  }
-  for (const key of [
-    'span_key',
-    'parent_key',
-    'trace_id',
-    'span_id',
-    'parent_span_id',
-  ]) {
-    if (value[key] != null && typeof value[key] !== 'string') {
-      return false;
-    }
-  }
-  if (value.session_id != null && typeof value.session_id !== 'string') {
-    return false;
-  }
-  if (value.turn_id != null && !isPositiveInteger(value.turn_id)) {
-    return false;
-  }
-  if (
-    typeof value.created_at !== 'string' ||
-    !Number.isFinite(Date.parse(value.created_at))
-  ) {
-    return false;
-  }
-  if (
-    value.event_type === 'turn.finished' &&
-    !TERMINAL_PUBLIC_EVENT_STATUSES.has(value.status)
-  ) {
-    return false;
-  }
-  if (value.event_type === 'turn.finished' && value.payload.status != null) {
-    const payloadStatus = normalizePublicEventStatus(value.payload.status);
-    if (!payloadStatus || payloadStatus !== value.status) {
-      return false;
-    }
-  }
-  return true;
+  return (
+    hasCanonicalRequiredFields(value) &&
+    hasValidOptionalSource(value) &&
+    hasValidOptionalIdentifiers(value) &&
+    hasValidCreatedAt(value) &&
+    hasValidTerminalStatus(value)
+  );
 };
 
 export const publicEventTimestamp = (event, fallback = Date.now()) => {

@@ -120,6 +120,7 @@ export interface DataDictTable {
   name: string; // sheet 名 = 表名
   documentId?: string; // 来源资料修订 ID；用于精确追踪知识证据
   materialPurpose?: DocumentRecord['purpose']; // 上传资料用途；术语表导入依赖该标记区分普通业务表
+  materialImportDisposition?: MaterialSheetImportDisposition; // 逐 Sheet 导入处置；关系模板识别等轻量编译规则依赖该标记
   /** Identifies authoritative constraint metadata even when every field is nullable/non-primary. */
   constraintSource?: 'database' | 'dictionary';
   /** Ordered primary-key source columns returned by database metadata. */
@@ -201,6 +202,34 @@ export interface ArtifactCandidate {
   readiness: 'extractable' | 'needs_clarification';
 }
 
+/**
+ * Structured product facts are deliberately separate from model-generated
+ * artifact candidates.  The product-ledger gate may only use this source;
+ * candidateArtifacts are suggestions for later rule drafting and do not carry
+ * enough provenance to close a 201/198/3 inventory reconciliation.
+ */
+export interface ProductInventoryItem {
+  canonicalItemId: string;
+  name: string;
+  applicableSubjects: string[];
+  triggerScenarios: string[];
+  businessNeeds: string[];
+  sourceRecordIds: string[];
+  sourceLocator: string;
+  ruleRefs: string[];
+  mergeGroupId?: string;
+  evidenceStatus: 'complete' | 'insufficient';
+  processingStatus?: 'pending' | 'ready' | 'generated' | 'blocked';
+  structuredGaps?: string[];
+  insufficiencyReason?: string;
+}
+
+export interface ProductInventorySummary {
+  rawCount: number;
+  canonicalCount: number;
+  mergedGroupCount: number;
+}
+
 export type CandidateDispositionStatus =
   | 'generated'
   | 'merged'
@@ -268,6 +297,9 @@ export interface AnalysisResult {
   candidateProcesses?: CandidateBusinessProcess[];
   materialAssessments?: MaterialAssessment[];
   candidateArtifacts?: ArtifactCandidate[];
+  /** Authoritative, itemized product facts used by the product ledger gate. */
+  productInventory?: ProductInventoryItem[];
+  productInventorySummary?: ProductInventorySummary;
   documentReadCoverage?: DocumentReadCoverage[];
 }
 

@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Tests for skill routes against the onto-runtime layout."""
 
 from api.routes.skills import skills_router

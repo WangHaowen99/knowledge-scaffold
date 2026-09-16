@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import json
@@ -8,13 +9,14 @@ from agent.tools.business_data.adapters.nl2sql_template_search import (
 )
 from backend_synthetic_credentials import synthetic_secret
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
+from internal_access import internal
 
 
 def _provider(*, workspace_root: str, ontology_id: str, ontology_version: str = ""):
     connection = EffectiveConnection(
         version=1,
         provider="nl2sql_http",
-        endpoint="http://nl2sql.example.net",
+        endpoint="https://nl2sql.example.net",
         auth=AuthSpec(type="bearer", token=synthetic_secret("nl2sql_template_version_lock-credential-01")),
         options={"scene": "scene-x", "timeout_seconds": 88, "max_retries": 2},
     )
@@ -119,8 +121,8 @@ def test_adapter_default_matcher_uses_locked_version_templates(tmp_path):
         captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
-    provider._session.post = _fake_post
+    internal(provider).session.post = _fake_post
 
     list(provider.search_stream(query="query", entity="TargetItem"))
-    assert captured["url"] == "http://nl2sql.example.net/api/v1/sql"
+    assert captured["url"] == "https://nl2sql.example.net/api/v1/sql"
     assert captured["json"]["sql"] == "SELECT version_one"

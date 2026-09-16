@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """HTTP API for the operation-evolution buffer and staged patches.
 
 Routes (all under `/agentic/operations`):
@@ -482,8 +483,9 @@ def apply_staged(
     request: Request,
     workspace_id: str = Depends(require_admin_workspace_id),
 ):
-    """Promote staged → live `.md`. Admin only. Archives previous `.md` and
-    transitions the merged proposals to status=applied."""
+    """Promote staged → live `.md`. Admin only. Archives previous `.md` and."""
+    # Details: Promote staged → live `.md`. Admin only. Archives previous `.md` and transitions the merged proposals
+    # to status=applied.
     paths = staged_paths_for(ontology_id, operation_key, workspace_id=workspace_id)
     if paths is None:
         return JSONResponse(

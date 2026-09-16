@@ -83,6 +83,10 @@ export const startEvaluation = (id) => api(`${P(id)}/evaluate`, {
 export const cancelEvaluationRun = (id, roundId) => api(`${P(id)}/evaluate/cancel`, {
   method: 'POST', body: JSON.stringify({ roundId }),
 });
+export const overrideVerdict = (id, resultId, verdict, reason) => api(
+  `${P(id)}/results/${encodeURIComponent(resultId)}`,
+  { method: 'PATCH', body: JSON.stringify({ verdict, reason }) },
+);
 export const diagnoseEvaluation = (id, roundId) => api(`${P(id)}/optimize/diagnose`, {
   method: 'POST', body: JSON.stringify({ roundId }),
 });

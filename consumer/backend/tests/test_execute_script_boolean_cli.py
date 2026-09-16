@@ -1,12 +1,15 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Regression tests for execute_script boolean CLI argument semantics."""
 
 from __future__ import annotations
 
+from operator import getitem
 from types import SimpleNamespace
 
 import agent.tools.execute_script as execute_script_module
 import pytest
 from agent.tools.execute_script import _build_cli_args_from_parameters
+from internal_access import internal
 
 
 @pytest.mark.parametrize(
@@ -44,7 +47,7 @@ def test_execute_script_builds_boolean_cli_arguments(parameter, value, expected)
 
     args, missing, invalid = _build_cli_args_from_parameters(
         script_parameters=[parameter],
-        arguments={parameter["name"]: value},
+        arguments={getitem(parameter, "name"): value},
     )
 
     assert (args, missing, invalid) == (expected, [], [])
@@ -143,7 +146,7 @@ def test_optional_runtime_parameter_can_be_omitted_without_context():
 
 
 def test_legacy_runtime_placeholder_cannot_fall_back_to_user_argument():
-    args, missing, invalid = execute_script_module._build_cli_args(
+    args, missing, invalid = internal(execute_script_module).build_cli_args(
         script_args=["--session-id", "<runtime.session_id>"],
         script_parameters=[],
         arguments={"session_id": "forged"},
@@ -156,7 +159,7 @@ def test_legacy_runtime_placeholder_cannot_fall_back_to_user_argument():
 
 
 def test_legacy_runtime_user_id_uses_backend_context_when_available():
-    args, missing, invalid = execute_script_module._build_cli_args(
+    args, missing, invalid = internal(execute_script_module).build_cli_args(
         script_args=["--user-id", "<runtime.user_id>"],
         script_parameters=[],
         arguments={"user_id": "forged-user"},
@@ -214,7 +217,7 @@ def test_execute_script_tool_injects_selected_operation_ontology_as_runtime_onto
     )
 
     assert outcome.content == "ok"
-    assert captured["runtime_context"]["ontology_id"] == "demo"
+    assert getitem(getitem(captured, "runtime_context"), "ontology_id") == "demo"
 
 
 def test_explicit_runtime_user_id_uses_backend_context():
