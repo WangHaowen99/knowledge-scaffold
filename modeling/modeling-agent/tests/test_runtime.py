@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +25,7 @@ from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
 from modeling_agent.service import (
     AgentService,
+    APPROVED_PLAN_REQUIRED_TOOLS,
     LiveRun,
     PURPOSE_REVIEW_ALLOWED_TOOLS,
     _absorb_plan_progress,
@@ -100,7 +102,7 @@ async def test_explicit_resume_plan_id_is_claimed_and_injected_into_runtime_prom
             message="继续页面选择的计划",
             resume_plan_id="plan_resume_demo",
         )
-        await wait_for_status(runtime, started["id"], {"completed", "failed", "suspended"})
+        settled = await wait_for_status(runtime, started["id"], {"waiting"})
 
         claim = next(call for call in gateway.calls if call["tool"] == "claim_candidate_workspace")
         assert claim["arguments"] == {"resume_plan_id": "plan_resume_demo"}
@@ -110,6 +112,10 @@ async def test_explicit_resume_plan_id_is_claimed_and_injected_into_runtime_prom
         assert "信号匹配规则" in runtime_prompt
         assert "计划完成前不得" in runtime_prompt
         assert any(call["tool"] == "get_change_plan" for call in gateway.calls)
+        assert settled["status"] == "waiting"
+        interaction = runtime.store.pending_interaction("project_resume_plan")
+        assert interaction is not None
+        assert set(interaction.payload["missingRequiredTools"]) == APPROVED_PLAN_REQUIRED_TOOLS
     finally:
         await runtime.shutdown()
 
@@ -2362,14 +2368,17 @@ async def test_material_purpose_review_requires_a_directive_for_every_document(s
         )
         active = runtime.store.active_run("project_incomplete_purpose_review")
         assert active is not None
-        completed = await wait_for_status(runtime, active.id, {"completed", "failed"})
+        settled = await wait_for_status(runtime, active.id, {"waiting"})
 
-        assert completed["status"] == "failed"
+        assert settled["status"] == "waiting"
         directives = [
             call["arguments"]["filename"] for call in gateway.calls
             if call["tool"] == "set_material_directive"
         ]
         assert directives == ["业务说明.docx"]
+        interaction = runtime.store.pending_interaction("project_incomplete_purpose_review")
+        assert interaction is not None
+        assert interaction.payload["missingRequiredTools"] == ["set_material_directive"]
     finally:
         await runtime.shutdown()
 
@@ -4559,10 +4568,13 @@ async def test_failed_full_read_tool_does_not_satisfy_completion_proof(settings)
             token="token_1",
             message="请全文精读《工艺规程.docx》。",
         )
-        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        settled = await wait_for_status(runtime, started["id"], {"waiting"})
 
-        assert completed["status"] == "failed"
+        assert settled["status"] == "waiting"
         assert [call["tool"] for call in gateway.calls].count("read_documents_fully") >= 1
+        interaction = runtime.store.pending_interaction("project_failed_full_read")
+        assert interaction is not None
+        assert interaction.payload["missingRequiredTools"] == ["read_documents_fully"]
         visible = "".join(
             event.payload.get("delta", "")
             for event in runtime.store.events_after("project_failed_full_read", 0)
@@ -6095,10 +6107,11 @@ async def test_approved_plan_progress_text_is_not_settled_completed(settings) ->
             token="token_approved_plan_progress",
             message="请按已批准的 5 项修复计划继续执行，完成候选预检、完整校验并生成确认卡",
         )
-        settled = await wait_for_status(
-            runtime, started["id"], {"completed", "failed", "suspended"}, timeout=15,
-        )
-        assert settled["status"] != "completed", settled
+        settled = await wait_for_status(runtime, started["id"], {"waiting"}, timeout=15)
+        assert settled["status"] == "waiting", settled
+        interaction = runtime.store.pending_interaction("project_approved_plan_progress")
+        assert interaction is not None
+        assert set(interaction.payload["missingRequiredTools"]) == APPROVED_PLAN_REQUIRED_TOOLS
         events = runtime.store.events_after("project_approved_plan_progress", 0)
         assert not any(
             event.kind == "status" and event.payload.get("text") == "本轮完成"
@@ -6157,10 +6170,11 @@ async def test_approved_plan_plain_text_is_not_settled_completed(settings) -> No
             token="token_approved_plan_plain_text",
             message=("我已在页面批准当前建模计划。请从计划第一项继续，先核对当前状态和写入回执，不要重复已经完成的任务。"),
         )
-        settled = await wait_for_status(
-            runtime, started["id"], {"completed", "failed", "suspended"}, timeout=15,
-        )
-        assert settled["status"] != "completed", settled
+        settled = await wait_for_status(runtime, started["id"], {"waiting"}, timeout=15)
+        assert settled["status"] == "waiting", settled
+        interaction = runtime.store.pending_interaction("project_approved_plan_plain_text")
+        assert interaction is not None
+        assert set(interaction.payload["missingRequiredTools"]) == APPROVED_PLAN_REQUIRED_TOOLS
     finally:
         await runtime.shutdown()
 
