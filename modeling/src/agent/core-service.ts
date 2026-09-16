@@ -1784,20 +1784,12 @@ export class AgentCoreService {
     context: AgentToolContext,
     args: Record<string, unknown>,
   ): void {
-    const goal = String(args.goal ?? '').trim();
     const tasks = Array.isArray(args.tasks) ? args.tasks : [];
-    const text = [goal, ...tasks.map((task) => (
-      task && typeof task === 'object' && !Array.isArray(task)
-        ? JSON.stringify(task)
-        : String(task ?? '')
-    ))].join('\n');
-    const explicitLedger = /(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)/iu.test(text);
-    if (explicitLedger) {
-      this.db.prepare(`UPDATE projects SET product_ledger_required = 1, updated_at = ? WHERE id = ?`)
-        .run(nowIso(), context.project.id);
-    }
-    const required = this.productLedgerRequired(context.project.id) || explicitLedger;
-    if (!required) return;
+    // 台账要不要做是项目策略，只能来自用户决定（require_product_ledger 或部署
+    // enforce）。这里曾经用正则扫 goal/tasks 再置位，但那段文本是模型自己写的
+    // 计划文案，不是用户意图：模型写一句「完整提取 N 项产品清单」就会在不知情的
+    // 情况下给自己加上写入门禁，且无法通过改措辞撤销。猜测不能当决定用。
+    if (!this.productLedgerRequired(context.project.id)) return;
     const hasFormalGeneration = tasks.some((task) => {
         if (!task || typeof task !== 'object' || Array.isArray(task)) return false;
         const value = task as Record<string, unknown>;
@@ -4937,6 +4929,21 @@ export class AgentCoreService {
     args: Record<string, unknown>,
   ) {
     const required = args.required !== false;
+    // 门禁竖起来的那一刻就必须是可满足的。台账唯一合法来源是资料分析提交的
+    // productInventory；来源不存在时启用，只会让后续 begin_product_ledger 与
+    // get_product_inventory_source 互相指向对方，把运行锁死在无解状态。
+    if (required && !this.productInventoryAnalysis(context.project.id)?.items.length) {
+      throw new AgentCoreError(
+        'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
+        '当前资料分析没有提交结构化产品事实，不能启用产品清单台账门禁',
+        [
+          '先让资料分析产出 productInventory，再启用台账门禁',
+          '资料本身不是可枚举清单时，不要启用该门禁',
+        ],
+        409,
+        { productInventory: false },
+      );
+    }
     this.db.prepare(`UPDATE projects SET product_ledger_required = ?, updated_at = ? WHERE id = ?`)
       .run(required ? 1 : 0, nowIso(), context.project.id);
     const ledger = this.getProductLedger(workspace);

@@ -547,6 +547,75 @@ test('enforce 模式下产品台账未通过会阻断规则 Change Set', async (
   assert.equal(blocked.json().gate, 'product_ledger_verified');
 });
 
+function seedProductInventoryAnalysis(projectId: string, itemCount = 2): string {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const id = `mar-${projectId}`;
+  const items = Array.from({ length: itemCount }, (_, index) => ({
+    canonicalItemId: `item-${index}`,
+    name: `产品 ${index}`,
+    ruleRefs: [`rule-${index}`],
+    sourceRecordIds: [`record-${index}`],
+    sourceLocator: `material:doc-synthetic#段落 ${index}`,
+  }));
+  db.prepare(`INSERT INTO material_analysis_runs (
+    id, project_id, source_set_fingerprint, brief_fingerprint, model_id,
+    protocol_version, plan_json, status, stage, result_json, created_at, updated_at, completed_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, projectId, `sources-${projectId}`, 'brief', 'synthetic-model', 'v1', '{}',
+    'completed', 'complete', JSON.stringify({ productInventory: items }), now, now, now,
+  );
+  return id;
+}
+
+test('资料分析没有结构化产品事实时，拒绝启用台账门禁而不是把运行锁死', async (t) => {
+  const project = createProject({ owner: 'alice', name: '台账门禁可满足性', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+
+  const refused = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
+  assert.equal(refused.statusCode, 409, refused.body);
+  assert.equal(refused.json().code, 'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE');
+  assert.equal(refused.json().productInventory, false);
+
+  // 拒绝必须是原子的：门禁没有落库，正式写入照常可用，不会留下无解状态。
+  assert.equal(getDb().prepare('SELECT product_ledger_required FROM projects WHERE id = ?')
+    .get(project.id).product_ledger_required, 0);
+
+  const source = await tool(app, project.id, 'get_product_inventory_source', {}, runId);
+  assert.equal(source.statusCode, 409, source.body);
+
+  // 来源就位后同一调用应当放行，证明拒绝的是「不可满足」而不是这个工具本身。
+  seedProductInventoryAnalysis(project.id);
+  const allowed = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
+  assert.equal(allowed.statusCode, 200, allowed.body);
+  assert.equal(allowed.json().required, true);
+});
+
+test('创建计划不再因模型自己写的计划文案而启用台账门禁', async (t) => {
+  const project = createProject({ owner: 'alice', name: '计划文案不触发门禁', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const revision = claimed.json().baseRevision;
+
+  // 这段措辞命中旧正则（产品/清单 + 完整/逐项/N 条），但它出自模型的规划，
+  // 不是用户要求；不应被当作项目策略。
+  const plan = await tool(app, project.id, 'create_change_plan', {
+    goal: '完整提取 23 项终产品清单并逐项去重', mode: 'generation', expected_revision: revision,
+    tasks: [{
+      client_key: 'rule-a', title: '生成规则 A', resource_kind: 'rule', target_key: 'rule-a',
+      allowed_tools: ['create_rule'], depends_on: [], acceptance: '规则具备来源证据', required: true,
+    }],
+  }, runId);
+  assert.notEqual(plan.json().code, 'PRODUCT_LEDGER_REQUIRED');
+  assert.equal(getDb().prepare('SELECT product_ledger_required FROM projects WHERE id = ?')
+    .get(project.id).product_ledger_required, 0);
+});
+
 test('项目要求产品台账时，advisory 模式也会在计划和旧写入路径前置阻断', async (t) => {
   const project = createProject({ owner: 'alice', name: '产品台账前置门禁', runtime: 'agent' });
   const app = appFor(t);
@@ -555,6 +624,7 @@ test('项目要求产品台账时，advisory 模式也会在计划和旧写入�
   assert.equal(claimed.statusCode, 200, claimed.body);
   const revision = claimed.json().baseRevision;
 
+  seedProductInventoryAnalysis(project.id);
   const required = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
   assert.equal(required.statusCode, 200, required.body);
   assert.equal(required.json().required, true);
