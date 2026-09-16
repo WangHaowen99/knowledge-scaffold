@@ -138,6 +138,10 @@ PHASE_GATES = {
     "evaluation": "ready_for_eval",
     "release": "releasable",
 }
+# 阶段自身的门禁。PHASE_GATES 记的是「进入某阶段要过哪道门」，表达不了
+# 「在这个阶段内部做到哪一步」。增量轮次的全部工作都在同一阶段内完成，
+# 它的前向门禁是全量口径的，拿来当本轮目标会派下基线治理这类本轮不该做的活。
+PHASE_SELF_GATES = {"increment": "increment_resolved"}
 
 
 def _phase_projection() -> list[dict[str, Any]]:
@@ -3176,6 +3180,78 @@ class AgentService:
         public["phaseLabel"] = PHASE_LABELS.get(target, target)
         self.events.publish(live.project_id, live.run_id, "state", public)
 
+    async def _gate_progress(
+        self,
+        live: LiveRun,
+        gate: str,
+    ) -> tuple[str, list[str], str]:
+        """读一道门禁，归一成 (状态, 可推进项, 卡住原因)。
+
+        状态五取一：unreachable 是网关调用失败；unknown 是门禁不存在或返回错误；
+        passed 已通过；actionable 有助手能独立推进的事；blocked 是服务端明确标注
+        为空——助手推不动，和「没算出来」必须区分开。前向门禁和阶段自身门禁共用
+        这段判定，但对 unreachable 的处置不同：前向门禁沿用原先的整体中止。
+        """
+        try:
+            result = await self._gateway.call(
+                project_id=live.project_id,
+                run_id=live.run_id,
+                token=live.token,
+                tool="gate_status",
+                arguments={"gate": gate},
+            )
+        except Exception:
+            # 目标只是引导，取不到不该影响本轮执行。
+            logger.warning("turn goal gate lookup failed run=%s gate=%s", live.run_id, gate)
+            return ("unreachable", [], "")
+        if result.get("error"):
+            return ("unknown", [], "")
+        if result.get("pass"):
+            return ("passed", [], "")
+        # 优先用服务端标注的「助手可独立推进项」。blockers 面向用户，说的是
+        # 「还差什么」，其中不少条目的主语是用户——把「由项目负责人完成发布」
+        # 指派给助手只会让它困惑或越界。
+        raw_actionable = result.get("agentActionable")
+        if raw_actionable is None:
+            # 服务端还没标注这道门禁，退回 blockers 保持兼容。
+            items = _string_list(result.get("blockers") or result.get("next"), 30)
+        else:
+            # 已标注：空表示这道门禁当前没有助手能独立推进的事，
+            # 此时不能退回 blockers，否则又会把用户的事派给助手。
+            items = _string_list(raw_actionable, 30)
+        if items:
+            return ("actionable", items, "")
+        if raw_actionable is None:
+            return ("unknown", [], "")
+        return ("blocked", [], "；".join(_string_list(result.get("blockers"), 3)))
+
+    @staticmethod
+    def _actionable_goal(gate: str, items: list[str]) -> str:
+        remaining = f"，该门禁共 {len(items)} 项待推进" if len(items) > 1 else ""
+        return (
+            f"{items[0]}\n\n"
+            f"这一项来自门禁 {gate}{remaining}。本轮只推进这一项，完成后即可结束本轮；"
+            "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
+            "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
+            "不要反复读取资料试图自行补齐前提。"
+        )
+
+    def _blocked_goal(self, live: LiveRun, gate: str, reason: str) -> str:
+        # 「算出来助手没事做」和「没算出来」必须给出不同指令。过去两者都是
+        # 返回空串，模型这一轮就完全没有目标——而没有目标正是空转的起点，
+        # 它会自己找活，再读一份资料永远算得上可执行动作。
+        live.situation.no_actionable_gate = gate
+        live.situation.no_actionable_reason = reason
+        detail = f"当前卡在：{reason}\n\n" if reason else ""
+        return (
+            "本轮没有你能独立推进的事项。\n\n"
+            f"{detail}"
+            f"门禁 {gate} 还没通过，但它剩下的事要由用户或专家在别处完成，"
+            "你再宣告多少遍也推不动。请用一段话向专家说明卡在哪一项、"
+            "需要他做什么，然后结束本轮。不要自行改换目标去做别的事，"
+            "也不要反复读取资料等它变化——外部事件会重新唤醒你。"
+        )
+
     async def _turn_goal(self, live: LiveRun) -> str:
         """从当前阶段「向前推进」那个门禁的未完成项里，派生本轮要完成的单一目标。
 
@@ -3186,6 +3262,10 @@ class AgentService:
 
         只看前进方向的门禁：退回目标阶段的门禁不代表本轮该做什么。
 
+        阶段自身门禁优先，且一旦有结论就不再看前向门禁。增量轮次的前向门禁
+        （knowledge_confirmed、ready_for_eval）都是全量口径，派下来的是「补齐
+        基线里某个操作的输入定义」这类本轮明令不准碰的活。
+
         两种返回都有意义，不能混用：有可推进项时返回那一项，门禁未过但服务端
         明确标注助手无可推进项时返回一段「说明并收尾」的指令，并在 situation
         上记下门禁名，让续跑判定收掉本轮。只有确实拿不到门禁结论时才返回空串。
@@ -3195,6 +3275,22 @@ class AgentService:
         phase = self.store.project_state(live.project_id).state.partition(":")[0]
         if phase not in PHASE_ORDER:
             return ""
+        self_gate = PHASE_SELF_GATES.get(phase)
+        if self_gate:
+            status, items, reason = await self._gate_progress(live, self_gate)
+            if status == "actionable":
+                return self._actionable_goal(self_gate, items)
+            if status == "blocked":
+                return self._blocked_goal(live, self_gate, reason)
+            if status == "passed":
+                return (
+                    "本阶段的工作已经完成。\n\n"
+                    f"门禁 {self_gate} 已通过。调用 transition_project_state 转到下一阶段"
+                    "（受影响内容涉及脚本时转 validation，否则转 evaluation），然后结束本轮。\n"
+                    "不要回头去做全量建模阶段的事，也不要自行改换目标。"
+                )
+            # unreachable / unknown：这个阶段拿不到自身门禁的结论（例如知识包导入
+            # 开的增量轮次还没有资料影响记录），落回前向门禁，保持原有行为。
         current_index = PHASE_ORDER.index(phase)
         blocked: tuple[str, str] | None = None
         for target in PHASE_EDGES.get(phase, ()):
@@ -3203,64 +3299,21 @@ class AgentService:
             gate = PHASE_GATES.get(target)
             if not gate:
                 continue
-            try:
-                result = await self._gateway.call(
-                    project_id=live.project_id,
-                    run_id=live.run_id,
-                    token=live.token,
-                    tool="gate_status",
-                    arguments={"gate": gate},
-                )
-            except Exception:
-                # 目标只是引导，取不到不该影响本轮执行。
-                logger.warning("turn goal gate lookup failed run=%s gate=%s", live.run_id, gate)
+            status, items, reason = await self._gate_progress(live, gate)
+            if status == "unreachable":
+                # 取不到门禁结论时不派目标，沿用原先的整体中止。
                 return ""
-            if result.get("error") or result.get("pass"):
+            if status in {"unknown", "passed"}:
                 continue
-            # 优先用服务端标注的「助手可独立推进项」。blockers 面向用户，说的是
-            # 「还差什么」，其中不少条目的主语是用户——把「由项目负责人完成发布」
-            # 指派给助手只会让它困惑或越界。
-            raw_actionable = result.get("agentActionable")
-            if raw_actionable is None:
-                # 服务端还没标注这道门禁，退回 blockers 保持兼容。
-                items = _string_list(result.get("blockers") or result.get("next"), 30)
-            else:
-                # 已标注：空表示这道门禁当前没有助手能独立推进的事，
-                # 此时不能退回 blockers，否则又会把用户的事派给助手。
-                items = _string_list(raw_actionable, 30)
-            if not items:
-                if raw_actionable is not None and blocked is None:
-                    # 明确标注为空：这道门禁助手推不动。先记下来继续看后面的
-                    # 前向门禁——增量轮次这类阶段有不止一条前向边，不能因为
-                    # 第一道卡住就放弃第二道确实有活的那道。
-                    blocked = (gate, "；".join(_string_list(result.get("blockers"), 3)))
+            if status == "blocked" and blocked is None:
+                # 先记下来继续看后面的前向门禁——增量轮次这类阶段有不止一条
+                # 前向边，不能因为第一道卡住就放弃第二道确实有活的那道。
+                blocked = (gate, reason)
                 continue
-            remaining = (
-                f"，该门禁共 {len(items)} 项待推进" if len(items) > 1 else ""
-            )
-            return (
-                f"{items[0]}\n\n"
-                f"这一项来自门禁 {gate}{remaining}。本轮只推进这一项，完成后即可结束本轮；"
-                "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
-                "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
-                "不要反复读取资料试图自行补齐前提。"
-            )
+            if status == "actionable":
+                return self._actionable_goal(gate, items)
         if blocked is not None:
-            # 「算出来助手没事做」和「没算出来」必须给出不同指令。过去两者都是
-            # 返回空串，模型这一轮就完全没有目标——而没有目标正是空转的起点，
-            # 它会自己找活，再读一份资料永远算得上可执行动作。
-            gate, reason = blocked
-            live.situation.no_actionable_gate = gate
-            live.situation.no_actionable_reason = reason
-            detail = f"当前卡在：{reason}\n\n" if reason else ""
-            return (
-                "本轮没有你能独立推进的事项。\n\n"
-                f"{detail}"
-                f"门禁 {gate} 还没通过，但它剩下的事要由用户或专家在别处完成，"
-                "你再宣告多少遍也推不动。请用一段话向专家说明卡在哪一项、"
-                "需要他做什么，然后结束本轮。不要自行改换目标去做别的事，"
-                "也不要反复读取资料等它变化——外部事件会重新唤醒你。"
-            )
+            return self._blocked_goal(live, blocked[0], blocked[1])
         return ""
 
     async def _state_for_agent(self, live: LiveRun) -> dict[str, Any]:

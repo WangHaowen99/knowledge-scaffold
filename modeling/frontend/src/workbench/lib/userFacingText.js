@@ -60,6 +60,7 @@ const TOKEN_LABELS = {
   evaluation_passed: '正式评测',
   ready_for_eval: '评测准备',
   product_ledger_verified: '产品清单台账',
+  increment_resolved: '增量影响处理',
   deterministic_confirmed: '确定性计算范围确认',
   releasable: '发布条件',
   query_eval_db: '查询评测数据',

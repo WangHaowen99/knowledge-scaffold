@@ -16,9 +16,11 @@ import type { ArtifactChange, ArtifactFileDiff } from '../artifacts/repository.j
 import { getDb, nowIso } from '../db/index.js';
 import {
   applyMaterialInvalidation,
+  listMaterialImpacts,
   resolveMaterialImpactScope,
   type AffectedKnowledgeKind,
   type AffectedKnowledgeResource,
+  type StoredMaterialImpact,
 } from '../documents/material-impact.js';
 import { getDocumentRawContent, listDocuments, updateDocumentDirectives } from '../documents/repo.js';
 import {
@@ -299,6 +301,7 @@ const GATE_LABELS: Record<string, string> = {
   process_confirmed: '业务流程确认',
   knowledge_confirmed: '知识内容确认',
   product_ledger_verified: '产品清单台账',
+  increment_resolved: '增量影响处理',
   deterministic_confirmed: '确定性计算范围确认',
   modeling_complete: '建模完成',
   ready_for_eval: '评测准备',
@@ -9130,7 +9133,8 @@ export class AgentCoreService {
     const documents = listDocuments(workspace.project_id);
     const parsed = documents.filter((item) => item.parseStatus === 'parsed').length;
     const failed = documents.filter((item) => item.parseStatus === 'failed');
-    const confirmedPaths = this.confirmedPaths(workspace.project_id);
+    const confirmedTimes = this.confirmedPathTimes(workspace.project_id);
+    const confirmedPaths = new Set(confirmedTimes.keys());
     const workspaceChanges = this.changes(workspace);
     const { files, spec: storedWorkingSpec } = await this.overlay(workspace, workspaceChanges);
     const workingSpec = resolveAgentStudioSpec(storedWorkingSpec, files, workspaceChanges);
@@ -9351,6 +9355,24 @@ export class AgentCoreService {
           : [],
       };
     }
+    // 增量轮次的进度，只有资料影响记录能表达。前向门禁（knowledge_confirmed、
+    // ready_for_eval）都是全量口径，把它们当增量的目标，派下来的就是「补齐基线里
+    // 某个操作的输入定义」这类本轮明令不准碰的活。
+    //
+    // 不需要知道 Agent 侧的 roundMode：有正式基线 + 有语义变化的影响记录，
+    // 就是增量要处理的事实。条件性出现，和 product_ledger_verified 同一模式；
+    // 但判据是「存在影响记录」而不是「存在未处理影响」——处理完门禁要能 pass，
+    // 消失的话 gate_status 会 404。
+    const semanticImpacts = listMaterialImpacts(this.db, workspace.project_id)
+      .filter((item) => item.semanticChanged === true);
+    if (trustedProcessBaseline && semanticImpacts.length) {
+      gates.increment_resolved = incrementImpactGate(
+        semanticImpacts,
+        files,
+        pendingPaths,
+        confirmedTimes,
+      );
+    }
     const modelingReady = combine(gates, [
       'materials_ready',
       'goal_confirmed',
@@ -9392,22 +9414,35 @@ export class AgentCoreService {
     return gates;
   }
 
-  private confirmedPaths(projectId: string): Set<string> {
-    const rows = this.db.prepare(`SELECT c.groups_json, a.selected_groups_json
+  /**
+   * 每个路径最近一次被确认的时间。
+   *
+   * 增量门禁要判断的是「这条影响记录产生之后，受影响的内容有没有重新确认过」，
+   * 光有「确认过」的集合不够——存量基线里几乎每个路径都确认过。
+   */
+  private confirmedPathTimes(projectId: string): Map<string, string> {
+    const rows = this.db.prepare(`SELECT c.groups_json, a.selected_groups_json, a.created_at
       FROM agent_confirmations a JOIN artifact_candidate_revisions c ON c.id = a.candidate_id
       WHERE a.project_id = ? ORDER BY a.created_at`).all(projectId) as any[];
-    const paths = new Set<string>();
+    const times = new Map<string, string>();
     for (const row of rows) {
       const selected = new Set(parseArray(row.selected_groups_json));
       const groups = parseObjects(row.groups_json);
+      const confirmedAt = String(row.created_at ?? '');
       for (const group of groups) {
         if (!selected.has(String(group.id))) continue;
         for (const change of Array.isArray(group.changes) ? group.changes : []) {
-          if (change && typeof change === 'object' && 'path' in change) paths.add(publicPath(String(change.path)));
+          if (!change || typeof change !== 'object' || !('path' in change)) continue;
+          // 行已按 created_at 升序，后写入的就是更晚的一次确认。
+          times.set(publicPath(String(change.path)), confirmedAt);
         }
       }
     }
-    return paths;
+    return times;
+  }
+
+  private confirmedPaths(projectId: string): Set<string> {
+    return new Set(this.confirmedPathTimes(projectId).keys());
   }
 
   private evaluationStatus(projectId: string) {
@@ -11667,6 +11702,71 @@ function findKnowledgeResourcePath(
   const frontmatterKey = new RegExp(`^key:\\s*["']?${escaped}["']?\\s*$`, 'mu');
   return candidates.find(([, content]) => frontmatterKey.test(content))?.[0]
     ?? candidates.find(([path]) => path.split('/').at(-1)?.replace(/\.(?:md|py)$/u, '') === key)?.[0];
+}
+
+/**
+ * 增量轮次的三档进度：界定影响范围 -> 改完受影响资源 -> 候选确认。
+ *
+ * 判据全部来自 material_revision_impacts：scopeResolved 由 resolveMaterialImpactScope
+ * 持久化，affectedResources 是传播算好的影响面。「这一项处理过没有」看的是受影响路径
+ * 有没有晚于该条影响记录的确认——存量基线里几乎每个路径都确认过，光看「确认过」没用。
+ *
+ * agentActionable 的顺序就是三档顺序：_turn_goal 只取第一项作为本轮目标，
+ * 排错了就会让增量在还没界定范围时先去发确认卡。
+ */
+export function incrementImpactGate(
+  impacts: StoredMaterialImpact[],
+  files: Record<string, string>,
+  pendingPaths: ReadonlySet<string>,
+  confirmedTimes: ReadonlyMap<string, string>,
+): GateResults[string] {
+  const unscoped = impacts.filter((impact) => impact.scopeResolved === false);
+  const unhandled = new Map<string, string>();
+  const staged = new Map<string, string>();
+  for (const impact of impacts) {
+    if (impact.scopeResolved === false) continue;
+    const label = impact.sourceKey || impact.id;
+    for (const resource of impact.affectedResources ?? []) {
+      const path = findKnowledgeResourcePath(files, String(resource.kind), String(resource.key));
+      // 受影响资源已经被删掉时没有路径可处理，不该因此卡住增量。
+      if (!path) continue;
+      if (pendingPaths.has(path)) {
+        staged.set(path, label);
+        continue;
+      }
+      const confirmedAt = confirmedTimes.get(path);
+      if (!confirmedAt || confirmedAt < impact.createdAt) unhandled.set(path, label);
+    }
+  }
+  const sources = (items: Iterable<string>) => [...new Set(items)].join('、');
+  const blockers = [
+    ...unscoped.map((impact) => (
+      `界定《${impact.sourceKey || impact.id}》的影响范围，范围确定前不能宣称任何内容保持有效`
+    )),
+    ...(unhandled.size
+      ? [`处理受资料变更影响的 ${unhandled.size} 项内容：${sources(unhandled.values())}`]
+      : []),
+    ...(staged.size ? [`确认已修改的 ${staged.size} 项受影响内容`] : []),
+  ];
+  return {
+    pass: blockers.length === 0,
+    blockers,
+    agentActionable: unscoped.length
+      ? [
+        `调用 analyze_material_impact 读取《${unscoped[0].sourceKey || unscoped[0].id}》的影响，`
+        + '再按读到的资料和相关知识用 direct_resources 提交直接影响起点；'
+        + '范围未界定前不要生成候选，也不要把全包标成受影响',
+      ]
+      : unhandled.size
+        ? [
+          `只处理受资料变更影响的这 ${unhandled.size} 项内容并形成候选：`
+          + `${[...unhandled.keys()].slice(0, 8).join('、')}。`
+          + '未受影响的正式内容保持不变，基线已有问题不属于本次增量',
+        ]
+        : staged.size
+          ? [`为已修改的 ${staged.size} 项受影响内容发起确认卡，一次覆盖一组相关改动`]
+          : [],
+  };
 }
 
 function knowledgeKindLabel(kind: string): string {

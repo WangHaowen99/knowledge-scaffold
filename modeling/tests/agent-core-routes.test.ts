@@ -25,6 +25,7 @@ const [
   { parseExcel },
   { config },
   { normalizePlanTargetKey },
+  { storeMaterialImpact },
 ] = await Promise.all([
   import('../src/agent/core-routes.js'),
   import('../src/projects/repo.js'),
@@ -38,6 +39,7 @@ const [
   import('../src/documents/parser.js'),
   import('../src/config.js'),
   import('../src/agent/change-control.js'),
+  import('../src/documents/material-impact.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -4751,4 +4753,47 @@ test('资料按章节读取，分页终点吸附到块边界不切断表格', as
   }, runId);
   assert.equal(missing.statusCode, 404, missing.body);
   assert.equal(missing.json().code, 'DOCUMENT_SECTION_NOT_FOUND');
+});
+
+test('增量影响门禁只在有正式基线和语义影响记录时出现，并按进度派活', async (t) => {
+  const artifacts = getPackageArtifactStore();
+  const project = createProject({ owner: 'alice', name: '增量影响门禁', runtime: 'agent' });
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: `baseline-${project.id}`, name: project.name, description: '已发布基线。',
+  });
+  await artifacts.saveFiles(project.id, {
+    expectedRevision: initial.revision.oid,
+    files: { 'package/objects/customer.md': '---\nkey: customer\n---\n\n# 客户\n\n基线内容。\n' },
+    action: {
+      cause: 'package_release', summary: '建立正式基线', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const app = appFor(t);
+  const runId = `increment-gate-${project.id}`;
+
+  // 没有资料影响记录时这道门禁不该出现，普通建模流程不多一条视觉闸位
+  const absent = await tool(app, project.id, 'gate_status', {
+    gate: 'increment_resolved',
+  }, runId);
+  assert.equal(absent.statusCode, 400, absent.body);
+  assert.equal(absent.json().code, 'GATE_NOT_FOUND');
+
+  storeMaterialImpact(getDb(), project.id, {
+    sourceKey: '结算口径说明',
+    kind: 'replaced',
+    semanticChanged: true,
+    previous: { id: 'doc_prev', filename: '结算口径说明.md' },
+    current: { id: 'doc_now', filename: '结算口径说明.md' },
+  } as any, {
+    semanticChanged: true, scopeResolved: false, affectedResources: [], staleWorkflowSteps: [],
+  });
+
+  const unscoped = await tool(app, project.id, 'gate_status', {
+    gate: 'increment_resolved',
+  }, runId);
+  assert.equal(unscoped.statusCode, 200, unscoped.body);
+  assert.equal(unscoped.json().pass, false);
+  // 增量阶段只看这一道门禁，判成「助手无事可做」等于本轮拿不到指派目标
+  assert.equal(unscoped.json().agentActionable.length, 1);
+  assert.match(unscoped.json().agentActionable[0], /analyze_material_impact/u);
 });

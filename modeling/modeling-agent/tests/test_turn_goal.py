@@ -291,3 +291,165 @@ async def test_missing_field_falls_back_to_blockers(settings) -> None:
         assert "demo-op" in goal_section(goals[0])
     finally:
         await runtime.shutdown()
+
+
+class GateAwareGateway(FakeGateway):
+    """按门禁名返回不同结果。
+
+    默认的 FakeGateway 不分 gate 名，验证不了「增量阶段只认自身门禁」——
+    那条判定的全部意义就在于区分 increment_resolved 和前向门禁。
+    """
+
+    def __init__(self, gates: dict[str, dict], **responses) -> None:
+        super().__init__(responses)
+        self.gates = gates
+
+    async def call(self, *, project_id, run_id, token, tool, arguments):
+        result = await super().call(
+            project_id=project_id, run_id=run_id, token=token,
+            tool=tool, arguments=arguments,
+        )
+        if tool != "gate_status":
+            return result
+        gate = str(arguments.get("gate") or "")
+        if gate not in self.gates:
+            return {"error": "GATE_NOT_FOUND", "reason": f"未知门禁：{gate}"}
+        return dict(self.gates[gate])
+
+
+def enter_increment(runtime, project_id: str) -> None:
+    initial = runtime.store.project_state(project_id)
+    released = runtime.store.transition_project_state(
+        project_id,
+        expected_revision=initial.revision,
+        next_state="release:completed",
+        cause="test_released",
+    )
+    assert released.state == "release:completed"
+    started, _created = runtime.store.start_increment_round(
+        project_id,
+        baseline_revision="sha256:released-1",
+        package_version="1.0.0",
+    )
+    assert started.state == "increment:idle"
+
+
+@pytest.mark.asyncio
+async def test_increment_goal_comes_from_its_own_gate(settings) -> None:
+    """增量轮次的目标只能来自 increment_resolved，不能落到全量口径门禁上。
+
+    前向门禁 knowledge_confirmed / ready_for_eval 都是对全包算的。把它们当增量
+    的目标，派下来的是「补全基线里某个操作的输入定义」——而增量约束恰恰写着
+    「未受影响的正式内容保持不变」。目标在让模型做约束禁止它做的事。
+    """
+    model = ScriptedModel(
+        [[ToolTurn("update_work_notes", {"markdown": "# 进展"})], []],
+        final="本轮已完成。",
+    )
+    gateway = GateAwareGateway({
+        "increment_resolved": {
+            "pass": False,
+            "blockers": ["处理受资料变更影响的 2 项内容"],
+            "agentActionable": ["只处理受资料变更影响的这 2 项内容并形成候选：objects/customer.md"],
+        },
+        "knowledge_confirmed": {
+            "pass": False,
+            "blockers": ["补全业务操作「baseline-op」的输入定义"],
+            "agentActionable": ["补全业务操作「baseline-op」的输入定义"],
+        },
+        "ready_for_eval": {"pass": False, "blockers": [], "agentActionable": []},
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        enter_increment(runtime, "project_increment_goal")
+        started = await runtime.start_run(
+            project_id="project_increment_goal", token="token_1", message="继续",
+        )
+        await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
+        )
+        goals = [t for t in system_texts(model) if GOAL_HEADING in t]
+        assert goals, "增量轮次没有收到指派目标"
+        goal = goal_section(goals[0])
+        assert "objects/customer.md" in goal
+        assert "baseline-op" not in goal, "落回了全量口径的 knowledge_confirmed"
+        assert "increment_resolved" in goal
+        # 证明走的是自身门禁那条路。不能反过来断言「没查过 knowledge_confirmed」——
+        # _state_for_agent 本来就会为每条前向边查一次 gate_status。
+        gates_asked = [
+            item["arguments"].get("gate") for item in gateway.calls
+            if item["tool"] == "gate_status"
+        ]
+        assert "increment_resolved" in gates_asked
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_increment_gate_passed_assigns_phase_transition(settings) -> None:
+    """增量门禁通过后派的是「转下一阶段」，不是回头做全量建模。"""
+    model = ScriptedModel(
+        [[ToolTurn("update_work_notes", {"markdown": "# 进展"})], []],
+        final="本轮已完成。",
+    )
+    gateway = GateAwareGateway({
+        "increment_resolved": {"pass": True, "blockers": [], "agentActionable": []},
+        "knowledge_confirmed": {
+            "pass": False,
+            "blockers": ["补全业务操作「baseline-op」的输入定义"],
+            "agentActionable": ["补全业务操作「baseline-op」的输入定义"],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        enter_increment(runtime, "project_increment_done")
+        started = await runtime.start_run(
+            project_id="project_increment_done", token="token_1", message="继续",
+        )
+        await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
+        )
+        goals = [t for t in system_texts(model) if GOAL_HEADING in t]
+        assert goals, "增量门禁通过后仍应给出收尾目标"
+        goal = goal_section(goals[0])
+        assert "transition_project_state" in goal
+        assert "baseline-op" not in goal, "通过后又落回了全量口径门禁"
+    finally:
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_increment_without_own_gate_falls_back_to_forward_gates(settings) -> None:
+    """自身门禁不存在时落回前向门禁，保持原有行为。
+
+    知识包导入开的增量轮次没有资料影响记录，Core 不会给出 increment_resolved。
+    这种情况下不能让本轮完全没有目标——没有目标正是空转的起点。
+    """
+    model = ScriptedModel(
+        [[ToolTurn("update_work_notes", {"markdown": "# 进展"})], []],
+        final="本轮已完成。",
+    )
+    gateway = GateAwareGateway({
+        "knowledge_confirmed": {
+            "pass": False,
+            "blockers": ["核对尚未确认的 3 个知识条目"],
+            "agentActionable": ["核对尚未确认的 3 个知识条目并发起确认卡"],
+        },
+    })
+    runtime = service(settings, model, gateway)
+    await runtime.startup()
+    try:
+        enter_increment(runtime, "project_increment_no_gate")
+        started = await runtime.start_run(
+            project_id="project_increment_no_gate", token="token_1", message="继续",
+        )
+        await wait_for_status(
+            runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
+        )
+        goals = [t for t in system_texts(model) if GOAL_HEADING in t]
+        assert goals, "自身门禁缺失时应落回前向门禁"
+        assert "3 个知识条目" in goal_section(goals[0])
+    finally:
+        await runtime.shutdown()
