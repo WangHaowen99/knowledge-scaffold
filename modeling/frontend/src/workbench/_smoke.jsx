@@ -1719,6 +1719,62 @@ try {
   console.log('✓ 暂停计划使用显式恢复卡且不被历史回放覆盖');
 } catch (e) { console.log('✗ 暂停计划恢复卡:', e.message); bad++; }
 
+/* 带着待批准计划刷新页面：bootstrap 会把计划卡片预插在流首，
+   历史回放到计划事件时应把卡片挪回时间顺序位置；回放结束后的实时更新仍原地替换。 */
+const planReplaySmoke = {
+  id: 'plan-replay-smoke',
+  goal: '按资料生成建模计划',
+  status: 'active',
+  approval_status: 'pending',
+  version: 1,
+  tasks: [{ id: 'task-replay-a', title: '同步物理对象', status: 'pending', required: true }],
+};
+store.set({
+  demo: false,
+  loading: false,
+  interaction: null,
+  pausedPlan: null,
+  changePlan: planReplaySmoke,
+  run: null,
+  uploads: [],
+  terminalRunIds: [],
+  lastSeq: 0,
+  replayUntilSeq: 2,
+  messages: [{
+    id: 'change-plan-plan-replay-smoke',
+    role: 'assistant',
+    createdAt: '2026-01-01T00:50:00Z',
+    blocks: [{ type: 'plan', plan: planReplaySmoke, items: [] }],
+  }],
+});
+actions.handleEvent({
+  eventType: 'message', seq: 1, role: 'system', createdAt: '2026-01-01T00:29:00Z',
+  blocks: [{ type: 'text', text: '资料解析成功' }],
+});
+actions.handleEvent({
+  eventType: 'change_plan', seq: 2, plan: planReplaySmoke, createdAt: '2026-01-01T00:50:00Z',
+});
+actions.handleEvent({
+  eventType: 'message', seq: 3, role: 'assistant', createdAt: '2026-01-01T00:55:00Z',
+  blocks: [{ type: 'text', text: '等待批准中' }],
+});
+actions.handleEvent({
+  eventType: 'change_plan', seq: 4,
+  plan: { ...planReplaySmoke, version: 2 }, createdAt: '2026-01-01T00:58:00Z',
+});
+try {
+  const ids = store.get().messages.map((message) => message.id);
+  const planIndex = ids.indexOf('change-plan-plan-replay-smoke');
+  const planMessage = store.get().messages[planIndex];
+  if (JSON.stringify(ids) !== JSON.stringify(['event-1', 'change-plan-plan-replay-smoke', 'event-3'])) {
+    throw new Error(`计划卡片没有回到历史时间位置：${ids.join(',')}`);
+  }
+  if (planMessage?.blocks?.[0]?.plan?.version !== 2) {
+    throw new Error('回放结束后的计划更新没有原地刷新卡片内容');
+  }
+  console.log('✓ 待批准计划卡片在历史回放后回到时间顺序位置');
+} catch (e) { console.log('✗ 计划卡片回放归位:', e.message); bad++; }
+
 const messageTimeSmokeCreatedAt = '2026-08-24T06:02:00.000Z';
 store.set({
   demo: false,
