@@ -47,6 +47,18 @@ export function resolveCandidateGroupSelection(groups, requestedGroupIds) {
   };
 }
 
+/* 流内确认卡待答复时，同一候选不再在面板重复展示：两个入口走不同后端通道，
+   双开会让专家在两处看到同一个决定、分组数量还对不上。老交互没有候选 id 时
+   整体隐藏兜底，此时流内确认卡是唯一操作面。 */
+export function visibleCandidateRevisions(candidates = [], pendingConfirmation = null) {
+  if (!pendingConfirmation
+    || pendingConfirmation.status !== 'pending'
+    || pendingConfirmation.kind !== 'confirmation') return candidates;
+  const confirmingId = String(pendingConfirmation.payload?.candidateRevision || '');
+  if (!confirmingId) return [];
+  return candidates.filter((candidate) => String(candidate?.id ?? '') !== confirmingId);
+}
+
 export function candidateRevisionAcceptedNotice(response = {}) {
   const revision = String(
     response?.currentRevision ?? response?.candidate?.acceptedRevision ?? '',
@@ -252,6 +264,7 @@ export default function CandidateRevisionPanel({
   projectId,
   candidates: suppliedCandidates,
   refreshKey,
+  pendingConfirmation,
   onVisibilityChange,
   onPreview,
   onChanged,
@@ -264,7 +277,7 @@ export default function CandidateRevisionPanel({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState(null);
-  const candidates = suppliedCandidates ?? loaded ?? [];
+  const candidates = visibleCandidateRevisions(suppliedCandidates ?? loaded ?? [], pendingConfirmation);
   const visibilityKey = candidateRevisionVisibilityKey(candidates, error, notice?.key);
 
   useEffect(() => {

@@ -27,6 +27,7 @@ import ActivityLine, { executionStartedAt, visibleRunActivity } from './right/Ac
 import Composer, { shouldSendComposerMessage } from './right/Composer.jsx';
 import { MaterialPurposeBatchCard, messageText } from './right/RightPane.jsx';
 import RightPane from './right/RightPane.jsx';
+import CandidateRevisionPanel, { visibleCandidateRevisions } from '../CandidateRevisionPanel.jsx';
 import {
   nextReadyMaterialPurposeReview,
   packageUploadFollowUp,
@@ -1774,6 +1775,46 @@ try {
   }
   console.log('✓ 待批准计划卡片在历史回放后回到时间顺序位置');
 } catch (e) { console.log('✗ 计划卡片回放归位:', e.message); bad++; }
+
+/* 流内确认卡待答复时，底部候选面板不重复展示同一候选；
+   其他候选、已答复交互和发布确认不受影响。 */
+const panelConfirmCandidate = {
+  id: 'cand-panel-smoke',
+  status: 'pending',
+  summary: '建模目标草稿已完成，请确认。',
+  groups: [
+    { id: 'goal', summary: '建模目标确认', changedPaths: ['.modeling/goal.md'], dependsOn: [] },
+    { id: 'runtime_context', summary: '同步建模计划与会话锚点', changedPaths: ['.modeling/plan.md'], dependsOn: ['goal'] },
+  ],
+};
+try {
+  const pendingConfirm = {
+    id: 'interaction-panel-smoke', kind: 'confirmation', status: 'pending',
+    payload: { candidateRevision: 'cand-panel-smoke' },
+  };
+  const otherCandidate = { ...panelConfirmCandidate, id: 'cand-panel-other', summary: '流程图修订' };
+  const kept = visibleCandidateRevisions([panelConfirmCandidate, otherCandidate], pendingConfirm);
+  if (kept.length !== 1 || kept[0].id !== 'cand-panel-other') {
+    throw new Error('确认中的候选没有从面板隐藏，或误伤了其他候选');
+  }
+  if (visibleCandidateRevisions([panelConfirmCandidate], { ...pendingConfirm, payload: {} }).length !== 0) {
+    throw new Error('交互缺候选 id 时面板没有整体隐藏兜底');
+  }
+  if (visibleCandidateRevisions([panelConfirmCandidate], { ...pendingConfirm, status: 'answered' }).length !== 1
+    || visibleCandidateRevisions([panelConfirmCandidate], { ...pendingConfirm, kind: 'release_confirmation' }).length !== 1
+    || visibleCandidateRevisions([panelConfirmCandidate], null).length !== 1) {
+    throw new Error('非待答复确认交互不应影响面板展示');
+  }
+  const hiddenHtml = renderToString(<CandidateRevisionPanel projectId="p-panel-smoke"
+    candidates={[panelConfirmCandidate]} pendingConfirmation={pendingConfirm} />);
+  const shownHtml = renderToString(<CandidateRevisionPanel projectId="p-panel-smoke"
+    candidates={[panelConfirmCandidate]} pendingConfirmation={null} />);
+  if (hiddenHtml.includes('候选修订') || !shownHtml.includes('候选修订')
+    || !shownHtml.includes('同步建模计划与会话锚点')) {
+    throw new Error('面板渲染没有按流内确认状态隐藏或恢复');
+  }
+  console.log('✓ 流内确认卡待答复时底部面板不重复展示同一候选');
+} catch (e) { console.log('✗ 确认卡与候选面板去重:', e.message); bad++; }
 
 const messageTimeSmokeCreatedAt = '2026-08-24T06:02:00.000Z';
 store.set({
