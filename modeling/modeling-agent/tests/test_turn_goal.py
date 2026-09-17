@@ -421,11 +421,13 @@ async def test_increment_gate_passed_assigns_phase_transition(settings) -> None:
 
 
 @pytest.mark.asyncio
-async def test_increment_without_own_gate_falls_back_to_forward_gates(settings) -> None:
-    """自身门禁不存在时落回前向门禁，保持原有行为。
+async def test_increment_without_own_gate_assigns_idle_goal(settings) -> None:
+    """自身门禁拿不到结论时派「说明并待命」，绝不落回全量前向门禁。
 
     知识包导入开的增量轮次没有资料影响记录，Core 不会给出 increment_resolved。
-    这种情况下不能让本轮完全没有目标——没有目标正是空转的起点。
+    过去这里落回前向门禁防空转，但前向门禁全是全量口径——派出的正是增量
+    约束明令「不归本次管」的基线旧账。防空转和阶段隔离都要：待命目标既给
+    本轮明确指令（说明现状、收尾），又不越增量的界。
     """
     model = ScriptedModel(
         [[ToolTurn("update_work_notes", {"markdown": "# 进展"})], []],
@@ -449,7 +451,11 @@ async def test_increment_without_own_gate_falls_back_to_forward_gates(settings) 
             runtime, started["id"], {"completed", "failed", "waiting", "suspended"},
         )
         goals = [t for t in system_texts(model) if GOAL_HEADING in t]
-        assert goals, "自身门禁缺失时应落回前向门禁"
-        assert "3 个知识条目" in goal_section(goals[0])
+        assert goals, "待命也要给指令，不能让这一轮完全没有目标"
+        goal = goal_section(goals[0])
+        assert "没有已界定的增量影响" in goal
+        assert "结束本轮" in goal
+        # 全量口径的活绝不能进增量轮的目标
+        assert "3 个知识条目" not in goal, "落回了全量前向门禁"
     finally:
         await runtime.shutdown()

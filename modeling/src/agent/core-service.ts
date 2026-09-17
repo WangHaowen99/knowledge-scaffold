@@ -189,6 +189,7 @@ import {
   CHANGE_SET_DOMAIN_TOOLS,
   OBJECT_RELATION_REVIEW_TARGET_KEY,
   OBJECT_RELATION_REVIEW_TOOL,
+  normalizePlanTargetKey,
   parseChangeSetActions,
   type ChangeSetActionInput,
 } from './change-control.js';
@@ -1700,6 +1701,15 @@ export class AgentCoreService {
         workingSpec,
         working.files,
       );
+      // 增量隔离的确定性守卫：过去「只动受影响部分」只写在提示词里，模型把
+      // 未受影响的基线资源列进计划没有任何代码会拦——增量隔离是偏好不是不变量。
+      // 判据与 increment_resolved 门禁同源但更严：项目正式发布过，之后的既有
+      // 资源修改就必须落在已界定的影响范围内（发布后的迭代本来就该按影响口径
+      // 走；专家明确要求的全量迭代由撞墙后的裁决卡知情确认）。计划模式没有
+      // increment 取值，发布事实才是增量语境的可靠信号。
+      if (this.projectHasConfirmedRelease(context.project.id)) {
+        this.assertIncrementPlanScope(context.project.id, sourcePolicy.tasks, workingSpec);
+      }
       const projectTables = this.tables(context.project.id);
       const plan = this.changeControl.createPlan({
         projectId: context.project.id,
@@ -1731,6 +1741,43 @@ export class AgentCoreService {
     } catch (error) {
       throw normalizeChangeControlError(error);
     }
+  }
+
+  /** 项目是否有过正式发布——增量口径生效的确定性信号。 */
+  private projectHasConfirmedRelease(projectId: string): boolean {
+    const row = this.db.prepare(`SELECT 1 FROM artifact_revisions
+      WHERE project_id = ? AND cause = 'agent_release_confirmed' LIMIT 1`).get(projectId);
+    return Boolean(row);
+  }
+
+  /** 增量计划的范围守卫：修改既有资源必须落在已界定的影响闭包内。
+   *
+   *  代码判断的是动作的合法性，不是语言的含义：专家插话要求处理基线内容时，
+   *  模型在这里撞墙，按 next 指引升级 conflict_decision 裁决卡请专家知情决定。 */
+  private assertIncrementPlanScope(
+    projectId: string,
+    rawTasks: unknown,
+    workingSpec: PackageSpec,
+  ): void {
+    const outOfScope = incrementPlanScopeViolations(
+      rawTasks,
+      workingSpec,
+      listMaterialImpacts(this.db, projectId),
+    );
+    if (!outOfScope.length) return;
+    throw new AgentCoreError(
+      'INCREMENT_SCOPE_VIOLATION',
+      `增量计划包含不在本轮影响范围内的既有内容：${outOfScope.slice(0, 8).join('、')}`,
+      [
+        '只把受资料变更影响的内容列入增量计划；基线已有问题不属于本次增量',
+        "若这些改动来自专家明确要求（含发布后重新迭代），先用 ask(kind='conflict_decision') 向专家说明这会动到基线内容并请其裁决，得到确认后再按裁决执行",
+      ],
+      409,
+      {
+        retryable: false,
+        outOfScope: outOfScope.slice(0, 20),
+      },
+    );
   }
 
   private assertProductLedgerBeforeMutation(
@@ -11849,6 +11896,49 @@ function findKnowledgeResourcePath(
  * agentActionable 的顺序就是三档顺序：_turn_goal 只取第一项作为本轮目标，
  * 排错了就会让增量在还没界定范围时先去发确认卡。
  */
+/** 增量计划的范围违例：修改既有资源却不在已界定的影响闭包内的任务目标。
+ *
+ *  规则：任务目标在当前工作区 spec 里已存在 → 必须 ∈ 影响闭包（所有已界定
+ *  影响记录的 affectedResources 并集）；目标不存在（新建，来自增量资料的
+ *  新知识）→ 放行——新建不碰基线。binding/other 类任务与平台注入任务不在
+ *  守卫范围（保守放行，避免误伤确定性同步流程）。 */
+export function incrementPlanScopeViolations(
+  rawTasks: unknown,
+  workingSpec: PackageSpec,
+  impacts: StoredMaterialImpact[],
+): string[] {
+  if (!Array.isArray(rawTasks)) return [];
+  const impactScope = new Set<string>();
+  for (const impact of impacts) {
+    if (impact.semanticChanged !== true || impact.scopeResolved !== true) continue;
+    for (const resource of impact.affectedResources ?? []) {
+      impactScope.add(`${resource.kind}:${resource.key}`);
+    }
+  }
+  const existing = new Set<string>([
+    ...workingSpec.objects.map((item) => `object:${item.key}`),
+    ...(workingSpec.operations ?? []).map((item) => `operation:${item.key}`),
+    ...(workingSpec.rules ?? []).map((item) => `rule:${item.key}`),
+    ...(workingSpec.metrics ?? []).map((item) => `metric:${item.key}`),
+    ...(workingSpec.scripts ?? []).map((item) => `script:${item.key}`),
+  ]);
+  const guarded = new Set(['object', 'rule', 'operation', 'metric', 'script']);
+  const outOfScope = new Set<string>();
+  for (const raw of rawTasks) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const task = raw as Record<string, unknown>;
+    const kind = String(task.resource_kind ?? '').trim();
+    if (!guarded.has(kind)) continue;
+    const target = normalizePlanTargetKey(kind, String(task.target_key ?? '').trim());
+    if (!target) continue;
+    const ref = `${kind}:${target}`;
+    if (!existing.has(ref)) continue;
+    if (impactScope.has(ref)) continue;
+    outOfScope.add(ref);
+  }
+  return [...outOfScope];
+}
+
 export function incrementImpactGate(
   impacts: StoredMaterialImpact[],
   files: Record<string, string>,
