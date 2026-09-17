@@ -156,6 +156,7 @@ export const steerAgent = (id, message, options = {}) => api(`${P(id)}/agent/ste
   method: 'POST', body: JSON.stringify({
     message,
     ...(options.purposeReviewCompleted ? { purposeReviewCompleted: true } : {}),
+    ...(options.planDecision ? { planDecision: options.planDecision } : {}),
   }),
 });
 export const resumeAgentIssue = (id, issueId, actionId) => api(

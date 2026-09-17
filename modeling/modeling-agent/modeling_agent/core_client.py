@@ -82,6 +82,17 @@ class HttpCoreGateway:
         if credential:
             self._run_credentials[run_id] = credential
 
+    async def health(self) -> bool:
+        """探测建模核心是否就绪；仅用于启动恢复前的就绪门，失败不抛错。"""
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/health",
+                timeout=5.0,
+            )
+        except httpx.HTTPError:
+            return False
+        return response.is_success
+
     async def model_config(
         self,
         *,

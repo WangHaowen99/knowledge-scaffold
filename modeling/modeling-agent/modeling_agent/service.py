@@ -165,6 +165,30 @@ MAX_TOOL_SUMMARIES = 60
 MAX_MODEL_RECOVERY_ATTEMPTS = 1
 MODEL_RECOVERY_DELAY_SECONDS = 0.5
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
+# 首轮恢复因瞬时原因失败后的进程内对账间隔：resume_failed 不再是进程内终态，
+# 否则一次启动竞态会让项目卡死到下一次服务重启（cs 实测同一批项目连续 23 次重启均恢复失败）。
+RECOVERY_RECONCILE_DELAYS = (60.0, 300.0, 900.0)
+# 启动恢复前等待建模核心就绪的上限；等不到也继续，交给每次恢复自身的退避与对账。
+CORE_READY_TIMEOUT_SECONDS = 60.0
+CORE_READY_PROBE_INTERVAL_SECONDS = 2.0
+# 瞬时性按「错误族」判断而不是单一错误码：发布分支曾新增 CORE_CANCELLATION_UNAVAILABLE
+# （停止栅栏探测）这类 503 新码，单码判据会让退避重试对它直接失明。
+TRANSIENT_CORE_ERROR_CODES = frozenset({
+    "CORE_UNAVAILABLE",
+    "CORE_CANCELLATION_UNAVAILABLE",
+})
+TRANSIENT_CORE_ERROR_STATUSES = frozenset({502, 503, 504})
+
+
+def _is_transient_core_error(error: Exception) -> bool:
+    if not isinstance(error, AgentRuntimeError):
+        return False
+    return (
+        error.code in TRANSIENT_CORE_ERROR_CODES
+        or error.status in TRANSIENT_CORE_ERROR_STATUSES
+    )
+
+
 EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS = 3.5
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     # 切换阶段是明确的前进。不计入的话，「刚进入新阶段、还没来得及产出」
@@ -416,6 +440,57 @@ def _missing_material_directives(live: LiveRun) -> set[str]:
     return live.required_material_directives - live.observed_material_directives
 
 
+def _unsatisfiable_required_tools(live: LiveRun, missing: set[str]) -> set[str]:
+    """缺失的必需工具全部真实调用过仍未完成时，判定该要求疑似不可满足。
+
+    工具被调用过却始终没有 completed，通常是服务端门禁在确定性拒绝，而不是
+    助手在回避调用（产品台账误判事故）。但"调用失败"也可能只是"还没做完"
+    （如全文精读分段未完成），服务端不能据此单方面撤销要求——只把判定结果
+    标注到恢复卡上，让专家知情后自行选择"取消该要求"。
+    """
+    if missing and missing <= live.attempted_tools:
+        return set(missing)
+    return set()
+
+
+def _expert_answer_intent_text(answer: dict[str, Any]) -> str:
+    """只保留专家自己给出的答复内容参与意图判定。
+
+    卡片的问题正文和选项文案都出自助手，一旦参与意图判定，助手描述建模
+    内容的行文（如「终产品……10 项」）会被误判成用户诉求，形成不可满足
+    的必需工具要求。displayText 是选项文案的回显，一并剔除。
+    """
+    return json.dumps(
+        {key: value for key, value in (answer or {}).items() if key != "displayText"},
+        ensure_ascii=False,
+    )
+
+
+# 「已满足/已完成」处置的证据锚点语法：type:值，分号分隔，可附说明文字。
+# 锚点必须指向真实存在的记录——这是防谎报处置的确定性防线。
+_EVIDENCE_ANCHOR_PATTERN = re.compile(
+    r"^(constraint|task|interjection|interaction|revision|file|receipt|report|change_set|mutation)"
+    r"\s*[:：]\s*(.+)$",
+    re.IGNORECASE,
+)
+
+# LIKE 类锚点的最小长度：太短的标识（如 file:a）会匹配到任何记录，验真失效。
+_EVIDENCE_TOKEN_MIN_LENGTH = 4
+
+
+def _parse_evidence_anchors(evidence: str) -> list[tuple[str, str]]:
+    """把 evidence 拆成锚点列表；非 type:值 形状的片段视为说明文字忽略。"""
+    anchors: list[tuple[str, str]] = []
+    for part in re.split(r"[;；\n]", str(evidence or "")):
+        entry = part.strip()
+        if not entry:
+            continue
+        match = _EVIDENCE_ANCHOR_PATTERN.match(entry)
+        if match:
+            anchors.append((match.group(1).lower(), match.group(2).strip()))
+    return anchors
+
+
 def _interaction_requires_artifact(interaction: InteractionRecord) -> bool:
     """判断交互是否要求本轮形成实际脚本产物（新契约/候选/确认卡）。
 
@@ -458,8 +533,19 @@ def _answer_requires_script_artifact(
     """
     if not _interaction_requires_artifact(interaction):
         return False
-    text = json.dumps(answer, ensure_ascii=False)
-    return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(text))
+    # 豁免只认专家选中的选项身份（value/action/selected/displayText），
+    # 不扫自由文本：答复里写「不调整 A，但请生成 B」不构成对产物要求的
+    # 豁免，否则一句带否定词的补充说明就会静默放水。
+    selected_parts = [
+        str(answer.get("value") or ""),
+        str(answer.get("action") or ""),
+        str(answer.get("displayText") or ""),
+    ]
+    selected_parts.extend(
+        str(item) for item in (answer.get("selected") or []) if item is not None
+    )
+    joined = "\n".join(part for part in selected_parts if part)
+    return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(joined))
 
 
 def _required_text_constraint(
@@ -1002,6 +1088,7 @@ class AgentService:
         self._storage_diag: dict[str, Any] = {}
         self._recovery_summary: dict[str, Any] = {}
         self._cancel_locks: dict[str, asyncio.Lock] = {}
+        self._recovery_tasks: set[asyncio.Task[None]] = set()
 
     async def startup(self) -> None:
         if self._started:
@@ -1059,6 +1146,7 @@ class AgentService:
                     interrupted_cancellations.append(recovered)
                 else:
                     resumable_runs.append(recovered)
+            await self._wait_core_ready()
             await asyncio.gather(*(
                 self._resume_interrupted_cancellation(recovered)
                 for recovered in interrupted_cancellations
@@ -1080,7 +1168,32 @@ class AgentService:
                 "text": "停止结算尚未完成，已保留当前进展，请稍后继续核对",
             })
 
-    async def _auto_resume_recovered(self, run: RunRecord) -> None:
+    async def _wait_core_ready(self) -> None:
+        """启动恢复前的就绪门：agent 容器常早于核心就绪，直接开扫会整批撞 503。"""
+        health = getattr(self._gateway, "health", None)
+        if not callable(health):
+            return
+        deadline = time.monotonic() + CORE_READY_TIMEOUT_SECONDS
+        while not self._shutting_down:
+            try:
+                if await health():
+                    return
+            except Exception:  # noqa: BLE001 - 探测失败等同未就绪
+                pass
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Modeling core not ready within %.0fs; starting recovery with per-run retries",
+                    CORE_READY_TIMEOUT_SECONDS,
+                )
+                return
+            await asyncio.sleep(CORE_READY_PROBE_INTERVAL_SECONDS)
+
+    async def _auto_resume_recovered(
+        self,
+        run: RunRecord,
+        *,
+        reconcile_attempt: int = 0,
+    ) -> None:
         self._publish_state(run.project_id, run.id)
         if not run.run_credential or not run.session_id:
             self.events.publish(
@@ -1107,26 +1220,23 @@ class AgentService:
             )
             return
         restore(run.id, run.run_credential)
-        for attempt in range(len(RECOVERY_RETRY_DELAYS) + 1):
-            try:
-                await self._resume(
-                    run,
-                    "",
-                    {},
-                    preserve_token_fingerprint=True,
-                )
-                break
-            except AgentRuntimeError as error:
-                transient = error.code == "CORE_UNAVAILABLE"
-                if not transient or attempt >= len(RECOVERY_RETRY_DELAYS):
-                    logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                    self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
-                    return
-                await asyncio.sleep(RECOVERY_RETRY_DELAYS[attempt])
-            except Exception as error:  # noqa: BLE001 - one failed recovery must not block other projects
-                logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
-                return
+        error = await self._resume_with_retries(run)
+        if error is not None:
+            logger.warning("Could not automatically resume run %s: %s", run.id, error)
+            detail = (
+                f"[{error.code}] {error.message}"
+                if isinstance(error, AgentRuntimeError)
+                else f"[{type(error).__name__}] {error}"
+            )
+            self._mark_resume_failed(
+                run,
+                RECOVERY_RESUME_FAILED,
+                "自动恢复失败，已安全停在最近进展",
+                detail=detail,
+            )
+            if _is_transient_core_error(error):
+                self._schedule_recovery_reconcile(run, attempt=reconcile_attempt)
+            return
         self.store.mark_recovery_status(
             run.project_id,
             RECOVERY_NONE,
@@ -1140,19 +1250,71 @@ class AgentService:
             {"status": RUN_QUEUED, "text": "服务恢复完成，助手正在从原进度继续"},
         )
 
-    def _mark_resume_failed(self, run: RunRecord, status: str, message: str) -> None:
+    async def _resume_with_retries(self, run: RunRecord) -> Exception | None:
+        for attempt in range(len(RECOVERY_RETRY_DELAYS) + 1):
+            try:
+                await self._resume(
+                    run,
+                    "",
+                    {},
+                    preserve_token_fingerprint=True,
+                )
+                return None
+            except AgentRuntimeError as error:
+                if not _is_transient_core_error(error) or attempt >= len(RECOVERY_RETRY_DELAYS):
+                    return error
+                await asyncio.sleep(RECOVERY_RETRY_DELAYS[attempt])
+            except Exception as error:  # noqa: BLE001 - one failed recovery must not block other projects
+                return error
+        return None
+
+    def _schedule_recovery_reconcile(self, run: RunRecord, *, attempt: int) -> None:
+        if self._shutting_down or attempt >= len(RECOVERY_RECONCILE_DELAYS):
+            return
+        task = asyncio.create_task(self._recovery_reconcile(run, attempt))
+        self._recovery_tasks.add(task)
+        task.add_done_callback(self._recovery_tasks.discard)
+
+    async def _recovery_reconcile(self, run: RunRecord, attempt: int) -> None:
+        await asyncio.sleep(RECOVERY_RECONCILE_DELAYS[attempt])
+        if self._shutting_down:
+            return
+        # 状态可能已被人工恢复或推进；只有仍停在 resume_failed 且无在跑任务时才重试。
+        state = self.store.project_state(run.project_id)
+        if state.recovery_status != RECOVERY_RESUME_FAILED or state.run_id != run.id:
+            return
+        if run.project_id in self._live:
+            return
+        logger.info(
+            "Reconciling failed recovery for run %s (attempt %d)", run.id, attempt + 1
+        )
+        await self._auto_resume_recovered(run, reconcile_attempt=attempt + 1)
+
+    def _mark_resume_failed(
+        self,
+        run: RunRecord,
+        status: str,
+        message: str,
+        *,
+        detail: str = "",
+    ) -> None:
+        # detail 落库：运维排查时必须能从状态里看到「为什么」，而不是翻进程日志。
+        stored_error = f"{message}（{detail[:200]}）" if detail else message
         self.store.mark_recovery_status(
             run.project_id,
             status,
-            error=message,
+            error=stored_error,
             cause="recovery_failed",
         )
         self._publish_state(run.project_id, run.id)
+        payload: dict[str, Any] = {"status": RUN_SUSPENDED, "text": message}
+        if detail:
+            payload["reason"] = detail[:200]
         self.events.publish(
             run.project_id,
             run.id,
             "status",
-            {"status": RUN_SUSPENDED, "text": message},
+            payload,
         )
 
     def _checkpoint_available(self) -> bool:
@@ -1243,6 +1405,11 @@ class AgentService:
 
     async def shutdown(self) -> None:
         self._shutting_down = True
+        for task in list(self._recovery_tasks):
+            task.cancel()
+        if self._recovery_tasks:
+            await asyncio.gather(*self._recovery_tasks, return_exceptions=True)
+        self._recovery_tasks.clear()
         for live in list(self._live.values()):
             if live.task and not live.task.done():
                 live.task.cancel()
@@ -1425,27 +1592,9 @@ class AgentService:
                     status=502,
                 )
             intent_required_tools.add("get_change_plan")
-        # Persist the workflow policy before the model gets a chance to create
-        # a plan. Core remains the authority, but this early call closes the
-        # advisory-mode race between user intent and the first tool call.
-        if _product_ledger_requested(prompt):
-            try:
-                await self._gateway.call(
-                    project_id=project_id,
-                    run_id=run_id,
-                    token=token,
-                    tool="require_product_ledger",
-                    arguments={"required": True},
-                )
-            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
-                # The required tool remains in the run contract; a later
-                # recovery will expose the failure rather than silently
-                # allowing formal generation.
-                logger.warning(
-                    "Could not persist the product-ledger requirement for run %s: %s",
-                    run_id,
-                    type(error).__name__,
-                )
+        # 台账门禁不再由措辞猜测静默启用（0.26.9.2 台账死锁事故）：启用只能
+        # 来自专家确认——助手判断需要对账时先发确认卡，批准后再调
+        # require_product_ledger；核心侧对启用与规则批次仍保持确定性门禁。
         live = LiveRun(
             run_id=run_id,
             project_id=project_id,
@@ -2508,11 +2657,13 @@ class AgentService:
                 issue_id=issue_id,
                 action_id=recovery_action,
             )
-        answer_text = json.dumps(answer, ensure_ascii=False)
+        # 卡片问题文案出自助手，不能参与任何意图判定：建模确认卡里的
+        # 「终产品……N 项」曾被误判成产品台账诉求，形成不可满足的必需
+        # 工具循环。这里只判定专家自己给出的答复内容。
+        answer_text = _expert_answer_intent_text(answer)
         live_for_answer = self._live.get(interaction.run_id)
         required_tools = _required_tools_for_user_intent(
-            f"{interaction.payload.get('question') or ''}\n{answer_text}",
-            # 问题文案出自助手，只有专家的回答才代表用户要求全文精读。
+            answer_text,
             full_read_text=answer_text,
             situation=live_for_answer.situation if live_for_answer else None,
         )
@@ -2526,19 +2677,6 @@ class AgentService:
                 "phase": "completed",
                 "summary": "补充说明已绑定到恢复任务",
                 "constraintHash": required_text_constraint.get("textHash"),
-            })
-        if required_text_constraint and _product_ledger_requested(
-            f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}",
-        ):
-            # The decision card is itself an explicit workflow policy. Require
-            # the policy write and source/ledger evidence, independent of the
-            # deployment's advisory setting.
-            required_tools.update({
-                "require_product_ledger",
-                "get_product_inventory_source",
-                "begin_product_ledger",
-                "append_product_ledger_batch",
-                "finalize_product_ledger",
             })
         if direct_confirmation:
             approved = answer.get("approved") is True
@@ -2672,11 +2810,19 @@ class AgentService:
         token: str,
         text: str,
         purpose_review_completed: bool = False,
+        plan_decision: str = "",
     ) -> dict[str, Any]:
         _require_project_and_token(project_id, token)
         message = text.strip()
         if not message:
             raise AgentRuntimeError("INVALID_MESSAGE", "请输入要补充或追问的内容")
+        # 页面批准建模计划的那次点击本身就是结构化信号：必需工具从这里
+        # 进料，不依赖续跑文案的措辞（意图正则双轨保留，待统一拔除）。
+        plan_required_tools = (
+            set(APPROVED_PLAN_REQUIRED_TOOLS)
+            if str(plan_decision).strip().lower() == "approved"
+            else set()
+        )
         run = self.store.active_run(project_id)
         if run is None:
             return {"mode": "new_run", "run": await self.start_run(project_id=project_id, token=token, message=message)}
@@ -2714,7 +2860,7 @@ class AgentService:
                 restore_interaction=None if resolved_elsewhere else interaction,
                 required_tools=_required_tools_for_user_intent(
                     message, situation=_situation_of(self._live.get(run.id)),
-                ),
+                ) | plan_required_tools,
                 autonomous_seed=True,
             )
             return {
@@ -2732,7 +2878,7 @@ class AgentService:
                 message,
                 required_tools=_required_tools_for_user_intent(
                     message, situation=_situation_of(self._live.get(run.id)),
-                ),
+                ) | plan_required_tools,
                 autonomous_seed=True,
             )
             self.store.mark_steering_delivered(steering_id)
@@ -2779,21 +2925,7 @@ class AgentService:
         live.required_tools.update(_required_tools_for_user_intent(
             message, situation=live.situation, notes=live.intent_notes,
         ))
-        if _product_ledger_requested(message):
-            try:
-                await self._gateway.call(
-                    project_id=project_id,
-                    run_id=run.id,
-                    token=token,
-                    tool="require_product_ledger",
-                    arguments={"required": True},
-                )
-            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
-                logger.warning(
-                    "Could not persist the product-ledger requirement for run %s: %s",
-                    run.id,
-                    type(error).__name__,
-                )
+        live.required_tools.update(plan_required_tools)
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
         )
@@ -2908,6 +3040,53 @@ class AgentService:
             return {
                 "mode": "kept",
                 "run": settled_run,
+                "issueId": normalized_issue,
+                "resolvedIssueIds": [normalized_issue],
+            }
+
+        if normalized_action == "cancel_required_tools":
+            # 用户明确表示这项必需步骤不是自己的要求：撤销要求并从当前
+            # 进度继续本轮，而不是像 keep_current_progress 那样结束本轮。
+            if technical is None or technical.get("strategy") != "required_tools":
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "这个问题已经解决或被后续状态替代", status=409,
+                )
+            if execution not in {RUN_SUSPENDED, RUN_WAITING}:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "当前运行状态已经变化，请刷新后重试", status=409,
+                )
+            required_from_recovery = {
+                str(item).strip()
+                for item in technical.get("requiredTools") or []
+                if str(item).strip()
+            }
+            cancelled_tool = str(technical.get("requiredTool") or "").strip()
+            if cancelled_tool:
+                required_from_recovery.add(cancelled_tool)
+            self.store.resolve_technical_recoveries(run.id, [normalized_issue])
+            live = self._live.get(run.id)
+            if live is not None:
+                live.technical_recoveries.pop(normalized_issue, None)
+                live.required_tools.difference_update(required_from_recovery)
+            self.events.publish(project_id, run.id, "tool", {
+                "name": "issue_recovery",
+                "phase": "completed",
+                "summary": "已按你的选择取消该必需步骤，本轮从当前进度继续",
+                "issueStatus": "resolved",
+                "resolvedIssueIds": [normalized_issue],
+                "waivedTools": sorted(required_from_recovery),
+            })
+            resumed = await self._continue(
+                run,
+                token,
+                "用户已明确取消刚才的必需步骤要求，不要再尝试补做这些工具。"
+                "从当前项目状态继续主动完成下一步；已经确认的内容保持不变。",
+                required_tools=set(),
+                autonomous_seed=True,
+            )
+            return {
+                "mode": "checkpoint_resume",
+                "run": resumed,
                 "issueId": normalized_issue,
                 "resolvedIssueIds": [normalized_issue],
             }
@@ -3042,6 +3221,56 @@ class AgentService:
             self.store.resolve_technical_recoveries(run.id, [normalized_issue])
         return {"mode": "new_run", "run": started, "issueId": normalized_issue}
 
+    def _verify_evidence_anchors(
+        self,
+        project_id: str,
+        evidence: str,
+        *,
+        exclude_interjection_id: int = 0,
+    ) -> None:
+        """证据锚点逐个查表验真：只能引用真实存在的记录。
+
+        「已满足/已完成」是模型自报，纯文字承诺无法审计。锚点必须指向本库
+        的记录（约束、插话、交互），或本项目真实工具往来里出现过的标识
+        （修订号、文件路径等）。只验存在与归属，不验语义——语义兜底靠处置
+        记录对专家可见、可改判。被处置的插话自己不能作为自己的证据。
+        """
+        anchors = _parse_evidence_anchors(evidence)
+        if not anchors:
+            raise AgentRuntimeError(
+                "INTERJECTION_EVIDENCE_UNVERIFIABLE",
+                "evidence 必须包含至少一个可验真锚点（形如 revision:修订号、"
+                "file:路径、constraint:编号、task:编号、interaction:交互ID，"
+                "多个用分号分隔，可附说明文字），不能只写文字承诺",
+                status=400,
+            )
+        for kind, value in anchors:
+            if kind == "constraint":
+                verified = value.isdigit() and self.store.constraint_exists(
+                    project_id, int(value),
+                )
+            elif kind in {"task", "interjection"}:
+                verified = (
+                    value.isdigit()
+                    and int(value) != exclude_interjection_id
+                    and self.store.interjection_exists(project_id, int(value))
+                )
+            elif kind == "interaction":
+                verified = self.store.interaction_exists(project_id, value)
+            else:
+                verified = (
+                    len(value) >= _EVIDENCE_TOKEN_MIN_LENGTH
+                    and self.store.evidence_token_exists(project_id, value)
+                )
+            if not verified:
+                raise AgentRuntimeError(
+                    "INTERJECTION_EVIDENCE_NOT_FOUND",
+                    f"证据锚点查无实据：{kind}:{value}。只能引用真实存在的记录，"
+                    "或本项目工具结果里实际出现过的标识；不要编造，也不要引用"
+                    "被处置的插话自身",
+                    status=400,
+                )
+
     def _interjection_action(
         self,
         live: LiveRun,
@@ -3067,9 +3296,13 @@ class AgentService:
             if not evidence:
                 raise AgentRuntimeError(
                     "INTERJECTION_EVIDENCE_REQUIRED",
-                    "完成待办必须引用具体产物位置作为证据",
+                    "完成待办必须在 evidence 提供可验真锚点（形如 revision:修订号、"
+                    "file:路径，分号分隔）作为证据",
                     status=400,
                 )
+            self._verify_evidence_anchors(
+                project_id, evidence, exclude_interjection_id=interjection_id,
+            )
             completed = self.store.complete_interjection_task(
                 project_id, interjection_id, evidence=evidence,
             )
@@ -3115,11 +3348,26 @@ class AgentService:
             if not evidence:
                 raise AgentRuntimeError(
                     "INTERJECTION_EVIDENCE_REQUIRED",
-                    "「已满足」必须在 evidence 引用具体产物位置（文件路径、条目 ID 或状态事实）",
+                    "「已满足」必须在 evidence 提供可验真锚点（形如 revision:修订号、"
+                    "file:路径、constraint:编号，分号分隔，可附说明文字）",
                     status=400,
                 )
+            self._verify_evidence_anchors(
+                project_id, evidence, exclude_interjection_id=interjection_id,
+            )
             detail = {"evidence": evidence}
-            outcome = "已标记满足并留下证据"
+            outcome = "已标记满足并留下经验真的证据"
+        elif resolution == "answered":
+            # 纯提问型插话：不产生产物，没有锚点可引。回答本身由可见正文
+            # 承载（rails 保证本轮必有非空可见输出），这里只登记回答要点。
+            if not text:
+                raise AgentRuntimeError(
+                    "INTERJECTION_TEXT_REQUIRED",
+                    "「已回答」必须在 text 简述本轮给出的回答要点",
+                    status=400,
+                )
+            detail = {"answer": text}
+            outcome = "已登记为提问并在本轮正文回答"
         elif resolution == "rejected":
             if not reason:
                 raise AgentRuntimeError(
@@ -3130,7 +3378,7 @@ class AgentService:
         else:
             raise AgentRuntimeError(
                 "INTERJECTION_RESOLUTION_INVALID",
-                "resolution 只能是 constraint、task、satisfied 或 rejected",
+                "resolution 只能是 constraint、task、satisfied、answered 或 rejected",
                 status=400,
             )
         disposed = self.store.dispose_interjection(
@@ -3545,8 +3793,10 @@ class AgentService:
             f"本轮以完成并处置这条插话为唯一目标{remaining}。"
             "按「这条指令什么时候失效」判断它的寿命并选择出口：\n"
             "- 「不许/一律/以后都」这类长期规矩：调用 dispose_interjection(resolution='constraint') 登记为专家约束；\n"
-            "- 本轮能完成的一次性动作：直接执行，然后 dispose_interjection(resolution='satisfied') 并在 evidence 引用产物位置；\n"
+            "- 本轮能完成的一次性动作：直接执行，然后 dispose_interjection(resolution='satisfied') 并在 evidence "
+            "提供可验真锚点（形如 revision:修订号、file:路径，分号分隔）；\n"
             "- 本轮做不完的动作：dispose_interjection(resolution='task') 转成待办；\n"
+            "- 纯提问或咨询：先在正文回答，然后 dispose_interjection(resolution='answered') 并在 text 简述回答要点；\n"
             "- 与已批准计划或业务事实冲突：dispose_interjection(resolution='rejected') 说明理由。\n"
             "执行中被阶段守卫或工具拦截时，不要放弃也不要绕过：把拦截返回的原因、"
             "合法路径和代价整理成 ask(kind='conflict_decision') 请专家裁决，"
@@ -3562,7 +3812,8 @@ class AgentService:
             f"完成插话转来的待办 #{head['id']}：\n\n"
             f"「{head['text']}」\n\n"
             f"这一项来自专家插话{remaining}。本轮只推进这一项，完成后调用 "
-            "complete_interjection_task 并在 evidence 引用产物位置，然后结束本轮；"
+            "complete_interjection_task 并在 evidence 提供可验真锚点"
+            "（形如 revision:修订号、file:路径），然后结束本轮；"
             "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
             "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
             "不要反复读取资料试图自行补齐前提。"
@@ -4310,6 +4561,9 @@ class AgentService:
         """Expose an actionable, diagnostic card instead of a generic stop."""
         issue_id = f"required-tool-review-{run.id}"
         constraint = live.required_text_constraint or {}
+        # 全部缺失工具都真实调用过仍被拒绝时，标注出来供专家判断是否
+        # 「取消该要求」；服务端不据此单方面撤销（失败不等于已完成）。
+        attempted_but_rejected = sorted(_unsatisfiable_required_tools(live, missing_tools))
         recovery = {
             "issueId": issue_id,
             "requiredTool": sorted(missing_tools)[0] if missing_tools else "",
@@ -4321,6 +4575,11 @@ class AgentService:
                     "id": "retry_required_tools",
                     "label": "从当前进度继续",
                     "description": "从最后已保存的步骤重试缺失工具，不生成正式规则候选。",
+                },
+                {
+                    "id": "cancel_required_tools",
+                    "label": "取消该要求",
+                    "description": "撤销这项必需步骤并从当前进度继续本轮，已有成果保持不变。",
                 },
                 {
                     "id": "keep_current_progress",
@@ -4335,12 +4594,18 @@ class AgentService:
             "processed": live.situation.product_ledger_processed,
             "remaining": live.situation.product_ledger_remaining,
             "analysisRevision": live.situation.product_ledger_analysis_revision or None,
-            "failureReason": "必需工具在重试后仍未完成",
+            "failureReason": (
+                "必需工具已多次真实调用但均被当前项目状态拒绝，可能无法在当前状态下满足"
+                if attempted_but_rejected else "必需工具在重试后仍未完成"
+            ),
+            "attemptedButRejected": attempted_but_rejected,
             "constraintStatus": "unconfirmed" if constraint else "not_applicable",
             "missingConstraintItems": (
                 _required_text_constraint_status("", constraint)[1] if constraint else []
             ),
-            "allowedActions": ["retry_required_tools", "keep_current_progress"],
+            "allowedActions": [
+                "retry_required_tools", "cancel_required_tools", "keep_current_progress",
+            ],
             "constraintHash": constraint.get("textHash"),
         }
         live.technical_recoveries[issue_id] = recovery
@@ -4361,6 +4626,11 @@ class AgentService:
                         "value": "retry_required_tools",
                     },
                     {
+                        "label": "取消该要求",
+                        "description": "撤销这项必需步骤并从当前进度继续",
+                        "value": "cancel_required_tools",
+                    },
+                    {
                         "label": "保留成果并停止",
                         "description": "不产生新的规则、指标或操作候选",
                         "value": "keep_current_progress",
@@ -4375,6 +4645,7 @@ class AgentService:
                 "remaining": recovery["remaining"],
                 "analysisRevision": recovery["analysisRevision"],
                 "failureReason": recovery["failureReason"],
+                "attemptedButRejected": recovery["attemptedButRejected"],
                 "constraintStatus": recovery["constraintStatus"],
                 "missingConstraintItems": recovery["missingConstraintItems"],
             },
@@ -5525,7 +5796,7 @@ class AgentService:
         return (
             f"专家插话 #{head['id']} 还没有处置结论。本轮系统指派的目标就是这条插话："
             "先完成或裁决它，并调用 dispose_interjection 登记处置（登记约束/转待办/"
-            "已满足附证据/拒绝说明理由），再考虑其它工作。不要请求用户指示，"
+            "已满足附可验真锚点/纯提问已回答/拒绝说明理由），再考虑其它工作。不要请求用户指示，"
             "也不要把插话内容当成普通聊天忽略。"
         )
 
@@ -6337,17 +6608,6 @@ _PACKAGE_FUSION_INTENT = re.compile(
     re.IGNORECASE,
 )
 
-# 明确要求逐项对账的产品/规则大清单。只有同时出现数量、逐项、去重、
-# 归并或完整性等信号时才触发产品台账工具，避免影响普通单条规则修改。
-_PRODUCT_LEDGER_INTENT = re.compile(
-    r"(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
-    r"(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)|"
-    r"(?:产品|商品).{0,20}(?:台账|清单)|(?:台账|清单).{0,20}(?:产品|商品)|"
-    r"规则.{0,220}(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
-    r"(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}规则",
-    re.IGNORECASE,
-)
-
 _RELEASE_REENTRY_INTENT = re.compile(
     r"增量|迭代|新版本|补充.{0,8}资料|替换.{0,8}资料|导入.{0,8}(?:知识包|来源包)|"
     r"融合|修改.{0,8}(?:知识|规则|流程|对象|指标|脚本)|修复.{0,8}(?:知识|规则|流程|对象|指标|脚本)|"
@@ -6409,11 +6669,6 @@ def _document_rule_change_requested(text: str) -> bool:
 
 def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
-
-
-def _product_ledger_requested(text: str) -> bool:
-    """Return whether the user explicitly asks for a large, itemized ledger."""
-    return bool(_PRODUCT_LEDGER_INTENT.search(str(text or "")))
 
 
 # 会形成本阶段交付物的工具。阶段切换后重新计数，用来区分
@@ -6719,14 +6974,8 @@ def _required_tools_for_user_intent(
         required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
-    if _product_ledger_requested(value):
-        # 台账先作为一个确定性工具结果取得；产品台账模式为 advisory 时不阻断，
-        # 切换为 enforce 后由核心门禁阻止正式规则批次继续生成。
-        required.update({
-            "require_product_ledger", "get_product_inventory_source",
-            "begin_product_ledger", "append_product_ledger_batch",
-            "finalize_product_ledger",
-        })
+    # 台账意图正则已退役（0.26.9.2 死锁事故）：措辞不再产生台账必需工具或
+    # 静默策略写入。对账诉求由助手经专家确认卡启用门禁，核心侧确定性把关。
     if _approved_plan_execution_requested(value):
         required.update(APPROVED_PLAN_REQUIRED_TOOLS)
     return required

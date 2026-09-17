@@ -24,12 +24,16 @@ from modeling_agent.rails import (
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
 from modeling_agent.service import (
+    APPROVED_PLAN_REQUIRED_TOOLS,
     AgentService,
     APPROVED_PLAN_REQUIRED_TOOLS,
     LiveRun,
     PURPOSE_REVIEW_ALLOWED_TOOLS,
     _absorb_plan_progress,
+    _answer_requires_script_artifact,
+    _expert_answer_intent_text,
     _required_tools_for_user_intent,
+    _unsatisfiable_required_tools,
 )
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
@@ -1647,6 +1651,203 @@ async def test_required_tool_recovery_retry_restores_all_missing_tools(settings)
         assert captured == [{"begin_product_ledger", "append_product_ledger_batch"}]
     finally:
         await runtime.shutdown()
+
+
+async def test_confirmation_answer_intent_ignores_assistant_card_text() -> None:
+    """卡片文案出自助手，不参与意图判定；台账正则已整体退役（死锁事故回归）。"""
+    card_question = (
+        "已完成建模目标草稿：覆盖从原油输入到终产品的物料平衡与收率计算，"
+        "并将 10 项已识别的口径歧义整理为待确认项。"
+    )
+    approval_answer = {
+        "approved": True,
+        "review_mode": "full",
+        "displayText": "从当前进度继续",
+    }
+    intent_text = _expert_answer_intent_text(approval_answer)
+    assert card_question not in intent_text
+    assert "displayText" not in intent_text
+    ledger_tools = {
+        "require_product_ledger", "get_product_inventory_source",
+        "begin_product_ledger", "append_product_ledger_batch",
+        "finalize_product_ledger",
+    }
+    # 台账正则退役后，任何措辞——包括曾引发死锁的「终产品……10 项」卡片
+    # 行文和明确的对账诉求——都不再产生台账必需工具；启用只走专家确认卡。
+    assert not _required_tools_for_user_intent(intent_text) & ledger_tools
+    assert not _required_tools_for_user_intent(
+        f"{card_question}\n{intent_text}",
+    ) & ledger_tools
+    explicit = _expert_answer_intent_text(
+        {"feedback": "请把产品清单逐项去重后完整对账"},
+    )
+    assert not _required_tools_for_user_intent(explicit) & ledger_tools
+
+
+async def test_ledger_wording_never_enables_policy_silently(settings) -> None:
+    """对账措辞不再触发 require_product_ledger 的静默策略写入。"""
+    ledger_wording = "请把产品清单逐项去重后完整对账，保留 198 条与 3 组归并"
+    gateway = FakeGateway({"gate_status": {"pass": True, "blockers": []}})
+    runtime = service(settings, ScriptedModel([[], []], final="收到，将先与你确认是否启用台账门禁。"), gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_ledger_wording",
+            token="token_1",
+            message=ledger_wording,
+        )
+        await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        assert "require_product_ledger" not in [call["tool"] for call in gateway.calls]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_unsatisfiable_required_tools_waived_only_after_real_attempts() -> None:
+    live = LiveRun(
+        run_id="run_waiver", project_id="project_waiver", token="token_waiver",
+    )
+    missing = {"begin_product_ledger", "append_product_ledger_batch"}
+    live.required_tools = set(missing)
+    # 完全没调用过：是回避，不是不可满足，不得撤销。
+    assert _unsatisfiable_required_tools(live, missing) == set()
+    # 只调用过一部分：仍按回避处理。
+    live.attempted_tools = {"begin_product_ledger"}
+    assert _unsatisfiable_required_tools(live, missing) == set()
+    # 全部真实调用过且始终未完成：判定为不可满足，整组撤销。
+    live.attempted_tools = set(missing)
+    assert _unsatisfiable_required_tools(live, missing) == missing
+
+
+async def test_cancel_required_tools_resumes_run_without_requirement(settings) -> None:
+    """恢复卡的「取消该要求」应撤销必需工具并继续本轮，而不是结束本轮。"""
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    captured: list[dict] = []
+
+    async def continue_stub(run, token, prompt, **kwargs):
+        captured.append({
+            "prompt": prompt,
+            "requiredTools": set(kwargs.get("required_tools") or ()),
+        })
+        return run.public()
+
+    runtime._continue = continue_stub  # type: ignore[method-assign]
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_cancel_required_tools",
+            project_id="project_cancel_required_tools",
+            session_id="cancel-required-tools-session",
+            status="queued",
+            prompt="建立结构化产品台账",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+        live = LiveRun(
+            run_id=run.id,
+            project_id=run.project_id,
+            token="token_cancel_required_tools",
+            required_tools={"begin_product_ledger", "append_product_ledger_batch"},
+        )
+        live.attempted_tools = {"begin_product_ledger", "append_product_ledger_batch"}
+        runtime._suspend_required_tool_review(  # noqa: SLF001
+            live,
+            run,
+            {"begin_product_ledger", "append_product_ledger_batch"},
+        )
+        interaction = runtime.store.pending_interaction(run.project_id)
+        assert interaction is not None
+        option_values = [item["value"] for item in interaction.payload["options"]]
+        assert "cancel_required_tools" in option_values
+        assert "cancel_required_tools" in interaction.payload["recovery"]["allowedActions"]
+        # 工具全部真实调用过仍被拒绝时，卡片应标注出来供专家知情决策。
+        assert interaction.payload["attemptedButRejected"] == [
+            "append_product_ledger_batch", "begin_product_ledger",
+        ]
+        assert "均被当前项目状态拒绝" in interaction.payload["failureReason"]
+
+        cancelled = await runtime.answer_interaction(
+            project_id=run.project_id,
+            interaction_id=interaction.id,
+            token="token_cancel_required_tools",
+            answer={
+                "value": "cancel_required_tools",
+                "selected": ["cancel_required_tools"],
+            },
+        )
+        assert cancelled["mode"] == "checkpoint_resume"
+        assert captured and captured[0]["requiredTools"] == set()
+        assert runtime.store.technical_recoveries(run.id) == {}
+    finally:
+        await runtime.shutdown()
+
+
+async def test_plan_decision_signal_feeds_required_tools_without_wording(settings) -> None:
+    """页面批准计划的结构化信号直接进料必需工具，不依赖续跑文案措辞。"""
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    captured: list[set[str]] = []
+
+    async def continue_stub(run, token, prompt, **kwargs):
+        captured.append(set(kwargs.get("required_tools") or ()))
+        return {"id": run.id, "status": "queued"}
+
+    runtime._continue = continue_stub  # type: ignore[method-assign]
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_plan_decision_signal",
+            project_id="project_plan_decision_signal",
+            session_id="plan-decision-signal-session",
+            status="queued",
+            prompt="规划建模计划",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+
+        # 措辞刻意不含任何计划执行关键词：结构化信号必须独立生效。
+        await runtime.steer(
+            project_id=run.project_id,
+            token="token_plan_decision",
+            text="开工吧",
+            plan_decision="approved",
+        )
+        assert captured and APPROVED_PLAN_REQUIRED_TOOLS <= captured[0]
+
+        # 拒绝计划不注入执行链要求。
+        runtime.store.update_run(run.id, status="suspended")
+        await runtime.steer(
+            project_id=run.project_id,
+            token="token_plan_decision",
+            text="先停一停",
+            plan_decision="rejected",
+        )
+        assert not (APPROVED_PLAN_REQUIRED_TOOLS & captured[1])
+    finally:
+        await runtime.shutdown()
+
+
+async def test_script_artifact_waiver_only_honors_selected_option(settings) -> None:
+    """产物豁免只认选中项：自由文本里的否定词不构成豁免。"""
+    interaction = InteractionRecord(
+        id="interaction_waiver_scope",
+        project_id="project_waiver_scope",
+        run_id="run_waiver_scope",
+        tool_call_id="call_waiver_scope",
+        kind="scope_confirmation",
+        payload={"question": "是否按契约实现？", "operation": "demo_operation"},
+    )
+    # 专家选了继续实现，只是自由文本里出现了否定词：仍要求产物。
+    assert _answer_requires_script_artifact(interaction, {
+        "value": "adjust",
+        "feedback": "本轮不生成 X 也可以，但请生成 Y 的脚本",
+    }) is True
+    # 专家明确选中「本轮不生成」选项：豁免生效。
+    assert _answer_requires_script_artifact(interaction, {
+        "value": "no_scripts",
+        "displayText": "本轮不生成脚本",
+    }) is False
+    assert _answer_requires_script_artifact(interaction, {
+        "value": "skip",
+    }) is False
 
 
 async def test_validation_issue_resume_preserves_report_locator_and_has_fallback(settings) -> None:

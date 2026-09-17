@@ -1147,7 +1147,10 @@ CORE_TOOL_SPECS = (
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
         "require_product_ledger",
-        "将用户明确要求的产品/规则大清单台账写入当前项目策略；启用后，在台账 finalized 前禁止建立正式规则、指标、操作计划或写入资源。",
+        "将产品/规则大清单台账写入当前项目策略；启用后，在台账 finalized 前禁止建立正式规则、指标、操作计划或写入资源。"
+        "只能在专家通过确认卡明确批准后调用，不得凭对话措辞推测启用："
+        "专家诉求出现逐项对账、去重归并、数量核对（如「保留 N 条与 M 组归并」）等信号时，"
+        "先用 request_confirmation 询问「是否启用产品台账门禁」，批准后再调用本工具。",
         {"required": {"type": "boolean"}},
         display="正在启用产品清单台账门禁",
     ),
@@ -2404,12 +2407,17 @@ INTERJECTION_TOOL_SPECS = (
         "处置一条专家插话（编号见项目状态 pendingInterjections 和本轮目标）。resolution 按「这条指令什么时候失效」选择："
         "constraint=「不许/一律/以后都」类长期规矩，登记后每轮生效直到专家撤销，需提供 text（可用 replaces_constraint_id 覆盖旧条款）；"
         "task=本轮做不完的一次性动作，转成跨轮待办，需提供 text；"
-        "satisfied=已执行完成或本来就符合，必须在 evidence 引用具体产物位置（文件路径、条目 ID 或状态事实），不能只写一句「已满足」；"
+        "satisfied=已执行完成或本来就符合，必须在 evidence 提供可验真锚点（形如 revision:修订号、file:路径、"
+        "constraint:编号、task:编号、interaction:交互ID，多个用分号分隔，可附说明文字）；"
+        "服务端会逐个锚点查表验真，查无实据会被拒绝，不要编造标识；"
+        "answered=纯提问或咨询，已在本轮正文中回答，需在 text 简述回答要点；"
         "rejected=与已批准计划或业务事实冲突，必须在 reason 说明理由。"
-        "每条插话在本轮结束前必须有处置结论；执行中被阶段守卫拦截时不选 rejected，改用 ask(kind='conflict_decision') 请专家裁决。",
+        "每条插话在本轮结束前必须有处置结论；执行中被阶段守卫拦截时不选 rejected，改用 ask(kind='conflict_decision') 请专家裁决。"
+        "助判信号：插话要求对产品/规则大清单逐项对账（去重、归并、数量核对、唯一标识）时，"
+        "不要静默启用台账门禁——先用 request_confirmation 请专家确认是否启用，批准后再调 require_product_ledger。",
         {
             "interjection_id": {"type": "integer", "minimum": 1},
-            "resolution": {"type": "string", "enum": ["constraint", "task", "satisfied", "rejected"]},
+            "resolution": {"type": "string", "enum": ["constraint", "task", "satisfied", "answered", "rejected"]},
             "text": {"type": "string", "maxLength": 2000},
             "evidence": {"type": "string", "maxLength": 2000},
             "reason": {"type": "string", "maxLength": 2000},
@@ -2421,7 +2429,8 @@ INTERJECTION_TOOL_SPECS = (
     ),
     ToolSpec(
         "complete_interjection_task",
-        "完成一条由插话转来的待办（编号见项目状态 openInterjectionTasks）。必须在 evidence 引用具体产物位置证明完成，不能只声称做完。",
+        "完成一条由插话转来的待办（编号见项目状态 openInterjectionTasks）。必须在 evidence 提供可验真锚点"
+        "（形如 revision:修订号、file:路径，多个用分号分隔）证明完成；服务端会逐个查表验真，查无实据会被拒绝。",
         {
             "interjection_id": {"type": "integer", "minimum": 1},
             "evidence": {"type": "string", "minLength": 1, "maxLength": 2000},
