@@ -431,6 +431,32 @@ def _missing_material_directives(live: LiveRun) -> set[str]:
     return live.required_material_directives - live.observed_material_directives
 
 
+def _unsatisfiable_required_tools(live: LiveRun, missing: set[str]) -> set[str]:
+    """缺失的必需工具全部真实调用过仍未完成时，判定该要求疑似不可满足。
+
+    工具被调用过却始终没有 completed，通常是服务端门禁在确定性拒绝，而不是
+    助手在回避调用（产品台账误判事故）。但"调用失败"也可能只是"还没做完"
+    （如全文精读分段未完成），服务端不能据此单方面撤销要求——只把判定结果
+    标注到恢复卡上，让专家知情后自行选择"取消该要求"。
+    """
+    if missing and missing <= live.attempted_tools:
+        return set(missing)
+    return set()
+
+
+def _expert_answer_intent_text(answer: dict[str, Any]) -> str:
+    """只保留专家自己给出的答复内容参与意图判定。
+
+    卡片的问题正文和选项文案都出自助手，一旦参与意图判定，助手描述建模
+    内容的行文（如「终产品……10 项」）会被误判成用户诉求，形成不可满足
+    的必需工具要求。displayText 是选项文案的回显，一并剔除。
+    """
+    return json.dumps(
+        {key: value for key, value in (answer or {}).items() if key != "displayText"},
+        ensure_ascii=False,
+    )
+
+
 def _interaction_requires_artifact(interaction: InteractionRecord) -> bool:
     """判断交互是否要求本轮形成实际脚本产物（新契约/候选/确认卡）。
 
@@ -2604,11 +2630,13 @@ class AgentService:
                 issue_id=issue_id,
                 action_id=recovery_action,
             )
-        answer_text = json.dumps(answer, ensure_ascii=False)
+        # 卡片问题文案出自助手，不能参与任何意图判定：建模确认卡里的
+        # 「终产品……N 项」曾被误判成产品台账诉求，形成不可满足的必需
+        # 工具循环。这里只判定专家自己给出的答复内容。
+        answer_text = _expert_answer_intent_text(answer)
         live_for_answer = self._live.get(interaction.run_id)
         required_tools = _required_tools_for_user_intent(
-            f"{interaction.payload.get('question') or ''}\n{answer_text}",
-            # 问题文案出自助手，只有专家的回答才代表用户要求全文精读。
+            answer_text,
             full_read_text=answer_text,
             situation=live_for_answer.situation if live_for_answer else None,
         )
@@ -2623,9 +2651,7 @@ class AgentService:
                 "summary": "补充说明已绑定到恢复任务",
                 "constraintHash": required_text_constraint.get("textHash"),
             })
-        if required_text_constraint and _product_ledger_requested(
-            f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}",
-        ):
+        if required_text_constraint and _product_ledger_requested(answer_text):
             # The decision card is itself an explicit workflow policy. Require
             # the policy write and source/ledger evidence, independent of the
             # deployment's advisory setting.
@@ -3004,6 +3030,53 @@ class AgentService:
             return {
                 "mode": "kept",
                 "run": settled_run,
+                "issueId": normalized_issue,
+                "resolvedIssueIds": [normalized_issue],
+            }
+
+        if normalized_action == "cancel_required_tools":
+            # 用户明确表示这项必需步骤不是自己的要求：撤销要求并从当前
+            # 进度继续本轮，而不是像 keep_current_progress 那样结束本轮。
+            if technical is None or technical.get("strategy") != "required_tools":
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "这个问题已经解决或被后续状态替代", status=409,
+                )
+            if execution not in {RUN_SUSPENDED, RUN_WAITING}:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "当前运行状态已经变化，请刷新后重试", status=409,
+                )
+            required_from_recovery = {
+                str(item).strip()
+                for item in technical.get("requiredTools") or []
+                if str(item).strip()
+            }
+            cancelled_tool = str(technical.get("requiredTool") or "").strip()
+            if cancelled_tool:
+                required_from_recovery.add(cancelled_tool)
+            self.store.resolve_technical_recoveries(run.id, [normalized_issue])
+            live = self._live.get(run.id)
+            if live is not None:
+                live.technical_recoveries.pop(normalized_issue, None)
+                live.required_tools.difference_update(required_from_recovery)
+            self.events.publish(project_id, run.id, "tool", {
+                "name": "issue_recovery",
+                "phase": "completed",
+                "summary": "已按你的选择取消该必需步骤，本轮从当前进度继续",
+                "issueStatus": "resolved",
+                "resolvedIssueIds": [normalized_issue],
+                "waivedTools": sorted(required_from_recovery),
+            })
+            resumed = await self._continue(
+                run,
+                token,
+                "用户已明确取消刚才的必需步骤要求，不要再尝试补做这些工具。"
+                "从当前项目状态继续主动完成下一步；已经确认的内容保持不变。",
+                required_tools=set(),
+                autonomous_seed=True,
+            )
+            return {
+                "mode": "checkpoint_resume",
+                "run": resumed,
                 "issueId": normalized_issue,
                 "resolvedIssueIds": [normalized_issue],
             }
@@ -4406,6 +4479,9 @@ class AgentService:
         """Expose an actionable, diagnostic card instead of a generic stop."""
         issue_id = f"required-tool-review-{run.id}"
         constraint = live.required_text_constraint or {}
+        # 全部缺失工具都真实调用过仍被拒绝时，标注出来供专家判断是否
+        # 「取消该要求」；服务端不据此单方面撤销（失败不等于已完成）。
+        attempted_but_rejected = sorted(_unsatisfiable_required_tools(live, missing_tools))
         recovery = {
             "issueId": issue_id,
             "requiredTool": sorted(missing_tools)[0] if missing_tools else "",
@@ -4417,6 +4493,11 @@ class AgentService:
                     "id": "retry_required_tools",
                     "label": "从当前进度继续",
                     "description": "从最后已保存的步骤重试缺失工具，不生成正式规则候选。",
+                },
+                {
+                    "id": "cancel_required_tools",
+                    "label": "取消该要求",
+                    "description": "撤销这项必需步骤并从当前进度继续本轮，已有成果保持不变。",
                 },
                 {
                     "id": "keep_current_progress",
@@ -4431,12 +4512,18 @@ class AgentService:
             "processed": live.situation.product_ledger_processed,
             "remaining": live.situation.product_ledger_remaining,
             "analysisRevision": live.situation.product_ledger_analysis_revision or None,
-            "failureReason": "必需工具在重试后仍未完成",
+            "failureReason": (
+                "必需工具已多次真实调用但均被当前项目状态拒绝，可能无法在当前状态下满足"
+                if attempted_but_rejected else "必需工具在重试后仍未完成"
+            ),
+            "attemptedButRejected": attempted_but_rejected,
             "constraintStatus": "unconfirmed" if constraint else "not_applicable",
             "missingConstraintItems": (
                 _required_text_constraint_status("", constraint)[1] if constraint else []
             ),
-            "allowedActions": ["retry_required_tools", "keep_current_progress"],
+            "allowedActions": [
+                "retry_required_tools", "cancel_required_tools", "keep_current_progress",
+            ],
             "constraintHash": constraint.get("textHash"),
         }
         live.technical_recoveries[issue_id] = recovery
@@ -4457,6 +4544,11 @@ class AgentService:
                         "value": "retry_required_tools",
                     },
                     {
+                        "label": "取消该要求",
+                        "description": "撤销这项必需步骤并从当前进度继续",
+                        "value": "cancel_required_tools",
+                    },
+                    {
                         "label": "保留成果并停止",
                         "description": "不产生新的规则、指标或操作候选",
                         "value": "keep_current_progress",
@@ -4471,6 +4563,7 @@ class AgentService:
                 "remaining": recovery["remaining"],
                 "analysisRevision": recovery["analysisRevision"],
                 "failureReason": recovery["failureReason"],
+                "attemptedButRejected": recovery["attemptedButRejected"],
                 "constraintStatus": recovery["constraintStatus"],
                 "missingConstraintItems": recovery["missingConstraintItems"],
             },

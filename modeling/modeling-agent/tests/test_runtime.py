@@ -29,7 +29,9 @@ from modeling_agent.service import (
     LiveRun,
     PURPOSE_REVIEW_ALLOWED_TOOLS,
     _absorb_plan_progress,
+    _expert_answer_intent_text,
     _required_tools_for_user_intent,
+    _unsatisfiable_required_tools,
 )
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
@@ -1645,6 +1647,113 @@ async def test_required_tool_recovery_retry_restores_all_missing_tools(settings)
         )
         assert resumed["mode"] == "checkpoint_resume"
         assert captured == [{"begin_product_ledger", "append_product_ledger_batch"}]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_confirmation_answer_intent_ignores_assistant_card_text() -> None:
+    """卡片文案出自助手，只有专家答复内容才能触发必需工具（台账误判回归）。"""
+    card_question = (
+        "已完成建模目标草稿：覆盖从原油输入到终产品的物料平衡与收率计算，"
+        "并将 10 项已识别的口径歧义整理为待确认项。"
+    )
+    approval_answer = {
+        "approved": True,
+        "review_mode": "full",
+        "displayText": "从当前进度继续",
+    }
+    intent_text = _expert_answer_intent_text(approval_answer)
+    assert card_question not in intent_text
+    assert "displayText" not in intent_text
+    assert not _required_tools_for_user_intent(intent_text) & {
+        "require_product_ledger", "begin_product_ledger",
+    }
+    # 旧逻辑把问题文案一并判定，会将助手行文误判成产品台账诉求。
+    assert "require_product_ledger" in _required_tools_for_user_intent(
+        f"{card_question}\n{intent_text}",
+    )
+    # 专家自己明确要求逐项对账时，意图判定仍然生效。
+    explicit = _expert_answer_intent_text(
+        {"feedback": "请把产品清单逐项去重后完整对账"},
+    )
+    assert "require_product_ledger" in _required_tools_for_user_intent(explicit)
+
+
+async def test_unsatisfiable_required_tools_waived_only_after_real_attempts() -> None:
+    live = LiveRun(
+        run_id="run_waiver", project_id="project_waiver", token="token_waiver",
+    )
+    missing = {"begin_product_ledger", "append_product_ledger_batch"}
+    live.required_tools = set(missing)
+    # 完全没调用过：是回避，不是不可满足，不得撤销。
+    assert _unsatisfiable_required_tools(live, missing) == set()
+    # 只调用过一部分：仍按回避处理。
+    live.attempted_tools = {"begin_product_ledger"}
+    assert _unsatisfiable_required_tools(live, missing) == set()
+    # 全部真实调用过且始终未完成：判定为不可满足，整组撤销。
+    live.attempted_tools = set(missing)
+    assert _unsatisfiable_required_tools(live, missing) == missing
+
+
+async def test_cancel_required_tools_resumes_run_without_requirement(settings) -> None:
+    """恢复卡的「取消该要求」应撤销必需工具并继续本轮，而不是结束本轮。"""
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    captured: list[dict] = []
+
+    async def continue_stub(run, token, prompt, **kwargs):
+        captured.append({
+            "prompt": prompt,
+            "requiredTools": set(kwargs.get("required_tools") or ()),
+        })
+        return run.public()
+
+    runtime._continue = continue_stub  # type: ignore[method-assign]
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_cancel_required_tools",
+            project_id="project_cancel_required_tools",
+            session_id="cancel-required-tools-session",
+            status="queued",
+            prompt="建立结构化产品台账",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+        live = LiveRun(
+            run_id=run.id,
+            project_id=run.project_id,
+            token="token_cancel_required_tools",
+            required_tools={"begin_product_ledger", "append_product_ledger_batch"},
+        )
+        live.attempted_tools = {"begin_product_ledger", "append_product_ledger_batch"}
+        runtime._suspend_required_tool_review(  # noqa: SLF001
+            live,
+            run,
+            {"begin_product_ledger", "append_product_ledger_batch"},
+        )
+        interaction = runtime.store.pending_interaction(run.project_id)
+        assert interaction is not None
+        option_values = [item["value"] for item in interaction.payload["options"]]
+        assert "cancel_required_tools" in option_values
+        assert "cancel_required_tools" in interaction.payload["recovery"]["allowedActions"]
+        # 工具全部真实调用过仍被拒绝时，卡片应标注出来供专家知情决策。
+        assert interaction.payload["attemptedButRejected"] == [
+            "append_product_ledger_batch", "begin_product_ledger",
+        ]
+        assert "均被当前项目状态拒绝" in interaction.payload["failureReason"]
+
+        cancelled = await runtime.answer_interaction(
+            project_id=run.project_id,
+            interaction_id=interaction.id,
+            token="token_cancel_required_tools",
+            answer={
+                "value": "cancel_required_tools",
+                "selected": ["cancel_required_tools"],
+            },
+        )
+        assert cancelled["mode"] == "checkpoint_resume"
+        assert captured and captured[0]["requiredTools"] == set()
+        assert runtime.store.technical_recoveries(run.id) == {}
     finally:
         await runtime.shutdown()
 
