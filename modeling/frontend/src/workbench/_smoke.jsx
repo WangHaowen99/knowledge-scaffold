@@ -45,6 +45,7 @@ import ProcessDrawer, {
   restoredVersionMessage,
 } from './shell/ProcessDrawer.jsx';
 import { userFacingText } from './lib/userFacingText.js';
+import { formatMessageTime, formatTraceTime } from './lib/time.js';
 import {
   evidenceLabel,
   evidenceHref,
@@ -1589,6 +1590,52 @@ try {
   }
   console.log('✓ 刷新时直接恢复待确认卡');
 } catch (e) { console.log('✗ 待确认卡恢复:', e.message); bad++; }
+
+const messageTimeSmokeCreatedAt = '2026-08-24T06:02:00.000Z';
+store.set({
+  demo: false,
+  interaction: null,
+  userMessages: [],
+  replayUntilSeq: 0,
+  messages: [{
+    id: 'message-time-smoke', role: 'user', createdAt: messageTimeSmokeCreatedAt,
+    blocks: [{ type: 'text', text: '对话时间要看得出是哪一天' }],
+  }],
+});
+try {
+  const stamp = formatMessageTime(messageTimeSmokeCreatedAt);
+  const html = renderToString(<RightPane />);
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/u.test(stamp)
+    || formatMessageTime('') !== ''
+    || formatMessageTime('not-a-date') !== ''
+    || !html.includes(`· ${stamp}`)) {
+    throw new Error('会话消息没有按年月日时分展示时间');
+  }
+  console.log('✓ 会话消息时间展示到年月日时分');
+} catch (e) { console.log('✗ 会话消息时间:', e.message); bad++; }
+
+const traceTimeSmokeCreatedAt = '2026-08-24T06:01:07.000Z';
+store.set({
+  demo: false, messages: [], trace: [], terminalRunIds: [],
+  run: null, activity: null, lastSeq: 0, replayUntilSeq: 0,
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'trace-time-smoke', toolCallId: 'call-trace-time',
+  name: 'read_document', phase: 'completed', summary: '资料读取完成',
+  createdAt: traceTimeSmokeCreatedAt,
+});
+try {
+  const stamp = formatTraceTime(traceTimeSmokeCreatedAt);
+  const html = renderToString(<ProcessDrawer onClose={() => {}} />);
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u.test(stamp)
+    || formatTraceTime('') !== ''
+    || formatTraceTime('not-a-date') !== ''
+    || store.get().trace[0]?.at !== stamp
+    || !html.includes(`>${stamp}</time>`)) {
+    throw new Error('过程记录没有按年月日时分秒展示时间');
+  }
+  console.log('✓ 过程记录时间展示到年月日时分秒');
+} catch (e) { console.log('✗ 过程记录时间:', e.message); bad++; }
 
 store.set({
   demo: false,

@@ -6,18 +6,19 @@ import { getRevisionDiff, listRevisions, restoreRevision } from '../lib/api.js';
 import VersionPanel from '../../VersionPanel.jsx';
 import { normalizeVersion, versionTitle } from '../../revision-state.js';
 import { userFacingText } from '../lib/userFacingText.js';
+import { formatTraceTime } from '../lib/time.js';
 
 const TRACE = [
-  { id: 1, createdAt: '2026-01-01T14:01:07', at: '14:01:07', actor: '助手', summary: '正在核对当前进展', phase: 'completed' },
-  { id: 2, createdAt: '2026-01-01T14:01:08', at: '14:01:08', actor: '助手', summary: '已找到 6 份项目资料', phase: 'completed' },
-  { id: 3, createdAt: '2026-01-01T14:01:09', at: '14:01:09', actor: '助手', summary: '3 份资料正在并行分析', phase: 'started' },
-  { id: 4, createdAt: '2026-01-01T14:01:22', at: '14:01:22', actor: '资料分析', summary: '找到 14 段与安全库存相关的内容', phase: 'completed' },
-  { id: 5, createdAt: '2026-01-01T14:01:31', at: '14:01:31', actor: '资料分析', summary: '已读到《作业手册》的相关章节', phase: 'completed' },
-  { id: 6, createdAt: '2026-01-01T14:01:44', at: '14:01:44', actor: '资料分析', summary: '已核对库存明细的字段与样例', phase: 'completed' },
-  { id: 7, createdAt: '2026-01-01T14:02:35', at: '14:02:35', actor: '助手', summary: '3 份资料分析完成，正在汇总', phase: 'completed' },
-  { id: 8, createdAt: '2026-01-01T14:02:40', at: '14:02:40', actor: '助手', summary: '已形成采购申请流程草案', phase: 'completed' },
-  { id: 9, createdAt: '2026-01-01T14:02:41', at: '14:02:41', actor: '助手', summary: '找到 3 处相关知识引用', phase: 'completed' },
-  { id: 10, createdAt: '2026-01-01T14:03:02', at: '14:03:02', actor: '助手', summary: '需要确认 D2 的可用量口径', phase: 'waiting' },
+  { id: 1, createdAt: '2026-01-01T14:01:07', at: '2026-01-01 14:01:07', actor: '助手', summary: '正在核对当前进展', phase: 'completed' },
+  { id: 2, createdAt: '2026-01-01T14:01:08', at: '2026-01-01 14:01:08', actor: '助手', summary: '已找到 6 份项目资料', phase: 'completed' },
+  { id: 3, createdAt: '2026-01-01T14:01:09', at: '2026-01-01 14:01:09', actor: '助手', summary: '3 份资料正在并行分析', phase: 'started' },
+  { id: 4, createdAt: '2026-01-01T14:01:22', at: '2026-01-01 14:01:22', actor: '资料分析', summary: '找到 14 段与安全库存相关的内容', phase: 'completed' },
+  { id: 5, createdAt: '2026-01-01T14:01:31', at: '2026-01-01 14:01:31', actor: '资料分析', summary: '已读到《作业手册》的相关章节', phase: 'completed' },
+  { id: 6, createdAt: '2026-01-01T14:01:44', at: '2026-01-01 14:01:44', actor: '资料分析', summary: '已核对库存明细的字段与样例', phase: 'completed' },
+  { id: 7, createdAt: '2026-01-01T14:02:35', at: '2026-01-01 14:02:35', actor: '助手', summary: '3 份资料分析完成，正在汇总', phase: 'completed' },
+  { id: 8, createdAt: '2026-01-01T14:02:40', at: '2026-01-01 14:02:40', actor: '助手', summary: '已形成采购申请流程草案', phase: 'completed' },
+  { id: 9, createdAt: '2026-01-01T14:02:41', at: '2026-01-01 14:02:41', actor: '助手', summary: '找到 3 处相关知识引用', phase: 'completed' },
+  { id: 10, createdAt: '2026-01-01T14:03:02', at: '2026-01-01 14:03:02', actor: '助手', summary: '需要确认 D2 的可用量口径', phase: 'waiting' },
 ];
 
 /* 可审计 ≠ 常驻界面。工具轨迹、子 agent、检查点全部收进抽屉。 */
@@ -180,17 +181,10 @@ export function newestTraceFirst(items) {
 function traceTimestamp(item) {
   const createdAt = Date.parse(String(item?.createdAt || ''));
   if (Number.isFinite(createdAt)) return createdAt;
-  const parts = String(item?.at || '').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/u);
+  const parts = String(item?.at || '')
+    .match(/^(?:\d{4}-\d{2}-\d{2} )?(\d{1,2}):(\d{2})(?::(\d{2}))?$/u);
   if (!parts) return Number.NEGATIVE_INFINITY;
   return Number(parts[1]) * 3_600 + Number(parts[2]) * 60 + Number(parts[3] || 0);
-}
-
-function formatTraceTime(value) {
-  const date = value ? new Date(value) : null;
-  if (!date || Number.isNaN(date.getTime())) return '';
-  return [date.getHours(), date.getMinutes(), date.getSeconds()]
-    .map((part) => String(part).padStart(2, '0'))
-    .join(':');
 }
 
 export function restoredVersionMessage(packageVersion, target) {
