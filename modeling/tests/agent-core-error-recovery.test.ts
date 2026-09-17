@@ -113,3 +113,50 @@ test('评测优化失败时把服务端附带的诊断摊开，不只取一句 m
     assert.doesNotMatch(scope, /settleTask\(\);\s*\n\s*\} catch/);
   }
 });
+
+test('操作必须就读写哪些对象表态，两条创建路径不能各说各话', () => {
+  /* upsert_operation 一直要求 related_objects 非空，但增量路径的 create_operation
+     写成了 args.references ?? [] + allowEmpty，缺省即放行。助手于是只往 references
+     里塞规则 ID，九个物理对象里六个成了孤儿，操作不知道该查哪张表（见 #46）。
+     这里锁的是「必须表态」，不是「必须绑」——强制绑定只会把缺边换成查不出来的假边。 */
+  const source = readFileSync('src/agent/core-service.ts', 'utf8');
+  assert.match(source, /function operationReferences\(args: Record<string, unknown>\)/);
+  assert.match(source, /OPERATION_OBJECT_BINDING_REQUIRED/);
+  // 允许显式弃权，但必须写明理由
+  assert.match(source, /args\.no_object_reason/);
+  // 不能再退回「缺省即放行」
+  assert.doesNotMatch(source, /domainReferenceRelations\(\s*'operation',\s*\n?\s*requiredStringArray\(args\.references \?\? \[\]/);
+
+  const tools = readFileSync('modeling-agent/modeling_agent/tools.py', 'utf8');
+  // 两条创建路径都要把 references 列进必填，且都提供弃权字段
+  assert.equal((tools.match(/"no_object_reason": STRING,/g) || []).length, 2);
+  assert.match(tools, /\["key", "title", "description", "flow", "references", "evidence"\]/);
+  assert.match(tools, /"flow", "references", "evidence"\)/);
+});
+
+test('建模计划 plan_id 由服务端解析，不让模型自己编 ID', () => {
+  /* 一个 run 最多一份活跃计划（createPlan 遇到已有活跃计划直接拒绝），plan_id 对模型
+     没有决策空间。让它填只会出事：实测模型不知道能省略，编了个 "default"，撞上
+     「建模计划不存在」后据此认定计划没了、重建计划，而那份已批准的 13 项计划一直活着
+     （见 #49）。融合计划是另一个子系统，可能同时有多份，不在此列。 */
+  const source = readFileSync('src/agent/core-service.ts', 'utf8');
+  assert.match(source, /private resolvePlanId\(context: AgentToolContext/);
+  // 省略时取当前运行的活跃计划
+  assert.match(source, /this\.changeControl\.activePlan\(context\.project\.id, context\.runId\)/);
+  // 四条建模计划路径都不再强制必填
+  assert.doesNotMatch(source, /const planId = text\(args\.plan_id, 'plan_id'\);/);
+  // 真的没有计划时，提示要说清「已有计划可省略」，否则模型还是会去编一个
+  assert.match(source, /省略 plan_id 即可自动使用当前活跃计划/);
+
+  const tools = readFileSync('modeling-agent/modeling_agent/tools.py', 'utf8');
+  // 按 ToolSpec 边界切，别用固定字符数——stage_change_set 的定义很长，切窄了会漏判
+  const bounds = [...tools.matchAll(/ToolSpec\(\s*\n\s*"(\w+)",/g)]
+    .map((match) => ({ name: match[1], at: match.index ?? 0 }));
+  for (const tool of ['revise_change_plan', 'stage_change_set', 'validate_change_set', 'discard_change_set']) {
+    const index = bounds.findIndex((item) => item.name === tool);
+    assert.ok(index >= 0, `找不到工具 ${tool}`);
+    const body = tools.slice(bounds[index].at, bounds[index + 1]?.at ?? tools.length);
+    assert.match(body, /省略即自动使用当前运行的活跃计划/, `${tool} 的 plan_id 缺少可省略说明`);
+    assert.doesNotMatch(body, /\(\s*"plan_id",/, `${tool} 仍把 plan_id 列为必填`);
+  }
+});

@@ -124,7 +124,30 @@ services:
       - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-}
       - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
       - MODELING_LLM_MAX_TOKENS=${MODELING_AGENT_LLM_MAX_TOKENS:-32768}
+      # 思维链与正文共用 max_tokens。模型默认就推理时（如 glm 系列）配置侧看不出来，
+      # 阶段预算会被推理占满、正文一个 token 都吐不出来；显式设为 enabled 才会追加余量。
+      - MODELING_LLM_THINKING_MODE=${MODELING_LLM_THINKING_MODE:-}
+      - MODELING_REASONING_HEADROOM_TOKENS=${MODELING_REASONING_HEADROOM_TOKENS:-}
+      - MODELING_LEADER_OUTPUT_TOKENS=${MODELING_LEADER_OUTPUT_TOKENS:-}
       - MODELING_AGENT_MAX_ITERATIONS=${MODELING_AGENT_MAX_ITERATIONS:-200}
+      # 上下文滚动窗口。这三个是安全网不是主控：实测 19 条消息就能吃掉 231K token，
+      # 按条数拦不住真正的膨胀，binding 的永远是下面的 token 预算。代码默认 48/64/10
+      # 只留得住几十条消息，专家的回答会被挤出窗口，助手于是把同一个问题问上第五遍。
+      - MODELING_CONTEXT_WINDOW_MESSAGES=${MODELING_CONTEXT_WINDOW_MESSAGES:-400}
+      - MODELING_CONTEXT_MAX_MESSAGES=${MODELING_CONTEXT_MAX_MESSAGES:-500}
+      - MODELING_CONTEXT_WINDOW_ROUNDS=${MODELING_CONTEXT_WINDOW_ROUNDS:-80}
+      # 卸载+摘要+回灌预设链。不开时超窗消息直接丢弃且找不回；开了才有句柄回灌。
+      # 放开上面的条数必须同时开它，否则只是让每次请求更贵而没有任何归档机制。
+      - MODELING_CONTEXT_PROCESSOR_PRESET=${MODELING_CONTEXT_PROCESSOR_PRESET:-1}
+      # 卸载阈值是「窗口的百分之十」，所以这个值是把尺子，决定多大算大。不配时框架
+      # 会按模型名推断（glm-5.2 推出 1M），阈值随之涨到 10 万 token，实测 386 条消息
+      # 里只有 2 条够得着——链子开了也几乎不干活，等于白花压缩的钱。默认取 128000
+      # 压在 gpt-4o / glm-4 的窗口线上：报大了上下文会涨到模型接不下而硬失败，报小了
+      # 只是压缩得早一点。大窗口模型按实际容量调高（glm-5.2 建议 200000）。
+      - MODELING_CONTEXT_WINDOW_TOKENS=${MODELING_CONTEXT_WINDOW_TOKENS:-128000}
+      # 免卸载名单。判据是「丢了能不能重新拿到」：专家的回答只有一份，丢了只能再问
+      # 一次；知识包文件随时能重读。默认值与代码一致，这里只是让部署侧可调。
+      - MODELING_CONTEXT_PROTECTED_TOOLS=${MODELING_CONTEXT_PROTECTED_TOOLS:-ask,request_confirmation,task_tool}
       - MODELING_SERVICE_TOKEN=${MODELING_SERVICE_TOKEN:-}
     volumes:
       - modeling-agent-data:/data

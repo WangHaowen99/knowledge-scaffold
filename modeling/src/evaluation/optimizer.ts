@@ -15,7 +15,10 @@ import type { EvalResult } from '../workflow/m3-repo.js';
 import type { OptSuggestion } from '../workflow/m4-repo.js';
 import type { FailureDiagnosis } from './failure-diagnosis.js';
 import { attachKnowledgeChangeEvidence } from '../workflow/knowledge-evidence.js';
-import { DATA_PROVIDER_SCRIPT_CONTRACT } from '../workflow/script-safety.js';
+import {
+  SCRIPT_PURE_COMPUTATION_GUIDANCE,
+  newScriptDataAccessPoints,
+} from '../workflow/script-safety.js';
 import { mapWithConcurrency } from '../workflow/generation-planner.js';
 import {
   applyPythonSourceEdits,
@@ -2355,11 +2358,11 @@ function validateOptimizationScriptRequirements(
         errors.push(`优化候选 script:${script.key} 的 load_reference_data 未提供下游读取键：${newDisconnects.join('、')}；必须在装载器返回或明确写入 data 后才能读取`);
       }
     }
-    if (requiresAuthoritativeProviderData(requirements) && /\bDataProviderClient\b/u.test(source)) {
-      const fileLoaders = fileDataLoaderFunctions(source);
-      if (fileLoaders.length) {
-        errors.push(`优化候选 script:${script.key} 已使用 DataProviderClient，却仍保留文件数据读取函数 ${fileLoaders.join('、')}；平台数据源必须是唯一业务数据入口`);
-      }
+    // 优化阶段同样不许把取数写回脚本里。基线取优化前源码：存量脚本已有的取数按现状
+    // 放行，只拦本轮新引入的，否则改一处公式就会被整份拒掉。
+    const addedDataAccess = newScriptDataAccessPoints(before?.sourceCode, source);
+    if (addedDataAccess.length) {
+      errors.push(`优化候选 script:${script.key} 新增了${addedDataAccess.join('、')}；${SCRIPT_PURE_COMPUTATION_GUIDANCE}`);
     }
     if (requiresRuntimeSourceMapping(requirements)) {
       const hardCodedCollections = hardCodedRuntimeIdentifierCollections(source);
@@ -3734,10 +3737,10 @@ export async function applyOptimizations(
     '④ add_script/modify_script 必须落到 scripts，且目标 operation.script.key 必须同步绑定；脚本只接受结构化输入，不得内置用例答案常量。',
     '绑定脚本的 operation 只有一条权威计算路径：脚本失败时停止并报告阻断；禁止新增模型/人工手算、business_data_search、ontology_context 或其他替代计算兜底。',
     '修改既有脚本时必须保留原 key、runtime、boundOperation、entrypoint 和非空 sourceCode；除非建议明确要求迁移入口，否则只能在原入口文件内修复，禁止通过改名或空实现删除既有脚本文件。',
-    '脚本必须提供 argparse CLI、按 parameters 声明全部 flag，并向 stdout 输出 JSON。需要查询本体数据源时，',
-    '只能 from shared_capabilities.ontology_script_sdk import DataProviderClient 后调用 query/query_sql；禁止定义 query_table 等待运行时注入的占位函数，禁止 NotImplementedError。',
-    DATA_PROVIDER_SCRIPT_CONTRACT,
-    'DataProvider 行适配必须由当前对象的 sourceRefs/fields 契约驱动：按语义键、来源列键等候选顺序读取，跳过 null 和空字符串；数值字段必须显式转换并对缺失或非法值给出清晰错误，禁止直接把原始字符串参与数值比较或运算。',
+    '脚本必须提供 argparse CLI、按 parameters 声明全部 flag，并向 stdout 输出 JSON。',
+    SCRIPT_PURE_COMPUTATION_GUIDANCE,
+    '禁止定义 query_table 等待运行时注入的占位函数，禁止 NotImplementedError。',
+    '数据行适配必须由当前对象的 sourceRefs/fields 契约驱动：按语义键、来源列键等候选顺序读取，跳过 null 和空字符串；数值字段必须显式转换并对缺失或非法值给出清晰错误，禁止直接把原始字符串参与数值比较或运算。',
     '从 CLI JSON、字典 .get(...) 或下标读取的每个数值字段，也必须先显式转换成数值变量，再进行大小比较、加减乘除或聚合；不能因为脚本中其他字段已经调用 float/int 就跳过当前字段。',
     '推荐逐字段采用 raw_value = record.get("field")；value = normalize_number(raw_value, "field") 的两段式写法。校验错误列出的每一个原始变量都必须分别修复，不能只增加一个未覆盖该变量的通用转换函数。',
     '推荐统一使用以下等价 helper（可以重命名，但不得省略空值判断）：def first_non_empty(row, *candidate_keys): 对候选键依次 value = row.get(key)；若 value in (None, "") 则 continue；否则 return value；全部为空时 return None。',
@@ -3770,8 +3773,8 @@ export async function applyOptimizations(
     '若源码修改需要新增或调整 CLI 输入、JSON 输出或边界，必须在同一次提交的 contractPatch 中更新 parameters、outputs、description 或 boundaries；服务端会同步绑定 operation。不得修改 key、runtime、boundOperation、entrypoint、timeoutSeconds 或 evidence。',
     '新增 import 请放在被替换函数内部；未列入 editable 的符号和知识资源由服务端原样保留。',
     '不得写入标准答案、评测问题原文、判分理由、当前用例批次/日期/结果数值或样例专用分支。',
-    'DataProviderClient 是平台数据唯一读取入口；不得保留文件读取、静默缺省数据或人工手算兜底作为权威计算路径。',
-    DATA_PROVIDER_SCRIPT_CONTRACT,
+    '不得保留文件读取、静默缺省数据或人工手算兜底作为权威计算路径；缺数据时报错，不要自行找地方补数据。',
+    SCRIPT_PURE_COMPUTATION_GUIDANCE,
     '所有结构化数值必须先显式转换并校验；数据行按本体语义字段、来源列字段、位置索引的顺序跳过空值读取。',
     '当校验错误列出 load_reference_data 的下游读取键时，必须逐一核对：每个键要么按真实源表契约由同一个 load_reference_data 返回，要么删除不必要的下游读取；禁止使用别名、空壳 None、静默默认值或只在局部变量写入来绕过。',
     '当建议涉及实际周期时，aggregate_month 的可达调用链必须汇总全部批次的 period_days，并把汇总结果用于月度能力或负荷分母；固定天数不算落实。',

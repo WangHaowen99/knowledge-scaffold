@@ -125,3 +125,26 @@ test('Workbench 实时门禁焦点不会让建模阶段提前进入评测', () =
     kind: 'evaluation', target: '正式评测', source: 'agent',
   });
 });
+
+test('运行恢复之后自动撤掉「需要恢复」卡片', () => {
+  // 线上现场：Agent 重启比 Core 快，自动恢复失败落了一张红卡；十几秒后运行
+  // 其实已经恢复并继续写文件，红卡却一直挂着。后端此时不再下发 recovery
+  // 字段（state.public() 只在 recovery_status 非空时带它），而字段缺席过去被
+  // 当成「保持原值」，于是只能靠用户自己点刷新。
+  store.set({ recovery: null, lastSeq: 0, replayUntilSeq: 0 });
+
+  actions.handleEvent({ kind: 'state', seq: 1, execution: 'suspended', recovery: { status: 'resume_failed' } });
+  assert.deepEqual(store.get().recovery, { status: 'resume_failed' });
+
+  // 仍然挂起时不能清：REST 侧的恢复诊断可能还有更细的信息
+  actions.handleEvent({ kind: 'state', seq: 2, execution: 'suspended' });
+  assert.deepEqual(store.get().recovery, { status: 'resume_failed' });
+
+  actions.handleEvent({ kind: 'state', seq: 3, execution: 'running' });
+  assert.equal(store.get().recovery, null, '重新跑起来就不该再提示需要恢复');
+
+  // 停下来等用户同样不是「需要恢复」
+  store.set({ recovery: { status: 'resume_failed' }, lastSeq: 3 });
+  actions.handleEvent({ kind: 'state', seq: 4, execution: 'waiting' });
+  assert.equal(store.get().recovery, null);
+});

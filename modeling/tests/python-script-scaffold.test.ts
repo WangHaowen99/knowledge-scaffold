@@ -31,9 +31,8 @@ const contract: Omit<SpecScript, 'sourceCode'> = {
 test('Core 脚手架确定性生成 CLI 和 JSON 外壳，模型只实现业务函数', () => {
   const scaffold = buildPythonScriptScaffold(contract);
   assert.equal(isCoreManagedPythonScaffold(scaffold), true);
-  assert.doesNotMatch(scaffold, /^from shared_capabilities\.ontology_script_sdk import DataProviderClient$/mu);
-  assert.match(scaffold, /class DataProviderClient:[\s\S]+def __new__\(cls, \*args, \*\*kwargs\):/u);
-  assert.match(scaffold, /DataProviderClient as _DataProviderClient/u);
+  assert.doesNotMatch(scaffold, /DataProviderClient/u);
+  assert.doesNotMatch(scaffold, /ontology_script_sdk/u);
   assert.match(scaffold, /type=parse_boolean/u);
   assert.match(scaffold, /action="store_true"/u);
   assert.match(scaffold, /parser\.add_argument\("--value", dest="value", type=float, required=True\)/u);

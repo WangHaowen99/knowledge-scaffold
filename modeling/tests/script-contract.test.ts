@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   validateGeneratedScriptSafety,
   validateGeneratedScriptSecurity,
+  validateScriptComputationPurity,
 } from '../src/workflow/script-safety.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import { runFormatChecks } from '../src/workflow/package-check.js';
@@ -215,6 +216,65 @@ def main():
 if __name__ == "__main__":
     main()
 `)));
+});
+
+test('新脚本写取数代码会被纯计算检查拒绝', () => {
+  const pure = `
+import argparse
+import json
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-json", required=True)
+    args = parser.parse_args()
+    rows = json.loads(args.input_json)["rows"]
+    print(json.dumps({"result": sum(float(row["amount"]) for row in rows)}, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()
+`;
+  assert.doesNotThrow(() => validateScriptComputationPurity(script(pure)));
+
+  for (const dataAccess of [
+    'from shared_capabilities.ontology_script_sdk import DataProviderClient',
+    'import requests',
+    'import pymysql',
+    'with open("rows.csv") as handle:\n        pass',
+  ]) {
+    const impure = pure.replace('    rows =', `    ${dataAccess}\n    rows =`);
+    assert.throws(() => validateScriptComputationPurity(script(impure)), /脚本纯计算检查失败/u);
+  }
+});
+
+test('存量脚本已有的取数按现状放行，只拦本次新增的取数', () => {
+  const legacy = `
+import argparse
+import json
+from shared_capabilities.ontology_script_sdk import DataProviderClient
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-json", required=True)
+    args = parser.parse_args()
+    client = DataProviderClient()
+    response = client.query("读取生产计划基础数据")
+    if not response.success:
+        raise RuntimeError(response.error or response.message)
+    print(json.dumps({"result": len(response.data)}, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()
+`;
+  // 只改算法、不碰取数：不能因为存量代码里本来就有取数而拒掉这次提交。
+  const edited = legacy.replace('len(response.data)', 'len(response.data) * 2');
+  assert.doesNotThrow(() => validateScriptComputationPurity(script(edited), legacy));
+
+  // 在存量取数之上又新增一类取数入口：只报新增的那一类。
+  const widened = legacy.replace('    client =', '    import requests\n    client =');
+  assert.throws(
+    () => validateScriptComputationPurity(script(widened), legacy),
+    /脚本纯计算检查失败.*网络请求/su,
+  );
 });
 
 test('generated scripts reject unsupported keyword filters on provider SDK queries', () => {

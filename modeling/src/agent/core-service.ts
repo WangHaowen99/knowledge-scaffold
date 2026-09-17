@@ -16,9 +16,11 @@ import type { ArtifactChange, ArtifactFileDiff } from '../artifacts/repository.j
 import { getDb, nowIso } from '../db/index.js';
 import {
   applyMaterialInvalidation,
+  listMaterialImpacts,
   resolveMaterialImpactScope,
   type AffectedKnowledgeKind,
   type AffectedKnowledgeResource,
+  type StoredMaterialImpact,
 } from '../documents/material-impact.js';
 import { getDocumentRawContent, listDocuments, updateDocumentDirectives } from '../documents/repo.js';
 import {
@@ -110,6 +112,11 @@ import {
   isCoreManagedPythonScaffold,
 } from '../workflow/python-script-scaffold.js';
 import {
+  SCRIPT_PURE_COMPUTATION_GUIDANCE,
+  SCRIPT_PURITY_VALIDATOR_VERSION,
+  newScriptDataAccessPoints,
+} from '../workflow/script-safety.js';
+import {
   applyPythonSourceEdits,
   selectPythonSourceSymbols,
   type PythonSourceEdit,
@@ -121,7 +128,10 @@ import {
 } from '../workflow/package-version-lifecycle.js';
 import { ensureFullDocumentSummaries } from '../workflow/material-analysis-map-reduce.js';
 import { buildTaskLlm } from '../llm/provider.js';
-import { identifyScriptCandidates } from '../ai-construction/deterministic-capability.js';
+import {
+  identifyScriptCandidates,
+  operationsMissingInputs,
+} from '../ai-construction/deterministic-capability.js';
 import {
   getRound,
   latestEffectiveEvaluation,
@@ -179,6 +189,7 @@ import {
   CHANGE_SET_DOMAIN_TOOLS,
   OBJECT_RELATION_REVIEW_TARGET_KEY,
   OBJECT_RELATION_REVIEW_TOOL,
+  normalizePlanTargetKey,
   parseChangeSetActions,
   type ChangeSetActionInput,
 } from './change-control.js';
@@ -238,6 +249,12 @@ type GateResult = {
   /** 只剩用户要在别的界面自己完成的事情。助手再宣告多少遍也推不动，
    *  应当结束本轮等待外部事件，而不是一轮轮重复同一段话（见 #39）。 */
   awaitingUser?: boolean;
+  /** blockers 里助手能自己动手推进的那些，措辞按「助手要做的动作」写。
+   *  blockers 面向用户，说的是「还差什么」；助手需要的是「现在该干什么」，
+   *  两者主语经常不同——「确认建模目标」是用户的事，助手能做的是起草并发卡。
+   *  单轮目标只从这里挑，避免把「由项目负责人完成发布」指派给助手。
+   *  为空表示这道门禁当前没有助手能独立推进的事。 */
+  agentActionable?: string[];
 };
 
 interface ObjectRelationReviewRow {
@@ -285,6 +302,7 @@ const GATE_LABELS: Record<string, string> = {
   process_confirmed: '业务流程确认',
   knowledge_confirmed: '知识内容确认',
   product_ledger_verified: '产品清单台账',
+  increment_resolved: '增量影响处理',
   deterministic_confirmed: '确定性计算范围确认',
   modeling_complete: '建模完成',
   ready_for_eval: '评测准备',
@@ -354,6 +372,10 @@ interface DeterministicCapabilityView {
   skipped_operation_keys: string[];
   missing_script_bindings: string[];
   missing_script_tests: string[];
+  // 被识别为脚本候选、却还没声明输入的业务操作。脚本契约的参数只能来自业务
+  // 操作的输入定义；缺了它，写契约时既无处可查，也没有工具可补——确定性验证
+  // 阶段拿不到领域写工具，只能自己编数据从哪来。必须在知识阶段就补齐。
+  missing_operation_inputs: string[];
   decision: null | {
     reason: string;
     decided_by: string;
@@ -1213,6 +1235,7 @@ export class AgentCoreService {
     switch (tool) {
       case 'list_documents': return this.listDocuments(context.project.id);
       case 'get_goal_context': return this.goalContext(context.project.id, workspace);
+      case 'get_material_context': return this.materialContext(context.project.id, args);
       case 'require_product_ledger': return this.requireProductLedger(context, workspace, args);
       case 'get_product_inventory_source': return this.productInventorySource(context, args);
       case 'begin_product_ledger': return runProjectWriteExclusive(
@@ -1231,6 +1254,7 @@ export class AgentCoreService {
       case 'get_product_ledger': return this.getProductLedger(workspace);
       case 'stage_product_ledger': return this.stageProductLedger(workspace, args);
       case 'read_document': return this.readDocument(context.project.id, args);
+      case 'list_document_outline': return this.listDocumentOutline(context.project.id, args);
       case 'set_material_directive': return this.setMaterialDirective(context.project.id, args);
       case 'read_documents_fully': return this.readDocumentsFully(context, args);
       case 'search_documents': return this.searchDocuments(context.project.id, args);
@@ -1677,6 +1701,15 @@ export class AgentCoreService {
         workingSpec,
         working.files,
       );
+      // 增量隔离的确定性守卫：过去「只动受影响部分」只写在提示词里，模型把
+      // 未受影响的基线资源列进计划没有任何代码会拦——增量隔离是偏好不是不变量。
+      // 判据与 increment_resolved 门禁同源但更严：项目正式发布过，之后的既有
+      // 资源修改就必须落在已界定的影响范围内（发布后的迭代本来就该按影响口径
+      // 走；专家明确要求的全量迭代由撞墙后的裁决卡知情确认）。计划模式没有
+      // increment 取值，发布事实才是增量语境的可靠信号。
+      if (this.projectHasConfirmedRelease(context.project.id)) {
+        this.assertIncrementPlanScope(context.project.id, sourcePolicy.tasks, workingSpec);
+      }
       const projectTables = this.tables(context.project.id);
       const plan = this.changeControl.createPlan({
         projectId: context.project.id,
@@ -1708,6 +1741,43 @@ export class AgentCoreService {
     } catch (error) {
       throw normalizeChangeControlError(error);
     }
+  }
+
+  /** 项目是否有过正式发布——增量口径生效的确定性信号。 */
+  private projectHasConfirmedRelease(projectId: string): boolean {
+    const row = this.db.prepare(`SELECT 1 FROM artifact_revisions
+      WHERE project_id = ? AND cause = 'agent_release_confirmed' LIMIT 1`).get(projectId);
+    return Boolean(row);
+  }
+
+  /** 增量计划的范围守卫：修改既有资源必须落在已界定的影响闭包内。
+   *
+   *  代码判断的是动作的合法性，不是语言的含义：专家插话要求处理基线内容时，
+   *  模型在这里撞墙，按 next 指引升级 conflict_decision 裁决卡请专家知情决定。 */
+  private assertIncrementPlanScope(
+    projectId: string,
+    rawTasks: unknown,
+    workingSpec: PackageSpec,
+  ): void {
+    const outOfScope = incrementPlanScopeViolations(
+      rawTasks,
+      workingSpec,
+      listMaterialImpacts(this.db, projectId),
+    );
+    if (!outOfScope.length) return;
+    throw new AgentCoreError(
+      'INCREMENT_SCOPE_VIOLATION',
+      `增量计划包含不在本轮影响范围内的既有内容：${outOfScope.slice(0, 8).join('、')}`,
+      [
+        '只把受资料变更影响的内容列入增量计划；基线已有问题不属于本次增量',
+        "若这些改动来自专家明确要求（含发布后重新迭代），先用 ask(kind='conflict_decision') 向专家说明这会动到基线内容并请其裁决，得到确认后再按裁决执行",
+      ],
+      409,
+      {
+        retryable: false,
+        outOfScope: outOfScope.slice(0, 20),
+      },
+    );
   }
 
   private assertProductLedgerBeforeMutation(
@@ -1762,20 +1832,12 @@ export class AgentCoreService {
     context: AgentToolContext,
     args: Record<string, unknown>,
   ): void {
-    const goal = String(args.goal ?? '').trim();
     const tasks = Array.isArray(args.tasks) ? args.tasks : [];
-    const text = [goal, ...tasks.map((task) => (
-      task && typeof task === 'object' && !Array.isArray(task)
-        ? JSON.stringify(task)
-        : String(task ?? '')
-    ))].join('\n');
-    const explicitLedger = /(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)/iu.test(text);
-    if (explicitLedger) {
-      this.db.prepare(`UPDATE projects SET product_ledger_required = 1, updated_at = ? WHERE id = ?`)
-        .run(nowIso(), context.project.id);
-    }
-    const required = this.productLedgerRequired(context.project.id) || explicitLedger;
-    if (!required) return;
+    // 台账要不要做是项目策略，只能来自用户决定（require_product_ledger 或部署
+    // enforce）。这里曾经用正则扫 goal/tasks 再置位，但那段文本是模型自己写的
+    // 计划文案，不是用户意图：模型写一句「完整提取 N 项产品清单」就会在不知情的
+    // 情况下给自己加上写入门禁，且无法通过改措辞撤销。猜测不能当决定用。
+    if (!this.productLedgerRequired(context.project.id)) return;
     const hasFormalGeneration = tasks.some((task) => {
         if (!task || typeof task !== 'object' || Array.isArray(task)) return false;
         const value = task as Record<string, unknown>;
@@ -2047,7 +2109,7 @@ export class AgentCoreService {
       const plan = this.changeControl.revisePlan({
         projectId: context.project.id,
         runId: context.runId,
-        planId: args.plan_id,
+        planId: this.resolvePlanId(context, args),
         expectedVersion: args.expected_version,
         reason: args.reason,
         addTasks: args.add_tasks,
@@ -2067,10 +2129,28 @@ export class AgentCoreService {
     return runProjectWriteExclusive(context.project.id, () => this.stageChangeSetExclusive(context, args));
   }
 
+  /* 一个 run 最多一份活跃计划（createPlan 遇到已有活跃计划直接拒绝），所以 plan_id 对模型
+     没有决策空间——服务端一查就知道。让模型填它只会出事：实测模型不知道能省略，编了个
+     "default" 传进来，撞上「建模计划不存在」，据此以为计划没了，于是重建计划，而那份已批准
+     的 13 项计划其实一直活着、17 个任务原封不动等着它（见 #49）。
+     省略即自动解析；显式传入仍然生效，老调用不受影响。 */
+  private resolvePlanId(context: AgentToolContext, args: Record<string, unknown>): string {
+    const explicit = String(args.plan_id ?? '').trim();
+    if (explicit) return explicit;
+    const active = this.changeControl.activePlan(context.project.id, context.runId);
+    if (active) return active.id;
+    throw new AgentCoreError(
+      'CHANGE_PLAN_NOT_FOUND',
+      '当前运行还没有受控建模计划',
+      ['先用 create_change_plan 建立计划并等待批准；已有计划时省略 plan_id 即可自动使用当前活跃计划'],
+      404,
+    );
+  }
+
   private async stageChangeSetExclusive(context: AgentToolContext, args: Record<string, unknown>) {
     let changeSetId = '';
     try {
-      const planId = text(args.plan_id, 'plan_id');
+      const planId = this.resolvePlanId(context, args);
       const mutationId = text(args.mutation_id, 'mutation_id');
       const expectedRevision = text(args.expected_revision, 'expected_revision');
       const actions = parseChangeSetActions(args.actions);
@@ -2433,7 +2513,7 @@ export class AgentCoreService {
     args: Record<string, unknown>,
   ) {
     try {
-      const planId = text(args.plan_id, 'plan_id');
+      const planId = this.resolvePlanId(context, args);
       const current = await this.overlay(workspace);
       this.changeControl.readyForValidation(context.project.id, context.runId, planId);
       this.assertSchemaSemantics(workspace, current);
@@ -2482,7 +2562,7 @@ export class AgentCoreService {
     args: Record<string, unknown>,
   ) {
     try {
-      const planId = text(args.plan_id, 'plan_id');
+      const planId = this.resolvePlanId(context, args);
       if (workspace.candidate_id) {
         throw new AgentCoreError('CHANGE_SET_FROZEN', '这批修改已经进入确认，请先在页面退回', ['等用户在页面接受或退回这批修改后再继续；不要重复提交同一批'], 409);
       }
@@ -3313,6 +3393,10 @@ export class AgentCoreService {
     const skipped = currentDecision
       ? uncovered.map((candidate) => candidate.operation_key).filter((key) => !selectedSet.has(key))
       : [];
+    const missingOperationInputs = operationsMissingInputs(
+      candidates.map((candidate) => candidate.operation_key),
+      spec.operations ?? [],
+    );
     let status: DeterministicCapabilityView['status'];
     let displayText: string;
     if (!candidates.length) {
@@ -3343,6 +3427,7 @@ export class AgentCoreService {
       skipped_operation_keys: skipped,
       missing_script_bindings: missingBindings,
       missing_script_tests: missingTests,
+      missing_operation_inputs: missingOperationInputs,
       decision: currentDecision ? {
         reason: currentDecision.reason,
         decided_by: currentDecision.decided_by,
@@ -3839,6 +3924,34 @@ export class AgentCoreService {
         `操作 ${contract.boundOperation} 已绑定脚本 ${conflicting.key}`,
         ['先由专家决定保留哪一个脚本契约，不要静默覆盖绑定'],
         409,
+      );
+    }
+    // 提交即拦：脚本在沙箱里按 CLI 执行，取数代码在那里根本跑不通，放过去只会让
+    // 模型在后续沙箱测试里反复猜数据从哪来。基线取存量源码，存量已有的取数不追溯。
+    // 标成 retryable：改掉源码重新提交就能过，交给 Agent 的受控修复轮次收敛；
+    // 真改不动（业务数据没有契约入口）时由修复轮次耗尽升级给专家，不在这里堵死。
+    const addedDataAccess = newScriptDataAccessPoints(existing?.sourceCode, sourceCode);
+    if (addedDataAccess.length) {
+      throw new AgentCoreError(
+        'SCRIPT_DATA_ACCESS_FORBIDDEN',
+        `脚本源码新增了${addedDataAccess.join('、')}：${SCRIPT_PURE_COMPUTATION_GUIDANCE}`,
+        [
+          '删除脚本里的取数代码，改为从 run_business_logic 的 inputs 读取已传入的业务数据，然后重新提交',
+          '业务数据没有契约入口时，先按操作已声明的输入补齐脚本契约参数；操作本身没有声明输入的，回到知识阶段请专家补齐，不要在脚本里自行取数',
+        ],
+        409,
+        {
+          retryable: true,
+          validatorVersion: SCRIPT_PURITY_VALIDATOR_VERSION,
+          findingCount: addedDataAccess.length,
+          findings: addedDataAccess.map((label) => ({
+            ruleId: 'script.pure-computation',
+            path: `scripts/${contract.entrypoint}`,
+            message: `脚本新增了${label}`,
+            suggestion: '删除该取数代码，改用契约参数传入的业务数据',
+          })),
+          data_access_points: addedDataAccess,
+        },
       );
     }
     const scripts = [...(spec.scripts ?? [])];
@@ -4768,12 +4881,244 @@ export class AgentCoreService {
     };
   }
 
+  /** 资料档案查询面：全文精读已按分块提取并三层落库（分块事实、文档摘要、
+   *  项目汇总），此前唯一的消费方是进度条——细粒度事实躺在库里没有出口，
+   *  后续阶段只能回原文重读。这里把档案按资料/主题/类型开放为只读查询，
+   *  返回形态遵守「结论+锚点+句柄」：档案是缓存不是事实源，写入知识包的
+   *  数字和口径必须按 filename+offset 回原文核对。 */
+  private materialContext(projectId: string, args: Record<string, unknown>) {
+    const documentFilter = String(args.document ?? '').trim();
+    const topic = String(args.topic ?? '').trim();
+    const kindFilter = String(args.kind ?? '').trim();
+    const allowedKinds = ['object', 'rule', 'operation', 'metric', 'process', 'fact'];
+    if (kindFilter && !allowedKinds.includes(kindFilter)) {
+      throw new AgentCoreError('INVALID_INPUT', `kind 只能是 ${allowedKinds.join('/')}`, ['修正 kind 后重试'], 400);
+    }
+    const run = this.db.prepare(`SELECT id, updated_at FROM material_analysis_runs
+      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
+      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(projectId) as
+      | { id: string; updated_at: string }
+      | undefined;
+    if (!run) {
+      return {
+        version: 'material-context-v1',
+        available: false,
+        documents: [], facts: [], candidates: [],
+        instruction: '当前没有已完成的资料分析；先完成全文精读建立档案，或直接用 search_documents 定位原文。',
+        display: { text: '资料档案尚未建立' },
+      };
+    }
+    const current = new Map(listDocuments(projectId).flatMap((document) => {
+      const fingerprint = documentRevisionFingerprint(document);
+      return [[document.id, fingerprint], [document.filename, fingerprint]] as const;
+    }));
+    const matchesDocument = (row: { document_id?: string | null; filename: string }) => (
+      !documentFilter || row.filename === documentFilter || row.document_id === documentFilter
+    );
+    // 主题按 OR 匹配子串，与 search_documents 同一口径；档案负责"找到"，
+    // 不负责"引用"，召回宽一点、由锚点核对兜住准确性。
+    const terms = topic.split(/\s+/).map((item) => item.trim().toLocaleLowerCase('zh-CN'))
+      .filter((item) => item.length >= 2);
+    const matchesTopic = (...texts: Array<string | undefined>) => (
+      !terms.length || texts.some((value) => {
+        const lower = String(value ?? '').toLocaleLowerCase('zh-CN');
+        return terms.some((term) => lower.includes(term));
+      })
+    );
+    const stale = (row: { document_id?: string | null; filename: string; revision_fingerprint: string }) => {
+      const fingerprint = current.get(String(row.document_id ?? '')) ?? current.get(row.filename);
+      return fingerprint !== row.revision_fingerprint;
+    };
+    const parse = (raw: string | null) => {
+      try { return raw ? JSON.parse(raw) as Record<string, any> : {}; } catch { return {}; }
+    };
+    const compact = (value: unknown, limit: number) => String(value ?? '').trim().slice(0, limit);
+
+    const summaryRows = this.db.prepare(`SELECT document_id, filename, revision_fingerprint, payload_json
+      FROM material_analysis_document_summaries WHERE run_id = ? AND status = 'completed'
+      ORDER BY document_key`).all(run.id) as Array<{
+        document_id: string | null; filename: string; revision_fingerprint: string; payload_json: string | null;
+      }>;
+    const documents = summaryRows.filter(matchesDocument).flatMap((row) => {
+      const payload = parse(row.payload_json);
+      if (!matchesTopic(payload.summary, row.filename)) return [];
+      return [{
+        documentId: row.document_id ?? null,
+        filename: row.filename,
+        summary: compact(payload.summary, 2_000),
+        suitableFor: Array.isArray(payload.suitableFor) ? payload.suitableFor.slice(0, 6) : [],
+        stale: stale(row),
+      }];
+    }).slice(0, 20);
+
+    const chunkRows = this.db.prepare(`SELECT document_id, filename, revision_fingerprint, payload_json
+      FROM material_analysis_chunks WHERE run_id = ? AND status = 'completed'
+      ORDER BY document_key, chunk_index`).all(run.id) as Array<{
+        document_id: string | null; filename: string; revision_fingerprint: string; payload_json: string | null;
+      }>;
+    const facts: Array<{ filename: string; offset: number; kind: string; note: string; stale?: boolean }> = [];
+    const candidates: Array<Record<string, unknown>> = [];
+    for (const row of chunkRows) {
+      if (!matchesDocument(row)) continue;
+      const payload = parse(row.payload_json);
+      const rowStale = stale(row);
+      for (const item of Array.isArray(payload.evidence) ? payload.evidence : []) {
+        if (facts.length >= 30) break;
+        const kind = compact(item?.kind, 20) || 'fact';
+        const note = compact(item?.note, 500);
+        if (!note || !Number.isFinite(item?.offset)) continue;
+        if (kindFilter && kind !== kindFilter) continue;
+        if (!matchesTopic(note)) continue;
+        facts.push({
+          filename: row.filename, offset: Math.floor(Number(item.offset)), kind, note,
+          ...(rowStale ? { stale: true } : {}),
+        });
+      }
+      for (const item of Array.isArray(payload.candidates) ? payload.candidates : []) {
+        if (candidates.length >= 20) break;
+        const kind = compact(item?.kind, 20);
+        const name = compact(item?.name, 200);
+        if (!name) continue;
+        if (kindFilter && kind !== kindFilter) continue;
+        if (!matchesTopic(name, item?.rationale)) continue;
+        candidates.push({
+          filename: row.filename, kind, name,
+          rationale: compact(item?.rationale, 600),
+          evidenceOffsets: (Array.isArray(item?.evidenceOffsets) ? item.evidenceOffsets : [])
+            .filter((offset: unknown) => Number.isFinite(offset)).slice(0, 8),
+          ...(item?.readiness ? { readiness: compact(item.readiness, 40) } : {}),
+          ...(rowStale ? { stale: true } : {}),
+        });
+      }
+      if (facts.length >= 30 && candidates.length >= 20) break;
+    }
+
+    const hasStale = documents.some((item) => item.stale)
+      || facts.some((item) => item.stale) || candidates.some((item) => item.stale);
+    return {
+      version: 'material-context-v1',
+      available: true,
+      analysisUpdatedAt: run.updated_at,
+      documents, facts, candidates,
+      instruction: [
+        '档案是缓存不是事实源：写入知识包的数字和口径，必须按 filename+offset 用 read_document 核对原文后引用。',
+        ...(hasStale ? ['标记 stale 的条目来自已更新的资料旧版本，先对该资料重新全文精读再使用。'] : []),
+      ].join(''),
+      display: { text: `资料档案：${documents.length} 份摘要、${facts.length} 条事实、${candidates.length} 个候选` },
+    };
+  }
+
+  /** Markdown 标题切出的章节目录。资料正文都是 md，标题是现成的结构信号，
+   *  而按字符分页只认 offset——实测会把收率表从中间劈成两半，模型第一页拿到
+   *  有表头没数据、第二页有数据没表头，只能自己在上下文里拼回去。 */
+  private documentOutline(content: string) {
+    const pattern = /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
+    const heads: { level: number; title: string; offset: number }[] = [];
+    for (let match = pattern.exec(content); match; match = pattern.exec(content)) {
+      heads.push({ level: match[1].length, title: match[2].trim(), offset: match.index });
+    }
+    return heads.map((head, index) => {
+      const endOffset = heads[index + 1]?.offset ?? content.length;
+      return {
+        index,
+        level: head.level,
+        title: head.title,
+        offset: head.offset,
+        endOffset,
+        chars: endOffset - head.offset,
+      };
+    });
+  }
+
+  /** 把分页终点吸到块边界。空行是 Markdown 里最可靠的边界——表格内部不允许
+   *  出现空行，所以吸到空行就一定不会把表格切断。先往后找，超出容差就往前退：
+   *  宁可这一页少给一点，也不要交给模型半张表。 */
+  private snapToBlockBoundary(content: string, start: number, rawEnd: number, tolerance: number) {
+    if (rawEnd >= content.length) return content.length;
+    const lineStart = content.lastIndexOf('\n', Math.max(0, rawEnd - 1)) + 1;
+    const lineBreak = content.indexOf('\n', rawEnd);
+    const line = content.slice(lineStart, lineBreak < 0 ? content.length : lineBreak);
+    if (line.trimStart().startsWith('|')) {
+      // 切点落在表格行上。表格必须整张交付：半张表（有表头没数据、或有数据
+      // 没表头）对模型几乎没有价值，还要它自己跨页拼回去。容差在这里不适用，
+      // 改用一个硬上限防止超长表格把单页撑爆。
+      const blockEnd = content.indexOf('\n\n', rawEnd);
+      const hardCap = start + Math.max(tolerance * 10, 4_000);
+      if (blockEnd >= 0 && blockEnd <= hardCap) return blockEnd + 2;
+      const rowEnd = content.indexOf('\n', rawEnd);
+      // 表格本身超过硬上限，至少切在行边界，不要把一行劈开。
+      return rowEnd > start ? rowEnd + 1 : rawEnd;
+    }
+    const forward = content.indexOf('\n\n', rawEnd);
+    if (forward >= 0 && forward - rawEnd <= tolerance) return Math.min(content.length, forward + 2);
+    const backward = content.lastIndexOf('\n\n', rawEnd);
+    if (backward > start) return backward + 2;
+    const rowEnd = content.indexOf('\n', rawEnd);
+    return rowEnd > start ? rowEnd + 1 : rawEnd;
+  }
+
+  private resolveDocumentSection(
+    outline: ReturnType<AgentCoreService['documentOutline']>,
+    requested: unknown,
+  ) {
+    if (typeof requested === 'number' && Number.isSafeInteger(requested)) {
+      return outline[requested] ?? null;
+    }
+    const wanted = String(requested ?? '').trim();
+    if (!wanted) return null;
+    const asIndex = Number(wanted);
+    if (Number.isSafeInteger(asIndex) && String(asIndex) === wanted) return outline[asIndex] ?? null;
+    return outline.find((item) => item.title === wanted)
+      ?? outline.find((item) => item.title.includes(wanted))
+      ?? null;
+  }
+
+  private listDocumentOutline(projectId: string, args: Record<string, unknown>) {
+    const filename = text(args.filename, 'filename');
+    const document = listDocuments(projectId).find((item) => item.filename === filename || item.id === filename);
+    if (!document?.textContent) {
+      throw new AgentCoreError(
+        'DOCUMENT_UNREADABLE',
+        `未找到可读取正文的资料：${filename}`,
+        ['调用 list_documents 核对文件名和解析状态'],
+        404,
+      );
+    }
+    const sections = this.documentOutline(document.textContent);
+    return {
+      filename: document.filename,
+      totalChars: document.textContent.length,
+      sectionCount: sections.length,
+      sections,
+      display: {
+        text: sections.length
+          ? `《${document.filename}》共 ${sections.length} 节`
+          : `《${document.filename}》没有标题分节`,
+      },
+    };
+  }
+
   private requireProductLedger(
     context: AgentToolContext,
     workspace: WorkspaceRow,
     args: Record<string, unknown>,
   ) {
     const required = args.required !== false;
+    // 门禁竖起来的那一刻就必须是可满足的。台账唯一合法来源是资料分析提交的
+    // productInventory；来源不存在时启用，只会让后续 begin_product_ledger 与
+    // get_product_inventory_source 互相指向对方，把运行锁死在无解状态。
+    if (required && !this.productInventoryAnalysis(context.project.id)?.items.length) {
+      throw new AgentCoreError(
+        'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
+        '当前资料分析没有提交结构化产品事实，不能启用产品清单台账门禁',
+        [
+          '先让资料分析产出 productInventory，再启用台账门禁',
+          '资料本身不是可枚举清单时，不要启用该门禁',
+        ],
+        409,
+        { productInventory: false },
+      );
+    }
     this.db.prepare(`UPDATE projects SET product_ledger_required = ?, updated_at = ? WHERE id = ?`)
       .run(required ? 1 : 0, nowIso(), context.project.id);
     const ledger = this.getProductLedger(workspace);
@@ -5322,18 +5667,50 @@ export class AgentCoreService {
         404,
       );
     }
-    const offset = integer(args.offset, 0, 0, document.textContent.length);
-    const limit = integer(args.limit, 6_000, 1, 20_000);
-    const endOffset = Math.min(document.textContent.length, offset + limit);
+    const content = document.textContent;
+    const outline = this.documentOutline(content);
+    const wantsSection = args.section !== undefined && args.section !== null && args.section !== '';
+    let offset: number;
+    let endOffset: number;
+    let boundarySnapped = false;
+    if (wantsSection) {
+      const section = this.resolveDocumentSection(outline, args.section);
+      if (!section) {
+        throw new AgentCoreError(
+          'DOCUMENT_SECTION_NOT_FOUND',
+          `资料《${document.filename}》里没有这一节：${String(args.section)}`,
+          ['调用 list_document_outline 查看可用章节的序号和标题'],
+          404,
+        );
+      }
+      offset = section.offset;
+      endOffset = section.endOffset;
+    } else {
+      offset = integer(args.offset, 0, 0, content.length);
+      const limit = integer(args.limit, 6_000, 1, 20_000);
+      const rawEnd = Math.min(content.length, offset + limit);
+      endOffset = this.snapToBlockBoundary(content, offset, rawEnd, Math.ceil(limit * 0.3));
+      boundarySnapped = endOffset !== rawEnd;
+    }
+    // 这一页开头落在哪一节。模型过去只拿得到 offset 这种位置信息，
+    // 一个结构信息都没有，读到哪一章全靠自己猜。
+    const current = outline.filter((item) => item.offset <= offset).pop() ?? null;
     return {
       filename: document.filename,
-      content: document.textContent.slice(offset, endOffset),
+      content: content.slice(offset, endOffset),
       offset,
       endOffset,
-      nextOffset: endOffset < document.textContent.length ? endOffset : null,
-      totalChars: document.textContent.length,
-      eof: endOffset >= document.textContent.length,
-      display: { text: `正在读《${document.filename}》` },
+      nextOffset: endOffset < content.length ? endOffset : null,
+      totalChars: content.length,
+      eof: endOffset >= content.length,
+      section: current && { index: current.index, level: current.level, title: current.title },
+      sectionCount: outline.length,
+      boundarySnapped,
+      display: {
+        text: current
+          ? `正在读《${document.filename}》· ${current.title}`
+          : `正在读《${document.filename}》`,
+      },
     };
   }
 
@@ -8938,7 +9315,8 @@ export class AgentCoreService {
     const documents = listDocuments(workspace.project_id);
     const parsed = documents.filter((item) => item.parseStatus === 'parsed').length;
     const failed = documents.filter((item) => item.parseStatus === 'failed');
-    const confirmedPaths = this.confirmedPaths(workspace.project_id);
+    const confirmedTimes = this.confirmedPathTimes(workspace.project_id);
+    const confirmedPaths = new Set(confirmedTimes.keys());
     const workspaceChanges = this.changes(workspace);
     const { files, spec: storedWorkingSpec } = await this.overlay(workspace, workspaceChanges);
     const workingSpec = resolveAgentStudioSpec(storedWorkingSpec, files, workspaceChanges);
@@ -8947,6 +9325,10 @@ export class AgentCoreService {
     const diagramPaths = Object.keys(files).filter((path) => path.startsWith('diagrams/') && path.endsWith('.mmd'));
     const knowledgePaths = Object.keys(files).filter((path) => /^(objects|operations|rules|metrics)\/.+\.md$/.test(path)
       && !path.endsWith('/index.md'));
+    // 还没确认、或者有未确认改动的知识条目。blockers 逐条列给用户看，
+    // 助手侧只要个数——它一次发一张卡覆盖一组改动，不是一条一张。
+    const unconfirmedKnowledgePaths = knowledgePaths
+      .filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path));
     const trustedProcessBaseline = Object.keys(base.files).some((path) => (
       /^(objects|operations|rules|metrics|scripts)\/.+/u.test(path) && !path.endsWith('/index.md')
     ));
@@ -9018,11 +9400,19 @@ export class AgentCoreService {
         blockers: [
           ...(parsed || importedPackageBaseline ? [] : ['至少上传并成功解析 1 份资料']),
         ],
+        // 上传由用户完成，助手能做的是把缺口说清楚再请求资料。
+        agentActionable: parsed || importedPackageBaseline
+          ? []
+          : ['向用户发起资料请求，说明需要哪类资料以及它影响哪个环节'],
         warnings: failed.map((item) => `资料无法解析：${item.filename}`),
       },
       goal_confirmed: {
         pass: goalConfirmed,
         blockers: goalConfirmed ? [] : ['确认当前建模目标'],
+        // 「确认」是专家的动作，助手能做的是把目标写出来再发确认卡。
+        agentActionable: goalConfirmed
+          ? []
+          : ['依据已读资料起草或修订建模目标，完成后发起目标确认卡'],
       },
       process_confirmed: {
         pass: processConfirmed,
@@ -9030,17 +9420,43 @@ export class AgentCoreService {
           ? diagramPaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
             .map((path) => `确认流程 ${path}`)
           : ['形成并确认至少 1 条业务流程'],
+        agentActionable: processConfirmed ? [] : diagramPaths.length
+          ? diagramPaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
+            .map((path) => `核对流程 ${path} 并发起确认卡`)
+          : ['依据已读资料形成至少 1 条业务流程，完成后发起确认卡'],
       },
       knowledge_confirmed: {
-        pass: knowledgeConfirmed,
+        pass: knowledgeConfirmed && !deterministic.missing_operation_inputs.length,
         blockers: [
           ...(knowledgeFilesConfirmed ? [] : knowledgePaths.length
-            ? knowledgePaths.filter((path) => !confirmedPaths.has(path) || pendingPaths.has(path))
-              .map((path) => `确认知识条目 ${path}`)
+            ? unconfirmedKnowledgePaths.map((path) => `确认知识条目 ${path}`)
             : ['形成并确认对象、操作或规则知识']),
           ...(schemaSemanticsConfirmed ? [] : [
             `补全并确认 Schema 对象业务语义（${schemaSemantics.errorCount} 项阻断问题）`,
           ]),
+          // 缺输入定义要在这里拦下：确定性验证阶段只剩领域只读工具，到那时
+          // 既查不到也补不了，模型只能自己编数据来源。
+          ...deterministic.missing_operation_inputs
+            .map((key) => `补全业务操作“${key}”的输入定义，确定性计算的脚本参数只能来自它`),
+        ],
+        // 「确认」是专家在卡上的动作，但把待确认内容整理成确认卡是助手的动作——
+        // 口径和 process_confirmed / modeling_complete 一致，不能因为终点在专家
+        // 手上就判成「助手无事可做」，那会让整个知识建模阶段拿不到指派目标。
+        // 顺序和 blockers 有意不同：先补内容再发卡，否则卡上带的还是缺语义、
+        // 缺输入的版本，专家确认完门禁照样过不了，白白多打断一次。
+        agentActionable: [
+          ...(schemaSemanticsConfirmed ? [] : [
+            `补全 Schema 对象的业务语义，当前有 ${schemaSemantics.errorCount} 项阻断问题`,
+          ]),
+          ...deterministic.missing_operation_inputs
+            .map((key) => `补全业务操作“${key}”的输入定义（参数名、类型、是否必填），`
+              + '确定性计算的脚本参数只能来自它'),
+          ...(knowledgeFilesConfirmed ? [] : knowledgePaths.length
+            ? (unconfirmedKnowledgePaths.length
+              ? [`核对尚未确认的 ${unconfirmedKnowledgePaths.length} 个知识条目并发起确认卡，`
+                + '一次覆盖一组相关改动']
+              : [])
+            : ['依据已读资料形成对象、操作或规则知识，完成后发起确认卡']),
         ],
       },
       modeling_complete: {
@@ -9049,6 +9465,10 @@ export class AgentCoreService {
           ...(pendingBusiness ? [`还有 ${pendingBusiness} 个候选文件未确认`] : []),
           ...(pendingCandidates ? [`还有 ${pendingCandidates} 个确认请求待处理`] : []),
         ],
+        // 确认动作在专家手上；助手能做的是把待确认的内容整理成确认卡。
+        agentActionable: pendingBusiness
+          ? [`为尚未确认的 ${pendingBusiness} 个候选文件发起确认卡，一次覆盖一组相关改动`]
+          : [],
       },
       deterministic_confirmed: {
         pass: !['decision_required', 'implementation_required'].includes(deterministic.status),
@@ -9060,6 +9480,20 @@ export class AgentCoreService {
             ...deterministic.missing_script_tests
               .map((key) => `让业务操作“${key}”的当前脚本通过已确认契约的隔离测试`),
           ],
+        // decision_required 在等专家拍板范围，但「等」不等于助手没事做：把候选
+        // 整理成 scope_confirmation 确认卡本来就是 SKILL 要求助手做的动作，
+        // 禁止的只是代替专家调用 confirm_deterministic_scope。先查有没有已有
+        // 答复再决定发卡还是落盘，否则会把专家已经答过的问题再问一遍。
+        agentActionable: deterministic.status === 'decision_required' ? [
+          '核对专家是否已经答复过确定性计算范围：答复过就据此调用 '
+          + 'confirm_deterministic_scope 落盘；没答复过就整理 2 至 4 个互斥范围方案，'
+          + '发起 scope_confirmation 确认卡。任何情况下都不得代替专家选定范围',
+        ] : [
+          ...deterministic.missing_script_bindings
+            .map((key) => `完成业务操作“${key}”的脚本：定义契约、提交源码、绑定到该操作`),
+          ...deterministic.missing_script_tests
+            .map((key) => `让业务操作“${key}”的当前脚本通过已确认契约的隔离测试`),
+        ],
         warnings: deterministic.skipped_operation_keys.length
           ? [`专家已明确跳过 ${deterministic.skipped_operation_keys.length} 个确定性计算候选`]
           : [],
@@ -9068,6 +9502,12 @@ export class AgentCoreService {
         pass: evaluationMatchesCurrentFacts,
         blockers: evaluationMatchesCurrentFacts ? [] : [
           '确保当前知识包的每条真实用例都有最新有效结果，且问题、参考答案和结果保持一致并通过',
+        ],
+        // 原 blocker 一句话塞了三件事，当目标会让助手同时开几个头。
+        // 这里只给一个入口动作：先读结果，再按失败原因决定改什么。
+        agentActionable: evaluationMatchesCurrentFacts ? [] : [
+          '读取最新评测结果，按失败原因修复知识包或脚本；'
+          + '结果与当前知识包事实不一致时重新运行评测',
         ],
       },
     };
@@ -9085,10 +9525,35 @@ export class AgentCoreService {
           : productLedger.sourceRevision !== workspace.base_revision_oid
             ? ['台账对应的资料修订已变化，请重新核对当前清单']
             : (productLedgerValidation?.errors ?? []).slice(0, 8),
+        // 台账的重新核对和校验错误都是助手自己能改的。
+        agentActionable: !productLedgerEnforced
+          ? []
+          : productLedger.sourceRevision !== workspace.base_revision_oid
+            ? ['按当前资料修订重新核对产品清单台账并提交']
+            : (productLedgerValidation?.errors ?? []).slice(0, 8)
+              .map((item: string) => `修正产品清单台账的校验问题：${item}`),
         warnings: config.productLedger.mode === 'advisory' && productLedgerValidation?.pass !== true
           ? ['产品清单台账目前处于观测阶段，当前问题不会阻断普通建模']
           : [],
       };
+    }
+    // 增量轮次的进度，只有资料影响记录能表达。前向门禁（knowledge_confirmed、
+    // ready_for_eval）都是全量口径，把它们当增量的目标，派下来的就是「补齐基线里
+    // 某个操作的输入定义」这类本轮明令不准碰的活。
+    //
+    // 不需要知道 Agent 侧的 roundMode：有正式基线 + 有语义变化的影响记录，
+    // 就是增量要处理的事实。条件性出现，和 product_ledger_verified 同一模式；
+    // 但判据是「存在影响记录」而不是「存在未处理影响」——处理完门禁要能 pass，
+    // 消失的话 gate_status 会 404。
+    const semanticImpacts = listMaterialImpacts(this.db, workspace.project_id)
+      .filter((item) => item.semanticChanged === true);
+    if (trustedProcessBaseline && semanticImpacts.length) {
+      gates.increment_resolved = incrementImpactGate(
+        semanticImpacts,
+        files,
+        pendingPaths,
+        confirmedTimes,
+      );
     }
     const modelingReady = combine(gates, [
       'materials_ready',
@@ -9113,6 +9578,8 @@ export class AgentCoreService {
         ...userSideBlockers,
         ...(runningImport ? [`评测库数据仍在后台导入：${runningImport.filename}`] : []),
       ],
+      // 录用例、配数据源、等导入都不是助手能代劳的，只继承前面那些建模门禁。
+      agentActionable: modelingReady.agentActionable,
       awaitingUser: !modelingReady.blockers.length
         && userSideBlockers.length > 0
         && !runningImport,
@@ -9123,26 +9590,41 @@ export class AgentCoreService {
       blockers: releasedContent && pendingBusiness === 0 && pendingCandidates === 0
         ? []
         : ['由项目负责人确认真实用例覆盖和稳定版本号，并完成正式发布'],
+      // 发布必须由项目负责人在确认卡上完成，助手没有可独立推进的事。
+      agentActionable: [],
     };
     return gates;
   }
 
-  private confirmedPaths(projectId: string): Set<string> {
-    const rows = this.db.prepare(`SELECT c.groups_json, a.selected_groups_json
+  /**
+   * 每个路径最近一次被确认的时间。
+   *
+   * 增量门禁要判断的是「这条影响记录产生之后，受影响的内容有没有重新确认过」，
+   * 光有「确认过」的集合不够——存量基线里几乎每个路径都确认过。
+   */
+  private confirmedPathTimes(projectId: string): Map<string, string> {
+    const rows = this.db.prepare(`SELECT c.groups_json, a.selected_groups_json, a.created_at
       FROM agent_confirmations a JOIN artifact_candidate_revisions c ON c.id = a.candidate_id
       WHERE a.project_id = ? ORDER BY a.created_at`).all(projectId) as any[];
-    const paths = new Set<string>();
+    const times = new Map<string, string>();
     for (const row of rows) {
       const selected = new Set(parseArray(row.selected_groups_json));
       const groups = parseObjects(row.groups_json);
+      const confirmedAt = String(row.created_at ?? '');
       for (const group of groups) {
         if (!selected.has(String(group.id))) continue;
         for (const change of Array.isArray(group.changes) ? group.changes : []) {
-          if (change && typeof change === 'object' && 'path' in change) paths.add(publicPath(String(change.path)));
+          if (!change || typeof change !== 'object' || !('path' in change)) continue;
+          // 行已按 created_at 升序，后写入的就是更晚的一次确认。
+          times.set(publicPath(String(change.path)), confirmedAt);
         }
       }
     }
-    return paths;
+    return times;
+  }
+
+  private confirmedPaths(projectId: string): Set<string> {
+    return new Set(this.confirmedPathTimes(projectId).keys());
   }
 
   private evaluationStatus(projectId: string) {
@@ -10329,10 +10811,7 @@ function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Re
       flow: requiredStringArray(args.flow, 'flow'),
       notes: stringArray(args.notes),
       evidence: requiredStringArray(args.evidence, 'evidence'),
-      relations: domainReferenceRelations(
-        'operation',
-        requiredStringArray(args.references ?? [], 'references', true),
-      ),
+      relations: domainReferenceRelations('operation', operationReferences(args)),
     };
   }
   return {
@@ -10356,6 +10835,28 @@ function domainCreateValues(kind: DomainKind, args: Record<string, unknown>): Re
       requiredStringArray(args.object_references ?? [], 'object_references', true),
     ),
   };
+}
+
+/* 操作必须就「我读写哪些对象」表态。upsert_operation 一直要求 related_objects 非空，
+   但增量路径的 create_operation 把它写成了 args.references ?? [] + allowEmpty，
+   缺省即放行——于是助手只往 references 里塞规则 ID，九个物理对象里六个成了没人引用的
+   孤儿，操作不知道该查哪张表，脚本只能生成占位模板，评测必挂。
+   这里不强制「必须绑」（真不读写数据的操作被逼着绑，只会造出查不出来的假边），
+   而是强制「必须说清楚」：要么列出对象，要么写明为什么一个都不读写。 */
+function operationReferences(args: Record<string, unknown>): string[] {
+  const references = requiredStringArray(args.references ?? [], 'references', true);
+  if (references.some((item) => item.startsWith('object:'))) return references;
+  const reason = String(args.no_object_reason ?? '').trim();
+  if (reason) return references;
+  throw new AgentCoreError(
+    'OPERATION_OBJECT_BINDING_REQUIRED',
+    '操作没有声明读写的对象',
+    [
+      `把这个操作读写的对象写进 references（形如 object:业务受理），对照 flow 和 inputs/outputs 里提到的业务实体逐个核对`,
+      '确实不读写任何业务数据时（例如纯告知、纯人工协调类操作），用 no_object_reason 写明原因',
+    ],
+    400,
+  );
 }
 
 function domainReferenceRelations(
@@ -11251,11 +11752,13 @@ function normalizeReviewMode(value: unknown, automatic: boolean): 'full' | 'sequ
 }
 
 function combine(
-  gates: Record<string, { pass: boolean; blockers: string[] }>,
+  gates: Record<string, { pass: boolean; blockers: string[]; agentActionable?: string[] }>,
   names: string[],
-): { pass: boolean; blockers: string[] } {
+): { pass: boolean; blockers: string[]; agentActionable: string[] } {
   const blockers = names.flatMap((name) => gates[name]?.pass ? [] : gates[name]?.blockers ?? [`门禁 ${name} 未通过`]);
-  return { pass: blockers.length === 0, blockers };
+  // 组合门禁的可推进项按子门禁顺序汇总，顺序即优先级：靠前的阶段先做完。
+  const agentActionable = names.flatMap((name) => gates[name]?.pass ? [] : gates[name]?.agentActionable ?? []);
+  return { pass: blockers.length === 0, blockers, agentActionable };
 }
 
 function locateAnchor(content: string, anchor: string): number {
@@ -11381,6 +11884,114 @@ function findKnowledgeResourcePath(
   const frontmatterKey = new RegExp(`^key:\\s*["']?${escaped}["']?\\s*$`, 'mu');
   return candidates.find(([, content]) => frontmatterKey.test(content))?.[0]
     ?? candidates.find(([path]) => path.split('/').at(-1)?.replace(/\.(?:md|py)$/u, '') === key)?.[0];
+}
+
+/**
+ * 增量轮次的三档进度：界定影响范围 -> 改完受影响资源 -> 候选确认。
+ *
+ * 判据全部来自 material_revision_impacts：scopeResolved 由 resolveMaterialImpactScope
+ * 持久化，affectedResources 是传播算好的影响面。「这一项处理过没有」看的是受影响路径
+ * 有没有晚于该条影响记录的确认——存量基线里几乎每个路径都确认过，光看「确认过」没用。
+ *
+ * agentActionable 的顺序就是三档顺序：_turn_goal 只取第一项作为本轮目标，
+ * 排错了就会让增量在还没界定范围时先去发确认卡。
+ */
+/** 增量计划的范围违例：修改既有资源却不在已界定的影响闭包内的任务目标。
+ *
+ *  规则：任务目标在当前工作区 spec 里已存在 → 必须 ∈ 影响闭包（所有已界定
+ *  影响记录的 affectedResources 并集）；目标不存在（新建，来自增量资料的
+ *  新知识）→ 放行——新建不碰基线。binding/other 类任务与平台注入任务不在
+ *  守卫范围（保守放行，避免误伤确定性同步流程）。 */
+export function incrementPlanScopeViolations(
+  rawTasks: unknown,
+  workingSpec: PackageSpec,
+  impacts: StoredMaterialImpact[],
+): string[] {
+  if (!Array.isArray(rawTasks)) return [];
+  const impactScope = new Set<string>();
+  for (const impact of impacts) {
+    if (impact.semanticChanged !== true || impact.scopeResolved !== true) continue;
+    for (const resource of impact.affectedResources ?? []) {
+      impactScope.add(`${resource.kind}:${resource.key}`);
+    }
+  }
+  const existing = new Set<string>([
+    ...workingSpec.objects.map((item) => `object:${item.key}`),
+    ...(workingSpec.operations ?? []).map((item) => `operation:${item.key}`),
+    ...(workingSpec.rules ?? []).map((item) => `rule:${item.key}`),
+    ...(workingSpec.metrics ?? []).map((item) => `metric:${item.key}`),
+    ...(workingSpec.scripts ?? []).map((item) => `script:${item.key}`),
+  ]);
+  const guarded = new Set(['object', 'rule', 'operation', 'metric', 'script']);
+  const outOfScope = new Set<string>();
+  for (const raw of rawTasks) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const task = raw as Record<string, unknown>;
+    const kind = String(task.resource_kind ?? '').trim();
+    if (!guarded.has(kind)) continue;
+    const target = normalizePlanTargetKey(kind, String(task.target_key ?? '').trim());
+    if (!target) continue;
+    const ref = `${kind}:${target}`;
+    if (!existing.has(ref)) continue;
+    if (impactScope.has(ref)) continue;
+    outOfScope.add(ref);
+  }
+  return [...outOfScope];
+}
+
+export function incrementImpactGate(
+  impacts: StoredMaterialImpact[],
+  files: Record<string, string>,
+  pendingPaths: ReadonlySet<string>,
+  confirmedTimes: ReadonlyMap<string, string>,
+): GateResults[string] {
+  const unscoped = impacts.filter((impact) => impact.scopeResolved === false);
+  const unhandled = new Map<string, string>();
+  const staged = new Map<string, string>();
+  for (const impact of impacts) {
+    if (impact.scopeResolved === false) continue;
+    const label = impact.sourceKey || impact.id;
+    for (const resource of impact.affectedResources ?? []) {
+      const path = findKnowledgeResourcePath(files, String(resource.kind), String(resource.key));
+      // 受影响资源已经被删掉时没有路径可处理，不该因此卡住增量。
+      if (!path) continue;
+      if (pendingPaths.has(path)) {
+        staged.set(path, label);
+        continue;
+      }
+      const confirmedAt = confirmedTimes.get(path);
+      if (!confirmedAt || confirmedAt < impact.createdAt) unhandled.set(path, label);
+    }
+  }
+  const sources = (items: Iterable<string>) => [...new Set(items)].join('、');
+  const blockers = [
+    ...unscoped.map((impact) => (
+      `界定《${impact.sourceKey || impact.id}》的影响范围，范围确定前不能宣称任何内容保持有效`
+    )),
+    ...(unhandled.size
+      ? [`处理受资料变更影响的 ${unhandled.size} 项内容：${sources(unhandled.values())}`]
+      : []),
+    ...(staged.size ? [`确认已修改的 ${staged.size} 项受影响内容`] : []),
+  ];
+  return {
+    pass: blockers.length === 0,
+    blockers,
+    agentActionable: unscoped.length
+      ? [
+        `调用 analyze_material_impact 读取《${unscoped[0].sourceKey || unscoped[0].id}》的影响，`
+        + '再按读到的资料和相关知识用 direct_resources 提交直接影响起点；'
+        + '范围未界定前不要生成候选，也不要把全包标成受影响',
+      ]
+      : unhandled.size
+        ? [
+          `只处理受资料变更影响的这 ${unhandled.size} 项内容并形成候选：`
+          + `${[...unhandled.keys()].slice(0, 8).join('、')}。`
+          + '未受影响的正式内容保持不变，基线已有问题不属于本次增量',
+        ]
+        : staged.size
+          ? [`为已修改的 ${staged.size} 项受影响内容发起确认卡，一次覆盖一组相关改动`]
+          : [],
+  };
 }
 
 function knowledgeKindLabel(kind: string): string {

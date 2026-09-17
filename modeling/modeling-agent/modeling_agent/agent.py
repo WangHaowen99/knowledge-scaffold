@@ -26,7 +26,21 @@ from .rails import (
     WriteSafetyRail,
 )
 from .settings import Settings
-from .tools import ToolContext, build_core_tools, build_tools
+from .tools import ToolContext, build_core_tools, build_tools, contract_governed_tool_exposed
+
+
+# 阶段形 skill 由服务端按当前阶段注入 system 段：该读哪本手册是系统事实，
+# 由代码根据阶段选，不靠模型自觉调 list_skill；注入后享受 system 段防驱逐
+# 待遇，长阶段中途方法不再被工具返回值挤出窗口。
+# 情形形 skill（package-merge、failure-repair）由事件而非阶段触发，
+# 保留 list_skill 按需加载，不在此表。
+PHASE_SKILLS = {
+    "intake": "material-analysis",
+    "goal": "material-analysis",
+    "process": "process-modeling",
+    "knowledge": "knowledge-extraction",
+    "increment": "incremental-intake",
+}
 
 
 SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，你是主动推进工作的建模者。
@@ -59,6 +73,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - ask 的选项如果是「我去某个界面自己完成」这类需要用户离开当前对话的动作，必须给该选项设置 route（目前只支持 evaluation），否则点击只会把这句话发回给你，界面不会跳转，用户会以为没反应。若阻塞项只能由用户在评测界面完成，说明清楚后结束本轮等待，不要一轮轮重复同样的话。
 - 需要人决定时只用 ask 或 request_confirmation。即便等待决定，用户也可以自由插话；若收到反问，先回答，再重新提出仍未解决的原问题。
 - 收到插话或反问后，直接用最终自然语言回答并结束这次小回合；服务端会自动恢复仍未解决的原问题。不要在同一小回合再次调用 ask 或 request_confirmation。
+- 专家在运行中的插话是最高优先级输入，每条都会出现在 get_project_state 的 pendingInterjections 里并带编号。每条插话在本轮结束前必须调用 dispose_interjection 给出处置结论：长期规矩登记为约束、做不完的动作转待办、已完成或本来就符合的附证据标记满足、确有冲突的说明理由拒绝；沉默不是合法出口。执行插话时被阶段守卫或工具拦截的，不要放弃也不要绕过，把拦截原因、合法路径和代价整理成 ask(kind='conflict_decision') 请专家裁决。system 段「专家约束」清单里的规矩每轮生效，与生成契约同等刚性。
 - 候选写完后直接调用 request_confirmation 并只提供面向用户的业务摘要；确认分组由系统按实际路径自动整理，不要猜测或填写变更组 ID，也不要先用 ask 重复询问同一项确认。
 - 知识包生成契约由核心校验器在本轮开始时注入。写候选前必须遵守其中的 requiredFields、platformManagedFields 和目录契约；平台管理字段只能从当前正式文件保留，不能自行重建或猜测。
 - 不论是用户点名修改还是根据资料正常生成，写领域资源前都必须先调用 create_change_plan：把每个目标资源列成独立任务，声明依赖、允许的领域工具和可验收条件。Core 返回的任务 ID 和状态是唯一完成依据；不得用 Markdown 计划、自然语言清单或模型自述代替。generation 计划的 approval_status=pending 时必须停止写入，等待用户在可见计划卡批准；批准后重新读取计划再继续。范围扩大时先用 ask 获得用户决定，再调用 revise_change_plan 记录原因；范围缩小时只能跳过计划中明确可选的任务。平台会在适用时自动注入唯一的“确认对象间关系”任务（内部包含候选审阅和确认写入）；创建计划前先判断是否会注入，若会，禁止自行规划“关系审阅”“关系确认”或“对象间关系”等同义任务，只规划业务资源任务。
@@ -105,7 +120,7 @@ def build_model(settings: Settings, *, output_tokens: int | None = None) -> Any:
         "model": settings.llm_model,
         "temperature": 0.2,
         "top_p": 0.1,
-        "max_tokens": min(settings.llm_max_tokens, output_tokens or settings.llm_max_tokens),
+        "max_tokens": settings.resolved_output_budget(output_tokens),
     }
     extra_body = settings.llm_request_extra_body()
     if extra_body:
@@ -155,10 +170,17 @@ def context_engine_config(settings: Settings) -> ContextEngineConfig:
             settings.context_max_messages,
         ),
         default_window_round_num=settings.context_window_rounds,
-        # 业务记忆来自 Change Plan、回执和 Execution Brief；卸载的长历史不自动回灌。
-        enable_reload=False,
+        # 不启用预设链时没有卸载，保持原样；启用后必须允许回灌，否则模型会看到
+        # 句柄却取不回原文——那比直接截断更糟。
+        enable_reload=settings.context_processor_preset,
         enable_tiktoken_counter=False,
         model_name=settings.llm_model or None,
+        # 压缩器按「占用达到窗口的百分之多少」触发，不告诉它窗口多大就永远不触发。
+        **(
+            {"context_window_tokens": settings.context_window_tokens}
+            if settings.context_window_tokens > 0
+            else {}
+        ),
     )
 
 
@@ -169,6 +191,8 @@ def build_agent(
     model: Any | None = None,
     analyst_model: Any | None = None,
     package_contract: dict[str, Any] | None = None,
+    turn_goal: str = "",
+    constraints: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
 ) -> AgentBundle:
     resolved_model = model or build_model(settings)
     workspace = settings.data_dir / "runtime-workspaces" / context.run_id
@@ -176,6 +200,10 @@ def build_agent(
     workspace.mkdir(parents=True, exist_ok=True)
     copytree(settings.skills_dir, workspace_skills, dirs_exist_ok=True)
     leader_skill = _skill_body(settings.skills_dir / "modeling-leader" / "SKILL.md")
+    phase_method = ""
+    phase_skill = PHASE_SKILLS.get(context.phase)
+    if phase_skill:
+        phase_method = _skill_body(settings.skills_dir / phase_skill / "SKILL.md")
     rails = [
         InterjectionSafetyRail(context),
         ToolBoundaryRail(context),
@@ -197,6 +225,30 @@ def build_agent(
             validation_repair=context.validation_repair,
         ),
     ]
+    if settings.context_processor_preset:
+        # 不配这条 Rail 时，上下文只有最基础的窗口滚动截断：超出窗口的消息被
+        # 直接丢弃且无法找回。预设链提供卸载（超长消息搬到外部、原位留摘要与
+        # 句柄）和分级压缩，代价是压缩器会产生额外的模型调用。
+        from openjiuwen.core.context_engine.processor.forked.offloader.message_offloader import (
+            MessageSummaryOffloaderConfig,
+        )
+        from openjiuwen.harness.rails.context_engineer.context_processor_rail import (
+            ContextProcessorRail,
+        )
+        # 覆盖框架默认的免卸载名单。默认只保护 read_file，但实测它读的全是
+        # 知识包内部制品（对象、规则、操作、计划、索引），随时能重新读回来，
+        # 而且 87% 是重复读取——保护它等于让重复内容常驻。真正不可重获的是
+        # 专家的回答：那只有一份，丢了只能再问一次。
+        rails.append(
+            ContextProcessorRail(
+                processors=[(
+                    "MessageSummaryOffloader",
+                    MessageSummaryOffloaderConfig(
+                        protected_tool_names=list(settings.context_protected_tools),
+                    ),
+                )],
+            )
+        )
     agent = create_deep_agent(
         resolved_model,
         card=AgentCard(
@@ -205,7 +257,18 @@ def build_agent(
             description="主动推进知识包建模、协调专家决定并控制工作台焦点",
         ),
         tool_owner_id=context.run_id,
-        system_prompt=_system_prompt(leader_skill, package_contract or {}),
+        system_prompt=_system_prompt(
+            leader_skill,
+            package_contract or {},
+            turn_goal,
+            phase_method=phase_method,
+            constraints=tuple(constraints),
+            contract_active=contract_governed_tool_exposed(
+                context.phase,
+                context.required_tools,
+                tool_profile=context.tool_profile,
+            ),
+        ),
         tools=build_tools(context),
         subagents=_subagents(settings, context, analyst_model or resolved_model),
         rails=rails,
@@ -226,24 +289,70 @@ def build_agent(
     return AgentBundle(agent=agent, model=resolved_model)
 
 
-def _system_prompt(leader_skill: str, package_contract: dict[str, Any]) -> str:
-    contract = json.dumps(package_contract, ensure_ascii=False, sort_keys=True, indent=2)
-    return (
-        f"{SYSTEM_PROMPT}\n\n"
-        "# 本轮知识包生成契约（来自核心确定性校验器）\n\n"
-        f"```json\n{contract}\n```\n\n"
-        "生成、修正和确认候选都必须以这份带 validatorVersion 的契约为准。\n\n"
-        f"# 建模方法 Skill\n\n{leader_skill}"
+def _system_prompt(
+    leader_skill: str,
+    package_contract: dict[str, Any],
+    turn_goal: str = "",
+    *,
+    phase_method: str = "",
+    constraints: tuple[dict[str, Any], ...] = (),
+    contract_active: bool = True,
+) -> str:
+    # system 段按指令寿命分槽位：契约（项目寿命，随管辖工具出现）→ 主手册
+    # （跨阶段通则）→ 本阶段方法（阶段寿命）→ 专家约束（撤销前有效）→
+    # 本轮目标（一轮寿命）。准入标准是「当下相关」，不是「重要」——按
+    # 「重要」收容，特权区会装下一切，然后所有常驻指令一起被稀释。
+    if contract_active:
+        contract = json.dumps(package_contract, ensure_ascii=False, sort_keys=True, indent=2)
+        contract_section = (
+            "# 本轮知识包生成契约（来自核心确定性校验器）\n\n"
+            f"```json\n{contract}\n```\n\n"
+            "生成、修正和确认候选都必须以这份带 validatorVersion 的契约为准。\n\n"
+        )
+    else:
+        # 留一行占位而不是完全删除，避免模型在早期阶段虚构契约概念。
+        contract_section = (
+            "# 本轮知识包生成契约（来自核心确定性校验器）\n\n"
+            "当前阶段无生成类工具，生成契约将在进入生成相关阶段时自动提供。\n\n"
+        )
+    method_section = (
+        f"# 本阶段方法（服务端按当前阶段提供）\n\n{phase_method}\n\n"
+        if phase_method.strip() else ""
     )
+    constraint_lines = "\n".join(
+        f"{index}. [约束 #{item['id']}] {item['text']}"
+        for index, item in enumerate(constraints, start=1)
+        if str(item.get("text") or "").strip()
+    )
+    constraints_section = (
+        "# 专家约束（长期有效，直到专家撤销）\n\n"
+        f"{constraint_lines}\n\n"
+        "以上规矩适用于本轮所有生成和修正动作。只有专家明确表示取消某条时，"
+        "才调用 revoke_constraint 撤销对应编号。\n\n"
+        if constraint_lines else ""
+    )
+    # 本轮目标放在 system 段：上下文窗口截断时 system 消息优先保留，
+    # 而普通消息会被工具返回值挤掉——目标一旦被挤掉，模型就会自己另找事做。
+    goal_section = f"\n\n# 本轮目标（服务端指派）\n\n{turn_goal}\n" if turn_goal.strip() else ""
+    body = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"{contract_section}"
+        f"# 建模方法 Skill\n\n{leader_skill}\n\n"
+        f"{method_section}"
+        f"{constraints_section}"
+    )
+    return body.rstrip("\n") + goal_section
 
 
 def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[SubAgentConfig]:
     material_tools = build_core_tools(context, {
-        "list_documents", "read_document", "read_documents_fully", "search_documents", "get_goal_context",
+        "list_documents", "list_document_outline", "read_document", "read_documents_fully",
+        "search_documents", "get_goal_context", "get_material_context",
         "list_tables", "get_schema_overview", "describe_table", "read_table_rows",
     })
     package_read_names = {
-        "list_documents", "read_document", "search_documents",
+        "list_documents", "list_document_outline", "read_document", "search_documents",
+        "get_material_context",
         "list_tables", "get_schema_overview", "describe_table", "read_table_rows",
         "list_dir", "read_file", "grep_package", "who_references", "diff", "gate_status",
         "list_package_sources", "list_package_fusion_plans", "get_package_fusion_plan",

@@ -27,6 +27,7 @@ import {
   getProgress,
   safeTerminateChangePlan as safeTerminateChangePlanRequest,
   terminateStaleRun as terminateStaleRunRequest,
+  saveFlowchartDraft,
 } from './api.js';
 import { prefetchStudioBootstrap } from '../studio/studio-api.js';
 
@@ -146,6 +147,8 @@ const SNAPSHOT_REFRESH_DEBOUNCE_MS = 300;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 let optimisticSequence = 0;
 let snapshotRefreshTimer = null;
+let snapshotRefreshInFlight = false;
+let snapshotRefreshQueued = false;
 let snapshotRefreshOpenPurposeReview = false;
 const optimisticId = (kind) => `optimistic-${kind}-${Date.now()}-${optimisticSequence += 1}`;
 const uploadStatus = (document) => document?.parseStatus === 'pending'
@@ -273,6 +276,12 @@ export function resolveWorkbenchBootstrapResults(results) {
     warning: warnings.join('；'),
   };
 }
+
+// 运行重新跑起来、或者停下来等用户之后，「需要恢复」这件事就不成立了。
+// 后端此时不再下发 recovery 字段（state.public() 只在 recovery_status 非空时带它），
+// 而字段缺席过去被当成「保持原值」，于是恢复成功后红框一直挂着，只能手动点刷新。
+// 挂起/失败这些状态不清：那时 REST 侧的 _recovery_diagnostic 可能还有更细的诊断。
+const RECOVERED_EXECUTIONS = new Set(['queued', 'running', 'waiting', 'completed']);
 
 export function shouldUseStaleRunTermination(recovery) {
   return Boolean(recovery && ['stale_run', 'plan_unreadable'].includes(recovery.status));
@@ -424,19 +433,46 @@ export const actions = {
       }
     }
   },
-  // 工具完成事件可能成串到达，这里合并成一次快照拉取，并兜住失败——
-  // 直接 void refreshSnapshot() 会让拒绝变成无人处理的 promise rejection，界面停在旧值且毫无提示。
+  /* 工具完成事件可能成串到达，这里合并成一次快照拉取，并兜住失败——
+     直接 void refreshSnapshot() 会让拒绝变成无人处理的 promise rejection，界面停在旧值且毫无提示。
+     只合并、不补跑是不够的：Agent 会并行提交五份资料用途，合并窗口和请求飞行期间到达的事件
+     被整个吞掉，最后一份资料的建议永远到不了界面，批量确认卡停在「分析中」，一键确认全部永久
+     禁用，整条流程从第一个决策点就卡死，只能刷新页面（见 #45）。所以窗口里再来事件必须补一轮。 */
   scheduleSnapshotRefresh(options = {}) {
     if (options.openPurposeReview) snapshotRefreshOpenPurposeReview = true;
-    if (snapshotRefreshTimer) return;
+    if (snapshotRefreshTimer || snapshotRefreshInFlight) { snapshotRefreshQueued = true; return; }
     snapshotRefreshTimer = setTimeout(() => {
       snapshotRefreshTimer = null;
+      snapshotRefreshQueued = false;
+      snapshotRefreshInFlight = true;
       const openPurposeReview = snapshotRefreshOpenPurposeReview;
       snapshotRefreshOpenPurposeReview = false;
       actions.refreshSnapshot({ openPurposeReview }).catch((error) => {
         store.set({ error: error instanceof Error ? error.message : '知识包内容暂时读不到，稍后会自动重试' });
+      }).finally(() => {
+        snapshotRefreshInFlight = false;
+        if (snapshotRefreshQueued) {
+          snapshotRefreshQueued = false;
+          actions.scheduleSnapshotRefresh();
+        }
       });
     }, SNAPSHOT_REFRESH_DEBOUNCE_MS);
+  },
+  /* 流程图编辑先落前端草稿，这里才写盘。走 PUT /package/diagram：服务端带乐观锁
+     （expectedRevision）和草稿冲突拦截，写完重渲染 .mmd 和索引。失败按普通错误提示，
+     草稿留在界面上，用户可以重试或放弃，不静默丢改动。 */
+  async saveFlowDraft(path, draft) {
+    const { projectId, revision } = store.get();
+    if (!projectId || !draft?.edges?.length) return null;
+    try {
+      const result = await saveFlowchartDraft(projectId, path, draft.edges, revision);
+      store.set({ error: '' });
+      actions.scheduleSnapshotRefresh();
+      return result;
+    } catch (error) {
+      store.set({ error: error instanceof Error ? error.message : '流程图保存失败' });
+      return null;
+    }
   },
   refreshCandidateRevisions() {
     store.set((state) => ({
@@ -540,7 +576,7 @@ export const actions = {
         progress: null,
         recovery: event.recovery
           ? { ...(state.recovery || {}), ...event.recovery }
-          : state.recovery,
+          : (RECOVERED_EXECUTIONS.has(event.execution) ? null : state.recovery),
       }));
     }
     if (eventType === 'change_plan' && event.plan) {

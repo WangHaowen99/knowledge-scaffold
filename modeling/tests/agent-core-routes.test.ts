@@ -25,6 +25,7 @@ const [
   { parseExcel },
   { config },
   { normalizePlanTargetKey },
+  { storeMaterialImpact },
 ] = await Promise.all([
   import('../src/agent/core-routes.js'),
   import('../src/projects/repo.js'),
@@ -38,6 +39,7 @@ const [
   import('../src/documents/parser.js'),
   import('../src/config.js'),
   import('../src/agent/change-control.js'),
+  import('../src/documents/material-impact.js'),
 ]);
 
 function appFor(t: test.TestContext, username = 'alice') {
@@ -392,6 +394,20 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
   }, runId);
   assert.equal(script.statusCode, 409, script.body);
   assert.equal(script.json().gate, 'knowledge_confirmed');
+  const pendingKnowledgeGate = await tool(app, project.id, 'gate_status', {
+    gate: 'knowledge_confirmed',
+  }, runId);
+  assert.equal(pendingKnowledgeGate.json().pass, false);
+  // 「确认」在专家手上，但把待确认内容整理成确认卡是助手的活。这里不能给空数组：
+  // 知识建模阶段只看这一道门禁，判成「助手无事可做」等于整个阶段拿不到指派目标。
+  assert.ok(
+    pendingKnowledgeGate.json().blockers.some((item: string) => item.includes('确认知识条目')),
+    '面向用户的说法不变',
+  );
+  assert.ok(
+    pendingKnowledgeGate.json().agentActionable.some((item: string) => item.includes('发起确认卡')),
+    '知识条目待确认时助手的活是发确认卡',
+  );
 
   const pendingGoal = await tool(app, project.id, 'write_file', {
     path: '.modeling/goal.md', content: '# 调整中的建模目标\n',
@@ -402,6 +418,19 @@ test('候选路径按目标和流程确认结果确定性阻断跨阶段写入',
     gate: 'goal_confirmed',
   }, runId);
   assert.equal(pendingGoalGate.json().pass, false);
+  // 门禁要分清这一条是谁的活：blockers 面向用户说「还差什么」，
+  // agentActionable 说「助手现在该干什么」，两者主语经常不同。
+  assert.deepEqual(pendingGoalGate.json().blockers, ['确认当前建模目标']);
+  assert.ok(
+    pendingGoalGate.json().agentActionable.some((item: string) => item.includes('起草')),
+    '目标确认的助手动作应当是起草并发卡，而不是替专家确认',
+  );
+  const releasableGate = await tool(app, project.id, 'gate_status', {
+    gate: 'releasable',
+  }, runId);
+  // 发布只能由项目负责人完成，助手没有可独立推进的事，必须是空数组而不是缺字段——
+  // 缺字段会让调用方退回 blockers，又把用户的活派给助手。
+  assert.deepEqual(releasableGate.json().agentActionable, []);
   const staleGoalCannotAuthorizeProcess = await tool(app, project.id, 'write_file', {
     path: 'diagrams/stale-goal.mmd', content: 'flowchart TD\nA --> B\n',
     change_group: 'stale-goal-process', evidence: [],
@@ -518,6 +547,75 @@ test('enforce 模式下产品台账未通过会阻断规则 Change Set', async (
   assert.equal(blocked.json().gate, 'product_ledger_verified');
 });
 
+function seedProductInventoryAnalysis(projectId: string, itemCount = 2): string {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const id = `mar-${projectId}`;
+  const items = Array.from({ length: itemCount }, (_, index) => ({
+    canonicalItemId: `item-${index}`,
+    name: `产品 ${index}`,
+    ruleRefs: [`rule-${index}`],
+    sourceRecordIds: [`record-${index}`],
+    sourceLocator: `material:doc-synthetic#段落 ${index}`,
+  }));
+  db.prepare(`INSERT INTO material_analysis_runs (
+    id, project_id, source_set_fingerprint, brief_fingerprint, model_id,
+    protocol_version, plan_json, status, stage, result_json, created_at, updated_at, completed_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, projectId, `sources-${projectId}`, 'brief', 'synthetic-model', 'v1', '{}',
+    'completed', 'complete', JSON.stringify({ productInventory: items }), now, now, now,
+  );
+  return id;
+}
+
+test('资料分析没有结构化产品事实时，拒绝启用台账门禁而不是把运行锁死', async (t) => {
+  const project = createProject({ owner: 'alice', name: '台账门禁可满足性', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+
+  const refused = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
+  assert.equal(refused.statusCode, 409, refused.body);
+  assert.equal(refused.json().code, 'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE');
+  assert.equal(refused.json().productInventory, false);
+
+  // 拒绝必须是原子的：门禁没有落库，正式写入照常可用，不会留下无解状态。
+  assert.equal(getDb().prepare('SELECT product_ledger_required FROM projects WHERE id = ?')
+    .get(project.id).product_ledger_required, 0);
+
+  const source = await tool(app, project.id, 'get_product_inventory_source', {}, runId);
+  assert.equal(source.statusCode, 409, source.body);
+
+  // 来源就位后同一调用应当放行，证明拒绝的是「不可满足」而不是这个工具本身。
+  seedProductInventoryAnalysis(project.id);
+  const allowed = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
+  assert.equal(allowed.statusCode, 200, allowed.body);
+  assert.equal(allowed.json().required, true);
+});
+
+test('创建计划不再因模型自己写的计划文案而启用台账门禁', async (t) => {
+  const project = createProject({ owner: 'alice', name: '计划文案不触发门禁', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const revision = claimed.json().baseRevision;
+
+  // 这段措辞命中旧正则（产品/清单 + 完整/逐项/N 条），但它出自模型的规划，
+  // 不是用户要求；不应被当作项目策略。
+  const plan = await tool(app, project.id, 'create_change_plan', {
+    goal: '完整提取 23 项终产品清单并逐项去重', mode: 'generation', expected_revision: revision,
+    tasks: [{
+      client_key: 'rule-a', title: '生成规则 A', resource_kind: 'rule', target_key: 'rule-a',
+      allowed_tools: ['create_rule'], depends_on: [], acceptance: '规则具备来源证据', required: true,
+    }],
+  }, runId);
+  assert.notEqual(plan.json().code, 'PRODUCT_LEDGER_REQUIRED');
+  assert.equal(getDb().prepare('SELECT product_ledger_required FROM projects WHERE id = ?')
+    .get(project.id).product_ledger_required, 0);
+});
+
 test('项目要求产品台账时，advisory 模式也会在计划和旧写入路径前置阻断', async (t) => {
   const project = createProject({ owner: 'alice', name: '产品台账前置门禁', runtime: 'agent' });
   const app = appFor(t);
@@ -526,6 +624,7 @@ test('项目要求产品台账时，advisory 模式也会在计划和旧写入�
   assert.equal(claimed.statusCode, 200, claimed.body);
   const revision = claimed.json().baseRevision;
 
+  seedProductInventoryAnalysis(project.id);
   const required = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
   assert.equal(required.statusCode, 200, required.body);
   assert.equal(required.json().required, true);
@@ -3559,6 +3658,11 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
   assert.equal(blocked.statusCode, 200, blocked.body);
   assert.equal(blocked.json().pass, false);
   assert.match(blocked.json().blockers[0], /确认当前确定性计算候选/u);
+  // 等专家拍板不等于助手没事做：发 scope_confirmation 确认卡本来就是 SKILL
+  // 要求助手做的动作，禁止的只是代替专家调用 confirm_deterministic_scope。
+  assert.equal(blocked.json().agentActionable.length, 1);
+  assert.match(blocked.json().agentActionable[0], /scope_confirmation/u);
+  assert.match(blocked.json().agentActionable[0], /不得代替专家/u);
 
   const stale = await tool(app, project.id, 'confirm_deterministic_scope', {
     expected_scope_hash: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
@@ -3687,6 +3791,32 @@ test('确定性计算候选必须经人工确认且知识变化后旧决定自�
     (item: any) => item.qualified_name === 'run_business_logic',
   );
   assert.ok(businessNode);
+
+  const dataAccessPatch = await tool(app, project.id, 'stage_script_patch', {
+    script_key: 'calculate_device_load',
+    expected_revision: defined.json().working_revision,
+    expected_contract_hash: defined.json().contract_hash,
+    base_source_hash: editContext.json().base_source_hash,
+    mutation_id: 'stage-device-load-script-patch-data-access',
+    reason: '尝试在脚本里自行取数',
+    edits: [{
+      kind: 'replace_function',
+      symbol: 'run_business_logic',
+      expected_node_hash: businessNode.node_hash,
+      source: `def run_business_logic(inputs):
+    from shared_capabilities.ontology_script_sdk import DataProviderClient
+    client = DataProviderClient()
+    result = client.query("device")
+    return {"load_rate": len(result.data)}
+`,
+    }],
+  }, nextRunId);
+  assert.equal(dataAccessPatch.statusCode, 409, dataAccessPatch.body);
+  assert.equal(dataAccessPatch.json().code, 'SCRIPT_DATA_ACCESS_FORBIDDEN');
+  // 模型改掉源码就能过，必须进 Agent 的受控修复轮次，而不是标成不可重试堵死。
+  assert.equal(dataAccessPatch.json().retryable, true);
+  assert.equal(dataAccessPatch.json().findings.length, dataAccessPatch.json().findingCount);
+  assert.equal(dataAccessPatch.json().findings[0].ruleId, 'script.pure-computation');
 
   const businessSource = `def run_business_logic(inputs):
     days = inputs["days"]
@@ -4611,4 +4741,129 @@ test('表头第二行的中文名直接种进 cnName，不再全量触发语义�
   assert.match(source, /value\.length > 20/);
   assert.match(source, /\[。；;，,：:！!？\?\\n\]/u);
   assert.match(source, /\\u4e00-\\u9fff/);
+});
+
+test('资料按章节读取，分页终点吸附到块边界不切断表格', async (t) => {
+  const project = createProject({ owner: 'alice', name: '资料章节读取' });
+  const table = [
+    '| 产品 | 收率 |',
+    '|------|------|',
+    '| 航煤 | 8.81% |',
+    '| 燃料油DMB | 14.81% |',
+    '| 燃料油DMX | 14.51% |',
+    '| 加氢尾油 | 32.43% |',
+  ].join('\n');
+  const textContent = [
+    '# 全流程业务判决逻辑',
+    '',
+    '总纲部分，描述原油进厂到终产品的整体链路。'.repeat(4),
+    '',
+    '## 产品线7：减压渣油路线',
+    '',
+    '减压渣油走 DCC 与溶脱两条支线。'.repeat(4),
+    '',
+    table,
+    '',
+    '## 8.2 能源成本计算',
+    '',
+    'energy 表关键字段说明。'.repeat(4),
+    '',
+  ].join('\n');
+  const document = insertDocumentRevision({
+    projectId: project.id,
+    filename: '业务流程梳理.md',
+    kind: 'text',
+    parseStatus: 'parsed',
+    textContent,
+  }).document;
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+
+  const outline = await tool(app, project.id, 'list_document_outline', {
+    filename: document.filename,
+  }, runId);
+  assert.equal(outline.statusCode, 200, outline.body);
+  assert.deepEqual(outline.json().sections.map((item: any) => item.title), [
+    '全流程业务判决逻辑', '产品线7：减压渣油路线', '8.2 能源成本计算',
+  ]);
+  assert.equal(outline.json().sections[0].offset, 0);
+  assert.equal(outline.json().totalChars, textContent.length);
+
+  // 按章节取：正好是那一节，不多不少
+  const section = await tool(app, project.id, 'read_document', {
+    filename: document.filename, section: '产品线7：减压渣油路线',
+  }, runId);
+  assert.equal(section.statusCode, 200, section.body);
+  assert.ok(section.json().content.startsWith('## 产品线7'));
+  assert.ok(section.json().content.includes('| 加氢尾油 | 32.43% |'), '整张表都要在这一节里');
+  assert.ok(!section.json().content.includes('8.2 能源成本计算'), '不能串到下一节');
+  assert.equal(section.json().section.title, '产品线7：减压渣油路线');
+
+  // 序号取法等价
+  const byIndex = await tool(app, project.id, 'read_document', {
+    filename: document.filename, section: 1,
+  }, runId);
+  assert.equal(byIndex.json().content, section.json().content);
+
+  // 分页：终点落在表格中间时要吸附到块边界，不能把表劈开
+  const tableStart = textContent.indexOf('| 产品 | 收率 |');
+  const cut = await tool(app, project.id, 'read_document', {
+    filename: document.filename, offset: tableStart, limit: 40,
+  }, runId);
+  assert.equal(cut.statusCode, 200, cut.body);
+  const content = cut.json().content;
+  assert.equal(cut.json().boundarySnapped, true);
+  const openedTable = content.includes('| 产品 | 收率 |');
+  assert.ok(openedTable, '这一页应当从表头开始');
+  assert.ok(content.includes('| 加氢尾油 | 32.43% |'), '开了表头就要把整张表给完，不能只给前两行');
+  assert.equal(cut.json().section.title, '产品线7：减压渣油路线', '要告诉模型这一页属于哪一节');
+
+  const missing = await tool(app, project.id, 'read_document', {
+    filename: document.filename, section: '不存在的章节',
+  }, runId);
+  assert.equal(missing.statusCode, 404, missing.body);
+  assert.equal(missing.json().code, 'DOCUMENT_SECTION_NOT_FOUND');
+});
+
+test('增量影响门禁只在有正式基线和语义影响记录时出现，并按进度派活', async (t) => {
+  const artifacts = getPackageArtifactStore();
+  const project = createProject({ owner: 'alice', name: '增量影响门禁', runtime: 'agent' });
+  const initial = await artifacts.initializeDraftPackage(project.id, {
+    id: `baseline-${project.id}`, name: project.name, description: '已发布基线。',
+  });
+  await artifacts.saveFiles(project.id, {
+    expectedRevision: initial.revision.oid,
+    files: { 'package/objects/customer.md': '---\nkey: customer\n---\n\n# 客户\n\n基线内容。\n' },
+    action: {
+      cause: 'package_release', summary: '建立正式基线', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const app = appFor(t);
+  const runId = `increment-gate-${project.id}`;
+
+  // 没有资料影响记录时这道门禁不该出现，普通建模流程不多一条视觉闸位
+  const absent = await tool(app, project.id, 'gate_status', {
+    gate: 'increment_resolved',
+  }, runId);
+  assert.equal(absent.statusCode, 400, absent.body);
+  assert.equal(absent.json().code, 'GATE_NOT_FOUND');
+
+  storeMaterialImpact(getDb(), project.id, {
+    sourceKey: '结算口径说明',
+    kind: 'replaced',
+    semanticChanged: true,
+    previous: { id: 'doc_prev', filename: '结算口径说明.md' },
+    current: { id: 'doc_now', filename: '结算口径说明.md' },
+  } as any, {
+    semanticChanged: true, scopeResolved: false, affectedResources: [], staleWorkflowSteps: [],
+  });
+
+  const unscoped = await tool(app, project.id, 'gate_status', {
+    gate: 'increment_resolved',
+  }, runId);
+  assert.equal(unscoped.statusCode, 200, unscoped.body);
+  assert.equal(unscoped.json().pass, false);
+  // 增量阶段只看这一道门禁，判成「助手无事可做」等于本轮拿不到指派目标
+  assert.equal(unscoped.json().agentActionable.length, 1);
+  assert.match(unscoped.json().agentActionable[0], /analyze_material_impact/u);
 });

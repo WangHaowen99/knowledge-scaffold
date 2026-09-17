@@ -8,6 +8,63 @@ export const DATA_PROVIDER_SCRIPT_CONTRACT = [
   '成功时只能从 result.data 解析行数据，不得直接迭代、取下标或对 ProviderResult 做真值判断。',
 ].join('');
 
+export const SCRIPT_PURITY_VALIDATOR_VERSION = 'script-pure-computation-v1';
+
+export const SCRIPT_PURE_COMPUTATION_GUIDANCE = [
+  '脚本是纯计算：不连接数据库、不调用接口、不读取本地文件、不使用平台数据源客户端。',
+  '业务数据一律由调用方在脚本外取好，经契约声明的 CLI 参数传入；',
+  '脚本只负责把传入的结构化输入算成结构化输出。',
+].join('');
+
+/**
+ * 脚本里的取数点。
+ *
+ * 判据只认「把外部数据搬进进程」的动作，不认计算本身，因此纯计算脚本不会命中。
+ * 这里刻意不做语法树分析：取数一旦被写进来，必然留下 import 或调用的字面痕迹，
+ * 正则足以识别，而误判的代价（拒掉一次提交并给出改法）远低于漏判（脚本在沙箱里
+ * 拿不到数据，模型只能原地反复推演）。
+ */
+const DATA_ACCESS_RULES: { pattern: RegExp; label: string }[] = [
+  {
+    pattern: /\bDataProviderClient\b|\bDeterministicProviderClient\b|\bontology_script_sdk\b/u,
+    label: '平台数据源客户端',
+  },
+  { pattern: /\.\s*(?:query|query_sql)\s*\(/u, label: '数据源查询调用' },
+  {
+    pattern: /\bopen\s*\(|\.\s*read_(?:text|bytes)\s*\(|\bjson\s*\.\s*load\s*\(|\bcsv\s*\.\s*(?:reader|DictReader)\s*\(|\b(?:import|from)\s+pathlib\b/u,
+    label: '本地文件读取',
+  },
+  {
+    pattern: /\b(?:import|from)\s+(?:sqlite3|pymysql|MySQLdb|psycopg2?|pyodbc|sqlalchemy|neo4j|pymongo|redis)\b/u,
+    label: '数据库连接',
+  },
+  {
+    pattern: /\b(?:import|from)\s+(?:requests|httpx|aiohttp|socket|urllib)\b|\burlopen\s*\(/u,
+    label: '网络请求',
+  },
+];
+
+export function scriptDataAccessPoints(sourceCode: string): string[] {
+  return DATA_ACCESS_RULES
+    .filter((rule) => rule.pattern.test(sourceCode))
+    .map((rule) => rule.label);
+}
+
+/**
+ * 本次改动新引入的取数点。
+ *
+ * 用基线做差而不是全量禁止：存量脚本里已有的取数代码按现状放行，否则改一处公式
+ * 就会被整份拒掉，等于把老脚本锁死；而新建脚本没有基线，任何取数都算新增，
+ * 正好覆盖「脚本生成阶段写出取数代码」这个目标场景。
+ */
+export function newScriptDataAccessPoints(
+  baselineSourceCode: string | undefined,
+  sourceCode: string,
+): string[] {
+  const baseline = new Set(scriptDataAccessPoints(baselineSourceCode ?? ''));
+  return scriptDataAccessPoints(sourceCode).filter((label) => !baseline.has(label));
+}
+
 const FORBIDDEN: { pattern: RegExp; label: string }[] = [
   { pattern: /\b(?:import|from)\s+subprocess\b|\bsubprocess\s*\./, label: 'subprocess' },
   { pattern: /\b(?:import|from)\s+(?:ctypes|multiprocessing|pickle|marshal)\b/, label: '高风险模块' },
@@ -203,6 +260,23 @@ export function validateGeneratedScriptExecutionContract(script: SpecScript): vo
       );
     }
   }
+}
+
+/**
+ * 纯计算检查。
+ *
+ * 刻意不并入 validateGeneratedScriptSafety：后者会在整包渲染时对全部脚本执行，
+ * 而存量脚本里允许保留已有的取数代码。这道检查只挂在「本次改动过的脚本」上。
+ */
+export function validateScriptComputationPurity(
+  script: SpecScript,
+  baselineSourceCode?: string,
+): void {
+  const added = newScriptDataAccessPoints(baselineSourceCode, script.sourceCode);
+  if (!added.length) return;
+  throw new Error(
+    `脚本纯计算检查失败（${script.key}）：本次改动新增了${added.join('、')}。${SCRIPT_PURE_COMPUTATION_GUIDANCE}`,
+  );
 }
 
 export function validateGeneratedScriptSafety(script: SpecScript): void {

@@ -138,6 +138,10 @@ PHASE_GATES = {
     "evaluation": "ready_for_eval",
     "release": "releasable",
 }
+# 阶段自身的门禁。PHASE_GATES 记的是「进入某阶段要过哪道门」，表达不了
+# 「在这个阶段内部做到哪一步」。增量轮次的全部工作都在同一阶段内完成，
+# 它的前向门禁是全量口径的，拿来当本轮目标会派下基线治理这类本轮不该做的活。
+PHASE_SELF_GATES = {"increment": "increment_resolved"}
 
 
 def _phase_projection() -> list[dict[str, Any]]:
@@ -163,6 +167,11 @@ MAX_STALLED_CONTINUATIONS = 2
 # 但它们是写入前的正常准备，用 2 轮上限会让计划刚起步就被判成本轮完成。
 MAX_STALLED_PLAN_CONTINUATIONS = 5
 MAX_DECISION_CARD_RETRIES = 2
+# 思维链吃光输出预算导致本轮零产出时的重试上限。截断不是“没事可做”，
+# 换一次更克制的推理方式往往就能出结果；连着两次仍然截断说明当前任务
+# 在这个预算下想不完，交给用户处理比继续空转有意义。
+MAX_TRUNCATION_RETRIES = 2
+
 MAX_PROGRESS_ONLY_CONTINUATIONS = 2
 MAX_VISIBLE_REASONING_CHARS = 12_000
 REASONING_EVENT_BATCH_CHARS = 160
@@ -230,10 +239,20 @@ SCRIPT_ARTIFACT_TOOLS = frozenset({
     "run_script_test",
     "bind_object_sources",
 })
+# 专家已经批准契约之后，重新定义一遍契约不算交付物——define_script_contract
+# 产出的正是被批准的那个对象本身。把它留在期望产物里，等于允许“确认完再原地
+# 重定义一次契约”通过检查：线上实测正是这条路把一个没有任何后续产物的运行
+# 判成了成功完成，页面上待办消失、也没有下一张卡。
+CONTRACT_ACCEPTED_ARTIFACT_TOOLS = SCRIPT_ARTIFACT_TOOLS - {"define_script_contract"}
+# 表示“按当前契约继续实现”的交互动作。这些动作之后必须出现新的脚本产物。
+CONTRACT_ACCEPTED_ACTION_KEYS = frozenset({"accept_contract"})
 # 整体确认卡连续未形成时，候选修改仍然是可恢复的中间状态。
 # 该恢复不依赖用户重新描述业务，也不把内部工具参数暴露给用户。
 CONFIRMATION_REVIEW_STRATEGY = "confirmation_review"
 CONFIRMATION_REVIEW_REQUIRED_TOOL = "list_domain_resources"
+# 思维链占满输出预算导致零产出时的恢复策略。它没有 requiredTool——要换的是
+# 推进方式，不是补一次工具调用，因此需要一条自己的续跑提示。
+MODEL_TRUNCATION_STRATEGY = "model_truncation"
 
 
 def _confirmation_review_actions() -> list[dict[str, str]]:
@@ -258,7 +277,8 @@ FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
 # 统一确认卡；只输出进度文字不能把 Run 结算为完成。
 APPROVED_PLAN_REQUIRED_TOOLS = frozenset({"stage_change_set", "validate_change_set", "request_confirmation"})
 PURPOSE_REVIEW_ALLOWED_TOOLS = frozenset({
-    "get_project_state", "list_documents", "read_document", "list_tables", "describe_table",
+    "get_project_state", "list_documents", "list_document_outline", "read_document",
+    "list_tables", "describe_table",
     "set_material_directive", "read_file", "list_skill", "focus", "notify",
 })
 PHASE_ORDER = tuple(PHASE_LABELS)
@@ -320,6 +340,12 @@ class RunSituation:
     awaiting_user_action: bool = False
     awaiting_user_reason: str = ""
 
+    # 门禁未过，但服务端明确标注这道门禁没有助手能独立推进的事项。
+    # 和 awaiting_user_action 同义，来源不同：那个来自模型自己调门禁的返回值，
+    # 四小时里只发生过一次；这个来自每轮续跑前的目标指派，每轮都会算。
+    no_actionable_gate: str = ""
+    no_actionable_reason: str = ""
+
     def has_full_read_materials(self) -> Verdict:
         if not self.materials_observed:
             return Verdict.UNKNOWN
@@ -379,6 +405,12 @@ class LiveRun:
     # 可从 RunRecord.latest_interaction 重新装载，避免只依赖框架的 tool result。
     required_text_constraint: dict[str, Any] | None = None
     required_text_guard_retries: int = 0
+    # 最近一次主模型调用的度量。ActivityRail 把 model_call 事件发到同一个 emit，
+    # 这里顺手留存，用于判断本轮是不是被思维链吃光了输出预算。
+    last_model_call: dict[str, Any] = field(default_factory=dict)
+    # 本轮实际生效的模型配置（平台下发的运行时配置优先）。紧凑摘要直接调用
+    # model.stream 覆盖 max_tokens，需要按同一份配置换算预算。
+    model_settings: Settings | None = None
 
 
 def _missing_required_tools(live: LiveRun) -> set[str]:
@@ -808,6 +840,36 @@ def _detect_loop(live: LiveRun) -> str:
         if near >= LOOP_OUTPUT_REPEAT_THRESHOLD:
             return f"最近 {near + 1} 轮在重复同样的内容"
     return ""
+
+
+def _model_output_truncated(metrics: dict[str, Any]) -> bool:
+    """这次主模型调用是否被思维链吃光了输出预算。
+
+    判据是「推理 token 用满了全部输出 token，且一个正文字符都没有」：这说明
+    预算全被思维链占掉，正文和工具调用都没来得及产生。
+
+    两个条件缺一不可。只看「输出预算用满」会误判——线上实测有多次调用把预算
+    全部用掉，却仍然正常吐出了 tool_calls。只看字符数更不行：截断轮与成功轮的
+    推理字符数互有高低（成功轮到过 14655 字符，截断轮是 15568 字符），真正的
+    分界线在 token 上。
+    """
+    if not metrics or metrics.get("outcome") == "tool_calls":
+        return False
+    output_tokens = int(metrics.get("outputTokens") or 0)
+    reasoning_tokens = int(metrics.get("reasoningTokens") or 0)
+    if output_tokens <= 0 or reasoning_tokens < output_tokens:
+        return False
+    return not int(metrics.get("contentChars") or 0)
+
+
+# 截断后的续跑提示。截断的成因是模型想在一次思考里把整套方案推演完，
+# 因此这里要求它把问题切小、用工具取证代替空想，而不是简单地重试一遍。
+TRUNCATION_RECOVERY_PROMPT = (
+    "上一轮你把全部输出预算都用在了推理上，没有产出任何工具调用或正文，本轮必须换一种做法。"
+    "不要试图在一次思考里把整套方案想完：只做下一步最小的一件事，"
+    "先用一次工具调用去取证或落地，拿到真实结果再决定下一步。"
+    "如果关键前提还不确定，直接调用 ask 把问题交给专家，不要自己反复推演。"
+)
 
 
 def _with_intent_notes(live: LiveRun, query: Any) -> Any:
@@ -2586,7 +2648,9 @@ class AgentService:
             }
 
         if execution == RUN_SUSPENDED:
-            steering_id = self.store.queue_steering(project_id, run.id, message)
+            steering_id = self.store.queue_steering(
+                project_id, run.id, message, origin="expert",
+            )
             resumed = await self._continue(
                 run,
                 token,
@@ -2618,7 +2682,9 @@ class AgentService:
                 ):
                     live.restore_interaction = None
                     self.events.publish(project_id, run.id, "interaction", settled.public())
-                steering_id = self.store.queue_steering(project_id, run.id, message)
+                steering_id = self.store.queue_steering(
+                    project_id, run.id, message, origin="expert",
+                )
                 live.deferred_purpose_continuation = (steering_id, token, message)
                 self.events.publish(project_id, run.id, "message", {
                     "role": "user",
@@ -2630,7 +2696,9 @@ class AgentService:
                 "runId": run.id,
                 "delivery": "after_purpose_review",
             }
-        steering_id = self.store.queue_steering(project_id, run.id, message)
+        steering_id = self.store.queue_steering(
+            project_id, run.id, message, origin="expert",
+        )
         live.token = token
         live.stable_read_cache.clear()
         live.required_tools.update(_required_tools_for_user_intent(
@@ -2658,6 +2726,27 @@ class AgentService:
         self.store.mark_steering_delivered(steering_id)
         self.events.publish(project_id, run.id, "message", {"role": "user", "blocks": [{"type": "text", "text": message}], "delivery": "next_tool_boundary"})
         return {"mode": "steering", "runId": run.id, "delivery": "next_tool_boundary"}
+
+    def project_constraints(self, project_id: str) -> dict[str, Any]:
+        """专家约束登记表，含已撤销/被覆盖的历史，页面可见是登记表的一部分。"""
+        return {"constraints": self.store.list_constraints(project_id)}
+
+    def revoke_project_constraint(
+        self,
+        *,
+        project_id: str,
+        constraint_id: int,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """专家在页面上直接撤销一条约束——登记表的改判兜底通道。
+
+        模型判断（哪些插话进表）必须是明处可推翻的：第一层是处置工具留痕，
+        这里是第二层，专家看到错登的规矩能直接撤掉，不用等下一轮对话。
+        """
+        revoked = self.store.revoke_constraint(project_id, constraint_id, reason=reason)
+        state = self.store.project_state(project_id)
+        self._publish_constraints(project_id, state.run_id)
+        return {"ok": True, **revoked}
 
     async def resume_issue(
         self,
@@ -2774,6 +2863,13 @@ class AgentService:
                 required_tools.add(required_tool)
             if technical.get("strategy") == CONFIRMATION_REVIEW_STRATEGY:
                 recovery_prompt = self._confirmation_review_prompt(run)
+            elif technical.get("strategy") == MODEL_TRUNCATION_STRATEGY:
+                # 这条恢复没有 required tool：上一轮之所以零产出，是模型想在一次
+                # 思考里把整套方案推演完，要换的是推进方式而不是补一次工具调用。
+                recovery_prompt = (
+                    "页面请求从当前进展继续。不要把它当成用户业务发言；"
+                    + TRUNCATION_RECOVERY_PROMPT
+                )
             else:
                 recovery_prompt = (
                     "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
@@ -2871,6 +2967,109 @@ class AgentService:
             self.store.resolve_technical_recoveries(run.id, [normalized_issue])
         return {"mode": "new_run", "run": started, "issueId": normalized_issue}
 
+    def _interjection_action(
+        self,
+        live: LiveRun,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """插话处置与约束工具。不走乐观锁：处置的是插话自己的生命周期，
+        不动 project_agent_state；重复处置由 store 的状态守卫拒绝。"""
+        project_id = live.project_id
+        if name == "revoke_constraint":
+            constraint_id = int(arguments.get("constraint_id") or 0)
+            reason = str(arguments.get("reason") or "").strip()
+            revoked = self.store.revoke_constraint(project_id, constraint_id, reason=reason)
+            self._publish_constraints(project_id, live.run_id)
+            return {
+                "ok": True,
+                **revoked,
+                "display": {"text": f"已撤销专家约束 #{constraint_id}，下一轮起不再生效"},
+            }
+        if name == "complete_interjection_task":
+            interjection_id = int(arguments.get("interjection_id") or 0)
+            evidence = str(arguments.get("evidence") or "").strip()
+            if not evidence:
+                raise AgentRuntimeError(
+                    "INTERJECTION_EVIDENCE_REQUIRED",
+                    "完成待办必须引用具体产物位置作为证据",
+                    status=400,
+                )
+            completed = self.store.complete_interjection_task(
+                project_id, interjection_id, evidence=evidence,
+            )
+            return {
+                "ok": True,
+                **completed,
+                "display": {"text": f"插话待办 #{interjection_id} 已完成并留下证据"},
+            }
+        # dispose_interjection
+        interjection_id = int(arguments.get("interjection_id") or 0)
+        resolution = str(arguments.get("resolution") or "")
+        text = str(arguments.get("text") or "").strip()
+        evidence = str(arguments.get("evidence") or "").strip()
+        reason = str(arguments.get("reason") or "").strip()
+        if resolution == "constraint":
+            if not text:
+                raise AgentRuntimeError(
+                    "INTERJECTION_TEXT_REQUIRED", "登记约束必须提供规矩文本", status=400,
+                )
+            raw_replaces = arguments.get("replaces_constraint_id")
+            replaces_id = (
+                int(raw_replaces)
+                if isinstance(raw_replaces, int) and not isinstance(raw_replaces, bool)
+                else None
+            )
+            constraint = self.store.register_constraint(
+                project_id, text,
+                source_steering_id=interjection_id,
+                replaces_id=replaces_id,
+            )
+            detail: dict[str, Any] = {"constraintId": constraint["id"], "text": text}
+            outcome = f"已登记为专家约束 #{constraint['id']}，每轮生效直到专家撤销"
+        elif resolution == "task":
+            if not text:
+                raise AgentRuntimeError(
+                    "INTERJECTION_TEXT_REQUIRED", "转待办必须提供要做的事", status=400,
+                )
+            detail = {"text": text}
+            outcome = "已转成跨轮待办，完成后需调用 complete_interjection_task 附证据"
+        elif resolution == "satisfied":
+            # 「已满足」是模型自报，天然是合理化逃生口：不带证据锚点的满足
+            # 声明会让强制表态退化成合规表演，歧义只是从「沉默」搬到「假阳性」。
+            if not evidence:
+                raise AgentRuntimeError(
+                    "INTERJECTION_EVIDENCE_REQUIRED",
+                    "「已满足」必须在 evidence 引用具体产物位置（文件路径、条目 ID 或状态事实）",
+                    status=400,
+                )
+            detail = {"evidence": evidence}
+            outcome = "已标记满足并留下证据"
+        elif resolution == "rejected":
+            if not reason:
+                raise AgentRuntimeError(
+                    "INTERJECTION_REASON_REQUIRED", "拒绝插话必须说明理由", status=400,
+                )
+            detail = {"reason": reason}
+            outcome = "已拒绝并记录理由；专家可以在对话里继续追问或调整"
+        else:
+            raise AgentRuntimeError(
+                "INTERJECTION_RESOLUTION_INVALID",
+                "resolution 只能是 constraint、task、satisfied 或 rejected",
+                status=400,
+            )
+        disposed = self.store.dispose_interjection(
+            project_id, interjection_id, resolution=resolution, detail=detail,
+        )
+        if resolution == "constraint":
+            self._publish_constraints(project_id, live.run_id)
+        return {"ok": True, **disposed, "display": {"text": outcome}}
+
+    def _publish_constraints(self, project_id: str, run_id: str) -> None:
+        self.events.publish(project_id, run_id, "constraints", {
+            "active": self.store.active_constraints(project_id),
+        })
+
     async def _state_action(
         self,
         live: LiveRun,
@@ -2879,6 +3078,8 @@ class AgentService:
     ) -> dict[str, Any]:
         if name == "get_project_state":
             return await self._state_for_agent(live)
+        if name in {"dispose_interjection", "complete_interjection_task", "revoke_constraint"}:
+            return self._interjection_action(live, name, arguments)
 
         current = self.store.project_state(live.project_id)
         expected = arguments.get("expected_revision")
@@ -3111,6 +3312,205 @@ class AgentService:
         public["phaseLabel"] = PHASE_LABELS.get(target, target)
         self.events.publish(live.project_id, live.run_id, "state", public)
 
+    async def _gate_progress(
+        self,
+        live: LiveRun,
+        gate: str,
+    ) -> tuple[str, list[str], str]:
+        """读一道门禁，归一成 (状态, 可推进项, 卡住原因)。
+
+        状态五取一：unreachable 是网关调用失败；unknown 是门禁不存在或返回错误；
+        passed 已通过；actionable 有助手能独立推进的事；blocked 是服务端明确标注
+        为空——助手推不动，和「没算出来」必须区分开。前向门禁和阶段自身门禁共用
+        这段判定，但对 unreachable 的处置不同：前向门禁沿用原先的整体中止。
+        """
+        try:
+            result = await self._gateway.call(
+                project_id=live.project_id,
+                run_id=live.run_id,
+                token=live.token,
+                tool="gate_status",
+                arguments={"gate": gate},
+            )
+        except Exception:
+            # 目标只是引导，取不到不该影响本轮执行。
+            logger.warning("turn goal gate lookup failed run=%s gate=%s", live.run_id, gate)
+            return ("unreachable", [], "")
+        if result.get("error"):
+            return ("unknown", [], "")
+        if result.get("pass"):
+            return ("passed", [], "")
+        # 优先用服务端标注的「助手可独立推进项」。blockers 面向用户，说的是
+        # 「还差什么」，其中不少条目的主语是用户——把「由项目负责人完成发布」
+        # 指派给助手只会让它困惑或越界。
+        raw_actionable = result.get("agentActionable")
+        if raw_actionable is None:
+            # 服务端还没标注这道门禁，退回 blockers 保持兼容。
+            items = _string_list(result.get("blockers") or result.get("next"), 30)
+        else:
+            # 已标注：空表示这道门禁当前没有助手能独立推进的事，
+            # 此时不能退回 blockers，否则又会把用户的事派给助手。
+            items = _string_list(raw_actionable, 30)
+        if items:
+            return ("actionable", items, "")
+        if raw_actionable is None:
+            return ("unknown", [], "")
+        return ("blocked", [], "；".join(_string_list(result.get("blockers"), 3)))
+
+    @staticmethod
+    def _actionable_goal(gate: str, items: list[str]) -> str:
+        remaining = f"，该门禁共 {len(items)} 项待推进" if len(items) > 1 else ""
+        return (
+            f"{items[0]}\n\n"
+            f"这一项来自门禁 {gate}{remaining}。本轮只推进这一项，完成后即可结束本轮；"
+            "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
+            "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
+            "不要反复读取资料试图自行补齐前提。"
+        )
+
+    def _blocked_goal(self, live: LiveRun, gate: str, reason: str) -> str:
+        # 「算出来助手没事做」和「没算出来」必须给出不同指令。过去两者都是
+        # 返回空串，模型这一轮就完全没有目标——而没有目标正是空转的起点，
+        # 它会自己找活，再读一份资料永远算得上可执行动作。
+        live.situation.no_actionable_gate = gate
+        live.situation.no_actionable_reason = reason
+        detail = f"当前卡在：{reason}\n\n" if reason else ""
+        return (
+            "本轮没有你能独立推进的事项。\n\n"
+            f"{detail}"
+            f"门禁 {gate} 还没通过，但它剩下的事要由用户或专家在别处完成，"
+            "你再宣告多少遍也推不动。请用一段话向专家说明卡在哪一项、"
+            "需要他做什么，然后结束本轮。不要自行改换目标去做别的事，"
+            "也不要反复读取资料等它变化——外部事件会重新唤醒你。"
+        )
+
+    @staticmethod
+    def _interjection_goal(items: list[dict[str, Any]]) -> str:
+        """未处置的专家插话即本轮目标（items[0] 纪律，与门禁目标同构）。
+
+        宽进：不在这里做语义准入判断——「这句话会不会碰不变量」代码算不出来。
+        探测点后移到执行层：阶段守卫和工具拦截是确定性的，撞墙时目标文本已经
+        约定了升级出口（conflict_decision 裁决卡），模型没有仲裁角色。
+        """
+        head = items[0]
+        remaining = f"，另有 {len(items) - 1} 条插话排在后面" if len(items) > 1 else ""
+        return (
+            f"专家插话 #{head['id']} 尚未处置：\n\n"
+            f"「{head['text']}」\n\n"
+            f"本轮以完成并处置这条插话为唯一目标{remaining}。"
+            "按「这条指令什么时候失效」判断它的寿命并选择出口：\n"
+            "- 「不许/一律/以后都」这类长期规矩：调用 dispose_interjection(resolution='constraint') 登记为专家约束；\n"
+            "- 本轮能完成的一次性动作：直接执行，然后 dispose_interjection(resolution='satisfied') 并在 evidence 引用产物位置；\n"
+            "- 本轮做不完的动作：dispose_interjection(resolution='task') 转成待办；\n"
+            "- 与已批准计划或业务事实冲突：dispose_interjection(resolution='rejected') 说明理由。\n"
+            "执行中被阶段守卫或工具拦截时，不要放弃也不要绕过：把拦截返回的原因、"
+            "合法路径和代价整理成 ask(kind='conflict_decision') 请专家裁决，"
+            "系统会把这条插话标记为已升级待决。\n"
+            "本轮结束前必须完成处置；不要顺带去做门禁清单上的其它项。"
+        )
+
+    @staticmethod
+    def _interjection_task_goal(items: list[dict[str, Any]]) -> str:
+        head = items[0]
+        remaining = f"，该队列共 {len(items)} 项待办" if len(items) > 1 else ""
+        return (
+            f"完成插话转来的待办 #{head['id']}：\n\n"
+            f"「{head['text']}」\n\n"
+            f"这一项来自专家插话{remaining}。本轮只推进这一项，完成后调用 "
+            "complete_interjection_task 并在 evidence 引用产物位置，然后结束本轮；"
+            "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
+            "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
+            "不要反复读取资料试图自行补齐前提。"
+        )
+
+    async def _turn_goal(self, live: LiveRun) -> str:
+        """从当前阶段「向前推进」那个门禁的未完成项里，派生本轮要完成的单一目标。
+
+        门禁 blockers 本来就是服务端算出来的任务清单，只是过去它只作为
+        get_project_state 的一个字段返回——和文件正文一样是普通工具返回值，
+        很快被后续读取挤出窗口，模型于是自己另找事做。这里把清单的第一项
+        提升为本轮的指派目标，交给 system 段常驻。
+
+        专家插话优先于门禁：门禁是服务端替专家算出来的约束，是手段；插话是
+        专家亲口说的目的。两者不并列——插话成为那个唯一目标，门禁项排在它
+        之后。一次性动作转出的待办排第二，都清空后才回到门禁目标。
+
+        只看前进方向的门禁：退回目标阶段的门禁不代表本轮该做什么。
+
+        配置了自身门禁的阶段（增量轮次）从不落回前向门禁。前向门禁
+        （knowledge_confirmed、ready_for_eval）都是全量口径，派下来的是「补齐
+        基线里某个操作的输入定义」这类本轮明令不准碰的活；自身门禁拿不到
+        结论时（导入开的轮次还没有影响记录）派「说明并待命」目标。
+
+        两种返回都有意义，不能混用：有可推进项时返回那一项，门禁未过但服务端
+        明确标注助手无可推进项时返回一段「说明并收尾」的指令，并在 situation
+        上记下门禁名，让续跑判定收掉本轮。只有确实拿不到门禁结论时才返回空串。
+        """
+        live.situation.no_actionable_gate = ""
+        live.situation.no_actionable_reason = ""
+        interjections = self.store.pending_interjections(live.project_id)
+        if interjections:
+            return self._interjection_goal(interjections)
+        tasks = self.store.open_interjection_tasks(live.project_id)
+        if tasks:
+            return self._interjection_task_goal(tasks)
+        phase = self.store.project_state(live.project_id).state.partition(":")[0]
+        if phase not in PHASE_ORDER:
+            return ""
+        self_gate = PHASE_SELF_GATES.get(phase)
+        if self_gate:
+            status, items, reason = await self._gate_progress(live, self_gate)
+            if status == "actionable":
+                return self._actionable_goal(self_gate, items)
+            if status == "blocked":
+                return self._blocked_goal(live, self_gate, reason)
+            if status == "passed":
+                return (
+                    "本阶段的工作已经完成。\n\n"
+                    f"门禁 {self_gate} 已通过。调用 transition_project_state 转到下一阶段"
+                    "（受影响内容涉及脚本时转 validation，否则转 evaluation），然后结束本轮。\n"
+                    "不要回头去做全量建模阶段的事，也不要自行改换目标。"
+                )
+            # unreachable / unknown：增量轮自身门禁拿不到结论——典型是知识包导入
+            # 开的轮次还没有资料影响记录。过去这里落回前向门禁「保持原有行为」，
+            # 但前向门禁全是全量口径，派下来的是「补齐基线里某操作的输入定义」
+            # 这类明令不归本次增量的活：防空转和阶段隔离在这里打架，落回全量是
+            # 选错了边。第三个选项一直存在——派「说明并待命」的收尾目标，
+            # 既不给模型自己找活的空档，也不越增量的界。
+            live.situation.no_actionable_gate = self_gate
+            live.situation.no_actionable_reason = "尚无已界定的资料影响记录"
+            return (
+                "本轮没有已界定的增量影响需要处理。\n\n"
+                "增量轮次只处理受资料变更影响的内容；导入基线的已有问题不属于本次增量。"
+                "请用一段话向专家说明当前在等待补充或替换资料（或其它明确指示），"
+                "然后结束本轮。不要去做全量建模阶段的事，也不要反复读取资料"
+                "等它变化——新资料上传后系统会重新唤醒你。"
+            )
+        current_index = PHASE_ORDER.index(phase)
+        blocked: tuple[str, str] | None = None
+        for target in PHASE_EDGES.get(phase, ()):
+            if target not in PHASE_ORDER or PHASE_ORDER.index(target) <= current_index:
+                continue
+            gate = PHASE_GATES.get(target)
+            if not gate:
+                continue
+            status, items, reason = await self._gate_progress(live, gate)
+            if status == "unreachable":
+                # 取不到门禁结论时不派目标，沿用原先的整体中止。
+                return ""
+            if status in {"unknown", "passed"}:
+                continue
+            if status == "blocked" and blocked is None:
+                # 先记下来继续看后面的前向门禁——增量轮次这类阶段有不止一条
+                # 前向边，不能因为第一道卡住就放弃第二道确实有活的那道。
+                blocked = (gate, reason)
+                continue
+            if status == "actionable":
+                return self._actionable_goal(gate, items)
+        if blocked is not None:
+            return self._blocked_goal(live, blocked[0], blocked[1])
+        return ""
+
     async def _state_for_agent(self, live: LiveRun) -> dict[str, Any]:
         state = self.store.project_state(live.project_id)
         public = state.public()
@@ -3172,6 +3572,11 @@ class AgentService:
             "evaluation": evaluation,
             "dataSource": data_source,
             "allowedTransitions": transitions,
+            # 插话编号是处置工具的入参来源；这些字段只供内部编排，
+            # 不得出现在用户可见正文里（与 scopeResolved 同一纪律）。
+            "pendingInterjections": self.store.pending_interjections(live.project_id),
+            "openInterjectionTasks": self.store.open_interjection_tasks(live.project_id),
+            "expertConstraints": self.store.active_constraints(live.project_id),
             "display": {"text": f"当前阶段：{public['phaseLabel']}"},
         }
 
@@ -3396,8 +3801,18 @@ class AgentService:
         self.store.update_run(run.id, latest_interaction=snapshot)
 
     def _script_artifact_produced(self, live: LiveRun, run: RunRecord) -> bool:
-        """本轮是否已经形成脚本产物或下一张确认卡。"""
-        if live.observed_tools & SCRIPT_ARTIFACT_TOOLS:
+        """本轮是否已经形成脚本产物或下一张确认卡。
+
+        专家批准契约后，重新定义一遍契约不算交付物：define_script_contract
+        产出的正是被批准的那个对象本身。线上现场就是这样——确认后模型只是把
+        契约又定义了一遍，随后几轮被思维链吃光预算、零产出，却因为这次调用
+        被判成「本轮有产物」，Run 被结算成成功完成。
+        """
+        snapshot = run.latest_interaction or {}
+        expected = SCRIPT_ARTIFACT_TOOLS
+        if str(snapshot.get("actionKey") or "") in CONTRACT_ACCEPTED_ACTION_KEYS:
+            expected = CONTRACT_ACCEPTED_ARTIFACT_TOOLS
+        if live.observed_tools & expected:
             return True
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
@@ -3453,6 +3868,64 @@ class AgentService:
         self.events.publish(run.project_id, run.id, "status", {
             "status": RUN_WAITING,
             "text": "等待你确认补充说明后继续",
+        })
+
+    def _suspend_model_truncation(self, live: LiveRun, run: RunRecord) -> None:
+        """连续截断后落一张可操作的复核卡，而不是悄悄结算成功。
+
+        截断意味着本轮完全没有产出，既不是完成也不是失败。原先它会沿着自主
+        续跑分支耗完停滞预算、再被结算成「成功但没话说」——页面上表现为待办
+        消失、没有新卡也没有报错。这条出口保留已有成果，把下一步交还给用户。
+        """
+        issue_id = f"model-truncation-{run.id}"
+        state = self.store.project_state(run.project_id).public()
+        recovery_actions = [
+            {
+                # 复用通用的「从最新进展重试」动作 id：恢复入口据此重置重试计数。
+                "id": "retry_from_latest",
+                "label": "拆小步骤继续",
+                "description": "从当前进展继续，一次只推进一小步。",
+            },
+            {
+                "id": "keep_current_progress",
+                "label": "保留当前成果，结束本轮",
+                "description": "保留已经形成的内容，暂不继续本轮处理。",
+            },
+        ]
+        recovery = {
+            "issueId": issue_id,
+            "strategy": MODEL_TRUNCATION_STRATEGY,
+            "actionId": "retry_from_latest",
+            "recoveryActions": recovery_actions,
+            "projectPhase": str(state.get("phase") or ""),
+            "toolProfile": run.tool_profile,
+            "attempt": MAX_TRUNCATION_RETRIES,
+            "maxAttempts": MAX_TRUNCATION_RETRIES,
+            "exhausted": True,
+        }
+        live.technical_recoveries[issue_id] = recovery
+        self.store.save_technical_recovery(run.id, issue_id, recovery)
+        self.store.update_run(run.id, status=RUN_SUSPENDED, result="", error="")
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": "model_output_truncated",
+            "phase": "waiting",
+            "summary": "助手连续几轮都没能在预算内给出结论，已有成果已保留",
+            "code": "MODEL_OUTPUT_TRUNCATED",
+            "issueId": issue_id,
+            "issueStatus": "awaiting_user",
+            "problemVisibility": "recovery",
+            "projectPhase": recovery["projectPhase"],
+            "toolProfile": recovery["toolProfile"],
+            "recoveryActions": recovery_actions,
+        })
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_SUSPENDED,
+            "text": "助手这一步没能得出结论，已有成果已保留，请选择后续处理",
         })
 
     def _suspend_required_tool_review(
@@ -3846,17 +4319,27 @@ class AgentService:
             self.store.update_run(run.id, status=RUN_RUNNING)
             self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})
+            live.model_settings = model_settings
             autonomous = live.autonomous_seed
             stalled = 0
             continuations = 0
             decision_card_retries = 0
             confirmation_card_retries = 0
+            truncation_retries = 0
             progress_only_retries = 0
             model_operation_seq = 0
             current_query = query
             active_phase = initial_phase
             while True:
                 def emit(kind: str, payload: dict[str, Any]) -> None:
+                    if kind == "model_call":
+                        # ActivityRail 的度量事件走的是同一个 emit。主模型调用完成时
+                        # 留存最后一次度量，供截断守卫判断本轮是不是零产出。
+                        if (
+                            payload.get("phase") == "completed"
+                            and payload.get("actor") == "modeling_leader"
+                        ):
+                            live.last_model_call = dict(payload)
                     if kind == "tool":
                         phase = str(payload.get("phase") or "")
                         name = str(payload.get("name") or "")
@@ -3947,6 +4430,20 @@ class AgentService:
                     model=model,
                     analyst_model=analyst_model,
                     package_contract=live.package_contract,
+                    # 用户刚下达指令或刚回答完问题时，指令本身就是本轮目标，
+                    # 不需要服务端再指派。只有模型自己决定下一步时才需要——
+                    # 那正是过去它漫无目的地反复取证的地方。
+                    # 判据是「有没有待处理指令」而不只是「是不是续跑」：
+                    # 未处置的专家插话和插话待办在任何一轮都构成本轮目标，
+                    # 否则插话只能作为普通消息随窗口滚动而被静默丢弃。
+                    turn_goal=await self._turn_goal(live) if (
+                        continuations
+                        or self.store.pending_interjections(live.project_id)
+                        or self.store.open_interjection_tasks(live.project_id)
+                    ) else "",
+                    # 专家约束每轮从登记表重算注入，撤销即时生效；system 段
+                    # 常驻保证它不被工具返回值挤出窗口。
+                    constraints=self.store.active_constraints(live.project_id),
                 )
                 boundary = self.events.publish(
                     run.project_id,
@@ -3955,6 +4452,7 @@ class AgentService:
                     {"status": RUN_RUNNING, "text": "助手正在执行下一步" if continuations else "助手正在建模"},
                 )
                 model_operation_seq += 1
+                live.last_model_call = {}
                 result = await self._run_model_operation(
                     live,
                     run,
@@ -3962,6 +4460,39 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                # 截断守卫必须排在最前面：本轮模型一个 token 都没吐出来，
+                # 后面所有「模型说了什么/做了什么」的判断都无从谈起。尤其不能
+                # 让它掉进自主续跑分支——那里会把零产出当成停滞，扣完预算后
+                # 直接结算成功，页面上就是待办消失、没有下文。
+                if (
+                    result.get("result_type") == "success"
+                    and not str(result.get("output") or "").strip()
+                    and _model_output_truncated(live.last_model_call)
+                ):
+                    metrics = live.last_model_call
+                    logger.warning(
+                        "model output truncated by reasoning run=%s attempt=%s "
+                        "outputTokens=%s reasoningTokens=%s",
+                        run.id,
+                        truncation_retries + 1,
+                        metrics.get("outputTokens"),
+                        metrics.get("reasoningTokens"),
+                    )
+                    if truncation_retries < MAX_TRUNCATION_RETRIES:
+                        truncation_retries += 1
+                        self.events.publish(run.project_id, run.id, "tool", {
+                            "name": "model_output_truncated",
+                            "phase": "repairing",
+                            "summary": "本轮推理占满了输出预算，正在换一种更小步的做法重试",
+                            "code": "MODEL_OUTPUT_TRUNCATED",
+                            "attempt": truncation_retries,
+                            "maxAttempts": MAX_TRUNCATION_RETRIES,
+                            "problemVisibility": "internal",
+                        })
+                        current_query = TRUNCATION_RECOVERY_PROMPT
+                        continue
+                    self._suspend_model_truncation(live, run)
+                    return
                 if _required_text_interrupt_requires_review(
                     result,
                     live,
@@ -4193,15 +4724,35 @@ class AgentService:
                 # 只会一轮轮重复同一段话。结束本轮，等外部事件把它唤醒。
                 if live.situation.awaiting_user_action:
                     loop_reason = loop_reason or "剩余事项需要用户在其它界面完成"
-                can_continue_autonomously = autonomous and not loop_reason
+                # 指派目标时就算出这道门禁没有助手能推的事。不收尾的话，下一轮
+                # 仍然拿不到目标，模型又会退回「自己找活」——空转就是这么起来的。
+                if live.situation.no_actionable_gate:
+                    loop_reason = loop_reason or (
+                        f"门禁 {live.situation.no_actionable_gate} 的剩余事项"
+                        "需要用户或专家完成"
+                    )
+                # 强制表态：本轮结束时还有未处置的专家插话，不能就这样收尾——
+                # 沉默必须是一种错误状态，不是默认状态。在预算内强制续一轮，
+                # 让下一轮的指派目标带着处置要求重新出现；预算耗尽或确认打转时
+                # 不再硬转（防止模型拒绝处置时无限循环），改为发一条可见事件，
+                # 把「插话没被处置」摆到台面上。
+                undisposed = self.store.pending_interjections(run.project_id)
+                must_dispose = bool(undisposed)
+                can_continue_autonomously = (autonomous or must_dispose) and not loop_reason
                 has_continuation_budget = continuations < MAX_AUTONOMOUS_CONTINUATIONS
                 has_stall_budget = stalled < stall_budget
                 if can_continue_autonomously and has_continuation_budget and has_stall_budget:
                     continuations += 1
-                    current_query = self._autonomous_continuation_prompt(
-                        run.project_id, live, stalled=stalled,
+                    current_query = (
+                        self._interjection_continuation_prompt(undisposed)
+                        if must_dispose
+                        else self._autonomous_continuation_prompt(
+                            run.project_id, live, stalled=stalled,
+                        )
                     )
                     continue
+                if must_dispose:
+                    self._publish_interjections_undisposed(run, undisposed)
                 if live.situation.plan_remaining:
                     self._publish_plan_incomplete_activity(live, run, stalled=stalled)
 
@@ -4515,6 +5066,44 @@ class AgentService:
             )
         return prompt
 
+    @staticmethod
+    def _interjection_continuation_prompt(undisposed: list[dict[str, Any]]) -> str:
+        head = undisposed[0]
+        return (
+            f"专家插话 #{head['id']} 还没有处置结论。本轮系统指派的目标就是这条插话："
+            "先完成或裁决它，并调用 dispose_interjection 登记处置（登记约束/转待办/"
+            "已满足附证据/拒绝说明理由），再考虑其它工作。不要请求用户指示，"
+            "也不要把插话内容当成普通聊天忽略。"
+        )
+
+    def _publish_interjections_undisposed(
+        self,
+        run: RunRecord,
+        undisposed: list[dict[str, Any]],
+    ) -> None:
+        """插话没处置就收尾时，把这件事摆到台面上。
+
+        否则界面只显示「本轮完成」，专家无法区分「插话办了」和「插话被静默
+        丢弃」——后者正是这套机制要消灭的失败形态，它至少必须可见。
+        """
+        head = undisposed[0]
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": "interjection_undisposed",
+            "phase": "waiting",
+            "summary": (
+                f"本轮结束时还有 {len(undisposed)} 条专家插话没有处置结论，"
+                f"最早一条是：「{str(head['text'])[:200]}」。"
+                "它会在下一轮继续作为指派目标；也可以直接发消息催促或调整。"
+            ),
+            "undisposedCount": len(undisposed),
+            "headInterjectionId": head["id"],
+            "problemVisibility": "user",
+        })
+        logger.warning(
+            "run %s settled with %s undisposed interjections (head=%s)",
+            run.id, len(undisposed), head["id"],
+        )
+
     def _autonomous_continuation_prompt(
         self,
         project_id: str,
@@ -4716,7 +5305,9 @@ class AgentService:
                 async for chunk in live.bundle.model.stream(
                     messages,
                     tools=None,
-                    max_tokens=min(COMPACT_SUMMARY_MAX_TOKENS, self.settings.llm_max_tokens),
+                    max_tokens=(live.model_settings or self.settings).resolved_output_budget(
+                        COMPACT_SUMMARY_MAX_TOKENS,
+                    ),
                     timeout=COMPACT_SUMMARY_TIMEOUT_SECONDS,
                 ):
                     chunks += 1
@@ -4944,6 +5535,20 @@ class AgentService:
             if not isinstance(interaction, InteractionRecord):
                 interaction = _interaction_from_result(run, result)
             self.store.create_interaction(interaction)
+            # 冲突裁决卡出现时，服务端确定性地把未处置插话绑定为「已升级待决」，
+            # 不靠模型自觉再调一次登记工具——绑定动作可以算出来就不该交给推断。
+            # 升级不是终态：卡被回答后插话会重新开放，按专家裁决完成收尾。
+            if interaction.kind == "conflict_decision":
+                escalated = self.store.escalate_interjections(run.project_id, interaction.id)
+                if escalated:
+                    self.events.publish(run.project_id, run.id, "tool", {
+                        "name": "interjection_escalated",
+                        "phase": "completed",
+                        "summary": f"{len(escalated)} 条专家插话已升级为待专家裁决",
+                        "interjectionIds": escalated,
+                        "interactionId": interaction.id,
+                        "problemVisibility": "internal",
+                    })
             self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "checkpoint", {"id": run.session_id, "revision": run.candidate_revision or run.baseline_revision})
             self.events.publish(run.project_id, run.id, "interaction", interaction.public())

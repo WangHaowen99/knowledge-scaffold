@@ -47,6 +47,23 @@ function operationContractSuggestion(operation: SpecOperation): string {
   ].join('\n');
 }
 
+/**
+ * 脚本候选里还没有声明输入的业务操作。
+ *
+ * 脚本契约的参数只能来自业务操作已声明的输入定义。确定性验证阶段只保留领域
+ * 只读工具，到那时发现操作缺输入既查不到也补不了，模型只能在契约里自行编造
+ * 数据来源（例如“运行时从平台读取”）；而脚本是在沙箱里按 CLI 执行的纯计算，
+ * 做不到这件事，于是原地反复推演。把缺失挡在知识阶段——那里才有补全操作的
+ * 工具，输入也本该在对着资料抽取知识时就确定下来。
+ */
+export function operationsMissingInputs(
+  candidateOperationKeys: readonly string[],
+  operations: readonly SpecOperation[],
+): string[] {
+  const byKey = new Map(operations.map((operation) => [operation.key, operation]));
+  return candidateOperationKeys.filter((key) => !(byKey.get(key)?.inputs ?? []).length);
+}
+
 export function identifyScriptCandidates(
   operations: SpecOperation[],
   metrics: SpecMetric[],

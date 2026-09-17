@@ -300,7 +300,8 @@ cmd_preflight() {
 }
 
 cmd_up() {
-  local with_eval=0 consumer_only=0 modeling_only=0
+  local with_eval=0 consumer_only=0 modeling_only=0 no_build=0
+  local modeling_tag="${MODELING_TAG:-latest}"
   command -v curl >/dev/null 2>&1 || fail "缺少 curl，无法执行部署健康检查" 2
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -308,12 +309,17 @@ cmd_up() {
       --with-eval) with_eval=1 ;;
       --consumer-only) consumer_only=1 ;;
       --modeling-only) modeling_only=1 ;;
+      --no-build) no_build=1 ;;
       --tag) [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || fail "--tag 需要一个值（例：--tag latest）" 2; TAG="$2"; shift ;;
-      *) fail "未知参数：$1（可用：--with-auth --with-eval --consumer-only --modeling-only --tag <tag>）" 2 ;;
+      --modeling-tag) [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || fail "--modeling-tag 需要一个值（例：--modeling-tag d3bfa079）" 2; modeling_tag="$2"; shift ;;
+      *) fail "未知参数：$1（可用：--with-auth --with-eval --consumer-only --modeling-only --no-build --tag <tag> --modeling-tag <tag>）" 2 ;;
     esac
     shift
   done
-  export TAG
+  export TAG MODELING_TAG="$modeling_tag"
+
+  local build_args=(--build)
+  [ "$no_build" -eq 0 ] || build_args=(--no-build)
 
   if [ ! -f "$CONSUMER_DIR/backend/.env" ]; then
     cp "$CONSUMER_DIR/backend/.env.example" "$CONSUMER_DIR/backend/.env"
@@ -339,8 +345,14 @@ cmd_up() {
     for key in MODELING_LLM_BASE_URL MODELING_LLM_MODEL MODELING_LLM_API_KEY \
                MODELING_LLM_MAX_TOKENS MODELING_LLM_CONTEXT_WINDOW \
                MODELING_AGENT_LLM_MAX_TOKENS MODELING_AGENT_MAX_ITERATIONS \
+               MODELING_LLM_THINKING_MODE MODELING_REASONING_HEADROOM_TOKENS \
+               MODELING_LEADER_OUTPUT_TOKENS \
                MODELING_AGENT_PIP_INDEX_URL MODELING_AGENT_PIP_TIMEOUT \
-               MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN; do
+               MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN \
+               MODELING_CONTEXT_WINDOW_MESSAGES MODELING_CONTEXT_MAX_MESSAGES \
+               MODELING_CONTEXT_WINDOW_ROUNDS MODELING_CONTEXT_PROCESSOR_PRESET \
+               MODELING_CONTEXT_WINDOW_TOKENS MODELING_CONTEXT_PROTECTED_TOOLS \
+               MODELING_ACCEPTANCE_MODE; do
       load_env_if_unset "$CONSUMER_DIR/backend/.env" "$key"
     done
   fi
@@ -357,7 +369,7 @@ cmd_up() {
     ensure_mcp_token_secret
     ensure_jiuwenbox_image
     log "启动 consumer（TAG=$TAG）…"
-    consumer_compose up -d --build
+    consumer_compose up -d "${build_args[@]}"
     wait_for_container "onto-agent-auth-server-${TAG}" 180 auth-server
     wait_for_container "onto-agent-jiuwenbox-${TAG}" 180 jiuwenbox
     wait_for_container "onto-agent-backend-${TAG}" 180 backend
@@ -396,8 +408,8 @@ cmd_up() {
       ok "评测库已启用：EVAL_DB_URL=$(printf '%s' "$EVAL_DB_URL" | sed -E 's#://([^:/@]+):[^@]*@#://\1:***@#')"
     fi
 
-    log "启动 Modeling Workbench（core + MCP + Agent）…"
-    modeling_compose "${eval_args[@]+"${eval_args[@]}"}" up -d --build --remove-orphans
+    log "启动 Modeling Workbench（core + MCP + Agent，tag=$MODELING_TAG）…"
+    modeling_compose "${eval_args[@]+"${eval_args[@]}"}" up -d "${build_args[@]}" --remove-orphans
     wait_for_container "mw-modeling-agent" 180
     wait_http "modeling" "http://127.0.0.1:${MODELING_PORT:-5100}/health" 120 modeling
     wait_http "modeling-mcp" "http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" 120 modeling
@@ -458,7 +470,9 @@ cmd_help() {
       --with-eval               附带评测库 MySQL（建模评测闭环）
       --consumer-only           只部署运行期 consumer
       --modeling-only           只部署建模工作台（要求 consumer 已在运行）
+      --no-build               禁止在部署机构建，只使用已加载的镜像
       --tag <tag>               consumer 镜像 tag（默认 latest）
+      --modeling-tag <tag>      Modeling Core/Agent 镜像 tag（默认 latest）
   status                        容器状态 + 健康检查
   down [--volumes]              停止（--volumes 同时删数据卷，慎用）
   logs <service>                跟踪日志：backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-agent|eval-mysql

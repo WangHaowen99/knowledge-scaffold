@@ -23,6 +23,11 @@ export const savePackageDataSource = (id, dataSourceType) => api(`${P(id)}/agent
   method: 'PUT', body: JSON.stringify({ dataSourceType }),
 });
 export const getAgentState = (id) => api(`${P(id)}/agent/state`);
+export const getConstraints = (id) => api(`${P(id)}/agent/constraints`);
+export const revokeConstraint = (id, constraintId, reason = '') => api(
+  `${P(id)}/agent/constraints/${encodeURIComponent(constraintId)}/revoke`,
+  { method: 'POST', body: JSON.stringify({ reason }) },
+);
 export const getProgress = (id) => api(`${P(id)}/agent/progress`);
 export const listPerformanceRuns = (id, limit = 20) => api(
   `${P(id)}/agent/performance/runs?limit=${encodeURIComponent(limit)}`,
@@ -225,3 +230,20 @@ export function subscribeAgent(id, { after = 0, onEvent } = {}) {
     if (reconnect) clearTimeout(reconnect);
   };
 }
+
+/* 把流程图前端草稿落盘。服务端 PUT /package/diagram 接收整份流程图文档：带乐观锁
+   （expectedRevision）、拦截并发草稿、重渲染 .mmd 与索引。这里只负责把新连线并进
+   当前文档再提交，冲突和校验由服务端判定。 */
+export const saveFlowchartDraft = async (projectId, path, edges, expectedRevision) => {
+  const document = await api(`${P(projectId)}/package/diagram`);
+  const diagrams = Array.isArray(document?.diagrams) ? document.diagrams : [];
+  const target = diagrams.find((item) => path.endsWith(`${item.key}.mmd`)) || diagrams[0];
+  if (!target) throw new Error('没有找到要保存的流程图');
+  target.edges = (target.edges || []).concat(edges.map((edge) => ({
+    from: edge.source, to: edge.target, label: edge.label || '',
+  })));
+  return api(`${P(projectId)}/package/diagram`, {
+    method: 'PUT',
+    body: JSON.stringify({ document, expectedRevision }),
+  });
+};

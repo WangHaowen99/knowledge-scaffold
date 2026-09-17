@@ -49,10 +49,14 @@ export function analyzeMaterialImpact(
   change: MaterialRevisionChange,
   spec?: PackageSpec | null,
 ): MaterialImpactAnalysis {
-  if (!change.semanticChanged || !spec) {
-    return { semanticChanged: change.semanticChanged, affectedResources: [], staleWorkflowSteps: [] };
+  if (!change.semanticChanged) {
+    // 语义哈希没变，确定性地无影响，不惊动任何人。
+    return { semanticChanged: false, affectedResources: [], staleWorkflowSteps: [] };
   }
-  if (!change.previous) {
+  if (!spec || !change.previous) {
+    // 语义变了但无从自动界定（包 spec 解析不出来，或是全新资料没有历史引用）。
+    // 显式标记待界定：scopeResolved 留空会让门禁把它当已界定的空影响放行——
+    // 「没算出要处理什么」不能和「算出来没事」共用同一个结果。
     return {
       semanticChanged: true,
       scopeResolved: false,
@@ -86,6 +90,18 @@ export function analyzeMaterialImpact(
   collect('metric', spec.metrics);
   collect('script', spec.scripts);
   const direct = [...new Map(affectedResources.map((item) => [`${item.kind}:${item.key}`, item])).values()];
+  if (!direct.length) {
+    // 自动匹配为空不等于无影响：基线证据锚点缺失、格式不对或引用了别名时，
+    // 这里同样匹配不到——而增量的主要客源正是锚点覆盖最差的老格式导入包。
+    // 静默判空会让门禁直接放行（假阴性无声无息）；降级为待界定，交模型读过
+    // 资料后显式提交起点，确认无影响时提交空起点即可。
+    return {
+      semanticChanged: true,
+      scopeResolved: false,
+      affectedResources: [],
+      staleWorkflowSteps: [],
+    };
+  }
   // 直接引用了这份资料的只是起点。改一条规则，引用它的业务操作和绑定的脚本同样要复核——
   // 沿 spec 里的显式引用关系把影响面算全，用户才知道这次改动到底牵动了什么。
   const unique = propagateImpact(spec, direct);

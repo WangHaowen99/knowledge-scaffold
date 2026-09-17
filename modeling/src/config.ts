@@ -14,6 +14,12 @@ function positiveIntegerEnv(key: string, fallback: number): number {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
+function boundedIntegerEnv(key: string, fallback: number, min: number, max: number): number {
+  const value = Number(env(key, String(fallback)));
+  if (!Number.isSafeInteger(value)) return fallback;
+  return Math.min(Math.max(value, min), max);
+}
+
 function normalizeMcpTransportEnv(key: string, fallback: 'both' | 'streamable-http' | 'sse'): 'both' | 'streamable-http' | 'sse' {
   const value = env(key, fallback).trim().toLowerCase();
   if (value === 'http') return 'streamable-http';
@@ -72,6 +78,9 @@ export const config = {
   },
 
   consumerApiUrl: env('CONSUMER_API_URL', 'http://localhost:5055'),
+  // 评测用例的并发条数。用例之间互相独立，串行跑时整轮耗时几乎全花在等模型出字上；
+  // 设为 1 即恢复串行。上限 16，避免把共享的模型端点打到限流。
+  evaluationCaseConcurrency: boundedIntegerEnv('MODELING_EVALUATION_CASE_CONCURRENCY', 4, 1, 16),
   evaluationModelProfileRef: env('MODELING_EVALUATION_MODEL_PROFILE_REF'),
   evaluationManagedModelProfile: evaluationLlmModel ? {
     provider: env('MODELING_EVALUATION_LLM_PROVIDER', 'openai_compatible'),
