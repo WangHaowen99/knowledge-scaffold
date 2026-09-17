@@ -62,6 +62,44 @@ def seed_expert_interjection(store, project_id: str, text: str) -> int:
 # ---------------- store 层：生命周期与登记表 ----------------
 
 
+def test_store_migrates_legacy_steering_schema(tmp_path) -> None:
+    """存量库升级：旧版 steering_messages 没有处置列。
+
+    流水线实测事故：SCHEMA 里的处置索引引用 origin 列，而存量库的表已存在、
+    CREATE TABLE IF NOT EXISTS 不补列，executescript 阶段建索引直接
+    no such column 崩掉服务。索引必须在迁移补列之后创建；本用例先按旧版
+    结构建库，再初始化 RuntimeStore，守住这条升级路径。
+    """
+    import sqlite3
+
+    path = tmp_path / "legacy.sqlite"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(
+        """CREATE TABLE steering_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          text TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'queued',
+          created_at TEXT NOT NULL,
+          delivered_at TEXT NOT NULL DEFAULT ''
+        );"""
+    )
+    legacy.execute(
+        """INSERT INTO steering_messages(project_id, run_id, text, status, created_at)
+        VALUES ('p_legacy', 'r_legacy', '历史插话', 'delivered', '2020-01-01T00:00:00Z')""",
+    )
+    legacy.commit()
+    legacy.close()
+
+    store = RuntimeStore(path)
+    # 历史插话按 system 来源迁移：它们早已随当时的对话处理完，
+    # 不能在升级后复活成本轮目标
+    assert store.pending_interjections("p_legacy") == []
+    fresh = seed_expert_interjection(store, "p_legacy", "升级后的新插话")
+    assert [item["id"] for item in store.pending_interjections("p_legacy")] == [fresh]
+
+
 def test_store_interjection_and_constraint_lifecycle(tmp_path) -> None:
     store = RuntimeStore(tmp_path / "runtime.sqlite")
 

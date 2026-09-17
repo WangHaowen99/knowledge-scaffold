@@ -125,8 +125,10 @@ CREATE TABLE IF NOT EXISTS steering_messages (
   delivered_at TEXT NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_steering_messages_project_disposition
-  ON steering_messages(project_id, origin, status, disposition);
+-- 注意：steering_messages 的处置索引不放在这里。存量库的表已存在，
+-- CREATE TABLE IF NOT EXISTS 不会补列，origin 等列要等迁移函数才有；
+-- 在 executescript 阶段建引用新列的索引会在旧库上直接失败。
+-- 索引在 _migrate_schema_locked 补列之后创建。
 
 -- 专家立的长期规矩：活到被撤销或被新条款覆盖为止，每轮注入 system 段。
 -- 与 turn_goal（一轮寿命）、待办（做完即死）、package_contract（代码定义）
@@ -301,6 +303,11 @@ class RuntimeStore:
                 self._db.execute(
                     f"ALTER TABLE steering_messages ADD COLUMN {column} {definition}"
                 )
+        # 处置索引只能在补列之后建：存量库在 executescript 阶段还没有这些列。
+        self._db.execute(
+            """CREATE INDEX IF NOT EXISTS idx_steering_messages_project_disposition
+            ON steering_messages(project_id, origin, status, disposition)"""
+        )
         timestamp = now_iso()
         terminal = tuple(sorted(TERMINAL_RUN_STATUSES))
         placeholders = ",".join("?" for _ in terminal)
