@@ -75,7 +75,13 @@ import {
   packageGenerationContract,
 } from '../workflow/package-contract.js';
 import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
-import { renderObjectProjection, renderPackage } from '../workflow/package-render.js';
+import {
+  DIAGRAM_INDEX_PATH,
+  ROOT_INDEX_PATH,
+  renderObjectProjection,
+  renderPackage,
+  renderRootIndex,
+} from '../workflow/package-render.js';
 import {
   expectedSchemaObjects,
   OBJECT_DATA_MAPPING_PATH,
@@ -3101,6 +3107,7 @@ export class AgentCoreService {
           reason: 'Schema 对象确定性编译产物',
         });
       }
+      await this.syncRootIndexChange(workspace, nextSpec, current.files);
       await this.upsertChange(workspace, {
         path: INTERNAL_SPEC_CHANGE_PATH,
         kind: 'write',
@@ -4066,7 +4073,6 @@ export class AgentCoreService {
         ? [`operations/${existing.boundOperation}.md`]
         : []),
       'operations/index.md',
-      'index.md',
     ];
     const sourceHash = hashStructuredValue('script-source-v1', sourceCode);
     await this.stageCompiledSpec(
@@ -4090,7 +4096,8 @@ export class AgentCoreService {
       contract_hash: row.contract_hash,
       source_hash: sourceHash,
       bound_operation: contract.boundOperation,
-      rendered_paths: renderedPaths,
+      // 根索引由 syncRootIndexChange 统一渲染，不在写入清单里，但确实随本次编译刷新
+      rendered_paths: [...renderedPaths, ROOT_INDEX_PATH],
       deterministic: true,
       candidate: true,
       next: ['使用当前源码对应的真实用例运行脚本沙箱测试，通过后再发起候选确认'],
@@ -7329,6 +7336,28 @@ export class AgentCoreService {
     };
   }
 
+  /**
+   * 根索引的「目录」「典型问题」「Runtime 能力」派生自整份 spec，不属于任何单个领域资源，
+   * 因此所有确定性编译写入路径都要在这里兜底刷新一次，否则它会一直停留在草稿初始化时的空
+   * spec 快照。includeDiagrams 跟随当前修订：草稿模板渲染过流程图目录，重渲染不得删掉那一行。
+   */
+  private async syncRootIndexChange(
+    workspace: WorkspaceRow,
+    compiledSpec: PackageSpec,
+    currentFiles: Record<string, string>,
+  ) {
+    const content = renderRootIndex(compiledSpec, Object.hasOwn(currentFiles, DIAGRAM_INDEX_PATH));
+    if (currentFiles[ROOT_INDEX_PATH] === content) return;
+    await this.upsertChange(workspace, {
+      path: ROOT_INDEX_PATH,
+      kind: 'write',
+      content,
+      groupId: COMPILED_RESOURCES_GROUP,
+      evidence: [],
+      reason: '根索引的目录与 Runtime 能力随结构化规格同步',
+    });
+  }
+
   private async stageCompiledSpec(
     workspace: WorkspaceRow,
     context: AgentToolContext,
@@ -7372,6 +7401,9 @@ export class AgentCoreService {
     this.db.exec('SAVEPOINT agent_domain_compile');
     try {
       for (const path of renderedPaths) {
+        // 根索引统一由 syncRootIndexChange 渲染：renderPackage 不带 includeDraftTemplate，
+        // 在这里写会先落一份丢掉「流程图目录」的版本，再被兜底同步跳过（内容已是最新时提前 return）。
+        if (path === ROOT_INDEX_PATH) continue;
         const content = rendered[path];
         if (content === undefined) {
           throw new AgentCoreError(
@@ -7402,6 +7434,10 @@ export class AgentCoreService {
           reason: '虚拟对象模式不生成物理数据 mapping',
         });
       }
+      // 根索引的目录、典型问题和 Runtime 能力派生自整份 spec，不属于任何单个领域工具的
+      // renderedPaths。不在这里兜底同步，它会一直停留在草稿初始化时的空 spec 快照，
+      // 出现「对象已绑定数据表、mapping 已生成，但根索引仍写着业务数据查询 disabled」。
+      await this.syncRootIndexChange(workspace, compiledSpec, currentFiles);
       await this.upsertChange(workspace, {
         path: INTERNAL_SPEC_CHANGE_PATH,
         kind: 'write',

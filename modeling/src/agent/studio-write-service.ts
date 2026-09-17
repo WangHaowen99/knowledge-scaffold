@@ -29,7 +29,12 @@ import {
   type OntologyStudioKind,
 } from '../workflow/ontology-model-validation.js';
 import { parseRenderedPackageFiles } from '../workflow/package-import.js';
-import { renderPackage } from '../workflow/package-render.js';
+import {
+  DIAGRAM_INDEX_PATH,
+  ROOT_INDEX_PATH,
+  renderPackage,
+  renderRootIndex,
+} from '../workflow/package-render.js';
 import { OBJECT_DATA_MAPPING_PATH } from '../workflow/schema-object-policy.js';
 import {
   STUDIO_SCHEMA,
@@ -1031,13 +1036,20 @@ function applyMutation(
     ...Object.keys(rendered),
     ...(Object.hasOwn(workingFiles, OBJECT_DATA_MAPPING_PATH) ? [OBJECT_DATA_MAPPING_PATH] : []),
   ])].filter((path) => (
-    previousRendered[path] !== rendered[path]
-    || (path === OBJECT_DATA_MAPPING_PATH && workingFiles[path] !== rendered[path])
+    // 根索引单独渲染：renderPackage 的版本按「是否铺草稿模板」决定列不列流程图目录，
+    // 直接覆盖会把当前修订已有的 diagrams/index.md 从目录里抹掉。
+    path !== ROOT_INDEX_PATH
+    && (
+      previousRendered[path] !== rendered[path]
+      || (path === OBJECT_DATA_MAPPING_PATH && workingFiles[path] !== rendered[path])
+    )
   ));
   for (const path of compilerChangedPaths) {
     if (path in rendered) nextFiles[path] = rendered[path];
     else delete nextFiles[path];
   }
+  const nextRootIndex = renderRootIndex(spec, Object.hasOwn(workingFiles, DIAGRAM_INDEX_PATH));
+  if (workingFiles[ROOT_INDEX_PATH] !== nextRootIndex) nextFiles[ROOT_INDEX_PATH] = nextRootIndex;
   nextFiles[INTERNAL_SPEC_CHANGE_PATH] = serializeInternalSpec(spec);
   for (const path of deletedPaths) delete nextFiles[path];
   return {

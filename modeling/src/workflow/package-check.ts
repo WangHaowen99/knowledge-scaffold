@@ -35,7 +35,7 @@ import {
   tableSourcesFor,
 } from './source-references.js';
 import { duplicateScriptEntrypoints, normalizeCompetencyQuestion, questionsMatch } from './spec-validation.js';
-import type { PackageFiles } from './package-render.js';
+import { ROOT_INDEX_PATH, businessDataQueryEnabled, type PackageFiles } from './package-render.js';
 import { validateGeneratedScriptSafety } from './script-safety.js';
 import type { DataDictTable, PackageSpec } from '../types.js';
 
@@ -433,6 +433,23 @@ export function runFormatChecks(spec: PackageSpec, inputFiles: PackageFiles): Ch
   }
   if (!mappingRequired && mappingContent !== undefined) {
     add('错误', 'mapping 非法', OBJECT_DATA_MAPPING_PATH, '没有物理对象绑定时不得生成 object data mapping 文件');
+  }
+  // 根索引的「业务数据查询」和 mapping 的对象集合同源。增量写入路径漏刷根索引时，
+  // 这里在发布前暴露「对象已绑定数据表、mapping 已生成，但根索引仍写着 disabled」。
+  const declaredDataQuery = files[ROOT_INDEX_PATH]
+    ?.match(/^\|\s*业务数据查询\s*\|\s*(enabled|disabled)\s*\|/mu)?.[1];
+  const expectedDataQuery = businessDataQueryEnabled(spec) ? 'enabled' : 'disabled';
+  if (declaredDataQuery && declaredDataQuery !== expectedDataQuery) {
+    add(
+      '错误',
+      '根索引能力不一致',
+      ROOT_INDEX_PATH,
+      `根索引把业务数据查询标为 ${declaredDataQuery}，但当前${expectedDataQuery === 'enabled'
+        ? '已有对象绑定物理数据表，mapping 会映射这些对象'
+        : '没有任何对象绑定物理数据表'}`,
+      `重新渲染 ${ROOT_INDEX_PATH} 的 Runtime 能力表，使业务数据查询与 ${OBJECT_DATA_MAPPING_PATH} 一致`,
+      true,
+    );
   }
   for (const o of spec.objects ?? []) {
     if (!(`objects/${o.key}.md` in files)) add('错误', '必选文件缺失', `objects/${o.key}.md`, `对象 ${o.key} 的详情文件缺失`);

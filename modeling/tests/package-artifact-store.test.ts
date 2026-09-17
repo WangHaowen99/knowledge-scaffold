@@ -13,7 +13,7 @@ import {
   PackageArtifactStoreError,
 } from '../src/artifacts/index.js';
 import type { CoverageResult, PackageSpec } from '../src/types.js';
-import { renderPackage } from '../src/workflow/package-render.js';
+import { renderPackage, renderRootIndex } from '../src/workflow/package-render.js';
 
 const schema = await readFile(new URL('../src/db/schema.sql', import.meta.url), 'utf8');
 
@@ -342,6 +342,37 @@ test('人工修改要求当前版本，撤销后恢复生成内容', async (t) =
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM package_versions WHERE project_id = ?')
     .get(projectId) as any).count, 1);
   assert.deepEqual((await store.history(projectId)).slice(0, 2).map((item) => item.packageVersion), [undefined, undefined]);
+});
+
+test('撤销根索引修改时保留当前修订已有的流程图目录', async (t) => {
+  const { projectId, store } = await fixture(t);
+  const initial = await store.ensureProject(projectId);
+  const generated = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: spec('1.0.0'),
+    coverage,
+    action: { cause: 'generate', summary: '生成内容', actorKind: 'agent', actorName: '智能助手' },
+  });
+  const withDiagram = await store.saveFiles(projectId, {
+    expectedRevision: generated.revision.oid,
+    files: { 'package/diagrams/index.md': '# 流程图目录\n' },
+    action: userAction('写入流程图目录'),
+  });
+  const edited = await store.saveFile(projectId, {
+    expectedRevision: withDiagram.revision.oid,
+    path: 'package/index.md',
+    content: '# 人工修改\n',
+    action: userAction('修改首页'),
+  });
+
+  const reset = await store.resetFile(projectId, {
+    expectedRevision: edited.revision.oid,
+    path: 'package/index.md',
+    action: userAction('撤销修改'),
+  });
+
+  assert.equal(reset.content, renderRootIndex(spec('1.0.0'), true));
+  assert.ok(reset.content.includes('- 流程图目录：diagrams/index.md'));
 });
 
 test('多文件写入和过期流程图删除共用一个原子修订', async (t) => {

@@ -3050,6 +3050,98 @@ test('对象领域工具原子生成跨 Sheet 主表与扩展表映射', async (
   assert.equal(mapping.sources[1].fields.detail.source_column, 'detail_text');
 });
 
+test('增量领域变更同步根索引的 Runtime 能力', async (t) => {
+  const project = createProject({ owner: 'alice', name: '根索引能力同步', runtime: 'agent' });
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: 'root-index-runtime-package',
+    name: '根索引能力同步',
+    description: '验证对象绑定数据表后根索引的 Runtime 能力随之更新。',
+  });
+  const material = insertDocumentRevision({
+    projectId: project.id,
+    filename: 'synthetic-runtime.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'RuntimeBase', rowCount: 1,
+      fields: [
+        { name: 'base_id', inferredType: 'string', sampleValues: ['R-1'], distinctRatio: 1 },
+        { name: 'base_name', inferredType: 'string', sampleValues: ['合成记录'], distinctRatio: 1 },
+      ],
+      rows: [['R-1', '合成记录']],
+    }],
+  }).document;
+  const reviews = new MaterialPurposeReviewStore(getDb());
+  reviews.ensure(material);
+  const suggestion = reviews.suggest(material, {
+    purpose: 'schema',
+    sheets: [{ sheet: 'RuntimeBase', semanticRole: 'schema', importDisposition: 'object' }],
+    suggestedBy: 'agent',
+  });
+  reviews.confirm(material, {
+    purpose: 'schema',
+    sheets: suggestion.sheetSuggestions,
+    confirmedBy: 'alice',
+    expectedDirectiveRevision: 0,
+  });
+  const app = appFor(t);
+  const selectedSource = await app.inject({
+    method: 'PUT',
+    url: `/api/projects/${project.id}/agent/package-data-source`,
+    payload: { dataSourceType: 'neo4j' },
+  });
+  assert.equal(selectedSource.statusCode, 200, selectedSource.body);
+  const runId = `run-${project.id}`;
+  await confirmGoal(app, project.id, runId);
+  await confirmProcess(app, project.id, runId);
+
+  const draftIndex = await tool(app, project.id, 'read_file', { path: 'index.md' }, runId);
+  assert.equal(draftIndex.statusCode, 200, draftIndex.body);
+  assert.match(draftIndex.json().content, /\| 业务数据查询 \| disabled \|/u);
+
+  const listed = await tool(app, project.id, 'list_domain_resources', { kind: 'object' }, runId);
+  const planResponse = await tool(app, project.id, 'create_change_plan', {
+    goal: '按已确认的 Sheet 用途同步物理对象',
+    mode: 'generation',
+    expected_revision: listed.json().working_revision,
+    tasks: [{
+      client_key: 'runtime-base-object',
+      title: '同步合成记录对象',
+      resource_kind: 'object',
+      target_key: 'RuntimeBase',
+      allowed_tools: ['create_object'],
+      acceptance: '完整同步 RuntimeBase Sheet 的字段与来源映射',
+    }],
+  }, runId);
+  assert.equal(planResponse.statusCode, 200, planResponse.body);
+  const plan = planResponse.json().plan;
+  const approved = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/agent/change-plans/${plan.id}/respond`,
+    payload: { approved: true },
+  });
+  assert.equal(approved.statusCode, 200, approved.body);
+  const synced = await tool(app, project.id, 'sync_schema_objects', {
+    plan_task_id: plan.tasks[0].id,
+    expected_revision: listed.json().working_revision,
+    mutation_id: 'root-index-schema-sync',
+    reason: '按用户确认的 Sheet 用途确定性同步',
+  }, runId);
+  assert.equal(synced.statusCode, 200, synced.body);
+
+  const updatedIndex = await tool(app, project.id, 'read_file', { path: 'index.md' }, runId);
+  assert.equal(updatedIndex.statusCode, 200, updatedIndex.body);
+  const indexContent = updatedIndex.json().content;
+  assert.match(indexContent, /\| 业务数据查询 \| enabled \| 通过 mappings\/object-data-mappings\.json/u);
+  // 草稿模板在目录里列过流程图，重渲染根索引不得把这一行删掉
+  assert.ok(indexContent.includes('- 流程图目录：diagrams/index.md'));
+
+  const indexChange = getDb().prepare(`SELECT group_id FROM agent_candidate_changes
+    WHERE project_id = ? AND run_id = ? AND path = 'index.md'`)
+    .get(project.id, runId) as { group_id: string } | undefined;
+  assert.equal(indexChange?.group_id, 'compiled_resources');
+});
+
 test('同名 Sheet 必须用资料 ID 稳定寻址', async (t) => {
   const project = createProject({ owner: 'alice', name: '同名 Sheet 寻址' });
   const app = appFor(t);
