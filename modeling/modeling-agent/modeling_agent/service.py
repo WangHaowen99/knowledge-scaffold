@@ -156,6 +156,30 @@ MAX_TOOL_SUMMARIES = 60
 MAX_MODEL_RECOVERY_ATTEMPTS = 1
 MODEL_RECOVERY_DELAY_SECONDS = 0.5
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
+# 首轮恢复因瞬时原因失败后的进程内对账间隔：resume_failed 不再是进程内终态，
+# 否则一次启动竞态会让项目卡死到下一次服务重启（cs 实测同一批项目连续 23 次重启均恢复失败）。
+RECOVERY_RECONCILE_DELAYS = (60.0, 300.0, 900.0)
+# 启动恢复前等待建模核心就绪的上限；等不到也继续，交给每次恢复自身的退避与对账。
+CORE_READY_TIMEOUT_SECONDS = 60.0
+CORE_READY_PROBE_INTERVAL_SECONDS = 2.0
+# 瞬时性按「错误族」判断而不是单一错误码：发布分支曾新增 CORE_CANCELLATION_UNAVAILABLE
+# （停止栅栏探测）这类 503 新码，单码判据会让退避重试对它直接失明。
+TRANSIENT_CORE_ERROR_CODES = frozenset({
+    "CORE_UNAVAILABLE",
+    "CORE_CANCELLATION_UNAVAILABLE",
+})
+TRANSIENT_CORE_ERROR_STATUSES = frozenset({502, 503, 504})
+
+
+def _is_transient_core_error(error: Exception) -> bool:
+    if not isinstance(error, AgentRuntimeError):
+        return False
+    return (
+        error.code in TRANSIENT_CORE_ERROR_CODES
+        or error.status in TRANSIENT_CORE_ERROR_STATUSES
+    )
+
+
 EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS = 3.5
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     # 切换阶段是明确的前进。不计入的话，「刚进入新阶段、还没来得及产出」
@@ -993,6 +1017,7 @@ class AgentService:
         self._storage_diag: dict[str, Any] = {}
         self._recovery_summary: dict[str, Any] = {}
         self._cancel_locks: dict[str, asyncio.Lock] = {}
+        self._recovery_tasks: set[asyncio.Task[None]] = set()
 
     async def startup(self) -> None:
         if self._started:
@@ -1050,6 +1075,7 @@ class AgentService:
                     interrupted_cancellations.append(recovered)
                 else:
                     resumable_runs.append(recovered)
+            await self._wait_core_ready()
             await asyncio.gather(*(
                 self._resume_interrupted_cancellation(recovered)
                 for recovered in interrupted_cancellations
@@ -1071,7 +1097,32 @@ class AgentService:
                 "text": "停止结算尚未完成，已保留当前进展，请稍后继续核对",
             })
 
-    async def _auto_resume_recovered(self, run: RunRecord) -> None:
+    async def _wait_core_ready(self) -> None:
+        """启动恢复前的就绪门：agent 容器常早于核心就绪，直接开扫会整批撞 503。"""
+        health = getattr(self._gateway, "health", None)
+        if not callable(health):
+            return
+        deadline = time.monotonic() + CORE_READY_TIMEOUT_SECONDS
+        while not self._shutting_down:
+            try:
+                if await health():
+                    return
+            except Exception:  # noqa: BLE001 - 探测失败等同未就绪
+                pass
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Modeling core not ready within %.0fs; starting recovery with per-run retries",
+                    CORE_READY_TIMEOUT_SECONDS,
+                )
+                return
+            await asyncio.sleep(CORE_READY_PROBE_INTERVAL_SECONDS)
+
+    async def _auto_resume_recovered(
+        self,
+        run: RunRecord,
+        *,
+        reconcile_attempt: int = 0,
+    ) -> None:
         self._publish_state(run.project_id, run.id)
         if not run.run_credential or not run.session_id:
             self.events.publish(
@@ -1098,26 +1149,23 @@ class AgentService:
             )
             return
         restore(run.id, run.run_credential)
-        for attempt in range(len(RECOVERY_RETRY_DELAYS) + 1):
-            try:
-                await self._resume(
-                    run,
-                    "",
-                    {},
-                    preserve_token_fingerprint=True,
-                )
-                break
-            except AgentRuntimeError as error:
-                transient = error.code == "CORE_UNAVAILABLE"
-                if not transient or attempt >= len(RECOVERY_RETRY_DELAYS):
-                    logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                    self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
-                    return
-                await asyncio.sleep(RECOVERY_RETRY_DELAYS[attempt])
-            except Exception as error:  # noqa: BLE001 - one failed recovery must not block other projects
-                logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
-                return
+        error = await self._resume_with_retries(run)
+        if error is not None:
+            logger.warning("Could not automatically resume run %s: %s", run.id, error)
+            detail = (
+                f"[{error.code}] {error.message}"
+                if isinstance(error, AgentRuntimeError)
+                else f"[{type(error).__name__}] {error}"
+            )
+            self._mark_resume_failed(
+                run,
+                RECOVERY_RESUME_FAILED,
+                "自动恢复失败，已安全停在最近进展",
+                detail=detail,
+            )
+            if _is_transient_core_error(error):
+                self._schedule_recovery_reconcile(run, attempt=reconcile_attempt)
+            return
         self.store.mark_recovery_status(
             run.project_id,
             RECOVERY_NONE,
@@ -1131,19 +1179,71 @@ class AgentService:
             {"status": RUN_QUEUED, "text": "服务恢复完成，助手正在从原进度继续"},
         )
 
-    def _mark_resume_failed(self, run: RunRecord, status: str, message: str) -> None:
+    async def _resume_with_retries(self, run: RunRecord) -> Exception | None:
+        for attempt in range(len(RECOVERY_RETRY_DELAYS) + 1):
+            try:
+                await self._resume(
+                    run,
+                    "",
+                    {},
+                    preserve_token_fingerprint=True,
+                )
+                return None
+            except AgentRuntimeError as error:
+                if not _is_transient_core_error(error) or attempt >= len(RECOVERY_RETRY_DELAYS):
+                    return error
+                await asyncio.sleep(RECOVERY_RETRY_DELAYS[attempt])
+            except Exception as error:  # noqa: BLE001 - one failed recovery must not block other projects
+                return error
+        return None
+
+    def _schedule_recovery_reconcile(self, run: RunRecord, *, attempt: int) -> None:
+        if self._shutting_down or attempt >= len(RECOVERY_RECONCILE_DELAYS):
+            return
+        task = asyncio.create_task(self._recovery_reconcile(run, attempt))
+        self._recovery_tasks.add(task)
+        task.add_done_callback(self._recovery_tasks.discard)
+
+    async def _recovery_reconcile(self, run: RunRecord, attempt: int) -> None:
+        await asyncio.sleep(RECOVERY_RECONCILE_DELAYS[attempt])
+        if self._shutting_down:
+            return
+        # 状态可能已被人工恢复或推进；只有仍停在 resume_failed 且无在跑任务时才重试。
+        state = self.store.project_state(run.project_id)
+        if state.recovery_status != RECOVERY_RESUME_FAILED or state.run_id != run.id:
+            return
+        if run.project_id in self._live:
+            return
+        logger.info(
+            "Reconciling failed recovery for run %s (attempt %d)", run.id, attempt + 1
+        )
+        await self._auto_resume_recovered(run, reconcile_attempt=attempt + 1)
+
+    def _mark_resume_failed(
+        self,
+        run: RunRecord,
+        status: str,
+        message: str,
+        *,
+        detail: str = "",
+    ) -> None:
+        # detail 落库：运维排查时必须能从状态里看到「为什么」，而不是翻进程日志。
+        stored_error = f"{message}（{detail[:200]}）" if detail else message
         self.store.mark_recovery_status(
             run.project_id,
             status,
-            error=message,
+            error=stored_error,
             cause="recovery_failed",
         )
         self._publish_state(run.project_id, run.id)
+        payload: dict[str, Any] = {"status": RUN_SUSPENDED, "text": message}
+        if detail:
+            payload["reason"] = detail[:200]
         self.events.publish(
             run.project_id,
             run.id,
             "status",
-            {"status": RUN_SUSPENDED, "text": message},
+            payload,
         )
 
     def _checkpoint_available(self) -> bool:
@@ -1234,6 +1334,11 @@ class AgentService:
 
     async def shutdown(self) -> None:
         self._shutting_down = True
+        for task in list(self._recovery_tasks):
+            task.cancel()
+        if self._recovery_tasks:
+            await asyncio.gather(*self._recovery_tasks, return_exceptions=True)
+        self._recovery_tasks.clear()
         for live in list(self._live.values()):
             if live.task and not live.task.done():
                 live.task.cancel()
