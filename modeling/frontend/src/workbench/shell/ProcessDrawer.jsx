@@ -290,6 +290,7 @@ export function humanizeTraceSummary(summary, toolName = '', phase = '') {
     process_confirmed: '业务流程确认',
     knowledge_confirmed: '知识内容确认',
     product_ledger_verified: '产品清单台账',
+    increment_resolved: '增量影响处理',
     deterministic_confirmed: '确定性计算范围确认',
     modeling_complete: '建模完成',
   };

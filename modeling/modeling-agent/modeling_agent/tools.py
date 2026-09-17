@@ -109,8 +109,10 @@ VALIDATION_REPAIR_RESOLUTION_TOOLS = VALIDATION_REPAIR_RESET_TOOLS | {
 TOOL_WORK_DETAILS = {
     "list_documents": "先盘点可用资料，再确定需要精读的范围",
     "read_document": "正在从原文提取与当前任务相关的事实和依据",
+    "list_document_outline": "正在查看资料的章节目录，确定该读哪几节",
     "read_documents_fully": "正在核对全文覆盖范围，并整理可引用的事实",
     "search_documents": "正在定位相关原文，再与当前建模内容交叉核对",
+    "get_material_context": "先查已提取的资料档案，再按锚点定位需要核对的原文",
     "list_tables": "先盘点可用数据表，再选择需要核对的字段范围",
     "describe_table": "正在核对字段含义、类型和样例，避免只按名称推断",
     "read_table_rows": "正在用真实样例值复核字段口径和数据关系",
@@ -796,10 +798,16 @@ DOMAIN_FIELD = {
     "required": ["key", "type", "required"],
     "additionalProperties": False,
 }
+# 不暴露 kind：关系类型当前只有 object_relation 一个合法值，服务端本来就会补默认值，
+# create_object 那条路更是直接硬编码、根本不看传入值。把一个只有唯一答案的字段交给模型填，
+# 只会制造错误——实测模型会把推荐接口返回的 belongs_to 抄进 kind，被拒后反复猜、原地打转
+# 数轮，最后整批任务放弃（见 #48）。业务谓词写 label，这才是模型该决定的东西。
 DOMAIN_RELATION = {
     "type": "object",
     "properties": {
-        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING, "description": STRING,
+        "target_id": RESOURCE_ID,
+        "label": {**STRING, "description": "业务谓词，例如「归属于」「适用于」，由你根据证据拟定。"},
+        "description": STRING,
     },
     "required": ["target_id"],
     "additionalProperties": False,
@@ -811,7 +819,9 @@ DOMAIN_ACTION_CHANGES = {
         "required": {"type": "boolean"}, "note": STRING, "alias": STRING,
         "condition": STRING, "conclusion": STRING,
         "param": STRING, "field": STRING, "handling": STRING,
-        "kind": STRING, "target_id": RESOURCE_ID, "label": STRING,
+        # 和 DOMAIN_RELATION 同理：关系类型只有唯一合法值且服务端自带默认，不暴露给模型
+        "target_id": RESOURCE_ID,
+        "label": {**STRING, "description": "业务谓词，例如「归属于」「适用于」，由你根据证据拟定。"},
         "description": STRING,
     },
     "additionalProperties": False,
@@ -1046,8 +1056,9 @@ CHANGE_SET_CREATE_OPERATION_ARGUMENTS = change_set_arguments({
     "flow": {"type": "array", "minItems": 1, "items": STRING},
     "notes": {"type": "array", "items": STRING},
     "references": {"type": "array", "items": RESOURCE_ID},
+    "no_object_reason": STRING,
     "evidence": {"type": "array", "minItems": 1, "items": STRING},
-}, ["key", "title", "description", "flow", "evidence"])
+}, ["key", "title", "description", "flow", "references", "evidence"])
 CHANGE_SET_CREATE_METRIC_ARGUMENTS = change_set_arguments({
     "key": STRING, "title": STRING, "description": STRING, "unit": STRING, "grain": STRING,
     "caliber": STRING, "boundaries": {"type": "array", "minItems": 1, "items": STRING},
@@ -1214,9 +1225,26 @@ CORE_TOOL_SPECS = (
         display="正在核对数据 Schema 映射计划",
     ),
     ToolSpec(
+        "list_document_outline",
+        "读取资料的章节目录：返回每一节的序号、层级、标题、起止 offset 和字符数。"
+        "要定位某一部分内容时先调它，再用 read_document 的 section 参数直接取那一节，"
+        "不要从头一页页翻。没有标题分节的资料返回空目录。",
+        {"filename": STRING},
+        ("filename",),
+        display="正在查看资料目录",
+    ),
+    ToolSpec(
         "read_document",
-        "按需分页读取资料正文。局部核对先检索再读取命中范围；需要全文覆盖时必须改用 read_documents_fully，禁止串行翻页替代。",
-        {"filename": STRING, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 20000}},
+        "按需读取资料正文。优先用 section 按章节取（配合 list_document_outline）；"
+        "不给 section 时按 offset/limit 分页，终点会自动吸附到块边界，所以实际 endOffset "
+        "可能和 offset+limit 不一致，续读一律以返回的 nextOffset 为准。"
+        "局部核对先检索再读取命中范围；需要全文覆盖时必须改用 read_documents_fully，禁止串行翻页替代。",
+        {
+            "filename": STRING,
+            "section": {"type": ["string", "integer"], "description": "章节标题或目录里的序号"},
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20000},
+        },
         ("filename",),
         display="正在读取资料",
     ),
@@ -1252,6 +1280,19 @@ CORE_TOOL_SPECS = (
         "正在并行全文精读资料",
     ),
     ToolSpec("search_documents", "跨资料搜索原文，query 中的词按 OR 匹配。", {"query": STRING}, ("query",), display="正在检索资料"),
+    ToolSpec(
+        "get_material_context",
+        "查询资料档案：全文精读后持久化的结构化提取结果（文档摘要、带原文 offset 的业务事实、知识候选）。"
+        "按 document（资料名或 ID）、topic（关键词，OR 匹配）、kind（object/rule/operation/metric/process/fact）过滤。"
+        "优先用它代替重读原文；档案是缓存不是事实源，写入知识包的数字和口径必须按返回的 filename+offset 用 read_document 核对原文，"
+        "标记 stale 的资料需先重新全文精读。",
+        {
+            "document": STRING,
+            "topic": STRING,
+            "kind": {"type": "string", "enum": ["object", "rule", "operation", "metric", "process", "fact"]},
+        },
+        display="正在查询资料档案",
+    ),
     ToolSpec("list_tables", "列出从表格资料解析出的数据字典。", {}, display="正在查看数据表"),
     ToolSpec(
         "get_schema_overview",
@@ -1308,14 +1349,14 @@ CORE_TOOL_SPECS = (
         "revise_change_plan",
         "记录范围调整、增加任务或跳过可选任务。执行开始后扩大范围必须先得到用户明确决定。",
         {
-            "plan_id": STRING,
+            "plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"},
             "expected_version": {"type": "integer", "minimum": 1},
             "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
             "add_tasks": {"type": "array", "maxItems": 100, "items": CHANGE_PLAN_TASK},
             "skip_task_ids": {"type": "array", "maxItems": 100, "items": STRING},
             "scope_approved": {"type": "boolean"},
         },
-        ("plan_id", "expected_version", "reason"),
+        ("expected_version", "reason"),
         False,
         "正在记录计划调整",
     ),
@@ -1323,12 +1364,12 @@ CORE_TOOL_SPECS = (
         "stage_change_set",
         "把依赖闭合的 1 到 4 个计划任务作为一个小型原子 Change Set 提交。每个 action 只对应一个计划任务和一个目标资源；同一资源需要补多个字段时应放进该 patch 的 actions，一次完成。大计划必须分批读取最新计划和资源快照后继续，最后再整体验证。只能使用白名单领域动作；每批成功或整批不生效。",
         {
-            "plan_id": STRING,
+            "plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"},
             "expected_revision": WORKING_REVISION,
             "mutation_id": MUTATION_ID,
             "actions": {"type": "array", "minItems": 1, "maxItems": 4, "items": CHANGE_SET_ACTION},
         },
-        ("plan_id", "expected_revision", "mutation_id", "actions"),
+        ("expected_revision", "mutation_id", "actions"),
         False,
         "正在原子生成待确认修改",
     ),
@@ -1365,16 +1406,16 @@ CORE_TOOL_SPECS = (
     ToolSpec(
         "validate_change_set",
         "只有计划全部必选任务形成候选后，才对完整批次校验并冻结确认回执。",
-        {"plan_id": STRING, "summary": {"type": "string", "maxLength": 1000}},
-        ("plan_id",),
+        {"plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"}, "summary": {"type": "string", "maxLength": 1000}},
+        (),
         False,
         "正在校验完整建模计划",
     ),
     ToolSpec(
         "discard_change_set",
         "放弃尚未进入确认的当前计划和候选修改，不影响已确认版本。",
-        {"plan_id": STRING, "reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
-        ("plan_id", "reason"),
+        {"plan_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "省略即自动使用当前运行的活跃计划（一个运行最多一份）。不要自己编 ID。"}, "reason": {"type": "string", "minLength": 1, "maxLength": 1000}},
+        ("reason"),
         False,
         "正在放弃待确认修改",
     ),
@@ -1492,7 +1533,10 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "create_operation",
-        "创建业务操作。references 使用对象、规则或指标资源 ID；服务端生成详情与索引。",
+        "创建业务操作。references 必须声明这个操作读写的对象（object:key），以及用到的规则和指标；"
+        "对照 flow 和 inputs/outputs 里提到的业务实体逐个核对，不要只填规则。"
+        "确实不读写任何业务数据时（纯告知、纯人工协调类操作），references 只填规则或指标，"
+        "并用 no_object_reason 写明原因。服务端生成详情与索引。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
             "key": STRING, "title": STRING, "description": STRING,
@@ -1510,9 +1554,11 @@ CORE_TOOL_SPECS = (
             "flow": {"type": "array", "minItems": 1, "items": STRING},
             "notes": {"type": "array", "items": STRING},
             "references": {"type": "array", "items": RESOURCE_ID},
+            "no_object_reason": STRING,
             "evidence": {"type": "array", "minItems": 1, "items": STRING},
         },
-        ("expected_revision", "mutation_id", "reason", "key", "title", "description", "flow", "evidence"),
+        ("expected_revision", "mutation_id", "reason", "key", "title", "description",
+         "flow", "references", "evidence"),
         False,
         "正在创建业务操作",
     ),
@@ -2144,7 +2190,8 @@ CORE_TOOL_SPECS = (
     ToolSpec("update_plan", "仅供历史 checkpoint 恢复：更新 .modeling/plan.md 工作笔记。新运行使用 update_work_notes。", {"markdown": STRING}, ("markdown",), False, "正在恢复历史工作笔记"),
     ToolSpec(
         "define_script_contract",
-        "先定义脚本的绑定操作、CLI 参数、结构化输出、超时和执行边界；这一步不写源码或候选文件。",
+        "先定义脚本的绑定操作、CLI 参数、结构化输出、超时和执行边界；这一步不写源码或候选文件。"
+        "脚本是纯计算，业务数据一律由调用方取好后经 CLI 参数传入，参数只能来自该操作已声明的输入定义。",
         {
             **DOMAIN_MUTATION_ENVELOPE,
             "script_key": STRING,
@@ -2205,7 +2252,9 @@ CORE_TOOL_SPECS = (
     ToolSpec(
         "stage_script_patch",
         "按当前源码、契约和目标节点哈希提交 Python 顶层符号补丁。Core 只替换授权节点，"
-        "其余源码保持不变，并复用脚本安全、绑定和候选门禁。",
+        "其余源码保持不变，并复用脚本安全、绑定和候选门禁。"
+        "补丁里不得出现连数据库、调接口、读本地文件或使用平台数据源客户端的代码，"
+        "业务数据从 run_business_logic 的 inputs 读取；写了会被 Core 退回，按 findings 删掉取数再提交同一补丁。",
         {
             "script_key": STRING,
             "plan_task_id": PLAN_TASK_ID,
@@ -2242,7 +2291,8 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "stage_script_source",
-        "仅供历史 checkpoint 恢复：按已定义契约提交完整 Python 源码。新运行必须使用 stage_script_patch。",
+        "仅供历史 checkpoint 恢复：按已定义契约提交完整 Python 源码。新运行必须使用 stage_script_patch。"
+        "源码不得包含取数代码，业务数据从 CLI 参数传入；写了会被 Core 退回，按 findings 修正后重新提交。",
         {
             "script_key": STRING,
             "plan_task_id": PLAN_TASK_ID,
@@ -2331,6 +2381,55 @@ PROJECT_STATE_TOOL_SPECS = (
         ("expected_revision", "summary", "open_questions", "evidence"),
         False,
         "正在保存项目上下文",
+    ),
+)
+
+# 专家插话的强制表态出口。「已接受」不许只是一句话：必须落成约束或待办，
+# 判断才会留下可查、可纠正的结构化痕迹；判错不再是静默失效。
+# 分类判据只有一个问题——这条指令什么时候失效：
+# 专家撤销才失效 → constraint；做完这件事失效 → task / satisfied。
+INTERJECTION_TOOL_SPECS = (
+    ToolSpec(
+        "dispose_interjection",
+        "处置一条专家插话（编号见项目状态 pendingInterjections 和本轮目标）。resolution 按「这条指令什么时候失效」选择："
+        "constraint=「不许/一律/以后都」类长期规矩，登记后每轮生效直到专家撤销，需提供 text（可用 replaces_constraint_id 覆盖旧条款）；"
+        "task=本轮做不完的一次性动作，转成跨轮待办，需提供 text；"
+        "satisfied=已执行完成或本来就符合，必须在 evidence 引用具体产物位置（文件路径、条目 ID 或状态事实），不能只写一句「已满足」；"
+        "rejected=与已批准计划或业务事实冲突，必须在 reason 说明理由。"
+        "每条插话在本轮结束前必须有处置结论；执行中被阶段守卫拦截时不选 rejected，改用 ask(kind='conflict_decision') 请专家裁决。",
+        {
+            "interjection_id": {"type": "integer", "minimum": 1},
+            "resolution": {"type": "string", "enum": ["constraint", "task", "satisfied", "rejected"]},
+            "text": {"type": "string", "maxLength": 2000},
+            "evidence": {"type": "string", "maxLength": 2000},
+            "reason": {"type": "string", "maxLength": 2000},
+            "replaces_constraint_id": {"type": "integer", "minimum": 1},
+        },
+        ("interjection_id", "resolution"),
+        False,
+        "正在登记专家插话的处置结论",
+    ),
+    ToolSpec(
+        "complete_interjection_task",
+        "完成一条由插话转来的待办（编号见项目状态 openInterjectionTasks）。必须在 evidence 引用具体产物位置证明完成，不能只声称做完。",
+        {
+            "interjection_id": {"type": "integer", "minimum": 1},
+            "evidence": {"type": "string", "minLength": 1, "maxLength": 2000},
+        },
+        ("interjection_id", "evidence"),
+        False,
+        "正在核销插话待办",
+    ),
+    ToolSpec(
+        "revoke_constraint",
+        "撤销一条专家约束（编号见 system 段专家约束清单）。只有专家明确表示取消该规矩时才能调用；撤销后下一轮起不再注入。",
+        {
+            "constraint_id": {"type": "integer", "minimum": 1},
+            "reason": {"type": "string", "maxLength": 2000},
+        },
+        ("constraint_id",),
+        False,
+        "正在撤销专家约束",
     ),
 )
 
@@ -3021,6 +3120,7 @@ def build_tools(context: ToolContext) -> list[Tool]:
     )
     return [
         *(ProjectStateTool(spec, context) for spec in PROJECT_STATE_TOOL_SPECS),
+        *(ProjectStateTool(spec, context) for spec in INTERJECTION_TOOL_SPECS),
         *(CoreTool(spec, context) for spec in core_specs),
         FocusTool(context),
         NotifyTool(context),
@@ -3074,6 +3174,33 @@ CHANGE_SET_DIRECT_ACTION_TOOLS = frozenset({
     "create_object", "create_rule", "create_operation", "create_metric",
     "patch_object", "patch_rule", "patch_operation", "patch_metric",
 })
+
+# 生成契约管辖的工具：产物受 packageContract 校验器约束的写入面。
+# 判定「本阶段要不要注入契约」直接耦合到这张表和阶段工具过滤——契约和它管的
+# 工具走同一个开关，机制上不会出现「用得上却不在场」。write_file 不在此列：
+# 它写的 diagrams/.modeling 走 Mermaid/文件校验器，不受候选契约字段约束，
+# 把它算进来会让 intake 也常驻几 KB 契约 JSON，瘦身就落空了。
+CONTRACT_GOVERNED_TOOLS = frozenset(
+    DOMAIN_PHASE_TOOLS | SCRIPT_PHASE_TOOLS | {"stage_package_merge"}
+)
+
+
+def contract_governed_tool_exposed(
+    phase: str,
+    required_tools: frozenset[str] = frozenset(),
+    *,
+    tool_profile: str = "domain-v2",
+) -> bool:
+    """本阶段暴露的工具集是否含契约管辖工具。
+
+    含则契约必须在场（急性事故红线：生成时没契约会被校验器全部打回）；
+    不含则契约 JSON 是纯负重，不注入。required_tools 的恢复性放行会把管辖
+    工具带进早期阶段，此时契约必须跟着出现——按实际暴露算，不按阶段名猜。
+    """
+    return any(
+        spec.name in CONTRACT_GOVERNED_TOOLS
+        for spec in core_tool_specs_for_phase(phase, required_tools, tool_profile=tool_profile)
+    )
 
 
 def core_tool_specs_for_phase(
@@ -3153,4 +3280,4 @@ def tool_spec(name: str) -> ToolSpec | None:
         return RequestConfirmationTool.SPEC
     if name == "request_release":
         return RequestReleaseTool.SPEC
-    return next((spec for spec in (*PROJECT_STATE_TOOL_SPECS, *CORE_TOOL_SPECS) if spec.name == name), None)
+    return next((spec for spec in (*PROJECT_STATE_TOOL_SPECS, *INTERJECTION_TOOL_SPECS, *CORE_TOOL_SPECS) if spec.name == name), None)

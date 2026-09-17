@@ -3,6 +3,8 @@ import { consumerFetch } from '../consumer/client.js';
 import { zipPackage } from '../workflow/export.js';
 import { publicKnowledgePackageFiles } from '../workflow/package-file-scope.js';
 import { judge, type Verdict } from './judge.js';
+import { runCasesWithLimit } from './case-runner.js';
+import { config } from '../config.js';
 import * as repo from '../workflow/m3-repo.js';
 import { getProjectDataSource, type ProjectDataSource } from './data-source-repo.js';
 import { prepareProjectDataSourceForEvaluation } from './data-source-evaluation-service.js';
@@ -452,45 +454,88 @@ async function runRound(
     log('已按数据源配置清除本体数据源（判断类问题仍可评测）');
   }
 
-  // 5. 逐用例串行运行 + judge
+  // 5. 用例按有界并发运行 + judge；结果仍按用例顺序落库
   repo.roundPhase(roundId, 'cases');
+  const concurrency = Math.min(config.evaluationCaseConcurrency, testcases.length || 1);
+  if (concurrency > 1) log(`并发运行评测用例：${concurrency} 条并行`);
   let done = 0;
   let pass = 0;
-  for (const tc of testcases) {
-    assertEvaluationNotCancelled(signal);
-    repo.roundCaseStarted(roundId);
-    let finalAnswer = '';
-    let trace: EvaluationExecutionTrace | undefined;
-    let verdict: 'pass' | 'partial' | 'fail' | 'error' = 'error';
-    let reason = '';
-    try {
-      const run = await runCase(request, ws, tc.question, signal);
+
+  type CaseOutcome = {
+    finalAnswer: string;
+    trace?: EvaluationExecutionTrace;
+    verdict: 'pass' | 'partial' | 'fail' | 'error';
+    reason: string;
+    traceWarning?: string;
+  };
+
+  await runCasesWithLimit<typeof testcases[number], CaseOutcome>(testcases, concurrency, {
+    onStart: () => repo.roundCaseStarted(roundId),
+    run: async (tc) => {
       assertEvaluationNotCancelled(signal);
-      finalAnswer = run.finalAnswer;
-      trace = run.trace;
-      if (trace.status === 'unavailable') {
-        log(`⚠ [${done + 1}/${testcases.length}] Trace 不可用：${trace.error ?? '未知错误'}`);
-      }
-      const v = await judgeEvaluationAnswer(tc.question, tc.groundTruth, finalAnswer, judge, signal);
+      // runCase 内部只处理「响应返回了非 2xx」；网关限流是直接抛异常的，
+      // 那条路径绕过了内层重试，外面再包一层才兜得住。
+      const runHooks: RunCaseHooks = {
+        onRateLimited: (attempt, waitMs, failure) => {
+          log(`⏳ 被限流，${Math.round(waitMs / 1000)} 秒后重试（第 ${attempt} 次）：${failure.slice(0, 80)}`);
+        },
+      };
+      const run = await withRateLimitRetry(
+        '用例执行',
+        () => runCase(request, ws, tc.question, signal, runHooks),
+        runHooks,
+        signal,
+      );
       assertEvaluationNotCancelled(signal);
-      verdict = v.verdict;
-      reason = v.reason;
-      repo.addResult(roundId, {
-        testcaseId: tc.id, question: tc.question, groundTruth: tc.groundTruth,
-        finalAnswer, verdict, reason, trace,
-      });
-    } catch (e) {
+      const v = await withRateLimitRetry(
+        '评测判分',
+        () => judgeEvaluationAnswer(tc.question, tc.groundTruth, run.finalAnswer, judge, signal),
+        {
+          onRateLimited: (attempt, waitMs, failure) => {
+            log(`⏳ 判分被限流，${Math.round(waitMs / 1000)} 秒后重试（第 ${attempt} 次）：${failure.slice(0, 80)}`);
+          },
+        },
+        signal,
+      );
+      assertEvaluationNotCancelled(signal);
+      return {
+        finalAnswer: run.finalAnswer,
+        trace: run.trace,
+        verdict: v.verdict,
+        reason: v.reason,
+        traceWarning: run.trace.status === 'unavailable'
+          ? `Trace 不可用：${run.trace.error ?? '未知错误'}`
+          : undefined,
+      };
+    },
+    // 单条用例失败只记一条 error 判定；鉴权失败和取消属于致命错误，向上抛出终止整轮。
+    recover: (tc, _index, error) => {
       if (signal.aborted) throw signal.reason;
-      if (e instanceof EvaluationAuthenticationError) throw e;
-      reason = `运行失败：${e instanceof Error ? e.message : e}`;
-      repo.addResult(roundId, { testcaseId: tc.id, question: tc.question, groundTruth: tc.groundTruth, finalAnswer, verdict, reason, trace });
-    }
-    assertEvaluationNotCancelled(signal);
-    done++;
-    if (verdict === 'pass') pass++;
-    repo.roundProgress(roundId, done, pass);
-    log(`[${done}/${testcases.length}] ${verdict} · ${tc.question.slice(0, 40)}`);
-  }
+      if (error instanceof EvaluationAuthenticationError) throw error;
+      return {
+        finalAnswer: '',
+        verdict: 'error',
+        reason: `运行失败：${error instanceof Error ? error.message : error}`,
+      };
+    },
+    commit: (tc, _index, outcome) => {
+      done += 1;
+      if (outcome.verdict === 'pass') pass += 1;
+      if (outcome.traceWarning) log(`⚠ [${done}/${testcases.length}] ${outcome.traceWarning}`);
+      repo.addResult(roundId, {
+        testcaseId: tc.id,
+        question: tc.question,
+        groundTruth: tc.groundTruth,
+        finalAnswer: outcome.finalAnswer,
+        verdict: outcome.verdict,
+        reason: outcome.reason,
+        trace: outcome.trace,
+      });
+      repo.roundProgress(roundId, done, pass);
+      log(`[${done}/${testcases.length}] ${outcome.verdict} · ${tc.question.slice(0, 40)}`);
+    },
+  }, signal);
+  assertEvaluationNotCancelled(signal);
 
   assertEvaluationNotCancelled(signal);
   repo.finishRound(roundId, 'done');
@@ -498,25 +543,98 @@ async function runRound(
 }
 
 // runs/sync：429/503 退避重试
-async function runCase(
+/**
+ * 上游模型端点的限流不一定体现为 HTTP 429：agent 在 consumer 内部调模型被限流时，
+ * 错误会包在响应体里带上来（例如 OpenAI SDK 的「429 status code (no body)」）。
+ * 并发跑用例后这类错误明显变多，必须一并当作可重试，否则一条用例会直接判 error。
+ */
+export function isRateLimitedFailure(status: number, message: unknown): boolean {
+  if (status === 429 || status === 503) return true;
+  const text = String(message ?? '');
+  // 中文文案来自网关而不是模型 SDK（「模型服务请求过于频繁」），
+  // 同仓 material-analysis-map-reduce 早已覆盖，评测这条路径先前漏了。
+  return /(^|\D)429(\D|$)/u.test(text)
+    || /rate[\s_-]?limit/iu.test(text)
+    || /too many requests/iu.test(text)
+    || /请求过于频繁/u.test(text)
+    || /限流/u.test(text);
+}
+
+/** 指数退避 + 抖动：并发下固定退避会让多条用例同时重试、再次撞限流。 */
+export function rateLimitBackoffMs(attempt: number, random: () => number = Math.random): number {
+  const base = Math.min(2000 * (2 ** Math.max(0, attempt - 1)), 30_000);
+  return Math.round(base * (0.8 + (0.4 * random())));
+}
+
+const RATE_LIMIT_MAX_ATTEMPTS = 6;
+
+/** 限流重试包装：runs/sync 与判分调用共用同一套退避策略。 */
+export async function withRateLimitRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  hooks: RunCaseHooks,
+  signal: AbortSignal,
+): Promise<T> {
+  let attempts = 0;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // 判分走的是 LLM SDK，限流只会以异常文本出现，没有 HTTP 状态码可查。
+      if (!isRateLimitedFailure(0, message) || signal.aborted) throw error;
+      attempts += 1;
+      if (attempts >= RATE_LIMIT_MAX_ATTEMPTS) {
+        throw new Error(`${label} 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍被限流：${message}`);
+      }
+      const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(attempts);
+      hooks.onRateLimited?.(attempts, waitMs, message);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, waitMs);
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new Error('本轮评测已由用户停止'));
+        }, { once: true });
+      });
+    }
+  }
+}
+
+export interface RunCaseHooks {
+  /** 每次因限流而等待前回调，用于把重试写进轮次日志。 */
+  onRateLimited?: (attempt: number, waitMs: number, failure: string) => void;
+  /** 退避时长，仅测试会覆盖，避免真的等满一轮指数退避。 */
+  backoffMs?: (attempt: number) => number;
+}
+
+/** 导出供测试直接驱动限流重试循环；生产路径只由 runRound 调用。 */
+export async function runCase(
   request: ConsumerRequest,
   ws: string,
   question: string,
   signal: AbortSignal,
+  hooks: RunCaseHooks = {},
 ): Promise<{ finalAnswer: string; trace: EvaluationExecutionTrace }> {
   const sessionId = `mw-eval-${randomUUID().slice(0, 8)}`;
   let rateLimitAttempts = 0;
-  while (rateLimitAttempts < 4) {
+  for (;;) {
     assertEvaluationNotCancelled(signal);
     const res = await request('', '/agentic/runs/sync', {
       method: 'POST', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ request: question, session_id: sessionId, include_trace: true }),
       signal,
     });
-    if (res.status === 429 || res.status === 503) {
-      rateLimitAttempts++;
+    const data = (await res.json().catch(() => ({}))) as any;
+    const failure = res.ok ? '' : (data.error || data.detail || `runs/sync ${res.status}`);
+    if (!res.ok && isRateLimitedFailure(res.status, failure)) {
+      rateLimitAttempts += 1;
+      if (rateLimitAttempts >= RATE_LIMIT_MAX_ATTEMPTS) {
+        throw new Error(`runs/sync 重试 ${RATE_LIMIT_MAX_ATTEMPTS} 次后仍被限流：${failure}`);
+      }
+      const waitMs = (hooks.backoffMs ?? rateLimitBackoffMs)(rateLimitAttempts);
+      hooks.onRateLimited?.(rateLimitAttempts, waitMs, String(failure));
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, rateLimitAttempts * 3000);
+        const timer = setTimeout(resolve, waitMs);
         signal.addEventListener('abort', () => {
           clearTimeout(timer);
           reject(new Error('本轮评测已由用户停止'));
@@ -524,8 +642,7 @@ async function runCase(
       });
       continue;
     }
-    const data = (await res.json().catch(() => ({}))) as any;
-    if (!res.ok) throw new Error(data.error || data.detail || `runs/sync ${res.status}`);
+    if (!res.ok) throw new Error(failure);
     const resolvedSessionId = String(data.session_id || sessionId);
     const runId = String(data.run_id || '');
     const trace = traceFromSyncResponse(data) ?? await fetchEvaluationRunTrace({
@@ -534,7 +651,6 @@ async function runCase(
     });
     return { finalAnswer: evaluationFinalAnswer(data), trace };
   }
-  throw new Error('runs/sync 重试后仍被限流');
 }
 
 async function authenticatedConsumerRequest(

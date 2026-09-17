@@ -112,15 +112,47 @@ CREATE TABLE IF NOT EXISTS external_project_events (
 CREATE INDEX IF NOT EXISTS idx_external_project_events_project
   ON external_project_events(project_id, created_at);
 
+-- origin 区分插话来源：expert 是专家亲口说的指令，需要逐条处置；system 是服务端
+-- 组装的续跑/事件提示，投递即完结。disposition 是专家插话的生命周期：空串表示
+-- 「已投递但未处置」——投递只说明进过对话，不代表办了，两者混同正是插话被
+-- 静默丢弃的根源。task_status 只在 disposition='task' 时使用（open/done）。
 CREATE TABLE IF NOT EXISTS steering_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'queued',
+  origin TEXT NOT NULL DEFAULT 'system',
+  disposition TEXT NOT NULL DEFAULT '',
+  disposition_json TEXT NOT NULL DEFAULT '{}',
+  disposed_at TEXT NOT NULL DEFAULT '',
+  task_status TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   delivered_at TEXT NOT NULL DEFAULT ''
 );
+
+-- 注意：steering_messages 的处置索引不放在这里。存量库的表已存在，
+-- CREATE TABLE IF NOT EXISTS 不会补列，origin 等列要等迁移函数才有；
+-- 在 executescript 阶段建引用新列的索引会在旧库上直接失败。
+-- 索引在 _migrate_schema_locked 补列之后创建。
+
+-- 专家立的长期规矩：活到被撤销或被新条款覆盖为止，每轮注入 system 段。
+-- 与 turn_goal（一轮寿命）、待办（做完即死）、package_contract（代码定义）
+-- 是四种不同寿命的容器，判据只有一个问题：这条指令什么时候失效。
+CREATE TABLE IF NOT EXISTS project_constraints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  source_steering_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'active',
+  superseded_by INTEGER,
+  revoke_reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_constraints_project_status
+  ON project_constraints(project_id, status, created_at);
 
 -- 每个项目唯一的当前状态。业务阶段与执行状态编码在同一个 state 字段中，
 -- 例如 goal:waiting；其他表只保存事实记录、事件或恢复材料。
@@ -260,6 +292,28 @@ class RuntimeStore:
             self._db.execute(
                 "ALTER TABLE project_agent_state ADD COLUMN baseline_revision TEXT NOT NULL DEFAULT ''"
             )
+        steering_columns = {
+            str(row["name"])
+            for row in self._db.execute("PRAGMA table_info(steering_messages)").fetchall()
+        }
+        # 历史插话行没有处置生命周期，origin 默认 system：它们早已随当时的对话
+        # 处理完，补上 expert 语义会让陈年插话在升级后突然复活成本轮目标。
+        for column, definition in (
+            ("origin", "TEXT NOT NULL DEFAULT 'system'"),
+            ("disposition", "TEXT NOT NULL DEFAULT ''"),
+            ("disposition_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("disposed_at", "TEXT NOT NULL DEFAULT ''"),
+            ("task_status", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in steering_columns:
+                self._db.execute(
+                    f"ALTER TABLE steering_messages ADD COLUMN {column} {definition}"
+                )
+        # 处置索引只能在补列之后建：存量库在 executescript 阶段还没有这些列。
+        self._db.execute(
+            """CREATE INDEX IF NOT EXISTS idx_steering_messages_project_disposition
+            ON steering_messages(project_id, origin, status, disposition)"""
+        )
         timestamp = now_iso()
         terminal = tuple(sorted(TERMINAL_RUN_STATUSES))
         placeholders = ",".join("?" for _ in terminal)
@@ -1259,6 +1313,9 @@ class RuntimeStore:
                 if current is None:
                     raise AgentRuntimeError("INTERACTION_NOT_FOUND", "待答问题不存在", status=404)
                 raise AgentRuntimeError("INTERACTION_CLOSED", "这个问题已经处理过了", status=409)
+        # 升级待决不是终态：专家已经裁决，插话回到未处置队列，
+        # 下一轮以裁决结论为背景重新成为本轮目标并完成收尾。
+        self.reopen_escalated_interjections(interaction_id)
         return self.get_interaction(interaction_id)  # type: ignore[return-value]
 
     def append_event(
@@ -1498,12 +1555,19 @@ class RuntimeStore:
             ).fetchone()
         return int(row["seq"] if row else 0)
 
-    def queue_steering(self, project_id: str, run_id: str, text: str) -> int:
+    def queue_steering(
+        self,
+        project_id: str,
+        run_id: str,
+        text: str,
+        *,
+        origin: str = "system",
+    ) -> int:
         with self._lock, self._db:
             cursor = self._db.execute(
-                """INSERT INTO steering_messages(project_id, run_id, text, created_at)
-                VALUES (?, ?, ?, ?)""",
-                (project_id, run_id, text, now_iso()),
+                """INSERT INTO steering_messages(project_id, run_id, text, origin, created_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (project_id, run_id, text, origin, now_iso()),
             )
             return int(cursor.lastrowid)
 
@@ -1514,6 +1578,250 @@ class RuntimeStore:
                 SET status = 'delivered', delivered_at = ? WHERE id = ?""",
                 (now_iso(), message_id),
             )
+
+    def pending_interjections(self, project_id: str) -> list[dict[str, Any]]:
+        """已投递但未处置的专家插话，按时间先后排列。
+
+        按项目而不是按运行查询：插话是对项目说的，本轮预算耗尽没处置完，
+        下一次运行仍然要接着处置，不能随运行结束一起蒸发。
+        """
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT id, run_id, text, created_at FROM steering_messages
+                WHERE project_id = ? AND origin = 'expert'
+                  AND status = 'delivered' AND disposition = ''
+                ORDER BY id""",
+                (project_id,),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "runId": str(row["run_id"]),
+                "text": str(row["text"]),
+                "createdAt": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def dispose_interjection(
+        self,
+        project_id: str,
+        interjection_id: int,
+        *,
+        resolution: str,
+        detail: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """UPDATE steering_messages
+                SET disposition = ?, disposition_json = ?, disposed_at = ?,
+                    task_status = ?
+                WHERE id = ? AND project_id = ? AND origin = 'expert'
+                  AND status = 'delivered' AND disposition = ''""",
+                (
+                    resolution,
+                    _json(detail),
+                    now_iso(),
+                    "open" if resolution == "task" else "",
+                    interjection_id,
+                    project_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                row = self._db.execute(
+                    "SELECT disposition FROM steering_messages WHERE id = ? AND project_id = ?",
+                    (interjection_id, project_id),
+                ).fetchone()
+                if row is None:
+                    raise AgentRuntimeError(
+                        "INTERJECTION_NOT_FOUND", "这条插话不存在或不属于当前项目", status=404,
+                    )
+                raise AgentRuntimeError(
+                    "INTERJECTION_ALREADY_DISPOSED",
+                    f"这条插话已经处置过了（{row['disposition']}），不能重复处置",
+                    status=409,
+                )
+        return {"id": interjection_id, "resolution": resolution, **detail}
+
+    def open_interjection_tasks(self, project_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT id, text, disposition_json, disposed_at FROM steering_messages
+                WHERE project_id = ? AND disposition = 'task' AND task_status = 'open'
+                ORDER BY id""",
+                (project_id,),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "text": str(_object(row["disposition_json"]).get("text") or row["text"]),
+                "disposedAt": str(row["disposed_at"]),
+            }
+            for row in rows
+        ]
+
+    def complete_interjection_task(
+        self,
+        project_id: str,
+        interjection_id: int,
+        *,
+        evidence: str,
+    ) -> dict[str, Any]:
+        with self._lock, self._db:
+            row = self._db.execute(
+                """SELECT disposition_json FROM steering_messages
+                WHERE id = ? AND project_id = ? AND disposition = 'task' AND task_status = 'open'""",
+                (interjection_id, project_id),
+            ).fetchone()
+            if row is None:
+                raise AgentRuntimeError(
+                    "INTERJECTION_TASK_NOT_OPEN",
+                    "没有这条待办，或它已经完成",
+                    status=409,
+                )
+            detail = _object(row["disposition_json"])
+            detail["evidence"] = evidence
+            detail["completedAt"] = now_iso()
+            self._db.execute(
+                """UPDATE steering_messages
+                SET task_status = 'done', disposition_json = ? WHERE id = ?""",
+                (_json(detail), interjection_id),
+            )
+        return {"id": interjection_id, **detail}
+
+    def escalate_interjections(self, project_id: str, interaction_id: str) -> list[int]:
+        """把未处置插话标记为「已升级待决」，绑定裁决卡。
+
+        升级不是终态：裁决卡被回答时 reopen 回未处置，插话重新成为本轮目标，
+        由模型按专家裁决完成收尾。这样错误升级（无关的冲突卡恰好出现）最多
+        延迟处置一次，不会静默吞掉插话。
+        """
+        with self._lock, self._db:
+            rows = self._db.execute(
+                """SELECT id FROM steering_messages
+                WHERE project_id = ? AND origin = 'expert'
+                  AND status = 'delivered' AND disposition = ''""",
+                (project_id,),
+            ).fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                timestamp = now_iso()
+                detail = _json({"interactionId": interaction_id})
+                self._db.executemany(
+                    """UPDATE steering_messages
+                    SET disposition = 'escalated', disposition_json = ?, disposed_at = ?
+                    WHERE id = ?""",
+                    [(detail, timestamp, item) for item in ids],
+                )
+        return ids
+
+    def reopen_escalated_interjections(self, interaction_id: str) -> list[int]:
+        with self._lock, self._db:
+            rows = self._db.execute(
+                """SELECT id, disposition_json FROM steering_messages
+                WHERE disposition = 'escalated'""",
+            ).fetchall()
+            ids = [
+                int(row["id"])
+                for row in rows
+                if _object(row["disposition_json"]).get("interactionId") == interaction_id
+            ]
+            if ids:
+                self._db.executemany(
+                    """UPDATE steering_messages
+                    SET disposition = '', disposition_json = '{}', disposed_at = ''
+                    WHERE id = ?""",
+                    [(item,) for item in ids],
+                )
+        return ids
+
+    def register_constraint(
+        self,
+        project_id: str,
+        text: str,
+        *,
+        source_steering_id: int | None = None,
+        replaces_id: int | None = None,
+    ) -> dict[str, Any]:
+        timestamp = now_iso()
+        with self._lock, self._db:
+            if replaces_id is not None:
+                replaced = self._db.execute(
+                    """SELECT id FROM project_constraints
+                    WHERE id = ? AND project_id = ? AND status = 'active'""",
+                    (replaces_id, project_id),
+                ).fetchone()
+                if replaced is None:
+                    raise AgentRuntimeError(
+                        "CONSTRAINT_NOT_ACTIVE", "要覆盖的约束不存在或已失效", status=409,
+                    )
+            cursor = self._db.execute(
+                """INSERT INTO project_constraints(project_id, text, source_steering_id, created_at)
+                VALUES (?, ?, ?, ?)""",
+                (project_id, text, source_steering_id, timestamp),
+            )
+            constraint_id = int(cursor.lastrowid)
+            if replaces_id is not None:
+                self._db.execute(
+                    """UPDATE project_constraints
+                    SET status = 'superseded', superseded_by = ?, ended_at = ?
+                    WHERE id = ?""",
+                    (constraint_id, timestamp, replaces_id),
+                )
+        return {"id": constraint_id, "text": text, "replaces": replaces_id}
+
+    def revoke_constraint(
+        self,
+        project_id: str,
+        constraint_id: int,
+        *,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """UPDATE project_constraints
+                SET status = 'revoked', revoke_reason = ?, ended_at = ?
+                WHERE id = ? AND project_id = ? AND status = 'active'""",
+                (reason, now_iso(), constraint_id, project_id),
+            )
+            if cursor.rowcount != 1:
+                raise AgentRuntimeError(
+                    "CONSTRAINT_NOT_ACTIVE", "这条约束不存在或已失效", status=409,
+                )
+        return {"id": constraint_id, "revoked": True, "reason": reason}
+
+    def active_constraints(self, project_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT id, text, created_at FROM project_constraints
+                WHERE project_id = ? AND status = 'active' ORDER BY id""",
+                (project_id,),
+            ).fetchall()
+        return [
+            {"id": int(row["id"]), "text": str(row["text"]), "createdAt": str(row["created_at"])}
+            for row in rows
+        ]
+
+    def list_constraints(self, project_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM project_constraints
+                WHERE project_id = ? ORDER BY id DESC""",
+                (project_id,),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "text": str(row["text"]),
+                "status": str(row["status"]),
+                "sourceSteeringId": row["source_steering_id"],
+                "supersededBy": row["superseded_by"],
+                "revokeReason": str(row["revoke_reason"]),
+                "createdAt": str(row["created_at"]),
+                "endedAt": str(row["ended_at"]),
+            }
+            for row in rows
+        ]
 
 
 def _json(value: Any) -> str:

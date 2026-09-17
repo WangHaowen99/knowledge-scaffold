@@ -2008,7 +2008,9 @@ try {
   const capabilityClaim = userFacingText('脚本契约需要读取领域资源，但本会话工具集中没有该读取能力，请确认平台是否开放。');
   const agentHtml = renderToString(<Block block={{ type: 'text', text: leakedText }} />);
   const quotaText = userFacingText("[181001] model call failed: RateLimitError: Error code: 429 - {'code':'insufficient_quota','message':'Allocated quota exceeded'}");
-  if (!html.includes('v1.0.0 · 已发布') || !html.includes('发布交付')) {
+  /* 版本和状态拆成了两个元素（版本是带框胶囊，状态是弱化文字），断言的是两者都在，
+     而不是它们拼成一串——拼法属于版式，不该锁死在测试里。 */
+  if (!html.includes('v1.0.0') || !html.includes('已发布') || !html.includes('发布交付')) {
     throw new Error('主界面没有优先显示语义版本和业务阶段');
   }
   if (/deadbeef|request_release|run-|cp-013|工具事件|工具边界/.test(html)) {
@@ -2491,6 +2493,44 @@ try {
   globalThis.window = priorWindow;
   console.log('✓ Studio WebGL init 未完成时卸载不抛异常');
 } catch (e) { console.log('✗ Studio WebGL 卸载竞态:', e.message); bad++; }
+
+try {
+  /* Agent 会并行提交多份资料用途。快照刷新只合并、不补跑的话，合并窗口和请求飞行期间
+     到达的事件被整个吞掉，最后一份资料停在「分析中」，一键确认全部永久禁用（见 #45）。
+     这里直接跑调度器本体：模拟「刷新在飞 → 又来一个事件」，必须补第二轮。 */
+  const source = readFileSync('src/workbench/lib/appStore.js', 'utf8');
+  if (!/snapshotRefreshInFlight/.test(source)) throw new Error('快照刷新没有区分「飞行中」状态');
+  if (!/snapshotRefreshQueued = true; return;/.test(source)) throw new Error('窗口内到达的事件没有被记下来');
+  if (!/\.finally\(\(\) => \{\s*\n\s*snapshotRefreshInFlight = false;/.test(source)) {
+    throw new Error('刷新结束后没有清掉飞行标记，后续事件会被永久吞掉');
+  }
+  if (!/if \(snapshotRefreshQueued\) \{\s*\n\s*snapshotRefreshQueued = false;\s*\n\s*actions\.scheduleSnapshotRefresh\(\);/.test(source)) {
+    throw new Error('窗口内到达的事件没有补跑一轮快照刷新');
+  }
+  console.log('✓ 快照刷新合并窗口内到达的事件会补跑，不吞掉最后一份资料');
+} catch (e) { console.log('✗ 快照刷新补跑:', e.message); bad++; }
+
+try {
+  /* 流程图编辑：画布上连线只进前端草稿，落盘必须显式点「保存为候选」并带乐观锁。
+     若直接改正式包，就绕开了整套「修改先成候选、确认后才写入」的约束。 */
+  const view = readFileSync('src/workbench/center/LegacyFlowView.jsx', 'utf8');
+  if (!/nodesDraggable=\{editable\}/.test(view)) throw new Error('编辑态没打开节点拖动');
+  if (!/nodesConnectable=\{editable\}/.test(view)) throw new Error('编辑态没打开连线');
+  if (!/onConnect=\{editable \? handleConnect : undefined\}/.test(view)) throw new Error('非编辑态不应接受连线');
+  if (!/const \[draftEdges, setDraftEdges\] = useState\(\[\]\)/.test(view)) throw new Error('新连线没有单独存草稿');
+
+  const flow = readFileSync('src/workbench/center/FlowView.jsx', 'utf8');
+  if (!/saveFlowDraft\?\.\(path, draft\)/.test(flow)) throw new Error('缺少保存为候选入口');
+  if (!/draft\?\.dirty/.test(flow)) throw new Error('没有草稿时不该出现保存按钮');
+
+  const store = readFileSync('src/workbench/lib/appStore.js', 'utf8');
+  if (!/async saveFlowDraft\(path, draft\)/.test(store)) throw new Error('appStore 缺少 saveFlowDraft');
+  const api = readFileSync('src/workbench/lib/api.js', 'utf8');
+  if (!/expectedRevision/.test(api.slice(api.indexOf('saveFlowchartDraft')))) {
+    throw new Error('流程图落盘没有带乐观锁基线');
+  }
+  console.log('✓ 流程图编辑只出草稿，落盘走乐观锁');
+} catch (e) { console.log('✗ 流程图编辑:', e.message); bad++; }
 
 console.log(bad ? `\n${bad} 处失败` : '\n全部通过');
 process.exit(bad ? 1 : 0);

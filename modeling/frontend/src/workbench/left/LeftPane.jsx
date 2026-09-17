@@ -12,6 +12,7 @@ import {
 import { decodeLegacyArchiveName, displayPackageEntryName } from '../../legacyArchiveFilename.js';
 import { store, actions } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
+import { getConstraints, revokeConstraint } from '../lib/api.js';
 import * as F from '../lib/mock/fixtures.js';
 import Icon from '../ui/Icon.jsx';
 
@@ -24,6 +25,7 @@ const selFiles = (s) => s.files;
 const selMaterials = (s) => s.materials;
 const selLoading = (s) => s.loading;
 const selFocus = (s) => s.focus;
+const selProjectId = (s) => s.projectId;
 
 export default function LeftPane() {
   const tab = useStore(store, selTab);
@@ -36,8 +38,94 @@ export default function LeftPane() {
           onClick={() => actions.setLeftTab('pkg')}>知识包</button>
         <button role="tab" aria-selected={tab === 'mat'} className={tab === 'mat' ? 'on' : ''}
           onClick={() => actions.setLeftTab('mat')}>资料 <span className="wb-tab-count">{demo ? F.materials.length : materials.length}</span></button>
+        <button role="tab" aria-selected={tab === 'rules'} className={tab === 'rules' ? 'on' : ''}
+          onClick={() => actions.setLeftTab('rules')}>规矩</button>
       </div>
-      {tab === 'pkg' ? <PackageTree /> : <MaterialList />}
+      {tab === 'pkg' && <PackageTree />}
+      {tab === 'mat' && <MaterialList />}
+      {tab === 'rules' && <ConstraintList />}
+    </>
+  );
+}
+
+/* ---------------- 专家约束登记表 ----------------
+ * 专家立的长期规矩：每轮注入助手 system 段，撤销前一直生效。
+ * 页面可见 + 可撤销是登记表的改判兜底通道——助手把插话错登成规矩时，
+ * 专家在这里直接撤掉，不用翻聊天记录考古。 */
+function ConstraintList() {
+  const projectId = useStore(store, selProjectId);
+  const demo = useStore(store, selDemo);
+  const [items, setItems] = useState([]);
+  const [error, setError] = useState('');
+  const [busyId, setBusyId] = useState(0);
+
+  useEffect(() => {
+    if (demo || !projectId) return undefined;
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const payload = await getConstraints(projectId);
+        if (alive) { setItems(payload.constraints || []); setError(''); }
+      } catch (cause) {
+        if (alive) setError(cause?.message || '规矩清单读取失败');
+      }
+    };
+    void refresh();
+    const timer = setInterval(refresh, 15_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [projectId, demo]);
+
+  const revoke = async (item) => {
+    if (!window.confirm(`确定撤销这条规矩吗？\n「${item.text}」\n撤销后助手下一轮起不再遵守它。`)) return;
+    setBusyId(item.id);
+    setError('');
+    try {
+      await revokeConstraint(projectId, item.id, '专家在页面上撤销');
+      const payload = await getConstraints(projectId);
+      setItems(payload.constraints || []);
+    } catch (cause) {
+      setError(cause?.message || '撤销失败');
+    } finally {
+      setBusyId(0);
+    }
+  };
+
+  const active = items.filter((item) => item.status === 'active');
+  const ended = items.filter((item) => item.status !== 'active');
+  return (
+    <>
+      <div className="wb-scroll">
+        <div style={{ padding: 'var(--s-2) 0' }}>
+          {error && <div className="t-sm faint" style={{ padding: 'var(--s-3)' }}>{error}</div>}
+          {!error && !active.length && (
+            <div className="t-sm faint" style={{ padding: 'var(--s-3)' }}>
+              还没有生效中的规矩。在对话里对助手说「以后一律…」「不许…」，确认后会登记到这里。
+            </div>
+          )}
+          {active.map((item) => (
+            <div key={item.id} className="wb-row i1" style={{ alignItems: 'flex-start', gap: 'var(--s-2)' }}>
+              <span className="dot dot-ok" style={{ marginTop: 6 }} />
+              <span className="nm" style={{ whiteSpace: 'normal', flex: 1 }}>{item.text}</span>
+              <button className="btn btn-ghost btn-sm" type="button" disabled={busyId === item.id}
+                onClick={() => void revoke(item)}>{busyId === item.id ? '撤销中…' : '撤销'}</button>
+            </div>
+          ))}
+          {ended.length > 0 && (
+            <div style={{ marginTop: 'var(--s-3)' }}>
+              <div className="grp">已失效 · {ended.length}</div>
+              {ended.map((item) => (
+                <div key={item.id} className="wb-row i1 dim" style={{ alignItems: 'flex-start', pointerEvents: 'none' }}>
+                  <span className="nm" style={{ whiteSpace: 'normal', flex: 1, textDecoration: 'line-through' }}>{item.text}</span>
+                  <span className="cap">{item.status === 'revoked' ? '已撤销' : '已被新条款覆盖'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="wb-legend">
+        <i><Icon name="alert" size={12} />生效中的规矩每轮都会提醒助手遵守，直到在此撤销</i>
+      </div>
     </>
   );
 }

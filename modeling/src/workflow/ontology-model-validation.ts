@@ -199,11 +199,22 @@ export function normalizeStudioRelations(
     const targetId = String(item.targetId ?? '').trim();
     const parsed = parseElementId(targetId);
     const allowedTargets = legal.get(kind);
-    if (!allowedTargets) issues.push(issue('RELATION_KIND_INVALID', `${itemPath}.kind`, '不支持的关系类型'));
+    /* 只说「不支持」而不说支持什么，调用方只能靠猜。这里三个接口对同一件事用了三套叫法：
+       推荐接口返回 relation: "belongs_to"，写入接口要 kind + label，业务谓词归 label。
+       实测助手会反复试 belongs_to、"归属" 等值，原地打转数轮后放弃整批任务，所以报错必须
+       同时给出合法值和「业务谓词写哪里」。合法值从 legalRelations 生成，不手写平行清单。 */
+    if (!allowedTargets) {
+      const allowedKinds = [...legal.keys()];
+      issues.push(issue('RELATION_KIND_INVALID', `${itemPath}.kind`,
+        `不支持的关系类型${kind ? ` ${kind}` : ''}；kind 只接受 ${allowedKinds.join('、')}`
+        + '，业务谓词（例如「归属于」）写进 label，不要写进 kind'));
+    }
     if (!parsed) {
-      issues.push(issue('RELATION_TARGET_ID_INVALID', `${itemPath}.targetId`, 'targetId 必须是 kind:key'));
+      issues.push(issue('RELATION_TARGET_ID_INVALID', `${itemPath}.targetId`,
+        `targetId 必须是 kind:key，例如 ${(legalRelations[0]?.targetKinds[0] ?? 'object')}:对象名`));
     } else if (allowedTargets && !(allowedTargets as readonly string[]).includes(parsed.kind)) {
-      issues.push(issue('RELATION_TARGET_KIND_MISMATCH', `${itemPath}.targetId`, '目标知识类型与关系类型不匹配'));
+      issues.push(issue('RELATION_TARGET_KIND_MISMATCH', `${itemPath}.targetId`,
+        `目标知识类型与关系类型不匹配；${kind} 的目标只能是 ${(allowedTargets as readonly string[]).join('、')}`));
     }
     if (item.label !== undefined && typeof item.label !== 'string') {
       issues.push(issue('RELATION_LABEL_INVALID', `${itemPath}.label`, '必须是文本'));
@@ -212,8 +223,11 @@ export function normalizeStudioRelations(
       issues.push(issue('RELATION_DESCRIPTION_INVALID', `${itemPath}.description`, '必须是文本'));
     }
     for (const key of Object.keys(item)) {
-      if (!['kind', 'targetId', 'label', 'description', ...(options.preserveEvidence ? ['evidence'] : [])].includes(key)) {
-        issues.push(issue('RELATION_UNKNOWN_FIELD', `${itemPath}.${key}`, '未知字段'));
+      const allowedFields = ['kind', 'targetId', 'label', 'description',
+        ...(options.preserveEvidence ? ['evidence'] : [])];
+      if (!allowedFields.includes(key)) {
+        issues.push(issue('RELATION_UNKNOWN_FIELD', `${itemPath}.${key}`,
+          `未知字段；关系只接受 ${allowedFields.join('、')}`));
       }
     }
     if (parsed && allowedTargets) {

@@ -6,6 +6,7 @@ description: 以已确认流程为主线抽取 operation、object、rule、metri
 # 知识抽取
 
 - 一条已确认流程是一批抽取工作的边界。先读流程源码和证据，按有独立输入、动作、输出的业务节点拆 operation，再补它依赖的 object、rule、metric；不要把整条流程重复塞进一个 operation。
+- 资料事实优先走档案与检索：先用 `get_material_context` 查已提取的文档摘要、业务事实和候选，再用 `search_documents` 定位锚点、按 offset 用 `read_document` 定点核对原文；只有用户点名全文精读或档案标记资料 stale 时才调用 `read_documents_fully`。档案是缓存不是事实源：写入知识包的数字和口径必须经原文锚点核对后引用，不得直接引用档案摘要。
 - 先复用知识包已有的文件格式、frontmatter、key 和索引约定。operation 详情只能写入 `operations/<key>.md`，object 写入 `objects/<key>.md`，rule 写入 `rules/<key>.md`，metric 写入 `metrics/<key>.md`；不得创建 `knowledge/` 通用目录。详情文件保持单一职责，引用使用稳定 key；先写详情文件，全部成功后再更新各目录的 `index.md` 和根 `manifest.yaml`，避免索引指向不存在的内容。
 - 每个 operation 明确输入对象、动作、输出对象、适用装置或工况，并回指对应 `diagrams/*.mmd` 节点。只有名称相同但业务动作或工况不同的节点不得强行合并。
 - object 只声明多处 operation 共同使用的业务实体和资料明确支持的字段；不要把流程步骤、整张 Excel 表或数据库内部 ID 当成对象字段。

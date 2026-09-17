@@ -1864,11 +1864,15 @@ test('优化候选一次返回全部确定性校验问题供下一轮统一修�
   spec.scripts = [{
     key: 'normalize_and_allocate', title: '数据归一与分配', description: '读取数据并按路由互斥分配。',
     boundOperation: 'recommend', runtime: 'python', entrypoint: 'normalize_and_allocate.py', timeoutSeconds: 30,
-    parameters: [{ name: 'route', flag: '--route', type: 'string', required: true }],
+    parameters: [
+      { name: 'route', flag: '--route', type: 'string', required: true },
+      { name: 'rows', flag: '--rows', type: 'json', required: true },
+    ],
     outputs: [{ key: 'total', type: 'number' }], boundaries: ['未知路由必须拒绝。'],
     sourceCode: [
       'import argparse', 'import json',
       'parser = argparse.ArgumentParser()', 'parser.add_argument("--route", required=True)',
+      'parser.add_argument("--rows", required=True)',
       'args = parser.parse_args()', 'print(json.dumps({"total": 0}))',
     ].join('\n'),
   }];
@@ -1885,24 +1889,21 @@ test('优化候选一次返回全部确定性校验问题供下一轮统一修�
   };
   const unsafeSource = [
     'import argparse', 'import json',
-    'from shared_capabilities.ontology_script_sdk import DataProviderClient',
     'parser = argparse.ArgumentParser()', 'parser.add_argument("--route", required=True)',
-    'args = parser.parse_args()', 'client = DataProviderClient()', 'rows = client.query("customer").data',
+    'parser.add_argument("--rows", required=True)',
+    'args = parser.parse_args()', 'rows = json.loads(args.rows)',
     'total = sum(row.get("amount", 0) for row in rows)',
     'print(json.dumps({"total": total}))',
   ].join('\n');
   const safeSource = [
     'import argparse', 'import json',
-    'from shared_capabilities.ontology_script_sdk import DataProviderClient',
     'parser = argparse.ArgumentParser()', 'parser.add_argument("--route", required=True)',
+    'parser.add_argument("--rows", required=True)',
     'args = parser.parse_args()',
     'allowed_routes = {"left", "right"}',
     'if args.route not in allowed_routes:',
     '    raise ValueError(f"unsupported route: {args.route}")',
-    'client = DataProviderClient()',
-    'result = client.query("customer")',
-    'if not result.success:',
-    '    raise RuntimeError(result.error or result.message)',
+    'rows = json.loads(args.rows)',
     'def first_non_empty(row, *candidate_keys):',
     '    for key in candidate_keys:',
     '        value = row.get(key)',
@@ -1910,7 +1911,7 @@ test('优化候选一次返回全部确定性校验问题供下一轮统一修�
     '            return value',
     '    return None',
     'logical_values = {}',
-    'for row in result.data:',
+    'for row in rows:',
     '    business_key = first_non_empty(row, "customer_id", "customerId", "0")',
     '    value = float(first_non_empty(row, "amount", "source_amount", "1"))',
     '    logical_values.setdefault(business_key, value)',

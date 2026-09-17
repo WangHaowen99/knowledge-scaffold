@@ -122,6 +122,25 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     );
   });
 
+  app.get('/api/projects/:id/agent/constraints', async (request, reply) => {
+    const id = projectId(request);
+    if (!canReadProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/constraints`, 'GET', id);
+  });
+
+  app.post('/api/projects/:id/agent/constraints/:constraintId/revoke', async (request, reply) => {
+    const id = projectId(request);
+    if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    const constraintId = encodeURIComponent(String((request.params as any).constraintId ?? ''));
+    return proxyJson(
+      request,
+      reply,
+      `/v1/projects/${encodeURIComponent(id)}/constraints/${constraintId}/revoke`,
+      'POST',
+      id,
+    );
+  });
+
   app.post('/api/projects/:id/agent/cancel', async (request, reply) => (
     proxyJson(request, reply, `/v1/projects/${projectId(request)}/cancel`, 'POST')
   ));
