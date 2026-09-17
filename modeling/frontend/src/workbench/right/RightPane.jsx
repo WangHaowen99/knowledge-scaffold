@@ -12,6 +12,7 @@ import ActivityLine from './ActivityLine.jsx';
 import Composer from './Composer.jsx';
 import Icon from '../ui/Icon.jsx';
 import { userFacingText } from '../lib/userFacingText.js';
+import { formatMessageTime } from '../lib/time.js';
 import SemanticBindingPanel from '../../SemanticBindingPanel.jsx';
 import CandidateRevisionPanel from '../../CandidateRevisionPanel.jsx';
 import { ASSISTANT_SCROLL_ACTION, assistantScrollAction } from './scrollPolicy.js';
@@ -420,7 +421,7 @@ export function messageForInteraction(interaction) {
 function Message({ m }) {
   const mine = m.role === 'user';
   const system = m.role === 'system';
-  const at = m.at || formatTime(m.createdAt);
+  const at = m.at || formatMessageTime(m.createdAt);
   return (
     <div className={`wb-msg${mine ? ' wb-msg-user' : ''}${m.sendFailed ? ' wb-msg-failed' : ''}${m.incomplete ? ' wb-msg-incomplete' : ''}`}
       data-message-id={m.id}
@@ -490,11 +491,4 @@ export function messageText(block = {}, sanitize = true) {
       || '已提交选择');
   }
   return '';
-}
-
-function formatTime(value) {
-  const date = value ? new Date(value) : null;
-  return date && !Number.isNaN(date.getTime())
-    ? `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-    : '';
 }
