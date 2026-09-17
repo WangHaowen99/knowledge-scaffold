@@ -11,7 +11,7 @@ import type {
   ProductInventorySummary,
 } from '../types.js';
 import { throwIfCancelled } from '../cancellation.js';
-import { makeAgent, runAgentCaptured } from './agent.js';
+import { makeAgent, runAgentCaptured, type StructuredToolChoiceState } from './agent.js';
 import {
   assertCompleteDocumentPlan,
   planDocumentAnalysis,
@@ -380,15 +380,23 @@ function balancedTableSummaries(tables: DataDictTable[], llm: LlmDeps) {
   }));
 }
 
+// 分段精读的重试预算。旧预算（600 秒超时 × 3 次捕获 × 4 轮外层）最坏能把一个分段拖到
+// 两小时；强制 tool_choice 后「读完不提交」主要由端点约束解码兜住，预算只需覆盖偶发
+// 超时、参数校验重试和产品事实批次的多轮提交。
+const CHUNK_ATTEMPT_TIMEOUT_MS = 420_000;
+const CHUNK_CAPTURE_ATTEMPTS = 2;
+const CHUNK_ANALYSIS_ATTEMPTS = 2;
+
 async function analyzeChunk(
   llm: LlmDeps,
   chunk: DocumentAnalysisChunk,
   observe?: (event: unknown) => void,
   requireProductInventory = false,
+  toolChoiceState?: StructuredToolChoiceState,
 ): Promise<ChunkAnalysisPayload> {
   let fallbackSummary = '';
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await analyzeChunkAttempt(llm, chunk, observe, requireProductInventory);
+  for (let attempt = 0; attempt < CHUNK_ANALYSIS_ATTEMPTS; attempt += 1) {
+    const result = await analyzeChunkAttempt(llm, chunk, observe, requireProductInventory, toolChoiceState);
     if (result.payload) return result.payload;
     fallbackSummary = result.assistantText || fallbackSummary;
   }
@@ -414,6 +422,7 @@ async function analyzeChunkAttempt(
   chunk: DocumentAnalysisChunk,
   observe?: (event: unknown) => void,
   requireProductInventory = false,
+  toolChoiceState?: StructuredToolChoiceState,
 ): Promise<{ payload?: ChunkAnalysisPayload; assistantText: string }> {
   const capture: { value?: ChunkAnalysisPayload } = {};
   const inventory = createProductInventoryCapture();
@@ -476,9 +485,15 @@ async function analyzeChunkAttempt(
     '请先补齐剩余产品事实批次，再调用 submit_document_chunk_analysis 并声明 productInventoryDisposition。',
     observe,
     {
-      timeoutMs: 600_000,
-      maxCaptureAttempts: 3,
+      timeoutMs: CHUNK_ATTEMPT_TIMEOUT_MS,
+      maxCaptureAttempts: CHUNK_CAPTURE_ATTEMPTS,
       maxTurns: 64,
+      // 分段协议要求每一轮都以工具调用收尾（批次工具或最终提交），因此用 required
+      // 而不是 named：named 会锁死 submit_document_chunk_analysis，
+      // 使产品事实批次工具 submit_product_inventory_batch 无法调用。
+      // 端点不支持时 runAgentCaptured 会自动降级到 auto，行为等同现状。
+      requiredToolName: 'submit_document_chunk_analysis',
+      toolChoiceState: toolChoiceState ?? { mode: 'required' },
       // 分段提交会被产品事实捕获契约拒绝（角色混用、缺必填字段、口径与数据不一致等）。
       // 不带诊断时模型只收到通用话术，无法得知被拒原因，会原样重复同一个错误直到本段失败；
       // 这里把具体校验错因编入下一轮提示，让重试真正携带纠错信息。
@@ -1044,6 +1059,8 @@ async function runMaterialAnalysisMapReduceOnce(
   reportMapProgress(reusedChunks ? `复用 ${reusedChunks}/${plan.chunks.length} 个已完成分段` : '正在分析全文分段');
 
   const pending = before.filter((chunk) => chunk.status !== 'completed');
+  // 本次 run 内共享工具选择协商结果：端点若拒绝 required，只降级一次，后续分段直接沿用。
+  const chunkToolChoiceState: StructuredToolChoiceState = { mode: 'required' };
   try {
     await adaptiveMap(pending, input.concurrency ?? Number(process.env.MODELING_MATERIAL_ANALYSIS_CONCURRENCY ?? 5), async (record) => {
       throwIfCancelled(input.projectId, 'analyze');
@@ -1059,6 +1076,7 @@ async function runMaterialAnalysisMapReduceOnce(
             chunk,
             input.observe?.(`document_map_${record.documentKey}_${record.chunkIndex}`),
             Boolean(input.requireProductInventory),
+            chunkToolChoiceState,
           ),
         );
         const payload = shared.value;
