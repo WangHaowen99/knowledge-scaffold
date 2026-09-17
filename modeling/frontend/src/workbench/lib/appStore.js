@@ -981,7 +981,10 @@ export const actions = {
         })),
       }));
       await waitForPlanContinuationBoundary(projectId);
-      await actions.send(planContinuationPrompt(approved));
+      // 批准/拒绝随结构化字段下发，服务端不再从文案措辞里猜决定。
+      await actions.send(planContinuationPrompt(approved), {
+        planDecision: approved ? 'approved' : 'rejected',
+      });
       return result;
     } catch (error) {
       const data = error?.data && typeof error.data === 'object' ? error.data : {};
@@ -1020,7 +1023,9 @@ export const actions = {
     if (!projectId || !resume?.planId) return null;
     try {
       await waitForPlanContinuationBoundary(projectId);
-      await actions.send(planContinuationPrompt(resume.approved));
+      await actions.send(planContinuationPrompt(resume.approved), {
+        planDecision: resume.approved ? 'approved' : 'rejected',
+      });
       store.set({ error: '' });
       return true;
     } catch (cause) {

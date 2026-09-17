@@ -524,8 +524,19 @@ def _answer_requires_script_artifact(
     """
     if not _interaction_requires_artifact(interaction):
         return False
-    text = json.dumps(answer, ensure_ascii=False)
-    return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(text))
+    # 豁免只认专家选中的选项身份（value/action/selected/displayText），
+    # 不扫自由文本：答复里写「不调整 A，但请生成 B」不构成对产物要求的
+    # 豁免，否则一句带否定词的补充说明就会静默放水。
+    selected_parts = [
+        str(answer.get("value") or ""),
+        str(answer.get("action") or ""),
+        str(answer.get("displayText") or ""),
+    ]
+    selected_parts.extend(
+        str(item) for item in (answer.get("selected") or []) if item is not None
+    )
+    joined = "\n".join(part for part in selected_parts if part)
+    return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(joined))
 
 
 def _required_text_constraint(
@@ -2819,11 +2830,19 @@ class AgentService:
         token: str,
         text: str,
         purpose_review_completed: bool = False,
+        plan_decision: str = "",
     ) -> dict[str, Any]:
         _require_project_and_token(project_id, token)
         message = text.strip()
         if not message:
             raise AgentRuntimeError("INVALID_MESSAGE", "请输入要补充或追问的内容")
+        # 页面批准建模计划的那次点击本身就是结构化信号：必需工具从这里
+        # 进料，不依赖续跑文案的措辞（意图正则双轨保留，待统一拔除）。
+        plan_required_tools = (
+            set(APPROVED_PLAN_REQUIRED_TOOLS)
+            if str(plan_decision).strip().lower() == "approved"
+            else set()
+        )
         run = self.store.active_run(project_id)
         if run is None:
             return {"mode": "new_run", "run": await self.start_run(project_id=project_id, token=token, message=message)}
@@ -2861,7 +2880,7 @@ class AgentService:
                 restore_interaction=None if resolved_elsewhere else interaction,
                 required_tools=_required_tools_for_user_intent(
                     message, situation=_situation_of(self._live.get(run.id)),
-                ),
+                ) | plan_required_tools,
                 autonomous_seed=True,
             )
             return {
@@ -2879,7 +2898,7 @@ class AgentService:
                 message,
                 required_tools=_required_tools_for_user_intent(
                     message, situation=_situation_of(self._live.get(run.id)),
-                ),
+                ) | plan_required_tools,
                 autonomous_seed=True,
             )
             self.store.mark_steering_delivered(steering_id)
@@ -2926,6 +2945,7 @@ class AgentService:
         live.required_tools.update(_required_tools_for_user_intent(
             message, situation=live.situation, notes=live.intent_notes,
         ))
+        live.required_tools.update(plan_required_tools)
         if _product_ledger_requested(message):
             try:
                 await self._gateway.call(

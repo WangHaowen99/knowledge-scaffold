@@ -24,11 +24,13 @@ from modeling_agent.rails import (
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.schemas import InteractionRecord, RUN_RUNNING, RUN_SUSPENDED, RunRecord
 from modeling_agent.service import (
+    APPROVED_PLAN_REQUIRED_TOOLS,
     AgentService,
     APPROVED_PLAN_REQUIRED_TOOLS,
     LiveRun,
     PURPOSE_REVIEW_ALLOWED_TOOLS,
     _absorb_plan_progress,
+    _answer_requires_script_artifact,
     _expert_answer_intent_text,
     _required_tools_for_user_intent,
     _unsatisfiable_required_tools,
@@ -1756,6 +1758,75 @@ async def test_cancel_required_tools_resumes_run_without_requirement(settings) -
         assert runtime.store.technical_recoveries(run.id) == {}
     finally:
         await runtime.shutdown()
+
+
+async def test_plan_decision_signal_feeds_required_tools_without_wording(settings) -> None:
+    """页面批准计划的结构化信号直接进料必需工具，不依赖续跑文案措辞。"""
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    captured: list[set[str]] = []
+
+    async def continue_stub(run, token, prompt, **kwargs):
+        captured.append(set(kwargs.get("required_tools") or ()))
+        return {"id": run.id, "status": "queued"}
+
+    runtime._continue = continue_stub  # type: ignore[method-assign]
+    await runtime.startup()
+    try:
+        run = runtime.store.create_run(RunRecord(
+            id="run_plan_decision_signal",
+            project_id="project_plan_decision_signal",
+            session_id="plan-decision-signal-session",
+            status="queued",
+            prompt="规划建模计划",
+            token_fingerprint="000000000000",
+        ))
+        runtime.store.update_run(run.id, status="suspended")
+
+        # 措辞刻意不含任何计划执行关键词：结构化信号必须独立生效。
+        await runtime.steer(
+            project_id=run.project_id,
+            token="token_plan_decision",
+            text="开工吧",
+            plan_decision="approved",
+        )
+        assert captured and APPROVED_PLAN_REQUIRED_TOOLS <= captured[0]
+
+        # 拒绝计划不注入执行链要求。
+        runtime.store.update_run(run.id, status="suspended")
+        await runtime.steer(
+            project_id=run.project_id,
+            token="token_plan_decision",
+            text="先停一停",
+            plan_decision="rejected",
+        )
+        assert not (APPROVED_PLAN_REQUIRED_TOOLS & captured[1])
+    finally:
+        await runtime.shutdown()
+
+
+async def test_script_artifact_waiver_only_honors_selected_option(settings) -> None:
+    """产物豁免只认选中项：自由文本里的否定词不构成豁免。"""
+    interaction = InteractionRecord(
+        id="interaction_waiver_scope",
+        project_id="project_waiver_scope",
+        run_id="run_waiver_scope",
+        tool_call_id="call_waiver_scope",
+        kind="scope_confirmation",
+        payload={"question": "是否按契约实现？", "operation": "demo_operation"},
+    )
+    # 专家选了继续实现，只是自由文本里出现了否定词：仍要求产物。
+    assert _answer_requires_script_artifact(interaction, {
+        "value": "adjust",
+        "feedback": "本轮不生成 X 也可以，但请生成 Y 的脚本",
+    }) is True
+    # 专家明确选中「本轮不生成」选项：豁免生效。
+    assert _answer_requires_script_artifact(interaction, {
+        "value": "no_scripts",
+        "displayText": "本轮不生成脚本",
+    }) is False
+    assert _answer_requires_script_artifact(interaction, {
+        "value": "skip",
+    }) is False
 
 
 async def test_validation_issue_resume_preserves_report_locator_and_has_fallback(settings) -> None:

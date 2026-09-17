@@ -29,6 +29,9 @@ class StartIncrementRoundBody(BaseModel):
 class SteerBody(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     purposeReviewCompleted: bool = False
+    # 页面批准/拒绝建模计划的结构化信号；服务端据此进料必需工具，
+    # 不再依赖从续跑文案里用正则猜回来。
+    planDecision: str = Field(default="", max_length=20)
 
 
 class ResumeIssueBody(BaseModel):
@@ -136,6 +139,7 @@ def create_app(service: AgentService) -> Starlette:
             token=_require_token(request),
             text=body.message,
             purpose_review_completed=body.purposeReviewCompleted,
+            plan_decision=body.planDecision,
         )
         return JSONResponse(result, status_code=202)
 
