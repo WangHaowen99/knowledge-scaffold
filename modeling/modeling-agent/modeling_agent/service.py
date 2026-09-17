@@ -1583,27 +1583,9 @@ class AgentService:
                     status=502,
                 )
             intent_required_tools.add("get_change_plan")
-        # Persist the workflow policy before the model gets a chance to create
-        # a plan. Core remains the authority, but this early call closes the
-        # advisory-mode race between user intent and the first tool call.
-        if _product_ledger_requested(prompt):
-            try:
-                await self._gateway.call(
-                    project_id=project_id,
-                    run_id=run_id,
-                    token=token,
-                    tool="require_product_ledger",
-                    arguments={"required": True},
-                )
-            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
-                # The required tool remains in the run contract; a later
-                # recovery will expose the failure rather than silently
-                # allowing formal generation.
-                logger.warning(
-                    "Could not persist the product-ledger requirement for run %s: %s",
-                    run_id,
-                    type(error).__name__,
-                )
+        # 台账门禁不再由措辞猜测静默启用（0.26.9.2 台账死锁事故）：启用只能
+        # 来自专家确认——助手判断需要对账时先发确认卡，批准后再调
+        # require_product_ledger；核心侧对启用与规则批次仍保持确定性门禁。
         live = LiveRun(
             run_id=run_id,
             project_id=project_id,
@@ -2687,17 +2669,6 @@ class AgentService:
                 "summary": "补充说明已绑定到恢复任务",
                 "constraintHash": required_text_constraint.get("textHash"),
             })
-        if required_text_constraint and _product_ledger_requested(answer_text):
-            # The decision card is itself an explicit workflow policy. Require
-            # the policy write and source/ledger evidence, independent of the
-            # deployment's advisory setting.
-            required_tools.update({
-                "require_product_ledger",
-                "get_product_inventory_source",
-                "begin_product_ledger",
-                "append_product_ledger_batch",
-                "finalize_product_ledger",
-            })
         if direct_confirmation:
             approved = answer.get("approved") is True
             if not approved:
@@ -2946,21 +2917,6 @@ class AgentService:
             message, situation=live.situation, notes=live.intent_notes,
         ))
         live.required_tools.update(plan_required_tools)
-        if _product_ledger_requested(message):
-            try:
-                await self._gateway.call(
-                    project_id=project_id,
-                    run_id=run.id,
-                    token=token,
-                    tool="require_product_ledger",
-                    arguments={"required": True},
-                )
-            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
-                logger.warning(
-                    "Could not persist the product-ledger requirement for run %s: %s",
-                    run.id,
-                    type(error).__name__,
-                )
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
         )
@@ -6631,17 +6587,6 @@ _PACKAGE_FUSION_INTENT = re.compile(
     re.IGNORECASE,
 )
 
-# 明确要求逐项对账的产品/规则大清单。只有同时出现数量、逐项、去重、
-# 归并或完整性等信号时才触发产品台账工具，避免影响普通单条规则修改。
-_PRODUCT_LEDGER_INTENT = re.compile(
-    r"(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
-    r"(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)|"
-    r"(?:产品|商品).{0,20}(?:台账|清单)|(?:台账|清单).{0,20}(?:产品|商品)|"
-    r"规则.{0,220}(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
-    r"(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}规则",
-    re.IGNORECASE,
-)
-
 _RELEASE_REENTRY_INTENT = re.compile(
     r"增量|迭代|新版本|补充.{0,8}资料|替换.{0,8}资料|导入.{0,8}(?:知识包|来源包)|"
     r"融合|修改.{0,8}(?:知识|规则|流程|对象|指标|脚本)|修复.{0,8}(?:知识|规则|流程|对象|指标|脚本)|"
@@ -6703,11 +6648,6 @@ def _document_rule_change_requested(text: str) -> bool:
 
 def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
-
-
-def _product_ledger_requested(text: str) -> bool:
-    """Return whether the user explicitly asks for a large, itemized ledger."""
-    return bool(_PRODUCT_LEDGER_INTENT.search(str(text or "")))
 
 
 # 会形成本阶段交付物的工具。阶段切换后重新计数，用来区分
@@ -7013,14 +6953,8 @@ def _required_tools_for_user_intent(
         required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
-    if _product_ledger_requested(value):
-        # 台账先作为一个确定性工具结果取得；产品台账模式为 advisory 时不阻断，
-        # 切换为 enforce 后由核心门禁阻止正式规则批次继续生成。
-        required.update({
-            "require_product_ledger", "get_product_inventory_source",
-            "begin_product_ledger", "append_product_ledger_batch",
-            "finalize_product_ledger",
-        })
+    # 台账意图正则已退役（0.26.9.2 死锁事故）：措辞不再产生台账必需工具或
+    # 静默策略写入。对账诉求由助手经专家确认卡启用门禁，核心侧确定性把关。
     if _approved_plan_execution_requested(value):
         required.update(APPROVED_PLAN_REQUIRED_TOOLS)
     return required

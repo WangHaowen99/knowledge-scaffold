@@ -1654,7 +1654,7 @@ async def test_required_tool_recovery_retry_restores_all_missing_tools(settings)
 
 
 async def test_confirmation_answer_intent_ignores_assistant_card_text() -> None:
-    """卡片文案出自助手，只有专家答复内容才能触发必需工具（台账误判回归）。"""
+    """卡片文案出自助手，不参与意图判定；台账正则已整体退役（死锁事故回归）。"""
     card_question = (
         "已完成建模目标草稿：覆盖从原油输入到终产品的物料平衡与收率计算，"
         "并将 10 项已识别的口径歧义整理为待确认项。"
@@ -1667,18 +1667,39 @@ async def test_confirmation_answer_intent_ignores_assistant_card_text() -> None:
     intent_text = _expert_answer_intent_text(approval_answer)
     assert card_question not in intent_text
     assert "displayText" not in intent_text
-    assert not _required_tools_for_user_intent(intent_text) & {
-        "require_product_ledger", "begin_product_ledger",
+    ledger_tools = {
+        "require_product_ledger", "get_product_inventory_source",
+        "begin_product_ledger", "append_product_ledger_batch",
+        "finalize_product_ledger",
     }
-    # 旧逻辑把问题文案一并判定，会将助手行文误判成产品台账诉求。
-    assert "require_product_ledger" in _required_tools_for_user_intent(
+    # 台账正则退役后，任何措辞——包括曾引发死锁的「终产品……10 项」卡片
+    # 行文和明确的对账诉求——都不再产生台账必需工具；启用只走专家确认卡。
+    assert not _required_tools_for_user_intent(intent_text) & ledger_tools
+    assert not _required_tools_for_user_intent(
         f"{card_question}\n{intent_text}",
-    )
-    # 专家自己明确要求逐项对账时，意图判定仍然生效。
+    ) & ledger_tools
     explicit = _expert_answer_intent_text(
         {"feedback": "请把产品清单逐项去重后完整对账"},
     )
-    assert "require_product_ledger" in _required_tools_for_user_intent(explicit)
+    assert not _required_tools_for_user_intent(explicit) & ledger_tools
+
+
+async def test_ledger_wording_never_enables_policy_silently(settings) -> None:
+    """对账措辞不再触发 require_product_ledger 的静默策略写入。"""
+    ledger_wording = "请把产品清单逐项去重后完整对账，保留 198 条与 3 组归并"
+    gateway = FakeGateway({"gate_status": {"pass": True, "blockers": []}})
+    runtime = service(settings, ScriptedModel([[], []], final="收到，将先与你确认是否启用台账门禁。"), gateway)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_ledger_wording",
+            token="token_1",
+            message=ledger_wording,
+        )
+        await wait_for_status(runtime, started["id"], {"completed", "failed"})
+        assert "require_product_ledger" not in [call["tool"] for call in gateway.calls]
+    finally:
+        await runtime.shutdown()
 
 
 async def test_unsatisfiable_required_tools_waived_only_after_real_attempts() -> None:
