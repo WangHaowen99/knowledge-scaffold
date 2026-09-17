@@ -31,7 +31,9 @@ consumer_compose() {
 }
 
 consumer_container() {
-  if docker inspect onto-agent-backend >/dev/null 2>&1; then
+  # 同名镜像也会被 docker inspect 命中，必须限定 --type container，
+  # 否则探测到的是镜像而不是在跑的 consumer 容器。
+  if docker inspect --type container onto-agent-backend >/dev/null 2>&1; then
     printf 'onto-agent-backend\n'
     return 0
   fi

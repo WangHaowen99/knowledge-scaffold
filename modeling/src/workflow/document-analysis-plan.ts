@@ -4,7 +4,8 @@ import type { ReadableDocument } from './document-read-session.js';
 
 export const MATERIAL_ANALYSIS_PROTOCOL_VERSION = 'map-reduce-v1';
 export const MATERIAL_ANALYSIS_SPLITTER_VERSION = 'section-token-v1';
-const MATERIAL_ANALYSIS_PROMPT_VERSION = 'facts-v1';
+// 产品事实改为显式、可校验的捕获契约，仅含摘要的旧检查点不得复用。
+const MATERIAL_ANALYSIS_PROMPT_VERSION = 'facts-inventory-v3';
 
 export interface DocumentAnalysisChunk {
   documentKey: string;

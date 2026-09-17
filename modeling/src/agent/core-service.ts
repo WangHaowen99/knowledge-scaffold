@@ -212,6 +212,8 @@ const AGENT_REQUIRED_FILES: ReadonlySet<string> = new Set([
   ...PACKAGE_REQUIRED_FILES,
 ]);
 const CHANGE_GROUP_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/u;
+/** 有界目标上下文里保留的候选条数；完整候选集走 get_analysis_candidates 分页。 */
+const GOAL_CONTEXT_CANDIDATE_LIMIT = 40;
 const DOMAIN_TOOL_CONTRACT_VERSION = 'domain-patch-v2';
 const DOMAIN_TOOL_NAMES = new Set([
   'list_domain_resources', 'get_domain_resource',
@@ -1321,6 +1323,7 @@ export class AgentCoreService {
       case 'list_documents': return this.listDocuments(context.project.id);
       case 'get_goal_context': return this.goalContext(context.project.id, workspace);
       case 'get_material_context': return this.materialContext(context.project.id, args);
+      case 'get_analysis_candidates': return this.analysisCandidates(context, args);
       case 'require_product_ledger': return this.requireProductLedger(context, workspace, args);
       case 'get_product_inventory_source': return this.productInventorySource(context, args);
       case 'begin_product_ledger': return runProjectWriteExclusive(
@@ -5019,20 +5022,27 @@ export class AgentCoreService {
     const openQuestions = Array.isArray(analysis.openQuestions) ? analysis.openQuestions.slice(0, 20).map((item: any) => ({
       topic: compact(item?.topic, 300), why: compact(item?.why, 600),
     })).filter((item) => item.topic && item.why) : [];
-    const candidates = Array.isArray(analysis.candidateArtifacts) ? analysis.candidateArtifacts.slice(0, 40).map((item: any) => ({
+    const candidateArtifacts = Array.isArray(analysis.candidateArtifacts) ? analysis.candidateArtifacts : [];
+    const candidates = candidateArtifacts.slice(0, GOAL_CONTEXT_CANDIDATE_LIMIT).map((item: any) => ({
       kind: compact(item?.kind, 40), name: compact(item?.name, 200), rationale: compact(item?.rationale, 600),
       evidence: stringArray(item?.evidence).slice(0, 8),
-    })).filter((item) => item.name) : [];
+    })).filter((item) => item.name);
     return {
       version: 'goal-context-v1',
       workingRevision: workspace.base_revision_oid,
       sourceRevisions: documents,
       analysisUpdatedAt: row?.updated_at ?? null,
-      coverageComplete: Boolean(row),
+      coverageComplete: Boolean(row) && analysis.coverageComplete !== false,
       domainOverview: compact(analysis.domainOverview, 4_000),
       candidateGoals: Array.isArray(analysis.candidateGoals) ? analysis.candidateGoals.slice(0, 3) : [],
       candidateProcesses: Array.isArray(analysis.candidateProcesses) ? analysis.candidateProcesses.slice(0, 3) : [],
       candidates,
+      // 截断必须自报。只给前 N 条又不说还有多少，调用方会把"看到的"当成"全部的"。
+      candidateTotal: candidateArtifacts.length,
+      candidatesTruncated: candidateArtifacts.length > candidates.length,
+      ...(candidateArtifacts.length > candidates.length
+        ? { candidatePagingTool: 'get_analysis_candidates' }
+        : {}),
       openQuestions,
       display: { text: row ? '已整理可用于目标生成的结构化资料依据' : '当前没有已完成的资料分析，目标只可依据用户明确说明生成' },
     };
@@ -5255,6 +5265,43 @@ export class AgentCoreService {
     };
   }
 
+  /**
+   * 完整候选集分页读取。有界目标上下文刻意保持紧凑，需要逐条盘点候选时
+   * 走这里，而不是让调用方拿被截断的 get_goal_context 结果当全集。
+   */
+  private analysisCandidates(context: AgentToolContext, args: Record<string, unknown>) {
+    const row = this.db.prepare(`SELECT id, result_json, updated_at FROM material_analysis_runs
+      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
+      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(context.project.id) as
+      | { id: string; result_json: string; updated_at: string }
+      | undefined;
+    let analysis: Record<string, any> = {};
+    try { analysis = row ? JSON.parse(row.result_json) as Record<string, any> : {}; } catch { /* 旧分析损坏时按空集返回 */ }
+    const all = Array.isArray(analysis.candidateArtifacts) ? analysis.candidateArtifacts : [];
+    const kind = String(args.kind ?? '').trim();
+    const items = kind ? all.filter((item: any) => String(item?.kind ?? '') === kind) : all;
+    const limitValue = Number(args.limit ?? 50);
+    const limit = Number.isSafeInteger(limitValue) ? Math.max(1, Math.min(limitValue, 100)) : 50;
+    const cursorValue = Number(args.cursor ?? 0);
+    const offset = Number.isSafeInteger(cursorValue) && cursorValue >= 0 ? cursorValue : 0;
+    if (offset > items.length) {
+      throw new AgentCoreError('ANALYSIS_CANDIDATE_CURSOR_INVALID', '候选游标超出当前数据范围', ['从第一页重新读取'], 400);
+    }
+    const page = items.slice(offset, offset + limit);
+    const next = offset + page.length;
+    return {
+      analysisRevision: row?.id ?? null,
+      analysisUpdatedAt: row?.updated_at ?? null,
+      total: items.length,
+      items: page,
+      cursor: offset,
+      nextCursor: next < items.length ? next : null,
+      hasMore: next < items.length,
+      ...(kind ? { kind } : {}),
+      display: { text: `已读取分析候选 ${next}/${items.length} 项` },
+    };
+  }
+
   private requireProductLedger(
     context: AgentToolContext,
     workspace: WorkspaceRow,
@@ -5343,12 +5390,13 @@ export class AgentCoreService {
     }
     const timestamp = nowIso();
     this.db.prepare(`INSERT INTO product_ledger_drafts
-      (project_id, ledger_id, source_revision, analysis_revision, scope, raw_count, canonical_count,
+      (project_id, ledger_id, source_revision, analysis_revision, source_fingerprint, scope, raw_count, canonical_count,
        merged_group_count, status, next_batch_no, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)
       ON CONFLICT(project_id, ledger_id) DO UPDATE SET
         source_revision = excluded.source_revision,
         analysis_revision = excluded.analysis_revision,
+        source_fingerprint = excluded.source_fingerprint,
         scope = excluded.scope,
         raw_count = excluded.raw_count,
         canonical_count = excluded.canonical_count,
@@ -5358,6 +5406,7 @@ export class AgentCoreService {
       ledgerId,
       sourceRevision,
       analysisRevision,
+      sourceAnalysis?.sourceSetFingerprint ?? null,
       scope,
       Number.isSafeInteger(Number(args.raw_count)) ? Number(args.raw_count) : null,
       Number.isSafeInteger(Number(args.canonical_count)) ? Number(args.canonical_count) : null,
@@ -5536,6 +5585,12 @@ export class AgentCoreService {
       } else if (canonicalCount !== sourceCanonicalCount) {
         declaredMismatches.push(`台账条目 ${canonicalCount} 与结构化来源 ${sourceCanonicalCount} 项不一致，仍有 ${Math.max(0, sourceCanonicalCount - canonicalCount)} 项未处理`);
       }
+      // 草稿记录了建立时的资料集指纹。来源被换掉后条数仍可能凑巧对上，
+      // 只有指纹能证明这份台账对的还是同一批资料。
+      if (sourceAnalysis && draft.source_fingerprint
+        && String(draft.source_fingerprint) !== sourceAnalysis.sourceSetFingerprint) {
+        declaredMismatches.push('来源资料集指纹已变化，台账必须基于当前分析重新建立');
+      }
     if (sourceAnalysis) {
         if (sourceAnalysis.summary) {
           if (sourceAnalysis.summary.canonicalCount !== canonicalCount) {
@@ -5608,11 +5663,17 @@ export class AgentCoreService {
         rawCount, canonicalCount, mergedGroupCount, required: true, entries,
         sourceAnalysisRevision: draft.analysis_revision,
         ...(draft.analysis_revision ? {
-          sourceFingerprint: this.productInventoryAnalysis(workspace.project_id, draft.analysis_revision)?.sourceSetFingerprint,
+          sourceFingerprint: String(draft.source_fingerprint ?? '').trim()
+            || this.productInventoryAnalysis(workspace.project_id, draft.analysis_revision)?.sourceSetFingerprint,
         } : {}),
       }, true);
       const validation = declaredMismatches.length && result.validation
-        ? { ...result.validation, pass: false, errors: [...declaredMismatches, ...result.validation.errors] }
+        ? {
+          ...result.validation,
+          pass: false,
+          blocking: true,
+          errors: [...declaredMismatches, ...result.validation.errors],
+        }
         : result.validation;
       const status = validation?.pass === true ? 'finalized' : 'needs_review';
       if (declaredMismatches.length && validation) {
@@ -5643,7 +5704,13 @@ export class AgentCoreService {
     id: string;
     sourceSetFingerprint: string;
     items: ProductInventoryItem[];
-    summary?: { rawCount: number; canonicalCount: number; mergedGroupCount: number };
+    summary?: {
+      rawCount: number;
+      canonicalCount: number;
+      mergedGroupCount: number;
+      completeCount: number;
+      insufficientCount: number;
+    };
   } | null {
     const row = this.db.prepare(`SELECT id, source_set_fingerprint, result_json
       FROM material_analysis_runs
@@ -5692,12 +5759,18 @@ export class AgentCoreService {
     const rawCount = items.reduce((sum, item) => sum + item.sourceRecordIds.length, 0);
     const mergedGroupCount = new Set(items.map((item) => item.mergeGroupId).filter(Boolean)).size;
     if (canonicalIds.size !== items.length || sourceIds.size !== rawCount) return null;
+    const completeCount = items.filter((item) => item.evidenceStatus === 'complete').length;
+    const insufficientCount = items.length - completeCount;
     const declaredSummary = analysis.productInventorySummary;
     if (declaredSummary && typeof declaredSummary === 'object' && !Array.isArray(declaredSummary)) {
       const summary = declaredSummary as Record<string, unknown>;
       if (Number(summary.rawCount) !== rawCount
         || Number(summary.canonicalCount) !== items.length
         || Number(summary.mergedGroupCount) !== mergedGroupCount) return null;
+      // 申报了资料完整性计数就必须与逐项事实一致，否则整页作废。
+      // 只核对前三项会让"条数对得上、完整性对不上"的来源混过闭合检查。
+      if (summary.completeCount !== undefined && Number(summary.completeCount) !== completeCount) return null;
+      if (summary.insufficientCount !== undefined && Number(summary.insufficientCount) !== insufficientCount) return null;
     }
     return {
       id: row.id,
@@ -5707,6 +5780,8 @@ export class AgentCoreService {
         rawCount,
         canonicalCount: items.length,
         mergedGroupCount,
+        completeCount,
+        insufficientCount,
       },
     };
   }
@@ -5719,42 +5794,31 @@ export class AgentCoreService {
   private productInventorySource(context: AgentToolContext, args: Record<string, unknown>) {
     const projectId = context.project.id;
     const workspaceRevision = this.workspace(projectId)?.base_revision_oid ?? '';
-    const row = this.db.prepare(`SELECT id, source_set_fingerprint, result_json
-      FROM material_analysis_runs
-      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
-      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(projectId) as
-      | { id: string; source_set_fingerprint: string; result_json: string }
-      | undefined;
-    if (!row) {
-      throw new AgentCoreError(
-        'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
-        '当前没有已完成的结构化资料分析，无法建立产品清单台账',
-        ['先完成资料分析，或通过可操作问题卡补充缺失的产品清单来源'],
-        409,
-        { analysisRevision: null, processed: 0, remaining: 0 },
-      );
-    }
     const requestedRevision = String(args.analysis_revision ?? '').trim();
-    if (requestedRevision && requestedRevision !== row.id) {
-      throw new AgentCoreError(
-        'PRODUCT_INVENTORY_REVISION_CONFLICT',
-        '产品清单来源分析修订已经变化，请从新修订的第一页重新读取',
-        ['清空旧游标，并使用返回的 analysisRevision 重新开始'],
-        409,
-        { expectedAnalysisRevision: requestedRevision, currentAnalysisRevision: row.id },
-      );
-    }
-    const scope = String(args.scope ?? 'product_catalog').trim() || 'product_catalog';
-    const source = this.productInventoryAnalysis(projectId, row.id);
+    // 只在"确实产出了结构化产品事实"的分析里挑来源。按最新完成运行取值会被
+    // 精读等不产出产品事实的运行顶掉，让已有的合格来源永远取不到。
+    const source = this.productInventoryAnalysis(projectId, requestedRevision || null);
     if (!source || !source.items.length) {
+      const latest = requestedRevision ? this.productInventoryAnalysis(projectId, null) : null;
+      if (latest?.items.length) {
+        throw new AgentCoreError(
+          'PRODUCT_INVENTORY_REVISION_CONFLICT',
+          '指定的分析修订没有可用的结构化产品事实，请改用当前可用修订重新读取',
+          ['清空旧游标，并使用返回的 currentAnalysisRevision 重新开始'],
+          409,
+          { expectedAnalysisRevision: requestedRevision, currentAnalysisRevision: latest.id },
+        );
+      }
       throw new AgentCoreError(
         'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
         '当前资料分析没有提交可审计的结构化产品事实，不能把规则候选当作产品台账来源',
         ['重新运行资料分析并提交 productInventory；完成前不能建立产品清单台账'],
         409,
-        { analysisRevision: row.id, sourceFingerprint: row.source_set_fingerprint, productInventory: false },
+        { analysisRevision: requestedRevision || null, productInventory: false },
       );
     }
+    const scope = String(args.scope ?? 'product_catalog').trim() || 'product_catalog';
+    const boundRevision = source.id;
     const items = source.items;
     // Scope is part of the ledger identity, but the analysis result is already
     // project-scoped. Do not guess-filter by a free-form scope string: doing so
@@ -5769,9 +5833,9 @@ export class AgentCoreService {
       const separator = token.lastIndexOf(':');
       if (separator > 0) {
         const cursorRevision = token.slice(0, separator);
-        if (cursorRevision !== row.id) {
+        if (cursorRevision !== boundRevision) {
           throw new AgentCoreError('PRODUCT_INVENTORY_CURSOR_INVALID', '产品清单来源游标属于另一份分析修订', ['使用当前 analysisRevision 返回的 nextCursor 继续读取'], 409, {
-            expectedAnalysisRevision: row.id, cursorAnalysisRevision: cursorRevision,
+            expectedAnalysisRevision: boundRevision, cursorAnalysisRevision: cursorRevision,
           });
         }
         const parsed = Number(token.slice(separator + 1));
@@ -5800,14 +5864,14 @@ export class AgentCoreService {
       total: scopedItems.length,
       items: page,
       cursor: offset,
-      nextCursor: next < scopedItems.length ? `${row.id}:${next}` : null,
+      nextCursor: next < scopedItems.length ? `${boundRevision}:${next}` : null,
       hasMore: next < scopedItems.length,
       // The ledger gate is bound to the package/workspace revision. Keep the
       // analysis fingerprint as a separate fact so callers cannot accidentally
       // submit an analysis hash where a package revision is required.
       sourceRevision: workspaceRevision,
-      sourceFingerprint: row.source_set_fingerprint,
-      analysisRevision: row.id,
+      sourceFingerprint: source.sourceSetFingerprint,
+      analysisRevision: boundRevision,
       ...(source.summary ? { sourceSummary: source.summary } : {}),
       display: { text: `已读取产品清单来源 ${next}/${scopedItems.length} 项` },
     };
@@ -6059,6 +6123,9 @@ export class AgentCoreService {
       projectId: context.project.id,
       documents: readableDocuments,
       llm: buildTaskLlm(),
+      // 项目要求逐项产品台账时，精读必须在分段阶段就捕获产品事实，
+      // 否则这一次"已完成"的分析里永远没有台账可用的来源。
+      requireProductInventory: this.productLedgerRequired(context.project.id),
     });
     const textCoverage = textResult.coverage.map((item) => ({
       documentId: item.documentId,
@@ -6074,8 +6141,12 @@ export class AgentCoreService {
       } : {}),
     }));
     const coverage = textCoverage;
-    if (coverage.some((item) => !item.complete) || coverage.length !== selected.length) {
-      throw new AgentCoreError('FULL_READ_INCOMPLETE', '全文精读没有覆盖全部内容，已保留进度', ['从已完成分段继续处理缺失范围'], 409, { coverage });
+    if (coverage.some((item) => !item.complete) || coverage.length !== selected.length
+      || !textResult.coverageComplete) {
+      throw new AgentCoreError('FULL_READ_INCOMPLETE', '全文精读没有覆盖全部内容，已保留进度', ['从已完成分段继续处理缺失范围'], 409, {
+        coverage,
+        failedChunkCount: textResult.failedChunkCount,
+      });
     }
     return {
       documents: textResult.summaries.map((item) => {
@@ -6099,8 +6170,17 @@ export class AgentCoreService {
       }),
       coverage,
       totalChars: textCoverage.reduce((sum, item) => sum + item.totalChars, 0),
+      analysisRevision: textResult.analysisRevision,
+      sourceFingerprint: textResult.sourceFingerprint,
+      productInventoryCount: textResult.productInventory.length,
+      ...(textResult.productInventorySummary
+        ? { productInventorySummary: textResult.productInventorySummary }
+        : {}),
       display: {
-        text: `已并行全文精读 ${coverage.length} 份资料，全部内容完整度 100%`,
+        text: `已并行全文精读 ${coverage.length} 份资料，全部内容完整度 100%`
+          + (textResult.productInventory.length
+            ? `，逐项产品事实 ${textResult.productInventory.length} 项`
+            : ''),
       },
     };
   }
@@ -7232,6 +7312,17 @@ export class AgentCoreService {
     const validation = validateProductLedger(ledger);
     const dependencyFingerprint = validation.fingerprint;
     const timestamp = nowIso();
+    // 先判后写：拒绝的台账不能落库。先写再抛会把一份被拒绝的快照留在
+    // product_ledger_snapshots 里，后续读取方看到的是"有台账"而不是"被拒绝"。
+    if (!validation.pass && config.productLedger.mode === 'enforce' && required && !allowInvalidForFinalize) {
+      throw new AgentCoreError(
+        'PRODUCT_LEDGER_INVALID',
+        `产品清单台账校验未通过：${validation.errors.slice(0, 8).join('；')}`,
+        ['补齐逐项来源定位、唯一 ID、归并关系和完整/不足状态后重新提交台账'],
+        409,
+        { validation, ledger },
+      );
+    }
     this.db.prepare(`INSERT INTO product_ledger_snapshots
       (project_id, source_revision, scope, required, ledger_json, validation_json, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -7259,15 +7350,6 @@ export class AgentCoreService {
           ledger_json = excluded.ledger_json, validation_json = excluded.validation_json, updated_at = excluded.updated_at`)
         .run(workspace.project_id, ledger.scope, dependencyFingerprint, ledger.sourceRevision, required ? 1 : 0,
           JSON.stringify(ledger), JSON.stringify(validation), timestamp, timestamp);
-    }
-    if (!validation.pass && config.productLedger.mode === 'enforce' && required && !allowInvalidForFinalize) {
-      throw new AgentCoreError(
-        'PRODUCT_LEDGER_INVALID',
-        `产品清单台账校验未通过：${validation.errors.slice(0, 8).join('；')}`,
-        ['补齐逐项来源定位、唯一 ID、归并关系和完整/不足状态后重新提交台账'],
-        409,
-        { validation, ledger },
-      );
     }
     return {
       ok: validation.pass,

@@ -1131,8 +1131,18 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "get_goal_context",
-        "读取服务端生成的有界目标上下文，只返回结构化资料结论、约束、候选和证据引用，不返回长篇原文工具历史。",
+        "读取服务端生成的有界目标上下文，只返回结构化资料结论、约束、候选和证据引用，不返回长篇原文工具历史。候选可能被截断，回执中的 candidatesTruncated 和 candidateTotal 是准数。",
         {}, display="正在整理目标生成依据",
+    ),
+    ToolSpec(
+        "get_analysis_candidates",
+        "分页读取完整的资料分析候选集。需要逐条盘点候选时用这个，不要把 get_goal_context 里被截断的候选当作全集。",
+        {
+            "cursor": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "kind": STRING,
+        },
+        display="正在分页读取分析候选",
     ),
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(

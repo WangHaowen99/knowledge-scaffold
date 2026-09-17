@@ -350,7 +350,7 @@ def _system_prompt(
 def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[SubAgentConfig]:
     material_tools = build_core_tools(context, {
         "list_documents", "list_document_outline", "read_document", "read_documents_fully",
-        "search_documents", "get_goal_context", "get_material_context",
+        "search_documents", "get_goal_context", "get_material_context", "get_analysis_candidates",
         "list_tables", "get_schema_overview", "describe_table", "read_table_rows",
     })
     package_read_names = {

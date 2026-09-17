@@ -138,6 +138,15 @@ def _phase_projection() -> list[dict[str, Any]]:
 
 MAX_AUTONOMOUS_CONTINUATIONS = 8
 MAX_STALLED_CONTINUATIONS = 2
+# 会带回台账进度的工具回执；恢复本轮快照时按完成顺序重放这些回执。
+PRODUCT_LEDGER_STATE_TOOLS = (
+    "begin_product_ledger",
+    "append_product_ledger_batch",
+    "get_product_ledger_progress",
+    "finalize_product_ledger",
+    "stage_product_ledger",
+    "get_product_ledger",
+)
 # 计划仍有必选任务未完成时的停滞上限。取证、核对台账、检索原文都不算“进展”，
 # 但它们是写入前的正常准备，用 2 轮上限会让计划刚起步就被判成本轮完成。
 MAX_STALLED_PLAN_CONTINUATIONS = 5
@@ -4517,6 +4526,7 @@ class AgentService:
         )
         if steering:
             await live.steering.put(steering)
+        self._restore_product_ledger_situation(live)
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, resume))
         updated = self.store.require_run(run.id)
@@ -4604,6 +4614,7 @@ class AgentService:
             technical_recoveries=technical_recoveries,
             required_text_constraint=resolved_required_text_constraint,
         )
+        self._restore_product_ledger_situation(live)
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, prompt))
         updated = self.store.require_run(run.id)
@@ -4651,6 +4662,16 @@ class AgentService:
             if issued:
                 self.store.update_run(run_id, run_credential=issued)
         return claimed
+
+    def _restore_product_ledger_situation(self, live: LiveRun) -> None:
+        """重放台账工具回执，把已完成的批次进度带回本轮快照。
+
+        恢复时 observed_tools 只重建"调用过哪些工具"，业务结果只存在于回执里。
+        不重放的话，续跑的诊断回执会把已落库的批次报成 unknown / 0 条，
+        让用户以为进度丢了，从而重头再来。
+        """
+        for _name, result in self.store.tool_receipts_by_name(live.run_id, PRODUCT_LEDGER_STATE_TOOLS):
+            _absorb_product_ledger(live, result)
 
     def _validation_repair_state(self, run_id: str) -> CandidateValidationRepairState:
         return CandidateValidationRepairState.from_snapshot(

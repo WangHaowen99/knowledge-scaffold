@@ -5,6 +5,7 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -1176,6 +1177,26 @@ class RuntimeStore:
                 "display": {"text": "已阻止不一致的恢复操作"},
             }
         return _object(row["result_json"])
+
+    def tool_receipts_by_name(self, run_id: str, tool_names: Sequence[str]) -> list[tuple[str, dict[str, Any]]]:
+        """取回指定工具在本 Run 的全部原始回执，按完成顺序返回。
+
+        恢复断点时 observed_tools 只能从工具事件重建，而事件里没有业务结果；
+        "这次调用到底做成了什么"只存在于回执里（result_json 是未压缩的核心原始返回）。
+        判定规则留在调用方，store 只负责取数。
+        """
+        names = [str(name) for name in tool_names if str(name)]
+        if not names:
+            return []
+        placeholders = ",".join("?" for _ in names)
+        with self._lock:
+            rows = self._db.execute(
+                f"""SELECT tool_name, result_json FROM agent_tool_receipts
+                WHERE run_id = ? AND tool_name IN ({placeholders})
+                ORDER BY completed_at, rowid""",
+                (run_id, *names),
+            ).fetchall()
+        return [(str(row["tool_name"]), _object(row["result_json"])) for row in rows]
 
     def save_tool_receipt(
         self,
