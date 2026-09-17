@@ -1689,6 +1689,58 @@ class RuntimeStore:
             )
         return {"id": interjection_id, **detail}
 
+    def constraint_exists(self, project_id: str, constraint_id: int) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM project_constraints WHERE id = ? AND project_id = ?",
+                (constraint_id, project_id),
+            ).fetchone()
+        return row is not None
+
+    def interjection_exists(self, project_id: str, interjection_id: int) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM steering_messages WHERE id = ? AND project_id = ?",
+                (interjection_id, project_id),
+            ).fetchone()
+        return row is not None
+
+    def interaction_exists(self, project_id: str, interaction_id: str) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM agent_interactions WHERE id = ? AND project_id = ?",
+                (interaction_id, project_id),
+            ).fetchone()
+        return row is not None
+
+    def evidence_token_exists(self, project_id: str, token: str) -> bool:
+        """判断标识是否在本项目真实的工具往来记录里出现过。
+
+        修订号、文件路径这类标识不归本库管辖，但它们若真实存在，必然在
+        工具回执或事件流里出现过——模型编造的标识在这两处都查不到。
+        只验出现过与归属，不验语义。
+        """
+        escaped = (
+            token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        like = f"%{escaped}%"
+        with self._lock:
+            row = self._db.execute(
+                """SELECT 1 FROM agent_tool_receipts receipts
+                JOIN agent_runs runs ON runs.id = receipts.run_id
+                WHERE runs.project_id = ? AND receipts.result_json LIKE ? ESCAPE '\\'
+                LIMIT 1""",
+                (project_id, like),
+            ).fetchone()
+            if row is None:
+                row = self._db.execute(
+                    """SELECT 1 FROM agent_events
+                    WHERE project_id = ? AND payload_json LIKE ? ESCAPE '\\'
+                    LIMIT 1""",
+                    (project_id, like),
+                ).fetchone()
+        return row is not None
+
     def escalate_interjections(self, project_id: str, interaction_id: str) -> list[int]:
         """把未处置插话标记为「已升级待决」，绑定裁决卡。
 

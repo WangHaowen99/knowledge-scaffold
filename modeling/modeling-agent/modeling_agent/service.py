@@ -457,6 +457,31 @@ def _expert_answer_intent_text(answer: dict[str, Any]) -> str:
     )
 
 
+# 「已满足/已完成」处置的证据锚点语法：type:值，分号分隔，可附说明文字。
+# 锚点必须指向真实存在的记录——这是防谎报处置的确定性防线。
+_EVIDENCE_ANCHOR_PATTERN = re.compile(
+    r"^(constraint|task|interjection|interaction|revision|file|receipt|report|change_set|mutation)"
+    r"\s*[:：]\s*(.+)$",
+    re.IGNORECASE,
+)
+
+# LIKE 类锚点的最小长度：太短的标识（如 file:a）会匹配到任何记录，验真失效。
+_EVIDENCE_TOKEN_MIN_LENGTH = 4
+
+
+def _parse_evidence_anchors(evidence: str) -> list[tuple[str, str]]:
+    """把 evidence 拆成锚点列表；非 type:值 形状的片段视为说明文字忽略。"""
+    anchors: list[tuple[str, str]] = []
+    for part in re.split(r"[;；\n]", str(evidence or "")):
+        entry = part.strip()
+        if not entry:
+            continue
+        match = _EVIDENCE_ANCHOR_PATTERN.match(entry)
+        if match:
+            anchors.append((match.group(1).lower(), match.group(2).strip()))
+    return anchors
+
+
 def _interaction_requires_artifact(interaction: InteractionRecord) -> bool:
     """判断交互是否要求本轮形成实际脚本产物（新契约/候选/确认卡）。
 
@@ -3211,6 +3236,56 @@ class AgentService:
             self.store.resolve_technical_recoveries(run.id, [normalized_issue])
         return {"mode": "new_run", "run": started, "issueId": normalized_issue}
 
+    def _verify_evidence_anchors(
+        self,
+        project_id: str,
+        evidence: str,
+        *,
+        exclude_interjection_id: int = 0,
+    ) -> None:
+        """证据锚点逐个查表验真：只能引用真实存在的记录。
+
+        「已满足/已完成」是模型自报，纯文字承诺无法审计。锚点必须指向本库
+        的记录（约束、插话、交互），或本项目真实工具往来里出现过的标识
+        （修订号、文件路径等）。只验存在与归属，不验语义——语义兜底靠处置
+        记录对专家可见、可改判。被处置的插话自己不能作为自己的证据。
+        """
+        anchors = _parse_evidence_anchors(evidence)
+        if not anchors:
+            raise AgentRuntimeError(
+                "INTERJECTION_EVIDENCE_UNVERIFIABLE",
+                "evidence 必须包含至少一个可验真锚点（形如 revision:修订号、"
+                "file:路径、constraint:编号、task:编号、interaction:交互ID，"
+                "多个用分号分隔，可附说明文字），不能只写文字承诺",
+                status=400,
+            )
+        for kind, value in anchors:
+            if kind == "constraint":
+                verified = value.isdigit() and self.store.constraint_exists(
+                    project_id, int(value),
+                )
+            elif kind in {"task", "interjection"}:
+                verified = (
+                    value.isdigit()
+                    and int(value) != exclude_interjection_id
+                    and self.store.interjection_exists(project_id, int(value))
+                )
+            elif kind == "interaction":
+                verified = self.store.interaction_exists(project_id, value)
+            else:
+                verified = (
+                    len(value) >= _EVIDENCE_TOKEN_MIN_LENGTH
+                    and self.store.evidence_token_exists(project_id, value)
+                )
+            if not verified:
+                raise AgentRuntimeError(
+                    "INTERJECTION_EVIDENCE_NOT_FOUND",
+                    f"证据锚点查无实据：{kind}:{value}。只能引用真实存在的记录，"
+                    "或本项目工具结果里实际出现过的标识；不要编造，也不要引用"
+                    "被处置的插话自身",
+                    status=400,
+                )
+
     def _interjection_action(
         self,
         live: LiveRun,
@@ -3236,9 +3311,13 @@ class AgentService:
             if not evidence:
                 raise AgentRuntimeError(
                     "INTERJECTION_EVIDENCE_REQUIRED",
-                    "完成待办必须引用具体产物位置作为证据",
+                    "完成待办必须在 evidence 提供可验真锚点（形如 revision:修订号、"
+                    "file:路径，分号分隔）作为证据",
                     status=400,
                 )
+            self._verify_evidence_anchors(
+                project_id, evidence, exclude_interjection_id=interjection_id,
+            )
             completed = self.store.complete_interjection_task(
                 project_id, interjection_id, evidence=evidence,
             )
@@ -3284,11 +3363,26 @@ class AgentService:
             if not evidence:
                 raise AgentRuntimeError(
                     "INTERJECTION_EVIDENCE_REQUIRED",
-                    "「已满足」必须在 evidence 引用具体产物位置（文件路径、条目 ID 或状态事实）",
+                    "「已满足」必须在 evidence 提供可验真锚点（形如 revision:修订号、"
+                    "file:路径、constraint:编号，分号分隔，可附说明文字）",
                     status=400,
                 )
+            self._verify_evidence_anchors(
+                project_id, evidence, exclude_interjection_id=interjection_id,
+            )
             detail = {"evidence": evidence}
-            outcome = "已标记满足并留下证据"
+            outcome = "已标记满足并留下经验真的证据"
+        elif resolution == "answered":
+            # 纯提问型插话：不产生产物，没有锚点可引。回答本身由可见正文
+            # 承载（rails 保证本轮必有非空可见输出），这里只登记回答要点。
+            if not text:
+                raise AgentRuntimeError(
+                    "INTERJECTION_TEXT_REQUIRED",
+                    "「已回答」必须在 text 简述本轮给出的回答要点",
+                    status=400,
+                )
+            detail = {"answer": text}
+            outcome = "已登记为提问并在本轮正文回答"
         elif resolution == "rejected":
             if not reason:
                 raise AgentRuntimeError(
@@ -3299,7 +3393,7 @@ class AgentService:
         else:
             raise AgentRuntimeError(
                 "INTERJECTION_RESOLUTION_INVALID",
-                "resolution 只能是 constraint、task、satisfied 或 rejected",
+                "resolution 只能是 constraint、task、satisfied、answered 或 rejected",
                 status=400,
             )
         disposed = self.store.dispose_interjection(
@@ -3714,8 +3808,10 @@ class AgentService:
             f"本轮以完成并处置这条插话为唯一目标{remaining}。"
             "按「这条指令什么时候失效」判断它的寿命并选择出口：\n"
             "- 「不许/一律/以后都」这类长期规矩：调用 dispose_interjection(resolution='constraint') 登记为专家约束；\n"
-            "- 本轮能完成的一次性动作：直接执行，然后 dispose_interjection(resolution='satisfied') 并在 evidence 引用产物位置；\n"
+            "- 本轮能完成的一次性动作：直接执行，然后 dispose_interjection(resolution='satisfied') 并在 evidence "
+            "提供可验真锚点（形如 revision:修订号、file:路径，分号分隔）；\n"
             "- 本轮做不完的动作：dispose_interjection(resolution='task') 转成待办；\n"
+            "- 纯提问或咨询：先在正文回答，然后 dispose_interjection(resolution='answered') 并在 text 简述回答要点；\n"
             "- 与已批准计划或业务事实冲突：dispose_interjection(resolution='rejected') 说明理由。\n"
             "执行中被阶段守卫或工具拦截时，不要放弃也不要绕过：把拦截返回的原因、"
             "合法路径和代价整理成 ask(kind='conflict_decision') 请专家裁决，"
@@ -3731,7 +3827,8 @@ class AgentService:
             f"完成插话转来的待办 #{head['id']}：\n\n"
             f"「{head['text']}」\n\n"
             f"这一项来自专家插话{remaining}。本轮只推进这一项，完成后调用 "
-            "complete_interjection_task 并在 evidence 引用产物位置，然后结束本轮；"
+            "complete_interjection_task 并在 evidence 提供可验真锚点"
+            "（形如 revision:修订号、file:路径），然后结束本轮；"
             "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
             "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
             "不要反复读取资料试图自行补齐前提。"
@@ -5702,7 +5799,7 @@ class AgentService:
         return (
             f"专家插话 #{head['id']} 还没有处置结论。本轮系统指派的目标就是这条插话："
             "先完成或裁决它，并调用 dispose_interjection 登记处置（登记约束/转待办/"
-            "已满足附证据/拒绝说明理由），再考虑其它工作。不要请求用户指示，"
+            "已满足附可验真锚点/纯提问已回答/拒绝说明理由），再考虑其它工作。不要请求用户指示，"
             "也不要把插话内容当成普通聊天忽略。"
         )
 

@@ -440,3 +440,124 @@ def test_system_prompt_renders_constraint_slot() -> None:
 
     without = _system_prompt("技能正文", {"validatorVersion": "v1"})
     assert "专家约束（长期有效，直到专家撤销）" not in without
+
+
+# ---------------- service 层：证据锚点验真与 answered 出口 ----------------
+
+
+def _anchor_runtime(settings):
+    from modeling_agent.schemas import RunRecord
+    from modeling_agent.service import LiveRun
+
+    runtime = service(settings, ScriptedModel([]), FakeGateway())
+    project_id = "project_anchor_verify"
+    run = runtime.store.create_run(RunRecord(
+        id="run_anchor_verify",
+        project_id=project_id,
+        session_id="anchor-verify-session",
+        status="running",
+        prompt="继续建模",
+        token_fingerprint="000000000000",
+    ))
+    live = LiveRun(run_id=run.id, project_id=project_id, token="token_anchor")
+    return runtime, project_id, run, live
+
+
+@pytest.mark.asyncio
+async def test_satisfied_disposition_verifies_evidence_anchors(settings) -> None:
+    """「已满足」的证据必须是可验真锚点：文字承诺、编造标识、自引用都被拒。"""
+    runtime, project_id, run, live = _anchor_runtime(settings)
+    interjection = seed_expert_interjection(runtime.store, project_id, "把储罐利用率移出范围")
+
+    # 纯文字承诺：没有任何锚点，拒绝。
+    with pytest.raises(AgentRuntimeError) as unverifiable:
+        runtime._interjection_action(live, "dispose_interjection", {  # noqa: SLF001
+            "interjection_id": interjection,
+            "resolution": "satisfied",
+            "evidence": "已经处理完了，范围里没有这一项",
+        })
+    assert unverifiable.value.code == "INTERJECTION_EVIDENCE_UNVERIFIABLE"
+
+    # 编造的修订号：工具往来里查无实据，拒绝。
+    with pytest.raises(AgentRuntimeError) as fabricated:
+        runtime._interjection_action(live, "dispose_interjection", {  # noqa: SLF001
+            "interjection_id": interjection,
+            "resolution": "satisfied",
+            "evidence": "revision:cr_fabricated_999",
+        })
+    assert fabricated.value.code == "INTERJECTION_EVIDENCE_NOT_FOUND"
+
+    # 引用被处置的插话自身：不能自证，拒绝。
+    with pytest.raises(AgentRuntimeError) as self_reference:
+        runtime._interjection_action(live, "dispose_interjection", {  # noqa: SLF001
+            "interjection_id": interjection,
+            "resolution": "satisfied",
+            "evidence": f"task:{interjection}",
+        })
+    assert self_reference.value.code == "INTERJECTION_EVIDENCE_NOT_FOUND"
+
+    # 真实工具回执里出现过的修订号：验真通过，处置生效。
+    runtime.store.save_tool_receipt(
+        run.id, "call_anchor_1", "stage_change_set", {"mutation_id": "m1"},
+        {"ok": True, "revision": "cr_real_anchor_123"},
+    )
+    disposed = runtime._interjection_action(live, "dispose_interjection", {  # noqa: SLF001
+        "interjection_id": interjection,
+        "resolution": "satisfied",
+        "evidence": "revision:cr_real_anchor_123；goal 范围已同步调整",
+    })
+    assert disposed["ok"] is True
+    assert runtime.store.pending_interjections(project_id) == []
+
+
+@pytest.mark.asyncio
+async def test_answered_disposition_records_answer_summary(settings) -> None:
+    """纯提问型插话走 answered 出口：必须留回答要点，不要求产物锚点。"""
+    runtime, project_id, run, live = _anchor_runtime(settings)
+    interjection = seed_expert_interjection(runtime.store, project_id, "现在能跑评测吗？")
+
+    with pytest.raises(AgentRuntimeError) as missing_text:
+        runtime._interjection_action(live, "dispose_interjection", {  # noqa: SLF001
+            "interjection_id": interjection,
+            "resolution": "answered",
+        })
+    assert missing_text.value.code == "INTERJECTION_TEXT_REQUIRED"
+
+    disposed = runtime._interjection_action(live, "dispose_interjection", {  # noqa: SLF001
+        "interjection_id": interjection,
+        "resolution": "answered",
+        "text": "已说明评测入口和当前不可用的原因",
+    })
+    assert disposed["resolution"] == "answered"
+    assert runtime.store.pending_interjections(project_id) == []
+
+
+@pytest.mark.asyncio
+async def test_complete_interjection_task_verifies_anchor(settings) -> None:
+    """核销待办同样验真：编造锚点被拒，事件流里真实出现过的路径可用。"""
+    runtime, project_id, run, live = _anchor_runtime(settings)
+    interjection = seed_expert_interjection(runtime.store, project_id, "把储罐利用率移出范围")
+    runtime._interjection_action(live, "dispose_interjection", {  # noqa: SLF001
+        "interjection_id": interjection,
+        "resolution": "task",
+        "text": "把储罐利用率移出建模范围",
+    })
+
+    with pytest.raises(AgentRuntimeError) as fabricated:
+        runtime._interjection_action(live, "complete_interjection_task", {  # noqa: SLF001
+            "interjection_id": interjection,
+            "evidence": "file:objects/nonexistent_artifact.md",
+        })
+    assert fabricated.value.code == "INTERJECTION_EVIDENCE_NOT_FOUND"
+
+    runtime.store.append_event(project_id, run.id, "tool", {
+        "name": "write_candidate_file",
+        "phase": "completed",
+        "summary": "已更新 objects/scope_overview.md",
+    })
+    completed = runtime._interjection_action(live, "complete_interjection_task", {  # noqa: SLF001
+        "interjection_id": interjection,
+        "evidence": "file:objects/scope_overview.md",
+    })
+    assert completed["ok"] is True
+    assert runtime.store.open_interjection_tasks(project_id) == []
