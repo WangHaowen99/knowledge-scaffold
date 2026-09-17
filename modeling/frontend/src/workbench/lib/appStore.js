@@ -1,6 +1,7 @@
 /* 工作台共享状态。字段刻意保持扁平，方便 useStore 用稳定引用做选择器订阅。 */
 import { createStore } from './store.js';
 import * as F from './mock/fixtures.js';
+import { formatTraceTime } from './time.js';
 import { refreshWorkbenchAfterConfirmation } from '../interaction-settlement.js';
 import {
   answerAgent,
@@ -1603,7 +1604,7 @@ export function mergeToolTrace(trace, event, seq) {
     runId: event.runId || '',
     toolCallId,
     createdAt,
-    at: timeOf(createdAt),
+    at: formatTraceTime(createdAt),
     name: event.name,
     phase: event.phase,
     summary: event.summary,
@@ -1685,6 +1686,8 @@ function projectFromUrl() {
   return new URLSearchParams(window.location?.search || '').get('project');
 }
 
+/* 活动行折叠区只列当前这一轮在途的几条动作，都发生在此刻，
+   补日期只会挤掉摘要。完整轨迹在「过程」抽屉里带年月日。 */
 function timeOf(value) {
   const date = value ? new Date(value) : new Date();
   return Number.isNaN(date.getTime())

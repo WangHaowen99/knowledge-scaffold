@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { actions } from '../lib/appStore.js';
 import { store } from '../lib/appStore.js';
 import { useStore } from '../lib/store.js';
+import { formatMessageTime } from '../lib/time.js';
 import Icon from '../ui/Icon.jsx';
 
 /* 输入框永不锁死：有阻断性问题时，问题卡和自由输入并存。
@@ -26,7 +27,7 @@ export default function Composer() {
     const value = draft.trim();
     if (!value || sending) return;
     if (demo) {
-      actions.pushMessage({ role: 'user', at: now(), blocks: [{ type: 'text', text: value }] });
+      actions.pushMessage({ role: 'user', at: formatMessageTime(new Date()), blocks: [{ type: 'text', text: value }] });
       setDraft('');
       requestAnimationFrame(grow);
       return;
@@ -85,9 +86,4 @@ export function shouldSendComposerMessage(event) {
     && !event.shiftKey
     && !event.isComposing
     && !event.nativeEvent?.isComposing;
-}
-
-function now() {
-  const d = new Date();
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
