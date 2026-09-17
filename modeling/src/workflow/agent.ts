@@ -528,7 +528,9 @@ export async function runAgentCaptured(
               tracker.observe(event);
               observe?.(event);
             },
-            { ...runOptions, maxTurns: 1 },
+            // 纯提交型捕获默认单轮即可；显式传入 maxTurns 的调用方（如分段分析需要
+            // 多轮提交产品事实批次）必须保留自己的轮数预算，否则会被截断成单轮。
+            { ...runOptions, maxTurns: runOptions.maxTurns === undefined ? 1 : runOptions.maxTurns },
           );
           break;
         } catch (error) {

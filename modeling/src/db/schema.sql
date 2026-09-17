@@ -265,6 +265,8 @@ CREATE TABLE IF NOT EXISTS product_ledger_drafts (
   ledger_id        TEXT NOT NULL,
   source_revision  TEXT NOT NULL,
   analysis_revision TEXT,
+  -- 建立草稿时来源分析的资料集指纹；完成时据此核对来源是否被换掉。
+  source_fingerprint TEXT,
   scope            TEXT NOT NULL,
   raw_count        INTEGER,
   canonical_count  INTEGER,

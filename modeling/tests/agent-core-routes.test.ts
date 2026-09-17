@@ -4959,3 +4959,237 @@ test('增量影响门禁只在有正式基线和语义影响记录时出现，�
   assert.equal(unscoped.json().agentActionable.length, 1);
   assert.match(unscoped.json().agentActionable[0], /analyze_material_impact/u);
 });
+
+/** 种一份已完成的资料分析运行，用来驱动候选分页和产品事实来源的路由测试。 */
+function seedMaterialAnalysis(projectId: string, runId: string, analysis: Record<string, unknown>,
+  options: { sourceSetFingerprint?: string; completedAt?: string } = {}) {
+  const timestamp = options.completedAt ?? new Date().toISOString();
+  getDb().prepare(`INSERT INTO material_analysis_runs (
+    id, project_id, source_set_fingerprint, brief_fingerprint, model_id,
+    protocol_version, plan_json, status, stage, result_json, created_at, updated_at, completed_at
+  ) VALUES (?,?,?,?,?,?,?,'completed','completed',?,?,?,?)`).run(
+    runId, projectId, options.sourceSetFingerprint ?? `sources-${runId}`, 'brief-synthetic',
+    'synthetic-model', 'facts-inventory-v3', JSON.stringify({ totalChars: 0 }),
+    JSON.stringify(analysis), timestamp, timestamp, timestamp,
+  );
+  return runId;
+}
+
+function inventoryItem(index: number, overrides: Record<string, unknown> = {}) {
+  return {
+    completenessContract: 'source-fields-v1',
+    canonicalItemId: `product-${index}`,
+    name: `合成产品 ${index}`,
+    ruleRefs: [`rule-${index}`],
+    sourceRecordIds: [`source-${index}`],
+    sourceLocator: `manual#${index}`,
+    evidenceStatus: 'complete',
+    processingStatus: 'ready',
+    applicableSubjects: ['合成主体'],
+    triggerScenarios: ['合成场景'],
+    businessNeeds: ['合成需求'],
+    admissionConditions: ['合成准入条件'],
+    exclusionConditions: ['合成排除条件'],
+    structuredGaps: [],
+    ...overrides,
+  };
+}
+
+test('目标上下文如实自报候选被截断，完整候选集由分页工具取回', async (t) => {
+  const project = createProject({ owner: 'alice', name: '候选分页读取', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const candidateArtifacts = Array.from({ length: 45 }, (_, index) => ({
+    kind: index % 3 === 0 ? 'object' : 'rule',
+    name: `候选 ${index}`,
+    rationale: '合成依据',
+    evidence: [`manual#${index}`],
+    sources: ['manual.md'],
+  }));
+  seedMaterialAnalysis(project.id, `analysis-paging-${project.id}`, {
+    domainOverview: '合成领域概览', candidateArtifacts, openQuestions: [], coverageComplete: true,
+  });
+
+  const context = await tool(app, project.id, 'get_goal_context', {}, runId);
+  assert.equal(context.statusCode, 200, context.body);
+  // 只给前 40 条却不说还有多少，调用方会把"看到的"当成"全部的"。
+  assert.equal(context.json().candidates.length, 40);
+  assert.equal(context.json().candidateTotal, 45);
+  assert.equal(context.json().candidatesTruncated, true);
+  assert.equal(context.json().candidatePagingTool, 'get_analysis_candidates');
+
+  const collected: string[] = [];
+  let cursor: number | null = 0;
+  let pages = 0;
+  while (cursor !== null) {
+    const page = await tool(app, project.id, 'get_analysis_candidates', { cursor, limit: 20 }, runId);
+    assert.equal(page.statusCode, 200, page.body);
+    assert.equal(page.json().total, 45);
+    assert.equal(page.json().cursor, cursor);
+    collected.push(...page.json().items.map((item: any) => item.name));
+    cursor = page.json().nextCursor;
+    assert.equal(page.json().hasMore, cursor !== null);
+    pages += 1;
+  }
+  assert.equal(pages, 3);
+  // 分页不得漏项也不得重复，否则"逐条盘点"本身就不成立。
+  assert.deepEqual(collected, candidateArtifacts.map((item) => item.name));
+
+  const filtered = await tool(app, project.id, 'get_analysis_candidates', { kind: 'object', limit: 100 }, runId);
+  assert.equal(filtered.json().total, 15);
+  assert.equal(filtered.json().kind, 'object');
+  assert.ok(filtered.json().items.every((item: any) => item.kind === 'object'));
+  assert.equal(filtered.json().nextCursor, null);
+
+  const overLimit = await tool(app, project.id, 'get_analysis_candidates', { limit: 500 }, runId);
+  assert.equal(overLimit.json().items.length, 45, 'limit 超出上限应收敛到 100 而不是报错');
+
+  const invalid = await tool(app, project.id, 'get_analysis_candidates', { cursor: 999 }, runId);
+  assert.equal(invalid.statusCode, 400, invalid.body);
+  assert.equal(invalid.json().code, 'ANALYSIS_CANDIDATE_CURSOR_INVALID');
+});
+
+test('只含摘要的新分析不得顶掉已有的结构化产品事实来源', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品事实来源绑定', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const withInventory = seedMaterialAnalysis(project.id, `analysis-inventory-${project.id}`, {
+    domainOverview: '含产品事实的分析', candidateArtifacts: [],
+    productInventory: [inventoryItem(1), inventoryItem(2)],
+    productInventorySummary: {
+      rawCount: 2, canonicalCount: 2, mergedGroupCount: 0, completeCount: 2, insufficientCount: 0,
+    },
+  }, { completedAt: '2026-09-01T00:00:00.000Z' });
+  const summaryOnly = seedMaterialAnalysis(project.id, `analysis-summary-${project.id}`, {
+    domainOverview: '精读汇总，没有逐项产品事实', candidateArtifacts: [], openQuestions: [],
+  }, { completedAt: '2026-09-02T00:00:00.000Z' });
+
+  // 精读运行更新，但它没有产品事实；按"最新完成"取来源会让合格来源永远取不到。
+  const source = await tool(app, project.id, 'get_product_inventory_source', {}, runId);
+  assert.equal(source.statusCode, 200, source.body);
+  assert.equal(source.json().analysisRevision, withInventory);
+  assert.equal(source.json().total, 2);
+  assert.deepEqual(source.json().sourceSummary, {
+    rawCount: 2, canonicalCount: 2, mergedGroupCount: 0, completeCount: 2, insufficientCount: 0,
+  });
+  assert.equal(source.json().sourceFingerprint, `sources-${withInventory}`);
+
+  const conflict = await tool(app, project.id, 'get_product_inventory_source', {
+    analysis_revision: summaryOnly,
+  }, runId);
+  assert.equal(conflict.statusCode, 409, conflict.body);
+  assert.equal(conflict.json().code, 'PRODUCT_INVENTORY_REVISION_CONFLICT');
+  assert.equal(conflict.json().currentAnalysisRevision, withInventory);
+  assert.equal(conflict.json().expectedAnalysisRevision, summaryOnly);
+});
+
+test('来源申报的完整性计数与逐项事实不符时整页作废，而不是照单放行', async (t) => {
+  const project = createProject({ owner: 'alice', name: '产品事实来源计数闭合', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  seedMaterialAnalysis(project.id, `analysis-count-${project.id}`, {
+    domainOverview: '计数不闭合的分析', candidateArtifacts: [],
+    productInventory: [
+      inventoryItem(1),
+      inventoryItem(2, { evidenceStatus: 'insufficient', processingStatus: 'blocked', insufficiencyReason: '原文缺少准入条件' }),
+    ],
+    // 条数对得上、完整性对不上：这种来源一旦放行就会产出假的"全部完整"结论。
+    productInventorySummary: {
+      rawCount: 2, canonicalCount: 2, mergedGroupCount: 0, completeCount: 2, insufficientCount: 0,
+    },
+  });
+
+  const source = await tool(app, project.id, 'get_product_inventory_source', {}, runId);
+  assert.equal(source.statusCode, 409, source.body);
+  assert.equal(source.json().code, 'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE');
+});
+
+test('台账草稿记下来源资料集指纹，来源被换掉后收尾如实报冲突', async (t) => {
+  const project = createProject({ owner: 'alice', name: '台账来源指纹漂移', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const revision = claimed.json().baseRevision;
+  // 门禁要求启用时来源已存在，所以先种分析再 require_product_ledger。
+  const analysisRevision = seedMaterialAnalysis(project.id, `analysis-drift-${project.id}`, {
+    domainOverview: '含产品事实的分析', candidateArtifacts: [],
+    productInventory: [inventoryItem(1)],
+    productInventorySummary: {
+      rawCount: 1, canonicalCount: 1, mergedGroupCount: 0, completeCount: 1, insufficientCount: 0,
+    },
+  }, { sourceSetFingerprint: 'fingerprint-before' });
+  const required = await tool(app, project.id, 'require_product_ledger', { required: true }, runId);
+  assert.equal(required.statusCode, 200, required.body);
+
+  const begun = await tool(app, project.id, 'begin_product_ledger', {
+    ledger_id: 'ledger-drift', source_revision: revision, analysis_revision: analysisRevision,
+  }, runId);
+  assert.equal(begun.statusCode, 200, begun.body);
+  assert.equal(begun.json().analysisRevision, analysisRevision);
+  assert.equal(begun.json().sourceFingerprint, 'fingerprint-before');
+  assert.equal(
+    (getDb().prepare('SELECT source_fingerprint FROM product_ledger_drafts WHERE project_id = ? AND ledger_id = ?')
+      .get(project.id, 'ledger-drift') as any)?.source_fingerprint,
+    'fingerprint-before',
+    '草稿必须落盘建立时的来源指纹，否则无从证明对的是同一批资料',
+  );
+
+  const appended = await tool(app, project.id, 'append_product_ledger_batch', {
+    ledger_id: 'ledger-drift',
+    batch_no: 1,
+    entries: [{
+      canonicalItemId: 'product-1', name: '合成产品 1', ruleRefs: ['rule-1'],
+      sourceRecordIds: ['source-1'], sourceLocator: 'manual#1',
+      evidenceStatus: 'complete', processingStatus: 'ready',
+    }],
+  }, runId);
+  assert.equal(appended.statusCode, 200, appended.body);
+
+  // 换掉来源资料集：条数仍然凑得上，只有指纹能证明这不是同一批资料。
+  getDb().prepare('UPDATE material_analysis_runs SET source_set_fingerprint = ? WHERE id = ?')
+    .run('fingerprint-after', analysisRevision);
+
+  const finalized = await tool(app, project.id, 'finalize_product_ledger', {
+    ledger_id: 'ledger-drift',
+  }, runId);
+  assert.equal(finalized.statusCode, 200, finalized.body);
+  assert.equal(finalized.json().status, 'needs_review');
+  assert.equal(finalized.json().validation.pass, false);
+  assert.equal(finalized.json().validation.blocking, true);
+  assert.deepEqual(finalized.json().validation.errors, ['来源资料集指纹已变化，台账必须基于当前分析重新建立'],
+    '除指纹漂移外其余闭合等式都应成立，错误必须精确指向漂移');
+  assert.deepEqual(finalized.json().validation.counts, {
+    raw: 1, canonical: 1, mergedGroups: 0, complete: 1, insufficient: 0,
+  });
+});
+
+test('enforce 模式下被拒绝的台账不落库，读取方看到的是"没有台账"而不是"有台账"', async (t) => {
+  const project = createProject({ owner: 'alice', name: '台账先判后写', runtime: 'agent' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const previousMode = config.productLedger.mode;
+  t.after(() => { config.productLedger.mode = previousMode; });
+  config.productLedger.mode = 'enforce';
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+
+  const rejected = await tool(app, project.id, 'stage_product_ledger', {
+    scope: 'product_catalog', rawCount: 2, canonicalCount: 1, mergedGroupCount: 1, entries: [],
+  }, runId);
+  assert.equal(rejected.statusCode, 409, rejected.body);
+  assert.equal(rejected.json().code, 'PRODUCT_LEDGER_INVALID');
+
+  assert.equal(
+    getDb().prepare('SELECT source_revision FROM product_ledger_snapshots WHERE project_id = ?').get(project.id),
+    undefined,
+    '先写再抛会把被拒绝的快照留在库里',
+  );
+  assert.equal(
+    getDb().prepare('SELECT source_revision FROM product_ledger_v2_snapshots WHERE project_id = ?').get(project.id),
+    undefined,
+  );
+  const read = await tool(app, project.id, 'get_product_ledger', {}, runId);
+  assert.equal(read.statusCode, 200, read.body);
+  assert.equal(read.json().available, false);
+});

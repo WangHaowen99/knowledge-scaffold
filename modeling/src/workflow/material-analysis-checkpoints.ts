@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
-import type { DocumentReadCoverage } from '../types.js';
+import type { DocumentReadCoverage, ProductInventoryItem } from '../types.js';
 import type { DocumentAnalysisChunk, DocumentAnalysisPlan } from './document-analysis-plan.js';
 import { serializableDocumentAnalysisPlan, sha256 } from './document-analysis-plan.js';
 
@@ -26,6 +26,10 @@ export interface ChunkAnalysisPayload {
   evidence: ChunkEvidence[];
   candidates: ChunkCandidate[];
   openQuestions: Array<{ topic: string; why: string }>;
+  /** 当前原文分段中逐项提取的产品事实；最终由 Core 跨分段确定性归并。 */
+  productInventory?: ProductInventoryItem[];
+  /** 分段未能提交结构化结果、仅靠正文摘要兜底时为 true，用于向下游标记覆盖不完整。 */
+  degraded?: boolean;
 }
 
 export interface DocumentAnalysisPayload {
@@ -248,6 +252,31 @@ export class MaterialAnalysisCheckpointStore {
       throw error;
     }
     return this.getRun(id)!;
+  }
+
+  /** 只重开不可用的捕获，保留已完成的兄弟分段和尝试计数。 */
+  retryIncompleteChunks(runId: string, requireInventory: boolean): void {
+    const chunks = this.listChunks(runId).filter((chunk) => chunk.status === 'completed'
+      && (chunk.payload?.degraded || (requireInventory && !chunk.payload?.productInventory?.length)));
+    if (!chunks.length) return;
+    const db = getDb();
+    const now = nowIso();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const chunk of chunks) {
+        db.prepare(`UPDATE material_analysis_chunks SET status = 'pending', error = NULL,
+          updated_at = ? WHERE run_id = ? AND document_key = ? AND chunk_index = ?`)
+          .run(now, runId, chunk.documentKey, chunk.chunkIndex);
+        db.prepare(`UPDATE material_analysis_document_summaries SET status = 'pending',
+          updated_at = ? WHERE run_id = ? AND document_key = ?`).run(now, runId, chunk.documentKey);
+      }
+      db.prepare(`UPDATE material_analysis_runs SET status = 'running', completed_at = NULL,
+        updated_at = ? WHERE id = ?`).run(now, runId);
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* transaction 已结束 */ }
+      throw error;
+    }
   }
 
   getRun(runId: string): MaterialAnalysisRunRecord | undefined {

@@ -176,6 +176,8 @@ export function buildFauxModeler(): LlmDeps {
           evidenceOffsets: [offset], readiness: 'extractable',
         }],
         openQuestions: [],
+        // 演示语料里没有逐项产品条目，如实声明而不是让平台替它猜。
+        productInventoryDisposition: 'not_applicable',
       })]);
     }
 

@@ -38,6 +38,11 @@ export interface ProductLedger {
 
 export interface ProductLedgerValidation {
   pass: boolean;
+  /**
+   * 台账不可据以宣布产品覆盖完整：校验未通过，或条目存在资料不足/阻塞状态。
+   * pass 只回答"结构和计数是否自洽"，blocking 才回答"能不能往下走"。
+   */
+  blocking: boolean;
   errors: string[];
   counts: {
     raw: number;
@@ -49,17 +54,27 @@ export interface ProductLedgerValidation {
   fingerprint: string;
 }
 
+/** 单次台账条目上限；超出说明提交方式错误，不能靠继续追加掩盖。 */
+export const MAX_PRODUCT_LEDGER_ENTRIES = 20_000;
+
 export function validateProductLedger(input: unknown): ProductLedgerValidation {
   const errors: string[] = [];
   const ledger = isRecord(input) ? input : {};
-  const rawCount = nonNegativeInteger(ledger.rawCount);
-  const canonicalCount = nonNegativeInteger(ledger.canonicalCount);
-  const mergedGroupCount = nonNegativeInteger(ledger.mergedGroupCount);
+  const rawCount = countField(ledger.rawCount, 'rawCount', errors);
+  const canonicalCount = countField(ledger.canonicalCount, 'canonicalCount', errors);
+  const mergedGroupCount = countField(ledger.mergedGroupCount, 'mergedGroupCount', errors);
   const entries = Array.isArray(ledger.entries) ? ledger.entries : [];
 
   if (ledger.schemaVersion !== 'product-ledger-v1' && ledger.schemaVersion !== 'product-ledger-v2') errors.push('schemaVersion 必须为 product-ledger-v1 或 product-ledger-v2');
   if (!String(ledger.sourceRevision ?? '').trim()) errors.push('sourceRevision 不能为空');
   if (!String(ledger.scope ?? '').trim()) errors.push('scope 不能为空');
+  if (!Array.isArray(ledger.entries)) errors.push('entries 必须是数组');
+  // 空台账会让下面所有闭合等式在 0 处成立，从而"真空通过"。
+  // 没有条目就是没有事实，必须直接判失败，而不是交给 required 决定。
+  if (!entries.length) errors.push('entries 不能为空：没有逐项产品事实的台账不能视为通过');
+  if (entries.length > MAX_PRODUCT_LEDGER_ENTRIES) {
+    errors.push(`entries 数量 ${entries.length} 超过上限 ${MAX_PRODUCT_LEDGER_ENTRIES}`);
+  }
   if (rawCount < canonicalCount) errors.push('rawCount 不能小于 canonicalCount');
   if (entries.length !== canonicalCount) {
     errors.push(`entries 数量 ${entries.length} 与 canonicalCount ${canonicalCount} 不一致`);
@@ -73,6 +88,7 @@ export function validateProductLedger(input: unknown): ProductLedgerValidation {
   let mergedReduction = 0;
   let complete = 0;
   let insufficient = 0;
+  let blockedProcessing = 0;
 
   entries.forEach((rawEntry, index) => {
     const entry = isRecord(rawEntry) ? rawEntry : {};
@@ -121,7 +137,7 @@ export function validateProductLedger(input: unknown): ProductLedgerValidation {
     }
     if (!['pending', 'ready', 'generated', 'blocked'].includes(processingStatus)) {
       errors.push(`${prefix}.processingStatus 不是受支持的处理状态`);
-    }
+    } else if (processingStatus === 'blocked') blockedProcessing += 1;
     if (mergeGroupId) mergeGroups.add(mergeGroupId);
     if (sourceRecordIds.length > 1 && !mergeGroupId) {
       errors.push(`${prefix} 多条原始记录归并时必须提供 mergeGroupId`);
@@ -146,6 +162,7 @@ export function validateProductLedger(input: unknown): ProductLedgerValidation {
     .digest('hex')}`;
   return {
     pass: errors.length === 0,
+    blocking: errors.length > 0 || insufficient > 0 || blockedProcessing > 0,
     errors,
     counts: { raw: rawCount, canonical: canonicalCount, mergedGroups: mergedGroupCount, complete, insufficient },
     fingerprint,
@@ -166,6 +183,14 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function nonNegativeInteger(value: unknown): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+/**
+ * 非法计数必须报错。悄悄折算成 0 会让缺失或负数的申报看起来是"零条目台账"，
+ * 再配合零处成立的闭合等式变成一次假通过。
+ */
+function countField(value: unknown, field: string, errors: string[]): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    errors.push(`${field} 必须是非负整数`);
+    return Number.isFinite(value as number) ? Math.trunc(value as number) : 0;
+  }
+  return value;
 }

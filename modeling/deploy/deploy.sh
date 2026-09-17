@@ -127,7 +127,10 @@ container_network() {
 }
 
 consumer_container() {
-    if docker inspect onto-agent-backend >/dev/null 2>&1; then
+    # 必须限定 --type container：同名镜像（onto-agent-backend:latest）也会被
+    # docker inspect 命中，那样后面读到的是镜像的 Config.Env，token 校验会把
+    # 「探测错对象」误报成「consumer 用的不是同一个 token」。
+    if docker inspect --type container onto-agent-backend >/dev/null 2>&1; then
         printf 'onto-agent-backend\n'
         return 0
     fi
