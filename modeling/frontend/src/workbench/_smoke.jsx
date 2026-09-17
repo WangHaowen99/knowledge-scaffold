@@ -1504,17 +1504,104 @@ actions.handleEvent({
   eventType: 'status', seq: 5, runId: 'cancel-tool-run', status: 'running',
   text: '迟到的运行状态',
 });
+actions.handleEvent({
+  eventType: 'tool', seq: 6, runId: 'cancel-tool-run',
+  toolCallId: 'call-stage-change-set', name: 'stage_change_set',
+  phase: 'started', summary: '迟到的原子生成活动',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 7, runId: 'cancel-tool-run',
+  toolCallId: 'call-late-state', name: 'get_project_state',
+  phase: 'failed', summary: '迟到的失败回执',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 8, runId: 'cancel-tool-run',
+  toolCallId: 'call-late-confirmation', name: 'request_confirmation',
+  phase: 'blocked', code: 'RUN_CANCELLING',
+  summary: '当前运行正在停止，新的修改不会继续写入',
+  problemVisibility: 'recovery',
+});
 try {
   const html = renderToString(<App />);
   const drawer = renderToString(<ProcessDrawer onClose={() => {}} />);
   if (store.get().run?.status !== 'cancelled' || store.get().activity
     || store.get().trace[0]?.phase !== 'cancelled'
+    || store.get().trace.length !== 1
     || html.includes('助手运行中') || !drawer.includes('已取消')
-    || !drawer.includes('运行已停止，当前操作已取消')) {
+    || !drawer.includes('运行已停止，当前操作已取消')
+    || drawer.includes('需要处理') || drawer.includes('失败')) {
     throw new Error('取消后工具活动、顶栏或迟到事件没有收敛到同一终态');
   }
   console.log('✓ 取消运行同步结算工具活动并拒绝迟到运行事件');
 } catch (e) { console.log('✗ 取消运行工具终态:', e.message); bad++; }
+
+store.set({
+  demo: false,
+  run: { id: 'historical-cancelled-run', status: 'cancelled' },
+  terminalRunIds: ['historical-cancelled-run'],
+  messages: [], trace: [], activity: null, lastSeq: 0, replayUntilSeq: 6,
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'historical-cancelled-run',
+  toolCallId: 'historical-call', name: 'get_project_state',
+  phase: 'started', summary: '历史上下文核对',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'historical-cancelled-run',
+  toolCallId: 'historical-call', name: 'get_project_state',
+  phase: 'failed', summary: '历史处理未完成',
+});
+actions.handleEvent({
+  eventType: 'message', seq: 3, runId: 'historical-cancelled-run', role: 'assistant',
+  blocks: [{ type: 'text', text: '历史完整消息' }],
+});
+actions.handleEvent({
+  eventType: 'message_delta', seq: 4, runId: 'historical-cancelled-run',
+  messageId: 'historical-stream', role: 'assistant', delta: '历史流式消息',
+});
+actions.handleEvent({
+  eventType: 'reasoning_delta', seq: 5, runId: 'historical-cancelled-run',
+  messageId: 'historical-reasoning', role: 'assistant', delta: '历史思考记录',
+});
+actions.handleEvent({
+  eventType: 'reasoning_done', seq: 6, runId: 'historical-cancelled-run',
+  messageId: 'historical-reasoning', role: 'assistant',
+});
+try {
+  const replayedText = store.get().messages.flatMap((message) => message.blocks || [])
+    .map((block) => block.text || '').join('');
+  if (store.get().run?.status !== 'cancelled'
+    || store.get().trace.length !== 1
+    || store.get().trace[0]?.phase !== 'failed'
+    || !replayedText.includes('历史完整消息')
+    || !replayedText.includes('历史流式消息')
+    || !replayedText.includes('历史思考记录')) {
+    throw new Error('已取消运行的历史回放被实时迟到事件栅栏误删');
+  }
+  console.log('✓ 已取消运行的历史消息与轨迹仍可回放');
+} catch (e) { console.log('✗ 已取消运行历史回放:', e.message); bad++; }
+
+store.set({
+  run: { id: 'current-active-run', status: 'running' },
+  trace: [{
+    id: 'tool:previous-run:call-previous', seq: 1,
+    runId: 'previous-run', toolCallId: 'call-previous',
+    name: 'stage_change_set', phase: 'started', summary: '旧运行尚未结算',
+  }],
+  terminalRunIds: [], lastSeq: 0, replayUntilSeq: 0,
+});
+actions.handleEvent({
+  eventType: 'status', seq: 2, runId: 'previous-run', status: 'cancelled',
+  text: '旧运行已停止',
+});
+try {
+  if (store.get().run?.id !== 'current-active-run'
+    || store.get().trace[0]?.phase !== 'cancelled') {
+    throw new Error('旧运行终态覆盖了当前运行，或没有结算旧活动');
+  }
+  console.log('✓ 旧运行迟到终态只结算历史轨迹');
+} catch (e) { console.log('✗ 旧运行迟到终态:', e.message); bad++; }
+store.set({ run: null, trace: [], terminalRunIds: [], lastSeq: 0 });
 
 try {
   const html = renderToString(<Block block={{
@@ -1590,6 +1677,47 @@ try {
   }
   console.log('✓ 刷新时直接恢复待确认卡');
 } catch (e) { console.log('✗ 待确认卡恢复:', e.message); bad++; }
+
+const pausedPlanSmoke = {
+  id: 'plan-paused-smoke',
+  goal: '完成客户规则和产品匹配建模',
+  status: 'paused',
+  approval_status: 'approved',
+  remaining_count: 2,
+  tasks: [
+    { id: 'task-rule-a', title: '信号与产品匹配规则', status: 'pending', required: true },
+    { id: 'task-rule-b', title: '客户分层决策规则', status: 'pending', required: true },
+  ],
+};
+store.set({
+  demo: false,
+  loading: false,
+  messages: [],
+  interaction: null,
+  pausedPlan: pausedPlanSmoke,
+  changePlan: null,
+  run: { id: 'run-paused-smoke', status: 'cancelled' },
+  lastSeq: 0,
+  replayUntilSeq: 10,
+});
+actions.handleEvent({
+  eventType: 'change_plan',
+  seq: 1,
+  runId: 'run-paused-smoke',
+  plan: { ...pausedPlanSmoke, status: 'active' },
+  createdAt: '2026-01-01T00:00:00Z',
+});
+try {
+  const html = renderToString(<RightPane />);
+  if (store.get().pausedPlan?.status !== 'paused'
+    || !html.includes('未完成的建模计划已暂停')
+    || !html.includes('信号与产品匹配规则')
+    || !html.includes('继续未完成计划')
+    || !html.includes('结束该计划并重新规划')) {
+    throw new Error('暂停计划被历史回放覆盖，或缺少明确恢复与结束动作');
+  }
+  console.log('✓ 暂停计划使用显式恢复卡且不被历史回放覆盖');
+} catch (e) { console.log('✗ 暂停计划恢复卡:', e.message); bad++; }
 
 const messageTimeSmokeCreatedAt = '2026-08-24T06:02:00.000Z';
 store.set({
@@ -1945,6 +2073,7 @@ try {
   if (humanizeTraceSummary('当前项目状态：评测 / running') !== '当前阶段：评测'
     || humanizeTraceSummary('处理完成', 'task_tool') !== '一项子任务已完成，主任务继续处理中'
     || humanizeTraceSummary('处理完成', 'read_document') !== '当前步骤已完成'
+    || humanizeTraceSummary('处理完成', 'stage_change_set', 'failed') !== '当前步骤未完成'
     || !html.includes('当前阶段：评测')) {
     throw new Error('历史过程摘要没有翻译成业务语言');
   }

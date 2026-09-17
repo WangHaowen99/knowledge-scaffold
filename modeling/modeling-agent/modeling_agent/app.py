@@ -18,6 +18,7 @@ from .service import AgentService
 class StartRunBody(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     baselineRevision: str = Field(default="", max_length=200)
+    resumePlanId: str = Field(default="", max_length=200)
 
 
 class StartIncrementRoundBody(BaseModel):
@@ -124,6 +125,7 @@ def create_app(service: AgentService) -> Starlette:
             token=_require_token(request),
             message=body.message,
             baseline_revision=body.baselineRevision,
+            resume_plan_id=body.resumePlanId,
         )
         return JSONResponse({"run": run}, status_code=202)
 
@@ -196,9 +198,15 @@ def create_app(service: AgentService) -> Starlette:
         return JSONResponse({"run": run}, status_code=202)
 
     async def cancel(request: Request) -> JSONResponse:
-        _require_token(request)
-        run = await service.cancel(project_id=request.path_params["project_id"])
-        return JSONResponse({"run": run})
+        result = await service.cancel(
+            project_id=request.path_params["project_id"],
+            token=_require_token(request),
+        )
+        # Keep the historical ``{run: ...}`` response shape while exposing
+        # stale-run diagnostics alongside the null Run.
+        if isinstance(result, dict) and result.get("terminatedStale") is True:
+            return JSONResponse({"run": None, **result})
+        return JSONResponse({"run": result})
 
     async def terminate_stale(request: Request) -> JSONResponse:
         _require_token(request)

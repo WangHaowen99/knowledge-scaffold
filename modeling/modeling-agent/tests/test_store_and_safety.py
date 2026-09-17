@@ -11,7 +11,7 @@ import pytest
 import modeling_agent.service as service_module
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.events import EventHub
-from modeling_agent.rails import ActivityRail, ToolBoundaryRail, WriteSafetyRail, _phase_write_problem, check_write_safety
+from modeling_agent.rails import ActivityRail, AskRail, ConfirmationRail, ToolBoundaryRail, WriteSafetyRail, _phase_write_problem, check_write_safety
 from modeling_agent.schemas import (
     InteractionRecord,
     RUN_QUEUED,
@@ -19,7 +19,11 @@ from modeling_agent.schemas import (
     RUN_WAITING,
     RunRecord,
 )
-from modeling_agent.store import RuntimeStore
+from modeling_agent.store import (
+    CANCELLATION_PENDING_REASON,
+    INTERRUPTED_CANCELLATION_REASON,
+    RuntimeStore,
+)
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     CandidateValidationRepairState,
@@ -27,6 +31,7 @@ from modeling_agent.tools import (
     EVALUATION_PENDING_MESSAGE,
     ToolContext,
 )
+from openjiuwen.harness.tools.base_tool import ToolOutput
 from conftest import FakeGateway, ScriptedModel, service
 
 BACKGROUND_TASK_START_TIMEOUT_SECONDS = 10
@@ -71,6 +76,43 @@ def test_store_enforces_one_active_run_and_recovers_checkpoint(tmp_path: Path) -
             ("intake:queued", "intake:running"),
             ("intake:running", "intake:suspended"),
         ]
+    finally:
+        store.close()
+
+
+def test_recovery_preserves_interrupted_cancellation_intent(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        store.create_run(run("run_stopping_restart"))
+        store.update_run("run_stopping_restart", status=RUN_RUNNING)
+        store.begin_run_cancellation("run_stopping_restart")
+
+        recovered = store.recover_interrupted()
+
+        assert [item.id for item in recovered] == ["run_stopping_restart"]
+        assert recovered[0].status == "suspended"
+        assert recovered[0].error == INTERRUPTED_CANCELLATION_REASON
+        assert store.project_state("project_demo").state == "intake:suspended"
+    finally:
+        store.close()
+
+
+def test_recovery_preserves_pending_cancellation_reconciliation(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        store.create_run(run("run_pending_cancel_restart"))
+        store.update_run("run_pending_cancel_restart", status=RUN_RUNNING)
+        store.begin_run_cancellation("run_pending_cancel_restart")
+        store.update_run(
+            "run_pending_cancel_restart",
+            status="suspended",
+            error=CANCELLATION_PENDING_REASON,
+        )
+
+        recovered = store.recover_interrupted()
+
+        assert [item.id for item in recovered] == ["run_pending_cancel_restart"]
+        assert recovered[0].error == CANCELLATION_PENDING_REASON
     finally:
         store.close()
 
@@ -663,6 +705,32 @@ def test_begin_run_cancellation_atomically_closes_pending_interaction(tmp_path: 
         store.close()
 
 
+def test_run_status_cannot_regress_after_cancellation_fence(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    try:
+        current = store.create_run(run("run_monotonic_cancel"))
+        store.update_run(current.id, status=RUN_RUNNING)
+        store.begin_run_cancellation(current.id)
+
+        late_running = store.update_run(current.id, status=RUN_RUNNING)
+        late_completed = store.update_run(current.id, status="completed")
+
+        assert late_running.status == "stopping"
+        assert late_completed.status == "stopping"
+        assert store.require_run(current.id).status == "stopping"
+
+        store.update_run(current.id, status="suspended")
+        assert store.update_run(current.id, status=RUN_RUNNING).status == "suspended"
+        resumed = store.update_run(
+            current.id,
+            status=RUN_QUEUED,
+            _allow_status_regression=True,
+        )
+        assert resumed.status == RUN_QUEUED
+    finally:
+        store.close()
+
+
 def test_unfinished_tool_events_track_each_tool_call_terminal_state(tmp_path: Path) -> None:
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     try:
@@ -673,18 +741,27 @@ def test_unfinished_tool_events_track_each_tool_call_terminal_state(tmp_path: Pa
             {"name": "stage_change_set", "phase": "started", "toolCallId": "call_repairing"},
             {"name": "stage_change_set", "phase": "repairing", "toolCallId": "call_repairing"},
             {"name": "validate_change_set", "phase": "started", "toolCallId": "call_active"},
+            {"name": "stage_change_set", "phase": "cancel_pending", "toolCallId": "call_pending"},
         ):
             store.append_event(current.project_id, current.id, "tool", payload)
 
         unfinished = store.unfinished_tool_events(current.id)
 
         assert [event.payload["toolCallId"] for event in unfinished] == [
-            "call_repairing", "call_active",
+            "call_repairing", "call_active", "call_pending",
         ]
         store.append_event(current.project_id, current.id, "tool", {
             "name": "stage_change_set",
             "phase": "cancelled",
             "toolCallId": "call_repairing",
+        })
+        assert [
+            event.payload["toolCallId"] for event in store.unfinished_tool_events(current.id)
+        ] == ["call_active", "call_pending"]
+        store.append_event(current.project_id, current.id, "tool", {
+            "name": "stage_change_set",
+            "phase": "cancelled",
+            "toolCallId": "call_pending",
         })
         assert [
             event.payload["toolCallId"] for event in store.unfinished_tool_events(current.id)
@@ -921,6 +998,133 @@ async def test_optional_evaluation_database_unavailable_stays_in_activity_trace(
     assert tool_event["code"] == "EVAL_DB_TOOL_UNAVAILABLE"
     assert tool_event["problemVisibility"] == "activity"
     assert tool_event["summary"] == "可选评测库未配置，已跳过本次查询"
+
+
+@pytest.mark.asyncio
+async def test_activity_rail_normalizes_openjiuwen_tool_output() -> None:
+    events: list[tuple[str, dict]] = []
+    call = _tool_call_context("task_tool", {}, "call-task-output")
+    call.inputs.tool_result = ToolOutput(
+        success=True,
+        data={"output": "子任务完成", "agent_id": "material_analyst"},
+    )
+
+    await ActivityRail(lambda kind, payload: events.append((kind, payload))).after_tool_call(call)  # type: ignore[arg-type]
+
+    tool_event = next(payload for kind, payload in events if kind == "tool")
+    assert tool_event["phase"] == "completed"
+    assert tool_event["summary"] == "处理完成"
+
+
+@pytest.mark.asyncio
+async def test_activity_rail_uses_failure_summary_when_error_has_no_reason() -> None:
+    events: list[tuple[str, dict]] = []
+    call = _tool_call_context("stage_change_set", {}, "call-failed-no-reason")
+    call.inputs.tool_result = json.dumps({"error": "INVALID_ARGUMENTS"}, ensure_ascii=False)
+
+    await ActivityRail(lambda kind, payload: events.append((kind, payload))).after_tool_call(call)  # type: ignore[arg-type]
+
+    tool_event = next(payload for kind, payload in events if kind == "tool")
+    assert tool_event["phase"] == "failed"
+    assert tool_event["summary"] == "当前步骤未完成"
+
+
+@pytest.mark.asyncio
+async def test_activity_rail_normalizes_legacy_pydantic_tool_output() -> None:
+    events: list[tuple[str, dict]] = []
+
+    class LegacyOutput:
+        def dict(self):
+            return {"success": True, "display": {"text": "技能已加载"}}
+
+    call = _tool_call_context("skill_tool", {}, "call-skill-output")
+    call.inputs.tool_result = LegacyOutput()
+    await ActivityRail(lambda kind, payload: events.append((kind, payload))).after_tool_call(call)  # type: ignore[arg-type]
+
+    tool_event = next(payload for kind, payload in events if kind == "tool")
+    assert tool_event["phase"] == "completed"
+    assert tool_event["summary"] == "技能已加载"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_error_is_activity_not_recovery() -> None:
+    events: list[tuple[str, dict]] = []
+    call = _tool_call_context("request_confirmation", {}, "call-cancelled", {
+        "error": "RUN_CANCELLING",
+        "reason": "当前运行正在停止，新的修改不会继续写入",
+        "tracePhase": "blocked",
+        "problemVisibility": "recovery",
+    })
+    await ActivityRail(lambda kind, payload: events.append((kind, payload))).after_tool_call(call)  # type: ignore[arg-type]
+    tool_event = next(payload for kind, payload in events if kind == "tool")
+    assert tool_event["phase"] == "cancelled"
+    assert tool_event["problemVisibility"] == "activity"
+    assert not any(kind == "recovery" for kind, _payload in events)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_interaction_rail_does_not_call_core() -> None:
+    gateway = FakeGateway()
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    context = ToolContext(
+        project_id="project_cancelled_rail",
+        run_id="run_cancelled_rail",
+        token="token",
+        gateway=gateway,
+        emit=lambda *_args: None,
+        cancel_event=cancel_event,
+    )
+    call = type("Call", (), {"arguments": '{"summary":"确认候选"}'})()
+    with pytest.raises(asyncio.CancelledError):
+        await ConfirmationRail(context).resolve_interrupt(None, call, None)  # type: ignore[arg-type]
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirmation_rail_cancels_core_call_already_in_flight() -> None:
+    class SlowGateway(FakeGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def call(self, **kwargs):
+            self.calls.append(kwargs)
+            self.entered.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+    gateway = SlowGateway()
+    cancel_event = asyncio.Event()
+    inflight: set[asyncio.Task] = set()
+    events: list[tuple[str, dict]] = []
+    context = ToolContext(
+        project_id="project_inflight_rail",
+        run_id="run_inflight_rail",
+        token="token",
+        gateway=gateway,
+        emit=lambda kind, payload: events.append((kind, payload)),
+        cancel_event=cancel_event,
+        inflight_core_calls=inflight,
+    )
+    call = type("Call", (), {"arguments": '{"summary":"确认候选"}'})()
+    resolution = asyncio.create_task(
+        ConfirmationRail(context).resolve_interrupt(None, call, None),  # type: ignore[arg-type]
+    )
+
+    await asyncio.wait_for(gateway.entered.wait(), timeout=1)
+    assert len(inflight) == 1
+    cancel_event.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(resolution, timeout=1)
+
+    assert gateway.cancelled.is_set()
+    assert inflight == set()
+    assert events == []
 
 
 @pytest.mark.asyncio

@@ -196,6 +196,57 @@ class ToolContext:
         self.validation_repair._notify_change()
 
 
+def _cancel_requested(context: ToolContext) -> bool:
+    """Return whether the current Agent invocation crossed its cancel fence."""
+    return bool(context.cancel_event is not None and context.cancel_event.is_set())
+
+
+async def call_core(
+    context: ToolContext,
+    tool: str,
+    arguments: dict[str, Any],
+    *,
+    poll_seconds: float = 0.1,
+) -> dict[str, Any]:
+    """Call Core without allowing a late response to escape cancellation.
+
+    A number of rails run outside ``CoreTool.invoke`` (notably confirmation
+    preflight).  Those calls used to bypass the in-flight task set and could
+    publish a blocked/failed result after the run had already been cancelled.
+    Keep them on the same cancellation boundary as ordinary tools.
+    """
+    if _cancel_requested(context):
+        raise asyncio.CancelledError
+    call = asyncio.create_task(context.gateway.call(
+        project_id=context.project_id,
+        run_id=context.run_id,
+        token=context.token,
+        tool=tool,
+        arguments=arguments,
+    ))
+    if context.inflight_core_calls is not None:
+        context.inflight_core_calls.add(call)
+    try:
+        while True:
+            if _cancel_requested(context):
+                call.cancel()
+                await asyncio.gather(call, return_exceptions=True)
+                raise asyncio.CancelledError
+            done, _pending = await asyncio.wait({call}, timeout=poll_seconds)
+            if done:
+                if _cancel_requested(context):
+                    raise asyncio.CancelledError
+                return call.result()
+    except BaseException:
+        if not call.done():
+            call.cancel()
+        await asyncio.gather(call, return_exceptions=True)
+        raise
+    finally:
+        if context.inflight_core_calls is not None:
+            context.inflight_core_calls.discard(call)
+
+
 @dataclass
 class CandidateValidationRepairState:
     candidate_revision: str = ""
@@ -2475,18 +2526,18 @@ class CoreTool(Tool):
                     raise asyncio.CancelledError
                 done, _pending = await asyncio.wait({call}, timeout=FULL_READ_PROGRESS_INTERVAL_SECONDS)
                 if done:
+                    if self.context.cancel_event is not None and self.context.cancel_event.is_set():
+                        raise asyncio.CancelledError
                     result = call.result()
                     break
                 elapsed = max(0, int(time.monotonic() - started))
                 if self.spec.name == "read_documents_fully":
                     progress_unavailable = False
                     try:
-                        progress = await self.context.gateway.call(
-                            project_id=self.context.project_id,
-                            run_id=self.context.run_id,
-                            token=self.context.token,
-                            tool="get_material_analysis_progress",
-                            arguments={
+                        progress = await call_core(
+                            self.context,
+                            "get_material_analysis_progress",
+                            {
                                 "started_after": started_after,
                                 "filenames": arguments.get("filenames", []),
                             },
@@ -2525,6 +2576,8 @@ class CoreTool(Tool):
                 self.context.inflight_core_calls.discard(call)
         if cache_key is not None and not result.get("error"):
             self.context.stable_read_cache[cache_key] = result
+        if _cancel_requested(self.context):
+            raise asyncio.CancelledError
         autonomous_recovery = _autonomous_recovery(self.spec.name, arguments, result, self.context)
         if autonomous_recovery is not None:
             result = autonomous_recovery
@@ -2853,6 +2906,8 @@ class ProjectStateTool(Tool):
     async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
         if self.context.state_action is None:
             raise RuntimeError("项目状态工具未绑定")
+        if _cancel_requested(self.context):
+            raise asyncio.CancelledError
         try:
             result = await self.context.state_action(self.spec.name, input_dict(inputs))
         except AgentRuntimeError as error:
@@ -2869,6 +2924,14 @@ class ProjectStateTool(Tool):
             }
         if not result.get("error"):
             self.context.validation_repair.record_success(self.spec.name)
+        # A cancelled state snapshot is an expected terminal observation, not
+        # a failed tool invocation.  Keep the cancellation reason out of the
+        # generic validation/recovery classifier.
+        cancellation = result.get("cancellation")
+        if result.get("execution") in {"stopping", "cancelled"} or (
+            isinstance(cancellation, Mapping) and cancellation.get("requested") is True
+        ):
+            result.pop("error", None)
         return json.dumps(result, ensure_ascii=False)
 
     async def stream(self, inputs: Any, **kwargs: Any):

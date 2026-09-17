@@ -6,6 +6,7 @@ import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { getDb, nowIso } from '../db/index.js';
 import { listDocuments } from '../documents/repo.js';
+import { isRunCancellationRequested } from './run-cancellation.js';
 import type {
   PackageSpec,
   Project,
@@ -68,6 +69,7 @@ interface MutationEnvelope {
   expectedRevision: string;
   clientMutationId: string;
   editSessionId?: string;
+  runId?: string;
 }
 
 interface CreateAction {
@@ -400,6 +402,18 @@ export class StudioWriteService {
       }
 
       let workspace = this.workspace(project.id);
+      // Only Agent-originated mutations carry an explicit runId. Ordinary
+      // Studio edits must remain available after a cancelled Agent run; the
+      // Agent route itself applies the cancellation fence before dispatch.
+      const requestRunId = plan.envelope.runId || '';
+      if (requestRunId && isRunCancellationRequested(this.db, project.id, requestRunId)) {
+        throw new StudioWriteError(
+          'RUN_CANCELLING',
+          '当前运行正在停止，新的修改不会继续写入',
+          409,
+          { runId: requestRunId, retryable: false },
+        );
+      }
       if (workspace?.owner !== undefined && workspace.owner !== username) {
         if (Date.parse(workspace.lease_expires_at) > Date.now()) {
           throw new StudioWriteError(
@@ -774,8 +788,15 @@ function parseEnvelope(body: Record<string, unknown>): MutationEnvelope {
   if (editSessionId && !MUTATION_ID_PATTERN.test(editSessionId)) {
     errors.editSessionId = 'editSessionId 必须是 1 到 128 位字母、数字或 . _ : -';
   }
+  const runId = String(body.runId ?? '').trim();
+  if (runId.length > 200) errors.runId = 'runId 不能超过 200 字符';
   if (Object.keys(errors).length) throw fieldError(errors);
-  return { expectedRevision, clientMutationId, ...(editSessionId ? { editSessionId } : {}) };
+  return {
+    expectedRevision,
+    clientMutationId,
+    ...(editSessionId ? { editSessionId } : {}),
+    ...(runId ? { runId } : {}),
+  };
 }
 
 function parseCreate(body: Record<string, unknown>, prefix: string): CreateAction {

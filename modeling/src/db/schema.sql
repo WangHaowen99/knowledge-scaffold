@@ -758,7 +758,7 @@ CREATE TABLE IF NOT EXISTS agent_change_plans (
   run_id            TEXT NOT NULL,
   goal              TEXT NOT NULL,
   mode              TEXT NOT NULL CHECK (mode IN ('expert_edit', 'generation')),
-  status            TEXT NOT NULL CHECK (status IN ('active', 'completed', 'failed', 'cancelled')),
+  status            TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed', 'failed', 'cancelled')),
   approval_status   TEXT NOT NULL DEFAULT 'approved'
                     CHECK (approval_status IN ('pending', 'approved', 'rejected')),
   approved_by       TEXT,
@@ -862,6 +862,18 @@ CREATE TABLE IF NOT EXISTS agent_change_control_events (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_change_control_events_plan
   ON agent_change_control_events(plan_id, created_at);
+
+-- Python Agent 的取消栅栏。它只阻止同一 run 在 Node 侧开始新的写入，
+-- 不保存业务正文；已完成的候选和审计记录仍由各自表保留。
+CREATE TABLE IF NOT EXISTS agent_run_cancellations (
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id      TEXT NOT NULL,
+  reason      TEXT NOT NULL DEFAULT '',
+  requested_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_run_cancellations_project
+  ON agent_run_cancellations(project_id, requested_at DESC);
 
 -- 浏览器黑盒验收专用的一次性故障开关。仅在显式验收模式下由可见页面读写，
 -- 不保存任意代码、地址或请求内容，也不会在生产模式下提供路由。

@@ -34,8 +34,13 @@ export default function ProcessDrawer({ onClose }) {
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [loadingDiff, setLoadingDiff] = useState(false);
   const [versionError, setVersionError] = useState('');
-  const canCancel = !demo && ['queued', 'running', 'suspended'].includes(run?.status);
+  const [expandedCancellationRuns, setExpandedCancellationRuns] = useState(() => new Set());
+  const canCancel = !demo && ['queued', 'running', 'waiting', 'suspended'].includes(run?.status);
   const traceRows = newestTraceFirst(demo ? TRACE : trace);
+  const displayedTraceRows = groupCancelledTraceRows(traceRows);
+  useEffect(() => {
+    if (!demo && projectId) void actions.refreshAgentState();
+  }, [demo, projectId]);
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -86,11 +91,11 @@ export default function ProcessDrawer({ onClose }) {
             <button className={tab === 'trace' ? 'on' : ''} onClick={() => setTab('trace')}>活动记录</button>
             {!demo && <button className={tab === 'versions' ? 'on' : ''} onClick={() => setTab('versions')}>版本历史</button>}
           </div>
-          {tab === 'trace' && <span className="t-xs">{demo ? '67 项处理 · 4 个并行任务 · 12 个保存点' : `${trace.length} 条处理记录`}</span>}
+          {tab === 'trace' && <span className="t-xs">{demo ? '67 项处理 · 4 个并行任务 · 12 个保存点' : `${displayedTraceRows.length} 条处理记录`}</span>}
           <span className="spacer" />
           {tab === 'trace' && canCancel && (
             <button className="btn btn-danger btn-sm" onClick={() => void actions.cancel()}>
-              <Icon name="x" size={12} />停止运行
+              <Icon name="x" size={12} />{run?.status === 'suspended' ? '继续核对停止结果' : '停止运行'}
             </button>
           )}
           <button className="btn btn-ghost" onClick={onClose} aria-label="关闭"><Icon name="x" size={13} /></button>
@@ -98,8 +103,9 @@ export default function ProcessDrawer({ onClose }) {
         <div className="wb-scroll" style={{ background: 'var(--c-surface)' }}>
           {tab === 'trace' ? <>
             <div className="wb-trace-list" role="list" aria-label="活动记录，最新记录在前">
-              {traceRows.map((item, index) => {
+              {displayedTraceRows.map((item, index) => {
                 const status = phasePresentation(item.phase);
+                const cancellationOpen = item.kind === 'cancellation' && expandedCancellationRuns.has(item.runId);
                 return (
                   <article className={`wb-trace-item is-${status.tone}`} role="listitem"
                     key={item.id ?? `${item.createdAt || item.at}-${index}`}>
@@ -110,7 +116,28 @@ export default function ProcessDrawer({ onClose }) {
                         <span className="wb-trace-actor">{item.actor || '助手'}</span>
                         <span className={`wb-trace-status is-${status.tone}`}>{status.label}</span>
                       </div>
-                      <div className="wb-trace-summary">{traceSummary(item)}</div>
+                      {item.kind === 'cancellation' ? (
+                        <>
+                          <button type="button" className="wb-trace-summary wb-trace-disclosure"
+                            aria-expanded={cancellationOpen}
+                            onClick={() => setExpandedCancellationRuns((current) => {
+                              const next = new Set(current);
+                              if (next.has(item.runId)) next.delete(item.runId); else next.add(item.runId);
+                              return next;
+                            })}>
+                            {traceSummary(item)} · {cancellationOpen ? '收起详情' : '展开详情'}
+                          </button>
+                          {cancellationOpen && <div className="wb-trace-details">
+                            {item.tools.map((tool, toolIndex) => (
+                              <div className="wb-trace-detail" key={tool.toolCallId || `${tool.name}-${toolIndex}`}>
+                                <span>{tool.name || '工具'}</span>
+                                <time>{formatTraceTime(tool.startedAt)}</time>
+                                <span>{phasePresentation(tool.phase).label}</span>
+                              </div>
+                            ))}
+                          </div>}
+                        </>
+                      ) : <div className="wb-trace-summary">{traceSummary(item)}</div>}
                     </div>
                   </article>
                 );
@@ -154,6 +181,7 @@ function phasePresentation(phase) {
   return ({
     started: { label: '进行中', tone: 'active' },
     repairing: { label: '自动修正中', tone: 'active' },
+    cancel_pending: { label: '停止核对中', tone: 'active' },
     completed: { label: '已完成', tone: 'done' },
     failed: { label: '失败', tone: 'failed' },
     blocked: { label: '需要处理', tone: 'failed' },
@@ -178,6 +206,42 @@ export function newestTraceFirst(items) {
     .map(({ item }) => item);
 }
 
+export function groupCancelledTraceRows(items) {
+  const rows = [];
+  const cancellationByRun = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (item?.phase !== 'cancelled' || !item?.runId || !item?.summary?.includes('运行已停止')) {
+      rows.push(item);
+      continue;
+    }
+    let group = cancellationByRun.get(item.runId);
+    if (!group) {
+      group = {
+        id: `cancellation:${item.runId}`,
+        kind: 'cancellation',
+        runId: item.runId,
+        createdAt: item.cancelledAt || item.createdAt,
+        at: formatTraceTime(item.cancelledAt || item.createdAt) || item.at,
+        actor: item.actor || '助手',
+        phase: 'cancelled',
+        summary: '本次停止',
+        tools: [],
+      };
+      cancellationByRun.set(item.runId, group);
+      rows.push(group);
+    }
+    group.tools.push(item);
+    const timestamp = traceTimestamp(item);
+    if (timestamp > traceTimestamp(group)) {
+      group.createdAt = item.cancelledAt || item.createdAt;
+      group.at = formatTraceTime(group.createdAt) || item.at;
+    }
+  }
+  return rows.map((item) => item.kind === 'cancellation'
+    ? { ...item, summary: `${item.summary}，${item.tools.length} 个在途操作已取消（运行已停止，当前操作已取消）` }
+    : item);
+}
+
 function traceTimestamp(item) {
   const createdAt = Date.parse(String(item?.createdAt || ''));
   if (Number.isFinite(createdAt)) return createdAt;
@@ -194,11 +258,14 @@ export function restoredVersionMessage(packageVersion, target) {
   return `已从版本历史恢复到${label}，无需重复评测。`;
 }
 
-export function humanizeTraceSummary(summary, toolName = '') {
+export function humanizeTraceSummary(summary, toolName = '', phase = '') {
   const completion = toolName === 'task_tool'
     ? '一项子任务已完成，主任务继续处理中'
     : '当前步骤已完成';
-  let text = String(summary || '已记录一次处理')
+  const failedWithCompletionFallback = phase === 'failed' && String(summary || '').trim() === '处理完成';
+  let text = String(failedWithCompletionFallback
+    ? '当前步骤未完成'
+    : summary || (phase === 'failed' ? '当前步骤未完成' : '已记录一次处理'))
     .replace(/^正在读取项目状态$/u, '正在核对当前进展')
     .replace(/^正在保存项目上下文$/u, '正在保存当前进展')
     .replace(/^正在核对项目状态转换$/u, '正在核对下一阶段')
@@ -226,7 +293,7 @@ export function humanizeTraceSummary(summary, toolName = '') {
 }
 
 export function traceSummary(item = {}) {
-  const summary = humanizeTraceSummary(item.summary, item.name);
+  const summary = humanizeTraceSummary(item.summary, item.name, item.phase);
   const count = Number(item.segmentCount) || 0;
   if (item.name === 'get_evaluation_results' && count > 1) {
     return `${summary} · 共 ${count} 次读取，已合并`;

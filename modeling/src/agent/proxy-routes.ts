@@ -32,6 +32,17 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
   app.post('/api/projects/:id/agent/runs', async (request, reply) => {
     const id = projectId(request);
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    const pausedPlan = new ChangeControlStore(getDb()).pausedPlanSnapshot(id);
+    const resumePlanId = String((request.body as any)?.resumePlanId ?? '').trim();
+    if (pausedPlan && resumePlanId !== pausedPlan.id) {
+      return reply.code(409).send(pausedPlanDecision(pausedPlan));
+    }
+    if (!pausedPlan && resumePlanId) {
+      return reply.code(409).send({
+        code: 'PAUSED_CHANGE_PLAN_STALE',
+        error: '暂停计划状态已经变化，请刷新页面后再操作',
+      });
+    }
     const acceptanceFailure = takeAcceptanceMessageFailure(request, reply, id);
     if (acceptanceFailure) return acceptanceFailure;
     if (shouldStartIncrementRound(String((request.body as any)?.message ?? ''))) {
@@ -39,6 +50,30 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
       if (prepared.status >= 400) return reply.code(prepared.status).send(prepared.payload);
     }
     return proxyJson(request, reply, `/v1/projects/${encodeURIComponent(id)}/runs`, 'POST', id);
+  });
+
+  app.post('/api/projects/:id/agent/change-plans/:planId/resume', async (request, reply) => {
+    const id = projectId(request);
+    if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    const planId = String((request.params as any).planId ?? '').trim();
+    const pausedPlan = new ChangeControlStore(getDb()).pausedPlanSnapshot(id);
+    if (!pausedPlan || pausedPlan.id !== planId) {
+      return reply.code(409).send({
+        code: 'PAUSED_CHANGE_PLAN_STALE',
+        error: '暂停计划状态已经变化，请刷新页面后再操作',
+      });
+    }
+    const result = await agentJson(
+      request,
+      `/v1/projects/${encodeURIComponent(id)}/runs`,
+      'POST',
+      {
+        message: '继续页面中明确选择的未完成建模计划。',
+        baselineRevision: '',
+        resumePlanId: planId,
+      },
+    );
+    return reply.code(result.status).send(result.payload);
   });
 
   app.post('/api/projects/:id/agent/increment/start', async (request, reply) => {
@@ -51,6 +86,8 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
   app.post('/api/projects/:id/agent/steer', async (request, reply) => {
     const id = projectId(request);
     if (!canWriteProject(id, request.user!.username)) return reply.code(404).send({ error: '项目不存在' });
+    const pausedPlan = new ChangeControlStore(getDb()).pausedPlanSnapshot(id);
+    if (pausedPlan) return reply.code(409).send(pausedPlanDecision(pausedPlan));
     const acceptanceFailure = takeAcceptanceMessageFailure(request, reply, id);
     if (acceptanceFailure) return acceptanceFailure;
     if ((request.body as any)?.purposeReviewCompleted === true) {
@@ -195,6 +232,15 @@ export function registerAgentProxyRoutes(app: FastifyInstance): void {
     });
     bridge.pipe(reply.raw);
   });
+}
+
+function pausedPlanDecision(pausedPlan: Record<string, unknown>) {
+  return {
+    code: 'PAUSED_CHANGE_PLAN_DECISION_REQUIRED',
+    error: '当前项目还有暂停的建模计划，请先选择继续该计划或结束后重新规划',
+    pausedPlan,
+    requiresUserDecision: true,
+  };
 }
 
 export function incrementRoundRequested(message: string): boolean {

@@ -320,6 +320,51 @@ export function ensureAgentProjectEventKinds(db: DatabaseSync): void {
   }
 }
 
+/** 旧版计划表的 CHECK 不接受 paused，需要保留关联记录后原地扩展约束。 */
+export function ensureAgentChangePlanPausedStatus(db: DatabaseSync): void {
+  const row = db.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'agent_change_plans'`).get() as { sql?: string } | undefined;
+  if (!row?.sql || row.sql.includes("'paused'")) return;
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE agent_change_plans_next (
+        id                TEXT PRIMARY KEY,
+        project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        run_id            TEXT NOT NULL,
+        goal              TEXT NOT NULL,
+        mode              TEXT NOT NULL CHECK (mode IN ('expert_edit', 'generation')),
+        status            TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed', 'failed', 'cancelled')),
+        approval_status   TEXT NOT NULL DEFAULT 'approved'
+                          CHECK (approval_status IN ('pending', 'approved', 'rejected')),
+        approved_by       TEXT,
+        approved_at       TEXT,
+        version           INTEGER NOT NULL DEFAULT 1,
+        expected_revision TEXT NOT NULL,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+      );
+      INSERT INTO agent_change_plans_next (
+        id, project_id, run_id, goal, mode, status, approval_status, approved_by,
+        approved_at, version, expected_revision, created_at, updated_at
+      ) SELECT
+        id, project_id, run_id, goal, mode, status, approval_status, approved_by,
+        approved_at, version, expected_revision, created_at, updated_at
+      FROM agent_change_plans;
+      DROP TABLE agent_change_plans;
+      ALTER TABLE agent_change_plans_next RENAME TO agent_change_plans;
+      CREATE INDEX idx_agent_change_plans_run
+        ON agent_change_plans(project_id, run_id, updated_at DESC);
+      COMMIT;`);
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* 没有活动事务时忽略 */ }
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 /**
  * 旧版按读取时机投影的任务图已经包含真实进度，只迁移来源标记。
  * 不重建任务图，避免改写既有任务、里程碑、确认记录和 revision。
@@ -383,6 +428,7 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'agent_change_plans', 'approval_status', "TEXT NOT NULL DEFAULT 'approved'");
   ensureColumn(db, 'agent_change_plans', 'approved_by', 'TEXT');
   ensureColumn(db, 'agent_change_plans', 'approved_at', 'TEXT');
+  ensureAgentChangePlanPausedStatus(db);
   ensureColumn(db, 'package_drafts', 'base_revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
   ensureColumn(db, 'generation_batch_checkpoints', 'dependency_hash', "TEXT NOT NULL DEFAULT ''");
