@@ -62,3 +62,28 @@ def test_raw_error_detection():
     assert _looks_like_raw_error("Claude Code returned an error result")
     assert _looks_like_raw_error("(request id: 2026...)")
     assert not _looks_like_raw_error("订单对象提取完成，共 12 个字段。")
+
+
+def test_model_settings_roundtrip(tmp_path: Path, monkeypatch):
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    assert model_settings.masked()["configured"] is False
+
+    saved = model_settings.save("https://gateway.example.com", "sk-test-1234567890abcd", "m1")
+    assert saved["configured"] is True
+    assert saved["api_key_masked"].startswith("sk-tes")
+    assert "1234567890" not in saved["api_key_masked"]
+
+    env = model_settings.session_env()
+    assert env["ANTHROPIC_BASE_URL"] == "https://gateway.example.com"
+    assert env["ANTHROPIC_API_KEY"] == "sk-test-1234567890abcd"
+    assert env["ANTHROPIC_MODEL"] == "m1"
+
+    # 留空 key 不覆盖既有值；非法地址被拒
+    model_settings.save("https://gateway.example.com", "", "m2")
+    assert model_settings.session_env()["ANTHROPIC_API_KEY"] == "sk-test-1234567890abcd"
+    with pytest.raises(model_settings.ModelConfigError):
+        model_settings.save("ftp://bad", "", "")

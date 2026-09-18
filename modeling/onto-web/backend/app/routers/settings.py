@@ -2,9 +2,39 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..services import mcp_expose, mcp_settings
+from ..services import auth, mcp_expose, mcp_settings, model_settings
+from ..services.auth import AuthError
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+def _require_admin(request: Request) -> None:
+    if not auth.ENABLED:
+        return
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        raise AuthError("需要管理员权限", 403)
+
+
+class ModelBody(BaseModel):
+    base_url: str = ""
+    api_key: str = ""  # 留空表示不修改
+    model: str = ""
+
+
+@router.get("/model")
+def get_model_settings(request: Request):
+    _require_admin(request)
+    return model_settings.masked()
+
+
+@router.put("/model")
+def put_model_settings(body: ModelBody, request: Request):
+    _require_admin(request)
+    try:
+        return model_settings.save(body.base_url, body.api_key, body.model)
+    except model_settings.ModelConfigError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
 class McpBody(BaseModel):

@@ -1,13 +1,14 @@
 import {
-  DownOutlined,
+  ArrowLeftOutlined,
   ImportOutlined,
+  LogoutOutlined,
   MoreOutlined,
   PlusOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 import {
+  Avatar,
   Button,
-  Drawer,
   Dropdown,
   Empty,
   Input,
@@ -28,6 +29,7 @@ import ChatPane from './components/ChatPane.jsx';
 import LeftPane, { stageProgress } from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
 import McpSettings from './components/McpSettings.jsx';
+import ModelSettings from './components/ModelSettings.jsx';
 import { api, authStore } from './lib/api.js';
 import { ThemeCtx } from './lib/theme-context.js';
 import { ACCENTS } from './theme.js';
@@ -159,12 +161,43 @@ export default function App() {
     },
   });
 
-  const settingsDrawer = (
-    <Drawer
+  const isAdmin = auth === 'disabled' || authStore.role === 'admin';
+
+  const logout = () => {
+    authStore.clear();
+    setProject(null);
+    setAuth('required');
+  };
+
+  const avatarNode = auth === 'ok' && (
+    <Dropdown
+      trigger={['click']}
+      menu={{
+        items: [
+          { key: 'user', label: authStore.username, disabled: true },
+          { type: 'divider' },
+          { key: 'logout', label: '退出登录', icon: <LogoutOutlined />, danger: true },
+        ],
+        onClick: ({ key }) => {
+          if (key === 'logout') logout();
+        },
+      }}
+    >
+      <Avatar className="user-avatar" size={30}>
+        {(authStore.username || '?').slice(0, 1).toUpperCase()}
+      </Avatar>
+    </Dropdown>
+  );
+
+  const settingsModal = (
+    <Modal
       title="设置"
       open={settingsOpen}
-      onClose={() => setSettingsOpen(false)}
-      width={400}
+      onCancel={() => setSettingsOpen(false)}
+      footer={null}
+      centered
+      width={620}
+      destroyOnHidden
     >
       <Tabs
         items={[
@@ -205,6 +238,15 @@ export default function App() {
               </>
             ),
           },
+          ...(isAdmin
+            ? [
+                {
+                  key: 'model',
+                  label: '模型接入',
+                  children: <ModelSettings project={project} />,
+                },
+              ]
+            : []),
           {
             key: 'mcp',
             label: 'MCP 服务器',
@@ -212,7 +254,7 @@ export default function App() {
           },
         ]}
       />
-    </Drawer>
+    </Modal>
   );
 
   if (auth === 'unknown') return null;
@@ -222,8 +264,6 @@ export default function App() {
   if (adminOpen) {
     return <AdminPage onBack={() => setAdminOpen(false)} />;
   }
-
-  const isAdmin = auth === 'disabled' || authStore.role === 'admin';
 
   if (!project) {
     return (
@@ -242,16 +282,7 @@ export default function App() {
           </Upload>
           {isAdmin && <Button onClick={() => setAdminOpen(true)}>运维</Button>}
           <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)} />
-          {auth === 'ok' && (
-            <Button
-              onClick={() => {
-                authStore.clear();
-                setAuth('required');
-              }}
-            >
-              退出（{authStore.username}）
-            </Button>
-          )}
+          {avatarNode}
         </div>
         <div className="pj-grid">
           <div
@@ -345,7 +376,7 @@ export default function App() {
             onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
           />
         </Modal>
-        {settingsDrawer}
+        {settingsModal}
       </div>
     );
   }
@@ -376,9 +407,10 @@ export default function App() {
           icon={<SettingOutlined />}
           onClick={() => setSettingsOpen(true)}
         />
-        <Button size="small" icon={<DownOutlined rotate={90} />} onClick={() => setProject(null)}>
-          切换任务
+        <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => setProject(null)}>
+          返回项目列表
         </Button>
+        {avatarNode}
       </div>
       <div className="app-body">
         <Splitter>
@@ -432,7 +464,7 @@ export default function App() {
           </Splitter.Panel>
         </Splitter>
       </div>
-      {settingsDrawer}
+      {settingsModal}
     </div>
   );
 }
