@@ -124,6 +124,7 @@ export default function CenterPane({
   onFocus,
   diffRev,
   onOpenFile,
+  onCommand,
 }) {
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -132,8 +133,32 @@ export default function CenterPane({
   const [diffState, setDiffState] = useState(null); // {original, modified, rev}
   const [diffDraft, setDiffDraft] = useState('');
   const [pickRev, setPickRev] = useState(null);
+  const [coverage, setCoverage] = useState(null);
+  const [reportPath, setReportPath] = useState(null);
+  const [reportContent, setReportContent] = useState(null);
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
+  const reportPaths = useMemo(
+    () => paths.filter((p) => p.startsWith('reports/') && p.endsWith('.md')).sort().reverse(),
+    [paths],
+  );
+
+  useEffect(() => {
+    if (focus === 'overview') {
+      api.metrics(project.id).then(setCoverage).catch(() => {});
+    }
+  }, [focus, project.id, versions.length]);
+
+  useEffect(() => {
+    if (focus !== 'reports' || !reportPath) {
+      setReportContent(null);
+      return;
+    }
+    api
+      .readFile(project.id, reportPath)
+      .then(setReportContent)
+      .catch((error) => setReportContent({ error: error.message }));
+  }, [focus, project.id, reportPath]);
 
   // 文件加载
   useEffect(() => {
@@ -206,6 +231,7 @@ export default function CenterPane({
           { label: 'Studio', value: 'studio' },
           { label: '文件', value: 'file' },
           { label: '对比', value: 'diff' },
+          { label: '报告', value: 'reports' },
         ]}
         style={{ marginBottom: 12 }}
       />
@@ -243,6 +269,34 @@ export default function CenterPane({
                 <div className="stat-label">版本数</div>
               </div>
             </div>
+            {coverage && (coverage.design_coverage != null || coverage.pass_rate != null) && (
+              <div className="stat-grid">
+                <div className="stat-tile" style={{ '--tile': '#16845b', '--tile-bg': '#e2f5ed' }}>
+                  <div className="stat-num">
+                    {coverage.design_coverage != null ? `${coverage.design_coverage}%` : '—'}
+                  </div>
+                  <div className="stat-label">设计覆盖率</div>
+                </div>
+                <div className="stat-tile" style={{ '--tile': '#256fd0', '--tile-bg': '#e8f1fd' }}>
+                  <div className="stat-num">
+                    {coverage.pass_rate != null ? `${coverage.pass_rate}%` : '—'}
+                  </div>
+                  <div className="stat-label">推演通过率</div>
+                </div>
+                <div
+                  className="stat-tile"
+                  style={{ '--tile': 'var(--text-secondary)', '--tile-bg': 'var(--surface-subtle)', cursor: 'pointer' }}
+                  onClick={() => {
+                    setReportPath(coverage.source);
+                    onFocus('reports');
+                  }}
+                >
+                  <div className="stat-label" style={{ marginTop: 14 }}>
+                    来源：{coverage.source?.replace('reports/', '')}
+                  </div>
+                </div>
+              </div>
+            )}
             {usage && usage.calls > 0 && (
               <Card size="small" title="模型用量">
                 <Space size={24} wrap>
@@ -274,7 +328,18 @@ export default function CenterPane({
         <div className="center-anim" key="file">
         <Spin spinning={loading}>
           {!file && <Empty description="从左栏「产物」选择文件" />}
-          {file && content?.unsupported && (
+          {file && /\.html?$/i.test(file) && (
+            <>
+              <Typography.Title level={5}>{file}</Typography.Title>
+              <iframe
+                className="html-preview"
+                title={file}
+                sandbox="allow-scripts"
+                src={api.rawUrl(project.id, file)}
+              />
+            </>
+          )}
+          {file && content?.unsupported && !/\.html?$/i.test(file) && (
             <Empty description={`${file} 暂不支持预览（当前仅支持文本类文件）`} />
           )}
           {file && content?.error && <Empty description={content.error} />}
@@ -360,6 +425,56 @@ export default function CenterPane({
             />
           ) : (
             <Empty description="选择文件与历史版本后展示对比（左：历史，右：当前可编辑）" />
+          )}
+        </div>
+      )}
+
+      {focus === 'reports' && (
+        <div className="center-anim" key="reports">
+          {reportPaths.length === 0 ? (
+            <Empty description="还没有报告——运行校验或追踪后在这里评审" />
+          ) : (
+            <div className="report-layout">
+              <div className="report-list">
+                {reportPaths.map((path) => (
+                  <div
+                    key={path}
+                    className={`report-item${reportPath === path ? ' active' : ''}`}
+                    onClick={() => setReportPath(path)}
+                  >
+                    {path.replace('reports/', '')}
+                  </div>
+                ))}
+              </div>
+              <div className="report-body">
+                {!reportPath && <Empty description="选择左侧报告查看" />}
+                {reportPath && reportContent?.error && <Empty description={reportContent.error} />}
+                {reportPath && reportContent?.content != null && (
+                  <>
+                    <Space style={{ marginBottom: 8 }} wrap>
+                      <Button
+                        size="small"
+                        type="primary"
+                        onClick={() =>
+                          onCommand?.(
+                            `请阅读 ${reportPath}，逐条修复其中列出的错误项，修复后重新运行校验`,
+                          )
+                        }
+                      >
+                        让助手修复错误项
+                      </Button>
+                      <Button size="small" onClick={() => onCommand?.('/ontology-validate')}>
+                        重新校验
+                      </Button>
+                      <Button size="small" onClick={() => onOpenFile(reportPath)}>
+                        在编辑器中打开
+                      </Button>
+                    </Space>
+                    <Markdown content={reportContent.content} onWikiLink={openWikiLink} />
+                  </>
+                )}
+              </div>
+            </div>
           )}
         </div>
       )}

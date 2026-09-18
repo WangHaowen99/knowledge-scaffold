@@ -193,7 +193,7 @@ class SessionManager:
             # user 级设置承载部署机的模型网关配置（~/.claude/settings.json 的 env）
             setting_sources=["user", "project"],
             # bypassPermissions 下 can_use_tool 不会被触发；切回 default 即恢复确认卡
-            permission_mode=config.PERMISSION_MODE,
+            permission_mode=_permission_mode(),
             can_use_tool=can_use_tool,
             include_partial_messages=True,
             mcp_servers=_mcp_servers(),
@@ -328,6 +328,15 @@ def _mcp_servers() -> dict:
         return mcp_settings.sdk_config()
     except Exception:
         return {}
+
+
+def _permission_mode() -> str:
+    try:
+        from . import runtime_settings
+
+        return runtime_settings.permission_mode()
+    except Exception:
+        return config.PERMISSION_MODE
 
 
 def _session_env() -> dict:

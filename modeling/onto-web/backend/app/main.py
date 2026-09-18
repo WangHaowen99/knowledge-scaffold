@@ -74,6 +74,10 @@ async def auth_middleware(request: Request, call_next):
         return JSONResponse(status_code=401, content={"error": "未登录或登录已过期"})
     request.state.user = claims
     auth.touch(claims.get("sub", ""))
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        from .services import audit
+
+        audit.log(claims.get("sub", ""), request.method, path)
     return await call_next(request)
 
 

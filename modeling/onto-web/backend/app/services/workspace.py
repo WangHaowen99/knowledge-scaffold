@@ -120,6 +120,20 @@ class WorkspaceManager:
         projects.sort(key=lambda p: p.get("created_at", 0), reverse=True)
         return projects
 
+    @staticmethod
+    def visible_to(projects: list[dict], username: str, is_admin: bool) -> list[dict]:
+        """项目可见性：管理员看全部；普通用户看自己的 + 无主的历史项目。"""
+        if is_admin:
+            return projects
+        return [p for p in projects if p.get("owner", "") in ("", username)]
+
+    @staticmethod
+    def can_access(meta: dict, username: str, is_admin: bool) -> bool:
+        if is_admin:
+            return True
+        owner = meta.get("owner", "")
+        return owner == "" or owner == username
+
     def get_project(self, project_id: str) -> dict:
         root = self.project_root(project_id)
         return json.loads((root / META_FILE).read_text(encoding="utf-8"))

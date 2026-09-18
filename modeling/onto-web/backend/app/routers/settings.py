@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -68,6 +68,60 @@ def revoke_service_token(token_id: str):
     if not mcp_expose.revoke_token(token_id):
         return JSONResponse(status_code=404, content={"error": "令牌不存在"})
     return {"ok": True}
+
+
+class RuntimeBody(BaseModel):
+    permission_mode: str
+
+
+@router.get("/runtime")
+def get_runtime(request: Request):
+    _require_admin(request)
+    from ..services import runtime_settings
+
+    return {
+        "permission_mode": runtime_settings.permission_mode(),
+        "allowed": list(runtime_settings.ALLOWED_PERMISSION_MODES),
+    }
+
+
+@router.put("/runtime")
+def put_runtime(body: RuntimeBody, request: Request):
+    _require_admin(request)
+    from ..services import runtime_settings
+
+    try:
+        runtime_settings.save(body.permission_mode)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return {"permission_mode": runtime_settings.permission_mode()}
+
+
+@router.get("/assets")
+def get_assets(request: Request):
+    _require_admin(request)
+    from ..services import assets_admin
+
+    return assets_admin.info()
+
+
+@router.post("/assets/upload")
+async def upload_assets(request: Request, file: UploadFile = File(...)):
+    _require_admin(request)
+    import tempfile
+    from pathlib import Path
+
+    from ..services import assets_admin
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return assets_admin.upload(tmp_path)
+    except assets_admin.AssetError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 @router.get("/mcp")

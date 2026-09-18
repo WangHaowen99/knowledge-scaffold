@@ -4,6 +4,7 @@ import {
   LogoutOutlined,
   MoreOutlined,
   PlusOutlined,
+  SearchOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 import {
@@ -30,6 +31,7 @@ import LeftPane, { stageProgress } from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
 import McpSettings from './components/McpSettings.jsx';
 import ModelSettings from './components/ModelSettings.jsx';
+import { AssetsSettings, RuntimeSettings } from './components/SystemSettings.jsx';
 import { api, authStore } from './lib/api.js';
 import { ThemeCtx } from './lib/theme-context.js';
 import { ACCENTS } from './theme.js';
@@ -57,6 +59,8 @@ export default function App() {
   const [renaming, setRenaming] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchHits, setSearchHits] = useState(null);
   const chatSendRef = useRef(null);
   const theme = useContext(ThemeCtx);
 
@@ -245,6 +249,16 @@ export default function App() {
                   label: '模型接入',
                   children: <ModelSettings project={project} />,
                 },
+                {
+                  key: 'runtime',
+                  label: '会话',
+                  children: <RuntimeSettings project={project} />,
+                },
+                {
+                  key: 'assets',
+                  label: '提示词资产',
+                  children: <AssetsSettings />,
+                },
               ]
             : []),
           {
@@ -404,6 +418,14 @@ export default function App() {
         )}
         <Button
           size="small"
+          icon={<SearchOutlined />}
+          onClick={() => {
+            setSearchHits(null);
+            setSearchOpen(true);
+          }}
+        />
+        <Button
+          size="small"
           icon={<SettingOutlined />}
           onClick={() => setSettingsOpen(true)}
         />
@@ -448,6 +470,7 @@ export default function App() {
                   setSelectedFile(path);
                   setFocus('file');
                 }}
+                onCommand={(command) => chatSendRef.current?.(command)}
               />
             </div>
           </Splitter.Panel>
@@ -465,6 +488,47 @@ export default function App() {
         </Splitter>
       </div>
       {settingsModal}
+      <Modal
+        title="全文搜索"
+        open={searchOpen}
+        onCancel={() => setSearchOpen(false)}
+        footer={null}
+        centered
+        width={640}
+      >
+        <Input.Search
+          placeholder="搜索产物、调研、报告与知识"
+          autoFocus
+          enterButton
+          onSearch={async (q) => {
+            if (!q.trim()) return;
+            try {
+              const data = await api.search(project.id, q.trim());
+              setSearchHits(data.hits);
+            } catch (error) {
+              message.error(error.message);
+            }
+          }}
+          style={{ marginBottom: 12 }}
+        />
+        {searchHits && searchHits.length === 0 && <Empty description="没有命中" />}
+        {searchHits?.map((hit, index) => (
+          <div
+            key={`${hit.path}-${hit.line}-${index}`}
+            className="search-hit msg-soft"
+            onClick={() => {
+              setSelectedFile(hit.path);
+              setFocus('file');
+              setSearchOpen(false);
+            }}
+          >
+            <div className="search-hit-path">
+              {hit.path}:{hit.line}
+            </div>
+            <div className="search-hit-text">{hit.text}</div>
+          </div>
+        ))}
+      </Modal>
     </div>
   );
 }
