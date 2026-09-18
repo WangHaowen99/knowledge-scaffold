@@ -45,9 +45,10 @@ function RecoveryBlock({ block }) {
         <div className="wb-text" style={{ marginBottom: 'var(--s-3)' }}>
           <MarkdownContent>{userFacingText(block.text)}</MarkdownContent>
         </div>
-        {(block.missingRequiredTools?.length || block.ledgerStatus || block.processed != null || block.missingConstraintItems?.length || block.constraintStatus) && (
+        {(block.missingRequiredTools?.length || block.ledgerStatus || block.processed != null || block.missingConstraintItems?.length || block.constraintStatus || block.blockers?.length) && (
           <div className="wb-recovery-diagnostics" role="status">
             {block.missingRequiredTools?.length > 0 && <div>缺失步骤：{block.missingRequiredTools.map(userFacingText).join('、')}</div>}
+            {block.blockers?.length > 0 && <div>未满足条件：{block.blockers.map(userFacingText).join('；')}</div>}
             {block.ledgerStatus && <div>台账状态：{userFacingText(block.ledgerStatus)}</div>}
             {block.processed != null && <div>进度：已处理 {block.processed}{block.remaining != null ? `，剩余 ${block.remaining}` : ''}</div>}
             {block.failureReason && <div>原因：{userFacingText(block.failureReason)}</div>}

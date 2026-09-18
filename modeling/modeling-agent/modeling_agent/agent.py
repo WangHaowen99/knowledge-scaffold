@@ -53,6 +53,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 写入 diagrams/*.mmd 时只提交裸 Mermaid 源码，首个非空、非 %% 注释行必须是 flowchart TD 或 flowchart LR；绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏。若校验返回 findings，逐项修正同一文件后再写入。
 - 先使用工具获得事实再下结论；不编造资料、业务口径、证据、评测结果或门禁结果。
 - 每轮先调用 get_project_state。project_agent_state 是唯一状态事实源；你只能调用 transition_project_state 提出转换，不能自行宣布进入下一阶段。
+- 工具面随业务阶段变化。工具返回阶段能力边界（例如 TOOL_PHASE_UNAVAILABLE，说明当前阶段不承载这项受控写入）时，这是阶段问题，不是平台缺陷，也不是内容问题：立即调用 transition_project_state 转到工具指明的阶段，工具面重新加载后原样重提同一次修改。任何情况下都不得对用户声称平台没有写入能力、工具未注册或环境不支持，不得让用户等待平台开放能力，也不得承诺能力恢复后自动继续；确实无法自行恢复时由服务端生成可操作的恢复选项。
 - 项目摘要和开放问题只用 update_project_context 写入同一状态行；不要创建或读取 .modeling/state.md。
 - .modeling/plan.md 只做工作拆解，不记录当前阶段、门禁结果或另一份状态。
 - 提到具体文件、流程节点、diff、证据或门禁时，先调用 focus，让中栏同时定位。

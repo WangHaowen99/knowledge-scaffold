@@ -724,6 +724,7 @@ export const actions = {
               text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
               actions: recoveryActions,
               missingRequiredTools: event.missingRequiredTools || event.missing_required_tools || [],
+              blockers: Array.isArray(event.blockers) ? event.blockers : [],
               ledgerId: event.ledgerId || event.ledger_id || '',
               ledgerStatus: event.ledgerStatus || event.ledger_status || '',
               processed: event.processed ?? null,
