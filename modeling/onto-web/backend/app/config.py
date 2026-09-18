@@ -17,4 +17,7 @@ PERMISSION_MODE = os.environ.get("ONTO_WEB_PERMISSION_MODE", "bypassPermissions"
 
 # 私有网关兼容：多轮回放空 thinking 块会被部分网关 400 拒绝，设 0 关闭扩展思考
 MAX_THINKING_TOKENS = os.environ.get("ONTO_WEB_MAX_THINKING_TOKENS", "")
+
+# auth-server 管理 API 的令牌（用户管理页需要；未配置时用户管理功能不可用）
+AUTH_ADMIN_TOKEN = os.environ.get("ONTO_WEB_AUTH_ADMIN_TOKEN", "")
 MAX_FILE_PREVIEW_BYTES = 512 * 1024

@@ -1,12 +1,12 @@
 import asyncio
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..services.agent_sessions import manager
-from .projects import workspaces
+from .projects import ensure_access
 
 router = APIRouter(prefix="/api/projects/{project_id}/session", tags=["session"])
 
@@ -22,17 +22,17 @@ class PermissionBody(BaseModel):
 
 
 @router.get("/usage")
-def session_usage(project_id: str):
+def session_usage(project_id: str, request: Request):
     """汇总该项目全部模型调用的成本与 token 用量（从事件历史统计）。"""
-    workspaces.project_root(project_id)
+    ensure_access(project_id, request)
     from ..services.agent_sessions import usage_summary
 
     return usage_summary(project_id)
 
 
 @router.get("")
-def session_state(project_id: str):
-    workspaces.project_root(project_id)
+def session_state(project_id: str, request: Request):
+    ensure_access(project_id, request)
     session = manager.get(project_id)
     history = manager.get_history(project_id)
     return {
@@ -44,14 +44,17 @@ def session_state(project_id: str):
 
 
 @router.post("/messages")
-async def send_message(project_id: str, body: MessageBody):
-    cwd = workspaces.project_root(project_id)
+async def send_message(project_id: str, body: MessageBody, request: Request):
+    cwd = ensure_access(project_id, request)
     session = await manager.send(project_id, cwd, body.text)
     return {"session_id": session.id, "state": session.state}
 
 
 @router.post("/permissions/{request_id}")
-async def respond_permission(project_id: str, request_id: str, body: PermissionBody):
+async def respond_permission(
+    project_id: str, request_id: str, body: PermissionBody, request: Request
+):
+    ensure_access(project_id, request)
     await manager.respond_permission(
         project_id, request_id, body.behavior, body.message, body.answers
     )
@@ -59,23 +62,24 @@ async def respond_permission(project_id: str, request_id: str, body: PermissionB
 
 
 @router.post("/close")
-async def close_session(project_id: str):
+async def close_session(project_id: str, request: Request):
     """终止并丢弃当前会话（历史保留）；下次发消息按最新配置新建会话。"""
-    workspaces.project_root(project_id)
+    ensure_access(project_id, request)
     await manager.close(project_id)
     return {"ok": True}
 
 
 @router.post("/interrupt")
-async def interrupt(project_id: str):
+async def interrupt(project_id: str, request: Request):
+    ensure_access(project_id, request)
     await manager.interrupt(project_id)
     return {"ok": True}
 
 
 @router.get("/stream")
-async def stream(project_id: str, after: int = 0):
+async def stream(project_id: str, request: Request, after: int = 0):
     """SSE 事件流：先补发 after 之后的历史，再持续推送新事件。"""
-    workspaces.project_root(project_id)
+    ensure_access(project_id, request)
 
     async def generate():
         queue: asyncio.Queue = asyncio.Queue()

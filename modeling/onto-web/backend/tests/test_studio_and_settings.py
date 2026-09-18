@@ -64,6 +64,63 @@ def test_raw_error_detection():
     assert not _looks_like_raw_error("订单对象提取完成，共 12 个字段。")
 
 
+def test_project_visibility_rules():
+    from app.services.workspace import WorkspaceManager
+
+    projects = [
+        {"id": "a", "owner": "alice"},
+        {"id": "b", "owner": "bob"},
+        {"id": "c", "owner": ""},  # 历史无主项目
+    ]
+    visible = WorkspaceManager.visible_to(projects, "alice", is_admin=False)
+    assert {p["id"] for p in visible} == {"a", "c"}
+    assert len(WorkspaceManager.visible_to(projects, "alice", is_admin=True)) == 3
+    assert WorkspaceManager.can_access({"owner": "bob"}, "alice", False) is False
+    assert WorkspaceManager.can_access({"owner": "bob"}, "alice", True) is True
+    assert WorkspaceManager.can_access({"owner": ""}, "alice", False) is True
+
+
+def test_coverage_metrics_parse(tmp_path: Path):
+    from app.services import metrics
+
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "20260918-trace.md").write_text(
+        "# 追踪报告\n\n设计覆盖率: 83.3%\n推演通过率：90%\n", encoding="utf-8"
+    )
+    result = metrics.coverage(tmp_path)
+    assert result["design_coverage"] == 83.3
+    assert result["pass_rate"] == 90.0
+    assert result["source"] == "reports/20260918-trace.md"
+
+    empty = metrics.coverage(tmp_path / "nope")
+    assert empty["design_coverage"] is None
+
+
+def test_runtime_settings_permission_mode(tmp_path: Path, monkeypatch):
+    from app import config
+    from app.services import runtime_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    assert runtime_settings.permission_mode() == config.PERMISSION_MODE
+    runtime_settings.save("default")
+    assert runtime_settings.permission_mode() == "default"
+    with pytest.raises(ValueError):
+        runtime_settings.save("yolo")
+
+
+def test_audit_log_roundtrip(tmp_path: Path, monkeypatch):
+    from app import config
+    from app.services import audit
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    audit.log("alice", "POST", "/api/projects")
+    audit.log("bob", "DELETE", "/api/projects/x")
+    entries = audit.read()
+    assert entries[0]["user"] == "bob"  # 最新在前
+    assert entries[1]["method"] == "POST"
+
+
 def test_model_settings_roundtrip(tmp_path: Path, monkeypatch):
     from app import config
     from app.services import model_settings

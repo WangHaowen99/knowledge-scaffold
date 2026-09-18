@@ -181,7 +181,42 @@ export const api = {
     }),
   mcpServiceRevokeToken: (id) =>
     request(`/api/settings/mcp-service/tokens/${id}`, { method: 'DELETE' }),
+  metrics: (pid) => request(`/api/projects/${pid}/metrics`),
+  search: (pid, q) =>
+    request(`/api/projects/${pid}/search?q=${encodeURIComponent(q)}`),
+  rawUrl: (pid, path) =>
+    `/api/projects/${pid}/raw?path=${encodeURIComponent(path)}&token=${encodeURIComponent(authStore.token)}`,
+  getRuntime: () => request('/api/settings/runtime'),
+  saveRuntime: (permission_mode) =>
+    request('/api/settings/runtime', {
+      method: 'PUT',
+      body: JSON.stringify({ permission_mode }),
+    }),
+  getAssets: () => request('/api/settings/assets'),
+  uploadAssets: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return fetch('/api/settings/assets/upload', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+    }).then(async (r) => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `上传失败 ${r.status}`);
+      return data;
+    });
+  },
   adminOverview: () => request('/api/admin/overview'),
+  adminAudit: () => request('/api/admin/audit'),
+  adminBackup: () => request('/api/admin/backup', { method: 'POST' }),
+  adminUsers: () => request('/api/admin/users'),
+  adminUpdateUser: (username, payload) =>
+    request(`/api/admin/users/${encodeURIComponent(username)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  adminDeleteUser: (username) =>
+    request(`/api/admin/users/${encodeURIComponent(username)}`, { method: 'DELETE' }),
   studioGraph: (pid) => request(`/api/projects/${pid}/studio/graph`),
   studioElement: (pid, path) =>
     request(`/api/projects/${pid}/studio/element?path=${encodeURIComponent(path)}`),

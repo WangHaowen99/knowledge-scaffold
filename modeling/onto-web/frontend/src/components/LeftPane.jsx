@@ -2,6 +2,7 @@ import { DeleteOutlined, InboxOutlined } from '@ant-design/icons';
 import {
   Button,
   Divider,
+  Dropdown,
   List,
   Popconfirm,
   Segmented,
@@ -25,7 +26,8 @@ const STAGES = [
     title: '调研',
     probe: (paths) => paths.some((p) => p.startsWith('research/')),
     actions: [
-      { label: '开始调研', command: '/ontology-research ' },
+      { label: '联网调研', command: '/ontology-research ' },
+      { label: '仅本地资料', command: '/ontology-research 仅基于本地文档 ' },
       { label: '追加调研', command: '/ontology-research 追加' },
     ],
   },
@@ -262,6 +264,31 @@ export default function LeftPane({
             onSelect={(keys, info) => {
               if (info.node.isLeaf) onSelectFile(String(keys[0]));
             }}
+            titleRender={(node) =>
+              node.isLeaf ? (
+                <Dropdown
+                  trigger={['contextMenu']}
+                  menu={{
+                    items: [
+                      { key: 'open', label: '打开' },
+                      { key: 'impact', label: '影响分析' },
+                      { key: 'refs', label: '引用反查' },
+                    ],
+                    onClick: ({ key, domEvent }) => {
+                      domEvent.stopPropagation();
+                      const name = String(node.title).replace(/\.md$/i, '');
+                      if (key === 'open') onSelectFile(node.key);
+                      if (key === 'impact') onCommand(`/ontology-impact ${node.key}`);
+                      if (key === 'refs') onCommand(`/ontology-query 引用 ${name}`);
+                    },
+                  }}
+                >
+                  <span>{node.title}</span>
+                </Dropdown>
+              ) : (
+                node.title
+              )
+            }
           />
         ) : (
           <Typography.Paragraph type="secondary">
