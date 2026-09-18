@@ -603,8 +603,16 @@ export const actions = {
           state.pausedPlan?.id === event.plan.id ? null : state.pausedPlan
         ),
       }));
+      const planMessageId = `change-plan-${event.plan.id}`;
+      // bootstrap 会把待批准计划卡片预插在流首；回放到计划事件时先删再追加，
+      // 让卡片落回它在历史里的时间位置。实时更新仍原地替换，卡片不跳动。
+      if (replaying) {
+        store.set((state) => ({
+          messages: state.messages.filter((message) => message.id !== planMessageId),
+        }));
+      }
       actions.appendMessage({
-        id: `change-plan-${event.plan.id}`,
+        id: planMessageId,
         role: 'assistant',
         createdAt: event.createdAt,
         blocks: planCardBlocks(event.plan),

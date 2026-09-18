@@ -246,6 +246,7 @@ export default function RightPane() {
           {!demo && projectId && <CandidateRevisionPanel
             projectId={projectId}
             refreshKey={candidateRevisionRefreshKey}
+            pendingConfirmation={interaction}
             onVisibilityChange={setCandidateAttentionKey}
             onPreview={actions.openCandidateRevisionPreview}
             onChanged={async () => {

@@ -6129,7 +6129,8 @@ export class AgentCoreService {
     const textResult = await ensureFullDocumentSummaries({
       projectId: context.project.id,
       documents: readableDocuments,
-      llm: buildTaskLlm(),
+      // 精读是长批量任务：兼容端点默认开思考会把单段耗时放大数倍，这里全程关闭。
+      llm: buildTaskLlm({ disableThinking: true }),
       // 项目要求逐项产品台账时，精读必须在分段阶段就捕获产品事实，
       // 否则这一次"已完成"的分析里永远没有台账可用的来源。
       requireProductInventory: this.productLedgerRequired(context.project.id),

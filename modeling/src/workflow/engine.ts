@@ -183,7 +183,8 @@ export async function runAnalyze(
   onProgress?: (progress: MaterialAnalysisProgressUpdate) => void,
   confirmedBrief?: ModelingBrief,
 ): Promise<{ node: WorkflowNode; analysis: AnalysisResult }> {
-  const llm = llmOverride ?? buildTaskLlm();
+  // 资料分析与精读同链路：兼容端点默认开思考会把单段耗时放大数倍，这里全程关闭。
+  const llm = llmOverride ?? buildTaskLlm({ disableThinking: true });
   const node = upsertNode({ projectId, type: 'analyze', status: 'running', ordinal: nextOrdinal(projectId) });
   const reportProgress = (progress: MaterialAnalysisProgressUpdate) => {
     try { onProgress?.(progress); } catch { /* 进度展示失败不能中断资料分析 */ }

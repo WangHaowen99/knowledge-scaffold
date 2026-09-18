@@ -20,8 +20,11 @@ function observedLlm(input: {
   rejectInventoryOnceFor?: string;
   /** 分段产品事实里故意留空的来源字段，用来验证缺口由平台反推。 */
   missingFactField?: 'applicableSubjects' | 'triggerScenarios' | 'businessNeeds' | 'admissionConditions' | 'exclusionConditions';
+  /** 覆盖模型 api 标识，用来验证不同端点协议下的工具选择行为。 */
+  modelApi?: string;
 }) {
   const calls = new Map<string, number>();
+  const toolChoices: Array<{ chunk: boolean; toolChoice: unknown }> = [];
   let active = 0;
   let peak = 0;
   let failed = false;
@@ -45,8 +48,9 @@ function observedLlm(input: {
     };
   };
   const chunkPrompts: string[] = [];
+  const fauxModel = createFauxCore({ provider: 'synthetic-map', models: [{ id: 'synthetic-map' }] }).getModel();
   const llm: LlmDeps = {
-    model: createFauxCore({ provider: 'synthetic-map', models: [{ id: 'synthetic-map' }] }).getModel(),
+    model: input.modelApi ? { ...fauxModel, api: input.modelApi } : fauxModel,
     getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
       const system = String(context.systemPrompt ?? '');
@@ -55,6 +59,7 @@ function observedLlm(input: {
       }
       const filename = (system.match(/文档：([^\n]+)/u) ?? [])[1]?.trim() ?? '';
       const isChunk = system.includes('submit_document_chunk_analysis');
+      toolChoices.push({ chunk: isChunk, toolChoice: (options as { toolChoice?: unknown } | undefined)?.toolChoice });
       const core = createFauxCore({ provider: 'synthetic-map', models: [{ id: 'synthetic-map' }] });
       core.setResponses([async () => {
         if (isChunk) {
@@ -130,7 +135,7 @@ function observedLlm(input: {
       return core.streamSimple(model as any, context, options as any);
     }) as LlmDeps['streamFn'],
   };
-  return { llm, calls, chunkPrompts, peak: () => peak, reductions: () => reductions };
+  return { llm, calls, chunkPrompts, toolChoices, peak: () => peak, reductions: () => reductions };
 }
 
 function documents(names: string[]) {
@@ -257,7 +262,32 @@ test('模型持续不调用分段工具时保留公开摘要，但如实报告�
   assert.equal(result.analysis.coverageComplete, false);
   assert.ok((result.analysis.failedChunkCount ?? 0) > 0, '降级分段数必须如实计数');
   assert.equal(observed.calls.get('a.md'), 1);
-  assert.ok((observed.calls.get('b.md') ?? 0) >= 8, '应完成多轮协议恢复后再使用公开摘要降级');
+  assert.equal(
+    observed.calls.get('b.md'),
+    4,
+    '应在压缩后的重试预算（2 轮 × 2 次捕获）内完成协议恢复，再使用公开摘要降级',
+  );
+});
+
+test('分段精读对 openai 兼容端点强制 required 工具选择，汇总阶段不受影响', async () => {
+  const project = createProject({ owner: 'tester', name: '合成工具选择强制' });
+  const observed = observedLlm({ modelApi: 'openai-completions' });
+  await runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '合成场景',
+    tables: [],
+    documents: documents(['a']),
+    llm: observed.llm,
+    concurrency: 1,
+  });
+  const chunkChoices = observed.toolChoices.filter((item) => item.chunk);
+  assert.ok(chunkChoices.length > 0, '应捕获到分段阶段的模型调用');
+  for (const item of chunkChoices) {
+    assert.equal(item.toolChoice, 'required', '分段调用必须携带 required 工具选择');
+  }
+  for (const item of observed.toolChoices.filter((entry) => !entry.chunk)) {
+    assert.equal(item.toolChoice, undefined, '汇总阶段调用不应携带工具选择约束');
+  }
 });
 
 test('领域汇总缺少辅助表时补齐已分析记录且不伪造知识候选', async () => {
