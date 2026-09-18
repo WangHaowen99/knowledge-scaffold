@@ -11,4 +11,7 @@ PORT = int(os.environ.get("ONTO_WEB_PORT", "8100"))
 
 # canUseTool 确认卡等待前端答复的超时；超时按拒绝处理，避免会话永久挂起
 PERMISSION_TIMEOUT_SECONDS = int(os.environ.get("ONTO_WEB_PERMISSION_TIMEOUT", "600"))
+
+# 会话权限模式：默认全放行（bypassPermissions）；设为 default 时启用逐操作确认卡
+PERMISSION_MODE = os.environ.get("ONTO_WEB_PERMISSION_MODE", "bypassPermissions")
 MAX_FILE_PREVIEW_BYTES = 512 * 1024

@@ -1,8 +1,74 @@
-async function request(path, options = {}) {
+const TOKEN_KEY = 'onto-access-token';
+const REFRESH_KEY = 'onto-refresh-token';
+
+export const authStore = {
+  get token() {
+    return localStorage.getItem(TOKEN_KEY) || '';
+  },
+  get refreshToken() {
+    return localStorage.getItem(REFRESH_KEY) || '';
+  },
+  get username() {
+    try {
+      const payload = JSON.parse(atob(this.token.split('.')[1]));
+      return payload.sub || '';
+    } catch {
+      return '';
+    }
+  },
+  save(tokens) {
+    localStorage.setItem(TOKEN_KEY, tokens.access_token);
+    if (tokens.refresh_token) localStorage.setItem(REFRESH_KEY, tokens.refresh_token);
+  },
+  clear() {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+  },
+};
+
+function authHeaders() {
+  return authStore.token ? { Authorization: `Bearer ${authStore.token}` } : {};
+}
+
+let refreshing = null;
+async function tryRefresh() {
+  if (!authStore.refreshToken) return false;
+  refreshing =
+    refreshing ||
+    fetch('/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: authStore.refreshToken }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) {
+          authStore.save(data);
+          return true;
+        }
+        authStore.clear();
+        return false;
+      })
+      .catch(() => false)
+      .finally(() => {
+        refreshing = null;
+      });
+  return refreshing;
+}
+
+async function request(path, options = {}, retried = false) {
   const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     ...options,
+    ...(options.headers
+      ? { headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options.headers } }
+      : {}),
   });
+  if (response.status === 401 && !retried && !path.startsWith('/api/auth/')) {
+    if (await tryRefresh()) return request(path, options, true);
+    window.dispatchEvent(new Event('onto-auth-required'));
+    throw new Error('未登录或登录已过期');
+  }
   if (!response.ok) {
     let detail = `${response.status}`;
     try {
@@ -16,23 +82,72 @@ async function request(path, options = {}) {
 
 export const api = {
   health: () => request('/api/health'),
+  authStatus: () => request('/api/auth/status'),
+  login: async (username, password) => {
+    const tokens = await request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    authStore.save(tokens);
+    return tokens;
+  },
   listProjects: () => request('/api/projects'),
-  createProject: (name) =>
-    request('/api/projects', { method: 'POST', body: JSON.stringify({ name }) }),
+  createProject: (name, template = 'blank') =>
+    request('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify({ name, template }),
+    }),
+  renameProject: (pid, name) =>
+    request(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  deleteProject: (pid) => request(`/api/projects/${pid}`, { method: 'DELETE' }),
+  exportUrl: (pid, scope) =>
+    `/api/projects/${pid}/export?scope=${scope}&token=${encodeURIComponent(authStore.token)}`,
+  importProject: (name, file) => {
+    const form = new FormData();
+    form.append('name', name);
+    form.append('file', file);
+    return fetch('/api/projects/import', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+    }).then((r) => {
+      if (!r.ok) throw new Error(`导入失败 ${r.status}`);
+      return r.json();
+    });
+  },
   fileTree: (pid) => request(`/api/projects/${pid}/files`),
   readFile: (pid, path) =>
     request(`/api/projects/${pid}/file?path=${encodeURIComponent(path)}`),
+  writeFile: (pid, path, content) =>
+    request(`/api/projects/${pid}/file`, {
+      method: 'PUT',
+      body: JSON.stringify({ path, content }),
+    }),
+  fileAt: (pid, rev, path) =>
+    request(
+      `/api/projects/${pid}/file-at?rev=${encodeURIComponent(rev)}&path=${encodeURIComponent(path)}`,
+    ),
+  deleteResource: (pid, path) =>
+    request(`/api/projects/${pid}/resources?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    }),
   versions: (pid) => request(`/api/projects/${pid}/versions`),
+  revert: (pid, commit) =>
+    request(`/api/projects/${pid}/versions/revert`, {
+      method: 'POST',
+      body: JSON.stringify({ commit }),
+    }),
   sessionState: (pid) => request(`/api/projects/${pid}/session`),
+  usage: (pid) => request(`/api/projects/${pid}/session/usage`),
   sendMessage: (pid, text) =>
     request(`/api/projects/${pid}/session/messages`, {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
-  respondPermission: (pid, requestId, behavior, message = '') =>
+  respondPermission: (pid, requestId, behavior, message = '', answers = null) =>
     request(`/api/projects/${pid}/session/permissions/${requestId}`, {
       method: 'POST',
-      body: JSON.stringify({ behavior, message }),
+      body: JSON.stringify({ behavior, message, answers }),
     }),
   interrupt: (pid) =>
     request(`/api/projects/${pid}/session/interrupt`, { method: 'POST' }),
@@ -40,17 +155,22 @@ export const api = {
     const form = new FormData();
     form.append('subdir', subdir);
     form.append('file', file);
-    return fetch(`/api/projects/${pid}/resources`, { method: 'POST', body: form }).then(
-      (r) => {
-        if (!r.ok) throw new Error(`上传失败 ${r.status}`);
-        return r.json();
-      },
-    );
+    return fetch(`/api/projects/${pid}/resources`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+    }).then((r) => {
+      if (!r.ok) throw new Error(`上传失败 ${r.status}`);
+      return r.json();
+    });
   },
 };
 
 export function openEventStream(pid, onEvent, after = 0) {
-  const source = new EventSource(`/api/projects/${pid}/session/stream?after=${after}`);
+  const token = encodeURIComponent(authStore.token);
+  const source = new EventSource(
+    `/api/projects/${pid}/session/stream?after=${after}&token=${token}`,
+  );
   source.onmessage = (msg) => {
     try {
       onEvent(JSON.parse(msg.data));

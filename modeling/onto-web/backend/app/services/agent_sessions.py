@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -15,6 +16,25 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
+
+
+def _history_path(project_id: str) -> Path:
+    sessions_dir = Path(config.DATA_DIR) / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    return sessions_dir / f"{project_id}.jsonl"
+
+
+def load_history(project_id: str) -> list[dict]:
+    path = _history_path(project_id)
+    if not path.exists():
+        return []
+    events = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
 
 try:
     from claude_agent_sdk import (
@@ -65,10 +85,20 @@ class Session:
     pending_permissions: dict[str, PendingPermission] = field(default_factory=dict)
     reader_task: asyncio.Task | None = None
 
-    def broadcast(self, event: dict) -> None:
+    def broadcast(self, event: dict, transient: bool = False) -> None:
         event.setdefault("ts", time.time())
+        if transient:
+            # 流式增量只发给在线订阅者，不进历史（避免回放时重放上千条 delta）
+            for queue in list(self.subscribers):
+                queue.put_nowait(event)
+            return
         event["seq"] = len(self.events)
         self.events.append(event)
+        try:
+            with open(_history_path(self.project_id), "a", encoding="utf-8") as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except OSError:
+            pass  # 落盘失败不阻断会话
         for queue in list(self.subscribers):
             queue.put_nowait(event)
 
@@ -85,6 +115,13 @@ class SessionManager:
     def get(self, project_id: str) -> Session | None:
         return self._sessions.get(project_id)
 
+    def get_history(self, project_id: str) -> list[dict]:
+        """活跃会话的事件，或磁盘上的历史（服务重启后仍可回放）。"""
+        session = self._sessions.get(project_id)
+        if session:
+            return session.events
+        return load_history(project_id)
+
     async def ensure_session(self, project_id: str, cwd: Path) -> Session:
         if not SDK_AVAILABLE:
             raise SessionError("claude-agent-sdk 未安装，无法启动建模会话", 503)
@@ -93,6 +130,7 @@ class SessionManager:
             return existing
 
         session = Session(id=uuid.uuid4().hex[:12], project_id=project_id, client=None)
+        session.events = load_history(project_id)  # 续接历史，seq 连续
 
         async def can_use_tool(tool_name: str, tool_input: dict, context) -> Any:
             request = PendingPermission(
@@ -136,8 +174,10 @@ class SessionManager:
             system_prompt={"type": "preset", "preset": "claude_code"},
             # user 级设置承载部署机的模型网关配置（~/.claude/settings.json 的 env）
             setting_sources=["user", "project"],
-            permission_mode="default",
+            # bypassPermissions 下 can_use_tool 不会被触发；切回 default 即恢复确认卡
+            permission_mode=config.PERMISSION_MODE,
             can_use_tool=can_use_tool,
+            include_partial_messages=True,
         )
         client = ClaudeSDKClient(options=options)
         await client.connect()
@@ -158,7 +198,12 @@ class SessionManager:
         return session
 
     async def respond_permission(
-        self, project_id: str, request_id: str, behavior: str, message: str = ""
+        self,
+        project_id: str,
+        request_id: str,
+        behavior: str,
+        message: str = "",
+        answers: dict | None = None,
     ) -> None:
         session = self._sessions.get(project_id)
         if not session:
@@ -167,7 +212,11 @@ class SessionManager:
         if not request or request.future.done():
             raise SessionError("确认请求不存在或已处理", 404)
         if behavior == "allow":
-            request.future.set_result(PermissionResultAllow())
+            updated_input = None
+            if answers:
+                # AskUserQuestion：答案经 updated_input.answers 回填（问题文本 → 选项文本）
+                updated_input = {**request.tool_input, "answers": answers}
+            request.future.set_result(PermissionResultAllow(updated_input=updated_input))
         else:
             request.future.set_result(
                 PermissionResultDeny(message=message or "用户拒绝了该操作")
@@ -196,7 +245,9 @@ class SessionManager:
             async for message in session.client.receive_messages():
                 event = normalize_message(message)
                 if event:
-                    session.broadcast(event)
+                    session.broadcast(
+                        event, transient=event.get("type") == "stream_delta"
+                    )
                 if event and event.get("type") == "result":
                     session.set_state("idle")
         except asyncio.CancelledError:
@@ -214,7 +265,9 @@ def normalize_message(message: Any) -> dict | None:
             if isinstance(block, TextBlock):
                 blocks.append({"kind": "text", "text": block.text})
             elif isinstance(block, ThinkingBlock):
-                blocks.append({"kind": "thinking", "text": block.thinking})
+                # display: omitted 时 thinking 正文是空串，不产出空卡片
+                if (block.thinking or "").strip():
+                    blocks.append({"kind": "thinking", "text": block.thinking})
             elif isinstance(block, ToolUseBlock):
                 blocks.append(
                     {
@@ -224,7 +277,12 @@ def normalize_message(message: Any) -> dict | None:
                         "tool_use_id": block.id,
                     }
                 )
-        return {"type": "assistant_message", "blocks": blocks, "model": message.model}
+        return {
+            "type": "assistant_message",
+            "blocks": blocks,
+            "model": message.model,
+            "subagent": bool(getattr(message, "parent_tool_use_id", None)),
+        }
     if isinstance(message, UserMessage):
         blocks = []
         content = message.content
@@ -251,9 +309,24 @@ def normalize_message(message: Any) -> dict | None:
             "duration_ms": message.duration_ms,
             "total_cost_usd": message.total_cost_usd,
             "num_turns": message.num_turns,
+            "usage": _safe_json(getattr(message, "usage", None)),
         }
     if isinstance(message, StreamEvent):
-        return None  # 首片未开启 partial 流
+        # 只转发主 agent 的文本/思考增量；子代理的过程以工具行形式呈现，不混进主气泡
+        if message.parent_tool_use_id:
+            return None
+        raw = message.event
+        if raw.get("type") == "content_block_delta":
+            delta = raw.get("delta", {})
+            if delta.get("type") == "text_delta" and delta.get("text"):
+                return {"type": "stream_delta", "kind": "text", "text": delta["text"]}
+            if delta.get("type") == "thinking_delta" and delta.get("thinking"):
+                return {
+                    "type": "stream_delta",
+                    "kind": "thinking",
+                    "text": delta["thinking"],
+                }
+        return None
     return None
 
 
