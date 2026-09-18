@@ -420,6 +420,8 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
           resolved: resolvedPermissions.has(event.request_id),
         });
       } else if (event.type === 'session_error') {
+        // 旧历史里遗留的 SIGTERM（服务重启）报错不再展示
+        if (/exit code[:\s]*143/.test(event.error || '')) continue;
         list.push({ key: event.seq, role: 'error', content: event.error });
       }
     }
@@ -515,6 +517,7 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
                   className="msg-in msg-left"
                   type="error"
                   showIcon
+                  closable
                   message={item.content}
                 />
               );

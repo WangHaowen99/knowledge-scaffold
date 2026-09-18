@@ -3,27 +3,35 @@ import zhCN from 'antd/locale/zh_CN';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
+import { ThemeCtx } from './lib/theme-context.js';
 import { antdTokens, applyCssVars } from './theme.js';
 import './styles.css';
 
 function Root() {
-  const [mode] = useState('light');
-  const [accent] = useState('blue');
+  const [mode, setMode] = useState(localStorage.getItem('onto-theme-mode') || 'light');
+  const [accent, setAccent] = useState(
+    localStorage.getItem('onto-theme-accent') || 'blue',
+  );
 
   useEffect(() => {
     applyCssVars(mode, accent);
+    localStorage.setItem('onto-theme-mode', mode);
+    localStorage.setItem('onto-theme-accent', accent);
   }, [mode, accent]);
 
   return (
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        token: antdTokens(mode, accent),
-        algorithm: mode === 'dark' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-      }}
-    >
-      <App />
-    </ConfigProvider>
+    <ThemeCtx.Provider value={{ mode, accent, setMode, setAccent }}>
+      <ConfigProvider
+        locale={zhCN}
+        theme={{
+          token: antdTokens(mode, accent),
+          algorithm:
+            mode === 'dark' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+        }}
+      >
+        <App />
+      </ConfigProvider>
+    </ThemeCtx.Provider>
   );
 }
 
