@@ -18,19 +18,46 @@ class MessageBody(BaseModel):
 class PermissionBody(BaseModel):
     behavior: str  # allow | deny
     message: str = ""
+    answers: dict | None = None  # AskUserQuestion 的选项答案（问题文本 → 选项文本）
+
+
+@router.get("/usage")
+def session_usage(project_id: str):
+    """汇总该项目全部模型调用的成本与 token 用量（从事件历史统计）。"""
+    workspaces.project_root(project_id)
+    history = manager.get_history(project_id)
+    total_cost = 0.0
+    output_tokens = 0
+    input_tokens = 0
+    calls = 0
+    for event in history:
+        if event.get("type") != "result":
+            continue
+        calls += 1
+        total_cost += event.get("total_cost_usd") or 0
+        usage = event.get("usage") or {}
+        output_tokens += usage.get("output_tokens") or 0
+        input_tokens += (usage.get("input_tokens") or 0) + (
+            usage.get("cache_read_input_tokens") or 0
+        )
+    return {
+        "calls": calls,
+        "total_cost_usd": round(total_cost, 4),
+        "output_tokens": output_tokens,
+        "input_tokens": input_tokens,
+    }
 
 
 @router.get("")
 def session_state(project_id: str):
     workspaces.project_root(project_id)
     session = manager.get(project_id)
-    if not session:
-        return {"active": False}
+    history = manager.get_history(project_id)
     return {
-        "active": True,
-        "session_id": session.id,
-        "state": session.state,
-        "events": len(session.events),
+        "active": session is not None,
+        "session_id": session.id if session else None,
+        "state": session.state if session else "idle",
+        "events": len(history),
     }
 
 
@@ -43,7 +70,9 @@ async def send_message(project_id: str, body: MessageBody):
 
 @router.post("/permissions/{request_id}")
 async def respond_permission(project_id: str, request_id: str, body: PermissionBody):
-    await manager.respond_permission(project_id, request_id, body.behavior, body.message)
+    await manager.respond_permission(
+        project_id, request_id, body.behavior, body.message, body.answers
+    )
     return {"ok": True}
 
 
@@ -60,21 +89,30 @@ async def stream(project_id: str, after: int = 0):
 
     async def generate():
         queue: asyncio.Queue = asyncio.Queue()
+        sent = after  # 已发送到的 seq 水位，避免"文件历史 + 会话补挂"重复发送
+        history = manager.get_history(project_id)
+        for event in history[sent:]:
+            yield _sse(event)
+        sent = max(sent, len(history))
         session = manager.get(project_id)
         if session:
-            for event in session.events[after:]:
-                yield _sse(event)
             session.subscribers.append(queue)
         try:
             while True:
                 current = manager.get(project_id)
                 if current and queue not in current.subscribers:
-                    # send() 之后才建立的会话：补挂订阅并补发历史
-                    for event in current.events[after:]:
+                    # send() 之后才建立的会话：补挂订阅并补发缺口
+                    for event in current.events[sent:]:
                         yield _sse(event)
+                    sent = max(sent, len(current.events))
                     current.subscribers.append(queue)
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15)
+                    seq = event.get("seq")
+                    if seq is not None:
+                        if seq < sent:
+                            continue
+                        sent = seq + 1
                     yield _sse(event)
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
