@@ -1,0 +1,36 @@
+html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
+
+.app-shell { height: 100%; display: flex; flex-direction: column; }
+.app-topbar {
+  height: 52px; flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 0 16px; background: var(--surface-card);
+  border-bottom: 1px solid var(--border-default);
+}
+.app-topbar .brand { font-weight: 600; color: var(--text-primary); }
+.app-topbar .project-name { color: var(--text-secondary); }
+.app-body { flex: 1; min-height: 0; }
+
+.pane { height: 100%; overflow: auto; padding: 12px; box-sizing: border-box; }
+.pane-left { background: var(--surface-card); }
+.pane-center { background: var(--surface-page); }
+.pane-right { background: var(--surface-card); display: flex; flex-direction: column; padding: 0; }
+
+.chat-history { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+.chat-footer { flex: none; padding: 8px 12px 12px; border-top: 1px solid var(--border-subtle); }
+
+.markdown-body { line-height: 1.7; color: var(--text-primary); }
+.markdown-body pre {
+  background: var(--surface-subtle); padding: 12px; border-radius: 8px; overflow: auto;
+}
+.markdown-body code { font-size: 13px; }
+.markdown-body table { border-collapse: collapse; }
+.markdown-body th, .markdown-body td {
+  border: 1px solid var(--border-default); padding: 4px 10px;
+}
+.wiki-link { color: var(--color-primary); cursor: pointer; }
+
+.tool-line { color: var(--text-tertiary); font-size: 12px; }
+
+.project-picker {
+  max-width: 560px; margin: 48px auto; display: flex; flex-direction: column; gap: 16px;
+}

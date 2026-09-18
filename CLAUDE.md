@@ -214,6 +214,15 @@ Current commands for the consumer application:
 - Build consumer-only release package: `cd consumer && ./build.sh <version> [amd|arm]`
 - Build modeling-only release package: `cd modeling && ./build.sh <version> [amd|arm]`
 
+Commands for the Onto Web application (`modeling/onto-web/`):
+
+- Install onto-web backend dependencies: `cd modeling/onto-web/backend && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt`
+- Start onto-web backend: `cd modeling/onto-web/backend && ./venv/bin/python run.py`
+- Run onto-web backend tests: `cd modeling/onto-web/backend && ./venv/bin/python -m pytest tests/`
+- Install onto-web frontend dependencies: `cd modeling/onto-web/frontend && npm install`
+- Start onto-web frontend dev server: `cd modeling/onto-web/frontend && npm run dev`
+- Build onto-web frontend: `cd modeling/onto-web/frontend && npm run build`
+
 After initializing the project, Claude must update this section with real commands.
 
 ### 8.1 Consumer 前端收敛约束
