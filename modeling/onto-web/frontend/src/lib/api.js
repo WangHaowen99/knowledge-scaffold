@@ -170,6 +170,9 @@ export const api = {
   getMcp: () => request('/api/settings/mcp'),
   saveMcp: (servers) =>
     request('/api/settings/mcp', { method: 'PUT', body: JSON.stringify({ servers }) }),
+  getModelSettings: () => request('/api/settings/model'),
+  saveModelSettings: (payload) =>
+    request('/api/settings/model', { method: 'PUT', body: JSON.stringify(payload) }),
   mcpService: () => request('/api/settings/mcp-service'),
   mcpServiceCreateToken: (name) =>
     request('/api/settings/mcp-service/tokens', {

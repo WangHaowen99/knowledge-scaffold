@@ -197,11 +197,7 @@ class SessionManager:
             can_use_tool=can_use_tool,
             include_partial_messages=True,
             mcp_servers=_mcp_servers(),
-            env=(
-                {"MAX_THINKING_TOKENS": config.MAX_THINKING_TOKENS}
-                if config.MAX_THINKING_TOKENS
-                else {}
-            ),
+            env=_session_env(),
         )
         client = ClaudeSDKClient(options=options)
         await client.connect()
@@ -332,6 +328,19 @@ def _mcp_servers() -> dict:
         return mcp_settings.sdk_config()
     except Exception:
         return {}
+
+
+def _session_env() -> dict:
+    env = {}
+    if config.MAX_THINKING_TOKENS:
+        env["MAX_THINKING_TOKENS"] = config.MAX_THINKING_TOKENS
+    try:
+        from . import model_settings
+
+        env.update(model_settings.session_env())
+    except Exception:
+        pass
+    return env
 
 
 def normalize_message(message: Any) -> dict | None:
