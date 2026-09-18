@@ -16,6 +16,14 @@ export const authStore = {
       return '';
     }
   },
+  get role() {
+    try {
+      const payload = JSON.parse(atob(this.token.split('.')[1]));
+      return payload.role || '';
+    } catch {
+      return '';
+    }
+  },
   save(tokens) {
     localStorage.setItem(TOKEN_KEY, tokens.access_token);
     if (tokens.refresh_token) localStorage.setItem(REFRESH_KEY, tokens.refresh_token);
@@ -91,6 +99,24 @@ export const api = {
     authStore.save(tokens);
     return tokens;
   },
+  register: async (username, password) => {
+    const response = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    let data = {};
+    try {
+      data = await response.json();
+    } catch { /* empty body */ }
+    if (!response.ok) {
+      const error = new Error(data.error || `注册失败 ${response.status}`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  },
   listProjects: () => request('/api/projects'),
   createProject: (name, template = 'blank') =>
     request('/api/projects', {
@@ -139,6 +165,23 @@ export const api = {
     }),
   sessionState: (pid) => request(`/api/projects/${pid}/session`),
   usage: (pid) => request(`/api/projects/${pid}/session/usage`),
+  closeSession: (pid) =>
+    request(`/api/projects/${pid}/session/close`, { method: 'POST' }),
+  getMcp: () => request('/api/settings/mcp'),
+  saveMcp: (servers) =>
+    request('/api/settings/mcp', { method: 'PUT', body: JSON.stringify({ servers }) }),
+  mcpService: () => request('/api/settings/mcp-service'),
+  mcpServiceCreateToken: (name) =>
+    request('/api/settings/mcp-service/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  mcpServiceRevokeToken: (id) =>
+    request(`/api/settings/mcp-service/tokens/${id}`, { method: 'DELETE' }),
+  adminOverview: () => request('/api/admin/overview'),
+  studioGraph: (pid) => request(`/api/projects/${pid}/studio/graph`),
+  studioElement: (pid, path) =>
+    request(`/api/projects/${pid}/studio/element?path=${encodeURIComponent(path)}`),
   sendMessage: (pid, text) =>
     request(`/api/projects/${pid}/session/messages`, {
       method: 'POST',

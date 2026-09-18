@@ -39,7 +39,7 @@ class WorkspaceManager:
 
     # ---- 项目 CRUD ----
 
-    def create_project(self, name: str) -> dict:
+    def create_project(self, name: str, owner: str = "") -> dict:
         name = (name or "").strip()
         if not name:
             raise WorkspaceError("项目名称不能为空")
@@ -53,7 +53,12 @@ class WorkspaceManager:
         for sub in ("research", "reports"):
             (root / sub).mkdir(exist_ok=True)
 
-        meta = {"id": project_id, "name": name, "created_at": int(time.time())}
+        meta = {
+            "id": project_id,
+            "name": name,
+            "created_at": int(time.time()),
+            "owner": owner or "",
+        }
         (root / META_FILE).write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -233,10 +238,10 @@ class WorkspaceManager:
     # 导入时跳过的顶层条目：资产由本服务重新挂载；.git 不合并（v1 不保留导入方历史）
     IMPORT_SKIP_TOP = {".claude", "CLAUDE.md", "README.md", ".git", META_FILE}
 
-    def import_zip(self, name: str, archive_path: Path) -> dict:
+    def import_zip(self, name: str, archive_path: Path, owner: str = "") -> dict:
         import zipfile
 
-        meta = self.create_project(name)
+        meta = self.create_project(name, owner=owner)
         root = self.project_root(meta["id"])
         try:
             with zipfile.ZipFile(archive_path) as zf:

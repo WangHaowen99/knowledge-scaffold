@@ -3,30 +3,45 @@ import {
   ImportOutlined,
   MoreOutlined,
   PlusOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
 import {
   Button,
+  Drawer,
   Dropdown,
   Empty,
   Input,
   Modal,
+  Segmented,
   Splitter,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
   Upload,
   message,
 } from 'antd';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import AdminPage from './components/AdminPage.jsx';
 import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
 import LeftPane, { stageProgress } from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
+import McpSettings from './components/McpSettings.jsx';
 import { api, authStore } from './lib/api.js';
+import { ThemeCtx } from './lib/theme-context.js';
+import { ACCENTS } from './theme.js';
+
+const ACCENT_LABELS = {
+  blue: '默认蓝',
+  violet: '紫',
+  teal: '青',
+  orange: '橙',
+  graphite: '石墨',
+};
 
 export default function App() {
-  // auth: unknown -> disabled | required | ok
-  const [auth, setAuth] = useState('unknown');
+  const [auth, setAuth] = useState('unknown'); // unknown -> disabled | required | ok
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState(null);
   const [tree, setTree] = useState([]);
@@ -35,9 +50,13 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [focus, setFocus] = useState('overview');
   const [diffRev, setDiffRev] = useState(null);
+  const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [renaming, setRenaming] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
   const chatSendRef = useRef(null);
+  const theme = useContext(ThemeCtx);
 
   const refreshProjects = useCallback(() => {
     api.listProjects().then((data) => setProjects(data.projects)).catch(() => {});
@@ -85,6 +104,7 @@ export default function App() {
     try {
       const created = await api.createProject(name, template);
       setNewName('');
+      setCreating(false);
       refreshProjects();
       setProject(created);
       if (template === 'example') message.success('示例领域已注入，可直接体验各阶段');
@@ -139,43 +159,91 @@ export default function App() {
     },
   });
 
+  const settingsDrawer = (
+    <Drawer
+      title="设置"
+      open={settingsOpen}
+      onClose={() => setSettingsOpen(false)}
+      width={400}
+    >
+      <Tabs
+        items={[
+          {
+            key: 'appearance',
+            label: '外观',
+            children: (
+              <>
+                <Typography.Paragraph strong style={{ marginBottom: 8 }}>
+                  明暗模式
+                </Typography.Paragraph>
+                <Segmented
+                  block
+                  value={theme.mode}
+                  onChange={theme.setMode}
+                  options={[
+                    { label: '浅色', value: 'light' },
+                    { label: '深色', value: 'dark' },
+                  ]}
+                  style={{ marginBottom: 24 }}
+                />
+                <Typography.Paragraph strong style={{ marginBottom: 8 }}>
+                  强调色
+                </Typography.Paragraph>
+                <div className="accent-row">
+                  {Object.keys(ACCENTS).map((key) => (
+                    <Tooltip key={key} title={ACCENT_LABELS[key] || key}>
+                      <button
+                        type="button"
+                        className={`accent-swatch${theme.accent === key ? ' active' : ''}`}
+                        style={{ background: ACCENTS[key].primary }}
+                        onClick={() => theme.setAccent(key)}
+                        aria-label={ACCENT_LABELS[key] || key}
+                      />
+                    </Tooltip>
+                  ))}
+                </div>
+              </>
+            ),
+          },
+          {
+            key: 'mcp',
+            label: 'MCP 服务器',
+            children: <McpSettings project={project} />,
+          },
+        ]}
+      />
+    </Drawer>
+  );
+
   if (auth === 'unknown') return null;
   if (auth === 'required') {
     return <LoginPage onLogin={() => setAuth('ok')} />;
   }
+  if (adminOpen) {
+    return <AdminPage onBack={() => setAdminOpen(false)} />;
+  }
+
+  const isAdmin = auth === 'disabled' || authStore.role === 'admin';
 
   if (!project) {
     return (
       <div className="home">
-        <div className="home-hero">
-          <div className="home-title">
-            <span className="brand-dot" />
-            <Typography.Title level={3} style={{ margin: 0 }}>
-              本体建模工作台
-            </Typography.Title>
+        <div className="pj-head">
+          <div>
+            <div className="home-title">
+              <span className="brand-dot" />
+              <h2>我的建模任务</h2>
+            </div>
+            <p>调研 → 流程图 → 提取对象/逻辑 → 校验 → Mock → 追踪 → 代码生成</p>
           </div>
-          <Typography.Text type="secondary">
-            调研 → 流程图 → 提取对象/逻辑 → 校验 → Mock → 追踪 → 代码生成
-          </Typography.Text>
-        </div>
-        <div className="home-actions">
-          <Input
-            className="home-input"
-            placeholder="任务名称，如：电商订单建模"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onPressEnter={() => createProject('blank')}
-          />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => createProject('blank')}>
-            创建任务
-          </Button>
-          <Button onClick={() => createProject('example')}>示例项目</Button>
+          <span style={{ flex: 1 }} />
           <Upload accept=".zip" showUploadList={false} beforeUpload={importProject}>
             <Button icon={<ImportOutlined />}>导入</Button>
           </Upload>
+          {isAdmin && <Button onClick={() => setAdminOpen(true)}>运维</Button>}
+          <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)} />
           {auth === 'ok' && (
             <Button
-              style={{ marginLeft: 'auto' }}
               onClick={() => {
                 authStore.clear();
                 setAuth('required');
@@ -185,50 +253,83 @@ export default function App() {
             </Button>
           )}
         </div>
-        {projects.length === 0 ? (
-          <Empty description="还没有任务，创建一个或先体验示例项目" style={{ marginTop: 64 }} />
-        ) : (
-          <div className="project-grid">
-            {projects.map((item, index) => (
-              <div
-                key={item.id}
-                className="project-card msg-soft"
-                style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}
-                onClick={() => setProject(item)}
-              >
-                <div className="project-card-head">
-                  <span className="project-card-name">{item.name}</span>
-                  <Dropdown menu={projectMenu(item)} trigger={['click']}>
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={<MoreOutlined />}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </Dropdown>
-                </div>
-                <div className="pbar">
-                  <div
-                    className="pbar-fill"
-                    style={{
-                      width: `${((item.stages_done || 0) / (item.stages_total || 8)) * 100}%`,
-                    }}
-                  />
-                </div>
-                <div className="project-card-meta">
-                  <span>
-                    阶段 {item.stages_done ?? 0}/{item.stages_total ?? 8}
-                  </span>
-                  <span>对象 {item.objects ?? 0}</span>
-                  <span>逻辑 {item.logics ?? 0}</span>
-                </div>
-                <div className="project-card-time">
-                  {new Date(item.created_at * 1000).toLocaleString()}
-                </div>
-              </div>
-            ))}
+        <div className="pj-grid">
+          <div
+            className="pj-card pj-new msg-soft"
+            role="button"
+            tabIndex={0}
+            onClick={() => setCreating(true)}
+          >
+            <div className="pj-new-icon">
+              <PlusOutlined />
+            </div>
+            <div className="pj-new-t">新建建模任务</div>
+            <div className="pj-new-d">从空白开始，或注入示例领域体验全流程</div>
           </div>
+          {projects.map((item, index) => (
+            <div
+              key={item.id}
+              className="pj-card msg-soft"
+              role="button"
+              tabIndex={0}
+              style={{ animationDelay: `${Math.min(index + 1, 8) * 40}ms` }}
+              onClick={() => setProject(item)}
+            >
+              <Dropdown menu={projectMenu(item)} trigger={['click']}>
+                <button
+                  type="button"
+                  className="pj-menu"
+                  aria-label="任务操作"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <MoreOutlined />
+                </button>
+              </Dropdown>
+              <h3 title={item.name}>{item.name}</h3>
+              <div className="pd">
+                对象 {item.objects ?? 0} · 逻辑 {item.logics ?? 0}
+              </div>
+              <div className="pj-prog">
+                <div
+                  className="pj-prog-in"
+                  style={{
+                    width: `${((item.stages_done || 0) / (item.stages_total || 8)) * 100}%`,
+                  }}
+                />
+              </div>
+              <div className="pm">
+                <span>
+                  阶段 {item.stages_done ?? 0}/{item.stages_total ?? 8}
+                </span>
+                <span className="pj-date">
+                  {new Date(item.created_at * 1000).toLocaleDateString()}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {projects.length === 0 && (
+          <Empty description="还没有任务" style={{ marginTop: 48 }} />
         )}
+        <Modal
+          open={creating}
+          title="新建建模任务"
+          onCancel={() => setCreating(false)}
+          footer={null}
+        >
+          <Input
+            placeholder="任务名称，如：电商订单建模"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onPressEnter={() => createProject('blank')}
+            style={{ margin: '8px 0 16px' }}
+            autoFocus
+          />
+          <Button type="primary" onClick={() => createProject('blank')}>
+            创建空白任务
+          </Button>{' '}
+          <Button onClick={() => createProject('example')}>注入外卖订单示例</Button>
+        </Modal>
         <Modal
           open={!!renaming}
           title="重命名任务"
@@ -244,6 +345,7 @@ export default function App() {
             onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
           />
         </Modal>
+        {settingsDrawer}
       </div>
     );
   }
@@ -269,6 +371,11 @@ export default function App() {
             <span className="cost-widget">${usage.total_cost_usd.toFixed(2)}</span>
           </Tooltip>
         )}
+        <Button
+          size="small"
+          icon={<SettingOutlined />}
+          onClick={() => setSettingsOpen(true)}
+        />
         <Button size="small" icon={<DownOutlined rotate={90} />} onClick={() => setProject(null)}>
           切换任务
         </Button>
@@ -325,6 +432,7 @@ export default function App() {
           </Splitter.Panel>
         </Splitter>
       </div>
+      {settingsDrawer}
     </div>
   );
 }

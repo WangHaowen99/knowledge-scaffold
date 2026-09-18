@@ -17,12 +17,14 @@ import {
   message,
 } from 'antd';
 import mermaid from 'mermaid';
-import { memo, useEffect, useId, useMemo, useState } from 'react';
+import { Suspense, lazy, memo, useEffect, useId, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
 import CodeEditor from './cm/CodeEditor.jsx';
 import MergeDiff from './cm/MergeDiff.jsx';
+
+const StudioView = lazy(() => import('./StudioView.jsx'));
 
 mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
 
@@ -201,11 +203,20 @@ export default function CenterPane({
         onChange={onFocus}
         options={[
           { label: '概览', value: 'overview' },
+          { label: 'Studio', value: 'studio' },
           { label: '文件', value: 'file' },
           { label: '对比', value: 'diff' },
         ]}
         style={{ marginBottom: 12 }}
       />
+
+      {focus === 'studio' && (
+        <div className="center-anim" key="studio">
+          <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
+            <StudioView project={project} onOpenFile={onOpenFile} />
+          </Suspense>
+        </div>
+      )}
 
       {focus === 'overview' && (
         <div className="center-anim" key="overview">

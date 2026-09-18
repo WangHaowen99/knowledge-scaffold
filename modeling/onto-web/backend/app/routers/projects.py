@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -35,21 +35,28 @@ def list_projects():
     return {"projects": workspaces.list_projects()}
 
 
+def _request_user(request: Request) -> str:
+    user = getattr(request.state, "user", None)
+    return (user or {}).get("sub", "")
+
+
 @router.post("")
-def create_project(body: CreateProjectBody):
-    meta = workspaces.create_project(body.name)
+def create_project(body: CreateProjectBody, request: Request):
+    meta = workspaces.create_project(body.name, owner=_request_user(request))
     if body.template == "example":
         workspaces.seed_example(meta["id"])
     return meta
 
 
 @router.post("/import")
-async def import_project(name: str = Form(...), file: UploadFile = File(...)):
+async def import_project(
+    request: Request, name: str = Form(...), file: UploadFile = File(...)
+):
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = Path(tmp.name)
     try:
-        return workspaces.import_zip(name, tmp_path)
+        return workspaces.import_zip(name, tmp_path, owner=_request_user(request))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -116,6 +123,26 @@ async def upload_resource(
 @router.delete("/{project_id}/resources")
 def delete_resource(project_id: str, path: str):
     return workspaces.delete_resource(project_id, path)
+
+
+@router.get("/{project_id}/studio/graph")
+def studio_graph(project_id: str):
+    from ..services import studio
+
+    root = workspaces.project_root(project_id)
+    return studio.graph(root)
+
+
+@router.get("/{project_id}/studio/element")
+def studio_element(project_id: str, path: str):
+    from ..services import studio
+
+    root = workspaces.project_root(project_id)
+    workspaces._resolve_inside(root, path)
+    try:
+        return studio.element(root, path)
+    except FileNotFoundError:
+        raise WorkspaceError("条目不存在", 404)
 
 
 @router.get("/{project_id}/versions")

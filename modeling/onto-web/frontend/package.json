@@ -17,6 +17,8 @@
     "@codemirror/merge": "^6.12.2",
     "@codemirror/state": "^6.7.5",
     "@codemirror/view": "^6.43.12",
+    "@dagrejs/dagre": "^3.1.1",
+    "@xyflow/react": "^12.11.6",
     "antd": "^5.27.0",
     "mermaid": "^11.4.0",
     "react": "^19.0.0",

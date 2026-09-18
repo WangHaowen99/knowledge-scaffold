@@ -14,4 +14,7 @@ PERMISSION_TIMEOUT_SECONDS = int(os.environ.get("ONTO_WEB_PERMISSION_TIMEOUT", "
 
 # 会话权限模式：默认全放行（bypassPermissions）；设为 default 时启用逐操作确认卡
 PERMISSION_MODE = os.environ.get("ONTO_WEB_PERMISSION_MODE", "bypassPermissions")
+
+# 私有网关兼容：多轮回放空 thinking 块会被部分网关 400 拒绝，设 0 关闭扩展思考
+MAX_THINKING_TOKENS = os.environ.get("ONTO_WEB_MAX_THINKING_TOKENS", "")
 MAX_FILE_PREVIEW_BYTES = 512 * 1024

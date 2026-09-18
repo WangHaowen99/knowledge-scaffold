@@ -16,6 +16,24 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
+from . import error_log
+
+# 面向用户的通用错误提示；原始错误只进运维留档，不出现在聊天流里
+FRIENDLY_ERROR = "模型服务暂时不稳定，本次调用未完成。系统已记录详细信息，请重试；若持续出现请联系管理员。"
+_RAW_ERROR_PATTERN = None  # 延迟编译
+
+
+def _looks_like_raw_error(text: str) -> bool:
+    global _RAW_ERROR_PATTERN
+    if _RAW_ERROR_PATTERN is None:
+        import re
+
+        _RAW_ERROR_PATTERN = re.compile(
+            r"API Error|Claude Code|request id:|exit code|invalid_grant|"
+            r"OAuth|Traceback \(most recent call last\)",
+            re.IGNORECASE,
+        )
+    return bool(_RAW_ERROR_PATTERN.search(text or ""))
 
 
 def _history_path(project_id: str) -> Path:
@@ -178,6 +196,12 @@ class SessionManager:
             permission_mode=config.PERMISSION_MODE,
             can_use_tool=can_use_tool,
             include_partial_messages=True,
+            mcp_servers=_mcp_servers(),
+            env=(
+                {"MAX_THINKING_TOKENS": config.MAX_THINKING_TOKENS}
+                if config.MAX_THINKING_TOKENS
+                else {}
+            ),
         )
         client = ClaudeSDKClient(options=options)
         await client.connect()
@@ -244,6 +268,16 @@ class SessionManager:
         try:
             async for message in session.client.receive_messages():
                 event = normalize_message(message)
+                if event and event.get("type") == "assistant_message":
+                    # CLI 把 API 错误当正文回流时，替换为友好提示并留档原文
+                    for block in event["blocks"]:
+                        if block.get("kind") == "text" and _looks_like_raw_error(
+                            block["text"]
+                        ):
+                            error_log.log(
+                                session.project_id, "assistant_text", block["text"]
+                            )
+                            block["text"] = FRIENDLY_ERROR
                 if event:
                     session.broadcast(
                         event, transient=event.get("type") == "stream_delta"
@@ -252,9 +286,52 @@ class SessionManager:
                     session.set_state("idle")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # 会话崩溃要让前端可见，而不是静默断流
-            session.broadcast({"type": "session_error", "error": str(exc)})
-            session.set_state("error")
+        except Exception as exc:
+            # SIGTERM（服务重启/会话终止）不是错误，不给用户留红色横幅
+            if getattr(exc, "exit_code", None) == 143 or "exit code 143" in str(exc):
+                session.set_state("closed")
+            else:
+                error_log.log(session.project_id, "session", str(exc))
+                session.broadcast({"type": "session_error", "error": FRIENDLY_ERROR})
+                session.set_state("error")
+
+
+def usage_summary(project_id: str) -> dict:
+    """项目累计模型用量（从事件历史统计），会话接口与运维页共用。"""
+    history = manager.get_history(project_id)
+    total_cost = 0.0
+    output_tokens = 0
+    input_tokens = 0
+    calls = 0
+    last_activity = None
+    for event in history:
+        if event.get("ts"):
+            last_activity = event["ts"]
+        if event.get("type") != "result":
+            continue
+        calls += 1
+        total_cost += event.get("total_cost_usd") or 0
+        usage = event.get("usage") or {}
+        output_tokens += usage.get("output_tokens") or 0
+        input_tokens += (usage.get("input_tokens") or 0) + (
+            usage.get("cache_read_input_tokens") or 0
+        )
+    return {
+        "calls": calls,
+        "total_cost_usd": round(total_cost, 4),
+        "output_tokens": output_tokens,
+        "input_tokens": input_tokens,
+        "last_activity": last_activity,
+    }
+
+
+def _mcp_servers() -> dict:
+    from . import mcp_settings
+
+    try:
+        return mcp_settings.sdk_config()
+    except Exception:
+        return {}
 
 
 def normalize_message(message: Any) -> dict | None:

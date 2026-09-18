@@ -25,27 +25,9 @@ class PermissionBody(BaseModel):
 def session_usage(project_id: str):
     """汇总该项目全部模型调用的成本与 token 用量（从事件历史统计）。"""
     workspaces.project_root(project_id)
-    history = manager.get_history(project_id)
-    total_cost = 0.0
-    output_tokens = 0
-    input_tokens = 0
-    calls = 0
-    for event in history:
-        if event.get("type") != "result":
-            continue
-        calls += 1
-        total_cost += event.get("total_cost_usd") or 0
-        usage = event.get("usage") or {}
-        output_tokens += usage.get("output_tokens") or 0
-        input_tokens += (usage.get("input_tokens") or 0) + (
-            usage.get("cache_read_input_tokens") or 0
-        )
-    return {
-        "calls": calls,
-        "total_cost_usd": round(total_cost, 4),
-        "output_tokens": output_tokens,
-        "input_tokens": input_tokens,
-    }
+    from ..services.agent_sessions import usage_summary
+
+    return usage_summary(project_id)
 
 
 @router.get("")
@@ -73,6 +55,14 @@ async def respond_permission(project_id: str, request_id: str, body: PermissionB
     await manager.respond_permission(
         project_id, request_id, body.behavior, body.message, body.answers
     )
+    return {"ok": True}
+
+
+@router.post("/close")
+async def close_session(project_id: str):
+    """终止并丢弃当前会话（历史保留）；下次发消息按最新配置新建会话。"""
+    workspaces.project_root(project_id)
+    await manager.close(project_id)
     return {"ok": True}
 
 

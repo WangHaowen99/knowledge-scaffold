@@ -22,6 +22,16 @@ AUDIENCE = os.environ.get("ONTO_WEB_AUTH_AUDIENCE", "meta-wise")
 ENABLED = bool(AUTH_URL)
 _jwks_client = PyJWKClient(f"{AUTH_URL}/jwks.json") if ENABLED else None
 
+# 用户最近活跃时间（内存态，重启清零），供运维页"在线用户"用
+LAST_SEEN: dict[str, float] = {}
+
+
+def touch(username: str) -> None:
+    if username:
+        import time
+
+        LAST_SEEN[username] = time.time()
+
 
 class AuthError(Exception):
     def __init__(self, message: str, status: int = 401):
@@ -43,6 +53,29 @@ def verify_access_token(token: str) -> dict | None:
     if claims.get("typ") != "access":
         return None
     return claims
+
+
+def register_request(payload: dict) -> tuple[int, dict]:
+    """代理 auth-server /register；4xx/5xx 原样透传（含密码策略 violations）。"""
+    if not ENABLED:
+        raise AuthError("鉴权未启用", 400)
+    data = json.dumps(payload).encode()
+    request = urllib.request.Request(
+        f"{AUTH_URL}/register",
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read())
+        except Exception:
+            body = {"error": "注册失败"}
+        return exc.code, body
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise AuthError("认证服务不可达", 502) from exc
 
 
 def token_request(payload: dict) -> dict:
