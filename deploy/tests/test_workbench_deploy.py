@@ -230,9 +230,15 @@ exit 0
         names = set(archive.getnames())
         assert "modeling/images/mw-modeling-v-test.tar" in names
         assert "modeling/images/mw-modeling-agent-v-test.tar" in names
+        assert "modeling/.env.example" in names
+        assert "modeling/deploy/install.sh" in names
+        assert "modeling/deploy/bin/docker-compose" in names
         manifest_file = archive.extractfile("modeling/deploy/manifest.json")
         assert manifest_file is not None
         manifest = json.load(manifest_file)
+    assert manifest["schema_version"] == "2"
+    assert manifest["bash_min_version"] == "3.2"
+    assert manifest["docker_min_version"] == "20.10"
     assert manifest["modeling_image"] == "mw-modeling:v-test"
     assert manifest["modeling_agent_image"] == "mw-modeling-agent:v-test"
     assert manifest["modeling_agent_image_tar"] == "images/mw-modeling-agent-v-test.tar"
@@ -421,3 +427,38 @@ def test_source_deploy_allows_admin_to_configure_llm_after_startup(
 
 def test_root_deploy_script_is_executable() -> None:
     assert os.access(DEPLOY_ROOT / "deploy.sh", os.X_OK)
+
+
+def test_modeling_release_uses_bundled_compose_and_no_host_python() -> None:
+    deploy = (MODELING_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert '"${SCRIPT_DIR}/bin/docker-compose"' in deploy
+    assert '"${SCRIPT_DIR}/../bin/docker-compose"' in deploy
+    assert "docker version --format '{{.Server.APIVersion}}'" in deploy
+    assert 'DOCKER_API_VERSION="${daemon_api_version}"' in deploy
+    assert "python3 -c" not in deploy
+    assert "od -An -N 32 -tx1 /dev/urandom" in deploy
+
+
+def test_modeling_build_help_uses_named_parameters() -> None:
+    result = subprocess.run(
+        [_bash_executable(), str(MODELING_ROOT / "build.sh"), "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "--version <version>" in result.stdout
+    assert "--arch <amd|arm>" in result.stdout
+
+
+def test_modeling_install_is_minimal_and_persists_custom_ports() -> None:
+    install = (MODELING_ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
+
+    assert "checksums.txt" in install
+    assert "MODELING_PORT" in install
+    assert "MODELING_MCP_PORT" in install
+    assert 'exec bash "${SCRIPT_DIR}/deploy.sh"' in install
+    assert "modelingctl" not in install
+    assert "reports" not in install

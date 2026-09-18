@@ -5,55 +5,64 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-    cat <<EOF
-Usage: $(basename "$0") <version> [amd|arm]
+    cat <<EOF_USAGE
+Usage: $(basename "$0") --version <version> [--arch <amd|arm>]
+       $(basename "$0") <version> [amd|arm]
 
 Examples:
-  $(basename "$0") v1.2.0
+  $(basename "$0") --version v1.2.0 --arch amd
   $(basename "$0") v1.2.0 amd
-EOF
+EOF_USAGE
 }
 
 detect_arch() {
     case "$(uname -m)" in
-        x86_64|amd64)
-            printf 'amd\n'
-            ;;
-        aarch64|arm64)
-            printf 'arm\n'
-            ;;
-        *)
-            printf 'amd\n'
-            ;;
+        x86_64|amd64) printf 'amd\n' ;;
+        aarch64|arm64) printf 'arm\n' ;;
+        *) printf 'amd\n' ;;
     esac
 }
 
-if [ -z "${1:-}" ]; then
+VERSION=""
+ARCH=""
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     usage
-    exit 1
+    exit 0
+elif [ "${1:-}" = "--version" ] || [ "${1:-}" = "--arch" ]; then
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --version)
+                [ "$#" -ge 2 ] || { usage >&2; exit 1; }
+                VERSION="$2"
+                shift 2
+                ;;
+            --arch)
+                [ "$#" -ge 2 ] || { usage >&2; exit 1; }
+                ARCH="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                usage >&2
+                exit 1
+                ;;
+        esac
+    done
+else
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 1; }
+    VERSION="$1"
+    ARCH="${2:-}"
 fi
 
-if [ "$#" -gt 2 ]; then
-    usage
-    exit 1
-fi
-
-VERSION="$1"
-ARCH="${2:-$(detect_arch)}"
-
+[ -n "${VERSION}" ] || { usage >&2; exit 1; }
+ARCH="${ARCH:-$(detect_arch)}"
 case "${ARCH}" in
-    amd)
-        PLATFORM="linux/amd64"
-        RELEASE_ARCH="amd64"
-        ;;
-    arm)
-        PLATFORM="linux/arm64"
-        RELEASE_ARCH="arm64"
-        ;;
-    *)
-        echo "Error: Invalid arch '${ARCH}'. Use 'amd' or 'arm'." >&2
-        exit 1
-        ;;
+    amd) PLATFORM="linux/amd64"; RELEASE_ARCH="amd64" ;;
+    arm) PLATFORM="linux/arm64"; RELEASE_ARCH="arm64" ;;
+    *) echo "Error: Invalid arch '${ARCH}'. Use 'amd' or 'arm'." >&2; exit 1 ;;
 esac
 
 STANDALONE=0
@@ -71,7 +80,6 @@ fi
 
 IMAGES_DIR="${BUNDLE_DIR}/images"
 mkdir -p "${IMAGES_DIR}" "${DEPLOY_DIR}"
-
 echo "Building modeling release ${VERSION} for ${PLATFORM}"
 
 if docker buildx version >/dev/null 2>&1; then
@@ -85,9 +93,7 @@ AGENT_PIP_INDEX_URL="${MODELING_AGENT_PIP_INDEX_URL:-${PIP_INDEX_URL:-https://py
 AGENT_PIP_TIMEOUT="${MODELING_AGENT_PIP_TIMEOUT:-${PIP_DEFAULT_TIMEOUT:-120}}"
 AGENT_PIP_RETRIES="${MODELING_AGENT_PIP_RETRIES:-${PIP_RETRIES:-10}}"
 
-"${BUILD_CMD[@]}" \
-    -t "mw-modeling:${VERSION}" \
-    "${SCRIPT_DIR}"
+"${BUILD_CMD[@]}" -t "mw-modeling:${VERSION}" "${SCRIPT_DIR}"
 docker save -o "${IMAGES_DIR}/mw-modeling-${VERSION}.tar" "mw-modeling:${VERSION}"
 
 "${BUILD_CMD[@]}" \
@@ -102,27 +108,60 @@ docker save -o "${IMAGES_DIR}/mw-modeling-agent-${VERSION}.tar" "mw-modeling-age
 cp -r "${SCRIPT_DIR}/deploy/"* "${DEPLOY_DIR}/"
 
 if [ "${STANDALONE}" = "1" ]; then
-    cat > "${DEPLOY_DIR}/manifest.json" <<EOF
+    mkdir -p "${DEPLOY_DIR}/bin"
+    COMPOSE_PLUGIN_PATH="${DOCKER_COMPOSE_PLUGIN_PATH:-$(command -v docker-compose 2>/dev/null || true)}"
+    if [ -z "${COMPOSE_PLUGIN_PATH}" ] && [ -x /usr/libexec/docker/cli-plugins/docker-compose ]; then
+        COMPOSE_PLUGIN_PATH=/usr/libexec/docker/cli-plugins/docker-compose
+    fi
+    if [ -z "${COMPOSE_PLUGIN_PATH}" ] && [ -x /usr/local/lib/docker/cli-plugins/docker-compose ]; then
+        COMPOSE_PLUGIN_PATH=/usr/local/lib/docker/cli-plugins/docker-compose
+    fi
+    [ -n "${COMPOSE_PLUGIN_PATH}" ] && [ -x "${COMPOSE_PLUGIN_PATH}" ] || {
+        echo "Error: Docker Compose v2 binary is required to package the modeling release" >&2
+        exit 1
+    }
+    cp "${COMPOSE_PLUGIN_PATH}" "${DEPLOY_DIR}/bin/docker-compose"
+    chmod 0755 "${DEPLOY_DIR}/bin/docker-compose"
+
+    cat > "${BUNDLE_DIR}/.env.example" <<'EOF_ENV'
+MODELING_SERVICE_TOKEN=
+MODELING_MCP_TOKEN_SECRET=
+MODELING_PORT=5100
+MODELING_MCP_PORT=5188
+MODELING_LLM_BASE_URL=
+MODELING_LLM_MODEL=
+MODELING_LLM_API_KEY=
+MODELING_TASK_LLM_BASE_URL=
+MODELING_TASK_LLM_MODEL=
+MODELING_TASK_LLM_API_KEY=
+AUTH_ISSUER_URL=http://auth-server:5056
+AUTH_JWT_ISSUER=http://auth-server:5056
+AUTH_JWT_AUDIENCE=meta-wise
+CONSUMER_API_URL=http://backend:5055
+EOF_ENV
+
+    cat > "${DEPLOY_DIR}/manifest.json" <<EOF_MANIFEST
 {
+  "schema_version": "2",
   "app_version": "${VERSION}",
   "release_arch": "${RELEASE_ARCH}",
+  "bash_min_version": "3.2",
+  "docker_min_version": "20.10",
   "modeling_image": "mw-modeling:${VERSION}",
   "modeling_image_tar": "images/mw-modeling-${VERSION}.tar",
   "modeling_agent_image": "mw-modeling-agent:${VERSION}",
   "modeling_agent_image_tar": "images/mw-modeling-agent-${VERSION}.tar"
 }
-EOF
+EOF_MANIFEST
     printf '%s\n' "${VERSION}" > "${BUNDLE_DIR}/VERSION"
 
     find "${BUNDLE_DIR}" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
     find "${BUNDLE_DIR}" -type f -name '*.sh' -exec chmod +x {} +
-
-    if command -v sha256sum >/dev/null 2>&1; then
-        (
-            cd "${BUNDLE_DIR}"
-            sha256sum VERSION deploy/manifest.json images/*.tar > checksums.txt
-        )
-    fi
+    (
+        cd "${BUNDLE_DIR}"
+        find VERSION .env.example deploy images -type f -print0 \
+            | sort -z | xargs -0 sha256sum > checksums.txt
+    )
 
     mkdir -p "$(dirname "${OUTPUT_FILE}")"
     rm -f "${OUTPUT_FILE}"
