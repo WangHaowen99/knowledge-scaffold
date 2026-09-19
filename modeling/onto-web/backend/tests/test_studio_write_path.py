@@ -145,3 +145,52 @@ def test_delete_file_only_knowledge(manager: WorkspaceManager):
     manager.delete_file(meta["id"], "knowledge/规则一.md", author="alice")
     with pytest.raises(WorkspaceError):
         manager.delete_file(meta["id"], "research/x.md")
+
+
+CODEGEN_REPORT = """# 脚本化候选扫描 — 2026-01-01 10:00 Asia/Shanghai
+
+共扫描 4 条 logic：✅ 适合 1 / ⚠️ 部分适合 1 / ❌ 不适合 1 / 📦 已生成 1
+
+## ✅ 适合（1）
+
+| # | 逻辑 | 片段 | 类型 | 输入 | 输出 | 已有脚本 |
+|---|---|---|---|---|---|---|
+| 1 | 客群聚类 | 整段 | 算法计算 | `factors, k` | `DataFrame[user_id]` | — |
+
+## ⚠️ 部分适合（1）
+
+| # | 逻辑 | 片段 | 类型 | 输入 | 输出 | 备注 |
+|---|---|---|---|---|---|---|
+| 2 | 活动归因 | 步骤1-3 | SQL查询封装 | `activity_id` | `DataFrame[score]` | 步骤4 留 logic |
+
+## ❌ 不适合（1）
+
+| 逻辑 | 原因 |
+|---|---|
+| 上架审批 | 依赖人工评审 |
+
+## 📦 已生成（1）
+
+| 逻辑 | 已有脚本 |
+|---|---|
+| 历史聚类 | `a.py`<br>`b.py` |
+"""
+
+
+def test_parse_codegen_report():
+    parsed = report_items.parse(CODEGEN_REPORT)
+    assert parsed["type"] == "codegen"
+    assert parsed["summary"].startswith("共扫描 4 条")
+    assert [c["id"] for c in parsed["candidates"]] == [1, 2]
+    first = parsed["candidates"][0]
+    assert first["logic"] == "客群聚类" and first["fragment"] == "整段"
+    assert first["verdict"] == "适合" and first["inputs"] == "factors, k"
+    second = parsed["candidates"][1]
+    assert second["verdict"] == "部分适合" and second["fragment"] == "步骤1-3"
+    assert parsed["unsuitable"][0]["logic"] == "上架审批"
+    assert "、" in parsed["generated"][0]["scripts"]
+
+
+def test_generic_report_not_misdetected():
+    parsed = report_items.parse("## 规则检查结果\n\n- 缺少主键")
+    assert "type" not in parsed

@@ -189,6 +189,99 @@ export const Markdown = memo(function Markdown({ content, onWikiLink }) {
 
 const PREVIEWABLE = /\.(md|markdown|txt|py|json|yaml|yml|csv|mmd)$/i;
 
+// codegen 候选评审：按候选分组勾选 + 参数预览，组装 /ontology-codegen 指令
+function CodegenReview({ data, checked, onChecked, onGenerate }) {
+  const toggle = (id) => {
+    const next = new Set(checked);
+    next.has(id) ? next.delete(id) : next.add(id);
+    onChecked(next);
+  };
+  const selected = data.candidates.filter((c) => checked.has(c.id));
+  if (!data.candidates.length && !data.unsuitable.length) {
+    return <Empty description="报告里没有解析出候选（可切换查看原文）" />;
+  }
+  return (
+    <div>
+      {data.summary && (
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+          {data.summary}
+        </Typography.Paragraph>
+      )}
+      <Space style={{ marginBottom: 10 }} wrap>
+        <Button
+          size="small"
+          onClick={() =>
+            onChecked(new Set(data.candidates.filter((c) => c.verdict === '适合').map((c) => c.id)))
+          }
+        >
+          全选 ✅ 适合
+        </Button>
+        <Button size="small" onClick={() => onChecked(new Set(data.candidates.map((c) => c.id)))}>
+          全选
+        </Button>
+        <Button size="small" onClick={() => onChecked(new Set())}>
+          清空
+        </Button>
+        <Button
+          size="small"
+          type="primary"
+          disabled={selected.length === 0}
+          onClick={() => onGenerate(selected)}
+        >
+          生成选中候选（{selected.length}）
+        </Button>
+      </Space>
+      {data.candidates.map((c) => (
+        <label key={c.id} className={`codegen-card${checked.has(c.id) ? ' checked' : ''}`}>
+          <Checkbox checked={checked.has(c.id)} onChange={() => toggle(c.id)} />
+          <div className="codegen-main">
+            <div className="codegen-head">
+              <span className="codegen-id">#{c.id}</span>
+              <Typography.Text strong>{c.logic}</Typography.Text>
+              {c.fragment && c.fragment !== '整段' && <Tag>{c.fragment}</Tag>}
+              <Tag color={c.verdict === '适合' ? 'success' : 'warning'}>{c.verdict}</Tag>
+              {c.type && <Tag color="blue">{c.type}</Tag>}
+            </div>
+            <div className="codegen-io">
+              {c.inputs && c.inputs !== '—' && (
+                <span>
+                  输入 <code>{c.inputs}</code>
+                </span>
+              )}
+              {c.outputs && c.outputs !== '—' && (
+                <span>
+                  输出 <code>{c.outputs}</code>
+                </span>
+              )}
+            </div>
+            {c.note && c.note !== '—' && <div className="codegen-note">{c.note}</div>}
+          </div>
+        </label>
+      ))}
+      {data.unsuitable.length > 0 && (
+        <details className="codegen-fold">
+          <summary>❌ 不适合（{data.unsuitable.length}）</summary>
+          {data.unsuitable.map((u) => (
+            <div key={u.logic} className="codegen-note">
+              <b>{u.logic}</b>：{u.reason}
+            </div>
+          ))}
+        </details>
+      )}
+      {data.generated.length > 0 && (
+        <details className="codegen-fold">
+          <summary>📦 已生成（{data.generated.length}）</summary>
+          {data.generated.map((g) => (
+            <div key={g.logic} className="codegen-note">
+              <b>{g.logic}</b>：{g.scripts}
+            </div>
+          ))}
+        </details>
+      )}
+    </div>
+  );
+}
+
 // 报告评审：编号勾选 + 逐条确认（校验/追踪/codegen 候选通用）
 function ReportReview({ data, checked, onChecked, onFixSelected }) {
   if (!data) return <Spin />;
@@ -700,7 +793,13 @@ export default function CenterPane({
                         value={reportMode}
                         onChange={setReportMode}
                         options={[
-                          { label: `逐条评审（${reportItems?.items?.length ?? 0}）`, value: 'review' },
+                          {
+                            label:
+                              reportItems?.type === 'codegen'
+                                ? `候选评审（${reportItems.candidates.length}）`
+                                : `逐条评审（${reportItems?.items?.length ?? 0}）`,
+                            value: 'review',
+                          },
                           { label: '报告原文', value: 'raw' },
                         ]}
                       />
@@ -714,7 +813,26 @@ export default function CenterPane({
                     {reportMode === 'raw' && (
                       <Markdown content={reportContent.content} onWikiLink={openWikiLink} />
                     )}
-                    {reportMode === 'review' && (
+                    {reportMode === 'review' && reportItems?.type === 'codegen' && (
+                      <CodegenReview
+                        data={reportItems}
+                        checked={checkedItems}
+                        onChecked={setCheckedItems}
+                        onGenerate={(selected) =>
+                          onCommand?.(
+                            '/ontology-codegen ' +
+                              selected
+                                .map((c) =>
+                                  c.fragment && c.fragment !== '整段'
+                                    ? `${c.logic}:${c.fragment}`
+                                    : c.logic,
+                                )
+                                .join(' '),
+                          )
+                        }
+                      />
+                    )}
+                    {reportMode === 'review' && reportItems?.type !== 'codegen' && (
                       <ReportReview
                         data={reportItems}
                         checked={checkedItems}
