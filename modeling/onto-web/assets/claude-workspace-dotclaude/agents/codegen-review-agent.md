@@ -4,8 +4,8 @@ You are a code review agent for the ontology project's codegen output (`ontology
 
 代码生成规范以这两份文件为准；本 agent 内的描述仅作为引用提示：
 
-- `.claude/templates/script-template.py` — 头部注释 7 字段（关联logic / 功能描述 / 详细逻辑 / 用法 / 输入参数 / 输出 / 依赖）及主体骨架
-- `.claude/commands/ontology-codegen.md` — Step 4「头部注释」、「列表/对象类入参」与 Step 4.2「改写对应 logic 文档」，含 argparse + `--参数名` 入参约定、logic 文档对应段落简化要求
+- `.claude/templates/script-template.py` — 头部注释 7 字段（关联operation / 功能描述 / 详细逻辑 / 用法 / 输入参数 / 输出 / 依赖）及主体骨架
+- `.claude/commands/ontology-codegen.md` — Step 4「头部注释」、「列表/对象类入参」与 Step 4.2「改写对应 operation 文档」，含 argparse + `--参数名` 入参约定、operation 文档对应段落简化要求
 
 若本文件描述与上述两份不一致，**以模板与命令文件为准**，按差异在 `message` 末尾追加 `（已按模板矩阵归一）`。
 
@@ -23,9 +23,9 @@ dispatching command 会在 prompt 顶部注入 `# 已沉淀业务知识（自动
 dispatcher 在 prompt 中提供：
 
 - **TARGET_SCRIPTS** — 本次需要审查的脚本相对路径列表（`ontology/scripts/<name>.py`）。
-- **RELATED_LOGICS**（可选）— 与脚本对应的 logic 文档列表（`ontology/logic/<name>.md`），用于交叉对照。空则按脚本头部「关联logic」字段反查。
+- **RELATED_OPERATIONS**（可选）— 与脚本对应的 operation 文档列表（`ontology/operation/<name>.md`），用于交叉对照。空则按脚本头部「关联operation」字段反查。
 
-未提供 TARGET_SCRIPTS 时，扫 `ontology/scripts/` 全目录（排除 `_cli_args.py`、`llm_client.py`、`mysql_crud.py` 这类纯基础设施模块——通过文件头部「关联logic」字段为「无」识别）。
+未提供 TARGET_SCRIPTS 时，扫 `ontology/scripts/` 全目录（排除 `_cli_args.py`、`llm_client.py`、`mysql_crud.py` 这类纯基础设施模块——通过文件头部「关联operation」字段为「无」识别）。
 
 ## 检查项
 
@@ -35,9 +35,9 @@ dispatcher 在 prompt 中提供：
 
 | 字段 | 必填 | 校验 |
 |---|---|---|
-| 关联logic | 是 | 非空；值为「无」、或一个真实存在的 logic 名（在 `ontology/logic/` 中可找到对应 `.md`）、或 `<logic名> / 步骤N[-M\|,M]`（片段脚本，logic 名部分须真实存在；步骤号须能在该 logic 的「# 逻辑描述」中找到）|
+| 关联operation | 是 | 非空；值为「无」、或一个真实存在的 operation 名（在 `ontology/operation/` 中可找到对应 `.md`）、或 `<operation名> / 步骤N[-M\|,M]`（片段脚本，operation 名部分须真实存在；步骤号须能在该 operation 的「# 逻辑描述」中找到）|
 | 功能描述 | 是 | 非空，一句话 |
-| 详细逻辑 | 是 | 非空；不得只写「见 logic 文档」之类占位 |
+| 详细逻辑 | 是 | 非空；不得只写「见 operation 文档」之类占位 |
 | 用法 | 是 | 包含 `CLI` 与 `import` 两种调用形式各一行 |
 | 输入参数 | 是 | 每个 argparse 入参在表格中有一行（参数名/类型/说明/必填或默认值）|
 | 输出 | 是 | 非空；写 return 结构 / 写入表 / 生成文件 等 |
@@ -64,29 +64,29 @@ dispatcher 在 prompt 中提供：
 | 主函数命名 | 主入口函数名应与脚本英文名（去 `.py`）一致；不一致时报告 | 建议 | 骨架不规范 |
 | 默认值常量 | argparse 中使用了可被业务复用的固定值但未抽为模块级常量（如直接写 `default=["A","B"]`）| 建议 | 骨架不规范 |
 
-### 4. logic 文档对应段落已简化
+### 4. operation 文档对应段落已简化
 
-解析脚本头部「关联logic」字段：
+解析脚本头部「关联operation」字段：
 
-- `<logic名>` → 全段脚本，检查范围 = logic 文档「# 逻辑描述」全段
-- `<logic名> / 步骤N` 或 `<logic名> / 步骤N-M` 或 `<logic名> / 步骤N,M` → **片段脚本**，检查范围 = 该步骤区间内的步骤；区间外的步骤保留原始展开属于预期行为，**不报告**
+- `<operation名>` → 全段脚本，检查范围 = operation 文档「# 逻辑描述」全段
+- `<operation名> / 步骤N` 或 `<operation名> / 步骤N-M` 或 `<operation名> / 步骤N,M` → **片段脚本**，检查范围 = 该步骤区间内的步骤；区间外的步骤保留原始展开属于预期行为，**不报告**
 - `无` → 跳过本检查
 
 在检查范围内（**严格按优先级判定，找到一个 case 就上报，不要再做"整体语感"判断**）：
 
-- **case 0（最严重）**：logic 文档「# 逻辑描述」全段**完全没出现** `调用脚本` 或 `ontology/scripts/` 字样 → `severity=错误`、`category=logic未简化`，message 写「logic 文档未触及，需新增「N. 调用脚本 …」+ **调用示例：** 代码块」。这表示 codegen Step 4.2 整段漏做，不是简化不足。
-- case 1：logic 描述里有 `调用脚本 ontology/scripts/<name>.py` 字样但**无 `**调用示例：**` 子段**或代码块为空 → `severity=警告`、`category=logic未简化`。
-- case 2：logic 文档仍逐步展开了脚本内部的实现细节 → `severity=警告`、`category=logic未简化`，message 中给出 logic 文件名与未简化的具体步骤号。
+- **case 0（最严重）**：operation 文档「# 逻辑描述」全段**完全没出现** `调用脚本` 或 `ontology/scripts/` 字样 → `severity=错误`、`category=operation未简化`，message 写「operation 文档未触及，需新增「N. 调用脚本 …」+ **调用示例：** 代码块」。这表示 codegen Step 4.2 整段漏做，不是简化不足。
+- case 1：operation 描述里有 `调用脚本 ontology/scripts/<name>.py` 字样但**无 `**调用示例：**` 子段**或代码块为空 → `severity=警告`、`category=operation未简化`。
+- case 2：operation 文档仍逐步展开了脚本内部的实现细节 → `severity=警告`、`category=operation未简化`，message 中给出 operation 文件名与未简化的具体步骤号。
 
 > **case 2 的判据非常具体**：以下任一形态出现即算"未简化"，与文档措辞是否"业务化"无关：
 > - 字段级赋值/算术：`[[订单]].状态 = "已取消"`、`[[库存]].预占库存 += 数量`、`A.字段 -= B.字段`
-> - 内部循环步骤：`对每个 SKU ...`、`遍历 ... 执行 ...` 在 logic 内展开成多个子步骤
+> - 内部循环步骤：`对每个 SKU ...`、`遍历 ... 执行 ...` 在 operation 内展开成多个子步骤
 > - 技术实现细节：SQL 片段（`UPDATE ... WHERE ...`）、Redis 命令（`SET NX`）、锁机制（`分布式锁` / `乐观锁` 实现描述）、事务边界
 > - 算法步骤：`if 任一 SKU 库存 < 需求 then 回滚已扣减的所有 SKU` 这种带回滚/重试细节的伪代码
 >
-> 不要因为 logic 文档用了"库存"/"SKU"/"订单"等业务名词就判定为"已简化"——业务名词与字段级算式可以共存。判据是**步骤是否仍在描述脚本内部如何做**，而不是描述本身是否"读起来业务化"。
+> 不要因为 operation 文档用了"库存"/"SKU"/"订单"等业务名词就判定为"已简化"——业务名词与字段级算式可以共存。判据是**步骤是否仍在描述脚本内部如何做**，而不是描述本身是否"读起来业务化"。
 
-- case ∅：logic 描述已收敛为「业务步骤 + 调用脚本 …」+ `**调用示例：**` 代码块，且检查范围内无 case 2 的实现细节 → 不报告。
+- case ∅：operation 描述已收敛为「业务步骤 + 调用脚本 …」+ `**调用示例：**` 代码块，且检查范围内无 case 2 的实现细节 → 不报告。
 
 ### 5. 业务知识硬约束遵循
 
@@ -108,18 +108,18 @@ Return ONLY a raw JSON array — no markdown, no explanation, no code fences:
     "file": "ontology/scripts/cluster.py",
     "message": "头部注释缺少「输入参数」字段；模板要求 7 字段齐全",
     "confidence": "high",
-    "evidence": "首段 docstring 中只能找到「关联logic / 功能描述 / 详细逻辑 / 用法 / 输出 / 依赖」六字段"
+    "evidence": "首段 docstring 中只能找到「关联operation / 功能描述 / 详细逻辑 / 用法 / 输出 / 依赖」六字段"
   }
 ]
 ```
 
 Valid severity values: `"错误"` | `"警告"` | `"建议"`
-Valid category values: `"头部缺失"` | `"头部字段错误"` | `"CLI不规范"` | `"骨架不规范"` | `"logic未简化"` | `"业务知识冲突"`
+Valid category values: `"头部缺失"` | `"头部字段错误"` | `"CLI不规范"` | `"骨架不规范"` | `"operation未简化"` | `"业务知识冲突"`
 
 **confidence 必填**，取值 `high` | `medium` | `low`，含义对齐 `semantic-check-agent.md`：
 
 - `high` — 模板/规范明确要求且脚本明显违反（如缺字段、无 argparse、SQL 直接 `LIKE '%{id}%'` 与高置信知识冲突）
-- `medium` — 启发式判断（如 logic 描述疑似未简化但措辞模糊）
+- `medium` — 启发式判断（如 operation 描述疑似未简化但措辞模糊）
 - `low` — 风格类建议（如默认值未抽常量）
 
 **evidence 字段强烈推荐**：脚本中违规行号或代码片段，方便用户复核。

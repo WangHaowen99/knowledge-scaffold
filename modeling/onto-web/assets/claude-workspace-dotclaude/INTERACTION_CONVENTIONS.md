@@ -72,7 +72,7 @@
 
 - 自由意图通常包括：修改 / 补充 / 校验 / 调整。
 - 涉及修改已有 ontology / 文档：执行有明确范围的小修改；范围较复杂时转入 `/ontology-update`。
-- 涉及补充知识、补充对象或补充逻辑：转入 `/ontology-research`、`/ontology-extract-object` 增量模式或 `/ontology-extract-logic` 增量模式。
+- 涉及补充知识、补充对象或补充逻辑：转入 `/ontology-research`、`/ontology-extract-object` 增量模式或 `/ontology-extract-operation` 增量模式。
 - 涉及校验、检验、检查：转入对应校验命令（对象/逻辑用 `/ontology-validate`，流程图用 `/ontology-validate-diagrams`）。
 - 涉及调整流程、暂停、回退、查看历史：按 `/ontology`、`/version` 或当前命令已有处理路径执行。
 - 意图不清时，只问一个简短澄清问题。
@@ -125,9 +125,9 @@
 
 | 资料 | 触发约定位置 | 接入的命令 |
 |---|---|---|
-| `.claude/reference/BFO_MODELING_GUIDE.md` | 该文件 §10 | `/ontology-extract-object`、`/ontology-extract-logic`、`/ontology-validate`、`/ontology-overview` |
-| `.claude/reference/LOGIC_PARADIGM_GUIDE.md` | 该文件 §七 | `/ontology-extract-logic`、`/ontology-validate`、`/ontology-trace` |
-| `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` | 该文件 §十一 | `/ontology-extract-logic`、`/ontology-validate`、`/ontology-trace` |
+| `.claude/reference/BFO_MODELING_GUIDE.md` | 该文件 §10 | `/ontology-extract-object`、`/ontology-extract-operation`、`/ontology-validate`、`/ontology-overview` |
+| `.claude/reference/OPERATION_PARADIGM_GUIDE.md` | 该文件 §七 | `/ontology-extract-operation`、`/ontology-validate`、`/ontology-trace` |
+| `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` | 该文件 §十一 | `/ontology-extract-operation`、`/ontology-validate`、`/ontology-trace` |
 
 ### 业务知识确认类
 
@@ -166,9 +166,9 @@
 ## 呈现约定
 
 - Markdown 报告文件统一命名 `reports/{YYYYMMDD}-{HHMMSS}-{scope}-{phase}.md`：
-  - `{scope}` 标注检查对象范围：`objects` / `logic` / `actions` / `diagrams` 或 `all`（跨多个分类时）。
+  - `{scope}` 标注检查对象范围：`objects` / `operation` / `actions` / `diagrams` 或 `all`（跨多个分类时）。
   - `{phase}` 标注阶段：`rule`（规则/结构检查）、`semantic`（语义检查）、`trace`（场景追踪）、`overview`（整体视图）。
-  - 示例：`20260422-143022-logic-rule.md`、`20260422-143022-diagrams-semantic.md`。
+  - 示例：`20260422-143022-operation-rule.md`、`20260422-143022-diagrams-semantic.md`。
   - 旧格式（`structure-*.md` / `analyze-*.md` / 无 scope 的 `-rule.md`）已废弃。
 - 所有报告文件名中的日期时间、报告正文中的生成时间/日期/时间戳，统一使用 `Asia/Shanghai`。shell 里生成时间戳时使用 `TZ=Asia/Shanghai date ...`；Python 脚本使用 timezone-aware 的 `Asia/Shanghai` 时间，不依赖运行环境默认时区。
 - 终端输出使用 `❌ / ⚠️ / 💡 / ✅ / ⏭️ / 🔧` 表情分别表示 错误/警告/建议/已修复/已跳过/已自动修复，与 `ontology_checker.py` 的 `SEVERITY_ICON` 保持一致。

@@ -1,20 +1,20 @@
 ---
 name: mermaid-flowchart
-description: Use when the user asks to generate,整理, or convert business logic into a Mermaid flowchart for draw.io import. Requires user-provided business logic as inline text or a file path; do not invent the business process.
+description: Use when the user asks to generate,整理, or convert business operation into a Mermaid flowchart for draw.io import. Requires user-provided business operation as inline text or a file path; do not invent the business process.
 ---
 
 # Mermaid Flowchart
 
 ## Intent
 
-Convert user-provided business logic into draw.io-compatible Mermaid `flowchart` code.
+Convert user-provided business operation into draw.io-compatible Mermaid `flowchart` code.
 
-Use this skill only after the user provides the business logic. The business logic can be:
+Use this skill only after the user provides the business operation. The business operation can be:
 
 - inline text in the request;
-- a file path to a document that contains the business logic.
+- a file path to a document that contains the business operation.
 
-If no business logic text or file path is provided, stop and ask the user to provide one. Do not infer the process from the repository or from prior context unless the user explicitly says to use that context.
+If no business operation text or file path is provided, stop and ask the user to provide one. Do not infer the process from the repository or from prior context unless the user explicitly says to use that context.
 
 ## Input Handling
 
@@ -30,13 +30,13 @@ If no business logic text or file path is provided, stop and ask the user to pro
 - Do not save Mermaid flowcharts to other ontology artifact directories.
 - Create `ontology/mermaid/` when saving a file and the directory does not exist.
 - If the user explicitly specifies an output filename, use it under `ontology/mermaid/`.
-- If the business logic input is a file path and no output filename is specified, keep the flowchart filename aligned with the source document basename. For example, `docs/采购流程.md` becomes `ontology/mermaid/采购流程.md`.
-- If the business logic input is inline text and no output filename is specified, derive a concise filename from the business topic.
+- If the business operation input is a file path and no output filename is specified, keep the flowchart filename aligned with the source document basename. For example, `docs/采购流程.md` becomes `ontology/mermaid/采购流程.md`.
+- If the business operation input is inline text and no output filename is specified, derive a concise filename from the business topic.
 
 ## Workflow
 
-1. Identify the start event, end event, activities, decisions, parallel work, data objects, notifications, calculations, manual steps, and subprocess calls from the business logic.
-2. Group related activities into phases when the source logic clearly has stages.
+1. Identify the start event, end event, activities, decisions, parallel work, data objects, notifications, calculations, manual steps, and subprocess calls from the business operation.
+2. Group related activities into phases when the source operation clearly has stages.
 3. Assign stable node IDs that start with English letters.
 4. Generate Mermaid code using `flowchart TD`.
 5. Save the flowchart under `ontology/mermaid/` with the filename rule above when file output is requested.

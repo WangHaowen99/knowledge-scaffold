@@ -347,7 +347,7 @@ export default function App() {
         </Dropdown>
         <h3 title={item.name}>{item.name}</h3>
         <div className="pd">
-          对象 {item.objects ?? 0} · 逻辑 {item.logics ?? 0}
+          对象 {item.objects ?? 0} · 操作 {item.operations ?? 0}
         </div>
         <div className="pj-prog">
           <div
@@ -562,7 +562,7 @@ export default function App() {
                       {(importWiz.summary.total_size / 1048576).toFixed(1)} MB
                     </Descriptions.Item>
                     <Descriptions.Item label="业务对象">{importWiz.summary.objects}</Descriptions.Item>
-                    <Descriptions.Item label="业务逻辑">{importWiz.summary.logics}</Descriptions.Item>
+                    <Descriptions.Item label="业务操作">{importWiz.summary.operations}</Descriptions.Item>
                   </Descriptions>
                   <div style={{ marginBottom: 12 }}>
                     {importWiz.summary.top_dirs.map((d) => (

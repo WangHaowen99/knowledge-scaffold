@@ -210,13 +210,13 @@ git commit -m "extract: {TOPIC} objects"
 Display:
 "**下一步建议：**
 - 回复 **检验对象**（/ontology-validate）→ 先对已确认对象做规则和语义检验
-- 回复 **提取逻辑**（/ontology-extract-logic）→ 基于已确认对象提取业务逻辑
+- 回复 **提取逻辑**（/ontology-extract-operation）→ 基于已确认对象提取业务逻辑
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
 内部执行时，`{OBJECT_STEMS}` 为当前 `ontology/object/*.md` 的文件名 stem，空格分隔。不要在用户可见提示中展开这些对象名称。
 
 If user replies **检验对象**: `python3 .claude/scripts/state_helper.py release extract-object`，read `.claude/commands/ontology-validate.md` and follow it with `$ARGUMENTS = OBJECT_STEMS`。Stop this command.
-If user replies **提取逻辑**: `python3 .claude/scripts/state_helper.py release extract-object`，read `.claude/commands/ontology-extract-logic.md` and follow it. Stop this command.
+If user replies **提取逻辑**: `python3 .claude/scripts/state_helper.py release extract-object`，read `.claude/commands/ontology-extract-operation.md` and follow it. Stop this command.
 If user replies **完成**: `python3 .claude/scripts/state_helper.py release extract-object`，Stop.
 
 ## Note on mid-process edits

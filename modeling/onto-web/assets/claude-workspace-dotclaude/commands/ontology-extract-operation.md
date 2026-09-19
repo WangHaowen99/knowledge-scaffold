@@ -1,25 +1,25 @@
-Extract business logic from available source material and confirmed object documents. Optional mode/input: $ARGUMENTS
+Extract business operation from available source material and confirmed object documents. Optional mode/input: $ARGUMENTS
 
-This command is the logic-only half of extraction. It requires existing `ontology/object/*.md`, reads flowchart summaries, same-name Excel supplements, and/or research reports, writes `ontology/logic/*.md`, checks coverage, then commits the logic phase.
+This command is the operation-only half of extraction. It requires existing `ontology/object/*.md`, reads flowchart summaries, same-name Excel supplements, and/or research reports, writes `ontology/operation/*.md`, checks coverage, then commits the operation phase.
 
 ## Step 0: 前置检查
 
-遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `extract-logic`。简述：
+遵循 `.claude/STEP0_TEMPLATE.md`，COMMAND_NAME = `extract-operation`。简述：
 
-1. `python3 .claude/scripts/state_helper.py check-lock extract-logic`
-   - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `source` / `logic`，**续执**时跳到对应阶段。
-2. `python3 .claude/scripts/state_helper.py check-prereq extract-logic`
+1. `python3 .claude/scripts/state_helper.py check-lock extract-operation`
+   - `locked:{ts}:{phase}` → 按 **错误恢复类** 提示；phase 可能是 `source` / `operation`，**续执**时跳到对应阶段。
+2. `python3 .claude/scripts/state_helper.py check-prereq extract-operation`
    - `missing:对象已提取` → 按 **跳步守卫** 提示："当前没有已确认对象，逻辑中的对象引用无从对齐。" 选项 **先做 对象提取**（/ontology-extract-object）。
-3. `python3 .claude/scripts/state_helper.py acquire extract-logic source`
+3. `python3 .claude/scripts/state_helper.py acquire extract-operation source`
 4. 加载已沉淀业务知识。SCOPE_HINTS 取已存在的对象/逻辑名：
    ```bash
    SCOPE_ARGS=(--scope global)
-   for f in ontology/object/*.md ontology/logic/*.md; do
+   for f in ontology/object/*.md ontology/operation/*.md; do
        [ -f "$f" ] || continue
        stem=$(basename "$f" .md)
        case "$f" in
            */object/*) SCOPE_ARGS+=(--scope "object:$stem") ;;
-           */logic/*)   SCOPE_ARGS+=(--scope "logic:$stem") ;;
+           */operation/*)   SCOPE_ARGS+=(--scope "operation:$stem") ;;
        esac
    done
    KNOWLEDGE_BLOCK=$(python3 .claude/scripts/knowledge_helper.py load "${SCOPE_ARGS[@]}")
@@ -28,10 +28,10 @@ This command is the logic-only half of extraction. It requires existing `ontolog
 
 进入逻辑提取阶段时再调用：
 ```bash
-python3 .claude/scripts/state_helper.py acquire extract-logic logic
+python3 .claude/scripts/state_helper.py acquire extract-operation operation
 ```
 
-命令结束前 `release extract-logic`。
+命令结束前 `release extract-operation`。
 
 ## 业务知识识别（贯穿整个命令）
 
@@ -55,7 +55,7 @@ Tell user:
 "
 任一选择都会离开本命令，因此在等待用户回复前先释放锁：
 ```bash
-python3 .claude/scripts/state_helper.py release extract-logic
+python3 .claude/scripts/state_helper.py release extract-operation
 ```
 然后 stop。
 
@@ -69,8 +69,8 @@ Tell user:
 - 回复 **先做流程图** → 转入 /ontology-flowchart 创建流程图后再回来
 "
 - **继续**: set `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`，进入 Step 2。
-- **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-logic`；再读取 `.claude/commands/ontology-flowchart.md` 并执行；完成后 Claude 重新运行本命令。
-- **取消**: `python3 .claude/scripts/state_helper.py release extract-logic`，stop。
+- **先做流程图**: 先 `python3 .claude/scripts/state_helper.py release extract-operation`；再读取 `.claude/commands/ontology-flowchart.md` 并执行；完成后 Claude 重新运行本命令。
+- **取消**: `python3 .claude/scripts/state_helper.py release extract-operation`，stop。
 
 **模式 D — 两者都有：**
 Tell user:
@@ -82,7 +82,7 @@ Tell user:
 - **两者结合**（或默认）: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = REPORTS`。
 - **跳过调研**: `SUMMARY_PATHS = SUMMARIES`, `REPORT_PATHS = empty`。
 - **跳过流程图**: `SUMMARY_PATHS = empty`, `REPORT_PATHS = REPORTS`。
-- **取消**: `python3 .claude/scripts/state_helper.py release extract-logic`，stop。
+- **取消**: `python3 .claude/scripts/state_helper.py release extract-operation`，stop。
 
 ## Step 1.5: Bind Excel supplements to selected flowcharts
 
@@ -109,48 +109,48 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 "
 
 - **继续**（或默认）: 忽略 `ORPHAN_EXCEL_PATHS`，继续 Step 2。
-- **校验流程图**: `python3 .claude/scripts/state_helper.py release extract-logic`；read `.claude/commands/ontology-validate-diagrams.md` and follow it；Stop this command。
-- **刷新**: `python3 .claude/scripts/state_helper.py release extract-logic`；read `.claude/commands/ontology-flowchart.md` and follow refresh branch；Stop this command。
+- **校验流程图**: `python3 .claude/scripts/state_helper.py release extract-operation`；read `.claude/commands/ontology-validate-diagrams.md` and follow it；Stop this command。
+- **刷新**: `python3 .claude/scripts/state_helper.py release extract-operation`；read `.claude/commands/ontology-flowchart.md` and follow refresh branch；Stop this command。
 
 若 `SUMMARY_PATHS` 为空：`PAIRED_EXCEL_PATHS = empty`，`ORPHAN_EXCEL_PATHS = empty`，`EXCEL_CONTEXT = （无流程图摘要，Excel 不参与本次提取）`。
 
 > 传给 agent 时：若 `SUMMARY_PATHS` 为空，在 prompt 中写 `SUMMARY_PATHS: (无，仅基于调研报告)`；若 `REPORT_PATHS` 为空，省略该行；若 `PAIRED_EXCEL_PATHS` 为空，写 `PAIRED_EXCEL_PATHS: (无同名 Excel 补充表)`。
 
-## Step 2: Determine logic mode
+## Step 2: Determine operation mode
 
-List `ontology/logic/*.md`.
+List `ontology/operation/*.md`.
 
-If logic files already exist and MODE is not pre-set:
+If operation files already exist and MODE is not pre-set:
 
 ```
 已发现逻辑文档 {K} 个。
 
 **下一步建议：**
 - 回复 **增量** → 只补充缺失逻辑，不覆盖已有逻辑
-- 回复 **重做** → 清空 `ontology/logic/` 后重新提取逻辑
+- 回复 **重做** → 清空 `ontology/operation/` 后重新提取逻辑
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle user choice:
-- **增量**: set `MODE = incremental`; collect `EXISTING_FILES` from current `ontology/logic/*.md` stems.
-- **重做**: clear `ontology/logic/*.md`; set `MODE = full`.
-- **完成**: `python3 .claude/scripts/state_helper.py release extract-logic`，Stop.
+- **增量**: set `MODE = incremental`; collect `EXISTING_FILES` from current `ontology/operation/*.md` stems.
+- **重做**: clear `ontology/operation/*.md`; set `MODE = full`.
+- **完成**: `python3 .claude/scripts/state_helper.py release extract-operation`，Stop.
 
-If logic files do not exist, set `MODE = full`.
+If operation files do not exist, set `MODE = full`.
 
-When called from another command with `MODE = incremental` pre-set, skip this prompt and collect `EXISTING_FILES` from current `ontology/logic/*.md`.
+When called from another command with `MODE = incremental` pre-set, skip this prompt and collect `EXISTING_FILES` from current `ontology/operation/*.md`.
 
-## Step 3: Execute logic extraction
+## Step 3: Execute operation extraction
 
 ```bash
-python3 .claude/scripts/state_helper.py acquire extract-logic logic
+python3 .claude/scripts/state_helper.py acquire extract-operation operation
 ```
 
 Tell user: "**逻辑提取**\n正在从{source_label}中识别和提取业务逻辑..."
 
 > `{source_label}` 取值：`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图、Excel 补充表和调研报告"；`SUMMARY_PATHS` 非空且 `PAIRED_EXCEL_PATHS` 非空 → "流程图和 Excel 补充表"；`SUMMARY_PATHS` 非空且 `REPORT_PATHS` 非空 → "流程图和调研报告"；仅 `SUMMARY_PATHS` → "流程图摘要"；仅 `REPORT_PATHS` → "调研报告"。
 
-Read `.claude/agents/extract-logic-agent.md`. Dispatch it with:
+Read `.claude/agents/extract-operation-agent.md`. Dispatch it with:
 
 ```
 {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
@@ -162,7 +162,7 @@ EXCEL_CONTEXT:
 
 REPORT_PATHS: {调研报告路径，无则省略}
 OBJECTS_DIR: ontology/object/
-LOGIC_DIR: ontology/logic/
+OPERATION_DIR: ontology/operation/
 TEMPLATES_DIR: .claude/templates/
 {如 MODE=incremental: EXISTING_FILES: {现有文件名}}
 
@@ -184,8 +184,8 @@ SOURCE_PATHS: {SUMMARY_PATHS、PAIRED_EXCEL_PATHS 与 REPORT_PATHS 的并集，�
 EXCEL_CONTEXT:
 {EXCEL_CONTEXT}
 
-LOGIC_DIR: ontology/logic/
-CHECK_TYPE: logic
+OPERATION_DIR: ontology/operation/
+CHECK_TYPE: operation
 ```
 
 Handle gaps（全部补充 / 选择性补充 / 跳过），with one-retry limit.
@@ -204,25 +204,25 @@ When user confirms（回复 **确认** 或等价的肯定词，如"好的"、"�
 Determine TOPIC from flowchart summary filenames, research report filenames, or ask user.
 
 ```bash
-git add ontology/logic/
-git commit -m "extract: {TOPIC} logic"
+git add ontology/operation/
+git commit -m "extract: {TOPIC} operation"
 ```
 
-**Logic 范式参考提醒（可选）**：按 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §七「逻辑提取完成后」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别"，本次不再提示。该提醒与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一的逻辑提取完成后提醒合并输出。
+**Operation 范式参考提醒（可选）**：按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七「逻辑提取完成后」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别"，本次不再提示。该提醒与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一的逻辑提取完成后提醒合并输出。
 
 "**提取完成。** 对象：{M} 个，逻辑：{K} 个。
 
-💡 可选参考：逻辑提取已完成，进入校验/追踪前可先判别 Logic 范式。
-可参阅 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §三 / §四，判断当前业务更适合 SOP 流程型、断言驱动型或混合型验证策略。若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三补充测试场景。无需中断当前流程。
+💡 可选参考：逻辑提取已完成，进入校验/追踪前可先判别 Operation 范式。
+可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四，判断当前业务更适合 SOP 流程型、断言驱动型或混合型验证策略。若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三补充测试场景。无需中断当前流程。
 
 **下一步建议：**
 - 回复 **校验**（/ontology-validate）→ 立即开始校验
 - 回复 **整体视图**（/ontology-overview）→ 查看对象/逻辑全局关系
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
-If user replies **校验**: `python3 .claude/scripts/state_helper.py release extract-logic`，read `.claude/commands/ontology-validate.md` and follow it. Stop this command.
-If user replies **整体视图**: `python3 .claude/scripts/state_helper.py release extract-logic`，read `.claude/commands/ontology-overview.md` and follow it. Stop this command.
-If user replies **完成**: `python3 .claude/scripts/state_helper.py release extract-logic`，Stop.
+If user replies **校验**: `python3 .claude/scripts/state_helper.py release extract-operation`，read `.claude/commands/ontology-validate.md` and follow it. Stop this command.
+If user replies **整体视图**: `python3 .claude/scripts/state_helper.py release extract-operation`，read `.claude/commands/ontology-overview.md` and follow it. Stop this command.
+If user replies **完成**: `python3 .claude/scripts/state_helper.py release extract-operation`，Stop.
 
 ## Note on mid-process edits
 

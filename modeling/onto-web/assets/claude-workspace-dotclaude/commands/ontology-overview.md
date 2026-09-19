@@ -1,8 +1,8 @@
-Generate a structured overview of the entire ontology: object relationships, logic call chains, and coverage stats. Optional scope (topic keyword): $ARGUMENTS
+Generate a structured overview of the entire ontology: object relationships, operation call chains, and coverage stats. Optional scope (topic keyword): $ARGUMENTS
 
 ## Step 1: Check ontology exists
 
-List files in `ontology/object/` and `ontology/logic/`.
+List files in `ontology/object/` and `ontology/operation/`.
 
 If both are empty: "未找到本体文档，请先运行 `/ontology-extract-object`。" Stop.
 
@@ -14,25 +14,25 @@ Scan all ontology documents and build the following in-memory indexes:
    - From each `ontology/object/*.md`:
      - Parse `# 对象别名` line for aliases
      - Parse `# 关联对象` section for edges like `当前对象 → 关系 → [[对象X]]` or `[[对象Y]] → 关系 → 当前对象`
-2. **LOGIC_IDX**: `{逻辑名 → {输入对象, 输出对象, 支撑对象, 调用logic, 被logic调用}}`
-   - From each `ontology/logic/*.md`:
+2. **OPERATION_IDX**: `{逻辑名 → {输入对象, 输出对象, 支撑对象, 调用operation, 被operation调用}}`
+   - From each `ontology/operation/*.md`:
      - Parse `# 与object的关联` for 输入/输出/支撑 对象的 `[[...]]`
-     - Parse `# 与logic的关联` for "调用logic / 被logic调用" 行中的 `[[...]]`
+     - Parse `# 与operation的关联` for "调用operation / 被operation调用" 行中的 `[[...]]`
      - Parse `# 逻辑描述` for 调用子流程 (`调用[[X]]逻辑文档`)
 3. **SCRIPTS_IDX**: `{脚本文件名 → {size_kb, 关联逻辑（数组）, 角色}}`
    - List `*.py` files under `ontology/scripts/`（忽略 `__pycache__` 与 `_` 开头的私有模块）
-   - 关联逻辑：扫描每个 `ontology/logic/*.md` 的「调用指令」/「脚本位置」section，匹配 `ontology/scripts/<name>.py` 字样；可能 1 个脚本对应 1 个 logic，也可能对应多个，未被引用则记为「工具脚本」
-   - 角色：被 logic 引用 → 「主流程脚本」；未被引用 → 「工具脚本」（一般是被其他脚本 import 的辅助）
+   - 关联逻辑：扫描每个 `ontology/operation/*.md` 的「调用指令」/「脚本位置」section，匹配 `ontology/scripts/<name>.py` 字样；可能 1 个脚本对应 1 个 operation，也可能对应多个，未被引用则记为「工具脚本」
+   - 角色：被 operation 引用 → 「主流程脚本」；未被引用 → 「工具脚本」（一般是被其他脚本 import 的辅助）
 
 ## Step 3: Compute derived views
 
 From the indexes, compute:
 
-- **孤立对象**: in OBJECTS_IDX but NOT referenced by any logic (not in any logic's 输入/输出/支撑)
+- **孤立对象**: in OBJECTS_IDX but NOT referenced by any operation (not in any operation's 输入/输出/支撑)
 - **缺失引用**: `[[X]]` links whose target file does not exist (broken links)
-- **顶层逻辑**: logic with no "被logic调用" entry (entry points)
-- **子流程**: logic referenced by others via "调用[[...]]"
-- **对象度数 topN**: objects referenced by most logic (business hubs)
+- **顶层逻辑**: operation with no "被operation调用" entry (entry points)
+- **子流程**: operation referenced by others via "调用[[...]]"
+- **对象度数 topN**: objects referenced by most operation (business hubs)
 
 If $ARGUMENTS provided as a keyword: filter all views to only include items whose name contains the keyword (substring match, case-insensitive for latin; exact char match for Chinese).
 
@@ -55,18 +55,18 @@ If $ARGUMENTS provided as a keyword: filter all views to only include items whos
   - `value` 用于 vis-network 的 size 缩放（启用 `scaling`）
 - 边：每条 `# 关联对象` 条目一项，字段 `{from, to, label: "<关系名>", arrows: 'to'}`
 
-**logic_data**（vis-network 节点/边）：
+**operation_data**（vis-network 节点/边）：
 - 节点：每个逻辑一项，`{id, label, color}`
   - 顶层逻辑 → `{background:'#ffd8a8', border:'#bf8700'}`
-  - 工具流程（被 3 个以上 logic 调用）→ `{background:'#c7eed8', border:'#1a7f37'}`
+  - 工具流程（被 3 个以上 operation 调用）→ `{background:'#c7eed8', border:'#1a7f37'}`
   - 其他 → `{background:'#a7f0ba', border:'#1a7f37'}`
 - 边：每个 `调用[[X]]` 一项，`{from: 调用方, to: 被调用方, arrows: 'to'}`
 
 **object_meta**（侧栏详情，JS 对象 `{对象名: {...}}`）：
 - `name`, `aliases`（数组）, `description`（业务描述首行）, `used_by`（数组：使用该对象的逻辑名）, `related`（数组：`"对象X（关系）"` 字符串）
 
-**logic_meta**（侧栏详情，JS 对象 `{逻辑名: {...}}`）：
-- `name`, `description`, `is_top`（boolean）, `inputs`/`outputs`/`supports`（对象数组）, `calls`（调用的子流程数组）, `called_by`（被哪些 logic 使用）
+**operation_meta**（侧栏详情，JS 对象 `{逻辑名: {...}}`）：
+- `name`, `description`, `is_top`（boolean）, `inputs`/`outputs`/`supports`（对象数组）, `calls`（调用的子流程数组）, `called_by`（被哪些 operation 使用）
 
 > **节点过多兜底**：若对象总数 > 200 或逻辑总数 > 150，graph 数据集只保留度数 top 50 的节点 + 与其相连的边，并在图上方加 callout：「节点过多，仅展示度数 top 50；完整关系见下方矩阵」。
 
@@ -76,7 +76,7 @@ If $ARGUMENTS provided as a keyword: filter all views to only include items whos
 
 **STATS 段**
 
-- `{{N_OBJECTS}}` / `{{N_LOGICS}}` / `{{N_SCRIPTS}}` — 整数
+- `{{N_OBJECTS}}` / `{{N_OPERATIONS}}` / `{{N_SCRIPTS}}` — 整数
 - `{{STATS_WARN_BADGES}}` — 把下列条件块拼成一段（全部为零时为空字符串）：
   - 若 `n_orphan_obj > 0` → `<div class="stat warn"><span class="num">{n}</span><span class="label">孤立对象</span></div>`
   - 若 `n_broken > 0` → `<div class="stat danger">…</div>`，label "缺失引用"
@@ -84,20 +84,20 @@ If $ARGUMENTS provided as a keyword: filter all views to only include items whos
 **BODY 段**
 
 - `{{N_PROBLEMS_BADGE}}` — `n_problems > 0` 时 `<span class="badge danger">{n}</span>`，否则空串
-- `{{TOP_LOGIC_LIST}}` — 每个顶层 logic 一条 `<li><strong>逻辑名</strong> — 业务描述</li>`（描述文本转义）
+- `{{TOP_OPERATION_LIST}}` — 每个顶层 operation 一条 `<li><strong>逻辑名</strong> — 业务描述</li>`（描述文本转义）
 - `{{SCALE_SUMMARY}}` — 两三行自然语言摘要，例如"本体包含 X 个对象、Y 个逻辑，其中 Z 个顶层流程；存在 N 个待整改问题。"
-- `{{MATRIX_ROWS}}` — 每个 logic 一条 `<tr><td>逻辑名</td><td>对象A, 对象B</td><td>…</td><td>…</td></tr>`（对象用 `, ` 分隔，全部转义）
+- `{{MATRIX_ROWS}}` — 每个 operation 一条 `<tr><td>逻辑名</td><td>对象A, 对象B</td><td>…</td><td>…</td></tr>`（对象用 `, ` 分隔，全部转义）
 - `{{HOTSPOT_ROWS}}` — top-20 对象，每条 `<tr><td>对象名</td><td><span class="bar" style="width:{count*8}px"></span>{count}</td><td>逻辑列表</td></tr>`
 - `{{SCRIPTS_PANEL_CONTENT}}`：
   - 若 `n_scripts == 0` → `<p style="color:var(--text-muted);">未发现脚本（<code>ontology/scripts/</code> 为空）。</p>`
-  - 否则 → 整段 `<table><thead><tr><th>脚本</th><th>大小</th><th>角色</th><th>关联逻辑</th></tr></thead><tbody>{ROWS}</tbody></table>`。每行：`<tr><td><code>filename</code></td><td>{size_kb} KB</td><td>{角色 badge}</td><td>{关联 logic 列表或 —}</td></tr>`。脚本按角色分组（主流程脚本 → 工具脚本），组内按文件名。角色 badge：主流程 `<span class="badge accent">主流程</span>`，工具 `<span class="badge">工具</span>`
+  - 否则 → 整段 `<table><thead><tr><th>脚本</th><th>大小</th><th>角色</th><th>关联逻辑</th></tr></thead><tbody>{ROWS}</tbody></table>`。每行：`<tr><td><code>filename</code></td><td>{size_kb} KB</td><td>{角色 badge}</td><td>{关联 operation 列表或 —}</td></tr>`。脚本按角色分组（主流程脚本 → 工具脚本），组内按文件名。角色 badge：主流程 `<span class="badge accent">主流程</span>`，工具 `<span class="badge">工具</span>`
 - `{{PROBLEMS_PANEL_CONTENT}}` — 按下列条件拼接（全部为 0 时退化为单张 `<div class="card">未发现问题。</div>`）：
   - 孤立对象 > 0 → `<div class="card problem-section warn"><h3>孤立对象（n）</h3><p>这些对象未被任何逻辑使用：</p><ul>{对象列表}</ul></div>`
   - 缺失引用 > 0 → `<div class="card problem-section danger"><h3>缺失引用（n）</h3><ul>{引用方 → 缺失目标}</ul></div>`
 
 **SCRIPTS 段（JSON 数据集）**
 
-- `{{OBJECT_NODES_JSON}}` / `{{OBJECT_EDGES_JSON}}` / `{{OBJECT_META_JSON}}` / `{{LOGIC_NODES_JSON}}` / `{{LOGIC_EDGES_JSON}}` / `{{LOGIC_META_JSON}}` — **必须用真正的 JSON 序列化器产出**（如 `python3 -c 'import json,sys;json.dump(obj,sys.stdout,ensure_ascii=False)'`），中文按字面输出、不要 `\uXXXX`。
+- `{{OBJECT_NODES_JSON}}` / `{{OBJECT_EDGES_JSON}}` / `{{OBJECT_META_JSON}}` / `{{OPERATION_NODES_JSON}}` / `{{OPERATION_EDGES_JSON}}` / `{{OPERATION_META_JSON}}` — **必须用真正的 JSON 序列化器产出**（如 `python3 -c 'import json,sys;json.dump(obj,sys.stdout,ensure_ascii=False)'`），中文按字面输出、不要 `\uXXXX`。
   - ⚠️ **不要手写 JS 对象字面量**。业务描述里经常嵌半角双引号（如 `触发"提交订单"后`、`实现"两段式预占"`），手写极易漏转义，产出 `description: "…触发"提交订单"…"` 会让整段 `<script>` 在该行断裂报 `SyntaxError`，**对象关系图与逻辑调用图双双空白（只剩静态图例）**。序列化器会自动把值内 `"` 转义为 `\"`、换行转 `\n`、反斜杠转 `\\`；坚持手写就必须自己完成同样的转义。这是该报告最常见的炸点。
 
 ### 4.3 Substitute and assemble
@@ -164,10 +164,10 @@ On **打开**: 执行 `open reports/{filename}` （macOS 会用默认浏览器�
 On **修复**: read `.claude/commands/ontology-validate.md` and follow it.
 
 On **问题视图**:
-- 加载已沉淀业务知识（全量已存在的 logic / object scope；问题视图需要看到全部规则）：
+- 加载已沉淀业务知识（全量已存在的 operation / object scope；问题视图需要看到全部规则）：
   ```bash
   SCOPE_ARGS=(--scope global)
-  for stem in $(ls ontology/logic/ 2>/dev/null | sed 's/\.md$//'); do SCOPE_ARGS+=(--scope "logic:$stem"); done
+  for stem in $(ls ontology/operation/ 2>/dev/null | sed 's/\.md$//'); do SCOPE_ARGS+=(--scope "operation:$stem"); done
   for stem in $(ls ontology/object/ 2>/dev/null | sed 's/\.md$//'); do SCOPE_ARGS+=(--scope "object:$stem"); done
   KNOWLEDGE_BLOCK=$(python3 .claude/scripts/knowledge_helper.py load "${SCOPE_ARGS[@]}")
   ```
@@ -177,7 +177,7 @@ On **问题视图**:
   ```
   {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
 
-  LOGIC_DIR=ontology/logic/
+  OPERATION_DIR=ontology/operation/
   OBJECT_DIR=ontology/object/
   REPORT_PATH=reports/{YYYYMMDD}-{HHMMSS}-questions.html
   ```
@@ -196,7 +196,7 @@ On **积木视图**:
 - 加载已沉淀业务知识（与「问题视图」同一加载逻辑；若本次 overview 已加载过 KNOWLEDGE_BLOCK 可直接复用）：
   ```bash
   SCOPE_ARGS=(--scope global)
-  for stem in $(ls ontology/logic/ 2>/dev/null | sed 's/\.md$//'); do SCOPE_ARGS+=(--scope "logic:$stem"); done
+  for stem in $(ls ontology/operation/ 2>/dev/null | sed 's/\.md$//'); do SCOPE_ARGS+=(--scope "operation:$stem"); done
   for stem in $(ls ontology/object/ 2>/dev/null | sed 's/\.md$//'); do SCOPE_ARGS+=(--scope "object:$stem"); done
   KNOWLEDGE_BLOCK=$(python3 .claude/scripts/knowledge_helper.py load "${SCOPE_ARGS[@]}")
   ```
@@ -206,7 +206,7 @@ On **积木视图**:
   ```
   {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
 
-  LOGIC_DIR=ontology/logic/
+  OPERATION_DIR=ontology/operation/
   OBJECT_DIR=ontology/object/
   REPORT_PATH=reports/{YYYYMMDD}-{HHMMSS}-composition.html
   ```

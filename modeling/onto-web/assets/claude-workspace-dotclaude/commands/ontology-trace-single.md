@@ -1,29 +1,29 @@
-Trace one logic file with concrete scenarios and mock data. Loaded by `.claude/commands/ontology-trace.md` after Step 0.
+Trace one operation file with concrete scenarios and mock data. Loaded by `.claude/commands/ontology-trace.md` after Step 0.
 
 ## Mode Inputs
 
 - `TRACE_MODE=single`
-- `LOGIC_PATH`: the normalized logic file path from the trace entrypoint.
+- `OPERATION_PATH`: the normalized operation file path from the trace entrypoint.
 
-## Step 1: Read logic document
+## Step 1: Read operation document
 
-Read the logic document. Extract:
-- `# 逻辑描述` section (the logic steps)
+Read the operation document. Extract:
+- `# 逻辑描述` section (the operation steps)
 - `# 输入` table (required inputs)
 - `# 与object的关联` section (referenced objects)
 - All decision points (判断/若) and their branches
-- All sub-logic calls (调用[[X]]逻辑文档)
+- All sub-operation calls (调用[[X]]逻辑文档)
 
 If `# 逻辑描述` is empty or missing, tell user，然后 `python3 .claude/scripts/state_helper.py release trace`，stop.
 
-After reading the logic, derive:
-- `LOGIC_NAME` = basename without `.md`
+After reading the operation, derive:
+- `OPERATION_NAME` = basename without `.md`
 - `REFERENCED_OBJECTS` = object names from `# 与object的关联`
 
 Load business knowledge for this mode:
 
 ```bash
-SCOPE_ARGS=(--scope global --scope "logic:$LOGIC_NAME")
+SCOPE_ARGS=(--scope global --scope "operation:$OPERATION_NAME")
 for obj in $REFERENCED_OBJECTS; do
     SCOPE_ARGS+=(--scope "object:$obj")
 done
@@ -34,7 +34,7 @@ If `KNOWLEDGE_BLOCK` equals `（暂无相关业务知识）`, set it to an empty
 
 ## Step 2: Check for mock data
 
-List `ontology/data-mock/`. Extract the object names referenced by this logic from the `与object的关联` section.
+List `ontology/data-mock/`. Extract the object names referenced by this operation from the `与object的关联` section.
 
 **If mock data is missing for any referenced object:**
 Show: "该逻辑引用了以下对象，但尚无对应测试数据：
@@ -53,12 +53,12 @@ If user chooses "跳过": set MOCK_DATA_DIR = empty, proceed to Step 3.
 
 ## Step 2.5: Check for saved testcases
 
-Derive `LOGIC_NAME` from `LOGIC_PATH`（取 basename 去掉 `.md`）。设 `TESTCASE_PATH = ontology/testcase/{LOGIC_NAME}.md`。
+Derive `OPERATION_NAME` from `OPERATION_PATH`（取 basename 去掉 `.md`）。设 `TESTCASE_PATH = ontology/testcase/{OPERATION_NAME}.md`。
 
 **If `TESTCASE_PATH` exists:**
 
 Read and parse the file. 解析规则（与 `.claude/templates/testcase-template.md` 对齐）：
-- H1 首行 `# 测试场景：{LOGIC_NAME}` 验证逻辑名一致（不一致时提示用户并让其确认是否继续）。
+- H1 首行 `# 测试场景：{OPERATION_NAME}` 验证逻辑名一致（不一致时提示用户并让其确认是否继续）。
 - 每个 `## 场景 N：{name}` 段落提取 `输入`、`预期路径`、`数据来源` 三项，构造 `SAVED_SCENARIOS` 列表。
 
 Show user:
@@ -81,7 +81,7 @@ Handle the reply:
 
 ## Step 3: Auto-generate scenarios
 
-Based on the logic, generate test scenarios. Each scenario is a set of concrete input values that exercises a specific path:
+Based on the operation, generate test scenarios. Each scenario is a set of concrete input values that exercises a specific path:
 
 **Must include:**
 - **正常路径**: All conditions satisfied, reaches successful end
@@ -102,7 +102,7 @@ Each scenario format:
 数据来源：{正常数据第N行 / 自定义}
 ```
 
-Aim for 3–6 scenarios depending on logic complexity.
+Aim for 3–6 scenarios depending on operation complexity.
 
 **Supplement mode（仅当 Step 2.5 选 补充）**：比对 `EXISTING_SCENARIOS` 已经覆盖的分支，仅针对未覆盖的判断节点或边界补充新场景。最终 `SCENARIOS = EXISTING_SCENARIOS + 新增场景`。若已有场景已覆盖所有分支，直接告知用户"已有场景已覆盖全部分支，无需补充"，并让用户在"直接执行追踪"或"补一个自定义场景"中选择。
 
@@ -116,14 +116,14 @@ Step 1 已解析逻辑中所有判断节点的分支列表，记总分支数为 
 - 设计覆盖率 = `COVERED_BRANCHES / TOTAL_BRANCHES`
 - 未覆盖分支清单 = `TOTAL_BRANCHES - COVERED_BRANCHES` 中具体未被命中的 (判断节点, 分支) 对
 
-**Logic 范式 / 断言驱动测试参考提醒（可选）**：在展示场景并请求确认前，按 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §七「校验完成或 trace 场景确认前」与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一「trace 场景确认前」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
+**Operation 范式 / 断言驱动测试参考提醒（可选）**：在展示场景并请求确认前，按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七「校验完成或 trace 场景确认前」与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一「trace 场景确认前」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
 
 Show all generated scenarios and ask:
 
 "以上是 {N} 个测试场景。
 
-💡 可选参考：现有校验/追踪默认更适合 SOP 流程型；若本次 Logic 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Logic 范式。
-可参阅 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
+💡 可选参考：现有校验/追踪默认更适合 SOP 流程型；若本次 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
+可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
 
 **设计覆盖率：{COVERED_BRANCHES}/{TOTAL_BRANCHES}（{pct}%）**
 {若 < 100%，列出未覆盖分支：}
@@ -148,10 +148,10 @@ User 确认后（无论是 复用、补充 还是 重新生成 路径汇合到�
 2. 读取 `.claude/templates/testcase-template.md` 作为格式参考，按如下 shape 生成内容：
 
    ```markdown
-   # 测试场景：{LOGIC_NAME}
+   # 测试场景：{OPERATION_NAME}
 
    > 由 /ontology-trace 生成并由用户确认。再次运行 trace 会优先读取本文件以复用场景。
-   > 对应逻辑：[[{LOGIC_NAME}]]
+   > 对应逻辑：[[{OPERATION_NAME}]]
    > 最近一次更新：{YYYY-MM-DD}
 
    ## 场景 1：{name}
@@ -168,11 +168,11 @@ User 确认后（无论是 复用、补充 还是 重新生成 路径汇合到�
 4. Commit 这份场景文件（独立一次提交，方便回溯 "下次追踪用什么数据"）：
 
    ```bash
-   git add ontology/testcase/{LOGIC_NAME}.md
-   git commit -m "trace: {LOGIC_NAME} testcases"
+   git add ontology/testcase/{OPERATION_NAME}.md
+   git commit -m "trace: {OPERATION_NAME} testcases"
    ```
 
-5. Tell user: "场景已保存到 `ontology/testcase/{LOGIC_NAME}.md`，下次追踪 **{LOGIC_NAME}** 会自动复用。"
+5. Tell user: "场景已保存到 `ontology/testcase/{OPERATION_NAME}.md`，下次追踪 **{OPERATION_NAME}** 会自动复用。"
 
 > 特例：若 `REUSE_MODE = true` 且文件内容未发生变化（即用户选 **复用** 后没做任何修改），跳过写入与 commit。
 
@@ -182,10 +182,10 @@ Read `.claude/agents/trace-agent.md`. Dispatch it as a subagent with:
 
 {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
 
-- LOGIC_PATH = the logic file path
+- OPERATION_PATH = the operation file path
 - SCENARIOS = confirmed scenarios as JSON array
 - OBJECTS_DIR = `ontology/object/`
-- LOGIC_DIR = `ontology/logic/`
+- OPERATION_DIR = `ontology/operation/`
 - MOCK_DATA_DIR = `ontology/data-mock/` (or empty if skipped)
 
 ---
@@ -249,7 +249,7 @@ Show only the summary in terminal:
   - 规则定义与执行脱节：{n}
 
 追踪报告已保存至 `reports/{filename}`，详细步骤见报告。
-测试场景：`ontology/testcase/{LOGIC_NAME}.md`（已落盘，下次追踪自动复用）"
+测试场景：`ontology/testcase/{OPERATION_NAME}.md`（已落盘，下次追踪自动复用）"
 
 If issues were found, ask:
 "**下一步建议：**
@@ -258,7 +258,7 @@ If issues were found, ask:
 - 回复 **补充调研**（/ontology-research）→ 定向补充调研后增量提取并重新追踪
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
-**If user replies 补充调研:** Ask: "请描述要补充的调研方向（例如：「XX子流程的详细逻辑」「YY业务规则的边界条件」）：". Then `python3 .claude/scripts/state_helper.py release trace`，再 read `.claude/commands/ontology-research.md` and follow it using **追加调研（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt**. After research completes, ask: "调研完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, read `.claude/commands/ontology-extract-object.md` and follow it using **incremental mode**; if logic, read `.claude/commands/ontology-extract-logic.md` and follow it using **incremental mode**. After extract summary, ask: "是否重新追踪？回复 **是** 或 **否**。" — if yes, restart this command from Step 1（restart 时新一轮 Step 0 会重新 acquire）.
+**If user replies 补充调研:** Ask: "请描述要补充的调研方向（例如：「XX子流程的详细逻辑」「YY业务规则的边界条件」）：". Then `python3 .claude/scripts/state_helper.py release trace`，再 read `.claude/commands/ontology-research.md` and follow it using **追加调研（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt**. After research completes, ask: "调研完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, read `.claude/commands/ontology-extract-object.md` and follow it using **incremental mode**; if operation, read `.claude/commands/ontology-extract-operation.md` and follow it using **incremental mode**. After extract summary, ask: "是否重新追踪？回复 **是** 或 **否**。" — if yes, restart this command from Step 1（restart 时新一轮 Step 0 会重新 acquire）.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release trace`，Stop.
 

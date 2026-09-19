@@ -14,7 +14,7 @@ dispatcher 在 prompt 中提供一份候选条目 `CANDIDATE`：
 name: "_SegmentCustomer.segmentIds 是 ';' 分隔的多客群列表"
 type: domain-rule           # correction | convention | terminology | domain-rule
 slug: segment-ids-semicolon-bounded
-scopes:                     # global / object:<名> / logic:<名> 至少一项
+scopes:                     # global / object:<名> / operation:<名> 至少一项
   - global
 confidence: high            # high | medium | low
 body: |
@@ -57,14 +57,14 @@ suggestion = `ask_user`：必须由用户裁决覆盖、合并、还是保留双
 非重复、非冲突，但满足以下任一：
 
 - (a) **scope 有交集但 type 不同** — 例如 `C` 是 `convention`、`E` 是 `domain-rule`，作用域都包含 `object:_SegmentCustomer`。
-- (b) **同对象/同 logic 范围内的多条规则** — 任一 scope 字符串完全相同。
+- (b) **同对象/同 operation 范围内的多条规则** — 任一 scope 字符串完全相同。
 - (c) **C.related 显式列出了 E.slug**，但 E 的 `related` 不含 C。
 
 suggestion = `link_related`：建议把对方 slug 加到 `related` 列表（双向）。
 
 ## 防错
 
-- **type 维度的"不同 scope"不算冲突** — 例如 `global` 下一条规则与 `logic:客群聚类` 下另一条规则即使语义近似，也按 `related` 处理，不按 conflict。专门窄 scope 的规则可能是 global 的特化。
+- **type 维度的"不同 scope"不算冲突** — 例如 `global` 下一条规则与 `operation:客群聚类` 下另一条规则即使语义近似，也按 `related` 处理，不按 conflict。专门窄 scope 的规则可能是 global 的特化。
 - **不要在 message 里给出"哪条对"的判断** — 仅指出关系类型与依据，留给用户裁决。
 - **slug 完全相同**永远走 duplicate (a) 分支，不走 conflict——因为 `knowledge_helper.py revise` 才是正确通路。
 - **空 body / 占位条目跳过** — 既有条目正文为空或只含模板占位文本时不参与匹配。

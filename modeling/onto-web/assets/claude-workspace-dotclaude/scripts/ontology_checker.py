@@ -24,14 +24,14 @@ from knowledge_helper import parse_frontmatter as _hk_parse_frontmatter
 @dataclass
 class OntologyDoc:
     path: Path
-    doc_type: str          # "object" | "logic" | "action"
+    doc_type: str          # "object" | "operation" | "action"
     raw: str
     sections: dict = field(default_factory=dict)
     obsidian_links: list = field(default_factory=list)
     attribute_rows: list = field(default_factory=list)   # object docs
-    input_rows: list = field(default_factory=list)       # logic docs
-    output_rows: list = field(default_factory=list)      # logic docs
-    action_rows: list = field(default_factory=list)      # logic docs (empty when action phase disabled)
+    input_rows: list = field(default_factory=list)       # operation docs
+    output_rows: list = field(default_factory=list)      # operation docs
+    action_rows: list = field(default_factory=list)      # operation docs (empty when action phase disabled)
 
 @dataclass
 class Issue:
@@ -95,16 +95,17 @@ def parse_markdown_table(text: str) -> list:
 
 
 def load_ontology(ontology_dir: Path) -> dict:
-    """Load all object, logic, and action docs. Returns {stem: OntologyDoc}.
+    """Load all object, operation, and action docs. Returns {stem: OntologyDoc}.
 
     Cross-category stem duplicates are silently overwritten here; they are surfaced
     as Issues via ``check_duplicate_stems`` during rule checks.
     """
     docs = {}
-    for subdir, dtype in [('object', 'object'), ('logic', 'logic'), ('action', 'action')]:
+    # ontology/logic 是旧版目录，兼容读取为 operation（范式升级 ADR-0004）
+    for subdir, dtype in [('object', 'object'), ('operation', 'operation'), ('logic', 'operation'), ('rule', 'rule'), ('metric', 'metric'), ('action', 'action')]:
         d = ontology_dir / subdir
         if d.exists():
-            files = d.rglob('*.md') if subdir in ('object', 'logic') else d.glob('*.md')
+            files = d.rglob('*.md') if subdir in ('object', 'operation', 'logic') else d.glob('*.md')
             for f in sorted(files):
                 docs[f.stem] = load_doc(f, dtype)
     return docs
@@ -173,7 +174,7 @@ def check_knowledge(ontology_dir):
 # CLAUDE.md 规则 3：ontology/ 下允许放 .md 文件的子目录白名单。
 # scripts/ 仅放 .py（codegen 输出），diagrams/ 仅放 .drawio，因此都不在 .md 白名单内。
 ALLOWED_MD_SUBDIRS = (
-    'object', 'logic', 'action', 'data-mock',
+    'object', 'operation', 'logic', 'rule', 'metric', 'action', 'data-mock',
     'diagrams-summary', 'testcase', 'knowledge',
 )
 
@@ -206,13 +207,13 @@ def check_file_locations(ontology_dir: Path) -> list:
 
 
 def check_duplicate_stems(ontology_dir: Path) -> list:
-    """Detect files whose stem collides across object/logic/action — [[links]] become ambiguous."""
+    """Detect files whose stem collides across object/operation/action — [[links]] become ambiguous."""
     by_stem: dict = {}
-    for subdir in ('object', 'logic', 'action'):
+    for subdir in ('object', 'operation', 'logic', 'rule', 'metric', 'action'):
         d = ontology_dir / subdir
         if not d.exists():
             continue
-        files = d.rglob('*.md') if subdir in ('object', 'logic') else d.glob('*.md')
+        files = d.rglob('*.md') if subdir in ('object', 'operation', 'logic') else d.glob('*.md')
         for f in sorted(files):
             by_stem.setdefault(f.stem, []).append(f)
     issues = []
@@ -257,11 +258,14 @@ def check_todo_placeholders(doc: OntologyDoc) -> list:
 def load_doc(path: Path, doc_type: str) -> OntologyDoc:
     raw = path.read_text(encoding='utf-8')
     sections = extract_sections(raw)
+    # 章节名随范式升级迁移（ADR-0004）：旧文档章节读取时归一为新名
+    if '与logic的关联' in sections and '与operation的关联' not in sections:
+        sections['与operation的关联'] = sections.pop('与logic的关联')
     obsidian_links = extract_obsidian_links(raw)
     attribute_rows, input_rows, output_rows, action_rows = [], [], [], []
     if doc_type == 'object':
         attribute_rows = parse_markdown_table(sections.get('对象属性清单', ''))
-    elif doc_type == 'logic':
+    elif doc_type == 'operation':
         input_rows = parse_markdown_table(sections.get('输入', ''))
         output_rows = parse_markdown_table(sections.get('输出', ''))
         action_rows = parse_markdown_table(sections.get('与动作(action)的关联', ''))
@@ -280,18 +284,42 @@ OBJECT_REQUIRED_SECTIONS = ['对象描述', '对象别名', '英文名称', '对
 OBJECT_OPTIONAL_SECTIONS = ['关联对象']
 OBJECT_REQUIRED_COLUMNS = ['中文名称', '英文名称', '描述', '主键', '类型']
 
-LOGIC_REQUIRED_SECTIONS = ['业务描述', '与logic的关联', '与object的关联', '输入', '输出', '逻辑描述']
-LOGIC_INPUT_REQUIRED_COLUMNS = ['参数名称', '描述']
-LOGIC_OUTPUT_REQUIRED_COLUMNS = ['参数名称', '描述']
+OPERATION_REQUIRED_SECTIONS = ['业务描述', '与operation的关联', '与object的关联', '输入', '输出', '逻辑描述']
+OPERATION_INPUT_REQUIRED_COLUMNS = ['参数名称', '描述']
+OPERATION_OUTPUT_REQUIRED_COLUMNS = ['参数名称', '描述']
 ACTION_REQUIRED_SECTIONS = ['动作描述']
+
+# 范式升级（ADR-0004）：规则/指标为一等实体，元信息对齐 modeling 知识包模型
+RULE_REQUIRED_SECTIONS = ['规则描述', '适用对象', '约束表达']
+METRIC_REQUIRED_SECTIONS = ['指标描述', '计算公式', '数据来源']
 
 
 def _rel(doc: OntologyDoc) -> str:
     parts = doc.path.parts
     for i, p in enumerate(parts):
-        if p in ('object', 'logic', 'action'):
+        if p in ('object', 'operation', 'logic', 'rule', 'metric', 'action'):
             return '/'.join(parts[i:])
     return doc.path.name
+
+
+# --- Rule / Metric checks（通用结构 + 链接存在性）---
+
+def check_entity_structure(doc: OntologyDoc, required_sections: list, cn: str) -> list:
+    issues = []
+    for section in required_sections:
+        if section not in doc.sections or not doc.sections[section].strip():
+            issues.append(f"错误 {_rel(doc)}: 缺少必需章节「{section}」（{cn}模板要求）")
+    return issues
+
+
+def check_entity_links(doc: OntologyDoc, all_docs: dict, cn: str) -> list:
+    issues = []
+    known = set(all_docs.keys())
+    for link in doc.obsidian_links:
+        target = link.split('|')[0].split('#')[0].strip()
+        if target and target not in known:
+            issues.append(f"警告 {_rel(doc)}: {cn}引用了不存在的文档 [[{target}]]")
+    return issues
 
 
 # --- Object checks ---
@@ -339,8 +367,8 @@ def check_object_links(doc: OntologyDoc, all_docs: dict) -> list:
 
 
 # 派生属性强信号关键词：
-# - 属性规则 / 描述任一列出现这些词,说明该属性"被某个 logic 写入"
-# - 命中后,属性规则列必须使用规范格式 `派生：由 [[logic名]] 写入[；公式 = 表达式]`
+# - 属性规则 / 描述任一列出现这些词,说明该属性"被某个 operation 写入"
+# - 命中后,属性规则列必须使用规范格式 `派生：由 [[operation名]] 写入[；公式 = 表达式]`
 _DERIVED_STRONG_KW = re.compile(
     r'派生|回写|自动生成|系统产出|自动写入'
     r'|由\s*\[\[[^\]]+\]\][^|]*(?:写入|回写|产出|生成)'
@@ -355,8 +383,8 @@ def check_derived_attribute_markers(doc: OntologyDoc, all_docs: dict) -> list:
     """对象的派生属性标记必须遵循规范格式（CLAUDE.md 派生属性约定）。
 
     形态级检查：当属性描述或规则中出现派生强信号关键词时，「属性规则」列必须含
-    `派生：由 [[logic名]] 写入` 形式。规范命中后再校验括号内 stem 指向 logic 文档。
-    跨文档完整性（logic 输出但 object 完全无痕迹）留给 semantic-check 处理。
+    `派生：由 [[operation名]] 写入` 形式。规范命中后再校验括号内 stem 指向 operation 文档。
+    跨文档完整性（operation 输出但 object 完全无痕迹）留给 semantic-check 处理。
     """
     if doc.doc_type != 'object':
         return []
@@ -375,11 +403,11 @@ def check_derived_attribute_markers(doc: OntologyDoc, all_docs: dict) -> list:
             issues.append(Issue(
                 file=_rel(doc), severity='警告', category='派生标记格式',
                 message=(f'属性 "{name}" 在描述或规则中含派生信号（派生/回写/自动生成 等），'
-                         f'但「属性规则」列未使用规范格式 `派生：由 [[logic名]] 写入[；公式 = 表达式]`'),
+                         f'但「属性规则」列未使用规范格式 `派生：由 [[operation名]] 写入[；公式 = 表达式]`'),
                 source='规则检查',
             ))
             continue
-        # 规范命中 → 校验每个 [[stem]] 指向 logic
+        # 规范命中 → 校验每个 [[stem]] 指向 operation
         for link_match in re.finditer(r'\[\[([^\]]+)\]\]', m.group(1)):
             target = link_match.group(1).split('|')[0].strip()
             stem = target.split('/')[-1].strip()
@@ -387,28 +415,28 @@ def check_derived_attribute_markers(doc: OntologyDoc, all_docs: dict) -> list:
             target_doc = all_docs.get(stem)
             if target_doc is None:
                 continue  # link integrity 已由 check_object_links 处理
-            if target_doc.doc_type != 'logic':
+            if target_doc.doc_type != 'operation':
                 issues.append(Issue(
                     file=_rel(doc), severity='警告', category='派生标记格式',
                     message=(f'属性 "{name}" 派生标记引用 [[{stem}]]，'
-                             f'但该文档类型为 {target_doc.doc_type}（应为 logic）'),
+                             f'但该文档类型为 {target_doc.doc_type}（应为 operation）'),
                     source='规则检查',
                 ))
     return issues
 
 
-# --- Logic checks ---
+# --- Operation checks ---
 
-def _extract_sub_logic_refs(logic_text: str) -> list:
-    """Extract sub-logic references from logic description."""
-    refs = re.findall(r'调用\[\[([^\]]+)\]\]逻辑文档', logic_text)
-    refs += re.findall(r'调用\s*"([^"]+)"\s*逻辑文档', logic_text)
+def _extract_sub_operation_refs(operation_text: str) -> list:
+    """Extract sub-operation references from operation description."""
+    refs = re.findall(r'调用\[\[([^\]]+)\]\]逻辑文档', operation_text)
+    refs += re.findall(r'调用\s*"([^"]+)"\s*逻辑文档', operation_text)
     return refs
 
 
-def check_logic_structure(doc: OntologyDoc) -> list:
+def check_operation_structure(doc: OntologyDoc) -> list:
     issues = []
-    for s in LOGIC_REQUIRED_SECTIONS:
+    for s in OPERATION_REQUIRED_SECTIONS:
         if s not in doc.sections:
             issues.append(Issue(file=_rel(doc), severity='错误', category='结构缺失',
                                 message=f'缺少必需章节：# {s}', source='规则检查'))
@@ -421,7 +449,7 @@ def check_logic_structure(doc: OntologyDoc) -> list:
     return issues
 
 
-def check_logic_table(doc: OntologyDoc) -> list:
+def check_operation_table(doc: OntologyDoc) -> list:
     issues = []
     if '输入' in doc.sections:
         if not doc.input_rows:
@@ -432,7 +460,7 @@ def check_logic_table(doc: OntologyDoc) -> list:
                                     message='输入章节中未找到有效表格', source='规则检查'))
         else:
             present = set(doc.input_rows[0].keys())
-            for col in LOGIC_INPUT_REQUIRED_COLUMNS:
+            for col in OPERATION_INPUT_REQUIRED_COLUMNS:
                 if col not in present:
                     issues.append(Issue(file=_rel(doc), severity='警告', category='表格格式',
                                         message=f'输入表格缺少列：{col}', source='规则检查'))
@@ -444,14 +472,14 @@ def check_logic_table(doc: OntologyDoc) -> list:
                                     message='输出章节中未找到有效表格', source='规则检查'))
         else:
             present = set(doc.output_rows[0].keys())
-            for col in LOGIC_OUTPUT_REQUIRED_COLUMNS:
+            for col in OPERATION_OUTPUT_REQUIRED_COLUMNS:
                 if col not in present:
                     issues.append(Issue(file=_rel(doc), severity='警告', category='表格格式',
                                         message=f'输出表格缺少列：{col}', source='规则检查'))
     return issues
 
 
-def check_logic_links(doc: OntologyDoc, all_docs: dict) -> list:
+def check_operation_links(doc: OntologyDoc, all_docs: dict) -> list:
     return [
         Issue(file=_rel(doc), severity='错误', category='链接失效',
               message=f'Obsidian 链接 [[{link}]] 无对应文件', source='规则检查')
@@ -471,91 +499,91 @@ def _stems_in_section(section_text: str) -> set:
     return stems
 
 
-def _called_logic_stems(flow_section: str) -> set:
-    """Extract sub-logic stems declared on the '调用logic' line(s) of 与logic的关联."""
+def _called_operation_stems(flow_section: str) -> set:
+    """Extract sub-operation stems declared on the '调用operation' line(s) of 与operation的关联."""
     stems = set()
     for line in flow_section.split('\n'):
-        if re.match(r'^\s*[-•]?\s*调用\s*logic\b', line, re.IGNORECASE):
+        if re.match(r'^\s*[-•]?\s*调用\s*operation\b', line, re.IGNORECASE):
             stems |= _stems_in_section(line)
     return stems
 
 
-def _caller_logic_stems(flow_section: str) -> set:
-    """Extract parent-logic stems declared on the '被logic调用' line(s) of 与logic的关联."""
+def _caller_operation_stems(flow_section: str) -> set:
+    """Extract parent-operation stems declared on the '被operation调用' line(s) of 与operation的关联."""
     stems = set()
     for line in flow_section.split('\n'):
-        if re.match(r'^\s*[-•]?\s*被\s*logic\s*调用\b', line, re.IGNORECASE):
+        if re.match(r'^\s*[-•]?\s*被\s*operation\s*调用\b', line, re.IGNORECASE):
             stems |= _stems_in_section(line)
     return stems
 
 
-def check_logic_sub_refs(doc: OntologyDoc, all_docs: dict) -> list:
-    """Check sub-logic calls and the bidirectional contract with 与logic的关联.
+def check_operation_sub_refs(doc: OntologyDoc, all_docs: dict) -> list:
+    """Check sub-operation calls and the bidirectional contract with 与operation的关联.
 
-    Forward: 调用[[X]]逻辑文档 in 逻辑描述 → X 必须在 与logic的关联 → 调用logic 行
-    Reverse: 调用logic 行声明的 [[X]] → 必须在 逻辑描述 中被实际 调用[[X]]逻辑文档
+    Forward: 调用[[X]]逻辑文档 in 逻辑描述 → X 必须在 与operation的关联 → 调用operation 行
+    Reverse: 调用operation 行声明的 [[X]] → 必须在 逻辑描述 中被实际 调用[[X]]逻辑文档
     """
     issues = []
-    logic = doc.sections.get('逻辑描述', '')
-    flow_section = doc.sections.get('与logic的关联', '')
-    called_logic_stems = _called_logic_stems(flow_section)
-    called_refs = set(_extract_sub_logic_refs(logic))
+    operation = doc.sections.get('逻辑描述', '')
+    flow_section = doc.sections.get('与operation的关联', '')
+    called_operation_stems = _called_operation_stems(flow_section)
+    called_refs = set(_extract_sub_operation_refs(operation))
 
     # Forward
-    for ref in _extract_sub_logic_refs(logic):
+    for ref in _extract_sub_operation_refs(operation):
         if ref not in all_docs:
             issues.append(Issue(file=_rel(doc), severity='错误', category='引用失效',
-                                message=f'逻辑描述中调用的子logic "{ref}" 无对应文件',
+                                message=f'逻辑描述中调用的子operation "{ref}" 无对应文件',
                                 source='规则检查'))
-        elif ref not in called_logic_stems:
+        elif ref not in called_operation_stems:
             issues.append(Issue(file=_rel(doc), severity='警告', category='链接缺失',
-                                message=f'子logic "{ref}" 在逻辑描述中被调用，但未在 与logic的关联 → 调用logic 中列出',
+                                message=f'子operation "{ref}" 在逻辑描述中被调用，但未在 与operation的关联 → 调用operation 中列出',
                                 source='规则检查'))
 
     # Reverse
-    for declared in called_logic_stems:
+    for declared in called_operation_stems:
         if declared not in called_refs:
             issues.append(Issue(file=_rel(doc), severity='警告', category='链接冗余',
-                                message=f'子logic "{declared}" 在 与logic的关联 → 调用logic 中声明，但逻辑描述中未实际调用（格式：调用[[{declared}]]逻辑文档）',
+                                message=f'子operation "{declared}" 在 与operation的关联 → 调用operation 中声明，但逻辑描述中未实际调用（格式：调用[[{declared}]]逻辑文档）',
                                 source='规则检查'))
     return issues
 
 
-def check_logic_caller_refs(doc: OntologyDoc, all_docs: dict) -> list:
-    """Check the bidirectional contract for 被logic调用.
+def check_operation_caller_refs(doc: OntologyDoc, all_docs: dict) -> list:
+    """Check the bidirectional contract for 被operation调用.
 
-    For each parent P declared in D.被logic调用, P must satisfy ONE of:
-    - P.调用logic contains [[D]]
+    For each parent P declared in D.被operation调用, P must satisfy ONE of:
+    - P.调用operation contains [[D]]
     - P.逻辑描述 contains 调用[[D]]逻辑文档
 
-    若两者都不满足，本 logic 实际不是 P 的子例程，应改写成"无（…触发方式…）"。
+    若两者都不满足，本 operation 实际不是 P 的子例程，应改写成"无（…触发方式…）"。
     """
     issues = []
-    flow_section = doc.sections.get('与logic的关联', '')
-    declared_parents = _caller_logic_stems(flow_section)
+    flow_section = doc.sections.get('与operation的关联', '')
+    declared_parents = _caller_operation_stems(flow_section)
     d_stem = doc.path.stem
 
     for parent_stem in declared_parents:
         parent_doc = all_docs.get(parent_stem)
         if parent_doc is None:
-            # 链接失效已由 check_logic_flow_refs 报，不重复
+            # 链接失效已由 check_operation_flow_refs 报，不重复
             continue
-        if parent_doc.doc_type != 'logic':
+        if parent_doc.doc_type != 'operation':
             issues.append(Issue(
                 file=_rel(doc), severity='警告', category='流程关联不完整',
-                message=f'被logic调用 中声明的父 [[{parent_stem}]] 不是 logic 文档',
+                message=f'被operation调用 中声明的父 [[{parent_stem}]] 不是 operation 文档',
                 source='规则检查'))
             continue
-        parent_flow = parent_doc.sections.get('与logic的关联', '')
-        parent_logic = parent_doc.sections.get('逻辑描述', '')
-        parent_called_stems = _called_logic_stems(parent_flow)
-        parent_invocations = set(_extract_sub_logic_refs(parent_logic))
+        parent_flow = parent_doc.sections.get('与operation的关联', '')
+        parent_operation = parent_doc.sections.get('逻辑描述', '')
+        parent_called_stems = _called_operation_stems(parent_flow)
+        parent_invocations = set(_extract_sub_operation_refs(parent_operation))
         if d_stem not in parent_called_stems and d_stem not in parent_invocations:
             issues.append(Issue(
                 file=_rel(doc), severity='警告', category='流程关联不完整',
                 message=(
-                    f'被logic调用 声明父 [[{parent_stem}]]，但 [[{parent_stem}]] 既未在 调用logic 中列出本logic，'
-                    f'也未在 逻辑描述 中出现 "调用[[{d_stem}]]逻辑文档"——若本logic由独立触发'
+                    f'被operation调用 声明父 [[{parent_stem}]]，但 [[{parent_stem}]] 既未在 调用operation 中列出本operation，'
+                    f'也未在 逻辑描述 中出现 "调用[[{d_stem}]]逻辑文档"——若本operation由独立触发'
                     f'（异步回调 / 定时任务 / 用户直接发起 / 接口直接触发），应改填 "无（…触发方式…）"'
                 ),
                 source='规则检查'))
@@ -563,10 +591,10 @@ def check_logic_caller_refs(doc: OntologyDoc, all_docs: dict) -> list:
 
 
 
-def check_logic_flow_refs(doc: OntologyDoc, all_docs: dict) -> list:
+def check_operation_flow_refs(doc: OntologyDoc, all_docs: dict) -> list:
     """Check that flow references in the flow association section have corresponding files."""
     issues = []
-    flow_section = doc.sections.get('与logic的关联', '')
+    flow_section = doc.sections.get('与operation的关联', '')
     for link in re.findall(r'\[\[([^\]]+)\]\]', flow_section):
         stem = link.split('|')[0].strip()
         if stem == '无' or not stem:
@@ -579,13 +607,13 @@ def check_logic_flow_refs(doc: OntologyDoc, all_docs: dict) -> list:
 
 
 def check_branch_completeness(doc: OntologyDoc) -> list:
-    """Check decision points in logic for missing branches."""
+    """Check decision points in operation for missing branches."""
     issues = []
-    logic = doc.sections.get('逻辑描述', '')
-    if not logic:
+    operation = doc.sections.get('逻辑描述', '')
+    if not operation:
         return []
 
-    lines = logic.split('\n')
+    lines = operation.split('\n')
     for i, line in enumerate(lines):
         stripped = line.strip()
         # Detect decision points: lines containing 判断/若...？
@@ -620,17 +648,17 @@ def check_branch_completeness(doc: OntologyDoc) -> list:
     return issues
 
 
-def check_sub_logic_contract(doc: OntologyDoc, all_docs: dict) -> list:
-    """Check if sub-logic calls satisfy input/output contracts."""
+def check_sub_operation_contract(doc: OntologyDoc, all_docs: dict) -> list:
+    """Check if sub-operation calls satisfy input/output contracts."""
     issues = []
-    logic = doc.sections.get('逻辑描述', '')
-    if not logic:
+    operation = doc.sections.get('逻辑描述', '')
+    if not operation:
         return []
 
-    sub_refs = _extract_sub_logic_refs(logic)
+    sub_refs = _extract_sub_operation_refs(operation)
     for ref in sub_refs:
         sub_doc = all_docs.get(ref)
-        if sub_doc is None or sub_doc.doc_type != 'logic':
+        if sub_doc is None or sub_doc.doc_type != 'operation':
             continue  # broken link is caught by other checks
 
         caller_inputs = {row.get('参数名称', '').strip() for row in doc.input_rows if row.get('参数名称', '').strip()}
@@ -681,10 +709,10 @@ def check_action_structure(doc: OntologyDoc) -> list:
 
 
 def check_action_orphan(doc: OntologyDoc, all_docs: dict) -> list:
-    """Warn if an action file is not referenced by any logic document."""
+    """Warn if an action file is not referenced by any operation document."""
     action_stem = doc.path.stem
     for other_doc in all_docs.values():
-        if other_doc.doc_type == 'logic' and action_stem in other_doc.obsidian_links:
+        if other_doc.doc_type == 'operation' and action_stem in other_doc.obsidian_links:
             return []
     return [Issue(file=_rel(doc), severity='建议', category='孤立动作',
                   message=f'动作 "{action_stem}" 未被任何逻辑文档引用', source='规则检查')]
@@ -695,7 +723,7 @@ def check_action_orphan(doc: OntologyDoc, all_docs: dict) -> list:
 def build_term_map(all_docs: dict) -> dict:
     """Build {object_stem: set(attribute_names)} from all object docs.
 
-    Includes Chinese names, English names, and aliases so that logic docs
+    Includes Chinese names, English names, and aliases so that operation docs
     referencing fields by English name (e.g. [[订单]].order_status) are
     correctly matched against the object's attribute table.
     """
@@ -760,6 +788,9 @@ def _parse_mock_tables(path: Path) -> dict:
         return {}
     raw = path.read_text(encoding='utf-8')
     sections = extract_sections(raw)
+    # 章节名随范式升级迁移（ADR-0004）：旧文档章节读取时归一为新名
+    if '与logic的关联' in sections and '与operation的关联' not in sections:
+        sections['与operation的关联'] = sections.pop('与logic的关联')
     result = {}
     table = parse_markdown_table(sections.get('正常数据', ''))
     if not table:
@@ -858,7 +889,7 @@ def check_mock_data(all_docs: dict, mock_dir: Path) -> list:
     return issues
 
 
-def check_terminology(logic_doc: OntologyDoc, term_map: dict) -> list:
+def check_terminology(operation_doc: OntologyDoc, term_map: dict) -> list:
     """Check field accesses `[[Object]].fieldName` reference attributes that exist on that object.
 
     Only `.fieldName` access patterns are validated. Quoted strings on the same line
@@ -867,8 +898,8 @@ def check_terminology(logic_doc: OntologyDoc, term_map: dict) -> list:
     positives.
     """
     issues = []
-    logic = logic_doc.sections.get('逻辑描述', '')
-    for line in logic.split('\n'):
+    operation = operation_doc.sections.get('逻辑描述', '')
+    for line in operation.split('\n'):
         obj_refs = re.findall(r'\[\[([^\]|/]+?)(?:\|[^\]]+)?\]\]', line)
         obj_refs += re.findall(r'\[\[[^\]]+/([^\]|/]+?)(?:\|[^\]]+)?\]\]', line)
         obj_refs = [r.strip() for r in obj_refs if r.strip() in term_map]
@@ -882,7 +913,7 @@ def check_terminology(logic_doc: OntologyDoc, term_map: dict) -> list:
             for field_name in obj_field_refs:
                 if field_name not in known:
                     issues.append(Issue(
-                        file=_rel(logic_doc), severity='警告', category='术语不一致',
+                        file=_rel(operation_doc), severity='警告', category='术语不一致',
                         message=f'逻辑描述访问字段 ".{field_name}" 在 [[{obj_name}]] 中未定义',
                         source='规则检查',
                     ))
@@ -971,16 +1002,22 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
             issues += check_derived_attribute_markers(doc, all_docs)
-        elif doc.doc_type == 'logic':
-            issues += check_logic_structure(doc)
-            issues += check_logic_table(doc)
-            issues += check_logic_links(doc, all_docs)
-            issues += check_logic_sub_refs(doc, all_docs)
-            issues += check_logic_caller_refs(doc, all_docs)
-            issues += check_logic_flow_refs(doc, all_docs)
+        elif doc.doc_type == 'operation':
+            issues += check_operation_structure(doc)
+            issues += check_operation_table(doc)
+            issues += check_operation_links(doc, all_docs)
+            issues += check_operation_sub_refs(doc, all_docs)
+            issues += check_operation_caller_refs(doc, all_docs)
+            issues += check_operation_flow_refs(doc, all_docs)
             issues += check_terminology(doc, term_map)
             issues += check_branch_completeness(doc)
-            issues += check_sub_logic_contract(doc, all_docs)
+            issues += check_sub_operation_contract(doc, all_docs)
+        elif doc.doc_type == 'rule':
+            issues += check_entity_structure(doc, RULE_REQUIRED_SECTIONS, '规则')
+            issues += check_entity_links(doc, all_docs, '规则')
+        elif doc.doc_type == 'metric':
+            issues += check_entity_structure(doc, METRIC_REQUIRED_SECTIONS, '指标')
+            issues += check_entity_links(doc, all_docs, '指标')
         elif doc.doc_type == 'action':
             issues += check_action_structure(doc)
             issues += check_action_orphan(doc, all_docs)
@@ -1005,7 +1042,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Check business knowledge ontology docs for quality issues.'
     )
-    parser.add_argument('ontology_dir', help='Ontology root directory (contains object/, logic/, action/)')
+    parser.add_argument('ontology_dir', help='Ontology root directory (contains object/, operation/, action/)')
     parser.add_argument('--output', default=None, help='Report output path (default: report_YYYYMMDD_HHMMSS.md)')
     parser.add_argument('--json', action='store_true', help='Output issues as JSON array to stdout, skip file report')
     parser.add_argument('--files', nargs='*', default=None,

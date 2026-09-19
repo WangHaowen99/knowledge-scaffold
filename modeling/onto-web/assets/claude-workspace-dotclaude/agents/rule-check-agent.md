@@ -34,7 +34,7 @@ Return ONLY a raw JSON array — no markdown, no explanation, no code fences:
   {
     "severity": "错误",
     "category": "链接失效",
-    "file": "logic/创建订单.md",
+    "file": "operation/创建订单.md",
     "message": "Obsidian 链接 [[支付记录]] 无对应文件"
   }
 ]

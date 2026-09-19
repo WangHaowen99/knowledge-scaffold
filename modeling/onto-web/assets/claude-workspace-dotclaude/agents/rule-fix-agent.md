@@ -17,7 +17,7 @@ dispatching command 会传入：
     "issue_id": 1,
     "severity": "警告",
     "category": "链接失效",
-    "file": "logic/创建订单.md",
+    "file": "operation/创建订单.md",
     "message": "Obsidian 链接 [[支付记录]] 无对应文件"
   }
   ```
@@ -68,7 +68,7 @@ dispatching command 会传入：
   {
     "issue_id": 1,
     "applied": true,
-    "files_changed": ["logic/创建订单.md"],
+    "files_changed": ["operation/创建订单.md"],
     "change_summary": "移除失效链接 [[支付记录]]"
   },
   {

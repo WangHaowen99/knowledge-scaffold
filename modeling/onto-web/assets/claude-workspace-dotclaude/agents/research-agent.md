@@ -18,7 +18,7 @@ If `Local document paths` is specified in your task prompt:
 
 Read each file at the listed paths. For each document, extract and record:
 - Business entities / objects mentioned (names, attributes, business rules)
-- Business processes / operations (trigger conditions, logic steps, inputs/outputs)
+- Business processes / operations (trigger conditions, operation steps, inputs/outputs)
 - Domain terminology, constraints, and relationships
 
 Store all extracted content as LOCAL_KNOWLEDGE. This is your **primary source material** — it takes precedence over web-sourced information.

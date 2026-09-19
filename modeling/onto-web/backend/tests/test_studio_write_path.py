@@ -183,11 +183,11 @@ def test_parse_codegen_report():
     assert parsed["summary"].startswith("共扫描 4 条")
     assert [c["id"] for c in parsed["candidates"]] == [1, 2]
     first = parsed["candidates"][0]
-    assert first["logic"] == "客群聚类" and first["fragment"] == "整段"
+    assert first["operation"] == "客群聚类" and first["fragment"] == "整段"
     assert first["verdict"] == "适合" and first["inputs"] == "factors, k"
     second = parsed["candidates"][1]
     assert second["verdict"] == "部分适合" and second["fragment"] == "步骤1-3"
-    assert parsed["unsuitable"][0]["logic"] == "上架审批"
+    assert parsed["unsuitable"][0]["operation"] == "上架审批"
     assert "、" in parsed["generated"][0]["scripts"]
 
 

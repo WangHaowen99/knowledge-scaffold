@@ -41,7 +41,8 @@ def test_studio_graph_links_and_degrees(ontology_root: Path):
 
 def test_studio_element_sections_and_backlinks(ontology_root: Path):
     element = studio.element(ontology_root, "ontology/object/订单.md")
-    assert [s["title"] for s in element["sections"]] == ["属性", "与logic的关联"]
+    # 旧章节名「与logic的关联」读取时归一为新术语（ADR-0004）
+    assert [s["title"] for s in element["sections"]] == ["属性", "与operation的关联"]
     assert element["links"] == ["创建订单"]
     assert [b["name"] for b in element["backlinks"]] == ["创建订单"]
 
