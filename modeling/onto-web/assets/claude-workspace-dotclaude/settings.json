@@ -11,9 +11,7 @@
     ],
     "deny": [
       "Edit(/.claude/**)",
-      "Edit(/CLAUDE.md)",
-      "Write(/.claude/**)",
-      "Write(/CLAUDE.md)"
+      "Edit(/CLAUDE.md)"
     ]
   },
   "hooks": {
