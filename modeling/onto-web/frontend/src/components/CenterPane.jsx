@@ -1,5 +1,8 @@
 import {
   ApartmentOutlined,
+  ArrowLeftOutlined,
+  CheckOutlined,
+  CopyOutlined,
   DatabaseOutlined,
   FileSearchOutlined,
   HistoryOutlined,
@@ -7,7 +10,11 @@ import {
 import {
   Button,
   Card,
+  Checkbox,
   Empty,
+  Input,
+  Modal,
+  Popconfirm,
   Segmented,
   Select,
   Space,
@@ -16,33 +23,71 @@ import {
   Typography,
   message,
 } from 'antd';
+import 'highlight.js/styles/atom-one-light.css';
+// 暗色模式的代码高亮覆盖在 styles.css（[data-theme='dark'] .hljs-*）
 import mermaid from 'mermaid';
-import { Suspense, lazy, memo, useEffect, useId, useMemo, useState } from 'react';
+import { Suspense, lazy, memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
 import CodeEditor from './cm/CodeEditor.jsx';
 import MergeDiff from './cm/MergeDiff.jsx';
+import DrawioView from './DrawioView.jsx';
+import ExcelView from './ExcelView.jsx';
+import HtmlPreview from './HtmlPreview.jsx';
 
 const StudioView = lazy(() => import('./StudioView.jsx'));
 
-mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+// mermaid 配色跟随应用主题（CSS 变量取值）；主题切换时重配并触发重渲染
+let mermaidThemeVersion = 0;
+function configureMermaid() {
+  const css = getComputedStyle(document.documentElement);
+  const v = (name, fallback) => (css.getPropertyValue(name) || fallback).trim();
+  const dark = document.documentElement.dataset.theme === 'dark';
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: 'base',
+    themeVariables: {
+      fontFamily: v('--font-body', 'system-ui, sans-serif'),
+      primaryColor: v('--color-primary-soft', '#e8f1fd'),
+      primaryTextColor: v('--text-primary', dark ? '#edf1f7' : '#111827'),
+      primaryBorderColor: v('--color-primary', '#256fd0'),
+      lineColor: v('--text-tertiary', '#6f7785'),
+      background: v('--surface-card', dark ? '#151b24' : '#ffffff'),
+      mainBkg: v('--color-primary-soft', '#e8f1fd'),
+      clusterBkg: v('--surface-subtle', dark ? '#1a2130' : '#f3f5f8'),
+      edgeLabelBackground: v('--surface-card', '#ffffff'),
+    },
+  });
+  mermaidThemeVersion += 1;
+}
+configureMermaid();
+window.addEventListener('onto-theme-changed', configureMermaid);
 
 function MermaidBlock({ code }) {
   const id = useId().replace(/[^a-zA-Z0-9]/g, '');
   const [svg, setSvg] = useState('');
   const [failed, setFailed] = useState(false);
+  const [themeVersion, setThemeVersion] = useState(mermaidThemeVersion);
+
+  useEffect(() => {
+    const onTheme = () => setThemeVersion(mermaidThemeVersion);
+    window.addEventListener('onto-theme-changed', onTheme);
+    return () => window.removeEventListener('onto-theme-changed', onTheme);
+  }, []);
 
   useEffect(() => {
     let active = true;
     mermaid
-      .render(`mmd-${id}`, code)
+      .render(`mmd-${id}-${themeVersion}`, code)
       .then((result) => active && setSvg(result.svg))
       .catch(() => active && setFailed(true));
     return () => {
       active = false;
     };
-  }, [code, id]);
+  }, [code, id, themeVersion]);
 
   if (failed) {
     return (
@@ -52,7 +97,42 @@ function MermaidBlock({ code }) {
     );
   }
   // svg 来自 mermaid 对代码块的受控渲染，非用户任意 HTML
-  return <div dangerouslySetInnerHTML={{ __html: svg }} />;
+  return <div className="mermaid-figure" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+// 代码块卡片：语言角标 + 一键复制
+function CodeBlock({ className, children }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef(0);
+  const lang = /language-([\w-]+)/.exec(className || '')?.[1] || '';
+  const text = extractText(children);
+
+  const copy = () => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1600);
+    });
+  };
+
+  return (
+    <div className="code-card">
+      <div className="code-card-bar">
+        <span className="code-lang">{lang || 'text'}</span>
+        <button type="button" className="code-copy" onClick={copy}>
+          {copied ? <CheckOutlined /> : <CopyOutlined />} {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      <pre className={className}>{children}</pre>
+    </div>
+  );
+}
+
+function extractText(node) {
+  if (node == null) return '';
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  return extractText(node.props?.children);
 }
 
 // memo：流式期间每帧重渲染的开销主要在 markdown 解析，内容不变时跳过
@@ -65,6 +145,7 @@ export const Markdown = memo(function Markdown({ content, onWikiLink }) {
     <div className="markdown-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
         components={{
           a({ href, children }) {
             if (href && href.startsWith('#wiki:')) {
@@ -80,6 +161,12 @@ export const Markdown = memo(function Markdown({ content, onWikiLink }) {
                 {children}
               </a>
             );
+          },
+          pre({ children }) {
+            // mermaid 代码块由 code 渲染器整体接管，不包代码卡片
+            const child = Array.isArray(children) ? children[0] : children;
+            if (/language-mermaid/.test(child?.props?.className || '')) return children;
+            return <CodeBlock className={child?.props?.className}>{children}</CodeBlock>;
           },
           code({ className, children, ...props }) {
             const text = String(children ?? '');
@@ -101,6 +188,67 @@ export const Markdown = memo(function Markdown({ content, onWikiLink }) {
 });
 
 const PREVIEWABLE = /\.(md|markdown|txt|py|json|yaml|yml|csv|mmd)$/i;
+
+// 报告评审：编号勾选 + 逐条确认（校验/追踪/codegen 候选通用）
+function ReportReview({ data, checked, onChecked, onFixSelected }) {
+  if (!data) return <Spin />;
+  if (!data.items.length) {
+    return <Empty description="没有解析出可评审条目（可切换查看报告原文）" />;
+  }
+  const toggle = (id) => {
+    const next = new Set(checked);
+    next.has(id) ? next.delete(id) : next.add(id);
+    onChecked(next);
+  };
+  const groups = [];
+  for (const item of data.items) {
+    const last = groups[groups.length - 1];
+    if (last && last.name === item.group) last.items.push(item);
+    else groups.push({ name: item.group, items: [item] });
+  }
+  const selected = data.items.filter((i) => checked.has(i.id));
+  return (
+    <div>
+      <Space style={{ marginBottom: 8 }} wrap>
+        <Button
+          size="small"
+          onClick={() => onChecked(new Set(data.items.filter((i) => i.severity === 'error').map((i) => i.id)))}
+        >
+          全选错误项
+        </Button>
+        <Button size="small" onClick={() => onChecked(new Set(data.items.map((i) => i.id)))}>
+          全选
+        </Button>
+        <Button size="small" onClick={() => onChecked(new Set())}>
+          清空
+        </Button>
+        <Button
+          size="small"
+          type="primary"
+          disabled={selected.length === 0}
+          onClick={() => onFixSelected(selected)}
+        >
+          让助手修复选中项（{selected.length}）
+        </Button>
+      </Space>
+      {groups.map((group) => (
+        <div key={group.name || 'default'} className="review-group">
+          {group.name && <div className="review-group-title">{group.name}</div>}
+          {group.items.map((item) => (
+            <label key={item.id} className={`review-item ${item.severity}`}>
+              <Checkbox checked={checked.has(item.id)} onChange={() => toggle(item.id)} />
+              <span className="review-id">#{item.id}</span>
+              <Tag color={item.severity === 'error' ? 'error' : 'warning'} style={{ margin: 0 }}>
+                {item.severity === 'error' ? '错误' : '警告'}
+              </Tag>
+              <span className="review-text">{item.text}</span>
+            </label>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function countByPrefix(paths, prefix) {
   return paths.filter((p) => p.startsWith(prefix) && p.endsWith('.md')).length;
@@ -125,17 +273,32 @@ export default function CenterPane({
   diffRev,
   onOpenFile,
   onCommand,
+  canBack,
+  onBack,
+  queryPreset,
+  drawioAvailable,
+  onWorkspaceChanged,
 }) {
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
+  const [conflict, setConflict] = useState(null); // {mine, theirs, revision}
   const [diffState, setDiffState] = useState(null); // {original, modified, rev}
   const [diffDraft, setDiffDraft] = useState('');
   const [pickRev, setPickRev] = useState(null);
   const [coverage, setCoverage] = useState(null);
   const [reportPath, setReportPath] = useState(null);
   const [reportContent, setReportContent] = useState(null);
+  const [reportMode, setReportMode] = useState('review'); // review | raw
+  const [reportItems, setReportItems] = useState(null);
+  const [checkedItems, setCheckedItems] = useState(new Set());
+  const [knowledge, setKnowledge] = useState(null);
+  const [knowledgeDraft, setKnowledgeDraft] = useState(null); // {name, content}
+  const [queryKind, setQueryKind] = useState('used_by');
+  const [queryTerm, setQueryTerm] = useState('');
+  const [queryResult, setQueryResult] = useState(null);
+  const [queryLoading, setQueryLoading] = useState(false);
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
   const reportPaths = useMemo(
@@ -152,18 +315,33 @@ export default function CenterPane({
   useEffect(() => {
     if (focus !== 'reports' || !reportPath) {
       setReportContent(null);
+      setReportItems(null);
       return;
     }
+    setCheckedItems(new Set());
     api
       .readFile(project.id, reportPath)
       .then(setReportContent)
       .catch((error) => setReportContent({ error: error.message }));
+    api
+      .reportItems(project.id, reportPath)
+      .then(setReportItems)
+      .catch(() => setReportItems({ items: [] }));
   }, [focus, project.id, reportPath]);
 
-  // 文件加载
+  useEffect(() => {
+    if (focus !== 'knowledge') return;
+    api.listKnowledge(project.id).then((d) => setKnowledge(d.entries)).catch(() => {});
+  }, [focus, project.id, versions.length]);
+
+  // 文件加载（drawio/excel/html 有专属渲染组件，不走文本读取）
+  const isDrawio = !!file && /\.(drawio|dio)$/i.test(file);
+  const isExcel = !!file && /\.(xlsx|xlsm|xls)$/i.test(file);
+  const isHtml = !!file && /\.html?$/i.test(file);
   useEffect(() => {
     setEditing(false);
-    if (!file) {
+    setConflict(null);
+    if (!file || isDrawio || isExcel || isHtml) {
       setContent(null);
       return;
     }
@@ -180,6 +358,7 @@ export default function CenterPane({
       })
       .catch((error) => setContent({ error: error.message }))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id, file]);
 
   // 对比数据加载
@@ -211,10 +390,59 @@ export default function CenterPane({
     message.info(`未找到 ${name} 对应的文档`);
   };
 
+  const runQuery = async (kind = queryKind, term = queryTerm) => {
+    if (['used_by', 'search', 'knowledge'].includes(kind) && !term.trim()) {
+      message.warning('请填写查询词');
+      return;
+    }
+    setQueryLoading(true);
+    try {
+      const data = await api.reverseQuery(project.id, kind, term.trim());
+      setQueryResult(data.markdown);
+    } catch (error) {
+      message.error(error.message);
+    } finally {
+      setQueryLoading(false);
+    }
+  };
+
+  // 左栏/树右键发起的反查：预置类型与词并立即执行
+  useEffect(() => {
+    if (!queryPreset) return;
+    setQueryKind(queryPreset.kind);
+    setQueryTerm(queryPreset.term || '');
+    if (['used_by', 'search', 'knowledge'].includes(queryPreset.kind) && !queryPreset.term) return;
+    runQuery(queryPreset.kind, queryPreset.term || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryPreset?.nonce]);
+
   const saveDraft = async (text, after) => {
     try {
-      await api.writeFile(project.id, file, text);
-      message.success('已保存');
+      const result = await api.writeFile(project.id, file, text, content?.revision || '');
+      setContent((prev) => (prev ? { ...prev, revision: result.revision } : prev));
+      message.success('已保存并记录版本');
+      onWorkspaceChanged?.();
+      after?.();
+    } catch (error) {
+      if (error.status === 409) {
+        // 与助手写入撞车：拉最新内容给用户对比合并，不静默覆盖（方案 7.4）
+        const latest = await api.readFile(project.id, file).catch(() => null);
+        if (latest) setConflict({ mine: text, theirs: latest, after });
+        return;
+      }
+      message.error(error.message);
+    }
+  };
+
+  const resolveConflictSave = async (text) => {
+    const { theirs, after } = conflict;
+    setConflict(null);
+    try {
+      const result = await api.writeFile(project.id, file, text, theirs.revision);
+      setContent({ ...theirs, content: text, revision: result.revision });
+      setDraft(text);
+      message.success('已保存并记录版本');
+      onWorkspaceChanged?.();
       after?.();
     } catch (error) {
       message.error(error.message);
@@ -223,23 +451,39 @@ export default function CenterPane({
 
   return (
     <div>
-      <Segmented
-        value={focus}
-        onChange={onFocus}
-        options={[
-          { label: '概览', value: 'overview' },
-          { label: 'Studio', value: 'studio' },
-          { label: '文件', value: 'file' },
-          { label: '对比', value: 'diff' },
-          { label: '报告', value: 'reports' },
-        ]}
-        style={{ marginBottom: 12 }}
-      />
+      <Space style={{ marginBottom: 12 }} align="center">
+        {canBack && (
+          <Button
+            size="small"
+            icon={<ArrowLeftOutlined />}
+            onClick={onBack}
+            title="返回上一个视图"
+          />
+        )}
+        <Segmented
+          value={focus}
+          onChange={onFocus}
+          options={[
+            { label: '概览', value: 'overview' },
+            { label: 'Studio', value: 'studio' },
+            { label: '文件', value: 'file' },
+            { label: '对比', value: 'diff' },
+            { label: '报告', value: 'reports' },
+            { label: '知识', value: 'knowledge' },
+            { label: '反查', value: 'query' },
+          ]}
+        />
+      </Space>
 
       {focus === 'studio' && (
         <div className="center-anim" key="studio">
           <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
-            <StudioView project={project} onOpenFile={onOpenFile} />
+            <StudioView
+              project={project}
+              onOpenFile={onOpenFile}
+              onCommand={onCommand}
+              onWorkspaceChanged={onWorkspaceChanged}
+            />
           </Suspense>
         </div>
       )}
@@ -318,7 +562,7 @@ export default function CenterPane({
               {versions.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
             </Card>
             <Typography.Paragraph type="secondary">
-              从左栏「进度」开始建模；产物文件点击后在「文件」中预览与编辑。
+              从左栏「进度」开始建模；知识包文件点击后在「文件」中预览与编辑。
             </Typography.Paragraph>
           </Space>
         </div>
@@ -327,19 +571,18 @@ export default function CenterPane({
       {focus === 'file' && (
         <div className="center-anim" key="file">
         <Spin spinning={loading}>
-          {!file && <Empty description="从左栏「产物」选择文件" />}
-          {file && /\.html?$/i.test(file) && (
-            <>
-              <Typography.Title level={5}>{file}</Typography.Title>
-              <iframe
-                className="html-preview"
-                title={file}
-                sandbox="allow-scripts"
-                src={api.rawUrl(project.id, file)}
-              />
-            </>
+          {!file && <Empty description="从左栏「知识包」选择文件" />}
+          {isHtml && <HtmlPreview project={project} path={file} />}
+          {isDrawio && (
+            <DrawioView
+              project={project}
+              path={file}
+              editorAvailable={drawioAvailable}
+              onSaved={onWorkspaceChanged}
+            />
           )}
-          {file && content?.unsupported && !/\.html?$/i.test(file) && (
+          {isExcel && <ExcelView project={project} path={file} />}
+          {file && content?.unsupported && !isHtml && !isDrawio && !isExcel && (
             <Empty description={`${file} 暂不支持预览（当前仅支持文本类文件）`} />
           )}
           {file && content?.error && <Empty description={content.error} />}
@@ -390,7 +633,7 @@ export default function CenterPane({
       {focus === 'diff' && (
         <div className="center-anim" key="diff">
           <Space style={{ marginBottom: 8 }} wrap>
-            <Typography.Text>{file || '先从「产物」选择要对比的文件'}</Typography.Text>
+            <Typography.Text>{file || '先从「知识包」选择要对比的文件'}</Typography.Text>
             <Select
               size="small"
               style={{ minWidth: 220 }}
@@ -452,17 +695,15 @@ export default function CenterPane({
                 {reportPath && reportContent?.content != null && (
                   <>
                     <Space style={{ marginBottom: 8 }} wrap>
-                      <Button
+                      <Segmented
                         size="small"
-                        type="primary"
-                        onClick={() =>
-                          onCommand?.(
-                            `请阅读 ${reportPath}，逐条修复其中列出的错误项，修复后重新运行校验`,
-                          )
-                        }
-                      >
-                        让助手修复错误项
-                      </Button>
+                        value={reportMode}
+                        onChange={setReportMode}
+                        options={[
+                          { label: `逐条评审（${reportItems?.items?.length ?? 0}）`, value: 'review' },
+                          { label: '报告原文', value: 'raw' },
+                        ]}
+                      />
                       <Button size="small" onClick={() => onCommand?.('/ontology-validate')}>
                         重新校验
                       </Button>
@@ -470,7 +711,23 @@ export default function CenterPane({
                         在编辑器中打开
                       </Button>
                     </Space>
-                    <Markdown content={reportContent.content} onWikiLink={openWikiLink} />
+                    {reportMode === 'raw' && (
+                      <Markdown content={reportContent.content} onWikiLink={openWikiLink} />
+                    )}
+                    {reportMode === 'review' && (
+                      <ReportReview
+                        data={reportItems}
+                        checked={checkedItems}
+                        onChecked={setCheckedItems}
+                        onFixSelected={(items) =>
+                          onCommand?.(
+                            `请修复报告 ${reportPath} 中的以下条目（引用原文）：\n` +
+                              items.map((i) => `${i.id}. [${i.group}] ${i.text}`).join('\n') +
+                              '\n逐条修复，完成后重新运行对应校验并汇报每条的处理结果。',
+                          )
+                        }
+                      />
+                    )}
                   </>
                 )}
               </div>
@@ -478,6 +735,163 @@ export default function CenterPane({
           )}
         </div>
       )}
+
+      {focus === 'knowledge' && (
+        <div className="center-anim" key="knowledge">
+          <Space style={{ marginBottom: 8 }} wrap>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              业务知识库
+            </Typography.Title>
+            <Button
+              size="small"
+              type="primary"
+              onClick={() => setKnowledgeDraft({ name: '', content: '## 背景\n\n## 规则\n\n' })}
+            >
+              新增知识条目
+            </Button>
+          </Space>
+          {!knowledge && <Spin />}
+          {knowledge && knowledge.length === 0 && (
+            <Empty description="还没有沉淀的业务知识——对话中点助手消息旁的「沉淀知识」，或在此新增" />
+          )}
+          {knowledge?.map((entry) => (
+            <div key={entry.path} className="knowledge-item msg-soft">
+              <div className="knowledge-head">
+                <Typography.Text strong style={{ cursor: 'pointer' }} onClick={() => onOpenFile(entry.path)}>
+                  {entry.name}
+                </Typography.Text>
+                <span className="knowledge-time">
+                  {new Date(entry.updated_at * 1000).toLocaleDateString()}
+                </span>
+                <Button size="small" type="text" onClick={() => onOpenFile(entry.path)}>
+                  编辑
+                </Button>
+                <Popconfirm
+                  title="删除该知识条目？"
+                  onConfirm={async () => {
+                    await api.deleteKnowledge(project.id, entry.path).catch((e) => message.error(e.message));
+                    setKnowledge(knowledge.filter((k) => k.path !== entry.path));
+                    onWorkspaceChanged?.();
+                  }}
+                >
+                  <Button size="small" type="text" danger>
+                    删除
+                  </Button>
+                </Popconfirm>
+              </div>
+              {entry.excerpt && <div className="knowledge-excerpt">{entry.excerpt}</div>}
+            </div>
+          ))}
+          <Modal
+            title="新增业务知识"
+            open={!!knowledgeDraft}
+            onCancel={() => setKnowledgeDraft(null)}
+            okText="确认入库"
+            onOk={async () => {
+              if (!knowledgeDraft.name.trim()) {
+                message.warning('请填写条目名称');
+                return;
+              }
+              try {
+                await api.createKnowledge(project.id, knowledgeDraft.name, knowledgeDraft.content);
+                setKnowledgeDraft(null);
+                api.listKnowledge(project.id).then((d) => setKnowledge(d.entries));
+                onWorkspaceChanged?.();
+                message.success('已入库并记录版本，后续建模会自动应用');
+              } catch (error) {
+                message.error(error.message);
+              }
+            }}
+          >
+            <Input
+              placeholder="条目名称，如：退款只允许在支付后 24 小时内发起"
+              value={knowledgeDraft?.name}
+              onChange={(e) => setKnowledgeDraft({ ...knowledgeDraft, name: e.target.value })}
+              style={{ marginBottom: 8 }}
+            />
+            <Input.TextArea
+              autoSize={{ minRows: 6 }}
+              value={knowledgeDraft?.content}
+              onChange={(e) => setKnowledgeDraft({ ...knowledgeDraft, content: e.target.value })}
+            />
+          </Modal>
+        </div>
+      )}
+
+      {focus === 'query' && (
+        <div className="center-anim" key="query">
+          <Typography.Title level={5} style={{ marginTop: 0 }}>
+            反查（确定性检索，不经模型）
+          </Typography.Title>
+          <Space style={{ marginBottom: 12 }} wrap>
+            <Segmented
+              size="small"
+              value={queryKind}
+              onChange={(kind) => {
+                setQueryKind(kind);
+                setQueryResult(null);
+              }}
+              options={[
+                { label: '引用', value: 'used_by' },
+                { label: '搜索', value: 'search' },
+                { label: '孤立', value: 'orphans' },
+                { label: '未用', value: 'unused' },
+                { label: '失效链接', value: 'dangling' },
+                { label: '知识', value: 'knowledge' },
+              ]}
+            />
+            {['used_by', 'search', 'knowledge'].includes(queryKind) && (
+              <Input
+                size="small"
+                style={{ width: 220 }}
+                placeholder={queryKind === 'used_by' ? '元素名，如：订单' : '关键词'}
+                value={queryTerm}
+                onChange={(e) => setQueryTerm(e.target.value)}
+                onPressEnter={() => runQuery()}
+              />
+            )}
+            <Button size="small" type="primary" loading={queryLoading} onClick={() => runQuery()}>
+              查询
+            </Button>
+          </Space>
+          {queryResult && (
+            <div className="query-result msg-soft">
+              <Markdown content={queryResult} onWikiLink={openWikiLink} />
+            </div>
+          )}
+          {!queryResult && !queryLoading && (
+            <Empty description="选择反查类型后点击查询；产物树右键也可直达" />
+          )}
+        </div>
+      )}
+
+      <Modal
+        title="文件已被他人或助手修改"
+        open={!!conflict}
+        width={860}
+        onCancel={() => setConflict(null)}
+        footer={
+          conflict && [
+            <Button key="theirs" onClick={() => resolveConflictSave(conflict.theirs.content)}>
+              采用对方版本
+            </Button>,
+            <Button key="mine" type="primary" onClick={() => resolveConflictSave(conflict.mine)}>
+              以我的内容保存
+            </Button>,
+          ]
+        }
+      >
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+          左侧是对方的最新版本，右侧是你的修改（可继续编辑后保存）；两个版本都会留在时间线里。
+        </Typography.Paragraph>
+        {conflict && (
+          <MergeDiff
+            original={conflict.theirs.content}
+            modified={conflict.mine}
+            onModifiedChange={(text) => setConflict({ ...conflict, mine: text })}
+          />
+        )}
+      </Modal>
     </div>
   );
 }

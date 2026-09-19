@@ -6,6 +6,7 @@ import {
 import {
   Alert,
   Button,
+  Descriptions,
   Empty,
   Input,
   Modal,
@@ -361,6 +362,172 @@ function AuditTab() {
   );
 }
 
+// 会话池：活跃/排队一览 + 手动回收（续接点保留，用户下次发消息自动恢复）
+function SessionPoolTab({ data, refresh }) {
+  const pool = data?.session_pool;
+  const sessions = data?.sessions || [];
+  if (!pool) return null;
+  return (
+    <div>
+      <Descriptions column={3} size="small" bordered style={{ marginBottom: 12 }}>
+        <Descriptions.Item label="活跃会话">
+          {pool.active} / {pool.max}
+        </Descriptions.Item>
+        <Descriptions.Item label="排队中">{pool.waiting.length}</Descriptions.Item>
+        <Descriptions.Item label="空闲回收阈值">
+          {pool.idle_ttl_seconds > 0 ? `${Math.round(pool.idle_ttl_seconds / 60)} 分钟` : '关闭'}
+        </Descriptions.Item>
+      </Descriptions>
+      {pool.waiting.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`排队中的任务：${pool.waiting.join('、')}`}
+        />
+      )}
+      <Table
+        size="small"
+        rowKey="project_id"
+        dataSource={sessions}
+        pagination={false}
+        columns={[
+          { title: '任务', dataIndex: 'project_id' },
+          {
+            title: '状态',
+            dataIndex: 'state',
+            render: (state, row) => (
+              <Tag color={state === 'running' ? 'processing' : state === 'error' ? 'error' : 'default'}>
+                {state}
+                {row.connected ? '' : '（无子进程）'}
+              </Tag>
+            ),
+          },
+          { title: '事件数', dataIndex: 'events' },
+          {
+            title: '最近活动',
+            dataIndex: 'last_activity',
+            render: (ts) => (ts ? timeAgo(ts) : '—'),
+          },
+          {
+            title: '',
+            render: (_, row) => (
+              <Popconfirm
+                title="回收该会话子进程？"
+                description="模型上下文经 resume 保留，用户下次发消息自动恢复"
+                onConfirm={async () => {
+                  await api.adminRecycleSession(row.project_id).catch(() => {});
+                  message.success('已回收');
+                  refresh();
+                }}
+              >
+                <Button size="small" disabled={!row.connected}>
+                  回收
+                </Button>
+              </Popconfirm>
+            ),
+          },
+        ]}
+        locale={{ emptyText: '当前没有活跃会话' }}
+      />
+    </div>
+  );
+}
+
+// 健康页：SDK/CLI 版本、磁盘水位告警、负载、备份调度
+function HealthTab() {
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    api.adminHealth().then(setHealth).catch(() => {});
+  }, []);
+
+  if (!health) return null;
+  return (
+    <div style={{ maxWidth: 640 }}>
+      {health.disk.warn && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`磁盘水位告警：可用仅 ${formatBytes(health.disk.free)}（${health.disk.free_pct}%）`}
+          description="建议清理旧备份/回收站，或扩容数据盘。"
+        />
+      )}
+      <Descriptions column={1} size="small" bordered>
+        <Descriptions.Item label="Agent SDK 版本">{health.sdk_version || '未安装'}</Descriptions.Item>
+        <Descriptions.Item label="捆绑 CLI 版本">{health.cli_version || '未检测到'}</Descriptions.Item>
+        <Descriptions.Item label="磁盘">
+          可用 {formatBytes(health.disk.free)} / 共 {formatBytes(health.disk.total)}（
+          {health.disk.free_pct}% 可用）
+        </Descriptions.Item>
+        <Descriptions.Item label="负载（1/5/15 分钟）">
+          {health.load.map((v) => v.toFixed(2)).join(' / ')}
+        </Descriptions.Item>
+        <Descriptions.Item label="会话池">
+          活跃 {health.pool.active}/{health.pool.max} · 排队 {health.pool.waiting.length}
+        </Descriptions.Item>
+        <Descriptions.Item label="定期备份">
+          {health.backup.interval_hours > 0
+            ? `每 ${health.backup.interval_hours} 小时`
+            : '已关闭'}
+          {health.backup.last &&
+            ` · 最近：${new Date(health.backup.last.ts * 1000).toLocaleString()}`}
+        </Descriptions.Item>
+      </Descriptions>
+    </div>
+  );
+}
+
+// 回收站：软删除项目的可视化恢复
+function TrashTab() {
+  const [entries, setEntries] = useState(null);
+
+  const refresh = () => {
+    api.adminTrash().then((d) => setEntries(d.entries)).catch(() => {});
+  };
+  useEffect(refresh, []);
+
+  if (!entries) return <Spin />;
+  return (
+    <Table
+      size="small"
+      rowKey="name"
+      dataSource={entries}
+      pagination={false}
+      locale={{ emptyText: '回收站为空' }}
+      columns={[
+        { title: '任务', dataIndex: 'project_name' },
+        { title: '所有者', dataIndex: 'owner', render: (v) => v || '—' },
+        {
+          title: '删除时间',
+          dataIndex: 'deleted_at',
+          render: (ts) => (ts ? new Date(ts * 1000).toLocaleString() : '—'),
+        },
+        {
+          title: '',
+          render: (_, row) => (
+            <Popconfirm
+              title={`恢复「${row.project_name}」？`}
+              onConfirm={async () => {
+                try {
+                  await api.adminRestoreTrash(row.name);
+                  message.success('已恢复到项目列表');
+                  refresh();
+                } catch (error) {
+                  message.error(error.message);
+                }
+              }}
+            >
+              <Button size="small">恢复</Button>
+            </Popconfirm>
+          ),
+        },
+      ]}
+    />
+  );
+}
+
 export default function AdminPage({ onBack }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -404,6 +571,13 @@ export default function AdminPage({ onBack }) {
             label: '用户管理',
             children: <UsersTab available={!!data?.user_admin_available} />,
           },
+          {
+            key: 'pool',
+            label: '会话池',
+            children: <SessionPoolTab data={data} refresh={refresh} />,
+          },
+          { key: 'health', label: '健康', children: <HealthTab /> },
+          { key: 'trash', label: '回收站', children: <TrashTab /> },
           { key: 'audit', label: '审计日志', children: <AuditTab /> },
         ]}
       />

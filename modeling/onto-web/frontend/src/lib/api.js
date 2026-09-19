@@ -83,7 +83,9 @@ async function request(path, options = {}, retried = false) {
       const body = await response.json();
       detail = body.error || body.detail || detail;
     } catch { /* keep status text */ }
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -128,26 +130,124 @@ export const api = {
   deleteProject: (pid) => request(`/api/projects/${pid}`, { method: 'DELETE' }),
   exportUrl: (pid, scope) =>
     `/api/projects/${pid}/export?scope=${scope}&token=${encodeURIComponent(authStore.token)}`,
-  importProject: (name, file) => {
+  importProject: (name, file, dryRun = false) => {
     const form = new FormData();
     form.append('name', name);
     form.append('file', file);
+    if (dryRun) form.append('dry_run', 'true');
     return fetch('/api/projects/import', {
       method: 'POST',
       headers: authHeaders(),
       body: form,
-    }).then((r) => {
-      if (!r.ok) throw new Error(`导入失败 ${r.status}`);
-      return r.json();
+    }).then(async (r) => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `导入失败 ${r.status}`);
+      return data;
     });
   },
+  archiveProject: (pid, archived) =>
+    request(`/api/projects/${pid}/archive`, {
+      method: 'POST',
+      body: JSON.stringify({ archived }),
+    }),
+  cloneProject: (pid) => request(`/api/projects/${pid}/clone`, { method: 'POST' }),
+  getMembers: (pid) => request(`/api/projects/${pid}/members`),
+  saveMembers: (pid, members) =>
+    request(`/api/projects/${pid}/members`, {
+      method: 'PUT',
+      body: JSON.stringify({ members }),
+    }),
+  excelPreview: (pid, path) =>
+    request(`/api/projects/${pid}/excel?path=${encodeURIComponent(path)}`),
+  tagVersion: (pid, commit, label) =>
+    request(`/api/projects/${pid}/versions/tag`, {
+      method: 'POST',
+      body: JSON.stringify({ commit, label }),
+    }),
+  deleteTag: (pid, name) =>
+    request(`/api/projects/${pid}/versions/tag/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+  changePassword: (username, oldPassword, newPassword) =>
+    request('/api/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        old_password: oldPassword,
+        new_password: newPassword,
+      }),
+    }),
+  mcpTest: (server) =>
+    request('/api/settings/mcp/test', {
+      method: 'POST',
+      body: JSON.stringify({ server }),
+    }),
+  getProjectMcp: (pid) => request(`/api/projects/${pid}/mcp`),
+  saveProjectMcp: (pid, disabled) =>
+    request(`/api/projects/${pid}/mcp`, {
+      method: 'PUT',
+      body: JSON.stringify({ disabled }),
+    }),
+  assetBackups: () => request('/api/settings/assets/backups'),
+  assetRollback: (name) =>
+    request('/api/settings/assets/rollback', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  adminHealth: () => request('/api/admin/health'),
+  adminRecycleSession: (pid) =>
+    request(`/api/admin/sessions/${pid}/recycle`, { method: 'POST' }),
+  adminTrash: () => request('/api/admin/trash'),
+  adminRestoreTrash: (name) =>
+    request('/api/admin/trash/restore', { method: 'POST', body: JSON.stringify({ name }) }),
+  studioLease: (pid, path) =>
+    request(`/api/projects/${pid}/studio/lease`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  studioReleaseLease: (pid, path) =>
+    request(`/api/projects/${pid}/studio/lease?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    }),
+  studioSaveDraft: (pid, path, content, baseRevision) =>
+    request(`/api/projects/${pid}/studio/draft`, {
+      method: 'PUT',
+      body: JSON.stringify({ path, content, base_revision: baseRevision }),
+    }),
+  studioGetDraft: (pid, path) =>
+    request(`/api/projects/${pid}/studio/draft?path=${encodeURIComponent(path)}`),
+  studioDiscardDraft: (pid, path) =>
+    request(`/api/projects/${pid}/studio/draft?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    }),
+  studioSubmit: (pid, path) =>
+    request(`/api/projects/${pid}/studio/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  reportItems: (pid, path) =>
+    request(`/api/projects/${pid}/report-items?path=${encodeURIComponent(path)}`),
+  reverseQuery: (pid, kind, term = '') =>
+    request(
+      `/api/projects/${pid}/query?kind=${kind}&term=${encodeURIComponent(term)}`,
+    ),
+  listKnowledge: (pid) => request(`/api/projects/${pid}/knowledge`),
+  createKnowledge: (pid, name, content) =>
+    request(`/api/projects/${pid}/knowledge`, {
+      method: 'POST',
+      body: JSON.stringify({ name, content }),
+    }),
+  deleteKnowledge: (pid, path) =>
+    request(`/api/projects/${pid}/knowledge?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    }),
   fileTree: (pid) => request(`/api/projects/${pid}/files`),
   readFile: (pid, path) =>
     request(`/api/projects/${pid}/file?path=${encodeURIComponent(path)}`),
-  writeFile: (pid, path, content) =>
+  writeFile: (pid, path, content, baseRevision = '') =>
     request(`/api/projects/${pid}/file`, {
       method: 'PUT',
-      body: JSON.stringify({ path, content }),
+      body: JSON.stringify({ path, content, base_revision: baseRevision }),
     }),
   fileAt: (pid, rev, path) =>
     request(
@@ -232,20 +332,48 @@ export const api = {
     }),
   interrupt: (pid) =>
     request(`/api/projects/${pid}/session/interrupt`, { method: 'POST' }),
-  uploadResource: (pid, subdir, file) => {
+  uploadResource: (pid, subdir, file, onProgress) => {
     const form = new FormData();
     form.append('subdir', subdir);
     form.append('file', file);
-    return fetch(`/api/projects/${pid}/resources`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: form,
-    }).then((r) => {
-      if (!r.ok) throw new Error(`上传失败 ${r.status}`);
-      return r.json();
-    });
+    return xhrUpload(`/api/projects/${pid}/resources`, form, onProgress);
   },
 };
+
+// fetch 拿不到上传进度，附件上传走 XHR；onProgress 收 0~1 的比例
+function xhrUpload(path, form, onProgress, retried = false) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', path);
+    if (authStore.token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${authStore.token}`);
+    }
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded / e.total);
+    };
+    xhr.onload = async () => {
+      if (xhr.status === 401 && !retried) {
+        if (await tryRefresh()) {
+          return resolve(xhrUpload(path, form, onProgress, true));
+        }
+        window.dispatchEvent(new Event('onto-auth-required'));
+        return reject(new Error('未登录或登录已过期'));
+      }
+      let data = {};
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch { /* 非 JSON 响应按状态码处理 */ }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.(1);
+        resolve(data);
+      } else {
+        reject(new Error(data.error || data.detail || `上传失败 ${xhr.status}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('网络异常，上传中断'));
+    xhr.send(form);
+  });
+}
 
 export function openEventStream(pid, onEvent, after = 0) {
   const token = encodeURIComponent(authStore.token);

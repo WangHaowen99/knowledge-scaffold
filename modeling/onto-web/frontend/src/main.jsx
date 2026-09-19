@@ -17,6 +17,9 @@ function Root() {
     applyCssVars(mode, accent);
     localStorage.setItem('onto-theme-mode', mode);
     localStorage.setItem('onto-theme-accent', accent);
+    // 非 antd 渲染体系（mermaid/代码高亮/drawio 容器）经属性与事件跟随主题
+    document.documentElement.dataset.theme = mode;
+    window.dispatchEvent(new Event('onto-theme-changed'));
   }, [mode, accent]);
 
   return (
