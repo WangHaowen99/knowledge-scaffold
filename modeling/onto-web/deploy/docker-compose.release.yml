@@ -1,0 +1,42 @@
+services:
+  auth-server:
+    image: ${AUTH_SERVER_IMAGE:-onto-web-auth-server:latest}
+    container_name: onto-web-auth-server
+    restart: unless-stopped
+    # 只在 compose 网络内可达；issuer/audience 用镜像默认值（http://auth-server:5056 / meta-wise），
+    # 与 onto-web 容器内 ONTO_WEB_AUTH_URL 一致，改动时两边同步
+    expose:
+      - "5056"
+    environment:
+      # 首次启动（auth 数据卷为空）必须在 .env 里设初始管理员密码；已有用户数据后可移除
+      - AUTH_BOOTSTRAP_ADMIN_PASSWORD=${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
+    volumes:
+      - onto-web-auth-data:/data
+    mem_limit: 512m
+
+  onto-web:
+    image: ${ONTO_WEB_IMAGE:-onto-web:latest}
+    container_name: onto-web
+    restart: unless-stopped
+    # 每个活跃会话一个 CLI 子进程（均值约 400MB）；容器上限按
+    # 固定开销 + 会话上限 × 单进程峰值 规划（方案 4.1.1），默认对应 8G 主机
+    mem_limit: ${ONTO_WEB_MEM_LIMIT:-6500m}
+    stop_grace_period: 30s
+    ports:
+      - "${ONTO_WEB_PORT:-8100}:8100"
+    env_file:
+      - ./.env
+    environment:
+      - ONTO_WEB_AUTH_URL=http://auth-server:5056
+      # 容器内固定监听 8100（environment 覆盖 env_file），
+      # .env 的 ONTO_WEB_PORT 只控制上面 ports 的宿主发布端口
+      - ONTO_WEB_PORT=8100
+    volumes:
+      - onto-web-data:/data
+    depends_on:
+      auth-server:
+        condition: service_healthy
+
+volumes:
+  onto-web-data:
+  onto-web-auth-data:

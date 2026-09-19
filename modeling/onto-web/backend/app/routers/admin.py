@@ -72,7 +72,13 @@ def overview(request: Request):
     ]
 
     sessions = [
-        {"project_id": pid, "state": s.state, "events": len(s.events)}
+        {
+            "project_id": pid,
+            "state": s.state,
+            "events": len(s.events),
+            "connected": s.client is not None,
+            "last_activity": s.last_activity,
+        }
         for pid, s in manager._sessions.items()
     ]
 
@@ -107,6 +113,7 @@ def overview(request: Request):
         "users": users,
         "online_count": sum(1 for u in users if u["online"]),
         "sessions": sessions,
+        "session_pool": manager.pool_status(),
         "projects": projects,
         "total_cost_usd": round(total_cost, 4),
         "errors": error_log.read(100),
@@ -167,9 +174,8 @@ def _list_backups() -> list[dict]:
     ]
 
 
-@router.post("/backup")
-def backup(request: Request):
-    _require_admin(request)
+def run_backup() -> str:
+    """打包全部 workspace（保留最近 BACKUP_KEEP 份）；手动按钮与定时调度共用。"""
     directory = _backups_dir()
     directory.mkdir(parents=True, exist_ok=True)
     dest = directory / f"workspaces-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
@@ -177,7 +183,119 @@ def backup(request: Request):
         tar.add(workspaces.workspaces_dir, arcname="workspaces")
     for old in sorted(directory.glob("*.tar.gz"), reverse=True)[BACKUP_KEEP:]:
         old.unlink(missing_ok=True)
-    return {"created": dest.name, "backups": _list_backups()}
+    return dest.name
+
+
+async def backup_scheduler_loop():
+    """定期备份（ONTO_WEB_BACKUP_INTERVAL_HOURS，0 关闭）；打包放线程避免卡事件循环。"""
+    import asyncio
+
+    interval = config.BACKUP_INTERVAL_HOURS
+    if interval <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval * 3600)
+        try:
+            await asyncio.to_thread(run_backup)
+        except Exception:
+            pass  # 单次失败不终止调度
+
+
+@router.post("/backup")
+def backup(request: Request):
+    _require_admin(request)
+    return {"created": run_backup(), "backups": _list_backups()}
+
+
+@router.post("/sessions/{project_id}/recycle")
+async def recycle_session(project_id: str, request: Request):
+    """手动回收某项目的会话子进程（续接点保留，用户下次发消息自动恢复）。"""
+    _require_admin(request)
+    recycled = await manager.recycle_project(project_id)
+    return {"recycled": recycled, "pool": manager.pool_status()}
+
+
+_cli_version_cache: str | None = None
+
+
+def _cli_version() -> str:
+    global _cli_version_cache
+    if _cli_version_cache is not None:
+        return _cli_version_cache
+    import subprocess
+
+    cli = config.CLI_PATH
+    if not cli:
+        try:
+            import claude_agent_sdk
+
+            bundled = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
+            cli = str(bundled) if bundled.is_file() else ""
+        except ImportError:
+            cli = ""
+    if not cli:
+        _cli_version_cache = ""
+        return ""
+    try:
+        result = subprocess.run(
+            [cli, "--version"], capture_output=True, text=True, timeout=15
+        )
+        _cli_version_cache = result.stdout.strip()[:80] if result.returncode == 0 else ""
+    except Exception:
+        _cli_version_cache = ""
+    return _cli_version_cache
+
+
+@router.get("/health")
+def health_detail(request: Request):
+    """健康页：SDK/CLI 版本、磁盘水位（含告警）、负载、会话池、备份调度。"""
+    _require_admin(request)
+    disk = shutil.disk_usage(config.DATA_DIR)
+    free_pct = disk.free / disk.total * 100 if disk.total else 0
+    try:
+        load = os.getloadavg()
+    except OSError:
+        load = (0, 0, 0)
+    try:
+        from importlib.metadata import version as pkg_version
+
+        sdk_version = pkg_version("claude-agent-sdk")
+    except Exception:
+        sdk_version = ""
+    backups = _list_backups()
+    return {
+        "sdk_version": sdk_version,
+        "cli_version": _cli_version(),
+        "disk": {
+            "total": disk.total,
+            "free": disk.free,
+            "free_pct": round(free_pct, 1),
+            # 磁盘水位告警：可用低于 15% 或 10G
+            "warn": free_pct < 15 or disk.free < 10 * 1024**3,
+        },
+        "load": load,
+        "pool": manager.pool_status(),
+        "backup": {
+            "interval_hours": config.BACKUP_INTERVAL_HOURS,
+            "last": backups[0] if backups else None,
+        },
+    }
+
+
+@router.get("/trash")
+def list_trash(request: Request):
+    _require_admin(request)
+    return {"entries": workspaces.list_trash()}
+
+
+class RestoreBody(BaseModel):
+    name: str
+
+
+@router.post("/trash/restore")
+def restore_trash(request: Request, body: RestoreBody):
+    _require_admin(request)
+    return workspaces.restore_trash(body.name)
 
 
 @router.get("/audit")

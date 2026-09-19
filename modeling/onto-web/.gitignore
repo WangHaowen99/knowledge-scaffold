@@ -5,3 +5,9 @@ frontend/dist/
 __pycache__/
 *.pyc
 .env
+dist/
+vendor/wheels/*
+!vendor/wheels/.gitkeep
+vendor/drawio/**
+!vendor/drawio/webapp/
+!vendor/drawio/webapp/.gitkeep

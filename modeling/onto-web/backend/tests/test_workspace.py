@@ -46,7 +46,7 @@ def test_list_and_get_project(manager: WorkspaceManager):
 def test_file_tree_skips_git_and_symlinks(manager: WorkspaceManager):
     meta = manager.create_project("t")
     root = manager.project_root(meta["id"])
-    (root / "ontology" / "object").mkdir(parents=True)
+    (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
     (root / "ontology" / "object" / "订单.md").write_text("# 订单", encoding="utf-8")
 
     tree = manager.file_tree(meta["id"])
@@ -55,7 +55,8 @@ def test_file_tree_skips_git_and_symlinks(manager: WorkspaceManager):
     assert ".git" not in names
     assert ".claude" not in names
     ontology = next(n for n in tree if n["name"] == "ontology")
-    assert ontology["children"][0]["children"][0]["path"] == "ontology/object/订单.md"
+    object_dir = next(n for n in ontology["children"] if n["name"] == "object")
+    assert any(c["path"] == "ontology/object/订单.md" for c in object_dir["children"])
 
 
 def test_read_file_and_path_guard(manager: WorkspaceManager):
@@ -98,7 +99,7 @@ def test_rename_and_delete_project(manager: WorkspaceManager):
 def test_export_and_import_roundtrip(manager: WorkspaceManager, tmp_path: Path):
     meta = manager.create_project("导出")
     root = manager.project_root(meta["id"])
-    (root / "ontology" / "object").mkdir(parents=True)
+    (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
     (root / "ontology" / "object" / "订单.md").write_text("# 订单", encoding="utf-8")
     (root / "research").mkdir(exist_ok=True)
     (root / "research" / "调研.md").write_text("调研", encoding="utf-8")

@@ -25,11 +25,22 @@ except Exception:  # mcp 包缺失等情况不阻塞主应用
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    if _mcp_asgi is not None:
-        async with _mcp_asgi.router.lifespan_context(_mcp_asgi):
+    import asyncio
+
+    from .routers.admin import backup_scheduler_loop
+    from .services.agent_sessions import manager
+
+    manager.start_background()  # 空闲会话回收（方案 4.1.1）
+    backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
+    try:
+        if _mcp_asgi is not None:
+            async with _mcp_asgi.router.lifespan_context(_mcp_asgi):
+                yield
+        else:
             yield
-    else:
-        yield
+    finally:
+        backup_task.cancel()
+        await manager.shutdown()
 
 
 app = FastAPI(title="Onto Web", version="0.1.0", lifespan=_lifespan)
@@ -98,11 +109,21 @@ async def session_error_handler(request: Request, exc: SessionError):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "agent_sdk": SDK_AVAILABLE}
+    return {"ok": True, "agent_sdk": SDK_AVAILABLE, "drawio": _drawio_available}
 
 
 if _mcp_asgi is not None:
     app.mount("/mcp-service", _mcp_asgi)
+
+# drawio 编辑器（官方 webapp 静态部署，iframe embed 协议接入；缺席时前端只读降级）
+_drawio_dir = Path(
+    os.environ.get(
+        "ONTO_WEB_DRAWIO_DIR", str(config.PACKAGE_ROOT / "vendor" / "drawio" / "webapp")
+    )
+)
+_drawio_available = (_drawio_dir / "index.html").is_file()
+if _drawio_available:
+    app.mount("/drawio", StaticFiles(directory=_drawio_dir, html=True), name="drawio")
 
 # 部署形态：前端构建产物与 API 同端口服务；开发时用 vite dev + 代理，不走这里
 _static_dir = Path(

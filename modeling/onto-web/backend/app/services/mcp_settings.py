@@ -74,11 +74,16 @@ def validate(entry: dict) -> dict:
     return cleaned
 
 
-def sdk_config() -> dict:
-    """转换为 ClaudeAgentOptions.mcp_servers 需要的 dict。"""
+def sdk_config(disabled_names: set[str] | None = None) -> dict:
+    """转换为 ClaudeAgentOptions.mcp_servers 需要的 dict。
+
+    disabled_names：项目级停用清单（全局启用的服务器可按项目关闭）。
+    """
     servers = {}
     for entry in load():
         if not entry.get("enabled", True):
+            continue
+        if disabled_names and entry["name"] in disabled_names:
             continue
         if entry["transport"] == "http":
             servers[entry["name"]] = {"type": "http", "url": entry["url"]}
@@ -91,3 +96,28 @@ def sdk_config() -> dict:
                 "args": entry.get("args", []),
             }
     return servers
+
+
+def test_server(entry: dict) -> dict:
+    """连通性测试：http/sse 探测 URL 可达（任何 HTTP 响应都算可达），
+    stdio 检查命令可执行。不做完整 MCP 握手（避免 stdio 任意命令被这里拉起）。"""
+    cleaned = validate(entry)
+    if cleaned["transport"] in ("http", "sse"):
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(cleaned["url"], method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return {"ok": True, "detail": f"HTTP {response.status}"}
+        except urllib.error.HTTPError as exc:
+            # 405/406 等也说明端点存在并在响应
+            return {"ok": True, "detail": f"HTTP {exc.code}"}
+        except Exception as exc:
+            return {"ok": False, "detail": f"连接失败：{exc}"}
+    import shutil
+
+    found = shutil.which(cleaned["command"])
+    if found:
+        return {"ok": True, "detail": f"命令可执行：{found}"}
+    return {"ok": False, "detail": f"命令不存在：{cleaned['command']}"}
