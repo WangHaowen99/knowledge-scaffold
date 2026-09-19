@@ -129,7 +129,22 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         "# 客单价\n\n基于[[订单]]金额\n", encoding="utf-8"
     )
     (root / "ontology" / "scripts" / "calc_price.py").write_text(
-        '"""计算客单价。"""\n', encoding="utf-8"
+        '"""\n'
+        "关联operation：创建订单\n"
+        "\n"
+        "功能描述：计算客单价\n"
+        "\n"
+        "输入参数：\n"
+        "    orders    list    订单列表，必填\n"
+        "    factor    float   加权因子，默认 1.0\n"
+        "\n"
+        "输出：\n"
+        "    return 客单价数值\n"
+        '"""\n'
+        "\n"
+        "def run(orders):\n"
+        "    return 0\n",
+        encoding="utf-8",
     )
     dest = tmp_path / "pkg.zip"
     manager.export_package_zip(meta["id"], dest)
@@ -162,6 +177,11 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert "resource: script" in script_doc
         # consumer load_script_catalog 要求 entrypoint，缺失会被静默剔除
         assert "entrypoint: scripts/calc_price.py" in script_doc
+        # 执行契约：绑定 operation + 参数表（consumer execute_script 按此组装 CLI）
+        assert 'bound_operation: "创建订单"' in script_doc
+        assert "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |" in script_doc
+        assert "| orders | --orders | string | 是 |  | 订单列表，必填 |" in script_doc
+        assert "| factor | --factor | number | 否 | 1.0 |" in script_doc
         assert f"{pid}/rules/index.md" in names
         assert f"{pid}/metrics/index.md" in names
 
@@ -209,3 +229,30 @@ def test_ensure_package_layout_migrates_logic_and_indexes(
     progress = manager._project_progress(root)
     assert progress["stages_done"] == 0  # 各目录只有 index.md 时不算阶段完成
     assert progress["operations"] == 1
+
+
+def test_import_transfer_zip_restores_history(manager: WorkspaceManager, tmp_path: Path):
+    meta = manager.create_project("迁移源", background="测试迁移")
+    root = manager.project_root(meta["id"])
+    (root / "research" / "note.md").write_text("# 记录\n", encoding="utf-8")
+    import subprocess
+
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "feat: 记录"], cwd=root, check=True, capture_output=True
+    )
+    archive = tmp_path / "transfer.zip"
+    manager.export_zip(meta["id"], "workspace", archive)
+
+    restored = manager.import_transfer_zip(archive, owner="alice")
+    assert restored["id"] != meta["id"]
+    assert restored["name"] == "迁移源"
+    assert restored["owner"] == "alice"
+    assert restored["background"] == "测试迁移"
+    new_root = manager.project_root(restored["id"])
+    assert (new_root / "research" / "note.md").is_file()
+    # git 历史保留（迁移包含 .git）
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=new_root, capture_output=True, text=True
+    ).stdout
+    assert "feat: 记录" in log

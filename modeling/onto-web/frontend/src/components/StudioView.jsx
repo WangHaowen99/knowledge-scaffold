@@ -205,9 +205,6 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
                 结构化编辑
               </Button>
             )}
-            <Button size="small" icon={<EditOutlined />} onClick={() => onOpenFile(entry.path)}>
-              在编辑器中打开
-            </Button>
           </div>
           {entry.links.length > 0 && (
             <div className="studio-links">

@@ -144,6 +144,8 @@ function extractText(node) {
 // ---- 产物路径实体芯片：消息/报告里的路径文本可点击打开（识别优于回忆） ----
 
 const PATH_RE = /(?:research|reports|ontology|knowledge|resource)\/[^\s`）)，。;；:"'<>|]+\.(?:md|mmd|drawio|xlsx|xlsm|html|py|csv)/g;
+// 行内代码路径判定：常见知识包目录开头 + 已知扩展名
+const INLINE_PATH_RE = /^(?:ontology|research|reports|resource)\/[^\s`]+\.(?:md|py|json|yaml|yml|csv|mmd|drawio|xlsx?|html|txt)$/i;
 
 const EXT_ICON = {
   md: '📄', mmd: '🔀', drawio: '🔀', xlsx: '📊', xlsm: '📊',
@@ -238,6 +240,15 @@ export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile
             const text = String(children ?? '');
             if (/language-mermaid/.test(className || '')) {
               return <MermaidBlock code={text} />;
+            }
+            // 行内代码若是工作区文件路径 → 可点击芯片直接在中栏打开
+            if (
+              !className &&
+              !text.includes('\n') &&
+              INLINE_PATH_RE.test(text.trim()) &&
+              (!knownPaths || knownPaths.has(text.trim()))
+            ) {
+              return <FileChip path={text.trim()} exists onOpen={onOpenFile} />;
             }
             return (
               <code className={className} {...props}>
@@ -1067,9 +1078,22 @@ export default function CenterPane({
           {file && content?.content != null && (
             <>
               <Space style={{ marginBottom: 8 }} align="center" wrap>
-                <Typography.Title level={5} style={{ margin: 0 }} className="file-title" title={file}>
-                  {file}
-                </Typography.Title>
+                <span className="file-crumb" title={file}>
+                  {file.split('/').map((seg, i, arr) =>
+                    i < arr.length - 1 ? (
+                      // eslint-disable-next-line react/no-array-index-key
+                      <span key={i} className="fc-dir">
+                        {seg}
+                        <span className="fc-sep">/</span>
+                      </span>
+                    ) : (
+                      // eslint-disable-next-line react/no-array-index-key
+                      <span key={i} className="fc-name">
+                        {seg}
+                      </span>
+                    ),
+                  )}
+                </span>
                 {content.truncated && <Tag color="warning">仅显示前 512KB</Tag>}
                 {dirty && <Tag color="warning">未保存</Tag>}
                 {!editing ? (

@@ -120,11 +120,25 @@ export const api = {
     return data;
   },
   listProjects: () => request('/api/projects'),
-  createProject: (name, template = 'blank') =>
+  createProject: (name, template = 'blank', background = '') =>
     request('/api/projects', {
       method: 'POST',
-      body: JSON.stringify({ name, template }),
+      body: JSON.stringify({ name, template, background }),
     }),
+  transferImport: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    // request() 会强加 JSON Content-Type，FormData 走裸 fetch
+    return fetch('/api/projects/transfer-import', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+    }).then(async (r) => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `导入失败 ${r.status}`);
+      return data;
+    });
+  },
   renameProject: (pid, name) =>
     request(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
   deleteProject: (pid) => request(`/api/projects/${pid}`, { method: 'DELETE' }),

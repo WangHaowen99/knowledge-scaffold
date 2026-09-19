@@ -286,6 +286,7 @@ export default function LeftPane({
           <Steps
             direction="vertical"
             size="small"
+            className="stage-steps"
             items={STAGES.map((stage, index) => ({
               status: statuses[index],
               title: (
@@ -317,6 +318,17 @@ export default function LeftPane({
             }))}
           />
           <Divider style={{ margin: '8px 0' }} />
+          {statuses.every((st, i) => st === 'finish' || STAGES[i].optional) && (
+            <Button
+              type="primary"
+              block
+              className="export-package-btn"
+              style={{ marginBottom: 8 }}
+              onClick={() => window.open(api.exportUrl(project.id, 'package'))}
+            >
+              导出知识包
+            </Button>
+          )}
           <Space wrap size={4}>
             {EXTRA_ACTIONS.map((action) => (
               <Button key={action.label} size="small" onClick={() => onCommand(action.command)}>

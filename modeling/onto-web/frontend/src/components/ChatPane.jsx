@@ -252,8 +252,6 @@ function ToolGroup({ tools }) {
       <div className="tool-group-header" onClick={() => setOpen(!open)}>
         {running ? (
           <LoadingOutlined className="tool-status running" />
-        ) : errors > 0 ? (
-          <CloseOutlined className="tool-status error" />
         ) : (
           <CheckOutlined className="tool-status ok" />
         )}
