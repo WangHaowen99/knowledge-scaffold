@@ -99,20 +99,91 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   background: var(--color-primary-soft);
 }
 
-.question-card .question-item { margin-bottom: 8px; }
-.question-card .question-text { margin-bottom: 6px; font-weight: 500; }
-.question-card .question-options { display: flex; flex-direction: column; gap: 6px; }
-.question-card .question-option {
-  border: 1px solid var(--border-default); border-radius: 8px;
-  padding: 6px 10px; cursor: pointer; transition: all var(--motion-fast, 150ms ease);
+/* 提问卡：主色渐变描边 + 序号/勾选双重状态反馈 */
+.question-card {
+  position: relative; border: 1px solid transparent; border-radius: 14px;
+  padding: 12px 14px;
+  background:
+    linear-gradient(var(--surface-card), var(--surface-card)) padding-box,
+    linear-gradient(135deg, var(--color-primary) 0%, rgba(64, 128, 255, 0.35) 45%, var(--border-default) 100%) border-box;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 10px 28px -16px rgba(37, 99, 235, 0.35);
 }
-.question-card .question-option:hover { border-color: var(--color-primary); }
+.question-card.resolved {
+  background: var(--surface-card); border-color: var(--border-default); box-shadow: none;
+}
+.qc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.qc-glyph {
+  width: 22px; height: 22px; border-radius: 8px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--color-primary), rgba(64, 128, 255, 0.75));
+  color: #fff; font-size: 13px; font-weight: 700;
+}
+.qc-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.qc-state { margin-left: auto; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.qc-state.live { color: var(--color-primary); }
+.qc-state.done { color: var(--color-success, #52c41a); }
+.qc-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  animation: qc-pulse 1.6s ease-in-out infinite;
+}
+@keyframes qc-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.75); }
+}
+.qc-topic {
+  display: inline-flex; padding: 1px 9px; border-radius: 999px; flex-shrink: 0;
+  background: var(--color-primary-soft); color: var(--color-primary);
+  font-size: 11.5px; font-weight: 500;
+}
+.question-card .question-item { margin-bottom: 10px; }
+.question-card .question-text {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 8px; font-weight: 550; font-size: 13px; line-height: 1.6;
+}
+.question-card .question-options { display: flex; flex-direction: column; gap: 7px; }
+.question-card .question-option {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left;
+  border: 1px solid var(--border-default); border-radius: 11px;
+  background: var(--surface-card); padding: 9px 12px; cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease,
+    transform 0.18s ease, opacity 0.18s ease;
+  animation: qc-opt-in 0.3s ease backwards;
+}
+@keyframes qc-opt-in {
+  from { opacity: 0; transform: translateY(5px); }
+}
+.question-card .question-option:hover:not(:disabled) {
+  border-color: var(--color-primary); transform: translateY(-1px);
+  box-shadow: 0 4px 14px -6px rgba(37, 99, 235, 0.35);
+}
 .question-card .question-option.selected {
   border-color: var(--color-primary); background: var(--color-primary-soft);
 }
-.question-card .question-option.disabled { cursor: default; opacity: 0.65; }
-.question-card .option-label { font-size: 13px; color: var(--text-primary); }
-.question-card .option-desc { font-size: 12px; color: var(--text-tertiary); }
+.question-card .question-option:disabled { cursor: default; }
+.question-card.resolved .question-option:not(.selected) { opacity: 0.5; }
+.option-index {
+  width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; margin-top: 1px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-subtle); color: var(--text-tertiary);
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.question-option.selected .option-index { background: var(--color-primary); color: #fff; }
+.option-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.question-card .option-label { font-size: 13px; font-weight: 550; color: var(--text-primary); line-height: 1.5; }
+.question-card .option-desc { font-size: 12px; color: var(--text-tertiary); line-height: 1.55; }
+.option-check {
+  align-self: center; color: var(--color-primary); font-size: 13px;
+  opacity: 0; transform: scale(0.4); transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.question-option.selected .option-check { opacity: 1; transform: scale(1); }
+.qc-custom {
+  display: flex; align-items: center; gap: 6px; margin-top: 10px;
+  border: 1px dashed var(--border-default); border-radius: 999px; padding: 2px 4px 2px 8px;
+  transition: border-color 0.18s ease;
+}
+.qc-custom:focus-within { border-color: var(--color-primary); border-style: solid; }
+.qc-custom .ant-input { font-size: 13px; }
 
 /* 助手侧内容淡入即可，避免流式→完整切换时的弹跳突兀 */
 @keyframes soft-in { from { opacity: 0; } to { opacity: 1; } }
@@ -780,7 +851,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   background: var(--color-primary-soft); border-radius: 999px;
   padding: 1px 10px; margin-bottom: 4px;
 }
-.question-card.trace-card { border-color: var(--color-primary); }
+.question-card.trace-card .qc-glyph { background: linear-gradient(135deg, #722ed1, #b37feb); }
 .question-card.trace-card .question-option { padding: 10px 14px; }
 .assistant-row { position: relative; }
 .assistant-row .distill-btn {
@@ -973,7 +1044,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 
 /* 阅读类视图限宽：超宽屏行长可读（~880px 内容列） */
 .center-narrow { max-width: 880px; }
-.md-doc { max-width: 820px; }
+.md-doc { max-width: 920px; }
 
 /* 报告列表：类型徽标 + 时间 */
 .report-item-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
@@ -1035,3 +1106,60 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .changes-card .file-chip { max-width: 168px; }
 .changes-card { padding: 7px 10px; }
 .changes-head { margin-bottom: 5px; }
+
+/* 中栏页签：滑动指示条 + 图标 */
+.center-tabs {
+  position: relative; display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--surface-subtle); border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+.center-tabs-thumb {
+  position: absolute; top: 3px; bottom: 3px; left: 0; border-radius: 9px;
+  background: var(--surface-card);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14), 0 1px 2px rgba(15, 23, 42, 0.08);
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.center-tab {
+  position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px;
+  border: none; background: none; padding: 5px 14px; border-radius: 9px;
+  font-size: 13px; color: var(--text-secondary); cursor: pointer; transition: color 0.2s ease;
+}
+.center-tab:hover { color: var(--text-primary); }
+.center-tab.on { color: var(--color-primary); font-weight: 600; }
+.center-tab-icon { display: inline-flex; font-size: 14px; }
+
+/* 知识文档排版：文档视图专用（不影响聊天气泡），标题降阶 + CJK 表格不拆字 */
+.md-doc .markdown-body { font-size: 14px; line-height: 1.8; letter-spacing: 0.01em; }
+.md-doc .markdown-body h1,
+.md-doc .markdown-body h2,
+.md-doc .markdown-body h3,
+.md-doc .markdown-body h4 { font-weight: 650; line-height: 1.45; margin: 1.5em 0 0.6em; }
+.md-doc .markdown-body h1 { font-size: 21px; padding-bottom: 8px; }
+.md-doc .markdown-body h2 { font-size: 17px; padding-bottom: 6px; }
+.md-doc .markdown-body h3 { font-size: 15px; }
+.md-doc .markdown-body h4 { font-size: 14px; }
+.md-doc .markdown-body > h1:first-child,
+.md-doc .markdown-body > h2:first-child { margin-top: 0.2em; }
+.md-doc .markdown-body p { margin: 0.8em 0; }
+.md-doc .markdown-body ul,
+.md-doc .markdown-body ol { margin: 0.6em 0; padding-left: 1.6em; }
+.md-doc .markdown-body li { margin: 0.3em 0; }
+.md-doc .markdown-body li::marker { color: var(--text-tertiary); }
+.md-doc .markdown-body table {
+  font-size: 13px; line-height: 1.6; margin: 14px 0;
+  border: 1px solid var(--border-subtle);
+}
+.md-doc .markdown-body th,
+.md-doc .markdown-body td {
+  padding: 8px 14px; word-break: keep-all; overflow-wrap: break-word;
+  border-color: var(--border-subtle);
+}
+.md-doc .markdown-body th { white-space: nowrap; font-weight: 600; color: var(--text-secondary); }
+.md-doc .markdown-body tbody tr:nth-child(even) td { background: var(--surface-subtle); }
+.md-doc .markdown-body tbody tr:hover td { background: var(--color-primary-soft); }
+.md-doc .markdown-body :not(pre) > code {
+  background: var(--surface-subtle); padding: 0.15em 0.45em; border-radius: 5px;
+}
+.md-doc .markdown-body strong { font-weight: 650; }
+.md-doc .markdown-body a { text-decoration: none; }
+.md-doc .markdown-body a:hover { text-decoration: underline; }

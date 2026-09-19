@@ -30,7 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AdminPage from './components/AdminPage.jsx';
 import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
-import LeftPane, { stageProgress } from './components/LeftPane.jsx';
+import LeftPane from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
 import { api, authStore } from './lib/api.js';
@@ -592,7 +592,6 @@ export default function App() {
     );
   }
 
-  const progress = stageProgress(tree);
 
   return (
     <div className="app-shell">
@@ -600,11 +599,6 @@ export default function App() {
         <img src="/favicon.svg" alt="" width="28" height="28" />
         <span className="brand">知识工程建模工作台</span>
         <span className="project-name">{project.name}</span>
-        {progress.current ? (
-          <Tag color="processing">{progress.current}</Tag>
-        ) : (
-          <Tag color="success">主链完成</Tag>
-        )}
         <span style={{ flex: 1 }} />
         {pendingCount > 0 && (
           <Tooltip title="对话里有待你确认的操作">

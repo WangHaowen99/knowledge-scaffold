@@ -159,8 +159,6 @@ export default function LeftPane({
   onSelectFile,
   onRefresh,
   onCommand,
-  onDiff,
-  onQuery,
   onKnowledge,
 }) {
   const [section, setSection] = useState('progress');
@@ -299,9 +297,6 @@ export default function LeftPane({
                 {action.label}
               </Button>
             ))}
-            <Button size="small" onClick={() => onQuery?.('orphans', '')}>
-              反查面板
-            </Button>
             <Button size="small" onClick={() => onKnowledge?.()}>
               知识库
             </Button>
@@ -335,17 +330,11 @@ export default function LeftPane({
                       items: [
                         { key: 'open', label: '打开' },
                         { key: 'impact', label: '影响分析' },
-                        { type: 'divider' },
-                        { key: 'used_by', label: '谁引用了它' },
-                        { key: 'search', label: '全文搜索该名称' },
-                        { key: 'knowledge', label: '相关业务知识' },
                       ],
                       onClick: ({ key, domEvent }) => {
                         domEvent.stopPropagation();
-                        const name = String(node.title).replace(/\.md$/i, '');
                         if (key === 'open') onSelectFile(node.key);
                         else if (key === 'impact') onCommand(`/ontology-impact ${node.key}`);
-                        else onQuery?.(key, name);
                       },
                     }}
                   >
@@ -482,9 +471,6 @@ export default function LeftPane({
                       </Tag>
                     ))}
                     <Space size={4} style={{ marginTop: 2 }}>
-                      <Button size="small" type="text" onClick={() => onDiff?.(v.commit)}>
-                        对比
-                      </Button>
                       <Button
                         size="small"
                         type="text"

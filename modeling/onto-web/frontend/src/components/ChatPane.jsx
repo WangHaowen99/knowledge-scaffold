@@ -1,6 +1,7 @@
 import { Bubble, Sender } from '@ant-design/x';
 import {
   ArrowDownOutlined,
+  CheckCircleFilled,
   CheckOutlined,
   CloseOutlined,
   DownOutlined,
@@ -302,39 +303,60 @@ function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
   const allAnswered = questions.every((q) => chosen[q.question]);
 
   return (
-    <Card
-      size="small"
-      className={`question-card${trace ? ' trace-card' : ''}`}
-      title={trace ? '走查分支选择' : '助手向你提问'}
-    >
+    <div className={`question-card${trace ? ' trace-card' : ''}${resolved ? ' resolved' : ''}`}>
+      <div className="qc-head">
+        <span className="qc-glyph">?</span>
+        <span className="qc-title">{trace ? '走查分支选择' : '助手向你提问'}</span>
+        {resolved ? (
+          <span className="qc-state done">
+            <CheckCircleFilled /> 已答复
+          </span>
+        ) : (
+          <span className="qc-state live">
+            <span className="qc-dot" />
+            等待你选择
+          </span>
+        )}
+      </div>
       {questions.map((q) => (
         <div key={q.question} className="question-item">
           <div className="question-text">
-            {q.header && <Tag>{q.header}</Tag>}
-            {q.question}
+            {q.header && <span className="qc-topic">{q.header}</span>}
+            <span>{q.question}</span>
           </div>
-          <div className="question-options">
-            {(q.options || []).map((opt) => {
+          <div className="question-options" role="radiogroup" aria-label={q.question}>
+            {(q.options || []).map((opt, index) => {
               const selected = (chosen[q.question] || '').split(',').includes(opt.label);
               return (
-                <div
+                <button
+                  type="button"
                   key={opt.label}
-                  className={`question-option${selected ? ' selected' : ''}${resolved ? ' disabled' : ''}`}
+                  role={q.multiSelect ? 'checkbox' : 'radio'}
+                  aria-checked={selected}
+                  className={`question-option${selected ? ' selected' : ''}`}
+                  disabled={resolved}
+                  style={{ animationDelay: `${Math.min(index * 45, 220)}ms` }}
                   onClick={() => choose(q, opt.label)}
                 >
-                  <div className="option-label">{opt.label}</div>
-                  {opt.description && <div className="option-desc">{opt.description}</div>}
-                </div>
+                  <span className="option-index">{index + 1}</span>
+                  <span className="option-main">
+                    <span className="option-label">{opt.label}</span>
+                    {opt.description && <span className="option-desc">{opt.description}</span>}
+                  </span>
+                  <span className="option-check">
+                    <CheckOutlined />
+                  </span>
+                </button>
               );
             })}
           </div>
         </div>
       ))}
       {!resolved && (
-        <Space.Compact style={{ width: '100%', marginTop: 8 }}>
+        <div className="qc-custom">
           <Input
-            size="small"
-            placeholder="或输入自定义回答"
+            placeholder="或输入自定义回答…"
+            variant="borderless"
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
             onPressEnter={() => {
@@ -344,22 +366,23 @@ function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
             }}
           />
           {multi ? (
-            <Button size="small" type="primary" disabled={!allAnswered} onClick={() => submit(chosen)}>
+            <Button size="small" type="primary" shape="round" disabled={!allAnswered} onClick={() => submit(chosen)}>
               提交
             </Button>
           ) : (
             <Button
               size="small"
+              type="primary"
+              shape="round"
               disabled={!custom.trim()}
               onClick={() => submit({ [questions[0]?.question]: custom.trim() })}
             >
               发送
             </Button>
           )}
-        </Space.Compact>
+        </div>
       )}
-      {resolved && <Typography.Text type="secondary">已答复</Typography.Text>}
-    </Card>
+    </div>
   );
 }
 
