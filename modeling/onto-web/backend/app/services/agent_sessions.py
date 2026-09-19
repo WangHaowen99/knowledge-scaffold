@@ -159,6 +159,7 @@ class Session:
     resume_attempted: bool = False
     received_any: bool = False
     last_activity: float = field(default_factory=time.time)
+    round_base_commit: str = ""  # 本轮起点 HEAD，用于 result 后产出"产物变更"事件
 
     def broadcast(self, event: dict, transient: bool = False) -> None:
         event.setdefault("ts", time.time())
@@ -244,6 +245,8 @@ class SessionManager:
             self._sessions[project_id] = session
         session.cwd = cwd
         session.last_activity = time.time()
+        if session.state != "running":
+            session.round_base_commit = await asyncio.to_thread(_git_head, cwd)
         session.broadcast({"type": "user_message", "text": text})
         if session.client is not None:
             await session.client.query(text)
@@ -315,6 +318,10 @@ class SessionManager:
                 }
             )
             prompts, session.pending_prompts = session.pending_prompts, []
+            if prompts and session.cwd:
+                session.round_base_commit = await asyncio.to_thread(
+                    _git_head, session.cwd
+                )
             for prompt in prompts:
                 await client.query(prompt)
             session.set_state("running" if prompts else "idle")
@@ -477,6 +484,7 @@ class SessionManager:
                 session.set_state("idle")
             return
         await session.client.interrupt()
+        session.broadcast({"type": "session_interrupted"})
 
     # ---- SDK 对接 ----
 
@@ -541,6 +549,30 @@ class SessionManager:
             kwargs["cli_path"] = config.CLI_PATH
         return ClaudeAgentOptions(**kwargs)
 
+    async def _emit_workspace_changes(self, session: Session) -> None:
+        """一轮结束后广播本轮产物变更（对话内"产物变更卡"的数据源）。"""
+        if not session.cwd or not session.round_base_commit:
+            return
+        try:
+            head = await asyncio.to_thread(_git_head, session.cwd)
+            if not head or head == session.round_base_commit:
+                return
+            changes = await asyncio.to_thread(
+                _git_changes, session.cwd, session.round_base_commit, head
+            )
+            if any(changes.values()):
+                session.broadcast(
+                    {
+                        "type": "workspace_changes",
+                        **changes,
+                        "from": session.round_base_commit,
+                        "to": head,
+                    }
+                )
+            session.round_base_commit = head
+        except Exception:
+            pass  # 变更卡是增强信息，失败不影响会话
+
     async def _read_loop(self, session: Session) -> None:
         try:
             async for message in session.client.receive_messages():
@@ -568,6 +600,7 @@ class SessionManager:
                         event, transient=event.get("type") == "stream_delta"
                     )
                 if event and event.get("type") == "result":
+                    await self._emit_workspace_changes(session)
                     session.set_state("idle")
         except asyncio.CancelledError:
             raise
@@ -698,6 +731,7 @@ def normalize_message(message: Any) -> dict | None:
                             "kind": "tool_result",
                             "tool_use_id": block.tool_use_id,
                             "is_error": bool(block.is_error),
+                            "excerpt": _tool_result_excerpt(block.content),
                         }
                     )
         if not blocks:
@@ -742,6 +776,60 @@ def _safe_json(value: Any) -> Any:
         return value
     except (TypeError, ValueError):
         return str(value)
+
+
+def _tool_result_excerpt(content: Any, limit: int = 400) -> str:
+    """工具结果的文本摘录（对话内展开详情用）；结构化内容取 text 块拼接。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+            elif isinstance(item, str):
+                parts.append(item)
+        text = "\n".join(parts)
+    else:
+        text = str(content)
+    text = text.strip()
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _git_head(cwd: Path) -> str:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=cwd, capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _git_changes(cwd: Path, base: str, head: str, cap: int = 50) -> dict:
+    import subprocess
+
+    changes = {"added": [], "modified": [], "deleted": []}
+    result = subprocess.run(
+        ["git", "diff", "--name-status", f"{base}..{head}"],
+        cwd=cwd, capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        return changes
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status, path = parts[0][:1], parts[-1]
+        bucket = {"A": "added", "M": "modified", "D": "deleted", "R": "modified"}.get(status)
+        if bucket and len(changes[bucket]) < cap:
+            changes[bucket].append(path)
+    return changes
 
 
 manager = SessionManager()

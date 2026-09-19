@@ -24,7 +24,7 @@ import { api } from '../lib/api.js';
 
 // 阶段定义：探测产物目录推断完成态（对应 CLI 版 detect-stage），
 // actions 是该阶段的操作入口；command 以空格结尾表示"填入输入框待补参数"
-const STAGES = [
+export const STAGES = [
   {
     key: 'research',
     title: '调研',

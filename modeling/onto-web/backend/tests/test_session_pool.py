@@ -214,3 +214,25 @@ def test_running_session_not_reaped(pool_env, tmp_path):
         await manager.shutdown()
 
     asyncio.run(scenario())
+
+
+def test_tool_result_excerpt_and_git_changes(tmp_path):
+    import subprocess
+
+    from app.services.agent_sessions import _git_changes, _git_head, _tool_result_excerpt
+
+    assert _tool_result_excerpt("hello") == "hello"
+    assert _tool_result_excerpt([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]) == "a\nb"
+    assert _tool_result_excerpt("x" * 500).endswith("…")
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                    "commit", "-q", "--allow-empty", "-m", "base"], cwd=tmp_path, check=True)
+    base = _git_head(tmp_path)
+    (tmp_path / "a.md").write_text("1", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                    "commit", "-q", "-m", "add"], cwd=tmp_path, check=True)
+    head = _git_head(tmp_path)
+    changes = _git_changes(tmp_path, base, head)
+    assert changes["added"] == ["a.md"] and changes["modified"] == []
