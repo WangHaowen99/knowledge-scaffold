@@ -222,6 +222,8 @@ Commands for the Onto Web application (`modeling/onto-web/`):
 - Install onto-web frontend dependencies: `cd modeling/onto-web/frontend && npm install`
 - Start onto-web frontend dev server: `cd modeling/onto-web/frontend && npm run dev`
 - Build onto-web frontend: `cd modeling/onto-web/frontend && npm run build`
+- Build onto-web release package: `cd modeling/onto-web && ./build.sh <version> [amd|arm]`
+- Run onto-web full stack from source: `cd modeling/onto-web && docker compose up --build`
 
 After initializing the project, Claude must update this section with real commands.
 
