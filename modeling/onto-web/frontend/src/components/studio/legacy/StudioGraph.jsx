@@ -44,7 +44,7 @@ import {
   studioVisibleElementId,
 } from './studio-model.js';
 import { fallbackStudioLayout, layoutStudioGraph } from './studio-graph-layout.js';
-// onto-web 适配：OperationFlowPanel 依赖 modeling 后端 API，不随图模块搬迁
+import OperationFlowPanel from './operation-flow/OperationFlowPanel.jsx';
 import StudioWebGLGraph from './webgl/StudioWebGLGraph.jsx';
 import {
   buildStudioRoutePresentation,
@@ -324,8 +324,9 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   const selectedObjectAttributes = selectedNode?.kind === 'object'
     ? studioGraphNodeAttributes(selectedNode, session.details)
     : [];
-  // onto-web 适配：操作流面板不迁移，恒不可见
-  const operationFlowVisible = false;
+  const operationSelectedInOperationTab = session.kind === 'operation' && selectedNode?.kind === 'operation';
+  const operationFlowVisible = operationSelectedInOperationTab
+    && dismissedOperationFlowElementId !== selectedNode.id;
 
   useEffect(() => setNodes(projectedNodes), [projectedNodes]);
 
@@ -645,8 +646,6 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
         />}
         <div className="studio-graph-legend" aria-label="图例">
         {Object.entries(KIND_META).map(([kind, meta]) => {
-          // onto-web 适配：本体只有对象/逻辑两类，无实例的 kind 不占图例位
-          if (!session.graph?.nodes?.some((node) => node.kind === kind)) return null;
           const visible = !(session.hiddenKinds || []).includes(kind);
           return (
             <button type="button" key={kind} className={visible ? '' : 'off'} aria-pressed={visible}
@@ -695,6 +694,11 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
         )}
         </div>
       </div>
+      {operationFlowVisible && selectedElement && (
+        <OperationFlowPanel key={`${session.workingRevision}:${selectedElement.id}`}
+          projectId={projectId} operation={selectedElement} workingRevision={session.workingRevision}
+          onClose={() => setDismissedOperationFlowElementId(selectedElement.id)} onOpen={onOpen} />
+      )}
     </div>
   );
 }
