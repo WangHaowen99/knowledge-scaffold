@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import StudioGraph from './legacy/StudioGraph.jsx';
 import { createStudioSession } from './legacy/studio-model.js';
 import './legacy/studio-tokens.css';
+import './legacy/studio-base.css';
 import './legacy/studio.css';
 
 /** 原版 modeling Studio 图的宿主适配层（方案 7.1"整体搬迁"）。

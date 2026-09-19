@@ -1,0 +1,15 @@
+/* 摘自 modeling workbench/base.css 的 .wb 基础规则（原样），
+   图区文字渲染与按钮重置依赖这些声明 */
+.wb {
+  height: 100%;
+  font-family: var(--font);
+  font-size: var(--t-md);
+  line-height: 1.55;
+  color: var(--c-ink);
+  background: var(--c-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+}
+.wb button, .wb input, .wb textarea, .wb select { font: inherit; color: inherit; }
+.wb button { cursor: pointer; background: none; border: none; padding: 0; }
