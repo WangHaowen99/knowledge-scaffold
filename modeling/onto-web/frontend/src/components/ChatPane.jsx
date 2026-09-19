@@ -1,25 +1,134 @@
 import { Bubble, Sender } from '@ant-design/x';
 import {
+  ArrowDownOutlined,
   CheckOutlined,
   CloseOutlined,
   DownOutlined,
   FileOutlined,
   LoadingOutlined,
+  MoreOutlined,
   PaperClipOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Card, Input, Modal, Space, Tag, Typography, Upload, message } from 'antd';
+import {
+  Alert,
+  Button,
+  Card,
+  Dropdown,
+  Input,
+  Modal,
+  Popconfirm,
+  Popover,
+  Space,
+  Tag,
+  Tooltip,
+  Typography,
+  Upload,
+  message,
+} from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
-import { Markdown } from './CenterPane.jsx';
+import { FileChip, Markdown } from './CenterPane.jsx';
+import { STAGES } from './LeftPane.jsx';
 
-const QUICK_PROMPTS = [
+// 「⋯ 更多」里的全量命令（希克定律：常显建议 ≤4，全集收进菜单）
+const ALL_COMMANDS = [
   { key: 'start', label: '开始建模', text: '/ontology' },
   { key: 'research', label: '开始调研', text: '/ontology-research ' },
   { key: 'extract-object', label: '提取对象', text: '/ontology-extract-object' },
   { key: 'extract-logic', label: '提取逻辑', text: '/ontology-extract-logic' },
   { key: 'validate', label: '校验', text: '/ontology-validate' },
+  { key: 'mock', label: '生成 Mock', text: '/ontology-mock' },
+  { key: 'trace', label: '批量追踪', text: '/ontology-trace 全部' },
+  { key: 'scan', label: '扫描脚本候选', text: '/ontology-codegen-scan' },
   { key: 'overview', label: '整体视图', text: '/ontology-overview' },
+  { key: 'update', label: '增量更新', text: '/ontology-update ' },
 ];
+
+const CONTEXT_WINDOW_TOKENS = 200000; // 上下文水位估算基准（标注"估算"）
+
+function flattenTreePaths(nodes, out = []) {
+  for (const node of nodes || []) {
+    if (node.type === 'file') out.push(node.path);
+    if (node.children) flattenTreePaths(node.children, out);
+  }
+  return out;
+}
+
+// 情境化"下一步建议"：优先级取首个主推，总数 ≤4（设计稿 §1 规则表）
+function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) {
+  if (interrupted) {
+    return [
+      { key: 'resume', primary: true, label: '继续刚才的任务', tooltip: '从打断处继续', command: '继续' },
+      { key: 'redirect', label: '换个方向', tooltip: '清空输入，重新下达指令', fill: '' },
+    ];
+  }
+  const out = [];
+  if (reportErrors) {
+    out.push({
+      key: 'fix',
+      primary: true,
+      label: `修复报告错误项（${reportErrors.count}）`,
+      tooltip: `检测到 ${reportErrors.path.split('/').pop()} 有 ${reportErrors.count} 个错误项`,
+      command: `请阅读 ${reportErrors.path}，逐条修复其中列出的错误项，完成后重新运行校验并汇报结果`,
+    });
+    out.push({ key: 'revalidate', label: '重新校验', tooltip: '重新运行完整校验', command: '/ontology-validate' });
+  } else if (
+    (meta?.resource_updated_at || 0) > (versions?.[0]?.time || 0) &&
+    paths.some((p) => p.startsWith('research/'))
+  ) {
+    out.push({
+      key: 'refresh',
+      primary: true,
+      label: '刷新受影响产物',
+      tooltip: '资料区有更新，派生产物可能已过期',
+      command: '/ontology-update 资料区有新变更，请检查并刷新受影响的产物',
+    });
+  }
+  let done = 0;
+  for (const stage of STAGES) {
+    if (stage.probe(paths)) done += 1;
+    else break;
+  }
+  const started = paths.some((p) => p.startsWith('research/') || p.startsWith('ontology/'));
+  if (!started && !out.length) {
+    out.push({ key: 'start', primary: true, label: '开始建模', tooltip: '进入引导式建模主链', command: '/ontology' });
+  }
+  if (done < STAGES.length) {
+    const next = STAGES[done];
+    for (const action of next.actions) {
+      if (out.length >= 4) break;
+      out.push({
+        key: `st-${next.key}-${action.label}`,
+        primary: !out.some((s) => s.primary),
+        label: action.label,
+        tooltip: `下一阶段：${next.title}`,
+        command: action.command,
+      });
+    }
+  } else if (out.length < 4) {
+    out.push(
+      { key: 'overview', primary: !out.some((s) => s.primary), label: '整体视图', tooltip: '主链已完成，查看整体报告', command: '/ontology-overview' },
+      { key: 'scan', label: '扫描脚本候选', tooltip: '识别可代码化的逻辑', command: '/ontology-codegen-scan' },
+    );
+  }
+  return out.slice(0, 4);
+}
+
+function relTime(ts) {
+  const diff = Date.now() / 1000 - ts;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  const date = new Date(ts * 1000);
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? date.toTimeString().slice(0, 5)
+    : date.toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function absTime(ts) {
+  return new Date(ts * 1000).toLocaleString();
+}
 
 const USER_BUBBLE_STYLE = {
   content: { background: 'var(--color-primary)', color: '#fff' },
@@ -80,25 +189,52 @@ function ThinkingBlock({ text }) {
   );
 }
 
-function ToolLine({ tool }) {
+function ToolLine({ tool, expanded, onToggle }) {
+  const hasDetail = tool.input != null || tool.excerpt;
   return (
-    <div className="tool-line">
-      {tool.status === undefined ? (
-        <LoadingOutlined className="tool-status running" />
-      ) : tool.status ? (
-        <CloseOutlined className="tool-status error" />
-      ) : (
-        <CheckOutlined className="tool-status ok" />
+    <div className="tool-item">
+      <div
+        className={`tool-line${hasDetail ? ' expandable' : ''}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (hasDetail) onToggle?.();
+        }}
+      >
+        {tool.status === undefined ? (
+          <LoadingOutlined className="tool-status running" />
+        ) : tool.status ? (
+          <CloseOutlined className="tool-status error" />
+        ) : (
+          <CheckOutlined className="tool-status ok" />
+        )}
+        <span className="tool-name">{tool.tool}</span>
+        {tool.summary && <span className="tool-arg">{tool.summary}</span>}
+        {hasDetail && <DownOutlined className={`tool-caret${expanded ? ' open' : ''}`} />}
+      </div>
+      {expanded && (
+        <div className="tool-detail msg-soft" onClick={(e) => e.stopPropagation()}>
+          {tool.input != null && (
+            <div className="tool-detail-block">
+              <div className="tool-detail-label">输入</div>
+              <pre>{JSON.stringify(tool.input, null, 2)?.slice(0, 800)}</pre>
+            </div>
+          )}
+          {tool.excerpt && (
+            <div className="tool-detail-block">
+              <div className="tool-detail-label">结果摘录</div>
+              <pre>{tool.excerpt}</pre>
+            </div>
+          )}
+        </div>
       )}
-      <span className="tool-name">{tool.tool}</span>
-      {tool.summary && <span className="tool-arg">{tool.summary}</span>}
     </div>
   );
 }
 
-// 连续的工具调用收进一个可展开的执行组，避免长任务刷屏
+// 连续的工具调用收进一个可展开的执行组，避免长任务刷屏；组内详情手风琴（一次一行）
 function ToolGroup({ tools }) {
   const [open, setOpen] = useState(false);
+  const [expandedKey, setExpandedKey] = useState(null);
   const running = tools.some((t) => t.status === undefined);
   const errors = tools.filter((t) => t.status).length;
   const latest = tools[tools.length - 1];
@@ -122,7 +258,12 @@ function ToolGroup({ tools }) {
       {open ? (
         <div className="tool-group-body">
           {tools.map((tool) => (
-            <ToolLine key={tool.key} tool={tool} />
+            <ToolLine
+              key={tool.key}
+              tool={tool}
+              expanded={expandedKey === tool.key}
+              onToggle={() => setExpandedKey(expandedKey === tool.key ? null : tool.key)}
+            />
           ))}
         </div>
       ) : (
@@ -222,7 +363,80 @@ function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
   );
 }
 
-export default function ChatPane({ project, onWorkspaceChanged, onPendingChange, registerSend }) {
+// 每轮产物变更卡：让"助手改了什么"零成本可见（设计稿 §3）
+function ChangesCard({ added, modified, deleted, total, onOpenFile, onOpenDiff }) {
+  const [expanded, setExpanded] = useState(false);
+  const entries = [
+    ...added.map((p) => ({ path: p, status: 'added' })),
+    ...modified.map((p) => ({ path: p, status: 'modified' })),
+    ...deleted.map((p) => ({ path: p, status: 'deleted' })),
+  ];
+  const shown = expanded ? entries : entries.slice(0, 3);
+  return (
+    <div className="changes-card msg-soft">
+      <div className="changes-head">
+        <span className="changes-title">
+          本轮产物变更
+          {added.length > 0 && ` · 新增 ${added.length}`}
+          {modified.length > 0 && ` · 修改 ${modified.length}`}
+          {deleted.length > 0 && ` · 删除 ${deleted.length}`}
+        </span>
+        <button type="button" className="changes-diff" onClick={onOpenDiff}>
+          查看对比
+        </button>
+      </div>
+      <div className="changes-files">
+        {shown.map((entry) => (
+          <FileChip
+            key={entry.path}
+            path={entry.path}
+            status={entry.status}
+            exists={entry.status !== 'deleted'}
+            onOpen={onOpenFile}
+          />
+        ))}
+        {!expanded && entries.length > 3 && (
+          <button type="button" className="changes-more" onClick={() => setExpanded(true)}>
+            展开全部（{total}）
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 复制按钮：自身切换"已复制"1.6s，不弹 toast 打扰
+function CopyOpButton({ text }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef(0);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard?.writeText(text).then(() => {
+          setCopied(true);
+          clearTimeout(timerRef.current);
+          timerRef.current = setTimeout(() => setCopied(false), 1600);
+        });
+      }}
+    >
+      {copied ? '✓ 已复制' : '复制'}
+    </button>
+  );
+}
+
+export default function ChatPane({
+  project,
+  tree,
+  meta,
+  versions,
+  usage,
+  onWorkspaceChanged,
+  onPendingChange,
+  onOpenFile,
+  onOpenDiff,
+  registerSend,
+}) {
   const [events, setEvents] = useState([]);
   const [live, setLive] = useState({ text: '', thinking: '' });
   const [input, setInput] = useState('');
@@ -235,12 +449,20 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
   const [dragActive, setDragActive] = useState(false);
   const [queueInfo, setQueueInfo] = useState(null); // 会话池排队位次
   const [distill, setDistill] = useState(null); // 业务知识确认卡 {name, content}
+  const [newCount, setNewCount] = useState(0); // 未读新消息（滚动锚定用）
+  const [ctxTokens, setCtxTokens] = useState(null); // 最近一轮输入侧 tokens（水位估算）
+  const [reportErrors, setReportErrors] = useState(null); // 最新校验报告的错误项统计
   const historyRef = useRef(null);
   const seenRef = useRef(new Set());
   const uidRef = useRef(0);
   const liveRef = useRef({ text: '', thinking: '' });
   const metricsRef = useRef(null);
   const rafRef = useRef(0);
+  const nearBottomRef = useRef(true);
+  const recallIndexRef = useRef(-1); // ↑ 召回历史输入的位置
+
+  const paths = useMemo(() => flattenTreePaths(tree), [tree]);
+  const knownPaths = useMemo(() => new Set(paths), [paths]);
 
   const flushLive = () => {
     rafRef.current = 0;
@@ -264,9 +486,62 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
       uid: `att-${(uidRef.current += 1)}`,
       name: file.name,
       file,
+      // 图片附件（含粘贴截图）显示缩略图而非类型图标（识别优于回忆）
+      preview: file.type?.startsWith('image/') ? URL.createObjectURL(file) : null,
     }));
     if (next.length) setAttachments((prev) => [...prev, ...next]);
   };
+
+  // 粘贴截图直接进附件（业务用户贴流程/表格截图高频）
+  const onPaste = (event) => {
+    const images = [...(event.clipboardData?.items || [])]
+      .filter((item) => item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!images.length) return; // 非图片剪贴板不拦截默认粘贴
+    event.preventDefault();
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    addFiles(
+      images.map(
+        (file, index) =>
+          new File([file], `screenshot-${stamp}${index ? `-${index}` : ''}.png`, {
+            type: file.type,
+          }),
+      ),
+    );
+  };
+
+  const removeAttachment = (uid) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.uid === uid);
+      if (target?.preview) URL.revokeObjectURL(target.preview);
+      return prev.filter((a) => a.uid !== uid);
+    });
+  };
+
+  // 最新校验/追踪报告的错误项统计（动态建议的数据源；codegen 候选报告除外）
+  useEffect(() => {
+    const reports = paths
+      .filter((p) => p.startsWith('reports/') && p.endsWith('.md') && !p.includes('codegen-candidates'))
+      .sort();
+    const latest = reports[reports.length - 1];
+    if (!latest) {
+      setReportErrors(null);
+      return undefined;
+    }
+    let active = true;
+    api
+      .reportItems(project.id, latest)
+      .then((data) => {
+        if (!active) return;
+        const count = (data.items || []).filter((i) => i.severity === 'error').length;
+        setReportErrors(count > 0 ? { path: latest, count } : null);
+      })
+      .catch(() => active && setReportErrors(null));
+    return () => {
+      active = false;
+    };
+  }, [project.id, paths]);
 
   useEffect(() => {
     setEvents([]);
@@ -316,6 +591,7 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
         const outputTokens = usage.output_tokens;
         const cacheRead = usage.cache_read_input_tokens || 0;
         const inputTokens = (usage.input_tokens || 0) + cacheRead;
+        setCtxTokens(inputTokens || null);
         if (m?.firstTs) {
           setMetrics({
             ttft: m.firstTs - m.sentTs,
@@ -345,10 +621,37 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
 
-  useEffect(() => {
+  // 滚动锚定：贴底（<80px）才自动滚；上翻阅读时不打扰，浮出"新消息"按钮
+  const reducedMotion =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const scrollToBottom = (smooth = true) => {
     const el = historyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [events, live, pending, uploads]);
+    if (el) {
+      el.scrollTo({
+        top: el.scrollHeight,
+        behavior: smooth && !reducedMotion ? 'smooth' : 'auto',
+      });
+    }
+    setNewCount(0);
+  };
+  const onHistoryScroll = () => {
+    const el = historyRef.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    nearBottomRef.current = near;
+    if (near) setNewCount(0);
+  };
+  useEffect(() => {
+    if (nearBottomRef.current) scrollToBottom(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, pending, uploads]);
+  const eventCount = events.length;
+  useEffect(() => {
+    if (nearBottomRef.current) scrollToBottom(false);
+    else setNewCount((count) => count + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventCount]);
 
   const send = async (text) => {
     const trimmed = (text || '').trim();
@@ -356,8 +659,10 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
     if (!trimmed && attachments.length === 0) return;
     const toUpload = attachments;
     setInput('');
+    recallIndexRef.current = -1;
     // 附件立即离开输入框，进入对话区变成带进度条的文件卡（并行上传）
     setAttachments([]);
+    for (const att of toUpload) if (att.preview) URL.revokeObjectURL(att.preview);
     setPending({ text: trimmed || '（发送资料）' });
     if (toUpload.length) {
       setUploading(true);
@@ -458,12 +763,17 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
     [events],
   );
 
-  // tool_use_id → is_error，用于给工具行标记完成状态
+  // tool_use_id → {isError, excerpt}，用于工具行状态与详情展开
   const toolResults = useMemo(() => {
     const map = new Map();
     for (const event of events) {
       if (event.type === 'tool_results') {
-        for (const block of event.blocks) map.set(block.tool_use_id, block.is_error);
+        for (const block of event.blocks) {
+          map.set(block.tool_use_id, {
+            isError: block.is_error,
+            excerpt: block.excerpt || '',
+          });
+        }
       }
     }
     return map;
@@ -480,25 +790,32 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
     };
     for (const event of events) {
       if (event.type === 'user_message') {
-        list.push({ key: event.seq, role: 'user', content: event.text });
+        list.push({ key: event.seq, role: 'user', content: event.text, ts: event.ts });
       } else if (event.type === 'assistant_message') {
         for (const [index, block] of event.blocks.entries()) {
           const key = `${event.seq}-${index}`;
           if (block.kind === 'tool_use') {
+            const result = toolResults.get(block.tool_use_id);
             pushTool({
               key,
               tool: block.tool,
               summary: toolSummary(block),
-              status: toolResults.get(block.tool_use_id),
+              status: result?.isError,
+              excerpt: result?.excerpt,
+              input: block.input,
             });
           } else if (event.subagent) {
             continue;
           } else if (block.kind === 'text') {
-            list.push({ key, role: 'assistant', content: block.text });
+            list.push({ key, role: 'assistant', content: block.text, ts: event.ts });
           } else if (block.kind === 'thinking' && block.text?.trim()) {
             list.push({ key, role: 'thinking', content: block.text });
           }
         }
+      } else if (event.type === 'workspace_changes') {
+        list.push({ key: event.seq, role: 'changes', content: event });
+      } else if (event.type === 'session_interrupted') {
+        list.push({ key: event.seq, role: 'system', content: '已打断' });
       } else if (event.type === 'permission_request') {
         const fingerprint = `${event.tool_name}:${JSON.stringify(event.tool_input ?? {})}`;
         const repeat = (fingerprints.get(fingerprint) || 0) + 1;
@@ -529,6 +846,72 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
 
   const hasLive = live.text || live.thinking;
 
+  // 打断后且尚未发新消息 → 建议区给出续接出口
+  const interrupted = useMemo(() => {
+    if (state === 'running' || state === 'queued') return false;
+    let lastInterrupt = -1;
+    let lastUser = -1;
+    events.forEach((event, index) => {
+      if (event.type === 'session_interrupted') lastInterrupt = index;
+      if (event.type === 'user_message') lastUser = index;
+    });
+    return lastInterrupt > lastUser;
+  }, [events, state]);
+
+  const suggestions = useMemo(
+    () => buildSuggestions({ paths, meta, versions, reportErrors, interrupted }),
+    [paths, meta, versions, reportErrors, interrupted],
+  );
+
+  // 会话状态（右栏头部常显）：空闲/生成中/执行工具/排队/出错
+  const lastItem = items[items.length - 1];
+  const toolRunning =
+    lastItem?.role === 'toolgroup' && lastItem.tools.some((t) => t.status === undefined);
+  const statusInfo =
+    state === 'queued'
+      ? { cls: 'queued', text: queueInfo ? `排队第 ${queueInfo.position} 位` : '排队中' }
+      : state === 'running'
+        ? toolRunning
+          ? { cls: 'running', text: '执行工具' }
+          : { cls: 'running breathing', text: '生成中' }
+        : state === 'error'
+          ? { cls: 'error', text: '出错了' }
+          : { cls: 'idle', text: '空闲' };
+  const ctxPct = ctxTokens ? Math.min(100, Math.round((ctxTokens / CONTEXT_WINDOW_TOKENS) * 100)) : null;
+
+  // ↑ 键召回历史输入（仅空输入框且非运行中，不抢正常光标行为）
+  const userMessages = useMemo(
+    () => items.filter((i) => i.role === 'user').map((i) => i.content),
+    [items],
+  );
+  const onRecallKey = (event) => {
+    if (state === 'running' || state === 'queued') return;
+    if (event.key === 'Escape' && recallIndexRef.current !== -1) {
+      recallIndexRef.current = -1;
+      setInput('');
+      return;
+    }
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    if (event.key === 'ArrowUp' && input !== '' && recallIndexRef.current === -1) return;
+    if (!userMessages.length) return;
+    event.preventDefault();
+    let index = recallIndexRef.current;
+    if (event.key === 'ArrowUp') {
+      index = index === -1 ? userMessages.length - 1 : Math.max(0, index - 1);
+    } else {
+      if (index === -1) return;
+      index += 1;
+      if (index >= userMessages.length) {
+        recallIndexRef.current = -1;
+        setInput('');
+        return;
+      }
+    }
+    recallIndexRef.current = index;
+    setInput(userMessages[index]);
+  };
+
+
   // 顶栏"待处理"徽标：尚未答复的确认卡/提问卡数量
   const pendingPermissions = items.filter(
     (item) => (item.role === 'permission' || item.role === 'question') && !item.resolved,
@@ -541,6 +924,7 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
   return (
     <div
       className="chat-root"
+      onPaste={onPaste}
       onDragOver={(e) => {
         e.preventDefault();
         setDragActive(true);
@@ -560,7 +944,57 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
           <div>松开以添加附件</div>
         </div>
       )}
-      <div className="chat-history" ref={historyRef}>
+      <div className="chat-header">
+        <span className={`status-dot ${statusInfo.cls}`} />
+        <span className="status-text">{statusInfo.text}</span>
+        <span style={{ flex: 1 }} />
+        {usage && usage.calls > 0 && (
+          <Popover
+            placement="bottomRight"
+            content={
+              <div className="usage-pop">
+                <div>调用 {usage.calls} 次</div>
+                <div>输入 {(usage.input_tokens / 1000).toFixed(1)}k tokens</div>
+                <div>输出 {(usage.output_tokens / 1000).toFixed(1)}k tokens</div>
+                {metrics?.done && metrics.cacheRate != null && (
+                  <div>最近一轮缓存命中 {Math.round(metrics.cacheRate * 100)}%</div>
+                )}
+              </div>
+            }
+          >
+            <span className="chat-cost">${usage.total_cost_usd.toFixed(2)}</span>
+          </Popover>
+        )}
+        {ctxPct != null && (
+          <Tooltip
+            title={`上下文约 ${ctxPct}%（估算）${ctxPct > 80 ? '，建议重启会话以压缩' : ''}`}
+          >
+            <svg className={`ctx-ring${ctxPct > 80 ? ' danger' : ctxPct > 60 ? ' warn' : ''}`} viewBox="0 0 20 20">
+              <circle className="ctx-ring-bg" cx="10" cy="10" r="8" />
+              <circle
+                className="ctx-ring-fg"
+                cx="10"
+                cy="10"
+                r="8"
+                strokeDasharray={`${(ctxPct / 100) * 50.27} 50.27`}
+                transform="rotate(-90 10 10)"
+              />
+            </svg>
+          </Tooltip>
+        )}
+        <Popconfirm
+          title="重启会话？"
+          description="历史保留；模型上下文经 resume 续接，配置按最新生效"
+          onConfirm={async () => {
+            await api.closeSession(project.id).catch(() => {});
+            setCtxTokens(null);
+            message.success('会话已重置，下次发消息生效');
+          }}
+        >
+          <Button size="small" type="text" icon={<ReloadOutlined />} title="重启会话" />
+        </Popconfirm>
+      </div>
+      <div className="chat-history" ref={historyRef} onScroll={onHistoryScroll}>
         {items.length === 0 && !hasLive && !pending && (
           <Typography.Paragraph type="secondary" style={{ padding: 12 }}>
             回复下方建议或直接输入，开始建模。
@@ -640,6 +1074,28 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
                 </Card>
               );
             }
+            if (item.role === 'changes') {
+              const { added = [], modified = [], deleted = [] } = item.content;
+              const total = added.length + modified.length + deleted.length;
+              return (
+                <ChangesCard
+                  key={item.key}
+                  added={added}
+                  modified={modified}
+                  deleted={deleted}
+                  total={total}
+                  onOpenFile={onOpenFile}
+                  onOpenDiff={() => onOpenDiff?.(item.content.from)}
+                />
+              );
+            }
+            if (item.role === 'system') {
+              return (
+                <div key={item.key} className="system-line">
+                  — {item.content} —
+                </div>
+              );
+            }
             if (item.role === 'error') {
               return (
                 <Alert
@@ -667,22 +1123,55 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
               );
             }
             const isUser = item.role === 'user';
+            if (isUser) {
+              return (
+                <div key={item.key}>
+                  {item.ts && (
+                    <div className="round-divider">
+                      <span title={absTime(item.ts)}>{relTime(item.ts)}</span>
+                    </div>
+                  )}
+                  <div className="msg-in msg-right has-time">
+                    <Bubble
+                      placement="end"
+                      variant="filled"
+                      styles={USER_BUBBLE_STYLE}
+                      content={item.content}
+                    />
+                    {item.ts && <span className="msg-time">{absTime(item.ts)}</span>}
+                  </div>
+                </div>
+              );
+            }
             return (
-              <div
-                key={item.key}
-                className={isUser ? 'msg-in msg-right' : 'msg-soft msg-left-wrap assistant-row'}
-              >
+              <div key={item.key} className="msg-soft msg-left-wrap assistant-row has-time">
                 <Bubble
-                  placement={isUser ? 'end' : 'start'}
+                  placement="start"
                   variant="filled"
-                  styles={isUser ? USER_BUBBLE_STYLE : ASSISTANT_BUBBLE_STYLE}
-                  content={isUser ? item.content : <Markdown content={item.content} />}
+                  styles={ASSISTANT_BUBBLE_STYLE}
+                  content={
+                    <Markdown
+                      content={item.content}
+                      onOpenFile={onOpenFile}
+                      knownPaths={knownPaths}
+                    />
+                  }
                 />
-                {!isUser && (
+                {item.ts && <span className="msg-time">{absTime(item.ts)}</span>}
+                <div className="msg-ops">
+                  <CopyOpButton text={item.content} />
                   <button
                     type="button"
-                    className="distill-btn"
-                    title="把这条内容沉淀为业务知识"
+                    onClick={() => {
+                      const quoted = item.content.slice(0, 120).replace(/\n+/g, ' ');
+                      setInput(`> ${quoted}${item.content.length > 120 ? '…' : ''}\n\n`);
+                      recallIndexRef.current = -1;
+                    }}
+                  >
+                    引用
+                  </button>
+                  <button
+                    type="button"
                     onClick={() =>
                       setDistill({
                         name: item.content.split('\n')[0].replace(/^#+\s*/, '').slice(0, 40),
@@ -692,7 +1181,7 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
                   >
                     沉淀知识
                   </button>
-                )}
+                </div>
               </div>
             );
           })}
@@ -742,7 +1231,9 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
                   placement="start"
                   variant="filled"
                   styles={ASSISTANT_BUBBLE_STYLE}
-                  content={<Markdown content={live.text} />}
+                  content={
+                    <Markdown content={live.text} onOpenFile={onOpenFile} knownPaths={knownPaths} />
+                  }
                 />
               )}
             </div>
@@ -752,6 +1243,11 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
           )}
         </Space>
       </div>
+      {newCount > 0 && (
+        <button type="button" className="new-msg-pill" onClick={() => scrollToBottom()}>
+          <ArrowDownOutlined /> 新消息 {newCount}
+        </button>
+      )}
       <div className="chat-footer">
         {state === 'queued' && (
           <div className="queue-banner">
@@ -784,26 +1280,50 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
             )}
           </div>
         )}
-        <div className="quick-row">
-          {QUICK_PROMPTS.map((prompt) => (
-            <button
-              key={prompt.key}
-              type="button"
-              className="quick-chip"
-              onClick={() => {
-                if (prompt.text.endsWith(' ')) setInput(prompt.text);
-                else send(prompt.text);
+        {state !== 'running' && state !== 'queued' && !uploading && (
+          <div className="quick-row msg-soft">
+            {suggestions.map((sug) => (
+              <Tooltip key={sug.key} title={sug.tooltip} mouseEnterDelay={0.4}>
+                <button
+                  type="button"
+                  className={`quick-chip${sug.primary ? ' primary' : ''}`}
+                  onClick={() => {
+                    if (sug.fill !== undefined) setInput(sug.fill);
+                    else if (sug.command.endsWith(' ')) setInput(sug.command);
+                    else send(sug.command);
+                  }}
+                >
+                  {sug.primary && <span className="chip-arrow">→</span>}
+                  {sug.label}
+                </button>
+              </Tooltip>
+            ))}
+            <Dropdown
+              menu={{
+                items: ALL_COMMANDS.map((c) => ({ key: c.key, label: c.label })),
+                onClick: ({ key }) => {
+                  const cmd = ALL_COMMANDS.find((c) => c.key === key);
+                  if (!cmd) return;
+                  if (cmd.text.endsWith(' ')) setInput(cmd.text);
+                  else send(cmd.text);
+                },
               }}
             >
-              {prompt.label}
-            </button>
-          ))}
-        </div>
+              <button type="button" className="quick-chip more" title="全部命令">
+                <MoreOutlined />
+              </button>
+            </Dropdown>
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="attach-row">
             {attachments.map((att) => (
               <div key={att.uid} className="attach-chip">
-                <FileOutlined className="attach-icon" />
+                {att.preview ? (
+                  <img className="attach-thumb" src={att.preview} alt="" />
+                ) : (
+                  <FileOutlined className="attach-icon" />
+                )}
                 <div className="attach-meta">
                   <span className="attach-name" title={att.name}>
                     {att.name}
@@ -812,15 +1332,14 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
                 </div>
                 <CloseOutlined
                   className="attach-remove"
-                  onClick={() =>
-                    setAttachments((prev) => prev.filter((a) => a.uid !== att.uid))
-                  }
+                  onClick={() => removeAttachment(att.uid)}
                 />
               </div>
             ))}
           </div>
         )}
-        <Sender
+        <div onKeyDownCapture={onRecallKey}>
+          <Sender
           value={input}
           onChange={setInput}
           onSubmit={send}
@@ -837,12 +1356,13 @@ export default function ChatPane({ project, onWorkspaceChanged, onPendingChange,
               <Button type="text" icon={<PaperClipOutlined />} />
             </Upload>
           }
-          placeholder="输入消息，可拖入文件作为资料附件"
+          placeholder="输入消息，可拖入文件或直接粘贴截图作为资料附件"
           onCancel={() => {
             // 上传阶段还没有会话消息可打断，忽略停止按钮
             if (!uploading) api.interrupt(project.id).catch(() => {});
           }}
         />
+        </div>
       </div>
       <Modal
         title="沉淀为业务知识"

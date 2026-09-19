@@ -135,11 +135,66 @@ function extractText(node) {
   return extractText(node.props?.children);
 }
 
+// ---- 产物路径实体芯片：消息/报告里的路径文本可点击打开（识别优于回忆） ----
+
+const PATH_RE = /(?:research|reports|ontology|knowledge|resource)\/[^\s`）)，。;；:"'<>|]+\.(?:md|mmd|drawio|xlsx|xlsm|html|py|csv)/g;
+
+const EXT_ICON = {
+  md: '📄', mmd: '🔀', drawio: '🔀', xlsx: '📊', xlsm: '📊',
+  html: '📈', py: '🐍', csv: '📊',
+};
+
+export function FileChip({ path, exists = true, onOpen, status }) {
+  const name = path.split('/').pop();
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  return (
+    <span
+      className={`file-chip${exists ? '' : ' missing'}${status ? ` ${status}` : ''}`}
+      title={path}
+      role="button"
+      tabIndex={0}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (exists) onOpen?.(path);
+        else message.info('文件不存在（可能已改名或删除）');
+      }}
+      onKeyDown={(e) => e.key === 'Enter' && exists && onOpen?.(path)}
+    >
+      <span className="file-chip-icon">{EXT_ICON[ext] || '📄'}</span>
+      {name}
+    </span>
+  );
+}
+
+// 在 markdown 源文本里把产物路径包成链接语法；跳过围栏代码块与行内代码
+function linkifyPaths(md) {
+  const fenceParts = md.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~)/);
+  return fenceParts
+    .map((part, i) => {
+      if (i % 2 === 1) return part; // 围栏代码块原样
+      return part
+        .split(/(`[^`\n]*`)/)
+        .map((seg, j) => {
+          if (j % 2 === 1) return seg; // 行内代码原样
+          return seg.replace(PATH_RE, (m, offset, whole) => {
+            // 已在链接/wiki 语法里的不重复包装
+            const before = whole.slice(Math.max(0, offset - 2), offset);
+            if (before.includes('[') || before.includes('(')) return m;
+            return `[${m}](#file:${encodeURIComponent(m)})`;
+          });
+        })
+        .join('');
+    })
+    .join('');
+}
+
 // memo：流式期间每帧重渲染的开销主要在 markdown 解析，内容不变时跳过
-export const Markdown = memo(function Markdown({ content, onWikiLink }) {
-  const prepared = content.replace(
-    /\[\[([^\]]+)\]\]/g,
-    (_, name) => `[${name}](#wiki:${encodeURIComponent(name)})`,
+export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile, knownPaths }) {
+  const prepared = linkifyPaths(
+    content.replace(
+      /\[\[([^\]]+)\]\]/g,
+      (_, name) => `[${name}](#wiki:${encodeURIComponent(name)})`,
+    ),
   );
   return (
     <div className="markdown-body">
@@ -155,6 +210,11 @@ export const Markdown = memo(function Markdown({ content, onWikiLink }) {
                   {children}
                 </span>
               );
+            }
+            if (href && href.startsWith('#file:')) {
+              const path = decodeURIComponent(href.slice('#file:'.length));
+              const exists = knownPaths ? knownPaths.has(path) : true;
+              return <FileChip path={path} exists={exists} onOpen={onOpenFile} />;
             }
             return (
               <a href={href} target="_blank" rel="noreferrer">
@@ -394,6 +454,7 @@ export default function CenterPane({
   const [queryLoading, setQueryLoading] = useState(false);
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
+  const knownPaths = useMemo(() => new Set(paths), [paths]);
   const reportPaths = useMemo(
     () => paths.filter((p) => p.startsWith('reports/') && p.endsWith('.md')).sort().reverse(),
     [paths],
@@ -672,6 +733,7 @@ export default function CenterPane({
               path={file}
               editorAvailable={drawioAvailable}
               onSaved={onWorkspaceChanged}
+              refreshKey={tree}
             />
           )}
           {isExcel && <ExcelView project={project} path={file} />}
@@ -715,7 +777,7 @@ export default function CenterPane({
               ) : /\.mmd$/i.test(file) ? (
                 <MermaidBlock code={content.content} />
               ) : (
-                <Markdown content={content.content} onWikiLink={openWikiLink} />
+                <Markdown content={content.content} onWikiLink={openWikiLink} onOpenFile={onOpenFile} knownPaths={knownPaths} />
               )}
             </>
           )}
@@ -811,7 +873,7 @@ export default function CenterPane({
                       </Button>
                     </Space>
                     {reportMode === 'raw' && (
-                      <Markdown content={reportContent.content} onWikiLink={openWikiLink} />
+                      <Markdown content={reportContent.content} onWikiLink={openWikiLink} onOpenFile={onOpenFile} knownPaths={knownPaths} />
                     )}
                     {reportMode === 'review' && reportItems?.type === 'codegen' && (
                       <CodegenReview
@@ -974,7 +1036,7 @@ export default function CenterPane({
           </Space>
           {queryResult && (
             <div className="query-result msg-soft">
-              <Markdown content={queryResult} onWikiLink={openWikiLink} />
+              <Markdown content={queryResult} onWikiLink={openWikiLink} onOpenFile={onOpenFile} knownPaths={knownPaths} />
             </div>
           )}
           {!queryResult && !queryLoading && (

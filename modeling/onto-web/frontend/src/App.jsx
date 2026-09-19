@@ -675,8 +675,20 @@ export default function App() {
             <div className="pane pane-right">
               <ChatPane
                 project={project}
+                tree={tree}
+                meta={project}
+                versions={versions}
+                usage={usage}
                 onWorkspaceChanged={refreshWorkspace}
                 onPendingChange={setPendingCount}
+                onOpenFile={(path) => {
+                  setSelectedFile(path);
+                  pushFocus('file');
+                }}
+                onOpenDiff={(rev) => {
+                  setDiffRev(rev);
+                  pushFocus('diff');
+                }}
                 registerSend={(fn) => {
                   chatSendRef.current = fn;
                 }}
