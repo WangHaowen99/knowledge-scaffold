@@ -40,7 +40,7 @@ class WorkspaceManager:
 
     # ---- 项目 CRUD ----
 
-    def create_project(self, name: str, owner: str = "") -> dict:
+    def create_project(self, name: str, owner: str = "", background: str = "") -> dict:
         name = (name or "").strip()
         if not name:
             raise WorkspaceError("项目名称不能为空")
@@ -68,6 +68,7 @@ class WorkspaceManager:
             "name": name,
             "created_at": int(time.time()),
             "owner": owner or "",
+            "background": (background or "").strip()[:200],
         }
         (root / META_FILE).write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -522,15 +523,87 @@ class WorkspaceManager:
                     f"{pkg}/scripts/index.md",
                     index_md("script_index", "scripts", "脚本目录", scripts, "script key"),
                 )
+                operation_keys = {key for key, _ in operations}
                 for key, code in scripts:
                     zf.writestr(f"{pkg}/scripts/{key}.py", code)
-                    # consumer 的 load_script_catalog 要求描述符声明 entrypoint，缺失会被静默排除
-                    zf.writestr(
-                        f"{pkg}/scripts/{key}.md",
-                        front("script", key, key, f"entrypoint: scripts/{key}.py\n")
-                        + f"由 /ontology-codegen 生成的确定性脚本，实现见 `{key}.py`。\n",
-                    )
+                    # consumer 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
+                    # 成为该 operation 的可执行实现；参数表驱动 CLI 参数组装。
+                    bound, params = _script_header_meta(code)
+                    extra = f"entrypoint: scripts/{key}.py\n"
+                    if bound and bound in operation_keys:
+                        extra += f"bound_operation: {q(bound)}\n"
+                    body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{key}.py`。\n"
+                    if params:
+                        rows = "".join(
+                            f"| {p['name']} | --{p['name']} | {p['type']} | {p['required']} | {p['default']} | {p['desc']} |\n"
+                            for p in params
+                        )
+                        body += (
+                            "\n## 输入参数\n\n"
+                            "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |\n"
+                            "| --- | --- | --- | --- | --- | --- |\n" + rows
+                        )
+                    zf.writestr(f"{pkg}/scripts/{key}.md", front("script", key, key, extra) + body)
         return dest_path
+
+    def import_transfer_zip(self, archive_path: Path, owner: str = "") -> dict:
+        """导入迁移包（workspace 导出 zip）：恢复完整工作区含 git 版本历史。
+
+        与 import_zip 的区别：保留 .git（但剥离 hooks，防止恶意钩子），
+        沿用原 meta 的名称与统计，仅重写 id/owner/created_at。
+        """
+        import zipfile
+
+        with zipfile.ZipFile(archive_path) as zf:
+            names = set(zf.namelist())
+            if META_FILE not in names:
+                raise WorkspaceError("不是有效的项目迁移包（缺少工作区元数据）")
+            try:
+                old_meta = json.loads(zf.read(META_FILE).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise WorkspaceError("迁移包元数据无法解析") from exc
+            name = str(old_meta.get("name") or "").strip() or "导入项目"
+            project_id = f"{_slugify(name)}-{uuid.uuid4().hex[:8]}"
+            root = self.workspaces_dir / project_id
+            root.mkdir(parents=True)
+            for info in zf.infolist():
+                parts = Path(info.filename).parts
+                if (
+                    not parts
+                    or info.filename.startswith("/")
+                    or ".." in parts
+                    or info.is_dir()
+                    or parts[0] in (".claude", "CLAUDE.md", "README.md")
+                    or (len(parts) > 1 and parts[0] == ".git" and parts[1] == "hooks")
+                ):
+                    continue
+                if (info.external_attr >> 28) == 0xA:
+                    continue  # 拒绝 zip 内符号链接
+                dest = root / info.filename
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+
+        self._mount_assets(root)
+        self._write_gitignore(root)
+        meta = {
+            **{k: v for k, v in old_meta.items() if k not in ("members",)},
+            "id": project_id,
+            "owner": owner or "",
+            "created_at": int(time.time()),
+        }
+        (root / META_FILE).write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        if not (root / ".git").is_dir():
+            _git(root, "init")
+        _git(root, "config", "user.name", "Onto Web")
+        _git(root, "config", "user.email", "onto-web@example.invalid")
+        # 保险：禁用可能随包携带的 hooks 路径配置
+        _git(root, "config", "core.hooksPath", ".git/hooks-disabled")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-m", "import: 迁移导入", "--allow-empty")
+        return meta
 
     # 导入时跳过的顶层条目：资产由本服务重新挂载；.git 不合并（v1 不保留导入方历史）
     IMPORT_SKIP_TOP = {".claude", "CLAUDE.md", "README.md", ".git", META_FILE}
@@ -864,6 +937,65 @@ class WorkspaceManager:
         if not target.is_relative_to(root_resolved):
             raise WorkspaceError("路径越界", 403)
         return target
+
+
+_SCRIPT_TYPE_MAP = {
+    "str": "string", "string": "string", "int": "number", "float": "number",
+    "number": "number", "bool": "boolean", "boolean": "boolean", "list": "string",
+}
+
+
+def _script_header_meta(code: str) -> tuple[str, list[dict]]:
+    """从 codegen 脚本头部注释提取 关联operation 与 输入参数 段。
+
+    头部契约见资产 templates/script-template.py。解析尽力而为：
+    片段脚本的 " / 步骤N" 后缀会被截断；"无" 视为不绑定。
+    """
+    doc = code.split('"""')
+    header = doc[1] if len(doc) >= 2 else ""
+    bound = ""
+    match = re.search(r"关联operation[：:]\s*(.+)", header)
+    if match:
+        bound = match.group(1).split("/")[0].strip()
+        if bound in ("无", "-", ""):
+            bound = ""
+
+    params: list[dict] = []
+    lines = header.splitlines()
+    in_params = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^输入参数[：:]\s*$", stripped):
+            in_params = True
+            continue
+        if in_params:
+            # 下一个段落标题（形如 "输出：" "依赖："）结束参数段
+            if re.match(r"^[\w\u4e00-\u9fff]+[：:]", stripped) and not stripped.startswith("-"):
+                break
+            if not stripped:
+                continue
+            fields = re.split(r"\s{2,}|\t", stripped)
+            if len(fields) < 2:
+                continue
+            name = fields[0].strip().lstrip("-").strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                continue
+            raw_type = fields[1].strip().lower()
+            desc = fields[2].strip() if len(fields) > 2 else ""
+            required = "是" if "必填" in desc else "否"
+            default = ""
+            dmatch = re.search(r"默认[值为]?\s*[：:]?\s*([^\s，。；;]+)", desc)
+            if dmatch:
+                default = dmatch.group(1)
+                required = "否"
+            params.append({
+                "name": name,
+                "type": _SCRIPT_TYPE_MAP.get(raw_type, "string"),
+                "required": required,
+                "default": default,
+                "desc": desc.replace("|", "，"),
+            })
+    return bound, params
 
 
 def _first_heading(path: Path) -> str:

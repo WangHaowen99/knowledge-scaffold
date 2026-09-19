@@ -20,6 +20,7 @@ MAX_SEARCH_HITS = 80
 class CreateProjectBody(BaseModel):
     name: str
     template: str = "blank"  # blank | example
+    background: str = ""  # 一句话目标说明（项目卡片展示）
 
 
 class RenameBody(BaseModel):
@@ -100,7 +101,9 @@ def list_projects(request: Request):
 
 @router.post("")
 def create_project(body: CreateProjectBody, request: Request):
-    meta = workspaces.create_project(body.name, owner=_request_user(request))
+    meta = workspaces.create_project(
+        body.name, owner=_request_user(request), background=body.background
+    )
     if body.template == "example":
         workspaces.seed_example(meta["id"])
     return meta
@@ -121,6 +124,18 @@ async def import_project(
         if dry_run:
             return workspaces.import_summary(tmp_path)
         return workspaces.import_zip(name, tmp_path, owner=_request_user(request))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@router.post("/transfer-import")
+async def transfer_import(request: Request, file: UploadFile = File(...)):
+    """导入项目迁移包（导出的完整工作区 zip，含版本历史）。"""
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return workspaces.import_transfer_zip(tmp_path, owner=_request_user(request))
     finally:
         tmp_path.unlink(missing_ok=True)
 

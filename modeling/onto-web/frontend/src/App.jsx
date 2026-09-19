@@ -1,10 +1,8 @@
 import {
   ArrowLeftOutlined,
-  ImportOutlined,
   InboxOutlined,
   LogoutOutlined,
   MoreOutlined,
-  PlusOutlined,
   SearchOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
@@ -23,7 +21,6 @@ import {
   Steps,
   Tag,
   Tooltip,
-  Upload,
   message,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -32,6 +29,9 @@ import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
 import LeftPane from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
+import CreatePage from './components/home/CreatePage.jsx';
+import './components/home/modeling-home.css';
+import '../src/components/studio/legacy/studio-tokens.css';
 import SettingsPage from './components/SettingsPage.jsx';
 import { api, authStore } from './lib/api.js';
 
@@ -39,6 +39,7 @@ function parseHash() {
   const hash = window.location.hash || '#/';
   if (hash.startsWith('#/settings')) return { name: 'settings' };
   if (hash.startsWith('#/admin')) return { name: 'admin' };
+  if (hash.startsWith('#/create')) return { name: 'create' };
   if (hash.startsWith('#/p/')) return { name: 'project', projectId: hash.slice(4) };
   return { name: 'home' };
 }
@@ -54,8 +55,6 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [focusStack, setFocusStack] = useState(['overview']);
   const [diffRev, setDiffRev] = useState(null);
-  const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState('');
   const [renaming, setRenaming] = useState(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchHits, setSearchHits] = useState(null);
@@ -67,6 +66,10 @@ export default function App() {
   const [diffFiles, setDiffFiles] = useState(null); // 变更卡带入对比页的文件清单
   const [recentFiles, setRecentFiles] = useState([]);
   const chatSendRef = useRef(null);
+  const [homeMenuOpen, setHomeMenuOpen] = useState(false);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const transferInputRef = useRef(null);
+  const importInputRef = useRef(null);
 
   // ---- 手写 hash 路由：刷新/深链回到原页面 ----
   useEffect(() => {
@@ -162,20 +165,6 @@ export default function App() {
     }
   }, [projectId, projectsLoaded, project]);
 
-  const createProject = async (template = 'blank') => {
-    const name = template === 'example' ? newName.trim() || '外卖订单示例' : newName;
-    try {
-      const created = await api.createProject(name, template);
-      setNewName('');
-      setCreating(false);
-      refreshProjects();
-      nav(`#/p/${created.id}`);
-      if (template === 'example') message.success('示例领域已注入，可直接体验各阶段');
-    } catch (error) {
-      message.error(error.message);
-    }
-  };
-
   // ---- 导入向导：选文件 → 内容确认（dry-run 摘要）→ 导入 ----
   const startImport = (file) => {
     setImportWiz({
@@ -237,7 +226,7 @@ export default function App() {
       { type: 'divider' },
       { key: 'export-onto', label: '导出知识包（原始产物）' },
       { key: 'export-pkg', label: '发布为知识包（供消费端导入）' },
-      { key: 'export-ws', label: '导出完整工作区' },
+      { key: 'export-ws', label: '导出迁移包（完整工作区）' },
       { type: 'divider' },
       { key: 'delete', label: '删除', danger: true },
     ],
@@ -320,122 +309,225 @@ export default function App() {
     );
   }
 
+  if (route.name === 'create') {
+    return (
+      <CreatePage
+        onBack={() => nav('#/')}
+        onCreated={(created) => {
+          refreshProjects();
+          nav(`#/p/${created.id}`);
+        }}
+      />
+    );
+  }
+
   // 深链项目：列表未加载完成前不闪首页
   if (projectId && !projectsLoaded) return null;
 
   if (route.name === 'home' || !project) {
     const activeProjects = projects.filter((p) => !p.archived);
     const archivedProjects = projects.filter((p) => p.archived);
-    const renderCard = (item, index) => (
+    const stageLabel = (item) =>
+      (item.stages_done ?? 0) >= (item.stages_total ?? 9) ? '主链完成' : `阶段 ${item.stages_done ?? 0}/${item.stages_total ?? 9}`;
+    // 卡片结构逐节点复刻 modeling ProjectList.ProjectCard
+    const renderCard = (item) => (
       <div
         key={item.id}
-        className="pj-card msg-soft"
+        className="pj-card"
         role="button"
         tabIndex={0}
-        style={{ animationDelay: `${Math.min(index + 1, 8) * 40}ms` }}
+        aria-label={`打开项目：${item.name}`}
         onClick={() => nav(`#/p/${item.id}`)}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget || !['Enter', ' '].includes(event.key)) return;
+          event.preventDefault();
+          nav(`#/p/${item.id}`);
+        }}
       >
+        <button
+          type="button"
+          className="pj-share"
+          aria-label={`共享项目：${item.name}`}
+          title="管理项目成员"
+          onClick={async (event) => {
+            event.stopPropagation();
+            try {
+              const data = await api.getMembers(item.id);
+              setMemberWiz({ project: item, members: data.members, newUser: '', newRole: 'editor' });
+            } catch (error) {
+              message.error(error.message);
+            }
+          }}
+        >
+          成员
+        </button>
         <Dropdown menu={projectMenu(item)} trigger={['click']}>
           <button
             type="button"
-            className="pj-menu"
-            aria-label="任务操作"
+            className="pj-share pj-more"
+            aria-label="更多操作"
+            title="更多操作"
             onClick={(e) => e.stopPropagation()}
           >
-            <MoreOutlined />
+            ⋯
           </button>
         </Dropdown>
+        <button
+          type="button"
+          className="pj-delete"
+          aria-label={`删除项目：${item.name}`}
+          title="删除项目"
+          onClick={(event) => {
+            event.stopPropagation();
+            removeProject(item);
+          }}
+        >
+          ×
+        </button>
         <h3 title={item.name}>{item.name}</h3>
-        <div className="pd">
-          对象 {item.objects ?? 0} · 操作 {item.operations ?? 0}
+        <div className={`pd ${item.background ? '' : 'pd-empty'}`}>
+          {item.background || `对象 ${item.objects ?? 0} · 操作 ${item.operations ?? 0}`}
         </div>
-        <div className="pj-prog">
+        <div className="pj-prog" title={stageLabel(item)}>
           <div
             className="pj-prog-in"
-            style={{
-              width: `${((item.stages_done || 0) / (item.stages_total || 8)) * 100}%`,
-            }}
+            style={{ width: `${((item.stages_done || 0) / (item.stages_total || 9)) * 100}%` }}
           />
         </div>
         <div className="pm">
-          <span>
-            阶段 {item.stages_done ?? 0}/{item.stages_total ?? 8}
-          </span>
-          <span className="pj-date">
-            {new Date(item.created_at * 1000).toLocaleDateString()}
-          </span>
+          <span className="tag tag-lang">{stageLabel(item)}</span>
+          {(item.stages_done ?? 0) >= (item.stages_total ?? 9) && <span className="tag tag-ok">可导出</span>}
+          <span className="pj-date">{new Date(item.created_at * 1000).toLocaleDateString()}</span>
         </div>
       </div>
     );
 
     return (
-      <div className="home">
-        <div className="pj-head">
-          <div>
-            <div className="home-title">
-              <span className="brand-dot" />
-              <h2>我的建模任务</h2>
+      <div className="mwr shell">
+        <div className="topbar">
+          <div className="logo"><span className="mk">知</span>知识工程建模工作台</div>
+          <span className="crumb">项目</span>
+          <div className="right">
+            <button
+              className="tb-btn"
+              disabled={transferBusy}
+              title="从其他环境导入完整项目迁移包（含版本历史）"
+              onClick={() => transferInputRef.current?.click()}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+              {transferBusy ? '导入项目…' : '导入项目'}
+            </button>
+            <input
+              ref={transferInputRef}
+              type="file"
+              accept=".zip"
+              hidden
+              onChange={async (event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (!file) return;
+                setTransferBusy(true);
+                try {
+                  const created = await api.transferImport(file);
+                  refreshProjects();
+                  nav(`#/p/${created.id}`);
+                  message.success('迁移导入完成（版本历史已保留）');
+                } catch (error) {
+                  message.error(error.message);
+                } finally {
+                  setTransferBusy(false);
+                }
+              }}
+            />
+            <button className="tb-btn" onClick={() => importInputRef.current?.click()}>
+              导入已有知识包
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".zip"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) startImport(file);
+              }}
+            />
+            {isAdmin && (
+              <button className="tb-btn" onClick={() => nav('#/admin')}>运维</button>
+            )}
+            <button className="tb-btn" onClick={() => nav('#/settings')}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              配置中心
+            </button>
+            <span className="tb-sep" />
+            <div className="tb-user">
+              <button
+                type="button"
+                className={`tb-chip ${homeMenuOpen ? 'open' : ''}`}
+                title="账号菜单"
+                onClick={() => setHomeMenuOpen((v) => !v)}
+              >
+                <span className="tb-avatar">{(authStore.username || '?').slice(0, 1).toUpperCase()}</span>
+                <span className="tb-name">{authStore.username || '本地'}</span>
+                <span className={`tb-caret ${homeMenuOpen ? 'up' : ''}`}>▾</span>
+              </button>
+              {homeMenuOpen && (
+                <div className="tb-menu">
+                  <div className="tb-menu-head">
+                    <span className="tb-avatar lg">{(authStore.username || '?').slice(0, 1).toUpperCase()}</span>
+                    <div>
+                      <div className="tb-menu-name">{authStore.username || '本地模式'}</div>
+                      <div className="tb-menu-sub">当前登录账号</div>
+                    </div>
+                  </div>
+                  <button className="tb-menu-item" onClick={logout}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    退出登录
+                  </button>
+                </div>
+              )}
             </div>
-            <p>资料分析与目标确认 → 流程图 → 对象/操作提取 → 规则与指标 → 质量检查 → 示例数据 → 场景验证 → 代码生成</p>
           </div>
-          <span style={{ flex: 1 }} />
-          <Upload accept=".zip" showUploadList={false} beforeUpload={startImport}>
-            <Button icon={<ImportOutlined />}>导入</Button>
-          </Upload>
-          {isAdmin && <Button onClick={() => nav('#/admin')}>运维</Button>}
-          <Button icon={<SettingOutlined />} onClick={() => nav('#/settings')} />
-          {avatarNode}
         </div>
-        <div className="pj-grid">
-          <div
-            className="pj-card pj-new msg-soft"
-            role="button"
-            tabIndex={0}
-            onClick={() => setCreating(true)}
-          >
-            <div className="pj-new-icon">
-              <PlusOutlined />
+        <div className="main">
+          <div className="pj-head">
+            <div>
+              <h2>建模任务与知识包</h2>
+              <p>资料分析与目标确认 → 对象/操作提取 → 规则与指标 → 质量检查 → 场景验证 → 导出交付</p>
             </div>
-            <div className="pj-new-t">新建建模任务</div>
-            <div className="pj-new-d">从空白开始，或注入示例领域体验全流程</div>
+            {activeProjects.length > 0 && <span className="pj-count">{activeProjects.length} 个任务</span>}
           </div>
-          {activeProjects.map(renderCard)}
+          {projects.length === 0 && (
+            <div className="pj-hero">
+              <span className="pj-hero-ic">✦</span>
+              <div>
+                <div className="pj-hero-t">暂无任务</div>
+                <div className="pj-hero-d">创建任务并说明建模目标，AI 将围绕目标分析资料。</div>
+              </div>
+            </div>
+          )}
+          <div className="pj-grid">
+            {activeProjects.map(renderCard)}
+            <button className="pj-card pj-new" onClick={() => nav('#/create')}>
+              <span className="pj-new-ic">＋</span>
+              <span>新建任务</span>
+            </button>
+          </div>
+          {archivedProjects.length > 0 && (
+            <Collapse
+              ghost
+              style={{ marginTop: 24, maxWidth: 1200 }}
+              items={[
+                {
+                  key: 'archived',
+                  label: <span><InboxOutlined /> 归档区（{archivedProjects.length}）</span>,
+                  children: <div className="pj-grid">{archivedProjects.map(renderCard)}</div>,
+                },
+              ]}
+            />
+          )}
         </div>
-        {projects.length === 0 && (
-          <Empty description="还没有任务" style={{ marginTop: 48 }} />
-        )}
-        {archivedProjects.length > 0 && (
-          <Collapse
-            ghost
-            style={{ marginTop: 24 }}
-            items={[
-              {
-                key: 'archived',
-                label: <span><InboxOutlined /> 归档区（{archivedProjects.length}）</span>,
-                children: <div className="pj-grid">{archivedProjects.map(renderCard)}</div>,
-              },
-            ]}
-          />
-        )}
-        <Modal
-          open={creating}
-          title="新建建模任务"
-          onCancel={() => setCreating(false)}
-          footer={null}
-        >
-          <Input
-            placeholder="任务名称，如：电商订单建模"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onPressEnter={() => createProject('blank')}
-            style={{ margin: '8px 0 16px' }}
-            autoFocus
-          />
-          <Button type="primary" onClick={() => createProject('blank')}>
-            创建空白任务
-          </Button>{' '}
-          <Button onClick={() => createProject('example')}>注入外卖订单示例</Button>
-        </Modal>
         <Modal
           open={!!renaming}
           title="重命名任务"

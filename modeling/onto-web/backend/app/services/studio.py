@@ -57,22 +57,34 @@ def graph(root: Path) -> dict:
     in_degree = {d["name"]: 0 for d in docs}
     out_degree = {d["name"]: 0 for d in docs}
 
+    texts = {}
     for doc in docs:
         try:
-            text = doc["file"].read_text(encoding="utf-8")
+            texts[doc["name"]] = doc["file"].read_text(encoding="utf-8")
         except OSError:
-            text = ""
+            texts[doc["name"]] = ""
+
+    def add_edge(source: str, target: str) -> None:
+        key = (source, target)
+        if source == target or key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": source, "target": target})
+        out_degree[source] += 1
+        in_degree[target] += 1
+
+    script_names = [d["name"] for d in docs if d["kind"] == "script"]
+    for doc in docs:
+        text = texts[doc["name"]]
         for target in WIKILINK.findall(text):
             target = target.strip()
-            if target == doc["name"] or target not in by_name:
-                continue
-            key = (doc["name"], target)
-            if key in seen_edges:
-                continue
-            seen_edges.add(key)
-            edges.append({"source": doc["name"], "target": target})
-            out_degree[doc["name"]] += 1
-            in_degree[target] += 1
+            if target in by_name:
+                add_edge(doc["name"], target)
+        # 操作/规则等文档以 `脚本名.py` 引用脚本（codegen 范式），补上这层关系
+        if doc["kind"] != "script":
+            for script in script_names:
+                if f"{script}.py" in text:
+                    add_edge(doc["name"], script)
 
     for doc in docs:
         nodes.append(
@@ -97,16 +109,24 @@ def element(root: Path, rel_path: str) -> dict:
     sections = parse_sections(text)
     intro = _intro_of(text)
 
-    links = sorted({t.strip() for t in WIKILINK.findall(text) if t.strip() != name})
+    all_docs = _docs(root)
+    links = {t.strip() for t in WIKILINK.findall(text) if t.strip() != name}
+    if target.suffix.lower() == ".md":
+        for doc in all_docs:
+            if doc["kind"] == "script" and f"{doc['name']}.py" in text:
+                links.add(doc["name"])
+    links = sorted(links)
+    is_script = target.suffix.lower() == ".py"
     backlinks = []
-    for doc in _docs(root):
+    for doc in all_docs:
         if doc["name"] == name:
             continue
         try:
             other = doc["file"].read_text(encoding="utf-8")
         except OSError:
             continue
-        if f"[[{name}" in other:
+        hit = f"[[{name}" in other or (is_script and f"{name}.py" in other)
+        if hit:
             backlinks.append({"name": doc["name"], "kind": doc["kind"], "path": doc["path"]})
 
     return {
