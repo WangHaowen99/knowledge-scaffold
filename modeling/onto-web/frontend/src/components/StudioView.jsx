@@ -299,7 +299,11 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
             size="small"
             rowKey="id"
             pagination={{ pageSize: 15, hideOnSinglePage: true }}
-            dataSource={graph.nodes}
+            dataSource={
+              query.trim()
+                ? graph.nodes.filter((n) => n.id.includes(query.trim()))
+                : graph.nodes
+            }
             onRow={(row) => ({ onClick: () => openEntry(row.path), style: { cursor: 'pointer' } })}
             columns={[
               {
