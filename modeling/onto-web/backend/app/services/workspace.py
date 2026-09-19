@@ -427,9 +427,11 @@ class WorkspaceManager:
                 )
                 for key, code in scripts:
                     zf.writestr(f"{pkg}/scripts/{key}.py", code)
+                    # consumer 的 load_script_catalog 要求描述符声明 entrypoint，缺失会被静默排除
                     zf.writestr(
                         f"{pkg}/scripts/{key}.md",
-                        front("script", key, key) + f"由 /ontology-codegen 生成的确定性脚本，实现见 `{key}.py`。\n",
+                        front("script", key, key, f"entrypoint: scripts/{key}.py\n")
+                        + f"由 /ontology-codegen 生成的确定性脚本，实现见 `{key}.py`。\n",
                     )
         return dest_path
 

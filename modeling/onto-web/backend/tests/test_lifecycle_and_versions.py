@@ -160,6 +160,8 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert f"{pid}/scripts/calc_price.py" in names
         script_doc = zf.read(f"{pid}/scripts/calc_price.md").decode("utf-8")
         assert "resource: script" in script_doc
+        # consumer load_script_catalog 要求 entrypoint，缺失会被静默剔除
+        assert "entrypoint: scripts/calc_price.py" in script_doc
         assert f"{pid}/rules/index.md" in names
         assert f"{pid}/metrics/index.md" in names
 
