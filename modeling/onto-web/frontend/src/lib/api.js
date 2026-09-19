@@ -346,12 +346,20 @@ export const api = {
     }),
   interrupt: (pid) =>
     request(`/api/projects/${pid}/session/interrupt`, { method: 'POST' }),
-  uploadResource: (pid, subdir, file, onProgress) => {
+  uploadResource: (pid, subdir, file, onProgress, purpose = 'auto', readingMode = 'on_demand') => {
     const form = new FormData();
     form.append('subdir', subdir);
     form.append('file', file);
+    form.append('purpose', purpose);
+    form.append('reading_mode', readingMode);
     return xhrUpload(`/api/projects/${pid}/resources`, form, onProgress);
   },
+  resourceDirectives: (pid) => request(`/api/projects/${pid}/resource-meta`),
+  setResourceDirective: (pid, path, purpose, readingMode = 'on_demand') =>
+    request(`/api/projects/${pid}/resource-meta`, {
+      method: 'PATCH',
+      body: JSON.stringify({ path, purpose, reading_mode: readingMode }),
+    }),
 };
 
 // fetch 拿不到上传进度，附件上传走 XHR；onProgress 收 0~1 的比例

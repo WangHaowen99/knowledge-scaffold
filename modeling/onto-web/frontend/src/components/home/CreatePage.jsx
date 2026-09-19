@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react';
 import { message } from 'antd';
 import { api } from '../../lib/api.js';
+import { MATERIAL_PURPOSES } from '../LeftPane.jsx';
 import './modeling-home.css';
 
 /* 全屏新建项目页 —— 结构与样式复刻 modeling workbench/pages/CreatePage.jsx。
-   差异仅在业务字段：onto-web 无资料用途/数据源选择，初始资料直接进 resource 区。 */
+   资料用途/精读模式随上传写入 resource/materials.json；无数据源选择（onto-web 不区分）。 */
 export default function CreatePage({ onBack, onCreated }) {
   const [over, setOver] = useState(false);
   const [files, setFiles] = useState([]);
@@ -22,10 +23,19 @@ export default function CreatePage({ onBack, onCreated }) {
         ...current,
         ...incoming
           .filter((file) => !names.has(file.name))
-          .map((file) => ({ file, name: file.name, meta: formatSize(file.size) })),
+          .map((file) => ({
+            file,
+            name: file.name,
+            meta: formatSize(file.size),
+            purpose: 'auto',
+            readingMode: 'on_demand',
+          })),
       ];
     });
   };
+
+  const updateFile = (name, patch) =>
+    setFiles((current) => current.map((item) => (item.name === name ? { ...item, ...patch } : item)));
 
   const start = async (template = 'blank') => {
     if (!name.trim() || creating) return;
@@ -34,9 +44,16 @@ export default function CreatePage({ onBack, onCreated }) {
     try {
       const created = await api.createProject(name.trim(), template, goal.trim());
       for (const item of files) {
-        // 初始资料逐个上传到资料区；失败不阻断进入项目
+        // 初始资料逐个上传到资料区（带用途标签）；失败不阻断进入项目
         await api
-          .uploadResource(created.id, autoSubdir(item.name), item.file)
+          .uploadResource(
+            created.id,
+            autoSubdir(item.name),
+            item.file,
+            undefined,
+            item.purpose,
+            item.readingMode,
+          )
           .catch((cause) => message.warning(`${item.name} 上传失败：${cause.message}`));
       }
       onCreated(created);
@@ -136,6 +153,37 @@ export default function CreatePage({ onBack, onCreated }) {
                   >
                     移除
                   </button>
+                </div>
+                <div className="wb-material-directives">
+                  <label>
+                    <span>用途</span>
+                    <select
+                      className="input"
+                      value={f.purpose}
+                      aria-label={`${f.name}的资料用途`}
+                      onChange={(event) => updateFile(f.name, { purpose: event.target.value })}
+                    >
+                      {MATERIAL_PURPOSES.map((opt) => (
+                        <option
+                          key={opt.value}
+                          value={opt.value}
+                          disabled={opt.tableOnly && !/\.(xlsx?|csv)$/i.test(f.name)}
+                        >
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="wb-material-reading">
+                    <input
+                      type="checkbox"
+                      checked={f.readingMode === 'full'}
+                      onChange={(event) =>
+                        updateFile(f.name, { readingMode: event.target.checked ? 'full' : 'on_demand' })
+                      }
+                    />
+                    <span>全文精读</span>
+                  </label>
                 </div>
               </div>
             ))}

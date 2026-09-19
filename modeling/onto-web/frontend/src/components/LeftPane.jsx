@@ -19,7 +19,7 @@ import {
   Upload,
   message,
 } from 'antd';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 
 // 阶段定义：探测产物目录推断完成态（对应 CLI 版 detect-stage），
@@ -125,6 +125,16 @@ export function stageStatuses(paths) {
   });
 }
 
+// 资料用途（对齐 modeling 的 material purpose 体系）；schema/term 仅表格类可选
+export const MATERIAL_PURPOSES = [
+  { value: 'auto', label: '由助手判断' },
+  { value: 'goal', label: '建模目标依据' },
+  { value: 'schema', label: '数据 Schema', tableOnly: true },
+  { value: 'term', label: '术语表', tableOnly: true },
+  { value: 'evidence', label: '通用业务依据' },
+];
+const isTableFile = (name) => /\.(xlsx?|csv)$/i.test(name);
+
 const EXTRA_ACTIONS = [
   { label: '整体视图', command: '/ontology-overview' },
   { label: '增量更新', command: '/ontology-update ' },
@@ -174,7 +184,8 @@ function collectResources(nodes) {
       if (
         node.type === 'file' &&
         node.path.startsWith('resource/') &&
-        node.name.toLowerCase() !== 'readme.md'
+        node.name.toLowerCase() !== 'readme.md' &&
+        node.path !== 'resource/materials.json'
       )
         files.push(node);
       if (node.children) walk(node.children);
@@ -204,6 +215,24 @@ export default function LeftPane({
   const statuses = useMemo(() => stageStatuses(paths), [paths]);
   const resources = useMemo(() => collectResources(tree), [tree]);
   const [deleting, setDeleting] = useState(null);
+  const [directives, setDirectives] = useState({});
+
+  useEffect(() => {
+    if (section !== 'resources') return;
+    api
+      .resourceDirectives(project.id)
+      .then((data) => setDirectives(data.directives || {}))
+      .catch(() => {});
+  }, [section, project.id]);
+
+  const changeDirective = async (path, purpose, readingMode) => {
+    try {
+      await api.setResourceDirective(project.id, path, purpose, readingMode);
+      setDirectives((prev) => ({ ...prev, [path]: { purpose, reading_mode: readingMode } }));
+    } catch (error) {
+      message.error(error.message);
+    }
+  };
 
   // 资料变更提醒：资料上传/删除时间晚于最近版本 → 派生产物可能过期
   const latestVersionTime = versions[0]?.time || 0;
@@ -460,13 +489,49 @@ export default function LeftPane({
                     </Popconfirm>,
                   ]}
                 >
-                  <Typography.Text
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => onSelectFile(item.path)}
-                    ellipsis
-                  >
-                    {item.path.split('/').pop()}
-                  </Typography.Text>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <Typography.Text
+                      style={{ cursor: 'pointer', display: 'block' }}
+                      onClick={() => onSelectFile(item.path)}
+                      ellipsis
+                    >
+                      {item.path.split('/').pop()}
+                    </Typography.Text>
+                    <div className="resource-directive">
+                      <Select
+                        size="small"
+                        variant="borderless"
+                        popupMatchSelectWidth={false}
+                        value={directives[item.path]?.purpose || 'auto'}
+                        onChange={(purpose) =>
+                          changeDirective(
+                            item.path,
+                            purpose,
+                            directives[item.path]?.reading_mode || 'on_demand',
+                          )
+                        }
+                        options={MATERIAL_PURPOSES.map((opt) => ({
+                          value: opt.value,
+                          label: opt.label,
+                          disabled: opt.tableOnly && !isTableFile(item.path),
+                        }))}
+                      />
+                      <label className="resource-reading">
+                        <input
+                          type="checkbox"
+                          checked={directives[item.path]?.reading_mode === 'full'}
+                          onChange={(e) =>
+                            changeDirective(
+                              item.path,
+                              directives[item.path]?.purpose || 'auto',
+                              e.target.checked ? 'full' : 'on_demand',
+                            )
+                          }
+                        />
+                        全文精读
+                      </label>
+                    </div>
+                  </div>
                 </List.Item>
               );
             }}

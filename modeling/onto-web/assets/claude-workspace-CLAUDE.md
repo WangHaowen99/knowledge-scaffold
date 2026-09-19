@@ -50,6 +50,18 @@ These rules apply to all work in this repository.
 
 8. **`resource/` is user-managed and read-only for models** — 模型可以读取 `resource/`，也可以基于 `resource/` 刷新或生成 `ontology/` 下的派生产物；但任何时候都不得创建、修改、移动或删除任意 `resource/` 目录下的文件。若源材料需要调整，必须提示用户手工修改 `resource/`。
 
+8.1 **资料用途标签（`resource/materials.json`）** — 用户可为每份资料指定用途与读取模式（对齐 modeling 的资料用途体系）。读取任何资料前先查该清单（不存在或无条目视为 `auto`）：
+
+   | purpose | 语义 | 建模约束 |
+   |---|---|---|
+   | `auto` | 由助手判断 | 按文件名/类型/内容自行判断用途 |
+   | `goal` | 建模目标依据 | 目标确认（Step 0 / 调研范围）必须优先引用该资料 |
+   | `schema` | 数据 Schema | 该表格是对象与属性的**事实来源**：对象属性清单的英文名称/类型必须来自真实表头列，逐 Sheet 覆盖、不得虚构或合并；类型与主键只能标注为推断，不得据样例行编造业务含义 |
+   | `term` | 术语表 | 对象/操作/规则/指标的命名与别名必须与术语表对齐；冲突时以术语表为准并在文档标注 |
+   | `evidence` | 通用业务依据 | 作为佐证材料按需引用，引用时注明出处文件 |
+
+   `reading_mode`：`full` = 必须全文精读后再使用；`on_demand` = 按需检索片段即可。该文件由平台维护，模型同样**不得修改**。
+
 ## Business Knowledge
 
 9. **业务知识识别守则** —

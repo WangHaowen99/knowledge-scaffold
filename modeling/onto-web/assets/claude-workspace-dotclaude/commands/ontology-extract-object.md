@@ -114,6 +114,17 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 
 > 传给 agent 时：若 `SUMMARY_PATHS` 为空，在 prompt 中写 `SUMMARY_PATHS: (无，仅基于调研报告)`；若 `REPORT_PATHS` 为空，省略该行；若 `PAIRED_EXCEL_PATHS` 为空，写 `PAIRED_EXCEL_PATHS: (无同名 Excel 补充表)`。
 
+## Step 1.6: 资料用途约束（schema / term）
+
+读取 `resource/materials.json`（不存在则跳过本步）：
+
+- 存在 `purpose=schema` 的表格时，这些表是对象与属性的**事实来源**：
+  - 每个 Sheet 对应一个候选对象，属性英文名称必须逐列取自真实表头，不得虚构、改名或合并列；
+  - 类型与主键候选只能标注为"推断"；样例行只用于类型判断，不得据此编造业务含义或必填性；
+  - 空表头、重名列、主键歧义 → 用业务化的选项询问用户，不自行决断。
+- 存在 `purpose=term` 的术语表时，对象命名、别名、属性中文名必须与术语表对齐；冲突时以术语表为准并在文档"来源"处标注。
+- `reading_mode=full` 的资料在提取前必须已全文读取。
+
 ## Step 2: Determine object mode
 
 List `ontology/object/*.md`.
