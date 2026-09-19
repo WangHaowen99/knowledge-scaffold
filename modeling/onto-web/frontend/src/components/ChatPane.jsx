@@ -35,12 +35,13 @@ import { STAGES } from './LeftPane.jsx';
 // 「⋯ 更多」里的全量命令（希克定律：常显建议 ≤4，全集收进菜单）
 const ALL_COMMANDS = [
   { key: 'start', label: '开始建模', text: '/ontology' },
-  { key: 'research', label: '开始调研', text: '/ontology-research ' },
+  { key: 'research', label: '资料分析与目标确认', text: '/ontology-research ' },
   { key: 'extract-object', label: '提取对象', text: '/ontology-extract-object' },
   { key: 'extract-operation', label: '提取操作', text: '/ontology-extract-operation' },
-  { key: 'validate', label: '校验', text: '/ontology-validate' },
-  { key: 'mock', label: '生成 Mock', text: '/ontology-mock' },
-  { key: 'trace', label: '批量追踪', text: '/ontology-trace 全部' },
+  { key: 'extract-rule-metric', label: '提取规则与指标', text: '/ontology-extract-rule-metric' },
+  { key: 'validate', label: '质量检查', text: '/ontology-validate' },
+  { key: 'mock', label: '生成示例数据', text: '/ontology-mock' },
+  { key: 'trace', label: '场景验证', text: '/ontology-trace 全部' },
   { key: 'scan', label: '扫描脚本候选', text: '/ontology-codegen-scan' },
   { key: 'overview', label: '整体视图', text: '/ontology-overview' },
   { key: 'update', label: '增量更新', text: '/ontology-update ' },
@@ -86,17 +87,22 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
       command: '/ontology-update 资料区有新变更，请检查并刷新受影响的产物',
     });
   }
-  let done = 0;
-  for (const stage of STAGES) {
-    if (stage.probe(paths)) done += 1;
-    else break;
+  // 下一步 = 第一个未完成阶段；用户已越过的可选阶段不再主推
+  const hits = STAGES.map((stage) => stage.probe(paths));
+  const lastHit = hits.lastIndexOf(true);
+  let nextIndex = -1;
+  for (let i = 0; i < STAGES.length; i += 1) {
+    if (hits[i]) continue;
+    if (STAGES[i].optional && i < lastHit) continue;
+    nextIndex = i;
+    break;
   }
   const started = paths.some((p) => p.startsWith('research/') || p.startsWith('ontology/'));
   if (!started && !out.length) {
     out.push({ key: 'start', primary: true, label: '开始建模', tooltip: '进入引导式建模主链', command: '/ontology' });
   }
-  if (done < STAGES.length) {
-    const next = STAGES[done];
+  if (nextIndex >= 0) {
+    const next = STAGES[nextIndex];
     for (const action of next.actions) {
       if (out.length >= 4) break;
       out.push({
@@ -110,7 +116,7 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
   } else if (out.length < 4) {
     out.push(
       { key: 'overview', primary: !out.some((s) => s.primary), label: '整体视图', tooltip: '主链已完成，查看整体报告', command: '/ontology-overview' },
-      { key: 'scan', label: '扫描脚本候选', tooltip: '识别可代码化的逻辑', command: '/ontology-codegen-scan' },
+      { key: 'scan', label: '扫描脚本候选', tooltip: '识别可代码化的操作', command: '/ontology-codegen-scan' },
     );
   }
   return out.slice(0, 4);
@@ -208,6 +214,7 @@ function ToolLine({ tool, expanded, onToggle }) {
         ) : (
           <CheckOutlined className="tool-status ok" />
         )}
+        {tool.sub && <span className="tool-sub-badge">子代理</span>}
         <span className="tool-name">{tool.tool}</span>
         {tool.summary && <span className="tool-arg">{tool.summary}</span>}
         {hasDetail && <DownOutlined className={`tool-caret${expanded ? ' open' : ''}`} />}
@@ -499,6 +506,9 @@ export default function ChatPane({
   const [queueInfo, setQueueInfo] = useState(null); // 会话池排队位次
   const [distill, setDistill] = useState(null); // 业务知识确认卡 {name, content}
   const [newCount, setNewCount] = useState(0); // 未读新消息（滚动锚定用）
+  const [skippedEvents, setSkippedEvents] = useState(0); // 历史截断：跳过的较早事件数
+  const [historyEpoch, setHistoryEpoch] = useState(0); // 触发全量重放
+  const fullHistoryRef = useRef(false);
   const [ctxTokens, setCtxTokens] = useState(null); // 最近一轮输入侧 tokens（水位估算）
   const [reportErrors, setReportErrors] = useState(null); // 最新校验报告的错误项统计
   const historyRef = useRef(null);
@@ -601,7 +611,12 @@ export default function ChatPane({
     seenRef.current = new Set();
     setQueueInfo(null);
     setUploads([]);
-    const source = openEventStream(project.id, (event) => {
+    setSkippedEvents(0);
+    // 只回放最近一段事件：长历史项目秒开；"查看更早"再全量重放
+    const HISTORY_TAIL = 400;
+    let source = null;
+    let cancelled = false;
+    const handleEvent = (event) => {
       if (event.type === 'queue_position') {
         setQueueInfo({ position: event.position, waiting: event.waiting });
         return;
@@ -664,11 +679,26 @@ export default function ChatPane({
         if (event.state !== 'queued') setQueueInfo(null);
       }
       if (event.type === 'result') onWorkspaceChanged?.();
-    });
-    return () => source.close();
+    };
+    api
+      .sessionState(project.id)
+      .then((info) => {
+        if (cancelled) return;
+        const total = info.events || 0;
+        const skip = fullHistoryRef.current ? 0 : Math.max(0, total - HISTORY_TAIL);
+        setSkippedEvents(skip);
+        source = openEventStream(project.id, handleEvent, skip);
+      })
+      .catch(() => {
+        if (!cancelled) source = openEventStream(project.id, handleEvent, 0);
+      });
+    return () => {
+      cancelled = true;
+      source?.close();
+    };
     // onWorkspaceChanged 变化不应重建 SSE 连接
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id]);
+  }, [project.id, historyEpoch]);
 
   // 滚动锚定：贴底（<80px）才自动滚；上翻阅读时不打扰，浮出"新消息"按钮
   const reducedMotion =
@@ -845,6 +875,20 @@ export default function ChatPane({
           const key = `${event.seq}-${index}`;
           if (block.kind === 'tool_use') {
             const result = toolResults.get(block.tool_use_id);
+            if (block.tool === 'Task' && !event.subagent) {
+              // 子代理派遣：独立卡片呈现运行状态，而不是淹没在工具行里
+              list.push({
+                key,
+                role: 'subagent',
+                description: block.input?.description || '子任务',
+                agentType: block.input?.subagent_type || '',
+                prompt: block.input?.prompt || '',
+                done: result !== undefined,
+                failed: result?.isError,
+                excerpt: result?.excerpt,
+              });
+              continue;
+            }
             pushTool({
               key,
               tool: block.tool,
@@ -852,6 +896,7 @@ export default function ChatPane({
               status: result?.isError,
               excerpt: result?.excerpt,
               input: block.input,
+              sub: !!event.subagent,
             });
           } else if (event.subagent) {
             continue;
@@ -1044,6 +1089,18 @@ export default function ChatPane({
         </Popconfirm>
       </div>
       <div className="chat-history" ref={historyRef} onScroll={onHistoryScroll}>
+        {skippedEvents > 0 && (
+          <button
+            type="button"
+            className="history-gap"
+            onClick={() => {
+              fullHistoryRef.current = true;
+              setHistoryEpoch((epoch) => epoch + 1);
+            }}
+          >
+            已折叠较早的对话记录 · 点击加载全部
+          </button>
+        )}
         {items.length === 0 && !hasLive && !pending && (
           <Typography.Paragraph type="secondary" style={{ padding: 12 }}>
             回复下方建议或直接输入，开始建模。
@@ -1160,6 +1217,36 @@ export default function ChatPane({
                 />
               );
             }
+            if (item.role === 'subagent') {
+              return (
+                <div
+                  key={item.key}
+                  className={`subagent-card${item.done ? (item.failed ? ' failed' : ' done') : ' running'}`}
+                >
+                  <span className="subagent-icon">
+                    {item.done ? (
+                      item.failed ? (
+                        <CloseOutlined />
+                      ) : (
+                        <CheckOutlined />
+                      )
+                    ) : (
+                      <LoadingOutlined />
+                    )}
+                  </span>
+                  <span className="subagent-main">
+                    <span className="subagent-title">
+                      子任务{item.done ? (item.failed ? '失败' : '完成') : '运行中'} ·{' '}
+                      {item.description}
+                    </span>
+                    {item.agentType && <span className="subagent-type">{item.agentType}</span>}
+                    {!item.done && (
+                      <span className="subagent-hint">独立子代理执行中，主对话稍后汇总结果</span>
+                    )}
+                  </span>
+                </div>
+              );
+            }
             if (item.role === 'toolgroup') {
               return (
                 <div key={item.key} className="msg-soft">
@@ -1196,7 +1283,7 @@ export default function ChatPane({
               );
             }
             return (
-              <div key={item.key} className="msg-soft msg-left-wrap assistant-row has-time">
+              <div key={item.key} className="msg-soft assistant-row">
                 <Bubble
                   placement="start"
                   variant="filled"
@@ -1209,8 +1296,8 @@ export default function ChatPane({
                     />
                   }
                 />
-                {item.ts && <span className="msg-time">{absTime(item.ts)}</span>}
                 <div className="msg-ops">
+                  {item.ts && <span className="msg-ops-time">{relTime(item.ts)}</span>}
                   <CopyOpButton text={item.content} />
                   <button
                     type="button"

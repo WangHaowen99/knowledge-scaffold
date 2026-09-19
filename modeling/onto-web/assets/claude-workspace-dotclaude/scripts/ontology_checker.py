@@ -107,6 +107,8 @@ def load_ontology(ontology_dir: Path) -> dict:
         if d.exists():
             files = d.rglob('*.md') if subdir in ('object', 'operation', 'logic') else d.glob('*.md')
             for f in sorted(files):
+                if f.name.lower() == 'index.md':
+                    continue  # 目录索引不是实体文档
                 docs[f.stem] = load_doc(f, dtype)
     return docs
 

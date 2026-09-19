@@ -186,3 +186,26 @@ def test_excel_preview_roundtrip(tmp_path: Path):
     assert sheet["rows"][0] == ["编号", "金额"]
     assert sheet["rows"][1] == ["1", "12.5"]
     assert {"row": 2, "col": 0, "rowspan": 1, "colspan": 2} in sheet["merges"]
+
+
+def test_ensure_package_layout_migrates_logic_and_indexes(
+    manager: WorkspaceManager, tmp_path: Path
+):
+    meta = manager.create_project("迁移验证")
+    root = manager.project_root(meta["id"])
+    legacy = root / "ontology" / "logic"
+    legacy.mkdir()
+    (legacy / "创建订单.md").write_text("# 创建订单\n\n步骤若干\n", encoding="utf-8")
+    (legacy / "index.md").write_text("旧占位\n", encoding="utf-8")
+
+    assert manager.ensure_package_layout(meta["id"]) is True
+    assert not legacy.exists()
+    assert (root / "ontology" / "operation" / "创建订单.md").is_file()
+    index = (root / "ontology" / "operation" / "index.md").read_text(encoding="utf-8")
+    assert "| 创建订单.md | 创建订单 |" in index
+    # 幂等：第二次无变化，也不产生新提交
+    assert manager.ensure_package_layout(meta["id"]) is False
+    # index.md 不计入进度探针与实体计数
+    progress = manager._project_progress(root)
+    assert progress["stages_done"] == 0  # 各目录只有 index.md 时不算阶段完成
+    assert progress["operations"] == 1

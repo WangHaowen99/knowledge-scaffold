@@ -194,3 +194,21 @@ def test_parse_codegen_report():
 def test_generic_report_not_misdetected():
     parsed = report_items.parse("## 规则检查结果\n\n- 缺少主键")
     assert "type" not in parsed
+
+
+def test_report_items_skips_stat_and_pass_lines():
+    from app.services import report_items
+
+    text = (
+        "## 测试设计覆盖率\n"
+        "- 判断分支总数：8\n"
+        "- 推演通过率：100%\n"
+        "- 未覆盖分支：无\n"
+        "- 场景A 主流程：pass ✅\n"
+        "## 问题清单\n"
+        "- `创建订单`：缺少『与operation的关联』章节\n"
+    )
+    parsed = report_items.parse(text)
+    assert [i["text"] for i in parsed["items"]] == [
+        "`创建订单`：缺少『与operation的关联』章节"
+    ]

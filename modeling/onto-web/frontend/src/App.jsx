@@ -376,7 +376,7 @@ export default function App() {
               <span className="brand-dot" />
               <h2>我的建模任务</h2>
             </div>
-            <p>调研 → 流程图 → 提取对象/逻辑 → 校验 → Mock → 追踪 → 代码生成</p>
+            <p>资料分析与目标确认 → 流程图 → 对象/操作提取 → 规则与指标 → 质量检查 → 示例数据 → 场景验证 → 代码生成</p>
           </div>
           <span style={{ flex: 1 }} />
           <Upload accept=".zip" showUploadList={false} beforeUpload={startImport}>

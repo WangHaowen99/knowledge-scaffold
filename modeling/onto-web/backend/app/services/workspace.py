@@ -60,11 +60,8 @@ class WorkspaceManager:
             "ontology/excel",
         )
         for rel in knowledge_dirs:
-            directory = root / rel
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / "index.md").write_text(
-                f"# {rel.rsplit('/', 1)[-1]}\n\n待生成知识包内容。\n", encoding="utf-8"
-            )
+            (root / rel).mkdir(parents=True, exist_ok=True)
+        self._refresh_indexes(root)
 
         meta = {
             "id": project_id,
@@ -83,34 +80,41 @@ class WorkspaceManager:
         _git(root, "commit", "-m", "init: 任务工作区基线", "--allow-empty")
         return meta
 
-    # 与前端阶段定义保持一致的目录探针（顺序推进，遇到第一个未完成即停）
-    # ontology/logic 是旧目录别名（范式升级 ADR-0004），探针两者取或
-    STAGE_DIRS = (
-        "research",
-        "ontology/diagrams",
-        "ontology/object",
-        "ontology/operation",
-        "reports",
-        "ontology/data-mock",
-        "ontology/testcase",
-        "ontology/scripts",
+    # 与前端阶段定义保持一致的目录探针：可选阶段未完成时跳过继续，
+    # 必选阶段未完成即停。index.md 是目录索引，不算产物。
+    # ontology/logic 是旧目录别名（范式升级 ADR-0004），探针两者取或。
+    STAGES = (
+        (("research",), False),
+        (("ontology/diagrams",), True),
+        (("ontology/object",), False),
+        (("ontology/operation", "ontology/logic"), False),
+        (("ontology/rule", "ontology/metric"), True),
+        (("reports",), False),
+        (("ontology/data-mock",), False),
+        (("ontology/testcase",), False),
+        (("ontology/scripts",), True),
     )
-    STAGE_DIR_ALIASES = {"ontology/operation": "ontology/logic"}
-    STAGE_TOTAL = len(STAGE_DIRS)
+    STAGE_TOTAL = len(STAGES)
+
+    @staticmethod
+    def _dir_has_entries(directory: Path) -> bool:
+        if not directory.is_dir():
+            return False
+        return any(
+            entry
+            for entry in directory.iterdir()
+            if not entry.name.startswith(".") and entry.name.lower() != "index.md"
+        )
 
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
         done = 0
-        for rel in cls.STAGE_DIRS:
-            candidates = [rel, cls.STAGE_DIR_ALIASES.get(rel)]
-            hit = False
-            for candidate in filter(None, candidates):
-                directory = root / candidate
-                if directory.is_dir() and any(directory.iterdir()):
-                    hit = True
-                    break
+        for dirs, optional in cls.STAGES:
+            hit = any(cls._dir_has_entries(root / rel) for rel in dirs)
             if hit:
                 done += 1
+            elif optional:
+                continue
             else:
                 break
 
@@ -118,7 +122,9 @@ class WorkspaceManager:
             directory = root / rel
             if not directory.is_dir():
                 return 0
-            return sum(1 for f in directory.glob("*.md"))
+            return sum(
+                1 for f in directory.glob("*.md") if f.name.lower() != "index.md"
+            )
 
         return {
             "stages_done": done,
@@ -191,10 +197,101 @@ class WorkspaceManager:
             raise WorkspaceError("项目不存在", 404)
         return root
 
+    # ---- 知识包目录规范化（范式升级 ADR-0004）----
+
+    # 目录索引标题；index.md 采用 modeling 发布包风格的清单表格
+    INDEX_DIRS = (
+        ("ontology/object", "对象目录"),
+        ("ontology/operation", "操作目录"),
+        ("ontology/rule", "规则目录"),
+        ("ontology/metric", "指标目录"),
+        ("ontology/data-mock", "示例数据目录"),
+        ("ontology/testcase", "场景用例目录"),
+        ("ontology/scripts", "脚本目录"),
+        ("ontology/diagrams", "流程图目录"),
+        ("ontology/diagrams-summary", "流程图摘要目录"),
+        ("ontology/mermaid", "Mermaid 图目录"),
+        ("ontology/excel", "表格资料目录"),
+        ("research", "资料分析目录"),
+        ("reports", "报告目录"),
+    )
+
+    def ensure_package_layout(self, project_id: str) -> bool:
+        """迁移旧 ontology/logic 目录并刷新各目录 index.md。
+
+        仅当工作区原本干净时才提交版本；agent 会话中途的改动留给
+        agent 自己的提交收编，避免交叉提交打断其暂存状态。
+        """
+        root = self.project_root(project_id)
+        was_clean = not _git(root, "status", "--porcelain").strip()
+        changed = self._migrate_legacy_logic(root)
+        changed = self._refresh_indexes(root) or changed
+        if changed and was_clean:
+            _git(root, "add", "-A")
+            _git(root, "commit", "-m", "chore: 知识包目录规范化（operation 目录与索引）")
+        return changed
+
+    @staticmethod
+    def _migrate_legacy_logic(root: Path) -> bool:
+        legacy = root / "ontology" / "logic"
+        if not legacy.is_dir():
+            return False
+        target = root / "ontology" / "operation"
+        target.mkdir(parents=True, exist_ok=True)
+        changed = False
+        for entry in sorted(legacy.iterdir()):
+            if entry.name.lower() == "index.md":
+                entry.unlink()
+                changed = True
+                continue
+            dest = target / entry.name
+            if dest.exists():
+                continue  # 同名冲突保留原位人工处理，不覆盖
+            entry.rename(dest)
+            changed = True
+        if not any(legacy.iterdir()):
+            legacy.rmdir()
+            changed = True
+        return changed
+
+    def _refresh_indexes(self, root: Path) -> bool:
+        changed = False
+        for rel, title in self.INDEX_DIRS:
+            directory = root / rel
+            if not directory.is_dir():
+                continue
+            rows = []
+            for entry in sorted(directory.iterdir()):
+                if (
+                    entry.name.startswith(".")
+                    or entry.is_dir()
+                    or entry.name.lower() == "index.md"
+                ):
+                    continue
+                label = (
+                    _first_heading(entry) or entry.stem
+                    if entry.suffix.lower() == ".md"
+                    else entry.stem
+                )
+                rows.append(f"| {entry.name} | {label} |\n")
+            content = f"# {title}\n\n| 文件 | 标题 |\n| --- | --- |\n" + "".join(rows)
+            index_path = directory / "index.md"
+            existing = (
+                index_path.read_text(encoding="utf-8") if index_path.is_file() else None
+            )
+            if existing != content:
+                index_path.write_text(content, encoding="utf-8")
+                changed = True
+        return changed
+
     # ---- 文件 ----
 
     def file_tree(self, project_id: str) -> list[dict]:
         root = self.project_root(project_id)
+        try:
+            self.ensure_package_layout(project_id)
+        except Exception:
+            pass  # 规范化失败不阻断浏览（下次访问重试）
 
         def walk(directory: Path, rel: str) -> list[dict]:
             nodes = []
@@ -767,6 +864,21 @@ class WorkspaceManager:
         if not target.is_relative_to(root_resolved):
             raise WorkspaceError("路径越界", 403)
         return target
+
+
+def _first_heading(path: Path) -> str:
+    """markdown 首个一级标题作 index 清单的标题列；读不到则退回文件名。"""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for _ in range(20):
+                line = fh.readline()
+                if not line:
+                    break
+                if line.startswith("# "):
+                    return line[2:].strip()[:80]
+    except OSError:
+        pass
+    return ""
 
 
 def _slugify(name: str) -> str:

@@ -272,7 +272,7 @@ STAGE_ORDER = [
 
 
 def _has_md_files(path: Path) -> bool:
-    return path.exists() and any(path.rglob('*.md'))
+    return path.exists() and any(f for f in path.rglob('*.md') if f.name.lower() != 'index.md')
 
 
 def _has_drawio_files(path: Path) -> bool:
