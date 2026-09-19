@@ -30,6 +30,8 @@ def _docs(root: Path) -> list[dict]:
         if not directory.is_dir():
             continue
         for path in sorted(directory.glob("*.md")):
+            if path.name == "index.md":  # 工作区占位 index 不是本体元素
+                continue
             docs.append(
                 {
                     "name": path.stem,

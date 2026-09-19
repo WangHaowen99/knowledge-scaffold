@@ -1030,3 +1030,8 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 /* 预览高度改用动态视口单位（收栏/窄屏更稳） */
 .html-preview { height: calc(100dvh - 210px); }
 .excel-scroll { max-height: calc(100dvh - 250px); }
+
+/* 变更卡精致化：芯片更紧凑，长名截断不撑行 */
+.changes-card .file-chip { max-width: 168px; }
+.changes-card { padding: 7px 10px; }
+.changes-head { margin-bottom: 5px; }

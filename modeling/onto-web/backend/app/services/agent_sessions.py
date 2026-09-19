@@ -815,8 +815,9 @@ def _git_changes(cwd: Path, base: str, head: str, cap: int = 50) -> dict:
     import subprocess
 
     changes = {"added": [], "modified": [], "deleted": []}
+    # core.quotepath=false：中文路径按 UTF-8 原样输出，不做 C 风格八进制转义
     result = subprocess.run(
-        ["git", "diff", "--name-status", f"{base}..{head}"],
+        ["git", "-c", "core.quotepath=false", "diff", "--name-status", f"{base}..{head}"],
         cwd=cwd, capture_output=True, text=True, timeout=15,
     )
     if result.returncode != 0:
@@ -825,7 +826,7 @@ def _git_changes(cwd: Path, base: str, head: str, cap: int = 50) -> dict:
         parts = line.split("\t")
         if len(parts) < 2:
             continue
-        status, path = parts[0][:1], parts[-1]
+        status, path = parts[0][:1], parts[-1].strip().strip('"')
         bucket = {"A": "added", "M": "modified", "D": "deleted", "R": "modified"}.get(status)
         if bucket and len(changes[bucket]) < cap:
             changes[bucket].append(path)

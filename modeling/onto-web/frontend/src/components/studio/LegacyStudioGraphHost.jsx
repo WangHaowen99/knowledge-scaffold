@@ -60,7 +60,8 @@ export default function LegacyStudioGraphHost({ project, graph, query, onOpenEnt
   );
 
   return (
-    <div className="legacy-studio-host">
+    // wb = modeling 工作台的样式作用域根类：原版 studio.css 与 tokens 全部以 .wb 前缀限定
+    <div className="legacy-studio-host wb">
       <StudioGraph
         projectId={project.id}
         session={session}
