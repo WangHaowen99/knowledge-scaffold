@@ -14,13 +14,16 @@ import {
   ReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Button, Empty, Table, Tag, Typography, message } from 'antd';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Empty, Spin, Table, Tag, Typography, message } from 'antd';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { Markdown } from './CenterPane.jsx';
 import StudioEntryEditor from './StudioEntryEditor.jsx';
 
-// 大本体降级阈值：超过后关闭 MiniMap/只渲染视口内元素，保持交互流畅
+// WebGL 大图运行时按需加载（pixi 体积大，不进默认 chunk）
+const StudioBigGraph = lazy(() => import('./studio/StudioBigGraph.jsx'));
+
+// 超过阈值自动切 WebGL 大图（Pixi + Worker 力导）；也可手动切换
 const BIG_GRAPH_NODES = 150;
 
 // 与 modeling 工作台 Studio 相同的 kind 视觉体系（对象=圆形，逻辑沿用"操作"的绿色圆角矩形）
@@ -82,6 +85,10 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [renderMode, setRenderMode] = useState('auto'); // auto | flow | webgl
+  const useWebgl =
+    renderMode === 'webgl' ||
+    (renderMode === 'auto' && graph.nodes.length > BIG_GRAPH_NODES);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -207,6 +214,16 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
         <span className="studio-count">
           {graph.nodes.length} 元素 · {graph.edges.length} 关联
         </span>
+        {view === 'graph' && (
+          <Button
+            size="small"
+            type="text"
+            title={useWebgl ? '切回标准视图（适合小图精细交互）' : '切到 WebGL 大图（适合上千节点）'}
+            onClick={() => setRenderMode(useWebgl ? 'flow' : 'webgl')}
+          >
+            {useWebgl ? 'WebGL' : '标准'}
+          </Button>
+        )}
         <Button
           size="small"
           type="text"
@@ -216,7 +233,34 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
         />
       </div>
 
-      {view === 'graph' && (
+      {view === 'graph' && useWebgl && (
+        <div className="studio-graph">
+          <Suspense fallback={<Spin style={{ margin: 48 }} />}>
+            <StudioBigGraph
+              graph={graph}
+              kindMeta={KIND_META}
+              query={query}
+              selected={selected}
+              onNodeClick={(id) => {
+                setSelected(id);
+                const path = pathByName.get(id);
+                if (path) openEntry(path);
+              }}
+            />
+          </Suspense>
+          <div className="studio-graph-legend">
+            {Object.entries(KIND_META).map(([kind, meta]) => (
+              <button key={kind} type="button">
+                <i className={`studio-swatch ${kind}`} style={{ background: meta.soft }} />
+                {meta.label}
+                <small>{kindCounts[kind] || 0}</small>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {view === 'graph' && !useWebgl && (
         <div className="studio-graph">
           <ReactFlow
             nodes={flowNodes}

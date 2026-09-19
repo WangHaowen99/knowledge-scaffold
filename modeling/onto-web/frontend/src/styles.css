@@ -821,3 +821,34 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 }
 .assistant-row:hover .distill-btn { opacity: 1; }
 .assistant-row .distill-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
+
+/* ---- Studio WebGL 大图 ---- */
+.studio-biggraph {
+  position: relative; height: 100%; min-height: 420px;
+  border-radius: 12px; overflow: hidden; background: var(--surface-page);
+}
+.studio-biggraph canvas { display: block; }
+.studio-biggraph-loading {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; background: color-mix(in srgb, var(--surface-page) 70%, transparent);
+}
+
+/* ---- codegen 候选评审 ---- */
+.codegen-card {
+  display: flex; gap: 10px; align-items: flex-start;
+  border: 1px solid var(--border-subtle); border-radius: 10px;
+  padding: 10px 12px; margin-bottom: 8px; cursor: pointer;
+  background: var(--surface-card); transition: border-color .15s;
+}
+.codegen-card:hover { border-color: var(--color-primary); }
+.codegen-card.checked { border-color: var(--color-primary); background: var(--color-primary-soft); }
+.codegen-main { flex: 1; min-width: 0; }
+.codegen-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.codegen-id { color: var(--text-tertiary); font-size: 12px; }
+.codegen-io { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.codegen-io code {
+  background: var(--surface-subtle); border-radius: 4px; padding: 0 6px; font-size: 12px;
+}
+.codegen-note { color: var(--text-tertiary); font-size: 12px; margin-top: 3px; }
+.codegen-fold { margin-top: 10px; color: var(--text-secondary); font-size: 13px; }
+.codegen-fold summary { cursor: pointer; user-select: none; margin-bottom: 4px; }
