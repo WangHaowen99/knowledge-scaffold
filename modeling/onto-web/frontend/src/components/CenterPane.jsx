@@ -1,10 +1,14 @@
 import {
   ApartmentOutlined,
+  AppstoreOutlined,
   ArrowLeftOutlined,
+  BookOutlined,
   CheckOutlined,
   CopyOutlined,
   DatabaseOutlined,
+  DeploymentUnitOutlined,
   FileSearchOutlined,
+  FileTextOutlined,
   HistoryOutlined,
 } from '@ant-design/icons';
 import {
@@ -28,7 +32,7 @@ import {
 import 'highlight.js/styles/atom-one-light.css';
 // 暗色模式的代码高亮覆盖在 styles.css（[data-theme='dark'] .hljs-*）
 import mermaid from 'mermaid';
-import { Suspense, lazy, memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
@@ -342,6 +346,48 @@ function reportMeta(path) {
   const time = match ? `${match[2]}-${match[3]} ${match[4]}:${match[5]}` : '';
   const title = match ? name.slice(16).replace(/^-/, '') : name;
   return { type, time, title: title || name };
+}
+
+// 中栏页签：滑动指示条 + 图标，替代默认 Segmented 的朴素样式
+function CenterTabs({ value, onChange, items }) {
+  const barRef = useRef(null);
+  const [indicator, setIndicator] = useState(null);
+  useLayoutEffect(() => {
+    const active = barRef.current?.querySelector('[data-active="true"]');
+    if (!active) {
+      setIndicator(null);
+      return;
+    }
+    const left = active.offsetLeft;
+    const width = active.offsetWidth;
+    setIndicator((prev) =>
+      prev && prev.left === left && prev.width === width ? prev : { left, width },
+    );
+  });
+  return (
+    <div className="center-tabs" ref={barRef} role="tablist">
+      {indicator && (
+        <span
+          className="center-tabs-thumb"
+          style={{ transform: `translateX(${indicator.left}px)`, width: indicator.width }}
+        />
+      )}
+      {items.map((item) => (
+        <button
+          key={item.value}
+          type="button"
+          role="tab"
+          aria-selected={value === item.value}
+          data-active={value === item.value}
+          className={`center-tab${value === item.value ? ' on' : ''}`}
+          onClick={() => onChange(item.value)}
+        >
+          <span className="center-tab-icon">{item.icon}</span>
+          <span className="center-tab-label">{item.label}</span>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 // markdown 长文档目录：≥4 个标题时右侧浮动
@@ -842,26 +888,25 @@ export default function CenterPane({
             title="返回上一个视图"
           />
         )}
-        <Segmented
+        <CenterTabs
           value={focus}
           // 页签是平级切换（重置返回栈）；只有下钻动作（打开文件/对比/评审）才入栈
+          // 对比/报告/反查暂不露出（保留内部路由，入口后续再开）
           onChange={(next) => (onFocusPlain || onFocus)(next)}
-          options={[
-            { label: '概览', value: 'overview' },
-            { label: 'Studio', value: 'studio' },
+          items={[
+            { label: '概览', value: 'overview', icon: <AppstoreOutlined /> },
+            { label: 'Studio', value: 'studio', icon: <DeploymentUnitOutlined /> },
             {
               label: file
-                ? `文件 · ${(() => {
+                ? (() => {
                     const name = file.split('/').pop();
-                    return name.length > 10 ? `${name.slice(0, 9)}…` : name;
-                  })()}`
+                    return name.length > 12 ? `${name.slice(0, 11)}…` : name;
+                  })()
                 : '文件',
               value: 'file',
+              icon: <FileTextOutlined />,
             },
-            { label: '对比', value: 'diff' },
-            { label: '报告', value: 'reports' },
-            { label: '知识', value: 'knowledge' },
-            { label: '反查', value: 'query' },
+            { label: '知识', value: 'knowledge', icon: <BookOutlined /> },
           ]}
         />
       </Space>
