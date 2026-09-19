@@ -24,11 +24,17 @@ import { api } from '../lib/api.js';
 
 // 阶段定义：探测产物目录推断完成态（对应 CLI 版 detect-stage），
 // actions 是该阶段的操作入口；command 以空格结尾表示"填入输入框待补参数"
+// 目录内只有 index.md（目录索引）时不算有产物
+const hasEntry = (paths, ...prefixes) =>
+  paths.some(
+    (p) => prefixes.some((prefix) => p.startsWith(prefix)) && !p.endsWith('/index.md'),
+  );
+
 export const STAGES = [
   {
     key: 'research',
-    title: '调研',
-    probe: (paths) => paths.some((p) => p.startsWith('research/')),
+    title: '资料分析与目标确认',
+    probe: (paths) => hasEntry(paths, 'research/'),
     actions: [
       { label: '联网调研', command: '/ontology-research ' },
       { label: '仅本地资料', command: '/ontology-research 仅基于本地文档 ' },
@@ -38,7 +44,8 @@ export const STAGES = [
   {
     key: 'flowchart',
     title: '流程图（可选）',
-    probe: (paths) => paths.some((p) => p.startsWith('ontology/diagrams/')),
+    optional: true,
+    probe: (paths) => hasEntry(paths, 'ontology/diagrams/'),
     actions: [
       { label: '创建/打磨流程图', command: '/ontology-flowchart' },
       { label: '全量刷新', command: '/ontology-flowchart 全量刷新' },
@@ -48,7 +55,7 @@ export const STAGES = [
   {
     key: 'object',
     title: '对象提取',
-    probe: (paths) => paths.some((p) => p.startsWith('ontology/object/')),
+    probe: (paths) => hasEntry(paths, 'ontology/object/'),
     actions: [
       { label: '提取对象', command: '/ontology-extract-object' },
       { label: '迁移提取', command: '迁移提取业务对象 ' },
@@ -58,35 +65,42 @@ export const STAGES = [
     key: 'operation',
     title: '操作提取',
     // ontology/logic 为旧目录兼容（范式升级 ADR-0004）
-    probe: (paths) =>
-      paths.some((p) => p.startsWith('ontology/operation/') || p.startsWith('ontology/logic/')),
+    probe: (paths) => hasEntry(paths, 'ontology/operation/', 'ontology/logic/'),
     actions: [{ label: '提取操作', command: '/ontology-extract-operation' }],
   },
   {
+    key: 'rulemetric',
+    title: '规则与指标（可选）',
+    optional: true,
+    probe: (paths) => hasEntry(paths, 'ontology/rule/', 'ontology/metric/'),
+    actions: [{ label: '提取规则与指标', command: '/ontology-extract-rule-metric' }],
+  },
+  {
     key: 'validate',
-    title: '校验',
-    probe: (paths) => paths.some((p) => p.startsWith('reports/')),
-    actions: [{ label: '运行校验', command: '/ontology-validate' }],
+    title: '质量检查',
+    probe: (paths) => hasEntry(paths, 'reports/'),
+    actions: [{ label: '运行质量检查', command: '/ontology-validate' }],
   },
   {
     key: 'mock',
-    title: 'Mock 数据',
-    probe: (paths) => paths.some((p) => p.startsWith('ontology/data-mock/')),
-    actions: [{ label: '生成 Mock', command: '/ontology-mock' }],
+    title: '示例数据',
+    probe: (paths) => hasEntry(paths, 'ontology/data-mock/'),
+    actions: [{ label: '生成示例数据', command: '/ontology-mock' }],
   },
   {
     key: 'trace',
-    title: '场景追踪',
-    probe: (paths) => paths.some((p) => p.startsWith('ontology/testcase/')),
+    title: '场景验证',
+    probe: (paths) => hasEntry(paths, 'ontology/testcase/'),
     actions: [
-      { label: '批量追踪', command: '/ontology-trace 全部' },
+      { label: '批量验证', command: '/ontology-trace 全部' },
       { label: '交互走查', command: '/ontology-trace 交互' },
     ],
   },
   {
     key: 'codegen',
     title: '代码生成（可选）',
-    probe: (paths) => paths.some((p) => p.startsWith('ontology/scripts/')),
+    optional: true,
+    probe: (paths) => hasEntry(paths, 'ontology/scripts/'),
     actions: [
       { label: '扫描候选', command: '/ontology-codegen-scan' },
       { label: '生成脚本', command: '/ontology-codegen ' },
@@ -94,9 +108,25 @@ export const STAGES = [
   },
 ];
 
+// 每个阶段的展示状态：可选阶段未完成不阻塞后续（finish/process/wait）
+export function stageStatuses(paths) {
+  const hits = STAGES.map((stage) => stage.probe(paths));
+  let firstPending = -1;
+  for (let i = 0; i < STAGES.length; i += 1) {
+    if (!hits[i] && !STAGES[i].optional) {
+      firstPending = i;
+      break;
+    }
+  }
+  return STAGES.map((stage, i) => {
+    if (hits[i]) return 'finish';
+    if (i === firstPending) return 'process';
+    return 'wait';
+  });
+}
+
 const EXTRA_ACTIONS = [
   { label: '整体视图', command: '/ontology-overview' },
-  { label: '规则与指标', command: '/ontology-extract-rule-metric' },
   { label: '增量更新', command: '/ontology-update ' },
 ];
 
@@ -111,12 +141,10 @@ function flattenPaths(nodes, out = []) {
 // 供 App 顶栏与概览复用：从产物树推断阶段进度
 export function stageProgress(tree) {
   const paths = flattenPaths(tree);
-  let done = 0;
-  for (const stage of STAGES) {
-    if (stage.probe(paths)) done += 1;
-    else break;
-  }
-  const current = done < STAGES.length ? STAGES[done].title : null;
+  const statuses = stageStatuses(paths);
+  const done = statuses.filter((status) => status === 'finish').length;
+  const pending = statuses.indexOf('process');
+  const current = pending >= 0 ? STAGES[pending].title : null;
   return { done, total: STAGES.length, current };
 }
 
@@ -143,7 +171,12 @@ function collectResources(nodes) {
   const files = [];
   const walk = (list) => {
     for (const node of list) {
-      if (node.type === 'file' && node.path.startsWith('resource/')) files.push(node);
+      if (
+        node.type === 'file' &&
+        node.path.startsWith('resource/') &&
+        node.name.toLowerCase() !== 'readme.md'
+      )
+        files.push(node);
       if (node.children) walk(node.children);
     }
   };
@@ -168,14 +201,7 @@ export default function LeftPane({
   const [tagging, setTagging] = useState(null); // {commit, label}
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
-  const doneCount = useMemo(() => {
-    let count = 0;
-    for (const stage of STAGES) {
-      if (stage.probe(paths)) count += 1;
-      else break;
-    }
-    return count;
-  }, [paths]);
+  const statuses = useMemo(() => stageStatuses(paths), [paths]);
   const resources = useMemo(() => collectResources(tree), [tree]);
   const [deleting, setDeleting] = useState(null);
 
@@ -260,8 +286,8 @@ export default function LeftPane({
           <Steps
             direction="vertical"
             size="small"
-            current={doneCount}
             items={STAGES.map((stage, index) => ({
+              status: statuses[index],
               title: (
                 <span
                   style={{ cursor: 'pointer' }}
@@ -279,8 +305,8 @@ export default function LeftPane({
                       <Button
                         key={action.label}
                         size="small"
-                        type={index === doneCount ? 'primary' : 'default'}
-                        ghost={index === doneCount}
+                        type={statuses[index] === 'process' ? 'primary' : 'default'}
+                        ghost={statuses[index] === 'process'}
                         onClick={() => onCommand(action.command)}
                       >
                         {action.label}

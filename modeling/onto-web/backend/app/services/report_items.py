@@ -12,6 +12,9 @@ ITEM_RE = re.compile(r"^\s*(?:[-*]|\d+[.、)])\s+(.+)$")
 HEADING_RE = re.compile(r"^(#{2,4})\s+(.+)$")
 WARN_HINT = re.compile(r"警告|⚠|warning|建议|提示", re.IGNORECASE)
 OK_HINT = re.compile(r"^(无|通过|无问题|没有问题|全部通过|0 个|无孤立|无失效)")
+# 统计行（"判断分支总数：8""推演通过率：100%""未覆盖分支：无"）与通过行不是缺陷条目
+STAT_HINT = re.compile(r"[：:]\s*(?:\d+(?:\.\d+)?%?|无)\s*$")
+PASS_HINT = re.compile(r"(?:pass|通过)\s*[✅✓]?\s*$", re.IGNORECASE)
 
 
 def parse(text: str) -> dict:
@@ -33,6 +36,8 @@ def parse(text: str) -> dict:
             continue
         content = match.group(1).strip()
         if not content or OK_HINT.match(content):
+            continue
+        if STAT_HINT.search(content) or PASS_HINT.search(content):
             continue
         items.append(
             {

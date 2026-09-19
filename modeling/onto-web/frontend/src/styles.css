@@ -972,30 +972,30 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 }
 .round-divider span { padding: 0 10px; font-size: 11px; }
 .has-time { position: relative; }
+.msg-right.has-time { margin-top: 14px; }
 .msg-time {
   position: absolute; top: -14px; font-size: 11px; color: var(--text-tertiary);
   opacity: 0; transition: opacity 150ms ease; pointer-events: none;
 }
 .msg-right .msg-time,
 .msg-right.has-time .msg-time { right: 4px; }
-.assistant-row .msg-time { left: 4px; }
 .has-time:hover .msg-time { opacity: 1; }
 
-/* 助手消息操作条 */
+/* 助手消息操作条：流内占位（不遮挡上下内容），时间常显、按钮悬停浮现 */
 .msg-ops {
-  position: absolute; left: 8px; bottom: -20px; display: inline-flex; gap: 2px;
-  background: var(--surface-card); border: 1px solid var(--border-default);
-  border-radius: 999px; padding: 1px 4px; opacity: 0;
-  transition: opacity 150ms ease; z-index: 2;
-  box-shadow: 0 2px 8px rgba(16, 24, 40, .08);
+  display: flex; align-items: center; gap: 2px;
+  margin: 5px 0 0 6px; min-height: 20px;
 }
-.assistant-row:hover .msg-ops { opacity: 1; }
+.msg-ops-time { font-size: 11px; color: var(--text-tertiary); margin-right: 8px; }
 .msg-ops button {
   border: none; background: none; color: var(--text-tertiary); font-size: 11px;
   padding: 2px 7px; cursor: pointer; border-radius: 999px;
+  opacity: 0; transition: opacity 150ms ease, color 150ms ease;
 }
+.assistant-row:hover .msg-ops button,
+.msg-ops button:focus-visible { opacity: 1; }
 .msg-ops button:hover { color: var(--color-primary); background: var(--color-primary-soft); }
-.assistant-row { margin-bottom: 14px; }
+.assistant-row { margin-bottom: 4px; }
 
 /* 工具详情展开 */
 .tool-line.expandable { cursor: pointer; }
@@ -1163,3 +1163,41 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .md-doc .markdown-body strong { font-weight: 650; }
 .md-doc .markdown-body a { text-decoration: none; }
 .md-doc .markdown-body a:hover { text-decoration: underline; }
+
+/* 历史截断横幅 */
+.history-gap {
+  display: block; width: 100%; margin: 0 0 10px; padding: 6px 12px;
+  border: 1px dashed var(--border-default); border-radius: 999px;
+  background: var(--surface-subtle); color: var(--text-tertiary);
+  font-size: 12px; cursor: pointer; transition: color 0.18s ease, border-color 0.18s ease;
+}
+.history-gap:hover { color: var(--color-primary); border-color: var(--color-primary); }
+
+/* 子代理运行卡 */
+.subagent-card {
+  display: flex; align-items: flex-start; gap: 10px;
+  border: 1px solid var(--border-default); border-left: 3px solid #722ed1;
+  border-radius: 10px; padding: 9px 12px; background: var(--surface-card);
+}
+.subagent-card.running {
+  border-left-color: #722ed1;
+  background: linear-gradient(90deg, rgba(114, 46, 209, 0.06), var(--surface-card) 55%);
+}
+.subagent-card.done { border-left-color: var(--color-success, #52c41a); }
+.subagent-card.failed { border-left-color: #ff4d4f; }
+.subagent-icon { margin-top: 2px; font-size: 14px; color: #722ed1; }
+.subagent-card.done .subagent-icon { color: var(--color-success, #52c41a); }
+.subagent-card.failed .subagent-icon { color: #ff4d4f; }
+.subagent-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.subagent-title { font-size: 13px; font-weight: 550; color: var(--text-primary); }
+.subagent-type {
+  align-self: flex-start; font-size: 11px; padding: 0 8px; border-radius: 999px;
+  background: rgba(114, 46, 209, 0.1); color: #722ed1;
+}
+.subagent-hint { font-size: 11.5px; color: var(--text-tertiary); }
+
+/* 子代理内部工具行标记 */
+.tool-sub-badge {
+  flex-shrink: 0; font-size: 10px; line-height: 16px; padding: 0 6px;
+  border-radius: 999px; background: rgba(114, 46, 209, 0.1); color: #722ed1;
+}
