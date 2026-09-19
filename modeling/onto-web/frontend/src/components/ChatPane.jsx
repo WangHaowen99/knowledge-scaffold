@@ -1085,7 +1085,9 @@ export default function ChatPane({
                   deleted={deleted}
                   total={total}
                   onOpenFile={onOpenFile}
-                  onOpenDiff={() => onOpenDiff?.(item.content.from)}
+                  onOpenDiff={() =>
+                    onOpenDiff?.(item.content.from, [...(added || []), ...(modified || [])])
+                  }
                 />
               );
             }

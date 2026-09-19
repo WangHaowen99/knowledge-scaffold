@@ -43,21 +43,11 @@ function OverviewTab({ data, loading, refresh }) {
 
   const tiles = data
     ? [
-        { label: '在线用户', value: data.online_count, color: '#256fd0', bg: '#e8f1fd' },
-        { label: '活跃会话', value: data.sessions.length, color: '#7048c8', bg: '#eae2f9' },
-        { label: '建模任务', value: data.projects.length, color: '#0f8f7f', bg: '#d5f3ee' },
-        {
-          label: '累计成本',
-          value: `$${data.total_cost_usd.toFixed(2)}`,
-          color: '#b77909',
-          bg: '#fbf0d7',
-        },
-        {
-          label: '磁盘可用',
-          value: formatBytes(data.system.disk_free),
-          color: '#c53d4b',
-          bg: '#fbe8e8',
-        },
+        { label: '在线用户', value: data.online_count, tone: 'tone-blue' },
+        { label: '活跃会话', value: data.sessions.length, tone: 'tone-violet' },
+        { label: '建模任务', value: data.projects.length, tone: 'tone-teal' },
+        { label: '累计成本', value: `$${data.total_cost_usd.toFixed(2)}`, tone: 'tone-amber' },
+        { label: '磁盘可用', value: formatBytes(data.system.disk_free), tone: 'tone-red' },
       ]
     : [];
 
@@ -67,8 +57,8 @@ function OverviewTab({ data, loading, refresh }) {
         {tiles.map((tile, index) => (
           <div
             key={tile.label}
-            className="stat-tile msg-soft"
-            style={{ '--tile': tile.color, '--tile-bg': tile.bg, animationDelay: `${index * 50}ms` }}
+            className={`stat-tile msg-soft ${tile.tone}`}
+            style={{ animationDelay: `${index * 50}ms` }}
           >
             <div className="stat-num">{tile.value}</div>
             <div className="stat-label">{tile.label}</div>

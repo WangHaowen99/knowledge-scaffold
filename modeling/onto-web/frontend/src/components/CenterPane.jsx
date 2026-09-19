@@ -8,9 +8,11 @@ import {
   HistoryOutlined,
 } from '@ant-design/icons';
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
+  Dropdown,
   Empty,
   Input,
   Modal,
@@ -249,6 +251,162 @@ export const Markdown = memo(function Markdown({ content, onWikiLink, onOpenFile
 
 const PREVIEWABLE = /\.(md|markdown|txt|py|json|yaml|yml|csv|mmd)$/i;
 
+// 代码/配置文件只读预览：包成代码卡（语法高亮 + 复制），不再误当 markdown 渲染
+function CodePreview({ content, lang }) {
+  const longestFence = Math.max(2, ...[...content.matchAll(/`+/g)].map((m) => m[0].length));
+  const fence = '`'.repeat(longestFence + 1);
+  return <Markdown content={`${fence}${lang}\n${content}\n${fence}`} />;
+}
+
+// 简易 CSV 解析（支持双引号转义），复用 Excel 表格样式渲染
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') {
+        cell += '"';
+        i += 1;
+      } else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') {
+      row.push(cell);
+      cell = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i += 1;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+    } else cell += ch;
+  }
+  if (cell !== '' || row.length) {
+    row.push(cell);
+    rows.push(row);
+  }
+  return rows.filter((r) => r.length > 1 || (r[0] ?? '').trim() !== '');
+}
+
+function CsvTable({ text }) {
+  const rows = useMemo(() => parseCsv(text).slice(0, 500), [text]);
+  if (!rows.length) return <Empty description="空 CSV" />;
+  return (
+    <div className="excel-scroll">
+      <table className="excel-table">
+        <thead>
+          <tr>
+            {rows[0].map((cell, i) => (
+              // eslint-disable-next-line react/no-array-index-key
+              <th key={i}>{cell}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(1).map((r, ri) => (
+            // eslint-disable-next-line react/no-array-index-key
+            <tr key={ri}>
+              {r.map((cell, ci) => (
+                // eslint-disable-next-line react/no-array-index-key
+                <td key={ci} className={cell !== '' && !Number.isNaN(Number(cell)) ? 'num' : undefined}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// 报告文件名 → 类型徽标与日期（{YYYYMMDD}-{HHMMSS}-{scope}-{type}.md 约定）
+const REPORT_TYPES = [
+  ['codegen-candidates', { label: '候选', color: 'purple' }],
+  ['-rule', { label: '规则', color: 'blue' }],
+  ['-semantic', { label: '语义', color: 'cyan' }],
+  ['trace', { label: '追踪', color: 'green' }],
+  ['testcase', { label: '追踪', color: 'green' }],
+];
+
+function reportMeta(path) {
+  const name = path.split('/').pop().replace(/\.md$/i, '');
+  const type = REPORT_TYPES.find(([hint]) => name.includes(hint))?.[1] || {
+    label: '报告',
+    color: 'default',
+  };
+  const match = name.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
+  const time = match ? `${match[2]}-${match[3]} ${match[4]}:${match[5]}` : '';
+  const title = match ? name.slice(16).replace(/^-/, '') : name;
+  return { type, time, title: title || name };
+}
+
+// markdown 长文档目录：≥4 个标题时右侧浮动
+function extractHeadings(md) {
+  const headings = [];
+  const clean = md.split(/```[\s\S]*?```/).join('\n');
+  for (const match of clean.matchAll(/^(#{1,3})\s+(.+)$/gm)) {
+    headings.push({ level: match[1].length, text: match[2].trim().slice(0, 40) });
+  }
+  return headings;
+}
+
+// 文件预览按类型分流：md 带目录、mmd 图、csv 表格、代码高亮、纯文本
+function FilePreviewBody({ file, content, onWikiLink, onOpenFile, knownPaths }) {
+  const ext = (file.split('.').pop() || '').toLowerCase();
+  const containerRef = useRef(null);
+  const isMd = ext === 'md' || ext === 'markdown';
+  const headings = useMemo(() => (isMd ? extractHeadings(content) : []), [isMd, content]);
+
+  const jumpTo = (text) => {
+    const nodes = containerRef.current?.querySelectorAll('h1, h2, h3') || [];
+    for (const node of nodes) {
+      if (node.textContent.trim().startsWith(text.slice(0, 20))) {
+        node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+    }
+  };
+
+  if (ext === 'mmd') return <MermaidBlock code={content} />;
+  if (ext === 'csv') return <CsvTable text={content} />;
+  if (['py', 'json', 'yaml', 'yml'].includes(ext)) {
+    return <CodePreview content={content} lang={ext === 'yml' ? 'yaml' : ext} />;
+  }
+  if (ext === 'txt') return <pre className="plain-text">{content}</pre>;
+  return (
+    <div className="md-with-toc">
+      <div ref={containerRef} className="md-doc">
+        <Markdown
+          content={content}
+          onWikiLink={onWikiLink}
+          onOpenFile={onOpenFile}
+          knownPaths={knownPaths}
+        />
+      </div>
+      {headings.length >= 4 && (
+        <nav className="md-toc" aria-label="文档目录">
+          <div className="md-toc-title">目录</div>
+          {headings.slice(0, 30).map((heading, index) => (
+            <button
+              // eslint-disable-next-line react/no-array-index-key
+              key={index}
+              type="button"
+              className={`toc-item lv${heading.level}`}
+              onClick={() => jumpTo(heading.text)}
+            >
+              {heading.text}
+            </button>
+          ))}
+        </nav>
+      )}
+    </div>
+  );
+}
+
 // codegen 候选评审：按候选分组勾选 + 参数预览，组装 /ontology-codegen 指令
 function CodegenReview({ data, checked, onChecked, onGenerate }) {
   const toggle = (id) => {
@@ -428,7 +586,11 @@ export default function CenterPane({
   onCommand,
   canBack,
   onBack,
+  onFocusPlain,
   queryPreset,
+  diffFiles,
+  onPickFile,
+  recentFiles,
   drawioAvailable,
   onWorkspaceChanged,
 }) {
@@ -452,6 +614,9 @@ export default function CenterPane({
   const [queryTerm, setQueryTerm] = useState('');
   const [queryResult, setQueryResult] = useState(null);
   const [queryLoading, setQueryLoading] = useState(false);
+  const [studioVisited, setStudioVisited] = useState(false); // Studio 保持挂载不丢状态
+  const [restoredDraft, setRestoredDraft] = useState(false); // 恢复了未保存草稿的提示
+  const draftsRef = useRef(new Map()); // path -> 未保存草稿（跨文件切换保留，防丢稿）
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
   const knownPaths = useMemo(() => new Set(paths), [paths]);
@@ -465,6 +630,30 @@ export default function CenterPane({
       api.metrics(project.id).then(setCoverage).catch(() => {});
     }
   }, [focus, project.id, versions.length]);
+
+  useEffect(() => {
+    if (focus === 'studio') setStudioVisited(true);
+  }, [focus]);
+
+  // 报告页默认选中最新一份（不再进门先见空态）
+  useEffect(() => {
+    if (focus === 'reports' && reportPaths.length && (!reportPath || !reportPaths.includes(reportPath))) {
+      setReportPath(reportPaths[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, reportPaths]);
+
+  // 有未保存草稿时拦截页面关闭
+  useEffect(() => {
+    const guard = (event) => {
+      if (draftsRef.current.size > 0) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, []);
 
   useEffect(() => {
     if (focus !== 'reports' || !reportPath) {
@@ -504,16 +693,55 @@ export default function CenterPane({
       return;
     }
     setLoading(true);
+    setRestoredDraft(false);
     api
       .readFile(project.id, file)
       .then((data) => {
         setContent(data);
-        setDraft(data.content);
+        // 该文件此前有未保存草稿 → 恢复编辑态（防丢稿：切换不丢，回来续编）
+        const saved = draftsRef.current.get(file);
+        if (saved != null && saved !== data.content) {
+          setDraft(saved);
+          setEditing(true);
+          setRestoredDraft(true);
+        } else {
+          draftsRef.current.delete(file);
+          setDraft(data.content);
+        }
       })
       .catch((error) => setContent({ error: error.message }))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id, file]);
+
+  const dirty = editing && content?.content != null && draft !== content.content;
+
+  const changeDraft = (text) => {
+    setDraft(text);
+    if (content?.content != null && text !== content.content) draftsRef.current.set(file, text);
+    else draftsRef.current.delete(file);
+  };
+
+  const cancelEditing = () => {
+    if (dirty) {
+      Modal.confirm({
+        title: '放弃未保存的修改？',
+        content: '取消编辑将丢弃本次改动（也可以先保存，或切去别处稍后回来继续）。',
+        okText: '放弃修改',
+        okButtonProps: { danger: true },
+        cancelText: '继续编辑',
+        onOk: () => {
+          draftsRef.current.delete(file);
+          setDraft(content.content);
+          setEditing(false);
+          setRestoredDraft(false);
+        },
+      });
+      return;
+    }
+    setEditing(false);
+    setRestoredDraft(false);
+  };
 
   // 对比数据加载
   const rev = diffRev || pickRev;
@@ -616,11 +844,20 @@ export default function CenterPane({
         )}
         <Segmented
           value={focus}
-          onChange={onFocus}
+          // 页签是平级切换（重置返回栈）；只有下钻动作（打开文件/对比/评审）才入栈
+          onChange={(next) => (onFocusPlain || onFocus)(next)}
           options={[
             { label: '概览', value: 'overview' },
             { label: 'Studio', value: 'studio' },
-            { label: '文件', value: 'file' },
+            {
+              label: file
+                ? `文件 · ${(() => {
+                    const name = file.split('/').pop();
+                    return name.length > 10 ? `${name.slice(0, 9)}…` : name;
+                  })()}`
+                : '文件',
+              value: 'file',
+            },
             { label: '对比', value: 'diff' },
             { label: '报告', value: 'reports' },
             { label: '知识', value: 'knowledge' },
@@ -629,8 +866,13 @@ export default function CenterPane({
         />
       </Space>
 
-      {focus === 'studio' && (
-        <div className="center-anim" key="studio">
+      {studioVisited && (
+        // 保持挂载：从条目跳文件再返回时不丢 Studio 的视图/选中状态
+        <div
+          className="center-anim"
+          key="studio"
+          style={{ display: focus === 'studio' ? undefined : 'none' }}
+        >
           <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
             <StudioView
               project={project}
@@ -643,25 +885,25 @@ export default function CenterPane({
       )}
 
       {focus === 'overview' && (
-        <div className="center-anim" key="overview">
+        <div className="center-anim center-narrow" key="overview">
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <div className="stat-grid">
-              <div className="stat-tile" style={{ '--tile': '#256fd0', '--tile-bg': '#e8f1fd' }}>
+              <div className="stat-tile tone-blue">
                 <DatabaseOutlined className="stat-icon" />
                 <div className="stat-num">{countByPrefix(paths, 'ontology/object/')}</div>
                 <div className="stat-label">业务对象</div>
               </div>
-              <div className="stat-tile" style={{ '--tile': '#7048c8', '--tile-bg': '#eae2f9' }}>
+              <div className="stat-tile tone-violet">
                 <ApartmentOutlined className="stat-icon" />
                 <div className="stat-num">{countByPrefix(paths, 'ontology/logic/')}</div>
                 <div className="stat-label">业务逻辑</div>
               </div>
-              <div className="stat-tile" style={{ '--tile': '#0f8f7f', '--tile-bg': '#d5f3ee' }}>
+              <div className="stat-tile tone-teal">
                 <FileSearchOutlined className="stat-icon" />
                 <div className="stat-num">{countByPrefix(paths, 'research/')}</div>
                 <div className="stat-label">调研报告</div>
               </div>
-              <div className="stat-tile" style={{ '--tile': '#b77909', '--tile-bg': '#fbf0d7' }}>
+              <div className="stat-tile tone-amber">
                 <HistoryOutlined className="stat-icon" />
                 <div className="stat-num">{versions.length}</div>
                 <div className="stat-label">版本数</div>
@@ -669,21 +911,21 @@ export default function CenterPane({
             </div>
             {coverage && (coverage.design_coverage != null || coverage.pass_rate != null) && (
               <div className="stat-grid">
-                <div className="stat-tile" style={{ '--tile': '#16845b', '--tile-bg': '#e2f5ed' }}>
+                <div className="stat-tile tone-green">
                   <div className="stat-num">
                     {coverage.design_coverage != null ? `${coverage.design_coverage}%` : '—'}
                   </div>
                   <div className="stat-label">设计覆盖率</div>
                 </div>
-                <div className="stat-tile" style={{ '--tile': '#256fd0', '--tile-bg': '#e8f1fd' }}>
+                <div className="stat-tile tone-blue">
                   <div className="stat-num">
                     {coverage.pass_rate != null ? `${coverage.pass_rate}%` : '—'}
                   </div>
                   <div className="stat-label">推演通过率</div>
                 </div>
                 <div
-                  className="stat-tile"
-                  style={{ '--tile': 'var(--text-secondary)', '--tile-bg': 'var(--surface-subtle)', cursor: 'pointer' }}
+                  className="stat-tile tone-neutral"
+                  style={{ cursor: 'pointer' }}
                   onClick={() => {
                     setReportPath(coverage.source);
                     onFocus('reports');
@@ -708,7 +950,17 @@ export default function CenterPane({
             )}
             <Card size="small" title="最近版本">
               {versions.slice(0, 3).map((v) => (
-                <div key={v.commit}>
+                <div
+                  key={v.commit}
+                  className="version-row"
+                  role="button"
+                  tabIndex={0}
+                  title="点击进入对比视图"
+                  onClick={() => {
+                    setPickRev(v.commit);
+                    onFocus('diff');
+                  }}
+                >
                   <Typography.Text type="secondary">版本 {v.version}</Typography.Text>{' '}
                   {v.message}
                 </div>
@@ -725,7 +977,23 @@ export default function CenterPane({
       {focus === 'file' && (
         <div className="center-anim" key="file">
         <Spin spinning={loading}>
-          {!file && <Empty description="从左栏「知识包」选择文件" />}
+          {!file && (
+            <Empty description="从左栏「知识包」选择文件">
+              {recentFiles?.length > 0 && (
+                <div className="recent-files">
+                  <div className="recent-files-label">最近打开</div>
+                  {recentFiles.map((path) => (
+                    <FileChip
+                      key={path}
+                      path={path}
+                      exists={knownPaths.has(path)}
+                      onOpen={onOpenFile}
+                    />
+                  ))}
+                </div>
+              )}
+            </Empty>
+          )}
           {isHtml && <HtmlPreview project={project} path={file} />}
           {isDrawio && (
             <DrawioView
@@ -743,11 +1011,12 @@ export default function CenterPane({
           {file && content?.error && <Empty description={content.error} />}
           {file && content?.content != null && (
             <>
-              <Space style={{ marginBottom: 8 }} align="center">
-                <Typography.Title level={5} style={{ margin: 0 }}>
+              <Space style={{ marginBottom: 8 }} align="center" wrap>
+                <Typography.Title level={5} style={{ margin: 0 }} className="file-title" title={file}>
                   {file}
                 </Typography.Title>
                 {content.truncated && <Tag color="warning">仅显示前 512KB</Tag>}
+                {dirty && <Tag color="warning">未保存</Tag>}
                 {!editing ? (
                   <Button size="small" onClick={() => setEditing(true)}>
                     编辑
@@ -757,27 +1026,48 @@ export default function CenterPane({
                     <Button
                       size="small"
                       type="primary"
+                      disabled={!dirty}
                       onClick={() =>
                         saveDraft(draft, () => {
+                          draftsRef.current.delete(file);
                           setContent({ ...content, content: draft });
                           setEditing(false);
+                          setRestoredDraft(false);
                         })
                       }
                     >
                       保存
                     </Button>
-                    <Button size="small" onClick={() => setEditing(false)}>
+                    <Button size="small" onClick={cancelEditing}>
                       取消
                     </Button>
                   </>
                 )}
               </Space>
+              {restoredDraft && (
+                <Alert
+                  type="info"
+                  showIcon
+                  closable
+                  style={{ marginBottom: 8 }}
+                  message="已恢复上次未保存的草稿"
+                  action={
+                    <Button size="small" onClick={cancelEditing}>
+                      放弃草稿
+                    </Button>
+                  }
+                />
+              )}
               {editing ? (
-                <CodeEditor key={file} value={draft} onChange={setDraft} />
-              ) : /\.mmd$/i.test(file) ? (
-                <MermaidBlock code={content.content} />
+                <CodeEditor key={file} value={draft} onChange={changeDraft} />
               ) : (
-                <Markdown content={content.content} onWikiLink={openWikiLink} onOpenFile={onOpenFile} knownPaths={knownPaths} />
+                <FilePreviewBody
+                  file={file}
+                  content={content.content}
+                  onWikiLink={openWikiLink}
+                  onOpenFile={onOpenFile}
+                  knownPaths={knownPaths}
+                />
               )}
             </>
           )}
@@ -787,8 +1077,22 @@ export default function CenterPane({
 
       {focus === 'diff' && (
         <div className="center-anim" key="diff">
+          {diffFiles?.length > 0 && (
+            <div className="diff-files">
+              <span className="diff-files-label">该轮变更：</span>
+              {diffFiles.map((path) => (
+                <FileChip
+                  key={path}
+                  path={path}
+                  status={file === path ? 'modified' : undefined}
+                  exists={knownPaths.has(path)}
+                  onOpen={(p) => onPickFile?.(p)}
+                />
+              ))}
+            </div>
+          )}
           <Space style={{ marginBottom: 8 }} wrap>
-            <Typography.Text>{file || '先从「知识包」选择要对比的文件'}</Typography.Text>
+            <Typography.Text>{file || '先从「知识包」或上方变更清单选择文件'}</Typography.Text>
             <Select
               size="small"
               style={{ minWidth: 220 }}
@@ -834,15 +1138,25 @@ export default function CenterPane({
           ) : (
             <div className="report-layout">
               <div className="report-list">
-                {reportPaths.map((path) => (
-                  <div
-                    key={path}
-                    className={`report-item${reportPath === path ? ' active' : ''}`}
-                    onClick={() => setReportPath(path)}
-                  >
-                    {path.replace('reports/', '')}
-                  </div>
-                ))}
+                {reportPaths.map((path) => {
+                  const meta = reportMeta(path);
+                  return (
+                    <div
+                      key={path}
+                      className={`report-item${reportPath === path ? ' active' : ''}`}
+                      onClick={() => setReportPath(path)}
+                      title={path}
+                    >
+                      <div className="report-item-head">
+                        <Tag color={meta.type.color} style={{ margin: 0 }}>
+                          {meta.type.label}
+                        </Tag>
+                        <span className="report-item-time">{meta.time}</span>
+                      </div>
+                      <div className="report-item-name">{meta.title}</div>
+                    </div>
+                  );
+                })}
               </div>
               <div className="report-body">
                 {!reportPath && <Empty description="选择左侧报告查看" />}
@@ -917,7 +1231,7 @@ export default function CenterPane({
       )}
 
       {focus === 'knowledge' && (
-        <div className="center-anim" key="knowledge">
+        <div className="center-anim center-narrow" key="knowledge">
           <Space style={{ marginBottom: 8 }} wrap>
             <Typography.Title level={5} style={{ margin: 0 }}>
               业务知识库
@@ -999,7 +1313,7 @@ export default function CenterPane({
       )}
 
       {focus === 'query' && (
-        <div className="center-anim" key="query">
+        <div className="center-anim center-narrow" key="query">
           <Typography.Title level={5} style={{ marginTop: 0 }}>
             反查（确定性检索，不经模型）
           </Typography.Title>

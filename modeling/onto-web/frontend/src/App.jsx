@@ -64,6 +64,8 @@ export default function App() {
   const [importWiz, setImportWiz] = useState(null); // {step,file,name,summary,importing}
   const [memberWiz, setMemberWiz] = useState(null); // {project, members, newUser, newRole}
   const [queryPreset, setQueryPreset] = useState(null); // 反查预置 {kind, term, nonce}
+  const [diffFiles, setDiffFiles] = useState(null); // 变更卡带入对比页的文件清单
+  const [recentFiles, setRecentFiles] = useState([]);
   const chatSendRef = useRef(null);
 
   // ---- 手写 hash 路由：刷新/深链回到原页面 ----
@@ -90,6 +92,16 @@ export default function App() {
     );
   }, []);
   const popFocus = () => setFocusStack((stack) => (stack.length > 1 ? stack.slice(0, -1) : stack));
+
+  // 打开文件 = 下钻（入返回栈）+ 记录最近文件
+  const openFile = useCallback(
+    (path) => {
+      setSelectedFile(path);
+      setRecentFiles((prev) => [path, ...prev.filter((p) => p !== path)].slice(0, 6));
+      pushFocus('file');
+    },
+    [pushFocus],
+  );
 
   const refreshProjects = useCallback(() => {
     api
@@ -629,14 +641,12 @@ export default function App() {
                 meta={project}
                 tree={tree}
                 versions={versions}
-                onSelectFile={(path) => {
-                  setSelectedFile(path);
-                  pushFocus('file');
-                }}
+                onSelectFile={openFile}
                 onRefresh={refreshWorkspace}
                 onCommand={(command) => chatSendRef.current?.(command)}
                 onDiff={(rev) => {
                   setDiffRev(rev);
+                  setDiffFiles(null);
                   pushFocus('diff');
                 }}
                 onQuery={(kind, term) => {
@@ -661,12 +671,13 @@ export default function App() {
                 onBack={popFocus}
                 diffRev={diffRev}
                 queryPreset={queryPreset}
+                onFocusPlain={(next) => setFocusStack([next])}
+                diffFiles={diffFiles}
+                onPickFile={setSelectedFile}
+                recentFiles={recentFiles}
                 drawioAvailable={drawioAvailable}
                 onWorkspaceChanged={refreshWorkspace}
-                onOpenFile={(path) => {
-                  setSelectedFile(path);
-                  pushFocus('file');
-                }}
+                onOpenFile={openFile}
                 onCommand={(command) => chatSendRef.current?.(command)}
               />
             </div>
@@ -681,12 +692,10 @@ export default function App() {
                 usage={usage}
                 onWorkspaceChanged={refreshWorkspace}
                 onPendingChange={setPendingCount}
-                onOpenFile={(path) => {
-                  setSelectedFile(path);
-                  pushFocus('file');
-                }}
-                onOpenDiff={(rev) => {
+                onOpenFile={openFile}
+                onOpenDiff={(rev, files) => {
                   setDiffRev(rev);
+                  setDiffFiles(files?.length ? files : null);
                   pushFocus('diff');
                 }}
                 registerSend={(fn) => {
@@ -726,8 +735,7 @@ export default function App() {
             key={`${hit.path}-${hit.line}-${index}`}
             className="search-hit msg-soft"
             onClick={() => {
-              setSelectedFile(hit.path);
-              pushFocus('file');
+              openFile(hit.path);
               setSearchOpen(false);
             }}
           >
