@@ -144,3 +144,17 @@ def test_model_settings_roundtrip(tmp_path: Path, monkeypatch):
     assert model_settings.session_env()["ANTHROPIC_API_KEY"] == "sk-test-1234567890abcd"
     with pytest.raises(model_settings.ModelConfigError):
         model_settings.save("ftp://bad", "", "")
+
+
+def test_model_settings_session_env_overrides_both_auth_vars(tmp_path, monkeypatch):
+    """UI 配置的 key 必须同时覆盖 API_KEY 与 AUTH_TOKEN，防旧令牌残留生效。"""
+    from app import config
+    from app.services import model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    model_settings.save("https://gateway.example.com", "test-key-value", "some-model")
+    env = model_settings.session_env()
+    assert env["ANTHROPIC_API_KEY"] == "test-key-value"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "test-key-value"
+    assert env["ANTHROPIC_BASE_URL"] == "https://gateway.example.com"
+    assert env["ANTHROPIC_MODEL"] == "some-model"

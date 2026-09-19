@@ -42,6 +42,37 @@ def info() -> dict:
     }
 
 
+def list_backups() -> list[dict]:
+    backups = Path(config.DATA_DIR) / "asset-backups"
+    if not backups.is_dir():
+        return []
+    entries = []
+    for entry in sorted(backups.iterdir(), reverse=True):
+        if entry.is_dir() and entry.name.startswith("dotclaude-"):
+            try:
+                ts = int(entry.name.rsplit("-", 1)[1])
+            except ValueError:
+                ts = int(entry.stat().st_mtime)
+            commands = sum(1 for _ in (entry / "commands").glob("*.md")) if (entry / "commands").is_dir() else 0
+            entries.append({"name": entry.name, "time": ts, "commands": commands})
+    return entries
+
+
+def rollback(backup_name: str) -> dict:
+    """回滚到指定备份：当前资产先入备份，再恢复所选版本。"""
+    if not backup_name.startswith("dotclaude-") or "/" in backup_name or ".." in backup_name:
+        raise AssetError("无效的备份名")
+    backups = Path(config.DATA_DIR) / "asset-backups"
+    source = backups / backup_name
+    if not source.is_dir():
+        raise AssetError("备份不存在", 404)
+    current = _assets_dotclaude()
+    if current.exists():
+        shutil.move(str(current), str(backups / f"dotclaude-{int(time.time())}"))
+    shutil.copytree(source, current)
+    return info()
+
+
 def upload(archive_path: Path) -> dict:
     """校验并替换提示词资产；旧资产备份到数据目录。"""
     staging = Path(config.DATA_DIR) / "asset-staging"

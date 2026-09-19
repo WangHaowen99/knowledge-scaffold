@@ -1,0 +1,131 @@
+#!/bin/bash
+# 构建 Onto Web 离线交付包：镜像 tar + compose + 部署脚本，amd/arm 双架构（方案第八节）。
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"          # modeling/onto-web
+REPOSITORY_ROOT="$(cd "${PROJECT_ROOT}/../.." && pwd)"  # 仓库根
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") <version> [amd|arm]
+
+Examples:
+  $(basename "$0") v0.1.0
+  $(basename "$0") v0.1.0 arm
+EOF
+}
+
+detect_arch() {
+    case "$(uname -m)" in
+        aarch64|arm64) printf 'arm\n' ;;
+        *) printf 'amd\n' ;;
+    esac
+}
+
+[ -n "${1:-}" ] || { usage; exit 1; }
+[ "$#" -le 2 ] || { usage; exit 1; }
+
+VERSION="$1"
+ARCH="${2:-$(detect_arch)}"
+
+case "${ARCH}" in
+    amd) PLATFORM="linux/amd64"; RELEASE_ARCH="amd64" ;;
+    arm) PLATFORM="linux/arm64"; RELEASE_ARCH="arm64" ;;
+    *) echo "Error: Invalid arch '${ARCH}'. Use 'amd' or 'arm'." >&2; exit 1 ;;
+esac
+
+STAGE_ROOT="${PROJECT_ROOT}/dist/release-${VERSION}-${RELEASE_ARCH}"
+BUNDLE_DIR="${STAGE_ROOT}/onto-web"
+IMAGES_DIR="${BUNDLE_DIR}/images"
+OUTPUT_FILE="${PROJECT_ROOT}/dist/onto-web-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
+
+cleanup() {
+    [ -d "${STAGE_ROOT}" ] && rm -rf "${STAGE_ROOT}"
+}
+trap cleanup EXIT
+
+rm -rf "${STAGE_ROOT}"
+mkdir -p "${IMAGES_DIR}"
+
+echo "Building Onto Web release ${VERSION} for ${PLATFORM}"
+
+# 用宿主 pip 预下载目标平台 wheel 到 vendor/wheels（命中宿主缓存则零下载），
+# 镜像构建经 bind mount 离线安装；失败不阻断，Dockerfile 会回落到镜像源。
+# 目录跨构建累积旧版本无害（pip 按 requirements 选取），离线场景下不清空更稳妥。
+VENDOR_DIR="${PROJECT_ROOT}/vendor/wheels"
+mkdir -p "${VENDOR_DIR}"
+case "${ARCH}" in
+    amd) PIP_PLATFORMS=(--platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64 --platform manylinux_2_28_x86_64) ;;
+    arm) PIP_PLATFORMS=(--platform manylinux_2_17_aarch64 --platform manylinux2014_aarch64 --platform manylinux_2_28_aarch64) ;;
+esac
+if command -v pip3 >/dev/null 2>&1; then
+    echo "Vendoring Python wheels for ${PLATFORM} into vendor/wheels"
+    pip3 download -r "${PROJECT_ROOT}/backend/requirements.txt" -d "${VENDOR_DIR}" \
+        --only-binary=:all: "${PIP_PLATFORMS[@]}" \
+        --python-version 3.11 --implementation cp \
+        --abi cp311 --abi abi3 --abi none \
+        -q -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        || echo "Warning: wheel vendoring failed; image build will download from index"
+else
+    echo "Note: pip3 not found on host; image build will download from index"
+fi
+
+# drawio 官方 webapp（离线编辑器）：本机没有则从 npm 镜像获取一次，之后复用
+DRAWIO_VERSION="2.7.0"  # @yank-note/extension-drawio，内含官方 drawio 31.4.5 webapp
+DRAWIO_DIR="${PROJECT_ROOT}/vendor/drawio/webapp"
+mkdir -p "${DRAWIO_DIR}"
+if [ ! -f "${DRAWIO_DIR}/index.html" ]; then
+    echo "Vendoring drawio webapp into vendor/drawio/webapp"
+    DRAWIO_TMP="$(mktemp -d)"
+    if (cd "${DRAWIO_TMP}" \
+        && npm pack "@yank-note/extension-drawio@${DRAWIO_VERSION}" \
+            --registry=https://registry.npmmirror.com >/dev/null 2>&1 \
+        && tar -xzf yank-note-extension-drawio-*.tgz package/drawio/src/main/webapp \
+        && cp -r package/drawio/src/main/webapp/. "${DRAWIO_DIR}/"); then
+        echo "drawio webapp vendored."
+    else
+        echo "Warning: drawio webapp vendoring failed; 该发布包中 drawio 编辑功能不可用（预览不受影响的 mermaid/markdown 除外）"
+    fi
+    rm -rf "${DRAWIO_TMP}"
+fi
+
+if docker buildx version >/dev/null 2>&1; then
+    BUILD_CMD="docker buildx build --platform ${PLATFORM} --load"
+else
+    echo "Note: docker buildx not available, falling back to docker build"
+    BUILD_CMD="docker build"
+fi
+
+# docker 一律在目标目录内用相对路径调用：WSL 下 docker 可能是 Windows 侧
+# docker.exe（interop），不认 /mnt/* 绝对路径，相对路径会被正确映射到盘符路径
+(cd "${PROJECT_ROOT}" && ${BUILD_CMD} -t "onto-web:${VERSION}" -f Dockerfile .)
+(cd "${IMAGES_DIR}" && docker save -o "onto-web-${VERSION}.tar" "onto-web:${VERSION}")
+
+AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
+[ -d "${AUTH_SERVER_SRC}" ] || {
+    echo "Error: auth-server source directory not found: ${AUTH_SERVER_SRC}" >&2
+    exit 1
+}
+(cd "${AUTH_SERVER_SRC}" && ${BUILD_CMD} -t "onto-web-auth-server:${VERSION}" .)
+(cd "${IMAGES_DIR}" && docker save -o "onto-web-auth-server-${VERSION}.tar" "onto-web-auth-server:${VERSION}")
+
+cp "${SCRIPT_DIR}/docker-compose.release.yml" "${BUNDLE_DIR}/"
+cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/preflight.sh" "${BUNDLE_DIR}/"
+cp "${SCRIPT_DIR}/README.md" "${BUNDLE_DIR}/README.md"
+cp "${PROJECT_ROOT}/.env.example" "${BUNDLE_DIR}/.env.example"
+chmod +x "${BUNDLE_DIR}/deploy.sh" "${BUNDLE_DIR}/preflight.sh"
+
+# 镜像清单：deploy.sh / compose 从这里取镜像 tag，目标机不需要再传参数
+cat > "${BUNDLE_DIR}/images.env" <<EOF
+ONTO_WEB_IMAGE=onto-web:${VERSION}
+AUTH_SERVER_IMAGE=onto-web-auth-server:${VERSION}
+RELEASE_VERSION=${VERSION}
+RELEASE_ARCH=${RELEASE_ARCH}
+EOF
+
+mkdir -p "$(dirname "${OUTPUT_FILE}")"
+tar -czf "${OUTPUT_FILE}" -C "${STAGE_ROOT}" onto-web
+
+echo "Release package: ${OUTPUT_FILE}"

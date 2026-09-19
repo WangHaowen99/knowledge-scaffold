@@ -40,12 +40,14 @@ def session_state(project_id: str, request: Request):
         "session_id": session.id if session else None,
         "state": session.state if session else "idle",
         "events": len(history),
+        "queue_position": manager.queue_position(project_id),
+        "pool": manager.pool_status(),
     }
 
 
 @router.post("/messages")
 async def send_message(project_id: str, body: MessageBody, request: Request):
-    cwd = ensure_access(project_id, request)
+    cwd = ensure_access(project_id, request, write=True)
     session = await manager.send(project_id, cwd, body.text)
     return {"session_id": session.id, "state": session.state}
 
@@ -54,7 +56,7 @@ async def send_message(project_id: str, body: MessageBody, request: Request):
 async def respond_permission(
     project_id: str, request_id: str, body: PermissionBody, request: Request
 ):
-    ensure_access(project_id, request)
+    ensure_access(project_id, request, write=True)
     await manager.respond_permission(
         project_id, request_id, body.behavior, body.message, body.answers
     )
@@ -64,14 +66,14 @@ async def respond_permission(
 @router.post("/close")
 async def close_session(project_id: str, request: Request):
     """终止并丢弃当前会话（历史保留）；下次发消息按最新配置新建会话。"""
-    ensure_access(project_id, request)
+    ensure_access(project_id, request, write=True)
     await manager.close(project_id)
     return {"ok": True}
 
 
 @router.post("/interrupt")
 async def interrupt(project_id: str, request: Request):
-    ensure_access(project_id, request)
+    ensure_access(project_id, request, write=True)
     await manager.interrupt(project_id)
     return {"ok": True}
 

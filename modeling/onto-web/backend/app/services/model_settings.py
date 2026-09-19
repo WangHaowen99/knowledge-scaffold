@@ -67,13 +67,19 @@ def clear_key() -> dict:
 
 
 def session_env() -> dict:
-    """转成会话子进程的环境变量；空值不注入。"""
+    """转成会话子进程的环境变量；空值不注入。
+
+    key 同时覆盖 ANTHROPIC_API_KEY 与 ANTHROPIC_AUTH_TOKEN：CLI 优先用
+    AUTH_TOKEN 做 Bearer 鉴权，若只覆盖 API_KEY，部署机 .env 里残留的
+    旧令牌会继续生效，导致新网关 401（实测踩坑）。
+    """
     data = load()
     env = {}
     if data.get("base_url"):
         env["ANTHROPIC_BASE_URL"] = data["base_url"]
     if data.get("api_key"):
         env["ANTHROPIC_API_KEY"] = data["api_key"]
+        env["ANTHROPIC_AUTH_TOKEN"] = data["api_key"]
     if data.get("model"):
         env["ANTHROPIC_MODEL"] = data["model"]
     return env

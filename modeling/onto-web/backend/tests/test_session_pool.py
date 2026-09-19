@@ -1,0 +1,216 @@
+"""会话池的调度语义测试：上限、驱逐、排队、resume 续接与空闲回收。
+
+用假客户端替换 _create_client，不拉起真实 CLI 子进程。
+"""
+
+import asyncio
+import time
+from pathlib import Path
+
+import pytest
+
+from app import config
+from app.services import agent_sessions
+from app.services.agent_sessions import SessionManager, load_resume_id, save_resume_id
+
+
+class FakeClient:
+    def __init__(self, options):
+        self.options = options
+        self.connected = False
+        self.queries = []
+        self.interrupted = False
+
+    async def connect(self):
+        self.connected = True
+
+    async def disconnect(self):
+        self.connected = False
+
+    async def query(self, text):
+        self.queries.append(text)
+
+    async def interrupt(self):
+        self.interrupted = True
+
+    async def receive_messages(self):
+        # 长驻不产消息，模拟等待模型的会话；测试结束由 cancel 收尾
+        if False:  # pragma: no cover
+            yield
+        await asyncio.Event().wait()
+
+
+@pytest.fixture()
+def pool_env(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 1)
+    monkeypatch.setattr(config, "SESSION_IDLE_TTL_SECONDS", 600)
+    monkeypatch.setattr(agent_sessions, "SDK_AVAILABLE", True)
+
+    created = []
+
+    def create_client(self, options):
+        client = FakeClient(options)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(SessionManager, "_create_client", create_client)
+    manager = SessionManager()
+    return manager, created, tmp_path
+
+
+async def _settle(manager: SessionManager, project_id: str):
+    """等连接后台任务跑完。"""
+    session = manager.get(project_id)
+    for _ in range(20):
+        if session and session.connect_task:
+            await session.connect_task
+        await asyncio.sleep(0)
+        if session and (session.client is not None or session.state in ("queued", "error")):
+            return session
+    return session
+
+
+def test_send_connects_and_flushes_prompt(pool_env, tmp_path):
+    manager, created, _ = pool_env
+
+    async def scenario():
+        session = await manager.send("p1", tmp_path / "w1", "第一条")
+        session = await _settle(manager, "p1")
+        assert session.client is not None
+        assert session.client.queries == ["第一条"]
+        assert session.state == "running"
+        assert manager.active_count() == 1
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_pool_evicts_oldest_idle_session(pool_env, tmp_path):
+    manager, created, _ = pool_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "你好")
+        first = await _settle(manager, "p1")
+        first.state = "idle"  # 模拟上一轮已结束
+
+        await manager.send("p2", tmp_path / "w2", "开始")
+        second = await _settle(manager, "p2")
+
+        assert manager.get("p1") is None  # 空闲会话被驱逐让位
+        assert first.client is None
+        assert second.client is not None and second.client.queries == ["开始"]
+        assert manager.active_count() == 1
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_pool_queues_when_all_running_then_drains(pool_env, tmp_path):
+    manager, created, _ = pool_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "任务一")
+        first = await _settle(manager, "p1")
+        assert first.state == "running"  # 在跑，不可驱逐
+
+        await manager.send("p2", tmp_path / "w2", "任务二")
+        second = manager.get("p2")
+        assert second.state == "queued"
+        assert manager.queue_position("p2") == 1
+
+        # 第一个会话结束并被关闭 → 排队者自动续接
+        first.state = "idle"
+        await manager.close("p1")
+        second = await _settle(manager, "p2")
+        assert second.client is not None
+        assert second.client.queries == ["任务二"]
+        assert manager.queue_position("p2") is None
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_cancels_queue(pool_env, tmp_path):
+    manager, created, _ = pool_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "任务一")
+        first = await _settle(manager, "p1")
+        first.state = "running"
+
+        await manager.send("p2", tmp_path / "w2", "任务二")
+        assert manager.queue_position("p2") == 1
+
+        await manager.interrupt("p2")
+        assert manager.queue_position("p2") is None
+        assert manager.get("p2").pending_prompts == []
+        assert manager.get("p2").state == "idle"
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_resume_id_passed_to_options(pool_env, tmp_path):
+    manager, created, _ = pool_env
+
+    async def scenario():
+        save_resume_id("p1", "sdk-session-abc")
+        await manager.send("p1", tmp_path / "w1", "继续")
+        session = await _settle(manager, "p1")
+        assert session.client.options.resume == "sdk-session-abc"
+        assert session.resume_attempted is True
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_close_clears_resume_id(pool_env, tmp_path):
+    manager, created, _ = pool_env
+
+    async def scenario():
+        save_resume_id("p1", "sdk-session-abc")
+        await manager.send("p1", tmp_path / "w1", "你好")
+        await _settle(manager, "p1")
+        await manager.close("p1")
+        assert load_resume_id("p1") is None
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_reap_idle_recycles_but_keeps_resume_id(pool_env, tmp_path, monkeypatch):
+    manager, created, _ = pool_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "你好")
+        session = await _settle(manager, "p1")
+        session.state = "idle"
+        session.sdk_session_id = "sdk-session-xyz"
+        save_resume_id("p1", "sdk-session-xyz")
+        session.last_activity = time.time() - 10_000
+
+        reaped = await manager.reap_idle()
+        assert reaped == 1
+        assert manager.get("p1") is None
+        assert load_resume_id("p1") == "sdk-session-xyz"  # 续接点保留
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_running_session_not_reaped(pool_env, tmp_path):
+    manager, created, _ = pool_env
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "你好")
+        session = await _settle(manager, "p1")
+        assert session.state == "running"
+        session.last_activity = time.time() - 10_000
+
+        reaped = await manager.reap_idle()
+        assert reaped == 0
+        assert manager.get("p1") is session
+        await manager.shutdown()
+
+    asyncio.run(scenario())
