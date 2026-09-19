@@ -4,91 +4,24 @@ import {
   ReloadOutlined,
   SearchOutlined,
 } from '@ant-design/icons';
-import dagre from '@dagrejs/dagre';
-import {
-  Background,
-  Controls,
-  Handle,
-  MiniMap,
-  Position,
-  ReactFlow,
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
 import { Button, Empty, Spin, Table, Tag, Typography, message } from 'antd';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { Markdown } from './CenterPane.jsx';
 import StudioEntryEditor from './StudioEntryEditor.jsx';
 
-// WebGL 大图运行时按需加载（pixi 体积大，不进默认 chunk）
-const StudioBigGraph = lazy(() => import('./studio/StudioBigGraph.jsx'));
+// 图模式 = 原版 modeling Studio 图整体搬迁（含 WebGL 力导运行时），按需加载
+const LegacyStudioGraphHost = lazy(() => import('./studio/LegacyStudioGraphHost.jsx'));
 
-// 超过阈值自动切 WebGL 大图（Pixi + Worker 力导）；也可手动切换
-const BIG_GRAPH_NODES = 150;
-
-// 与 modeling 工作台 Studio 相同的 kind 视觉体系（对象=圆形，逻辑沿用"操作"的绿色圆角矩形）
-const KIND_META = {
-  object: { label: '对象', color: '#07386f', soft: '#9fc8ff', glow: 'rgba(7, 56, 111, .52)' },
-  logic: { label: '逻辑', color: '#07513a', soft: '#a8dfc2', glow: 'rgba(7, 81, 58, .52)' },
-};
-
-const NODE_SIZE = {
-  object: { width: 112, height: 112 },
-  logic: { width: 150, height: 56 },
-};
-
-function StudioNode({ data }) {
-  const meta = KIND_META[data.kind] || KIND_META.object;
-  return (
-    <div
-      className={`studio-node ${data.kind}${data.dimmed ? ' dimmed' : ''}${data.selected ? ' selected' : ''}`}
-      style={{ '--node-soft': meta.soft, '--node-color': meta.color, '--node-glow': meta.glow }}
-    >
-      <span className="studio-node-meta">
-        {meta.label}
-        <small>{data.degree}</small>
-      </span>
-      <strong>{data.name}</strong>
-      <Handle type="target" position={Position.Left} />
-      <Handle type="source" position={Position.Right} />
-    </div>
-  );
-}
-
-const NODE_TYPES = { studio: StudioNode };
-
-function layout(nodes, edges) {
-  const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: 'LR', nodesep: 26, ranksep: 80 });
-  g.setDefaultEdgeLabel(() => ({}));
-  for (const node of nodes) {
-    const size = NODE_SIZE[node.data.kind] || NODE_SIZE.logic;
-    g.setNode(node.id, { ...size });
-  }
-  for (const edge of edges) g.setEdge(edge.source, edge.target);
-  dagre.layout(g);
-  return nodes.map((node) => {
-    const pos = g.node(node.id);
-    const size = NODE_SIZE[node.data.kind] || NODE_SIZE.logic;
-    return {
-      ...node,
-      position: { x: pos.x - size.width / 2, y: pos.y - size.height / 2 },
-      style: { width: size.width, height: size.height },
-    };
-  });
-}
+// 表格视图的 kind 视觉沿用原版 KIND_META 的对象/操作用色
+const KIND_LABEL = { object: '对象', logic: '逻辑' };
 
 export default function StudioView({ project, onOpenFile, onCommand, onWorkspaceChanged }) {
   const [view, setView] = useState('graph');
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [entry, setEntry] = useState(null);
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [renderMode, setRenderMode] = useState('auto'); // auto | flow | webgl
-  const useWebgl =
-    renderMode === 'webgl' ||
-    (renderMode === 'auto' && graph.nodes.length > BIG_GRAPH_NODES);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -103,7 +36,6 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
     setEntry(null);
     setView('graph');
     setQuery('');
-    setSelected(null);
     refresh();
   }, [refresh]);
 
@@ -125,41 +57,6 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
     for (const node of graph.nodes) map.set(node.id, node.path);
     return map;
   }, [graph]);
-
-  const kindCounts = useMemo(() => {
-    const counts = { object: 0, logic: 0 };
-    for (const node of graph.nodes) counts[node.kind] = (counts[node.kind] || 0) + 1;
-    return counts;
-  }, [graph]);
-
-  const flowNodes = useMemo(() => {
-    const trimmed = query.trim();
-    return layout(
-      graph.nodes.map((node) => ({
-        id: node.id,
-        type: 'studio',
-        data: {
-          name: node.id,
-          kind: node.kind,
-          degree: node.in + node.out,
-          dimmed: trimmed ? !node.id.includes(trimmed) : false,
-          selected: selected === node.id,
-        },
-      })),
-      graph.edges,
-    );
-  }, [graph, query, selected]);
-
-  const flowEdges = useMemo(
-    () =>
-      graph.edges.map((edge, index) => ({
-        id: `e${index}`,
-        source: edge.source,
-        target: edge.target,
-        className: 'studio-edge',
-      })),
-    [graph],
-  );
 
   if (!loading && graph.nodes.length === 0) {
     return (
@@ -214,16 +111,6 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
         <span className="studio-count">
           {graph.nodes.length} 元素 · {graph.edges.length} 关联
         </span>
-        {view === 'graph' && (
-          <Button
-            size="small"
-            type="text"
-            title={useWebgl ? '切回标准视图（适合小图精细交互）' : '切到 WebGL 大图（适合上千节点）'}
-            onClick={() => setRenderMode(useWebgl ? 'flow' : 'webgl')}
-          >
-            {useWebgl ? 'WebGL' : '标准'}
-          </Button>
-        )}
         <Button
           size="small"
           type="text"
@@ -233,63 +120,16 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
         />
       </div>
 
-      {view === 'graph' && useWebgl && (
-        <div className="studio-graph">
+      {view === 'graph' && (
+        <div className="studio-graph-slot">
           <Suspense fallback={<Spin style={{ margin: 48 }} />}>
-            <StudioBigGraph
+            <LegacyStudioGraphHost
+              project={project}
               graph={graph}
-              kindMeta={KIND_META}
               query={query}
-              selected={selected}
-              onNodeClick={(id) => {
-                setSelected(id);
-                const path = pathByName.get(id);
-                if (path) openEntry(path);
-              }}
+              onOpenEntry={openEntry}
             />
           </Suspense>
-          <div className="studio-graph-legend">
-            {Object.entries(KIND_META).map(([kind, meta]) => (
-              <button key={kind} type="button">
-                <i className={`studio-swatch ${kind}`} style={{ background: meta.soft }} />
-                {meta.label}
-                <small>{kindCounts[kind] || 0}</small>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {view === 'graph' && !useWebgl && (
-        <div className="studio-graph">
-          <ReactFlow
-            nodes={flowNodes}
-            edges={flowEdges}
-            nodeTypes={NODE_TYPES}
-            fitView
-            proOptions={{ hideAttribution: true }}
-            onlyRenderVisibleElements={graph.nodes.length > BIG_GRAPH_NODES}
-            onNodeClick={(_, node) => {
-              setSelected(node.id);
-              const path = pathByName.get(node.id);
-              if (path) openEntry(path);
-            }}
-            nodesConnectable={false}
-            nodesDraggable
-          >
-            <Background gap={22} size={1} color="var(--border-subtle)" />
-            {graph.nodes.length <= BIG_GRAPH_NODES && <MiniMap pannable zoomable />}
-            <Controls showInteractive={false} />
-          </ReactFlow>
-          <div className="studio-graph-legend">
-            {Object.entries(KIND_META).map(([kind, meta]) => (
-              <button key={kind} type="button">
-                <i className={`studio-swatch ${kind}`} style={{ background: meta.soft }} />
-                {meta.label}
-                <small>{kindCounts[kind] || 0}</small>
-              </button>
-            ))}
-          </div>
         </div>
       )}
 
@@ -317,7 +157,7 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
                 onFilter: (value, row) => row.kind === value,
                 render: (kind) => (
                   <Tag color={kind === 'object' ? 'blue' : 'green'}>
-                    {KIND_META[kind]?.label || kind}
+                    {KIND_LABEL[kind] || kind}
                   </Tag>
                 ),
               },

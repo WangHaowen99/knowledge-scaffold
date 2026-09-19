@@ -1,0 +1,65 @@
+/* 建模工作台 · 设计令牌
+   暖中性调色板，取自设计草图。所有颜色、间距、层级的唯一来源。
+   不引入 webfont：中文字体加载是首屏最大的性能风险，系统字体栈零成本。 */
+
+.wb {
+  /* 色系对齐现有应用的 .mwr 设计体系（styles.css）：冷调蓝灰 + 单一蓝色品牌色。
+     两套界面在双跑期并存，用户会来回切，色温不一致会很明显。 */
+  --c-bg:        #f2f4f8;
+  --c-surface:   #ffffff;
+  --c-surface-2: #f7f9fb;
+  --c-surface-3: #eef1f6;
+  --c-line:      #e3e6ec;
+  --c-line-soft: #eff1f5;
+
+  --c-ink:    #161c28;
+  --c-ink-2:  #4c5464;
+  --c-muted:  #89909e;
+  --c-faint:  #a4aab6;
+
+  /* 语义色取自 .mwr 的 good / warn / crit / blue，底色用同色系浅化 */
+  --c-ok:      #0e6b4a;  --c-ok-bg:     #e2f5ed;  --c-ok-line:    #bde4d1;
+  /* 待处理色降饱和：整套底色是冷调蓝灰，原来的土褐是里面唯一的暖褐，
+     大面积铺在阶段条上显脏。收到接近中性的暖灰，对比度仍达 AA
+     （正文 5.44:1、白字实心 5.83:1）。 */
+  --c-wait:    #7d6122;  --c-wait-bg:   #faf7f0;  --c-wait-line:  #eae2d2;
+  --c-stale:   #a8322c;  --c-stale-bg:  #fdecea;  --c-stale-line: #f5c8c3;
+  --c-accent:  #2a78d6;  --c-accent-bg: #eef4fc;  --c-accent-line:#cfe0f7;
+  /* 助手色：原体系里没有第二品牌色，取偏靛的蓝以示区别但不出家族 */
+  --c-agent:   #4a5fa8;  --c-agent-bg:  #eef1fa;  --c-agent-line: #d4dcf0;
+  --c-draft:   #89909e;
+
+  --c-add-bg: #e2f5ed; --c-add-ink: #0e6b4a;
+  --c-del-bg: #fdecea; --c-del-ink: #a8322c;
+
+  /* 主按钮沿用 .mwr 的蓝色渐变，这是最显眼的品牌信号 */
+  --grad-p: linear-gradient(135deg, #5b9bf0 0%, #2a78d6 48%, #1c5cab 100%);
+  --c-p-shadow: 0 2px 8px -2px rgba(42, 120, 214, .5), inset 0 1px 0 rgba(255, 255, 255, .16);
+
+  --t-xs: 10.5px;
+  --t-sm: 11.5px;
+  --t-md: 13px;
+  --t-lg: 14px;
+  --t-xl: 15.5px;
+
+  --s-1: 4px;  --s-2: 6px;  --s-3: 8px;  --s-4: 10px;
+  --s-5: 12px; --s-6: 16px; --s-7: 20px; --s-8: 28px; --s-9: 36px;
+
+  /* 圆角对齐 .mwr（按钮 9px、卡片 12px、标签 99px） */
+  --r-sm: 6px; --r-md: 9px; --r-lg: 12px; --r-full: 99px;
+
+  --sh-1: 0 1px 2px rgba(16, 24, 40, .05);
+  --sh-2: 0 4px 14px -4px rgba(16, 24, 40, .1), 0 2px 4px -2px rgba(16, 24, 40, .05);
+  --sh-3: 0 24px 56px -20px rgba(16, 24, 40, .28);
+  --ring: 0 0 0 3px rgba(85, 152, 231, .18);
+
+  --e-fast: 120ms cubic-bezier(.2, 0, .2, 1);
+  --e-base: 160ms cubic-bezier(.2, 0, .2, 1);
+
+  --font: system-ui, -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --h-topbar: 44px;
+  --w-left: 232px;
+  --w-right: 384px;
+}
