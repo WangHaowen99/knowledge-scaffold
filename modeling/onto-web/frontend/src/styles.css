@@ -1023,3 +1023,79 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   .msg-in, .msg-soft { animation: none !important; }
   .file-chip:hover { transform: none; }
 }
+
+/* ==== 中栏 UI 优化（人因学批次） ==== */
+
+/* 磁贴主题化：色调走类名，明暗两套；不再内联硬编码 hex */
+.stat-tile.tone-blue { --tile: var(--color-primary); --tile-bg: var(--color-primary-soft); }
+.stat-tile.tone-violet { --tile: #7048c8; --tile-bg: #eae2f9; }
+.stat-tile.tone-teal { --tile: #0f8f7f; --tile-bg: #d5f3ee; }
+.stat-tile.tone-amber { --tile: #b77909; --tile-bg: #fbf0d7; }
+.stat-tile.tone-green { --tile: #16845b; --tile-bg: #e2f5ed; }
+.stat-tile.tone-red { --tile: #c53d4b; --tile-bg: #fbe8e8; }
+.stat-tile.tone-neutral { --tile: var(--text-secondary); --tile-bg: var(--surface-subtle); }
+[data-theme='dark'] .stat-tile.tone-violet { --tile: #a98bee; --tile-bg: color-mix(in srgb, #7048c8 22%, var(--surface-card)); }
+[data-theme='dark'] .stat-tile.tone-teal { --tile: #4cc3b0; --tile-bg: color-mix(in srgb, #0f8f7f 22%, var(--surface-card)); }
+[data-theme='dark'] .stat-tile.tone-amber { --tile: #e0a63f; --tile-bg: color-mix(in srgb, #b77909 22%, var(--surface-card)); }
+[data-theme='dark'] .stat-tile.tone-green { --tile: #4fbe93; --tile-bg: color-mix(in srgb, #16845b 22%, var(--surface-card)); }
+[data-theme='dark'] .stat-tile.tone-red { --tile: #e57683; --tile-bg: color-mix(in srgb, #c53d4b 22%, var(--surface-card)); }
+
+/* 阅读类视图限宽：超宽屏行长可读（~880px 内容列） */
+.center-narrow { max-width: 880px; }
+.md-doc { max-width: 820px; }
+
+/* 报告列表：类型徽标 + 时间 */
+.report-item-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.report-item-time { font-size: 11px; color: var(--text-tertiary); }
+.report-item-name { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
+.report-item.active .report-item-name { color: var(--color-primary); }
+
+/* 对比页变更文件清单 */
+.diff-files {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  padding: 6px 10px; margin-bottom: 8px; border-radius: 8px;
+  background: var(--surface-subtle);
+}
+.diff-files-label { font-size: 12px; color: var(--text-tertiary); }
+
+/* 最近打开文件（文件页空态） */
+.recent-files { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.recent-files-label { width: 100%; font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; }
+
+/* 纯文本预览 */
+.plain-text {
+  background: var(--surface-card); border: 1px solid var(--border-subtle);
+  border-radius: 10px; padding: 12px 16px; font-size: 13px; line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word; color: var(--text-primary);
+  max-width: 820px;
+}
+
+/* 概览"最近版本"行可点 */
+.version-row { padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+.version-row:hover { background: var(--surface-subtle); }
+
+/* 文件标题长路径截断 */
+.file-title { max-width: 480px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* markdown 目录（长文档右侧浮动） */
+.md-with-toc { display: flex; gap: 16px; align-items: flex-start; }
+.md-with-toc .md-doc { flex: 1; min-width: 0; }
+.md-toc {
+  position: sticky; top: 8px; width: 168px; flex: none;
+  border-left: 2px solid var(--border-subtle); padding-left: 10px;
+  max-height: calc(100dvh - 200px); overflow-y: auto;
+}
+.md-toc-title { font-size: 11px; color: var(--text-tertiary); margin-bottom: 4px; }
+.toc-item {
+  display: block; width: 100%; text-align: left; border: none; background: none;
+  color: var(--text-secondary); font-size: 12px; padding: 2px 0; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.toc-item:hover { color: var(--color-primary); }
+.toc-item.lv2 { padding-left: 10px; }
+.toc-item.lv3 { padding-left: 20px; color: var(--text-tertiary); }
+@media (max-width: 1100px) { .md-toc { display: none; } }
+
+/* 预览高度改用动态视口单位（收栏/窄屏更稳） */
+.html-preview { height: calc(100dvh - 210px); }
+.excel-scroll { max-height: calc(100dvh - 250px); }
