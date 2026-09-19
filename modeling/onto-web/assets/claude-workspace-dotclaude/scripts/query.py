@@ -5,8 +5,8 @@ Query modes:
     --used-by <stem>        list all docs that reference [[stem]]
     --orphans               list docs that nothing references
     --search <keyword>      find any doc containing the keyword
-    --unused-objects        objects not referenced by any logic
-    --unused-actions        actions not referenced by any logic
+    --unused-objects        objects not referenced by any operation
+    --unused-actions        actions not referenced by any operation
     --dangling              broken [[link]] targets
 
 Output: markdown table by default, --json for machine-readable.
@@ -34,7 +34,7 @@ def query_orphans(all_docs: dict) -> dict:
     referenced = set()
     for doc in all_docs.values():
         referenced.update(doc.obsidian_links)
-    orphans = {'object': [], 'logic': [], 'action': []}
+    orphans = {'object': [], 'operation': [], 'action': []}
     for stem, doc in all_docs.items():
         if stem not in referenced:
             orphans.setdefault(doc.doc_type, []).append(stem)
@@ -58,10 +58,10 @@ def query_search(keyword: str, all_docs: dict) -> list:
 
 
 def query_unused(all_docs: dict, target_type: str) -> list:
-    """Objects/actions not referenced by any logic."""
+    """Objects/actions not referenced by any operation."""
     referenced = set()
     for doc in all_docs.values():
-        if doc.doc_type == 'logic':
+        if doc.doc_type == 'operation':
             referenced.update(doc.obsidian_links)
             # action invocations
             for row in doc.action_rows:
@@ -133,8 +133,8 @@ def format_orphans(orphans: dict) -> str:
     if total == 0:
         lines.append('无孤立文档。')
         return '\n'.join(lines)
-    cn = {'object': '对象', 'logic': '逻辑', 'action': '动作'}
-    for dtype in ('object', 'logic', 'action'):
+    cn = {'object': '对象', 'operation': '操作', 'action': '动作'}
+    for dtype in ('object', 'operation', 'action'):
         items = orphans.get(dtype, [])
         if not items:
             continue
@@ -189,8 +189,8 @@ def main():
     group.add_argument('--used-by', metavar='STEM', help='List docs that reference [[STEM]]')
     group.add_argument('--orphans', action='store_true', help='List unreferenced docs')
     group.add_argument('--search', metavar='KEYWORD', help='Free-text search')
-    group.add_argument('--unused-objects', action='store_true', help='Objects not used by any logic')
-    group.add_argument('--unused-actions', action='store_true', help='Actions not invoked by any logic')
+    group.add_argument('--unused-objects', action='store_true', help='Objects not used by any operation')
+    group.add_argument('--unused-actions', action='store_true', help='Actions not invoked by any operation')
     group.add_argument('--dangling', action='store_true', help='Broken [[link]] targets')
     group.add_argument('--knowledge', metavar='KEYWORD',
                        help='Search business knowledge entries')

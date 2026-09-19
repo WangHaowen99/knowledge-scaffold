@@ -33,12 +33,12 @@ OUTPUT_PATH = BASE_DIR / 'reports' / f'{NOW_STR}-overview.html'
 
 # ─── Parse Objects ───────────────────────────────────────────────────────────
 object_files = sorted((ONTOLOGY_DIR / 'object').glob('*.md'))
-logic_files = sorted((ONTOLOGY_DIR / 'logic').glob('*.md'))
+operation_files = sorted((ONTOLOGY_DIR / 'operation').glob('*.md'))
 script_dir = ONTOLOGY_DIR / 'scripts'
 script_files = sorted(script_dir.glob('*.py')) if script_dir.exists() else []
 
 OBJECTS_IDX = {}
-LOGIC_IDX = {}
+OPERATION_IDX = {}
 
 def parse_object(path):
     name = path.stem
@@ -63,7 +63,7 @@ def parse_object(path):
                 attrs.append(cells[0])
 
     related = list(set(re.findall(r'\[\[([^\]]+)\]\]', content)))
-    related = [r for r in related if r not in (name, 'logic')]
+    related = [r for r in related if r not in (name, 'operation')]
 
     return {
         'name': name,
@@ -77,8 +77,8 @@ def parse_object(path):
 for f in object_files:
     OBJECTS_IDX[f.stem] = parse_object(f)
 
-# ─── Parse Logics ─────────────────────────────────────────────────────────────
-def parse_logic(path):
+# ─── Parse Operations ─────────────────────────────────────────────────────────────
+def parse_operation(path):
     name = path.stem
     content = path.read_text(encoding='utf-8')
 
@@ -114,38 +114,38 @@ def parse_logic(path):
         'called_by': []
     }
 
-for f in logic_files:
-    LOGIC_IDX[f.stem] = parse_logic(f)
+for f in operation_files:
+    OPERATION_IDX[f.stem] = parse_operation(f)
 
-# ─── Cross-link: which logics reference each object ───────────────────────────
-for lname, ldata in LOGIC_IDX.items():
+# ─── Cross-link: which operations reference each object ───────────────────────────
+for lname, ldata in OPERATION_IDX.items():
     for obj_list in [ldata['inputs'], ldata['outputs'], ldata['supports']]:
         for oname in obj_list:
             if oname in OBJECTS_IDX:
                 OBJECTS_IDX[oname]['used_by'].append(lname)
 
-# ─── Cross-link: logic call graph ───────────────────────────────────────────
-for lname, ldata in LOGIC_IDX.items():
+# ─── Cross-link: operation call graph ───────────────────────────────────────────
+for lname, ldata in OPERATION_IDX.items():
     for callee in ldata['calls']:
-        if callee in LOGIC_IDX:
-            LOGIC_IDX[callee]['called_by'].append(lname)
+        if callee in OPERATION_IDX:
+            OPERATION_IDX[callee]['called_by'].append(lname)
 
 # ─── Compute derived metrics ──────────────────────────────────────────────────
 object_use_count = {oname: len(odata['used_by']) for oname, odata in OBJECTS_IDX.items()}
 orphan_objects = [oname for oname, cnt in object_use_count.items() if cnt == 0]
-top_logic = [lname for lname, ldata in LOGIC_IDX.items() if not ldata['called_by']]
+top_operation = [lname for lname, ldata in OPERATION_IDX.items() if not ldata['called_by']]
 
 missing_refs = []
-for lname, ldata in LOGIC_IDX.items():
+for lname, ldata in OPERATION_IDX.items():
     for oname in list(ldata['inputs']) + list(ldata['outputs']) + list(ldata['supports']):
         if oname not in OBJECTS_IDX:
             missing_refs.append((lname, oname, 'object'))
     for cname in ldata['calls']:
-        if cname not in LOGIC_IDX:
-            missing_refs.append((lname, cname, 'logic'))
+        if cname not in OPERATION_IDX:
+            missing_refs.append((lname, cname, 'operation'))
 for oname, odata in OBJECTS_IDX.items():
     for rname in odata['related']:
-        if rname not in OBJECTS_IDX and rname not in LOGIC_IDX:
+        if rname not in OBJECTS_IDX and rname not in OPERATION_IDX:
             missing_refs.append((oname, rname, 'related'))
 
 sorted_objects = sorted(object_use_count.items(), key=lambda x: -x[1])[:20]
@@ -181,26 +181,26 @@ for oname, odata in OBJECTS_IDX.items():
         if rname in OBJECTS_IDX:
             object_edges.append({'from': oname, 'to': rname, 'arrows': 'to'})
 
-tool_logics = {lname for lname, ldata in LOGIC_IDX.items() if len(ldata['called_by']) >= 3}
-logic_nodes = []
-logic_edges = []
-for lname, ldata in LOGIC_IDX.items():
+tool_operations = {lname for lname, ldata in OPERATION_IDX.items() if len(ldata['called_by']) >= 3}
+operation_nodes = []
+operation_edges = []
+for lname, ldata in OPERATION_IDX.items():
     if ldata['called_by']:
         color = {'background': '#c7eed8', 'border': '#1a7f37'}
-    elif lname in top_logic:
+    elif lname in top_operation:
         color = {'background': '#ffd8a8', 'border': '#bf8700'}
     else:
         color = {'background': '#a7f0ba', 'border': '#1a7f37'}
 
-    logic_nodes.append({
+    operation_nodes.append({
         'id': lname, 'label': lname, 'color': color,
         'title': f"{lname}\n调用 {len(ldata['calls'])} 个子流程"
     })
 
-for lname, ldata in LOGIC_IDX.items():
+for lname, ldata in OPERATION_IDX.items():
     for callee in ldata['calls']:
-        if callee in LOGIC_IDX:
-            logic_edges.append({'from': lname, 'to': callee, 'arrows': 'to'})
+        if callee in OPERATION_IDX:
+            operation_edges.append({'from': lname, 'to': callee, 'arrows': 'to'})
 
 object_meta = {oname: {
     'name': oname,
@@ -210,19 +210,19 @@ object_meta = {oname: {
     'related': odata['related']
 } for oname, odata in OBJECTS_IDX.items()}
 
-logic_meta = {lname: {
+operation_meta = {lname: {
     'name': lname,
     'description': ldata['description'],
-    'is_top': lname in top_logic,
+    'is_top': lname in top_operation,
     'inputs': ldata['inputs'],
     'outputs': ldata['outputs'],
     'supports': ldata['supports'],
     'calls': ldata['calls'],
     'called_by': ldata['called_by']
-} for lname, ldata in LOGIC_IDX.items()}
+} for lname, ldata in OPERATION_IDX.items()}
 
 N_OBJECTS = len(OBJECTS_IDX)
-N_LOGICS = len(LOGIC_IDX)
+N_OPERATIONS = len(OPERATION_IDX)
 N_SCRIPTS = len(script_files)
 N_ACTIONS = 0  # action phase 默认关闭
 
@@ -231,24 +231,24 @@ if orphan_objects:
     warn_badges.append(f'<div class="stat warn"><span class="num">{len(orphan_objects)}</span><span class="label">孤立对象</span></div>')
 stats_warn_badges = '\n'.join(warn_badges)
 
-top_logic_items = []
-for lname in sorted(top_logic):
-    desc = LOGIC_IDX[lname]['description']
-    top_logic_items.append(f'<li><strong>{lname}</strong> — {desc}</li>')
-top_logic_list = '\n'.join(top_logic_items)
+top_operation_items = []
+for lname in sorted(top_operation):
+    desc = OPERATION_IDX[lname]['description']
+    top_operation_items.append(f'<li><strong>{lname}</strong> — {desc}</li>')
+top_operation_list = '\n'.join(top_operation_items)
 
 scale_parts = []
 if N_OBJECTS:
     scale_parts.append(f'{N_OBJECTS} 个业务对象')
-if N_LOGICS:
-    scale_parts.append(f'{N_LOGICS} 个业务逻辑')
+if N_OPERATIONS:
+    scale_parts.append(f'{N_OPERATIONS} 个业务逻辑')
 if N_SCRIPTS:
     scale_parts.append(f'{N_SCRIPTS} 个生成脚本')
 scale_summary = '、'.join(scale_parts) + f'，覆盖{TOPIC}核心业务全流程。'
 
 matrix_rows = []
-for lname in sorted(LOGIC_IDX.keys()):
-    ldata = LOGIC_IDX[lname]
+for lname in sorted(OPERATION_IDX.keys()):
+    ldata = OPERATION_IDX[lname]
     inputs_str = ', '.join(ldata['inputs']) or '—'
     outputs_str = ', '.join(ldata['outputs']) or '—'
     supports_str = ', '.join(ldata['supports']) or '—'
@@ -301,7 +301,7 @@ output_html = output_html.replace(
     '{{HEADER_EXTRA}}',
     f'<div class="stats-row">'
     f'<div class="stat"><span class="num">{N_OBJECTS}</span><span class="label">对象</span></div>'
-    f'<div class="stat"><span class="num">{N_LOGICS}</span><span class="label">逻辑</span></div>'
+    f'<div class="stat"><span class="num">{N_OPERATIONS}</span><span class="label">逻辑</span></div>'
     f'<div class="stat"><span class="num">{N_ACTIONS}</span><span class="label">动作</span></div>'
     f'<div class="stat"><span class="num">{N_SCRIPTS}</span><span class="label">脚本</span></div>'
     f'{stats_warn_badges}'
@@ -311,7 +311,7 @@ output_html = output_html.replace(
 output_html = output_html.replace('{{BODY_CONTENT}}', body_html)
 output_html = output_html.replace('{{N_ACTIONS}}', str(N_ACTIONS))
 output_html = output_html.replace('{{N_PROBLEMS_BADGE}}', n_problems_badge)
-output_html = output_html.replace('{{TOP_LOGIC_LIST}}', top_logic_list)
+output_html = output_html.replace('{{TOP_OPERATION_LIST}}', top_operation_list)
 output_html = output_html.replace('{{SCALE_SUMMARY}}', scale_summary)
 output_html = output_html.replace('{{MATRIX_ROWS}}', matrix_rows_str)
 output_html = output_html.replace('{{HOTSPOT_ROWS}}', hotspot_rows_str)
@@ -324,9 +324,9 @@ output_html = output_html.replace('{{BODY_SCRIPTS}}', f'''
   const objectNodes = {json.dumps(object_nodes, ensure_ascii=False)};
   const objectEdges = {json.dumps(object_edges, ensure_ascii=False)};
   const objectMeta = {json.dumps(object_meta, ensure_ascii=False)};
-  const logicNodes = {json.dumps(logic_nodes, ensure_ascii=False)};
-  const logicEdges = {json.dumps(logic_edges, ensure_ascii=False)};
-  const logicMeta = {json.dumps(logic_meta, ensure_ascii=False)};
+  const logicNodes = {json.dumps(operation_nodes, ensure_ascii=False)};
+  const logicEdges = {json.dumps(operation_edges, ensure_ascii=False)};
+  const logicMeta = {json.dumps(operation_meta, ensure_ascii=False)};
 
   function escapeHtml(s) {{
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
@@ -380,7 +380,7 @@ output_html = output_html.replace('{{BODY_SCRIPTS}}', f'''
   }});
 
   const logicGraph = new vis.Network(
-    document.getElementById('logic-graph-canvas'),
+    document.getElementById('operation-graph-canvas'),
     {{ nodes: new vis.DataSet(logicNodes), edges: new vis.DataSet(logicEdges) }},
     {{
       layout: {{ hierarchical: {{ enabled: true, direction: 'UD', sortMethod: 'directed', levelSeparation: 110, nodeSpacing: 150 }} }},
@@ -391,7 +391,7 @@ output_html = output_html.replace('{{BODY_SCRIPTS}}', f'''
     }}
   );
   logicGraph.on('click', params => {{
-    const sidebar = document.getElementById('logic-graph-detail');
+    const sidebar = document.getElementById('operation-graph-detail');
     sidebar.innerHTML = params.nodes.length ? renderLogicDetail(logicMeta[params.nodes[0]]) : '<div class="placeholder">点击节点查看详情</div>';
   }});
 
@@ -407,7 +407,7 @@ output_html = output_html.replace('{{BODY_SCRIPTS}}', f'''
     }});
   }}
   setupSearch('object-search', objectGraph);
-  setupSearch('logic-search', logicGraph);
+  setupSearch('operation-search', logicGraph);
 </script>
 ''')
 
@@ -415,12 +415,12 @@ OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 OUTPUT_PATH.write_text(output_html, encoding='utf-8')
 print(f"Report written to: {OUTPUT_PATH}")
 print(f"\n=== STATS ===")
-print(f"Objects: {N_OBJECTS} | Logics: {N_LOGICS} | Scripts: {N_SCRIPTS}")
+print(f"Objects: {N_OBJECTS} | Operations: {N_OPERATIONS} | Scripts: {N_SCRIPTS}")
 print(f"\n=== ORPHAN OBJECTS ({len(orphan_objects)}) ===")
 for o in sorted(orphan_objects):
     print(f"  - {o}")
-print(f"\n=== TOP LOGICS ({len(top_logic)}) ===")
-for l in sorted(top_logic):
+print(f"\n=== TOP OPERATIONS ({len(top_operation)}) ===")
+for l in sorted(top_operation):
     print(f"  - {l}")
 print(f"\n=== OBJECT USAGE TOP 10 ===")
 for oname, cnt in sorted_objects[:10]:

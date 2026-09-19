@@ -148,4 +148,4 @@ git commit -m "mock: {TOPIC} test data"
 - 回复 **追踪**（/ontology-trace）→ 使用测试数据进行场景追踪
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
-If user replies **追踪**: ask "请输入要追踪的逻辑文件路径（如 ontology/logic/创建订单.md），或回复 **全部** 追踪所有逻辑：", then read `.claude/commands/ontology-trace.md` and follow it with the user's choice.
+If user replies **追踪**: ask "请输入要追踪的逻辑文件路径（如 ontology/operation/创建订单.md），或回复 **全部** 追踪所有逻辑：", then read `.claude/commands/ontology-trace.md` and follow it with the user's choice.

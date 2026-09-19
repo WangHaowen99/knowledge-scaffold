@@ -1,4 +1,4 @@
-Generate Python scripts from verified logic documents. Scope (if any): $ARGUMENTS
+Generate Python scripts from verified operation documents. Scope (if any): $ARGUMENTS
 
 ## Step 0: 前置检查
 
@@ -6,16 +6,16 @@ Generate Python scripts from verified logic documents. Scope (if any): $ARGUMENT
 
 1. `python3 .claude/scripts/state_helper.py check-lock codegen`
 2. `python3 .claude/scripts/state_helper.py check-prereq codegen`
-   - `missing:逻辑已提取` → **跳步守卫**："继续会导致没有逻辑可生成代码"。选项 **继续** / **先做 逻辑提取**（/ontology-extract-logic）。
+   - `missing:逻辑已提取` → **跳步守卫**："继续会导致没有逻辑可生成代码"。选项 **继续** / **先做 逻辑提取**（/ontology-extract-operation）。
 
    > codegen 只要求 `逻辑已提取`。若逻辑描述中包含外部副作用，只在生成代码中保留注释说明，不再生成单独函数桩。
 3. `python3 .claude/scripts/state_helper.py acquire codegen start`
 
-4. 加载已沉淀业务知识。SCOPE_HINTS = `global` + codegen 范围内的每个 logic + 这些 logic 引用的对象（从各 logic 文档的 `# 与object的关联` section 解析）：
+4. 加载已沉淀业务知识。SCOPE_HINTS = `global` + codegen 范围内的每个 operation + 这些 operation 引用的对象（从各 operation 文档的 `# 与object的关联` section 解析）：
    ```bash
    SCOPE_ARGS=(--scope global)
-   for logic in $TARGET_LOGICS; do
-       SCOPE_ARGS+=(--scope "logic:$logic")
+   for operation in $TARGET_OPERATIONS; do
+       SCOPE_ARGS+=(--scope "operation:$operation")
    done
    for obj in $REFERENCED_OBJECTS; do
        SCOPE_ARGS+=(--scope "object:$obj")
@@ -25,9 +25,9 @@ Generate Python scripts from verified logic documents. Scope (if any): $ARGUMENT
    若 `KNOWLEDGE_BLOCK` 等于 `（暂无相关业务知识）`，置为空字符串以跳过注入。
 
    > 注：
-   > - TARGET_LOGICS 与 REFERENCED_OBJECTS 在确定 codegen scope 后才能填入；本 load 实际在 **Step 2**（解析 scope）之后执行。
-   > - `TARGET_LOGICS` 是 Step 2 解析出的 `(logic, fragment_scope)` 元组列表**按 logic 名去重**后的集合——多个片段共享一条 logic 时只算一次 `--scope logic:活动归因`。
-   > - `REFERENCED_OBJECTS` 是 TARGET_LOGICS 内所有 logic 文档的 `# 与object的关联` section 中 `[[...]]` 引用的对象并集，同样去重。
+   > - TARGET_OPERATIONS 与 REFERENCED_OBJECTS 在确定 codegen scope 后才能填入；本 load 实际在 **Step 2**（解析 scope）之后执行。
+   > - `TARGET_OPERATIONS` 是 Step 2 解析出的 `(operation, fragment_scope)` 元组列表**按 operation 名去重**后的集合——多个片段共享一条 operation 时只算一次 `--scope operation:活动归因`。
+   > - `REFERENCED_OBJECTS` 是 TARGET_OPERATIONS 内所有 operation 文档的 `# 与object的关联` section 中 `[[...]]` 引用的对象并集，同样去重。
 
 额外推荐（非强制）：检查 `reports/` 最近是否有未处理的 `[ ]`，若有，提示"建议先跑 /ontology-validate 处理完问题后再生成代码"。
 
@@ -40,23 +40,23 @@ Generate Python scripts from verified logic documents. Scope (if any): $ARGUMENT
 本命令以 main agent 直接执行为主（无 sub-agent dispatch）。Step 3-4 生成 Python 代码时，**必须**先扫描 Step 0 加载的 `KNOWLEDGE_BLOCK`：
 - 置信度 `高` → **硬约束**：SQL/字段处理/枚举/分隔符/单位等实现细节必须符合（如 `';'` 边界匹配、双轨 plain+JSON 过滤等）；
 - 置信度 `中` / `低` → 在脚本注释中显式标注以便后续核对；
-- 若 logic 文档与高置信知识条目冲突，停下来汇报冲突给用户裁决，不要静默照搬 logic 文档。
+- 若 operation 文档与高置信知识条目冲突，停下来汇报冲突给用户裁决，不要静默照搬 operation 文档。
 
 ## Step 1: Check prerequisites
 
-List files in `ontology/logic/`. If empty: "未找到逻辑文档，请先完成提取和校验流程。" Stop.
+List files in `ontology/operation/`. If empty: "未找到逻辑文档，请先完成提取和校验流程。" Stop.
 
 ## Step 2: Determine scope
 
-**强制规则**：codegen 必须显式指定目标 logic 或片段，**不接受"对全部 logic 一键生成"**。理由：盲跑会把不适合脚本化的 logic（人工决策、政策陈述等）也生成空壳脚本，污染 `ontology/scripts/`。要批量处理请先走 `/ontology-codegen-scan` 由人工评审候选。
+**强制规则**：codegen 必须显式指定目标 operation 或片段，**不接受"对全部 operation 一键生成"**。理由：盲跑会把不适合脚本化的 operation（人工决策、政策陈述等）也生成空壳脚本，污染 `ontology/scripts/`。要批量处理请先走 `/ontology-codegen-scan` 由人工评审候选。
 
-每个 scope 项是一个 `(logic, fragment_scope)` 元组：
+每个 scope 项是一个 `(operation, fragment_scope)` 元组：
 
-- 纯 logic 名 `客群聚类` → fragment_scope = `整段`
-- `logic名:步骤区间` → fragment_scope 取冒号后内容；合法形式：`步骤N` / `步骤N-M` / `步骤N,M`（步骤号必须能在 logic 文档「# 逻辑描述」中找到）
+- 纯 operation 名 `客群聚类` → fragment_scope = `整段`
+- `operation名:步骤区间` → fragment_scope 取冒号后内容；合法形式：`步骤N` / `步骤N-M` / `步骤N,M`（步骤号必须能在 operation 文档「# 逻辑描述」中找到）
 
 **If $ARGUMENTS provided:**
-按空格切分；每段按上述规则解析。逐项 resolve 到 `ontology/logic/{logic}.md`，缺失文件或非法 fragment_scope 给警告并跳过。
+按空格切分；每段按上述规则解析。逐项 resolve 到 `ontology/operation/{operation}.md`，缺失文件或非法 fragment_scope 给警告并跳过。
 
 例：`/ontology-codegen 客群聚类 活动归因:步骤1-3 交易对账` →
 - (客群聚类, 整段)
@@ -66,7 +66,7 @@ List files in `ontology/logic/`. If empty: "未找到逻辑文档，请先完成
 > 若 `$ARGUMENTS` 仅包含 `全部` / `all` / `*` 等通配词，**拒绝并提示**："代码生成不接受全量目标，请改用 `/ontology-codegen 逻辑1 逻辑2` 形式，或先跑 `/ontology-codegen-scan` 评估候选。"
 
 **If $ARGUMENTS empty:**
-List all logic files and ask:
+List all operation files and ask:
 "发现 {N} 个逻辑文档。请指定要生成代码的范围（不支持一键全部）：
 
 - 回复 **扫描**（/ontology-codegen-scan）→ 先扫一遍候选清单挑（推荐）
@@ -80,19 +80,19 @@ List all logic files and ask:
 - **取消** → `python3 .claude/scripts/state_helper.py release codegen`，Stop。
 - **全部** / **all** / ***** → 复述强制规则并重新提示上述三选项，不进入生成流程。
 
-> 若不确定哪些 logic 适合脚本化，`/ontology-codegen-scan` 会输出带编号的候选报告（含每个 logic 的片段范围、输入输出概要、判定理由）。
+> 若不确定哪些 operation 适合脚本化，`/ontology-codegen-scan` 会输出带编号的候选报告（含每个 operation 的片段范围、输入输出概要、判定理由）。
 
 ## Step 3: Read dependencies
 
-For each logic doc in scope:
-1. Read the logic document from `ontology/logic/{name}.md`
+For each operation doc in scope:
+1. Read the operation document from `ontology/operation/{name}.md`
 2. Extract referenced objects from `与object的关联` section
 3. Read each referenced object from `ontology/object/`
 4. If `ontology/data-mock/` has mock data, read it for test examples
 
 ## Step 4: Generate Python code
 
-对 Step 2 解析出的每个 `(logic, fragment_scope)` 元组生成一个脚本：
+对 Step 2 解析出的每个 `(operation, fragment_scope)` 元组生成一个脚本：
 
 **文件名规则**：
 
@@ -103,12 +103,12 @@ For each logic doc in scope:
 | `步骤N-M` | `ontology/scripts/{逻辑英文名}_steps{N}-{M}.py`（区间保留 `-`）|
 | `步骤N1,N2,...` | `ontology/scripts/{逻辑英文名}_steps{N1}_{N2}_...py`（按用户输入顺序，每个数字用 `_` 拼接，不要排序）|
 
-> 区间与列表用不同分隔符以避免冲突（`步骤1-3` → `_steps1-3.py`；`步骤1,3` → `_steps1_3.py`，不会撞）。同一条 logic 的多个片段脚本可以共存；与原"一 logic 一脚本"约定向后兼容（整段命名不变）。
+> 区间与列表用不同分隔符以避免冲突（`步骤1-3` → `_steps1-3.py`；`步骤1,3` → `_steps1_3.py`，不会撞）。同一条 operation 的多个片段脚本可以共存；与原"一 operation 一脚本"约定向后兼容（整段命名不变）。
 
 **头部注释**：严格按 `.claude/templates/script-template.py` 模板填写，须包含：
-- `关联logic`：本脚本对应的 logic 名称。整段填 logic 名（如 `客群聚类`）；片段填 `客群聚类 / 步骤2-4`（用 ` / 步骤X` 后缀标注覆盖范围）；无关联填"无"
+- `关联operation`：本脚本对应的 operation 名称。整段填 operation 名（如 `客群聚类`）；片段填 `客群聚类 / 步骤2-4`（用 ` / 步骤X` 后缀标注覆盖范围）；无关联填"无"
 - `功能描述`：一句话说明脚本做什么
-- `详细逻辑`：对应原 logic 中被脚本实现的那段逻辑的展开描述（片段脚本只展开 fragment_scope 内的步骤）
+- `详细逻辑`：对应原 operation 中被脚本实现的那段逻辑的展开描述（片段脚本只展开 fragment_scope 内的步骤）
 - `用法`：CLI（`python3 ... --参数 值`）+ import 两种调用范例
 - `输入参数`：每个参数的"名称 / 类型 / 必填或默认值"
 - `输出`：return 结构 / 写入表 / 生成文件 等，含字段或结构说明
@@ -128,7 +128,7 @@ class {ObjectEnglishName}:
     {attribute_english}: {python_type}  # {中文名称}: {描述}
 
 # --- 主函数：使用普通形参，便于被其他脚本 import 调用 ---
-def {logic_english_name}(arg1: T, arg2: T | None = None) -> {ReturnType}:
+def {operation_english_name}(arg1: T, arg2: T | None = None) -> {ReturnType}:
     # {步骤 1 from 逻辑描述}
     ...
     return result
@@ -138,7 +138,7 @@ def _cli() -> None:
     parser = argparse.ArgumentParser(description="{一句话业务描述}")
     parser.add_argument("--arg1", required=True, help="...")
     parser.add_argument("--arg2", default=None, help="...")
-    {logic_english_name}(**vars(parser.parse_args()))
+    {operation_english_name}(**vars(parser.parse_args()))
 
 if __name__ == "__main__":
     _cli()
@@ -156,7 +156,7 @@ sku_details = [
     {"sku_id": s.split(":")[0], "quantity": int(s.split(":")[1])}
     for s in args.sku
 ]
-{logic_english_name}(order_id=args.order_id, sku_details=sku_details)
+{operation_english_name}(order_id=args.order_id, sku_details=sku_details)
 ```
 
 > 真有大批量结构化入参（如 100+ 条），用 `--input-file path.json` 由脚本读文件，而不是把 JSON 塞进 CLI value。
@@ -169,15 +169,15 @@ sku_details = [
 - 日期 → str (ISO format)
 - 对象引用 → the corresponding dataclass
 
-**Logic translation:**
+**Operation translation:**
 - 判断 steps → if/elif/else
 - 调用子流程 → function calls
 - 循环 → for/while loops
 - 异常处理 → try/except
 
-### Step 4.2: 改写对应 logic 文档（每个脚本必做，不可跳过）
+### Step 4.2: 改写对应 operation 文档（每个脚本必做，不可跳过）
 
-> **每写完一个 `.py` 必须紧接着改对应 `ontology/logic/{name}.md` 的 `# 逻辑描述` 段**——
+> **每写完一个 `.py` 必须紧接着改对应 `ontology/operation/{name}.md` 的 `# 逻辑描述` 段**——
 > 跳过此步直接进入 Step 4.5 = 流程错误。本步与生成脚本同属 Step 4 的必做项，
 > 不要因 Step 4.5 有 review-agent 兜底就省略。
 
@@ -204,8 +204,8 @@ python3 ontology/scripts/{script}.py --参数1 值1 --参数2 值2
 
 规则：
 - 业务步骤保留高层语义，**不重复**脚本内部实现细节。哪怕用了业务词汇（"库存"/"SKU"），只要出现字段级算式或内部循环就算未简化。
-- 片段脚本（仅覆盖 logic 的部分步骤）：只把被覆盖的那几条改为「调用脚本 ...」，其余步骤保持原文。
-- 调用示例使用实际业务场景中的典型参数值；脚本头部注释里的「输入参数」段是参数定义的单一来源，logic 文档不再重复字段表。
+- 片段脚本（仅覆盖 operation 的部分步骤）：只把被覆盖的那几条改为「调用脚本 ...」，其余步骤保持原文。
+- 调用示例使用实际业务场景中的典型参数值；脚本头部注释里的「输入参数」段是参数定义的单一来源，operation 文档不再重复字段表。
 
 ### Step 4.3: 默认值与双语支持（按需）
 
@@ -226,7 +226,7 @@ Read `.claude/agents/codegen-review-agent.md`. Dispatch it as a subagent.
 
 变量：
 - `TARGET_SCRIPTS`: Step 4 中生成或修改的 `ontology/scripts/*.py` 文件相对路径（空格分隔）
-- `RELATED_LOGICS`: 对应 `ontology/logic/*.md` 文件相对路径（空格分隔）
+- `RELATED_OPERATIONS`: 对应 `ontology/operation/*.md` 文件相对路径（空格分隔）
 
 在 dispatch prompt 底部（在已有的收尾指令之后）追加：
 
@@ -246,10 +246,10 @@ Wait for it to return a JSON array.
 - `头部缺失` / `头部字段错误` → 按 `.claude/templates/script-template.py` 补齐 7 字段
 - `CLI不规范` → 替换为 argparse + `--参数名` 形式；移除 JSON 串参数
 - `骨架不规范` → 按模板补 `from __future__ import annotations` / `_cli()` 等
-- `logic未简化` → 改写对应 `ontology/logic/{name}.md` 的「逻辑描述」段（按 Step 4.2 执行）。本应在 Step 4.2 生成时已完成；如果跑到这里说明 Step 4.2 漏做了，现在补
+- `operation未简化` → 改写对应 `ontology/operation/{name}.md` 的「逻辑描述」段（按 Step 4.2 执行）。本应在 Step 4.2 生成时已完成；如果跑到这里说明 Step 4.2 漏做了，现在补
 - `业务知识冲突` → 按 KNOWLEDGE_BLOCK 中对应高置信条目调整脚本（如 `';'` 边界匹配 SQL）
 
-修复后**重新 dispatch codegen-review-agent**（同 TARGET_SCRIPTS / RELATED_LOGICS）做一次回归。若回归后仍有 `severity=错误` 且与上一轮相同（按 `file + message` 精确配对），停下来汇报：
+修复后**重新 dispatch codegen-review-agent**（同 TARGET_SCRIPTS / RELATED_OPERATIONS）做一次回归。若回归后仍有 `severity=错误` 且与上一轮相同（按 `file + message` 精确配对），停下来汇报：
 
 ```
 自动修复未能消除以下错误，需人工介入：
@@ -298,11 +298,11 @@ Show list of generated files（示例同时含整段与片段两种命名）：
 ## Step 6: Commit
 
 ```bash
-git add ontology/scripts/ ontology/logic/
+git add ontology/scripts/ ontology/operation/
 git commit -m "codegen: {TOPIC}"
 ```
 
-> Step 4.5.1 可能改写 `ontology/logic/*.md` 的「逻辑描述」段（简化为业务步骤 + 调用示例），故一并纳入 `git add`。
+> Step 4.5.1 可能改写 `ontology/operation/*.md` 的「逻辑描述」段（简化为业务步骤 + 调用示例），故一并纳入 `git add`。
 
 ## Step 7: Suggest next step
 

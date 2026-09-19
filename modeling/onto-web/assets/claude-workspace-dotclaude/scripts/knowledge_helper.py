@@ -193,7 +193,7 @@ def _entry_path(type_: str, slug: str) -> Path:
 
 INDEX_HEADER = (
     '# 业务知识索引\n\n'
-    '> 由 /ontology-extract-object、/ontology-extract-logic、/ontology-trace 等命令在识别到专家经验/纠错时自动维护。\n'
+    '> 由 /ontology-extract-object、/ontology-extract-operation、/ontology-trace 等命令在识别到专家经验/纠错时自动维护。\n'
     '> 每行一条：`- [标题](文件名.md) — 类型 | scopes: …`\n\n'
 )
 

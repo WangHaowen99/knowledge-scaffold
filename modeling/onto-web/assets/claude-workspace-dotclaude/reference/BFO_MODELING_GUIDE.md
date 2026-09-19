@@ -14,7 +14,7 @@
 | 查所有 BFO 类目的定义 | §3 类目录 |
 | 查 BFO 常用关系 | §4 关系目录 |
 | 看制造业建模该遵守哪些原则 | §5 |
-| 把 BFO 范畴映射到本项目的 object / logic / action | §6 |
+| 把 BFO 范畴映射到本项目的 object / operation / action | §6 |
 | 看常见错误怎么避免 | §7 反模式 |
 | 建模收尾前自检 | §8 检查清单 |
 | 让校验脚本支持 BFO 规则 | §9 |
@@ -214,7 +214,7 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 
 ## 6. 与本项目模板的对应关系
 
-> 本项目的 `ontology/` 目录已经预设了 object / logic / action 三类文档，本节给出与 BFO 范畴的对照，方便在不改模板的前提下"按 BFO 思考"。
+> 本项目的 `ontology/` 目录已经预设了 object / operation / action 三类文档，本节给出与 BFO 范畴的对照，方便在不改模板的前提下"按 BFO 思考"。
 
 ### 6.1 BFO 范畴 → 本项目文档类型
 
@@ -227,10 +227,10 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 | Role | 一般做成 object，命名带"角色"；或作为属性 | 若有自己的生命周期、独立属性，独立建对象更清晰 |
 | Disposition / Function | object 的**属性** 或 `ontology/knowledge/` 业务规则 | 通常不单独建对象 |
 | ICE（工单 / BOM / 检验单 / 合同） | `ontology/object/` | 命名建议保留"单 / 表 / 记录"后缀以示信息体 |
-| Process（业务流程 / 子流程） | `ontology/logic/` | 主体 |
-| Process Boundary（瞬时事件） | `ontology/logic/` 的判断节点或外部副作用说明 | |
-| Plan（工艺计划、规则规范） | `ontology/knowledge/` 或独立 object | 与"实际执行的 logic"分开 |
-| 一个外部触发动作 | `ontology/logic/` 中的独立触发逻辑或外部副作用步骤 | |
+| Process（业务流程 / 子流程） | `ontology/operation/` | 主体 |
+| Process Boundary（瞬时事件） | `ontology/operation/` 的判断节点或外部副作用说明 | |
+| Plan（工艺计划、规则规范） | `ontology/knowledge/` 或独立 object | 与"实际执行的 operation"分开 |
+| 一个外部触发动作 | `ontology/operation/` 中的独立触发逻辑或外部副作用步骤 | |
 
 ### 6.2 模板字段的 BFO 解读
 
@@ -239,7 +239,7 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 - "对象属性清单" → 该 IC 的 Quality 集合（可能也包括与之关联的 ICE 字段）
 - "关联对象" → BFO 关系的简化表述；如需严格 BFO，可在关系名里使用 `part_of / inheres_in / participates_in` 等
 
-**`logic-template.md`**
+**`operation-template.md`**
 - 整个文档对应一个 **Process**（或一个 Process 类）
 - "输入 / 输出" 是 Process 的 input/output（CCO 风格）
 - "支撑数据的对象" 通常是 `has_participant` 的实体
@@ -253,8 +253,8 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 | ICE（信息体） | 保留"单 / 表 / 记录 / 凭证 / 报告" |
 | Role | 加"角色 / 身份" |
 | Site | 加"车间 / 仓位 / 工位 / 区域" |
-| Process | logic 文件名用动词或动名词："下单""审核订单""车削加工" |
-| Plan / 规则 | 进 `ontology/knowledge/`，不要混进 logic |
+| Process | operation 文件名用动词或动名词："下单""审核订单""车削加工" |
+| Plan / 规则 | 进 `ontology/knowledge/`，不要混进 operation |
 
 ---
 
@@ -262,12 +262,12 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 
 | 反模式 | 症状 | 正确做法 |
 |---|---|---|
-| **Continuant/Occurrent 混淆** | 把"加工"当对象、属性叫"是否完成" | 加工是 Process（logic），完成是 Process 边界 |
+| **Continuant/Occurrent 混淆** | 把"加工"当对象、属性叫"是否完成" | 加工是 Process（operation），完成是 Process 边界 |
 | **设计/实例混淆** | 工单和产品共用一个对象 | 工单 = ICE，产品 = Material Entity，两个对象 + `is_about` |
 | **状态机塞进字段** | 对象有 `status: enum`，没有过程文档 | 拆 Quality + 状态转移 Process + 边界 |
 | **属性当对象** | "颜色"独立建对象 | Quality 留在 object 属性里 |
 | **对象当属性** | "供应商"只写成订单的字符串字段 | 供应商应是独立 object（含 Role 语义） |
-| **Role 当作 Person 本体** | "审批人"建成对象，与"用户"语义重复 | 审批人是用户在某流程中的 Role，可只在 logic 里以 Role 出现 |
+| **Role 当作 Person 本体** | "审批人"建成对象，与"用户"语义重复 | 审批人是用户在某流程中的 Role，可只在 operation 里以 Role 出现 |
 | **缺时间索引** | 位置/状态/归属直接写"当前 X = Y" | 加 `at_time` / 配合 history 类对象 |
 | **追溯靠拼 ID** | 在 ID 字段里拼"批号-序号-工位" | 用 `participates_in` 串联 Process，ID 仅为 ICE 中的 denotation |
 | **信息层与现实层未分** | "订单"既指数据库行也指现实交易 | 现实交易 = Process；数据库行 = ICE 的 concretization |
@@ -280,13 +280,13 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 逐条问自己，不通过则回到对应原则：
 
 - [ ] 每个对象都能明确归入 IC / SDC / GDC 之一？
-- [ ] 每个 logic 都对应一个 Process（有起止、有参与者）？
+- [ ] 每个 operation 都对应一个 Process（有起止、有参与者）？
 - [ ] "设计/规范"类（BOM、工艺、合同）有没有作为 ICE 与"实际执行"分开？
 - [ ] 出现"状态"的地方，是否拆成了 Quality + Process + Boundary？
 - [ ] 出现"批/件/号"的地方，是否分清了 Aggregate / Object / ICE 三层？
 - [ ] 工艺/流程链条是否以 Process 的 `has_part` / `precedes` 表达，而不是塞进一个长文本？
 - [ ] 设备的"能做什么"是否区分了 Function / Disposition / Role？
-- [ ] "位置 / 状态 / 归属" 是否有时间索引（或在 logic 中说明随时间变化）？
+- [ ] "位置 / 状态 / 归属" 是否有时间索引（或在 operation 中说明随时间变化）？
 - [ ] 信息系统对象（工单等）有没有标注"它关于什么"（`is_about`）？
 - [ ] 追溯需求是否通过参与关系自然成立，不依赖 ID 字符串拼接？
 
@@ -300,10 +300,10 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 - **属性时序分离**：见 §9.4 完整规范。
 - **状态转移闭环**：见 §9.5 完整规范。
 - **设计/实例分层**：对名称含"单 / 表 / 记录 / 凭证 / 报告"的对象，提示其应有 `is_about` 类语义说明，并应与对应"实际过程 / 实体"对象分开。
-- **追溯结构**：检查跨 logic 是否通过对象参与（输入 / 输出 / 支撑）建立链条，而非只在字段里携带上游 ID 字符串。
+- **追溯结构**：检查跨 operation 是否通过对象参与（输入 / 输出 / 支撑）建立链条，而非只在字段里携带上游 ID 字符串。
 
 ### 9.2 适合作为语义检查的 BFO 项
-- Continuant / Occurrent 混淆（如 logic 文档读起来像对象描述）。
+- Continuant / Occurrent 混淆（如 operation 文档读起来像对象描述）。
 - Function vs Disposition vs Role 命名误用。
 - 对象属性是否其实应建模为独立对象（如"供应商"只是字符串字段）。
 
@@ -334,7 +334,7 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 1. 对每个 `ontology/object/*.md`，逐条扫描"对象属性清单"。
 2. 按上表判断每条属性是静态还是动态。
 3. 若 Object 上发现动态属性 → 报"属性时序未分离"，并给出拆分建议：`保留属性 / 迁出属性 / 建议的新时序对象名`。
-4. 反向检查：是否有 logic 文档已被错误地伴随建出"XX 状态"对象——若有，标"可能多余"。
+4. 反向检查：是否有 operation 文档已被错误地伴随建出"XX 状态"对象——若有，标"可能多余"。
 
 **防错**：
 - 不要遗漏**隐式**动态属性：命名里没有"当前 / 实时"字样但语义上属于动态的（如"位置""温度""状态"），需按业务语义判断。
@@ -345,22 +345,22 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 
 ### 9.5 状态转移闭环
 
-**适用范畴**：`ontology/object/`（提供合法状态集）+ `ontology/logic/`（提供转移定义）。
+**适用范畴**：`ontology/object/`（提供合法状态集）+ `ontology/operation/`（提供转移定义）。
 
 **前提**：仅当对象含状态枚举型属性时执行。识别信号：
 - 属性名含"状态 / 阶段 / 步骤"；或
 - 枚举值数量 ≥ 3 且语义上表示流程阶段。
 
-**核心规则**：每个状态枚举必须形成"可达 + 可出"的闭环；任何 logic 中提到的状态转移都必须能在转移矩阵中找到位置。
+**核心规则**：每个状态枚举必须形成"可达 + 可出"的闭环；任何 operation 中提到的状态转移都必须能在转移矩阵中找到位置。
 
 **校验步骤**：
 
 1. **提取合法状态集**：从对象属性枚举得到 `States = {S1, S2, ...}`。
-2. **构建转移矩阵**：扫描所有 `ontology/logic/*.md`（及启用时的 action）的"逻辑描述"，识别形如「当前状态 = A，触发 E 后状态变为 B」的语句，登记：
+2. **构建转移矩阵**：扫描所有 `ontology/operation/*.md`（及启用时的 action）的"逻辑描述"，识别形如「当前状态 = A，触发 E 后状态变为 B」的语句，登记：
 
    | 当前状态 | 触发事件 / 条件 | 目标状态 | 来源文档 |
    |---|---|---|---|
-   | A | E | B | `ontology/logic/X.md` |
+   | A | E | B | `ontology/operation/X.md` |
 
 3. **死锁 / 孤岛 / 不可达检测**：
    - **死锁**（有入无出）：可被到达，但无任何出向转移。
@@ -381,15 +381,15 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 
 **防错**：
 - 状态枚举必须显式存在于对象属性中，不允许校验器"推断"状态集。
-- 转移必须来源于文档原文（logic 的逻辑描述 / action 的描述），不允许脑补补全。
+- 转移必须来源于文档原文（operation 的逻辑描述 / action 的描述），不允许脑补补全。
 - **终态合法**：某些状态本就是终态（已关闭 / 已完成），有入无出不算死锁——需在对象文档中显式标注"终态"。
-- **防御性事件合法**：有些"幽灵事件"是业务上有意为之的防御性处理——需在 logic 描述中显式说明并标注"防御性"。
+- **防御性事件合法**：有些"幽灵事件"是业务上有意为之的防御性处理——需在 operation 描述中显式说明并标注"防御性"。
 - 异步语义不能假设瞬时——Action 完成后才生效的状态变更要在矩阵中体现两次（触发时进入"中间态" / 完成时进入"终态"），否则会被误报。
 
 **BFO 解释**：
 - 状态值（A、B、…）= time-indexed Quality；
 - 转移事件 = Process Boundary；
-- 转移过程 = Process（即对应的 logic / action）；
+- 转移过程 = Process（即对应的 operation / action）；
 - 完整状态机 = "Quality 集合 + Process 集合 + Process Boundary 集合" 的三层组合。
 - 转移闭环校验本质是验证这三层在文档中**齐全且对齐**。
 
@@ -404,7 +404,7 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 | 时机 | 命令 | 出现位置 |
 |---|---|---|
 | 对象提取完成、等待用户确认时 | `/ontology-extract-object` | 列出对象数量、请求 **确认** 之前 |
-| 逻辑提取完成、等待用户确认时 | `/ontology-extract-logic` | 列出逻辑数量、请求 **确认** 之前 |
+| 逻辑提取完成、等待用户确认时 | `/ontology-extract-operation` | 列出逻辑数量、请求 **确认** 之前 |
 | 校验完成、给出下一步建议之前 | `/ontology-validate` B6 末尾 | "校验全部完成" 文案之前 |
 | 整体视图报告生成后 | `/ontology-overview` Step 5 | "下一步建议" 之前 |
 
@@ -424,7 +424,7 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 
 **校验报告 issue category 关键词**（仅用于 `/ontology-validate` B6 时机）：
 
-- `规则冲突` / `状态相关` / `时序` / `关联无支撑` / `关系应转Logic`
+- `规则冲突` / `状态相关` / `时序` / `关联无支撑` / `关系应转Operation`
 
 ### 10.3 标准措辞（命令/agent 直接复用）
 
@@ -474,5 +474,5 @@ MES / ERP / WMS 里能看见的工单、报工、检验单、入库单 → 全�
 - 本文档为参考性内容，更新无需走 phase commit 流程；可单独 `docs: update BFO modeling guide` 提交。
 - 若把其中某条 "原则" 升级为强制规则，需同步：
   1. 在 `.claude/VALIDATION_BOUNDARIES.md` 增条目并标注归属（规则/语义）。
-  2. 在对应模板（`object-template.md` / `logic-template.md`）加字段或说明。
+  2. 在对应模板（`object-template.md` / `operation-template.md`）加字段或说明。
   3. 在本指南顶部加 "⚠️ 已纳入强制检查" 标记。

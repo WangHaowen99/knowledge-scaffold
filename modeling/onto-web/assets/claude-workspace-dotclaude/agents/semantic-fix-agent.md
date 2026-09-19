@@ -19,7 +19,7 @@ dispatching command 会传入：
     "severity": "错误",
     "category": "逻辑缺陷",
     "confidence": "high",
-    "file": "logic/创建订单.md",
+    "file": "operation/创建订单.md",
     "message": "逻辑步骤未处理「用户余额不足」的异常分支",
     "evidence": "业务描述明确要求检查账户余额，但逻辑描述中没有任何余额<金额 的分支"
   }
@@ -43,9 +43,9 @@ dispatching command 会传入：
 2. **生成修复方案**：根据 `category` 与 `message` 推导具体改动。常见 category 对应思路：
    - `逻辑缺陷` / `兜底缺失` / `空值语义模糊`: 在「逻辑描述」相应位置补一条分支或显式判断。
    - `参数未使用`: 把未使用参数从「输入」表删除，或在「逻辑描述」加上对该参数的引用。
-   - `对象关联不合理` / `流程关联不完整`: 调整「与object的关联」/「与logic的关联」段的归类或补全。
+   - `对象关联不合理` / `流程关联不完整`: 调整「与object的关联」/「与operation的关联」段的归类或补全。
    - `术语不一致` / `字段不一致` / `语义口径不一致`: 按 evidence 指示的方向统一表述。
-   - `派生属性未声明`: 在对象属性表的「属性规则」列追加 `派生：由 [[logic]] 写入`。
+   - `派生属性未声明`: 在对象属性表的「属性规则」列追加 `派生：由 [[operation]] 写入`。
    - `关系无数据支撑`: 删除该条关系或加 TODO 注释（视 evidence 倾向）。
    - `规则冲突` / `业务知识冲突`: 通常不在 agent 内强改——标 `applied: false`、`reason: "needs_human_judgment"`。
 3. **Edit 文件**：用 Edit 工具应用改动。`old_string` 必须在文件中唯一；不唯一时扩大 context 直至唯一。
@@ -70,7 +70,7 @@ dispatching command 会传入：
   {
     "issue_id": 3,
     "applied": true,
-    "files_changed": ["logic/创建订单.md"],
+    "files_changed": ["operation/创建订单.md"],
     "change_summary": "在「逻辑描述」第 4 步后补充「若 账户余额 < 应付金额 → 终止下单」分支"
   },
   {

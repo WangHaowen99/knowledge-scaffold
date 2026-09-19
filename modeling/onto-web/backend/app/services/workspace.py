@@ -53,7 +53,8 @@ class WorkspaceManager:
         self._write_gitignore(root)
         # 初始化知识包目录，并写入占位 index，便于前端直接浏览完整结构。
         knowledge_dirs = (
-            "research", "reports", "ontology/object", "ontology/logic",
+            "research", "reports", "ontology/object", "ontology/operation",
+            "ontology/rule", "ontology/metric",
             "ontology/data-mock", "ontology/testcase", "ontology/scripts",
             "ontology/diagrams", "ontology/diagrams-summary", "ontology/mermaid",
             "ontology/excel",
@@ -83,24 +84,32 @@ class WorkspaceManager:
         return meta
 
     # 与前端阶段定义保持一致的目录探针（顺序推进，遇到第一个未完成即停）
+    # ontology/logic 是旧目录别名（范式升级 ADR-0004），探针两者取或
     STAGE_DIRS = (
         "research",
         "ontology/diagrams",
         "ontology/object",
-        "ontology/logic",
+        "ontology/operation",
         "reports",
         "ontology/data-mock",
         "ontology/testcase",
         "ontology/scripts",
     )
+    STAGE_DIR_ALIASES = {"ontology/operation": "ontology/logic"}
     STAGE_TOTAL = len(STAGE_DIRS)
 
     @classmethod
     def _project_progress(cls, root: Path) -> dict:
         done = 0
         for rel in cls.STAGE_DIRS:
-            directory = root / rel
-            if directory.is_dir() and any(directory.iterdir()):
+            candidates = [rel, cls.STAGE_DIR_ALIASES.get(rel)]
+            hit = False
+            for candidate in filter(None, candidates):
+                directory = root / candidate
+                if directory.is_dir() and any(directory.iterdir()):
+                    hit = True
+                    break
+            if hit:
                 done += 1
             else:
                 break
@@ -115,7 +124,7 @@ class WorkspaceManager:
             "stages_done": done,
             "stages_total": cls.STAGE_TOTAL,
             "objects": count_md("ontology/object"),
-            "logics": count_md("ontology/logic"),
+            "operations": count_md("ontology/operation") + count_md("ontology/logic"),
         }
 
     def list_projects(self) -> list[dict]:
@@ -335,18 +344,26 @@ class WorkspaceManager:
         version = f"0.1.{len(self.versions(project_id))}"
         pkg = meta["id"]
 
-        def entry_items(rel_dir: str) -> list[tuple[str, str]]:
-            directory = root / rel_dir
+        def entry_items(*rel_dirs: str, pattern: str = "*.md") -> list[tuple[str, str]]:
             items = []
-            if directory.is_dir():
-                for path in sorted(directory.glob("*.md")):
-                    if path.name == "index.md":  # 工作区占位 index 不进包
+            seen = set()
+            for rel_dir in rel_dirs:
+                directory = root / rel_dir
+                if not directory.is_dir():
+                    continue
+                for path in sorted(directory.glob(pattern)):
+                    if path.name == "index.md" or path.stem in seen:
                         continue
+                    seen.add(path.stem)
                     items.append((path.stem, _strip_frontmatter(path.read_text(encoding="utf-8"))))
             return items
 
         objects = entry_items("ontology/object")
-        operations = entry_items("ontology/logic")
+        # ontology/logic 为旧目录兼容（范式升级 ADR-0004）
+        operations = entry_items("ontology/operation", "ontology/logic")
+        rules = entry_items("ontology/rule")
+        metrics = entry_items("ontology/metric")
+        scripts = entry_items("ontology/scripts", pattern="*.py")
         object_keys = {key for key, _ in objects}
         q = lambda s: json.dumps(s, ensure_ascii=False)  # JSON 字符串是合法 YAML 标量
 
@@ -384,6 +401,36 @@ class WorkspaceManager:
                 used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
                 extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
                 zf.writestr(f"{pkg}/operations/{key}.md", front("operation", key, key, extra) + body)
+            # 规则/指标/脚本：五元组一等实体（范式升级 ADR-0004），可选目录
+            if rules:
+                zf.writestr(
+                    f"{pkg}/rules/index.md",
+                    index_md("rule_index", "rules", "规则目录", rules, "rule key"),
+                )
+                for key, body in rules:
+                    used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
+                    extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
+                    zf.writestr(f"{pkg}/rules/{key}.md", front("rule", key, key, extra) + body)
+            if metrics:
+                zf.writestr(
+                    f"{pkg}/metrics/index.md",
+                    index_md("metric_index", "metrics", "指标目录", metrics, "metric key"),
+                )
+                for key, body in metrics:
+                    used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
+                    extra = f"uses:\n  objects: {json.dumps(used, ensure_ascii=False)}\n"
+                    zf.writestr(f"{pkg}/metrics/{key}.md", front("metric", key, key, extra) + body)
+            if scripts:
+                zf.writestr(
+                    f"{pkg}/scripts/index.md",
+                    index_md("script_index", "scripts", "脚本目录", scripts, "script key"),
+                )
+                for key, code in scripts:
+                    zf.writestr(f"{pkg}/scripts/{key}.py", code)
+                    zf.writestr(
+                        f"{pkg}/scripts/{key}.md",
+                        front("script", key, key) + f"由 /ontology-codegen 生成的确定性脚本，实现见 `{key}.py`。\n",
+                    )
         return dest_path
 
     # 导入时跳过的顶层条目：资产由本服务重新挂载；.git 不合并（v1 不保留导入方历史）
@@ -426,7 +473,7 @@ class WorkspaceManager:
 
         top_dirs: dict[str, int] = {}
         skipped: list[str] = []
-        objects = logics = files = 0
+        objects = operations = files = 0
         total_size = 0
         try:
             with zipfile.ZipFile(archive_path) as zf:
@@ -445,8 +492,8 @@ class WorkspaceManager:
                     posix = "/".join(parts)
                     if posix.startswith("ontology/object/") and posix.endswith(".md"):
                         objects += 1
-                    elif posix.startswith("ontology/logic/") and posix.endswith(".md"):
-                        logics += 1
+                    elif posix.startswith(("ontology/operation/", "ontology/logic/")) and posix.endswith(".md"):
+                        operations += 1
         except zipfile.BadZipFile as exc:
             raise WorkspaceError(f"压缩包无法解析：{exc}") from exc
         return {
@@ -455,7 +502,7 @@ class WorkspaceManager:
             "top_dirs": [{"name": k, "files": v} for k, v in sorted(top_dirs.items())],
             "skipped": sorted(skipped),
             "objects": objects,
-            "logics": logics,
+            "operations": operations,
         }
 
     def seed_example(self, project_id: str) -> None:

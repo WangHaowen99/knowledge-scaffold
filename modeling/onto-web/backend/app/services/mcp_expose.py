@@ -106,14 +106,20 @@ def build_asgi_app():
     def list_elements(project_id: str) -> dict:
         root = workspaces.project_root(project_id)
         result = {}
-        for kind, rel in (("objects", "ontology/object"), ("logics", "ontology/logic")):
-            directory = root / rel
-            names = (
-                sorted(f.stem for f in directory.glob("*.md"))
-                if directory.is_dir()
-                else []
-            )
-            result[kind] = names[:500]
+        # ontology/logic 为旧目录别名（范式升级 ADR-0004）
+        kinds = (
+            ("objects", ("ontology/object",)),
+            ("operations", ("ontology/operation", "ontology/logic")),
+            ("rules", ("ontology/rule",)),
+            ("metrics", ("ontology/metric",)),
+        )
+        for kind, rels in kinds:
+            names: set[str] = set()
+            for rel in rels:
+                directory = root / rel
+                if directory.is_dir():
+                    names.update(f.stem for f in directory.glob("*.md"))
+            result[kind] = sorted(names)[:500]
         return result
 
     @server.tool(description=TOOL_CATALOG[2]["description"])

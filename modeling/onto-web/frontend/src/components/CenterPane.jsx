@@ -455,7 +455,7 @@ function CodegenReview({ data, checked, onChecked, onGenerate }) {
           <div className="codegen-main">
             <div className="codegen-head">
               <span className="codegen-id">#{c.id}</span>
-              <Typography.Text strong>{c.logic}</Typography.Text>
+              <Typography.Text strong>{c.operation}</Typography.Text>
               {c.fragment && c.fragment !== '整段' && <Tag>{c.fragment}</Tag>}
               <Tag color={c.verdict === '适合' ? 'success' : 'warning'}>{c.verdict}</Tag>
               {c.type && <Tag color="blue">{c.type}</Tag>}
@@ -480,8 +480,8 @@ function CodegenReview({ data, checked, onChecked, onGenerate }) {
         <details className="codegen-fold">
           <summary>❌ 不适合（{data.unsuitable.length}）</summary>
           {data.unsuitable.map((u) => (
-            <div key={u.logic} className="codegen-note">
-              <b>{u.logic}</b>：{u.reason}
+            <div key={u.operation} className="codegen-note">
+              <b>{u.operation}</b>：{u.reason}
             </div>
           ))}
         </details>
@@ -490,8 +490,8 @@ function CodegenReview({ data, checked, onChecked, onGenerate }) {
         <details className="codegen-fold">
           <summary>📦 已生成（{data.generated.length}）</summary>
           {data.generated.map((g) => (
-            <div key={g.logic} className="codegen-note">
-              <b>{g.logic}</b>：{g.scripts}
+            <div key={g.operation} className="codegen-note">
+              <b>{g.operation}</b>：{g.scripts}
             </div>
           ))}
         </details>
@@ -762,7 +762,7 @@ export default function CenterPane({
   }, [focus, project.id, file, rev]);
 
   const openWikiLink = (name) => {
-    for (const dir of ['ontology/object', 'ontology/logic']) {
+    for (const dir of ['ontology/object', 'ontology/operation', 'ontology/rule', 'ontology/metric', 'ontology/logic']) {
       const candidate = `${dir}/${name}.md`;
       if (paths.includes(candidate)) {
         onOpenFile(candidate);
@@ -895,8 +895,18 @@ export default function CenterPane({
               </div>
               <div className="stat-tile tone-violet">
                 <ApartmentOutlined className="stat-icon" />
-                <div className="stat-num">{countByPrefix(paths, 'ontology/logic/')}</div>
-                <div className="stat-label">业务逻辑</div>
+                <div className="stat-num">
+                  {countByPrefix(paths, 'ontology/operation/') + countByPrefix(paths, 'ontology/logic/')}
+                </div>
+                <div className="stat-label">业务操作</div>
+              </div>
+              <div className="stat-tile tone-green">
+                <div className="stat-num">{countByPrefix(paths, 'ontology/rule/')}</div>
+                <div className="stat-label">规则</div>
+              </div>
+              <div className="stat-tile tone-amber">
+                <div className="stat-num">{countByPrefix(paths, 'ontology/metric/')}</div>
+                <div className="stat-label">指标</div>
               </div>
               <div className="stat-tile tone-teal">
                 <FileSearchOutlined className="stat-icon" />
@@ -1200,8 +1210,8 @@ export default function CenterPane({
                               selected
                                 .map((c) =>
                                   c.fragment && c.fragment !== '整段'
-                                    ? `${c.logic}:${c.fragment}`
-                                    : c.logic,
+                                    ? `${c.operation}:${c.fragment}`
+                                    : c.operation,
                                 )
                                 .join(' '),
                           )

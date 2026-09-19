@@ -24,7 +24,7 @@ python3 .claude/scripts/state_helper.py check-prereq impact
 python3 .claude/scripts/impact_analysis.py "{TARGET}"
 ```
 
-The script auto-detects whether TARGET is a bare stem or a path, and which category (object/logic/mock) it belongs to.
+The script auto-detects whether TARGET is a bare stem or a path, and which category (object/operation/mock) it belongs to.
 
 ## Step 3: Present result
 

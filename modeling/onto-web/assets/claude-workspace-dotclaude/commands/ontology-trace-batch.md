@@ -1,4 +1,4 @@
-Trace all logic files in batch mode. Loaded by `.claude/commands/ontology-trace.md` after Step 0.
+Trace all operation files in batch mode. Loaded by `.claude/commands/ontology-trace.md` after Step 0.
 
 ## Mode Inputs
 
@@ -6,35 +6,35 @@ Trace all logic files in batch mode. Loaded by `.claude/commands/ontology-trace.
 
 ## <a id="batch-mode"></a>Batch Mode
 
-### Step B1: Collect all logic files
+### Step B1: Collect all operation files
 
-List `.md` files in `ontology/logic/`. Let `LOGIC_FILES` = this list.
+List `.md` files in `ontology/operation/`. Let `OPERATION_FILES` = this list.
 
 If empty: "未找到任何逻辑文档。" 然后 `python3 .claude/scripts/state_helper.py release trace`，Stop.
 
 Show: "将对 {N} 个逻辑文档进行批量追踪：{file names}。
 
-💡 可选参考：现有批量追踪默认更适合 SOP 流程型；若本批 Logic 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Logic 范式。
-可参阅 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
+💡 可选参考：现有批量追踪默认更适合 SOP 流程型；若本批 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
+可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
 
 - 回复 **确认** → 开始批量追踪
 "
 
-上述参考提醒按 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §七与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一执行；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
+上述参考提醒按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一执行；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
 
 Wait for confirmation. On **取消**, `python3 .claude/scripts/state_helper.py release trace`，stop.
 
 ### Step B2: Pre-check mock data (once)
 
-Collect all objects referenced by any logic in `LOGIC_FILES` (from each doc's `与object的关联` section). Let `ALL_REF_OBJECTS` = union of these.
+Collect all objects referenced by any operation in `OPERATION_FILES` (from each doc's `与object的关联` section). Let `ALL_REF_OBJECTS` = union of these.
 
-Load business knowledge for batch mode after `LOGIC_FILES` and `ALL_REF_OBJECTS` are known:
+Load business knowledge for batch mode after `OPERATION_FILES` and `ALL_REF_OBJECTS` are known:
 
 ```bash
 SCOPE_ARGS=(--scope global)
-for logic_path in $LOGIC_FILES; do
-    logic_name=$(basename "$logic_path" .md)
-    SCOPE_ARGS+=(--scope "logic:$logic_name")
+for operation_path in $OPERATION_FILES; do
+    operation_name=$(basename "$operation_path" .md)
+    SCOPE_ARGS+=(--scope "operation:$operation_name")
 done
 for obj in $ALL_REF_OBJECTS; do
     SCOPE_ARGS+=(--scope "object:$obj")
@@ -59,7 +59,7 @@ Handle accordingly. On **生成**, call `ontology-mock.md` to generate only miss
 
 ### Step B2.5: Ask about saved testcase reuse
 
-检查 `ontology/testcase/` 下与 `LOGIC_FILES` 对应的已保存场景文件。设 `WITH_SAVED` 为已有保存文件的逻辑集合，`WITHOUT_SAVED` 为其余。
+检查 `ontology/testcase/` 下与 `OPERATION_FILES` 对应的已保存场景文件。设 `WITH_SAVED` 为已有保存文件的逻辑集合，`WITHOUT_SAVED` 为其余。
 
 If `WITH_SAVED` 非空，询问用户：
 
@@ -78,21 +78,21 @@ If `WITH_SAVED` 非空，询问用户：
 
 ### Step B3: Build JOBS list and one-shot dispatch
 
-固定本次 batch 的时间戳 `BATCH_TS = {YYYYMMDD}-{HHMMSS}`，使用 `Asia/Shanghai` 时间；每个 per-logic 报告与汇总报告共用同一个 `BATCH_TS`，便于关联回溯。
+固定本次 batch 的时间戳 `BATCH_TS = {YYYYMMDD}-{HHMMSS}`，使用 `Asia/Shanghai` 时间；每个 per-operation 报告与汇总报告共用同一个 `BATCH_TS`，便于关联回溯。
 
-#### B3.1 组装 LOGIC_JOBS
+#### B3.1 组装 OPERATION_JOBS
 
-只在主命令做轻量目录扫描，**不要 Read 任何 logic 文件**（agent 会自己 Read）：
+只在主命令做轻量目录扫描，**不要 Read 任何 operation 文件**（agent 会自己 Read）：
 
-For each `LOGIC_PATH` in `LOGIC_FILES`:
-- `LOGIC_NAME` = basename without `.md`
-- `report_path` = `reports/{BATCH_TS}-trace-{LOGIC_NAME}.md`
-- `testcase_path` = `ontology/testcase/{LOGIC_NAME}.md`
+For each `OPERATION_PATH` in `OPERATION_FILES`:
+- `OPERATION_NAME` = basename without `.md`
+- `report_path` = `reports/{BATCH_TS}-trace-{OPERATION_NAME}.md`
+- `testcase_path` = `ontology/testcase/{OPERATION_NAME}.md`
 - Job entry：
-  - 若 `BATCH_REUSE = true` 且 `testcase_path` 存在 → `{ logic_path, report_path, testcase_path }`
-  - 否则 → `{ logic_path, report_path }`（agent 会自动生成场景并把 testcase 写到 `testcase_path`）
+  - 若 `BATCH_REUSE = true` 且 `testcase_path` 存在 → `{ operation_path, report_path, testcase_path }`
+  - 否则 → `{ operation_path, report_path }`（agent 会自动生成场景并把 testcase 写到 `testcase_path`）
 
-Append all entries into `LOGIC_JOBS`。
+Append all entries into `OPERATION_JOBS`。
 
 告诉用户："准备批量追踪 {N} 个逻辑（其中 {k} 个复用已保存场景，{N-k} 个由 agent 自动生成），请稍候。"
 
@@ -103,9 +103,9 @@ Read `.claude/agents/trace-agent.md`. Dispatch 一次，prompt 形如：
 ```
 {若 KNOWLEDGE_BLOCK 非空：原样粘贴 KNOWLEDGE_BLOCK 在此处，紧跟一行分隔符 ---}
 
-LOGIC_JOBS = {上面组装好的 JSON 数组}
+OPERATION_JOBS = {上面组装好的 JSON 数组}
 OBJECTS_DIR = ontology/object/
-LOGIC_DIR = ontology/logic/
+OPERATION_DIR = ontology/operation/
 MOCK_DATA_DIR = {Step B2 决议出的值，可能为空}
 
 ---
@@ -113,15 +113,15 @@ MOCK_DATA_DIR = {Step B2 决议出的值，可能为空}
 请阅读并遵循 `.claude/BUSINESS_KNOWLEDGE_SNIPPET.md` 的「业务知识识别守则」。
 ```
 
-Wait for it to return a JSON array `JOB_SUMMARIES`（按 LOGIC_JOBS 顺序排列；每项含 `logic_name / status / report_path / branch_metrics / scenario_metrics / issues_by_type / issues / generated_testcase`）。**不要再 Read 详细报告文件**——主上下文只保留 summary。
+Wait for it to return a JSON array `JOB_SUMMARIES`（按 OPERATION_JOBS 顺序排列；每项含 `operation_name / status / report_path / branch_metrics / scenario_metrics / issues_by_type / issues / generated_testcase`）。**不要再 Read 详细报告文件**——主上下文只保留 summary。
 
 #### B3.3 进度回放
 
 agent 返回后，按 `JOB_SUMMARIES` 顺序打印一次性进度块（每行对应一个 job）：
 
 ```
-[1/N] {logic_name} → {pass}/{total} 通过，{issue_count} 个问题  ({来源: 复用/自动生成})
-[2/N] {logic_name} → 已跳过（缺逻辑描述）
+[1/N] {operation_name} → {pass}/{total} 通过，{issue_count} 个问题  ({来源: 复用/自动生成})
+[2/N] {operation_name} → 已跳过（缺逻辑描述）
 ...
 ```
 
@@ -129,13 +129,13 @@ agent 返回后，按 `JOB_SUMMARIES` 顺序打印一次性进度块（每行对
 
 ### Step B4: Save combined summary
 
-每个 per-logic 详细报告已由 trace-agent 在 Step B3 写入 `reports/{BATCH_TS}-trace-{LOGIC_NAME}.md`，本步**不再**由主命令 Write 这些详细报告——只用各 logic 的 summary JSON 写一份 batch 汇总。
+每个 per-operation 详细报告已由 trace-agent 在 Step B3 写入 `reports/{BATCH_TS}-trace-{OPERATION_NAME}.md`，本步**不再**由主命令 Write 这些详细报告——只用各 operation 的 summary JSON 写一份 batch 汇总。
 
 B3 中由 agent 新写入 `ontology/testcase/*.md` 的文件集中 commit 一次（来源：`JOB_SUMMARIES` 中 `generated_testcase: true` 的条目）：
 
 ```bash
 git add ontology/testcase/
-git commit -m "trace: batch testcases ({N} logics)"
+git commit -m "trace: batch testcases ({N} operations)"
 ```
 
 （`{N}` = `JOB_SUMMARIES` 中 `generated_testcase: true` 的数量。若全为 false，跳过本次 commit。）
@@ -159,13 +159,13 @@ Also write a combined summary to `reports/{BATCH_TS}-trace-batch.md`：
 
 ## 按逻辑文件
 
-### {logic_name_1}
+### {operation_name_1}
 - 设计覆盖率：{c}/{t}（{pct}%）{若未达 100%，列出未覆盖分支}
 - 推演通过率：{p}/{n}（{pct}%）
 - 问题概览：{分支缺失:x, 死路径:y, 隐式兜底:z, 规则定义与执行脱节:w, ...}
 - 详细报告：`reports/{detail_filename}`
 
-### {logic_name_2}
+### {operation_name_2}
 ...
 
 ## 问题热点（按类型聚合）
@@ -176,7 +176,7 @@ Also write a combined summary to `reports/{BATCH_TS}-trace-batch.md`：
 - ...
 
 ## 建议优先处理
-- {logic_name}：{问题数} 个问题（尤其是 {主要问题类型}）
+- {operation_name}：{问题数} 个问题（尤其是 {主要问题类型}）
 ```
 
 ### Step B5: Present summary
@@ -199,7 +199,7 @@ Show only the combined summary in terminal:
 - 回复 **修复 {逻辑名}** → 选择某个逻辑逐条处理
 - 回复 **再追踪 {逻辑名}** → 单独重新追踪某个逻辑
 - 回复 **扫描候选**（/ontology-codegen-scan）→ 看哪些逻辑适合转脚本
-- 回复 **代码生成**（/ontology-codegen）→ 选定 logic 后生成 Python 脚本（不支持一键全部）
+- 回复 **代码生成**（/ontology-codegen）→ 选定 operation 后生成 Python 脚本（不支持一键全部）
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release trace`，Stop.

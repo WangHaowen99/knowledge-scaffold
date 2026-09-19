@@ -36,7 +36,7 @@ const ALL_COMMANDS = [
   { key: 'start', label: '开始建模', text: '/ontology' },
   { key: 'research', label: '开始调研', text: '/ontology-research ' },
   { key: 'extract-object', label: '提取对象', text: '/ontology-extract-object' },
-  { key: 'extract-logic', label: '提取逻辑', text: '/ontology-extract-logic' },
+  { key: 'extract-operation', label: '提取操作', text: '/ontology-extract-operation' },
   { key: 'validate', label: '校验', text: '/ontology-validate' },
   { key: 'mock', label: '生成 Mock', text: '/ontology-mock' },
   { key: 'trace', label: '批量追踪', text: '/ontology-trace 全部' },

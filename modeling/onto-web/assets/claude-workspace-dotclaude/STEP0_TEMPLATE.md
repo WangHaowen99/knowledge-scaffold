@@ -69,7 +69,7 @@ python3 .claude/scripts/state_helper.py check-prereq {COMMAND_NAME}
   - 缺少 `对象已提取` → 引用对象名无从对齐
   - 缺少 `逻辑已提取` → 无法进行逻辑校验、追踪或代码生成
 
-  > 注：流程图阶段是可选的。`extract-object` 的前置只要求有研究报告或流程图其一；`extract-logic` 的前置要求对象已提取。
+  > 注：流程图阶段是可选的。`extract-object` 的前置只要求有研究报告或流程图其一；`extract-operation` 的前置要求对象已提取。
 
   - **继续**：跳过守卫继续第 3 步。
   - **先做 …**：读取对应命令文件并按照它执行，结束后再询问是否回来跑本命令。
@@ -85,7 +85,7 @@ python3 .claude/scripts/state_helper.py acquire {COMMAND_NAME} {PHASE 或 'start
 
 ### 4) 在阶段切换处更新锁
 
-每当命令进入下一阶段（如 extract 从 OBJECTS 进入 LOGIC），再调用一次：
+每当命令进入下一阶段（如 extract 从 OBJECTS 进入 OPERATION），再调用一次：
 
 ```bash
 python3 .claude/scripts/state_helper.py acquire {COMMAND_NAME} {新阶段标签}

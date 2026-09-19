@@ -44,7 +44,7 @@
 | **流程图** | `.drawio` 文件，位于 `ontology/diagrams/` |
 | **流程图摘要** | 位于 `ontology/diagrams-summary/` |
 | **业务对象 / 对象** | `ontology/object/*.md` |
-| **业务逻辑 / 逻辑** | `ontology/logic/*.md` |
+| **业务逻辑 / 逻辑** | `ontology/operation/*.md` |
 | **测试数据** | `ontology/data-mock/` |
 | **生成代码** | `ontology/scripts/`；**不要说"codegen 产物"** |
 | **校验报告** | `reports/` 下的文件 |

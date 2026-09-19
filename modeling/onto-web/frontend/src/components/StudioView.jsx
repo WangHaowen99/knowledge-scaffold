@@ -14,7 +14,7 @@ import StudioEntryEditor from './StudioEntryEditor.jsx';
 const LegacyStudioGraphHost = lazy(() => import('./studio/LegacyStudioGraphHost.jsx'));
 
 // 表格视图的 kind 视觉沿用原版 KIND_META 的对象/操作用色
-const KIND_LABEL = { object: '对象', logic: '逻辑' };
+const KIND_LABEL = { object: '对象', operation: '操作', logic: '操作', rule: '规则', metric: '指标', script: '脚本' };
 
 export default function StudioView({ project, onOpenFile, onCommand, onWorkspaceChanged }) {
   const [view, setView] = useState('graph');
@@ -152,11 +152,16 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
                 width: 80,
                 filters: [
                   { text: '对象', value: 'object' },
-                  { text: '逻辑', value: 'logic' },
+                  { text: '操作', value: 'operation' },
+                  { text: '规则', value: 'rule' },
+                  { text: '指标', value: 'metric' },
+                  { text: '脚本', value: 'script' },
                 ],
                 onFilter: (value, row) => row.kind === value,
                 render: (kind) => (
-                  <Tag color={kind === 'object' ? 'blue' : 'green'}>
+                  <Tag
+                    color={{ object: 'blue', operation: 'green', logic: 'green', rule: 'gold', metric: 'purple', script: 'magenta' }[kind] || 'default'}
+                  >
                     {KIND_LABEL[kind] || kind}
                   </Tag>
                 ),

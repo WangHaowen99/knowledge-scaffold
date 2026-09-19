@@ -258,8 +258,8 @@ def show_progress() -> int:
 
 
 # 阶段推断
-# 调研（research）保持启用，是常规建模起点之一。提取已拆为 object / logic
-# 两个命令，阶段终点以 logic 文档存在为准。
+# 调研（research）保持启用，是常规建模起点之一。提取已拆为 object / operation
+# 两个命令，阶段终点以 operation 文档存在为准。
 STAGE_ORDER = [
     ('未开始', '未开始'),
     ('调研完成', '调研完成'),
@@ -283,12 +283,12 @@ def _has_drawio_files(path: Path) -> bool:
 # 注意：
 # - extract-object 只要求"有调研报告或流程图之一"。`未开始` 状态会触发
 #   跳步守卫，提示用户先画流程图或显式做调研（/ontology-research）。
-# - extract-logic 要求对象已提取；逻辑提取完成即可校验、生成代码。
+# - extract-operation 要求对象已提取；逻辑提取完成即可校验、生成代码。
 COMMAND_PREREQS = {
     'research': [],
     'flowchart': [],
     'extract-object': ['调研完成'],
-    'extract-logic': ['对象已提取'],
+    'extract-operation': ['对象已提取'],
     'validate': ['逻辑已提取', '对象已提取'],
     'mock': ['对象已提取'],
     'trace': ['逻辑已提取'],
@@ -314,7 +314,7 @@ STAGE_NEXT_COMMAND = {
     '未开始': ('/ontology-research 或 /ontology-flowchart', '调研或直接画流程图'),
     '调研完成': ('/ontology-flowchart 或 /ontology-extract-object', '可选画流程图或直接提取对象'),
     '流程图就绪': ('/ontology-extract-object', '提取业务对象'),
-    '对象已提取': ('/ontology-extract-logic', '继续提取业务逻辑'),
+    '对象已提取': ('/ontology-extract-operation', '继续提取业务逻辑'),
     '逻辑已提取': ('/ontology-validate', '进入校验'),
 }
 
@@ -323,7 +323,7 @@ def _compute_stage() -> str:
     research_has = _has_md_files(Path('research'))
     diagrams_has = _has_drawio_files(Path('ontology/diagrams'))
     objects_has = _has_md_files(Path('ontology/object'))
-    logic_has = _has_md_files(Path('ontology/logic'))
+    operation_has = _has_md_files(Path('ontology/operation')) or _has_md_files(Path('ontology/logic'))
     reports_path = Path('reports')
     reports_has_pending = False
     if reports_path.exists():
@@ -335,11 +335,11 @@ def _compute_stage() -> str:
     validate_done = bool(progress.get('validate_last_run'))
     # 高阶段优先：即便上游产物被删（/ontology-update 中断、用户手动清理），
     # 已抵达的最高阶段仍可见，状态机不再误退回 '未开始'。
-    if logic_has and reports_has_pending:
+    if operation_has and reports_has_pending:
         return '校验待审阅'
-    if logic_has and validate_done:
+    if operation_has and validate_done:
         return '完成'
-    if logic_has:
+    if operation_has:
         return '逻辑已提取'
     if objects_has:
         return '对象已提取'

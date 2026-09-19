@@ -81,7 +81,7 @@ def _section_blocks(text: str) -> dict[str, str]:
 
 def parse_codegen(text: str) -> dict:
     """✅/⚠️ 两表编号连续；候选带片段范围/类型/输入/输出，供勾选后组装
-    `/ontology-codegen logic名[:片段区间]` 指令。"""
+    `/ontology-codegen operation名[:片段区间]` 指令。"""
     candidates = []
     unsuitable = []
     generated = []
@@ -94,7 +94,7 @@ def parse_codegen(text: str) -> dict:
                 candidates.append(
                     {
                         "id": int(cells[0]),
-                        "logic": cells[1],
+                        "operation": cells[1],
                         "fragment": cells[2],
                         "type": cells[3],
                         "inputs": cells[4].strip("`"),
@@ -106,12 +106,12 @@ def parse_codegen(text: str) -> dict:
         elif title.startswith("❌"):
             for cells in _table_rows(block):
                 if len(cells) >= 2:
-                    unsuitable.append({"logic": cells[0], "reason": cells[1]})
+                    unsuitable.append({"operation": cells[0], "reason": cells[1]})
         elif title.startswith("📦"):
             for cells in _table_rows(block):
                 if len(cells) >= 2:
                     generated.append(
-                        {"logic": cells[0], "scripts": cells[1].replace("<br>", "、")}
+                        {"operation": cells[0], "scripts": cells[1].replace("<br>", "、")}
                     )
     summary = next((l.strip() for l in text.splitlines() if l.strip().startswith("共扫描")), "")
     return {

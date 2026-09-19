@@ -58,9 +58,9 @@ case "$MSG" in
         ;;
     extract:*objects*)
         print_header
-        echo "💡 对象提取完成，建议运行 /ontology-extract-logic 继续提取逻辑"
+        echo "💡 对象提取完成，建议运行 /ontology-extract-operation 继续提取逻辑"
         ;;
-    extract:*logic*)
+    extract:*operation*)
         print_header
         echo "💡 逻辑提取完成，建议运行 /ontology-validate 开始校验"
         ;;

@@ -17,19 +17,24 @@ from .. import config
 WIKILINK = re.compile(r"\[\[([^\]|#]+)")
 SECTION = re.compile(r"^(#{1,2})\s+(.+)$", re.MULTILINE)
 
+# 五元组元模型（对齐 modeling 知识包，ADR-0004）；ontology/logic 为旧目录兼容
 KIND_DIRS = (
-    ("object", "ontology/object"),
-    ("logic", "ontology/logic"),
+    ("object", "ontology/object", "*.md"),
+    ("operation", "ontology/operation", "*.md"),
+    ("operation", "ontology/logic", "*.md"),
+    ("rule", "ontology/rule", "*.md"),
+    ("metric", "ontology/metric", "*.md"),
+    ("script", "ontology/scripts", "*.py"),
 )
 
 
 def _docs(root: Path) -> list[dict]:
     docs = []
-    for kind, rel_dir in KIND_DIRS:
+    for kind, rel_dir, pattern in KIND_DIRS:
         directory = root / rel_dir
         if not directory.is_dir():
             continue
-        for path in sorted(directory.glob("*.md")):
+        for path in sorted(directory.glob(pattern)):
             if path.name == "index.md":  # 工作区占位 index 不是本体元素
                 continue
             docs.append(
@@ -129,10 +134,11 @@ def parse_sections(text: str) -> list[dict]:
             continue  # 更高层级的标题（文档名）只作边界，不算章节
         start = match.end()
         end = tops[index + 1].start() if index + 1 < len(tops) else len(text)
+        title = match.group(2).strip()
         sections.append(
             {
                 "level": section_level,
-                "title": match.group(2).strip(),
+                "title": SECTION_ALIASES.get(title, title),
                 "content": text[start:end].strip(),
             }
         )
@@ -156,7 +162,10 @@ def serialize_sections(sections: list[dict]) -> str:
     return "\n".join(parts)
 
 
-# ---- schema：对准工具集对象/逻辑模板（assets templates） ----
+# ---- schema：对准工具集五元组模板（assets templates，ADR-0004） ----
+
+# 章节名随范式升级迁移；旧文档章节读取时归一为新名
+SECTION_ALIASES = {"与logic的关联": "与operation的关联"}
 
 OBJECT_SCHEMA = [
     {"title": "对象描述", "kind": "text", "required": True},
@@ -171,9 +180,9 @@ OBJECT_SCHEMA = [
     {"title": "关联对象", "kind": "text", "required": True},
 ]
 
-LOGIC_SCHEMA = [
+OPERATION_SCHEMA = [
     {"title": "业务描述", "kind": "text", "required": True},
-    {"title": "与logic的关联", "kind": "text", "required": True},
+    {"title": "与operation的关联", "kind": "text", "required": True},
     {"title": "与object的关联", "kind": "text", "required": True},
     {
         "title": "与object的语义关联",
@@ -188,11 +197,36 @@ LOGIC_SCHEMA = [
 ]
 
 
+RULE_SCHEMA = [
+    {"title": "规则描述", "kind": "text", "required": True},
+    {"title": "规则类型", "kind": "text", "required": False},
+    {"title": "适用对象", "kind": "text", "required": True},
+    {"title": "触发条件", "kind": "text", "required": False},
+    {"title": "约束表达", "kind": "text", "required": True},
+    {"title": "违反处置", "kind": "text", "required": False},
+    {"title": "来源", "kind": "text", "required": False},
+    {"title": "例外情况", "kind": "text", "required": False},
+]
+
+METRIC_SCHEMA = [
+    {"title": "指标描述", "kind": "text", "required": True},
+    {"title": "计算公式", "kind": "text", "required": True},
+    {"title": "数据来源", "kind": "text", "required": True},
+    {"title": "维度与粒度", "kind": "text", "required": False},
+    {"title": "单位", "kind": "text", "required": False},
+    {"title": "更新频率", "kind": "text", "required": False},
+]
+
+
 def schema_for(rel_path: str) -> list[dict] | None:
     if rel_path.startswith("ontology/object/"):
         return OBJECT_SCHEMA
-    if rel_path.startswith("ontology/logic/"):
-        return LOGIC_SCHEMA
+    if rel_path.startswith(("ontology/operation/", "ontology/logic/")):
+        return OPERATION_SCHEMA
+    if rel_path.startswith("ontology/rule/"):
+        return RULE_SCHEMA
+    if rel_path.startswith("ontology/metric/"):
+        return METRIC_SCHEMA
     return None
 
 

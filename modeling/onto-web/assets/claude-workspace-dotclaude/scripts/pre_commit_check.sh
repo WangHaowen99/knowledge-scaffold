@@ -84,7 +84,7 @@ fi
 # --- Ontology rule check（原逻辑） -------------------------------------------
 # Only relevant when staged files include ontology docs. Use -z for NUL-safe parsing.
 STAGED=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
-    | grep -E '^ontology/(object|logic|action|data-mock|knowledge)/.*\.md$' || true)
+    | grep -E '^ontology/(object|operation|action|data-mock|knowledge)/.*\.md$' || true)
 if [ -z "$STAGED" ]; then
     exit 0
 fi
@@ -94,7 +94,7 @@ fi
 # alphanumeric/Chinese, so a leading `-` indicates a malformed filename.
 declare -a STEMS=()
 declare -a SKIPPED=()
-# Staged ontology docs may live in nested object/logic folders; ontology_checker
+# Staged ontology docs may live in nested object/operation folders; ontology_checker
 # accepts bare stems, so strip directories before passing --files.
 while IFS= read -r staged_path; do
     stem=$(basename "$staged_path" .md)

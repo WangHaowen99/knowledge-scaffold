@@ -12,7 +12,7 @@ python3 .claude/scripts/state_helper.py detect-stage
 
 Output is one of: `未开始 / 调研完成 / 流程图就绪 / 对象已提取 / 逻辑已提取 / 校验待审阅 / 完成`。
 
-Also run `python3 .claude/scripts/state_helper.py check-lock <command>`（替换 `<command>` 为待诊断的具体命令名，如 `extract-object` / `extract-logic` / `validate` / `codegen`）for any command you suspect is stuck (optional; only when diagnosing "is there a stuck task?") — skipped on happy path.
+Also run `python3 .claude/scripts/state_helper.py check-lock <command>`（替换 `<command>` 为待诊断的具体命令名，如 `extract-object` / `extract-operation` / `validate` / `codegen`）for any command you suspect is stuck (optional; only when diagnosing "is there a stuck task?") — skipped on happy path.
 
 Before showing the status block, also look for an 引导 trigger: if $ARGUMENTS equals `示例`（或 `例子` / `demo`），跳到 **Step 3.5: 示例模式**。
 
@@ -83,23 +83,24 @@ Count .md files in `ontology/object/`. Show:
 对象：{M} 个（ontology/object/）
 
 **下一步建议：**
-- 回复 **提取逻辑**（/ontology-extract-logic）→ 提取业务逻辑
+- 回复 **提取逻辑**（/ontology-extract-operation）→ 提取业务逻辑
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
 ```
 
 Handle reply:
-- **提取逻辑** → read `.claude/commands/ontology-extract-logic.md` and follow it
+- **提取逻辑** → read `.claude/commands/ontology-extract-operation.md` and follow it
 - **完成** → stop
 
 **逻辑已提取:**
 
-Count .md files in `ontology/object/` and `ontology/logic/`. Show:
+Count .md files in `ontology/object/` and `ontology/operation/`. Show:
 ```
 当前状态：提取完成 ✅
 对象：{M} 个  |  逻辑：{K} 个
 
 **下一步建议：**
 - 回复 **校验**（/ontology-validate）→ 开始校验
+- 回复 **规则与指标**（/ontology-extract-rule-metric）→ 把规则/指标抽取为一等实体（对齐知识包五元组，可选）
 - 回复 **整体视图**（/ontology-overview）→ 先看全局关系
 - 回复 **更新**（/ontology-update）→ 按新的参考内容增量更新已有 ontology
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
@@ -107,6 +108,7 @@ Count .md files in `ontology/object/` and `ontology/logic/`. Show:
 
 Handle reply:
 - **校验** → read `.claude/commands/ontology-validate.md` and follow it
+- **规则与指标** → read `.claude/commands/ontology-extract-rule-metric.md` and follow it
 - **整体视图** → read `.claude/commands/ontology-overview.md` and follow it
 - **更新** → read `.claude/commands/ontology-update.md` and follow it
 - **完成** → stop
@@ -134,7 +136,7 @@ Count all docs. Get last git log line. Show:
 当前建模状态：完成 ✅
 
   对象：{M} 个（ontology/object/）
-  逻辑：{K} 个（ontology/logic/）
+  逻辑：{K} 个（ontology/operation/）
   上次提交：{git log --oneline -1}
 
 **可选操作：**
@@ -147,7 +149,7 @@ Count all docs. Get last git log line. Show:
 - 回复 **再校验**（/ontology-validate）→ 重新校验
 - 回复 **更新**（/ontology-update）→ 按新的参考内容更新已有 ontology
 - 回复 **补充对象**（/ontology-extract-object）→ 增量补充对象
-- 回复 **补充逻辑**（/ontology-extract-logic）→ 增量补充逻辑
+- 回复 **补充逻辑**（/ontology-extract-operation）→ 增量补充逻辑
 - 回复 **追加调研**（/ontology-research）→ 追加调研
 - 回复 **版本历史**（/version）→ 查看历史
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
@@ -201,7 +203,7 @@ python3 .claude/scripts/seed_example.py {DEMO_ROOT}
 - **提取对象**：读取并执行 `/ontology-extract-object` 指令（示例已备好流程图摘要，可直接开始）。
 - **完整走一遍**：依次运行
   1. `/ontology-extract-object`
-  2. `/ontology-extract-logic`
+  2. `/ontology-extract-operation`
   3. `/ontology-validate`
   4. `/ontology-mock`
   5. `/ontology-trace 全部`

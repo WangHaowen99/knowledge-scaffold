@@ -9,7 +9,7 @@ Validate the ontology documents in two sequential phases: rule check first, then
    - 若 `SCOPE = objects` 且 `TARGET_FILES` 非空：这是**对象增量校验**，跳过 `check-prereq validate`；对象提取完成后允许先检验对象，不要求逻辑已提取。
    - 其他情况继续执行下一条前置检查。
 3. `python3 .claude/scripts/state_helper.py check-prereq validate`
-   - `missing:...` → **跳步守卫**："继续会导致校验范围不完整"。选项 **继续** / **先做 逻辑提取**（/ontology-extract-logic）。
+   - `missing:...` → **跳步守卫**："继续会导致校验范围不完整"。选项 **继续** / **先做 逻辑提取**（/ontology-extract-operation）。
    - 若上一步已识别为对象增量校验，本条不执行。
 4. `python3 .claude/scripts/state_helper.py acquire validate start`
 5. 加载已沉淀业务知识（全量，validate 需要看到所有规则）：
@@ -20,9 +20,9 @@ Validate the ontology documents in two sequential phases: rule check first, then
        stem=$(basename "$f" .md)
        case "$f" in
            */object/*) SCOPE_ARGS+=(--scope "object:$stem") ;;
-           */logic/*)   SCOPE_ARGS+=(--scope "logic:$stem") ;;
+           */operation/*)   SCOPE_ARGS+=(--scope "operation:$stem") ;;
        esac
-   done < <(find ontology/object ontology/logic -type f -name '*.md' 2>/dev/null)
+   done < <(find ontology/object ontology/operation -type f -name '*.md' 2>/dev/null)
    KNOWLEDGE_BLOCK=$(python3 .claude/scripts/knowledge_helper.py load "${SCOPE_ARGS[@]}")
    ```
    若 `KNOWLEDGE_BLOCK` 等于 `（暂无相关业务知识）`，置为空字符串以跳过注入。
@@ -34,7 +34,7 @@ Validate the ontology documents in two sequential phases: rule check first, then
 If $ARGUMENTS is not empty, enter **incremental mode**:
 
 1. Parse $ARGUMENTS as space-separated bare names (e.g. `订单 创建订单 支付`).
-2. For each name, recursively search `ontology/object/**/{name}.md` and `ontology/logic/**/{name}.md`. If none exists, warn: "⚠️ 未找到文件：{name}，已跳过。"
+2. For each name, recursively search `ontology/object/**/{name}.md` and `ontology/operation/**/{name}.md`. If none exists, warn: "⚠️ 未找到文件：{name}，已跳过。"
 3. The resolved list is TARGET_FILES. If all names were invalid, fall back to full mode.
 4. Compute RELATED_FILES: for each target file, read it and collect all `[[link]]` stems. Also scan all other ontology files and include any whose `[[link]]` targets include a TARGET_FILE stem. Remove TARGET_FILES from this set.
 5. Display:
@@ -49,7 +49,7 @@ If $ARGUMENTS is empty, proceed in **full mode** (no message needed).
 - 全量模式：`SCOPE = all`。
 - 增量模式：按 `TARGET_FILES` 所属目录计算：
   - 若全部目标都属于 `ontology/object/` → `SCOPE = objects`
-  - 若全部目标都属于 `ontology/logic/` → `SCOPE = logic`
+  - 若全部目标都属于 `ontology/operation/` → `SCOPE = operation`
   - 跨多个分类 → `SCOPE = all`
 - 后续报告文件名统一使用 `reports/{YYYYMMDD}-{HHMMSS}-{SCOPE}-rule.md` 与 `reports/{YYYYMMDD}-{HHMMSS}-{SCOPE}-semantic.md`，其中日期时间使用 `Asia/Shanghai`。
 
@@ -64,7 +64,7 @@ rule-check-agent 与 semantic-check-agent 的 prompt 都需 transclude 该文件
 
 ## Step 1: Check ontology exists
 
-List markdown files recursively in `ontology/object/` and `ontology/logic/`. If both directories have no markdown files, tell user: "未找到本体文档，请先运行 `/ontology-extract-object`。" 然后：
+List markdown files recursively in `ontology/object/` and `ontology/operation/`. If both directories have no markdown files, tell user: "未找到本体文档，请先运行 `/ontology-extract-object`。" 然后：
 
 ```bash
 python3 .claude/scripts/state_helper.py release validate
@@ -174,8 +174,8 @@ Wait for it to return a JSON array `APPLY_RESULTS`，按 `issue_id` 索引。
 
 | # | 编号 | 文件 | 问题 | 处理结果 |
 |---|------|------|------|----------|
-| 1 | 1    | logic/X.md | [[Y]] 无对应文件 | ✅ 已应用：{change_summary} |
-| 2 | 5    | logic/Z.md | 字段「A」定义不一致 | ⏸ 未应用（{reason}）：{proposed_change} |
+| 1 | 1    | operation/X.md | [[Y]] 无对应文件 | ✅ 已应用：{change_summary} |
+| 2 | 5    | operation/Z.md | 字段「A」定义不一致 | ⏸ 未应用（{reason}）：{proposed_change} |
 
 **下一步建议：**
 - 回复 **确认** → 保留全部已应用修复，进入下一步（A5）
@@ -214,9 +214,9 @@ Show a numbered list in the terminal — no file-based checkbox interaction:
 ```
 还有 {M} 个需要业务判断的问题：
 
-1. ❌ [逻辑缺陷] logic/X.md → {message}
-2. ⚠️ [参数未使用] logic/Y.md → {message}
-3. 💡 [关联不合理] logic/Z.md → {message}
+1. ❌ [逻辑缺陷] operation/X.md → {message}
+2. ⚠️ [参数未使用] operation/Y.md → {message}
+3. 💡 [关联不合理] operation/Z.md → {message}
 
 要处理哪些？[全部 / 输入编号如 1,3 / 跳过]
 ```
@@ -358,7 +358,7 @@ Example (low-confidence group is default-collapsed — show only header + count,
 语义检查完成，共 {N} 个问题（🔴{H} 高 / 🟡{M} 中 / 🔵{L} 低）：
 
 🔴 高置信（{H}）
-1. ❌ [逻辑缺陷] logic/X.md → {message}
+1. ❌ [逻辑缺陷] operation/X.md → {message}
 
 🟡 中置信（{M}）
 2. ⚠️ [描述歧义] objects/Y.md → {message}
@@ -421,8 +421,8 @@ Wait for it to return a JSON array of apply results。把返回结果按 `issue_
 
 | # | 编号 | 文件 | 问题 | 处理结果 |
 |---|------|------|------|----------|
-| 1 | 3    | logic/创建订单.md | {message 摘要} | ✅ 已应用：{change_summary} |
-| 2 | 7    | logic/支付流程.md | {message 摘要} | ⏸ 未应用（{reason}）：{proposed_change} |
+| 1 | 3    | operation/创建订单.md | {message 摘要} | ✅ 已应用：{change_summary} |
+| 2 | 7    | operation/支付流程.md | {message 摘要} | ⏸ 未应用（{reason}）：{proposed_change} |
 | 3 | ...  | ... | ... | ... |
 
 **下一步建议：**
@@ -534,11 +534,11 @@ git commit -m "fix: address semantic check issues"
 - 命中 → 在 "**校验全部完成**" 文案前**单独一行**按 §10.3「校验报告触发形式」输出提示。本命令本次执行只触发一次。
 - 未命中 → 不输出。
 
-**Logic 范式 / 断言驱动测试参考提醒（可选）**：按 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §七「校验完成或 trace 场景确认前」与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一「校验完成后」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
+**Operation 范式 / 断言驱动测试参考提醒（可选）**：按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七「校验完成或 trace 场景确认前」与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一「校验完成后」输出提示；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
 
 Tell user:
-"💡 可选参考：现有校验/追踪默认更适合 SOP 流程型；若本次 Logic 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Logic 范式。
-可参阅 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §六 / §七，人工核对审计链贯通、规则不冲突、写入器前置审计与边界值口径。无需中断当前流程。
+"💡 可选参考：现有校验/追踪默认更适合 SOP 流程型；若本次 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
+可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §六 / §七，人工核对审计链贯通、规则不冲突、写入器前置审计与边界值口径。无需中断当前流程。
 
 **校验全部完成。下一步建议：**
 - 回复 **测试数据**（/ontology-mock）→ 生成 mock 测试数据
@@ -546,9 +546,9 @@ Tell user:
 - 回复 **交互走查**（/ontology-trace 交互）→ 逐个分支由你选方向，AI 辅助构造 testcase 和正常 mock 数据
 - 回复 **整体视图**（/ontology-overview）→ 查看对象/逻辑全局关系
 - 回复 **扫描候选**（/ontology-codegen-scan）→ 看哪些逻辑适合转脚本
-- 回复 **代码生成**（/ontology-codegen）→ 选定 logic 后生成 Python 脚本（不支持一键全部）
+- 回复 **代码生成**（/ontology-codegen）→ 选定 operation 后生成 Python 脚本（不支持一键全部）
 - 回复 **增量对象**（/ontology-extract-object）→ 补充提取缺失对象
-- 回复 **增量逻辑**（/ontology-extract-logic）→ 补充提取缺失逻辑
+- 回复 **增量逻辑**（/ontology-extract-operation）→ 补充提取缺失逻辑
 - 回复 **补充调研**（/ontology-research）→ 定向补充调研后增量提取
 - 回复 **再校验** → 重新执行完整校验流程
 上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。"
@@ -557,9 +557,9 @@ Tell user:
 
 **If user replies 测试数据:** release validate，然后 read `.claude/commands/ontology-mock.md` and follow its instructions.
 
-**If user replies 追踪:** ask "请输入要追踪的逻辑文件路径（如 ontology/logic/创建订单.md），或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md` and follow its instructions with the user's chosen path.
+**If user replies 追踪:** ask "请输入要追踪的逻辑文件路径（如 ontology/operation/创建订单.md），或回复 **全部** 追踪所有逻辑：". Then release validate 并 read `.claude/commands/ontology-trace.md` and follow its instructions with the user's chosen path.
 
-**If user replies 交互走查:** ask "请输入要交互走查的逻辑文件路径（如 ontology/logic/创建订单.md），或直接回复 **选择** 让我列出逻辑文件：". Then release validate 并 read `.claude/commands/ontology-trace.md` and follow it with `交互 {用户选择}`（如果用户回复 **选择**，传 `交互`）。
+**If user replies 交互走查:** ask "请输入要交互走查的逻辑文件路径（如 ontology/operation/创建订单.md），或直接回复 **选择** 让我列出逻辑文件：". Then release validate 并 read `.claude/commands/ontology-trace.md` and follow it with `交互 {用户选择}`（如果用户回复 **选择**，传 `交互`）。
 
 **If user replies 整体视图:** release validate，然后 read `.claude/commands/ontology-overview.md` and follow its instructions.
 
@@ -569,8 +569,8 @@ Tell user:
 
 **If user replies 增量对象:** release validate，然后 Read `.claude/commands/ontology-extract-object.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/object/` contents before dispatching the agent. After the agent returns its summary, ask: "增量对象完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
 
-**If user replies 增量逻辑:** release validate，然后 Read `.claude/commands/ontology-extract-logic.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/logic/` contents before dispatching the agent. After the agent returns its summary, ask: "增量逻辑完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
+**If user replies 增量逻辑:** release validate，然后 Read `.claude/commands/ontology-extract-operation.md` and follow its instructions with these overrides: MODE = incremental; collect EXISTING_FILES from current `ontology/operation/` contents before dispatching the agent. After the agent returns its summary, ask: "增量逻辑完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1 of this command.
 
-**If user replies 补充调研:** Ask: "请描述要补充的调研方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加调研（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "调研完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if logic, follow `/ontology-extract-logic` incremental; then ask: "增量提取完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1.
+**If user replies 补充调研:** Ask: "请描述要补充的调研方向（例如：「XX子流程的逻辑细节」「YY对象的状态转换」「某个引用断裂的缺失实体」）：". Then release validate 并 read `.claude/commands/ontology-research.md` and follow it using **追加调研（append）mode** with the user's direction as FOCUS_DIRECTIONS; **skip research's Step 5 next-step prompt** (do not ask about running flowchart). After research completes, ask: "调研完成。要增量提取哪一类？回复 **对象**、**逻辑** 或 **否**。" — if object, follow `/ontology-extract-object` incremental; if operation, follow `/ontology-extract-operation` incremental; then ask: "增量提取完成。是否重新校验？回复 **是** 或 **否**。" — if yes, restart from Step 1.
 
 **If user replies 完成:** `python3 .claude/scripts/state_helper.py release validate`，Stop.

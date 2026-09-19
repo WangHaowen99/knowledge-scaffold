@@ -37,14 +37,14 @@ python3 .claude/scripts/knowledge_helper.py add \
   --slug order-amount-manual-review \
   --name "大额订单强制人工审核" \
   --scope global \
-  --scope logic:订单审核与分仓路由 \
+  --scope operation:订单审核与分仓路由 \
   --confidence high \
-  --source "ontology-extract-logic@2026-05-27T21:34" \
+  --source "ontology-extract-operation@2026-05-27T21:34" \
   --body "$(cat <<'BODY'
 订单金额 >= 5000 元时，必须转人工审核，不可由系统自动通过下单校验。该规则优先于所有其他自动审核逻辑。
 
 **Why:** 业务方对大额订单有合规风控要求（用户口述）。
-**How to apply:** /ontology-extract-logic、/ontology-validate 在审核相关 logic 中将此作为硬约束遵循。
+**How to apply:** /ontology-extract-operation、/ontology-validate 在审核相关 operation 中将此作为硬约束遵循。
 BODY
 )" \
   --after-conflict-check none-found \
@@ -58,7 +58,7 @@ BODY
 | `--type` | `correction` / `convention` / `terminology` / `domain-rule` |
 | `--slug` | kebab-case 或 pinyin，唯一标识 |
 | `--name`（或 `--title`） | 一句话标题 |
-| `--scope` | 可多次，`global` / `object:<name>` / `logic:<name>` 等 |
+| `--scope` | 可多次，`global` / `object:<name>` / `operation:<name>` 等 |
 | `--confidence` | `high` / `medium` / `low`（也接受 `高` / `中` / `低` 中文别名） |
 | `--source` | `{当前命令名}@{ISO 时间}` |
 | `--body`（或 `--content`） | 正文（建议加 **Why:** 与 **How to apply:** 两行） |

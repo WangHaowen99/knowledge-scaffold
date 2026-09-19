@@ -107,7 +107,7 @@ def test_import_summary_reports_contents(manager: WorkspaceManager, tmp_path: Pa
         zf.writestr(".git/config", "skip me")
     summary = manager.import_summary(archive)
     assert summary["objects"] == 1
-    assert summary["logics"] == 1
+    assert summary["operations"] == 1
     assert summary["files"] == 4
     assert ".git" in summary["skipped"]
 
@@ -118,8 +118,18 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
     (root / "ontology" / "object" / "订单.md").write_text(
         "# 订单\n\n属性若干\n", encoding="utf-8"
     )
+    (root / "ontology" / "logic").mkdir(exist_ok=True)  # 旧目录：验证兼容读取
     (root / "ontology" / "logic" / "创建订单.md").write_text(
         "---\nold: front\n---\n\n生成[[订单]]\n", encoding="utf-8"
+    )
+    (root / "ontology" / "rule" / "限购规则.md").write_text(
+        "# 限购规则\n\n约束[[订单]]数量\n", encoding="utf-8"
+    )
+    (root / "ontology" / "metric" / "客单价.md").write_text(
+        "# 客单价\n\n基于[[订单]]金额\n", encoding="utf-8"
+    )
+    (root / "ontology" / "scripts" / "calc_price.py").write_text(
+        '"""计算客单价。"""\n', encoding="utf-8"
     )
     dest = tmp_path / "pkg.zip"
     manager.export_package_zip(meta["id"], dest)
@@ -142,6 +152,16 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert "| 订单 | 订单 |" in obj_index
         # 工作区占位 index.md 不应进包
         assert f"{pid}/objects/index.md" in names and "待生成" not in obj_index
+        # 五元组：规则/指标/脚本各自成组导出（ADR-0004）
+        rule = zf.read(f"{pid}/rules/限购规则.md").decode("utf-8")
+        assert "resource: rule" in rule and 'objects: ["订单"]' in rule
+        metric = zf.read(f"{pid}/metrics/客单价.md").decode("utf-8")
+        assert "resource: metric" in metric
+        assert f"{pid}/scripts/calc_price.py" in names
+        script_doc = zf.read(f"{pid}/scripts/calc_price.md").decode("utf-8")
+        assert "resource: script" in script_doc
+        assert f"{pid}/rules/index.md" in names
+        assert f"{pid}/metrics/index.md" in names
 
 
 def test_excel_preview_roundtrip(tmp_path: Path):

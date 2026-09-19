@@ -3,11 +3,11 @@ Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.m
 ## Mode Inputs
 
 - `TRACE_MODE=interactive`
-- `INTERACTIVE_TARGET`: remaining text after the trace entrypoint removed the trigger token (`交互` / `交互走查` / `对话走查` / `走查`). It may be empty, a logic path, or a scenario description.
+- `INTERACTIVE_TARGET`: remaining text after the trace entrypoint removed the trigger token (`交互` / `交互走查` / `对话走查` / `走查`). It may be empty, a operation path, or a scenario description.
 
 ## <a id="interactive-walkthrough-mode"></a>Interactive Walkthrough Mode
 
-交互走查用于 **Logic 语义还不够确定、需要人逐个分支定方向** 的场景。它不替代普通 trace；它先帮助用户构造可复用 testcase / 正常 mock 数据，再回到普通 trace 执行推演。
+交互走查用于 **Operation 语义还不够确定、需要人逐个分支定方向** 的场景。它不替代普通 trace；它先帮助用户构造可复用 testcase / 正常 mock 数据，再回到普通 trace 执行推演。
 
 ### 适用与触发
 
@@ -18,7 +18,7 @@ Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.m
 
 用法：
 - `/ontology-trace 交互`：先列出逻辑，让你选择入口
-- `/ontology-trace 交互 ontology/logic/创建订单.md`：直接走查指定逻辑
+- `/ontology-trace 交互 ontology/operation/创建订单.md`：直接走查指定逻辑
 - 也可以直接描述业务场景，例如：`交互 1 个订单，库存不足，优惠券已过期`
 
 规则：
@@ -26,27 +26,27 @@ Trace interactive walkthrough mode. Loaded by `.claude/commands/ontology-trace.m
 - 我根据你给的业务特征补具体输入、testcase 和必要的正常 mock 数据
 - 边界/异常场景写入 testcase 的自定义输入，不写入 data-mock 的边界/异常分区
 
-💡 可选参考：交互走查默认围绕分支选择展开；若本次 Logic 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Logic 范式。
-可参阅 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
+💡 可选参考：交互走查默认围绕分支选择展开；若本次 Operation 包含规则引擎、红线拦截、连续阈值、多判定器组合或审计链，可先对照 Operation 范式。
+可参阅 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §三 / §四核对范式；若判定为断言驱动型或混合型，再参阅 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §三 / §八，补充规则覆盖、约束边界、退化逻辑和跳过审计的负面 Case。无需中断当前流程。
 ```
 
-上述参考提醒按 `.claude/reference/LOGIC_PARADIGM_GUIDE.md` §七与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一执行；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
+上述参考提醒按 `.claude/reference/OPERATION_PARADIGM_GUIDE.md` §七与 `.claude/reference/ASSERTION_DRIVEN_TESTING_GUIDE.md` §十一执行；若用户本会话已表达"不需要 / 知道了 / 已判别 / 已按断言型补充"，本次不再提示。本命令本次执行只触发一次。
 
 ### I1: Choose Entry
 
-- If the optional target is a logic file path, set `LOGIC_PATH` to it.
-- If the optional target is a scenario description, keep it as `USER_SCENARIO_HINT` and list candidate logic files from `ontology/logic/` for the user to choose.
-- If no target is provided, list logic files from `ontology/logic/` and ask the user which one to walk through.
-- If no logic files exist, tell user "未找到任何逻辑文档，请先运行 `/ontology-extract-logic`。" Then `python3 .claude/scripts/state_helper.py release trace` and stop.
+- If the optional target is a operation file path, set `OPERATION_PATH` to it.
+- If the optional target is a scenario description, keep it as `USER_SCENARIO_HINT` and list candidate operation files from `ontology/operation/` for the user to choose.
+- If no target is provided, list operation files from `ontology/operation/` and ask the user which one to walk through.
+- If no operation files exist, tell user "未找到任何逻辑文档，请先运行 `/ontology-extract-operation`。" Then `python3 .claude/scripts/state_helper.py release trace` and stop.
 
-After `LOGIC_PATH` is selected, read it once to derive:
-- `LOGIC_NAME` = basename without `.md`
+After `OPERATION_PATH` is selected, read it once to derive:
+- `OPERATION_NAME` = basename without `.md`
 - `REFERENCED_OBJECTS` = object names from `# 与object的关联`
 
 Load business knowledge for this mode:
 
 ```bash
-SCOPE_ARGS=(--scope global --scope "logic:$LOGIC_NAME")
+SCOPE_ARGS=(--scope global --scope "operation:$OPERATION_NAME")
 for obj in $REFERENCED_OBJECTS; do
     SCOPE_ARGS+=(--scope "object:$obj")
 done
@@ -57,8 +57,8 @@ If `KNOWLEDGE_BLOCK` equals `（暂无相关业务知识）`, set it to an empty
 
 ### I2: Expand Branch Points
 
-Read `LOGIC_PATH` and its direct sub-logic calls. For the current logic:
-- Extract `# 逻辑描述`, `# 输入`, `# 与object的关联`, decision points, branches, and sub-logic calls.
+Read `OPERATION_PATH` and its direct sub-operation calls. For the current operation:
+- Extract `# 逻辑描述`, `# 输入`, `# 与object的关联`, decision points, branches, and sub-operation calls.
 - Show each decision point as a compact table:
   - 判断点 / 步骤
   - 可选分支
@@ -88,10 +88,10 @@ Show the constructed scenario and any mock row changes, then ask:
 - 回复 **停止** → 汇总已构造内容
 ```
 
-### I4: Recurse Through Sub-Logic
+### I4: Recurse Through Sub-Operation
 
-- If the selected branch calls a sub-logic, enter that sub-logic and repeat I2/I3.
-- Do not skip intermediate logic layers, even if the sub-logic looks simple.
+- If the selected branch calls a sub-operation, enter that sub-operation and repeat I2/I3.
+- Do not skip intermediate operation layers, even if the sub-operation looks simple.
 - When a branch reaches an end/termination point, ask whether to backtrack and cover another branch.
 
 ### I5: Handle Semantic Defects
@@ -99,7 +99,7 @@ Show the constructed scenario and any mock row changes, then ask:
 If a semantic defect is found, stop immediately and discuss it before continuing. Do not silently collect it for later.
 
 Show:
-- defect location (`logic + step`)
+- defect location (`operation + step`)
 - why it blocks or weakens the walkthrough
 - suggested fix
 - impact on generated scenario/data
@@ -112,34 +112,34 @@ Then ask:
 - 回复 **跳过** → 保留缺陷并选择其他分支
 ```
 
-Do not directly edit logic files without user confirmation.
+Do not directly edit operation files without user confirmation.
 
 ### I6: Save Outputs
 
 After the user stops or all desired branches are covered:
-- Save confirmed scenarios to `ontology/testcase/{LOGIC_NAME}.md` using `.claude/templates/testcase-template.md`.
+- Save confirmed scenarios to `ontology/testcase/{OPERATION_NAME}.md` using `.claude/templates/testcase-template.md`.
 - Save any confirmed normal mock rows under `ontology/data-mock/`.
-- Write a walkthrough report to `reports/{YYYYMMDD}-{HHMMSS}-walkthrough-{LOGIC_NAME}.md` using `Asia/Shanghai` time, with:
+- Write a walkthrough report to `reports/{YYYYMMDD}-{HHMMSS}-walkthrough-{OPERATION_NAME}.md` using `Asia/Shanghai` time, with:
   - branch coverage checklist
   - generated/updated mock data files
   - testcase path
   - semantic defect list
   - unresolved assumptions
-- Commit testcase files separately with `git commit -m "trace: {LOGIC_NAME} interactive testcases"` after user confirms.
-- If mock data files changed, commit them separately with `git commit -m "mock: {LOGIC_NAME} walkthrough data"` after user confirms.
+- Commit testcase files separately with `git commit -m "trace: {OPERATION_NAME} interactive testcases"` after user confirms.
+- If mock data files changed, commit them separately with `git commit -m "mock: {OPERATION_NAME} walkthrough data"` after user confirms.
 
 Final prompt:
 
 ```
 交互走查已完成。
-- 测试场景：`ontology/testcase/{LOGIC_NAME}.md`
+- 测试场景：`ontology/testcase/{OPERATION_NAME}.md`
 - 测试数据：{data-mock files or "未改动"}
 - 走查报告：`reports/{filename}`
 
 下一步建议：
-- 回复 **执行追踪** → 用刚保存的 testcase 运行 `/ontology-trace {LOGIC_PATH}`
+- 回复 **执行追踪** → 用刚保存的 testcase 运行 `/ontology-trace {OPERATION_PATH}`
 - 回复 **继续走查** → 回到分支选择，补更多场景
 - 回复 **修复缺陷** → 处理语义缺陷
 ```
 
-If user replies **执行追踪**, continue with normal single-file mode using `LOGIC_PATH`; saved testcases should be reused at Step 2.5.
+If user replies **执行追踪**, continue with normal single-file mode using `OPERATION_PATH`; saved testcases should be reused at Step 2.5.

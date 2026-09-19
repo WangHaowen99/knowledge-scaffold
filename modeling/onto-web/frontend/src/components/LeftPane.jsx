@@ -55,10 +55,12 @@ export const STAGES = [
     ],
   },
   {
-    key: 'logic',
-    title: '逻辑提取',
-    probe: (paths) => paths.some((p) => p.startsWith('ontology/logic/')),
-    actions: [{ label: '提取逻辑', command: '/ontology-extract-logic' }],
+    key: 'operation',
+    title: '操作提取',
+    // ontology/logic 为旧目录兼容（范式升级 ADR-0004）
+    probe: (paths) =>
+      paths.some((p) => p.startsWith('ontology/operation/') || p.startsWith('ontology/logic/')),
+    actions: [{ label: '提取操作', command: '/ontology-extract-operation' }],
   },
   {
     key: 'validate',
@@ -94,6 +96,7 @@ export const STAGES = [
 
 const EXTRA_ACTIONS = [
   { label: '整体视图', command: '/ontology-overview' },
+  { label: '规则与指标', command: '/ontology-extract-rule-metric' },
   { label: '增量更新', command: '/ontology-update ' },
 ];
 

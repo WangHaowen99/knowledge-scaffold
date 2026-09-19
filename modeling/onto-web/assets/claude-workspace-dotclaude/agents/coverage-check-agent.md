@@ -10,9 +10,9 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 
 - `SOURCE_PATHS`: comma-separated paths to source documents (flowchart summaries, paired Excel supplement paths, or research reports)
 - `EXCEL_CONTEXT` (optional): markdown exported from paired Excel 补充表. If `.xlsx` paths appear in `SOURCE_PATHS`, use this text block for their content instead of reading binary files.
-- `CHECK_TYPE`: what to check — "object", "logic", or "all"
+- `CHECK_TYPE`: what to check — "object", "operation", or "all"
 - `OBJECTS_DIR` (optional): path to object docs (e.g. `ontology/object/`)
-- `LOGIC_DIR` (optional): path to logic docs (e.g. `ontology/logic/`)
+- `OPERATION_DIR` (optional): path to operation docs (e.g. `ontology/operation/`)
 
 ## Step 1: Extract candidate names from source documents
 
@@ -20,30 +20,30 @@ Read all text files listed in `SOURCE_PATHS`. If a path ends with `.xlsx`, do no
 
 **For flowchart summaries** (files in `ontology/diagrams-summary/`):
 - Extract candidate **objects**: data entities referenced in flowchart nodes (nouns representing business data, parameters in start/end nodes, objects mentioned in operation descriptions).
-- Extract candidate **logic**: each flowchart generally maps to one logic document. Use the flowchart name as the logic name.
+- Extract candidate **operation**: each flowchart generally maps to one operation document. Use the flowchart name as the operation name.
 
 **For Excel 补充表** (`EXCEL_CONTEXT`):
 - Extract candidate **objects** from Excel 补充表中的业务活动、对象、字段、规则, especially columns that name input/output data, forms, records, states, fields, units, formulas, or related systems.
-- Extract candidate **logic** from same-name workflow sections and the 「业务活动」 column. Treat row-level business activities as coverage details for the matching workflow unless the row explicitly names a reusable sub-process.
+- Extract candidate **operation** from same-name workflow sections and the 「业务活动」 column. Treat row-level business activities as coverage details for the matching workflow unless the row explicitly names a reusable sub-process.
 
 **For structured research reports** (containing 核心业务对象候选 / 核心业务逻辑候选 sections):
 - From 核心业务对象候选: extract every bold name (`**名称**:` pattern).
 - From 核心业务逻辑候选: extract every bold name.
-- From 详细信息: scan for subsection headings naming objects or logic not yet captured.
+- From 详细信息: scan for subsection headings naming objects or operation not yet captured.
 
 **For raw domain documents** (no standard sections):
-- Read full content. Identify named business entities (objects) and named business processes (logic).
+- Read full content. Identify named business entities (objects) and named business processes (operation).
 - Use the document's own terminology. Do not invent names.
 
 Produce (based on CHECK_TYPE):
 - `MENTIONED_OBJECTS`: list of `{name, brief_description}` — deduplicate by name
-- `MENTIONED_LOGIC`: list of `{name, brief_description}` — deduplicate by name
+- `MENTIONED_OPERATION`: list of `{name, brief_description}` — deduplicate by name
 
 ## Step 2: Read extracted ontology files
 
 Based on CHECK_TYPE:
 - If "object" or "all": List `.md` files in `OBJECTS_DIR` → `EXTRACTED_OBJECTS`
-- If "logic" or "all": List `.md` files in `LOGIC_DIR` → `EXTRACTED_LOGIC`
+- If "operation" or "all": List `.md` files in `OPERATION_DIR` → `EXTRACTED_OPERATION`
 
 ## Step 3: Compute coverage
 
@@ -100,5 +100,5 @@ Return structured markdown:
 {contextual notes}
 ```
 
-Omit sections based on CHECK_TYPE (e.g., if CHECK_TYPE is "object", omit logic sections).
+Omit sections based on CHECK_TYPE (e.g., if CHECK_TYPE is "object", omit operation sections).
 Omit any subsection whose list is empty.
