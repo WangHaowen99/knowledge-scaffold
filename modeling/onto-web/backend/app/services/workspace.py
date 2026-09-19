@@ -337,7 +337,57 @@ class WorkspaceManager:
             "revision": _content_revision(target.read_bytes()),
         }
 
-    def save_resource(self, project_id: str, subdir: str, filename: str, data: bytes) -> dict:
+    # 资料用途标签（对齐 modeling 的 material purpose 体系）
+    MATERIAL_PURPOSES = ("auto", "goal", "schema", "term", "evidence")
+    MATERIAL_READING_MODES = ("on_demand", "full")
+
+    def resource_directives(self, project_id: str) -> dict:
+        """resource/materials.json：资料路径 → {purpose, reading_mode}。无文件视为空。"""
+        root = self.project_root(project_id)
+        path = root / "resource" / "materials.json"
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def set_resource_directive(
+        self, project_id: str, rel_path: str, purpose: str, reading_mode: str = "on_demand"
+    ) -> dict:
+        if purpose not in self.MATERIAL_PURPOSES:
+            raise WorkspaceError(f"资料用途必须是 {list(self.MATERIAL_PURPOSES)} 之一")
+        if reading_mode not in self.MATERIAL_READING_MODES:
+            raise WorkspaceError(f"读取模式必须是 {list(self.MATERIAL_READING_MODES)} 之一")
+        root = self.project_root(project_id)
+        target = self._resolve_inside(root, rel_path)
+        rel = target.relative_to(root.resolve()).as_posix()
+        if not rel.startswith("resource/") or not target.is_file():
+            raise WorkspaceError("只能为 resource/ 下的资料设置用途", 400)
+        directives = self.resource_directives(project_id)
+        directives[rel] = {"purpose": purpose, "reading_mode": reading_mode}
+        self._write_resource_directives(root, directives)
+        # 用途变化会影响派生产物的口径，视同资料更新
+        self._update_meta(project_id, resource_updated_at=int(time.time()))
+        return {"path": rel, **directives[rel]}
+
+    def _write_resource_directives(self, root: Path, directives: dict) -> None:
+        (root / "resource").mkdir(exist_ok=True)
+        (root / "resource" / "materials.json").write_text(
+            json.dumps(directives, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def save_resource(
+        self,
+        project_id: str,
+        subdir: str,
+        filename: str,
+        data: bytes,
+        purpose: str = "auto",
+        reading_mode: str = "on_demand",
+    ) -> dict:
         if subdir not in RESOURCE_SUBDIRS:
             raise WorkspaceError(f"资料分类必须是 {sorted(RESOURCE_SUBDIRS)} 之一")
         safe_name = Path(filename).name
@@ -349,13 +399,19 @@ class WorkspaceManager:
         dest = dest_dir / safe_name
         replaced = dest.exists()
         dest.write_bytes(data)
+        rel = f"resource/{subdir}/{safe_name}"
+        if purpose != "auto" or reading_mode != "on_demand":
+            directives = self.resource_directives(project_id)
+            directives[rel] = {
+                "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
+                "reading_mode": reading_mode
+                if reading_mode in self.MATERIAL_READING_MODES
+                else "on_demand",
+            }
+            self._write_resource_directives(root, directives)
         # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
         self._update_meta(project_id, resource_updated_at=int(time.time()))
-        return {
-            "path": f"resource/{subdir}/{safe_name}",
-            "size": len(data),
-            "replaced": replaced,
-        }
+        return {"path": rel, "size": len(data), "replaced": replaced}
 
     # ---- 生命周期扩展 ----
 
@@ -766,9 +822,14 @@ class WorkspaceManager:
         rel = target.relative_to(root.resolve())
         if len(rel.parts) < 2 or rel.parts[0] != "resource":
             raise WorkspaceError("只允许删除 resource/ 下的资料", 403)
+        if rel.name == "materials.json" and len(rel.parts) == 2:
+            raise WorkspaceError("资料用途清单不可直接删除", 403)
         if not target.is_file():
             raise WorkspaceError("文件不存在", 404)
         target.unlink()
+        directives = self.resource_directives(project_id)
+        if directives.pop(rel.as_posix(), None) is not None:
+            self._write_resource_directives(root, directives)
         self._update_meta(project_id, resource_updated_at=int(time.time()))
         return {"deleted": rel_path}
 

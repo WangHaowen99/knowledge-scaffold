@@ -51,6 +51,15 @@ d) 自定义方向...
 
 Ask the user to select one or more directions (or type a custom direction). Record selected directions as FOCUS_DIRECTIONS.
 
+## Step 1.4: 资料用途清单
+
+读取 `resource/materials.json`（不存在则跳过）。本步骤只建立处理计划，不逐个精读：
+
+- `purpose=goal` 的资料 → 在 Step 2 确认调研主题时必须先引用其内容；
+- `reading_mode=full` 的资料 → 在 Step 1.5 中必须全文读取，不得只扫开头；
+- `purpose=schema` / `term` 的表格 → 调研报告中列入"数据与术语来源"清单，供后续对象提取直接引用；
+- 其余按 `auto` 处理。
+
 ## Step 1.5: Check for local domain documents
 
 Ask the user:

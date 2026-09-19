@@ -1254,3 +1254,13 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 
 /* 执行组失败提示仍红字，但图标恒为绿勾（完成语义） */
 .tool-group-err { color: #ff4d4f; font-size: 12px; }
+
+/* 资料用途行内打标 */
+.resource-directive { display: flex; align-items: center; gap: 8px; margin-top: 1px; }
+.resource-directive .ant-select { margin-left: -7px; }
+.resource-directive .ant-select-selection-item { font-size: 11.5px; color: var(--text-tertiary); }
+.resource-reading {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--text-tertiary); cursor: pointer; white-space: nowrap;
+}
+.resource-reading input { width: 12px; height: 12px; accent-color: var(--color-primary); }

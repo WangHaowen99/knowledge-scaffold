@@ -299,12 +299,43 @@ async def upload_resource(
     request: Request,
     subdir: str = Form(...),
     file: UploadFile = File(...),
+    purpose: str = Form("auto"),
+    reading_mode: str = Form("on_demand"),
 ):
     ensure_access(project_id, request, write=True)
     data = await file.read()
     # 大文件同步写盘会卡住事件循环（SSE 全体停摆），挪到线程执行
     return await asyncio.to_thread(
-        workspaces.save_resource, project_id, subdir, file.filename or "", data
+        workspaces.save_resource,
+        project_id,
+        subdir,
+        file.filename or "",
+        data,
+        purpose,
+        reading_mode,
+    )
+
+
+@router.get("/{project_id}/resource-meta")
+def resource_meta(project_id: str, request: Request):
+    ensure_access(project_id, request)
+    return {
+        "directives": workspaces.resource_directives(project_id),
+        "purposes": list(workspaces.MATERIAL_PURPOSES),
+    }
+
+
+class ResourceDirectiveBody(BaseModel):
+    path: str
+    purpose: str
+    reading_mode: str = "on_demand"
+
+
+@router.patch("/{project_id}/resource-meta")
+def set_resource_meta(project_id: str, body: ResourceDirectiveBody, request: Request):
+    ensure_access(project_id, request, write=True)
+    return workspaces.set_resource_directive(
+        project_id, body.path, body.purpose, body.reading_mode
     )
 
 

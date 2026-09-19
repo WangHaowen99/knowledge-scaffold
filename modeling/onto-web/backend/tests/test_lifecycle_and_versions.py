@@ -256,3 +256,29 @@ def test_import_transfer_zip_restores_history(manager: WorkspaceManager, tmp_pat
         ["git", "log", "--oneline"], cwd=new_root, capture_output=True, text=True
     ).stdout
     assert "feat: 记录" in log
+
+
+def test_resource_directives_roundtrip(manager: WorkspaceManager):
+    meta = manager.create_project("资料用途")
+    saved = manager.save_resource(
+        meta["id"], "excel", "库表.xlsx", b"x", purpose="schema", reading_mode="full"
+    )
+    directives = manager.resource_directives(meta["id"])
+    assert directives[saved["path"]] == {"purpose": "schema", "reading_mode": "full"}
+    # 修改用途
+    manager.set_resource_directive(meta["id"], saved["path"], "term")
+    assert manager.resource_directives(meta["id"])[saved["path"]]["purpose"] == "term"
+    # 非法用途拒绝
+    try:
+        manager.set_resource_directive(meta["id"], saved["path"], "bogus")
+        raise AssertionError("should reject")
+    except WorkspaceError:
+        pass
+    # 删除资料清条目；materials.json 本身不可删
+    manager.delete_resource(meta["id"], saved["path"])
+    assert saved["path"] not in manager.resource_directives(meta["id"])
+    try:
+        manager.delete_resource(meta["id"], "resource/materials.json")
+        raise AssertionError("should protect materials.json")
+    except WorkspaceError:
+        pass
