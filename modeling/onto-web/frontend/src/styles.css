@@ -300,69 +300,10 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .studio-search button:hover { color: var(--text-primary); background: var(--surface-subtle); }
 .studio-count { color: var(--text-tertiary); font-size: 11px; white-space: nowrap; margin-left: auto; }
 
-.studio-graph { flex: 1; min-height: 0; position: relative; display: flex; overflow: hidden; background: var(--surface-page); }
-.studio-graph .react-flow__attribution { display: none; }
-.studio-graph .react-flow__controls {
-  border: 1px solid var(--border-default); border-radius: 8px; overflow: hidden;
-  box-shadow: var(--shadow-sm, 0 1px 2px rgba(16, 24, 40, .06));
-}
-.studio-graph .react-flow__minimap {
-  width: 145px; height: 96px; border: 1px solid var(--border-default);
-  border-radius: 8px; background: rgba(255, 255, 255, .94);
-}
-.studio-edge path { stroke: #94a0ae; stroke-width: 1.2; opacity: .55; }
-
-.studio-node {
-  position: relative; width: 100%; height: 100%; padding: 10px 14px;
-  display: grid; grid-template-rows: 18px minmax(20px, 1fr); row-gap: 4px;
-  align-items: center; overflow: hidden; border: 0; border-radius: 18px;
-  background: var(--node-soft);
-  box-shadow: 0 2px 8px rgba(31, 45, 61, .14);
-  color: var(--text-primary); line-height: 1.35; text-align: center;
-  transition: opacity 150ms, box-shadow 150ms, transform 150ms;
-  cursor: pointer;
-}
-.studio-node.object { padding: 16px; border-radius: 50%; }
-.studio-node.logic { border-radius: 18px; }
-.studio-node.selected {
-  box-shadow: 0 0 28px var(--node-glow), 0 9px 20px rgba(31, 45, 61, .16);
-  transform: translateY(-1px);
-  animation: studio-node-bloom .52s ease-out;
-}
-@keyframes studio-node-bloom {
-  0% { box-shadow: 0 0 0 var(--node-glow); }
-  60% { box-shadow: 0 0 34px var(--node-glow); }
-  100% { box-shadow: 0 0 28px var(--node-glow), 0 9px 20px rgba(31, 45, 61, .16); }
-}
-.studio-node.dimmed { opacity: .16; }
-.studio-node-meta {
-  min-width: 0; display: flex; align-items: center; justify-content: center; gap: 4px;
-  color: var(--node-color); font-size: 11px; font-weight: 600;
-}
-.studio-node-meta small { margin-left: auto; color: rgba(0, 0, 0, .35); font-size: 9px; font-weight: 400; }
-.studio-node > strong {
-  color: #1f2d3d; overflow-wrap: anywhere; white-space: normal;
-  font-size: 12.5px; line-height: 17px; font-weight: 650;
-}
-.studio-node .react-flow__handle {
-  width: 1px; height: 1px; min-width: 0; min-height: 0; border: 0; opacity: 0; pointer-events: none;
-}
-
-.studio-graph-legend {
-  position: absolute; left: 10px; bottom: 10px; z-index: 7;
-  display: flex; align-items: center; gap: 3px; padding: 4px;
-  border: 1px solid var(--border-default); border-radius: 8px;
-  background: rgba(255, 255, 255, .94); backdrop-filter: blur(4px);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, .06);
-}
-.studio-graph-legend button {
-  height: 24px; padding: 0 6px; display: inline-flex; align-items: center; gap: 5px;
-  border: 0; border-radius: 3px; color: var(--text-secondary); background: transparent;
-  font-size: 11px; white-space: nowrap; cursor: default;
-}
-.studio-graph-legend small { color: var(--text-tertiary); }
-.studio-swatch { width: 11px; height: 11px; flex: none; border: 0; border-radius: 50%; display: inline-block; }
-.studio-swatch.logic { border-radius: 3px; }
+/* 图模式的节点/边/图例样式全部来自搬迁的原版 legacy/studio.css，这里只留容器 */
+.studio-graph-slot { flex: 1; min-height: 0; display: flex; }
+.legacy-studio-host { flex: 1; min-height: 0; display: flex; }
+.legacy-studio-host .studio-graph { flex: 1; }
 
 .studio-table, .studio-entry { flex: 1; min-height: 0; overflow: auto; padding-top: 10px; }
 .studio-entry-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
@@ -851,16 +792,6 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .assistant-row:hover .distill-btn { opacity: 1; }
 .assistant-row .distill-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
 
-/* ---- Studio WebGL 大图 ---- */
-.studio-biggraph {
-  position: relative; height: 100%; min-height: 420px;
-  border-radius: 12px; overflow: hidden; background: var(--surface-page);
-}
-.studio-biggraph canvas { display: block; }
-.studio-biggraph-loading {
-  position: absolute; inset: 0; display: flex; align-items: center;
-  justify-content: center; background: color-mix(in srgb, var(--surface-page) 70%, transparent);
-}
 
 /* ---- codegen 候选评审 ---- */
 .codegen-card {
