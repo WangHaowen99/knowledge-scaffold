@@ -18,6 +18,10 @@ import { Button, Empty, Table, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { Markdown } from './CenterPane.jsx';
+import StudioEntryEditor from './StudioEntryEditor.jsx';
+
+// 大本体降级阈值：超过后关闭 MiniMap/只渲染视口内元素，保持交互流畅
+const BIG_GRAPH_NODES = 150;
 
 // 与 modeling 工作台 Studio 相同的 kind 视觉体系（对象=圆形，逻辑沿用"操作"的绿色圆角矩形）
 const KIND_META = {
@@ -71,7 +75,7 @@ function layout(nodes, edges) {
   });
 }
 
-export default function StudioView({ project, onOpenFile }) {
+export default function StudioView({ project, onOpenFile, onCommand, onWorkspaceChanged }) {
   const [view, setView] = useState('graph');
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [entry, setEntry] = useState(null);
@@ -162,8 +166,12 @@ export default function StudioView({ project, onOpenFile }) {
   return (
     <div className="studio-root">
       <div className="studio-toolbar">
-        {view === 'entry' && (
-          <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => setView('graph')}>
+        {(view === 'entry' || view === 'edit') && (
+          <Button
+            size="small"
+            icon={<ArrowLeftOutlined />}
+            onClick={() => setView(view === 'edit' ? 'entry' : 'graph')}
+          >
             返回
           </Button>
         )}
@@ -216,6 +224,7 @@ export default function StudioView({ project, onOpenFile }) {
             nodeTypes={NODE_TYPES}
             fitView
             proOptions={{ hideAttribution: true }}
+            onlyRenderVisibleElements={graph.nodes.length > BIG_GRAPH_NODES}
             onNodeClick={(_, node) => {
               setSelected(node.id);
               const path = pathByName.get(node.id);
@@ -225,7 +234,7 @@ export default function StudioView({ project, onOpenFile }) {
             nodesDraggable
           >
             <Background gap={22} size={1} color="var(--border-subtle)" />
-            <MiniMap pannable zoomable />
+            {graph.nodes.length <= BIG_GRAPH_NODES && <MiniMap pannable zoomable />}
             <Controls showInteractive={false} />
           </ReactFlow>
           <div className="studio-graph-legend">
@@ -272,12 +281,37 @@ export default function StudioView({ project, onOpenFile }) {
         </div>
       )}
 
+      {view === 'edit' && entry && (
+        <StudioEntryEditor
+          project={project}
+          entry={entry}
+          onCommand={onCommand}
+          onExit={() => {
+            openEntry(entry.path);
+            onWorkspaceChanged?.();
+          }}
+          onCommitted={onWorkspaceChanged}
+        />
+      )}
+
       {view === 'entry' && entry && (
         <div className="center-anim studio-entry">
           <div className="studio-entry-head">
             <Typography.Title level={5} style={{ margin: 0 }}>
               {entry.name}
             </Typography.Title>
+            {entry.draft && <Tag color="warning">有未提交草稿（{entry.draft.author}）</Tag>}
+            {entry.lease && <Tag color="processing">{entry.lease.owner} 编辑中</Tag>}
+            {entry.schema && (
+              <Button
+                size="small"
+                type="primary"
+                icon={<EditOutlined />}
+                onClick={() => setView('edit')}
+              >
+                结构化编辑
+              </Button>
+            )}
             <Button size="small" icon={<EditOutlined />} onClick={() => onOpenFile(entry.path)}>
               在编辑器中打开
             </Button>

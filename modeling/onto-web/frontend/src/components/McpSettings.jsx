@@ -212,6 +212,22 @@ function ExternalServers({ project }) {
               <Button
                 size="small"
                 type="text"
+                onClick={async () => {
+                  try {
+                    const result = await api.mcpTest(server);
+                    (result.ok ? message.success : message.warning)(
+                      `${server.name}：${result.detail}`,
+                    );
+                  } catch (error) {
+                    message.error(error.message);
+                  }
+                }}
+              >
+                测试
+              </Button>
+              <Button
+                size="small"
+                type="text"
                 icon={<DeleteOutlined />}
                 onClick={() => persist(servers.filter((_, i) => i !== index))}
               />
@@ -281,6 +297,53 @@ function ExternalServers({ project }) {
   );
 }
 
+// 项目级启用开关：全局启用的服务器可在单个任务里停用（新会话生效）
+export function ProjectMcpToggle({ project }) {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    if (!project) return;
+    api.getProjectMcp(project.id).then(setData).catch(() => {});
+  }, [project]);
+
+  if (!project || !data || data.servers.length === 0) return null;
+
+  const toggle = async (name, enabled) => {
+    const disabled = new Set(data.disabled);
+    if (enabled) disabled.delete(name);
+    else disabled.add(name);
+    try {
+      await api.saveProjectMcp(project.id, [...disabled]);
+      setData(await api.getProjectMcp(project.id));
+      message.success('已保存，本任务新会话生效');
+    } catch (error) {
+      message.error(error.message);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <Typography.Text strong>本任务启用状态（{project.name}）</Typography.Text>
+      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }} size={4}>
+        {data.servers.map((server) => (
+          <div key={server.name} className="mcp-row">
+            <Tag color="processing">{server.transport}</Tag>
+            <div className="mcp-meta">
+              <div className="mcp-name">{server.name}</div>
+            </div>
+            <Switch
+              size="small"
+              disabled={!server.enabled_globally}
+              checked={server.enabled}
+              onChange={(checked) => toggle(server.name, checked)}
+            />
+          </div>
+        ))}
+      </Space>
+    </div>
+  );
+}
+
 export default function McpSettings({ project }) {
   return (
     <div>
@@ -298,6 +361,7 @@ export default function McpSettings({ project }) {
         为建模助手接入外部工具能力。
       </Typography.Paragraph>
       <ExternalServers project={project} />
+      <ProjectMcpToggle project={project} />
     </div>
   );
 }

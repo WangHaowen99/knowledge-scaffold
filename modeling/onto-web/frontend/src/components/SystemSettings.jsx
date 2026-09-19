@@ -1,5 +1,5 @@
 import { UploadOutlined } from '@ant-design/icons';
-import { Alert, Button, Segmented, Typography, Upload, message } from 'antd';
+import { Alert, Button, List, Popconfirm, Segmented, Typography, Upload, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 
@@ -60,9 +60,11 @@ export function RuntimeSettings({ project }) {
 
 export function AssetsSettings() {
   const [info, setInfo] = useState(null);
+  const [backups, setBackups] = useState([]);
 
   const refresh = () => {
     api.getAssets().then(setInfo).catch(() => {});
+    api.assetBackups().then((data) => setBackups(data.backups)).catch(() => {});
   };
   useEffect(refresh, []);
 
@@ -85,8 +87,8 @@ export function AssetsSettings() {
         showUploadList={false}
         beforeUpload={async (file) => {
           try {
-            const saved = await api.uploadAssets(file);
-            setInfo(saved);
+            await api.uploadAssets(file);
+            refresh();
             message.success('资产已更新，旧版本已备份；新会话生效');
           } catch (error) {
             message.error(error.message);
@@ -96,10 +98,47 @@ export function AssetsSettings() {
       >
         <Button icon={<UploadOutlined />}>上传新资产包（zip）</Button>
       </Upload>
-      <Typography.Paragraph type="secondary" style={{ marginTop: 12, fontSize: 12 }}>
+      <Typography.Paragraph type="secondary" style={{ margin: '12px 0', fontSize: 12 }}>
         资产包需包含 commands/ 与 agents/ 目录（可整包 .claude/ 或其内容）。
-        旧资产自动备份到服务端数据目录，异常时可人工回滚。
       </Typography.Paragraph>
+      <Typography.Paragraph strong style={{ marginBottom: 4 }}>
+        历史版本
+      </Typography.Paragraph>
+      <List
+        size="small"
+        dataSource={backups}
+        locale={{ emptyText: '暂无备份版本' }}
+        renderItem={(item) => (
+          <List.Item
+            actions={[
+              <Popconfirm
+                key="rb"
+                title="回滚到该版本？当前资产会先自动备份。"
+                onConfirm={async () => {
+                  try {
+                    await api.assetRollback(item.name);
+                    refresh();
+                    message.success('已回滚，新会话生效');
+                  } catch (error) {
+                    message.error(error.message);
+                  }
+                }}
+              >
+                <Button size="small" type="text">
+                  回滚
+                </Button>
+              </Popconfirm>,
+            ]}
+          >
+            <span>
+              {new Date(item.time * 1000).toLocaleString()}
+              <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                {item.commands} 个命令
+              </Typography.Text>
+            </span>
+          </List.Item>
+        )}
+      />
     </div>
   );
 }

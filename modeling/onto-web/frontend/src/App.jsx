@@ -1,6 +1,7 @@
 import {
   ArrowLeftOutlined,
   ImportOutlined,
+  InboxOutlined,
   LogoutOutlined,
   MoreOutlined,
   PlusOutlined,
@@ -8,72 +9,105 @@ import {
   SettingOutlined,
 } from '@ant-design/icons';
 import {
+  Alert,
   Avatar,
+  Badge,
   Button,
+  Collapse,
+  Descriptions,
   Dropdown,
   Empty,
   Input,
   Modal,
-  Segmented,
   Splitter,
-  Tabs,
+  Steps,
   Tag,
   Tooltip,
-  Typography,
   Upload,
   message,
 } from 'antd';
-import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AdminPage from './components/AdminPage.jsx';
 import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
 import LeftPane, { stageProgress } from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
-import McpSettings from './components/McpSettings.jsx';
-import ModelSettings from './components/ModelSettings.jsx';
-import { AssetsSettings, RuntimeSettings } from './components/SystemSettings.jsx';
+import SettingsPage from './components/SettingsPage.jsx';
 import { api, authStore } from './lib/api.js';
-import { ThemeCtx } from './lib/theme-context.js';
-import { ACCENTS } from './theme.js';
 
-const ACCENT_LABELS = {
-  blue: '默认蓝',
-  violet: '紫',
-  teal: '青',
-  orange: '橙',
-  graphite: '石墨',
-};
+function parseHash() {
+  const hash = window.location.hash || '#/';
+  if (hash.startsWith('#/settings')) return { name: 'settings' };
+  if (hash.startsWith('#/admin')) return { name: 'admin' };
+  if (hash.startsWith('#/p/')) return { name: 'project', projectId: hash.slice(4) };
+  return { name: 'home' };
+}
 
 export default function App() {
   const [auth, setAuth] = useState('unknown'); // unknown -> disabled | required | ok
+  const [route, setRoute] = useState(parseHash);
   const [projects, setProjects] = useState([]);
-  const [project, setProject] = useState(null);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [tree, setTree] = useState([]);
   const [versions, setVersions] = useState([]);
   const [usage, setUsage] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
-  const [focus, setFocus] = useState('overview');
+  const [focusStack, setFocusStack] = useState(['overview']);
   const [diffRev, setDiffRev] = useState(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [renaming, setRenaming] = useState(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchHits, setSearchHits] = useState(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [drawioAvailable, setDrawioAvailable] = useState(false);
+  const [importWiz, setImportWiz] = useState(null); // {step,file,name,summary,importing}
+  const [memberWiz, setMemberWiz] = useState(null); // {project, members, newUser, newRole}
+  const [queryPreset, setQueryPreset] = useState(null); // 反查预置 {kind, term, nonce}
   const chatSendRef = useRef(null);
-  const theme = useContext(ThemeCtx);
+
+  // ---- 手写 hash 路由：刷新/深链回到原页面 ----
+  useEffect(() => {
+    const onHash = () => setRoute(parseHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const nav = (hash) => {
+    if (window.location.hash === hash) setRoute(parseHash());
+    else window.location.hash = hash;
+  };
+
+  const projectId = route.name === 'project' ? route.projectId : null;
+  const project = useMemo(
+    () => (projectId ? projects.find((p) => p.id === projectId) || null : null),
+    [projects, projectId],
+  );
+
+  const focus = focusStack[focusStack.length - 1];
+  const pushFocus = useCallback((next) => {
+    setFocusStack((stack) =>
+      stack[stack.length - 1] === next ? stack : [...stack, next].slice(-12),
+    );
+  }, []);
+  const popFocus = () => setFocusStack((stack) => (stack.length > 1 ? stack.slice(0, -1) : stack));
 
   const refreshProjects = useCallback(() => {
-    api.listProjects().then((data) => setProjects(data.projects)).catch(() => {});
+    api
+      .listProjects()
+      .then((data) => {
+        setProjects(data.projects);
+        setProjectsLoaded(true);
+      })
+      .catch(() => {});
   }, []);
 
   const refreshWorkspace = useCallback(() => {
-    if (!project) return;
-    api.fileTree(project.id).then((data) => setTree(data.tree)).catch(() => {});
-    api.versions(project.id).then((data) => setVersions(data.versions)).catch(() => {});
-    api.usage(project.id).then(setUsage).catch(() => {});
-  }, [project]);
+    if (!projectId) return;
+    api.fileTree(projectId).then((data) => setTree(data.tree)).catch(() => {});
+    api.versions(projectId).then((data) => setVersions(data.versions)).catch(() => {});
+    api.usage(projectId).then(setUsage).catch(() => {});
+    refreshProjects(); // 项目 meta（资料更新时间/统计）同步刷新
+  }, [projectId, refreshProjects]);
 
   useEffect(() => {
     api
@@ -83,8 +117,9 @@ export default function App() {
         else setAuth(authStore.token ? 'ok' : 'required');
       })
       .catch(() => setAuth('disabled'));
+    api.health().then((data) => setDrawioAvailable(!!data.drawio)).catch(() => {});
     const onAuthRequired = () => {
-      setProject(null);
+      nav('#/');
       setAuth('required');
     };
     window.addEventListener('onto-auth-required', onAuthRequired);
@@ -100,10 +135,20 @@ export default function App() {
     setVersions([]);
     setUsage(null);
     setSelectedFile(null);
-    setFocus('overview');
+    setFocusStack(['overview']);
     setDiffRev(null);
+    setPendingCount(0);
     refreshWorkspace();
-  }, [refreshWorkspace]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // 深链的项目不存在（被删/无权限）时回首页
+  useEffect(() => {
+    if (projectId && projectsLoaded && !project) {
+      message.warning('任务不存在或无权访问');
+      nav('#/');
+    }
+  }, [projectId, projectsLoaded, project]);
 
   const createProject = async (template = 'blank') => {
     const name = template === 'example' ? newName.trim() || '外卖订单示例' : newName;
@@ -112,24 +157,48 @@ export default function App() {
       setNewName('');
       setCreating(false);
       refreshProjects();
-      setProject(created);
+      nav(`#/p/${created.id}`);
       if (template === 'example') message.success('示例领域已注入，可直接体验各阶段');
     } catch (error) {
       message.error(error.message);
     }
   };
 
-  const importProject = async (file) => {
-    const name = file.name.replace(/\.zip$/i, '');
+  // ---- 导入向导：选文件 → 内容确认（dry-run 摘要）→ 导入 ----
+  const startImport = (file) => {
+    setImportWiz({
+      step: 0,
+      file,
+      name: file.name.replace(/\.zip$/i, ''),
+      summary: null,
+      importing: false,
+    });
+    return false;
+  };
+
+  const importInspect = async () => {
+    setImportWiz((w) => ({ ...w, importing: true }));
     try {
-      const created = await api.importProject(name, file);
+      const summary = await api.importProject(importWiz.name, importWiz.file, true);
+      setImportWiz((w) => ({ ...w, step: 1, summary, importing: false }));
+    } catch (error) {
+      message.error(error.message);
+      setImportWiz((w) => ({ ...w, importing: false }));
+    }
+  };
+
+  const importConfirm = async () => {
+    setImportWiz((w) => ({ ...w, importing: true }));
+    try {
+      const created = await api.importProject(importWiz.name, importWiz.file);
+      setImportWiz(null);
       refreshProjects();
-      setProject(created);
+      nav(`#/p/${created.id}`);
       message.success('导入完成');
     } catch (error) {
       message.error(error.message);
+      setImportWiz((w) => ({ ...w, importing: false }));
     }
-    return false;
   };
 
   const removeProject = (item) => {
@@ -141,7 +210,7 @@ export default function App() {
       onOk: async () => {
         await api.deleteProject(item.id);
         refreshProjects();
-        if (project?.id === item.id) setProject(null);
+        if (projectId === item.id) nav('#/');
       },
     });
   };
@@ -150,16 +219,43 @@ export default function App() {
     items: [
       { key: 'open', label: '打开' },
       { key: 'rename', label: '重命名' },
-      { key: 'export-onto', label: '导出产物包' },
+      { key: 'clone', label: '克隆' },
+      { key: 'members', label: '成员共享' },
+      { key: 'archive', label: item.archived ? '恢复' : '归档' },
+      { type: 'divider' },
+      { key: 'export-onto', label: '导出知识包（原始产物）' },
+      { key: 'export-pkg', label: '发布为知识包（供消费端导入）' },
       { key: 'export-ws', label: '导出完整工作区' },
       { type: 'divider' },
       { key: 'delete', label: '删除', danger: true },
     ],
-    onClick: ({ key, domEvent }) => {
+    onClick: async ({ key, domEvent }) => {
       domEvent.stopPropagation();
-      if (key === 'open') setProject(item);
+      if (key === 'open') nav(`#/p/${item.id}`);
       if (key === 'rename') setRenaming({ id: item.id, name: item.name });
+      if (key === 'clone') {
+        try {
+          const clone = await api.cloneProject(item.id);
+          refreshProjects();
+          message.success(`已克隆为「${clone.name}」`);
+        } catch (error) {
+          message.error(error.message);
+        }
+      }
+      if (key === 'members') {
+        try {
+          const data = await api.getMembers(item.id);
+          setMemberWiz({ project: item, members: data.members, newUser: '', newRole: 'editor' });
+        } catch (error) {
+          message.error(error.message);
+        }
+      }
+      if (key === 'archive') {
+        await api.archiveProject(item.id, !item.archived).catch((e) => message.error(e.message));
+        refreshProjects();
+      }
       if (key === 'export-onto') window.open(api.exportUrl(item.id, 'ontology'));
+      if (key === 'export-pkg') window.open(api.exportUrl(item.id, 'package'));
       if (key === 'export-ws') window.open(api.exportUrl(item.id, 'workspace'));
       if (key === 'delete') removeProject(item);
     },
@@ -169,7 +265,7 @@ export default function App() {
 
   const logout = () => {
     authStore.clear();
-    setProject(null);
+    nav('#/');
     setAuth('required');
   };
 
@@ -193,93 +289,73 @@ export default function App() {
     </Dropdown>
   );
 
-  const settingsModal = (
-    <Modal
-      title="设置"
-      open={settingsOpen}
-      onCancel={() => setSettingsOpen(false)}
-      footer={null}
-      centered
-      width={620}
-      destroyOnHidden
-    >
-      <Tabs
-        items={[
-          {
-            key: 'appearance',
-            label: '外观',
-            children: (
-              <>
-                <Typography.Paragraph strong style={{ marginBottom: 8 }}>
-                  明暗模式
-                </Typography.Paragraph>
-                <Segmented
-                  block
-                  value={theme.mode}
-                  onChange={theme.setMode}
-                  options={[
-                    { label: '浅色', value: 'light' },
-                    { label: '深色', value: 'dark' },
-                  ]}
-                  style={{ marginBottom: 24 }}
-                />
-                <Typography.Paragraph strong style={{ marginBottom: 8 }}>
-                  强调色
-                </Typography.Paragraph>
-                <div className="accent-row">
-                  {Object.keys(ACCENTS).map((key) => (
-                    <Tooltip key={key} title={ACCENT_LABELS[key] || key}>
-                      <button
-                        type="button"
-                        className={`accent-swatch${theme.accent === key ? ' active' : ''}`}
-                        style={{ background: ACCENTS[key].primary }}
-                        onClick={() => theme.setAccent(key)}
-                        aria-label={ACCENT_LABELS[key] || key}
-                      />
-                    </Tooltip>
-                  ))}
-                </div>
-              </>
-            ),
-          },
-          ...(isAdmin
-            ? [
-                {
-                  key: 'model',
-                  label: '模型接入',
-                  children: <ModelSettings project={project} />,
-                },
-                {
-                  key: 'runtime',
-                  label: '会话',
-                  children: <RuntimeSettings project={project} />,
-                },
-                {
-                  key: 'assets',
-                  label: '提示词资产',
-                  children: <AssetsSettings />,
-                },
-              ]
-            : []),
-          {
-            key: 'mcp',
-            label: 'MCP 服务器',
-            children: <McpSettings project={project} />,
-          },
-        ]}
-      />
-    </Modal>
-  );
-
   if (auth === 'unknown') return null;
   if (auth === 'required') {
     return <LoginPage onLogin={() => setAuth('ok')} />;
   }
-  if (adminOpen) {
-    return <AdminPage onBack={() => setAdminOpen(false)} />;
+  if (route.name === 'admin') {
+    return <AdminPage onBack={() => window.history.back()} />;
+  }
+  if (route.name === 'settings') {
+    return (
+      <SettingsPage
+        project={project}
+        isAdmin={isAdmin}
+        authEnabled={auth === 'ok'}
+        onBack={() => window.history.back()}
+        onOpenAdmin={() => nav('#/admin')}
+      />
+    );
   }
 
-  if (!project) {
+  // 深链项目：列表未加载完成前不闪首页
+  if (projectId && !projectsLoaded) return null;
+
+  if (route.name === 'home' || !project) {
+    const activeProjects = projects.filter((p) => !p.archived);
+    const archivedProjects = projects.filter((p) => p.archived);
+    const renderCard = (item, index) => (
+      <div
+        key={item.id}
+        className="pj-card msg-soft"
+        role="button"
+        tabIndex={0}
+        style={{ animationDelay: `${Math.min(index + 1, 8) * 40}ms` }}
+        onClick={() => nav(`#/p/${item.id}`)}
+      >
+        <Dropdown menu={projectMenu(item)} trigger={['click']}>
+          <button
+            type="button"
+            className="pj-menu"
+            aria-label="任务操作"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <MoreOutlined />
+          </button>
+        </Dropdown>
+        <h3 title={item.name}>{item.name}</h3>
+        <div className="pd">
+          对象 {item.objects ?? 0} · 逻辑 {item.logics ?? 0}
+        </div>
+        <div className="pj-prog">
+          <div
+            className="pj-prog-in"
+            style={{
+              width: `${((item.stages_done || 0) / (item.stages_total || 8)) * 100}%`,
+            }}
+          />
+        </div>
+        <div className="pm">
+          <span>
+            阶段 {item.stages_done ?? 0}/{item.stages_total ?? 8}
+          </span>
+          <span className="pj-date">
+            {new Date(item.created_at * 1000).toLocaleDateString()}
+          </span>
+        </div>
+      </div>
+    );
+
     return (
       <div className="home">
         <div className="pj-head">
@@ -291,11 +367,11 @@ export default function App() {
             <p>调研 → 流程图 → 提取对象/逻辑 → 校验 → Mock → 追踪 → 代码生成</p>
           </div>
           <span style={{ flex: 1 }} />
-          <Upload accept=".zip" showUploadList={false} beforeUpload={importProject}>
+          <Upload accept=".zip" showUploadList={false} beforeUpload={startImport}>
             <Button icon={<ImportOutlined />}>导入</Button>
           </Upload>
-          {isAdmin && <Button onClick={() => setAdminOpen(true)}>运维</Button>}
-          <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)} />
+          {isAdmin && <Button onClick={() => nav('#/admin')}>运维</Button>}
+          <Button icon={<SettingOutlined />} onClick={() => nav('#/settings')} />
           {avatarNode}
         </div>
         <div className="pj-grid">
@@ -311,50 +387,23 @@ export default function App() {
             <div className="pj-new-t">新建建模任务</div>
             <div className="pj-new-d">从空白开始，或注入示例领域体验全流程</div>
           </div>
-          {projects.map((item, index) => (
-            <div
-              key={item.id}
-              className="pj-card msg-soft"
-              role="button"
-              tabIndex={0}
-              style={{ animationDelay: `${Math.min(index + 1, 8) * 40}ms` }}
-              onClick={() => setProject(item)}
-            >
-              <Dropdown menu={projectMenu(item)} trigger={['click']}>
-                <button
-                  type="button"
-                  className="pj-menu"
-                  aria-label="任务操作"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <MoreOutlined />
-                </button>
-              </Dropdown>
-              <h3 title={item.name}>{item.name}</h3>
-              <div className="pd">
-                对象 {item.objects ?? 0} · 逻辑 {item.logics ?? 0}
-              </div>
-              <div className="pj-prog">
-                <div
-                  className="pj-prog-in"
-                  style={{
-                    width: `${((item.stages_done || 0) / (item.stages_total || 8)) * 100}%`,
-                  }}
-                />
-              </div>
-              <div className="pm">
-                <span>
-                  阶段 {item.stages_done ?? 0}/{item.stages_total ?? 8}
-                </span>
-                <span className="pj-date">
-                  {new Date(item.created_at * 1000).toLocaleDateString()}
-                </span>
-              </div>
-            </div>
-          ))}
+          {activeProjects.map(renderCard)}
         </div>
         {projects.length === 0 && (
           <Empty description="还没有任务" style={{ marginTop: 48 }} />
+        )}
+        {archivedProjects.length > 0 && (
+          <Collapse
+            ghost
+            style={{ marginTop: 24 }}
+            items={[
+              {
+                key: 'archived',
+                label: <span><InboxOutlined /> 归档区（{archivedProjects.length}）</span>,
+                children: <div className="pj-grid">{archivedProjects.map(renderCard)}</div>,
+              },
+            ]}
+          />
         )}
         <Modal
           open={creating}
@@ -390,7 +439,143 @@ export default function App() {
             onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
           />
         </Modal>
-        {settingsModal}
+        <Modal
+          title={memberWiz ? `成员共享 · ${memberWiz.project.name}` : ''}
+          open={!!memberWiz}
+          onCancel={() => setMemberWiz(null)}
+          okText="保存"
+          onOk={async () => {
+            try {
+              await api.saveMembers(memberWiz.project.id, memberWiz.members);
+              setMemberWiz(null);
+              message.success('成员已更新');
+            } catch (error) {
+              message.error(error.message);
+            }
+          }}
+        >
+          {memberWiz && (
+            <>
+              {Object.keys(memberWiz.members).length === 0 && (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未共享给其他成员" />
+              )}
+              {Object.entries(memberWiz.members).map(([user, role]) => (
+                <div key={user} className="member-row">
+                  <span className="member-name">{user}</span>
+                  <Tag color={role === 'editor' ? 'processing' : 'default'}>
+                    {role === 'editor' ? '建模者（可编辑）' : '只读评审'}
+                  </Tag>
+                  <Button
+                    size="small"
+                    type="text"
+                    danger
+                    onClick={() => {
+                      const next = { ...memberWiz.members };
+                      delete next[user];
+                      setMemberWiz({ ...memberWiz, members: next });
+                    }}
+                  >
+                    移除
+                  </Button>
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <Input
+                  placeholder="用户名"
+                  value={memberWiz.newUser}
+                  onChange={(e) => setMemberWiz({ ...memberWiz, newUser: e.target.value })}
+                  style={{ flex: 1 }}
+                />
+                <select
+                  className="member-role-select"
+                  value={memberWiz.newRole}
+                  onChange={(e) => setMemberWiz({ ...memberWiz, newRole: e.target.value })}
+                >
+                  <option value="editor">建模者（可编辑）</option>
+                  <option value="viewer">只读评审</option>
+                </select>
+                <Button
+                  onClick={() => {
+                    const user = memberWiz.newUser.trim();
+                    if (!user) return;
+                    setMemberWiz({
+                      ...memberWiz,
+                      members: { ...memberWiz.members, [user]: memberWiz.newRole },
+                      newUser: '',
+                    });
+                  }}
+                >
+                  添加
+                </Button>
+              </div>
+            </>
+          )}
+        </Modal>
+        <Modal
+          title="导入建模任务"
+          open={!!importWiz}
+          onCancel={() => setImportWiz(null)}
+          footer={null}
+          width={560}
+        >
+          {importWiz && (
+            <>
+              <Steps
+                size="small"
+                current={importWiz.step}
+                items={[{ title: '选择与命名' }, { title: '内容确认' }]}
+                style={{ margin: '8px 0 16px' }}
+              />
+              {importWiz.step === 0 && (
+                <>
+                  <Descriptions column={1} size="small" style={{ marginBottom: 12 }}>
+                    <Descriptions.Item label="压缩包">{importWiz.file.name}</Descriptions.Item>
+                  </Descriptions>
+                  <Input
+                    addonBefore="任务名称"
+                    value={importWiz.name}
+                    onChange={(e) => setImportWiz({ ...importWiz, name: e.target.value })}
+                    style={{ marginBottom: 16 }}
+                  />
+                  <Button type="primary" loading={importWiz.importing} onClick={importInspect}>
+                    检查内容
+                  </Button>
+                </>
+              )}
+              {importWiz.step === 1 && importWiz.summary && (
+                <>
+                  <Descriptions column={2} size="small" bordered style={{ marginBottom: 12 }}>
+                    <Descriptions.Item label="文件数">{importWiz.summary.files}</Descriptions.Item>
+                    <Descriptions.Item label="总大小">
+                      {(importWiz.summary.total_size / 1048576).toFixed(1)} MB
+                    </Descriptions.Item>
+                    <Descriptions.Item label="业务对象">{importWiz.summary.objects}</Descriptions.Item>
+                    <Descriptions.Item label="业务逻辑">{importWiz.summary.logics}</Descriptions.Item>
+                  </Descriptions>
+                  <div style={{ marginBottom: 12 }}>
+                    {importWiz.summary.top_dirs.map((d) => (
+                      <Tag key={d.name}>
+                        {d.name}/（{d.files}）
+                      </Tag>
+                    ))}
+                  </div>
+                  {importWiz.summary.skipped.length > 0 && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                      message={`将跳过：${importWiz.summary.skipped.join('、')}（资产由本服务重新挂载，git 历史不迁移）`}
+                    />
+                  )}
+                  <Button type="primary" loading={importWiz.importing} onClick={importConfirm}>
+                    确认导入
+                  </Button>{' '}
+                  <Button onClick={() => setImportWiz({ ...importWiz, step: 0 })}>上一步</Button>
+                </>
+              )}
+            </>
+          )}
+        </Modal>
       </div>
     );
   }
@@ -400,17 +585,22 @@ export default function App() {
   return (
     <div className="app-shell">
       <div className="app-topbar">
-        <span className="brand-dot" />
-        <span className="brand">本体建模工作台</span>
+        <img src="/favicon.svg" alt="" width="28" height="28" />
+        <span className="brand">知识工程建模工作台</span>
         <span className="project-name">{project.name}</span>
         {progress.current ? (
-          <Tag color="processing" style={{ marginInlineStart: 4 }}>
-            当前阶段：{progress.current}
-          </Tag>
+          <Tag color="processing">{progress.current}</Tag>
         ) : (
-          <Tag color="success">主链全部完成</Tag>
+          <Tag color="success">主链完成</Tag>
         )}
         <span style={{ flex: 1 }} />
+        {pendingCount > 0 && (
+          <Tooltip title="对话里有待你确认的操作">
+            <Badge count={pendingCount} size="small">
+              <span className="pending-widget">待处理</span>
+            </Badge>
+          </Tooltip>
+        )}
         {usage && usage.calls > 0 && (
           <Tooltip title={`${usage.calls} 次调用 · 输出 ${usage.output_tokens} tokens`}>
             <span className="cost-widget">${usage.total_cost_usd.toFixed(2)}</span>
@@ -424,34 +614,36 @@ export default function App() {
             setSearchOpen(true);
           }}
         />
-        <Button
-          size="small"
-          icon={<SettingOutlined />}
-          onClick={() => setSettingsOpen(true)}
-        />
-        <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => setProject(null)}>
+        <Button size="small" icon={<SettingOutlined />} onClick={() => nav('#/settings')} />
+        <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => nav('#/')}>
           返回项目列表
         </Button>
         {avatarNode}
       </div>
       <div className="app-body">
         <Splitter>
-          <Splitter.Panel defaultSize="22%" min="14%" max="35%">
+          <Splitter.Panel defaultSize="22%" min="14%" max="35%" collapsible>
             <div className="pane pane-left">
               <LeftPane
                 project={project}
+                meta={project}
                 tree={tree}
                 versions={versions}
                 onSelectFile={(path) => {
                   setSelectedFile(path);
-                  setFocus('file');
+                  pushFocus('file');
                 }}
                 onRefresh={refreshWorkspace}
                 onCommand={(command) => chatSendRef.current?.(command)}
-                onCompare={(commit) => {
-                  setDiffRev(commit);
-                  setFocus('diff');
+                onDiff={(rev) => {
+                  setDiffRev(rev);
+                  pushFocus('diff');
                 }}
+                onQuery={(kind, term) => {
+                  setQueryPreset({ kind, term, nonce: Date.now() });
+                  pushFocus('query');
+                }}
+                onKnowledge={() => pushFocus('knowledge')}
               />
             </div>
           </Splitter.Panel>
@@ -464,21 +656,27 @@ export default function App() {
                 usage={usage}
                 file={selectedFile}
                 focus={focus}
-                onFocus={setFocus}
+                onFocus={pushFocus}
+                canBack={focusStack.length > 1}
+                onBack={popFocus}
                 diffRev={diffRev}
+                queryPreset={queryPreset}
+                drawioAvailable={drawioAvailable}
+                onWorkspaceChanged={refreshWorkspace}
                 onOpenFile={(path) => {
                   setSelectedFile(path);
-                  setFocus('file');
+                  pushFocus('file');
                 }}
                 onCommand={(command) => chatSendRef.current?.(command)}
               />
             </div>
           </Splitter.Panel>
-          <Splitter.Panel defaultSize="32%" min="24%" max="48%">
+          <Splitter.Panel defaultSize="32%" min="24%" max="48%" collapsible>
             <div className="pane pane-right">
               <ChatPane
                 project={project}
                 onWorkspaceChanged={refreshWorkspace}
+                onPendingChange={setPendingCount}
                 registerSend={(fn) => {
                   chatSendRef.current = fn;
                 }}
@@ -487,7 +685,6 @@ export default function App() {
           </Splitter.Panel>
         </Splitter>
       </div>
-      {settingsModal}
       <Modal
         title="全文搜索"
         open={searchOpen}
@@ -497,7 +694,7 @@ export default function App() {
         width={640}
       >
         <Input.Search
-          placeholder="搜索产物、调研、报告与知识"
+          placeholder="搜索知识包、调研、报告与知识"
           autoFocus
           enterButton
           onSearch={async (q) => {
@@ -518,7 +715,7 @@ export default function App() {
             className="search-hit msg-soft"
             onClick={() => {
               setSelectedFile(hit.path);
-              setFocus('file');
+              pushFocus('file');
               setSearchOpen(false);
             }}
           >

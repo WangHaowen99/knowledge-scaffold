@@ -7,7 +7,7 @@ import {
   LoadingOutlined,
   PaperClipOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Card, Input, Space, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Card, Input, Modal, Space, Tag, Typography, Upload, message } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
 import { Markdown } from './CenterPane.jsx';
@@ -44,6 +44,13 @@ function resourceSubdir(filename) {
 function fileExt(name) {
   const dot = name.lastIndexOf('.');
   return dot > 0 ? name.slice(dot + 1).toUpperCase() : '文件';
+}
+
+function formatSize(bytes) {
+  if (!Number.isFinite(bytes)) return '';
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
 }
 
 function toolSummary(block) {
@@ -130,7 +137,7 @@ function ToolGroup({ tools }) {
 }
 
 // AskUserQuestion 专用卡：渲染问题与选项，答案经 answers 回填给工具
-function QuestionCard({ req, resolved, onAnswer }) {
+function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
   const questions = req.tool_input?.questions || [];
   const [chosen, setChosen] = useState({});
   const [custom, setCustom] = useState('');
@@ -154,7 +161,11 @@ function QuestionCard({ req, resolved, onAnswer }) {
   const allAnswered = questions.every((q) => chosen[q.question]);
 
   return (
-    <Card size="small" className="question-card" title="助手向你提问">
+    <Card
+      size="small"
+      className={`question-card${trace ? ' trace-card' : ''}`}
+      title={trace ? '走查分支选择' : '助手向你提问'}
+    >
       {questions.map((q) => (
         <div key={q.question} className="question-item">
           <div className="question-text">
@@ -211,7 +222,7 @@ function QuestionCard({ req, resolved, onAnswer }) {
   );
 }
 
-export default function ChatPane({ project, onWorkspaceChanged, registerSend }) {
+export default function ChatPane({ project, onWorkspaceChanged, onPendingChange, registerSend }) {
   const [events, setEvents] = useState([]);
   const [live, setLive] = useState({ text: '', thinking: '' });
   const [input, setInput] = useState('');
@@ -219,7 +230,11 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
   const [pending, setPending] = useState(null); // 乐观显示的用户消息
   const [metrics, setMetrics] = useState(null);
   const [attachments, setAttachments] = useState([]);
+  const [uploads, setUploads] = useState([]); // 发送中的附件卡：{uid,name,size,percent,status}
+  const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [queueInfo, setQueueInfo] = useState(null); // 会话池排队位次
+  const [distill, setDistill] = useState(null); // 业务知识确认卡 {name, content}
   const historyRef = useRef(null);
   const seenRef = useRef(new Set());
   const uidRef = useRef(0);
@@ -260,7 +275,14 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
     setPending(null);
     setMetrics(null);
     seenRef.current = new Set();
+    setQueueInfo(null);
+    setUploads([]);
     const source = openEventStream(project.id, (event) => {
+      if (event.type === 'queue_position') {
+        setQueueInfo({ position: event.position, waiting: event.waiting });
+        return;
+      }
+      if (event.type === 'session_started') setQueueInfo(null);
       if (event.type === 'stream_delta') {
         if (event.kind === 'thinking') liveRef.current.thinking += event.text;
         else liveRef.current.text += event.text;
@@ -280,6 +302,7 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
       }
       if (event.type === 'user_message') {
         setPending(null);
+        setUploads([]); // 附件进度卡由历史里的正式消息接棒
         metricsRef.current = { sentTs: event.ts };
         setMetrics(null);
       }
@@ -289,7 +312,10 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
       }
       if (event.type === 'result') {
         const m = metricsRef.current;
-        const outputTokens = event.usage?.output_tokens;
+        const usage = event.usage || {};
+        const outputTokens = usage.output_tokens;
+        const cacheRead = usage.cache_read_input_tokens || 0;
+        const inputTokens = (usage.input_tokens || 0) + cacheRead;
         if (m?.firstTs) {
           setMetrics({
             ttft: m.firstTs - m.sentTs,
@@ -300,12 +326,18 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
                   ? (m.lastTs - m.firstTs) / m.deltaCount
                   : null,
             tokens: outputTokens || null,
+            cost: event.total_cost_usd ?? null,
+            inputTokens: inputTokens || null,
+            cacheRate: inputTokens ? cacheRead / inputTokens : null,
             done: true,
           });
         }
       }
       setEvents((prev) => [...prev, event]);
-      if (event.type === 'session_state') setState(event.state);
+      if (event.type === 'session_state') {
+        setState(event.state);
+        if (event.state !== 'queued') setQueueInfo(null);
+      }
       if (event.type === 'result') onWorkspaceChanged?.();
     });
     return () => source.close();
@@ -316,27 +348,60 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
   useEffect(() => {
     const el = historyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [events, live, pending]);
+  }, [events, live, pending, uploads]);
 
   const send = async (text) => {
     const trimmed = (text || '').trim();
+    if (uploading) return;
     if (!trimmed && attachments.length === 0) return;
+    const toUpload = attachments;
     setInput('');
+    // 附件立即离开输入框，进入对话区变成带进度条的文件卡（并行上传）
+    setAttachments([]);
     setPending({ text: trimmed || '（发送资料）' });
+    if (toUpload.length) {
+      setUploading(true);
+      setUploads(
+        toUpload.map((att) => ({
+          uid: att.uid,
+          name: att.name,
+          size: att.file.size,
+          percent: 0,
+          status: 'uploading',
+        })),
+      );
+    }
+    const patchUpload = (uid, patch) =>
+      setUploads((prev) => prev.map((u) => (u.uid === uid ? { ...u, ...patch } : u)));
     try {
-      const uploaded = [];
-      for (const att of attachments) {
-        const saved = await api.uploadResource(
-          project.id,
-          resourceSubdir(att.name),
-          att.file,
-        );
-        uploaded.push(saved.path);
+      const results = await Promise.all(
+        toUpload.map(async (att) => {
+          try {
+            const saved = await api.uploadResource(
+              project.id,
+              resourceSubdir(att.name),
+              att.file,
+              (ratio) => patchUpload(att.uid, { percent: Math.round(ratio * 100) }),
+            );
+            patchUpload(att.uid, { percent: 100, status: 'done' });
+            return { att, path: saved.path };
+          } catch (error) {
+            patchUpload(att.uid, { status: 'error' });
+            return { att, error };
+          }
+        }),
+      );
+      if (results.some((r) => r.path)) onWorkspaceChanged?.();
+      const failed = results.filter((r) => r.error);
+      if (failed.length) {
+        // 失败的附件退回输入框待重试；成功的已入工作区，不重复上传
+        setAttachments((prev) => [...failed.map((f) => f.att), ...prev]);
+        setPending(null);
+        setInput(trimmed);
+        message.error(`${failed.length} 个文件上传失败：${failed[0].error.message}`);
+        return;
       }
-      if (uploaded.length) {
-        setAttachments([]);
-        onWorkspaceChanged?.();
-      }
+      const uploaded = results.map((r) => r.path);
       const prefix = uploaded.length
         ? `（我通过界面上传了资料，已存入工作区：${uploaded.join('、')}）\n`
         : '';
@@ -344,8 +409,13 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
       await api.sendMessage(project.id, prefix + body);
       setState('running');
     } catch (error) {
+      // 走到这里说明附件都已入工作区，只是消息未发出；不退回附件避免重复上传
       setPending(null);
+      setUploads([]);
+      setInput(trimmed);
       message.error(error.message);
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -360,6 +430,21 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
   const respondPermission = async (requestId, behavior, answers = null) => {
     try {
       await api.respondPermission(project.id, requestId, behavior, '', answers);
+    } catch (error) {
+      message.error(error.message);
+    }
+  };
+
+  // 挂卡死循环出口（方案风险#4）：明确取消该要求，指示助手不再重复发起
+  const cancelRequirement = async (requestId) => {
+    try {
+      await api.respondPermission(
+        project.id,
+        requestId,
+        'deny',
+        '用户已明确取消该要求：请不要再次发起相同的确认或提问，改用其他方式继续，或跳过此步骤并说明。',
+      );
+      message.success('已取消该要求');
     } catch (error) {
       message.error(error.message);
     }
@@ -386,6 +471,8 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
 
   const items = useMemo(() => {
     const list = [];
+    const fingerprints = new Map(); // 相同确认要求跨轮重复计数（防挂卡死循环，方案风险#4）
+    let traceCount = 0;
     const pushTool = (tool) => {
       const last = list[list.length - 1];
       if (last?.role === 'toolgroup') last.tools.push(tool);
@@ -413,11 +500,23 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
           }
         }
       } else if (event.type === 'permission_request') {
+        const fingerprint = `${event.tool_name}:${JSON.stringify(event.tool_input ?? {})}`;
+        const repeat = (fingerprints.get(fingerprint) || 0) + 1;
+        fingerprints.set(fingerprint, repeat);
+        const isQuestion = event.tool_name === 'AskUserQuestion';
+        const isTrace =
+          isQuestion &&
+          /分支|走向|走查|下一步怎么走|场景推演/.test(
+            JSON.stringify(event.tool_input?.questions ?? ''),
+          );
+        if (isTrace) traceCount += 1;
         list.push({
           key: event.seq,
-          role: event.tool_name === 'AskUserQuestion' ? 'question' : 'permission',
+          role: isQuestion ? 'question' : 'permission',
           content: event,
           resolved: resolvedPermissions.has(event.request_id),
+          repeat,
+          trace: isTrace ? traceCount : 0,
         });
       } else if (event.type === 'session_error') {
         // 旧历史里遗留的 SIGTERM（服务重启）报错不再展示
@@ -429,6 +528,15 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
   }, [events, resolvedPermissions, toolResults]);
 
   const hasLive = live.text || live.thinking;
+
+  // 顶栏"待处理"徽标：尚未答复的确认卡/提问卡数量
+  const pendingPermissions = items.filter(
+    (item) => (item.role === 'permission' || item.role === 'question') && !item.resolved,
+  ).length;
+  useEffect(() => {
+    onPendingChange?.(pendingPermissions);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPermissions]);
 
   return (
     <div
@@ -463,9 +571,23 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
             if (item.role === 'question') {
               return (
                 <div key={item.key} className="msg-in msg-left">
+                  {item.trace > 0 && (
+                    <div className="trace-badge">
+                      场景走查 · 第 {item.trace} 个分支
+                    </div>
+                  )}
+                  {!item.resolved && item.repeat > 1 && (
+                    <div className="repeat-banner">
+                      该问题已第 {item.repeat} 次出现。
+                      <Typography.Link onClick={() => cancelRequirement(item.content.request_id)}>
+                        取消该要求
+                      </Typography.Link>
+                    </div>
+                  )}
                   <QuestionCard
                     req={item.content}
                     resolved={item.resolved}
+                    trace={item.trace}
                     onAnswer={(requestId, answers) =>
                       respondPermission(requestId, 'allow', answers)
                     }
@@ -482,6 +604,14 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
                   className="msg-in msg-left"
                   title={req.title || `确认操作：${req.tool_name}`}
                 >
+                  {!item.resolved && item.repeat > 1 && (
+                    <div className="repeat-banner">
+                      相同的确认已第 {item.repeat} 次出现，助手可能在原地打转。
+                      <Typography.Link onClick={() => cancelRequirement(req.request_id)}>
+                        取消该要求（不再询问）
+                      </Typography.Link>
+                    </div>
+                  )}
                   {req.description && (
                     <Typography.Paragraph type="secondary">
                       {req.description}
@@ -540,7 +670,7 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
             return (
               <div
                 key={item.key}
-                className={isUser ? 'msg-in msg-right' : 'msg-soft msg-left-wrap'}
+                className={isUser ? 'msg-in msg-right' : 'msg-soft msg-left-wrap assistant-row'}
               >
                 <Bubble
                   placement={isUser ? 'end' : 'start'}
@@ -548,12 +678,60 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
                   styles={isUser ? USER_BUBBLE_STYLE : ASSISTANT_BUBBLE_STYLE}
                   content={isUser ? item.content : <Markdown content={item.content} />}
                 />
+                {!isUser && (
+                  <button
+                    type="button"
+                    className="distill-btn"
+                    title="把这条内容沉淀为业务知识"
+                    onClick={() =>
+                      setDistill({
+                        name: item.content.split('\n')[0].replace(/^#+\s*/, '').slice(0, 40),
+                        content: item.content,
+                      })
+                    }
+                  >
+                    沉淀知识
+                  </button>
+                )}
               </div>
             );
           })}
           {pending && (
             <div className="msg-in msg-right">
               <Bubble placement="end" variant="filled" styles={USER_BUBBLE_STYLE} content={pending.text} />
+            </div>
+          )}
+          {uploads.length > 0 && (
+            <div className="msg-right">
+              <div className="upload-stack">
+                {uploads.map((up) => (
+                  <div key={up.uid} className={`upload-card ${up.status}`}>
+                    <div className="upload-icon">
+                      {up.status === 'done' ? (
+                        <CheckOutlined />
+                      ) : up.status === 'error' ? (
+                        <CloseOutlined />
+                      ) : (
+                        <FileOutlined />
+                      )}
+                    </div>
+                    <div className="upload-info">
+                      <div className="upload-name" title={up.name}>
+                        {up.name}
+                      </div>
+                      <div className="upload-track">
+                        <div className="upload-fill" style={{ width: `${up.percent}%` }} />
+                      </div>
+                      <div className="upload-status">
+                        {up.status === 'uploading' &&
+                          `上传中 ${up.percent}% · ${formatSize(up.size)}`}
+                        {up.status === 'done' && `已存入工作区 · ${formatSize(up.size)}`}
+                        {up.status === 'error' && '上传失败，已退回输入框'}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {hasLive && (
@@ -575,6 +753,13 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
         </Space>
       </div>
       <div className="chat-footer">
+        {state === 'queued' && (
+          <div className="queue-banner">
+            当前建模任务较多
+            {queueInfo ? `，您排在第 ${queueInfo.position} 位（共 ${queueInfo.waiting} 位等待）` : '，正在排队'}
+            ；空出会话位后自动开始，点停止按钮可取消排队。
+          </div>
+        )}
         {metrics && (
           <div className="metrics-line">
             {metrics.done ? '上次调用' : '生成中'} · 首Token{' '}
@@ -588,6 +773,15 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
               </>
             )}
             {metrics.tokens != null && ` · 输出 ${metrics.tokens} tokens`}
+            {metrics.done && metrics.cost != null && ` · $${metrics.cost.toFixed(3)}`}
+            {metrics.done && metrics.inputTokens != null && (
+              <>
+                {' '}
+                · 输入 {(metrics.inputTokens / 1000).toFixed(1)}k
+                {metrics.cacheRate != null &&
+                  `（缓存 ${Math.round(metrics.cacheRate * 100)}%）`}
+              </>
+            )}
           </div>
         )}
         <div className="quick-row">
@@ -630,7 +824,7 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
           value={input}
           onChange={setInput}
           onSubmit={send}
-          loading={state === 'running'}
+          loading={state === 'running' || state === 'queued' || uploading}
           prefix={
             <Upload
               multiple
@@ -644,9 +838,47 @@ export default function ChatPane({ project, onWorkspaceChanged, registerSend }) 
             </Upload>
           }
           placeholder="输入消息，可拖入文件作为资料附件"
-          onCancel={() => api.interrupt(project.id).catch(() => {})}
+          onCancel={() => {
+            // 上传阶段还没有会话消息可打断，忽略停止按钮
+            if (!uploading) api.interrupt(project.id).catch(() => {});
+          }}
         />
       </div>
+      <Modal
+        title="沉淀为业务知识"
+        open={!!distill}
+        onCancel={() => setDistill(null)}
+        okText="确认入库"
+        onOk={async () => {
+          if (!distill.name.trim()) {
+            message.warning('请填写条目名称');
+            return;
+          }
+          try {
+            await api.createKnowledge(project.id, distill.name, distill.content);
+            setDistill(null);
+            onWorkspaceChanged?.();
+            message.success('已入库（knowledge/），后续建模会自动应用');
+          } catch (error) {
+            message.error(error.message);
+          }
+        }}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          入库后保存在项目 knowledge/ 目录并记录版本；可在中栏「知识」页管理。
+        </Typography.Paragraph>
+        <Input
+          placeholder="条目名称"
+          value={distill?.name}
+          onChange={(e) => setDistill({ ...distill, name: e.target.value })}
+          style={{ marginBottom: 8 }}
+        />
+        <Input.TextArea
+          autoSize={{ minRows: 5, maxRows: 14 }}
+          value={distill?.content}
+          onChange={(e) => setDistill({ ...distill, content: e.target.value })}
+        />
+      </Modal>
     </div>
   );
 }
