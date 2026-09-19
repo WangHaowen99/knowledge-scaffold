@@ -363,13 +363,35 @@ function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
   );
 }
 
+// 存量历史里 git 八进制转义的中文路径（core.quotepath 修复前落盘）解码兜底
+function decodeGitPath(path) {
+  if (!/\\\d{3}/.test(path)) return path.replace(/^"|"$/g, '');
+  try {
+    const bytes = [];
+    const encoder = new TextEncoder();
+    let i = 0;
+    while (i < path.length) {
+      if (path[i] === '\\' && /^\d{3}$/.test(path.slice(i + 1, i + 4))) {
+        bytes.push(parseInt(path.slice(i + 1, i + 4), 8));
+        i += 4;
+      } else {
+        bytes.push(...encoder.encode(path[i]));
+        i += 1;
+      }
+    }
+    return new TextDecoder().decode(new Uint8Array(bytes)).replace(/^"|"$/g, '');
+  } catch {
+    return path;
+  }
+}
+
 // 每轮产物变更卡：让"助手改了什么"零成本可见（设计稿 §3）
-function ChangesCard({ added, modified, deleted, total, onOpenFile, onOpenDiff }) {
+function ChangesCard({ added, modified, deleted, total, knownPaths, onOpenFile, onOpenDiff }) {
   const [expanded, setExpanded] = useState(false);
   const entries = [
-    ...added.map((p) => ({ path: p, status: 'added' })),
-    ...modified.map((p) => ({ path: p, status: 'modified' })),
-    ...deleted.map((p) => ({ path: p, status: 'deleted' })),
+    ...added.map((p) => ({ path: decodeGitPath(p), status: 'added' })),
+    ...modified.map((p) => ({ path: decodeGitPath(p), status: 'modified' })),
+    ...deleted.map((p) => ({ path: decodeGitPath(p), status: 'deleted' })),
   ];
   const shown = expanded ? entries : entries.slice(0, 3);
   return (
@@ -391,13 +413,17 @@ function ChangesCard({ added, modified, deleted, total, onOpenFile, onOpenDiff }
             key={entry.path}
             path={entry.path}
             status={entry.status}
-            exists={entry.status !== 'deleted'}
+            exists={entry.status !== 'deleted' && (!knownPaths || knownPaths.has(entry.path))}
             onOpen={onOpenFile}
           />
         ))}
-        {!expanded && entries.length > 3 && (
-          <button type="button" className="changes-more" onClick={() => setExpanded(true)}>
-            展开全部（{total}）
+        {entries.length > 3 && (
+          <button
+            type="button"
+            className="changes-more"
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? '收起' : `展开全部（${total}）`}
           </button>
         )}
       </div>
@@ -1084,6 +1110,7 @@ export default function ChatPane({
                   modified={modified}
                   deleted={deleted}
                   total={total}
+                  knownPaths={knownPaths}
                   onOpenFile={onOpenFile}
                   onOpenDiff={() =>
                     onOpenDiff?.(item.content.from, [...(added || []), ...(modified || [])])

@@ -230,9 +230,12 @@ def test_tool_result_excerpt_and_git_changes(tmp_path):
                     "commit", "-q", "--allow-empty", "-m", "base"], cwd=tmp_path, check=True)
     base = _git_head(tmp_path)
     (tmp_path / "a.md").write_text("1", encoding="utf-8")
+    (tmp_path / "订单目标.md").write_text("2", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
                     "commit", "-q", "-m", "add"], cwd=tmp_path, check=True)
     head = _git_head(tmp_path)
     changes = _git_changes(tmp_path, base, head)
-    assert changes["added"] == ["a.md"] and changes["modified"] == []
+    # 中文路径必须原样返回（core.quotepath 关闭），不得出现 \347 转义或引号
+    assert sorted(changes["added"]) == ["a.md", "订单目标.md"]
+    assert changes["modified"] == []
