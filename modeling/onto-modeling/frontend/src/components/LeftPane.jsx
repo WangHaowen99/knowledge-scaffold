@@ -37,12 +37,12 @@ const hasEntry = (paths, ...prefixes) =>
 export const STAGES = [
   {
     key: 'research',
-    title: '资料分析与目标确认',
+    title: '资料分析',
     probe: (paths) => hasEntry(paths, 'research/'),
     actions: [
-      { label: '联网调研', command: '/ontology-research ' },
+      { label: '联网资料分析', command: '/ontology-research ' },
       { label: '仅本地资料', command: '/ontology-research 仅基于本地文档 ' },
-      { label: '追加调研', command: '/ontology-research 追加' },
+      { label: '追加分析', command: '/ontology-research 追加' },
     ],
   },
   {
@@ -439,7 +439,7 @@ export default function LeftPane({
             />
           ) : (
             <Typography.Paragraph type="secondary">
-              暂无知识包，先在「进度」里开始调研
+              暂无知识包，先在「进度」里开始资料分析
             </Typography.Paragraph>
           )}
         </>

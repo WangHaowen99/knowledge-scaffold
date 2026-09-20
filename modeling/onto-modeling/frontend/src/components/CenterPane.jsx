@@ -971,7 +971,7 @@ export default function CenterPane({
               <div className="stat-tile tone-teal">
                 <FileSearchOutlined className="stat-icon" />
                 <div className="stat-num">{countByPrefix(paths, 'research/')}</div>
-                <div className="stat-label">调研报告</div>
+                <div className="stat-label">资料分析报告</div>
               </div>
               <div className="stat-tile tone-amber">
                 <HistoryOutlined className="stat-icon" />

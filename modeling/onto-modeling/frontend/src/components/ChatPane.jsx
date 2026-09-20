@@ -35,7 +35,7 @@ import { STAGES, stageForCommand } from './LeftPane.jsx';
 // 「⋯ 更多」里的全量命令（希克定律：常显建议 ≤4，全集收进菜单）
 const ALL_COMMANDS = [
   { key: 'start', label: '开始建模', text: '/ontology' },
-  { key: 'research', label: '资料分析与目标确认', text: '/ontology-research ' },
+  { key: 'research', label: '资料分析', text: '/ontology-research ' },
   { key: 'extract-object', label: '提取对象', text: '/ontology-extract-object' },
   { key: 'extract-operation', label: '提取操作', text: '/ontology-extract-operation' },
   { key: 'extract-rule-metric', label: '提取规则与指标', text: '/ontology-extract-rule-metric' },
@@ -174,22 +174,70 @@ function formatSize(bytes) {
   return `${bytes} B`;
 }
 
-function toolSummary(block) {
+// ---- 工具调用的用户视角呈现：中文动作 + 隐藏内部实现（.claude 资产、绝对路径）----
+
+function sanitizeInternal(raw) {
+  return String(raw || '')
+    // 工作区绝对路径 → 项目相对路径
+    .replace(/\/[^\s"']*workspaces\/[^/\s"']+\//g, '')
+    // 内置提示词资产：.claude/**/name.ext → 内置·name（不暴露内部目录结构）
+    .replace(
+      /(?:~\/|\/[^\s"']*\/)?\.claude\/[\w./-]*?([\w-]+)\.(?:py|md|json|yaml|yml|html|template)/g,
+      '内置·$1',
+    )
+    .replace(/(?:~\/|\/[^\s"']*\/)?\.claude\/?/g, '内置资产/')
+    // 其余系统绝对路径只留文件名
+    .replace(/\/(?:opt|data|usr|home|tmp|var)\/[\w./-]*\/([\w.-]+)/g, '$1');
+}
+
+const TOOL_VERBS = {
+  Read: '读取文件',
+  Write: '写入文件',
+  Edit: '修改文件',
+  MultiEdit: '修改文件',
+  NotebookEdit: '修改笔记',
+  Bash: '执行命令',
+  BashOutput: '查看命令输出',
+  KillShell: '终止命令',
+  Grep: '搜索内容',
+  Glob: '查找文件',
+  LS: '浏览目录',
+  WebSearch: '联网搜索',
+  WebFetch: '读取网页',
+  TodoWrite: '更新任务清单',
+  Task: '派遣子任务',
+  ExitPlanMode: '提交计划',
+  AskUserQuestion: '征询确认',
+};
+
+function presentTool(block) {
+  const name = block.tool || '';
   const input = block.input || {};
-  const raw =
-    input.file_path ||
-    input.path ||
-    input.command ||
-    input.pattern ||
-    input.description ||
-    input.url ||
-    input.query ||
-    '';
-  let text = typeof raw === 'string' ? raw : JSON.stringify(raw);
-  // 工作区绝对路径裁剪成相对路径，聊天里不暴露服务器目录
-  text = text.replace(/^\/[^\s]*workspaces\/[^/]+\//, '');
-  if (text.length > 64) text = `${text.slice(0, 64)}…`;
-  return text;
+  let verb = TOOL_VERBS[name];
+  if (!verb && name.startsWith('mcp__')) verb = `调用 ${name.split('__')[1] || 'MCP'} 服务`;
+  if (!verb) verb = name || '执行操作';
+
+  let raw;
+  if (name === 'TodoWrite') raw = '';
+  else if (name === 'Bash') raw = input.description || input.command || '';
+  else
+    raw =
+      input.file_path ||
+      input.path ||
+      input.pattern ||
+      input.command ||
+      input.description ||
+      input.url ||
+      input.query ||
+      '';
+  let summary = sanitizeInternal(typeof raw === 'string' ? raw : JSON.stringify(raw));
+  // 读写内置资产时不展示伪装成项目文件的路径，直接说明语义
+  if (['Read', 'Write', 'Edit', 'MultiEdit'].includes(name) && summary.startsWith('内置·')) {
+    verb = name === 'Read' ? '查阅内置规范' : '更新内置资产';
+    summary = summary.slice('内置·'.length);
+  }
+  if (summary.length > 64) summary = `${summary.slice(0, 64)}…`;
+  return { verb, summary };
 }
 
 function ThinkingBlock({ text }) {
@@ -229,13 +277,13 @@ function ToolLine({ tool, expanded, onToggle }) {
           {tool.input != null && (
             <div className="tool-detail-block">
               <div className="tool-detail-label">输入</div>
-              <pre>{JSON.stringify(tool.input, null, 2)?.slice(0, 800)}</pre>
+              <pre>{sanitizeInternal(JSON.stringify(tool.input, null, 2)).slice(0, 800)}</pre>
             </div>
           )}
           {tool.excerpt && (
             <div className="tool-detail-block">
               <div className="tool-detail-label">结果摘录</div>
-              <pre>{tool.excerpt}</pre>
+              <pre>{sanitizeInternal(tool.excerpt)}</pre>
             </div>
           )}
         </div>
@@ -959,10 +1007,11 @@ export default function ChatPane({
               });
               continue;
             }
+            const shown = presentTool(block);
             pushTool({
               key,
-              tool: block.tool,
-              summary: toolSummary(block),
+              tool: shown.verb,
+              summary: shown.summary,
               status: result?.isError,
               excerpt: result?.excerpt,
               input: block.input,
