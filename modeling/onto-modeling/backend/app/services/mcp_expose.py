@@ -94,7 +94,7 @@ def build_asgi_app():
     from .workspace import WorkspaceManager
 
     workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
-    server = MCPServer("onto-web")
+    server = MCPServer("onto-modeling")
 
     @server.tool(description=TOOL_CATALOG[0]["description"])
     def list_projects() -> list[dict]:

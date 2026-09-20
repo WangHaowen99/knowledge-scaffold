@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # backend/
-PACKAGE_ROOT = BASE_DIR.parent  # onto-web/
+PACKAGE_ROOT = BASE_DIR.parent  # onto-modeling/
 
 DATA_DIR = Path(os.environ.get("ONTO_WEB_DATA_DIR", str(BASE_DIR / "data")))
 ASSETS_DIR = Path(os.environ.get("ONTO_WEB_ASSETS_DIR", str(PACKAGE_ROOT / "assets")))

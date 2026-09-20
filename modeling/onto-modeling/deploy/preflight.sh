@@ -1,5 +1,5 @@
 #!/bin/bash
-# Onto Web 部署预检（方案第八节）：AVX 指令集、docker、内存/swap/磁盘。
+# Onto Modeling 部署预检（方案第八节）：AVX 指令集、docker、内存/swap/磁盘。
 # 独立脚本，可在解包后的交付目录或源码 deploy/ 目录直接运行。
 
 set -euo pipefail

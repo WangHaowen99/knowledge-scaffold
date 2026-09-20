@@ -43,7 +43,7 @@ async def _lifespan(app: FastAPI):
         await manager.shutdown()
 
 
-app = FastAPI(title="Onto Web", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(title="Onto Modeling", version="0.1.0", lifespan=_lifespan)
 app.include_router(auth_routes.router)
 app.include_router(projects.router)
 app.include_router(sessions.router)

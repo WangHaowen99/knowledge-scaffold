@@ -1,12 +1,12 @@
-# Onto Web 部署说明
+# Onto Modeling 部署说明
 
 离线交付包部署流程，对应方案第八节与 4.1.1 容量规划。
 
 ## 交付包内容
 
 ```
-onto-web/
-  images/                     # onto-web 与 auth-server 镜像 tar
+onto-modeling/
+  images/                     # onto-modeling 与 auth-server 镜像 tar
   images.env                  # 镜像 tag 清单（deploy.sh 自动读取）
   docker-compose.release.yml
   deploy.sh                   # 预检 → 加载镜像 → 拉起
@@ -18,8 +18,8 @@ onto-web/
 ## 部署步骤
 
 ```bash
-tar -xzf onto-web-<version>-linux-<arch>.tar.gz
-cd onto-web
+tar -xzf onto-modeling-<version>-linux-<arch>.tar.gz
+cd onto-modeling
 ./deploy.sh          # 首次运行会生成 .env 并提示填写模型网关配置
 vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 ./deploy.sh          # 再次运行完成部署

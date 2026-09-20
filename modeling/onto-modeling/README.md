@@ -1,4 +1,4 @@
-# Onto Web — 本体建模工具 Web 版
+# Onto Modeling — 本体建模工具 Web 版
 
 基于 Claude Agent SDK 的本体建模 Web 工作台。设计方案见
 `/mnt/jianguoyun/meta/design/本体建模工具Web版-方案设计-20260918.md`。
@@ -6,7 +6,7 @@
 ## 结构
 
 ```
-onto-web/
+onto-modeling/
   backend/    FastAPI 服务：项目/工作区管理、Agent 会话编排（会话池 + SSE）、文件与版本 API
   frontend/   React 19 + Vite 7 + antd + @ant-design/x 三栏工作台
   assets/     提示词资产（同步自本体建模工具集，挂载进每个任务工作区）
@@ -52,8 +52,8 @@ cd frontend && npm run build
 ## 构建与部署
 
 ```bash
-./build.sh <version> [amd|arm]     # 产出 dist/onto-web-<version>-linux-<arch>.tar.gz
-docker compose up --build          # 本地从源码起全栈（onto-web + auth-server）验证
+./build.sh <version> [amd|arm]     # 产出 dist/onto-modeling-<version>-linux-<arch>.tar.gz
+docker compose up --build          # 本地从源码起全栈（onto-modeling + auth-server）验证
 ```
 
 依赖复用（需 BuildKit，Docker Desktop / buildx 默认开启）：

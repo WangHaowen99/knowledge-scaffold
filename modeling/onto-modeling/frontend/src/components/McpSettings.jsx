@@ -41,7 +41,7 @@ function ExposedService() {
   const clientConfig = JSON.stringify(
     {
       mcpServers: {
-        'onto-web': {
+        'onto-modeling': {
           type: 'http',
           url: serviceUrl,
           headers: { Authorization: 'Bearer <你的令牌>' },

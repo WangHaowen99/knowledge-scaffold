@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"          # modeling/onto-web
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"          # modeling/onto-modeling
 REPOSITORY_ROOT="$(cd "${PROJECT_ROOT}/../.." && pwd)"  # 仓库根
 
 usage() {
@@ -37,9 +37,9 @@ case "${ARCH}" in
 esac
 
 STAGE_ROOT="${PROJECT_ROOT}/dist/release-${VERSION}-${RELEASE_ARCH}"
-BUNDLE_DIR="${STAGE_ROOT}/onto-web"
+BUNDLE_DIR="${STAGE_ROOT}/onto-modeling"
 IMAGES_DIR="${BUNDLE_DIR}/images"
-OUTPUT_FILE="${PROJECT_ROOT}/dist/onto-web-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
+OUTPUT_FILE="${PROJECT_ROOT}/dist/onto-modeling-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
 
 cleanup() {
     [ -d "${STAGE_ROOT}" ] && rm -rf "${STAGE_ROOT}"
@@ -100,16 +100,16 @@ fi
 
 # docker 一律在目标目录内用相对路径调用：WSL 下 docker 可能是 Windows 侧
 # docker.exe（interop），不认 /mnt/* 绝对路径，相对路径会被正确映射到盘符路径
-(cd "${PROJECT_ROOT}" && ${BUILD_CMD} -t "onto-web:${VERSION}" -f Dockerfile .)
-(cd "${IMAGES_DIR}" && docker save -o "onto-web-${VERSION}.tar" "onto-web:${VERSION}")
+(cd "${PROJECT_ROOT}" && ${BUILD_CMD} -t "onto-modeling:${VERSION}" -f Dockerfile .)
+(cd "${IMAGES_DIR}" && docker save -o "onto-modeling-${VERSION}.tar" "onto-modeling:${VERSION}")
 
 AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
 [ -d "${AUTH_SERVER_SRC}" ] || {
     echo "Error: auth-server source directory not found: ${AUTH_SERVER_SRC}" >&2
     exit 1
 }
-(cd "${AUTH_SERVER_SRC}" && ${BUILD_CMD} -t "onto-web-auth-server:${VERSION}" .)
-(cd "${IMAGES_DIR}" && docker save -o "onto-web-auth-server-${VERSION}.tar" "onto-web-auth-server:${VERSION}")
+(cd "${AUTH_SERVER_SRC}" && ${BUILD_CMD} -t "onto-modeling-auth-server:${VERSION}" .)
+(cd "${IMAGES_DIR}" && docker save -o "onto-modeling-auth-server-${VERSION}.tar" "onto-modeling-auth-server:${VERSION}")
 
 cp "${SCRIPT_DIR}/docker-compose.release.yml" "${BUNDLE_DIR}/"
 cp "${SCRIPT_DIR}/deploy.sh" "${SCRIPT_DIR}/preflight.sh" "${BUNDLE_DIR}/"
@@ -119,13 +119,13 @@ chmod +x "${BUNDLE_DIR}/deploy.sh" "${BUNDLE_DIR}/preflight.sh"
 
 # 镜像清单：deploy.sh / compose 从这里取镜像 tag，目标机不需要再传参数
 cat > "${BUNDLE_DIR}/images.env" <<EOF
-ONTO_WEB_IMAGE=onto-web:${VERSION}
-AUTH_SERVER_IMAGE=onto-web-auth-server:${VERSION}
+ONTO_WEB_IMAGE=onto-modeling:${VERSION}
+AUTH_SERVER_IMAGE=onto-modeling-auth-server:${VERSION}
 RELEASE_VERSION=${VERSION}
 RELEASE_ARCH=${RELEASE_ARCH}
 EOF
 
 mkdir -p "$(dirname "${OUTPUT_FILE}")"
-tar -czf "${OUTPUT_FILE}" -C "${STAGE_ROOT}" onto-web
+tar -czf "${OUTPUT_FILE}" -C "${STAGE_ROOT}" onto-modeling
 
 echo "Release package: ${OUTPUT_FILE}"

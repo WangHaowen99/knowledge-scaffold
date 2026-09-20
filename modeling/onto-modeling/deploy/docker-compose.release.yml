@@ -1,10 +1,14 @@
+# compose 项目名固定为历史值 onto-web：数据卷全名（onto-web_onto-web-data 等）
+# 由项目名前缀决定，改名 onto-modeling 后必须沿用旧项目名才能无缝复用存量数据。
+name: onto-web
+
 services:
   auth-server:
-    image: ${AUTH_SERVER_IMAGE:-onto-web-auth-server:latest}
-    container_name: onto-web-auth-server
+    image: ${AUTH_SERVER_IMAGE:-onto-modeling-auth-server:latest}
+    container_name: onto-modeling-auth-server
     restart: unless-stopped
     # 只在 compose 网络内可达；issuer/audience 用镜像默认值（http://auth-server:5056 / meta-wise），
-    # 与 onto-web 容器内 ONTO_WEB_AUTH_URL 一致，改动时两边同步
+    # 与 onto-modeling 容器内 ONTO_WEB_AUTH_URL 一致，改动时两边同步
     expose:
       - "5056"
     environment:
@@ -14,9 +18,9 @@ services:
       - onto-web-auth-data:/data
     mem_limit: 512m
 
-  onto-web:
-    image: ${ONTO_WEB_IMAGE:-onto-web:latest}
-    container_name: onto-web
+  onto-modeling:
+    image: ${ONTO_WEB_IMAGE:-onto-modeling:latest}
+    container_name: onto-modeling
     restart: unless-stopped
     # 每个活跃会话一个 CLI 子进程（均值约 400MB）；容器上限按
     # 固定开销 + 会话上限 × 单进程峰值 规划（方案 4.1.1），默认对应 8G 主机
