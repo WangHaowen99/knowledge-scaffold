@@ -187,6 +187,31 @@ class Session:
         return self.connect_task is not None and not self.connect_task.done()
 
 
+def _expire_orphan_permissions(session: "Session") -> None:
+    """历史中未决的确认请求（重启/回收后 future 已丢）补失效事件。
+
+    否则前端会永远渲染"等待选择"的幽灵卡，用户回答只能得到 404。
+    """
+    resolved = {
+        e.get("request_id")
+        for e in session.events
+        if e.get("type") == "permission_resolved"
+    }
+    orphans = [
+        e.get("request_id")
+        for e in session.events
+        if e.get("type") == "permission_request" and e.get("request_id") not in resolved
+    ]
+    for request_id in orphans:
+        session.broadcast(
+            {
+                "type": "permission_resolved",
+                "request_id": request_id,
+                "behavior": "expired",
+            }
+        )
+
+
 class SessionManager:
     def __init__(self):
         self._sessions: dict[str, Session] = {}  # project_id -> session
@@ -243,6 +268,7 @@ class SessionManager:
             )
             session.events = load_history(project_id)  # 续接历史，seq 连续
             self._sessions[project_id] = session
+            _expire_orphan_permissions(session)
         session.cwd = cwd
         session.last_activity = time.time()
         if session.state != "running":
@@ -454,10 +480,11 @@ class SessionManager:
     ) -> None:
         session = self._sessions.get(project_id)
         if not session:
-            raise SessionError("会话不存在", 404)
+            # 服务重启后旧确认卡的点击：会话与待决确认都已不在内存
+            raise SessionError("该确认已失效（会话已重启）", 410)
         request = session.pending_permissions.get(request_id)
         if not request or request.future.done():
-            raise SessionError("确认请求不存在或已处理", 404)
+            raise SessionError("确认请求不存在或已处理", 410)
         if behavior == "allow":
             updated_input = None
             if answers:

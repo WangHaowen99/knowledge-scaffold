@@ -929,10 +929,27 @@ export default function ChatPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
 
+  const [localResolved, setLocalResolved] = useState(() => new Set());
+
   const respondPermission = async (requestId, behavior, answers = null) => {
     try {
       await api.respondPermission(project.id, requestId, behavior, '', answers);
     } catch (error) {
+      // 会话重启后的失效确认卡：答案降级为普通消息续接（resume 会自动接上上下文）
+      if ((error.status === 410 || error.status === 404) && behavior === 'allow' && answers) {
+        setLocalResolved((prev) => new Set(prev).add(requestId));
+        const text = Object.entries(answers)
+          .map(([question, answer]) => `${question}\n我的选择：${answer}`)
+          .join('\n\n');
+        message.info('该确认来自上次会话，已把你的选择作为消息发给助手继续');
+        await send(text);
+        return;
+      }
+      if (error.status === 410 || error.status === 404) {
+        setLocalResolved((prev) => new Set(prev).add(requestId));
+        message.info('该确认已失效（会话已重启），如需继续请直接发消息');
+        return;
+      }
       message.error(error.message);
     }
   };
@@ -954,10 +971,11 @@ export default function ChatPane({
 
   const resolvedPermissions = useMemo(
     () =>
-      new Set(
-        events.filter((e) => e.type === 'permission_resolved').map((e) => e.request_id),
-      ),
-    [events],
+      new Set([
+        ...events.filter((e) => e.type === 'permission_resolved').map((e) => e.request_id),
+        ...localResolved,
+      ]),
+    [events, localResolved],
   );
 
   // tool_use_id → {isError, excerpt}，用于工具行状态与详情展开
