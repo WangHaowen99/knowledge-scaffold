@@ -86,13 +86,15 @@ async def stream(project_id: str, request: Request, after: int = 0):
     async def generate():
         queue: asyncio.Queue = asyncio.Queue()
         sent = after  # 已发送到的 seq 水位，避免"文件历史 + 会话补挂"重复发送
-        history = manager.get_history(project_id)
-        for event in history[sent:]:
-            yield _sse(event)
-        sent = max(sent, len(history))
+        # 先订阅再重放：重放长历史时事件循环会让出，期间新事件先进队列，
+        # 重放结束后按 seq 水位去重续发，不会再丢失重放窗口内的事件
         session = manager.get(project_id)
         if session:
             session.subscribers.append(queue)
+        history = list(manager.get_history(project_id))
+        for event in history[sent:]:
+            yield _sse(event)
+        sent = max(sent, len(history))
         try:
             while True:
                 current = manager.get(project_id)
@@ -111,7 +113,8 @@ async def stream(project_id: str, request: Request, after: int = 0):
                         sent = seq + 1
                     yield _sse(event)
                 except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
+                    # 可见心跳：前端据此判断连接是否僵死（SSE 注释行不触发 onmessage）
+                    yield _sse({"type": "ping"})
         finally:
             current = manager.get(project_id)
             if current and queue in current.subscribers:
