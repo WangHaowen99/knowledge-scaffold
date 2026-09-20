@@ -63,3 +63,24 @@ SIGILL 崩溃。`preflight.sh` 会检查；未通过时按优先级整改：
 - 升级：解包新版本交付包，重复部署步骤；`docker compose up -d` 滚动替换容器，
   数据卷保留。
 - 回滚：用旧版本交付包重复部署步骤即可（镜像 tag 随版本走，互不覆盖）。
+
+## 接入既有账号中心（单点账号）
+
+onto-modeling 默认自带独立 auth-server。若要与 consumer / modeling 栈共用同一
+用户库（账号密码即刻通用），在 `.env` 里加两行后重跑 `./deploy.sh`：
+
+```
+ONTO_MODELING_AUTH_URL=http://auth-server:5056
+ONTO_MODELING_EXTERNAL_AUTH_NETWORK=consumer_onto-agent-network
+```
+
+deploy.sh 会停用自带 auth-server、让应用容器加入 consumer 栈网络，直接复用其
+`auth-server` 服务（issuer/audience 一致，token 互认）。切换回自带模式：删除这
+两行重跑 deploy.sh 即可（自带 auth 数据卷始终保留）。需要 docker compose v2.24+。
+
+## 从原 modeling 服务迁移数据
+
+deploy.sh 部署完成后会自动检测 `mw-modeling` 容器（可用
+`ONTO_MODELING_MIGRATE_FROM=<容器名>` 覆盖），存在即执行
+`migrate-from-modeling.sh` 把项目/资料/知识包迁入本服务；迁移幂等，
+已迁移的项目自动跳过，也可随时手动重跑该脚本。
