@@ -231,6 +231,11 @@ class ClaudeEngine:
     """Claude Agent SDK 引擎实现（AgentEngine 协议）。"""
 
     name = "claude"
+    UNAVAILABLE_MESSAGE = "claude-agent-sdk 未安装，无法启动建模会话"
+
+    @classmethod
+    def available(cls) -> bool:
+        return SDK_AVAILABLE
 
     def __init__(self, ctx: EngineContext):
         self._ctx = ctx

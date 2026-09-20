@@ -30,14 +30,26 @@ def load() -> dict:
         return {}
 
 
+def _mask(key: str) -> str:
+    return (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("已设置" if key else "")
+
+
 def masked() -> dict:
     data = load()
     key = data.get("api_key", "")
+    jiuwen = data.get("jiuwen") or {}
     return {
         "base_url": data.get("base_url", ""),
         "model": data.get("model", ""),
-        "api_key_masked": (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("已设置" if key else ""),
+        "api_key_masked": _mask(key),
         "configured": bool(key or data.get("base_url")),
+        # Jiuwen 引擎（OpenAI 兼容）配置：与 Anthropic 网关配置并列的第二组
+        "jiuwen": {
+            "base_url": jiuwen.get("base_url", ""),
+            "model": jiuwen.get("model", ""),
+            "api_key_masked": _mask(jiuwen.get("api_key", "")),
+            "configured": bool(jiuwen.get("api_key") or jiuwen.get("base_url")),
+        },
     }
 
 
@@ -64,6 +76,36 @@ def clear_key() -> dict:
     data.pop("api_key", None)
     _file().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return masked()
+
+
+def save_jiuwen(base_url: str, api_key: str, model: str) -> dict:
+    """Jiuwen 引擎的 OpenAI 兼容模型配置（与 Anthropic 网关配置同文件存储）。"""
+    base_url = (base_url or "").strip()
+    model = (model or "").strip()
+    api_key = (api_key or "").strip()
+    if base_url and not base_url.startswith(("http://", "https://")):
+        raise ModelConfigError("网关地址必须以 http(s):// 开头")
+    data = load()
+    section = data.setdefault("jiuwen", {})
+    section["base_url"] = base_url
+    section["model"] = model
+    if api_key:  # 留空表示不修改既有 Key
+        section["api_key"] = api_key
+    path = _file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return masked()
+
+
+def jiuwen_config() -> dict:
+    """Jiuwen 引擎读取用的明文配置（仅服务端内部使用，不经接口外发）。"""
+    section = load().get("jiuwen") or {}
+    return {
+        "base_url": section.get("base_url", ""),
+        "api_key": section.get("api_key", ""),
+        "model": section.get("model", ""),
+    }
 
 
 def session_env() -> dict:

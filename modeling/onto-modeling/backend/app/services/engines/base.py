@@ -64,6 +64,8 @@ class EngineContext:
     clear_resume_token: Callable[[], None]
     # 运维错误留档（kind, 原始文本）
     log_error: Callable[[str, str], None]
+    # 事件历史（平台事件 dict 列表）：历史回放型引擎（Jiuwen）用它重建模型上下文
+    load_history: Callable[[], list[dict]] | None = None
 
 
 class AgentEngine(Protocol):

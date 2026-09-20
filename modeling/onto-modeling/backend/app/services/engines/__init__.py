@@ -17,7 +17,13 @@ def get_engine_class(name: str = DEFAULT_ENGINE):
     """按名称取引擎实现；未知名称回落默认引擎（存量项目 meta 无该字段）。"""
     from .claude import ClaudeEngine
 
-    registry = {"claude": ClaudeEngine}
+    registry: dict = {"claude": ClaudeEngine}
+    try:
+        from .jiuwen import JiuwenEngine
+
+        registry["jiuwen"] = JiuwenEngine
+    except ImportError:  # pragma: no cover - 取决于部署环境
+        pass
     return registry.get(name or DEFAULT_ENGINE, ClaudeEngine)
 
 

@@ -192,12 +192,33 @@ class EngineContext:
 回复 → result（含成本），回收后重连 `resumed: true` 且上下文找回（暗号测试）。
 meta.json 的 engine 字段留到 Phase 2 引擎开关一起做（现仍为单引擎，无歧义）。
 
-### Phase 2：JiuwenEngine 接入（2 人周）
+### Phase 2：JiuwenEngine 接入（2 人周）——代码完成（2026-09-20），线上验收待批
 
-事件桥、ask_user/审批桥、checkpoint resume、token_tracker 指标、信号量并发、
-项目级引擎开关（项目 meta `engine` 字段 + 管理端切换入口，默认 claude）。
-验收：用 Jiuwen 引擎项目走完整会话链（含确认卡、子代理卡、变更卡、打断、回收后续接），
-前端零改动；新增引擎测试组。
+落地形态：
+
+- `services/engines/jiuwen.py`：进程内 DeepAgent 引擎——`_ChunkBridge` 事件桥
+  （llm_output/llm_reasoning→stream_delta+assistant_message、tool_call/result→
+  工具事件并自造 id FIFO 配对、`parallel_tool_calls=False` 保证配对正确）；
+  ask_user interaction → `AskUserQuestion` 确认卡（questions 契约同形直传），
+  审批 interaction → 通用确认卡；答案经 InteractiveInput 回填续跑；
+  历史回放续接（`create_new_context_engine` 注水，24k 字符预算从最近取）；
+  cwd（项目 git 区）/ workspace（DATA_DIR/jiuwen/<pid> 私有工件区）分层不污染；
+  result 事件带 TokenTrackingRail 的轮内 tokens 增量（无单价来源，cost 为 None）；
+- 引擎路由：项目 meta `engine` 字段（`_engine_class_for`，无字段回落 claude）；
+  `PUT /api/projects/{id}/engine` 切换（写权限，切换即关会话）；
+  前端项目卡「更多 → 会话引擎」切换弹窗；
+- 模型配置：`model-settings.json` 增 `jiuwen` 段（`PUT /api/settings/model/jiuwen`，
+  admin，掩码读取），env 兜底 `ONTO_WEB_JIUWEN_BASE_URL/API_KEY/MODEL`；
+  配置中心「模型接入」页分 Anthropic / OpenAI 兼容两组；
+- 依赖：requirements 增 openjiuwen（`python_version>=3.11` 标记，本地 venv 已重建为
+  3.11 并顺带清理改名遗留软链）；**mcp 由 2.x 降为 1.30**（openjiuwen 的 fastmcp
+  约束），`mcp_expose` 加 1.x/2.x 双版本垫片（FastMCP settings 构造 ≙ MCPServer
+  streamable_http_app 参数）；镜像含双引擎依赖，体积增至 ~2.05GB。
+
+验证状态：69 后端测试全绿（新增 9 个：事件桥/确认卡映射/历史回放/轮驱动含
+interaction 回填/错误终止/引擎路由/配置优先级）；前端构建通过；v0.9.0 镜像内
+双引擎可用性确认。**线上端到端冒烟（真实 glm-5.2 会话 + ask_user 闭环 + 回收续接）
+待用户批准后执行**（权限分类器要求对"部署实例切引擎"取得明示授权）。
 
 ### Phase 3：资产装载器 + rails + 质量回归（2–4 人周，弹性最大）
 

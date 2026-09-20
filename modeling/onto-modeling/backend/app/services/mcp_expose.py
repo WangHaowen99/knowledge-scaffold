@@ -87,14 +87,35 @@ def verify_token(plaintext: str) -> bool:
 
 
 def build_asgi_app():
-    """构建 streamable-http 的 MCP ASGI 应用（挂载到 /mcp-service）。"""
-    from mcp.server.mcpserver import MCPServer
+    """构建 streamable-http 的 MCP ASGI 应用（挂载到 /mcp-service）。
+
+    兼容 mcp 1.x 与 2.x：openjiuwen 引擎的依赖约束要求 mcp 1.26+（fastmcp<3），
+    2.x 的 MCPServer 在 1.x 里对应 FastMCP（同款 @tool 装饰器），差异只在
+    streamable-http 配置的承载位置（1.x 进构造函数，2.x 进 streamable_http_app）。
+    """
     from mcp.server.transport_security import TransportSecuritySettings
 
     from .workspace import WorkspaceManager
 
+    try:  # mcp 2.x
+        from mcp.server.mcpserver import MCPServer
+
+        mcp_v2 = True
+        server = MCPServer("onto-modeling")
+    except ImportError:  # mcp 1.x
+        from mcp.server.fastmcp import FastMCP
+
+        mcp_v2 = False
+        server = FastMCP(
+            "onto-modeling",
+            stateless_http=True,
+            streamable_http_path="/mcp",
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            ),
+        )
+
     workspaces = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
-    server = MCPServer("onto-modeling")
 
     @server.tool(description=TOOL_CATALOG[0]["description"])
     def list_projects() -> list[dict]:
@@ -156,10 +177,12 @@ def build_asgi_app():
                             return hits
         return hits
 
-    return server.streamable_http_app(
-        streamable_http_path="/mcp",
-        stateless_http=True,
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=False
-        ),
-    )
+    if mcp_v2:
+        return server.streamable_http_app(
+            streamable_http_path="/mcp",
+            stateless_http=True,
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            ),
+        )
+    return server.streamable_http_app()

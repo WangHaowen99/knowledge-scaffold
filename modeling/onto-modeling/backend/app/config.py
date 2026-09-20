@@ -30,6 +30,14 @@ SESSION_REAPER_INTERVAL = int(os.environ.get("ONTO_WEB_SESSION_REAPER_INTERVAL",
 # 降级兼容包（无 AVX 环境的最后手段）：指向外部 JS 版 CLI 的路径，空 = 用捆绑 CLI
 CLI_PATH = os.environ.get("ONTO_WEB_CLI_PATH", "")
 
+# Jiuwen 引擎（openjiuwen，进程内，OpenAI 兼容模型直连）：env 为部署级兜底，
+# 配置中心「模型接入」的 UI 配置优先（docs/openjiuwen-engine-migration.md §3.3）
+JIUWEN_BASE_URL = os.environ.get("ONTO_WEB_JIUWEN_BASE_URL", "")
+JIUWEN_API_KEY = os.environ.get("ONTO_WEB_JIUWEN_API_KEY", "")
+JIUWEN_MODEL = os.environ.get("ONTO_WEB_JIUWEN_MODEL", "")
+JIUWEN_MAX_TOKENS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_TOKENS", "8192"))
+JIUWEN_MAX_ITERATIONS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60"))
+
 # workspace 定期备份间隔（小时，0 关闭）；保留份数固定为最近 3 份
 BACKUP_INTERVAL_HOURS = int(os.environ.get("ONTO_WEB_BACKUP_INTERVAL_HOURS", "24"))
 

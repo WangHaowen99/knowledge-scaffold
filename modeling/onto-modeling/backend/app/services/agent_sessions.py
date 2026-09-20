@@ -222,8 +222,15 @@ class SessionManager:
         text = (text or "").strip()
         if not text:
             raise SessionError("消息不能为空")
-        if not SDK_AVAILABLE:
-            raise SessionError("claude-agent-sdk 未安装，无法启动建模会话", 503)
+        engine_cls = self._engine_class_for(project_id)
+        if engine_cls.name == "claude":
+            # Claude 引擎沿用模块级开关（测试可 monkeypatch SDK_AVAILABLE）
+            if not SDK_AVAILABLE:
+                raise SessionError("claude-agent-sdk 未安装，无法启动建模会话", 503)
+        elif not engine_cls.available():
+            raise SessionError(
+                getattr(engine_cls, "UNAVAILABLE_MESSAGE", "所选引擎不可用"), 503
+            )
         session = self._sessions.get(project_id)
         if session is None or session.state == "closed":
             session = Session(id=uuid.uuid4().hex[:12], project_id=project_id)
@@ -286,9 +293,17 @@ class SessionManager:
 
     # ---- 引擎装配 ----
 
-    def _engine_class(self, session: Session):
-        """引擎选择点；Phase 2 起按项目 meta 的 engine 字段路由。"""
-        return get_engine_class("claude")
+    def _engine_class_for(self, project_id: str):
+        """按项目 meta 的 engine 字段路由（无字段回落 claude；灰度开关）。"""
+        meta_path = (
+            Path(config.DATA_DIR) / "workspaces" / project_id / ".onto-web.json"
+        )
+        name = ""
+        try:
+            name = json.loads(meta_path.read_text(encoding="utf-8")).get("engine") or ""
+        except (OSError, json.JSONDecodeError):
+            pass
+        return get_engine_class(name)
 
     def _make_engine(self, session: Session):
         project_id = session.project_id
@@ -312,8 +327,9 @@ class SessionManager:
             save_resume_token=save_token,
             clear_resume_token=lambda: clear_resume_id(project_id),
             log_error=lambda kind, text: error_log.log(project_id, kind, text),
+            load_history=lambda: list(session.events),
         )
-        return self._engine_class(session)(ctx)
+        return self._engine_class_for(project_id)(ctx)
 
     async def _connect(self, session: Session) -> None:
         project_id = session.project_id
