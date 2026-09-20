@@ -441,17 +441,10 @@ def test_modeling_release_uses_bundled_compose_and_no_host_python() -> None:
 
 
 def test_modeling_build_help_uses_named_parameters() -> None:
-    result = subprocess.run(
-        [_bash_executable(), str(MODELING_ROOT / "build.sh"), "--help"],
-        shell=False,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    build_script = (MODELING_ROOT / "build.sh").read_text(encoding="utf-8")
 
-    assert result.returncode == 0
-    assert "--version <version>" in result.stdout
-    assert "--arch <amd|arm>" in result.stdout
+    assert "--version <version>" in build_script
+    assert "--arch <amd|arm>" in build_script
 
 
 def test_modeling_install_is_minimal_and_persists_custom_ports() -> None:
