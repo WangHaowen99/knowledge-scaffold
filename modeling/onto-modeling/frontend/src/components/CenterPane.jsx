@@ -619,7 +619,10 @@ function ReportReview({ data, checked, onChecked, onFixSelected }) {
 }
 
 function countByPrefix(paths, prefix) {
-  return paths.filter((p) => p.startsWith(prefix) && p.endsWith('.md')).length;
+  // index.md 是目录索引，不算实体
+  return paths.filter(
+    (p) => p.startsWith(prefix) && p.endsWith('.md') && !p.endsWith('/index.md'),
+  ).length;
 }
 
 function flattenPaths(nodes, out = []) {

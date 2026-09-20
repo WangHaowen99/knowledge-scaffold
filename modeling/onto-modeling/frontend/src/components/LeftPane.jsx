@@ -24,10 +24,14 @@ import { api } from '../lib/api.js';
 
 // 阶段定义：探测产物目录推断完成态（对应 CLI 版 detect-stage），
 // actions 是该阶段的操作入口；command 以空格结尾表示"填入输入框待补参数"
-// 目录内只有 index.md（目录索引）时不算有产物
+// 有产物 = 目录下存在真实文件：排除目录节点本身（尾 '/'，新项目会预建全部目录）
+// 与目录索引 index.md
 const hasEntry = (paths, ...prefixes) =>
   paths.some(
-    (p) => prefixes.some((prefix) => p.startsWith(prefix)) && !p.endsWith('/index.md'),
+    (p) =>
+      prefixes.some((prefix) => p.startsWith(prefix)) &&
+      !p.endsWith('/') &&
+      !p.endsWith('/index.md'),
   );
 
 export const STAGES = [
@@ -237,7 +241,7 @@ export default function LeftPane({
   // 资料变更提醒：资料上传/删除时间晚于最近版本 → 派生产物可能过期
   const latestVersionTime = versions[0]?.time || 0;
   const resourceStale =
-    (meta?.resource_updated_at || 0) > latestVersionTime && paths.some((p) => p.startsWith('research/'));
+    (meta?.resource_updated_at || 0) > latestVersionTime && hasEntry(paths, 'research/');
 
   const autoSubdir = (name) => {
     const lower = name.toLowerCase();
