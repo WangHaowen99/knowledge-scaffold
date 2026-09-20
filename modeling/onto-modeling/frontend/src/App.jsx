@@ -495,7 +495,7 @@ export default function App() {
           <div className="pj-head">
             <div>
               <h2>建模任务与知识包</h2>
-              <p>资料分析与目标确认 → 对象/操作提取 → 规则与指标 → 质量检查 → 场景验证 → 导出交付</p>
+              <p>资料分析 → 对象/操作提取 → 规则与指标 → 质量检查 → 场景验证 → 导出交付</p>
             </div>
             {activeProjects.length > 0 && <span className="pj-count">{activeProjects.length} 个任务</span>}
           </div>
@@ -804,7 +804,7 @@ export default function App() {
         width={640}
       >
         <Input.Search
-          placeholder="搜索知识包、调研、报告与知识"
+          placeholder="搜索知识包、资料分析、报告与知识"
           autoFocus
           enterButton
           onSearch={async (q) => {

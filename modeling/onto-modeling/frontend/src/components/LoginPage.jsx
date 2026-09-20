@@ -26,7 +26,7 @@ const parseRegisterError = (e) => {
 };
 
 const FEATS = [
-  { icon: '📚', title: '系统调研', desc: '自动调研并沉淀领域知识' },
+  { icon: '📚', title: '资料分析', desc: '自动分析资料并沉淀领域知识' },
   { icon: '🧩', title: '对象与逻辑提取', desc: '把资料结构化为业务实体与流程' },
   { icon: '✅', title: '校验与追踪', desc: '规则 + 语义检查、场景推演验证' },
 ];
