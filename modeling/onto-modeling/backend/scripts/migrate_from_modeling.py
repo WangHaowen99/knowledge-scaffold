@@ -167,7 +167,7 @@ def main() -> int:
             continue
         bg = "；".join(x for x in [domain, background] if x)
         meta = mgr.create_project(
-            f"{name}（迁移）", owner=args.owner or owner or "", background=bg
+            name, owner=args.owner or owner or "", background=bg
         )
         mgr._update_meta(meta["id"], migrated_from=pid)
         root = mgr.project_root(meta["id"])
