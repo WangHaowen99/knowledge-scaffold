@@ -30,7 +30,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, openEventStream } from '../lib/api.js';
 import { FileChip, Markdown } from './CenterPane.jsx';
-import { STAGES } from './LeftPane.jsx';
+import { STAGES, stageForCommand } from './LeftPane.jsx';
 
 // 「⋯ 更多」里的全量命令（希克定律：常显建议 ≤4，全集收进菜单）
 const ALL_COMMANDS = [
@@ -495,6 +495,7 @@ export default function ChatPane({
   onOpenFile,
   onOpenDiff,
   registerSend,
+  onActiveStage,
 }) {
   const [events, setEvents] = useState([]);
   const [live, setLive] = useState({ text: '', thinking: '' });
@@ -959,6 +960,23 @@ export default function ChatPane({
     () => buildSuggestions({ paths, meta, versions, reportErrors, interrupted }),
     [paths, meta, versions, reportErrors, interrupted],
   );
+
+  // 正在执行的 /ontology-* 命令 → 左栏对应阶段进入"进行中"动效
+  useEffect(() => {
+    if (!onActiveStage) return;
+    if (state !== 'running' && state !== 'queued') {
+      onActiveStage(null);
+      return;
+    }
+    let lastUserText = '';
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      if (events[i].type === 'user_message') {
+        lastUserText = events[i].text || '';
+        break;
+      }
+    }
+    onActiveStage(stageForCommand(lastUserText));
+  }, [state, events, onActiveStage]);
 
   // 会话状态（右栏头部常显）：空闲/生成中/执行工具/排队/出错
   const lastItem = items[items.length - 1];

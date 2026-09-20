@@ -67,6 +67,7 @@ export default function App() {
   const [recentFiles, setRecentFiles] = useState([]);
   const chatSendRef = useRef(null);
   const [homeMenuOpen, setHomeMenuOpen] = useState(false);
+  const [activeStage, setActiveStage] = useState(null); // 会话正在执行的阶段（左栏高亮）
   const [transferBusy, setTransferBusy] = useState(false);
   const transferInputRef = useRef(null);
   const importInputRef = useRef(null);
@@ -723,6 +724,7 @@ export default function App() {
           <Splitter.Panel defaultSize="22%" min="14%" max="35%" collapsible>
             <div className="pane pane-left">
               <LeftPane
+                activeStage={activeStage}
                 project={project}
                 meta={project}
                 tree={tree}
@@ -771,6 +773,7 @@ export default function App() {
           <Splitter.Panel defaultSize="32%" min="24%" max="48%" collapsible>
             <div className="pane pane-right">
               <ChatPane
+                onActiveStage={setActiveStage}
                 project={project}
                 tree={tree}
                 meta={project}

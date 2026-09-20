@@ -39,11 +39,12 @@ import remarkGfm from 'remark-gfm';
 import { api } from '../lib/api.js';
 import CodeEditor from './cm/CodeEditor.jsx';
 import MergeDiff from './cm/MergeDiff.jsx';
-import DrawioView from './DrawioView.jsx';
 import ExcelView from './ExcelView.jsx';
 import HtmlPreview from './HtmlPreview.jsx';
 
 const StudioView = lazy(() => import('./StudioView.jsx'));
+// modeling 同款流程图编辑器（ReactFlow）；drawio iframe 只在高级编辑时加载
+const FlowchartView = lazy(() => import('./flowchart/FlowchartView.jsx'));
 
 // mermaid 配色跟随应用主题（CSS 变量取值）；主题切换时重配并触发重渲染
 let mermaidThemeVersion = 0;
@@ -1065,13 +1066,14 @@ export default function CenterPane({
           )}
           {isHtml && <HtmlPreview project={project} path={file} />}
           {isDrawio && (
-            <DrawioView
-              project={project}
-              path={file}
-              editorAvailable={drawioAvailable}
-              onSaved={onWorkspaceChanged}
-              refreshKey={tree}
-            />
+            <Suspense fallback={<Spin style={{ marginTop: 48 }} />}>
+              <FlowchartView
+                project={project}
+                path={file}
+                drawioAvailable={drawioAvailable}
+                onWorkspaceChanged={onWorkspaceChanged}
+              />
+            </Suspense>
           )}
           {isExcel && <ExcelView project={project} path={file} />}
           {file && content?.unsupported && !isHtml && !isDrawio && !isExcel && (

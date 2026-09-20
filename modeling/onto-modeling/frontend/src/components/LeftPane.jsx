@@ -139,6 +139,18 @@ export const MATERIAL_PURPOSES = [
 ];
 const isTableFile = (name) => /\.(xlsx?|csv)$/i.test(name);
 
+// 运行中的 /ontology-* 命令 → 所属阶段（左栏活跃高亮用）
+export function stageForCommand(text) {
+  const cmd = String(text || '').trim().split(/\s/)[0];
+  if (!cmd.startsWith('/ontology')) return null;
+  for (const stage of STAGES) {
+    for (const action of stage.actions) {
+      if (action.command.trim().split(/\s/)[0] === cmd) return stage.key;
+    }
+  }
+  return null;
+}
+
 const EXTRA_ACTIONS = [
   { label: '整体视图', command: '/ontology-overview' },
   { label: '增量更新', command: '/ontology-update ' },
@@ -204,6 +216,7 @@ export default function LeftPane({
   meta,
   tree,
   versions = [],
+  activeStage = null,
   onSelectFile,
   onRefresh,
   onCommand,
@@ -216,7 +229,15 @@ export default function LeftPane({
   const [tagging, setTagging] = useState(null); // {commit, label}
 
   const paths = useMemo(() => flattenPaths(tree), [tree]);
-  const statuses = useMemo(() => stageStatuses(paths), [paths]);
+  const statuses = useMemo(() => {
+    const base = stageStatuses(paths);
+    // 会话正在执行某阶段命令时，进行中的高亮跟随实际执行的阶段
+    const activeIndex = activeStage ? STAGES.findIndex((s) => s.key === activeStage) : -1;
+    if (activeIndex < 0) return base;
+    return base.map((status, index) =>
+      index === activeIndex ? 'process' : status === 'process' ? 'wait' : status,
+    );
+  }, [paths, activeStage]);
   const resources = useMemo(() => collectResources(tree), [tree]);
   const [deleting, setDeleting] = useState(null);
   const [directives, setDirectives] = useState({});
