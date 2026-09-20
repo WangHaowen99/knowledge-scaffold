@@ -193,6 +193,9 @@ def check_file_locations(ontology_dir: Path) -> list:
         # 跳过隐藏目录里的文件（避免 .git/ 等的潜在干扰）
         if any(p.startswith('.') for p in parts[:-1]):
             continue
+        # index.md 是平台维护的目录索引，允许出现在任意子目录
+        if f.name.lower() == 'index.md':
+            continue
         if len(parts) == 1:
             issues.append(Issue(
                 file=str(rel), severity='错误', category='文件位置',
@@ -217,6 +220,8 @@ def check_duplicate_stems(ontology_dir: Path) -> list:
             continue
         files = d.rglob('*.md') if subdir in ('object', 'operation', 'logic') else d.glob('*.md')
         for f in sorted(files):
+            if f.name.lower() == 'index.md':
+                continue  # 平台目录索引不是实体，不参与 [[链接]] 语义
             by_stem.setdefault(f.stem, []).append(f)
     issues = []
     for stem, paths in by_stem.items():
