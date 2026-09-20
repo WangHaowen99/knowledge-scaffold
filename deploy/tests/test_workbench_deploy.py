@@ -443,6 +443,7 @@ def test_modeling_release_uses_bundled_compose_and_no_host_python() -> None:
 def test_modeling_build_help_uses_named_parameters() -> None:
     result = subprocess.run(
         [_bash_executable(), str(MODELING_ROOT / "build.sh"), "--help"],
+        shell=False,
         text=True,
         capture_output=True,
         check=False,
