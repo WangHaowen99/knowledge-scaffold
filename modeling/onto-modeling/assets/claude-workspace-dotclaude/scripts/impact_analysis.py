@@ -66,7 +66,7 @@ def analyze_impact(stem: str, category: str, all_docs: dict, mock_dir: Path, tes
         if other_stem == stem:
             continue
 
-        linked = stem in other_doc.obsidian_links
+        linked = stem in other_doc.wiki_links
 
         if other_doc.doc_type == 'operation':
             if linked:

@@ -18,7 +18,7 @@ dispatching command 会传入：
     "severity": "警告",
     "category": "链接失效",
     "file": "operation/创建订单.md",
-    "message": "Obsidian 链接 [[支付记录]] 无对应文件"
+    "message": "Wiki 链接 [[支付记录]] 无对应文件"
   }
   ```
   `issue_id` 由主调命令分配，必须原样回传。

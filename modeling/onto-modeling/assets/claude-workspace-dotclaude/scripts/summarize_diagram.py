@@ -168,7 +168,7 @@ def make_classifier(rules, virtual_signatures):
                 return None  # 文本/标签节点，排除
         if is_virtual_style(style, virtual_signatures):
             return None
-        # 值含 [[...]] Obsidian 链接的节点一律视为子流程节点
+        # 值含 [[...]] Wiki 链接的节点一律视为子流程节点
         # 此约定优先于样式匹配，因为图例与流程图实际样式可能不一致
         if value and "[[" in value and "]]" in value:
             return "子流程"

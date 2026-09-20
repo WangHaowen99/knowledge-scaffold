@@ -18,8 +18,8 @@
 | LLM / agent | （不出现；或改为"自动检查""智能校验"） |
 | hook | （不出现；内部实现细节） |
 | slash command / 斜杠命令 | 命令 |
-| markdown / Obsidian / `.md` | 文档 / 文件 |
-| `[[link]]` / Obsidian 链接 | 引用 / 链接（仅在必须解释时出现） |
+| markdown / wiki / `.md` | 文档 / 文件 |
+| `[[link]]` / wiki 链接 | 引用 / 链接（仅在必须解释时出现） |
 | checkbox / 复选框 | （不出现；用"问题列表"代替） |
 | json / 数组 / 字段 | 清单 / 条目 / 属性 |
 | path / filepath | 文件位置（若必须展示具体路径则直接展示） |
