@@ -13,6 +13,7 @@ from openjiuwen.core.foundation.tool import Tool, ToolCard
 
 from .core_client import CoreGateway
 from .errors import AgentRuntimeError
+from .visible_text import sanitize_visible_text
 
 
 EventSink = Callable[[str, dict[str, Any]], None]
@@ -26,10 +27,35 @@ ValidationRepairSave = Callable[[dict[str, Any]], None]
 RequireTool = Callable[[str, dict[str, Any]], None]
 ReleaseRequiredTool = Callable[[str], None]
 ResolveIssues = Callable[[list[str]], None]
+SaveRecovery = Callable[[str, dict[str, Any]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 # Keep the outer tool deadline beyond the core client's 1800-second deadline.
 FULL_READ_TOOL_TIMEOUT_SECONDS = 1830.0
 EVALUATION_PENDING_MESSAGE = "正式评测任务已创建，可在评测界面查看实时进度。"
+BUSINESS_PHASE_LABELS = {
+    "intake": "资料与目标准备",
+    "goal": "目标确认",
+    "process": "流程建模",
+    "knowledge": "知识建模",
+    "increment": "增量建模",
+    "validation": "确定性验证",
+    "evaluation": "评测",
+    "release": "发布交付",
+}
+# 合法的阶段转换边。阶段能力重定向要先判断承载阶段这一跳到底走不走得通，
+# 否则会让模型反复尝试一次根本不存在的转换，把恢复预算烧在死路上。
+# service 层直接复用这份定义，不另抄一份。
+BUSINESS_PHASE_EDGES: dict[str, tuple[str, ...]] = {
+    "intake": ("goal",),
+    "goal": ("process",),
+    "process": ("goal", "knowledge"),
+    "knowledge": ("goal", "process", "validation"),
+    # 增量轮次在同一阶段内完成影响分析和受控修改，不能重新退回全量建模链路。
+    "increment": ("validation", "evaluation"),
+    "validation": ("goal", "process", "knowledge", "evaluation"),
+    "evaluation": ("goal", "process", "knowledge", "validation", "release"),
+    "release": ("goal", "process", "knowledge"),
+}
 LEADER_DOCUMENT_PAGE_CHARS = 6_000
 # Keep the default leader read deliberately bounded, while allowing read-only
 # specialists to request a larger page when they are doing batch material
@@ -155,6 +181,7 @@ class ToolContext:
     require_tool: RequireTool | None = None
     release_required_tool: ReleaseRequiredTool | None = None
     resolve_issues: ResolveIssues | None = None
+    save_recovery: SaveRecovery | None = None
     technical_recoveries: dict[str, dict[str, Any]] = field(default_factory=dict)
     state_action: StateAction | None = None
     after_core_tool: AfterCoreTool | None = None
@@ -194,6 +221,123 @@ class ToolContext:
         if isinstance(stop_on_repeated, bool):
             self.validation_repair.stop_on_repeated_fingerprint = stop_on_repeated
         self.validation_repair._notify_change()
+
+    def resolve_phase_capability_issues(self, phase: str) -> list[str]:
+        """Close the pending out-of-phase write issues that this phase now carries."""
+        resolved = [
+            issue_id
+            for issue_id, recovery in self.technical_recoveries.items()
+            if _carries_phase_capability_recovery(recovery, phase)
+        ]
+        if not resolved:
+            return []
+        for issue_id in resolved:
+            self.technical_recoveries.pop(issue_id, None)
+        if self.resolve_issues is not None:
+            self.resolve_issues(resolved)
+        self._release_transition_tool()
+        return resolved
+
+    def block_phase_capability_issues(
+        self,
+        phase: str,
+        error: Mapping[str, Any],
+    ) -> list[str]:
+        """Stop auto-retrying an out-of-phase write whose phase transition is refused.
+
+        门禁或阶段边挡住转换时，这条 issue 已经没有自愈路径了。继续让模型回去重提写入
+        只会把剩余预算烧完，用户点「继续」还会回到同一个循环。这里立刻把它标成
+        blocked 并带上真正的未满足项，交由服务端渲染成可操作的恢复卡。
+        """
+        blocked = [
+            issue_id
+            for issue_id, recovery in self.technical_recoveries.items()
+            if _carries_phase_capability_recovery(recovery, phase)
+        ]
+        if not blocked:
+            return []
+        blockers = _blocker_list(error)
+        for issue_id in blocked:
+            recovery = dict(self.technical_recoveries[issue_id])
+            host_label = str(
+                recovery.get("requiredPhaseLabel")
+                or BUSINESS_PHASE_LABELS.get(phase, phase)
+            )
+            reason = "；".join(blockers) if blockers else "前置条件尚未满足"
+            recovery.update({
+                "attempt": _non_negative_int(recovery.get("maxAttempts")) or 1,
+                "exhausted": True,
+                "blocked": True,
+                "blockers": blockers,
+                "transitionError": str(error.get("error") or ""),
+                "stoppedSummary": f"还不能回到「{host_label}」阶段继续这次修改：{reason}。",
+            })
+            self.technical_recoveries[issue_id] = recovery
+            if self.save_recovery is not None:
+                self.save_recovery(issue_id, recovery)
+        self._release_transition_tool()
+        self.recovery_waiting = True
+        return blocked
+
+    def _release_transition_tool(self) -> None:
+        still_required = any(
+            str(recovery.get("requiredTool") or "") == "transition_project_state"
+            and recovery.get("blocked") is not True
+            for recovery in self.technical_recoveries.values()
+        )
+        if not still_required and self.release_required_tool is not None:
+            self.release_required_tool("transition_project_state")
+
+
+def _cancel_requested(context: ToolContext) -> bool:
+    """Return whether the current Agent invocation crossed its cancel fence."""
+    return bool(context.cancel_event is not None and context.cancel_event.is_set())
+
+
+async def call_core(
+    context: ToolContext,
+    tool: str,
+    arguments: dict[str, Any],
+    *,
+    poll_seconds: float = 0.1,
+) -> dict[str, Any]:
+    """Call Core without allowing a late response to escape cancellation.
+
+    A number of rails run outside ``CoreTool.invoke`` (notably confirmation
+    preflight).  Those calls used to bypass the in-flight task set and could
+    publish a blocked/failed result after the run had already been cancelled.
+    Keep them on the same cancellation boundary as ordinary tools.
+    """
+    if _cancel_requested(context):
+        raise asyncio.CancelledError
+    call = asyncio.create_task(context.gateway.call(
+        project_id=context.project_id,
+        run_id=context.run_id,
+        token=context.token,
+        tool=tool,
+        arguments=arguments,
+    ))
+    if context.inflight_core_calls is not None:
+        context.inflight_core_calls.add(call)
+    try:
+        while True:
+            if _cancel_requested(context):
+                call.cancel()
+                await asyncio.gather(call, return_exceptions=True)
+                raise asyncio.CancelledError
+            done, _pending = await asyncio.wait({call}, timeout=poll_seconds)
+            if done:
+                if _cancel_requested(context):
+                    raise asyncio.CancelledError
+                return call.result()
+    except BaseException:
+        if not call.done():
+            call.cancel()
+        await asyncio.gather(call, return_exceptions=True)
+        raise
+    finally:
+        if context.inflight_core_calls is not None:
+            context.inflight_core_calls.discard(call)
 
 
 @dataclass
@@ -1080,13 +1224,26 @@ CORE_TOOL_SPECS = (
     ),
     ToolSpec(
         "get_goal_context",
-        "读取服务端生成的有界目标上下文，只返回结构化资料结论、约束、候选和证据引用，不返回长篇原文工具历史。",
+        "读取服务端生成的有界目标上下文，只返回结构化资料结论、约束、候选和证据引用，不返回长篇原文工具历史。候选可能被截断，回执中的 candidatesTruncated 和 candidateTotal 是准数。",
         {}, display="正在整理目标生成依据",
+    ),
+    ToolSpec(
+        "get_analysis_candidates",
+        "分页读取完整的资料分析候选集。需要逐条盘点候选时用这个，不要把 get_goal_context 里被截断的候选当作全集。",
+        {
+            "cursor": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "kind": STRING,
+        },
+        display="正在分页读取分析候选",
     ),
     ToolSpec("list_documents", "列出项目全部资料及修订和解析状态。", {}, display="正在查看资料清单"),
     ToolSpec(
         "require_product_ledger",
-        "将用户明确要求的产品/规则大清单台账写入当前项目策略；启用后，在台账 finalized 前禁止建立正式规则、指标、操作计划或写入资源。",
+        "将产品/规则大清单台账写入当前项目策略；启用后，在台账 finalized 前禁止建立正式规则、指标、操作计划或写入资源。"
+        "只能在专家通过确认卡明确批准后调用，不得凭对话措辞推测启用："
+        "专家诉求出现逐项对账、去重归并、数量核对（如「保留 N 条与 M 组归并」）等信号时，"
+        "先用 request_confirmation 询问「是否启用产品台账门禁」，批准后再调用本工具。",
         {"required": {"type": "boolean"}},
         display="正在启用产品清单台账门禁",
     ),
@@ -2343,12 +2500,17 @@ INTERJECTION_TOOL_SPECS = (
         "处置一条专家插话（编号见项目状态 pendingInterjections 和本轮目标）。resolution 按「这条指令什么时候失效」选择："
         "constraint=「不许/一律/以后都」类长期规矩，登记后每轮生效直到专家撤销，需提供 text（可用 replaces_constraint_id 覆盖旧条款）；"
         "task=本轮做不完的一次性动作，转成跨轮待办，需提供 text；"
-        "satisfied=已执行完成或本来就符合，必须在 evidence 引用具体产物位置（文件路径、条目 ID 或状态事实），不能只写一句「已满足」；"
+        "satisfied=已执行完成或本来就符合，必须在 evidence 提供可验真锚点（形如 revision:修订号、file:路径、"
+        "constraint:编号、task:编号、interaction:交互ID，多个用分号分隔，可附说明文字）；"
+        "服务端会逐个锚点查表验真，查无实据会被拒绝，不要编造标识；"
+        "answered=纯提问或咨询，已在本轮正文中回答，需在 text 简述回答要点；"
         "rejected=与已批准计划或业务事实冲突，必须在 reason 说明理由。"
-        "每条插话在本轮结束前必须有处置结论；执行中被阶段守卫拦截时不选 rejected，改用 ask(kind='conflict_decision') 请专家裁决。",
+        "每条插话在本轮结束前必须有处置结论；执行中被阶段守卫拦截时不选 rejected，改用 ask(kind='conflict_decision') 请专家裁决。"
+        "助判信号：插话要求对产品/规则大清单逐项对账（去重、归并、数量核对、唯一标识）时，"
+        "不要静默启用台账门禁——先用 request_confirmation 请专家确认是否启用，批准后再调 require_product_ledger。",
         {
             "interjection_id": {"type": "integer", "minimum": 1},
-            "resolution": {"type": "string", "enum": ["constraint", "task", "satisfied", "rejected"]},
+            "resolution": {"type": "string", "enum": ["constraint", "task", "satisfied", "answered", "rejected"]},
             "text": {"type": "string", "maxLength": 2000},
             "evidence": {"type": "string", "maxLength": 2000},
             "reason": {"type": "string", "maxLength": 2000},
@@ -2360,7 +2522,8 @@ INTERJECTION_TOOL_SPECS = (
     ),
     ToolSpec(
         "complete_interjection_task",
-        "完成一条由插话转来的待办（编号见项目状态 openInterjectionTasks）。必须在 evidence 引用具体产物位置证明完成，不能只声称做完。",
+        "完成一条由插话转来的待办（编号见项目状态 openInterjectionTasks）。必须在 evidence 提供可验真锚点"
+        "（形如 revision:修订号、file:路径，多个用分号分隔）证明完成；服务端会逐个查表验真，查无实据会被拒绝。",
         {
             "interjection_id": {"type": "integer", "minimum": 1},
             "evidence": {"type": "string", "minLength": 1, "maxLength": 2000},
@@ -2475,18 +2638,18 @@ class CoreTool(Tool):
                     raise asyncio.CancelledError
                 done, _pending = await asyncio.wait({call}, timeout=FULL_READ_PROGRESS_INTERVAL_SECONDS)
                 if done:
+                    if self.context.cancel_event is not None and self.context.cancel_event.is_set():
+                        raise asyncio.CancelledError
                     result = call.result()
                     break
                 elapsed = max(0, int(time.monotonic() - started))
                 if self.spec.name == "read_documents_fully":
                     progress_unavailable = False
                     try:
-                        progress = await self.context.gateway.call(
-                            project_id=self.context.project_id,
-                            run_id=self.context.run_id,
-                            token=self.context.token,
-                            tool="get_material_analysis_progress",
-                            arguments={
+                        progress = await call_core(
+                            self.context,
+                            "get_material_analysis_progress",
+                            {
                                 "started_after": started_after,
                                 "filenames": arguments.get("filenames", []),
                             },
@@ -2525,6 +2688,8 @@ class CoreTool(Tool):
                 self.context.inflight_core_calls.discard(call)
         if cache_key is not None and not result.get("error"):
             self.context.stable_read_cache[cache_key] = result
+        if _cancel_requested(self.context):
+            raise asyncio.CancelledError
         autonomous_recovery = _autonomous_recovery(self.spec.name, arguments, result, self.context)
         if autonomous_recovery is not None:
             result = autonomous_recovery
@@ -2685,7 +2850,10 @@ def _autonomous_recovery(
     )
     previous = context.technical_recoveries.get(issue_id, {})
     previous_attempt = _non_negative_int(previous.get("attempt"))
-    exhausted = previous_attempt >= max_attempts
+    # 策略可以声明这条 issue 本来就没有自愈路径（例如承载阶段一跳不可达）。
+    # 这种情况下让模型再试一遍只是把预算烧在死路上，直接转成用户可操作的选择。
+    auto_recoverable = recovery_config.get("autoRecoverable") is not False
+    exhausted = not auto_recoverable or previous_attempt >= max_attempts
     attempt = previous_attempt if exhausted else previous_attempt + 1
     recovery_actions = [
         {
@@ -2700,6 +2868,17 @@ def _autonomous_recovery(
         },
     ]
     recovery = {
+        # 策略自带的恢复上下文（例如能力所属阶段）必须跟着 issue 一起持久化，
+        # 否则页面恢复动作和阶段转换都无从判断这条 issue 已经解决。
+        **(dict(recovery_config.get("details")) if isinstance(recovery_config.get("details"), Mapping) else {}),
+        # 这条 issue 可能已经被判定成没有出路（例如转换被门禁挡回）。模型在同一轮里
+        # 再撞一次同样的边界时，不能把这份判定连同未满足项一起重置掉，否则恢复卡又
+        # 退回一句「已停止」，用户点「继续」还会回到同一个循环。
+        **{
+            key: previous[key]
+            for key in ("blocked", "blockers", "transitionError", "stoppedSummary")
+            if key in previous
+        },
         "issueId": issue_id,
         "requiredTool": required_tool,
         "sourceTool": tool_name,
@@ -2723,15 +2902,27 @@ def _autonomous_recovery(
             "repairAttempt": attempt,
             "tracePhase": "repairing",
             "problemVisibility": "activity",
-            "instruction": (
+            "instruction": str(result.get("instruction") or (
                 "这是系统可自行恢复的版本冲突。先重新读取当前建模计划和涉及的资源快照，"
                 "再按最新 revision 与 resource hash 生成新的参数和 mutation_id；"
                 "不得原样重放旧 Change Set。"
+            )),
+            "display": (
+                dict(result["display"]) if isinstance(result.get("display"), Mapping)
+                else {"text": "内容版本已更新，正在同步最新状态后继续"}
             ),
-            "display": {"text": "内容版本已更新，正在同步最新状态后继续"},
         }
     if context.release_required_tool is not None:
         context.release_required_tool(required_tool)
+    stopped_summary = str(
+        result.get("stoppedSummary") or "自动同步仍未完成，请选择如何处理当前成果。"
+    )
+    # 策略可以带一份自己的收尾指令。像「承载阶段走不通」这种情况，模型手上还有
+    # 一条真能走的路（先读状态、再按可走的路径推进），换成通用的「停止并等待用户」
+    # 会把这条路一起抹掉，模型又只剩下向用户解释平台能力这一个出口。
+    stopped_instruction = str(recovery_config.get("stoppedInstruction") or "").strip() or (
+        "自动恢复已达到上限。停止继续尝试并等待用户选择；不要把技术错误或内部参数交给用户。"
+    )
     return {
         **dict(result),
         "issueId": issue_id,
@@ -2740,11 +2931,9 @@ def _autonomous_recovery(
         "repairStopped": True,
         "tracePhase": "waiting",
         "problemVisibility": "recovery",
-        "customerSummary": "自动同步仍未完成，请选择如何处理当前成果。",
-        "instruction": (
-            "自动恢复已达到上限。停止继续尝试并等待用户选择；不要把技术错误或内部参数交给用户。"
-        ),
-        "display": {"text": "自动同步仍未完成，等待选择后续处理"},
+        "customerSummary": stopped_summary,
+        "instruction": stopped_instruction,
+        "display": {"text": stopped_summary},
         "recoveryAction": recovery_actions[0],
         "recoveryActions": recovery_actions,
     }
@@ -2853,6 +3042,8 @@ class ProjectStateTool(Tool):
     async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
         if self.context.state_action is None:
             raise RuntimeError("项目状态工具未绑定")
+        if _cancel_requested(self.context):
+            raise asyncio.CancelledError
         try:
             result = await self.context.state_action(self.spec.name, input_dict(inputs))
         except AgentRuntimeError as error:
@@ -2869,6 +3060,151 @@ class ProjectStateTool(Tool):
             }
         if not result.get("error"):
             self.context.validation_repair.record_success(self.spec.name)
+        # A cancelled state snapshot is an expected terminal observation, not
+        # a failed tool invocation.  Keep the cancellation reason out of the
+        # generic validation/recovery classifier.
+        cancellation = result.get("cancellation")
+        if result.get("execution") in {"stopping", "cancelled"} or (
+            isinstance(cancellation, Mapping) and cancellation.get("requested") is True
+        ):
+            result.pop("error", None)
+        return json.dumps(result, ensure_ascii=False)
+
+    async def stream(self, inputs: Any, **kwargs: Any):
+        yield await self.invoke(inputs, **kwargs)
+
+
+def phase_capability_redirect(
+    tool_name: str,
+    arguments: dict[str, Any],
+    host_phase: str,
+    context: ToolContext,
+    *,
+    current_phase: str | None = None,
+) -> dict[str, Any]:
+    """Answer an out-of-phase controlled write with a deterministic phase redirect.
+
+    工具面收敛和写入边界门禁是两条独立的拦截路径：工具没注册时由占位工具接住，
+    注册了但阶段不对时由 WriteSafetyRail 接住。两边必须给出同一份结构化出口，
+    否则模型仍会在其中一条路径上撞到「这件事做不了」，再讲成平台缺少写入能力。
+    """
+    phase = context.phase if current_phase is None else current_phase
+    host_label = BUSINESS_PHASE_LABELS.get(host_phase, host_phase)
+    current_label = BUSINESS_PHASE_LABELS.get(phase, phase)
+    host_phases = phase_capability_hosts(tool_name) or (host_phase,)
+    # 承载阶段这一跳走不走得通，决定这条 issue 还值不值得自愈：可达就先自己切阶段，
+    # 不可达时再让模型去试也只是把恢复预算烧在死路上，不如立刻给用户可操作的出口。
+    reachable = host_phase in BUSINESS_PHASE_EDGES.get(phase, ())
+    if reachable:
+        stopped_summary = f"这次修改还没有落盘，请选择是切回「{host_label}」阶段继续，还是保留当前成果。"
+        instruction = (
+            "这是阶段能力边界，不是平台缺少这项能力，也不是内容问题。"
+            f"立即调用 transition_project_state 转到 {host_phase}；转换成功后本轮工具面会重新加载，"
+            "再原样重提这次修改。不得向用户声称写入能力不可用或要求用户等待平台开放，"
+            "也不得改用自由文件写入绕过受控链路。"
+        )
+        customer_summary = f"正在切回「{host_label}」阶段继续这次修改。"
+        display_text = f"当前阶段不承载这项修改，正在切回「{host_label}」阶段"
+    else:
+        stopped_summary = (
+            f"这次修改要在「{host_label}」阶段做，而从「{current_label}」不能直接过去，"
+            "请选择如何处理当前成果。"
+        )
+        instruction = (
+            "这是阶段能力边界，不是平台缺少这项能力，也不是内容问题。"
+            f"「{host_label}」阶段承载这项修改，但从「{current_label}」不能直接转换过去，"
+            "不要反复尝试这次转换。先调用 get_project_state 看 allowedTransitions，"
+            "按可走的路径推进；需要用户拿主意时用 request_confirmation 或 ask 给出具体选项。"
+            "不得向用户声称写入能力不可用或要求用户等待平台开放，"
+            "也不得改用自由文件写入绕过受控链路。"
+        )
+        customer_summary = stopped_summary
+        display_text = f"这项修改要回到「{host_label}」阶段处理"
+    result: dict[str, Any] = {
+        "error": "TOOL_PHASE_UNAVAILABLE",
+        "message": (
+            f"{tool_name} 属于「{host_label}」阶段的受控写入能力，"
+            f"当前业务阶段是「{current_label}」。"
+        ),
+        "retryable": False,
+        "currentPhase": phase,
+        "requiredPhase": host_phase,
+        "requiredPhaseLabel": host_label,
+        # 同一个承载阶段上的写入共用一条 issue 和一份恢复预算。按工具名分账时，
+        # 模型在受控链路里换个工具重试就能各拿一份预算，用户要看着十几次失败才等到出口。
+        "issueId": f"phase-capability-{host_phase}",
+        "recovery": {
+            "owner": "agent",
+            "strategy": PHASE_CAPABILITY_STRATEGY,
+            "requiredTool": "transition_project_state",
+            "maxAttempts": 2,
+            "autoRecoverable": reachable,
+            # 这一跳走不通时，模型手上还有一条真能走的路，收尾指令必须保留它，
+            # 否则只剩下「停止并等待用户」，等于又把出口交回给平台。
+            "stoppedInstruction": "" if reachable else instruction,
+            "details": {
+                "requiredPhase": host_phase,
+                "requiredPhaseLabel": host_label,
+                "hostPhases": list(host_phases),
+                "code": "TOOL_PHASE_UNAVAILABLE",
+                "stoppedSummary": stopped_summary,
+                "phaseReachable": reachable,
+            },
+        },
+        "instruction": instruction,
+        "customerSummary": customer_summary,
+        "display": {"text": display_text},
+        "stoppedSummary": stopped_summary,
+    }
+    recovered = _autonomous_recovery(tool_name, arguments, result, context)
+    if recovered is not None:
+        result = recovered
+    if result.get("problemVisibility") == "recovery":
+        context.recovery_waiting = True
+    return result
+
+
+class PhaseUnavailableTool(Tool):
+    """Answer an out-of-phase write with a deterministic phase redirect.
+
+    工具面随业务阶段收敛，不属于当前阶段的写入工具以前直接从工具面消失。
+    模型只能撞上「工具不存在」，于是把阶段边界讲成平台缺少写入能力、
+    让用户等待平台开放（见修复待落盘的停滞会话）。这里改成显式注册、
+    确定性拒绝：先由自动恢复链路切回承载该能力的阶段再重提同一次修改，
+    恢复预算用尽后转成用户可操作的恢复动作，而不是无限等待。
+    """
+
+    def __init__(self, spec: ToolSpec, host_phase: str, context: ToolContext) -> None:
+        host_label = BUSINESS_PHASE_LABELS.get(host_phase, host_phase)
+        super().__init__(
+            ToolCard(
+                id=f"{spec.name}_{context.run_id}",
+                name=spec.name,
+                description=(
+                    f"{spec.display}。该能力由「{host_label}」阶段承载，当前阶段不执行："
+                    f"先调用 transition_project_state 转到 {host_phase}，再重新提交同一次修改。"
+                ),
+                # 这里只负责回答「能力在哪个阶段」，不校验业务参数：
+                # 放开入参才能接住模型按真实契约发起的那一次调用。
+                input_params={"type": "object", "properties": {}, "additionalProperties": True},
+                parallel_safe=False,
+            )
+        )
+        self.spec = spec
+        self.host_phase = host_phase
+        self.context = context
+
+    async def invoke(self, inputs: Any, **_kwargs: Any) -> str:
+        # 这条路径会持久化一条阶段能力 issue 并置 recovery_waiting。越过取消点还落库的话，
+        # 用户明明已经停了这一跳，下次恢复这次运行时仍会收到那张恢复卡。
+        if _cancel_requested(self.context):
+            raise asyncio.CancelledError
+        arguments = input_dict(inputs)
+        result = phase_capability_redirect(
+            self.spec.name, arguments, self.host_phase, self.context,
+        )
+        if self.context.after_core_tool is not None:
+            await self.context.after_core_tool(self.spec.name, arguments, result)
         return json.dumps(result, ensure_ascii=False)
 
     async def stream(self, inputs: Any, **kwargs: Any):
@@ -3055,10 +3391,16 @@ def build_tools(context: ToolContext) -> list[Tool]:
         context.required_tools,
         tool_profile=context.tool_profile,
     )
+    capability_specs = phase_capability_specs(
+        context.phase,
+        context.required_tools,
+        tool_profile=context.tool_profile,
+    )
     return [
         *(ProjectStateTool(spec, context) for spec in PROJECT_STATE_TOOL_SPECS),
         *(ProjectStateTool(spec, context) for spec in INTERJECTION_TOOL_SPECS),
         *(CoreTool(spec, context) for spec in core_specs),
+        *(PhaseUnavailableTool(spec, host_phase, context) for spec, host_phase in capability_specs),
         FocusTool(context),
         NotifyTool(context),
         AskTool(context.run_id),
@@ -3111,6 +3453,38 @@ CHANGE_SET_DIRECT_ACTION_TOOLS = frozenset({
     "create_object", "create_rule", "create_operation", "create_metric",
     "patch_object", "patch_rule", "patch_operation", "patch_metric",
 })
+# 受控写入链路按阶段分家：领域候选走 Change Plan / Change Set，脚本走符号补丁。
+# 评测失败后的修复回合往往落在另一个阶段上，工具面收敛会让整条链路整体消失。
+DOMAIN_CHANGE_CONTROL_TOOLS = frozenset({
+    "create_change_plan", "get_change_plan", "revise_change_plan",
+    "stage_change_set", "get_change_set_receipt", "validate_change_set", "discard_change_set",
+})
+SCRIPT_REPAIR_TOOLS = frozenset({
+    "define_script_contract", "get_script_contract", "get_script_edit_context",
+    "stage_script_patch", "run_script_test",
+})
+# 对象关系审阅也是受控写入：apply=true 会把选中的候选写进工作版本。它和上面两条链路
+# 不同的是，确定性验证和评测阶段按只读保留它做失败归因，所以只在不承载它的阶段缺席。
+OBJECT_RELATION_REVIEW_TOOLS = frozenset({"review_object_relations"})
+PHASE_CAPABILITY_STRATEGY = "phase_capability"
+# 每条受控链路的归属阶段。缺席时不再让工具静默消失：注册一个确定性拒绝的同名工具，
+# 明确回答「这项能力在哪个阶段」，否则模型只会撞上未注册工具，
+# 再把阶段边界讲成平台缺少写入能力并要求用户无限等待。
+#
+# 一条链路可以有多个承载阶段（例如脚本修复在确定性验证和增量建模里都在）。
+# 按当前阶段一跳可达优先挑选，挑不出可达的就退回第一个，由重定向去解释走不通。
+PHASE_CAPABILITY_HOSTS: tuple[tuple[frozenset[str], tuple[str, ...]], ...] = (
+    (DOMAIN_CHANGE_CONTROL_TOOLS, ("knowledge", "increment")),
+    (OBJECT_RELATION_REVIEW_TOOLS, ("knowledge", "increment")),
+    (SCRIPT_REPAIR_TOOLS, ("validation", "increment")),
+    (FUSION_PHASE_TOOLS, ("increment",)),
+    (EVALUATION_PHASE_TOOLS, ("validation", "evaluation", "release")),
+)
+# 修复回合可能落在建模主链路的任一后段阶段上，这些阶段都要这层显式拒绝；
+# intake / goal / process 是前置阶段，工具面保持收敛。
+PHASE_CAPABILITY_STUB_PHASES = frozenset({
+    "knowledge", "increment", "validation", "evaluation", "release",
+})
 
 # 生成契约管辖的工具：产物受 packageContract 校验器约束的写入面。
 # 判定「本阶段要不要注入契约」直接耦合到这张表和阶段工具过滤——契约和它管的
@@ -3159,7 +3533,9 @@ def core_tool_specs_for_phase(
                 selected_specs.append(spec)
         return tuple(selected_specs)
     allowed_domain = phase in {"knowledge", "increment"}
-    allowed_domain_read = allowed_domain or phase == "validation"
+    # 评测失败归因必须能读到当前领域资源；只读工具缺席时模型只能凭记忆猜内容，
+    # 或者把「读不到」讲成平台能力问题。
+    allowed_domain_read = allowed_domain or phase in {"validation", "evaluation"}
     allowed_fusion = phase == "increment"
     allowed_evaluation = phase in {"validation", "evaluation", "release"}
     selected_specs = []
@@ -3186,6 +3562,108 @@ def core_tool_specs_for_phase(
             continue
         selected_specs.append(spec)
     return tuple(selected_specs)
+
+
+def phase_capability_hosts(name: str) -> tuple[str, ...]:
+    """List every business phase that carries this controlled capability."""
+    for tool_names, host_phases in PHASE_CAPABILITY_HOSTS:
+        if name in tool_names:
+            return host_phases
+    return ()
+
+
+def _recovery_host_phases(recovery: Mapping[str, Any]) -> tuple[str, ...]:
+    """Read back every phase that can close this phase-capability issue."""
+    hosts = tuple(
+        str(item).strip()
+        for item in recovery.get("hostPhases") or ()
+        if str(item).strip()
+    )
+    if hosts:
+        return hosts
+    required = str(recovery.get("requiredPhase") or "").strip()
+    return (required,) if required else ()
+
+
+def _carries_phase_capability_recovery(recovery: Mapping[str, Any], phase: str) -> bool:
+    """Tell whether `phase` can carry this out-of-phase write recovery.
+
+    一条链路可能有多个承载阶段，模型转到其中任何一个都算这条 issue 有了去处；
+    只认 requiredPhase 会把已经能落盘的写入继续挂在未完成恢复上。
+    """
+    if str(recovery.get("strategy") or "") != PHASE_CAPABILITY_STRATEGY:
+        return False
+    return phase in _recovery_host_phases(recovery)
+
+
+def _blocker_list(error: Mapping[str, Any]) -> list[str]:
+    """Pull the user-meaningful preconditions out of a refused phase transition.
+
+    AgentRuntimeError.to_dict() 会把 details 摊平到顶层，所以两层都要看；
+    没有具体未满足项时退回错误正文，至少让恢复卡说得出「为什么还不能过去」。
+    """
+    details = error.get("details")
+    raw: Any = ()
+    if isinstance(details, Mapping):
+        raw = details.get("blockers") or details.get("next") or ()
+    if not raw:
+        raw = error.get("blockers") or error.get("next") or ()
+    if isinstance(raw, (str, bytes)):
+        raw = [raw]
+    blockers = [
+        sanitize_visible_text(str(item)).strip()
+        for item in raw
+        if str(item or "").strip()
+    ]
+    blockers = [item for item in blockers if item][:10]
+    if blockers:
+        return blockers
+    message = str(error.get("reason") or error.get("error") or error.get("message") or "")
+    fallback = sanitize_visible_text(message).strip()
+    return [fallback] if fallback else []
+
+
+def phase_capability_host(name: str, phase: str = "") -> str:
+    """Pick the phase to redirect an out-of-phase call to.
+
+    优先选当前阶段一跳可达的承载阶段，这样重定向给出的指引是真能走通的；
+    都不可达时退回第一个承载阶段，由 phase_capability_redirect 去说明走不通，
+    而不是假装还能自愈。
+    """
+    hosts = phase_capability_hosts(name)
+    if not hosts:
+        return ""
+    reachable = BUSINESS_PHASE_EDGES.get(phase, ())
+    return next((host for host in hosts if host in reachable), hosts[0])
+
+
+def phase_capability_specs(
+    phase: str,
+    required_tools: frozenset[str] = frozenset(),
+    *,
+    tool_profile: str = "domain-v2",
+) -> tuple[tuple[ToolSpec, str], ...]:
+    """List the write capabilities that this phase does not carry.
+
+    They stay callable so an out-of-phase repair gets a deterministic answer
+    (「这项能力属于哪个阶段」) instead of an unregistered tool, which the model
+    can only read as a missing platform capability.
+    """
+    if phase not in PHASE_CAPABILITY_STUB_PHASES:
+        return ()
+    available = {
+        spec.name
+        for spec in core_tool_specs_for_phase(phase, required_tools, tool_profile=tool_profile)
+    }
+    unavailable: list[tuple[ToolSpec, str]] = []
+    for spec in CORE_TOOL_SPECS:
+        if spec.name in available:
+            continue
+        host_phase = phase_capability_host(spec.name, phase)
+        if not host_phase or host_phase == phase:
+            continue
+        unavailable.append((spec, host_phase))
+    return tuple(unavailable)
 
 
 def build_core_tools(context: ToolContext, names: set[str]) -> list[Tool]:

@@ -38,6 +38,7 @@ const EXCLUDED_TABLES = new Set([
   'project_operation_leases',
   'inflight_operations',
   'modeling_mcp_runtime',
+  'agent_run_cancellations',
   'user_llm_settings',
   'user_task_llm_settings',
   'llm_default_settings',

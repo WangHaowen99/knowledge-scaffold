@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 写入 diagrams/*.mmd 时只提交裸 Mermaid 源码，首个非空、非 %% 注释行必须是 flowchart TD 或 flowchart LR；绝不能生成 ```mermaid / ``` 等 Markdown 代码围栏。若校验返回 findings，逐项修正同一文件后再写入。
 - 先使用工具获得事实再下结论；不编造资料、业务口径、证据、评测结果或门禁结果。
 - 每轮先调用 get_project_state。project_agent_state 是唯一状态事实源；你只能调用 transition_project_state 提出转换，不能自行宣布进入下一阶段。
+- 工具面随业务阶段变化。工具返回阶段能力边界（例如 TOOL_PHASE_UNAVAILABLE，说明当前阶段不承载这项受控写入）时，这是阶段问题，不是平台缺陷，也不是内容问题：立即调用 transition_project_state 转到工具指明的阶段，工具面重新加载后原样重提同一次修改。任何情况下都不得对用户声称平台没有写入能力、工具未注册或环境不支持，不得让用户等待平台开放能力，也不得承诺能力恢复后自动继续；确实无法自行恢复时由服务端生成可操作的恢复选项。
 - 项目摘要和开放问题只用 update_project_context 写入同一状态行；不要创建或读取 .modeling/state.md。
 - .modeling/plan.md 只做工作拆解，不记录当前阶段、门禁结果或另一份状态。
 - 提到具体文件、流程节点、diff、证据或门禁时，先调用 focus，让中栏同时定位。
@@ -349,7 +351,7 @@ def _system_prompt(
 def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[SubAgentConfig]:
     material_tools = build_core_tools(context, {
         "list_documents", "list_document_outline", "read_document", "read_documents_fully",
-        "search_documents", "get_goal_context", "get_material_context",
+        "search_documents", "get_goal_context", "get_material_context", "get_analysis_candidates",
         "list_tables", "get_schema_overview", "describe_table", "read_table_rows",
     })
     package_read_names = {
@@ -360,22 +362,30 @@ def _subagents(settings: Settings, context: ToolContext, model: Any) -> list[Sub
         "list_package_sources", "list_package_fusion_plans", "get_package_fusion_plan",
         "analyze_package_merge", "read_package_source_file",
     }
+    try:
+        supports_parallel_tool_calls = (
+            "parallel_tool_calls" in inspect.signature(SubAgentConfig).parameters
+        )
+    except (TypeError, ValueError):
+        supports_parallel_tool_calls = False
 
     def config(agent_id: str, description: str, skill: str, tools: list[Any]) -> SubAgentConfig:
-        return SubAgentConfig(
-            agent_card=AgentCard(id=agent_id, name=agent_id, description=description),
-            system_prompt=(
+        config_kwargs: dict[str, Any] = {
+            "agent_card": AgentCard(id=agent_id, name=agent_id, description=description),
+            "system_prompt": (
                 "你是建模 Leader 派出的只读分析员。只完成分配给你的范围，逐条给出可定位证据，"
                 "明确区分原文、推断和开放问题；不得宣称已经写入或确认任何知识包内容。\n\n"
                 f"# 工作方法\n\n{_skill_body(settings.skills_dir / skill / 'SKILL.md')}"
             ),
-            tools=tools,
-            model=model,
-            rails=[ToolBoundaryRail(context), ActivityRail(context.emit, actor=agent_id)],
-            max_iterations=min(60, settings.max_iterations),
-            parallel_tool_calls=True,
-            restrict_to_work_dir=True,
-        )
+            "tools": tools,
+            "model": model,
+            "rails": [ToolBoundaryRail(context), ActivityRail(context.emit, actor=agent_id)],
+            "max_iterations": min(60, settings.max_iterations),
+            "restrict_to_work_dir": True,
+        }
+        if supports_parallel_tool_calls:
+            config_kwargs["parallel_tool_calls"] = True
+        return SubAgentConfig(**config_kwargs)
 
     return [
         config("material_analyst", "全文阅读指定资料并提炼来源、冲突和缺口", "material-analysis", material_tools),

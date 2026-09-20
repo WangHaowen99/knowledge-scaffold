@@ -1,6 +1,7 @@
 /* 工作台共享状态。字段刻意保持扁平，方便 useStore 用稳定引用做选择器订阅。 */
 import { createStore } from './store.js';
 import * as F from './mock/fixtures.js';
+import { formatTraceTime } from './time.js';
 import { refreshWorkbenchAfterConfirmation } from '../interaction-settlement.js';
 import {
   answerAgent,
@@ -17,6 +18,7 @@ import {
   getSnapshot,
   steerAgent,
   resumeAgentIssue,
+  resumeAgentPlan,
   updateConfirmPolicy,
   updateMaterialDirectives,
   uploadMaterial,
@@ -67,6 +69,7 @@ const initial = {
   progress: null,
   progressError: '',
   changePlan: null,
+  pausedPlan: null,
   objectRelationReview: null,
   openedObjectRelationTaskId: '',
   files: [],
@@ -88,6 +91,7 @@ const initial = {
   error: '',
   uploads: [],
   trace: [],
+  terminalRunIds: [],
   lastSeq: 0,
   replayUntilSeq: 0,
   autoStartSent: false,
@@ -103,6 +107,7 @@ const initial = {
   activeAnchor: 0,                      // 资料原文里选中的高亮段
   userMessages: [],
   activity: null,                       // { text, progress, sub, startedAt } | null
+  cancellation: null,                   // { count, tools, at } | null
   activityOpen: false,
   approved: Object.fromEntries(F.changeGroups.map((g) => [g.id, true])),
   openTiers: { caliber: true, structural: false, index: false },
@@ -120,7 +125,12 @@ const UPLOAD_POLL_INTERVAL_MS = 800;
 const UPLOAD_POLL_TIMEOUT_MS = 11 * 60_000;
 export const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'stopping']);
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled']);
-const TERMINAL_TOOL_PHASES = new Set(['completed', 'failed', 'blocked', 'rejected', 'waiting', 'cancelled']);
+const PROGRESS_RUN_STATUSES = new Set(['queued', 'running']);
+const TERMINAL_TOOL_PHASES = new Set(['completed', 'failed', 'blocked', 'rejected', 'waiting', 'cancelled', 'cancel_pending']);
+const ACTIVE_TOOL_PHASES = new Set(['started', 'repairing', 'cancel_pending']);
+const LATE_TOOL_PHASES_AFTER_TERMINAL = new Set([
+  'started', 'repairing', 'blocked', 'failed', 'rejected', 'waiting', 'cancel_pending',
+]);
 // 这条续跑文案由前端代发，却会被服务端当成用户意图做正则分类。原文里的
 // 「需要全文精读的资料继续按已保存设置执行」既会命中全文精读意图、强行拉起
 // read_documents_fully，又因为措辞含糊让模型反复推敲用户到底要什么（见 #1）。
@@ -345,6 +355,7 @@ export const actions = {
         progress: null,
         progressError: '',
         changePlan: pendingChangePlan,
+        pausedPlan: snapshot.pausedPlan || null,
         files: snapshot.files,
         materials: mergeUploadMaterials(snapshot.materials, store.get().uploads),
         candidateDiff: candidate.files || [],
@@ -354,10 +365,15 @@ export const actions = {
         objectRelationReview: snapshot.objectRelationReview || null,
         selectedMaterial: snapshot.materials[0]?.id || '',
         run: agent.run,
+        terminalRunIds: agent.run && TERMINAL_RUN_STATUSES.has(String(agent.run.status || ''))
+          ? [String(agent.run.id || '')].filter(Boolean)
+          : [],
         recovery: agent.state?.recovery || null,
         interaction: agent.interaction,
         reviewedChangeGroups: [],
         activity,
+        statusText: agent.statusText || '',
+        cancellation: agent.cancellation || null,
         loading: false,
         error: warning,
         selectedPath: ['flow', 'file', 'diff'].includes(focus.kind) ? focus.target : initialPath,
@@ -410,6 +426,7 @@ export const actions = {
       revision: snapshot.revision,
       packageVersion: snapshot.packageVersion || null,
       packageStatus: snapshot.packageStatus || null,
+      pausedPlan: snapshot.pausedPlan || null,
       files: snapshot.files,
       materials: snapshot.materials,
       materialContents,
@@ -580,9 +597,22 @@ export const actions = {
       }));
     }
     if (eventType === 'change_plan' && event.plan) {
-      store.set({ changePlan: event.plan });
+      store.set((state) => replaying ? state : ({
+        changePlan: event.plan.status === 'active' ? event.plan : state.changePlan,
+        pausedPlan: event.plan.status === 'paused' ? event.plan : (
+          state.pausedPlan?.id === event.plan.id ? null : state.pausedPlan
+        ),
+      }));
+      const planMessageId = `change-plan-${event.plan.id}`;
+      // bootstrap 会把待批准计划卡片预插在流首；回放到计划事件时先删再追加，
+      // 让卡片落回它在历史里的时间位置。实时更新仍原地替换，卡片不跳动。
+      if (replaying) {
+        store.set((state) => ({
+          messages: state.messages.filter((message) => message.id !== planMessageId),
+        }));
+      }
       actions.appendMessage({
-        id: `change-plan-${event.plan.id}`,
+        id: planMessageId,
         role: 'assistant',
         createdAt: event.createdAt,
         blocks: planCardBlocks(event.plan),
@@ -597,7 +627,7 @@ export const actions = {
         const runStatus = String(state.run?.status || '');
         const eventRunId = String(event.runId || '');
         const currentRunId = String(state.run?.id || '');
-        if ((runStatus && !ACTIVE_RUN_STATUSES.has(runStatus))
+        if ((runStatus && !PROGRESS_RUN_STATUSES.has(runStatus))
           || (eventRunId && currentRunId && eventRunId !== currentRunId)) return state;
         return { activity: progressActivity(event, state.activity) };
       });
@@ -606,6 +636,34 @@ export const actions = {
       const createdAt = event.createdAt || new Date().toISOString();
       const line = `${timeOf(createdAt)} · ${event.summary || '处理完成'}`;
       const terminal = TERMINAL_TOOL_PHASES.has(event.phase);
+      const active = ACTIVE_TOOL_PHASES.has(event.phase);
+      const eventRunId = String(event.runId || '');
+      const currentRunId = String(store.get().run?.id || '');
+      const currentRunStatus = String(store.get().run?.status || '');
+      // Historical terminal events remain auditable, but a late active event
+      // must never resurrect a stopped run or overwrite a newer run's view.
+      const terminalRunIds = store.get().terminalRunIds || [];
+      const staleTerminalEvent = !replaying
+        && eventRunId && terminalRunIds.includes(eventRunId)
+        && LATE_TOOL_PHASES_AFTER_TERMINAL.has(String(event.phase || ''));
+      const sameTerminalRun = !replaying
+        && eventRunId && eventRunId === currentRunId
+        && (currentRunStatus === 'stopping' || TERMINAL_RUN_STATUSES.has(currentRunStatus))
+        && LATE_TOOL_PHASES_AFTER_TERMINAL.has(String(event.phase || ''));
+      if (staleTerminalEvent || sameTerminalRun) {
+        if (seq) store.set({ lastSeq: seq, ...(seq >= store.get().replayUntilSeq ? { replayUntilSeq: 0 } : {}) });
+        return;
+      }
+      if (!replaying && active && (
+        (eventRunId && terminalRunIds.includes(eventRunId))
+        || (eventRunId && currentRunId && eventRunId !== currentRunId
+          && ACTIVE_RUN_STATUSES.has(currentRunStatus))
+        || (eventRunId && eventRunId === currentRunId && currentRunStatus === 'stopping')
+        || (eventRunId && eventRunId === currentRunId && TERMINAL_RUN_STATUSES.has(currentRunStatus))
+      )) {
+        if (seq) store.set({ lastSeq: seq, ...(seq >= store.get().replayUntilSeq ? { replayUntilSeq: 0 } : {}) });
+        return;
+      }
       store.set((state) => ({
         // 刷新后的历史回放只重建轨迹，不能清空 state 接口恢复的最新活动。
         activity: (() => { if (replaying) return state.activity; return terminal
@@ -666,6 +724,7 @@ export const actions = {
               text: event.summary || '当前步骤没有完成，系统已保留现有进展。',
               actions: recoveryActions,
               missingRequiredTools: event.missingRequiredTools || event.missing_required_tools || [],
+              blockers: Array.isArray(event.blockers) ? event.blockers : [],
               ledgerId: event.ledgerId || event.ledger_id || '',
               ledgerStatus: event.ledgerStatus || event.ledger_status || '',
               processed: event.processed ?? null,
@@ -678,6 +737,12 @@ export const actions = {
       }
     }
     if (eventType === 'message') {
+      const eventRunId = String(event.runId || '');
+      const current = store.get();
+      if (!replaying && eventRunId && current.terminalRunIds?.includes(eventRunId)) {
+        if (seq) store.set({ lastSeq: seq, ...(seq >= store.get().replayUntilSeq ? { replayUntilSeq: 0 } : {}) });
+        return;
+      }
       const terminalDocumentIds = new Set((event.blocks || [])
         .filter((block) => block.type === 'uploadResult')
         .flatMap((block) => block.details || [])
@@ -699,6 +764,11 @@ export const actions = {
       actions.appendMessage({ ...event, id: `event-${seq}` });
     }
     if (eventType === 'message_delta' && event.messageId && event.delta) {
+      const eventRunId = String(event.runId || '');
+      if (!replaying && eventRunId && store.get().terminalRunIds?.includes(eventRunId)) {
+        if (seq) store.set({ lastSeq: seq, ...(seq >= store.get().replayUntilSeq ? { replayUntilSeq: 0 } : {}) });
+        return;
+      }
       store.set((state) => {
         const index = state.messages.findIndex((message) => message.id === event.messageId);
         if (index < 0) {
@@ -728,6 +798,11 @@ export const actions = {
       }));
     }
     if (eventType === 'reasoning_delta' && event.messageId && event.delta) {
+      const eventRunId = String(event.runId || '');
+      if (!replaying && eventRunId && store.get().terminalRunIds?.includes(eventRunId)) {
+        if (seq) store.set({ lastSeq: seq, ...(seq >= store.get().replayUntilSeq ? { replayUntilSeq: 0 } : {}) });
+        return;
+      }
       store.set((state) => {
         const index = state.messages.findIndex((message) => message.id === event.messageId);
         if (index < 0) {
@@ -825,19 +900,51 @@ export const actions = {
       store.set((state) => {
         const eventRunId = String(event.runId || state.run?.id || '');
         const sameRun = Boolean(eventRunId && eventRunId === String(state.run?.id || ''));
-        if (sameRun && TERMINAL_RUN_STATUSES.has(String(state.run?.status || ''))
-          && ACTIVE_RUN_STATUSES.has(String(event.status || ''))) return state;
-        const inactive = ['waiting', 'suspended', 'completed', 'failed', 'cancelled'].includes(event.status);
+        const currentStatus = String(state.run?.status || '');
+        const normalizedStatus = ['RUN_CANCELLING', 'RUN_CANCELLED'].includes(String(event.status || ''))
+          ? 'cancelled'
+          : String(event.status || '');
+        if (eventRunId && state.run?.id && eventRunId !== String(state.run.id)
+          && ACTIVE_RUN_STATUSES.has(currentStatus)) {
+          return TERMINAL_RUN_STATUSES.has(normalizedStatus)
+            ? {
+                terminalRunIds: [...new Set([...(state.terminalRunIds || []), eventRunId])],
+                trace: settleTerminalToolTrace(state.trace, eventRunId, normalizedStatus),
+              }
+            : state;
+        }
+        if (sameRun && currentStatus === 'stopping'
+          && !['cancelled', 'suspended'].includes(normalizedStatus)) return state;
+        if (sameRun && (
+          TERMINAL_RUN_STATUSES.has(currentStatus)
+          || (eventRunId && (state.terminalRunIds || []).includes(eventRunId))
+        )) return state;
+        if (sameRun && currentStatus === 'cancelled') return state;
+        const inactive = ['waiting', 'suspended', 'completed', 'failed', 'cancelled'].includes(normalizedStatus);
         return {
           run: {
             ...(state.run || {}),
             id: eventRunId,
-            status: event.status,
+            status: normalizedStatus,
             updatedAt: Number.isFinite(statusTime) ? event.createdAt : null,
           },
-          statusText: event.text || '',
+          ...(TERMINAL_RUN_STATUSES.has(normalizedStatus) && eventRunId
+            ? { terminalRunIds: [...new Set([...(state.terminalRunIds || []), eventRunId])] }
+            : {}),
+          statusText: normalizedStatus === 'cancelled'
+            ? (event.text || '运行已停止，当前操作已取消')
+            : event.text || '',
+          ...(normalizedStatus === 'cancelled' || normalizedStatus === 'suspended'
+            ? {
+              cancellation: {
+                count: Number(event.cancelledToolCount) || 0,
+                tools: Array.isArray(event.cancelledTools) ? event.cancelledTools : [],
+                at: event.createdAt || new Date().toISOString(),
+              },
+            }
+            : {}),
           ...(inactive ? { activity: null } : {}),
-          ...(event.status === 'cancelled'
+          ...(normalizedStatus === 'cancelled'
             ? { trace: settleCancelledToolTrace(state.trace, eventRunId) }
             : {}),
         };
@@ -883,7 +990,10 @@ export const actions = {
         })),
       }));
       await waitForPlanContinuationBoundary(projectId);
-      await actions.send(planContinuationPrompt(approved));
+      // 批准/拒绝随结构化字段下发，服务端不再从文案措辞里猜决定。
+      await actions.send(planContinuationPrompt(approved), {
+        planDecision: approved ? 'approved' : 'rejected',
+      });
       return result;
     } catch (error) {
       const data = error?.data && typeof error.data === 'object' ? error.data : {};
@@ -892,17 +1002,15 @@ export const actions = {
       // 决定已经生效，只是指令没发出去；此时说“计划仍保持原状态”是假的，
       // 会把用户引去重新批准（见 #30）。
       const settled = Boolean(error?.planSettled);
-      let recoveryMessage = '计划仍保持原状态，请在当前计划卡重试。';
-      if (staleRun) {
-        recoveryMessage = '当前运行还没有接续服务重启前的建模计划，请先安全终止失效计划后重新规划。';
-      } else if (settled) {
-        recoveryMessage = '决定已经生效，只是助手当时仍在收尾、没有收到开工指令。等助手空闲后点「继续执行」即可。';
-      }
       store.set({
         error: {
           scope: 'change_plan',
           message: error instanceof Error ? error.message : '计划决定提交失败',
-          recovery: recoveryMessage,
+          recovery: staleRun
+            ? '当前运行还没有接续服务重启前的建模计划，请先安全终止失效计划后重新规划。'
+            : settled
+              ? '决定已经生效，只是助手当时仍在收尾、没有收到开工指令。等助手空闲后点「继续执行」即可。'
+              : '计划仍保持原状态，请在当前计划卡重试。',
           ...(staleRun ? { staleRun: true } : {}),
           ...(settled ? { resumePlan: { planId, approved } } : {}),
         },
@@ -924,7 +1032,9 @@ export const actions = {
     if (!projectId || !resume?.planId) return null;
     try {
       await waitForPlanContinuationBoundary(projectId);
-      await actions.send(planContinuationPrompt(resume.approved));
+      await actions.send(planContinuationPrompt(resume.approved), {
+        planDecision: resume.approved ? 'approved' : 'rejected',
+      });
       store.set({ error: '' });
       return true;
     } catch (cause) {
@@ -966,6 +1076,53 @@ export const actions = {
       return null;
     }
   },
+  async resumePausedPlan(planId) {
+    const { projectId, pausedPlan } = store.get();
+    if (!projectId || !planId || pausedPlan?.id !== planId) return null;
+    try {
+      const result = await resumeAgentPlan(projectId, planId);
+      store.set({
+        run: result.run || null,
+        pausedPlan: null,
+        changePlan: { ...pausedPlan, status: 'active' },
+        activity: null,
+        statusText: '正在从停止点继续未完成计划',
+        error: '',
+      });
+      await actions.refreshSnapshot();
+      return result;
+    } catch (error) {
+      await actions.refreshSnapshot().catch(() => undefined);
+      store.set({ error: {
+        scope: 'change_plan',
+        message: error instanceof Error ? error.message : '未完成计划恢复失败',
+        recovery: '计划与候选内容仍然保留，请刷新状态后重试。',
+      } });
+      return null;
+    }
+  },
+  async endPausedPlan(planId) {
+    const { projectId, pausedPlan } = store.get();
+    if (!projectId || !planId || pausedPlan?.id !== planId) return null;
+    try {
+      const result = await safeTerminateChangePlanRequest(projectId, planId);
+      store.set({
+        pausedPlan: null,
+        changePlan: null,
+        statusText: '已结束暂停计划，候选内容和审计记录保留，可以重新规划',
+        error: '',
+      });
+      await actions.refreshSnapshot();
+      return result;
+    } catch (error) {
+      store.set({ error: {
+        scope: 'change_plan',
+        message: error instanceof Error ? error.message : '暂停计划结束失败',
+        recovery: '计划仍保持暂停状态，请刷新后重试。',
+      } });
+      return null;
+    }
+  },
   async terminateStaleRun() {
     const { projectId } = store.get();
     if (!projectId) return null;
@@ -996,9 +1153,20 @@ export const actions = {
       const agent = await getAgentState(projectId);
       store.set({
         run: agent.run,
+        terminalRunIds: agent.run && TERMINAL_RUN_STATUSES.has(String(agent.run.status || ''))
+          ? [...new Set([...(store.get().terminalRunIds || []), String(agent.run.id || '')].filter(Boolean))]
+          : store.get().terminalRunIds,
         interaction: agent.interaction,
         workflow: agent.state || null,
         recovery: agent.state?.recovery || null,
+        activity: agent.activity
+          ? progressActivity(agent.activity, store.get().activity)
+          : (agent.run && TERMINAL_RUN_STATUSES.has(String(agent.run.status || '')) ? null : store.get().activity),
+        statusText: agent.statusText || store.get().statusText,
+        cancellation: agent.cancellation || store.get().cancellation || null,
+        trace: agent.run && TERMINAL_RUN_STATUSES.has(String(agent.run.status || ''))
+          ? settleTerminalToolTrace(store.get().trace, agent.run.id, agent.run.status)
+          : store.get().trace,
         lastSeq: Number(agent.lastSeq) || 0,
       });
       return agent;
@@ -1432,7 +1600,7 @@ export const actions = {
   },
   async cancel() {
     const { projectId, run, activity } = store.get();
-    if (!projectId || !run || !['queued', 'running', 'suspended'].includes(run.status)) return null;
+    if (!projectId || !run || !['queued', 'running', 'waiting', 'suspended'].includes(run.status)) return null;
     store.set({
       run: { ...run, status: 'stopping' },
       activity: activity ? { ...activity, detail: '正在停止并核对已发出的修改，请稍候' } : activity,
@@ -1441,21 +1609,71 @@ export const actions = {
     });
     try {
       const result = await cancelAgent(projectId);
+      const responseRun = result?.run || null;
+      const staleTerminated = result?.terminatedStale === true;
+      const terminal = responseRun?.status === 'cancelled';
+      const suspended = responseRun?.status === 'suspended';
       store.set((state) => ({
-        run: result.run,
-        activity: null,
-        statusText: '已停止，已完成内容保留',
-        trace: settleCancelledToolTrace(state.trace, run.id),
+        run: staleTerminated
+          ? null
+          : responseRun || { ...run, status: suspended ? 'suspended' : 'stopping' },
+        terminalRunIds: terminal
+          ? [...new Set([...(state.terminalRunIds || []), String(run.id || '')].filter(Boolean))]
+          : state.terminalRunIds,
+        activity: staleTerminated || terminal || suspended ? null : state.activity,
+        statusText: staleTerminated
+          ? '已安全终止失效运行，候选内容与审计记录保留'
+          : terminal
+          ? '已停止，已完成内容保留'
+          : suspended
+            ? '停止请求已记录，仍有在途修改需要核对'
+            : '正在核对停止结果',
+        cancellation: result?.cancellation || state.cancellation || null,
+        trace: terminal
+          ? settleCancelledToolTrace(state.trace, run.id)
+          : state.trace,
       }));
+      if (!staleTerminated && !terminal && !suspended) {
+        await actions.waitForCancellation(run.id);
+      }
+      await actions.refreshSnapshot().catch(() => undefined);
       return result;
     } catch (error) {
-      store.set({
-        run,
-        activity,
-        error: error instanceof Error ? error.message : '停止运行失败，请重试',
-      });
+      await actions.refreshAgentState();
+      store.set({ error: error instanceof Error ? error.message : '停止运行失败，请重试' });
       return null;
     }
+  },
+  async waitForCancellation(runId, timeoutMs = 20_000) {
+    const { projectId } = store.get();
+    if (!projectId) return null;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const agent = await getAgentState(projectId);
+      const status = String(agent?.run?.status || '');
+      if (status === 'cancelled' || status === 'suspended' || !['queued', 'running', 'stopping'].includes(status)) {
+        store.set((state) => ({
+          run: agent.run || state.run,
+          terminalRunIds: status === 'cancelled'
+            ? [...new Set([...(state.terminalRunIds || []), String(runId || '')].filter(Boolean))]
+            : state.terminalRunIds,
+          interaction: agent.interaction,
+          workflow: agent.state || state.workflow,
+          recovery: agent.state?.recovery || state.recovery,
+          activity: status === 'cancelled' || status === 'suspended' ? null : (
+            agent.activity ? progressActivity(agent.activity, state.activity) : state.activity
+          ),
+          statusText: agent.statusText || state.statusText,
+          ...(TERMINAL_RUN_STATUSES.has(status)
+            ? { trace: settleTerminalToolTrace(state.trace, runId, status) }
+            : {}),
+          lastSeq: Number(agent.lastSeq) || state.lastSeq,
+        }));
+        return agent;
+      }
+      await wait(100);
+    }
+    return null;
   },
   async uploadPackage(file, options = {}) {
     const { projectId } = store.get();
@@ -1602,8 +1820,9 @@ export function mergeToolTrace(trace, event, seq) {
     seq,
     runId: event.runId || '',
     toolCallId,
+    mutationId: String(event.mutationId || ''),
     createdAt,
-    at: timeOf(createdAt),
+    at: formatTraceTime(createdAt),
     name: event.name,
     phase: event.phase,
     summary: event.summary,
@@ -1618,6 +1837,7 @@ export function mergeToolTrace(trace, event, seq) {
     problemVisibility: event.problemVisibility || '',
     recoveryActions: event.recoveryActions || [],
     resolvedIssueIds: event.resolvedIssueIds || [],
+    cancelledAt: event.cancelledAt || '',
     segmentCount: 1,
     toolCallIds: toolCallId ? [toolCallId] : [],
   };
@@ -1637,6 +1857,19 @@ export function mergeToolTrace(trace, event, seq) {
     };
     return merged.slice(-300);
   }
+  const previousPhase = String(trace[index]?.phase || '');
+  const nextPhase = String(event.phase || '');
+  // Tool state is monotonic. A delayed started/repairing frame cannot reopen
+  // an activity whose terminal receipt was already observed.
+  if (TERMINAL_TOOL_PHASES.has(previousPhase) && ACTIVE_TOOL_PHASES.has(nextPhase)) {
+    return trace;
+  }
+  if (previousPhase === 'completed' && nextPhase !== 'completed') {
+    return trace;
+  }
+  if (previousPhase === 'cancelled' && !['cancelled', 'completed'].includes(nextPhase)) {
+    return trace;
+  }
   const merged = [...trace];
   const previousCallIds = merged[index].toolCallIds || [];
   const nextCallIds = toolCallId && !previousCallIds.includes(toolCallId)
@@ -1650,16 +1883,29 @@ export function mergeToolTrace(trace, event, seq) {
     at: merged[index].at || entry.at,
     segmentCount: Math.max(1, nextCallIds.length || merged[index].segmentCount || 1),
     toolCallIds: nextCallIds,
+    cancelledAt: event.cancelledAt || merged[index].cancelledAt || '',
   };
   return merged.slice(-300);
 }
 
 export function settleCancelledToolTrace(trace, runId) {
+  return settleTerminalToolTrace(trace, runId, 'cancelled');
+}
+
+export function settleTerminalToolTrace(trace, runId, status) {
   const targetRunId = String(runId || '');
+  const terminal = TERMINAL_RUN_STATUSES.has(String(status || ''))
+    ? String(status)
+    : 'cancelled';
+  const summary = terminal === 'cancelled'
+    ? '运行已停止，当前操作已取消'
+    : terminal === 'completed'
+      ? '运行已结束，当前操作已完成'
+      : '运行已结束，当前操作未完成';
   return (Array.isArray(trace) ? trace : []).map((item) => (
     String(item?.runId || '') === targetRunId
-      && ['started', 'repairing'].includes(String(item?.phase || ''))
-      ? { ...item, phase: 'cancelled', summary: '运行已停止，当前操作已取消' }
+      && ACTIVE_TOOL_PHASES.has(String(item?.phase || ''))
+      ? { ...item, phase: terminal, summary, cancelledAt: terminal === 'cancelled' ? (item.cancelledAt || new Date().toISOString()) : item.cancelledAt }
       : item
   ));
 }
@@ -1685,6 +1931,8 @@ function projectFromUrl() {
   return new URLSearchParams(window.location?.search || '').get('project');
 }
 
+/* 活动行折叠区只列当前这一轮在途的几条动作，都发生在此刻，
+   补日期只会挤掉摘要。完整轨迹在「过程」抽屉里带年月日。 */
 function timeOf(value) {
   const date = value ? new Date(value) : new Date();
   return Number.isNaN(date.getTime())

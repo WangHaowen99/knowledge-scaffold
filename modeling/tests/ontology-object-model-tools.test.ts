@@ -925,6 +925,12 @@ test('脚本工具先固化契约，再原子生成源码、说明、索引和�
   assert.equal(restaged.statusCode, 200, restaged.body);
   assert.notEqual(restaged.json().source_hash, staged.json().source_hash);
 
+  // 第二次补丁只改源码，根索引内容本身没有变化：此时也不得有人用不带流程图目录的版本覆盖它
+  const restagedIndex = await tool(app, project.id, 'read_file', { path: 'index.md' });
+  assert.equal(restagedIndex.statusCode, 200, restagedIndex.body);
+  assert.ok(restagedIndex.json().content.includes('- 流程图目录：diagrams/index.md'));
+  assert.match(restagedIndex.json().content, /\| 受控脚本执行 \| enabled \|/u);
+
   const formalBeforeStudioReview = (await getPackageArtifactStore().current(project.id))!.revision.oid;
   const blockedStudioReview = await app.inject({
     method: 'POST',

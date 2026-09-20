@@ -29,7 +29,8 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const runCredential = String(req.headers['x-modeling-agent-credential'] ?? '').trim();
   if ((req.url.startsWith('/internal/agent/tools/')
     || req.url.startsWith('/internal/agent/llm-config')
-    || req.url.startsWith('/internal/agent/acceptance/'))
+    || req.url.startsWith('/internal/agent/acceptance/')
+    || req.url.startsWith('/internal/agent/runs/'))
     && runCredential) {
     const internalUser = authenticateAgentRunCredential(
       String(req.headers['x-modeling-project'] ?? '').trim(),

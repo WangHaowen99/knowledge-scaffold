@@ -138,9 +138,17 @@ export const getMaterialReferrers = (id, documentId, anchor = '') => api(
 export const locateEvidence = (id, reference) => api(
   `${P(id)}/evidence/locate?ref=${encodeURIComponent(reference)}`,
 );
-export const startAgent = (id, message, baselineRevision = '') => api(`${P(id)}/agent/runs`, {
-  method: 'POST', body: JSON.stringify({ message, baselineRevision }),
+export const startAgent = (id, message, baselineRevision = '', options = {}) => api(`${P(id)}/agent/runs`, {
+  method: 'POST', body: JSON.stringify({
+    message,
+    baselineRevision,
+    ...(options.resumePlanId ? { resumePlanId: options.resumePlanId } : {}),
+  }),
 });
+export const resumeAgentPlan = (id, planId) => api(
+  `${P(id)}/agent/change-plans/${encodeURIComponent(planId)}/resume`,
+  { method: 'POST', body: '{}' },
+);
 export const startAgentIncrementRound = (id) => api(`${P(id)}/agent/increment/start`, {
   method: 'POST', body: '{}',
 });
@@ -148,6 +156,7 @@ export const steerAgent = (id, message, options = {}) => api(`${P(id)}/agent/ste
   method: 'POST', body: JSON.stringify({
     message,
     ...(options.purposeReviewCompleted ? { purposeReviewCompleted: true } : {}),
+    ...(options.planDecision ? { planDecision: options.planDecision } : {}),
   }),
 });
 export const resumeAgentIssue = (id, issueId, actionId) => api(

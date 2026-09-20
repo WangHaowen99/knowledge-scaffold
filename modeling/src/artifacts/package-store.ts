@@ -5,7 +5,12 @@ import { getDb } from '../db/index.js';
 import type { CoverageResult, PackageSpec } from '../types.js';
 import { updateManifestPlatformMetadata } from '../workflow/package-contract.js';
 import { parseRenderedPackageFiles } from '../workflow/package-import.js';
-import { renderPackage } from '../workflow/package-render.js';
+import {
+  DIAGRAM_INDEX_PATH,
+  ROOT_INDEX_PATH,
+  renderPackage,
+  renderRootIndex,
+} from '../workflow/package-render.js';
 import { canonicalizePackageSpec } from '../workflow/package-spec.js';
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import { validateGeneratedScriptSafety } from '../workflow/script-safety.js';
@@ -352,7 +357,7 @@ export class PackageArtifactStore {
       };
       const coverage: CoverageResult = { covered: [], uncovered: [] };
       validatePackageSpec(spec);
-      const target = packageFiles(spec, coverage, true);
+      const target = packageFiles(spec, coverage, { includeDraftTemplate: true });
       const changes = changesForManagedFiles(current.files, target);
       const action: NormalizedAction = {
         cause: 'draft_initialized',
@@ -410,7 +415,9 @@ export class PackageArtifactStore {
       const packageVersion = requiredText(input.spec.version, '包版本', 100);
       const note = optionalText(input.note, '版本备注', 1000);
       const current = await this.repository.snapshot(projectId);
-      const target = packageFiles(input.spec, input.coverage);
+      const target = packageFiles(input.spec, input.coverage, {
+        hasDiagramIndex: hasDiagramIndex(current.files),
+      });
       if (input.preserveUnchangedManagedFiles) {
         preserveUnchangedManagedFiles(current, target, this.viewFromSnapshot(current));
       } else {
@@ -460,7 +467,9 @@ export class PackageArtifactStore {
       validateCoverage(input.coverage);
       const current = await this.repository.snapshot(projectId);
       assertExpectedRevision(input.expectedRevision, current.revision.oid);
-      const target = packageFiles(input.spec, input.coverage);
+      const target = packageFiles(input.spec, input.coverage, {
+        hasDiagramIndex: hasDiagramIndex(current.files),
+      });
       if (input.preserveUnchangedManagedFiles) {
         preserveUnchangedManagedFiles(current, target, this.viewFromSnapshot(current));
       } else {
@@ -893,8 +902,13 @@ export class PackageArtifactStore {
       const path = validatePackagePath(input.path);
       const current = await this.repository.snapshot(projectId);
       const view = this.viewFromSnapshot(current);
+      const relativePath = path.slice(PACKAGE_PREFIX.length);
       const rendered = renderPackage(view.spec);
-      const generated = rendered[path.slice(PACKAGE_PREFIX.length)];
+      // 根索引单独渲染：renderPackage 的版本只在铺草稿模板时列流程图目录，
+      // 用它重置会把当前修订已有的 diagrams/index.md 从目录里抹掉。
+      const generated = relativePath === ROOT_INDEX_PATH
+        ? renderRootIndex(view.spec, hasDiagramIndex(current.files))
+        : rendered[relativePath];
       if (generated === undefined) throw new PackageArtifactStoreError('file_not_found', '文件不存在');
       const changes: ArtifactChange[] = [{ kind: 'write', path, content: generated }];
       const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
@@ -1372,7 +1386,7 @@ export class PackageArtifactStore {
       const spec = parseSpec(row.spec_json);
       const coverage = parseCoverage(row.coverage_json);
       const packageVersion = requiredText(String(row.version ?? ''), '包版本', 100);
-      const target = packageFiles(spec, coverage);
+      const target = packageFiles(spec, coverage, { hasDiagramIndex: hasDiagramIndex(head.files) });
       // 历史版本补建 revision_oid 时，当前 Git HEAD 可能已含流程图、
       // 导入附件或扩展目录。这些不属于规格派生文件，迁移不得删除。
       preserveImportedExtras(head.files, target);
@@ -2155,12 +2169,24 @@ function gitMetadata(action: NormalizedAction) {
   };
 }
 
+interface PackageFilesOptions {
+  /** 铺草稿模板：额外生成 diagrams/index.md 占位，并在根索引目录里列出它。 */
+  includeDraftTemplate?: boolean;
+  /** 当前修订已有流程图目录时，重渲染的根索引必须继续列出它，否则会切断流程图入口。 */
+  hasDiagramIndex?: boolean;
+}
+
+function hasDiagramIndex(files: readonly ArtifactFile[]): boolean {
+  return files.some((file) => file.path === `${PACKAGE_PREFIX}${DIAGRAM_INDEX_PATH}`);
+}
+
 function packageFiles(
   spec: PackageSpec,
   coverage: CoverageResult,
-  includeDraftTemplate = false,
+  options: PackageFilesOptions = {},
 ): Map<string, Uint8Array> {
   const normalizedSpec = canonicalizePackageSpec(spec);
+  const includeDraftTemplate = options.includeDraftTemplate === true;
   const encoder = new TextEncoder();
   const files = new Map<string, Uint8Array>([
     [SPEC_PATH, encoder.encode(`${JSON.stringify(normalizedSpec, null, 2)}\n`)],
@@ -2168,6 +2194,12 @@ function packageFiles(
   ]);
   for (const [path, content] of Object.entries(renderPackage(normalizedSpec, { includeDraftTemplate }))) {
     files.set(`${PACKAGE_PREFIX}${path}`, encoder.encode(content));
+  }
+  if (!includeDraftTemplate && options.hasDiagramIndex) {
+    files.set(
+      `${PACKAGE_PREFIX}${ROOT_INDEX_PATH}`,
+      encoder.encode(renderRootIndex(normalizedSpec, true)),
+    );
   }
   return files;
 }
@@ -2182,8 +2214,11 @@ function draftPackageFiles(
   spec: PackageSpec,
   coverage: CoverageResult,
 ): Map<string, Uint8Array> {
-  const previousCanonical = packageFiles(currentView.spec, currentView.coverage);
-  const target = packageFiles(spec, coverage);
+  const diagramIndex = hasDiagramIndex(current.files);
+  const previousCanonical = packageFiles(currentView.spec, currentView.coverage, {
+    hasDiagramIndex: diagramIndex,
+  });
+  const target = packageFiles(spec, coverage, { hasDiagramIndex: diagramIndex });
   preserveImportedExtras(current.files, target);
 
   for (const file of current.files) {
@@ -2260,7 +2295,9 @@ function preserveUnchangedManagedFiles(
   target: Map<string, Uint8Array>,
   currentView: PackageArtifactView,
 ): void {
-  const canonicalCurrent = packageFiles(currentView.spec, currentView.coverage);
+  const canonicalCurrent = packageFiles(currentView.spec, currentView.coverage, {
+    hasDiagramIndex: hasDiagramIndex(current.files),
+  });
   const actual = new Map(current.files.map((file) => [file.path, file.content]));
   const paths = new Set([...canonicalCurrent.keys(), ...target.keys()]);
   for (const path of paths) {

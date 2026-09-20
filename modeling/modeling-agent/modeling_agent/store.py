@@ -5,6 +5,7 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -17,6 +18,8 @@ from .schemas import (
     RECOVERY_NONE,
     RECOVERY_STALE_RUN,
     RUN_CANCELLED,
+    RUN_COMPLETED,
+    RUN_FAILED,
     RUN_QUEUED,
     RUN_RUNNING,
     RUN_STOPPING,
@@ -34,6 +37,10 @@ def now_iso() -> str:
 
 def token_fingerprint(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+INTERRUPTED_CANCELLATION_REASON = "停止结算被服务重启中断，正在重新核对"
+CANCELLATION_PENDING_REASON = "仍有在途修改未取得明确回执，已暂停自动继续"
 
 
 SCHEMA = """
@@ -671,6 +678,7 @@ class RuntimeStore:
         return self.get_run(state.run_id) if state.run_id and execution in ACTIVE_RUN_STATUSES else None
 
     def update_run(self, run_id: str, **changes: Any) -> RunRecord:
+        allow_status_regression = bool(changes.pop("_allow_status_regression", False))
         allowed = {
             "session_id",
             "status",
@@ -694,6 +702,34 @@ class RuntimeStore:
         clean["updated_at"] = now_iso()
         assignments = ", ".join(f"{key} = ?" for key in clean)
         with self._lock, self._db:
+            current_row = self._db.execute(
+                "SELECT status, project_id FROM agent_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if current_row is None:
+                raise AgentRuntimeError("RUN_NOT_FOUND", "找不到这次 Agent 运行", status=404)
+            requested_status = str(changes.get("status") or "")
+            current_status = str(current_row["status"] or "")
+            # Cancellation is monotonic. A late model callback must not
+            # overwrite stopping/cancelled with running/completed/failed.
+            if current_status == RUN_CANCELLED and requested_status and requested_status != RUN_CANCELLED:
+                return _run_from_row(self._db.execute(
+                    "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+                ).fetchone())
+            if current_status == RUN_STOPPING and requested_status in {
+                RUN_QUEUED, RUN_RUNNING, RUN_WAITING, RUN_COMPLETED, RUN_FAILED,
+            }:
+                return _run_from_row(self._db.execute(
+                    "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+                ).fetchone())
+            if (
+                current_status == RUN_SUSPENDED
+                and requested_status in {RUN_QUEUED, RUN_RUNNING, RUN_WAITING, RUN_COMPLETED, RUN_FAILED}
+                and not allow_status_regression
+            ):
+                return _run_from_row(self._db.execute(
+                    "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+                ).fetchone())
             cursor = self._db.execute(
                 f"UPDATE agent_runs SET {assignments} WHERE id = ?",
                 (*clean.values(), run_id),
@@ -973,6 +1009,7 @@ class RuntimeStore:
             recovered: list[RunRecord] = []
             for state_row in state_rows:
                 state = _project_state_from_row(state_row)
+                phase, _separator, execution = state.state.partition(":")
                 row = self._db.execute(
                     "SELECT * FROM agent_runs WHERE id = ?", (state.run_id,)
                 ).fetchone()
@@ -990,12 +1027,19 @@ class RuntimeStore:
                     )
                     continue
                 if row and not state.interaction_id:
+                    reason = (
+                        INTERRUPTED_CANCELLATION_REASON
+                        if execution == RUN_STOPPING
+                        else str(row["error"])
+                        if execution == RUN_SUSPENDED and str(row["error"] or "")
+                        else "Agent 服务重启，已停在最近检查点"
+                    )
                     self._db.execute(
                         """UPDATE agent_runs SET status = ?, error = ?, updated_at = ?
                         WHERE id = ?""",
                         (
                             RUN_SUSPENDED,
-                            "Agent 服务重启，已停在最近检查点",
+                            reason,
                             timestamp,
                             state.run_id,
                         ),
@@ -1003,14 +1047,19 @@ class RuntimeStore:
                     recovered.append(_run_from_row(self._db.execute(
                         "SELECT * FROM agent_runs WHERE id = ?", (state.run_id,)
                     ).fetchone()))
-                phase, _separator, execution = state.state.partition(":")
                 if execution in {RUN_RUNNING, RUN_STOPPING, RUN_QUEUED}:
                     self._transition_project_state_locked(
                         state,
                         next_state=f"{phase}:{RUN_SUSPENDED}",
                         cause="service_restarted",
                         actor_run_id=str(row["id"]) if row else state.run_id,
-                        error="Agent 服务重启，已停在最近检查点",
+                        error=(
+                            INTERRUPTED_CANCELLATION_REASON
+                            if execution == RUN_STOPPING
+                            else str(row["error"])
+                            if execution == RUN_SUSPENDED and row and str(row["error"] or "")
+                            else "Agent 服务重启，已停在最近检查点"
+                        ),
                     )
         return recovered
 
@@ -1128,6 +1177,26 @@ class RuntimeStore:
                 "display": {"text": "已阻止不一致的恢复操作"},
             }
         return _object(row["result_json"])
+
+    def tool_receipts_by_name(self, run_id: str, tool_names: Sequence[str]) -> list[tuple[str, dict[str, Any]]]:
+        """取回指定工具在本 Run 的全部原始回执，按完成顺序返回。
+
+        恢复断点时 observed_tools 只能从工具事件重建，而事件里没有业务结果；
+        "这次调用到底做成了什么"只存在于回执里（result_json 是未压缩的核心原始返回）。
+        判定规则留在调用方，store 只负责取数。
+        """
+        names = [str(name) for name in tool_names if str(name)]
+        if not names:
+            return []
+        placeholders = ",".join("?" for _ in names)
+        with self._lock:
+            rows = self._db.execute(
+                f"""SELECT tool_name, result_json FROM agent_tool_receipts
+                WHERE run_id = ? AND tool_name IN ({placeholders})
+                ORDER BY completed_at, rowid""",
+                (run_id, *names),
+            ).fetchall()
+        return [(str(row["tool_name"]), _object(row["result_json"])) for row in rows]
 
     def save_tool_receipt(
         self,
@@ -1493,7 +1562,7 @@ class RuntimeStore:
             )
             phase = str(event.payload.get("phase") or "")
             identity = _tool_event_identity(event)
-            if phase in {"started", "repairing"}:
+            if phase in {"started", "repairing", "cancel_pending"}:
                 active[identity] = event
             elif phase in {"completed", "failed", "blocked", "rejected", "waiting", "cancelled"}:
                 active.pop(identity, None)
@@ -1640,6 +1709,58 @@ class RuntimeStore:
                 (_json(detail), interjection_id),
             )
         return {"id": interjection_id, **detail}
+
+    def constraint_exists(self, project_id: str, constraint_id: int) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM project_constraints WHERE id = ? AND project_id = ?",
+                (constraint_id, project_id),
+            ).fetchone()
+        return row is not None
+
+    def interjection_exists(self, project_id: str, interjection_id: int) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM steering_messages WHERE id = ? AND project_id = ?",
+                (interjection_id, project_id),
+            ).fetchone()
+        return row is not None
+
+    def interaction_exists(self, project_id: str, interaction_id: str) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM agent_interactions WHERE id = ? AND project_id = ?",
+                (interaction_id, project_id),
+            ).fetchone()
+        return row is not None
+
+    def evidence_token_exists(self, project_id: str, token: str) -> bool:
+        """判断标识是否在本项目真实的工具往来记录里出现过。
+
+        修订号、文件路径这类标识不归本库管辖，但它们若真实存在，必然在
+        工具回执或事件流里出现过——模型编造的标识在这两处都查不到。
+        只验出现过与归属，不验语义。
+        """
+        escaped = (
+            token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        like = f"%{escaped}%"
+        with self._lock:
+            row = self._db.execute(
+                """SELECT 1 FROM agent_tool_receipts receipts
+                JOIN agent_runs runs ON runs.id = receipts.run_id
+                WHERE runs.project_id = ? AND receipts.result_json LIKE ? ESCAPE '\\'
+                LIMIT 1""",
+                (project_id, like),
+            ).fetchone()
+            if row is None:
+                row = self._db.execute(
+                    """SELECT 1 FROM agent_events
+                    WHERE project_id = ? AND payload_json LIKE ? ESCAPE '\\'
+                    LIMIT 1""",
+                    (project_id, like),
+                ).fetchone()
+        return row is not None
 
     def escalate_interjections(self, project_id: str, interaction_id: str) -> list[int]:
         """把未处置插话标记为「已升级待决」，绑定裁决卡。

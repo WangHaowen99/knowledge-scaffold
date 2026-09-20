@@ -209,18 +209,30 @@ export interface ArtifactCandidate {
  * enough provenance to close a 201/198/3 inventory reconciliation.
  */
 export interface ProductInventoryItem {
+  /**
+   * 标记该项的完整性由平台按实际资料字段计算，而不是模型自报。只有经
+   * product-inventory-capture 归一化的事实才带此标记。
+   */
+  completenessContract?: 'source-fields-v1';
   canonicalItemId: string;
   name: string;
   applicableSubjects: string[];
   triggerScenarios: string[];
   businessNeeds: string[];
+  /** 准入条件；资料未提供时为空数组，不得用占位文字填充。 */
+  admissionConditions?: string[];
+  /** 排除条件；资料未提供时为空数组，不得用占位文字填充。 */
+  exclusionConditions?: string[];
   sourceRecordIds: string[];
   sourceLocator: string;
   ruleRefs: string[];
   mergeGroupId?: string;
   evidenceStatus: 'complete' | 'insufficient';
   processingStatus?: 'pending' | 'ready' | 'generated' | 'blocked';
+  /** 资料字段缺失清单。与 semanticWarnings 是两件事，不得混用。 */
   structuredGaps?: string[];
+  /** 口径、阈值等语义待确认项；字段齐备也可能存在，不影响 evidenceStatus。 */
+  semanticWarnings?: string[];
   insufficiencyReason?: string;
 }
 
@@ -228,6 +240,8 @@ export interface ProductInventorySummary {
   rawCount: number;
   canonicalCount: number;
   mergedGroupCount: number;
+  completeCount?: number;
+  insufficientCount?: number;
 }
 
 export type CandidateDispositionStatus =
@@ -300,6 +314,10 @@ export interface AnalysisResult {
   /** Authoritative, itemized product facts used by the product ledger gate. */
   productInventory?: ProductInventoryItem[];
   productInventorySummary?: ProductInventorySummary;
+  /** 仅靠正文摘要兜底、未产出结构化结果的降级分段数。>0 表示覆盖不完整。 */
+  failedChunkCount?: number;
+  /** 是否真正完整覆盖全文。兜底路径必须置 false，不得假报 100%。 */
+  coverageComplete?: boolean;
   documentReadCoverage?: DocumentReadCoverage[];
 }
 

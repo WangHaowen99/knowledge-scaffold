@@ -6,6 +6,7 @@ import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { getDb, nowIso } from '../db/index.js';
 import { listDocuments } from '../documents/repo.js';
+import { isRunCancellationRequested } from './run-cancellation.js';
 import type {
   PackageSpec,
   Project,
@@ -28,7 +29,12 @@ import {
   type OntologyStudioKind,
 } from '../workflow/ontology-model-validation.js';
 import { parseRenderedPackageFiles } from '../workflow/package-import.js';
-import { renderPackage } from '../workflow/package-render.js';
+import {
+  DIAGRAM_INDEX_PATH,
+  ROOT_INDEX_PATH,
+  renderPackage,
+  renderRootIndex,
+} from '../workflow/package-render.js';
 import { OBJECT_DATA_MAPPING_PATH } from '../workflow/schema-object-policy.js';
 import {
   STUDIO_SCHEMA,
@@ -68,6 +74,7 @@ interface MutationEnvelope {
   expectedRevision: string;
   clientMutationId: string;
   editSessionId?: string;
+  runId?: string;
 }
 
 interface CreateAction {
@@ -400,6 +407,18 @@ export class StudioWriteService {
       }
 
       let workspace = this.workspace(project.id);
+      // Only Agent-originated mutations carry an explicit runId. Ordinary
+      // Studio edits must remain available after a cancelled Agent run; the
+      // Agent route itself applies the cancellation fence before dispatch.
+      const requestRunId = plan.envelope.runId || '';
+      if (requestRunId && isRunCancellationRequested(this.db, project.id, requestRunId)) {
+        throw new StudioWriteError(
+          'RUN_CANCELLING',
+          '当前运行正在停止，新的修改不会继续写入',
+          409,
+          { runId: requestRunId, retryable: false },
+        );
+      }
       if (workspace?.owner !== undefined && workspace.owner !== username) {
         if (Date.parse(workspace.lease_expires_at) > Date.now()) {
           throw new StudioWriteError(
@@ -774,8 +793,15 @@ function parseEnvelope(body: Record<string, unknown>): MutationEnvelope {
   if (editSessionId && !MUTATION_ID_PATTERN.test(editSessionId)) {
     errors.editSessionId = 'editSessionId 必须是 1 到 128 位字母、数字或 . _ : -';
   }
+  const runId = String(body.runId ?? '').trim();
+  if (runId.length > 200) errors.runId = 'runId 不能超过 200 字符';
   if (Object.keys(errors).length) throw fieldError(errors);
-  return { expectedRevision, clientMutationId, ...(editSessionId ? { editSessionId } : {}) };
+  return {
+    expectedRevision,
+    clientMutationId,
+    ...(editSessionId ? { editSessionId } : {}),
+    ...(runId ? { runId } : {}),
+  };
 }
 
 function parseCreate(body: Record<string, unknown>, prefix: string): CreateAction {
@@ -1010,13 +1036,20 @@ function applyMutation(
     ...Object.keys(rendered),
     ...(Object.hasOwn(workingFiles, OBJECT_DATA_MAPPING_PATH) ? [OBJECT_DATA_MAPPING_PATH] : []),
   ])].filter((path) => (
-    previousRendered[path] !== rendered[path]
-    || (path === OBJECT_DATA_MAPPING_PATH && workingFiles[path] !== rendered[path])
+    // 根索引单独渲染：renderPackage 的版本按「是否铺草稿模板」决定列不列流程图目录，
+    // 直接覆盖会把当前修订已有的 diagrams/index.md 从目录里抹掉。
+    path !== ROOT_INDEX_PATH
+    && (
+      previousRendered[path] !== rendered[path]
+      || (path === OBJECT_DATA_MAPPING_PATH && workingFiles[path] !== rendered[path])
+    )
   ));
   for (const path of compilerChangedPaths) {
     if (path in rendered) nextFiles[path] = rendered[path];
     else delete nextFiles[path];
   }
+  const nextRootIndex = renderRootIndex(spec, Object.hasOwn(workingFiles, DIAGRAM_INDEX_PATH));
+  if (workingFiles[ROOT_INDEX_PATH] !== nextRootIndex) nextFiles[ROOT_INDEX_PATH] = nextRootIndex;
   nextFiles[INTERNAL_SPEC_CHANGE_PATH] = serializeInternalSpec(spec);
   for (const path of deletedPaths) delete nextFiles[path];
   return {

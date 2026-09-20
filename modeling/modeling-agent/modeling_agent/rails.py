@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import re
 import time
@@ -20,10 +21,14 @@ from .tools import (
     RequestConfirmationTool,
     RequestReleaseTool,
     ToolContext,
+    call_core,
     input_dict,
+    phase_capability_host,
+    phase_capability_redirect,
     tool_spec,
     tool_work_detail,
 )
+from .visible_text import claims_platform_capability_gap
 
 
 _EXPLICIT_DECISION_REQUESTS = (
@@ -117,6 +122,11 @@ def _skip_tool(ctx: AgentCallbackContext, result: dict[str, Any]) -> None:
     ctx.extra["_skip_tool"] = True
     ctx.inputs.tool_result = rendered
     ctx.inputs.tool_msg = ToolMessage(content=rendered, tool_call_id=_tool_call_id(ctx))
+
+
+def _raise_if_cancelled(context: ToolContext | None) -> None:
+    if context is not None and context.cancel_event is not None and context.cancel_event.is_set():
+        raise asyncio.CancelledError
 
 
 def _finding(
@@ -280,13 +290,7 @@ class WriteSafetyRail(AgentRail):
             return
         goal_documents: list[Mapping[str, Any]] = []
         if name == "write_file" and str(args.get("path") or "") == ".modeling/goal.md":
-            inventory = await self._context.gateway.call(
-                project_id=self._context.project_id,
-                run_id=self._context.run_id,
-                token=self._context.token,
-                tool="list_documents",
-                arguments={},
-            )
+            inventory = await call_core(self._context, "list_documents", {})
             raw_documents = inventory.get("documents") if isinstance(inventory, Mapping) else None
             goal_documents = [item for item in raw_documents or [] if isinstance(item, Mapping)]
         goal_evidence_findings = _goal_evidence_findings(name, args, goal_documents)
@@ -328,8 +332,17 @@ class WriteSafetyRail(AgentRail):
         unsafe = bool(problems)
         if not problems and not repair_recovery and self._context.state_action is not None:
             state = await self._context.state_action("get_project_state", {})
-            phase_problem = _phase_write_problem(name, args, str(state.get("phase") or ""))
+            live_phase = str(state.get("phase") or "")
+            phase_problem = _phase_write_problem(name, args, live_phase)
             if phase_problem:
+                # 受控写入链路有明确的承载阶段：不要停在「阶段不对」上等人工确认，
+                # 直接把切阶段交给自动恢复，恢复预算用尽后再交给用户选择。
+                host_phase = phase_capability_host(name, live_phase)
+                if host_phase and host_phase != live_phase:
+                    _skip_tool(ctx, phase_capability_redirect(
+                        name, args, host_phase, self._context, current_phase=live_phase,
+                    ))
+                    return
                 problems.append(phase_problem)
         if not problems:
             return
@@ -597,10 +610,21 @@ class PhaseTransitionRail(AgentRail):
             return
         result = _result_dict(getattr(ctx.inputs, "tool_result", None))
         next_phase = str(result.get("phase") or "").strip()
-        if result.get("error") or not next_phase or next_phase == self._context.phase:
+        if result.get("error"):
+            # 转换被门禁或阶段边挡回来时，挂起的写入已经没有自愈路径了。继续放模型回去
+            # 重提写入只会把剩余预算烧完，用户点「继续」还是回到同一个循环；这里立刻把
+            # issue 标成 blocked 并带上真正的未满足项，交给服务端渲染成可操作的恢复卡。
+            target_phase = str(_call_args(ctx).get("to_phase") or "").strip()
+            if target_phase:
+                self._context.block_phase_capability_issues(target_phase, result)
+            return
+        if not next_phase or next_phase == self._context.phase:
             return
         previous_phase = self._context.phase
         self._context.phase = next_phase
+        # 之前因为阶段不承载而挂起的写入，现在有落盘路径了，先把 issue 关掉，
+        # 否则本轮结算时它仍然是一条未完成的系统恢复。
+        self._context.resolve_phase_capability_issues(next_phase)
         ctx.request_force_finish({
             "result_type": "answer",
             "output": "",
@@ -686,6 +710,7 @@ class AskRail(BaseInterruptRail):
         auto_confirm_config: dict | None = None,
     ):
         del auto_confirm_config
+        _raise_if_cancelled(self._context)
         arguments = _arguments_from_call(tool_call)
         if user_input is None:
             if self._context:
@@ -842,17 +867,9 @@ class AskRail(BaseInterruptRail):
 
 
 def _claims_missing_capability(text: str) -> bool:
-    normalized = re.sub(r"\s+", "", str(text or "")).lower()
-    phrases = (
-        "环境无法", "当前环境不能", "平台无法", "无法补写", "人工补写",
-        "等待管理员", "管理员处理", "系统不支持", "没有权限修改",
-        "工具集中没有", "工具集没有", "没有该读取能力", "没有读取能力",
-        "本会话工具", "平台侧能力缺口", "平台能力缺口", "平台是否开放",
-    )
-    for phrase in phrases:
-        if phrase in normalized:
-            return True
-    return False
+    # 措辞清单与可见推理脱敏共用：同一件事换个说法就绕开门禁，
+    # 真实停滞会话里模型说的是「能力不可用」「写入能力未注册」「等待平台开放写入能力」。
+    return claims_platform_capability_gap(text)
 
 
 def _is_business_ambiguity(question: str, evidence: list[Any]) -> bool:
@@ -909,6 +926,7 @@ class ConfirmationRail(BaseInterruptRail):
         auto_confirm_config: dict | None = None,
     ):
         del auto_confirm_config
+        _raise_if_cancelled(self._context)
         arguments = _arguments_from_call(tool_call)
         if user_input is None:
             if self._context.user_input_request_in_text and not self._context.decision_card_requested:
@@ -957,13 +975,7 @@ class ConfirmationRail(BaseInterruptRail):
                     "direct_answer_required": True,
                     "instruction": "不要再次发起确认。请直接以最终自然语言回答用户插话并结束本轮，服务端会恢复原确认。",
                 }, ensure_ascii=False))
-            prepared = await self._context.gateway.call(
-                project_id=self._context.project_id,
-                run_id=self._context.run_id,
-                token=self._context.token,
-                tool="prepare_confirmation_groups",
-                arguments={},
-            )
+            prepared = await call_core(self._context, "prepare_confirmation_groups", {})
             if prepared.get("error"):
                 prepared = _ensure_validation_report(
                     prepared,
@@ -993,13 +1005,7 @@ class ConfirmationRail(BaseInterruptRail):
                 )
                 return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
             if _confirmation_requires_schema_mapping(groups):
-                mapping_plan = await self._context.gateway.call(
-                    project_id=self._context.project_id,
-                    run_id=self._context.run_id,
-                    token=self._context.token,
-                    tool="get_schema_mapping_plan",
-                    arguments={},
-                )
+                mapping_plan = await call_core(self._context, "get_schema_mapping_plan", {})
                 if mapping_plan.get("error"):
                     mapping_plan = _ensure_validation_report(
                         mapping_plan,
@@ -1054,12 +1060,8 @@ class ConfirmationRail(BaseInterruptRail):
                     result["mappingPlan"] = mapping_plan
                     return self.reject(tool_result=json.dumps(result, ensure_ascii=False))
             normalized_arguments = {**arguments, "change_groups": groups}
-            preflight = await self._context.gateway.call(
-                project_id=self._context.project_id,
-                run_id=self._context.run_id,
-                token=self._context.token,
-                tool="request_confirmation_preflight",
-                arguments=normalized_arguments,
+            preflight = await call_core(
+                self._context, "request_confirmation_preflight", normalized_arguments,
             )
             if preflight.get("error"):
                 preflight = _ensure_validation_report(
@@ -1189,12 +1191,10 @@ class ConfirmationRail(BaseInterruptRail):
             )
         if answer.get("approved") is not True:
             feedback = str(answer.get("feedback") or "专家退回了这批候选，请根据反馈调整后重新确认")
-            await self._context.gateway.call(
-                project_id=self._context.project_id,
-                run_id=self._context.run_id,
-                token=self._context.token,
-                tool="request_confirmation_rejected",
-                arguments={**arguments, "review": dict(answer)},
+            await call_core(
+                self._context,
+                "request_confirmation_rejected",
+                {**arguments, "review": dict(answer)},
             )
             return self.reject(tool_result=json.dumps({"approved": False, "feedback": feedback}, ensure_ascii=False))
         merged = {**arguments, "review": dict(answer)}
@@ -1216,6 +1216,7 @@ class ReleaseConfirmationRail(BaseInterruptRail):
         auto_confirm_config: dict | None = None,
     ):
         del auto_confirm_config
+        _raise_if_cancelled(self._context)
         arguments = _arguments_from_call(tool_call)
         if user_input is None:
             if self._context.release_declined:
@@ -1229,13 +1230,7 @@ class ReleaseConfirmationRail(BaseInterruptRail):
                     "direct_answer_required": True,
                     "instruction": "不要再次发起发布确认。请直接回答用户插话并结束本轮，服务端会恢复原确认。",
                 }, ensure_ascii=False))
-            preflight = await self._context.gateway.call(
-                project_id=self._context.project_id,
-                run_id=self._context.run_id,
-                token=self._context.token,
-                tool="release_preflight",
-                arguments={},
-            )
+            preflight = await call_core(self._context, "release_preflight", {})
             if preflight.get("error") or not preflight.get("ready"):
                 if not preflight.get("error"):
                     preflight = {
@@ -1471,6 +1466,9 @@ class ActivityRail(AgentRail):
             "summary": display,
             "toolCallId": tool_call_id,
         }
+        mutation_id = str(_call_args(ctx).get("mutation_id") or "").strip()
+        if mutation_id:
+            payload["mutationId"] = mutation_id
         if trace_group_id:
             payload["traceGroupId"] = trace_group_id
         self._emit("tool", payload)
@@ -1483,14 +1481,31 @@ class ActivityRail(AgentRail):
         if result.get("suppressTrace") is True:
             return
         display = result.get("display") if isinstance(result.get("display"), dict) else {}
+        has_error = bool(result.get("error") or result.get("code"))
         summary = str(
             result.get("customerSummary")
             or display.get("text")
             or result.get("reason")
-            or "处理完成"
+            or ("当前步骤未完成" if has_error else "处理完成")
         )
         trace_phase = str(result.get("tracePhase") or "")
-        if trace_phase:
+        cancellation_code = str(result.get("error") or result.get("code") or "")
+        cancellation_result = cancellation_code in {"RUN_CANCELLING", "RUN_CANCELLED"}
+        if cancellation_result:
+            # A cancellation fence is an expected activity boundary, not a
+            # recoverable user problem.  Never let it become a blocked card.
+            phase = "cancelled"
+            summary = "运行已停止，当前操作已取消"
+            result = {
+                **result,
+                "problemVisibility": "activity",
+                "retryable": False,
+                "repairStopped": False,
+                "issueId": "",
+                "issueStatus": "cancelled",
+                "recoveryActions": [],
+            }
+        elif trace_phase:
             phase = trace_phase
         elif result.get("repairStopped") is True:
             phase = "blocked"
@@ -1516,6 +1531,11 @@ class ActivityRail(AgentRail):
                 str(item) for item in result.get("resolvedIssueIds") or [] if str(item).strip()
             ],
         }
+        mutation_id = str(
+            result.get("mutation_id") or _call_args(ctx).get("mutation_id") or ""
+        ).strip()
+        if mutation_id:
+            payload["mutationId"] = mutation_id
         recovery_action = result.get("recoveryAction")
         if isinstance(recovery_action, Mapping):
             payload["recoveryAction"] = dict(recovery_action)
@@ -1568,7 +1588,7 @@ class ActivityRail(AgentRail):
             "phase": "planning",
             "counters": {},
         })
-        if result.get("problemVisibility") == "recovery":
+        if result.get("problemVisibility") == "recovery" and not cancellation_result:
             ctx.request_force_finish({
                 "result_type": "answer",
                 "output": "",
@@ -1873,6 +1893,27 @@ def _display_text(base: str, arguments: dict[str, Any]) -> str:
 def _result_dict(result: Any) -> dict[str, Any]:
     if isinstance(result, Mapping):
         return dict(result)
+    # openJiuwen built-in tools (notably skill_tool/task_tool) return the
+    # harness ToolOutput pydantic model rather than a plain mapping.  Treat
+    # both pydantic v2 and v1 models as structured results so ActivityRail can
+    # publish their terminal receipt instead of leaving the trace stuck at
+    # ``started`` until a later cancellation settles it.
+    model_dump = getattr(result, "model_dump", None)
+    if callable(model_dump):
+        try:
+            value = model_dump()
+        except Exception:  # noqa: BLE001 - malformed third-party result
+            value = None
+        if isinstance(value, Mapping):
+            return dict(value)
+    legacy_dump = getattr(result, "dict", None)
+    if callable(legacy_dump):
+        try:
+            value = legacy_dump()
+        except Exception:  # noqa: BLE001 - malformed third-party result
+            value = None
+        if isinstance(value, Mapping):
+            return dict(value)
     if isinstance(result, str):
         try:
             parsed = json.loads(result)

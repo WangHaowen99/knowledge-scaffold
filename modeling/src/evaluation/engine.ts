@@ -157,6 +157,41 @@ export interface EvaluationExecutionDependencies {
     projectId: string;
     signal: AbortSignal;
   }) => Promise<void>;
+  /** 开轮前的同步环境门；仅测试覆盖。默认实现见 preflightEvaluationEnvironment。 */
+  preflight?: (input: EvaluationPreflightInput) => void;
+}
+
+export interface EvaluationPreflightInput {
+  projectId: string;
+  workspaceId: string;
+  needsServiceCredential: boolean;
+}
+
+/**
+ * 环境类失败的判别：凭据、令牌、网络连接这类和知识包质量无关的失败。
+ * 实测一轮 151 条用例全部因「凭据已过期」判 error——环境坏了必须尽早停轮，
+ * 而不是把每条用例都烧成同一个错误。执行期熔断按此判据提前终止整轮。
+ */
+export function isEnvironmentFailureMessage(message: unknown): boolean {
+  const text = String(message ?? '');
+  return /评测访问凭据已过期|重新登录后再启动评测|缺少有效的 MODELING_SERVICE_TOKEN|Consumer 请求失败|fetch failed|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT/u.test(text);
+}
+
+const ENVIRONMENT_FAILURE_BREAKER_THRESHOLD = 3;
+
+/**
+ * 开轮前的同步环境门：只做零 I/O 的确定性检查（服务令牌是否配齐），
+ * 环境不就绪就在创建轮次前拒绝，避免留下 failed 轮次污染统计。
+ * 连接类失败不在这里探测——那会阻塞「创建即返回」契约，且已由执行期熔断兜底。
+ */
+function preflightEvaluationEnvironment(input: EvaluationPreflightInput): void {
+  if (input.needsServiceCredential && String(config.modelingServiceToken ?? '').trim().length < 32) {
+    throw new EvaluationOperationError(
+      'EVALUATION_ENVIRONMENT_UNAVAILABLE',
+      '缺少有效的 MODELING_SERVICE_TOKEN，评测未启动；请在部署配置中补齐服务令牌后重试',
+      409,
+    );
+  }
 }
 
 const activeProjects = new Set<string>();
@@ -310,6 +345,17 @@ export function startEvaluation(
       409,
     );
   }
+  // 假 runRound（测试注入）不触达真实环境，默认不做环境门；显式传入 preflight 时始终执行。
+  const preflight = dependencies.preflight
+    ?? (dependencies.runRound ? null : preflightEvaluationEnvironment);
+  if (preflight) {
+    preflight({
+      projectId,
+      workspaceId,
+      // 影子工作空间由服务凭据开通（与 runRound 的开通条件保持一致）。
+      needsServiceCredential: workspaceId === shadowWorkspaceId(projectId) && Boolean(opts.owner),
+    });
+  }
 
   const round = repo.createRound(
     projectId,
@@ -460,6 +506,7 @@ async function runRound(
   if (concurrency > 1) log(`并发运行评测用例：${concurrency} 条并行`);
   let done = 0;
   let pass = 0;
+  let environmentFailureStreak = 0;
 
   type CaseOutcome = {
     finalAnswer: string;
@@ -498,6 +545,7 @@ async function runRound(
         signal,
       );
       assertEvaluationNotCancelled(signal);
+      environmentFailureStreak = 0;
       return {
         finalAnswer: run.finalAnswer,
         trace: run.trace,
@@ -509,13 +557,27 @@ async function runRound(
       };
     },
     // 单条用例失败只记一条 error 判定；鉴权失败和取消属于致命错误，向上抛出终止整轮。
+    // 环境类失败（凭据/令牌/网络）连续出现时提前熔断，不把整批用例烧成同一个错误。
     recover: (tc, _index, error) => {
       if (signal.aborted) throw signal.reason;
       if (error instanceof EvaluationAuthenticationError) throw error;
+      // instanceof 会因模块被重复加载而失真，按异常名兜底，确保鉴权失败仍终止整轮。
+      if (error instanceof Error && error.name === 'EvaluationAuthenticationError') throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (isEnvironmentFailureMessage(message)) {
+        environmentFailureStreak += 1;
+        if (environmentFailureStreak >= ENVIRONMENT_FAILURE_BREAKER_THRESHOLD) {
+          throw new Error(
+            `评测环境持续异常，已提前终止本轮：连续 ${environmentFailureStreak} 条用例因环境问题失败（${message.slice(0, 120)}）`,
+          );
+        }
+      } else {
+        environmentFailureStreak = 0;
+      }
       return {
         finalAnswer: '',
         verdict: 'error',
-        reason: `运行失败：${error instanceof Error ? error.message : error}`,
+        reason: `运行失败：${message}`,
       };
     },
     commit: (tc, _index, outcome) => {

@@ -12,19 +12,54 @@ function observedLlm(input: {
   malformedChunkOnceFor?: string;
   documentSuitableFor?: Array<'object' | 'rule' | 'operation' | 'metric'>;
   delayMs?: number;
+  /** 这些文档的分段会逐项提交产品事实，模拟产品手册类原文。 */
+  productChunksFor?: string[];
+  /** 这些文档声明已提取产品事实但不提交逐项数据，用来验证捕获契约不被绕过。 */
+  emptyInventoryClaimFor?: string;
+  /** 这些文档首轮提交角色混用的产品事实，用来验证被拒后重试能拿到纠错提示。 */
+  rejectInventoryOnceFor?: string;
+  /** 分段产品事实里故意留空的来源字段，用来验证缺口由平台反推。 */
+  missingFactField?: 'applicableSubjects' | 'triggerScenarios' | 'businessNeeds' | 'admissionConditions' | 'exclusionConditions';
+  /** 覆盖模型 api 标识，用来验证不同端点协议下的工具选择行为。 */
+  modelApi?: string;
 }) {
   const calls = new Map<string, number>();
+  const toolChoices: Array<{ chunk: boolean; toolChoice: unknown }> = [];
   let active = 0;
   let peak = 0;
   let failed = false;
   let reductions = 0;
+  const productItem = (filename: string, offset: number) => {
+    const empty = input.missingFactField;
+    const field = (name: string, values: string[]) => (empty === name ? [] : values);
+    return {
+      canonicalItemId: `product:${filename}:${offset}`,
+      name: `${filename} 合成产品 ${offset}`,
+      ruleRefs: [`rule:${filename}`],
+      sourceRecordIds: [`source:${filename}:${offset}`],
+      sourceLocator: `${filename}#${offset}`,
+      evidenceStatus: 'complete',
+      applicableSubjects: field('applicableSubjects', ['合成主体']),
+      triggerScenarios: field('triggerScenarios', ['合成场景']),
+      businessNeeds: field('businessNeeds', ['合成需求']),
+      admissionConditions: field('admissionConditions', ['合成准入条件']),
+      exclusionConditions: field('exclusionConditions', ['合成排除条件']),
+      structuredGaps: [],
+    };
+  };
+  const chunkPrompts: string[] = [];
+  const fauxModel = createFauxCore({ provider: 'synthetic-map', models: [{ id: 'synthetic-map' }] }).getModel();
   const llm: LlmDeps = {
-    model: createFauxCore({ provider: 'synthetic-map', models: [{ id: 'synthetic-map' }] }).getModel(),
+    model: input.modelApi ? { ...fauxModel, api: input.modelApi } : fauxModel,
     getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
       const system = String(context.systemPrompt ?? '');
+      if (system.includes('submit_document_chunk_analysis')) {
+        chunkPrompts.push(JSON.stringify(context.messages ?? []));
+      }
       const filename = (system.match(/文档：([^\n]+)/u) ?? [])[1]?.trim() ?? '';
       const isChunk = system.includes('submit_document_chunk_analysis');
+      toolChoices.push({ chunk: isChunk, toolChoice: (options as { toolChoice?: unknown } | undefined)?.toolChoice });
       const core = createFauxCore({ provider: 'synthetic-map', models: [{ id: 'synthetic-map' }] });
       core.setResponses([async () => {
         if (isChunk) {
@@ -48,15 +83,35 @@ function observedLlm(input: {
               return fauxAssistantMessage([fauxToolCall('submit_document_chunk_analysis', {
                 summary: '合成分段摘要',
                 candidates: [{ kind: 'fact', rationale: '原文事实', evidenceOffsets: [offset] }],
+                productInventoryDisposition: 'not_applicable',
               })]);
             }
             const offset = Number((system.match(/原文区间：\[(\d+)/u) ?? [])[1] ?? 0);
+            if (filename === input.rejectInventoryOnceFor && (calls.get(filename) ?? 0) === 1) {
+              // 角色混用：把 canonicalItemId 塞进 sourceRecordIds，会被捕获契约在 execute 里拒绝。
+              const broken = productItem(filename, offset);
+              return fauxAssistantMessage([fauxToolCall('submit_document_chunk_analysis', {
+                summary: '合成分段摘要', evidence: [{ offset, kind: 'rule', note: '合成证据' }],
+                candidates: [], openQuestions: [],
+                productInventoryDisposition: 'extracted',
+                productInventory: [{ ...broken, sourceRecordIds: [broken.canonicalItemId] }],
+              })]);
+            }
+            const hasProducts = (input.productChunksFor ?? []).includes(filename);
             return fauxAssistantMessage([fauxToolCall('submit_document_chunk_analysis', {
               summary: '合成分段摘要', evidence: [{ offset, kind: 'rule', note: '合成证据' }],
               candidates: [{
                 kind: 'rule', name: `${filename} 规则`, rationale: '合成规则',
                 evidenceOffsets: [offset], readiness: 'extractable',
               }], openQuestions: [],
+              ...(filename === input.emptyInventoryClaimFor
+                ? { productInventoryDisposition: 'extracted' }
+                : hasProducts
+                  ? {
+                    productInventoryDisposition: 'extracted',
+                    productInventory: [productItem(filename, offset)],
+                  }
+                  : { productInventoryDisposition: 'not_applicable' }),
             })]);
           }
           if (system.includes('submit_document_analysis')) {
@@ -80,7 +135,7 @@ function observedLlm(input: {
       return core.streamSimple(model as any, context, options as any);
     }) as LlmDeps['streamFn'],
   };
-  return { llm, calls, peak: () => peak, reductions: () => reductions };
+  return { llm, calls, chunkPrompts, toolChoices, peak: () => peak, reductions: () => reductions };
 }
 
 function documents(names: string[]) {
@@ -189,7 +244,7 @@ test('模型未调用分段提交工具时只重试当前分段', async () => {
   assert.equal(observed.calls.get('b.md'), 3);
 });
 
-test('模型持续不调用分段工具时保留公开摘要并继续 Reduce', async () => {
+test('模型持续不调用分段工具时保留公开摘要，但如实报告覆盖不完整', async () => {
   const project = createProject({ owner: 'tester', name: '合成分段摘要降级' });
   const observed = observedLlm({ omitChunkSubmitAlwaysFor: 'b.md' });
   const result = await runMaterialAnalysisMapReduce({
@@ -200,9 +255,39 @@ test('模型持续不调用分段工具时保留公开摘要并继续 Reduce', a
     llm: observed.llm,
     concurrency: 2,
   });
-  assert.equal(result.analysis.documentReadCoverage?.every((item) => item.complete), true);
+  const coverage = new Map((result.analysis.documentReadCoverage ?? []).map((item) => [item.filename, item]));
+  assert.equal(coverage.get('a.md')?.complete, true, '未降级文档仍应完整');
+  assert.equal(coverage.get('b.md')?.complete, false, '兜底摘要不得冒充已覆盖原文');
+  assert.equal(coverage.get('b.md')?.eofSeen, false);
+  assert.equal(result.analysis.coverageComplete, false);
+  assert.ok((result.analysis.failedChunkCount ?? 0) > 0, '降级分段数必须如实计数');
   assert.equal(observed.calls.get('a.md'), 1);
-  assert.ok((observed.calls.get('b.md') ?? 0) >= 8, '应完成多轮协议恢复后再使用公开摘要降级');
+  assert.equal(
+    observed.calls.get('b.md'),
+    4,
+    '应在压缩后的重试预算（2 轮 × 2 次捕获）内完成协议恢复，再使用公开摘要降级',
+  );
+});
+
+test('分段精读对 openai 兼容端点强制 required 工具选择，汇总阶段不受影响', async () => {
+  const project = createProject({ owner: 'tester', name: '合成工具选择强制' });
+  const observed = observedLlm({ modelApi: 'openai-completions' });
+  await runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '合成场景',
+    tables: [],
+    documents: documents(['a']),
+    llm: observed.llm,
+    concurrency: 1,
+  });
+  const chunkChoices = observed.toolChoices.filter((item) => item.chunk);
+  assert.ok(chunkChoices.length > 0, '应捕获到分段阶段的模型调用');
+  for (const item of chunkChoices) {
+    assert.equal(item.toolChoice, 'required', '分段调用必须携带 required 工具选择');
+  }
+  for (const item of observed.toolChoices.filter((entry) => !entry.chunk)) {
+    assert.equal(item.toolChoice, undefined, '汇总阶段调用不应携带工具选择约束');
+  }
 });
 
 test('领域汇总缺少辅助表时补齐已分析记录且不伪造知识候选', async () => {
@@ -289,4 +374,144 @@ test('超长文档使用多层 Reduce 汇总而不把全部分段一次塞入模
   assert.ok(observed.reductions() > 1, `应执行多层文档汇总，实际 ${observed.reductions()} 次`);
   assert.equal(result.analysis.documentReadCoverage?.[0].complete, true);
   assert.equal(result.analysis.documentReadCoverage?.[0].contiguousEnd, textContent.length);
+});
+
+test('产品事实在分段层捕获，精读结果直接带出逐项清单和计数', async () => {
+  const project = createProject({ owner: 'tester', name: '合成产品事实分段捕获' });
+  const observed = observedLlm({ delayMs: 1, productChunksFor: ['catalog.md'] });
+  const result = await runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '合成产品手册',
+    tables: [],
+    documents: [{
+      id: 'doc-catalog', filename: 'catalog.md', revisionFingerprint: 'catalog:v1',
+      textContent: '合成产品条目与准入条件。'.repeat(400),
+    }],
+    llm: observed.llm,
+    documentOnly: true,
+    requireProductInventory: true,
+  });
+
+  const items = result.analysis.productInventory ?? [];
+  assert.ok(items.length > 0, '分段层应产出逐项产品事实');
+  assert.ok(items.every((item) => item.completenessContract === 'source-fields-v1'));
+  assert.ok(items.every((item) => item.evidenceStatus === 'complete'));
+  assert.deepEqual(result.analysis.productInventorySummary, {
+    rawCount: items.length,
+    canonicalCount: items.length,
+    mergedGroupCount: 0,
+    completeCount: items.length,
+    insufficientCount: 0,
+  });
+  assert.equal(result.analysis.coverageComplete, true);
+  assert.equal(result.analysis.failedChunkCount, 0);
+});
+
+test('分段产品事实缺来源字段时判为资料不足，而不是按完整计数', async () => {
+  const project = createProject({ owner: 'tester', name: '合成产品事实缺口' });
+  const observed = observedLlm({
+    delayMs: 1, productChunksFor: ['gap.md'], missingFactField: 'admissionConditions',
+  });
+  const result = await runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '合成产品手册',
+    tables: [],
+    documents: [{
+      id: 'doc-gap', filename: 'gap.md', revisionFingerprint: 'gap:v1',
+      textContent: '合成产品条目缺少准入条件。'.repeat(400),
+    }],
+    llm: observed.llm,
+    documentOnly: true,
+    requireProductInventory: true,
+  });
+
+  const items = result.analysis.productInventory ?? [];
+  assert.ok(items.length > 0);
+  assert.ok(items.every((item) => item.structuredGaps?.includes('admissionConditions')));
+  assert.ok(items.every((item) => item.evidenceStatus === 'insufficient'));
+  assert.ok(items.every((item) => item.processingStatus === 'blocked'));
+  assert.equal(result.analysis.productInventorySummary?.completeCount, 0);
+  assert.equal(result.analysis.productInventorySummary?.insufficientCount, items.length);
+});
+
+test('声明已提取却不交逐项产品事实时分段提交不被接受，分析不会假装完成', async () => {
+  const project = createProject({ owner: 'tester', name: '合成产品事实空口径' });
+  const observed = observedLlm({ delayMs: 1, emptyInventoryClaimFor: 'claim.md' });
+  const input = {
+    projectId: project.id,
+    projectContext: '合成产品手册',
+    tables: [],
+    documents: [{
+      id: 'doc-claim', filename: 'claim.md', revisionFingerprint: 'claim:v1',
+      textContent: '合成产品条目。'.repeat(400),
+    }],
+    llm: observed.llm,
+    documentOnly: true,
+    requireProductInventory: true,
+  };
+  // 只声明口径、不交逐项数据的提交会被捕获契约拒绝：此处模型除该提交外没有任何正文，
+  // 因此本段既拿不到结构化结果也没有可兜底的摘要，分析必须失败而不是记为已完成。
+  await assert.rejects(runMaterialAnalysisMapReduce(input), /分段分析未提交结构化结果/u);
+});
+
+test('分段提交被捕获契约拒绝后，重试提示必须说明是参数校验失败而不是没调用工具', async () => {
+  const project = createProject({ owner: 'tester', name: '合成分段校验纠错' });
+  const observed = observedLlm({ delayMs: 1, rejectInventoryOnceFor: 'catalog.md', productChunksFor: ['catalog.md'] });
+  const result = await runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '合成产品手册',
+    tables: [],
+    documents: [{
+      id: 'doc-reject', filename: 'catalog.md', revisionFingerprint: 'catalog:v1',
+      textContent: '合成产品条目与准入条件。'.repeat(400),
+    }],
+    llm: observed.llm,
+    documentOnly: true,
+    requireProductInventory: true,
+  });
+
+  // 不带诊断时模型只会收到"请调用提交工具"，而它明明已经调用过，于是原样重复直到本段失败。
+  const retryPrompts = observed.chunkPrompts.slice(1);
+  assert.ok(
+    retryPrompts.some((prompt) => prompt.includes('上一次工具参数未通过校验')),
+    '被拒后的重试必须携带参数校验失败的错因，而不是通用催调用话术',
+  );
+  assert.ok(
+    retryPrompts.every((prompt) => !prompt.includes('上一次未调用目标提交工具')),
+    '已调用过工具的分段不得被判为未调用',
+  );
+  assert.equal(result.analysis.failedChunkCount, 0, '拿到错因后应能自行纠正并完成本段');
+  assert.ok((result.analysis.productInventory ?? []).length > 0);
+});
+
+test('要求产品台账时不复用只含摘要的既有分析，重新按分段捕获', async () => {
+  const project = createProject({ owner: 'tester', name: '合成台账检查点隔离' });
+  const documentSet = [{
+    id: 'doc-reuse-inventory', filename: 'catalog.md', revisionFingerprint: 'catalog:v1',
+    textContent: '合成产品条目与准入条件。'.repeat(400),
+  }];
+  const summaryOnly = observedLlm({ delayMs: 1 });
+  const first = await runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '合成产品手册',
+    tables: [],
+    documents: documentSet,
+    llm: summaryOnly.llm,
+    documentOnly: true,
+  });
+  assert.deepEqual(first.analysis.productInventory ?? [], []);
+
+  const withInventory = observedLlm({ delayMs: 1, productChunksFor: ['catalog.md'] });
+  const second = await runMaterialAnalysisMapReduce({
+    projectId: project.id,
+    projectContext: '合成产品手册',
+    tables: [],
+    documents: documentSet,
+    llm: withInventory.llm,
+    documentOnly: true,
+    requireProductInventory: true,
+  });
+  assert.notEqual(second.runId, first.runId, '产品事实要求不同的分析不得共用检查点');
+  assert.ok((withInventory.calls.get('catalog.md') ?? 0) > 0, '应重新分析分段而不是复用摘要');
+  assert.ok((second.analysis.productInventory ?? []).length > 0);
 });

@@ -27,6 +27,7 @@ import ActivityLine, { executionStartedAt, visibleRunActivity } from './right/Ac
 import Composer, { shouldSendComposerMessage } from './right/Composer.jsx';
 import { MaterialPurposeBatchCard, messageText } from './right/RightPane.jsx';
 import RightPane from './right/RightPane.jsx';
+import CandidateRevisionPanel, { visibleCandidateRevisions } from '../CandidateRevisionPanel.jsx';
 import {
   nextReadyMaterialPurposeReview,
   packageUploadFollowUp,
@@ -45,6 +46,7 @@ import ProcessDrawer, {
   restoredVersionMessage,
 } from './shell/ProcessDrawer.jsx';
 import { userFacingText } from './lib/userFacingText.js';
+import { formatMessageTime, formatTraceTime } from './lib/time.js';
 import {
   evidenceLabel,
   evidenceHref,
@@ -1503,17 +1505,104 @@ actions.handleEvent({
   eventType: 'status', seq: 5, runId: 'cancel-tool-run', status: 'running',
   text: '迟到的运行状态',
 });
+actions.handleEvent({
+  eventType: 'tool', seq: 6, runId: 'cancel-tool-run',
+  toolCallId: 'call-stage-change-set', name: 'stage_change_set',
+  phase: 'started', summary: '迟到的原子生成活动',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 7, runId: 'cancel-tool-run',
+  toolCallId: 'call-late-state', name: 'get_project_state',
+  phase: 'failed', summary: '迟到的失败回执',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 8, runId: 'cancel-tool-run',
+  toolCallId: 'call-late-confirmation', name: 'request_confirmation',
+  phase: 'blocked', code: 'RUN_CANCELLING',
+  summary: '当前运行正在停止，新的修改不会继续写入',
+  problemVisibility: 'recovery',
+});
 try {
   const html = renderToString(<App />);
   const drawer = renderToString(<ProcessDrawer onClose={() => {}} />);
   if (store.get().run?.status !== 'cancelled' || store.get().activity
     || store.get().trace[0]?.phase !== 'cancelled'
+    || store.get().trace.length !== 1
     || html.includes('助手运行中') || !drawer.includes('已取消')
-    || !drawer.includes('运行已停止，当前操作已取消')) {
+    || !drawer.includes('运行已停止，当前操作已取消')
+    || drawer.includes('需要处理') || drawer.includes('失败')) {
     throw new Error('取消后工具活动、顶栏或迟到事件没有收敛到同一终态');
   }
   console.log('✓ 取消运行同步结算工具活动并拒绝迟到运行事件');
 } catch (e) { console.log('✗ 取消运行工具终态:', e.message); bad++; }
+
+store.set({
+  demo: false,
+  run: { id: 'historical-cancelled-run', status: 'cancelled' },
+  terminalRunIds: ['historical-cancelled-run'],
+  messages: [], trace: [], activity: null, lastSeq: 0, replayUntilSeq: 6,
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'historical-cancelled-run',
+  toolCallId: 'historical-call', name: 'get_project_state',
+  phase: 'started', summary: '历史上下文核对',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'historical-cancelled-run',
+  toolCallId: 'historical-call', name: 'get_project_state',
+  phase: 'failed', summary: '历史处理未完成',
+});
+actions.handleEvent({
+  eventType: 'message', seq: 3, runId: 'historical-cancelled-run', role: 'assistant',
+  blocks: [{ type: 'text', text: '历史完整消息' }],
+});
+actions.handleEvent({
+  eventType: 'message_delta', seq: 4, runId: 'historical-cancelled-run',
+  messageId: 'historical-stream', role: 'assistant', delta: '历史流式消息',
+});
+actions.handleEvent({
+  eventType: 'reasoning_delta', seq: 5, runId: 'historical-cancelled-run',
+  messageId: 'historical-reasoning', role: 'assistant', delta: '历史思考记录',
+});
+actions.handleEvent({
+  eventType: 'reasoning_done', seq: 6, runId: 'historical-cancelled-run',
+  messageId: 'historical-reasoning', role: 'assistant',
+});
+try {
+  const replayedText = store.get().messages.flatMap((message) => message.blocks || [])
+    .map((block) => block.text || '').join('');
+  if (store.get().run?.status !== 'cancelled'
+    || store.get().trace.length !== 1
+    || store.get().trace[0]?.phase !== 'failed'
+    || !replayedText.includes('历史完整消息')
+    || !replayedText.includes('历史流式消息')
+    || !replayedText.includes('历史思考记录')) {
+    throw new Error('已取消运行的历史回放被实时迟到事件栅栏误删');
+  }
+  console.log('✓ 已取消运行的历史消息与轨迹仍可回放');
+} catch (e) { console.log('✗ 已取消运行历史回放:', e.message); bad++; }
+
+store.set({
+  run: { id: 'current-active-run', status: 'running' },
+  trace: [{
+    id: 'tool:previous-run:call-previous', seq: 1,
+    runId: 'previous-run', toolCallId: 'call-previous',
+    name: 'stage_change_set', phase: 'started', summary: '旧运行尚未结算',
+  }],
+  terminalRunIds: [], lastSeq: 0, replayUntilSeq: 0,
+});
+actions.handleEvent({
+  eventType: 'status', seq: 2, runId: 'previous-run', status: 'cancelled',
+  text: '旧运行已停止',
+});
+try {
+  if (store.get().run?.id !== 'current-active-run'
+    || store.get().trace[0]?.phase !== 'cancelled') {
+    throw new Error('旧运行终态覆盖了当前运行，或没有结算旧活动');
+  }
+  console.log('✓ 旧运行迟到终态只结算历史轨迹');
+} catch (e) { console.log('✗ 旧运行迟到终态:', e.message); bad++; }
+store.set({ run: null, trace: [], terminalRunIds: [], lastSeq: 0 });
 
 try {
   const html = renderToString(<Block block={{
@@ -1589,6 +1678,189 @@ try {
   }
   console.log('✓ 刷新时直接恢复待确认卡');
 } catch (e) { console.log('✗ 待确认卡恢复:', e.message); bad++; }
+
+const pausedPlanSmoke = {
+  id: 'plan-paused-smoke',
+  goal: '完成客户规则和产品匹配建模',
+  status: 'paused',
+  approval_status: 'approved',
+  remaining_count: 2,
+  tasks: [
+    { id: 'task-rule-a', title: '信号与产品匹配规则', status: 'pending', required: true },
+    { id: 'task-rule-b', title: '客户分层决策规则', status: 'pending', required: true },
+  ],
+};
+store.set({
+  demo: false,
+  loading: false,
+  messages: [],
+  interaction: null,
+  pausedPlan: pausedPlanSmoke,
+  changePlan: null,
+  run: { id: 'run-paused-smoke', status: 'cancelled' },
+  lastSeq: 0,
+  replayUntilSeq: 10,
+});
+actions.handleEvent({
+  eventType: 'change_plan',
+  seq: 1,
+  runId: 'run-paused-smoke',
+  plan: { ...pausedPlanSmoke, status: 'active' },
+  createdAt: '2026-01-01T00:00:00Z',
+});
+try {
+  const html = renderToString(<RightPane />);
+  if (store.get().pausedPlan?.status !== 'paused'
+    || !html.includes('未完成的建模计划已暂停')
+    || !html.includes('信号与产品匹配规则')
+    || !html.includes('继续未完成计划')
+    || !html.includes('结束该计划并重新规划')) {
+    throw new Error('暂停计划被历史回放覆盖，或缺少明确恢复与结束动作');
+  }
+  console.log('✓ 暂停计划使用显式恢复卡且不被历史回放覆盖');
+} catch (e) { console.log('✗ 暂停计划恢复卡:', e.message); bad++; }
+
+/* 带着待批准计划刷新页面：bootstrap 会把计划卡片预插在流首，
+   历史回放到计划事件时应把卡片挪回时间顺序位置；回放结束后的实时更新仍原地替换。 */
+const planReplaySmoke = {
+  id: 'plan-replay-smoke',
+  goal: '按资料生成建模计划',
+  status: 'active',
+  approval_status: 'pending',
+  version: 1,
+  tasks: [{ id: 'task-replay-a', title: '同步物理对象', status: 'pending', required: true }],
+};
+store.set({
+  demo: false,
+  loading: false,
+  interaction: null,
+  pausedPlan: null,
+  changePlan: planReplaySmoke,
+  run: null,
+  uploads: [],
+  terminalRunIds: [],
+  lastSeq: 0,
+  replayUntilSeq: 2,
+  messages: [{
+    id: 'change-plan-plan-replay-smoke',
+    role: 'assistant',
+    createdAt: '2026-01-01T00:50:00Z',
+    blocks: [{ type: 'plan', plan: planReplaySmoke, items: [] }],
+  }],
+});
+actions.handleEvent({
+  eventType: 'message', seq: 1, role: 'system', createdAt: '2026-01-01T00:29:00Z',
+  blocks: [{ type: 'text', text: '资料解析成功' }],
+});
+actions.handleEvent({
+  eventType: 'change_plan', seq: 2, plan: planReplaySmoke, createdAt: '2026-01-01T00:50:00Z',
+});
+actions.handleEvent({
+  eventType: 'message', seq: 3, role: 'assistant', createdAt: '2026-01-01T00:55:00Z',
+  blocks: [{ type: 'text', text: '等待批准中' }],
+});
+actions.handleEvent({
+  eventType: 'change_plan', seq: 4,
+  plan: { ...planReplaySmoke, version: 2 }, createdAt: '2026-01-01T00:58:00Z',
+});
+try {
+  const ids = store.get().messages.map((message) => message.id);
+  const planIndex = ids.indexOf('change-plan-plan-replay-smoke');
+  const planMessage = store.get().messages[planIndex];
+  if (JSON.stringify(ids) !== JSON.stringify(['event-1', 'change-plan-plan-replay-smoke', 'event-3'])) {
+    throw new Error(`计划卡片没有回到历史时间位置：${ids.join(',')}`);
+  }
+  if (planMessage?.blocks?.[0]?.plan?.version !== 2) {
+    throw new Error('回放结束后的计划更新没有原地刷新卡片内容');
+  }
+  console.log('✓ 待批准计划卡片在历史回放后回到时间顺序位置');
+} catch (e) { console.log('✗ 计划卡片回放归位:', e.message); bad++; }
+
+/* 流内确认卡待答复时，底部候选面板不重复展示同一候选；
+   其他候选、已答复交互和发布确认不受影响。 */
+const panelConfirmCandidate = {
+  id: 'cand-panel-smoke',
+  status: 'pending',
+  summary: '建模目标草稿已完成，请确认。',
+  groups: [
+    { id: 'goal', summary: '建模目标确认', changedPaths: ['.modeling/goal.md'], dependsOn: [] },
+    { id: 'runtime_context', summary: '同步建模计划与会话锚点', changedPaths: ['.modeling/plan.md'], dependsOn: ['goal'] },
+  ],
+};
+try {
+  const pendingConfirm = {
+    id: 'interaction-panel-smoke', kind: 'confirmation', status: 'pending',
+    payload: { candidateRevision: 'cand-panel-smoke' },
+  };
+  const otherCandidate = { ...panelConfirmCandidate, id: 'cand-panel-other', summary: '流程图修订' };
+  const kept = visibleCandidateRevisions([panelConfirmCandidate, otherCandidate], pendingConfirm);
+  if (kept.length !== 1 || kept[0].id !== 'cand-panel-other') {
+    throw new Error('确认中的候选没有从面板隐藏，或误伤了其他候选');
+  }
+  if (visibleCandidateRevisions([panelConfirmCandidate], { ...pendingConfirm, payload: {} }).length !== 0) {
+    throw new Error('交互缺候选 id 时面板没有整体隐藏兜底');
+  }
+  if (visibleCandidateRevisions([panelConfirmCandidate], { ...pendingConfirm, status: 'answered' }).length !== 1
+    || visibleCandidateRevisions([panelConfirmCandidate], { ...pendingConfirm, kind: 'release_confirmation' }).length !== 1
+    || visibleCandidateRevisions([panelConfirmCandidate], null).length !== 1) {
+    throw new Error('非待答复确认交互不应影响面板展示');
+  }
+  const hiddenHtml = renderToString(<CandidateRevisionPanel projectId="p-panel-smoke"
+    candidates={[panelConfirmCandidate]} pendingConfirmation={pendingConfirm} />);
+  const shownHtml = renderToString(<CandidateRevisionPanel projectId="p-panel-smoke"
+    candidates={[panelConfirmCandidate]} pendingConfirmation={null} />);
+  if (hiddenHtml.includes('候选修订') || !shownHtml.includes('候选修订')
+    || !shownHtml.includes('同步建模计划与会话锚点')) {
+    throw new Error('面板渲染没有按流内确认状态隐藏或恢复');
+  }
+  console.log('✓ 流内确认卡待答复时底部面板不重复展示同一候选');
+} catch (e) { console.log('✗ 确认卡与候选面板去重:', e.message); bad++; }
+
+const messageTimeSmokeCreatedAt = '2026-08-24T06:02:00.000Z';
+store.set({
+  demo: false,
+  interaction: null,
+  userMessages: [],
+  replayUntilSeq: 0,
+  messages: [{
+    id: 'message-time-smoke', role: 'user', createdAt: messageTimeSmokeCreatedAt,
+    blocks: [{ type: 'text', text: '对话时间要看得出是哪一天' }],
+  }],
+});
+try {
+  const stamp = formatMessageTime(messageTimeSmokeCreatedAt);
+  const html = renderToString(<RightPane />);
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/u.test(stamp)
+    || formatMessageTime('') !== ''
+    || formatMessageTime('not-a-date') !== ''
+    || !html.includes(`· ${stamp}`)) {
+    throw new Error('会话消息没有按年月日时分展示时间');
+  }
+  console.log('✓ 会话消息时间展示到年月日时分');
+} catch (e) { console.log('✗ 会话消息时间:', e.message); bad++; }
+
+const traceTimeSmokeCreatedAt = '2026-08-24T06:01:07.000Z';
+store.set({
+  demo: false, messages: [], trace: [], terminalRunIds: [],
+  run: null, activity: null, lastSeq: 0, replayUntilSeq: 0,
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'trace-time-smoke', toolCallId: 'call-trace-time',
+  name: 'read_document', phase: 'completed', summary: '资料读取完成',
+  createdAt: traceTimeSmokeCreatedAt,
+});
+try {
+  const stamp = formatTraceTime(traceTimeSmokeCreatedAt);
+  const html = renderToString(<ProcessDrawer onClose={() => {}} />);
+  if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u.test(stamp)
+    || formatTraceTime('') !== ''
+    || formatTraceTime('not-a-date') !== ''
+    || store.get().trace[0]?.at !== stamp
+    || !html.includes(`>${stamp}</time>`)) {
+    throw new Error('过程记录没有按年月日时分秒展示时间');
+  }
+  console.log('✓ 过程记录时间展示到年月日时分秒');
+} catch (e) { console.log('✗ 过程记录时间:', e.message); bad++; }
 
 store.set({
   demo: false,
@@ -1898,6 +2170,7 @@ try {
   if (humanizeTraceSummary('当前项目状态：评测 / running') !== '当前阶段：评测'
     || humanizeTraceSummary('处理完成', 'task_tool') !== '一项子任务已完成，主任务继续处理中'
     || humanizeTraceSummary('处理完成', 'read_document') !== '当前步骤已完成'
+    || humanizeTraceSummary('处理完成', 'stage_change_set', 'failed') !== '当前步骤未完成'
     || !html.includes('当前阶段：评测')) {
     throw new Error('历史过程摘要没有翻译成业务语言');
   }

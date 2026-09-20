@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { runProjectWriteExclusive } from '../artifacts/project-write-lock.js';
 import { mapArtifactHttpError } from '../artifacts/http-error.js';
+import { isRunCancellationRequested } from './run-cancellation.js';
 import {
   backgroundAuthSessions,
   type BackgroundAuthSessionRegistry,
@@ -74,7 +75,13 @@ import {
   packageGenerationContract,
 } from '../workflow/package-contract.js';
 import { runFormatChecks, type CheckFinding } from '../workflow/package-check.js';
-import { renderObjectProjection, renderPackage } from '../workflow/package-render.js';
+import {
+  DIAGRAM_INDEX_PATH,
+  ROOT_INDEX_PATH,
+  renderObjectProjection,
+  renderPackage,
+  renderRootIndex,
+} from '../workflow/package-render.js';
 import {
   expectedSchemaObjects,
   OBJECT_DATA_MAPPING_PATH,
@@ -211,6 +218,8 @@ const AGENT_REQUIRED_FILES: ReadonlySet<string> = new Set([
   ...PACKAGE_REQUIRED_FILES,
 ]);
 const CHANGE_GROUP_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/u;
+/** 有界目标上下文里保留的候选条数；完整候选集走 get_analysis_candidates 分页。 */
+const GOAL_CONTEXT_CANDIDATE_LIMIT = 40;
 const DOMAIN_TOOL_CONTRACT_VERSION = 'domain-patch-v2';
 const DOMAIN_TOOL_NAMES = new Set([
   'list_domain_resources', 'get_domain_resource',
@@ -224,6 +233,27 @@ const CHANGE_CONTROL_TOOLS = new Set([
   'create_change_plan', 'get_change_plan', 'revise_change_plan',
   'stage_change_set', 'get_change_set_receipt', 'validate_change_set', 'discard_change_set',
   OBJECT_RELATION_REVIEW_TOOL,
+]);
+export const RUN_CANCELLATION_MUTATION_TOOLS = new Set([
+  'claim_candidate_workspace',
+  'set_material_directive', 'stage_product_ledger',
+  ...CHANGE_SET_DOMAIN_TOOLS,
+  ...CHANGE_PLAN_DIRECT_TOOLS,
+  'apply_ontology_object_patch', 'submit_ontology_object_review',
+  'stage_tabular_dataset', 'upsert_object', 'upsert_rule', 'upsert_operation',
+  'bind_object_source', 'bind_object_sources',
+  'create_change_plan', 'revise_change_plan', 'stage_change_set',
+  'validate_change_set', 'discard_change_set',
+  'write_file', 'delete_file', 'discard_rejected_candidate_changes',
+  'import_zip', 'regroup_changes', 'update_work_notes', 'update_plan',
+  'stage_package_merge', 'compile_package_fusion_plan',
+  'create_package_fusion_plan', 'update_package_fusion_plan',
+  'stage_script_source', 'stage_script_patch',
+  'define_script_contract', 'confirm_deterministic_scope', 'run_script_test',
+  'prepare_confirmation_groups', 'request_confirmation_preflight',
+  'ask', 'request_confirmation', 'request_confirmation_rejected', 'request_release',
+  'run_evaluation',
+  'update_project_context', 'transition_project_state',
 ]);
 const PRODUCT_LEDGER_GATED_MUTATION_TOOLS = new Set([
   'create_object', 'create_rule', 'create_operation', 'create_metric',
@@ -478,6 +508,7 @@ export class AgentCoreService {
       files: Object.keys(packageFiles.files).sort(),
       binaryFiles: packageFiles.binaryFiles,
       materials,
+      pausedPlan: this.changeControl.pausedPlanSnapshot(project.id),
       confirmPolicy: this.workbenchConfirmPolicy(project.id),
       packageDataSource: getProjectPackageDataSourceSelection(project.id),
       changePlan: pendingChangePlan,
@@ -1013,6 +1044,58 @@ export class AgentCoreService {
     }
   }
 
+  requestRunCancellation(project: Project, _username: string, runId: string, finalizePlans = true) {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      throw new AgentCoreError('INVALID_AGENT_CONTEXT', '缺少 Agent 运行标识', [], 400);
+    }
+    try {
+      this.changeControl.requestRunCancellation(project.id, normalizedRunId, '用户请求停止运行');
+      const reconciliation = this.changeControl.reconcileRunCancellation(
+        project.id,
+        normalizedRunId,
+        'modeling-agent',
+        finalizePlans,
+      );
+      return {
+        ...reconciliation,
+        display: {
+          text: reconciliation.quiescent
+            ? '已记录停止请求，Core 没有未结算的在途修改'
+            : '已记录停止请求，仍有在途修改正在核对',
+        },
+      };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
+  resumeRunAfterCancellation(project: Project, _username: string, runId: string) {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      throw new AgentCoreError('INVALID_AGENT_CONTEXT', '缺少 Agent 运行标识', [], 400);
+    }
+    try {
+      const reconciliation = this.changeControl.resumeRunAfterCancellation(
+        project.id,
+        normalizedRunId,
+        'modeling-agent',
+      );
+      if (!reconciliation.quiescent) {
+        throw new AgentCoreError(
+          'RUN_CANCELLATION_PENDING',
+          '仍有在途修改没有取得明确回执，暂不能继续运行',
+          ['继续核对 Change Set 回执后再恢复'],
+          409,
+          { ...reconciliation },
+        );
+      }
+      return { ...reconciliation, resumed: true, display: { text: '停止栅栏已结算，可以从最近进展继续' } };
+    } catch (error) {
+      throw normalizeChangeControlError(error);
+    }
+  }
+
   workbenchPackageSources(project: Project) {
     return {
       sources: listPackageMergeSources(this.db, project.id).map(packageSourceSummary),
@@ -1190,6 +1273,16 @@ export class AgentCoreService {
   }
 
   private async invokeRaw(context: AgentToolContext, tool: string, args: Record<string, unknown>) {
+    if (RUN_CANCELLATION_MUTATION_TOOLS.has(tool)
+      && isRunCancellationRequested(this.db, context.project.id, context.runId)) {
+      throw new AgentCoreError(
+        'RUN_CANCELLING',
+        '当前运行正在停止，新的修改不会继续写入',
+        ['等待停止结算完成后再从当前进展继续'],
+        409,
+        { retryable: false, runId: context.runId },
+      );
+    }
     if (DOMAIN_TOOL_NAMES.has(tool) || CHANGE_CONTROL_TOOLS.has(tool)) this.adoptDomainToolContract(context);
     this.assertProductLedgerBeforeMutation(context, tool, args);
     this.assertObjectSourceToolMode(context.project.id, tool, args);
@@ -1203,7 +1296,7 @@ export class AgentCoreService {
         { retryable: false, required_tool: 'stage_change_set' },
       );
     }
-    if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context);
+    if (tool === 'claim_candidate_workspace') return this.claimCandidateWorkspace(context, args);
     if (tool === 'get_package_contract') return packageGenerationContract();
     if (tool === 'project_data_source_status') return this.projectDataSourceStatus(context.project.id);
     if (tool === 'get_material_analysis_progress') return this.materialAnalysisProgress(context.project.id, args);
@@ -1236,6 +1329,7 @@ export class AgentCoreService {
       case 'list_documents': return this.listDocuments(context.project.id);
       case 'get_goal_context': return this.goalContext(context.project.id, workspace);
       case 'get_material_context': return this.materialContext(context.project.id, args);
+      case 'get_analysis_candidates': return this.analysisCandidates(context, args);
       case 'require_product_ledger': return this.requireProductLedger(context, workspace, args);
       case 'get_product_inventory_source': return this.productInventorySource(context, args);
       case 'begin_product_ledger': return runProjectWriteExclusive(
@@ -2752,6 +2846,7 @@ export class AgentCoreService {
         expectedRevision,
         clientMutationId: mutationId,
         ...(editSessionId ? { editSessionId } : {}),
+        runId: context.runId,
         kind,
         key: text(args.key, 'key'),
         values: domainCreateValues(kind, args),
@@ -2805,6 +2900,7 @@ export class AgentCoreService {
           expectedRevision: workingPackage.workingRevision,
           clientMutationId: mutationId,
           ...(editSessionId ? { editSessionId } : {}),
+          runId: context.runId,
           changes: compiled.changes,
         },
         requestHash,
@@ -2871,6 +2967,7 @@ export class AgentCoreService {
           expectedRevision: workingPackage.workingRevision,
           clientMutationId: mutationId,
           ...(editSessionId ? { editSessionId } : {}),
+          runId: context.runId,
           changes: preview.patchChanges,
         },
         requestHash,
@@ -3013,6 +3110,7 @@ export class AgentCoreService {
           reason: 'Schema 对象确定性编译产物',
         });
       }
+      await this.syncRootIndexChange(workspace, nextSpec, current.files);
       await this.upsertChange(workspace, {
         path: INTERNAL_SPEC_CHANGE_PATH,
         kind: 'write',
@@ -3141,6 +3239,7 @@ export class AgentCoreService {
           expectedRevision: workingPackage.workingRevision,
           clientMutationId: mutationId,
           editSessionId: mutationId,
+          runId: context.runId,
           creates: [],
           patches,
         },
@@ -3258,6 +3357,7 @@ export class AgentCoreService {
         expectedRevision,
         clientMutationId: mutationId,
         ...(editSessionId ? { editSessionId } : {}),
+        runId: context.runId,
         elementIds: resourceIds,
         previewToken: text(args.preview_token ?? args.previewToken, 'preview_token'),
         cleanupReferences: args.cleanup_references === true,
@@ -3976,7 +4076,6 @@ export class AgentCoreService {
         ? [`operations/${existing.boundOperation}.md`]
         : []),
       'operations/index.md',
-      'index.md',
     ];
     const sourceHash = hashStructuredValue('script-source-v1', sourceCode);
     await this.stageCompiledSpec(
@@ -4000,7 +4099,8 @@ export class AgentCoreService {
       contract_hash: row.contract_hash,
       source_hash: sourceHash,
       bound_operation: contract.boundOperation,
-      rendered_paths: renderedPaths,
+      // 根索引由 syncRootIndexChange 统一渲染，不在写入清单里，但确实随本次编译刷新
+      rendered_paths: [...renderedPaths, ROOT_INDEX_PATH],
       deterministic: true,
       candidate: true,
       next: ['使用当前源码对应的真实用例运行脚本沙箱测试，通过后再发起候选确认'],
@@ -4126,6 +4226,7 @@ export class AgentCoreService {
           expectedRevision: workingPackage.workingRevision,
           clientMutationId,
           ...(editSessionId ? { editSessionId } : {}),
+          runId: context.runId,
           changes: preview.patchChanges,
         },
       );
@@ -4566,10 +4667,58 @@ export class AgentCoreService {
     return listDocuments(projectId).flatMap((document) => document.tables ?? []);
   }
 
-  private async claimCandidateWorkspace(context: AgentToolContext) {
+  private async claimCandidateWorkspace(context: AgentToolContext, args: Record<string, unknown> = {}) {
+    const resumePlanId = String(args.resume_plan_id ?? '').trim();
+    const pausedPlan = this.changeControl.pausedPlanForProject(context.project.id);
+    if (pausedPlan && !resumePlanId) {
+      throw new AgentCoreError(
+        'PAUSED_CHANGE_PLAN_DECISION_REQUIRED',
+        '当前项目还有暂停的建模计划，请通过页面选择继续该计划或结束后重新规划',
+        ['使用暂停计划卡继续或结束计划'],
+        409,
+        {
+          retryable: false,
+          requires_user_decision: true,
+          plan_id: pausedPlan.id,
+          pausedPlan: this.changeControl.pausedPlanSnapshot(context.project.id),
+        },
+      );
+    }
+    if (resumePlanId && (!pausedPlan || pausedPlan.id !== resumePlanId)) {
+      throw new AgentCoreError(
+        'PAUSED_CHANGE_PLAN_STALE',
+        '暂停计划状态已经变化，请刷新页面后再操作',
+        ['刷新项目状态'],
+        409,
+        { retryable: false, plan_id: resumePlanId },
+      );
+    }
     const existing = this.workspace(context.project.id);
     const current = await this.artifacts.current(context.project.id);
+    if (resumePlanId && (!existing || existing.run_id !== pausedPlan!.run_id)) {
+      throw new AgentCoreError(
+        'PAUSED_CHANGE_PLAN_WORKSPACE_MISMATCH',
+        '暂停计划的候选工作区已经变化，不能自动恢复',
+        ['保留审计记录并明确结束旧计划后重新规划'],
+        409,
+        {
+          retryable: false,
+          plan_id: resumePlanId,
+          plan_run_id: pausedPlan!.run_id,
+          workspace_run_id: existing?.run_id ?? '',
+        },
+      );
+    }
     if (existing && current && existing.base_revision_oid !== current.revision.oid) {
+      if (resumePlanId) {
+        throw new AgentCoreError(
+          'PAUSED_CHANGE_PLAN_BASE_CHANGED',
+          '知识包正式版本已变化，暂停计划不能直接恢复',
+          ['结束暂停计划后基于最新版本重新规划'],
+          409,
+          { retryable: false, plan_id: resumePlanId },
+        );
+      }
       if (existing.owner !== context.username) {
         throw new AgentCoreError(
           'LEASE_LOST',
@@ -4630,22 +4779,40 @@ export class AgentCoreService {
           existing.run_id,
           context.username,
         );
-      this.changeControl.transferActiveRun(context.project.id, existing.run_id, context.runId);
+      if (resumePlanId) {
+        try {
+          this.changeControl.resumePausedPlan({
+            projectId: context.project.id,
+            planId: resumePlanId,
+            previousRunId: existing.run_id,
+            nextRunId: context.runId,
+            actor: context.username,
+          });
+        } catch (error) {
+          throw normalizeChangeControlError(error);
+        }
+      } else {
+        this.changeControl.transferActiveRun(context.project.id, existing.run_id, context.runId);
+      }
       this.db.exec('COMMIT');
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       throw error;
     }
+    const resumedPlan = resumePlanId
+      ? this.changeControl.snapshot(context.project.id, context.runId, resumePlanId)
+      : null;
     return {
       projectId: context.project.id,
       runId: context.runId,
       previousRunId: existing.run_id,
       resumed: true,
+      ...(resumedPlan ? { resumedPlan } : {}),
       preservedChanges: this.changes(this.workspace(context.project.id)!).length,
       runCredential: issueAgentRunCredential(context.project.id, context.runId, context.username),
       packageContract: packageGenerationContract(),
       packageDataSource: { dataSourceType: this.workspace(context.project.id)?.package_data_source_type ?? 'neo4j' },
-      display: { text: '已继续上次未完成的修改' },
+      display: { text: resumedPlan ? '已恢复暂停计划和未完成任务' : '已继续上次未完成的修改' },
     };
   }
 
@@ -4862,20 +5029,27 @@ export class AgentCoreService {
     const openQuestions = Array.isArray(analysis.openQuestions) ? analysis.openQuestions.slice(0, 20).map((item: any) => ({
       topic: compact(item?.topic, 300), why: compact(item?.why, 600),
     })).filter((item) => item.topic && item.why) : [];
-    const candidates = Array.isArray(analysis.candidateArtifacts) ? analysis.candidateArtifacts.slice(0, 40).map((item: any) => ({
+    const candidateArtifacts = Array.isArray(analysis.candidateArtifacts) ? analysis.candidateArtifacts : [];
+    const candidates = candidateArtifacts.slice(0, GOAL_CONTEXT_CANDIDATE_LIMIT).map((item: any) => ({
       kind: compact(item?.kind, 40), name: compact(item?.name, 200), rationale: compact(item?.rationale, 600),
       evidence: stringArray(item?.evidence).slice(0, 8),
-    })).filter((item) => item.name) : [];
+    })).filter((item) => item.name);
     return {
       version: 'goal-context-v1',
       workingRevision: workspace.base_revision_oid,
       sourceRevisions: documents,
       analysisUpdatedAt: row?.updated_at ?? null,
-      coverageComplete: Boolean(row),
+      coverageComplete: Boolean(row) && analysis.coverageComplete !== false,
       domainOverview: compact(analysis.domainOverview, 4_000),
       candidateGoals: Array.isArray(analysis.candidateGoals) ? analysis.candidateGoals.slice(0, 3) : [],
       candidateProcesses: Array.isArray(analysis.candidateProcesses) ? analysis.candidateProcesses.slice(0, 3) : [],
       candidates,
+      // 截断必须自报。只给前 N 条又不说还有多少，调用方会把"看到的"当成"全部的"。
+      candidateTotal: candidateArtifacts.length,
+      candidatesTruncated: candidateArtifacts.length > candidates.length,
+      ...(candidateArtifacts.length > candidates.length
+        ? { candidatePagingTool: 'get_analysis_candidates' }
+        : {}),
       openQuestions,
       display: { text: row ? '已整理可用于目标生成的结构化资料依据' : '当前没有已完成的资料分析，目标只可依据用户明确说明生成' },
     };
@@ -5098,6 +5272,43 @@ export class AgentCoreService {
     };
   }
 
+  /**
+   * 完整候选集分页读取。有界目标上下文刻意保持紧凑，需要逐条盘点候选时
+   * 走这里，而不是让调用方拿被截断的 get_goal_context 结果当全集。
+   */
+  private analysisCandidates(context: AgentToolContext, args: Record<string, unknown>) {
+    const row = this.db.prepare(`SELECT id, result_json, updated_at FROM material_analysis_runs
+      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
+      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(context.project.id) as
+      | { id: string; result_json: string; updated_at: string }
+      | undefined;
+    let analysis: Record<string, any> = {};
+    try { analysis = row ? JSON.parse(row.result_json) as Record<string, any> : {}; } catch { /* 旧分析损坏时按空集返回 */ }
+    const all = Array.isArray(analysis.candidateArtifacts) ? analysis.candidateArtifacts : [];
+    const kind = String(args.kind ?? '').trim();
+    const items = kind ? all.filter((item: any) => String(item?.kind ?? '') === kind) : all;
+    const limitValue = Number(args.limit ?? 50);
+    const limit = Number.isSafeInteger(limitValue) ? Math.max(1, Math.min(limitValue, 100)) : 50;
+    const cursorValue = Number(args.cursor ?? 0);
+    const offset = Number.isSafeInteger(cursorValue) && cursorValue >= 0 ? cursorValue : 0;
+    if (offset > items.length) {
+      throw new AgentCoreError('ANALYSIS_CANDIDATE_CURSOR_INVALID', '候选游标超出当前数据范围', ['从第一页重新读取'], 400);
+    }
+    const page = items.slice(offset, offset + limit);
+    const next = offset + page.length;
+    return {
+      analysisRevision: row?.id ?? null,
+      analysisUpdatedAt: row?.updated_at ?? null,
+      total: items.length,
+      items: page,
+      cursor: offset,
+      nextCursor: next < items.length ? next : null,
+      hasMore: next < items.length,
+      ...(kind ? { kind } : {}),
+      display: { text: `已读取分析候选 ${next}/${items.length} 项` },
+    };
+  }
+
   private requireProductLedger(
     context: AgentToolContext,
     workspace: WorkspaceRow,
@@ -5186,12 +5397,13 @@ export class AgentCoreService {
     }
     const timestamp = nowIso();
     this.db.prepare(`INSERT INTO product_ledger_drafts
-      (project_id, ledger_id, source_revision, analysis_revision, scope, raw_count, canonical_count,
+      (project_id, ledger_id, source_revision, analysis_revision, source_fingerprint, scope, raw_count, canonical_count,
        merged_group_count, status, next_batch_no, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?, ?)
       ON CONFLICT(project_id, ledger_id) DO UPDATE SET
         source_revision = excluded.source_revision,
         analysis_revision = excluded.analysis_revision,
+        source_fingerprint = excluded.source_fingerprint,
         scope = excluded.scope,
         raw_count = excluded.raw_count,
         canonical_count = excluded.canonical_count,
@@ -5201,6 +5413,7 @@ export class AgentCoreService {
       ledgerId,
       sourceRevision,
       analysisRevision,
+      sourceAnalysis?.sourceSetFingerprint ?? null,
       scope,
       Number.isSafeInteger(Number(args.raw_count)) ? Number(args.raw_count) : null,
       Number.isSafeInteger(Number(args.canonical_count)) ? Number(args.canonical_count) : null,
@@ -5379,6 +5592,12 @@ export class AgentCoreService {
       } else if (canonicalCount !== sourceCanonicalCount) {
         declaredMismatches.push(`台账条目 ${canonicalCount} 与结构化来源 ${sourceCanonicalCount} 项不一致，仍有 ${Math.max(0, sourceCanonicalCount - canonicalCount)} 项未处理`);
       }
+      // 草稿记录了建立时的资料集指纹。来源被换掉后条数仍可能凑巧对上，
+      // 只有指纹能证明这份台账对的还是同一批资料。
+      if (sourceAnalysis && draft.source_fingerprint
+        && String(draft.source_fingerprint) !== sourceAnalysis.sourceSetFingerprint) {
+        declaredMismatches.push('来源资料集指纹已变化，台账必须基于当前分析重新建立');
+      }
     if (sourceAnalysis) {
         if (sourceAnalysis.summary) {
           if (sourceAnalysis.summary.canonicalCount !== canonicalCount) {
@@ -5451,11 +5670,17 @@ export class AgentCoreService {
         rawCount, canonicalCount, mergedGroupCount, required: true, entries,
         sourceAnalysisRevision: draft.analysis_revision,
         ...(draft.analysis_revision ? {
-          sourceFingerprint: this.productInventoryAnalysis(workspace.project_id, draft.analysis_revision)?.sourceSetFingerprint,
+          sourceFingerprint: String(draft.source_fingerprint ?? '').trim()
+            || this.productInventoryAnalysis(workspace.project_id, draft.analysis_revision)?.sourceSetFingerprint,
         } : {}),
       }, true);
       const validation = declaredMismatches.length && result.validation
-        ? { ...result.validation, pass: false, errors: [...declaredMismatches, ...result.validation.errors] }
+        ? {
+          ...result.validation,
+          pass: false,
+          blocking: true,
+          errors: [...declaredMismatches, ...result.validation.errors],
+        }
         : result.validation;
       const status = validation?.pass === true ? 'finalized' : 'needs_review';
       if (declaredMismatches.length && validation) {
@@ -5486,7 +5711,13 @@ export class AgentCoreService {
     id: string;
     sourceSetFingerprint: string;
     items: ProductInventoryItem[];
-    summary?: { rawCount: number; canonicalCount: number; mergedGroupCount: number };
+    summary?: {
+      rawCount: number;
+      canonicalCount: number;
+      mergedGroupCount: number;
+      completeCount: number;
+      insufficientCount: number;
+    };
   } | null {
     const row = this.db.prepare(`SELECT id, source_set_fingerprint, result_json
       FROM material_analysis_runs
@@ -5535,12 +5766,18 @@ export class AgentCoreService {
     const rawCount = items.reduce((sum, item) => sum + item.sourceRecordIds.length, 0);
     const mergedGroupCount = new Set(items.map((item) => item.mergeGroupId).filter(Boolean)).size;
     if (canonicalIds.size !== items.length || sourceIds.size !== rawCount) return null;
+    const completeCount = items.filter((item) => item.evidenceStatus === 'complete').length;
+    const insufficientCount = items.length - completeCount;
     const declaredSummary = analysis.productInventorySummary;
     if (declaredSummary && typeof declaredSummary === 'object' && !Array.isArray(declaredSummary)) {
       const summary = declaredSummary as Record<string, unknown>;
       if (Number(summary.rawCount) !== rawCount
         || Number(summary.canonicalCount) !== items.length
         || Number(summary.mergedGroupCount) !== mergedGroupCount) return null;
+      // 申报了资料完整性计数就必须与逐项事实一致，否则整页作废。
+      // 只核对前三项会让"条数对得上、完整性对不上"的来源混过闭合检查。
+      if (summary.completeCount !== undefined && Number(summary.completeCount) !== completeCount) return null;
+      if (summary.insufficientCount !== undefined && Number(summary.insufficientCount) !== insufficientCount) return null;
     }
     return {
       id: row.id,
@@ -5550,6 +5787,8 @@ export class AgentCoreService {
         rawCount,
         canonicalCount: items.length,
         mergedGroupCount,
+        completeCount,
+        insufficientCount,
       },
     };
   }
@@ -5562,42 +5801,31 @@ export class AgentCoreService {
   private productInventorySource(context: AgentToolContext, args: Record<string, unknown>) {
     const projectId = context.project.id;
     const workspaceRevision = this.workspace(projectId)?.base_revision_oid ?? '';
-    const row = this.db.prepare(`SELECT id, source_set_fingerprint, result_json
-      FROM material_analysis_runs
-      WHERE project_id = ? AND status = 'completed' AND result_json IS NOT NULL
-      ORDER BY completed_at DESC, updated_at DESC LIMIT 1`).get(projectId) as
-      | { id: string; source_set_fingerprint: string; result_json: string }
-      | undefined;
-    if (!row) {
-      throw new AgentCoreError(
-        'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
-        '当前没有已完成的结构化资料分析，无法建立产品清单台账',
-        ['先完成资料分析，或通过可操作问题卡补充缺失的产品清单来源'],
-        409,
-        { analysisRevision: null, processed: 0, remaining: 0 },
-      );
-    }
     const requestedRevision = String(args.analysis_revision ?? '').trim();
-    if (requestedRevision && requestedRevision !== row.id) {
-      throw new AgentCoreError(
-        'PRODUCT_INVENTORY_REVISION_CONFLICT',
-        '产品清单来源分析修订已经变化，请从新修订的第一页重新读取',
-        ['清空旧游标，并使用返回的 analysisRevision 重新开始'],
-        409,
-        { expectedAnalysisRevision: requestedRevision, currentAnalysisRevision: row.id },
-      );
-    }
-    const scope = String(args.scope ?? 'product_catalog').trim() || 'product_catalog';
-    const source = this.productInventoryAnalysis(projectId, row.id);
+    // 只在"确实产出了结构化产品事实"的分析里挑来源。按最新完成运行取值会被
+    // 精读等不产出产品事实的运行顶掉，让已有的合格来源永远取不到。
+    const source = this.productInventoryAnalysis(projectId, requestedRevision || null);
     if (!source || !source.items.length) {
+      const latest = requestedRevision ? this.productInventoryAnalysis(projectId, null) : null;
+      if (latest?.items.length) {
+        throw new AgentCoreError(
+          'PRODUCT_INVENTORY_REVISION_CONFLICT',
+          '指定的分析修订没有可用的结构化产品事实，请改用当前可用修订重新读取',
+          ['清空旧游标，并使用返回的 currentAnalysisRevision 重新开始'],
+          409,
+          { expectedAnalysisRevision: requestedRevision, currentAnalysisRevision: latest.id },
+        );
+      }
       throw new AgentCoreError(
         'PRODUCT_INVENTORY_SOURCE_UNAVAILABLE',
         '当前资料分析没有提交可审计的结构化产品事实，不能把规则候选当作产品台账来源',
         ['重新运行资料分析并提交 productInventory；完成前不能建立产品清单台账'],
         409,
-        { analysisRevision: row.id, sourceFingerprint: row.source_set_fingerprint, productInventory: false },
+        { analysisRevision: requestedRevision || null, productInventory: false },
       );
     }
+    const scope = String(args.scope ?? 'product_catalog').trim() || 'product_catalog';
+    const boundRevision = source.id;
     const items = source.items;
     // Scope is part of the ledger identity, but the analysis result is already
     // project-scoped. Do not guess-filter by a free-form scope string: doing so
@@ -5612,9 +5840,9 @@ export class AgentCoreService {
       const separator = token.lastIndexOf(':');
       if (separator > 0) {
         const cursorRevision = token.slice(0, separator);
-        if (cursorRevision !== row.id) {
+        if (cursorRevision !== boundRevision) {
           throw new AgentCoreError('PRODUCT_INVENTORY_CURSOR_INVALID', '产品清单来源游标属于另一份分析修订', ['使用当前 analysisRevision 返回的 nextCursor 继续读取'], 409, {
-            expectedAnalysisRevision: row.id, cursorAnalysisRevision: cursorRevision,
+            expectedAnalysisRevision: boundRevision, cursorAnalysisRevision: cursorRevision,
           });
         }
         const parsed = Number(token.slice(separator + 1));
@@ -5643,14 +5871,14 @@ export class AgentCoreService {
       total: scopedItems.length,
       items: page,
       cursor: offset,
-      nextCursor: next < scopedItems.length ? `${row.id}:${next}` : null,
+      nextCursor: next < scopedItems.length ? `${boundRevision}:${next}` : null,
       hasMore: next < scopedItems.length,
       // The ledger gate is bound to the package/workspace revision. Keep the
       // analysis fingerprint as a separate fact so callers cannot accidentally
       // submit an analysis hash where a package revision is required.
       sourceRevision: workspaceRevision,
-      sourceFingerprint: row.source_set_fingerprint,
-      analysisRevision: row.id,
+      sourceFingerprint: source.sourceSetFingerprint,
+      analysisRevision: boundRevision,
       ...(source.summary ? { sourceSummary: source.summary } : {}),
       display: { text: `已读取产品清单来源 ${next}/${scopedItems.length} 项` },
     };
@@ -5901,7 +6129,11 @@ export class AgentCoreService {
     const textResult = await ensureFullDocumentSummaries({
       projectId: context.project.id,
       documents: readableDocuments,
-      llm: buildTaskLlm(),
+      // 精读是长批量任务：兼容端点默认开思考会把单段耗时放大数倍，这里全程关闭。
+      llm: buildTaskLlm({ disableThinking: true }),
+      // 项目要求逐项产品台账时，精读必须在分段阶段就捕获产品事实，
+      // 否则这一次"已完成"的分析里永远没有台账可用的来源。
+      requireProductInventory: this.productLedgerRequired(context.project.id),
     });
     const textCoverage = textResult.coverage.map((item) => ({
       documentId: item.documentId,
@@ -5917,8 +6149,12 @@ export class AgentCoreService {
       } : {}),
     }));
     const coverage = textCoverage;
-    if (coverage.some((item) => !item.complete) || coverage.length !== selected.length) {
-      throw new AgentCoreError('FULL_READ_INCOMPLETE', '全文精读没有覆盖全部内容，已保留进度', ['从已完成分段继续处理缺失范围'], 409, { coverage });
+    if (coverage.some((item) => !item.complete) || coverage.length !== selected.length
+      || !textResult.coverageComplete) {
+      throw new AgentCoreError('FULL_READ_INCOMPLETE', '全文精读没有覆盖全部内容，已保留进度', ['从已完成分段继续处理缺失范围'], 409, {
+        coverage,
+        failedChunkCount: textResult.failedChunkCount,
+      });
     }
     return {
       documents: textResult.summaries.map((item) => {
@@ -5942,8 +6178,17 @@ export class AgentCoreService {
       }),
       coverage,
       totalChars: textCoverage.reduce((sum, item) => sum + item.totalChars, 0),
+      analysisRevision: textResult.analysisRevision,
+      sourceFingerprint: textResult.sourceFingerprint,
+      productInventoryCount: textResult.productInventory.length,
+      ...(textResult.productInventorySummary
+        ? { productInventorySummary: textResult.productInventorySummary }
+        : {}),
       display: {
-        text: `已并行全文精读 ${coverage.length} 份资料，全部内容完整度 100%`,
+        text: `已并行全文精读 ${coverage.length} 份资料，全部内容完整度 100%`
+          + (textResult.productInventory.length
+            ? `，逐项产品事实 ${textResult.productInventory.length} 项`
+            : ''),
       },
     };
   }
@@ -7075,6 +7320,17 @@ export class AgentCoreService {
     const validation = validateProductLedger(ledger);
     const dependencyFingerprint = validation.fingerprint;
     const timestamp = nowIso();
+    // 先判后写：拒绝的台账不能落库。先写再抛会把一份被拒绝的快照留在
+    // product_ledger_snapshots 里，后续读取方看到的是"有台账"而不是"被拒绝"。
+    if (!validation.pass && config.productLedger.mode === 'enforce' && required && !allowInvalidForFinalize) {
+      throw new AgentCoreError(
+        'PRODUCT_LEDGER_INVALID',
+        `产品清单台账校验未通过：${validation.errors.slice(0, 8).join('；')}`,
+        ['补齐逐项来源定位、唯一 ID、归并关系和完整/不足状态后重新提交台账'],
+        409,
+        { validation, ledger },
+      );
+    }
     this.db.prepare(`INSERT INTO product_ledger_snapshots
       (project_id, source_revision, scope, required, ledger_json, validation_json, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -7102,15 +7358,6 @@ export class AgentCoreService {
           ledger_json = excluded.ledger_json, validation_json = excluded.validation_json, updated_at = excluded.updated_at`)
         .run(workspace.project_id, ledger.scope, dependencyFingerprint, ledger.sourceRevision, required ? 1 : 0,
           JSON.stringify(ledger), JSON.stringify(validation), timestamp, timestamp);
-    }
-    if (!validation.pass && config.productLedger.mode === 'enforce' && required && !allowInvalidForFinalize) {
-      throw new AgentCoreError(
-        'PRODUCT_LEDGER_INVALID',
-        `产品清单台账校验未通过：${validation.errors.slice(0, 8).join('；')}`,
-        ['补齐逐项来源定位、唯一 ID、归并关系和完整/不足状态后重新提交台账'],
-        409,
-        { validation, ledger },
-      );
     }
     return {
       ok: validation.pass,
@@ -7172,6 +7419,28 @@ export class AgentCoreService {
     };
   }
 
+  /**
+   * 根索引的「目录」「典型问题」「Runtime 能力」派生自整份 spec，不属于任何单个领域资源，
+   * 因此所有确定性编译写入路径都要在这里兜底刷新一次，否则它会一直停留在草稿初始化时的空
+   * spec 快照。includeDiagrams 跟随当前修订：草稿模板渲染过流程图目录，重渲染不得删掉那一行。
+   */
+  private async syncRootIndexChange(
+    workspace: WorkspaceRow,
+    compiledSpec: PackageSpec,
+    currentFiles: Record<string, string>,
+  ) {
+    const content = renderRootIndex(compiledSpec, Object.hasOwn(currentFiles, DIAGRAM_INDEX_PATH));
+    if (currentFiles[ROOT_INDEX_PATH] === content) return;
+    await this.upsertChange(workspace, {
+      path: ROOT_INDEX_PATH,
+      kind: 'write',
+      content,
+      groupId: COMPILED_RESOURCES_GROUP,
+      evidence: [],
+      reason: '根索引的目录与 Runtime 能力随结构化规格同步',
+    });
+  }
+
   private async stageCompiledSpec(
     workspace: WorkspaceRow,
     context: AgentToolContext,
@@ -7215,6 +7484,9 @@ export class AgentCoreService {
     this.db.exec('SAVEPOINT agent_domain_compile');
     try {
       for (const path of renderedPaths) {
+        // 根索引统一由 syncRootIndexChange 渲染：renderPackage 不带 includeDraftTemplate，
+        // 在这里写会先落一份丢掉「流程图目录」的版本，再被兜底同步跳过（内容已是最新时提前 return）。
+        if (path === ROOT_INDEX_PATH) continue;
         const content = rendered[path];
         if (content === undefined) {
           throw new AgentCoreError(
@@ -7245,6 +7517,10 @@ export class AgentCoreService {
           reason: '虚拟对象模式不生成物理数据 mapping',
         });
       }
+      // 根索引的目录、典型问题和 Runtime 能力派生自整份 spec，不属于任何单个领域工具的
+      // renderedPaths。不在这里兜底同步，它会一直停留在草稿初始化时的空 spec 快照，
+      // 出现「对象已绑定数据表、mapping 已生成，但根索引仍写着业务数据查询 disabled」。
+      await this.syncRootIndexChange(workspace, compiledSpec, currentFiles);
       await this.upsertChange(workspace, {
         path: INTERNAL_SPEC_CHANGE_PATH,
         kind: 'write',
@@ -9351,8 +9627,12 @@ export class AgentCoreService {
     const schemaSemanticsEnforced = this.schemaSemanticEnforcementEnabled(workspace.project_id);
     const schemaSemanticsConfirmed = !schemaSemanticsEnforced
       || this.schemaSemanticConfirmationMatches(workspace.project_id, schemaSemantics);
+    const incompletePlanTasks = this.changeControl.incompleteRequiredPlanTasks(workspace.project_id);
+    const pausedPlanTasks = incompletePlanTasks.filter((item) => item.planStatus === 'paused');
+    const activePlanTasks = incompletePlanTasks.filter((item) => item.planStatus === 'active');
     const knowledgeConfirmed = knowledgeFilesConfirmed
-      && schemaSemanticsConfirmed;
+      && schemaSemanticsConfirmed
+      && incompletePlanTasks.length === 0;
     const pendingBusiness = workspaceChanges.filter((item) => (
       item.group_id !== RUNTIME_GROUP && item.group_id !== LEGACY_RUNTIME_GROUP
     )).length;
@@ -9434,6 +9714,12 @@ export class AgentCoreService {
           ...(schemaSemanticsConfirmed ? [] : [
             `补全并确认 Schema 对象业务语义（${schemaSemantics.errorCount} 项阻断问题）`,
           ]),
+          ...(pausedPlanTasks.length ? [
+            `继续或结束暂停的建模计划（还有 ${pausedPlanTasks.length} 项必选任务未完成）`,
+          ] : []),
+          ...(activePlanTasks.length ? [
+            `完成当前建模计划的 ${activePlanTasks.length} 项必选任务`,
+          ] : []),
           // 缺输入定义要在这里拦下：确定性验证阶段只剩领域只读工具，到那时
           // 既查不到也补不了，模型只能自己编数据来源。
           ...deterministic.missing_operation_inputs
@@ -9460,10 +9746,12 @@ export class AgentCoreService {
         ],
       },
       modeling_complete: {
-        pass: pendingBusiness === 0 && pendingCandidates === 0,
+        pass: pendingBusiness === 0 && pendingCandidates === 0 && incompletePlanTasks.length === 0,
         blockers: [
           ...(pendingBusiness ? [`还有 ${pendingBusiness} 个候选文件未确认`] : []),
           ...(pendingCandidates ? [`还有 ${pendingCandidates} 个确认请求待处理`] : []),
+          ...(pausedPlanTasks.length ? [`还有 ${pausedPlanTasks.length} 项暂停计划任务待处理`] : []),
+          ...(activePlanTasks.length ? [`还有 ${activePlanTasks.length} 项计划任务未完成`] : []),
         ],
         // 确认动作在专家手上；助手能做的是把待确认的内容整理成确认卡。
         agentActionable: pendingBusiness

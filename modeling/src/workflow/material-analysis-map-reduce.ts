@@ -8,9 +8,10 @@ import type {
   MaterialAssessment,
   ModelingBrief,
   ProductInventoryItem,
+  ProductInventorySummary,
 } from '../types.js';
 import { throwIfCancelled } from '../cancellation.js';
-import { makeAgent, runAgentCaptured } from './agent.js';
+import { makeAgent, runAgentCaptured, type StructuredToolChoiceState } from './agent.js';
 import {
   assertCompleteDocumentPlan,
   planDocumentAnalysis,
@@ -31,6 +32,11 @@ import {
   type MaterialAnalysisChunkRecord,
 } from './material-analysis-checkpoints.js';
 import { summarizeModelingBrief } from '../ai-construction/modeling-brief.js';
+import {
+  createProductInventoryCapture,
+  normalizeProductInventory as normalizeCapturedInventory,
+  productInventoryItemSchema,
+} from './product-inventory-capture.js';
 
 export interface MaterialMapReduceProgress {
   phase: string;
@@ -159,6 +165,7 @@ function normalizedChunkPayload(value: any, chunk: DocumentAnalysisChunk): Chunk
     ...candidate,
     evidenceOffsets: candidate.evidenceOffsets.filter((offset: number) => normalizedEvidence.some((item: ChunkEvidence) => item.offset === offset)),
   }));
+  const productInventory = normalizeCapturedInventory(value?.productInventory ?? []);
   return {
     summary: String(value?.summary ?? '').trim().slice(0, 4_000) || '该分段未提取到可用摘要。',
     evidence: normalizedEvidence,
@@ -168,6 +175,75 @@ function normalizedChunkPayload(value: any, chunk: DocumentAnalysisChunk): Chunk
       const why = String(item?.why ?? '').trim();
       return topic && why ? [{ topic: topic.slice(0, 300), why: why.slice(0, 1_000) }] : [];
     }).slice(0, 20),
+    ...(productInventory.length ? { productInventory } : {}),
+  };
+}
+
+/**
+ * 跨分段确定性归并产品事实。归并交给代码而不是模型：同一 canonicalItemId
+ * 的多条原始记录才构成归并组，证据状态取严，缺口取并集。
+ */
+export function mergeProductInventory(chunks: MaterialAnalysisChunkRecord[]): {
+  items: ProductInventoryItem[];
+  summary?: ProductInventorySummary;
+} {
+  const merged = new Map<string, ProductInventoryItem>();
+  const unique = (values: Array<string | undefined>) => (
+    [...new Set(values.map((item) => String(item ?? '').trim()).filter(Boolean))]
+  );
+  for (const item of chunks.flatMap((chunk) => chunk.payload?.productInventory ?? [])) {
+    const previous = merged.get(item.canonicalItemId);
+    if (!previous) {
+      merged.set(item.canonicalItemId, { ...item });
+      continue;
+    }
+    const sourceRecordIds = unique([...previous.sourceRecordIds, ...item.sourceRecordIds]);
+    const structuredGaps = unique([...(previous.structuredGaps ?? []), ...(item.structuredGaps ?? [])]);
+    const insufficient = previous.evidenceStatus === 'insufficient'
+      || item.evidenceStatus === 'insufficient'
+      || structuredGaps.length > 0;
+    merged.set(item.canonicalItemId, {
+      ...previous,
+      ...(previous.completenessContract === 'source-fields-v1' && item.completenessContract === 'source-fields-v1'
+        ? { completenessContract: 'source-fields-v1' as const }
+        : {}),
+      name: previous.name || item.name,
+      ruleRefs: unique([...previous.ruleRefs, ...item.ruleRefs]),
+      sourceRecordIds,
+      sourceLocator: unique([previous.sourceLocator, item.sourceLocator]).join(' | '),
+      ...(sourceRecordIds.length > 1 ? { mergeGroupId: `merge:${item.canonicalItemId}` } : {}),
+      evidenceStatus: insufficient ? 'insufficient' : 'complete',
+      processingStatus: insufficient ? 'blocked' : 'ready',
+      ...(insufficient ? {
+        insufficiencyReason: unique([
+          previous.insufficiencyReason, item.insufficiencyReason, ...structuredGaps,
+        ]).join('、') || '资料字段不完整',
+      } : {}),
+      applicableSubjects: unique([...previous.applicableSubjects, ...item.applicableSubjects]),
+      triggerScenarios: unique([...previous.triggerScenarios, ...item.triggerScenarios]),
+      businessNeeds: unique([...previous.businessNeeds, ...item.businessNeeds]),
+      admissionConditions: unique([...(previous.admissionConditions ?? []), ...(item.admissionConditions ?? [])]),
+      exclusionConditions: unique([...(previous.exclusionConditions ?? []), ...(item.exclusionConditions ?? [])]),
+      semanticWarnings: unique([...(previous.semanticWarnings ?? []), ...(item.semanticWarnings ?? [])]),
+      structuredGaps,
+    });
+  }
+  const items = [...merged.values()].map((item) => {
+    const base = item.sourceRecordIds.length > 1
+      ? { ...item, mergeGroupId: `merge:${item.canonicalItemId}` }
+      : (({ mergeGroupId: _dropped, ...rest }) => rest)(item) as ProductInventoryItem;
+    return base;
+  }).sort((left, right) => left.canonicalItemId.localeCompare(right.canonicalItemId));
+  if (!items.length) return { items };
+  return {
+    items,
+    summary: {
+      rawCount: items.reduce((total, item) => total + item.sourceRecordIds.length, 0),
+      canonicalCount: items.length,
+      mergedGroupCount: items.filter((item) => item.sourceRecordIds.length > 1).length,
+      completeCount: items.filter((item) => item.evidenceStatus === 'complete').length,
+      insufficientCount: items.filter((item) => item.evidenceStatus === 'insufficient').length,
+    },
   };
 }
 
@@ -304,14 +380,23 @@ function balancedTableSummaries(tables: DataDictTable[], llm: LlmDeps) {
   }));
 }
 
+// 分段精读的重试预算。旧预算（600 秒超时 × 3 次捕获 × 4 轮外层）最坏能把一个分段拖到
+// 两小时；强制 tool_choice 后「读完不提交」主要由端点约束解码兜住，预算只需覆盖偶发
+// 超时、参数校验重试和产品事实批次的多轮提交。
+const CHUNK_ATTEMPT_TIMEOUT_MS = 420_000;
+const CHUNK_CAPTURE_ATTEMPTS = 2;
+const CHUNK_ANALYSIS_ATTEMPTS = 2;
+
 async function analyzeChunk(
   llm: LlmDeps,
   chunk: DocumentAnalysisChunk,
   observe?: (event: unknown) => void,
+  requireProductInventory = false,
+  toolChoiceState?: StructuredToolChoiceState,
 ): Promise<ChunkAnalysisPayload> {
   let fallbackSummary = '';
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const result = await analyzeChunkAttempt(llm, chunk, observe);
+  for (let attempt = 0; attempt < CHUNK_ANALYSIS_ATTEMPTS; attempt += 1) {
+    const result = await analyzeChunkAttempt(llm, chunk, observe, requireProductInventory, toolChoiceState);
     if (result.payload) return result.payload;
     fallbackSummary = result.assistantText || fallbackSummary;
   }
@@ -324,6 +409,9 @@ async function analyzeChunk(
         topic: `${chunk.filename} 第 ${chunk.chunkIndex + 1} 段需要在文档汇总阶段补充结构化提炼`,
         why: '模型已阅读并输出分段正文摘要，但连续多次未调用结构化提交工具。',
       }],
+      // 仅靠正文摘要兜底：本段未产出结构化候选/证据/产品事实，
+      // 标记降级供下游识别"并非真完成"，避免假报 100% 覆盖。
+      degraded: true,
     };
   }
   throw new Error('分段分析未提交结构化结果');
@@ -333,8 +421,11 @@ async function analyzeChunkAttempt(
   llm: LlmDeps,
   chunk: DocumentAnalysisChunk,
   observe?: (event: unknown) => void,
+  requireProductInventory = false,
+  toolChoiceState?: StructuredToolChoiceState,
 ): Promise<{ payload?: ChunkAnalysisPayload; assistantText: string }> {
-  const capture: { value?: unknown } = {};
+  const capture: { value?: ChunkAnalysisPayload } = {};
+  const inventory = createProductInventoryCapture();
   const submit = {
     name: 'submit_document_chunk_analysis',
     label: '提交文档分段分析',
@@ -354,9 +445,14 @@ async function analyzeChunkAttempt(
         readiness: Type.Optional(readiness),
       }), { maxItems: 60 })),
       openQuestions: Type.Optional(Type.Array(Type.Object({ topic: Type.Optional(Type.String()), why: Type.Optional(Type.String()) }), { maxItems: 40 })),
+      productInventoryDisposition: Type.Union([Type.Literal('extracted'), Type.Literal('not_applicable')]),
+      productInventory: Type.Optional(Type.Array(productInventoryItemSchema, { maxItems: 10 })),
     }),
     async execute(_id: string, params: unknown) {
-      capture.value = params;
+      const value = (params ?? {}) as Record<string, unknown>;
+      const productInventory = inventory.finish(value.productInventoryDisposition, value.productInventory);
+      if (!String(value.summary ?? '').trim()) throw new Error('分段摘要不能为空');
+      capture.value = normalizedChunkPayload({ ...value, productInventory }, chunk);
       return { content: [{ type: 'text' as const, text: '当前分段分析已提交。' }], details: {}, terminate: true };
     },
   };
@@ -364,6 +460,15 @@ async function analyzeChunkAttempt(
     '你是资料分段知识提取器。只分析当前原文分段，不推测分段外内容。',
     '提取可复用的业务事实、对象、规则、操作、指标和流程线索；证据 offset 必须位于给定区间。',
     '缺少阈值、权威口径或映射时标记 needs_clarification，禁止补造业务事实。',
+    '当分段包含产品手册、产品清单或逐项台账记录时，必须逐项提交产品事实。每个规范产品使用稳定canonicalItemId，保留所有原始记录ID、规则ID和来源位置；不完整字段写入structuredGaps，不得推断补齐。',
+    '产品多于10项时先多次调用submit_product_inventory_batch，每批1–10项；批次不会结束任务，处理完当前分段全部条目后再提交分段分析，并声明productInventoryDisposition=extracted，不要重复抄写批次。',
+    '不多于10项可在最终分段提交内附productInventory。仅当原文没有任何产品条目时声明productInventoryDisposition=not_applicable；不能用汇总、承诺或业务候选替代逐项事实。',
+    '逐项原样提取适用主体、触发场景、业务需求、准入条件admissionConditions、排除条件exclusionConditions。缺失或写明资料未提供时用空数组；不要把占位文字当作事实。',
+    '原始记录ID、规范业务项ID、规范规则ID和证据位置是四种不同角色。sourceRecordIds只列原始记录ID；不能为了"保留所有ID"把其他三个角色塞进来源记录数组。',
+    '本阶段只核对上述资料字段是否提供。有效性口径、阈值解释、推荐规则可执行性等歧义保留在semanticWarnings，不得把语义待确认与字段缺失混为一谈。完整状态由平台依据实际字段计算，不按预期数量倒推，不删除警告。',
+    ...(requireProductInventory
+      ? ['本项目已要求逐项产品台账；特别核对本段全部产品条目，不得因为已有摘要就跳过产品事实。非产品段仍需如实声明not_applicable。']
+      : []),
     '最后必须调用 submit_document_chunk_analysis，不要只输出正文。',
     `文档：${chunk.filename}`,
     `原文区间：[${chunk.startOffset}, ${chunk.endOffset})`,
@@ -371,18 +476,35 @@ async function analyzeChunkAttempt(
   const agent = makeAgent(
     taskModel(llm, 8_192),
     systemPrompt,
-    [submit] as any,
+    [inventory.tool, submit] as any,
   );
   const messages = await runAgentCaptured(
     agent,
     `请分析以下原文分段并提交结构化结果：\n\n${chunk.content}`,
-    () => Boolean(capture.value && typeof (capture.value as any).summary === 'string' && String((capture.value as any).summary).trim()),
-    '请立即调用 submit_document_chunk_analysis 提交当前分段结果。',
+    () => Boolean(capture.value),
+    '请先补齐剩余产品事实批次，再调用 submit_document_chunk_analysis 并声明 productInventoryDisposition。',
     observe,
-    { timeoutMs: 600_000, maxCaptureAttempts: 3 },
+    {
+      timeoutMs: CHUNK_ATTEMPT_TIMEOUT_MS,
+      maxCaptureAttempts: CHUNK_CAPTURE_ATTEMPTS,
+      maxTurns: 64,
+      // 分段协议要求每一轮都以工具调用收尾（批次工具或最终提交），因此用 required
+      // 而不是 named：named 会锁死 submit_document_chunk_analysis，
+      // 使产品事实批次工具 submit_product_inventory_batch 无法调用。
+      // 端点不支持时 runAgentCaptured 会自动降级到 auto，行为等同现状。
+      requiredToolName: 'submit_document_chunk_analysis',
+      toolChoiceState: toolChoiceState ?? { mode: 'required' },
+      // 分段提交会被产品事实捕获契约拒绝（角色混用、缺必填字段、口径与数据不一致等）。
+      // 不带诊断时模型只收到通用话术，无法得知被拒原因，会原样重复同一个错误直到本段失败；
+      // 这里把具体校验错因编入下一轮提示，让重试真正携带纠错信息。
+      captureDiagnostics: {
+        targetToolName: 'submit_document_chunk_analysis',
+        onAttempt: () => undefined,
+      },
+    },
   );
   return {
-    ...(capture.value ? { payload: normalizedChunkPayload(capture.value, chunk) } : {}),
+    ...(capture.value ? { payload: capture.value } : {}),
     assistantText: latestAssistantText(messages),
   };
 }
@@ -535,50 +657,14 @@ async function reduceDocumentHierarchically(
   return reduceDocument(llm, document, current, observe);
 }
 
+/**
+ * 领域 Reduce 只看得到文档摘要，原文细节已被压缩掉，因此这里不再接收
+ * productInventory。逐项产品事实一律来自分段 Map 阶段，由 Core 确定性归并。
+ */
 interface DomainReducePayload extends Pick<AnalysisResult,
   'domainOverview' | 'candidateObjects' | 'candidateGoals' | 'candidateProcesses' | 'openQuestions'> {
   tableMaterialAssessments?: MaterialAssessment[];
   tableCandidateArtifacts?: ArtifactCandidate[];
-  productInventory?: ProductInventoryItem[];
-  productInventorySummary?: AnalysisResult['productInventorySummary'];
-}
-
-function normalizeProductInventory(value: unknown): ProductInventoryItem[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((raw) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
-    const item = raw as Record<string, unknown>;
-    const text = (input: unknown) => String(input ?? '').trim();
-    const array = (input: unknown) => Array.isArray(input)
-      ? input.map(text).filter(Boolean).slice(0, 40)
-      : [];
-    const canonicalItemId = text(item.canonicalItemId ?? item.canonical_item_id);
-    const name = text(item.name);
-    const sourceRecordIds = array(item.sourceRecordIds ?? item.source_record_ids);
-    const sourceLocator = text(item.sourceLocator ?? item.source_locator);
-    if (!canonicalItemId || !name || !sourceRecordIds.length || !sourceLocator) return [];
-    const evidenceStatus = item.evidenceStatus === 'insufficient' ? 'insufficient' : 'complete';
-    return [{
-      canonicalItemId,
-      name,
-      applicableSubjects: array(item.applicableSubjects ?? item.applicable_subjects),
-      triggerScenarios: array(item.triggerScenarios ?? item.trigger_scenarios),
-      businessNeeds: array(item.businessNeeds ?? item.business_needs),
-      sourceRecordIds,
-      sourceLocator,
-      ruleRefs: array(item.ruleRefs ?? item.rule_refs ?? (item.ruleId ? [item.ruleId] : [])),
-      ...(text(item.mergeGroupId ?? item.merge_group_id) ? {
-        mergeGroupId: text(item.mergeGroupId ?? item.merge_group_id),
-      } : {}),
-      evidenceStatus,
-      ...(array(item.structuredGaps ?? item.structured_gaps).length ? {
-        structuredGaps: array(item.structuredGaps ?? item.structured_gaps),
-      } : {}),
-      ...(text(item.insufficiencyReason ?? item.insufficiency_reason) ? {
-        insufficiencyReason: text(item.insufficiencyReason ?? item.insufficiency_reason),
-      } : {}),
-    } as ProductInventoryItem];
-  });
 }
 
 function normalizeDomainTableArtifacts(
@@ -653,27 +739,6 @@ async function reduceDomain(input: {
         kind: artifactKind, name: Type.String(), rationale: Type.String(), sources: Type.Array(Type.String()),
         evidence: Type.Optional(Type.String()), readiness,
       })),
-      // This is the authoritative itemized product fact source for the
-      // ledger gate. It is intentionally separate from candidateArtifacts:
-      // candidates are suggestions and may not be used to close inventory
-      // counts or provenance.
-      productInventory: Type.Optional(Type.Array(Type.Object({
-        canonicalItemId: Type.String(), name: Type.String(),
-        applicableSubjects: Type.Array(Type.String()),
-        triggerScenarios: Type.Array(Type.String()),
-        businessNeeds: Type.Array(Type.String()),
-        sourceRecordIds: Type.Array(Type.String(), { minItems: 1 }),
-        sourceLocator: Type.String(), ruleRefs: Type.Array(Type.String()),
-        mergeGroupId: Type.Optional(Type.String()),
-        evidenceStatus: Type.Union([Type.Literal('complete'), Type.Literal('insufficient')]),
-        structuredGaps: Type.Optional(Type.Array(Type.String())),
-        insufficiencyReason: Type.Optional(Type.String()),
-      }), { maxItems: 10000 })),
-      productInventorySummary: Type.Optional(Type.Object({
-        rawCount: Type.Number({ minimum: 0 }),
-        canonicalCount: Type.Number({ minimum: 0 }),
-        mergedGroupCount: Type.Number({ minimum: 0 }),
-      })),
     }),
     async execute(_id: string, params: unknown) {
       capture.value = params;
@@ -690,8 +755,7 @@ async function reduceDomain(input: {
       '基于文档汇总与数据表结构形成领域概览、最多 3 个目标和流程、对象候选及开放问题。',
       'candidateObjects.sourceTables 和表格材料 source 必须精确使用输入中的真实表名。',
       '表格缺少业务口径时标记 needs_clarification，不得根据样例值编造规则阈值。',
-      '当任务涉及产品手册/产品清单台账时，必须额外提交 productInventory 和 productInventorySummary。productInventory 是逐项事实源，不是 candidateArtifacts 的复制；每项必须有稳定 canonicalItemId、ruleRefs、原始记录 ID、精确证据定位、名称、适用主体、触发场景、业务需求和 evidenceStatus。无法从资料确认的字段写入 structuredGaps/insufficiencyReason。',
-      'productInventorySummary 的 rawCount、canonicalCount、mergedGroupCount 必须由逐项 sourceRecordIds 和 mergeGroupId 闭合计算；无法确定时不要猜数，留空并让台账门禁阻断。',
+      '逐项产品事实已在分段阶段逐条捕获并由平台归并，这里不要重复输出产品清单，也不要用概述、估算或候选条目代替逐项事实。',
       '最后调用 submit_material_analysis_result。',
       `已确认建模目标：${goal}`,
       `项目上下文：${input.projectContext}`,
@@ -710,14 +774,6 @@ async function reduceDomain(input: {
   const domain = capture.value as DomainReducePayload;
   return {
     ...domain,
-    productInventory: normalizeProductInventory(domain.productInventory),
-    ...(domain.productInventorySummary ? {
-      productInventorySummary: {
-        rawCount: Number(domain.productInventorySummary.rawCount) || 0,
-        canonicalCount: Number(domain.productInventorySummary.canonicalCount) || 0,
-        mergedGroupCount: Number(domain.productInventorySummary.mergedGroupCount) || 0,
-      },
-    } : {}),
     ...normalizeDomainTableArtifacts(input.tables, domain),
   };
 }
@@ -817,23 +873,39 @@ function documentAnalysisToArtifacts(
   };
 }
 
-function coverageFromPlan(plan: DocumentAnalysisPlan): AnalysisResult['documentReadCoverage'] {
+/**
+ * 覆盖账本按实际可用分段计算，不按计划宣称。仅靠正文摘要兜底的降级分段
+ * 不计入已读范围，否则长文只要跑完流程就会假报 100%。
+ */
+function coverageFromChunks(
+  plan: DocumentAnalysisPlan,
+  records: MaterialAnalysisChunkRecord[],
+): AnalysisResult['documentReadCoverage'] {
+  const usableKey = new Set(records
+    .filter((record) => record.status === 'completed' && !record.payload?.degraded)
+    .map((record) => `${record.documentKey}\0${record.chunkIndex}`));
   const keys = [...new Set(plan.chunks.map((chunk) => chunk.documentKey))];
   return keys.map((key) => {
     const chunks = plan.chunks.filter((chunk) => chunk.documentKey === key)
       .sort((left, right) => left.startOffset - right.startOffset);
     const first = chunks[0];
     const totalChars = Math.max(...chunks.map((chunk) => chunk.endOffset));
-    const ranges = chunks.map((chunk) => [chunk.startOffset, chunk.endOffset] as [number, number]);
+    const usable = chunks.filter((chunk) => usableKey.has(`${chunk.documentKey}\0${chunk.chunkIndex}`));
+    const ranges = usable.map((chunk) => [chunk.startOffset, chunk.endOffset] as [number, number]);
+    let contiguousEnd = 0;
+    for (const [start, end] of ranges) {
+      if (start > contiguousEnd) break;
+      contiguousEnd = Math.max(contiguousEnd, end);
+    }
     return {
       ...(first.documentId ? { documentId: first.documentId } : {}),
       filename: first.filename,
       revisionFingerprint: first.revisionFingerprint,
       totalChars,
       ranges,
-      contiguousEnd: totalChars,
-      eofSeen: true,
-      complete: true,
+      contiguousEnd,
+      eofSeen: contiguousEnd >= totalChars,
+      complete: contiguousEnd >= totalChars,
     };
   });
 }
@@ -849,7 +921,16 @@ interface MaterialAnalysisMapReduceInput {
   observe?: (phase: string) => ((event: unknown) => void);
   concurrency?: number;
   documentOnly?: boolean;
+  /** 需要逐项产品台账时，分段必须显式声明产品事实处置，检查点也不与普通分析共用。 */
+  requireProductInventory?: boolean;
   finalizeAnalysis?: (analysis: AnalysisResult) => AnalysisResult;
+}
+
+/** 要求逐项产品事实的运行有更强的提交契约，不得复用只提交摘要的旧检查点。 */
+function analysisPlan(input: MaterialAnalysisMapReduceInput): DocumentAnalysisPlan {
+  const plan = planDocumentAnalysis(input.documents, input.llm);
+  if (!input.requireProductInventory) return plan;
+  return { ...plan, protocolVersion: `${plan.protocolVersion}:inventory-required` };
 }
 
 const inFlightMaterialAnalyses = new Map<string, Promise<MaterialMapReduceResult>>();
@@ -903,7 +984,7 @@ function documentReductionKey(
 }
 
 function materialAnalysisInFlightKey(input: MaterialAnalysisMapReduceInput): string {
-  const plan = planDocumentAnalysis(input.documents, input.llm);
+  const plan = analysisPlan(input);
   return JSON.stringify([
     input.projectId,
     materialSourceSetFingerprint({
@@ -937,7 +1018,7 @@ async function runMaterialAnalysisMapReduceOnce(
   const report = (progress: MaterialMapReduceProgress) => {
     try { input.onProgress?.(progress); } catch { /* 进度展示失败不能阻断分析 */ }
   };
-  const plan = planDocumentAnalysis(input.documents, input.llm);
+  const plan = analysisPlan(input);
   assertCompleteDocumentPlan(plan, input.documents);
   const store = new MaterialAnalysisCheckpointStore();
   const run = store.startOrResume({
@@ -950,9 +1031,20 @@ async function runMaterialAnalysisMapReduceOnce(
     briefFingerprint: materialBriefFingerprint(input.confirmedBrief),
     plan,
   });
-  if (run.status === 'completed' && run.result) {
-    return { analysis: run.result as AnalysisResult, runId: run.id, reusedChunks: plan.chunks.length, totalChunks: plan.chunks.length };
+  const priorAnalysis = run.result as AnalysisResult | undefined;
+  // 已完成但产物不达标的运行必须继续补齐：直接早退会把"曾经跑完"当成"已经合格"，
+  // 台账门禁就只能拿到永远缺产品事实的快照。
+  const needsInventory = Boolean(input.requireProductInventory && !priorAnalysis?.productInventory?.length);
+  if (run.status === 'completed' && priorAnalysis
+    && priorAnalysis.coverageComplete !== false && !needsInventory) {
+    return {
+      analysis: priorAnalysis,
+      runId: run.id,
+      reusedChunks: plan.chunks.length,
+      totalChunks: plan.chunks.length,
+    };
   }
+  store.retryIncompleteChunks(run.id, Boolean(input.requireProductInventory));
   const contentByChunk = new Map(plan.chunks.map((chunk) => [`${chunk.documentKey}\0${chunk.chunkIndex}`, chunk]));
   const before = store.listChunks(run.id);
   let reusedChunks = before.filter((chunk) => chunk.status === 'completed').length;
@@ -967,6 +1059,8 @@ async function runMaterialAnalysisMapReduceOnce(
   reportMapProgress(reusedChunks ? `复用 ${reusedChunks}/${plan.chunks.length} 个已完成分段` : '正在分析全文分段');
 
   const pending = before.filter((chunk) => chunk.status !== 'completed');
+  // 本次 run 内共享工具选择协商结果：端点若拒绝 required，只降级一次，后续分段直接沿用。
+  const chunkToolChoiceState: StructuredToolChoiceState = { mode: 'required' };
   try {
     await adaptiveMap(pending, input.concurrency ?? Number(process.env.MODELING_MATERIAL_ANALYSIS_CONCURRENCY ?? 5), async (record) => {
       throwIfCancelled(input.projectId, 'analyze');
@@ -981,6 +1075,8 @@ async function runMaterialAnalysisMapReduceOnce(
             input.llm,
             chunk,
             input.observe?.(`document_map_${record.documentKey}_${record.chunkIndex}`),
+            Boolean(input.requireProductInventory),
+            chunkToolChoiceState,
           ),
         );
         const payload = shared.value;
@@ -1011,6 +1107,10 @@ async function runMaterialAnalysisMapReduceOnce(
     store.fail(run.id, error);
     throw error;
   }
+  const degradedChunkCount = chunks.filter((chunk) => chunk.payload?.degraded === true).length;
+  const coverageComplete = degradedChunkCount === 0;
+  const inventory = mergeProductInventory(chunks);
+  const documentReadCoverage = coverageFromChunks(plan, chunks);
   try {
     store.updateStage(run.id, 'document_reduce');
     const documentKeys = [...new Set(chunks.map((chunk) => chunk.documentKey))];
@@ -1057,12 +1157,18 @@ async function runMaterialAnalysisMapReduceOnce(
         openQuestions: documentSummaries.flatMap((item) => item.payload.openQuestions),
         materialAssessments: documentArtifacts.map((item) => item.assessment),
         candidateArtifacts: documentArtifacts.flatMap((item) => item.candidates),
-        documentReadCoverage: coverageFromPlan(plan),
+        ...(inventory.items.length ? { productInventory: inventory.items } : {}),
+        ...(inventory.summary ? { productInventorySummary: inventory.summary } : {}),
+        failedChunkCount: degradedChunkCount,
+        coverageComplete,
+        documentReadCoverage,
       };
       store.complete(run.id, analysis);
       report({
         phase: 'complete', title: '原始资料全文事实提取完成', percent: 100,
-        summary: `文档 ${documentSummaries.length} 份 · 分段 ${plan.chunks.length} 个`,
+        summary: `文档 ${documentSummaries.length} 份 · 分段 ${plan.chunks.length} 个`
+          + (degradedChunkCount ? ` · ${degradedChunkCount} 个分段仅有正文摘要` : '')
+          + (inventory.items.length ? ` · 产品事实 ${inventory.items.length} 项` : ''),
       });
       return { analysis, runId: run.id, reusedChunks, totalChunks: plan.chunks.length };
     }
@@ -1077,7 +1183,10 @@ async function runMaterialAnalysisMapReduceOnce(
       observe: input.observe?.('domain_reduce'),
     });
     const analysis: AnalysisResult = {
-    domainOverview: String(domain.domainOverview ?? '').trim() || '已完成资料全文分析。',
+    domainOverview: String(domain.domainOverview ?? '').trim()
+      || (coverageComplete
+        ? '已完成资料全文分析。'
+        : `已分析资料全文，其中 ${degradedChunkCount} 个分段仅取得正文摘要，结构化提炼不完整。`),
     ...(input.confirmedBrief ? { modelingBrief: input.confirmedBrief } : {}),
     candidateObjects: Array.isArray(domain.candidateObjects) ? domain.candidateObjects : [],
     openQuestions: [
@@ -1094,11 +1203,11 @@ async function runMaterialAnalysisMapReduceOnce(
       ...(Array.isArray(domain.tableCandidateArtifacts) ? domain.tableCandidateArtifacts : []),
       ...documentArtifacts.flatMap((item) => item.candidates),
     ],
-    ...(Array.isArray(domain.productInventory) && domain.productInventory.length
-      ? { productInventory: domain.productInventory }
-      : {}),
-    ...(domain.productInventorySummary ? { productInventorySummary: domain.productInventorySummary } : {}),
-    documentReadCoverage: coverageFromPlan(plan),
+    ...(inventory.items.length ? { productInventory: inventory.items } : {}),
+    ...(inventory.summary ? { productInventorySummary: inventory.summary } : {}),
+    failedChunkCount: degradedChunkCount,
+    coverageComplete,
+    documentReadCoverage,
     };
     const finalizedAnalysis = input.finalizeAnalysis?.(analysis) ?? analysis;
     store.complete(run.id, finalizedAnalysis);
@@ -1121,9 +1230,19 @@ export async function ensureFullDocumentSummaries(input: {
   projectId: string;
   documents: ReadableDocument[];
   llm: LlmDeps;
+  requireProductInventory?: boolean;
   onProgress?: (progress: MaterialMapReduceProgress) => void;
   observe?: (phase: string) => ((event: unknown) => void);
-}): Promise<{ summaries: Array<{ filename: string; payload: DocumentAnalysisPayload }>; coverage: NonNullable<AnalysisResult['documentReadCoverage']> }> {
+}): Promise<{
+  summaries: Array<{ filename: string; payload: DocumentAnalysisPayload }>;
+  coverage: NonNullable<AnalysisResult['documentReadCoverage']>;
+  analysisRevision: string;
+  sourceFingerprint: string;
+  coverageComplete: boolean;
+  failedChunkCount: number;
+  productInventory: ProductInventoryItem[];
+  productInventorySummary?: AnalysisResult['productInventorySummary'];
+}> {
   const result = await runMaterialAnalysisMapReduce({
     ...input,
     projectContext: '仅建立原始资料的可复用全文摘要与证据索引。',
@@ -1137,5 +1256,17 @@ export async function ensureFullDocumentSummaries(input: {
     filename: chunks.find((chunk) => chunk.documentKey === documentKey)!.filename,
     payload: store.getDocumentSummary(result.runId, documentKey)!,
   }));
-  return { summaries, coverage: result.analysis.documentReadCoverage ?? [] };
+  const run = store.getRun(result.runId);
+  const analysis = result.analysis;
+  return {
+    summaries,
+    coverage: analysis.documentReadCoverage ?? [],
+    // 台账侧据此把草稿钉在这一次分析上，而不是每次都跟随"最新完成的运行"。
+    analysisRevision: result.runId,
+    sourceFingerprint: run?.sourceSetFingerprint ?? '',
+    coverageComplete: analysis.coverageComplete !== false,
+    failedChunkCount: analysis.failedChunkCount ?? 0,
+    productInventory: analysis.productInventory ?? [],
+    ...(analysis.productInventorySummary ? { productInventorySummary: analysis.productInventorySummary } : {}),
+  };
 }

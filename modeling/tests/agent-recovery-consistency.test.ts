@@ -163,3 +163,146 @@ test('Python stale-run 终止后 Node 活动计划一并取消，新 run 可重�
   assert.equal(replanned.statusCode, 200, replanned.body);
   assert.notEqual(replanned.json().plan.id, planId);
 });
+
+test('取消栅栏写入后 Core 拒绝同一 run 的新候选写入', async (t) => {
+  const project = createProject({ owner: 'alice', name: '取消栅栏回归' });
+  const app = appFor(t);
+  const store = new ChangeControlStore(getDb());
+  const runId = `run-${project.id}`;
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+
+  const fence = store.requestRunCancellation(project.id, runId, 'synthetic cancellation');
+  assert.equal(fence.runId, runId);
+  assert.equal(store.isRunCancellationRequested(project.id, runId), true);
+
+  const rejected = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(rejected.statusCode, 409, rejected.body);
+  assert.equal(rejected.json().code, 'RUN_CANCELLING');
+});
+
+test('Core 停止结算暂停计划并保留任务，只有显式 planId 可以迁移到新 run', async (t) => {
+  const project = createProject({ owner: 'alice', name: '取消接口回归' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const revision = await currentRevision(app, project.id, runId);
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const created = await tool(app, project.id, 'create_change_plan', planArgs(revision), runId);
+  assert.equal(created.statusCode, 200, created.body);
+  const planId = created.json().plan.id;
+  getDb().prepare(`UPDATE agent_change_plan_tasks
+    SET status = 'staged', change_set_id = 'synthetic-staged-result'
+    WHERE plan_id = ?`).run(planId);
+  getDb().prepare(`INSERT INTO agent_change_plan_tasks (
+    id, plan_id, client_key, ordinal, title, resource_kind, target_key,
+    allowed_tools_json, depends_on_json, acceptance, required, status, updated_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    `${planId}_pending`, planId, 'task-pending', 2, '尚未提取的规则', 'rule',
+    'PendingRule', JSON.stringify(['patch_rule']), JSON.stringify([]),
+    '规则提取完成', 1, 'pending', new Date().toISOString(),
+  );
+  const cancel = await app.inject({
+    method: 'POST',
+    url: `/internal/agent/runs/${runId}/cancel`,
+    headers: {
+      'x-modeling-project': project.id,
+      'x-modeling-run': runId,
+      authorization: 'Bearer agent-test-token',
+    },
+    payload: {},
+  });
+  assert.equal(cancel.statusCode, 200, cancel.body);
+  assert.equal(cancel.json().quiescent, true);
+  assert.equal(cancel.json().requested.runId, runId);
+  assert.equal(
+    (getDb().prepare('SELECT status FROM agent_change_plans WHERE id = ?').get(planId) as any).status,
+    'active',
+  );
+
+  const repeated = await app.inject({
+    method: 'POST',
+    url: `/internal/agent/runs/${runId}/cancel`,
+    headers: {
+      'x-modeling-project': project.id,
+      'x-modeling-run': runId,
+      authorization: 'Bearer agent-test-token',
+    },
+    payload: { drain: true },
+  });
+  assert.equal(repeated.statusCode, 200, repeated.body);
+  assert.equal(repeated.json().quiescent, true);
+  assert.deepEqual(repeated.json().pausedPlanIds, [planId]);
+  assert.equal(
+    (getDb().prepare('SELECT status FROM agent_change_plans WHERE id = ?').get(planId) as any).status,
+    'paused',
+  );
+  const pausedTasks = getDb().prepare(`SELECT status FROM agent_change_plan_tasks
+    WHERE plan_id = ? ORDER BY ordinal`).all(planId) as Array<{ status: string }>;
+  assert.deepEqual(pausedTasks.map((item) => item.status), ['staged', 'pending']);
+
+  const fencedRunResumed = await app.inject({
+    method: 'POST',
+    url: `/internal/agent/runs/${runId}/resume`,
+    headers: {
+      'x-modeling-project': project.id,
+      'x-modeling-run': runId,
+      authorization: 'Bearer agent-test-token',
+    },
+    payload: {},
+  });
+  assert.equal(fencedRunResumed.statusCode, 200, fencedRunResumed.body);
+  assert.equal(new ChangeControlStore(getDb()).isRunCancellationRequested(project.id, runId), false);
+
+  const nextRunId = `${runId}-next`;
+  const ambiguous = await tool(app, project.id, 'claim_candidate_workspace', {}, nextRunId);
+  assert.equal(ambiguous.statusCode, 409, ambiguous.body);
+  assert.equal(ambiguous.json().code, 'PAUSED_CHANGE_PLAN_DECISION_REQUIRED');
+  const ownership = getDb().prepare(`SELECT
+      plan.run_id AS plan_run_id, workspace.run_id AS workspace_run_id
+    FROM agent_change_plans plan
+    JOIN agent_candidate_workspaces workspace ON workspace.project_id = plan.project_id
+    WHERE plan.id = ?`).get(planId) as any;
+  assert.equal(ownership.plan_run_id, runId);
+  assert.equal(ownership.workspace_run_id, runId);
+
+  const resumed = await tool(app, project.id, 'claim_candidate_workspace', {
+    resume_plan_id: planId,
+  }, nextRunId);
+  assert.equal(resumed.statusCode, 200, resumed.body);
+  assert.equal(resumed.json().resumedPlan.id, planId);
+  assert.equal(resumed.json().resumedPlan.status, 'active');
+  assert.deepEqual(
+    resumed.json().resumedPlan.tasks.map((item: any) => item.status),
+    ['staged', 'pending'],
+  );
+  assert.equal(
+    (getDb().prepare('SELECT run_id FROM agent_change_plans WHERE id = ?').get(planId) as any).run_id,
+    nextRunId,
+  );
+});
+
+test('暂停计划的必选任务会阻断知识确认门禁', async (t) => {
+  const project = createProject({ owner: 'alice', name: '暂停计划门禁' });
+  const app = appFor(t);
+  const runId = `run-${project.id}`;
+  const revision = await currentRevision(app, project.id, runId);
+  const claimed = await tool(app, project.id, 'claim_candidate_workspace', {}, runId);
+  assert.equal(claimed.statusCode, 200, claimed.body);
+  const store = new ChangeControlStore(getDb());
+  const created = await tool(app, project.id, 'create_change_plan', planArgs(revision), runId);
+  assert.equal(created.statusCode, 200, created.body);
+  const plan = created.json().plan;
+  store.requestRunCancellation(project.id, runId, 'synthetic cancellation');
+  const settled = store.reconcileRunCancellation(project.id, runId, 'test', true);
+  assert.deepEqual(settled.pausedPlanIds, [plan.id]);
+
+  const progress = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/agent/progress`,
+  });
+  assert.equal(progress.statusCode, 200, progress.body);
+  const gate = progress.json().gates.find((item: any) => item.id === 'knowledge_confirmed');
+  assert.equal(gate.pass, false);
+  assert.equal(gate.blockers.some((item: string) => item.includes('暂停的建模计划')), true);
+});

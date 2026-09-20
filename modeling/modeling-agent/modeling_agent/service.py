@@ -36,14 +36,26 @@ from .schemas import (
     RunRecord,
 )
 from .settings import Settings
-from .store import RuntimeStore, token_fingerprint
+from .store import (
+    CANCELLATION_PENDING_REASON,
+    INTERRUPTED_CANCELLATION_REASON,
+    RuntimeStore,
+    token_fingerprint,
+)
 from .project_transfer import (
     delete_project_transfer,
     export_project_transfer,
     import_project_transfer,
 )
 from .rails import claims_confirmation_card
-from .tools import CandidateValidationRepairState, EVALUATION_PENDING_MESSAGE, ToolContext
+from .tools import (
+    BUSINESS_PHASE_EDGES,
+    BUSINESS_PHASE_LABELS,
+    CandidateValidationRepairState,
+    EVALUATION_PENDING_MESSAGE,
+    PHASE_CAPABILITY_STRATEGY,
+    ToolContext,
+)
 from .visible_text import VisibleReasoningSanitizer, VisibleTextSanitizer, sanitize_visible_text
 from .workflows import (
     build_execution_brief_workflow,
@@ -54,43 +66,13 @@ from .workflows import (
 
 logger = logging.getLogger("modeling_agent")
 INTERJECTION_CONTINUATION_PREFIX = "interjection-continuation:"
-
-
-def _has_complete_package_import_event(
-    event_id: str,
-    baseline_revision: str,
-    package_name: str,
-    package_version: str,
-) -> bool:
-    return all((event_id, baseline_revision, package_name, package_version))
-
-
-def _confirmation_claimed_without_pending_interaction(
-    result: dict[str, Any],
-    context: Any,
-    live: LiveRun,
-) -> bool:
-    if result.get("result_type") != "success":
-        return False
-    if not context.confirmation_claimed_in_text:
-        return False
-    if context.interjection_reply_required:
-        return False
-    return live.restore_interaction is None
-
-
-def _user_input_requested_without_decision_card(
-    result: dict[str, Any],
-    context: Any,
-    live: LiveRun,
-) -> bool:
-    if result.get("result_type") != "success":
-        return False
-    if not context.user_input_request_in_text:
-        return False
-    if context.decision_card_requested or context.interjection_reply_required:
-        return False
-    return live.restore_interaction is None
+ACTIVE_TOOL_PHASES = frozenset({"started", "repairing"})
+TERMINAL_TOOL_PHASES = frozenset({
+    "completed", "failed", "blocked", "rejected", "waiting", "cancelled",
+})
+CANCEL_PENDING_TOOL_PHASE = "cancel_pending"
+CANCELLATION_RECONCILIATION_ATTEMPTS = 3
+CANCELLATION_RECONCILIATION_DELAY_SECONDS = 0.05
 
 
 def now_iso() -> str:
@@ -109,27 +91,8 @@ def _object(raw: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-PHASE_LABELS = {
-    "intake": "资料与目标准备",
-    "goal": "目标确认",
-    "process": "流程建模",
-    "knowledge": "知识建模",
-    "increment": "增量建模",
-    "validation": "确定性验证",
-    "evaluation": "评测",
-    "release": "发布交付",
-}
-PHASE_EDGES = {
-    "intake": ("goal",),
-    "goal": ("process",),
-    "process": ("goal", "knowledge"),
-    "knowledge": ("goal", "process", "validation"),
-    # 增量轮次在同一阶段内完成影响分析和受控修改，不能重新退回全量建模链路。
-    "increment": ("validation", "evaluation"),
-    "validation": ("goal", "process", "knowledge", "evaluation"),
-    "evaluation": ("goal", "process", "knowledge", "validation", "release"),
-    "release": ("goal", "process", "knowledge"),
-}
+PHASE_LABELS = BUSINESS_PHASE_LABELS
+PHASE_EDGES = BUSINESS_PHASE_EDGES
 PHASE_GATES = {
     "goal": "materials_ready",
     "process": "goal_confirmed",
@@ -163,6 +126,15 @@ def _phase_projection() -> list[dict[str, Any]]:
 
 MAX_AUTONOMOUS_CONTINUATIONS = 8
 MAX_STALLED_CONTINUATIONS = 2
+# 会带回台账进度的工具回执；恢复本轮快照时按完成顺序重放这些回执。
+PRODUCT_LEDGER_STATE_TOOLS = (
+    "begin_product_ledger",
+    "append_product_ledger_batch",
+    "get_product_ledger_progress",
+    "finalize_product_ledger",
+    "stage_product_ledger",
+    "get_product_ledger",
+)
 # 计划仍有必选任务未完成时的停滞上限。取证、核对台账、检索原文都不算“进展”，
 # 但它们是写入前的正常准备，用 2 轮上限会让计划刚起步就被判成本轮完成。
 MAX_STALLED_PLAN_CONTINUATIONS = 5
@@ -181,6 +153,30 @@ MAX_TOOL_SUMMARIES = 60
 MAX_MODEL_RECOVERY_ATTEMPTS = 1
 MODEL_RECOVERY_DELAY_SECONDS = 0.5
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
+# 首轮恢复因瞬时原因失败后的进程内对账间隔：resume_failed 不再是进程内终态，
+# 否则一次启动竞态会让项目卡死到下一次服务重启（cs 实测同一批项目连续 23 次重启均恢复失败）。
+RECOVERY_RECONCILE_DELAYS = (60.0, 300.0, 900.0)
+# 启动恢复前等待建模核心就绪的上限；等不到也继续，交给每次恢复自身的退避与对账。
+CORE_READY_TIMEOUT_SECONDS = 60.0
+CORE_READY_PROBE_INTERVAL_SECONDS = 2.0
+# 瞬时性按「错误族」判断而不是单一错误码：发布分支曾新增 CORE_CANCELLATION_UNAVAILABLE
+# （停止栅栏探测）这类 503 新码，单码判据会让退避重试对它直接失明。
+TRANSIENT_CORE_ERROR_CODES = frozenset({
+    "CORE_UNAVAILABLE",
+    "CORE_CANCELLATION_UNAVAILABLE",
+})
+TRANSIENT_CORE_ERROR_STATUSES = frozenset({502, 503, 504})
+
+
+def _is_transient_core_error(error: Exception) -> bool:
+    if not isinstance(error, AgentRuntimeError):
+        return False
+    return (
+        error.code in TRANSIENT_CORE_ERROR_CODES
+        or error.status in TRANSIENT_CORE_ERROR_STATUSES
+    )
+
+
 EVALUATION_LAUNCH_SETTLE_TIMEOUT_SECONDS = 3.5
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     # 切换阶段是明确的前进。不计入的话，「刚进入新阶段、还没来得及产出」
@@ -273,8 +269,7 @@ def _confirmation_review_actions() -> list[dict[str, str]]:
 # 评测返回业务门禁失败时已经完成了用户要求的“执行评测”；其余必需工具
 # 会产生成果或完成证明，只有成功返回才算满足本轮要求。
 FAILED_REQUIRED_TOOL_ATTEMPT_IS_TERMINAL = frozenset({"run_evaluation"})
-# 已批准计划执行与候选退回后的修补都必须走完整闭环：候选写入、完整校验、
-# 统一确认卡；只输出进度文字不能把 Run 结算为完成。
+# 已批准计划执行必须闭合候选写入、校验和统一确认卡，不能用进度文字结算。
 APPROVED_PLAN_REQUIRED_TOOLS = frozenset({"stage_change_set", "validate_change_set", "request_confirmation"})
 PURPOSE_REVIEW_ALLOWED_TOOLS = frozenset({
     "get_project_state", "list_documents", "list_document_outline", "read_document",
@@ -405,6 +400,10 @@ class LiveRun:
     # 可从 RunRecord.latest_interaction 重新装载，避免只依赖框架的 tool result。
     required_text_constraint: dict[str, Any] | None = None
     required_text_guard_retries: int = 0
+    # Once set, non-terminal tool/progress events for this run are suppressed.
+    # The persisted Run status is the restart-safe fence; this flag closes the
+    # in-process race between task cancellation and callback delivery.
+    cancel_requested: bool = False
     # 最近一次主模型调用的度量。ActivityRail 把 model_call 事件发到同一个 emit，
     # 这里顺手留存，用于判断本轮是不是被思维链吃光了输出预算。
     last_model_call: dict[str, Any] = field(default_factory=dict)
@@ -427,6 +426,63 @@ def _missing_required_tools(live: LiveRun) -> set[str]:
 
 def _missing_material_directives(live: LiveRun) -> set[str]:
     return live.required_material_directives - live.observed_material_directives
+
+
+def _unsatisfiable_required_tools(live: LiveRun, missing: set[str]) -> set[str]:
+    """缺失的必需工具全部真实调用过仍未完成时，判定该要求疑似不可满足。
+
+    工具被调用过却始终没有 completed，通常是服务端门禁在确定性拒绝，而不是
+    助手在回避调用（产品台账误判事故）。但"调用失败"也可能只是"还没做完"
+    （如全文精读分段未完成），服务端不能据此单方面撤销要求——只把判定结果
+    标注到恢复卡上，让专家知情后自行选择"取消该要求"。
+    """
+    if missing and missing <= live.attempted_tools:
+        return set(missing)
+    return set()
+
+
+def _expert_answer_intent_text(answer: dict[str, Any]) -> str:
+    """只保留专家自己给出的答复内容参与意图判定。
+
+    卡片的问题正文和选项文案都出自助手，一旦参与意图判定，助手描述建模
+    内容的行文（如「终产品……10 项」）会被误判成用户诉求，形成不可满足
+    的必需工具要求。displayText 是选项文案的回显，一并剔除。
+    """
+    return json.dumps(
+        {key: value for key, value in (answer or {}).items() if key != "displayText"},
+        ensure_ascii=False,
+    )
+
+
+# 「已满足/已完成」处置的证据锚点语法：type:值，分号分隔，可附说明文字。
+# 锚点必须指向真实存在的记录——这是防谎报处置的确定性防线。
+_EVIDENCE_ANCHOR_PATTERN = re.compile(
+    r"^(constraint|task|interjection|interaction|revision|file|receipt|report|change_set|mutation)"
+    r"\s*[:：]\s*(.+)$",
+    re.IGNORECASE,
+)
+
+# LIKE 类锚点的最小长度：太短的标识（如 file:a）会匹配到任何记录，验真失效。
+_EVIDENCE_TOKEN_MIN_LENGTH = 4
+
+
+def _parse_evidence_anchors(evidence: str) -> list[tuple[str, str]]:
+    """把 evidence 拆成锚点列表；非 type:值 形状的片段视为说明文字忽略。"""
+    anchors: list[tuple[str, str]] = []
+    for part in re.split(r"[;；\n]", str(evidence or "")):
+        entry = part.strip()
+        if not entry:
+            continue
+        match = _EVIDENCE_ANCHOR_PATTERN.match(entry)
+        if match:
+            anchors.append((match.group(1).lower(), match.group(2).strip()))
+    return anchors
+
+def _is_blocked_phase_capability(recovery: dict[str, Any]) -> bool:
+    """判断这条恢复是否为已被门禁挡死、需要恢复卡兜底的阶段能力写入。"""
+    if recovery.get("strategy") != PHASE_CAPABILITY_STRATEGY:
+        return False
+    return recovery.get("blocked") is True
 
 
 def _interaction_requires_artifact(interaction: InteractionRecord) -> bool:
@@ -471,8 +527,19 @@ def _answer_requires_script_artifact(
     """
     if not _interaction_requires_artifact(interaction):
         return False
-    text = json.dumps(answer, ensure_ascii=False)
-    return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(text))
+    # 豁免只认专家选中的选项身份（value/action/selected/displayText），
+    # 不扫自由文本：答复里写「不调整 A，但请生成 B」不构成对产物要求的
+    # 豁免，否则一句带否定词的补充说明就会静默放水。
+    selected_parts = [
+        str(answer.get("value") or ""),
+        str(answer.get("action") or ""),
+        str(answer.get("displayText") or ""),
+    ]
+    selected_parts.extend(
+        str(item) for item in (answer.get("selected") or []) if item is not None
+    )
+    joined = "\n".join(part for part in selected_parts if part)
+    return not bool(_SCRIPT_SKIP_ARTIFACT_INTENT.search(joined))
 
 
 def _required_text_constraint(
@@ -927,7 +994,7 @@ class _ReasoningEmitter:
         return self._observed
 
     def feed(self, raw_text: str) -> None:
-        if not raw_text or self._live.reasoning_truncated:
+        if not raw_text or self._live.cancel_requested or self._live.reasoning_truncated:
             return
         chunk = self._sanitizer.feed(raw_text)
         if chunk and self._segment_break:
@@ -941,6 +1008,9 @@ class _ReasoningEmitter:
             self._flush()
 
     def finish(self) -> None:
+        if self._live.cancel_requested:
+            self._pending = ""
+            return
         if not self._live.reasoning_truncated:
             self._pending += self._sanitizer.finish()
         self._flush()
@@ -951,6 +1021,9 @@ class _ReasoningEmitter:
             })
 
     def _flush(self) -> None:
+        if self._live.cancel_requested:
+            self._pending = ""
+            return
         if not self._pending:
             return
         remaining = MAX_VISIBLE_REASONING_CHARS - self._live.reasoning_chars_published
@@ -973,7 +1046,7 @@ class _ReasoningEmitter:
             self._publish_truncated()
 
     def _publish_truncated(self) -> None:
-        if self._live.reasoning_truncated:
+        if self._live.cancel_requested or self._live.reasoning_truncated:
             return
         self._live.reasoning_truncated = True
         self._emitted = True
@@ -1008,6 +1081,8 @@ class AgentService:
         self._shutting_down = False
         self._storage_diag: dict[str, Any] = {}
         self._recovery_summary: dict[str, Any] = {}
+        self._cancel_locks: dict[str, asyncio.Lock] = {}
+        self._recovery_tasks: set[asyncio.Task[None]] = set()
 
     async def startup(self) -> None:
         if self._started:
@@ -1054,11 +1129,65 @@ class AgentService:
                         "建模服务持久化自检未通过，已暂停自动恢复，请核对数据卷",
                     )
                 return
+            interrupted_cancellations = []
+            resumable_runs = []
+            cancellation_reasons = {
+                INTERRUPTED_CANCELLATION_REASON,
+                CANCELLATION_PENDING_REASON,
+            }
+            for recovered in recovered_runs:
+                if recovered.error in cancellation_reasons:
+                    interrupted_cancellations.append(recovered)
+                else:
+                    resumable_runs.append(recovered)
+            await self._wait_core_ready()
             await asyncio.gather(*(
-                self._auto_resume_recovered(recovered) for recovered in recovered_runs
+                self._resume_interrupted_cancellation(recovered)
+                for recovered in interrupted_cancellations
+            ))
+            await asyncio.gather(*(
+                self._auto_resume_recovered(recovered) for recovered in resumable_runs
             ))
 
-    async def _auto_resume_recovered(self, run: RunRecord) -> None:
+    async def _resume_interrupted_cancellation(self, run: RunRecord) -> None:
+        restore = getattr(self._gateway, "restore_run_credential", None)
+        if callable(restore) and run.run_credential:
+            restore(run.id, run.run_credential)
+        try:
+            await self.cancel(project_id=run.project_id)
+        except Exception as error:  # noqa: BLE001 - an interrupted stop must remain suspended
+            logger.warning("Could not resume cancellation for run %s: %s", run.id, error)
+            self.events.publish(run.project_id, run.id, "status", {
+                "status": RUN_SUSPENDED,
+                "text": "停止结算尚未完成，已保留当前进展，请稍后继续核对",
+            })
+
+    async def _wait_core_ready(self) -> None:
+        """启动恢复前的就绪门：agent 容器常早于核心就绪，直接开扫会整批撞 503。"""
+        health = getattr(self._gateway, "health", None)
+        if not callable(health):
+            return
+        deadline = time.monotonic() + CORE_READY_TIMEOUT_SECONDS
+        while not self._shutting_down:
+            try:
+                if await health():
+                    return
+            except Exception:  # noqa: BLE001 - 探测失败等同未就绪
+                pass
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Modeling core not ready within %.0fs; starting recovery with per-run retries",
+                    CORE_READY_TIMEOUT_SECONDS,
+                )
+                return
+            await asyncio.sleep(CORE_READY_PROBE_INTERVAL_SECONDS)
+
+    async def _auto_resume_recovered(
+        self,
+        run: RunRecord,
+        *,
+        reconcile_attempt: int = 0,
+    ) -> None:
         self._publish_state(run.project_id, run.id)
         if not run.run_credential or not run.session_id:
             self.events.publish(
@@ -1085,26 +1214,23 @@ class AgentService:
             )
             return
         restore(run.id, run.run_credential)
-        for attempt in range(len(RECOVERY_RETRY_DELAYS) + 1):
-            try:
-                await self._resume(
-                    run,
-                    "",
-                    {},
-                    preserve_token_fingerprint=True,
-                )
-                break
-            except AgentRuntimeError as error:
-                transient = error.code == "CORE_UNAVAILABLE"
-                if not transient or attempt >= len(RECOVERY_RETRY_DELAYS):
-                    logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                    self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
-                    return
-                await asyncio.sleep(RECOVERY_RETRY_DELAYS[attempt])
-            except Exception as error:  # noqa: BLE001 - one failed recovery must not block other projects
-                logger.warning("Could not automatically resume run %s: %s", run.id, error)
-                self._mark_resume_failed(run, RECOVERY_RESUME_FAILED, "自动恢复失败，已安全停在最近进展")
-                return
+        error = await self._resume_with_retries(run)
+        if error is not None:
+            logger.warning("Could not automatically resume run %s: %s", run.id, error)
+            detail = (
+                f"[{error.code}] {error.message}"
+                if isinstance(error, AgentRuntimeError)
+                else f"[{type(error).__name__}] {error}"
+            )
+            self._mark_resume_failed(
+                run,
+                RECOVERY_RESUME_FAILED,
+                "自动恢复失败，已安全停在最近进展",
+                detail=detail,
+            )
+            if _is_transient_core_error(error):
+                self._schedule_recovery_reconcile(run, attempt=reconcile_attempt)
+            return
         self.store.mark_recovery_status(
             run.project_id,
             RECOVERY_NONE,
@@ -1118,19 +1244,71 @@ class AgentService:
             {"status": RUN_QUEUED, "text": "服务恢复完成，助手正在从原进度继续"},
         )
 
-    def _mark_resume_failed(self, run: RunRecord, status: str, message: str) -> None:
+    async def _resume_with_retries(self, run: RunRecord) -> Exception | None:
+        for attempt in range(len(RECOVERY_RETRY_DELAYS) + 1):
+            try:
+                await self._resume(
+                    run,
+                    "",
+                    {},
+                    preserve_token_fingerprint=True,
+                )
+                return None
+            except AgentRuntimeError as error:
+                if not _is_transient_core_error(error) or attempt >= len(RECOVERY_RETRY_DELAYS):
+                    return error
+                await asyncio.sleep(RECOVERY_RETRY_DELAYS[attempt])
+            except Exception as error:  # noqa: BLE001 - one failed recovery must not block other projects
+                return error
+        return None
+
+    def _schedule_recovery_reconcile(self, run: RunRecord, *, attempt: int) -> None:
+        if self._shutting_down or attempt >= len(RECOVERY_RECONCILE_DELAYS):
+            return
+        task = asyncio.create_task(self._recovery_reconcile(run, attempt))
+        self._recovery_tasks.add(task)
+        task.add_done_callback(self._recovery_tasks.discard)
+
+    async def _recovery_reconcile(self, run: RunRecord, attempt: int) -> None:
+        await asyncio.sleep(RECOVERY_RECONCILE_DELAYS[attempt])
+        if self._shutting_down:
+            return
+        # 状态可能已被人工恢复或推进；只有仍停在 resume_failed 且无在跑任务时才重试。
+        state = self.store.project_state(run.project_id)
+        if state.recovery_status != RECOVERY_RESUME_FAILED or state.run_id != run.id:
+            return
+        if run.project_id in self._live:
+            return
+        logger.info(
+            "Reconciling failed recovery for run %s (attempt %d)", run.id, attempt + 1
+        )
+        await self._auto_resume_recovered(run, reconcile_attempt=attempt + 1)
+
+    def _mark_resume_failed(
+        self,
+        run: RunRecord,
+        status: str,
+        message: str,
+        *,
+        detail: str = "",
+    ) -> None:
+        # detail 落库：运维排查时必须能从状态里看到「为什么」，而不是翻进程日志。
+        stored_error = f"{message}（{detail[:200]}）" if detail else message
         self.store.mark_recovery_status(
             run.project_id,
             status,
-            error=message,
+            error=stored_error,
             cause="recovery_failed",
         )
         self._publish_state(run.project_id, run.id)
+        payload: dict[str, Any] = {"status": RUN_SUSPENDED, "text": message}
+        if detail:
+            payload["reason"] = detail[:200]
         self.events.publish(
             run.project_id,
             run.id,
             "status",
-            {"status": RUN_SUSPENDED, "text": message},
+            payload,
         )
 
     def _checkpoint_available(self) -> bool:
@@ -1221,6 +1399,11 @@ class AgentService:
 
     async def shutdown(self) -> None:
         self._shutting_down = True
+        for task in list(self._recovery_tasks):
+            task.cancel()
+        if self._recovery_tasks:
+            await asyncio.gather(*self._recovery_tasks, return_exceptions=True)
+        self._recovery_tasks.clear()
         for live in list(self._live.values()):
             if live.task and not live.task.done():
                 live.task.cancel()
@@ -1256,6 +1439,7 @@ class AgentService:
             if run and run.status in {"queued", "running"}
             else None
         )
+        status_event = self.store.latest_event(project_id, run.id, "status") if run else None
         focus_event = self.store.latest_event(project_id, run.id, "focus") if run else None
         restored_focus = focus_event.payload.get("target") if focus_event else None
         public_state = state.public()
@@ -1270,6 +1454,9 @@ class AgentService:
         if recovery:
             public_state["recovery"] = recovery
         public_state["phaseLabel"] = PHASE_LABELS.get(public_state["phase"], public_state["phase"])
+        cancellation = status_event.payload if status_event and status_event.payload.get("status") in {
+            RUN_CANCELLED, RUN_SUSPENDED,
+        } else None
         return {
             "state": public_state,
             "phases": _phase_projection(),
@@ -1279,6 +1466,8 @@ class AgentService:
                 **activity_event.payload,
                 "createdAt": activity_event.created_at,
             } if activity_event else None,
+            "statusText": str(status_event.payload.get("text") or "") if status_event else "",
+            "cancellation": cancellation,
             "focus": restored_focus if isinstance(restored_focus, dict) else None,
             "lastSeq": self.store.latest_event_seq(project_id),
         }
@@ -1334,6 +1523,7 @@ class AgentService:
         token: str,
         message: str,
         baseline_revision: str = "",
+        resume_plan_id: str = "",
         publish_user_message: bool = True,
         required_tools: set[str] | None = None,
         required_material_directives: set[str] | None = None,
@@ -1367,7 +1557,12 @@ class AgentService:
             )
         self._publish_state(project_id, run_id)
         try:
-            claimed = await self._claim_workspace(project_id=project_id, run_id=run_id, token=token)
+            claimed = await self._claim_workspace(
+                project_id=project_id,
+                run_id=run_id,
+                token=token,
+                resume_plan_id=resume_plan_id,
+            )
         except Exception as error:
             self.store.update_run(run_id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
             self._publish_state(project_id, run_id)
@@ -1380,27 +1575,20 @@ class AgentService:
             if required_tools is not None
             else _required_tools_for_user_intent(prompt)
         )
-        # Persist the workflow policy before the model gets a chance to create
-        # a plan. Core remains the authority, but this early call closes the
-        # advisory-mode race between user intent and the first tool call.
-        if _product_ledger_requested(prompt):
-            try:
-                await self._gateway.call(
-                    project_id=project_id,
-                    run_id=run_id,
-                    token=token,
-                    tool="require_product_ledger",
-                    arguments={"required": True},
+        if resume_plan_id:
+            intent_required_tools.update(APPROVED_PLAN_REQUIRED_TOOLS)
+        resumed_plan = claimed.get("resumedPlan")
+        if resume_plan_id:
+            if not isinstance(resumed_plan, dict) or str(resumed_plan.get("id") or "") != resume_plan_id:
+                raise AgentRuntimeError(
+                    "PAUSED_CHANGE_PLAN_RESUME_INVALID",
+                    "暂停计划没有返回可验证的恢复快照",
+                    status=502,
                 )
-            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
-                # The required tool remains in the run contract; a later
-                # recovery will expose the failure rather than silently
-                # allowing formal generation.
-                logger.warning(
-                    "Could not persist the product-ledger requirement for run %s: %s",
-                    run_id,
-                    type(error).__name__,
-                )
+            intent_required_tools.add("get_change_plan")
+        # 台账门禁不再由措辞猜测静默启用（0.26.9.2 台账死锁事故）：启用只能
+        # 来自专家确认——助手判断需要对账时先发确认卡，批准后再调
+        # require_product_ledger；核心侧对启用与规则批次仍保持确定性门禁。
         live = LiveRun(
             run_id=run_id,
             project_id=project_id,
@@ -1428,6 +1616,34 @@ class AgentService:
         state_payload = self.project_state(project_id)["state"]
         state_snapshot = json.dumps(state_payload, ensure_ascii=False)[:12_000]
         increment_constraint = ""
+        paused_plan_constraint = ""
+        if isinstance(resumed_plan, dict):
+            plan_facts = {
+                "id": resumed_plan.get("id"),
+                "goal": resumed_plan.get("goal"),
+                "status": resumed_plan.get("status"),
+                "approval_status": resumed_plan.get("approval_status"),
+                "version": resumed_plan.get("version"),
+                "remaining_count": resumed_plan.get("remaining_count"),
+                "tasks": [
+                    {
+                        "id": item.get("id"),
+                        "title": item.get("title"),
+                        "status": item.get("status"),
+                        "required": item.get("required"),
+                    }
+                    for item in resumed_plan.get("tasks", [])
+                    if isinstance(item, dict)
+                ],
+            }
+            paused_plan_constraint = (
+                "\n# 页面显式恢复的暂停计划（服务端权威事实）\n"
+                f"{json.dumps(plan_facts, ensure_ascii=False)}\n"
+                "这是页面通过 resumePlanId 恢复的原计划，不是从用户文本猜测出的新意图。"
+                "先调用 get_change_plan(plan_id) 核对最新状态；保留 staged/validated 结果，"
+                "只继续 pending/failed 的必选任务。计划完成前不得另建替代计划、不得宣布知识建模完成，"
+                "也不得进入确定性验证。"
+            )
         if state_payload.get("roundMode") == "incremental":
             increment_constraint = (
                 "\n# 当前增量轮次约束（服务端已绑定正式基线）\n"
@@ -1450,7 +1666,7 @@ class AgentService:
             "# 项目唯一 Agent 状态快照（服务端在本轮启动时注入）\n"
             f"{state_snapshot}\n"
             "执行前仍应调用 get_project_state 获取最新版本；状态转换只能调用 transition_project_state。"
-            f"{increment_constraint}"
+            f"{increment_constraint}{paused_plan_constraint}"
         )
         live.task = asyncio.create_task(self._execute(live, runtime_prompt))
         return self._run_public(run, self.store.project_state(project_id))
@@ -1554,9 +1770,7 @@ class AgentService:
         baseline_revision = str(event.get("baselineRevision") or "").strip()
         package_name = str(event.get("packageName") or "").strip()
         package_version = str(event.get("packageVersion") or "").strip()
-        if not _has_complete_package_import_event(
-            event_id, baseline_revision, package_name, package_version,
-        ):
+        if not event_id or not baseline_revision or not package_name or not package_version:
             raise AgentRuntimeError("INVALID_PACKAGE_IMPORT_EVENT", "导入基线事件不完整", status=400)
 
         inserted = self.store.record_external_event(event_id, project_id, "package_import", event)
@@ -2295,12 +2509,13 @@ class AgentService:
             validation_receipt = interaction.payload.get("validationReceipt")
             if not isinstance(validation_receipt, dict):
                 validation_receipt = {}
-            confirmation_result = await self._gateway.call(
-                project_id=project_id,
-                run_id=interaction.run_id,
-                token=token,
-                tool="request_confirmation" if approved else "request_confirmation_rejected",
-                arguments={
+            interaction_live = self._live.get(interaction.run_id)
+            confirmation_result = await self._core_call_for_run(
+                project_id,
+                interaction.run_id,
+                token,
+                "request_confirmation" if approved else "request_confirmation_rejected",
+                {
                     "summary": str(interaction.payload.get("summary") or interaction.payload.get("question") or "确认待修改内容"),
                     "change_groups": interaction.payload.get("changeGroups") or [],
                     "expected_candidate_revision": str(interaction.payload.get("candidateRevision") or ""),
@@ -2308,6 +2523,7 @@ class AgentService:
                     "expected_validator_version": str(validation_receipt.get("validatorVersion") or ""),
                     "review": dict(answer),
                 },
+                live=interaction_live,
             )
             if confirmation_result.get("error"):
                 reason = str(confirmation_result.get("reason") or "待修改内容没有成功结算")
@@ -2371,12 +2587,13 @@ class AgentService:
                     details={"next": confirmation_result.get("next") or []},
                 )
         if direct_release:
-            release_result = await self._gateway.call(
-                project_id=project_id,
-                run_id=interaction.run_id,
-                token=token,
-                tool="request_release",
-                arguments={
+            interaction_live = self._live.get(interaction.run_id)
+            release_result = await self._core_call_for_run(
+                project_id,
+                interaction.run_id,
+                token,
+                "request_release",
+                {
                     "summary": str(
                         interaction.payload.get("summary")
                         or interaction.payload.get("question")
@@ -2389,6 +2606,7 @@ class AgentService:
                     ),
                     "review": dict(answer),
                 },
+                live=interaction_live,
             )
             if release_result.get("error"):
                 reason = str(release_result.get("reason") or "正式发布没有成功完成")
@@ -2433,11 +2651,13 @@ class AgentService:
                 issue_id=issue_id,
                 action_id=recovery_action,
             )
-        answer_text = json.dumps(answer, ensure_ascii=False)
+        # 卡片问题文案出自助手，不能参与任何意图判定：建模确认卡里的
+        # 「终产品……N 项」曾被误判成产品台账诉求，形成不可满足的必需
+        # 工具循环。这里只判定专家自己给出的答复内容。
+        answer_text = _expert_answer_intent_text(answer)
         live_for_answer = self._live.get(interaction.run_id)
         required_tools = _required_tools_for_user_intent(
-            f"{interaction.payload.get('question') or ''}\n{answer_text}",
-            # 问题文案出自助手，只有专家的回答才代表用户要求全文精读。
+            answer_text,
             full_read_text=answer_text,
             situation=live_for_answer.situation if live_for_answer else None,
         )
@@ -2451,19 +2671,6 @@ class AgentService:
                 "phase": "completed",
                 "summary": "补充说明已绑定到恢复任务",
                 "constraintHash": required_text_constraint.get("textHash"),
-            })
-        if required_text_constraint and _product_ledger_requested(
-            f"{interaction.payload.get('question') or ''}\n{json.dumps(answer, ensure_ascii=False)}",
-        ):
-            # The decision card is itself an explicit workflow policy. Require
-            # the policy write and source/ledger evidence, independent of the
-            # deployment's advisory setting.
-            required_tools.update({
-                "require_product_ledger",
-                "get_product_inventory_source",
-                "begin_product_ledger",
-                "append_product_ledger_batch",
-                "finalize_product_ledger",
             })
         if direct_confirmation:
             approved = answer.get("approved") is True
@@ -2597,11 +2804,19 @@ class AgentService:
         token: str,
         text: str,
         purpose_review_completed: bool = False,
+        plan_decision: str = "",
     ) -> dict[str, Any]:
         _require_project_and_token(project_id, token)
         message = text.strip()
         if not message:
             raise AgentRuntimeError("INVALID_MESSAGE", "请输入要补充或追问的内容")
+        # 页面批准建模计划的那次点击本身就是结构化信号：必需工具从这里
+        # 进料，不依赖续跑文案的措辞（意图正则双轨保留，待统一拔除）。
+        plan_required_tools = (
+            set(APPROVED_PLAN_REQUIRED_TOOLS)
+            if str(plan_decision).strip().lower() == "approved"
+            else set()
+        )
         run = self.store.active_run(project_id)
         if run is None:
             return {"mode": "new_run", "run": await self.start_run(project_id=project_id, token=token, message=message)}
@@ -2639,7 +2854,7 @@ class AgentService:
                 restore_interaction=None if resolved_elsewhere else interaction,
                 required_tools=_required_tools_for_user_intent(
                     message, situation=_situation_of(self._live.get(run.id)),
-                ),
+                ) | plan_required_tools,
                 autonomous_seed=True,
             )
             return {
@@ -2657,7 +2872,7 @@ class AgentService:
                 message,
                 required_tools=_required_tools_for_user_intent(
                     message, situation=_situation_of(self._live.get(run.id)),
-                ),
+                ) | plan_required_tools,
                 autonomous_seed=True,
             )
             self.store.mark_steering_delivered(steering_id)
@@ -2704,21 +2919,7 @@ class AgentService:
         live.required_tools.update(_required_tools_for_user_intent(
             message, situation=live.situation, notes=live.intent_notes,
         ))
-        if _product_ledger_requested(message):
-            try:
-                await self._gateway.call(
-                    project_id=project_id,
-                    run_id=run.id,
-                    token=token,
-                    tool="require_product_ledger",
-                    arguments={"required": True},
-                )
-            except Exception as error:  # noqa: BLE001 - required tool guard reports the failure later
-                logger.warning(
-                    "Could not persist the product-ledger requirement for run %s: %s",
-                    run.id,
-                    type(error).__name__,
-                )
+        live.required_tools.update(plan_required_tools)
         live.release_reentry_authorized = (
             live.release_reentry_authorized or _release_reentry_requested(message)
         )
@@ -2837,6 +3038,53 @@ class AgentService:
                 "resolvedIssueIds": [normalized_issue],
             }
 
+        if normalized_action == "cancel_required_tools":
+            # 用户明确表示这项必需步骤不是自己的要求：撤销要求并从当前
+            # 进度继续本轮，而不是像 keep_current_progress 那样结束本轮。
+            if technical is None or technical.get("strategy") != "required_tools":
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "这个问题已经解决或被后续状态替代", status=409,
+                )
+            if execution not in {RUN_SUSPENDED, RUN_WAITING}:
+                raise AgentRuntimeError(
+                    "ISSUE_ACTION_STALE", "当前运行状态已经变化，请刷新后重试", status=409,
+                )
+            required_from_recovery = {
+                str(item).strip()
+                for item in technical.get("requiredTools") or []
+                if str(item).strip()
+            }
+            cancelled_tool = str(technical.get("requiredTool") or "").strip()
+            if cancelled_tool:
+                required_from_recovery.add(cancelled_tool)
+            self.store.resolve_technical_recoveries(run.id, [normalized_issue])
+            live = self._live.get(run.id)
+            if live is not None:
+                live.technical_recoveries.pop(normalized_issue, None)
+                live.required_tools.difference_update(required_from_recovery)
+            self.events.publish(project_id, run.id, "tool", {
+                "name": "issue_recovery",
+                "phase": "completed",
+                "summary": "已按你的选择取消该必需步骤，本轮从当前进度继续",
+                "issueStatus": "resolved",
+                "resolvedIssueIds": [normalized_issue],
+                "waivedTools": sorted(required_from_recovery),
+            })
+            resumed = await self._continue(
+                run,
+                token,
+                "用户已明确取消刚才的必需步骤要求，不要再尝试补做这些工具。"
+                "从当前项目状态继续主动完成下一步；已经确认的内容保持不变。",
+                required_tools=set(),
+                autonomous_seed=True,
+            )
+            return {
+                "mode": "checkpoint_resume",
+                "run": resumed,
+                "issueId": normalized_issue,
+                "resolvedIssueIds": [normalized_issue],
+            }
+
         if technical is not None:
             available_actions = {
                 str(item.get("id") or "").strip()
@@ -2870,6 +3118,35 @@ class AgentService:
                     "页面请求从当前进展继续。不要把它当成用户业务发言；"
                     + TRUNCATION_RECOVERY_PROMPT
                 )
+            elif technical.get("strategy") == PHASE_CAPABILITY_STRATEGY:
+                required_phase = str(technical.get("requiredPhase") or "").strip()
+                required_label = str(
+                    technical.get("requiredPhaseLabel")
+                    or PHASE_LABELS.get(required_phase, required_phase)
+                )
+                if technical.get("blocked") is True:
+                    # 这一跳已经被门禁或阶段边挡回来过。还让模型重提同一次转换，
+                    # 用户点「继续」只会回到同一个循环，所以改成先读状态、按真正的
+                    # 未满足项推进，拿不定主意时回到用户，而不是继续空转。
+                    blockers = _string_list(technical.get("blockers"), 10)
+                    blocker_text = "；".join(blockers) if blockers else "前置条件尚未满足"
+                    required_tools = {"get_project_state"}
+                    recovery_prompt = (
+                        "页面请求继续上一轮没有落盘的修改。不要把它当成用户业务发言，"
+                        "也不要向用户解释平台能力或要求用户等待。"
+                        f"这次修改由「{required_label}」阶段承载，但上一次转换被前置条件挡回："
+                        f"{blocker_text}。先调用 get_project_state 读取最新状态和可走的转换，"
+                        "再针对未满足项推进；需要用户拿主意时用 ask 或 request_confirmation "
+                        "给出具体选项，不要重复尝试同一次转换。"
+                    )
+                else:
+                    required_tools = {"transition_project_state"}
+                    recovery_prompt = (
+                        "页面请求继续上一轮没有落盘的修改。不要把它当成用户业务发言，"
+                        "也不要向用户解释平台能力或要求用户等待。"
+                        f"先调用 transition_project_state 转到 {required_phase} 阶段，"
+                        "工具面重新加载后按已经确认的修复方案原样重提同一次修改，再完成候选确认。"
+                    )
             else:
                 recovery_prompt = (
                     "页面请求基于最新内容继续一个版本同步问题。不要把它当成用户业务发言；"
@@ -2967,6 +3244,56 @@ class AgentService:
             self.store.resolve_technical_recoveries(run.id, [normalized_issue])
         return {"mode": "new_run", "run": started, "issueId": normalized_issue}
 
+    def _verify_evidence_anchors(
+        self,
+        project_id: str,
+        evidence: str,
+        *,
+        exclude_interjection_id: int = 0,
+    ) -> None:
+        """证据锚点逐个查表验真：只能引用真实存在的记录。
+
+        「已满足/已完成」是模型自报，纯文字承诺无法审计。锚点必须指向本库
+        的记录（约束、插话、交互），或本项目真实工具往来里出现过的标识
+        （修订号、文件路径等）。只验存在与归属，不验语义——语义兜底靠处置
+        记录对专家可见、可改判。被处置的插话自己不能作为自己的证据。
+        """
+        anchors = _parse_evidence_anchors(evidence)
+        if not anchors:
+            raise AgentRuntimeError(
+                "INTERJECTION_EVIDENCE_UNVERIFIABLE",
+                "evidence 必须包含至少一个可验真锚点（形如 revision:修订号、"
+                "file:路径、constraint:编号、task:编号、interaction:交互ID，"
+                "多个用分号分隔，可附说明文字），不能只写文字承诺",
+                status=400,
+            )
+        for kind, value in anchors:
+            if kind == "constraint":
+                verified = value.isdigit() and self.store.constraint_exists(
+                    project_id, int(value),
+                )
+            elif kind in {"task", "interjection"}:
+                verified = (
+                    value.isdigit()
+                    and int(value) != exclude_interjection_id
+                    and self.store.interjection_exists(project_id, int(value))
+                )
+            elif kind == "interaction":
+                verified = self.store.interaction_exists(project_id, value)
+            else:
+                verified = (
+                    len(value) >= _EVIDENCE_TOKEN_MIN_LENGTH
+                    and self.store.evidence_token_exists(project_id, value)
+                )
+            if not verified:
+                raise AgentRuntimeError(
+                    "INTERJECTION_EVIDENCE_NOT_FOUND",
+                    f"证据锚点查无实据：{kind}:{value}。只能引用真实存在的记录，"
+                    "或本项目工具结果里实际出现过的标识；不要编造，也不要引用"
+                    "被处置的插话自身",
+                    status=400,
+                )
+
     def _interjection_action(
         self,
         live: LiveRun,
@@ -2992,9 +3319,13 @@ class AgentService:
             if not evidence:
                 raise AgentRuntimeError(
                     "INTERJECTION_EVIDENCE_REQUIRED",
-                    "完成待办必须引用具体产物位置作为证据",
+                    "完成待办必须在 evidence 提供可验真锚点（形如 revision:修订号、"
+                    "file:路径，分号分隔）作为证据",
                     status=400,
                 )
+            self._verify_evidence_anchors(
+                project_id, evidence, exclude_interjection_id=interjection_id,
+            )
             completed = self.store.complete_interjection_task(
                 project_id, interjection_id, evidence=evidence,
             )
@@ -3040,11 +3371,26 @@ class AgentService:
             if not evidence:
                 raise AgentRuntimeError(
                     "INTERJECTION_EVIDENCE_REQUIRED",
-                    "「已满足」必须在 evidence 引用具体产物位置（文件路径、条目 ID 或状态事实）",
+                    "「已满足」必须在 evidence 提供可验真锚点（形如 revision:修订号、"
+                    "file:路径、constraint:编号，分号分隔，可附说明文字）",
                     status=400,
                 )
+            self._verify_evidence_anchors(
+                project_id, evidence, exclude_interjection_id=interjection_id,
+            )
             detail = {"evidence": evidence}
-            outcome = "已标记满足并留下证据"
+            outcome = "已标记满足并留下经验真的证据"
+        elif resolution == "answered":
+            # 纯提问型插话：不产生产物，没有锚点可引。回答本身由可见正文
+            # 承载（rails 保证本轮必有非空可见输出），这里只登记回答要点。
+            if not text:
+                raise AgentRuntimeError(
+                    "INTERJECTION_TEXT_REQUIRED",
+                    "「已回答」必须在 text 简述本轮给出的回答要点",
+                    status=400,
+                )
+            detail = {"answer": text}
+            outcome = "已登记为提问并在本轮正文回答"
         elif resolution == "rejected":
             if not reason:
                 raise AgentRuntimeError(
@@ -3055,7 +3401,7 @@ class AgentService:
         else:
             raise AgentRuntimeError(
                 "INTERJECTION_RESOLUTION_INVALID",
-                "resolution 只能是 constraint、task、satisfied 或 rejected",
+                "resolution 只能是 constraint、task、satisfied、answered 或 rejected",
                 status=400,
             )
         disposed = self.store.dispose_interjection(
@@ -3091,6 +3437,8 @@ class AgentService:
                 details={"expectedRevision": expected, "currentRevision": current.revision},
             )
         phase, _separator, execution = current.state.partition(":")
+        if live.cancel_requested or execution in {RUN_STOPPING, RUN_CANCELLED}:
+            raise asyncio.CancelledError
         if current.run_id != live.run_id or execution != RUN_RUNNING:
             raise AgentRuntimeError(
                 "STATE_TRANSITION_INVALID",
@@ -3159,12 +3507,8 @@ class AgentService:
                 )
             gate = PHASE_GATES.get(target)
             if gate:
-                result = await self._gateway.call(
-                    project_id=live.project_id,
-                    run_id=live.run_id,
-                    token=live.token,
-                    tool="gate_status",
-                    arguments={"gate": gate},
+                result = await self._core_call(
+                    live, "gate_status", {"gate": gate},
                 )
                 if result.get("error"):
                     raise AgentRuntimeError(
@@ -3200,6 +3544,78 @@ class AgentService:
         public["phaseLabel"] = PHASE_LABELS.get(public["phase"], public["phase"])
         self.events.publish(live.project_id, live.run_id, "state", public)
         return {**public, "display": {"text": f"项目状态已更新为“{public['phaseLabel']}”"}}
+
+    async def _core_call(
+        self,
+        live: LiveRun,
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        poll_seconds: float = 0.1,
+    ) -> dict[str, Any]:
+        """Run a read/guard Core call behind the live cancellation fence."""
+        if live.cancel_requested or live.cancel_event.is_set():
+            raise asyncio.CancelledError
+        call = asyncio.create_task(self._gateway.call(
+            project_id=live.project_id,
+            run_id=live.run_id,
+            token=live.token,
+            tool=tool,
+            arguments=arguments,
+        ))
+        live.inflight_core_calls.add(call)
+        try:
+            while True:
+                if live.cancel_requested or live.cancel_event.is_set():
+                    call.cancel()
+                    await asyncio.gather(call, return_exceptions=True)
+                    raise asyncio.CancelledError
+                done, _pending = await asyncio.wait({call}, timeout=poll_seconds)
+                if done:
+                    if live.cancel_requested or live.cancel_event.is_set():
+                        raise asyncio.CancelledError
+                    return call.result()
+        except BaseException:
+            if not call.done():
+                call.cancel()
+            await asyncio.gather(call, return_exceptions=True)
+            raise
+        finally:
+            live.inflight_core_calls.discard(call)
+
+    async def _core_call_for_run(
+        self,
+        project_id: str,
+        run_id: str,
+        token: str,
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        live: LiveRun | None = None,
+    ) -> dict[str, Any]:
+        """Cancellation-aware Core call for an interaction callback.
+
+        Answering a card can happen outside the model task.  Reuse the live
+        call fence when present; otherwise consult the persisted run state and
+        refuse to submit a late answer to a stopped run.
+        """
+        if live is not None:
+            return await self._core_call(live, tool, arguments)
+        execution = self._execution(project_id, run_id)
+        if execution in {RUN_STOPPING, RUN_CANCELLED, ""}:
+            raise AgentRuntimeError("RUN_NOT_ACTIVE", "当前运行已经停止，操作未提交", status=409)
+        call = asyncio.create_task(self._gateway.call(
+            project_id=project_id,
+            run_id=run_id,
+            token=token,
+            tool=tool,
+            arguments=arguments,
+        ))
+        try:
+            return await call
+        finally:
+            if not call.done():
+                call.cancel()
 
     async def _after_core_tool(
         self,
@@ -3400,8 +3816,10 @@ class AgentService:
             f"本轮以完成并处置这条插话为唯一目标{remaining}。"
             "按「这条指令什么时候失效」判断它的寿命并选择出口：\n"
             "- 「不许/一律/以后都」这类长期规矩：调用 dispose_interjection(resolution='constraint') 登记为专家约束；\n"
-            "- 本轮能完成的一次性动作：直接执行，然后 dispose_interjection(resolution='satisfied') 并在 evidence 引用产物位置；\n"
+            "- 本轮能完成的一次性动作：直接执行，然后 dispose_interjection(resolution='satisfied') 并在 evidence "
+            "提供可验真锚点（形如 revision:修订号、file:路径，分号分隔）；\n"
             "- 本轮做不完的动作：dispose_interjection(resolution='task') 转成待办；\n"
+            "- 纯提问或咨询：先在正文回答，然后 dispose_interjection(resolution='answered') 并在 text 简述回答要点；\n"
             "- 与已批准计划或业务事实冲突：dispose_interjection(resolution='rejected') 说明理由。\n"
             "执行中被阶段守卫或工具拦截时，不要放弃也不要绕过：把拦截返回的原因、"
             "合法路径和代价整理成 ask(kind='conflict_decision') 请专家裁决，"
@@ -3417,7 +3835,8 @@ class AgentService:
             f"完成插话转来的待办 #{head['id']}：\n\n"
             f"「{head['text']}」\n\n"
             f"这一项来自专家插话{remaining}。本轮只推进这一项，完成后调用 "
-            "complete_interjection_task 并在 evidence 引用产物位置，然后结束本轮；"
+            "complete_interjection_task 并在 evidence 提供可验真锚点"
+            "（形如 revision:修订号、file:路径），然后结束本轮；"
             "不要顺带去做清单上的其它项，也不要自行改换目标。\n"
             "如果这一项的前提确实不具备，直接调用 ask 说明缺什么，"
             "不要反复读取资料试图自行补齐前提。"
@@ -3514,6 +3933,30 @@ class AgentService:
     async def _state_for_agent(self, live: LiveRun) -> dict[str, Any]:
         state = self.store.project_state(live.project_id)
         public = state.public()
+        execution = str(public.get("execution") or "")
+        cancellation_pending = execution == RUN_SUSPENDED and state.error in {
+            INTERRUPTED_CANCELLATION_REASON,
+            CANCELLATION_PENDING_REASON,
+        }
+        if live.cancel_requested or execution in {RUN_STOPPING, RUN_CANCELLED} or cancellation_pending:
+            # Cancellation is a normal terminal observation.  In particular,
+            # do not expose the persisted cancellation reason as a generic
+            # ``error`` field which the tool-trace classifier would render as
+            # a failed get_project_state call.
+            public.pop("error", None)
+            public["cancellation"] = {
+                "requested": True,
+                "status": execution,
+                "reason": "用户已停止运行" if execution == RUN_CANCELLED else "当前运行正在停止",
+            }
+            public["phaseLabel"] = PHASE_LABELS.get(str(public.get("phase") or ""), str(public.get("phase") or ""))
+            return {
+                **public,
+                "evaluation": {"available": False, "status": "cancelled", "terminal": True},
+                "dataSource": {"configured": False, "mode": "unknown"},
+                "allowedTransitions": [],
+                "display": {"text": "运行已停止，当前操作已取消"},
+            }
         evaluation = await self._evaluation_status_for_agent(live)
         if evaluation.get("terminal") is True:
             if (
@@ -3526,13 +3969,7 @@ class AgentService:
                 if not _claims_active_evaluation(str(item))
             ]
         phase = str(public["phase"])
-        data_source = await self._gateway.call(
-            project_id=live.project_id,
-            run_id=live.run_id,
-            token=live.token,
-            tool="project_data_source_status",
-            arguments={},
-        )
+        data_source = await self._core_call(live, "project_data_source_status", {})
         if data_source.get("error"):
             data_source = {
                 "configured": False,
@@ -3545,13 +3982,7 @@ class AgentService:
             ready = True
             blockers: list[str] = []
             if gate:
-                result = await self._gateway.call(
-                    project_id=live.project_id,
-                    run_id=live.run_id,
-                    token=live.token,
-                    tool="gate_status",
-                    arguments={"gate": gate},
-                )
+                result = await self._core_call(live, "gate_status", {"gate": gate})
                 ready = not result.get("error") and bool(result.get("pass"))
                 blockers = _string_list(result.get("blockers") or result.get("next"), 30)
                 if result.get("error") and not blockers:
@@ -3581,14 +4012,16 @@ class AgentService:
         }
 
     async def _evaluation_status_for_agent(self, live: LiveRun) -> dict[str, Any]:
+        state = self.store.project_state(live.project_id)
+        execution = state.state.partition(":")[2]
+        cancellation_pending = execution == RUN_SUSPENDED and state.error in {
+            INTERRUPTED_CANCELLATION_REASON,
+            CANCELLATION_PENDING_REASON,
+        }
+        if live.cancel_requested or execution in {RUN_STOPPING, RUN_CANCELLED} or cancellation_pending:
+            return {"available": False, "status": "cancelled", "terminal": True}
         try:
-            result = await self._gateway.call(
-                project_id=live.project_id,
-                run_id=live.run_id,
-                token=live.token,
-                tool="evaluation_status",
-                arguments={},
-            )
+            result = await self._core_call(live, "evaluation_status", {})
         except Exception as error:  # noqa: BLE001 - project state remains readable during Core outage
             return {
                 "available": False,
@@ -3625,11 +4058,21 @@ class AgentService:
             "finishedAt": result.get("finishedAt"),
         }
 
-    async def cancel(self, *, project_id: str) -> dict[str, Any]:
+    async def cancel(self, *, project_id: str, token: str = "") -> dict[str, Any]:
+        lock = self._cancel_locks.setdefault(project_id, asyncio.Lock())
+        async with lock:
+            return await self._cancel_locked(project_id=project_id, token=token)
+
+    async def _cancel_locked(self, *, project_id: str, token: str = "") -> dict[str, Any]:
         run = self.store.active_run(project_id)
         if run is None:
             state = self.store.project_state(project_id)
             _phase, _separator, execution = state.state.partition(":")
+            settled = self.store.get_run(state.run_id) if state.run_id else None
+            if settled is not None and execution == RUN_CANCELLED:
+                public = self._run_public(settled, state)
+                public["cancellation"] = {"quiescent": True, "idempotent": True}
+                return public
             if (
                 execution in ACTIVE_RUN_STATUSES
                 and state.run_id
@@ -3637,8 +4080,10 @@ class AgentService:
             ):
                 return await self.safe_terminate_stale(project_id=project_id)
             raise AgentRuntimeError("RUN_NOT_ACTIVE", "当前没有运行中的 Agent", status=409)
+
         live = self._live.get(run.id)
         if live:
+            live.cancel_requested = True
             live.cancel_event.set()
         _stopping, closed_interactions = self.store.begin_run_cancellation(run.id)
         for interaction in closed_interactions:
@@ -3648,19 +4093,31 @@ class AgentService:
             "text": "正在停止并核对已经发出的修改",
         })
         self._publish_state(project_id, run.id)
-        try:
-            await asyncio.wait_for(
-                self._gateway.call(
-                    project_id=project_id,
-                    run_id=run.id,
-                    token=live.token if live else "",
-                    tool="cancel_evaluation",
-                    arguments={},
-                ),
-                timeout=30,
-            )
-        except Exception as error:  # noqa: BLE001 - local cancellation must still complete
-            logger.warning("Could not cancel core evaluation for run %s: %s", run.id, error)
+
+        # Install the Core-side fence before draining local tasks. A missing
+        # optional method is treated as legacy compatibility; an unavailable
+        # real Core is not considered quiescent.
+        core_reconciliation = await self._request_core_cancellation(
+            run, live, token=token, drain=False,
+        )
+        # Evaluation cancellation is a best-effort side effect.  Do not let
+        # the local task cancellation race block Core reconciliation or turn
+        # a normal stop into a timeout error.
+        if live and live.evaluation_launch_active:
+            try:
+                await asyncio.wait_for(
+                    self._gateway.call(
+                        project_id=project_id,
+                        run_id=run.id,
+                        token=live.token,
+                        tool="cancel_evaluation",
+                        arguments={},
+                    ),
+                    timeout=10,
+                )
+            except Exception as error:  # noqa: BLE001 - local cancellation must still complete
+                logger.warning("Could not cancel core evaluation for run %s: %s", run.id, error)
+
         tasks: list[asyncio.Task[Any]] = []
         if live:
             tasks.extend(live.inflight_core_calls)
@@ -3671,11 +4128,204 @@ class AgentService:
                     task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        self._settle_cancelled_tool_events(project_id, run.id)
+        # The Core writer may finish just after the first fence request. Poll
+        # its reconciliation endpoint briefly before deciding whether the Run
+        # can truthfully become cancelled.
+        for attempt in range(CANCELLATION_RECONCILIATION_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(CANCELLATION_RECONCILIATION_DELAY_SECONDS)
+            core_reconciliation = await self._request_core_cancellation(
+                run, live, token=token, drain=True,
+            )
+            if core_reconciliation.get("quiescent") is True:
+                break
+
+        core_quiescent = core_reconciliation.get("quiescent") is True
+        event_phase = "cancelled" if core_quiescent else CANCEL_PENDING_TOOL_PHASE
+        event_summary = (
+            "运行已停止，当前操作已取消"
+            if core_quiescent
+            else "停止请求已记录，正在核对在途修改"
+        )
+        remaining_events: list[Any] = []
+        cancelled_tools: dict[str, dict[str, Any]] = {}
+        settled_mutations = {
+            str(item) for item in core_reconciliation.get("settledMutations", [])
+            if str(item).strip()
+        }
+        for attempt in range(CANCELLATION_RECONCILIATION_ATTEMPTS):
+            settled_tools = self._settle_cancelled_tool_events(
+                project_id,
+                run.id,
+                phase=event_phase,
+                summary=event_summary,
+                settled_mutations=settled_mutations,
+            )
+            for item in settled_tools:
+                identity = str(item.get("toolCallId") or item.get("traceGroupId") or item.get("name") or "")
+                if identity:
+                    cancelled_tools[identity] = item
+            remaining_events = self.store.unfinished_tool_events(run.id)
+            if not remaining_events:
+                break
+            if attempt + 1 < CANCELLATION_RECONCILIATION_ATTEMPTS:
+                await asyncio.sleep(CANCELLATION_RECONCILIATION_DELAY_SECONDS)
+
+        quiescent = core_quiescent and not remaining_events
+        if not quiescent:
+            reason = CANCELLATION_PENDING_REASON
+            updated = self.store.update_run(run.id, status=RUN_SUSPENDED, error=reason)
+            self._publish_state(project_id, run.id)
+            self.events.publish(project_id, run.id, "checkpoint", {
+                "id": run.session_id,
+                "revision": run.candidate_revision or run.baseline_revision,
+            })
+            self.events.publish(project_id, run.id, "status", {
+                "status": RUN_SUSPENDED,
+                "text": reason,
+                "cancelledToolCount": len(cancelled_tools),
+                "cancelledTools": list(cancelled_tools.values()),
+            })
+            public = self._run_public(updated, self.store.project_state(project_id))
+            public["cancellation"] = {
+                **core_reconciliation,
+                "quiescent": False,
+                "unresolvedToolEvents": len(remaining_events),
+                "cancelledToolCount": len(cancelled_tools),
+                "cancelledTools": list(cancelled_tools.values()),
+            }
+            return public
+
         updated = self.store.update_run(run.id, status=RUN_CANCELLED, error="用户已停止运行")
         self._publish_state(project_id, run.id)
-        self.events.publish(project_id, run.id, "status", {"status": RUN_CANCELLED, "text": "已停止，已完成的候选内容保留"})
-        return self._run_public(updated, self.store.project_state(project_id))
+        self.events.publish(project_id, run.id, "status", {
+            "status": RUN_CANCELLED,
+            "text": "已停止，已完成的候选内容保留",
+            "cancelledToolCount": len(cancelled_tools),
+            "cancelledTools": list(cancelled_tools.values()),
+        })
+        public = self._run_public(updated, self.store.project_state(project_id))
+        public["cancellation"] = {
+            **core_reconciliation,
+            "quiescent": True,
+            "unresolvedToolEvents": 0,
+            "cancelledToolCount": len(cancelled_tools),
+            "cancelledTools": list(cancelled_tools.values()),
+        }
+        return public
+    async def _request_core_cancellation(
+        self,
+        run: RunRecord,
+        live: LiveRun | None,
+        *,
+        token: str = "",
+        drain: bool = False,
+    ) -> dict[str, Any]:
+        cancel_run = getattr(self._gateway, "cancel_run", None)
+        if not callable(cancel_run):
+            return {"quiescent": True, "compatibility": "legacy_core"}
+        restore = getattr(self._gateway, "restore_run_credential", None)
+        current_credential = getattr(self._gateway, "run_credential", None)
+        if callable(restore) and run.run_credential:
+            has_current_credential = (
+                callable(current_credential) and current_credential(run.id)
+            )
+            if not has_current_credential:
+                restore(run.id, run.run_credential)
+        authorization = live.token if live else token
+        try:
+            try:
+                result = await cancel_run(
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    token=authorization,
+                    drain=drain,
+                )
+            except TypeError as error:
+                if "drain" not in str(error):
+                    raise
+                result = await cancel_run(
+                    project_id=run.project_id,
+                    run_id=run.id,
+                    token=authorization,
+                )
+        except Exception as error:  # noqa: BLE001 - cancellation must return a resumable state
+            logger.warning("Could not reconcile Core cancellation for run %s: %s", run.id, error)
+            return {
+                "quiescent": False,
+                "error": "CORE_CANCELLATION_UNAVAILABLE",
+                "reason": "建模核心停止回执暂时不可用",
+            }
+        return result if isinstance(result, dict) else {"quiescent": False}
+
+    def _settle_cancelled_tool_events(
+        self,
+        project_id: str,
+        run_id: str,
+        *,
+        phase: str = "cancelled",
+        summary: str = "运行已停止，当前操作已取消",
+        settled_mutations: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if phase not in TERMINAL_TOOL_PHASES and phase != CANCEL_PENDING_TOOL_PHASE:
+            phase = "cancelled"
+        cancelled_tools: list[dict[str, Any]] = []
+        cancelled_at = now_iso()
+        for event in self.store.unfinished_tool_events(run_id):
+            started = event.payload
+            mutation_id = str(started.get("mutationId") or "").strip()
+            event_phase = phase
+            event_summary = summary
+            mutation_was_settled = False
+            if mutation_id and settled_mutations:
+                mutation_was_settled = mutation_id in settled_mutations
+            is_stage_change_set = str(started.get("name") or "") == "stage_change_set"
+            if mutation_was_settled and is_stage_change_set:
+                event_phase = "completed"
+                event_summary = "已核对在途修改回执，候选内容已保留"
+            if str(started.get("phase") or "") == event_phase:
+                continue
+            payload = {
+                "name": str(started.get("name") or ""),
+                "phase": event_phase,
+                "summary": event_summary,
+                "toolCallId": str(started.get("toolCallId") or ""),
+                "cancelledAt": cancelled_at,
+            }
+            if mutation_id:
+                payload["mutationId"] = mutation_id
+            trace_group_id = str(started.get("traceGroupId") or "")
+            if trace_group_id:
+                payload["traceGroupId"] = trace_group_id
+            cancelled_tools.append({
+                "name": payload["name"],
+                "toolCallId": payload["toolCallId"],
+                "traceGroupId": trace_group_id,
+                "startedAt": event.created_at,
+                "cancelledAt": cancelled_at,
+                "phase": event_phase,
+                "summary": event_summary,
+            })
+            self.events.publish(project_id, run_id, "tool", payload)
+        return cancelled_tools
+
+    async def safe_terminate_stale(self, *, project_id: str) -> dict[str, Any]:
+        state = self.store.project_state(project_id)
+        terminated_run_id = state.run_id
+        terminated = self.store.terminate_stale_occupancy(project_id)
+        self._publish_state(project_id, terminated_run_id)
+        self.events.publish(
+            project_id,
+            terminated_run_id,
+            "status",
+            {"status": RUN_CANCELLED, "text": "已安全终止失效运行，候选内容与审计记录保留，可以重新规划"},
+        )
+        return {
+            "run": None,
+            "state": terminated.public(),
+            "terminatedStale": True,
+            "terminatedRunId": terminated_run_id,
+        }
 
     def _settle_tool_events(
         self,
@@ -3699,18 +4349,13 @@ class AgentService:
                 payload["code"] = code
             if retryable is not None:
                 payload["retryable"] = retryable
+            mutation_id = str(started.get("mutationId") or "").strip()
+            if mutation_id:
+                payload["mutationId"] = mutation_id
             trace_group_id = str(started.get("traceGroupId") or "")
             if trace_group_id:
                 payload["traceGroupId"] = trace_group_id
             self.events.publish(project_id, run_id, "tool", payload)
-
-    def _settle_cancelled_tool_events(self, project_id: str, run_id: str) -> None:
-        self._settle_tool_events(
-            project_id,
-            run_id,
-            phase="cancelled",
-            summary="运行已停止，当前操作已取消",
-        )
 
     def _settle_failed_tool_events(self, project_id: str, run_id: str, summary: str) -> None:
         self._settle_tool_events(
@@ -3721,24 +4366,6 @@ class AgentService:
             code="RUN_FAILED",
             retryable=False,
         )
-
-    async def safe_terminate_stale(self, *, project_id: str) -> dict[str, Any]:
-        state = self.store.project_state(project_id)
-        terminated_run_id = state.run_id
-        terminated = self.store.terminate_stale_occupancy(project_id)
-        self._publish_state(project_id, terminated_run_id)
-        self.events.publish(
-            project_id,
-            terminated_run_id,
-            "status",
-            {"status": RUN_CANCELLED, "text": "已安全终止失效运行，候选内容与审计记录保留，可以重新规划"},
-        )
-        return {
-            "run": None,
-            "state": terminated.public(),
-            "terminatedStale": True,
-            "terminatedRunId": terminated_run_id,
-        }
 
     def _persist_latest_interaction(
         self,
@@ -3816,6 +4443,26 @@ class AgentService:
             return True
         pending = self.store.pending_interaction(run.project_id)
         return pending is not None and pending.run_id == run.id
+
+    def _plan_execution_boundary_reached(self, live: LiveRun, run: RunRecord, output: str) -> bool:
+        if live.observed_tools & {"stage_change_set", "validate_change_set", "request_confirmation"}:
+            return True
+        if claims_confirmation_card(output):
+            return True
+        pending = self.store.pending_interaction(run.project_id)
+        return pending is not None and pending.run_id == run.id
+
+    def _progress_only_continuation_prompt(self, project_id: str) -> str:
+        state = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
+        return (
+            "你刚才只输出了执行进度，尚未形成候选修订、校验回执或确认卡。"
+            "不要再次只描述下一步；立即调用 get_project_state 读取最新状态，"
+            "再按已批准计划调用 stage_change_set 与 validate_change_set，"
+            "完整校验通过后调用 request_confirmation 生成统一确认卡。\n\n"
+            "# 项目唯一 Agent 状态快照\n"
+            f"{state}"
+        )
+
     def _suspend_required_text_review(
         self,
         live: LiveRun,
@@ -3937,6 +4584,9 @@ class AgentService:
         """Expose an actionable, diagnostic card instead of a generic stop."""
         issue_id = f"required-tool-review-{run.id}"
         constraint = live.required_text_constraint or {}
+        # 全部缺失工具都真实调用过仍被拒绝时，标注出来供专家判断是否
+        # 「取消该要求」；服务端不据此单方面撤销（失败不等于已完成）。
+        attempted_but_rejected = sorted(_unsatisfiable_required_tools(live, missing_tools))
         recovery = {
             "issueId": issue_id,
             "requiredTool": sorted(missing_tools)[0] if missing_tools else "",
@@ -3948,6 +4598,11 @@ class AgentService:
                     "id": "retry_required_tools",
                     "label": "从当前进度继续",
                     "description": "从最后已保存的步骤重试缺失工具，不生成正式规则候选。",
+                },
+                {
+                    "id": "cancel_required_tools",
+                    "label": "取消该要求",
+                    "description": "撤销这项必需步骤并从当前进度继续本轮，已有成果保持不变。",
                 },
                 {
                     "id": "keep_current_progress",
@@ -3962,12 +4617,18 @@ class AgentService:
             "processed": live.situation.product_ledger_processed,
             "remaining": live.situation.product_ledger_remaining,
             "analysisRevision": live.situation.product_ledger_analysis_revision or None,
-            "failureReason": "必需工具在重试后仍未完成",
+            "failureReason": (
+                "必需工具已多次真实调用但均被当前项目状态拒绝，可能无法在当前状态下满足"
+                if attempted_but_rejected else "必需工具在重试后仍未完成"
+            ),
+            "attemptedButRejected": attempted_but_rejected,
             "constraintStatus": "unconfirmed" if constraint else "not_applicable",
             "missingConstraintItems": (
                 _required_text_constraint_status("", constraint)[1] if constraint else []
             ),
-            "allowedActions": ["retry_required_tools", "keep_current_progress"],
+            "allowedActions": [
+                "retry_required_tools", "cancel_required_tools", "keep_current_progress",
+            ],
             "constraintHash": constraint.get("textHash"),
         }
         live.technical_recoveries[issue_id] = recovery
@@ -3988,6 +4649,11 @@ class AgentService:
                         "value": "retry_required_tools",
                     },
                     {
+                        "label": "取消该要求",
+                        "description": "撤销这项必需步骤并从当前进度继续",
+                        "value": "cancel_required_tools",
+                    },
+                    {
                         "label": "保留成果并停止",
                         "description": "不产生新的规则、指标或操作候选",
                         "value": "keep_current_progress",
@@ -4002,6 +4668,7 @@ class AgentService:
                 "remaining": recovery["remaining"],
                 "analysisRevision": recovery["analysisRevision"],
                 "failureReason": recovery["failureReason"],
+                "attemptedButRejected": recovery["attemptedButRejected"],
                 "constraintStatus": recovery["constraintStatus"],
                 "missingConstraintItems": recovery["missingConstraintItems"],
             },
@@ -4067,6 +4734,65 @@ class AgentService:
             "text": "整体复核卡未形成，待确认修改已保留，请选择后续处理",
         })
 
+    def _suspend_technical_recovery(
+        self,
+        live: LiveRun,
+        run: RunRecord,
+        issue_id: str,
+    ) -> None:
+        """把未完成的系统恢复转成用户可操作的选择。
+
+        自动恢复用尽后，整轮不能只留下一句「已停止」。界面需要 issueId、
+        问题码和恢复动作才能渲染出可点的出口，否则用户只能被动等待。
+        """
+        recovery = live.technical_recoveries.get(issue_id) or {}
+        actions = [
+            dict(item) for item in recovery.get("recoveryActions") or []
+            if isinstance(item, dict)
+        ] or _confirmation_review_actions()
+        try:
+            attempt = max(1, int(recovery.get("maxAttempts") or 1))
+        except (TypeError, ValueError):
+            attempt = 1
+        updated = {
+            **recovery,
+            "actionId": str(recovery.get("actionId") or "retry_from_latest"),
+            "recoveryActions": actions,
+            "attempt": attempt,
+            "exhausted": True,
+        }
+        live.technical_recoveries[issue_id] = updated
+        self.store.save_technical_recovery(run.id, issue_id, updated)
+        live.required_tools.discard(str(recovery.get("requiredTool") or "").strip())
+        summary = str(
+            recovery.get("stoppedSummary")
+            or "这一步还没有完成，已保留当前成果，请选择后续处理"
+        )
+        # 未满足项是用户唯一能据以行动的信息。卡片上只写「已停止」，用户仍然不知道
+        # 差什么，也就还是只能等平台。
+        blockers = _string_list(recovery.get("blockers"), 10)
+        self.store.update_run(run.id, status=RUN_SUSPENDED, result="", error="")
+        self._publish_state(run.project_id, run.id)
+        self.events.publish(run.project_id, run.id, "tool", {
+            "name": str(recovery.get("sourceTool") or "issue_recovery"),
+            "phase": "waiting",
+            "summary": summary,
+            "code": str(recovery.get("code") or "RECOVERY_NOT_COMPLETED"),
+            "issueId": issue_id,
+            "issueStatus": "awaiting_user",
+            "problemVisibility": "recovery",
+            "recoveryActions": actions,
+            **({"blockers": blockers} if blockers else {}),
+        })
+        self.events.publish(run.project_id, run.id, "checkpoint", {
+            "id": run.session_id,
+            "revision": run.candidate_revision or run.baseline_revision,
+        })
+        self.events.publish(run.project_id, run.id, "status", {
+            "status": RUN_SUSPENDED,
+            "text": summary,
+        })
+
     @staticmethod
     def _confirmation_review_prompt(run: RunRecord) -> str:
         snapshot = run.latest_interaction or {}
@@ -4085,30 +4811,6 @@ class AgentService:
             "只能依据当前项目事实和下面保存的最新交互继续，不得原样重放旧参数。\n"
             f"最新交互事实：{json.dumps(facts, ensure_ascii=False)}"
         )
-
-    def _plan_execution_boundary_reached(
-        self,
-        live: LiveRun,
-        run: RunRecord,
-        output: str,
-    ) -> bool:
-        """是否已经形成候选/确认卡等真实完成边界。"""
-        if live.observed_tools & {"stage_change_set", "validate_change_set", "request_confirmation"}:
-            return True
-        if claims_confirmation_card(output):
-            return True
-        pending = self.store.pending_interaction(run.project_id)
-        return pending is not None and pending.run_id == run.id
-
-    @staticmethod
-    def _retry_continuation(
-        retries: int,
-        max_retries: int,
-        retry_query: str,
-    ) -> tuple[int, str] | None:
-        if retries < max_retries:
-            return retries + 1, retry_query
-        return None
 
     async def _resume(
         self,
@@ -4130,6 +4832,7 @@ class AgentService:
     ) -> dict[str, Any]:
         if self._execution(run.project_id, run.id) not in {RUN_WAITING, RUN_SUSPENDED}:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
+        await self._release_core_cancellation_fence(run, token)
         claimed = await self._claim_workspace(project_id=run.project_id, run_id=run.id, token=token)
         from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
@@ -4140,6 +4843,7 @@ class AgentService:
             "status": RUN_QUEUED,
             "interaction_id": "",
             "error": "",
+            "_allow_status_regression": True,
         }
         if not preserve_token_fingerprint:
             updates["token_fingerprint"] = token_fingerprint(token)
@@ -4175,10 +4879,40 @@ class AgentService:
         )
         if steering:
             await live.steering.put(steering)
+        self._restore_product_ledger_situation(live)
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, resume))
         updated = self.store.require_run(run.id)
         return self._run_public(updated, self.store.project_state(run.project_id))
+
+    async def _release_core_cancellation_fence(self, run: RunRecord, token: str) -> None:
+        resume_run = getattr(self._gateway, "resume_run", None)
+        if not callable(resume_run):
+            return
+        result = await resume_run(
+            project_id=run.project_id,
+            run_id=run.id,
+            token=token,
+        )
+        if isinstance(result, dict) and result.get("quiescent") is False:
+            raise AgentRuntimeError(
+                "RUN_CANCELLATION_PENDING",
+                "仍有在途修改没有取得明确回执，暂不能继续运行",
+                status=409,
+                details=result,
+            )
+        if isinstance(result, dict) and result.get("requested"):
+            settled_mutations = {
+                str(item) for item in result.get("settledMutations", [])
+                if str(item).strip()
+            }
+            self._settle_cancelled_tool_events(
+                run.project_id,
+                run.id,
+                phase="cancelled",
+                summary="停止请求已结算，未完成操作已取消",
+                settled_mutations=settled_mutations,
+            )
 
     async def _continue(
         self,
@@ -4196,6 +4930,7 @@ class AgentService:
     ) -> dict[str, Any]:
         if self._execution(run.project_id, run.id) not in {RUN_WAITING, RUN_SUSPENDED}:
             raise AgentRuntimeError("RUN_NOT_WAITING", "当前运行不在等待恢复状态", status=409)
+        await self._release_core_cancellation_fence(run, token)
         claimed = await self._claim_workspace(project_id=run.project_id, run_id=run.id, token=token)
         self.store.update_run(
             run.id,
@@ -4203,6 +4938,7 @@ class AgentService:
             interaction_id="",
             token_fingerprint=token_fingerprint(token),
             error="",
+            _allow_status_regression=True,
         )
         self._publish_state(run.project_id, run.id)
         technical_recoveries = self.store.technical_recoveries(run.id)
@@ -4231,12 +4967,20 @@ class AgentService:
             technical_recoveries=technical_recoveries,
             required_text_constraint=resolved_required_text_constraint,
         )
+        self._restore_product_ledger_situation(live)
         self._live[run.id] = live
         live.task = asyncio.create_task(self._execute(live, prompt))
         updated = self.store.require_run(run.id)
         return self._run_public(updated, self.store.project_state(run.project_id))
 
-    async def _claim_workspace(self, *, project_id: str, run_id: str, token: str) -> dict[str, Any]:
+    async def _claim_workspace(
+        self,
+        *,
+        project_id: str,
+        run_id: str,
+        token: str,
+        resume_plan_id: str = "",
+    ) -> dict[str, Any]:
         current_credential = getattr(self._gateway, "run_credential", None)
         restore_credential = getattr(self._gateway, "restore_run_credential", None)
         if callable(current_credential) and callable(restore_credential) and not current_credential(run_id):
@@ -4248,7 +4992,7 @@ class AgentService:
             run_id=run_id,
             token=token,
             tool="claim_candidate_workspace",
-            arguments={},
+            arguments={"resume_plan_id": resume_plan_id} if resume_plan_id else {},
         )
         if claimed.get("error"):
             raise AgentRuntimeError(
@@ -4271,6 +5015,16 @@ class AgentService:
             if issued:
                 self.store.update_run(run_id, run_credential=issued)
         return claimed
+
+    def _restore_product_ledger_situation(self, live: LiveRun) -> None:
+        """重放台账工具回执，把已完成的批次进度带回本轮快照。
+
+        恢复时 observed_tools 只重建"调用过哪些工具"，业务结果只存在于回执里。
+        不重放的话，续跑的诊断回执会把已落库的批次报成 unknown / 0 条，
+        让用户以为进度丢了，从而重头再来。
+        """
+        for _name, result in self.store.tool_receipts_by_name(live.run_id, PRODUCT_LEDGER_STATE_TOOLS):
+            _absorb_product_ledger(live, result)
 
     def _validation_repair_state(self, run_id: str) -> CandidateValidationRepairState:
         return CandidateValidationRepairState.from_snapshot(
@@ -4316,10 +5070,17 @@ class AgentService:
                         runtime_settings,
                         output_tokens=runtime_settings.analyst_output_tokens,
                     )
-            self.store.update_run(run.id, status=RUN_RUNNING)
+            if live.cancel_requested or self._execution(run.project_id, run.id) in {
+                RUN_STOPPING, RUN_CANCELLED,
+            }:
+                return
+            running = self.store.update_run(run.id, status=RUN_RUNNING)
+            if running.status != RUN_RUNNING or live.cancel_requested:
+                return
             self._publish_state(run.project_id, run.id)
-            self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})
             live.model_settings = model_settings
+            if not live.cancel_requested:
+                self.events.publish(run.project_id, run.id, "status", {"status": RUN_RUNNING, "text": "助手正在建模"})
             autonomous = live.autonomous_seed
             stalled = 0
             continuations = 0
@@ -4332,6 +5093,30 @@ class AgentService:
             active_phase = initial_phase
             while True:
                 def emit(kind: str, payload: dict[str, Any]) -> None:
+                    phase = str(payload.get("phase") or "")
+                    # Cancellation is a monotonic fence. Terminal receipts are
+                    # still allowed through for reconciliation, but a late
+                    # progress/started callback must not resurrect the run.
+                    persisted_execution = self._execution(live.project_id, live.run_id)
+                    cancelling = live.cancel_requested or persisted_execution in {
+                        RUN_STOPPING, RUN_CANCELLED,
+                    }
+                    if cancelling:
+                        if kind == "progress":
+                            return
+                        # Once cancellation has been requested, only an
+                        # explicit receipt produced by the cancellation
+                        # reconciler may be shown.  In particular, a late
+                        # Core error such as RUN_CANCELLING is activity, not a
+                        # user-recovery problem.
+                        if kind == "tool":
+                            return
+                        if kind == "status" and str(payload.get("status") or "") in {
+                            RUN_QUEUED, RUN_RUNNING, RUN_STOPPING, RUN_WAITING,
+                        }:
+                            return
+                        if kind in {"message", "message_delta", "reasoning_delta", "reasoning_done"}:
+                            return
                     if kind == "model_call":
                         # ActivityRail 的度量事件走的是同一个 emit。主模型调用完成时
                         # 留存最后一次度量，供截断守卫判断本轮是不是零产出。
@@ -4341,7 +5126,20 @@ class AgentService:
                         ):
                             live.last_model_call = dict(payload)
                     if kind == "tool":
-                        phase = str(payload.get("phase") or "")
+                        code = str(payload.get("code") or "")
+                        if code in {"RUN_CANCELLING", "RUN_CANCELLED"}:
+                            payload = {
+                                **payload,
+                                "phase": "cancelled",
+                                "summary": "运行已停止，当前操作已取消",
+                                "problemVisibility": "activity",
+                                "retryable": False,
+                                "repairStopped": False,
+                                "issueId": "",
+                                "issueStatus": "cancelled",
+                                "recoveryActions": [],
+                            }
+                            phase = "cancelled"
                         name = str(payload.get("name") or "")
                         if name == "run_evaluation" and phase == "started":
                             live.evaluation_launch_active = True
@@ -4357,17 +5155,21 @@ class AgentService:
                             live.observed_tools.add(name)
                     self.events.publish(live.project_id, live.run_id, kind, payload)
 
+                def save_recovery(issue_id: str, recovery: dict[str, Any]) -> None:
+                    normalized = str(issue_id or "").strip()
+                    if not normalized:
+                        return
+                    live.technical_recoveries[normalized] = dict(recovery)
+                    self.store.save_technical_recovery(
+                        live.run_id, normalized, dict(recovery),
+                    )
+
                 def require_tool(name: str, recovery: dict[str, Any]) -> None:
                     normalized = str(name or "").strip()
                     if not normalized:
                         return
                     live.required_tools.add(normalized)
-                    issue_id = str(recovery.get("issueId") or "").strip()
-                    if issue_id:
-                        live.technical_recoveries[issue_id] = dict(recovery)
-                        self.store.save_technical_recovery(
-                            live.run_id, issue_id, dict(recovery),
-                        )
+                    save_recovery(str(recovery.get("issueId") or ""), recovery)
 
                 context = ToolContext(
                     project_id=live.project_id,
@@ -4385,6 +5187,7 @@ class AgentService:
                     resolve_issues=lambda issue_ids: self.store.resolve_technical_recoveries(
                         live.run_id, issue_ids,
                     ),
+                    save_recovery=save_recovery,
                     technical_recoveries=live.technical_recoveries,
                     state_action=lambda name, arguments: self._state_action(live, name, arguments),
                     after_core_tool=lambda name, arguments, result: self._after_core_tool(
@@ -4445,6 +5248,8 @@ class AgentService:
                     # 常驻保证它不被工具返回值挤出窗口。
                     constraints=self.store.active_constraints(live.project_id),
                 )
+                if live.cancel_requested:
+                    return
                 boundary = self.events.publish(
                     run.project_id,
                     run.id,
@@ -4460,6 +5265,10 @@ class AgentService:
                     current_query,
                     operation_id=f"model-stream-{model_operation_seq:04d}",
                 )
+                if live.cancel_requested or self._execution(run.project_id, run.id) in {
+                    RUN_STOPPING, RUN_CANCELLED,
+                }:
+                    return
                 # 截断守卫必须排在最前面：本轮模型一个 token 都没吐出来，
                 # 后面所有「模型说了什么/做了什么」的判断都无从谈起。尤其不能
                 # 让它掉进自主续跑分支——那里会把零产出当成停滞，扣完预算后
@@ -4531,6 +5340,19 @@ class AgentService:
                     self._settle(live, run, result)
                     return
                 if context.recovery_waiting or result.get("recovery_wait") is True:
+                    # 承载阶段被门禁挡住的写入已经没有自愈路径，只把本轮挂起会让用户
+                    # 回到「没有任何可操作入口」的老问题；这里补一张带未满足项的恢复卡。
+                    blocked_issue = next(
+                        (
+                            issue_id
+                            for issue_id, recovery in live.technical_recoveries.items()
+                            if _is_blocked_phase_capability(recovery)
+                        ),
+                        "",
+                    )
+                    if blocked_issue:
+                        self._suspend_technical_recovery(live, run, blocked_issue)
+                        return
                     self.store.update_run(
                         run.id,
                         status=RUN_SUSPENDED,
@@ -4594,6 +5416,21 @@ class AgentService:
                     ):
                         self._suspend_confirmation_review(live, run)
                         return
+                    # 阶段能力这类恢复自带承载阶段和重提指引，交给通用的必需工具卡会丢掉
+                    # requiredPhase，用户点「继续」后模型就不知道该切回哪个阶段重提修改。
+                    phase_capability_issue = next(
+                        (
+                            issue_id
+                            for issue_id, recovery in live.technical_recoveries.items()
+                            if recovery.get("strategy") == PHASE_CAPABILITY_STRATEGY
+                        ),
+                        "",
+                    )
+                    if phase_capability_issue:
+                        self._suspend_technical_recovery(
+                            live, run, phase_capability_issue,
+                        )
+                        return
                     self._suspend_required_tool_review(live, run, missing_tools)
                     return
                 if _required_text_response_requires_review(
@@ -4623,13 +5460,23 @@ class AgentService:
                     result = await self._ensure_visible_result(live, run, result)
                     self._settle(live, run, result)
                     return
-                if _confirmation_claimed_without_pending_interaction(result, context, live):
+                if (
+                    result.get("result_type") == "success"
+                    and context.confirmation_claimed_in_text
+                    and not context.interjection_reply_required
+                    and live.restore_interaction is None
+                ):
                     live.confirmation_required = True
-                if _user_input_requested_without_decision_card(result, context, live):
-                    next_retry = self._retry_continuation(
-                        decision_card_retries,
-                        MAX_DECISION_CARD_RETRIES,
-                        (
+                if (
+                    result.get("result_type") == "success"
+                    and context.user_input_request_in_text
+                    and not context.decision_card_requested
+                    and not context.interjection_reply_required
+                    and live.restore_interaction is None
+                ):
+                    if decision_card_retries < MAX_DECISION_CARD_RETRIES:
+                        decision_card_retries += 1
+                        current_query = (
                             "你刚才在普通文字里要求用户从业务选项中选择，但尚未生成可操作的问题卡。"
                             "立即调用 ask，把同一问题整理成少量互斥选项并保留自由输入；"
                             "不要改用 request_confirmation，也不要再次只输出文字选项。"
@@ -4637,10 +5484,7 @@ class AgentService:
                             "你刚才在普通文字里要求用户补充描述，但尚未生成可输入的问题卡。"
                             "立即调用 ask，把同一补充请求放入问题卡；可以不提供选项，并保留自由输入。"
                             "不要继续执行项目、转换阶段，也不要再次只用普通文字索要输入。"
-                        ),
-                    )
-                    if next_retry is not None:
-                        decision_card_retries, current_query = next_retry
+                        )
                         continue
                     result = {
                         "result_type": "error",
@@ -4648,16 +5492,12 @@ class AgentService:
                         "streamed": False,
                     }
                 if result.get("result_type") == "success" and live.confirmation_required:
-                    next_retry = self._retry_continuation(
-                        confirmation_card_retries,
-                        MAX_DECISION_CARD_RETRIES,
-                        (
+                    if confirmation_card_retries < 2:
+                        confirmation_card_retries += 1
+                        current_query = (
                             "整体差异已经核对，但页面上尚未形成需要专家处理的真实确认卡。"
                             "立即发起整体确认；不得替专家批准，也不得只用文字询问。"
-                        ),
-                    )
-                    if next_retry is not None:
-                        confirmation_card_retries, current_query = next_retry
+                        )
                         continue
                     self._suspend_confirmation_review(live, run)
                     return
@@ -4669,13 +5509,9 @@ class AgentService:
                     )
                     and APPROVED_PLAN_REQUIRED_TOOLS <= live.required_tools
                 ):
-                    next_retry = self._retry_continuation(
-                        progress_only_retries,
-                        MAX_PROGRESS_ONLY_CONTINUATIONS,
-                        self._progress_only_continuation_prompt(run.project_id),
-                    )
-                    if next_retry is not None:
-                        progress_only_retries, current_query = next_retry
+                    if progress_only_retries < MAX_PROGRESS_ONLY_CONTINUATIONS:
+                        progress_only_retries += 1
+                        current_query = self._progress_only_continuation_prompt(run.project_id)
                         continue
                     result = {
                         "result_type": "error",
@@ -4765,7 +5601,7 @@ class AgentService:
                 return
         except asyncio.CancelledError:
             execution = self._execution(run.project_id, run.id)
-            if self._shutting_down and execution != RUN_CANCELLED:
+            if self._shutting_down and not live.cancel_requested and execution != RUN_CANCELLED:
                 self.store.update_run(
                     run.id,
                     status=RUN_SUSPENDED,
@@ -4778,12 +5614,20 @@ class AgentService:
                     {"status": RUN_SUSPENDED, "text": "服务正在重启，已保留当前进展"},
                 )
                 self._publish_state(run.project_id, run.id)
-            elif execution not in {RUN_CANCELLED, RUN_STOPPING}:
+            elif not live.cancel_requested and execution not in {
+                RUN_CANCELLED, RUN_STOPPING,
+            }:
                 self.store.update_run(run.id, status=RUN_CANCELLED, error="运行被停止")
                 self._publish_state(run.project_id, run.id)
             raise
         except Exception as error:  # noqa: BLE001
             logger.exception("Agent run %s failed", run.id)
+            if live.cancel_requested or self._execution(run.project_id, run.id) in {
+                RUN_STOPPING, RUN_CANCELLED,
+            }:
+                return
+            self.store.update_run(run.id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
+            self._publish_state(run.project_id, run.id)
             visible_error = (
                 error.message
                 if isinstance(error, AgentRuntimeError) and error.code in {"LLM_NOT_CONFIGURED", "AGENT_TOOL_LOOP_DETECTED"}
@@ -4795,12 +5639,6 @@ class AgentService:
                     else "这次处理没有完成，之前已经确认的内容和候选修改都已保留。"
                 )
             )
-            try:
-                self._settle_failed_tool_events(run.project_id, run.id, visible_error)
-            except Exception:
-                logger.exception("Failed to settle unfinished tool events for run %s", run.id)
-            self.store.update_run(run.id, status=RUN_FAILED, error=f"{type(error).__name__}: {error}")
-            self._publish_state(run.project_id, run.id)
             self.events.publish(run.project_id, run.id, "message", {"role": "assistant", "blocks": [{"type": "error", "text": visible_error, "actions": [{"id": "retry", "label": "从当前进展重试"}]}]})
             if live.restore_interaction:
                 self._restore_interaction(run, live.restore_interaction)
@@ -4809,7 +5647,8 @@ class AgentService:
         finally:
             self._live.pop(run.id, None)
             deferred = live.deferred_purpose_continuation
-            run_cancelled = self.store.require_run(run.id).status == RUN_CANCELLED
+            run_status = self.store.require_run(run.id).status
+            run_cancelled = run_status in {RUN_CANCELLED, RUN_STOPPING} or live.cancel_requested
             if deferred is not None and not self._shutting_down and not run_cancelled:
                 steering_id, token, message = deferred
                 try:
@@ -5072,7 +5911,7 @@ class AgentService:
         return (
             f"专家插话 #{head['id']} 还没有处置结论。本轮系统指派的目标就是这条插话："
             "先完成或裁决它，并调用 dispose_interjection 登记处置（登记约束/转待办/"
-            "已满足附证据/拒绝说明理由），再考虑其它工作。不要请求用户指示，"
+            "已满足附可验真锚点/纯提问已回答/拒绝说明理由），再考虑其它工作。不要请求用户指示，"
             "也不要把插话内容当成普通聊天忽略。"
         )
 
@@ -5158,17 +5997,6 @@ class AgentService:
             "planNextTask": live.situation.plan_next_task,
             "stalledRounds": stalled,
         })
-
-    def _progress_only_continuation_prompt(self, project_id: str) -> str:
-        state = json.dumps(self.project_state(project_id)["state"], ensure_ascii=False)[:12_000]
-        return (
-            "你刚才只输出了执行进度，尚未形成候选修订、校验回执或确认卡。"
-            "不要再次只描述下一步；立即调用 get_project_state 读取最新状态，"
-            "再按已批准计划调用 stage_change_set 与 validate_change_set，"
-            "完整校验通过后调用 request_confirmation 生成统一确认卡。\n\n"
-            "# 项目唯一 Agent 状态快照\n"
-            f"{state}"
-        )
 
     async def _ensure_visible_result(
         self,
@@ -5432,12 +6260,13 @@ class AgentService:
                 "delta": delta,
             })
 
+        stream = runner.run_agent_streaming(
+            live.bundle.agent,
+            {"query": query, "_steering_queue": live.steering},
+            session=run.session_id,
+        )
         try:
-            async for chunk in runner.run_agent_streaming(
-                live.bundle.agent,
-                {"query": query, "_steering_queue": live.steering},
-                session=run.session_id,
-            ):
+            async for chunk in stream:
                 chunk_type = str(getattr(chunk, "type", "") or "")
                 if chunk_type == "llm_reasoning":
                     model_events += 1
@@ -5469,6 +6298,14 @@ class AgentService:
                     interaction = _interaction_from_stream(run, getattr(chunk, "payload", None))
             stream_completed = True
         finally:
+            close_stream = getattr(stream, "aclose", None)
+            if callable(close_stream):
+                try:
+                    await asyncio.shield(close_stream())
+                except (asyncio.CancelledError, Exception):
+                    # The runner/SDK may not expose a cooperative close; the
+                    # live cancellation fence still drops every late event.
+                    pass
             reasoning.finish()
             if not _missing_required_tools(live):
                 if held_parts:
@@ -5523,6 +6360,10 @@ class AgentService:
         }
 
     def _settle(self, live: LiveRun, run: RunRecord, result: dict[str, Any]) -> None:
+        if live.cancel_requested or self._execution(run.project_id, run.id) in {
+            RUN_STOPPING, RUN_CANCELLED,
+        }:
+            return
         if result.get("result_type") == "interrupt":
             if live.restore_interaction:
                 self.events.publish(
@@ -5605,6 +6446,13 @@ class AgentService:
     def _publish_state(self, project_id: str, run_id: str) -> None:
         state = self.store.project_state(project_id)
         public = state.public()
+        if public.get("execution") in {RUN_STOPPING, RUN_CANCELLED}:
+            public.pop("error", None)
+            public["cancellation"] = {
+                "requested": True,
+                "status": public.get("execution"),
+                "reason": "用户已停止运行",
+            }
         public["phaseLabel"] = PHASE_LABELS.get(public["phase"], public["phase"])
         self.events.publish(project_id, run_id, "state", public)
 
@@ -5875,17 +6723,6 @@ _PACKAGE_FUSION_INTENT = re.compile(
     re.IGNORECASE,
 )
 
-# 明确要求逐项对账的产品/规则大清单。只有同时出现数量、逐项、去重、
-# 归并或完整性等信号时才触发产品台账工具，避免影响普通单条规则修改。
-_PRODUCT_LEDGER_INTENT = re.compile(
-    r"(?:产品|商品|手册|台账|清单).{0,220}(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
-    r"(?:逐项|原始|去重|归并|完整|不足|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}(?:产品|商品|手册|台账|清单)|"
-    r"(?:产品|商品).{0,20}(?:台账|清单)|(?:台账|清单).{0,20}(?:产品|商品)|"
-    r"规则.{0,220}(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目))|"
-    r"(?:去重|归并|唯一\s*(?:ID|标识)|\d+\s*(?:条|项|条目)).{0,220}规则",
-    re.IGNORECASE,
-)
-
 _RELEASE_REENTRY_INTENT = re.compile(
     r"增量|迭代|新版本|补充.{0,8}资料|替换.{0,8}资料|导入.{0,8}(?:知识包|来源包)|"
     r"融合|修改.{0,8}(?:知识|规则|流程|对象|指标|脚本)|修复.{0,8}(?:知识|规则|流程|对象|指标|脚本)|"
@@ -5900,18 +6737,16 @@ _AUTONOMOUS_WORK_INTENT = re.compile(
     re.IGNORECASE,
 )
 
+
 _APPROVED_PLAN_EXECUTION_INTENT = re.compile(
-    r"(?:按|根据|依照).{0,16}(?:已批准|已审批|已同意|批准后?|审批后?)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,16}(?:继续|执行|推进|完成)|"
-    r"(?<![不未])(?:已批准|已审批|已同意|批准后?|审批后?)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,20}(?:继续|执行|推进|完成|开始)|"
-    r"(?<![不未])(?:批准|同意|确认)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,24}(?:继续|执行|推进|完成|开始)|"
+    r"(?:按|根据|依照).{0,16}(?:已批准|已审批|已同意|批准后?|审批后?)(?:了)?(?:这份|当前|这些|该|这个|本|上述)?(?:的)?(?:完整)?(?:修复|建模|变更)?计划.{0,20}(?:继续|执行|推进|完成|开始)|"
+    r"(?<![不未])(?:已批准|已审批|已同意|批准|同意|确认).{0,20}(?:计划).{0,20}(?:继续|执行|推进|完成|开始)|"
     r"(?:修复计划|变更计划|已批准计划).{0,12}(?:继续|执行|推进|完成)|"
-    r"(?:候选预检|完整校验|统一确认卡).{0,12}(?:继续|执行|完成|生成)|"
-    r"(?:继续|执行|完成|生成).{0,12}(?:候选预检|完整校验|统一确认卡)",
+    r"(?:候选预检|完整校验|统一确认卡).{0,12}(?:继续|执行|完成|生成)",
     re.IGNORECASE,
 )
-
 _APPROVED_PLAN_NEGATION = re.compile(
-    r"(?:不|未|没有|无需|不用|别|不是).{0,8}(?:按|根据|依照|继续|执行|推进|完成|开始)|"
+    r"(?:不|未|没有|无需|不用|别|不是).{0,8}(?:按|根据|依照).{0,8}(?:继续|执行|推进|完成|开始)|"
     r"(?:确认|核对|检查|查看).{0,16}(?:计划).{0,16}(?:已完成|已执行|已处理|完成情况|执行情况|状态)|"
     r"(?:计划|任务).{0,8}(?:已完成|已执行|已处理|完成情况|执行情况)",
     re.IGNORECASE,
@@ -5920,14 +6755,11 @@ _APPROVED_PLAN_NEGATION = re.compile(
 
 def _approved_plan_execution_requested(text: str) -> bool:
     value = str(text or "")
-    if _APPROVED_PLAN_NEGATION.search(value):
-        return False
-    return bool(_APPROVED_PLAN_EXECUTION_INTENT.search(value))
+    return not _APPROVED_PLAN_NEGATION.search(value) and bool(_APPROVED_PLAN_EXECUTION_INTENT.search(value))
 
 
 _PROGRESS_ONLY_FINAL_TEXT = re.compile(
-    r"正在执行(?:候选)?预检|"
-    r"正在(?:准备|进行|执行)(?:候选)?预检|"
+    r"正在执行(?:候选)?预检|正在(?:准备|进行|执行)(?:候选)?预检|"
     r"下一步(?:将|会|就)?(?:展示|生成|执行|进入)|"
     r"(?:尚未|还未|没有)(?:展示|生成|形成).{0,12}(?:确认卡|候选)|"
     r"(?:即将|准备)(?:展示|生成).{0,12}(?:确认卡|候选)|"
@@ -5952,11 +6784,6 @@ def _document_rule_change_requested(text: str) -> bool:
 
 def _autonomous_work_requested(text: str) -> bool:
     return bool(_AUTONOMOUS_WORK_INTENT.search(str(text or "")))
-
-
-def _product_ledger_requested(text: str) -> bool:
-    """Return whether the user explicitly asks for a large, itemized ledger."""
-    return bool(_PRODUCT_LEDGER_INTENT.search(str(text or "")))
 
 
 # 会形成本阶段交付物的工具。阶段切换后重新计数，用来区分
@@ -6262,14 +7089,8 @@ def _required_tools_for_user_intent(
         required.update({"read_document", "create_change_plan"})
     if _PACKAGE_FUSION_INTENT.search(value):
         required.update({"list_package_sources", "list_package_fusion_plans"})
-    if _product_ledger_requested(value):
-        # 台账先作为一个确定性工具结果取得；产品台账模式为 advisory 时不阻断，
-        # 切换为 enforce 后由核心门禁阻止正式规则批次继续生成。
-        required.update({
-            "require_product_ledger", "get_product_inventory_source",
-            "begin_product_ledger", "append_product_ledger_batch",
-            "finalize_product_ledger",
-        })
+    # 台账意图正则已退役（0.26.9.2 死锁事故）：措辞不再产生台账必需工具或
+    # 静默策略写入。对账诉求由助手经专家确认卡启用门禁，核心侧确定性把关。
     if _approved_plan_execution_requested(value):
         required.update(APPROVED_PLAN_REQUIRED_TOOLS)
     return required
