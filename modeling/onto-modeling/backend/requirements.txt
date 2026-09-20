@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+pyjwt[crypto]>=2.8
+claude-agent-sdk>=0.2.100
+mcp>=2
+openpyxl>=3.1

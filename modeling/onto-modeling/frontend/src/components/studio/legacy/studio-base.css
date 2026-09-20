@@ -1,0 +1,26 @@
+/* 摘自 modeling workbench/base.css 的 .wb 基础规则（原样），
+   图区文字渲染与按钮重置依赖这些声明 */
+.wb {
+  height: 100%;
+  font-family: var(--font);
+  font-size: var(--t-md);
+  line-height: 1.55;
+  color: var(--c-ink);
+  background: var(--c-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+}
+.wb button, .wb input, .wb textarea, .wb select { font: inherit; color: inherit; }
+.wb button { cursor: pointer; background: none; border: none; padding: 0; }
+
+/* ===== modeling workbench/base.css .seg 段（关系高亮切换的激活态）===== */
+.wb .seg { display: inline-flex; border: 1px solid var(--c-line); border-radius: var(--r-sm); overflow: hidden; flex: none; background: var(--c-surface); }
+.wb .seg button {
+  padding: 3px 10px; font-size: var(--t-sm); color: var(--c-muted);
+  transition: background var(--e-fast), color var(--e-fast);
+}
+.wb .seg button:hover:not(.on):not([disabled]) { background: var(--c-surface-3); }
+.wb .seg button.on { background: var(--c-accent); color: #fff; font-weight: 500; }
+.wb .seg-fixed button.on { background: var(--c-wait); }
+.wb .seg button[disabled] { background: var(--c-surface-3); color: var(--c-faint); cursor: not-allowed; }

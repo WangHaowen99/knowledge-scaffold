@@ -1,0 +1,14 @@
+# 建模任务的 .gitignore——只排除运行时噪声 / 工具集 symlink，
+# 让 ontology/、research/、reports/、knowledge/ 等建模产物全部进 git 历史。
+
+# 指向工具集的 symlink——每次 clone 任务时本地重建，不入任务 git
+.claude
+CLAUDE.md
+README.md
+
+# Python / 编辑器 / OS 噪声
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+**/.DS_Store

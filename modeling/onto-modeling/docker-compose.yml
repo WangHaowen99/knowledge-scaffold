@@ -1,0 +1,33 @@
+# 本地从源码构建并拉起全栈（onto-modeling + auth-server），用于交付前验证。
+# 生产部署用 deploy/ 下的离线交付包流程。
+services:
+  auth-server:
+    build: ../../auth-server
+    container_name: onto-modeling-auth-server-dev
+    expose:
+      - "5056"
+    environment:
+      # 首次启动必须提供初始管理员密码（本地验证可在 .env 里设置）
+      - AUTH_BOOTSTRAP_ADMIN_PASSWORD=${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
+    volumes:
+      - onto-modeling-auth-data-dev:/data
+
+  onto-modeling:
+    build: .
+    container_name: onto-modeling-dev
+    ports:
+      - "8100:8100"
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      - ONTO_WEB_AUTH_URL=http://auth-server:5056
+    volumes:
+      - onto-modeling-data-dev:/data
+    depends_on:
+      auth-server:
+        condition: service_healthy
+
+volumes:
+  onto-modeling-data-dev:
+  onto-modeling-auth-data-dev:

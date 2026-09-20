@@ -6,10 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--consumer-only|--modeling-only]
+Usage: $(basename "$0") [--consumer-only|--modeling-only|--onto-modeling-only]
 
-Deploy the full stack, including the Modeling Workbench, from either a source
-checkout or an extracted release package.
+Deploy the full stack — consumer, Modeling Workbench and Onto Modeling — from
+either a source checkout or an extracted release package.
 EOF
 }
 
@@ -105,6 +105,7 @@ ensure_release_modeling_mcp_token_secret() {
 
 CONSUMER_ONLY=0
 MODELING_ONLY=0
+ONTO_MODELING_ONLY=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -113,6 +114,9 @@ while [ "$#" -gt 0 ]; do
             ;;
         --modeling-only)
             MODELING_ONLY=1
+            ;;
+        --onto-modeling-only)
+            ONTO_MODELING_ONLY=1
             ;;
         -h|--help|help)
             usage
@@ -126,8 +130,8 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-if [ "${CONSUMER_ONLY}" = "1" ] && [ "${MODELING_ONLY}" = "1" ]; then
-    die "--consumer-only and --modeling-only cannot be used together"
+if [ "$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY ))" -gt 1 ]; then
+    die "--consumer-only / --modeling-only / --onto-modeling-only cannot be combined"
 fi
 
 # A release archive is commonly unpacked into a staging directory by CI or a
@@ -154,7 +158,7 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
             fi
         done
     fi
-    if [ "${EXISTING_INSTALL}" = true ]; then
+    if [ "${EXISTING_INSTALL}" = true ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
         [ -f "${SCRIPT_DIR}/upgrade.sh" ] \
             || die "Existing installation detected but upgrade.sh is missing"
         log "Existing installation detected at ${INSTALL_DIR}; dispatching upgrade flow"
@@ -164,7 +168,14 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
         elif [ "${MODELING_ONLY}" = "1" ]; then
             UPGRADE_ARGS+=(--modeling-only)
         fi
-        exec bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
+        bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
+        # upgrade.sh 只覆盖 consumer 与 modeling；onto-modeling 的部署自身幂等，
+        # 升级后继续拉起（数据卷由 compose 项目名锚定，不受升级影响）
+        if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]             && [ -f "${BUNDLE_ROOT}/onto-modeling/deploy.sh" ]; then
+            log "Deploying Onto Modeling (guided modeling workbench)"
+            bash "${BUNDLE_ROOT}/onto-modeling/deploy.sh"
+        fi
+        exit 0
     fi
 fi
 
@@ -180,7 +191,13 @@ if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
     MODELING_DEPLOY="${SCRIPT_DIR}/modeling/deploy.sh"
 elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
     log "Detected source checkout; deploying with deploy-stack.sh"
-    bash "${SCRIPT_DIR}/deploy-stack.sh" up "${DEPLOY_ARGS[@]}"
+    if [ "${ONTO_MODELING_ONLY}" = "0" ]; then
+        bash "${SCRIPT_DIR}/deploy-stack.sh" up "${DEPLOY_ARGS[@]}"
+    fi
+    if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
+        log "Deploying Onto Modeling (source, docker compose)"
+        (cd "${SCRIPT_DIR}/../modeling/onto-modeling" && docker compose up -d --build)
+    fi
     log "Deployment finished successfully"
     exit 0
 else
@@ -191,16 +208,28 @@ BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ensure_release_modeling_service_token "${BUNDLE_ROOT}"
 ensure_release_modeling_mcp_token_secret "${BUNDLE_ROOT}"
 
-if [ "${MODELING_ONLY}" = "0" ]; then
+if [ "${MODELING_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
     [ -f "${CONSUMER_DEPLOY}" ] || die "Consumer deploy script not found: ${CONSUMER_DEPLOY}"
     log "Deploying consumer services"
     bash "${CONSUMER_DEPLOY}"
 fi
 
-if [ "${CONSUMER_ONLY}" = "0" ]; then
+if [ "${CONSUMER_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
     [ -f "${MODELING_DEPLOY}" ] || die "Modeling deploy script not found: ${MODELING_DEPLOY}"
     log "Deploying Modeling Workbench (core + Agent)"
     bash "${MODELING_DEPLOY}"
+fi
+
+ONTO_MODELING_DEPLOY="${BUNDLE_ROOT}/onto-modeling/deploy.sh"
+if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
+    if [ -f "${ONTO_MODELING_DEPLOY}" ]; then
+        log "Deploying Onto Modeling (guided modeling workbench)"
+        bash "${ONTO_MODELING_DEPLOY}"
+    elif [ "${ONTO_MODELING_ONLY}" = "1" ]; then
+        die "Onto Modeling deploy script not found: ${ONTO_MODELING_DEPLOY}"
+    else
+        log "Onto Modeling bundle not present; skipping (older release package)"
+    fi
 fi
 
 log "Deployment finished successfully"
