@@ -97,7 +97,12 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
     nextIndex = i;
     break;
   }
-  const started = paths.some((p) => p.startsWith('research/') || p.startsWith('ontology/'));
+  const started = paths.some(
+    (p) =>
+      (p.startsWith('research/') || p.startsWith('ontology/')) &&
+      !p.endsWith('/') &&
+      !p.endsWith('/index.md'),
+  );
   if (!started && !out.length) {
     out.push({ key: 'start', primary: true, label: '开始建模', tooltip: '进入引导式建模主链', command: '/ontology' });
   }
