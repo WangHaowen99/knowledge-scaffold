@@ -240,6 +240,15 @@ meta.json 的 engine 字段留到 Phase 2 引擎开关一起做（现仍为单�
 展开执行 state_helper 状态检测并按命令话术输出下一步建议，与 Claude 引擎行为一致；
 resource/ 写入被拒（system prompt 规则第一道防线 + hooks rail 硬兜底）。
 
+**首个真实命令链质量探针**（/ontology-extract-object @ 示例项目，jiuwen+glm-5.2）：
+主链跑通——Step 0 锁/前置检查、源材料装载、**Task 派遣 3 次**（extract-objects-agent
+与 coverage-check-agent 均按资产格式产出）、8 个对象文档模板遵从度高（七列属性表、
+派生标记、wikilink 关联、索引与交叉引用维护），覆盖度报告 75%→补齐。
+已发现两个遵从性失分点（进质量回归清单）：
+1. 交互约定偏差：向专家提问用正文而非 ask_user 卡（前端不出确认卡）；
+2. 收尾步骤遗漏：内容完成后跳过 checker 复检 / release 锁 / git 提交
+   （candidate 对策：资产措辞强化须对 Claude 无害；或挂 task_completion rail 引擎侧兜底）。
+
 **剩余**：最小评测基线（Builder 全链脚本化 + Judge 评分）与三命令双跑质量回归
 （Claude 基线 vs Jiuwen+glm-5.2，失分项逐条修资产，目标 ≥ 基线 90%）；
 web 检索工具接入（research 命令的联网调研在 jiuwen 侧尚不可用，评测需避开或先补）。
