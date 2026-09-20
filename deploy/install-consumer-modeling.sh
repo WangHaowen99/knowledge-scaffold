@@ -4,6 +4,7 @@ set -euo pipefail
 CONSUMER_PACKAGE=""
 MODELING_PACKAGE=""
 UPGRADE_FROM=""
+COMMAND="install"
 INSTALL_ROOT_EXPLICIT=0
 [ -n "${INSTALL_ROOT+x}" ] && INSTALL_ROOT_EXPLICIT=1
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/onto-agent-stack}"
@@ -22,6 +23,12 @@ usage() {
     cat <<'HELP'
 用法：
   bash install-consumer-modeling.sh \
+    --consumer-package <Consumer发布包> \
+    --modeling-package <Modeling发布包>
+
+升级已经分离部署的 Consumer 和 Modeling：
+  INSTALL_ROOT=/opt/onto-agent-stack \
+  bash install-consumer-modeling.sh upgrade \
     --consumer-package <Consumer发布包> \
     --modeling-package <Modeling发布包>
 
@@ -55,12 +62,22 @@ usage() {
     --modeling-package '/path/to/modeling-*.tar.gz'
 
   INSTALL_ROOT=/data/onto-agent-stack \
+  bash install-consumer-modeling.sh upgrade \
+    --consumer-package '/path/to/onto-agent-*.tar.gz' \
+    --modeling-package '/path/to/modeling-*.tar.gz'
+
+  INSTALL_ROOT=/data/onto-agent-stack \
   bash install-consumer-modeling.sh \
     --upgrade-from /data/onto-agent \
     --consumer-package /path/to/onto-agent-linux-amd64-v2.tar.gz \
     --modeling-package '/path/to/modeling-*.tar.gz'
 HELP
 }
+
+if [ "${1:-}" = "upgrade" ]; then
+    COMMAND="upgrade"
+    shift
+fi
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -88,6 +105,10 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+if [ "${COMMAND}" = "upgrade" ] && [ -n "${UPGRADE_FROM}" ]; then
+    die "upgrade 命令用于升级已经分离的部署，不能同时使用 --upgrade-from"
+fi
 
 [ -n "${CONSUMER_PACKAGE}" ] || { usage >&2; die "必须指定 --consumer-package"; }
 [ -n "${MODELING_PACKAGE}" ] || { usage >&2; die "必须指定 --modeling-package"; }
@@ -265,6 +286,18 @@ validate_legacy_modeling_container() {
         2>/dev/null || true)"
     [ "${working_dir}" = "${UPGRADE_FROM}" ] || die \
         "容器 ${container_name} 不属于旧合并部署根目录 ${UPGRADE_FROM}，拒绝接管"
+}
+
+validate_modeling_container_owner() {
+    container_name="$1"
+    expected_dir="$2"
+    docker container inspect "${container_name}" >/dev/null 2>&1 || die \
+        "已分离部署缺少容器：${container_name}"
+    working_dir="$(docker container inspect "${container_name}" \
+        --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
+        2>/dev/null || true)"
+    [ "${working_dir}" = "${expected_dir}" ] || die \
+        "容器 ${container_name} 不属于独立 Modeling 目录 ${expected_dir}，拒绝升级"
 }
 
 resolve_legacy_volume() {
@@ -465,8 +498,122 @@ upgrade_install() {
     printf '[full-install] 升级备份：%s\n' "${backup_dir}"
 }
 
+upgrade_separated_install() {
+    CONSUMER_DIR="${INSTALL_ROOT}/onto-agent"
+    MODELING_DIR="${INSTALL_ROOT}/modeling"
+
+    [ -d "${CONSUMER_DIR}" ] || die "Consumer 安装目录不存在：${CONSUMER_DIR}"
+    [ -f "${CONSUMER_DIR}/VERSION" ] || die "Consumer 安装目录缺少 VERSION"
+    [ -f "${CONSUMER_DIR}/backend/.env" ] || die "Consumer 安装目录缺少 backend/.env"
+    [ -f "${CONSUMER_DIR}/deploy/state/current.env" ] || die "Consumer 安装目录缺少部署状态"
+    [ -d "${MODELING_DIR}" ] || die "Modeling 安装目录不存在：${MODELING_DIR}"
+    [ -f "${MODELING_DIR}/VERSION" ] || die "Modeling 安装目录缺少 VERSION"
+    [ -f "${MODELING_DIR}/.env" ] || die "Modeling 安装目录缺少 .env"
+
+    validate_modeling_container_owner mw-modeling "${MODELING_DIR}"
+    validate_modeling_container_owner mw-modeling-agent "${MODELING_DIR}"
+    modeling_volume="$(resolve_legacy_volume mw-modeling mw-modeling_modeling-data)"
+    agent_volume="$(resolve_legacy_volume mw-modeling-agent mw-modeling_modeling-agent-data)"
+    modeling_image="$(docker container inspect mw-modeling --format '{{.Config.Image}}')"
+    agent_image="$(docker container inspect mw-modeling-agent --format '{{.Config.Image}}')"
+
+    consumer_token="$(env_get "${CONSUMER_DIR}/backend/.env" MODELING_SERVICE_TOKEN)"
+    modeling_token="$(env_get "${MODELING_DIR}/.env" MODELING_SERVICE_TOKEN)"
+    [ "${#consumer_token}" -ge 32 ] || die "Consumer 未配置有效的 MODELING_SERVICE_TOKEN"
+    [ "${consumer_token}" = "${modeling_token}" ] || die \
+        "Consumer 与 Modeling 的 MODELING_SERVICE_TOKEN 不一致，拒绝升级"
+
+    stage_dir="$(mktemp -d "${INSTALL_ROOT}/.separated-upgrade.XXXXXX")" \
+        || die "无法创建升级暂存目录"
+    cleanup_separated_stage() {
+        if [ -n "${stage_dir:-}" ] && [ -d "${stage_dir}" ]; then
+            find "${stage_dir}" -mindepth 1 -delete 2>/dev/null || true
+            rmdir "${stage_dir}" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_separated_stage EXIT
+
+    backup_dir="${INSTALL_ROOT}/backups/separated-upgrade-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "${backup_dir}"
+    chmod 700 "${backup_dir}"
+
+    log "解压新发布包到升级暂存目录"
+    tar -xzf "${CONSUMER_PACKAGE}" -C "${stage_dir}"
+    tar -xzf "${MODELING_PACKAGE}" -C "${stage_dir}"
+    [ -x "${stage_dir}/onto-agent/deploy/upgrade.sh" ] || die "Consumer 发布包缺少 upgrade.sh"
+    [ -x "${stage_dir}/modeling/deploy/install.sh" ] || die "Modeling 发布包缺少 install.sh"
+
+    cp "${CONSUMER_DIR}/backend/.env" "${backup_dir}/consumer.env"
+    cp "${MODELING_DIR}/.env" "${backup_dir}/modeling.env"
+    chmod 600 "${backup_dir}/consumer.env" "${backup_dir}/modeling.env"
+
+    stopped_containers=""
+    handoff_started=false
+    restore_separated_containers() {
+        [ "${handoff_started}" = false ] || return 0
+        for container_name in ${stopped_containers}; do
+            docker start "${container_name}" >/dev/null 2>&1 || true
+        done
+    }
+    trap 'restore_separated_containers; cleanup_separated_stage' EXIT
+    for container_name in mw-modeling-nl2sql mw-modeling mw-modeling-agent; do
+        running="$(docker container inspect "${container_name}" \
+            --format '{{.State.Running}}' 2>/dev/null || true)"
+        if [ "${running}" = true ]; then
+            docker stop "${container_name}" >/dev/null || die "停止容器失败：${container_name}"
+            stopped_containers="${stopped_containers} ${container_name}"
+        fi
+    done
+
+    log "备份 Modeling 数据卷"
+    backup_docker_volume "${modeling_volume}" "${modeling_image}" \
+        modeling-data.tar.gz "${backup_dir}"
+    backup_docker_volume "${agent_volume}" "${agent_image}" \
+        modeling-agent-data.tar.gz "${backup_dir}"
+
+    log "升级独立 Consumer：${CONSUMER_DIR}"
+    [ -z "${BACKEND_PORT:-}" ] \
+        || write_env_value "${CONSUMER_DIR}/backend/.env" BACKEND_PORT "${BACKEND_PORT}"
+    [ -z "${MCP_SERVER_PORT:-}" ] \
+        || write_env_value "${CONSUMER_DIR}/backend/.env" MCP_SERVER_PORT "${MCP_SERVER_PORT}"
+    [ -z "${FRONTEND_PORT:-}" ] \
+        || write_env_value "${CONSUMER_DIR}/backend/.env" FRONTEND_PORT "${FRONTEND_PORT}"
+    if ! bash "${stage_dir}/onto-agent/deploy/upgrade.sh" "${CONSUMER_DIR}"; then
+        die "Consumer 升级失败；Modeling 容器已尝试恢复，备份位于 ${backup_dir}"
+    fi
+    upgraded_token="$(env_get "${CONSUMER_DIR}/backend/.env" MODELING_SERVICE_TOKEN)"
+    [ "${upgraded_token}" = "${consumer_token}" ] || die \
+        "Consumer 升级后 MODELING_SERVICE_TOKEN 发生变化，拒绝继续"
+
+    log "升级独立 Modeling：${MODELING_DIR}"
+    tar -C "${stage_dir}/modeling" -c -f - . | tar -C "${MODELING_DIR}" -x -f -
+    cp "${backup_dir}/modeling.env" "${MODELING_DIR}/.env"
+    chmod 600 "${MODELING_DIR}/.env"
+    handoff_started=true
+    if ! (cd "${MODELING_DIR}" && bash deploy/install.sh); then
+        die "Modeling 升级失败；原数据卷和备份均已保留，备份位于 ${backup_dir}"
+    fi
+
+    [ "$(container_mount_volume mw-modeling /data)" = "${modeling_volume}" ] || die \
+        "升级后 Modeling 未挂载原数据卷"
+    [ "$(container_mount_volume mw-modeling-agent /data)" = "${agent_volume}" ] || die \
+        "升级后 Modeling Agent 未挂载原数据卷"
+
+    cleanup_separated_stage
+    trap - EXIT
+    log "分离部署升级完成"
+    printf '[full-install] Consumer：%s\n' "${CONSUMER_DIR}"
+    printf '[full-install] Modeling：%s\n' "${MODELING_DIR}"
+    printf '[full-install] 升级备份：%s\n' "${backup_dir}"
+}
+
 validate_package "${CONSUMER_PACKAGE}" onto-agent
 validate_package "${MODELING_PACKAGE}" modeling
+
+if [ "${COMMAND}" = "upgrade" ]; then
+    upgrade_separated_install
+    exit 0
+fi
 
 if [ -n "${UPGRADE_FROM}" ]; then
     upgrade_install
