@@ -168,7 +168,14 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
         elif [ "${MODELING_ONLY}" = "1" ]; then
             UPGRADE_ARGS+=(--modeling-only)
         fi
-        exec bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
+        bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
+        # upgrade.sh 只覆盖 consumer 与 modeling；onto-modeling 的部署自身幂等，
+        # 升级后继续拉起（数据卷由 compose 项目名锚定，不受升级影响）
+        if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]             && [ -f "${BUNDLE_ROOT}/onto-modeling/deploy.sh" ]; then
+            log "Deploying Onto Modeling (guided modeling workbench)"
+            bash "${BUNDLE_ROOT}/onto-modeling/deploy.sh"
+        fi
+        exit 0
     fi
 fi
 

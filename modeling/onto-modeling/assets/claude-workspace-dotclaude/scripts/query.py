@@ -25,7 +25,7 @@ def query_used_by(stem: str, all_docs: dict) -> list:
     """Return list of stems whose document contains [[stem]]."""
     return sorted(
         other_stem for other_stem, doc in all_docs.items()
-        if other_stem != stem and stem in doc.obsidian_links
+        if other_stem != stem and stem in doc.wiki_links
     )
 
 
@@ -33,7 +33,7 @@ def query_orphans(all_docs: dict) -> dict:
     """Return {doc_type: [stems not referenced by anyone]}."""
     referenced = set()
     for doc in all_docs.values():
-        referenced.update(doc.obsidian_links)
+        referenced.update(doc.wiki_links)
     orphans = {'object': [], 'operation': [], 'action': []}
     for stem, doc in all_docs.items():
         if stem not in referenced:
@@ -62,7 +62,7 @@ def query_unused(all_docs: dict, target_type: str) -> list:
     referenced = set()
     for doc in all_docs.values():
         if doc.doc_type == 'operation':
-            referenced.update(doc.obsidian_links)
+            referenced.update(doc.wiki_links)
             # action invocations
             for row in doc.action_rows:
                 action_name = row.get('动作名称', '').strip()
@@ -79,7 +79,7 @@ def query_dangling(all_docs: dict) -> list:
     """Return list of (source_stem, broken_link)."""
     dangling = []
     for stem, doc in sorted(all_docs.items()):
-        for link in doc.obsidian_links:
+        for link in doc.wiki_links:
             if link not in all_docs:
                 dangling.append((stem, link))
     return dangling

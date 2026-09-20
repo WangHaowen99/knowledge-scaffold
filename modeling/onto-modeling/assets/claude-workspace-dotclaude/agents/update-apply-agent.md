@@ -41,7 +41,7 @@ For each entry, in order:
 3. Preserve sections and formatting the change doesn't touch. **Do not** reformat or "tidy up" unrelated parts of the file.
 4. For object files: keep the standard sections (`# 字段` table etc.) intact; only add/remove rows you were asked to change.
 5. For operation files: keep `# 业务描述` / `# 与operation的关联` / `# 与object的关联` / `# 输入` / `# 输出` / `# 逻辑描述` sections. When a step changes, edit only that step; when attributes change, sync `# 输入`/`# 输出` tables with the new wording.
-6. Maintain Obsidian-link integrity: every `[[X]]` reference should point at an existing file in `ontology/object/` or `ontology/operation/`. If the change introduces a reference to a file that another `create` entry in this PLAN is producing, that is fine — but never leave a `[[X]]` pointing at nothing if the PLAN didn't create X.
+6. Maintain wiki-link integrity: every `[[X]]` reference should point at an existing file in `ontology/object/` or `ontology/operation/`. If the change introduces a reference to a file that another `create` entry in this PLAN is producing, that is fine — but never leave a `[[X]]` pointing at nothing if the PLAN didn't create X.
 7. Sub-operation invariant: if you add a `调用[[Y]]逻辑文档` step inside `# 逻辑描述`, also list `[[Y]]` under `调用operation` in `# 与operation的关联`. If you remove such a step, remove the corresponding `调用operation` entry.
 
 ### operation = create

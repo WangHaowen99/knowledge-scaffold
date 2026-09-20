@@ -27,7 +27,7 @@ class OntologyDoc:
     doc_type: str          # "object" | "operation" | "action"
     raw: str
     sections: dict = field(default_factory=dict)
-    obsidian_links: list = field(default_factory=list)
+    wiki_links: list = field(default_factory=list)
     attribute_rows: list = field(default_factory=list)   # object docs
     input_rows: list = field(default_factory=list)       # operation docs
     output_rows: list = field(default_factory=list)      # operation docs
@@ -66,7 +66,7 @@ def extract_sections(raw: str) -> dict:
     return sections
 
 
-def extract_obsidian_links(raw: str) -> list:
+def extract_wiki_links(raw: str) -> list:
     """Extract [[link]] targets as filename stems (no path, no alias, no extension)."""
     links = []
     for m in re.finditer(r'\[\[([^\]]+)\]\]', raw):
@@ -268,7 +268,7 @@ def load_doc(path: Path, doc_type: str) -> OntologyDoc:
     # 章节名随范式升级迁移（ADR-0004）：旧文档章节读取时归一为新名
     if '与logic的关联' in sections and '与operation的关联' not in sections:
         sections['与operation的关联'] = sections.pop('与logic的关联')
-    obsidian_links = extract_obsidian_links(raw)
+    wiki_links = extract_wiki_links(raw)
     attribute_rows, input_rows, output_rows, action_rows = [], [], [], []
     if doc_type == 'object':
         attribute_rows = parse_markdown_table(sections.get('对象属性清单', ''))
@@ -278,7 +278,7 @@ def load_doc(path: Path, doc_type: str) -> OntologyDoc:
         action_rows = parse_markdown_table(sections.get('与动作(action)的关联', ''))
     return OntologyDoc(
         path=path, doc_type=doc_type, raw=raw, sections=sections,
-        obsidian_links=obsidian_links, attribute_rows=attribute_rows,
+        wiki_links=wiki_links, attribute_rows=attribute_rows,
         input_rows=input_rows, output_rows=output_rows, action_rows=action_rows,
     )
 
@@ -322,7 +322,7 @@ def check_entity_structure(doc: OntologyDoc, required_sections: list, cn: str) -
 def check_entity_links(doc: OntologyDoc, all_docs: dict, cn: str) -> list:
     issues = []
     known = set(all_docs.keys())
-    for link in doc.obsidian_links:
+    for link in doc.wiki_links:
         target = link.split('|')[0].split('#')[0].strip()
         if target and target not in known:
             issues.append(f"警告 {_rel(doc)}: {cn}引用了不存在的文档 [[{target}]]")
@@ -368,8 +368,8 @@ def check_object_primary_key(doc: OntologyDoc) -> list:
 def check_object_links(doc: OntologyDoc, all_docs: dict) -> list:
     return [
         Issue(file=_rel(doc), severity='错误', category='链接失效',
-              message=f'Obsidian 链接 [[{link}]] 无对应文件', source='规则检查')
-        for link in doc.obsidian_links if link not in all_docs
+              message=f'Wiki 链接 [[{link}]] 无对应文件', source='规则检查')
+        for link in doc.wiki_links if link not in all_docs
     ]
 
 
@@ -489,8 +489,8 @@ def check_operation_table(doc: OntologyDoc) -> list:
 def check_operation_links(doc: OntologyDoc, all_docs: dict) -> list:
     return [
         Issue(file=_rel(doc), severity='错误', category='链接失效',
-              message=f'Obsidian 链接 [[{link}]] 无对应文件', source='规则检查')
-        for link in doc.obsidian_links if link not in all_docs
+              message=f'Wiki 链接 [[{link}]] 无对应文件', source='规则检查')
+        for link in doc.wiki_links if link not in all_docs
     ]
 
 
@@ -719,7 +719,7 @@ def check_action_orphan(doc: OntologyDoc, all_docs: dict) -> list:
     """Warn if an action file is not referenced by any operation document."""
     action_stem = doc.path.stem
     for other_doc in all_docs.values():
-        if other_doc.doc_type == 'operation' and action_stem in other_doc.obsidian_links:
+        if other_doc.doc_type == 'operation' and action_stem in other_doc.wiki_links:
             return []
     return [Issue(file=_rel(doc), severity='建议', category='孤立动作',
                   message=f'动作 "{action_stem}" 未被任何逻辑文档引用', source='规则检查')]

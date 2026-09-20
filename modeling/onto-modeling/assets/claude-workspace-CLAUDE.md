@@ -16,7 +16,7 @@ These rules apply to all work in this repository.
 
 ## Formatting Rules
 
-1. **Obsidian links** — `[[文件名]]` must exactly match the target filename with no `.md` extension and no path prefix. Example: `[[订单]]` links to `ontology/object/订单.md`. Links resolve across `object/` and `logic/` directories.
+1. **Wiki 链接** — `[[文件名]]` must exactly match the target filename with no `.md` extension and no path prefix. Example: `[[订单]]` links to `ontology/object/订单.md`. Links resolve across `object/`, `operation/`, `rule/` and `metric/` directories (legacy `logic/` remains readable).
 
 2. **Sub-logic references** — Any sub-logic called in a 逻辑描述 section (format: `调用[[子流程名称]]逻辑文档`) must also appear as `[[子流程名称]]` in the 与logic的关联 section of the same document (in the "使用logic" line).
 
