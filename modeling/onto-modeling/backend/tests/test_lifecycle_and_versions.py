@@ -336,7 +336,7 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
 
     projects = manager.list_projects()
     migrated = next(p for p in projects if p.get("migrated_from") == "pj_test1")
-    assert migrated["name"] == "迁移源（迁移）"
+    assert migrated["name"] == "迁移源"
     assert migrated["owner"] == "alice"
     root = manager.project_root(migrated["id"])
     body = (root / "ontology/object/customer.md").read_text(encoding="utf-8")
