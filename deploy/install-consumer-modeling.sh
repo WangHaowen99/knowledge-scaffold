@@ -25,22 +25,22 @@ usage() {
     --consumer-package <Consumer发布包> \
     --modeling-package <Modeling发布包>
 
-升级旧的 Consumer、Modeling 合并部署：
+升级旧的 Consumer、Modeling 合并部署根目录：
   bash install-consumer-modeling.sh \
-    --upgrade-from <旧onto-agent安装目录> \
+    --upgrade-from <旧合并部署根目录> \
     --consumer-package <Consumer发布包> \
     --modeling-package <Modeling发布包>
 
 必填参数：
-  --consumer-package FILE  Consumer 发布包路径
-  --modeling-package FILE  Modeling 发布包路径
+  --consumer-package FILE  Consumer 发布包路径；支持通配符，但必须唯一匹配
+  --modeling-package FILE  Modeling 发布包路径；支持通配符，但必须唯一匹配
 
 可选参数：
-  --upgrade-from DIR       从旧合并部署升级；不传时执行首次安装
+  --upgrade-from DIR       旧合并部署根目录；目录不存在时按首次安装处理
 
 可选环境变量：
   INSTALL_ROOT           安装根目录，默认 /opt/onto-agent-stack
-                         升级时未指定则使用旧 Consumer 目录的父目录
+                         升级时默认在旧合并部署旁创建独立 Modeling 目录
   INSTALL_GLOBAL_OPSCTL  是否安装全局 opsctl，默认 0
 
 端口变量可直接放在命令前传入：
@@ -52,13 +52,13 @@ usage() {
   MODELING_PORT=55100 MODELING_MCP_PORT=55188 \
   bash install-consumer-modeling.sh \
     --consumer-package /path/to/onto-agent-linux-amd64-v2.tar.gz \
-    --modeling-package /path/to/modeling-linux-amd64.tar.gz
+    --modeling-package '/path/to/modeling-*.tar.gz'
 
   INSTALL_ROOT=/data/onto-agent-stack \
   bash install-consumer-modeling.sh \
     --upgrade-from /data/onto-agent \
     --consumer-package /path/to/onto-agent-linux-amd64-v2.tar.gz \
-    --modeling-package /path/to/modeling-linux-amd64.tar.gz
+    --modeling-package '/path/to/modeling-*.tar.gz'
 HELP
 }
 
@@ -75,7 +75,7 @@ while [ "$#" -gt 0 ]; do
             shift 2
             ;;
         --upgrade-from)
-            [ "$#" -ge 2 ] || die "--upgrade-from 缺少旧安装目录"
+            [ "$#" -ge 2 ] || die "--upgrade-from 缺少旧合并部署根目录"
             UPGRADE_FROM="$2"
             shift 2
             ;;
@@ -106,8 +106,42 @@ if [ -n "${UPGRADE_FROM}" ]; then
         *) UPGRADE_FROM="$(pwd)/${UPGRADE_FROM}" ;;
     esac
     if [ "${INSTALL_ROOT_EXPLICIT}" -eq 0 ]; then
-        INSTALL_ROOT="$(dirname "${UPGRADE_FROM}")"
+        case "$(basename "${UPGRADE_FROM}")" in
+            onto-agent)
+                INSTALL_ROOT="$(dirname "${UPGRADE_FROM}")"
+                ;;
+            *)
+                INSTALL_ROOT="${UPGRADE_FROM}"
+                ;;
+        esac
     fi
+fi
+
+resolve_package_path() {
+    package_pattern="$1"
+    package_label="$2"
+    case "${package_pattern}" in
+        *\**|*\?*|*\[* )
+            shopt -s nullglob
+            matches=( ${package_pattern} )
+            shopt -u nullglob
+            case "${#matches[@]}" in
+                0) die "${package_label}通配符未匹配到文件：${package_pattern}" ;;
+                1) package_pattern="${matches[0]}" ;;
+                *) die "${package_label}通配符匹配到多个文件，请改为唯一匹配：${package_pattern}" ;;
+            esac
+            ;;
+    esac
+    printf '%s\n' "${package_pattern}"
+}
+
+CONSUMER_PACKAGE="$(resolve_package_path "${CONSUMER_PACKAGE}" Consumer发布包)"
+MODELING_PACKAGE="$(resolve_package_path "${MODELING_PACKAGE}" Modeling发布包)"
+
+if [ -n "${UPGRADE_FROM}" ] && [ ! -e "${UPGRADE_FROM}" ]; then
+    [ ! -L "${UPGRADE_FROM}" ] || die "--upgrade-from 不能指向符号链接：${UPGRADE_FROM}"
+    log "旧合并部署根目录不存在，按首次安装处理：${UPGRADE_FROM}"
+    UPGRADE_FROM=""
 fi
 
 CONSUMER_DIR="${INSTALL_ROOT}/onto-agent"
@@ -230,7 +264,7 @@ validate_legacy_modeling_container() {
         --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
         2>/dev/null || true)"
     [ "${working_dir}" = "${UPGRADE_FROM}" ] || die \
-        "容器 ${container_name} 不属于旧安装目录 ${UPGRADE_FROM}，拒绝接管"
+        "容器 ${container_name} 不属于旧合并部署根目录 ${UPGRADE_FROM}，拒绝接管"
 }
 
 resolve_legacy_volume() {
@@ -267,16 +301,16 @@ backup_docker_volume() {
 }
 
 upgrade_install() {
-    old_consumer_dir="$(cd "${UPGRADE_FROM}" 2>/dev/null && pwd)" \
-        || die "旧安装目录不存在：${UPGRADE_FROM}"
-    UPGRADE_FROM="${old_consumer_dir}"
+    legacy_stack_dir="$(cd "${UPGRADE_FROM}" 2>/dev/null && pwd)" \
+        || die "旧合并部署根目录不存在：${UPGRADE_FROM}"
+    UPGRADE_FROM="${legacy_stack_dir}"
     CONSUMER_DIR="${UPGRADE_FROM}"
     MODELING_DIR="${INSTALL_ROOT}/modeling"
 
-    [ -f "${CONSUMER_DIR}/VERSION" ] || die "旧安装目录缺少 VERSION：${CONSUMER_DIR}"
-    [ -f "${CONSUMER_DIR}/backend/.env" ] || die "旧安装目录缺少 backend/.env"
+    [ -f "${CONSUMER_DIR}/VERSION" ] || die "旧合并部署根目录缺少 VERSION：${CONSUMER_DIR}"
+    [ -f "${CONSUMER_DIR}/backend/.env" ] || die "旧合并部署根目录缺少 backend/.env"
     [ -f "${CONSUMER_DIR}/deploy/state/current.env" ] || die \
-        "旧安装目录缺少部署状态，无法执行受控升级"
+        "旧合并部署根目录缺少部署状态，无法执行受控升级"
     [ ! -e "${MODELING_DIR}" ] || die \
         "独立 Modeling 目录已存在：${MODELING_DIR}；请确认现状后再升级"
     if [ -e "${INSTALL_ROOT}/onto-agent" ] \
