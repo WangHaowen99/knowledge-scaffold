@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 
-META_FILE = ".onto-web.json"
+META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
 
@@ -75,8 +75,8 @@ class WorkspaceManager:
         )
 
         _git(root, "init")
-        _git(root, "config", "user.name", "Onto Web")
-        _git(root, "config", "user.email", "onto-web@example.invalid")
+        _git(root, "config", "user.name", "Onto Modeling")
+        _git(root, "config", "user.email", "onto-modeling@example.invalid")
         _git(root, "add", "-A")
         _git(root, "commit", "-m", "init: 任务工作区基线", "--allow-empty")
         return meta
@@ -653,8 +653,8 @@ class WorkspaceManager:
         )
         if not (root / ".git").is_dir():
             _git(root, "init")
-        _git(root, "config", "user.name", "Onto Web")
-        _git(root, "config", "user.email", "onto-web@example.invalid")
+        _git(root, "config", "user.name", "Onto Modeling")
+        _git(root, "config", "user.email", "onto-modeling@example.invalid")
         # 保险：禁用可能随包携带的 hooks 路径配置
         _git(root, "config", "core.hooksPath", ".git/hooks-disabled")
         _git(root, "add", "-A")

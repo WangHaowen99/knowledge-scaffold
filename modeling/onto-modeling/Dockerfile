@@ -32,19 +32,20 @@ RUN --mount=type=bind,source=vendor/wheels,target=/tmp/wheels \
 
 COPY backend/app ./app
 COPY backend/run.py ./
-COPY assets /opt/onto-web/assets
-COPY --from=frontend-build /build/dist /opt/onto-web/static
+COPY assets /opt/onto-modeling/assets
+COPY --from=frontend-build /build/dist /opt/onto-modeling/static
 # drawio 官方 webapp（build_release.sh 供应到 vendor/drawio/webapp；缺席时编辑功能降级为只读）
-COPY vendor/drawio/webapp /opt/onto-web/drawio
+COPY vendor/drawio/webapp /opt/onto-modeling/drawio
 
 # HOME 指向数据卷：CLI 会话 transcript（resume 续接依赖）与 ~/.claude 配置随卷持久化
 # IS_SANDBOX=1：容器内以 root 运行时 CLI 才允许 bypassPermissions（否则启动即拒绝）
 ENV ONTO_WEB_HOST=0.0.0.0 \
     ONTO_WEB_PORT=8100 \
+    # 数据卷内路径保持历史值 /data/onto-web：存量部署的数据在该子目录下
     ONTO_WEB_DATA_DIR=/data/onto-web \
-    ONTO_WEB_ASSETS_DIR=/opt/onto-web/assets \
-    ONTO_WEB_STATIC_DIR=/opt/onto-web/static \
-    ONTO_WEB_DRAWIO_DIR=/opt/onto-web/drawio \
+    ONTO_WEB_ASSETS_DIR=/opt/onto-modeling/assets \
+    ONTO_WEB_STATIC_DIR=/opt/onto-modeling/static \
+    ONTO_WEB_DRAWIO_DIR=/opt/onto-modeling/drawio \
     ONTO_WEB_RELOAD=0 \
     HOME=/data/home \
     DISABLE_AUTOUPDATER=1 \

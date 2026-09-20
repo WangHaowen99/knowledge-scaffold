@@ -214,16 +214,16 @@ Current commands for the consumer application:
 - Build consumer-only release package: `cd consumer && ./build.sh <version> [amd|arm]`
 - Build modeling-only release package: `cd modeling && ./build.sh <version> [amd|arm]`
 
-Commands for the Onto Web application (`modeling/onto-web/`):
+Commands for the Onto Modeling application (`modeling/onto-modeling/`):
 
-- Install onto-web backend dependencies: `cd modeling/onto-web/backend && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt`
-- Start onto-web backend: `cd modeling/onto-web/backend && ./venv/bin/python run.py`
-- Run onto-web backend tests: `cd modeling/onto-web/backend && ./venv/bin/python -m pytest tests/`
-- Install onto-web frontend dependencies: `cd modeling/onto-web/frontend && npm install`
-- Start onto-web frontend dev server: `cd modeling/onto-web/frontend && npm run dev`
-- Build onto-web frontend: `cd modeling/onto-web/frontend && npm run build`
-- Build onto-web release package: `cd modeling/onto-web && ./build.sh <version> [amd|arm]`
-- Run onto-web full stack from source: `cd modeling/onto-web && docker compose up --build`
+- Install onto-modeling backend dependencies: `cd modeling/onto-modeling/backend && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt`
+- Start onto-modeling backend: `cd modeling/onto-modeling/backend && ./venv/bin/python run.py`
+- Run onto-modeling backend tests: `cd modeling/onto-modeling/backend && ./venv/bin/python -m pytest tests/`
+- Install onto-modeling frontend dependencies: `cd modeling/onto-modeling/frontend && npm install`
+- Start onto-modeling frontend dev server: `cd modeling/onto-modeling/frontend && npm run dev`
+- Build onto-modeling frontend: `cd modeling/onto-modeling/frontend && npm run build`
+- Build onto-modeling release package: `cd modeling/onto-modeling && ./build.sh <version> [amd|arm]`
+- Run onto-modeling full stack from source: `cd modeling/onto-modeling && docker compose up --build`
 
 After initializing the project, Claude must update this section with real commands.
 
