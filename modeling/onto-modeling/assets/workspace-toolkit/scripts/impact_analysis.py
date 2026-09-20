@@ -212,9 +212,9 @@ def format_report(result: dict) -> str:
     section('相关追踪场景', result['testcase_refs'],
             '这些逻辑已保存追踪场景（ontology/testcase/），修改目标后建议重新运行 /ontology-trace 验证场景仍然有效。')
 
-    if not any(result[k] for k in ('operation_refs', 'action_refs', 'object_refs',
-                                   'mock_refs', 'called_by', 'invokes_action',
-                                   'testcase_refs')):
+    ref_keys = ('operation_refs', 'action_refs', 'object_refs', 'mock_refs',
+                'called_by', 'invokes_action', 'testcase_refs')
+    if not any(result[k] for k in ref_keys):
         lines.append('**无任何下游引用。** 可以安全修改。')
         lines.append('')
 

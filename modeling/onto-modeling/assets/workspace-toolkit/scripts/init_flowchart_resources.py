@@ -16,7 +16,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.append(os.path.dirname(__file__))
 from summarize_diagram import summarize  # noqa: E402
 
 
@@ -232,7 +232,8 @@ def refresh_resources(
     pages = _normalize_names(pages)
     sheets = _normalize_names(sheets)
     names = _normalize_names(names)
-    if full_refresh and (pages or sheets or names):
+    has_filter = bool(pages or sheets or names)
+    if full_refresh and has_filter:
         raise ValueError("--refresh 是全量刷新，不能同时指定 --pages/--sheets/--names")
 
     target_pages = pages or names

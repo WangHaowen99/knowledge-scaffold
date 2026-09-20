@@ -150,6 +150,16 @@ class Session:
         return self.connect_task is not None and not self.connect_task.done()
 
 
+def _recyclable(session: "Session") -> bool:
+    """可驱逐/可回收：引擎在、空闲、无待确认卡、无积压消息。"""
+    return (
+        session.engine is not None
+        and session.state == "idle"
+        and not session.pending_permissions
+        and not session.pending_prompts
+    )
+
+
 def _expire_orphan_permissions(session: "Session") -> None:
     """历史中未决的确认请求（重启/回收后 future 已丢）补失效事件。
 
@@ -276,14 +286,7 @@ class SessionManager:
             self._broadcast_queue_positions()
 
     def _pick_idle_victim(self) -> Session | None:
-        candidates = [
-            s
-            for s in self._sessions.values()
-            if s.engine is not None
-            and s.state == "idle"
-            and not s.pending_permissions
-            and not s.pending_prompts
-        ]
+        candidates = [s for s in self._sessions.values() if _recyclable(s)]
         if not candidates:
             return None
         return min(candidates, key=lambda s: s.last_activity)
@@ -420,11 +423,7 @@ class SessionManager:
             victims = [
                 s
                 for s in self._sessions.values()
-                if s.engine is not None
-                and s.state == "idle"
-                and not s.pending_permissions
-                and not s.pending_prompts
-                and now - s.last_activity > ttl
+                if _recyclable(s) and now - s.last_activity > ttl
             ]
             for victim in victims:
                 await self._recycle(victim)

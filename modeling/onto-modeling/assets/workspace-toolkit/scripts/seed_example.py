@@ -186,7 +186,7 @@ def seed(root: str) -> int:
         summary_dir = _resolve(root, 'ontology/diagrams-summary')
         summary_dir.mkdir(parents=True, exist_ok=True)
         script_dir = Path(__file__).resolve().parent
-        sys.path.insert(0, str(script_dir))
+        sys.path.append(str(script_dir))
         try:
             from summarize_diagram import summarize  # type: ignore
             legend = Path('resource/diagrams/图示说明定义.drawio')

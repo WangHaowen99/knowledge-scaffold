@@ -160,15 +160,13 @@ def check_diagram(filepath):
     virtual_signatures = virtual_style_signatures()
 
     edges = {k: v for k, v in cells.items() if v["edge"]}
-    nodes = {
-        k: v for k, v in cells.items()
-        if (
-            v["vertex"]
-            and classify(v["style"])
-            and classify(v["style"]) not in ("文本", "边标签")
-            and not is_virtual_node(v["style"], virtual_signatures)
-        )
-    }
+    nodes = {}
+    for k, v in cells.items():
+        if not v["vertex"] or is_virtual_node(v["style"], virtual_signatures):
+            continue
+        kind = classify(v["style"])
+        if kind and kind not in ("文本", "边标签"):
+            nodes[k] = v
 
     all_out  = {nid: [] for nid in nodes}
     all_in   = {nid: [] for nid in nodes}
@@ -203,7 +201,8 @@ def check_diagram(filepath):
         is_start = nid in start_nodes
         is_end   = nid in end_nodes
 
-        if not has_in and not has_fout and not is_start and not is_end:
+        is_isolated = not (has_in or has_fout or is_start or is_end)
+        if is_isolated:
             if ntype == "循环":
                 continue
             issues.append("孤立节点[%s]「%s」" % (ntype, val))

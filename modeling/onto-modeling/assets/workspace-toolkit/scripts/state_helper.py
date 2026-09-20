@@ -21,6 +21,7 @@ State helper — 单一文件管理所有命令的执行锁与进度快照。
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -104,7 +105,7 @@ def _get_session_pid() -> int:
     shell_pid = os.getppid()
     try:
         result = subprocess.run(
-            ['ps', '-o', 'ppid=', '-p', str(shell_pid)],
+            [shutil.which('ps') or '/bin/ps', '-o', 'ppid=', '-p', str(shell_pid)],
             capture_output=True, text=True, timeout=2
         )
         if result.returncode == 0:
