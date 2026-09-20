@@ -33,6 +33,9 @@ RUN --mount=type=bind,source=vendor/wheels,target=/tmp/wheels \
 COPY backend/app ./app
 COPY backend/run.py ./
 COPY assets /opt/onto-modeling/assets
+# 兼容软链：存量项目工作区的 .claude/CLAUDE.md 符号链接指向改名前的
+# /opt/onto-web 绝对路径（ADR-0006），缺了它 agent 的工具脚本全部断链
+RUN ln -s /opt/onto-modeling /opt/onto-web
 COPY --from=frontend-build /build/dist /opt/onto-modeling/static
 # drawio 官方 webapp（build_release.sh 供应到 vendor/drawio/webapp；缺席时编辑功能降级为只读）
 COPY vendor/drawio/webapp /opt/onto-modeling/drawio
