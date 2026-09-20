@@ -99,14 +99,8 @@ async def _ensure_runner_started() -> None:
         _RUNNER_STARTED = True
 
 
-_SYSTEM_PROMPT = """你是本体建模助手，在专家的项目工作区内工作（当前目录即项目根）。
-
-工作区约定：
-- resource/ 是专家提供的业务资料（只读参考）；ontology/ 是建模产物；
-  research/ 放调研报告；reports/ 放检查报告；knowledge/ 是业务知识沉淀。
-- 修改产物前先阅读相关文件；重要取舍用 ask_user 工具向专家确认后再动手。
-- 全程使用中文，产出文档使用 Markdown。
-"""
+# 系统提示词与命令/守卫由资产装载器提供（jiuwen_assets.py，Phase 3：
+# workspace-rules + 命令索引 + 运行时适配注记；单一资产事实源）
 
 
 class _ChunkBridge:
@@ -320,6 +314,10 @@ def _history_to_messages(events: list[dict]):
                     pairs[-1] = ("assistant", pairs[-1][1] + "\n" + text)
                 else:
                     pairs.append(("assistant", text))
+    # 尾部未获回复的用户消息不注水：它们即将作为 pending prompt 重发，
+    # 注水会让模型看到两遍（也避免首轮被误标为"已续接"）
+    while pairs and pairs[-1][0] == "user":
+        pairs.pop()
     # 从最近往前收进预算
     kept: list[tuple[str, str]] = []
     budget = _REPLAY_CHAR_BUDGET
@@ -350,6 +348,9 @@ class JiuwenEngine:
         self._turn_task: asyncio.Task | None = None
         self._buffered: list[str] = []  # 轮内追加的消息，本轮结束后接续
         self._sid = f"onto-{ctx.project_id}"
+        from .jiuwen_assets import JiuwenAssetLoader
+
+        self._loader = JiuwenAssetLoader(Path(config.ASSETS_DIR))
         self._fingerprint = ""
         self._tracker: Any = None
         self._closed = False
@@ -385,12 +386,20 @@ class JiuwenEngine:
     def _build_agent(self, cfg: dict):
         """测试替换点：单测注入假 agent，不触碰真实框架。"""
         from openjiuwen.core.foundation.llm import init_model
+        from openjiuwen.core.runner import Runner
+        from openjiuwen.core.sys_operation import (
+            LocalWorkConfig,
+            OperationMode,
+            SysOperationCard,
+        )
         from openjiuwen.harness import create_deep_agent
         from openjiuwen.harness.cli.rails import TokenTrackingRail
         from openjiuwen.harness.cli.rails.tool_tracker import ToolTrackingRail
         from openjiuwen.harness.rails import AskUserRail
         from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
         from openjiuwen.harness.workspace.workspace import Workspace
+
+        from .jiuwen_assets import build_hooks_rail
 
         model = init_model(
             provider="OpenAI",
@@ -403,13 +412,43 @@ class JiuwenEngine:
         # 框架私有工件区与项目 git 工作区分离（官方 cwd/workspace 分层）
         shadow = Path(config.DATA_DIR) / "jiuwen" / self._ctx.project_id
         shadow.mkdir(parents=True, exist_ok=True)
+        # 文件沙箱三根：项目区 + 私有工件区 + 资产目录（工作区 .claude/CLAUDE.md
+        # 是指向资产的符号链接，沙箱按 resolve 后路径判定，不加资产根则读不穿；
+        # 资产写保护由 toolset_write_guard 经 ClaudeHooksRail 承担）
+        sysop_id = f"onto-jiuwen-{self._ctx.project_id}"
+        if Runner.resource_mgr.get_sys_operation(sysop_id) is None:
+            Runner.resource_mgr.add_sys_operation(
+                SysOperationCard(
+                    id=sysop_id,
+                    mode=OperationMode.LOCAL,
+                    work_config=LocalWorkConfig(
+                        shell_allowlist=None,
+                        restrict_to_sandbox=True,
+                        sandbox_root=[
+                            str(self._ctx.cwd),
+                            str(shadow),
+                            str(self._loader.assets_dir),
+                        ],
+                    ),
+                )
+            )
+        sys_operation = Runner.resource_mgr.get_sys_operation(sysop_id)
         tracker = TokenTrackingRail()
         agent = create_deep_agent(
             model=model,
-            system_prompt=_SYSTEM_PROMPT,
-            rails=[tracker, ToolTrackingRail(), SysOperationRail(), AskUserRail()],
+            system_prompt=self._loader.system_prompt(),
+            rails=[
+                tracker,
+                ToolTrackingRail(),
+                SysOperationRail(),
+                AskUserRail(),
+                build_hooks_rail(self._loader, self._ctx.cwd),
+            ],
             workspace=Workspace(root_path=str(shadow), language="cn"),
+            sys_operation=sys_operation,
             enable_task_loop=True,
+            # 命令资产的 Task 派遣模式：读 agents/*.md 内容作为子代理 prompt
+            add_general_purpose_agent=True,
             max_iterations=config.JIUWEN_MAX_ITERATIONS,
             language="cn",
             # tool_call chunk 无调用 id，串行执行保证桥接层 FIFO 配对正确
@@ -420,6 +459,7 @@ class JiuwenEngine:
         return agent, tracker
 
     async def send(self, text: str) -> None:
+        text = self._loader.expand_command(text)
         if self._turn_task and not self._turn_task.done():
             self._buffered.append(text)
             return

@@ -215,19 +215,34 @@ meta.json 的 engine 字段留到 Phase 2 引擎开关一起做（现仍为单�
   约束），`mcp_expose` 加 1.x/2.x 双版本垫片（FastMCP settings 构造 ≙ MCPServer
   streamable_http_app 参数）；镜像含双引擎依赖，体积增至 ~2.05GB。
 
-验证状态：69 后端测试全绿（新增 9 个：事件桥/确认卡映射/历史回放/轮驱动含
-interaction 回填/错误终止/引擎路由/配置优先级）；前端构建通过；v0.9.0 镜像内
-双引擎可用性确认。**线上端到端冒烟（真实 glm-5.2 会话 + ask_user 闭环 + 回收续接）
-待用户批准后执行**（权限分类器要求对"部署实例切引擎"取得明示授权）。
+验证状态（2026-09-21 冒烟通过，Phase 2 完成）：69 后端测试全绿；线上端到端
+（v0.9.0 @5100，真实 glm-5.2）——发消息/回复/result 带 tokens；ask_user 弹出
+结构化确认卡（header/options/description 完整）→ API 回填 → agent 按所选继续；
+回收后重连 `resumed: true` 且历史回放找回上下文（暗号测试）。冒烟发现并修复：
+历史回放不再注水尾部未获回复的用户消息（避免模型看两遍当前 prompt、首轮误标已续接）。
 
-### Phase 3：资产装载器 + rails + 质量回归（2–4 人周，弹性最大）
+### Phase 3：资产装载器 + rails + 质量回归（2–4 人周，弹性最大）——装载层完成（2026-09-21）
 
-**前置条件：最小评测基线**（此前遗留的"评测体系 API 化"在此成为必需，先做最小版：
-单标准领域脚本化跑 Builder 全链 + Judge 评分，不做管理界面）。
+已完成（`engines/jiuwen_assets.py`，单一资产事实源，零转存）：
 
-内容：`JiuwenAssetLoader`（commands/agents/规则装载）、4 个守卫 rails、permissions 映射；
-先跑通 3 条代表性命令（research / extract-object / validate），评测双跑（Claude 基线 vs
-Jiuwen+新模型），失分项逐条修资产措辞，直至达标（≥ 基线的 90%，阈值可在拍板时调整）。
+- **JiuwenAssetLoader**：workspace-rules.md + 命令索引 + 运行时适配注记 → system
+  prompt；`/命令 参数` 后端展开为命令文档全文（`$ARGUMENTS` 代入，与 CLI 等价）；
+  子代理不需预注册——命令资产的既有模式就是"Read agents/*.md 内容作 Task prompt"，
+  由 `add_general_purpose_agent=True` 的通用子代理承接；
+- **ClaudeHooksRail**：直接执行 settings.json 里 PreToolUse 的 shell 守卫脚本本体
+  （同 matcher、同 stdin JSON 协议，deny 输出转 rail 拒绝）——4 个守卫零逻辑复制；
+- **沙箱三根**：自建 SysOperation，`sandbox_root = [项目区, 私有工件区, 资产目录]`
+  ——工作区 `.claude/CLAUDE.md` 符号链接按 resolve 判定，不加资产根读不穿；
+  资产写保护由 toolset_write_guard 承担（沙箱不分读写）。
+
+验证：74 后端测试全绿（新增 5 个：命令展开/系统提示词/守卫脚本真实执行的
+拒绝与放行矩阵）；线上（v0.10.0 @5100，jiuwen 引擎 + 完整资产）——`/ontology`
+展开执行 state_helper 状态检测并按命令话术输出下一步建议，与 Claude 引擎行为一致；
+resource/ 写入被拒（system prompt 规则第一道防线 + hooks rail 硬兜底）。
+
+**剩余**：最小评测基线（Builder 全链脚本化 + Judge 评分）与三命令双跑质量回归
+（Claude 基线 vs Jiuwen+glm-5.2，失分项逐条修资产，目标 ≥ 基线 90%）；
+web 检索工具接入（research 命令的联网调研在 jiuwen 侧尚不可用，评测需避开或先补）。
 
 ### Phase 4：灰度与收尾（观察期 2–4 周）
 

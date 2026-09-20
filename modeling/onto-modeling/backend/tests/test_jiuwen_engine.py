@@ -149,13 +149,16 @@ def test_history_to_messages_roles_and_budget():
     ]
     messages = _history_to_messages(events)
     roles = [type(m).__name__ for m in messages]
-    assert roles == ["UserMessage", "AssistantMessage", "UserMessage"]
+    # 尾部未获回复的用户消息（即将作为 prompt 重发）不注水
+    assert roles == ["UserMessage", "AssistantMessage"]
     assert "第一答" in messages[1].content and "补充" in messages[1].content  # 相邻合并
 
     huge = [{"type": "user_message", "text": "长" * 30_000},
-            {"type": "user_message", "text": "近"}]
+            {"type": "assistant_message", "blocks": [{"kind": "text", "text": "答"}]},
+            {"type": "user_message", "text": "近"},
+            {"type": "assistant_message", "blocks": [{"kind": "text", "text": "近答"}]}]
     trimmed = _history_to_messages(huge)
-    assert [m.content for m in trimmed] == ["近"]  # 超预算时只保最近
+    assert [m.content for m in trimmed] == ["答", "近", "近答"]  # 超预算的长消息被丢弃
 
 
 # ---- 轮驱动（假 Runner 流）----
