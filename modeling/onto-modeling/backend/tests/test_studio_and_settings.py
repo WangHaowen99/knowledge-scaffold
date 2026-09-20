@@ -159,3 +159,20 @@ def test_model_settings_session_env_overrides_both_auth_vars(tmp_path, monkeypat
     assert env["ANTHROPIC_AUTH_TOKEN"] == "test-key-value"
     assert env["ANTHROPIC_BASE_URL"] == "https://gateway.example.com"
     assert env["ANTHROPIC_MODEL"] == "some-model"
+
+
+def test_expire_orphan_permissions_broadcasts_expired():
+    from app.services.agent_sessions import Session, _expire_orphan_permissions
+
+    session = Session(id="t1", project_id="p1", client=None)
+    session.events = [
+        {"type": "permission_request", "request_id": "a", "seq": 0},
+        {"type": "permission_request", "request_id": "b", "seq": 1},
+        {"type": "permission_resolved", "request_id": "a", "behavior": "allow", "seq": 2},
+    ]
+    _expire_orphan_permissions(session)
+    expired = [
+        e for e in session.events
+        if e.get("type") == "permission_resolved" and e.get("behavior") == "expired"
+    ]
+    assert [e["request_id"] for e in expired] == ["b"]
