@@ -1,6 +1,6 @@
 """会话池的调度语义测试：上限、驱逐、排队、resume 续接与空闲回收。
 
-用假客户端替换 _create_client，不拉起真实 CLI 子进程。
+用假客户端替换 ClaudeEngine._create_client，不拉起真实 CLI 子进程。
 """
 
 import asyncio
@@ -12,6 +12,7 @@ import pytest
 from app import config
 from app.services import agent_sessions
 from app.services.agent_sessions import SessionManager, load_resume_id, save_resume_id
+from app.services.engines.claude import ClaudeEngine
 
 
 class FakeClient:
@@ -54,7 +55,7 @@ def pool_env(tmp_path: Path, monkeypatch):
         created.append(client)
         return client
 
-    monkeypatch.setattr(SessionManager, "_create_client", create_client)
+    monkeypatch.setattr(ClaudeEngine, "_create_client", create_client)
     manager = SessionManager()
     return manager, created, tmp_path
 

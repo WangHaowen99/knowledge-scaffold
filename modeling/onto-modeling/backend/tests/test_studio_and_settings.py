@@ -164,7 +164,7 @@ def test_model_settings_session_env_overrides_both_auth_vars(tmp_path, monkeypat
 def test_expire_orphan_permissions_broadcasts_expired():
     from app.services.agent_sessions import Session, _expire_orphan_permissions
 
-    session = Session(id="t1", project_id="p1", client=None)
+    session = Session(id="t1", project_id="p1")
     session.events = [
         {"type": "permission_request", "request_id": "a", "seq": 0},
         {"type": "permission_request", "request_id": "b", "seq": 1},
