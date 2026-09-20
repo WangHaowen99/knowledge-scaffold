@@ -21,7 +21,10 @@ MAX_THINKING_TOKENS = os.environ.get("ONTO_WEB_MAX_THINKING_TOKENS", "")
 # 会话池（方案 4.1.1）：活跃子进程上限；8G 内存建议 12，超限先驱逐空闲会话再排队
 MAX_ACTIVE_SESSIONS = int(os.environ.get("ONTO_WEB_MAX_SESSIONS", "12"))
 # 空闲会话回收阈值（秒，0 关闭）；回收后靠 resume 续接模型上下文，界面无感
-SESSION_IDLE_TTL_SECONDS = int(os.environ.get("ONTO_WEB_SESSION_IDLE_TTL", "600"))
+# 空闲回收 TTL：连续对话期间进程常驻（轮间零延迟），停顿超过该时长即回收
+# 子进程释放内存（~400MB/会话），下次消息经 resume 续接（多付 2~5s 冷启动，
+# 且该场景通常已过 API prompt cache 的 5 分钟 TTL，感知很弱）。
+SESSION_IDLE_TTL_SECONDS = int(os.environ.get("ONTO_WEB_SESSION_IDLE_TTL", "120"))
 SESSION_REAPER_INTERVAL = int(os.environ.get("ONTO_WEB_SESSION_REAPER_INTERVAL", "30"))
 
 # 降级兼容包（无 AVX 环境的最后手段）：指向外部 JS 版 CLI 的路径，空 = 用捆绑 CLI
