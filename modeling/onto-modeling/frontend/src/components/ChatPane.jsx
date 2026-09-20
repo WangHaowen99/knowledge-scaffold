@@ -293,9 +293,13 @@ function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
   const questions = req.tool_input?.questions || [];
   const [chosen, setChosen] = useState({});
   const [custom, setCustom] = useState('');
+  const [submitted, setSubmitted] = useState(false); // 乐观：等确认事件期间即时反馈
   const multi = questions.length > 1 || questions.some((q) => q.multiSelect);
 
-  const submit = (answers) => onAnswer(req.request_id, answers);
+  const submit = (answers) => {
+    setSubmitted(true);
+    Promise.resolve(onAnswer(req.request_id, answers)).catch(() => setSubmitted(false));
+  };
 
   const choose = (q, label) => {
     if (resolved) return;
@@ -316,10 +320,14 @@ function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
     <div className={`question-card${trace ? ' trace-card' : ''}${resolved ? ' resolved' : ''}`}>
       <div className="qc-head">
         <span className="qc-glyph">?</span>
-        <span className="qc-title">{trace ? '走查分支选择' : '助手向你提问'}</span>
+        <span className="qc-title">{trace ? '走查分支选择' : '请专家确认'}</span>
         {resolved ? (
           <span className="qc-state done">
             <CheckCircleFilled /> 已答复
+          </span>
+        ) : submitted ? (
+          <span className="qc-state done">
+            <CheckCircleFilled /> 已提交
           </span>
         ) : (
           <span className="qc-state live">
@@ -384,8 +392,14 @@ function QuestionCard({ req, resolved, onAnswer, trace = 0 }) {
               size="small"
               type="primary"
               shape="round"
-              disabled={!custom.trim()}
-              onClick={() => submit({ [questions[0]?.question]: custom.trim() })}
+              disabled={!custom.trim() && !questions.every((q) => chosen[q.question])}
+              onClick={() => {
+                if (custom.trim()) {
+                  submit({ [questions[0]?.question]: custom.trim() });
+                } else {
+                  submit(chosen);
+                }
+              }}
             >
               发送
             </Button>
@@ -620,7 +634,16 @@ export default function ChatPane({
     const HISTORY_TAIL = 400;
     let source = null;
     let cancelled = false;
+    let retryTimer = 0;
+    let retryDelay = 2000;
+    const lastMsgTsRef = { current: Date.now() };
+    const nextAfterRef = { current: 0 };
     const handleEvent = (event) => {
+      lastMsgTsRef.current = Date.now();
+      if (event.type === 'ping') return; // 心跳仅用于连接活性判断
+      if (event.seq !== undefined) {
+        nextAfterRef.current = Math.max(nextAfterRef.current, event.seq + 1);
+      }
       if (event.type === 'queue_position') {
         setQueueInfo({ position: event.position, waiting: event.waiting });
         return;
@@ -684,6 +707,36 @@ export default function ChatPane({
       }
       if (event.type === 'result') onWorkspaceChanged?.();
     };
+    // SSE 断线自愈：URL 内嵌的 access token 只有约 15 分钟有效期，浏览器
+    // 自动重连一旦撞上过期 token（401）EventSource 就永久关闭。这里统一
+    // 接管重连：先走一次 REST（401 会自动刷新 token）再按已收水位续传。
+    const connect = (after) => {
+      if (cancelled) return;
+      source?.close();
+      source = openEventStream(project.id, handleEvent, after);
+      source.onopen = () => {
+        retryDelay = 2000;
+        lastMsgTsRef.current = Date.now();
+      };
+      source.onerror = () => {
+        if (cancelled) return;
+        // CONNECTING 是浏览器内建重试（同 URL）；CLOSED 才需要换 token 重建
+        if (source.readyState === EventSource.CLOSED) scheduleReconnect();
+      };
+    };
+    const scheduleReconnect = () => {
+      if (cancelled) return;
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(async () => {
+        if (cancelled) return;
+        try {
+          await api.sessionState(project.id); // request() 遇 401 会刷新 token
+        } catch { /* 服务暂不可达，下轮再试 */ }
+        connect(nextAfterRef.current);
+      }, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 30000);
+    };
+
     api
       .sessionState(project.id)
       .then((info) => {
@@ -691,13 +744,26 @@ export default function ChatPane({
         const total = info.events || 0;
         const skip = fullHistoryRef.current ? 0 : Math.max(0, total - HISTORY_TAIL);
         setSkippedEvents(skip);
-        source = openEventStream(project.id, handleEvent, skip);
+        nextAfterRef.current = skip;
+        connect(skip);
       })
       .catch(() => {
-        if (!cancelled) source = openEventStream(project.id, handleEvent, 0);
+        if (!cancelled) connect(0);
       });
+
+    // 看门狗：后端每 15s 发一次 ping，40s 静默视为连接僵死（半开），强制重建
+    const watchdog = setInterval(() => {
+      if (cancelled) return;
+      if (Date.now() - lastMsgTsRef.current > 40000) {
+        lastMsgTsRef.current = Date.now();
+        scheduleReconnect();
+      }
+    }, 10000);
+
     return () => {
       cancelled = true;
+      clearTimeout(retryTimer);
+      clearInterval(watchdog);
       source?.close();
     };
     // onWorkspaceChanged 变化不应重建 SSE 连接
