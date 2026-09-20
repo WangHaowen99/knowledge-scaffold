@@ -13,6 +13,7 @@ export default function CreatePage({ onBack, onCreated }) {
   const [goal, setGoal] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const [uploadNote, setUploadNote] = useState('');
   const input = useRef(null);
 
   const addFiles = (items) => {
@@ -43,19 +44,27 @@ export default function CreatePage({ onBack, onCreated }) {
     setError('');
     try {
       const created = await api.createProject(name.trim(), template, goal.trim());
-      for (const item of files) {
-        // 初始资料逐个上传到资料区（带用途标签）；失败不阻断进入项目
-        await api
-          .uploadResource(
-            created.id,
-            autoSubdir(item.name),
-            item.file,
-            undefined,
-            item.purpose,
-            item.readingMode,
-          )
-          .catch((cause) => message.warning(`${item.name} 上传失败：${cause.message}`));
-      }
+      // 初始资料并行上传（带用途标签）；单个失败不阻断进入项目
+      let done = 0;
+      setUploadNote(files.length ? `0/${files.length}` : '');
+      await Promise.all(
+        files.map((item) =>
+          api
+            .uploadResource(
+              created.id,
+              autoSubdir(item.name),
+              item.file,
+              undefined,
+              item.purpose,
+              item.readingMode,
+            )
+            .then(() => {
+              done += 1;
+              setUploadNote(`${done}/${files.length}`);
+            })
+            .catch((cause) => message.warning(`${item.name} 上传失败：${cause.message}`)),
+        ),
+      );
       onCreated(created);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '项目创建失败');
@@ -203,7 +212,7 @@ export default function CreatePage({ onBack, onCreated }) {
               disabled={!name.trim() || creating}
               onClick={() => void start('blank')}
             >
-              {creating ? '正在创建…' : '开始建模'}
+              {creating ? (uploadNote ? `正在上传资料 ${uploadNote}…` : '正在创建…') : '开始建模'}
             </button>
             <button
               type="button"

@@ -111,7 +111,7 @@ export default function App() {
   );
 
   const refreshProjects = useCallback(() => {
-    api
+    return api
       .listProjects()
       .then((data) => {
         setProjects(data.projects);
@@ -326,8 +326,9 @@ export default function App() {
     return (
       <CreatePage
         onBack={() => nav('#/')}
-        onCreated={(created) => {
-          refreshProjects();
+        onCreated={async (created) => {
+          // 先等列表刷新拿到新项目，再进入项目页（否则 project 解析为空会落回列表）
+          await refreshProjects();
           nav(`#/p/${created.id}`);
         }}
       />
