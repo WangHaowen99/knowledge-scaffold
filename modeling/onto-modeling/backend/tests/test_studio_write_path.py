@@ -112,7 +112,7 @@ def test_report_items_parse():
 @pytest.fixture()
 def manager(tmp_path: Path) -> WorkspaceManager:
     assets = tmp_path / "assets"
-    (assets / "claude-workspace-dotclaude" / "templates").mkdir(parents=True)
+    (assets / "workspace-toolkit" / "templates").mkdir(parents=True)
     (assets / "resource-template").mkdir(parents=True)
     return WorkspaceManager(tmp_path / "data", assets)
 

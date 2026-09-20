@@ -12,8 +12,8 @@ from app.services.workspace import WorkspaceError, WorkspaceManager
 @pytest.fixture()
 def manager(tmp_path: Path) -> WorkspaceManager:
     assets = tmp_path / "assets"
-    (assets / "claude-workspace-dotclaude" / "templates").mkdir(parents=True)
-    (assets / "claude-workspace-CLAUDE.md").write_text("# rules", encoding="utf-8")
+    (assets / "workspace-toolkit" / "templates").mkdir(parents=True)
+    (assets / "workspace-rules.md").write_text("# rules", encoding="utf-8")
     (assets / "resource-template" / "others").mkdir(parents=True)
     return WorkspaceManager(tmp_path / "data", assets)
 
