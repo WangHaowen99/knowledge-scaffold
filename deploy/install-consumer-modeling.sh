@@ -260,6 +260,39 @@ copy_env_key() {
     write_env_value "${target_file}" "${key}" "${line#*=}"
 }
 
+ensure_upgrade_bootstrap_password() {
+    env_file="$1"
+    bootstrap_password="$(env_get "${env_file}" AUTH_BOOTSTRAP_ADMIN_PASSWORD)"
+    if [ -z "${bootstrap_password}" ]; then
+        bootstrap_password="Aa1!$(generate_hex_secret 8)"
+        write_env_value "${env_file}" AUTH_BOOTSTRAP_ADMIN_PASSWORD "${bootstrap_password}"
+        log "旧合并部署缺少 AUTH_BOOTSTRAP_ADMIN_PASSWORD，已生成并写入升级配置（值不会打印）"
+    fi
+}
+
+run_consumer_upgrade() {
+    release_dir="$1"
+    install_dir="$2"
+    log "开始 Consumer 升级；预检中受管旧容器占用自身端口显示 WARN 时不会阻断升级"
+    if bash "${release_dir}/deploy/upgrade.sh" "${install_dir}"; then
+        upgrade_status=0
+    else
+        upgrade_status=$?
+    fi
+    case "${upgrade_status}" in
+        0)
+            return 0
+            ;;
+        10)
+            log "Consumer 升级完成，存在需要关注的警告，继续升级 Modeling"
+            return 0
+            ;;
+        *)
+            return "${upgrade_status}"
+            ;;
+    esac
+}
+
 container_mount_volume() {
     container_name="$1"
     destination="$2"
@@ -298,6 +331,34 @@ validate_modeling_container_owner() {
         2>/dev/null || true)"
     [ "${working_dir}" = "${expected_dir}" ] || die \
         "容器 ${container_name} 不属于独立 Modeling 目录 ${expected_dir}，拒绝升级"
+}
+
+stop_consumer_containers_for_upgrade() {
+    install_dir="$1"
+    STOPPED_CONSUMER_CONTAINERS=""
+    for container_name in onto-agent-frontend onto-agent-mcp onto-agent-backend \
+                          onto-agent-jiuwenbox onto-agent-auth-server; do
+        if ! docker container inspect "${container_name}" >/dev/null 2>&1; then
+            continue
+        fi
+        working_dir="$(docker container inspect "${container_name}" \
+            --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' \
+            2>/dev/null || true)"
+        [ "${working_dir}" = "${install_dir}" ] || die \
+            "Consumer 容器 ${container_name} 不属于安装目录 ${install_dir}，拒绝停止"
+        running="$(docker container inspect "${container_name}" \
+            --format '{{.State.Running}}' 2>/dev/null || true)"
+        if [ "${running}" = true ]; then
+            docker stop "${container_name}" >/dev/null || die "停止容器失败：${container_name}"
+            STOPPED_CONSUMER_CONTAINERS="${STOPPED_CONSUMER_CONTAINERS} ${container_name}"
+        fi
+    done
+}
+
+restore_consumer_containers_after_failure() {
+    for container_name in ${STOPPED_CONSUMER_CONTAINERS:-}; do
+        docker start "${container_name}" >/dev/null 2>&1 || true
+    done
 }
 
 resolve_legacy_volume() {
@@ -354,6 +415,7 @@ upgrade_install() {
     legacy_token="$(env_get "${CONSUMER_DIR}/backend/.env" MODELING_SERVICE_TOKEN)"
     [ "${#legacy_token}" -ge 32 ] || die \
         "旧部署未配置有效的 MODELING_SERVICE_TOKEN，无法保证升级后服务认证一致"
+    ensure_upgrade_bootstrap_password "${CONSUMER_DIR}/backend/.env"
 
     legacy_backend_port="$(legacy_host_port onto-agent-backend 5055 || true)"
     legacy_mcp_port="$(legacy_host_port onto-agent-mcp 7488 || true)"
@@ -400,8 +462,10 @@ upgrade_install() {
     [ -x "${stage_dir}/onto-agent/deploy/upgrade.sh" ] || die "Consumer 发布包缺少 upgrade.sh"
     [ -x "${stage_dir}/modeling/deploy/install.sh" ] || die "Modeling 发布包缺少 install.sh"
 
+    legacy_config_items="VERSION backend/.env deploy/manifest.json"
+    [ ! -e "${CONSUMER_DIR}/deploy/modeling" ] || legacy_config_items="${legacy_config_items} deploy/modeling"
     tar -C "${CONSUMER_DIR}" -czf "${backup_dir}/legacy-config.tar.gz" \
-        VERSION backend/.env deploy/manifest.json deploy/modeling 2>/dev/null \
+        ${legacy_config_items} 2>/dev/null \
         || die "备份旧部署配置失败"
     chmod 600 "${backup_dir}/legacy-config.tar.gz"
 
@@ -409,6 +473,7 @@ upgrade_install() {
     modeling_handoff_started=false
     restore_stopped_containers() {
         [ "${modeling_handoff_started}" = false ] || return 0
+        restore_consumer_containers_after_failure
         for container_name in ${stopped_containers}; do
             docker start "${container_name}" >/dev/null 2>&1 || true
         done
@@ -439,7 +504,9 @@ upgrade_install() {
     [ -z "${FRONTEND_PORT:-${legacy_frontend_port}}" ] \
         || write_env_value "${CONSUMER_DIR}/backend/.env" FRONTEND_PORT \
             "${FRONTEND_PORT:-${legacy_frontend_port}}"
-    if ! bash "${stage_dir}/onto-agent/deploy/upgrade.sh" "${CONSUMER_DIR}"; then
+    log "停止旧 Consumer 容器，避免升级备份期间日志文件继续写入"
+    stop_consumer_containers_for_upgrade "${CONSUMER_DIR}"
+    if ! run_consumer_upgrade "${stage_dir}/onto-agent" "${CONSUMER_DIR}"; then
         die "Consumer 升级失败；旧 Modeling 容器已尝试恢复，备份位于 ${backup_dir}"
     fi
 
@@ -551,6 +618,7 @@ upgrade_separated_install() {
     handoff_started=false
     restore_separated_containers() {
         [ "${handoff_started}" = false ] || return 0
+        restore_consumer_containers_after_failure
         for container_name in ${stopped_containers}; do
             docker start "${container_name}" >/dev/null 2>&1 || true
         done
@@ -578,7 +646,9 @@ upgrade_separated_install() {
         || write_env_value "${CONSUMER_DIR}/backend/.env" MCP_SERVER_PORT "${MCP_SERVER_PORT}"
     [ -z "${FRONTEND_PORT:-}" ] \
         || write_env_value "${CONSUMER_DIR}/backend/.env" FRONTEND_PORT "${FRONTEND_PORT}"
-    if ! bash "${stage_dir}/onto-agent/deploy/upgrade.sh" "${CONSUMER_DIR}"; then
+    log "停止 Consumer 容器，避免升级备份期间日志文件继续写入"
+    stop_consumer_containers_for_upgrade "${CONSUMER_DIR}"
+    if ! run_consumer_upgrade "${stage_dir}/onto-agent" "${CONSUMER_DIR}"; then
         die "Consumer 升级失败；Modeling 容器已尝试恢复，备份位于 ${backup_dir}"
     fi
     upgraded_token="$(env_get "${CONSUMER_DIR}/backend/.env" MODELING_SERVICE_TOKEN)"
