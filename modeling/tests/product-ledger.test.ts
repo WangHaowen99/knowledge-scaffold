@@ -186,4 +186,3 @@ test('blocking 区分「结构自洽」和「能不能往下走」', () => {
   assert.equal(blocked.pass, true);
   assert.equal(blocked.blocking, true);
 });
-
