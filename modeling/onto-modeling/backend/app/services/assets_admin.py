@@ -17,7 +17,7 @@ class AssetError(Exception):
 
 
 def _assets_dotclaude() -> Path:
-    return Path(config.ASSETS_DIR) / "claude-workspace-dotclaude"
+    return Path(config.ASSETS_DIR) / "workspace-toolkit"
 
 
 def info() -> dict:

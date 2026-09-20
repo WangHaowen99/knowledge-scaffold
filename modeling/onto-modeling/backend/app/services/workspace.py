@@ -963,9 +963,9 @@ class WorkspaceManager:
 
     def _mount_assets(self, root: Path) -> None:
         links = {
-            ".claude": self.assets_dir / "claude-workspace-dotclaude",
-            "CLAUDE.md": self.assets_dir / "claude-workspace-CLAUDE.md",
-            "README.md": self.assets_dir / "claude-workspace-README.md",
+            ".claude": self.assets_dir / "workspace-toolkit",
+            "CLAUDE.md": self.assets_dir / "workspace-rules.md",
+            "README.md": self.assets_dir / "workspace-readme.md",
         }
         for link_name, target in links.items():
             if target.exists():
@@ -982,7 +982,7 @@ class WorkspaceManager:
     def _write_gitignore(self, root: Path) -> None:
         template = (
             self.assets_dir
-            / "claude-workspace-dotclaude"
+            / "workspace-toolkit"
             / "templates"
             / "task-gitignore.template"
         )

@@ -35,8 +35,11 @@ COPY backend/scripts ./scripts
 COPY backend/run.py ./
 COPY assets /opt/onto-modeling/assets
 # 兼容软链：存量项目工作区的 .claude/CLAUDE.md 符号链接指向改名前的
-# /opt/onto-web 绝对路径（ADR-0006），缺了它 agent 的工具脚本全部断链
-RUN ln -s /opt/onto-modeling /opt/onto-web
+# /opt/onto-web 绝对路径与旧资产文件名（ADR-0006），缺了它 agent 工具链断裂
+RUN ln -s /opt/onto-modeling /opt/onto-web \
+    && ln -s /opt/onto-modeling/assets/workspace-toolkit /opt/onto-modeling/assets/claude-workspace-dotclaude \
+    && ln -s /opt/onto-modeling/assets/workspace-rules.md /opt/onto-modeling/assets/claude-workspace-CLAUDE.md \
+    && ln -s /opt/onto-modeling/assets/workspace-readme.md /opt/onto-modeling/assets/claude-workspace-README.md
 COPY --from=frontend-build /build/dist /opt/onto-modeling/static
 # drawio 官方 webapp（build_release.sh 供应到 vendor/drawio/webapp；缺席时编辑功能降级为只读）
 COPY vendor/drawio/webapp /opt/onto-modeling/drawio
