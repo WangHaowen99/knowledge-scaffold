@@ -31,6 +31,7 @@ RUN --mount=type=bind,source=vendor/wheels,target=/tmp/wheels \
     -r requirements.txt
 
 COPY backend/app ./app
+COPY backend/scripts ./scripts
 COPY backend/run.py ./
 COPY assets /opt/onto-modeling/assets
 # 兼容软链：存量项目工作区的 .claude/CLAUDE.md 符号链接指向改名前的
