@@ -84,7 +84,15 @@ class JiuwenAssetLoader:
             "`python3 .claude/scripts/state_helper.py ...`）。\n"
             "- 命令文档里的 Task 派遣：读取对应 `.claude/agents/*.md` 后，把其内容作为"
             "子代理任务的完整 prompt 派发（task_tool），等待结果后继续主流程。\n"
-            "- 需要专家决策时使用 ask_user 工具（对应文档中的 AskUserQuestion）。\n"
+            "- **凡需要用户选择或确认的问题**（命令文档中的 AskUserQuestion、"
+            "\"请用户选择\"、走查分支、来源选择等）**必须调用 ask_user 工具提出**，"
+            "禁止在正文里列出选项等待回复——正文提问不会生成确认卡，用户可能看不到，"
+            "流程会卡住。\n"
+            "- 当前会话**不提供联网检索工具**：执行资料分析（research）等命令时"
+            "一律走\"仅本地资料\"路径，不要尝试联网检索或访问外部网址。\n"
+            "- **命令文档的全部步骤必须执行完毕才算完成**：内容产出后仍须按文档执行"
+            "收尾步骤（运行检查脚本、`state_helper.py release` 释放锁、"
+            "`update-progress`、git 提交等）。收尾未完成前不得宣布任务完成或结束回合。\n"
             "- 全程使用中文。"
         )
         return "\n\n".join(parts)
