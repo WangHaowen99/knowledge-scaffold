@@ -176,3 +176,16 @@ def test_expire_orphan_permissions_broadcasts_expired():
         if e.get("type") == "permission_resolved" and e.get("behavior") == "expired"
     ]
     assert [e["request_id"] for e in expired] == ["b"]
+
+
+def test_config_error_translation():
+    from app.services.agent_sessions import (
+        _looks_like_config_error,
+        _looks_like_raw_error,
+    )
+
+    assert _looks_like_config_error("Not logged in · Please run /login")
+    assert _looks_like_config_error("API Error: 401 Unauthorized authentication_error")
+    assert not _looks_like_config_error("模型输出正常文本")
+    # 未登录也必须先被识别为原始错误才会进入替换分支
+    assert _looks_like_raw_error("Not logged in · Please run /login")

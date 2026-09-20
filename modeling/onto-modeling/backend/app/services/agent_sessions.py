@@ -24,7 +24,26 @@ from . import error_log
 
 # 面向用户的通用错误提示；原始错误只进运维留档，不出现在聊天流里
 FRIENDLY_ERROR = "模型服务暂时不稳定，本次调用未完成。系统已记录详细信息，请重试；若持续出现请联系管理员。"
+CONFIG_ERROR = (
+    "模型网关未配置或凭据无效。请管理员在「配置中心 → 模型接入」填写网关地址与 API Key，"
+    "保存后重新发送消息即可生效（无需重启）。"
+)
 _RAW_ERROR_PATTERN = None  # 延迟编译
+_CONFIG_ERROR_PATTERN = None
+
+
+def _looks_like_config_error(text: str) -> bool:
+    """未登录/凭据无效类错误：给专属中文指引而不是笼统的"服务不稳定"。"""
+    global _CONFIG_ERROR_PATTERN
+    if _CONFIG_ERROR_PATTERN is None:
+        import re
+
+        _CONFIG_ERROR_PATTERN = re.compile(
+            r"Not logged in|/login|Invalid API key|authentication_error|"
+            r"invalid x-api-key|401 Unauthorized|status.?401",
+            re.IGNORECASE,
+        )
+    return bool(_CONFIG_ERROR_PATTERN.search(text or ""))
 
 
 def _looks_like_raw_error(text: str) -> bool:
@@ -34,6 +53,7 @@ def _looks_like_raw_error(text: str) -> bool:
 
         _RAW_ERROR_PATTERN = re.compile(
             r"API Error|Claude Code|request id:|exit code|invalid_grant|"
+            r"Not logged in|Please run /login|Invalid API key|authentication_error|"
             r"OAuth|Traceback \(most recent call last\)",
             re.IGNORECASE,
         )
@@ -158,6 +178,7 @@ class Session:
     sdk_session_id: str | None = None
     resume_attempted: bool = False
     received_any: bool = False
+    env_fingerprint: str = ""  # 创建子进程时的模型配置指纹（配置热更检测）
     last_activity: float = field(default_factory=time.time)
     round_base_commit: str = ""  # 本轮起点 HEAD，用于 result 后产出"产物变更"事件
 
@@ -273,6 +294,20 @@ class SessionManager:
         session.last_activity = time.time()
         if session.state != "running":
             session.round_base_commit = await asyncio.to_thread(_git_head, cwd)
+        # 管理员更新模型配置后，旧子进程仍带着旧环境变量：指纹不一致时
+        # 断开重连（resume 续接上下文），让新网关/Key 立即生效
+        if (
+            session.client is not None
+            and session.env_fingerprint
+            and session.env_fingerprint != _env_fingerprint()
+        ):
+            if session.reader_task:
+                session.reader_task.cancel()
+            try:
+                await session.client.disconnect()
+            except Exception:
+                pass
+            session.client = None
         session.broadcast({"type": "user_message", "text": text})
         if session.client is not None:
             await session.client.query(text)
@@ -335,6 +370,7 @@ class SessionManager:
             session.resume_attempted = bool(resume_id)
             session.received_any = False
             session.client = client
+            session.env_fingerprint = _env_fingerprint()
             session.reader_task = asyncio.create_task(self._read_loop(session))
             session.broadcast(
                 {
@@ -621,7 +657,11 @@ class SessionManager:
                             error_log.log(
                                 session.project_id, "assistant_text", block["text"]
                             )
-                            block["text"] = FRIENDLY_ERROR
+                            block["text"] = (
+                                CONFIG_ERROR
+                                if _looks_like_config_error(block["text"])
+                                else FRIENDLY_ERROR
+                            )
                 if event:
                     session.broadcast(
                         event, transient=event.get("type") == "stream_delta"
@@ -640,7 +680,10 @@ class SessionManager:
                 session.set_state("closed")
             else:
                 error_log.log(session.project_id, "session", str(exc))
-                session.broadcast({"type": "session_error", "error": FRIENDLY_ERROR})
+                friendly = (
+                    CONFIG_ERROR if _looks_like_config_error(str(exc)) else FRIENDLY_ERROR
+                )
+                session.broadcast({"type": "session_error", "error": friendly})
                 session.set_state("error")
             # 子进程已死：释放槽位并唤醒排队者
             if session.client is not None:
@@ -706,6 +749,14 @@ def _permission_mode() -> str:
         return runtime_settings.permission_mode()
     except Exception:
         return config.PERMISSION_MODE
+
+
+def _env_fingerprint() -> str:
+    import hashlib
+
+    return hashlib.sha256(
+        json.dumps(_session_env(), sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def _session_env() -> dict:
