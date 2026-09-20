@@ -282,3 +282,71 @@ def test_resource_directives_roundtrip(manager: WorkspaceManager):
         raise AssertionError("should protect materials.json")
     except WorkspaceError:
         pass
+
+
+def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: Path, monkeypatch):
+    import sqlite3
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import migrate_from_modeling as mig
+
+    # 构造 modeling 数据目录：db + 发布布局包
+    source = tmp_path / "modeling-data"
+    source.mkdir()
+    db = sqlite3.connect(source / "modeling.db")
+    db.execute(
+        "CREATE TABLE projects (id TEXT, owner TEXT, name TEXT, domain TEXT, background TEXT)"
+    )
+    db.execute(
+        "CREATE TABLE documents (project_id TEXT, filename TEXT, kind TEXT,"
+        " text_content TEXT, tables_json TEXT, lifecycle_status TEXT)"
+    )
+    db.execute(
+        "INSERT INTO projects VALUES ('pj_test1', 'alice', '迁移源', '对公营销', '')"
+    )
+    db.execute(
+        "INSERT INTO documents VALUES ('pj_test1', '手册.docx', 'word', '产品说明正文', NULL, 'active')"
+    )
+    db.execute(
+        "INSERT INTO documents VALUES ('pj_test1', '数据表.xlsx', 'excel', NULL,"
+        " '[{\"name\":\"T1\",\"fields\":[{\"name\":\"ID\",\"inferredType\":\"string\","
+        "\"sampleValues\":[\"a\"]}]}]', 'active')"
+    )
+    db.commit()
+    db.close()
+
+    pkg = source / "artifacts" / "pj_test1" / "package"
+    (pkg / "objects").mkdir(parents=True)
+    (pkg / "objects" / "customer.md").write_text(
+        "---\nresource: object\nkey: customer\n---\n\n# 业务定义\n\n客户主体\n",
+        encoding="utf-8",
+    )
+    (pkg / "objects" / "index.md").write_text("目录", encoding="utf-8")
+    (pkg / "scripts").mkdir()
+    (pkg / "scripts" / "calc.py").write_text("print(1)\n", encoding="utf-8")
+    (pkg / "scripts" / "calc.md").write_text("descriptor", encoding="utf-8")
+
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "DATA_DIR", manager.workspaces_dir.parent)
+    monkeypatch.setattr(app_config, "ASSETS_DIR", manager.assets_dir)
+    monkeypatch.setattr(sys, "argv", ["mig", "--source", str(source)])
+    assert mig.main() == 0
+
+    projects = manager.list_projects()
+    migrated = next(p for p in projects if p.get("migrated_from") == "pj_test1")
+    assert migrated["name"] == "迁移源（迁移）"
+    assert migrated["owner"] == "alice"
+    root = manager.project_root(migrated["id"])
+    body = (root / "ontology/object/customer.md").read_text(encoding="utf-8")
+    assert body.startswith("# 业务定义")  # 发布 frontmatter 已剥离
+    assert (root / "ontology/scripts/calc.py").is_file()
+    assert not (root / "ontology/scripts/calc.md").exists()  # 描述符不迁
+    assert "解析文本" in (root / "resource/others/手册.md").read_text(encoding="utf-8")
+    excel = (root / "resource/excel/数据表.md").read_text(encoding="utf-8")
+    assert "| ID | string | a |" in excel
+    assert manager.resource_directives(migrated["id"])["resource/excel/数据表.md"]["purpose"] == "schema"
+    # 幂等：再跑一次跳过
+    assert mig.main() == 0
+    assert sum(1 for p in manager.list_projects() if p.get("migrated_from") == "pj_test1") == 1
