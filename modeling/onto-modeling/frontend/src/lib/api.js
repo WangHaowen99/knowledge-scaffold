@@ -290,6 +290,7 @@ export const api = {
   saveJiuwenModelSettings: (payload) =>
     request('/api/settings/model/jiuwen', { method: 'PUT', body: JSON.stringify(payload) }),
   getProjectEngine: (pid) => request(`/api/projects/${pid}/engine`),
+  evalDataAlignment: (pid) => request(`/api/projects/${pid}/eval-data/alignment`),
   setProjectEngine: (pid, engine) =>
     request(`/api/projects/${pid}/engine`, {
       method: 'PUT',

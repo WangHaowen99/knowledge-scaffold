@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import tempfile
 from pathlib import Path
@@ -374,6 +375,29 @@ def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
     names = [str(n)[:32] for n in body.disabled][:64]
     workspaces._update_meta(project_id, mcp_disabled=names)
     return {"disabled": names}
+
+
+@router.get("/{project_id}/eval-data/alignment")
+def eval_data_alignment(project_id: str, request: Request):
+    """评测数据三方对账（数据列 ↔ schema 字段 ↔ 对象属性）。
+
+    执行工作区工具箱的确定性检查脚本（与 agent 手动运行同一实现），
+    供资料区在 eval_data 资料行上显示对账徽标。
+    """
+    import subprocess
+
+    root = ensure_access(project_id, request)
+    script = root / ".claude" / "scripts" / "check_eval_data.py"
+    if not script.exists():
+        return {"status": "no_schema", "files": []}
+    try:
+        result = subprocess.run(
+            ["python3", str(script), "--json"],
+            cwd=root, capture_output=True, text=True, timeout=60,
+        )
+        return json.loads(result.stdout or "{}")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
+        return {"status": "error", "files": []}
 
 
 class ProjectEngineBody(BaseModel):

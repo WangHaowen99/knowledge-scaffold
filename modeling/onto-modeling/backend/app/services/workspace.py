@@ -339,7 +339,7 @@ class WorkspaceManager:
         }
 
     # 资料用途标签（对齐 modeling 的 material purpose 体系）
-    MATERIAL_PURPOSES = ("auto", "goal", "schema", "term", "evidence")
+    MATERIAL_PURPOSES = ("auto", "goal", "schema", "term", "evidence", "eval_data")
     MATERIAL_READING_MODES = ("on_demand", "full")
 
     def resource_directives(self, project_id: str) -> dict:
