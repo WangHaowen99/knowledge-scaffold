@@ -519,7 +519,8 @@ class WorkspaceManager:
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
         object_keys = {key for key, _ in objects}
-        q = lambda s: json.dumps(s, ensure_ascii=False)  # JSON 字符串是合法 YAML 标量
+        def q(s):
+            return json.dumps(s, ensure_ascii=False)  # JSON 字符串是合法 YAML 标量
 
         manifest = (
             f"kind: ontology-package\n"
@@ -623,14 +624,8 @@ class WorkspaceManager:
             root = self.workspaces_dir / project_id
             root.mkdir(parents=True)
             for info in zf.infolist():
-                parts = Path(info.filename).parts
-                if (
-                    not parts
-                    or info.filename.startswith("/")
-                    or ".." in parts
-                    or info.is_dir()
-                    or parts[0] in (".claude", "CLAUDE.md", "README.md")
-                    or (len(parts) > 1 and parts[0] == ".git" and parts[1] == "hooks")
+                if self._zip_member_skipped(
+                    info, (".claude", "CLAUDE.md", "README.md"), skip_git_hooks=True
                 ):
                     continue
                 if (info.external_attr >> 28) == 0xA:
@@ -664,6 +659,20 @@ class WorkspaceManager:
     # 导入时跳过的顶层条目：资产由本服务重新挂载；.git 不合并（v1 不保留导入方历史）
     IMPORT_SKIP_TOP = {".claude", "CLAUDE.md", "README.md", ".git", META_FILE}
 
+    @staticmethod
+    def _zip_member_skipped(info, skip_top, skip_git_hooks=False) -> bool:
+        """导入包成员过滤：路径穿越/绝对路径/目录项/受管顶层条目一律跳过。"""
+        parts = Path(info.filename).parts
+        if not parts or info.is_dir():
+            return True
+        if info.filename.startswith("/") or ".." in parts:
+            return True
+        if parts[0] in skip_top:
+            return True
+        if skip_git_hooks and len(parts) > 1 and parts[0] == ".git" and parts[1] == "hooks":
+            return True
+        return False
+
     def import_zip(self, name: str, archive_path: Path, owner: str = "") -> dict:
         import zipfile
 
@@ -672,14 +681,7 @@ class WorkspaceManager:
         try:
             with zipfile.ZipFile(archive_path) as zf:
                 for info in zf.infolist():
-                    parts = Path(info.filename).parts
-                    if (
-                        not parts
-                        or info.filename.startswith("/")
-                        or ".." in parts
-                        or parts[0] in self.IMPORT_SKIP_TOP
-                        or info.is_dir()
-                    ):
+                    if self._zip_member_skipped(info, self.IMPORT_SKIP_TOP):
                         continue
                     # 拒绝 zip 内符号链接（external_attr 高位 0xA 表示 symlink）
                     if (info.external_attr >> 28) == 0xA:

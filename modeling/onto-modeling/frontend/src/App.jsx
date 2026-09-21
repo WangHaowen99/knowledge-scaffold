@@ -17,10 +17,12 @@ import {
   Empty,
   Input,
   Modal,
+  Radio,
   Splitter,
   Steps,
   Tag,
   Tooltip,
+  Typography,
   message,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -62,6 +64,8 @@ export default function App() {
   const [drawioAvailable, setDrawioAvailable] = useState(false);
   const [importWiz, setImportWiz] = useState(null); // {step,file,name,summary,importing}
   const [memberWiz, setMemberWiz] = useState(null); // {project, members, newUser, newRole}
+  const [engineWiz, setEngineWiz] = useState(null); // {project, engine, available}
+  const [initialFiles, setInitialFiles] = useState(null); // {projectId, files} 新建项目待发送的初始资料
   const [queryPreset, setQueryPreset] = useState(null); // 反查预置 {kind, term, nonce}
   const [diffFiles, setDiffFiles] = useState(null); // 变更卡带入对比页的文件清单
   const [recentFiles, setRecentFiles] = useState([]);
@@ -108,7 +112,7 @@ export default function App() {
   );
 
   const refreshProjects = useCallback(() => {
-    api
+    return api
       .listProjects()
       .then((data) => {
         setProjects(data.projects);
@@ -223,6 +227,7 @@ export default function App() {
       { key: 'rename', label: '重命名' },
       { key: 'clone', label: '克隆' },
       { key: 'members', label: '成员共享' },
+      { key: 'engine', label: '会话引擎' },
       { key: 'archive', label: item.archived ? '恢复' : '归档' },
       { type: 'divider' },
       { key: 'export-onto', label: '导出知识包（原始产物）' },
@@ -240,6 +245,14 @@ export default function App() {
           const clone = await api.cloneProject(item.id);
           refreshProjects();
           message.success(`已克隆为「${clone.name}」`);
+        } catch (error) {
+          message.error(error.message);
+        }
+      }
+      if (key === 'engine') {
+        try {
+          const data = await api.getProjectEngine(item.id);
+          setEngineWiz({ project: item, engine: data.engine, available: data.available });
         } catch (error) {
           message.error(error.message);
         }
@@ -314,8 +327,10 @@ export default function App() {
     return (
       <CreatePage
         onBack={() => nav('#/')}
-        onCreated={(created) => {
-          refreshProjects();
+        onCreated={async (created, files) => {
+          if (files?.length) setInitialFiles({ projectId: created.id, files });
+          // 先等列表刷新拿到新项目，再进入项目页（否则 project 解析为空会落回列表）
+          await refreshProjects();
           nav(`#/p/${created.id}`);
         }}
       />
@@ -543,6 +558,44 @@ export default function App() {
             value={renaming?.name}
             onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
           />
+        </Modal>
+        <Modal
+          title={engineWiz ? `会话引擎 · ${engineWiz.project.name}` : ''}
+          open={!!engineWiz}
+          onCancel={() => setEngineWiz(null)}
+          okText="切换"
+          onOk={async () => {
+            try {
+              await api.setProjectEngine(engineWiz.project.id, engineWiz.engine);
+              message.success('已切换引擎；当前会话已重启，下一条消息用新引擎启动');
+              setEngineWiz(null);
+            } catch (error) {
+              message.error(error.message);
+            }
+          }}
+          width={460}
+        >
+          {engineWiz && (
+            <div>
+              <Radio.Group
+                value={engineWiz.engine}
+                onChange={(e) => setEngineWiz({ ...engineWiz, engine: e.target.value })}
+                style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+              >
+                <Radio value="claude">
+                  Claude 引擎（默认）— Anthropic 网关，功能最完整
+                </Radio>
+                <Radio value="jiuwen" disabled={!engineWiz.available?.jiuwen}>
+                  Jiuwen 引擎 — OpenAI 兼容模型直连，低内存（灰度中）
+                  {!engineWiz.available?.jiuwen && '（当前部署未安装）'}
+                </Radio>
+              </Radio.Group>
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12 }}>
+                切换即重启会话：界面历史保留可回放，模型上下文按新引擎的续接方式重建。
+                Jiuwen 引擎需管理员先在「配置中心 → 模型接入」配置 OpenAI 兼容模型。
+              </Typography.Paragraph>
+            </div>
+          )}
         </Modal>
         <Modal
           title={memberWiz ? `成员共享 · ${memberWiz.project.name}` : ''}
@@ -774,6 +827,8 @@ export default function App() {
             <div className="pane pane-right">
               <ChatPane
                 onActiveStage={setActiveStage}
+                initialFiles={initialFiles?.projectId === project.id ? initialFiles.files : null}
+                onInitialFilesConsumed={() => setInitialFiles(null)}
                 project={project}
                 tree={tree}
                 meta={project}

@@ -287,6 +287,14 @@ export const api = {
   getModelSettings: () => request('/api/settings/model'),
   saveModelSettings: (payload) =>
     request('/api/settings/model', { method: 'PUT', body: JSON.stringify(payload) }),
+  saveJiuwenModelSettings: (payload) =>
+    request('/api/settings/model/jiuwen', { method: 'PUT', body: JSON.stringify(payload) }),
+  getProjectEngine: (pid) => request(`/api/projects/${pid}/engine`),
+  setProjectEngine: (pid, engine) =>
+    request(`/api/projects/${pid}/engine`, {
+      method: 'PUT',
+      body: JSON.stringify({ engine }),
+    }),
   mcpService: () => request('/api/settings/mcp-service'),
   mcpServiceCreateToken: (name) =>
     request('/api/settings/mcp-service/tokens', {

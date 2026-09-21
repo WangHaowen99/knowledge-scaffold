@@ -288,7 +288,7 @@ def test_migrate_from_modeling_end_to_end(manager: WorkspaceManager, tmp_path: P
     import sqlite3
     import sys
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    sys.path.append(str(Path(__file__).resolve().parents[1] / "scripts"))
     import migrate_from_modeling as mig
 
     # 构造 modeling 数据目录：db + 发布布局包

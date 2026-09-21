@@ -14,7 +14,7 @@ REPORT_TZ = ZoneInfo("Asia/Shanghai")
 
 # Sibling script under .claude/scripts/; works when invoked as
 # `python3 .claude/scripts/ontology_checker.py` (sys.path[0] is the script dir).
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parent))
 from knowledge_helper import parse_frontmatter as _hk_parse_frontmatter
 
 # =============================================================================

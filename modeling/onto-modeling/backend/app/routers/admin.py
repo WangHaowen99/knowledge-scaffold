@@ -60,15 +60,14 @@ def overview(request: Request):
     except OSError:
         load = (0, 0, 0)
 
+    recent_users = sorted(auth.LAST_SEEN.items(), key=lambda item: -item[1])
     users = [
         {
             "username": username,
             "last_seen": last_seen,
             "online": now - last_seen < ONLINE_WINDOW_SECONDS,
         }
-        for username, last_seen in sorted(
-            auth.LAST_SEEN.items(), key=lambda item: -item[1]
-        )
+        for username, last_seen in recent_users
     ]
 
     sessions = [

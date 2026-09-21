@@ -201,7 +201,9 @@ function collectResources(nodes) {
         node.type === 'file' &&
         node.path.startsWith('resource/') &&
         node.name.toLowerCase() !== 'readme.md' &&
-        node.path !== 'resource/materials.json'
+        node.path !== 'resource/materials.json' &&
+        // 图例定义供流程图工具链使用（摘要节点分类依赖），不作为用户资料展示
+        node.path !== 'resource/diagrams/图示说明定义.drawio'
       )
         files.push(node);
       if (node.children) walk(node.children);

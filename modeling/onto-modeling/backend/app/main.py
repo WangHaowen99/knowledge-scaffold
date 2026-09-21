@@ -67,11 +67,12 @@ async def auth_middleware(request: Request, call_next):
         if not mcp_expose.verify_token(token):
             return JSONResponse(status_code=401, content={"error": "无效的服务令牌"})
         return await call_next(request)
+    is_non_api = not path.startswith("/api")
+    is_exempt = path.startswith(AUTH_EXEMPT_PREFIXES) or path == "/api/health"
     if (
         not auth.ENABLED
-        or not path.startswith("/api")
-        or path.startswith(AUTH_EXEMPT_PREFIXES)
-        or path == "/api/health"
+        or is_non_api
+        or is_exempt
     ):
         return await call_next(request)
     token = ""

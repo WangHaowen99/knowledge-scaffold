@@ -77,7 +77,13 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
     out.push({ key: 'revalidate', label: '重新校验', tooltip: '重新运行完整校验', command: '/ontology-validate' });
   } else if (
     (meta?.resource_updated_at || 0) > (versions?.[0]?.time || 0) &&
-    paths.some((p) => p.startsWith('research/'))
+    // 需存在真实派生产物才谈"刷新"：目录占位 index.md 不算（新项目误报修复）
+    paths.some(
+      (p) =>
+        (p.startsWith('research/') || p.startsWith('ontology/')) &&
+        !p.endsWith('/') &&
+        !p.endsWith('index.md'),
+    )
   ) {
     out.push({
       key: 'refresh',
@@ -548,6 +554,8 @@ function CopyOpButton({ text }) {
 
 export default function ChatPane({
   project,
+  initialFiles,
+  onInitialFilesConsumed,
   tree,
   meta,
   versions,
@@ -850,11 +858,11 @@ export default function ChatPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventCount]);
 
-  const send = async (text) => {
+  const send = async (text, explicitAttachments = null) => {
     const trimmed = (text || '').trim();
     if (uploading) return;
-    if (!trimmed && attachments.length === 0) return;
-    const toUpload = attachments;
+    const toUpload = explicitAttachments ?? attachments;
+    if (!trimmed && toUpload.length === 0) return;
     setInput('');
     recallIndexRef.current = -1;
     // 附件立即离开输入框，进入对话区变成带进度条的文件卡（并行上传）
@@ -884,6 +892,8 @@ export default function ChatPane({
               resourceSubdir(att.name),
               att.file,
               (ratio) => patchUpload(att.uid, { percent: Math.round(ratio * 100) }),
+              att.purpose,
+              att.readingMode,
             );
             patchUpload(att.uid, { percent: 100, status: 'done' });
             return { att, path: saved.path };
@@ -920,6 +930,21 @@ export default function ChatPane({
       setUploading(false);
     }
   };
+
+  useEffect(() => {
+    if (!initialFiles?.length) return;
+    const atts = initialFiles.map((f, i) => ({
+      uid: `init-${Date.now()}-${i}`,
+      name: f.name,
+      file: f.file,
+      preview: null,
+      purpose: f.purpose,
+      readingMode: f.readingMode,
+    }));
+    onInitialFilesConsumed?.();
+    void send('这是本项目的初始领域资料，请接收并简要浏览，等待我的下一步指令。', atts);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFiles]);
 
   useEffect(() => {
     registerSend?.((command) => {

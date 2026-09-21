@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config
@@ -374,6 +374,46 @@ def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
     names = [str(n)[:32] for n in body.disabled][:64]
     workspaces._update_meta(project_id, mcp_disabled=names)
     return {"disabled": names}
+
+
+class ProjectEngineBody(BaseModel):
+    engine: str  # claude | jiuwen
+
+
+@router.get("/{project_id}/engine")
+def get_project_engine(project_id: str, request: Request):
+    from ..services.engines import get_engine_class
+    from ..services.engines.jiuwen import JIUWEN_AVAILABLE
+
+    ensure_access(project_id, request)
+    meta = workspaces.get_project(project_id)
+    current = meta.get("engine") or "claude"
+    return {
+        "engine": get_engine_class(current).name,
+        "available": {"claude": True, "jiuwen": JIUWEN_AVAILABLE},
+    }
+
+
+@router.put("/{project_id}/engine")
+async def put_project_engine(project_id: str, body: ProjectEngineBody, request: Request):
+    """切换会话引擎（灰度开关）。切换即终止当前会话：界面历史保留可回放，
+    下一条消息用新引擎启动（Jiuwen 经历史回放续接上下文，Claude 全新会话）。"""
+    from ..services.agent_sessions import manager
+    from ..services.engines import get_engine_class
+
+    ensure_access(project_id, request, write=True)
+    name = (body.engine or "").strip()
+    if name not in ("claude", "jiuwen"):
+        return JSONResponse(status_code=400, content={"error": "未知引擎"})
+    engine_cls = get_engine_class(name)
+    if not engine_cls.available():
+        return JSONResponse(
+            status_code=400,
+            content={"error": getattr(engine_cls, "UNAVAILABLE_MESSAGE", "引擎不可用")},
+        )
+    workspaces._update_meta(project_id, engine=name)
+    await manager.close(project_id)
+    return {"engine": name}
 
 
 @router.get("/{project_id}/studio/graph")

@@ -37,26 +37,14 @@ export default function CreatePage({ onBack, onCreated }) {
   const updateFile = (name, patch) =>
     setFiles((current) => current.map((item) => (item.name === name ? { ...item, ...patch } : item)));
 
-  const start = async (template = 'blank') => {
+  const start = async () => {
     if (!name.trim() || creating) return;
     setCreating(true);
     setError('');
     try {
-      const created = await api.createProject(name.trim(), template, goal.trim());
-      for (const item of files) {
-        // 初始资料逐个上传到资料区（带用途标签）；失败不阻断进入项目
-        await api
-          .uploadResource(
-            created.id,
-            autoSubdir(item.name),
-            item.file,
-            undefined,
-            item.purpose,
-            item.readingMode,
-          )
-          .catch((cause) => message.warning(`${item.name} 上传失败：${cause.message}`));
-      }
-      onCreated(created);
+      const created = await api.createProject(name.trim(), 'blank', goal.trim());
+      // 资料不在本页上传：立即进入项目，由聊天框作为文档附件发送（带进度卡）
+      onCreated(created, files);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '项目创建失败');
       setCreating(false);
@@ -201,20 +189,9 @@ export default function CreatePage({ onBack, onCreated }) {
               className="btn btn-p"
               style={{ padding: '9px 22px' }}
               disabled={!name.trim() || creating}
-              onClick={() => void start('blank')}
+              onClick={() => void start()}
             >
               {creating ? '正在创建…' : '开始建模'}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={creating}
-              onClick={() => {
-                if (!name.trim()) setName('外卖订单示例');
-                void start('example');
-              }}
-            >
-              注入外卖订单示例
             </button>
             <button type="button" className="btn btn-ghost" onClick={onBack} title="取消并返回项目列表">
               取消建模
