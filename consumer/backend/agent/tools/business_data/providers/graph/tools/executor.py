@@ -11,6 +11,10 @@ from agent.tools.business_data.providers.base import OntologySearchEvent, normal
 
 from ..backends.base import GraphBackend, GraphBackendUnsupportedError
 from ..models import GraphBackendResult, GraphEntityMapping, GraphSearchRuntimeContext
+from ..property_types import (
+    GraphFilterTypeResolver,
+    normalize_pattern_filters,
+)
 from ..scope import sanitize_return_properties
 
 GraphToolEventSink = Callable[[OntologySearchEvent], None]
@@ -27,6 +31,13 @@ DATA_TOOLS = {
     "list_logic_titles",
     "get_logic_content",
     "get_element_info",
+}
+
+_PATTERN_CONTROL_KEYS = {
+    "label", "type", "edge_type", "var", "direction", "return_properties",
+    "entity_type_id", "entity_instance_id", "entity_name", "entity_id",
+    "relation_type", "relation_type_id", "relation_id", "relation_name",
+    "physical_relation_type", "props", "filters",
 }
 
 
@@ -60,6 +71,12 @@ class GraphToolExecutor:
         self.context = context
         self.mapping = mapping
         self.event_sink = event_sink
+        self.type_resolver = GraphFilterTypeResolver(
+            backend=backend,
+            scope=context.scope,
+            schema_context=context.schema_context,
+            provider=context.provider,
+        )
 
     def execute(self, tool_name: str, tool_args: Mapping[str, Any] | None) -> GraphToolExecution:
         name = str(tool_name or "").strip()
@@ -174,10 +191,15 @@ class GraphToolExecutor:
                     )
                 rows.append(row)
                 continue
+            normalized_filter = self.type_resolver.normalize_filter(
+                query["filter_dict"],
+                element_type=query["element_type"],
+                element_class=query["element_class"],
+            ).filter_dict
             result = self.backend.property_filter(
                 element_class=query["element_class"],
                 element_type=query["element_type"],
-                filter_dict=query["filter_dict"],
+                filter_dict=normalized_filter,
                 return_properties=query.get("return_properties"),
                 limit=effective_limit,
                 offset=query["offset"],
@@ -248,10 +270,15 @@ class GraphToolExecutor:
         total = 0
         warnings: list[str] = []
         for index, query in enumerate(queries):
+            normalized_filter = self.type_resolver.normalize_filter(
+                query["filter_dict"],
+                element_type=query["element_type"],
+                element_class=query["element_class"],
+            ).filter_dict
             result = self.backend.count_search(
                 element_class=query["element_class"],
                 element_type=query["element_type"],
-                filter_dict=query["filter_dict"],
+                filter_dict=normalized_filter,
                 scope=self.context.scope,
             )
             count = int(result.total or 0)
@@ -288,21 +315,30 @@ class GraphToolExecutor:
             raise GraphToolInputError("element_type 仅支持 NODE 或 EDGE")
         if not isinstance(filter_dict, Mapping):
             raise GraphToolInputError("filter_dict 必须是对象")
+        normalized_filter = self.type_resolver.normalize_filter(
+            filter_dict,
+            element_type=element_type,
+            element_class=element_class,
+        ).filter_dict
         result = self.backend.aggregate_search(
             element_class=element_class,
             element_type=element_type,
             target_property=target_property,
             agg=agg,
-            filter_dict=dict(filter_dict),
+            filter_dict=normalized_filter,
             scope=self.context.scope,
         )
+        aggregate_records = _records_with_external_filter(
+            result.records,
+            filter_dict,
+        )
         payload = {
-            "result": (result.records or [{}])[0] if result.records else {},
+            "result": aggregate_records[0] if aggregate_records else {},
             "success": True,
             "message": {"description": "聚合成功"},
         }
         backend_result = GraphBackendResult(
-            records=list(result.records or []),
+            records=aggregate_records,
             total=result.total,
             truncated=bool(result.truncated),
             warnings=list(result.warnings or []),
@@ -322,10 +358,15 @@ class GraphToolExecutor:
             raise GraphToolInputError("filter_dict 必须是对象")
         limit = _positive_int(args.get("limit"), default=min(self.context.max_result_rows, 50), upper=2000)
         offset = _non_negative_int(args.get("offset"), default=0)
+        normalized_filter = self.type_resolver.normalize_filter(
+            filter_dict,
+            element_type=element_type,
+            element_class=element_class,
+        ).filter_dict
         result = self.backend.sorted_search(
             element_class=element_class,
             element_type=element_type,
-            filter_dict=dict(filter_dict),
+            filter_dict=normalized_filter,
             return_properties=_optional_string_list(args.get("return_properties")),
             sort_by=_optional_string_list(args.get("sort_by")),
             ascending=bool(args.get("ascending", True)),
@@ -365,14 +406,23 @@ class GraphToolExecutor:
             raise GraphToolInputError("path_pattern 必须是非空数组")
         return_vars = _optional_string_list(args.get("return_vars"))
         return_properties = _normalize_pattern_return_properties(args.get("return_properties"))
-        _validate_pattern_search_against_schema(
-            path_pattern=path_pattern,
+        self.type_resolver.prepare_pattern_targets(
+            path_pattern,
             return_properties=return_properties,
-            schema_context=self.context.schema_context,
+        )
+        normalized_path_pattern = normalize_pattern_filters(
+            path_pattern,
+            self.type_resolver,
+            return_properties=return_properties,
+        )
+        _validate_pattern_search_against_schema(
+            path_pattern=normalized_path_pattern,
+            return_properties=return_properties,
+            schema_context=self.type_resolver.validation_schema_context(),
         )
         limit = _positive_int(args.get("limit"), default=min(self.context.max_result_rows, 200), upper=2000)
         result = self.backend.pattern_search(
-            path_pattern=path_pattern,
+            path_pattern=normalized_path_pattern,
             return_vars=return_vars,
             limit=limit,
             scope=self.context.scope,
@@ -445,11 +495,21 @@ class GraphToolExecutor:
         if not isinstance(end_props, Mapping):
             raise GraphToolInputError("end_props 必须是对象")
         max_depth = _positive_int(args.get("max_depth"), default=15, upper=15)
+        normalized_start_props = self.type_resolver.normalize_properties(
+            start_props,
+            element_type="NODE",
+            element_class=start_label,
+        )
+        normalized_end_props = self.type_resolver.normalize_properties(
+            end_props,
+            element_type="NODE",
+            element_class=end_label,
+        )
         result = self.backend.shortest_path_search(
             start_label=start_label,
-            start_props=dict(start_props),
+            start_props=normalized_start_props,
             end_label=end_label,
-            end_props=dict(end_props),
+            end_props=normalized_end_props,
             max_depth=max_depth,
             directed=bool(args.get("directed", False)),
             scope=self.context.scope,
@@ -741,6 +801,22 @@ def _single_payload_record(result: GraphBackendResult) -> dict[str, Any]:
     return dict(first) if isinstance(first, Mapping) else {}
 
 
+def _records_with_external_filter(
+    records: list[dict[str, Any]] | None,
+    filter_dict: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    external_filter = dict(filter_dict or {})
+    normalized: list[dict[str, Any]] = []
+    for raw_record in records or []:
+        record = dict(raw_record)
+        if "applied_filter" in record:
+            record["applied_filter"] = external_filter
+        if "filter_keys" in record:
+            record["filter_keys"] = list(external_filter)
+        normalized.append(record)
+    return normalized
+
+
 def _normalize_pattern_return_properties(raw_value: Any) -> Any | None:
     if raw_value in (None, ""):
         return None
@@ -828,11 +904,23 @@ def _validate_pattern_search_against_schema(
         if var and role in {"node", "edge"} and name:
             var_targets[var] = (role, name)
         if role == "node":
-            _validate_schema_name(name, schema["node_labels"], "节点 label")
-            _validate_filter_fields(segment.get("props"), schema["node_fields"].get(name), "节点 {}".format(name))
+            if not schema.get("node_labels_truncated"):
+                _validate_schema_name(name, schema["node_labels"], "节点 label")
+            _validate_filter_fields(
+                segment.get("props"),
+                schema["node_fields"].get(name),
+                "节点 {}".format(name),
+                schema_complete=name not in schema.get("node_fields_truncated_for", set()),
+            )
         elif role == "edge":
-            _validate_schema_name(name, schema["relationship_types"], "关系 type")
-            _validate_filter_fields(segment.get("props"), schema["edge_fields"].get(name), "关系 {}".format(name))
+            if not schema.get("relationship_types_truncated"):
+                _validate_schema_name(name, schema["relationship_types"], "关系 type")
+            _validate_filter_fields(
+                segment.get("props"),
+                schema["edge_fields"].get(name),
+                "关系 {}".format(name),
+                schema_complete=name not in schema.get("edge_fields_truncated_for", set()),
+            )
 
     _validate_pattern_return_properties_against_schema(
         return_properties=return_properties,
@@ -848,11 +936,47 @@ def _schema_index(schema_context: Mapping[str, Any] | None) -> dict[str, Any]:
             "relationship_types": set(),
             "node_fields": {},
             "edge_fields": {},
+            "node_labels_truncated": False,
+            "relationship_types_truncated": False,
+            "node_fields_truncated_for": set(),
+            "edge_fields_truncated_for": set(),
         }
     nodes_schema = schema_context.get("nodes_schema")
     edges_schema = schema_context.get("edges_schema")
     node_schema_map = (nodes_schema or {}).get("schema") if isinstance(nodes_schema, Mapping) else {}
     edge_schema_map = (edges_schema or {}).get("schema") if isinstance(edges_schema, Mapping) else {}
+    node_fields_truncated_for = {
+        str(item).strip()
+        for item in ((nodes_schema or {}).get("fields_truncated") if isinstance(nodes_schema, Mapping) else [])
+        if str(item).strip()
+    }
+    edge_fields_truncated_for = {
+        str(item).strip()
+        for item in ((edges_schema or {}).get("fields_truncated") if isinstance(edges_schema, Mapping) else [])
+        if str(item).strip()
+    }
+    node_field_complete = (
+        nodes_schema.get("field_complete")
+        if isinstance(nodes_schema, Mapping)
+        else {}
+    )
+    edge_field_complete = (
+        edges_schema.get("field_complete")
+        if isinstance(edges_schema, Mapping)
+        else {}
+    )
+    if isinstance(node_field_complete, Mapping):
+        node_fields_truncated_for.update(
+            str(label).strip()
+            for label, complete in node_field_complete.items()
+            if str(label).strip() and complete is False
+        )
+    if isinstance(edge_field_complete, Mapping):
+        edge_fields_truncated_for.update(
+            str(edge_type).strip()
+            for edge_type, complete in edge_field_complete.items()
+            if str(edge_type).strip() and complete is False
+        )
     node_fields = {
         str(label): set(str(field) for field in fields)
         for label, fields in (node_schema_map if isinstance(node_schema_map, Mapping) else {}).items()
@@ -873,11 +997,19 @@ def _schema_index(schema_context: Mapping[str, Any] | None) -> dict[str, Any]:
         for edge_type in ((edges_schema or {}).get("relationship_types") if isinstance(edges_schema, Mapping) else [])
         if str(edge_type).strip()
     } | set(edge_fields)
+    if isinstance(nodes_schema, Mapping) and nodes_schema.get("source_truncated"):
+        node_fields_truncated_for.update(node_labels)
+    if isinstance(edges_schema, Mapping) and edges_schema.get("source_truncated"):
+        edge_fields_truncated_for.update(relationship_types)
     return {
         "node_labels": node_labels,
         "relationship_types": relationship_types,
         "node_fields": node_fields,
         "edge_fields": edge_fields,
+        "node_labels_truncated": bool(isinstance(nodes_schema, Mapping) and (nodes_schema.get("truncated") or nodes_schema.get("source_truncated"))),
+        "relationship_types_truncated": bool(isinstance(edges_schema, Mapping) and (edges_schema.get("truncated") or edges_schema.get("source_truncated"))),
+        "node_fields_truncated_for": node_fields_truncated_for,
+        "edge_fields_truncated_for": edge_fields_truncated_for,
     }
 
 
@@ -894,11 +1026,19 @@ def _pattern_segment(raw_segment: Any, index: int) -> dict[str, Any]:
     if isinstance(raw_segment, Mapping):
         label = str(raw_segment.get("label") or "").strip()
         edge_type = str(raw_segment.get("type") or raw_segment.get("edge_type") or "").strip()
-        role = "node" if label else "edge" if edge_type else ""
+        relation = str(raw_segment.get("relation_type") or raw_segment.get("relation_type_id") or "").strip()
+        if index % 2 == 0:
+            role = "node"
+            name = label or str(
+                raw_segment.get("entity_type_id") or raw_segment.get("type") or ""
+            ).strip()
+        else:
+            role = "edge"
+            name = edge_type or relation
         return {
             "role": role,
-            "name": label or edge_type,
-            "var": str(raw_segment.get("var") or "").strip(),
+            "name": name,
+            "var": str(raw_segment.get("var") or _default_pattern_alias(role, index)).strip(),
             "props": _segment_props(raw_segment),
         }
     if isinstance(raw_segment, list) and raw_segment:
@@ -910,19 +1050,32 @@ def _pattern_segment(raw_segment: Any, index: int) -> dict[str, Any]:
         if isinstance(selector, Mapping):
             label = str(selector.get("label") or "").strip()
             edge_type = str(selector.get("type") or selector.get("edge_type") or "").strip()
-            role = "node" if label else "edge" if edge_type else ""
+            relation = str(selector.get("relation_type") or selector.get("relation_type_id") or "").strip()
+            if index % 2 == 0:
+                role = "node"
+                name = label or str(
+                    selector.get("entity_type_id") or selector.get("type") or ""
+                ).strip()
+            else:
+                role = "edge"
+                name = edge_type or relation
             props.update(_segment_props(selector))
             return {
                 "role": role,
-                "name": label or edge_type,
-                "var": str(selector.get("var") or "").strip(),
+                "name": name,
+                "var": str(selector.get("var") or _default_pattern_alias(role, index)).strip(),
                 "props": props,
             }
         name = str(selector or "").strip()
         if not name:
             return {}
         role = "edge" if index % 2 == 1 or _segment_has_direction(raw_segment[1:]) else "node"
-        return {"role": role, "name": name, "var": "", "props": props}
+        return {
+            "role": role,
+            "name": name,
+            "var": _default_pattern_alias(role, index),
+            "props": props,
+        }
     return {}
 
 
@@ -932,7 +1085,21 @@ def _segment_props(segment: Mapping[str, Any]) -> dict[str, Any]:
         value = segment.get(key)
         if isinstance(value, Mapping):
             props.update(dict(value))
+    props.update(
+        {
+            str(key).strip(): value
+            for key, value in segment.items()
+            if str(key).strip() not in _PATTERN_CONTROL_KEYS
+        }
+    )
     return props
+
+
+def _default_pattern_alias(role: str, index: int) -> str:
+    if role == "edge":
+        return "r{}".format((index + 1) // 2)
+    node_index = index // 2
+    return chr(ord("a") + node_index) if node_index < 26 else "n{}".format(node_index + 1)
 
 
 def _segment_has_direction(values: list[Any]) -> bool:
@@ -946,8 +1113,14 @@ def _validate_schema_name(name: str, allowed: set[str], kind: str) -> None:
         raise GraphToolInputError("{} 不存在于预取图 schema: {}".format(kind, name))
 
 
-def _validate_filter_fields(raw_props: Any, allowed_fields: set[str] | None, target: str) -> None:
-    if not raw_props or not allowed_fields:
+def _validate_filter_fields(
+    raw_props: Any,
+    allowed_fields: set[str] | None,
+    target: str,
+    *,
+    schema_complete: bool = True,
+) -> None:
+    if not raw_props or not allowed_fields or not schema_complete:
         return
     if not isinstance(raw_props, Mapping):
         return
@@ -972,10 +1145,17 @@ def _validate_pattern_return_properties_against_schema(
             target = var_targets.get(var)
             if not target:
                 continue
+            if not _target_schema_complete(target, schema):
+                continue
             allowed = _fields_for_target(target, schema)
             _validate_return_properties_for_target(raw_properties, allowed, "变量 {}".format(var))
         return
     if isinstance(return_properties, list):
+        if any(
+            not _target_schema_complete(target, schema)
+            for target in var_targets.values()
+        ):
+            return
         allowed_all = set()
         for target in var_targets.values():
             allowed_all.update(_fields_for_target(target, schema))
@@ -989,6 +1169,17 @@ def _fields_for_target(target: tuple[str, str], schema: Mapping[str, Any]) -> se
     if role == "edge":
         return set((schema.get("edge_fields") or {}).get(name) or set())
     return set()
+
+
+def _target_schema_complete(
+    target: tuple[str, str],
+    schema: Mapping[str, Any],
+) -> bool:
+    role, name = target
+    truncated_key = (
+        "node_fields_truncated_for" if role == "node" else "edge_fields_truncated_for"
+    )
+    return name not in set(schema.get(truncated_key) or set())
 
 
 def _validate_return_properties_for_target(raw_properties: Any, allowed_fields: set[str], target: str) -> None:

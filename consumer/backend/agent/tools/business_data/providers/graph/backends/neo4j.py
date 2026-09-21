@@ -25,7 +25,13 @@ from .base import GraphBackendError, GraphBackendTimeoutError, GraphBackendUnsup
 
 _ENTITY_TYPE_ID_TOKEN_RE = re.compile(r"^[eE]\d+$")
 _RELATION_TYPE_ID_TOKEN_RE = re.compile(r"^[rR]\d+$")
-_PATTERN_SEGMENT_META_KEYS = {"return_properties"}
+_PATTERN_SEGMENT_META_KEYS = {
+    "label", "type", "edge_type", "var", "direction", "return_properties",
+    "entity_type_id", "entity_instance_id", "entity_name", "entity_id",
+    "relation_type", "relation_type_id", "relation_id", "relation_name",
+    "physical_relation_type", "props", "filters",
+}
+_PATTERN_NESTED_META_KEYS = {"return_properties"}
 _PATTERN_COMPACT_EXACT_KEYS = {
     "ID",
     "Status",
@@ -62,6 +68,8 @@ _PATTERN_COMPACT_KEYWORDS = (
 
 class Neo4jGraphBackend:
     """Read-only Neo4J backend used inside GraphSearchRuntime."""
+
+    provider = "neo4j"
 
     def __init__(self, provider_config: Mapping[str, Any]) -> None:
         self.uri = str(provider_config.get("uri") or "").strip()
@@ -130,7 +138,7 @@ class Neo4jGraphBackend:
                 prop_name = str(_mapping_get(item, "name") or "").strip()
                 prop_type = str(_mapping_get(item, "type") or "").strip()
                 if prop_name and prop_type:
-                    props[prop_name] = prop_type
+                    _merge_schema_type(props, prop_name, prop_type)
             schema[label] = props
         labels = sorted(schema)
         return {"labels": labels, "schema": schema, "count": len(labels)}
@@ -167,7 +175,7 @@ class Neo4jGraphBackend:
                 prop_name = str(_mapping_get(item, "name") or "").strip()
                 prop_type = str(_mapping_get(item, "type") or "").strip()
                 if prop_name and prop_type:
-                    props[prop_name] = prop_type
+                    _merge_schema_type(props, prop_name, prop_type)
             physical_schema[rel_type] = props
 
         triple_params: dict[str, Any] = {}
@@ -180,6 +188,7 @@ class Neo4jGraphBackend:
             "labels(s) AS source_labels, "
             "coalesce(r.relation_id, '') AS relation_type_id, "
             "coalesce(r.relation_type, type(r)) AS relation_type, "
+            "type(r) AS physical_relation_type, "
             "coalesce(r.relation_name, '') AS relation_name, "
             "coalesce(t.entity_id, '') AS target_entity_type_id, "
             "coalesce(t.entity_name, '') AS target_entity_name, "
@@ -201,20 +210,19 @@ class Neo4jGraphBackend:
                 continue
             if relation_type:
                 relationship_types.add(relation_type)
-            relation_triples.append(
-                {
-                    "source_entity_type_id": _record_get(record, "source_entity_type_id") or "",
-                    "source_entity_name": _record_get(record, "source_entity_name") or "",
-                    "source_label": _pick_business_label(_record_get(record, "source_labels")),
-                    "relation_type_id": _record_get(record, "relation_type_id") or "",
-                    "relation_type": relation_type,
-                    "relation_name": _record_get(record, "relation_name") or "",
-                    "target_entity_type_id": _record_get(record, "target_entity_type_id") or "",
-                    "target_entity_name": _record_get(record, "target_entity_name") or "",
-                    "target_label": _pick_business_label(_record_get(record, "target_labels")),
-                    "edge_count": int(_record_get(record, "edge_count") or 0),
-                }
-            )
+            relation_triples.append({
+                "source_entity_type_id": _record_get(record, "source_entity_type_id") or "",
+                "source_entity_name": _record_get(record, "source_entity_name") or "",
+                "source_label": _pick_business_label(_record_get(record, "source_labels")),
+                "relation_type_id": _record_get(record, "relation_type_id") or "",
+                "relation_type": relation_type,
+                "physical_relation_type": _record_get(record, "physical_relation_type") or "",
+                "relation_name": _record_get(record, "relation_name") or "",
+                "target_entity_type_id": _record_get(record, "target_entity_type_id") or "",
+                "target_entity_name": _record_get(record, "target_entity_name") or "",
+                "target_label": _pick_business_label(_record_get(record, "target_labels")),
+                "edge_count": int(_record_get(record, "edge_count") or 0),
+            })
 
         return {
             "relationship_types": sorted(relationship_types),
@@ -223,6 +231,80 @@ class Neo4jGraphBackend:
             "relation_triples": relation_triples,
             "physical_relation_type_count": len(physical_schema),
             "relation_triple_count": len(relation_triples),
+        }
+
+    def get_property_types(
+        self,
+        *,
+        element_class: str,
+        element_type: str,
+        property_names: list[str],
+        scope: GraphScope,
+    ) -> dict[str, Any]:
+        """Read requested physical types when the prompt schema is incomplete."""
+
+        elem_type = str(element_type or "").strip().upper()
+        elem_class = str(element_class or "").strip()
+        fields = [str(item).strip() for item in property_names if str(item).strip()]
+        if elem_type not in {"NODE", "EDGE"} or not elem_class or not fields:
+            return {"property_types": {}, "complete": True, "source": "neo4j_valueType"}
+
+        params: dict[str, Any] = {
+            "elem_class": elem_class,
+            "property_names": fields,
+            "excluded_keys": sorted(_schema_excluded_keys(scope)),
+        }
+        if elem_type == "NODE":
+            where_parts = _build_scope_where("e", scope, params)
+            where_parts.extend(_build_exclude_logic_where("e"))
+            where_parts.append(_build_element_class_match("e", "NODE"))
+            query = (
+                "MATCH (e) WHERE {where} "
+                "UNWIND $property_names AS prop "
+                "WITH prop, e[prop] AS prop_value "
+                "WHERE prop_value IS NOT NULL AND NOT prop IN $excluded_keys "
+                "RETURN prop, collect(DISTINCT replace(valueType(prop_value), ' NOT NULL', '')) AS types"
+            ).format(where=" AND ".join(where_parts))
+            try:
+                records = self._run(query, params)
+            except Exception as exc:
+                _raise_backend_error("Neo4J get_property_types failed", exc)
+            return {
+                "property_types": _collect_property_types(records),
+                "complete": True,
+                "source": "neo4j_valueType",
+            }
+
+        where_parts = _build_edge_scope_where("a", "e", "b", scope, params)
+        where_parts.append(_build_element_class_match("e", "EDGE"))
+        query = (
+            "MATCH (a)-[e]->(b) WHERE {where} "
+            "UNWIND $property_names AS prop "
+            "WITH prop, e[prop] AS prop_value "
+            "WHERE prop_value IS NOT NULL AND NOT prop IN $excluded_keys "
+            "RETURN prop, collect(DISTINCT replace(valueType(prop_value), ' NOT NULL', '')) AS types"
+        ).format(where=" AND ".join(where_parts))
+        physical_query = (
+            "MATCH (a)-[e]->(b) WHERE {where} "
+            "RETURN collect(DISTINCT type(e)) AS physical_relation_types"
+        ).format(where=" AND ".join(where_parts))
+        try:
+            records = self._run(query, params)
+            physical_records = self._run(physical_query, params)
+        except Exception as exc:
+            _raise_backend_error("Neo4J get_property_types failed", exc)
+        physical_types: list[str] = []
+        for record in physical_records:
+            physical_types.extend(
+                str(item).strip()
+                for item in (_record_get(record, "physical_relation_types") or [])
+                if str(item).strip()
+            )
+        return {
+            "property_types": _collect_property_types(records),
+            "physical_relation_types": sorted(set(physical_types)),
+            "complete": True,
+            "source": "neo4j_valueType",
         }
 
     def property_filter(
@@ -805,7 +887,10 @@ class Neo4jGraphBackend:
             raise GraphBackendError("Neo4J URI 未配置")
         try:
             from neo4j import GraphDatabase
-            from neo4j._addressing import ResolvedAddress
+            try:
+                from neo4j._addressing import ResolvedAddress
+            except ImportError:
+                from neo4j.addressing import ResolvedAddress
         except ImportError as exc:
             raise GraphBackendError("Neo4J driver 未安装") from exc
         driver_options: dict[str, Any] = {
@@ -1002,13 +1087,10 @@ def _normalize_path_segments(path_pattern: list[Any] | None) -> list[dict[str, A
             selector = raw_segment[0]
             props = _segment_extra_props(raw_segment)
             return_properties = _segment_return_properties(selector) if isinstance(selector, Mapping) else None
-            props_return_properties = (
-                _segment_return_properties(raw_segment[1])
-                if len(raw_segment) > 1 and isinstance(raw_segment[1], Mapping)
-                else None
-            )
-            if props_return_properties is not None:
-                return_properties = props_return_properties
+            for value in raw_segment[1:]:
+                props_return_properties = _segment_return_properties(value)
+                if props_return_properties is not None:
+                    return_properties = props_return_properties
             if isinstance(selector, str):
                 token = selector.strip()
                 segment = {"var": alias, "props": props}
@@ -1037,7 +1119,11 @@ def _normalize_path_segments(path_pattern: list[Any] | None) -> list[dict[str, A
 
         alias = "r{}".format((index + 1) // 2)
         selector = raw_segment[0]
-        direction = str(raw_segment[1] if len(raw_segment) > 1 else "->").strip() or "->"
+        direction_value = next(
+            (value for value in raw_segment[1:] if not isinstance(value, Mapping)),
+            "->",
+        )
+        direction = str(direction_value).strip() or "->"
         if direction not in {"->", "<-", "--", "→", "←"}:
             raise GraphBackendUnsupportedError("path_pattern[{}] 方向不合法".format(index))
         if direction == "→":
@@ -1075,19 +1161,19 @@ def _normalize_path_segments(path_pattern: list[Any] | None) -> list[dict[str, A
 def _segment_extra_props(raw_segment: Any) -> dict[str, Any]:
     if not isinstance(raw_segment, (list, tuple)) or len(raw_segment) < 2:
         return {}
-    value = raw_segment[1]
-    if isinstance(value, Mapping):
+    result: dict[str, Any] = {}
+    for value in raw_segment[1:]:
+        if not isinstance(value, Mapping):
+            continue
         nested = _segment_props(value)
-        if nested:
-            direct = {
-                key: item
-                for key, item in value.items()
-                if key not in {"props", "filters"} and str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS
-            }
-            direct.update(nested)
-            return direct
-        return {key: item for key, item in value.items() if str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS}
-    return {}
+        direct = {
+            key: item
+            for key, item in value.items()
+            if str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS
+        }
+        direct.update(nested)
+        result.update(direct)
+    return result
 
 
 def _segment_return_properties(segment: Any) -> list[str] | None:
@@ -1097,11 +1183,10 @@ def _segment_return_properties(segment: Any) -> list[str] | None:
 
 
 def _normalize_mapping_segment(segment: dict[str, Any]) -> dict[str, Any]:
-    if "filters" not in segment:
-        return segment
-    props = _segment_props(segment)
     normalized = dict(segment)
-    normalized["props"] = props
+    props = _segment_props(segment)
+    if props:
+        normalized["props"] = props
     normalized.pop("filters", None)
     return normalized
 
@@ -1111,13 +1196,16 @@ def _segment_props(segment: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("props", "filters"):
         raw = segment.get(key)
         if isinstance(raw, Mapping):
-            props.update(
-                {
-                    str(prop): value
-                    for prop, value in raw.items()
-                    if str(prop or "").strip() not in _PATTERN_SEGMENT_META_KEYS
-                }
-            )
+            props.update({
+                str(prop): value
+                for prop, value in raw.items()
+                if str(prop or "").strip() not in _PATTERN_NESTED_META_KEYS
+            })
+    props.update({
+        str(prop): value
+        for prop, value in segment.items()
+        if str(prop or "").strip() not in _PATTERN_SEGMENT_META_KEYS
+    })
     return props
 
 
@@ -1459,6 +1547,31 @@ def _record_get(record: Any, key: str) -> Any:
         return record[key]
     except Exception:
         return getattr(record, key, None)
+
+
+def _collect_property_types(records: Any) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for record in records or []:
+        prop = str(_record_get(record, "prop") or "").strip()
+        types = [
+            str(item).strip()
+            for item in (_record_get(record, "types") or [])
+            if str(item).strip()
+        ]
+        if prop and types:
+            for prop_type in types:
+                _merge_schema_type(result, prop, prop_type)
+    return result
+
+
+def _merge_schema_type(bucket: dict[str, str], prop_name: str, prop_type: str) -> None:
+    current = str(bucket.get(prop_name) or "").strip()
+    if not current:
+        bucket[prop_name] = prop_type
+        return
+    values = set(item.strip() for item in current.split("|") if item.strip())
+    values.update(item.strip() for item in str(prop_type).split("|") if item.strip())
+    bucket[prop_name] = "|".join(sorted(values))
 
 
 def _mapping_get(value: Any, key: str) -> Any:

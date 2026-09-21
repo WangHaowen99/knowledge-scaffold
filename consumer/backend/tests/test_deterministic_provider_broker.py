@@ -10,10 +10,12 @@ import pytest
 from agent.direct_execution.provider_broker import (
     DeterministicProviderBroker,
     DeterministicProviderBrokerError,
+    _normalize_graph_operation_arguments,
     _provider_config,
+    _with_external_filter_result,
 )
 from agent.tools.business_data.deterministic import DeterministicProviderBinding
-from agent.tools.business_data.providers.graph.models import GraphBackendResult
+from agent.tools.business_data.providers.graph.models import GraphBackendResult, GraphScope
 from backend_synthetic_credentials import synthetic_invalid_password
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 from shared_capabilities.ontology_script_sdk.deterministic_provider import (
@@ -100,6 +102,93 @@ def test_broker_executes_only_allowlisted_scoped_operations(tmp_path, monkeypatc
     assert not broker.socket_path.exists()
 
 
+def test_broker_normalizes_filter_values_with_backend_physical_types():
+    calls = []
+
+    class TypedBackend:
+        provider = "neo4j"
+
+        def get_property_types(self, **kwargs):
+            calls.append(("get_property_types", kwargs))
+            return {
+                "property_types": {
+                    field: "INTEGER"
+                    for field in kwargs["property_names"]
+                },
+                "complete": True,
+            }
+
+    backend = TypedBackend()
+    scope = GraphScope(
+        workspace_property="workspace_key",
+        workspace_value="workspace_demo",
+        ontology_property="ontology_key",
+        ontology_value="knowledge_package_demo",
+    )
+    normalized = _normalize_graph_operation_arguments(
+        operation="property_filter",
+        arguments={
+            "element_class": "SyntheticNode",
+            "element_type": "NODE",
+            "filter_dict": {"event_key": "9007199254740993"},
+        },
+        backend=backend,
+        scope=scope,
+    )
+    pattern = _normalize_graph_operation_arguments(
+        operation="pattern_search",
+        arguments={
+            "path_pattern": [
+                ["SyntheticNode", {"props": {"event_key": "42"}}],
+                ["SYNTHETIC_LINK", "->"],
+                ["SyntheticTarget"],
+            ],
+        },
+        backend=backend,
+        scope=scope,
+    )
+    shortest = _normalize_graph_operation_arguments(
+        operation="shortest_path_search",
+        arguments={
+            "start_label": "SyntheticNode",
+            "start_props": {"start_key": "41"},
+            "end_label": "SyntheticTarget",
+            "end_props": {"end_key": "42"},
+        },
+        backend=backend,
+        scope=scope,
+    )
+
+    assert normalized["filter_dict"] == {"event_key": 9007199254740993}
+    assert pattern["path_pattern"][0][1]["props"] == {"event_key": 42}
+    assert shortest["start_props"] == {"start_key": 41}
+    assert shortest["end_props"] == {"end_key": 42}
+
+
+def test_broker_aggregate_result_keeps_external_filter_values():
+    external_filter = {"event_key": "9007199254740993"}
+    backend_filter = {"event_key": 9007199254740993}
+    result = GraphBackendResult(
+        records=[{
+            "value": 1,
+            "applied_filter": backend_filter,
+            "filter_keys": ["event_key"],
+        }],
+        payload={
+            "result": {
+                "value": 1,
+                "applied_filter": backend_filter,
+                "filter_keys": ["event_key"],
+            },
+        },
+    )
+
+    normalized = _with_external_filter_result(result, external_filter)
+
+    assert normalized.records[0]["applied_filter"] == external_filter
+    assert normalized.payload["result"]["applied_filter"] == external_filter
+
+
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
 def test_broker_rejects_unknown_operations_without_backend_call(tmp_path, monkeypatch):
     backend_calls = []
@@ -172,6 +261,7 @@ def test_broker_start_closes_socket_when_setup_fails(tmp_path, monkeypatch):
     assert server.closed is True
 
 
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="Unix sockets unavailable")
 def test_provider_client_maps_timeout_to_transport_error(tmp_path, monkeypatch):
     class FailingSocket:
         def __enter__(self):

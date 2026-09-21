@@ -392,17 +392,34 @@ def _compact_nodes_schema(payload: Any, focused_node_labels: list[str]) -> dict[
     selected_schema = {
         str(label): _limit_schema_fields(fields) for label, fields in schema.items() if isinstance(fields, Mapping)
     }
+    fields_truncated = [
+        str(label)
+        for label, fields in schema.items()
+        if isinstance(fields, Mapping) and len(fields) > _MAX_SCHEMA_FIELDS_PER_LABEL
+    ]
     raw_labels = sorted(selected_schema) or [
         str(label).strip()
         for label in (payload.get("labels") if isinstance(payload.get("labels"), list) else [])
         if str(label).strip()
     ]
     labels = _prioritize_values(raw_labels, focused_set)[:_MAX_SCHEMA_LABELS]
+    schema_incomplete = payload.get("types_authoritative") is False
+    if not schema_incomplete:
+        schema_incomplete = bool(payload.get("source_truncated"))
+    if not schema_incomplete:
+        schema_incomplete = len(raw_labels) > len(labels)
+    if not schema_incomplete:
+        schema_incomplete = any(label in labels for label in fields_truncated)
     return {
         "labels": labels,
         "schema": {label: selected_schema.get(label, {}) for label in labels},
         "count": len(labels),
+        "names_complete": False,
+        "types_authoritative": payload.get("types_authoritative") is not False,
         "truncated": len(raw_labels) > len(labels),
+        "fields_truncated": [label for label in fields_truncated if label in labels],
+        "source_truncated": bool(payload.get("source_truncated")),
+        "schema_incomplete": schema_incomplete,
     }
 
 
@@ -411,7 +428,7 @@ def _compact_edges_schema(payload: Any, relationship_types: list[str]) -> dict[s
         return {}
     requested = {str(item).strip() for item in relationship_types if str(item).strip()}
     raw_types = payload.get("relationship_types")
-    relationship_type_values = [
+    all_relationship_type_values = [
         str(item).strip()
         for item in (raw_types if isinstance(raw_types, list) else [])
         if str(item).strip() and (not requested or str(item).strip() in requested)
@@ -423,15 +440,44 @@ def _compact_edges_schema(payload: Any, relationship_types: list[str]) -> dict[s
         for edge_type, fields in schema.items()
         if isinstance(fields, Mapping) and (not requested or str(edge_type) in requested)
     }
-    if not relationship_type_values:
-        relationship_type_values = sorted(selected_schema)
-    relationship_type_values = relationship_type_values[:_MAX_SCHEMA_LABELS]
+    fields_truncated: list[str] = []
+    for edge_type, fields in schema.items():
+        if not isinstance(fields, Mapping):
+            continue
+        if len(fields) <= _MAX_SCHEMA_FIELDS_PER_LABEL:
+            continue
+        normalized_edge_type = str(edge_type)
+        if requested and normalized_edge_type not in requested:
+            continue
+        fields_truncated.append(normalized_edge_type)
+    if not all_relationship_type_values:
+        all_relationship_type_values = sorted(selected_schema)
+    relationship_type_values = all_relationship_type_values[:_MAX_SCHEMA_LABELS]
     triples = _compact_relation_triples(payload.get("relation_triples"), requested)
+    schema_incomplete = payload.get("types_authoritative") is False
+    if not schema_incomplete:
+        schema_incomplete = bool(payload.get("source_truncated"))
+    if not schema_incomplete:
+        schema_incomplete = len(all_relationship_type_values) > len(
+            relationship_type_values
+        )
+    if not schema_incomplete:
+        schema_incomplete = any(
+            item in relationship_type_values for item in fields_truncated
+        )
+    if not schema_incomplete:
+        schema_incomplete = len(triples) >= _MAX_RELATION_TRIPLES
     return {
         "relationship_types": relationship_type_values,
         "schema": {edge_type: selected_schema.get(edge_type, {}) for edge_type in relationship_type_values},
         "relation_triples": triples,
+        "names_complete": False,
+        "types_authoritative": payload.get("types_authoritative") is not False,
         "relation_triples_truncated": len(triples) >= _MAX_RELATION_TRIPLES,
+        "truncated": len(all_relationship_type_values) > len(relationship_type_values),
+        "fields_truncated": [item for item in fields_truncated if item in relationship_type_values],
+        "source_truncated": bool(payload.get("source_truncated")),
+        "schema_incomplete": schema_incomplete,
     }
 
 

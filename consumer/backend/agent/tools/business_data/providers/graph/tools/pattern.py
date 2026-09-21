@@ -7,6 +7,7 @@ from typing import Any
 
 from ..backends.base import GraphBackend
 from ..models import GraphBackendResult, GraphScope
+from ..property_types import GraphFilterTypeResolver, normalize_pattern_filters
 
 
 def pattern_search(
@@ -18,6 +19,20 @@ def pattern_search(
     limit: int = 100,
     scope: GraphScope,
 ) -> GraphBackendResult:
+    resolver = GraphFilterTypeResolver(
+        backend=backend,
+        scope=scope,
+        provider=getattr(backend, "provider", ""),
+    )
+    resolver.prepare_pattern_targets(
+        path_pattern,
+        return_properties=return_properties,
+    )
+    path_pattern = normalize_pattern_filters(
+        path_pattern,
+        resolver,
+        return_properties=return_properties,
+    )
     return backend.pattern_search(
         path_pattern=path_pattern,
         return_vars=return_vars,

@@ -126,10 +126,17 @@ def _build_graph_agent_system_prompt(schema_context: Mapping[str, Any] | None) -
         return GRAPH_AGENT_SYSTEM_PROMPT
     if len(schema_payload) > 12000:
         schema_payload = "{}...".format(schema_payload[:12000])
+    incomplete_note = (
+        "\n注意：该 schema 为紧凑上下文，存在字段/类型截断；可据此选字段，"
+        "执行器会对实际过滤字段按需回查数据库物理类型。"
+        if _schema_context_incomplete(schema_context)
+        else ""
+    )
     return (
         "{}\n\n预取图 schema 上下文（Provider 已按本次 entity/mapping 预取，优先使用，不要重复调用 schema"
-        " 工具）：\n```json\n{}\n```".format(
+        " 工具）：{}\n```json\n{}\n```".format(
             GRAPH_AGENT_SYSTEM_PROMPT,
+            incomplete_note,
             schema_payload,
         )
     )
@@ -148,6 +155,7 @@ def _agent_input_schema_context(schema_context: Mapping[str, Any] | None) -> Any
         "mapping_resource": str(schema_context.get("mapping_resource") or ""),
         "query_analysis": dict(schema_context.get("query_analysis") or {}),
         "mapping_intent": dict(schema_context.get("mapping_intent") or {}),
+        "schema_incomplete": _schema_context_incomplete(schema_context),
     }
 
 
@@ -586,6 +594,18 @@ def _schema_context_preloaded(schema_context: Mapping[str, Any] | None) -> bool:
     nodes_schema = schema_context.get("nodes_schema")
     edges_schema = schema_context.get("edges_schema")
     return bool(nodes_schema or edges_schema)
+
+
+def _schema_context_incomplete(schema_context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(schema_context, Mapping):
+        return False
+    for key in ("nodes_schema", "edges_schema"):
+        value = schema_context.get(key)
+        if not isinstance(value, Mapping):
+            continue
+        if bool(value.get("schema_incomplete")):
+            return True
+    return False
 
 
 def _format_timeout(value: float) -> str:
