@@ -23,6 +23,7 @@ DEFAULT_GITIGNORE = """.ontology-state/
 .claude
 CLAUDE.md
 README.md
+tmp/
 """
 
 
