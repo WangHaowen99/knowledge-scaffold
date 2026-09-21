@@ -50,6 +50,11 @@ These rules apply to all work in this repository.
 
 8. **`resource/` is user-managed and read-only for models** — 模型可以读取 `resource/`，也可以基于 `resource/` 刷新或生成 `ontology/` 下的派生产物；但任何时候都不得创建、修改、移动或删除任意 `resource/` 目录下的文件。若源材料需要调整，必须提示用户手工修改 `resource/`。
 
+8.04 **子代理派遣必须同步等待完成** — 用 Task/Agent 工具派遣子代理时必须在本轮内
+   同步等待其结果后再继续（工具若有 `run_in_background` 参数，必须显式传 `false`）。
+   **严禁后台派遣后结束回合"等通知"**：平台会回收空闲会话进程，后台子代理会随进程
+   丢失且不会有任何通知送达，任务将静默中断。材料再大也走同步派遣（本轮等待）。
+
 8.05 **临时/生成用脚本一律写到 `tmp/`** — 需要写一次性辅助脚本（批量生成、转换、检查等）时，
    写到工作区 `tmp/` 目录（已 gitignore），用完删除；正式的代码产物走 codegen 流程进
    `ontology/scripts/`。`.claude/` 是只读工具箱（资产源，受守卫保护），任何时候不要往里写文件。
