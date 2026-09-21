@@ -27,7 +27,13 @@ interface JsonRpcRequestPayload {
   params: Record<string, unknown>;
 }
 
-type ProtocolMode = 'modern' | 'legacy';
+type ProtocolMode = 'modern' | 'legacy' | 'compatibility';
+
+interface ProtocolNegotiation {
+  version: string;
+  mode: ProtocolMode;
+  source: 'body' | 'header' | 'default';
+}
 
 const JSONRPC_INVALID_REQUEST = -32600;
 const JSONRPC_METHOD_NOT_FOUND = -32601;
@@ -40,6 +46,7 @@ const SSE_SESSION_NOT_FOUND = 'Session not found';
 const SSE_HEARTBEAT_MS = 15_000;
 const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
 const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
+const LEGACY_PROTOCOL_VERSION = '2025-11-25';
 
 function isMcpTransportPath(url: string): boolean {
   return /\/(?:mcp|sse)(?:\/|[?]|$)/u.test(String(url ?? ''));
@@ -68,7 +75,6 @@ interface SseSessionRecord {
 
 export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
   app.get('/:mcpEndpointId/:toolset/mcp', async (request, reply) => {
-    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('streamable-http')) {
       return reply.code(404).send({ error: '当前未启用 Streamable HTTP transport' });
     }
@@ -77,7 +83,6 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
   });
 
   app.delete('/:mcpEndpointId/:toolset/mcp', async (request, reply) => {
-    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('streamable-http')) {
       return reply.code(404).send({ error: '当前未启用 Streamable HTTP transport' });
     }
@@ -86,7 +91,6 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
   });
 
   app.post('/:mcpEndpointId/:toolset/mcp', async (request, reply) => {
-    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('streamable-http')) {
       return sendRpcError(reply, null, 404, JSONRPC_METHOD_NOT_FOUND, '当前未启用 Streamable HTTP transport');
     }
@@ -100,27 +104,33 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       return sendRpcError(reply, rpc.id ?? null, 404, JSONRPC_INVALID_PARAMS, '未知 MCP toolset');
     }
 
-    const protocolMode = detectProtocolMode(rpc, request.headers);
     try {
-      if (protocolMode === 'modern') validateModernTransportHeaders(request, rpc);
+      const protocol = negotiateProtocol(rpc, request.headers);
+      if (protocol.mode !== 'legacy') validateTransportHeaders(request, rpc, protocol.mode);
       const verified = await verifyProjectMcpToken({
         bearerToken: bearerToken(request.headers.authorization),
         endpointId: String((request.params as any).mcpEndpointId ?? ''),
         minimumAccess: toolset === 'change' ? 'write' : 'read',
       });
-      const result = await dispatchMcpRequest({ rpc, protocolMode, toolset, verified });
+      const result = await dispatchMcpRequest({
+        rpc,
+        protocolMode: protocol.mode,
+        protocolVersion: protocol.version,
+        toolset,
+        verified,
+      });
       if (result === undefined) return reply.code(202).send();
-      if (protocolMode === 'modern') {
-        reply.header('MCP-Protocol-Version', config.mcp.protocolVersion);
+      if (protocol.source !== 'default') {
+        reply.header('MCP-Protocol-Version', protocol.version);
       }
-      maybeSetToolListHeaders(reply, rpc, protocolMode);
+      maybeSetToolListHeaders(reply, rpc, protocol.mode);
       return reply.code(200).send(rpcResultEnvelope(rpc.id ?? null, result));
     } catch (error) {
       if (error instanceof ModelingMcpError) {
         return sendNormalizedMcpRpcError(reply, rpc.id ?? null, error);
       }
       if (error instanceof RpcProtocolError) {
-        return sendRpcError(reply, rpc.id ?? null, error.statusCode, error.jsonrpcCode, error.message);
+        return sendRpcError(reply, rpc.id ?? null, error.statusCode, error.jsonrpcCode, error.message, error.data);
       }
       const artifactError = tryMapMcpArtifactError(error, 'load');
       if (artifactError) {
@@ -139,7 +149,6 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
   });
 
   app.get('/:mcpEndpointId/:toolset/sse', async (request, reply) => {
-    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('sse')) {
       return reply.code(404).send({ error: '当前未启用 SSE transport' });
     }
@@ -236,7 +245,6 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
   });
 
   const sseMessageHandler = async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!originAllowed(request)) return sendOriginRejected(reply);
     if (!modelingMcpTransportEnabled('sse')) {
       return sendRpcError(reply, null, 404, JSONRPC_METHOD_NOT_FOUND, '当前未启用 SSE transport');
     }
@@ -256,9 +264,9 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       return sendRpcError(reply, null, 404, JSONRPC_INVALID_REQUEST, SSE_SESSION_NOT_FOUND);
     }
 
-    const protocolMode = detectProtocolMode(rpc, request.headers);
     try {
-      if (protocolMode === 'modern') validateModernTransportHeaders(request, rpc);
+      const protocol = negotiateProtocol(rpc, request.headers);
+      if (protocol.mode !== 'legacy') validateTransportHeaders(request, rpc, protocol.mode);
       const verified = await verifyProjectMcpToken({
         bearerToken: bearerToken(request.headers.authorization),
         endpointId,
@@ -267,12 +275,18 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
       if (session.tokenId !== verified.tokenId || session.username !== verified.username) {
         throw new ModelingMcpError('MCP_SESSION_PRINCIPAL_MISMATCH', 'SSE session 与当前 Token 不匹配', 403);
       }
-      const result = await dispatchMcpRequest({ rpc, protocolMode, toolset, verified });
+      const result = await dispatchMcpRequest({
+        rpc,
+        protocolMode: protocol.mode,
+        protocolVersion: protocol.version,
+        toolset,
+        verified,
+      });
       if (result !== undefined) {
         session.send('message', JSON.stringify(rpcResultEnvelope(rpc.id ?? null, result)));
       }
-      if (protocolMode === 'modern') {
-        reply.header('MCP-Protocol-Version', config.mcp.protocolVersion);
+      if (protocol.source !== 'default') {
+        reply.header('MCP-Protocol-Version', protocol.version);
       }
       return reply.code(202).send();
     } catch (error) {
@@ -280,7 +294,7 @@ export function registerProjectMcpTransportRoutes(app: FastifyInstance): void {
         return sendNormalizedMcpRpcError(reply, rpc.id ?? null, error);
       }
       if (error instanceof RpcProtocolError) {
-        return sendRpcError(reply, rpc.id ?? null, error.statusCode, error.jsonrpcCode, error.message);
+        return sendRpcError(reply, rpc.id ?? null, error.statusCode, error.jsonrpcCode, error.message, error.data);
       }
       const artifactError = tryMapMcpArtifactError(error, 'load');
       if (artifactError) {
@@ -336,16 +350,17 @@ export function installMcpHttpErrorHandler(app: FastifyInstance): void {
 async function dispatchMcpRequest(input: {
   rpc: JsonRpcRequestPayload;
   protocolMode: ProtocolMode;
+  protocolVersion: string;
   toolset: ModelingMcpToolset;
   verified: Awaited<ReturnType<typeof verifyProjectMcpToken>>;
 }): Promise<Record<string, unknown> | undefined> {
-  const { rpc, protocolMode, toolset, verified } = input;
+  const { rpc, protocolMode, protocolVersion, toolset, verified } = input;
   if (rpc.method === 'notifications/initialized') return undefined;
   if (rpc.method === 'ping') return {};
 
   if (rpc.method === 'initialize') {
       return {
-        protocolVersion: config.mcp.legacyProtocolVersion,
+        protocolVersion,
         capabilities: { tools: { listChanged: false } },
         serverInfo: MODELING_MCP_SERVER_INFO,
         instructions: `当前 endpoint 只暴露 ${toolset} toolset，请通过 tools/list 查看当前 token 可用工具。`,
@@ -355,7 +370,7 @@ async function dispatchMcpRequest(input: {
   if (rpc.method === 'server/discover') {
     return {
       resultType: 'complete',
-      supportedVersions: [config.mcp.protocolVersion, config.mcp.legacyProtocolVersion],
+      supportedVersions: config.mcp.supportedProtocolVersions,
       capabilities: { tools: { listChanged: false } },
       instructions: `当前 endpoint 只暴露 ${toolset} toolset，请通过 tools/list 查看当前 token 可用工具。`,
       ttlMs: 300_000,
@@ -375,7 +390,7 @@ async function dispatchMcpRequest(input: {
         readOnlyHint: tool.toolset === 'read',
       },
     }));
-    if (protocolMode === 'modern') {
+    if (protocolMode !== 'legacy') {
       return {
         resultType: 'complete',
         tools,
@@ -414,18 +429,18 @@ async function dispatchMcpRequest(input: {
         tokenId: verified.tokenId,
         argumentsValue: (argumentsValue as Record<string, unknown> | undefined) ?? {},
       });
-      return protocolMode === 'modern'
+      return protocolMode !== 'legacy'
         ? modernToolResult(payload)
         : legacyToolResult(payload);
     } catch (error) {
       if (error instanceof AgentCoreError || error instanceof ModelingMcpToolError) {
-        return protocolMode === 'modern'
+        return protocolMode !== 'legacy'
           ? modernToolErrorResult(error)
           : legacyToolErrorResult(error);
       }
       const artifactError = tryMapMcpArtifactError(error, 'load');
       if (artifactError) {
-        return protocolMode === 'modern'
+        return protocolMode !== 'legacy'
           ? modernToolErrorResult(artifactError)
           : legacyToolErrorResult(artifactError);
       }
@@ -437,7 +452,7 @@ async function dispatchMcpRequest(input: {
 }
 
 function maybeSetToolListHeaders(reply: FastifyReply, rpc: JsonRpcRequestPayload, protocolMode: ProtocolMode): void {
-  if (protocolMode === 'modern' && rpc.method === 'tools/list') {
+  if (protocolMode !== 'legacy' && rpc.method === 'tools/list') {
     reply.header('Cache-Control', 'private, max-age=300');
   }
 }
@@ -475,28 +490,36 @@ function parseJsonRpcPayload(body: unknown):
   };
 }
 
-function detectProtocolMode(rpc: JsonRpcRequestPayload, headers: Record<string, unknown>): ProtocolMode {
+function negotiateProtocol(rpc: JsonRpcRequestPayload, headers: Record<string, unknown>): ProtocolNegotiation {
   const headerVersion = headerValue(headers['mcp-protocol-version']);
-  const metaVersion = rpcMetaProtocolVersion(rpc);
-  if (rpc.method === 'initialize') return 'legacy';
-  if (!metaVersion && (!headerVersion || headerVersion === config.mcp.legacyProtocolVersion)) return 'legacy';
-  return 'modern';
+  const bodyVersion = rpcBodyProtocolVersion(rpc);
+  if (headerVersion && bodyVersion && headerVersion !== bodyVersion) {
+    throw protocolVersionMismatch(headerVersion, bodyVersion);
+  }
+  const requestedVersion = bodyVersion || headerVersion;
+  const version = requestedVersion || config.mcp.supportedProtocolVersions[0];
+  if (requestedVersion) assertProtocolVersionSupported(requestedVersion);
+  const mode = !requestedVersion || rpc.method === 'initialize' || version === LEGACY_PROTOCOL_VERSION
+    ? 'legacy'
+    : version === config.mcp.supportedProtocolVersions[0] ? 'modern' : 'compatibility';
+  return {
+    version,
+    mode,
+    source: bodyVersion ? 'body' : headerVersion ? 'header' : 'default',
+  };
 }
 
-function validateModernTransportHeaders(request: FastifyRequest, rpc: JsonRpcRequestPayload): void {
-  const protocolVersion = headerValue(request.headers['mcp-protocol-version']);
-  if (protocolVersion && protocolVersion !== config.mcp.protocolVersion) {
-    throw new RpcProtocolError(`当前仅支持协议版本 ${config.mcp.protocolVersion}`, 400, JSONRPC_HEADER_MISMATCH);
-  }
-  const rpcVersion = rpcMetaProtocolVersion(rpc);
-  if (rpcVersion !== config.mcp.protocolVersion) {
-    throw new RpcProtocolError('请求体 _meta 协议版本与服务端不匹配', 400, JSONRPC_HEADER_MISMATCH);
-  }
+function validateTransportHeaders(
+  request: FastifyRequest,
+  rpc: JsonRpcRequestPayload,
+  protocolMode: Exclude<ProtocolMode, 'legacy'>,
+): void {
   const meta = rpc.params._meta;
   const clientCapabilities = meta && typeof meta === 'object' && !Array.isArray(meta)
     ? (meta as Record<string, unknown>)[CLIENT_CAPABILITIES_META_KEY]
     : undefined;
-  if (!clientCapabilities || typeof clientCapabilities !== 'object' || Array.isArray(clientCapabilities)) {
+  if (protocolMode === 'modern'
+    && (!clientCapabilities || typeof clientCapabilities !== 'object' || Array.isArray(clientCapabilities))) {
     throw new RpcProtocolError(
       `请求体 _meta.${CLIENT_CAPABILITIES_META_KEY} 必须是对象`,
       400,
@@ -586,10 +609,63 @@ function toolText(payload: Record<string, unknown>): string {
   return JSON.stringify(payload, null, 2);
 }
 
-function rpcMetaProtocolVersion(rpc: JsonRpcRequestPayload): string {
+function rpcBodyProtocolVersion(rpc: JsonRpcRequestPayload): string {
+  const standardVersion = String(rpc.params.protocolVersion ?? '').trim();
+  if (standardVersion) return standardVersion;
   const meta = rpc.params._meta;
   if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return '';
   return String((meta as Record<string, unknown>)['io.modelcontextprotocol/protocolVersion'] ?? '').trim();
+}
+
+function isProtocolVersion(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/u.test(value);
+}
+
+function assertProtocolVersionSupported(version: string): void {
+  if (!isProtocolVersion(version)) throw invalidProtocolVersion(version);
+  if (config.mcp.supportedProtocolVersions.includes(version)) return;
+  if (config.mcp.protocolCompatibility) return;
+  throw unsupportedProtocolVersion(version);
+}
+
+function invalidProtocolVersion(version: string): RpcProtocolError {
+  return new RpcProtocolError(
+    'MCP 协议版本格式无效',
+    400,
+    JSONRPC_HEADER_MISMATCH,
+    {
+      code: 'MCP_PROTOCOL_VERSION_INVALID',
+      requested_version: version,
+      supported_versions: config.mcp.supportedProtocolVersions,
+    },
+  );
+}
+
+function unsupportedProtocolVersion(version: string): RpcProtocolError {
+  return new RpcProtocolError(
+    '不支持的 MCP 协议版本',
+    400,
+    JSONRPC_HEADER_MISMATCH,
+    {
+      code: 'MCP_PROTOCOL_VERSION_UNSUPPORTED',
+      requested_version: version,
+      supported_versions: config.mcp.supportedProtocolVersions,
+    },
+  );
+}
+
+function protocolVersionMismatch(headerVersion: string, bodyVersion: string): RpcProtocolError {
+  return new RpcProtocolError(
+    'MCP 协议版本请求头与请求体不一致',
+    400,
+    JSONRPC_HEADER_MISMATCH,
+    {
+      code: 'MCP_PROTOCOL_VERSION_MISMATCH',
+      header_version: headerVersion,
+      body_version: bodyVersion,
+      supported_versions: config.mcp.supportedProtocolVersions,
+    },
+  );
 }
 
 function parseToolset(value: unknown): ModelingMcpToolset | null {
@@ -683,23 +759,6 @@ function sendMcpArtifactRpcError(
   );
 }
 
-function originAllowed(request: FastifyRequest): boolean {
-  const origin = headerValue(request.headers.origin);
-  if (!origin) return true;
-  return config.mcp.allowedOrigins.includes(origin);
-}
-
-function sendOriginRejected(reply: FastifyReply): FastifyReply {
-  return sendRpcError(
-    reply,
-    null,
-    403,
-    JSONRPC_AUTH_ERROR,
-    '请求 Origin 不在允许列表中',
-    { code: 'MCP_ORIGIN_FORBIDDEN' },
-  );
-}
-
 function toolErrorPayload(error: AgentCoreError | ModelingMcpToolError) {
   if (error instanceof ModelingMcpToolError) return publicMcpToolError(error);
   if (error.statusCode >= 500) {
@@ -752,6 +811,7 @@ class RpcProtocolError extends Error {
     message: string,
     public readonly statusCode: number,
     public readonly jsonrpcCode: number,
+    public readonly data?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'RpcProtocolError';
