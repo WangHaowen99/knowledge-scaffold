@@ -500,8 +500,22 @@ export default function LeftPane({
               onClick={() => window.open(api.exportUrl(project.id, 'package'))}
             >
               导出知识包
+              {evalInfo?.state?.summary != null && (
+                <span className="export-eval-score">评测 {evalInfo.state.summary.score}</span>
+              )}
             </Button>
           )}
+          {statuses.every((st, i) => st === 'finish' || STAGES[i].optional) &&
+            evalInfo?.enabled &&
+            evalInfo?.state?.status !== 'done' && (
+              <Alert
+                type="warning"
+                showIcon
+                className="export-eval-hint"
+                message="尚未数据评测——建议发布前在「数据评测」阶段跑一轮，验证知识包问答质量"
+                style={{ marginBottom: 8, fontSize: 12, padding: '4px 10px' }}
+              />
+            )}
           <Space wrap size={4}>
             {EXTRA_ACTIONS.map((action) => (
               <Button key={action.label} size="small" onClick={() => onCommand(action.command)}>

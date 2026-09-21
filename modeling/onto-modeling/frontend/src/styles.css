@@ -1280,3 +1280,13 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 /* ---- 数据评测用例复核 ---- */
 .eval-case-row { padding: 8px 0; border-bottom: 1px dashed var(--border-default); }
 .eval-case-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+
+/* ---- 数据评测门禁提示 ---- */
+.export-eval-score {
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.25);
+  font-size: 11px;
+}
+.export-eval-hint .ant-alert-message { font-size: 12px; }

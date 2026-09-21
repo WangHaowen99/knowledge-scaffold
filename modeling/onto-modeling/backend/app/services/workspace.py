@@ -135,7 +135,16 @@ class WorkspaceManager:
                 1 for f in directory.glob("*.md") if f.name.lower() != "index.md"
             )
 
+        eval_summary = {}
+        try:
+            eval_summary = json.loads(
+                (root / ".ontology-state" / "eval.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            pass
         return {
+            "eval_score": (eval_summary.get("summary") or {}).get("score"),
+            "eval_status": eval_summary.get("status"),
             "stages_done": done,
             "stages_total": cls.STAGE_TOTAL,
             "objects": count_md("ontology/object"),

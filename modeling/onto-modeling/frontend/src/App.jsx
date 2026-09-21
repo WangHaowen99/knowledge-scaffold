@@ -343,8 +343,13 @@ export default function App() {
   if (route.name === 'home' || !project) {
     const activeProjects = projects.filter((p) => !p.archived);
     const archivedProjects = projects.filter((p) => p.archived);
-    const stageLabel = (item) =>
-      (item.stages_done ?? 0) >= (item.stages_total ?? 9) ? '主链完成' : `阶段 ${item.stages_done ?? 0}/${item.stages_total ?? 9}`;
+    const stageLabel = (item) => {
+      const base =
+        (item.stages_done ?? 0) >= (item.stages_total ?? 9)
+          ? '主链完成'
+          : `阶段 ${item.stages_done ?? 0}/${item.stages_total ?? 9}`;
+      return item.eval_score != null ? `${base} · 评测 ${item.eval_score}` : base;
+    };
     // 卡片结构逐节点复刻 modeling ProjectList.ProjectCard
     const renderCard = (item) => (
       <div
