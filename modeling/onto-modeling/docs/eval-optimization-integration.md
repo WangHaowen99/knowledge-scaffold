@@ -140,6 +140,24 @@ modeling 服务时再评估。
   （编排里预留 data_source/import 步骤位）。真实栈端到端验证需同栈网络 +
   共享账号中心（方案 A），属部署拓扑变更，待用户批准后执行。
 
+## 3.7 真实栈端到端验证记录（2026-09-21，方案 A 共享账号中心）
+
+本机 onto-modeling 切换为外接 consumer 栈账号中心（`ONTO_MODELING_EXTERNAL_AUTH_NETWORK`
+一个变量 + 重跑 deploy.sh），注册/登录/评测 token 透传全链打通。真实 modeling 上
+逐步验证结果：
+
+- ✅ 包导入（`package-workspaces/import` 自动建项目）
+- ✅ 数据源配置（实测发现 modeling 要求显式配置，`mode=none` 步骤已补进编排）
+- ✅ 用例注入（trace 转换的用例 batch 成功）
+- ✅ evaluate 启动 + 轮次创建 + 轮询 + 失败日志透出
+  （failed 轮不再误报 0 分报告，状态带 modeling 侧原因）
+- ⛔ 轮次执行：本机 modeling 栈缺 `MODELING_SERVICE_TOKEN`（≥32 字符跨服务令牌，
+  影子工作区 provisioning 依赖）——**部署配置项**，代码链路已验证到此深度；
+  正式栈还需 consumer 真实 LLM（本机 faux 模式）与 `EVAL_DB_URL`（MySQL，数据导入）。
+
+结论：onto-modeling 侧代码完备；剩余全部为 modeling/consumer 栈的部署配置
+（SERVICE_TOKEN / EVAL_DB_URL / LLM），随根一键部署整改一并解决。
+
 ## 4. 依赖与开放问题（拍板时定）
 
 1. **部署形态**：评测要求 modeling + consumer 与 onto-modeling 共栈（根一键部署已满足）；

@@ -268,6 +268,13 @@ def _run_sync(project_id: str, root: Path, token: str, cases: list[dict]) -> Non
         mp_project = imported["project"]["id"]
         _write_state(root, modeling_project=mp_project)
 
+        # 数据源：modeling 要求显式配置后才能评测；v1 走 mode=none（纯知识包问答）。
+        # 接通评测数据库（EVAL_DB_URL/MySQL）后，此处按 eval_data 对账结果切
+        # connection + nl2sql_template 并追加 evaluation-database/import 步骤。
+        _write_state(root, phase="data_source", message="配置数据源（无数据库模式）")
+        _http("PUT", f"/api/projects/{mp_project}/data-source", token,
+              body={"mode": "none"})
+
         _write_state(root, phase="cases", message=f"注入评测用例（{len(cases)} 条）")
         _http("POST", f"/api/projects/{mp_project}/testcases/batch", token,
               body={"cases": [{"question": c["question"], "groundTruth": c["groundTruth"]}
@@ -293,6 +300,10 @@ def _run_sync(project_id: str, root: Path, token: str, cases: list[dict]) -> Non
         round_info = (details.get("round") or {})
         if round_info.get("status") not in ("done", "failed"):
             raise TimeoutError("评测超时（modeling 侧轮次未在时限内结束）")
+        if round_info.get("status") == "failed":
+            # 轮次在 modeling 侧失败：透出其日志，不生成报告
+            log = (round_info.get("log") or "").strip().splitlines()
+            raise RuntimeError(f"modeling 评测轮失败：{log[-1] if log else '原因未知'}")
 
         rel = _write_report(root, round_info, details.get("results") or [])
         _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")

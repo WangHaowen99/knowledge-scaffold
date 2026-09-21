@@ -85,6 +85,15 @@ class StubModeling(BaseHTTPRequestHandler):
             })
         return self._send(404, {})
 
+    def do_PUT(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length)
+        StubModeling.calls.append(("PUT", self.path))
+        if self.path.endswith("/data-source"):
+            assert json.loads(raw) == {"mode": "none"}
+            return self._send(200, {"ok": True})
+        return self._send(404, {})
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
@@ -138,10 +147,46 @@ def test_orchestration_full_protocol(tmp_path, monkeypatch):
                              capture_output=True, text=True).stdout
         assert "eval:" in log
         # 协议顺序：import → batch → evaluate → poll
-        posts = [p for m, p in StubModeling.calls if m == "POST"]
-        assert posts[0] == "/api/package-workspaces/import"
-        assert posts[1].endswith("/testcases/batch")
-        assert posts[2].endswith("/evaluate")
+        ordered = [(m, p) for m, p in StubModeling.calls if m in ("POST", "PUT")]
+        assert ordered[0] == ("POST", "/api/package-workspaces/import")
+        assert ordered[1][0] == "PUT" and ordered[1][1].endswith("/data-source")
+        assert ordered[2][1].endswith("/testcases/batch")
+        assert ordered[3][1].endswith("/evaluate")
+    finally:
+        server.shutdown()
+
+
+def test_failed_round_surfaces_modeling_log(tmp_path, monkeypatch):
+    class FailingStub(StubModeling):
+        def do_GET(self):
+            if "/rounds/" in self.path:
+                return self._send(200, {
+                    "round": {"id": "r2", "status": "failed",
+                              "log": "轮次失败：缺少有效的 MODELING_SERVICE_TOKEN\n"},
+                    "results": [],
+                })
+            return StubModeling.do_GET(self)
+
+    server = HTTPServer(("127.0.0.1", 0), FailingStub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.1)
+        from app.services.workspace import WorkspaceManager
+
+        manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+        meta = manager.create_project("失败轮")
+        root = manager.project_root(meta["id"])
+        modeling_eval._run_sync(
+            meta["id"], root, "t",
+            [{"question": "Q1", "groundTruth": "G1"}, {"question": "Q2", "groundTruth": "G2"}],
+        )
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "failed"
+        assert "MODELING_SERVICE_TOKEN" in state["message"]
+        assert not list((root / "reports").glob("eval-*.md"))  # 失败不出报告
     finally:
         server.shutdown()
 
