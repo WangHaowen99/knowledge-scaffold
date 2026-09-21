@@ -249,9 +249,30 @@ resource/ 写入被拒（system prompt 规则第一道防线 + hooks rail 硬兜
 2. 收尾步骤遗漏：内容完成后跳过 checker 复检 / release 锁 / git 提交
    （candidate 对策：资产措辞强化须对 Claude 无害；或挂 task_completion rail 引擎侧兜底）。
 
-**剩余**：最小评测基线（Builder 全链脚本化 + Judge 评分）与三命令双跑质量回归
-（Claude 基线 vs Jiuwen+glm-5.2，失分项逐条修资产，目标 ≥ 基线 90%）；
-web 检索工具接入（research 命令的联网调研在 jiuwen 侧尚不可用，评测需避开或先补）。
+**评测基线与首轮双跑回归（2026-09-21 完成）**：`backend/scripts/eval_baseline.py`
+——合成外卖领域三命令链（research 仅本地 → extract-object → validate），确定性
+记分卡（产物/结构/检查器/收尾/交互约定），驱动器带确认卡自答、产物级完成判定、
+token 自动刷新与后验重打分（--rescore）。web 检索按用户决定**不接入**（research
+恒走仅本地路径，适配注记已明示）。
+
+首轮结果（后验同口径，满分 90）：**Claude 80 / Jiuwen 70（= 基线 87.5%）**。
+产物维度打平（报告 ✓、对象 6-8 个、模板结构 ✓、硬错误 0、research/extract 提交 ✓，
+Jiuwen 还按前置自动补齐了 flowchart 阶段）；差距全部来自 Jiuwen 的 validate 收尾
+未完成。失分点清单（连同修复状态）：
+
+1. ~~正文提问不出卡~~ / ~~收尾遗漏~~：适配注记强化后，extract 链已实测
+   规范收尾（commit + release）——**已修**；
+2. **ask_user 空卡循环**（本轮新发现，validate 语义修复确认环节）：glm 以
+   不规范参数调 ask_user → rail 取不到 questions → 空"请确认"卡 → 通用回答
+   无法解锁 → 无限重问。桥接层已加参数恢复兜底（字符串化 JSON / 单数
+   question / query 文本），随 v0.11.1 部署，**待复验**；
+3. **interrupt 无法终止 ask-loop 轮**（新发现）：agent.abort + 任务取消未能
+   结束阻塞在 interaction 等待中的轮，只能靠回收硬停——引擎打断语义**待修**；
+4. Claude 侧新认识：一条命令可能拆成多轮（中途 idle），headless 驱动必须以
+   产物而非会话状态判定完成（驱动器已按此加固）。
+
+**Phase 3 收尾清单（进入 Phase 4 前）**：修引擎打断语义（#3）；v0.11.1 上
+复验 validate 链闭环；按需把 task_completion rail 挂为收尾兜底。
 
 ### Phase 4：灰度与收尾（观察期 2–4 周）
 

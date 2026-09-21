@@ -237,15 +237,31 @@ def _interaction_to_permission(request: Any) -> tuple[str, dict]:
     if tool_name == "ask_user":
         questions = _req_get(request, "questions")
         if not questions:
-            # 无结构化问题：从 tool_args.query 提取问题文本
+            # rail 只认规范的 questions 列表；模型传参不规范时（字符串化 JSON、
+            # 单数 question、纯 query 文本）从 tool_args 里尽量恢复出卡片
             args = _req_get(request, "tool_args")
             if isinstance(args, str):
                 try:
                     args = json.loads(args)
                 except (ValueError, TypeError):
                     args = {}
-            query = (args or {}).get("query") if isinstance(args, dict) else ""
-            questions = [{"question": str(query or "请确认"), "options": []}]
+            args = args if isinstance(args, dict) else {}
+            raw_questions = args.get("questions")
+            if isinstance(raw_questions, str):
+                try:
+                    raw_questions = json.loads(raw_questions)
+                except (ValueError, TypeError):
+                    raw_questions = None
+            if isinstance(raw_questions, list) and raw_questions:
+                questions = raw_questions
+            elif args.get("question"):
+                questions = [{
+                    "question": str(args["question"]),
+                    "options": args.get("options") or [],
+                }]
+            else:
+                text = args.get("query") or args.get("prompt") or args.get("message") or ""
+                questions = [{"question": str(text or "请确认"), "options": []}]
         return "AskUserQuestion", {"questions": safe_json(list(questions))}
     args = _req_get(request, "tool_args")
     if isinstance(args, str):

@@ -61,22 +61,31 @@ INLINE_QUESTION_PATTERN = re.compile(r"回复\s*\*\*|请选择|请回复")
 
 
 class Client:
-    def __init__(self, base: str, token: str):
+    def __init__(self, base: str, token: str, relogin=None):
         self.base = base
         self.token = token
+        self.relogin = relogin  # 长链会跨过 access token 有效期，401 时重登一次
 
     def call(self, method: str, path: str, body: dict | None = None) -> dict:
-        req = urllib.request.Request(
-            self.base + path,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/json",
-            },
-            data=json.dumps(body).encode() if body is not None else None,
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode() or "{}")
+        for attempt in (0, 1):
+            req = urllib.request.Request(
+                self.base + path,
+                method=method,
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json",
+                },
+                data=json.dumps(body).encode() if body is not None else None,
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    return json.loads(resp.read().decode() or "{}")
+            except urllib.error.HTTPError as exc:
+                if exc.code == 401 and attempt == 0 and self.relogin:
+                    self.token = self.relogin()
+                    continue
+                raise
+        return {}
 
 
 def login(base: str, username: str, password: str) -> str:
@@ -135,8 +144,11 @@ def read_events(project: str, container: str) -> list[dict]:
 
 
 def drive_command(client: Client, project: str, container: str, text: str,
-                  timeout_s: int = 900, nudges: int = 2) -> dict:
-    """发送命令并驱动到 idle：确认卡自动选第一个选项；正文提问计失分并轻推。"""
+                  timeout_s: int = 900, nudges: int = 3, done_check=None) -> dict:
+    """发送命令并驱动到完成：确认卡自动选推荐项；正文提问计失分并轻推。
+
+    完成判定基于产物（done_check），而非会话 idle——Claude 引擎可能把一条命令
+    拆成多轮（中途 idle），idle 仅作为"可继续推进"的信号。"""
     stats = {"cards_answered": 0, "inline_questions": 0, "errors": 0}
     seq_before = len(read_events(project, container))
     client.call("POST", f"/api/projects/{project}/session/messages", {"text": text})
@@ -176,6 +188,21 @@ def drive_command(client: Client, project: str, container: str, text: str,
                         if b.get("kind") == "text":
                             last_text = b["text"]
                     break
+            if done_check is not None and not done_check():
+                if nudges > 0:
+                    nudges -= 1
+                    seq_before = len(events)
+                    if INLINE_QUESTION_PATTERN.search(last_text):
+                        stats["inline_questions"] += 1
+                        nudge = "按你的推荐选项继续，不要等待；后续问题请用 ask_user 工具提出。"
+                    else:
+                        nudge = ("命令尚未执行完毕（产物或收尾缺失）。请继续按命令文档完成"
+                                 "全部剩余步骤：产物写入、检查、state_helper release、"
+                                 "update-progress 与 git 提交。")
+                    client.call("POST", f"/api/projects/{project}/session/messages",
+                                {"text": nudge})
+                    continue
+                break
             if INLINE_QUESTION_PATTERN.search(last_text) and nudges > 0:
                 stats["inline_questions"] += 1
                 nudges -= 1
@@ -204,9 +231,22 @@ def score_chain(client: Client, project: str, container: str) -> dict:
     def lock_free() -> bool:
         return not workspace_exec(project, "ls .ontology-state/lock-*.json 2>/dev/null", container).strip()
 
+    def research_done():
+        chars = len(workspace_exec(project, "cat research/*.md 2>/dev/null | grep -v '^| 文件' ", container))
+        return chars > 1500 and lock_free()
+
+    def extract_done():
+        return entry_count(project, container, "ontology/object") >= 4 and lock_free()
+
+    def validate_done():
+        return bool(workspace_exec(
+            project, "ls reports/*.md 2>/dev/null | grep -v index", container).strip()) and lock_free()
+
     # ---- research ----
     commits0 = git_count()
-    stats = drive_command(client, project, container, "/ontology-research 外卖订单（仅本地资料，不要联网）")
+    stats = drive_command(client, project, container,
+                          "/ontology-research 外卖订单（仅本地资料，不要联网）",
+                          done_check=research_done)
     report_chars = len(workspace_exec(project, "cat research/*.md 2>/dev/null", container))
     item = {
         "produced_report": report_chars > 1500,       # 20
@@ -221,7 +261,8 @@ def score_chain(client: Client, project: str, container: str) -> dict:
 
     # ---- extract-object ----
     commits0 = git_count()
-    stats = drive_command(client, project, container, "/ontology-extract-object")
+    stats = drive_command(client, project, container, "/ontology-extract-object",
+                          done_check=extract_done)
     objects = entry_count(project, container, "ontology/object")
     structure_ok = "对象属性清单" in workspace_exec(
         project, "cat ontology/object/*.md 2>/dev/null | head -200", container)
@@ -240,7 +281,8 @@ def score_chain(client: Client, project: str, container: str) -> dict:
     card["commands"]["extract-object"] = item
 
     # ---- validate ----
-    stats = drive_command(client, project, container, "/ontology-validate")
+    stats = drive_command(client, project, container, "/ontology-validate",
+                          done_check=validate_done)
     report_out = workspace_exec(project, "ls reports/*.md 2>/dev/null", container)
     checker_out = workspace_exec(
         project,
@@ -270,14 +312,70 @@ def score_chain(client: Client, project: str, container: str) -> dict:
     return card
 
 
+def rescore(project: str, container: str) -> dict:
+    """后验重打分：对既有评测项目的最终工作区状态做确定性检查（不含过程分）。"""
+    def lock_free() -> bool:
+        return not workspace_exec(project, "ls .ontology-state/lock-*.json 2>/dev/null", container).strip()
+
+    log = workspace_exec(project, "git log --format=%s 2>/dev/null", container)
+    report_chars = len(workspace_exec(project, "cat research/*.md 2>/dev/null", container))
+    objects = entry_count(project, container, "ontology/object")
+    structure_ok = "对象属性清单" in workspace_exec(
+        project, "cat ontology/object/*.md 2>/dev/null | head -200", container)
+    validate_report = bool(workspace_exec(
+        project, "ls reports/*.md 2>/dev/null | grep -v index", container).strip())
+    checker_out = workspace_exec(
+        project, "python3 .claude/scripts/ontology_checker.py ontology 2>&1 | tail -1", container)
+    m = re.search(r"(\d+)\s+issues \((\d+) errors", checker_out) or re.search(r"(\d+)\s*errors", checker_out)
+    total_errors = int(m.group(m.lastindex)) if m else 0
+    forward = int(workspace_exec(
+        project,
+        "python3 .claude/scripts/ontology_checker.py ontology 2>/dev/null | grep -c '链接失效' || true",
+        container).strip() or 0)
+    card = {
+        "project": project,
+        "research": {
+            "produced_report": report_chars > 1500,
+            "committed": "research:" in log,
+            "score": (20 if report_chars > 1500 else 0) + (5 if "research:" in log else 0) + (10 if lock_free() else 0),
+        },
+        "extract-object": {
+            "objects_extracted": objects,
+            "enough_objects": objects >= 4,
+            "template_structure": structure_ok,
+            "committed": ("extract:" in log or "objects" in log),
+            "score": (15 if objects >= 4 else 0) + (10 if structure_ok else 0)
+            + (5 if ("extract:" in log or "objects" in log) else 0) + (5 if lock_free() else 0),
+        },
+        "validate": {
+            "report_generated": validate_report,
+            "hard_errors": max(0, total_errors - forward),
+            "score": (10 if validate_report else 0) + (5 if max(0, total_errors - forward) == 0 else 0)
+            + (5 if lock_free() else 0),
+        },
+    }
+    card["total"] = sum(c["score"] for c in card.values() if isinstance(c, dict) and "score" in c)
+    card["max"] = 90  # 过程分（交互约定 5×2）后验不可测
+    return card
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://127.0.0.1:5100")
-    parser.add_argument("--engine", choices=["claude", "jiuwen"], required=True)
+    parser.add_argument("--engine", choices=["claude", "jiuwen"], default="")
     parser.add_argument("--username", default="admin")
     parser.add_argument("--container", default="onto-modeling")
     parser.add_argument("--keep", action="store_true", help="保留评测项目供人工复核")
+    parser.add_argument("--rescore", default="", help="仅对既有项目后验重打分")
+    parser.add_argument("--only", default="", help="仅驱动指定命令（research|extract-object|validate）")
     args = parser.parse_args()
+
+    if args.rescore:
+        print(json.dumps(rescore(args.rescore, args.container), ensure_ascii=False, indent=2))
+        return 0
+    if not args.engine:
+        print("--engine 必填（或用 --rescore）", file=sys.stderr)
+        return 2
 
     password = os.environ.get("EVAL_ADMIN_PASSWORD", "")
     if not password:
@@ -285,7 +383,8 @@ def main() -> int:
         return 2
 
     token = login(args.base, args.username, password)
-    client = Client(args.base, token)
+    client = Client(args.base, token,
+                    relogin=lambda: login(args.base, args.username, password))
     project = client.call(
         "POST", "/api/projects",
         {"name": f"评测-{args.engine}-{time.strftime('%m%d%H%M')}"})["id"]
