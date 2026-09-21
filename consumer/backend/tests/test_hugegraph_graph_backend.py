@@ -418,6 +418,150 @@ def test_hugegraph_backend_pattern_search_forces_scope(monkeypatch):
     assert result.records[0]["selected"]["b"]["properties"]["TargetItemCode"] == "M-001"
 
 
+def test_hugegraph_pattern_search_accepts_edge_props_without_explicit_direction(monkeypatch):
+    _install_hugegraph_http(monkeypatch)
+    backend = HugeGraphBackend({"url": "http://service.example.net", "graph": "demo"})
+
+    result = backend.pattern_search(
+        path_pattern=[
+            ["SourceItemVersion", {"SourceItemVersionID": "VERSION0001"}],
+            ["D2O_RELATION", {"props": {"relation_type": "PROCESS_TO"}}],
+            ["TargetItem"],
+        ],
+        return_vars=["a", "r1", "b"],
+        limit=10,
+        scope=_scope(),
+    )
+
+    assert result.total == 1
+    assert result.records[0]["relationships"][0]["relation_type"] == "PROCESS_TO"
+
+
+def test_hugegraph_property_type_prefers_schema_metadata(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, params=None, **kwargs):
+        calls.append((method, url, params))
+        if url.endswith("/schema"):
+            return _FakeResponse({
+                "propertykeys": [
+                    {"name": "event_key", "data_type": "LONG", "cardinality": "SINGLE"},
+                    {"name": "tags", "data_type": "INT", "cardinality": "LIST"},
+                ],
+                "vertexlabels": [
+                    {"name": "SyntheticEvent", "properties": ["event_key", "tags"]},
+                ],
+            })
+        return _FakeResponse({})
+
+    monkeypatch.setattr("requests.request", fake_request)
+    backend = HugeGraphBackend({"url": "http://service.example.net", "graph": "demo"})
+
+    result = backend.get_property_types(
+        element_class="SyntheticEvent",
+        element_type="NODE",
+        property_names=["event_key", "tags"],
+        scope=_scope(),
+    )
+
+    assert result == {
+        "property_types": {"event_key": "LONG", "tags": "LIST<INT>"},
+        "complete": True,
+        "source": "hugegraph_schema",
+        "authoritative_fields": ["event_key", "tags"],
+        "resolved_fields": ["event_key", "tags"],
+    }
+    assert len(calls) == 1
+
+
+def test_hugegraph_property_type_does_not_borrow_global_key_from_another_class(monkeypatch):
+    def fake_request(method, url, params=None, **kwargs):
+        if url.endswith("/schema"):
+            return _FakeResponse({
+                "propertykeys": [
+                    {"name": "event_key", "data_type": "LONG", "cardinality": "SINGLE"},
+                ],
+                "vertexlabels": [
+                    {"name": "OtherSyntheticEvent", "properties": ["event_key"]},
+                ],
+            })
+        if url.endswith("/graph/vertices"):
+            return _FakeResponse({
+                "vertices": [
+                    _vertex("v-1", "SyntheticEvent", {"event_key": "00042"}),
+                ],
+            })
+        if url.endswith("/graph/edges"):
+            return _FakeResponse({"edges": []})
+        return _FakeResponse({})
+
+    monkeypatch.setattr("requests.request", fake_request)
+    backend = HugeGraphBackend({"url": "http://service.example.net", "graph": "demo"})
+
+    result = backend.get_property_types(
+        element_class="SyntheticEvent",
+        element_type="NODE",
+        property_names=["event_key"],
+        scope=_scope(),
+    )
+
+    assert result["property_types"] == {"event_key": "STRING"}
+    assert result["source"] == "hugegraph_snapshot"
+
+
+def test_hugegraph_property_type_keeps_schema_fields_authoritative_when_snapshot_is_truncated(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, params=None, **kwargs):
+        calls.append((method, url, params))
+        if url.endswith("/schema"):
+            return _FakeResponse({
+                "propertykeys": [
+                    {"name": "event_key", "data_type": "LONG", "cardinality": "SINGLE"},
+                ],
+                "vertexlabels": [
+                    {"name": "SyntheticEvent", "properties": ["event_key"]},
+                ],
+            })
+        if url.endswith("/graph/vertices"):
+            return _FakeResponse({
+                "vertices": [
+                    _vertex(
+                        "v-{}".format(index),
+                        "SyntheticEvent",
+                        {"sampled_flag": True},
+                    )
+                    for index in range(2)
+                ],
+            })
+        if url.endswith("/graph/edges"):
+            return _FakeResponse({"edges": []})
+        return _FakeResponse({})
+
+    monkeypatch.setattr("requests.request", fake_request)
+    backend = HugeGraphBackend({
+        "url": "http://service.example.net",
+        "graph": "demo",
+        "vertex_query_limit": 2,
+    })
+
+    result = backend.get_property_types(
+        element_class="SyntheticEvent",
+        element_type="NODE",
+        property_names=["event_key", "sampled_flag"],
+        scope=_scope(),
+    )
+
+    assert result["property_types"] == {
+        "event_key": "LONG",
+        "sampled_flag": "BOOLEAN",
+    }
+    assert result["complete"] is False
+    assert result["authoritative_fields"] == ["event_key"]
+    assert result["resolved_fields"] == ["event_key"]
+    assert result["source"] == "hugegraph_schema+snapshot"
+
+
 def test_hugegraph_backend_pattern_search_treats_filters_as_props(monkeypatch):
     _install_hugegraph_http(monkeypatch, include_competing_path=True)
     backend = HugeGraphBackend({"url": "https://hugegraph.example.net", "graph": "demo"})

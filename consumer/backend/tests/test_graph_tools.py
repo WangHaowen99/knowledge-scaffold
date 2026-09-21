@@ -192,6 +192,28 @@ class _FallbackSampleBackend(_ToolBackend):
         return GraphBackendResult(records=records[:limit], total=len(records))
 
 
+class _TypedToolBackend(_ToolBackend):
+    provider = "neo4j"
+
+    def get_property_types(self, *, element_class, element_type, property_names, scope):
+        self.calls.append((
+            "get_property_types",
+            element_class,
+            element_type,
+            tuple(property_names),
+            scope.workspace_value,
+        ))
+        return {
+            "property_types": {
+                field: "INTEGER"
+                for field in property_names
+                if field in {"event_key", "start_key", "end_key"}
+            },
+            "complete": True,
+            "source": "synthetic_database",
+        }
+
+
 def _context(scope):
     return GraphSearchRuntimeContext(
         provider="neo4j",
@@ -390,6 +412,169 @@ def test_graph_tool_executor_runs_jiutian_style_property_query_and_blocks_scope_
         )
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "tool_args", "call_name", "filter_index"),
+    [
+        (
+            "property_filter",
+            {
+                "element_class": "SyntheticEvent",
+                "element_type": "NODE",
+                "filter_dict": {"event_key": "9007199254740993"},
+            },
+            "property_filter",
+            3,
+        ),
+        (
+            "count_search",
+            {
+                "element_class": "SyntheticEvent",
+                "element_type": "NODE",
+                "filter_dict": {"event_key": "9007199254740993"},
+            },
+            "count_search",
+            3,
+        ),
+        (
+            "aggregate_search",
+            {
+                "element_class": "SyntheticEvent",
+                "element_type": "NODE",
+                "target_property": "amount",
+                "agg": "SUM",
+                "filter_dict": {"event_key": "9007199254740993"},
+            },
+            "aggregate_search",
+            5,
+        ),
+        (
+            "sorted_search",
+            {
+                "element_class": "SyntheticEvent",
+                "element_type": "NODE",
+                "filter_dict": {"event_key": "9007199254740993"},
+                "sort_by": ["event_key"],
+            },
+            "sorted_search",
+            3,
+        ),
+    ],
+)
+def test_graph_tool_executor_normalizes_all_scalar_filter_entrypoints(
+    tool_name,
+    tool_args,
+    call_name,
+    filter_index,
+):
+    backend = _TypedToolBackend()
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
+    mapping = GraphEntityMapping(
+        entity="synthetic_event",
+        kind="node",
+        source="test",
+        label="SyntheticEvent",
+    )
+    executor = GraphToolExecutor(
+        backend=backend,
+        context=_context(scope),
+        mapping=mapping,
+    )
+
+    executor.execute(tool_name, tool_args)
+
+    backend_call = next(call for call in reversed(backend.calls) if call[0] == call_name)
+    assert backend_call[filter_index] == {"event_key": 9007199254740993}
+    type_calls = [call for call in backend.calls if call[0] == "get_property_types"]
+    assert type_calls == [
+        (
+            "get_property_types",
+            "SyntheticEvent",
+            "NODE",
+            ("event_key",),
+            "workspace-a",
+        )
+    ]
+
+
+def test_graph_tool_executor_normalizes_pattern_and_shortest_path_filters():
+    backend = _TypedToolBackend()
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
+    mapping = GraphEntityMapping(entity="synthetic_path", kind="path", source="test")
+    executor = GraphToolExecutor(
+        backend=backend,
+        context=_context(scope),
+        mapping=mapping,
+    )
+
+    executor.execute(
+        "pattern_search",
+        {
+            "path_pattern": [
+                ["SyntheticEvent", {"props": {"event_key": "9007199254740993"}}],
+                ["SYNTHETIC_LINK", "->"],
+                ["SyntheticTarget"],
+            ],
+        },
+    )
+    pattern_call = next(call for call in reversed(backend.calls) if call[0] == "pattern_search")
+    assert pattern_call[1][0][1]["props"] == {"event_key": 9007199254740993}
+
+    executor.execute(
+        "shortest_path",
+        {
+            "start_label": "SyntheticStart",
+            "start_props": {"start_key": "41"},
+            "end_label": "SyntheticEnd",
+            "end_props": {"end_key": "42"},
+        },
+    )
+    shortest_call = next(call for call in reversed(backend.calls) if call[0] == "shortest_path")
+    assert shortest_call[2] == {"start_key": 41}
+    assert shortest_call[4] == {"end_key": 42}
+
+
+def test_targeted_pattern_type_lookup_does_not_reject_unresolved_return_fields():
+    backend = _TypedToolBackend()
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
+    mapping = GraphEntityMapping(entity="synthetic_path", kind="path", source="test")
+    executor = GraphToolExecutor(
+        backend=backend,
+        context=_context(scope),
+        mapping=mapping,
+    )
+
+    execution = executor.execute(
+        "pattern_search",
+        {
+            "path_pattern": [
+                ["SyntheticEvent", {"props": {"event_key": "42"}}],
+                ["SYNTHETIC_LINK", "->"],
+                ["SyntheticTarget"],
+            ],
+            "return_properties": {"a": ["display_name"]},
+        },
+    )
+
+    assert execution.tool_name == "pattern_search"
+    pattern_call = next(call for call in reversed(backend.calls) if call[0] == "pattern_search")
+    assert pattern_call[3] == {"a": ["display_name"]}
+
+
 def test_graph_tool_executor_passes_pattern_return_properties():
     backend = _ToolBackend()
     scope = GraphScope(
@@ -474,7 +659,9 @@ def test_graph_tool_executor_validates_pattern_search_against_preloaded_schema()
     context = replace(
         _context(scope),
         schema_context={
+            "source": "provider_preload",
             "nodes_schema": {
+                "names_complete": True,
                 "labels": ["SourceItemVersion", "TargetItem"],
                 "schema": {
                     "SourceItemVersion": {"SourceItemCode": "STRING"},
@@ -482,6 +669,7 @@ def test_graph_tool_executor_validates_pattern_search_against_preloaded_schema()
                 },
             },
             "edges_schema": {
+                "names_complete": True,
                 "relationship_types": ["D2O_RELATION"],
                 "schema": {"D2O_RELATION": {"relation_type": "STRING"}},
             },
