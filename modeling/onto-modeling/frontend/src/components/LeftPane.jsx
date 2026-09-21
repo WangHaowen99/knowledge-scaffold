@@ -111,6 +111,14 @@ export const STAGES = [
       { label: '生成脚本', command: '/ontology-codegen ' },
     ],
   },
+  {
+    key: 'eval',
+    title: '数据评测（可选）',
+    optional: true,
+    // 探针：评测报告文件（由平台编排落盘），非目录占位
+    probe: (paths) => paths.some((p) => p.startsWith('reports/eval-')),
+    actions: [], // 入口是平台编排（复核 Modal），不走聊天命令
+  },
 ];
 
 // 每个阶段的展示状态：可选阶段未完成不阻塞后续（finish/process/wait）
@@ -254,6 +262,40 @@ export default function LeftPane({
       .catch(() => {});
   }, [section, project.id]);
 
+  // ---- 数据评测（方案 P2）：状态轮询 + 用例复核 Modal ----
+  const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state}
+  const [evalWiz, setEvalWiz] = useState(null); // {cases:[{question,groundTruth}]}
+  useEffect(() => {
+    if (section !== 'progress') return undefined;
+    let stop = false;
+    const pull = () =>
+      api.evalStatus(project.id).then((d) => {
+        if (!stop) setEvalInfo(d);
+      }).catch(() => {});
+    pull();
+    const timer = setInterval(() => {
+      // 运行中密集轮询，空闲时低频
+      if (evalInfo?.state?.status === 'running') pull();
+    }, 8000);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, project.id, evalInfo?.state?.status]);
+
+  const openEvalWizard = async () => {
+    try {
+      const data = await api.evalCases(project.id);
+      if (!data.cases?.length) {
+        message.info('没有可转换的场景用例——先完成「场景验证」阶段，或在弹窗中手工添加');
+      }
+      setEvalWiz({ cases: data.cases || [] });
+    } catch (error) {
+      message.error(error.message);
+    }
+  };
+
   const [alignment, setAlignment] = useState(null); // eval_data 三方对账结果
   useEffect(() => {
     if (section !== 'resources') return;
@@ -391,17 +433,59 @@ export default function LeftPane({
               description:
                 expandedStage === stage.key ? (
                   <Space wrap size={4} style={{ marginTop: 4 }}>
-                    {stage.actions.map((action) => (
-                      <Button
-                        key={action.label}
-                        size="small"
-                        type={statuses[index] === 'process' ? 'primary' : 'default'}
-                        ghost={statuses[index] === 'process'}
-                        onClick={() => onCommand(action.command)}
-                      >
-                        {action.label}
-                      </Button>
-                    ))}
+                    {stage.key === 'eval' ? (
+                      !evalInfo?.enabled ? (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          未配置 modeling 评测服务
+                        </Typography.Text>
+                      ) : (
+                        <>
+                          <Tooltip title={evalInfo?.reachable ? '' : 'modeling 评测服务不可达，请先启动'}>
+                            <Button
+                              size="small"
+                              type="primary"
+                              ghost
+                              disabled={!evalInfo?.reachable || evalInfo?.state?.status === 'running'}
+                              onClick={openEvalWizard}
+                            >
+                              {evalInfo?.state?.status === 'running' ? '评测运行中…' : '运行评测'}
+                            </Button>
+                          </Tooltip>
+                          {evalInfo?.state?.status === 'running' && (
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              {evalInfo.state.message}
+                            </Typography.Text>
+                          )}
+                          {evalInfo?.state?.status === 'done' && evalInfo.state.summary && (
+                            <Tag
+                              color={evalInfo.state.summary.score >= 80 ? 'green' : 'orange'}
+                              style={{ cursor: 'pointer' }}
+                              onClick={() => onSelectFile(evalInfo.state.report)}
+                            >
+                              最近得分 {evalInfo.state.summary.score}（{evalInfo.state.summary.pass}✓/
+                              {evalInfo.state.summary.fail}✗）
+                            </Tag>
+                          )}
+                          {evalInfo?.state?.status === 'failed' && (
+                            <Tooltip title={evalInfo.state.message}>
+                              <Tag color="red">上次评测失败</Tag>
+                            </Tooltip>
+                          )}
+                        </>
+                      )
+                    ) : (
+                      stage.actions.map((action) => (
+                        <Button
+                          key={action.label}
+                          size="small"
+                          type={statuses[index] === 'process' ? 'primary' : 'default'}
+                          ghost={statuses[index] === 'process'}
+                          onClick={() => onCommand(action.command)}
+                        >
+                          {action.label}
+                        </Button>
+                      ))
+                    )}
                   </Space>
                 ) : undefined,
             }))}
@@ -675,6 +759,81 @@ export default function LeftPane({
         </>
       )}
 
+    
+      <Modal
+        title="数据评测 · 用例复核"
+        open={!!evalWiz}
+        onCancel={() => setEvalWiz(null)}
+        width={720}
+        okText={`运行评测（${evalWiz?.cases?.length || 0} 条）`}
+        okButtonProps={{ disabled: !evalWiz?.cases?.length }}
+        onOk={async () => {
+          try {
+            await api.evalRun(project.id, evalWiz.cases);
+            message.success('评测已启动，进度见「数据评测」阶段');
+            setEvalWiz(null);
+            const data = await api.evalStatus(project.id);
+            setEvalInfo(data);
+          } catch (error) {
+            message.error(error.message);
+          }
+        }}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          用例由「场景验证」的 trace 场景自动转换（问题 → consumer 智能体作答 → Judge
+          按标准答案判分）。运行前请复核标准答案是否准确，可直接修改或删除。
+        </Typography.Paragraph>
+        <div style={{ maxHeight: 380, overflow: 'auto' }}>
+          {(evalWiz?.cases || []).map((item, index) => (
+            <div key={index} className="eval-case-row">
+              <div className="eval-case-head">
+                <Typography.Text strong style={{ fontSize: 12 }}>
+                  用例 {index + 1}
+                </Typography.Text>
+                <Button
+                  size="small"
+                  type="text"
+                  danger
+                  onClick={() =>
+                    setEvalWiz({ cases: evalWiz.cases.filter((_, i) => i !== index) })
+                  }
+                >
+                  删除
+                </Button>
+              </div>
+              <Input.TextArea
+                autoSize={{ minRows: 1, maxRows: 3 }}
+                value={item.question}
+                onChange={(e) => {
+                  const cases = [...evalWiz.cases];
+                  cases[index] = { ...item, question: e.target.value };
+                  setEvalWiz({ cases });
+                }}
+              />
+              <Input.TextArea
+                autoSize={{ minRows: 1, maxRows: 3 }}
+                placeholder="标准答案"
+                style={{ marginTop: 4 }}
+                value={item.groundTruth}
+                onChange={(e) => {
+                  const cases = [...evalWiz.cases];
+                  cases[index] = { ...item, groundTruth: e.target.value };
+                  setEvalWiz({ cases });
+                }}
+              />
+            </div>
+          ))}
+        </div>
+        <Button
+          size="small"
+          style={{ marginTop: 8 }}
+          onClick={() =>
+            setEvalWiz({ cases: [...(evalWiz?.cases || []), { question: '', groundTruth: '' }] })
+          }
+        >
+          + 手工添加用例
+        </Button>
+      </Modal>
     </div>
   );
 }

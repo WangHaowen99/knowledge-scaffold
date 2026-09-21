@@ -377,6 +377,62 @@ def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
     return {"disabled": names}
 
 
+@router.get("/{project_id}/eval/status")
+def eval_status(project_id: str, request: Request):
+    """数据评测状态：modeling 可达性 + 最近一轮进度/结果（前端阶段按钮轮询）。"""
+    from ..services import modeling_eval
+
+    root = ensure_access(project_id, request)
+    return {
+        "enabled": modeling_eval.enabled(),
+        "reachable": modeling_eval.reachable() if modeling_eval.enabled() else False,
+        "state": modeling_eval.read_state(root),
+    }
+
+
+@router.get("/{project_id}/eval/cases")
+def eval_cases_preview(project_id: str, request: Request):
+    """trace 场景 → 评测用例的转换预览（运行前供用户复核修订）。"""
+    from ..services import modeling_eval
+
+    root = ensure_access(project_id, request)
+    return {"cases": modeling_eval.trace_cases(root)}
+
+
+class EvalRunBody(BaseModel):
+    cases: list[dict]  # [{question, groundTruth}]，用户复核后的用例
+
+
+@router.post("/{project_id}/eval/run")
+async def eval_run(project_id: str, body: EvalRunBody, request: Request):
+    """启动数据评测（后台编排，状态经 /eval/status 轮询）。"""
+    from ..services import modeling_eval
+
+    root = ensure_access(project_id, request, write=True)
+    if not modeling_eval.enabled():
+        return JSONResponse(status_code=400, content={"error": "未配置 modeling 评测服务（ONTO_WEB_MODELING_URL）"})
+    if not modeling_eval.reachable():
+        return JSONResponse(status_code=503, content={"error": "modeling 评测服务不可达，请先启动该服务"})
+    cases = [
+        {"question": str(c.get("question", "")).strip(), "groundTruth": str(c.get("groundTruth", "")).strip()}
+        for c in body.cases
+        if str(c.get("question", "")).strip()
+    ]
+    if not cases:
+        return JSONResponse(status_code=400, content={"error": "没有可用的评测用例（先完成场景验证或手工补充）"})
+    if len(cases) > 500:
+        return JSONResponse(status_code=400, content={"error": "一次最多 500 条用例"})
+    # 鉴权：共享账号中心下透传当前用户 token；否则用部署级兜底令牌
+    auth = request.headers.get("authorization") or ""
+    token = config.MODELING_TOKEN or (auth[7:] if auth.lower().startswith("bearer ") else "")
+    if not token:
+        return JSONResponse(status_code=400, content={"error": "缺少可用于 modeling 的令牌"})
+    import asyncio as _asyncio
+
+    _asyncio.create_task(modeling_eval.run(project_id, root, token, cases))
+    return {"started": True, "cases": len(cases)}
+
+
 @router.get("/{project_id}/eval-data/alignment")
 def eval_data_alignment(project_id: str, request: Request):
     """评测数据三方对账（数据列 ↔ schema 字段 ↔ 对象属性）。

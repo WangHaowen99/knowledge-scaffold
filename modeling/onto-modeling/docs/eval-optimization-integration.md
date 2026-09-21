@@ -120,6 +120,26 @@ modeling 服务时再评估。
   不阻塞主链；独立部署时该阶段整体不出现。若未来决定下线 modeling 服务，
   再评估方案 II（引擎移植）。
 
+## 3.6 落地记录
+
+- **P1 完成（2026-09-21，v0.12.0）**：eval_data 用途标签（前后端 + agent 规则语义）、
+  三方对账检查器 `check_eval_data.py`（工具箱脚本单一实现 + `/eval-data/alignment`
+  端点 + 资料区行内徽标）、`mock_to_eval_seed.py` 种子转换器。
+- **P2 完成（2026-09-21，v0.12.1）**：`services/modeling_eval.py` 编排服务——
+  发布包 zip → `POST /api/package-workspaces/import`（modeling 一步建项目+导入包）→
+  `testcases/batch`（trace TC 段落自动转换 question/groundTruth）→ `evaluate` →
+  轮询 `rounds/:id` → 报告落 `reports/eval-<ts>.md`（git 提交）+ 状态落
+  `.ontology-state/eval.json`；左栏「数据评测」阶段（前后端探针 `reports/eval-*.md`，
+  可选语义）+ 运行按钮（未配置隐藏提示 / 不可达置灰）+ 用例复核 Modal
+  （可改可删可手工补）+ 最近得分 Tag（点击打开报告）。
+  鉴权：透传当前用户 token，`ONTO_WEB_MODELING_TOKEN` 兜底。
+  **编排协议经 stub modeling 服务全链验证**（import→batch→evaluate→poll→报告/提交
+  顺序与载荷断言）；81 后端测试全绿。
+- **部署级确认结果**：nl2sql 评测库 = modeling 侧 `EVAL_DB_URL`（仅 MySQL）；
+  本机与 tc 的 modeling 实例均未配置——数据导入环节待部署决策后接通
+  （编排里预留 data_source/import 步骤位）。真实栈端到端验证需同栈网络 +
+  共享账号中心（方案 A），属部署拓扑变更，待用户批准后执行。
+
 ## 4. 依赖与开放问题（拍板时定）
 
 1. **部署形态**：评测要求 modeling + consumer 与 onto-modeling 共栈（根一键部署已满足）；

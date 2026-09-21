@@ -95,6 +95,8 @@ class WorkspaceManager:
         (("ontology/data-mock",), False),
         (("ontology/testcase",), False),
         (("ontology/scripts",), True),
+        # 数据评测（可选，方案 eval-optimization-integration）：探针为报告文件 glob
+        (("reports/eval-*.md",), True),
     )
     STAGE_TOTAL = len(STAGES)
 
@@ -112,7 +114,12 @@ class WorkspaceManager:
     def _project_progress(cls, root: Path) -> dict:
         done = 0
         for dirs, optional in cls.STAGES:
-            hit = any(cls._dir_has_entries(root / rel) for rel in dirs)
+            hit = any(
+                (next(root.glob(rel), None) is not None)
+                if "*" in rel
+                else cls._dir_has_entries(root / rel)
+                for rel in dirs
+            )
             if hit:
                 done += 1
             elif optional:
