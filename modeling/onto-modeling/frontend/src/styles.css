@@ -188,7 +188,13 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 /* 助手侧内容淡入即可，避免流式→完整切换时的弹跳突兀 */
 @keyframes soft-in { from { opacity: 0; } to { opacity: 1; } }
 .msg-soft { animation: soft-in 0.18s ease both; }
-.msg-left-wrap { display: flex; justify-content: flex-start; }
+.msg-left-wrap {
+  display: flex;
+  flex-direction: column; /* 思考过程块与正文气泡纵向堆叠，避免同排挤压 */
+  align-items: flex-start;
+  gap: 8px;
+}
+.msg-left-wrap .thinking-block { max-width: 100%; }
 
 /* iMessage 式弹入：从下方缩放弹起，带轻微过冲 */
 @keyframes bubble-pop {

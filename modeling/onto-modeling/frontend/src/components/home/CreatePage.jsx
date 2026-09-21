@@ -13,7 +13,6 @@ export default function CreatePage({ onBack, onCreated }) {
   const [goal, setGoal] = useState('');
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
-  const [uploadNote, setUploadNote] = useState('');
   const input = useRef(null);
 
   const addFiles = (items) => {
@@ -38,34 +37,14 @@ export default function CreatePage({ onBack, onCreated }) {
   const updateFile = (name, patch) =>
     setFiles((current) => current.map((item) => (item.name === name ? { ...item, ...patch } : item)));
 
-  const start = async (template = 'blank') => {
+  const start = async () => {
     if (!name.trim() || creating) return;
     setCreating(true);
     setError('');
     try {
-      const created = await api.createProject(name.trim(), template, goal.trim());
-      // 初始资料并行上传（带用途标签）；单个失败不阻断进入项目
-      let done = 0;
-      setUploadNote(files.length ? `0/${files.length}` : '');
-      await Promise.all(
-        files.map((item) =>
-          api
-            .uploadResource(
-              created.id,
-              autoSubdir(item.name),
-              item.file,
-              undefined,
-              item.purpose,
-              item.readingMode,
-            )
-            .then(() => {
-              done += 1;
-              setUploadNote(`${done}/${files.length}`);
-            })
-            .catch((cause) => message.warning(`${item.name} 上传失败：${cause.message}`)),
-        ),
-      );
-      onCreated(created);
+      const created = await api.createProject(name.trim(), 'blank', goal.trim());
+      // 资料不在本页上传：立即进入项目，由聊天框作为文档附件发送（带进度卡）
+      onCreated(created, files);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '项目创建失败');
       setCreating(false);
@@ -210,20 +189,9 @@ export default function CreatePage({ onBack, onCreated }) {
               className="btn btn-p"
               style={{ padding: '9px 22px' }}
               disabled={!name.trim() || creating}
-              onClick={() => void start('blank')}
+              onClick={() => void start()}
             >
-              {creating ? (uploadNote ? `正在上传资料 ${uploadNote}…` : '正在创建…') : '开始建模'}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={creating}
-              onClick={() => {
-                if (!name.trim()) setName('外卖订单示例');
-                void start('example');
-              }}
-            >
-              注入外卖订单示例
+              {creating ? '正在创建…' : '开始建模'}
             </button>
             <button type="button" className="btn btn-ghost" onClick={onBack} title="取消并返回项目列表">
               取消建模

@@ -65,6 +65,7 @@ export default function App() {
   const [importWiz, setImportWiz] = useState(null); // {step,file,name,summary,importing}
   const [memberWiz, setMemberWiz] = useState(null); // {project, members, newUser, newRole}
   const [engineWiz, setEngineWiz] = useState(null); // {project, engine, available}
+  const [initialFiles, setInitialFiles] = useState(null); // {projectId, files} 新建项目待发送的初始资料
   const [queryPreset, setQueryPreset] = useState(null); // 反查预置 {kind, term, nonce}
   const [diffFiles, setDiffFiles] = useState(null); // 变更卡带入对比页的文件清单
   const [recentFiles, setRecentFiles] = useState([]);
@@ -326,7 +327,8 @@ export default function App() {
     return (
       <CreatePage
         onBack={() => nav('#/')}
-        onCreated={async (created) => {
+        onCreated={async (created, files) => {
+          if (files?.length) setInitialFiles({ projectId: created.id, files });
           // 先等列表刷新拿到新项目，再进入项目页（否则 project 解析为空会落回列表）
           await refreshProjects();
           nav(`#/p/${created.id}`);
@@ -825,6 +827,8 @@ export default function App() {
             <div className="pane pane-right">
               <ChatPane
                 onActiveStage={setActiveStage}
+                initialFiles={initialFiles?.projectId === project.id ? initialFiles.files : null}
+                onInitialFilesConsumed={() => setInitialFiles(null)}
                 project={project}
                 tree={tree}
                 meta={project}
