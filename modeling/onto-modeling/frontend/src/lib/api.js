@@ -293,6 +293,13 @@ export const api = {
   evalDataAlignment: (pid) => request(`/api/projects/${pid}/eval-data/alignment`),
   evalStatus: (pid) => request(`/api/projects/${pid}/eval/status`),
   evalCases: (pid) => request(`/api/projects/${pid}/eval/cases`),
+  evalCasesTemplateUrl: (pid) =>
+    `/api/projects/${pid}/eval/cases/template?token=${encodeURIComponent(authStore.token)}`,
+  evalCasesImport: (pid, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request(`/api/projects/${pid}/eval/cases/import`, { method: 'POST', body: form });
+  },
   evalRun: (pid, cases) =>
     request(`/api/projects/${pid}/eval/run`, {
       method: 'POST',

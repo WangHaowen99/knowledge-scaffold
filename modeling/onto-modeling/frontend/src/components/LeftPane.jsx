@@ -838,15 +838,39 @@ export default function LeftPane({
             </div>
           ))}
         </div>
-        <Button
-          size="small"
-          style={{ marginTop: 8 }}
-          onClick={() =>
-            setEvalWiz({ cases: [...(evalWiz?.cases || []), { question: '', groundTruth: '' }] })
-          }
-        >
-          + 手工添加用例
-        </Button>
+        <Space style={{ marginTop: 8 }}>
+          <Button
+            size="small"
+            onClick={() =>
+              setEvalWiz({ cases: [...(evalWiz?.cases || []), { question: '', groundTruth: '' }] })
+            }
+          >
+            + 手工添加用例
+          </Button>
+          <Upload
+            accept=".json,application/json"
+            showUploadList={false}
+            beforeUpload={async (file) => {
+              try {
+                const data = await api.evalCasesImport(project.id, file);
+                setEvalWiz({ cases: [...(evalWiz?.cases || []), ...data.cases] });
+                message.success(`已导入 ${data.cases.length} 条用例`);
+              } catch (error) {
+                message.error(error.message);
+              }
+              return false; // 阻止默认上传行为
+            }}
+          >
+            <Button size="small">批量导入 JSON</Button>
+          </Upload>
+          <Button
+            size="small"
+            type="link"
+            onClick={() => window.open(api.evalCasesTemplateUrl(project.id))}
+          >
+            下载模板
+          </Button>
+        </Space>
       </Modal>
     </div>
   );

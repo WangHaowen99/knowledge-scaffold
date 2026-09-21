@@ -141,6 +141,62 @@ def trace_cases(root: Path) -> list[dict]:
     return cases
 
 
+MAX_IMPORT_CASES = 500
+
+
+def parse_case_json(raw: str) -> list[dict]:
+    """用例 JSON → [{question, groundTruth}]（与 modeling 的 testcase-import 契约一致）。
+
+    顶层数组或 {cases: [...]}；question/prompt 必填；
+    groundTruth/ground_truth/answer/referenceAnswer 可选；重复问题拒绝。
+    """
+    try:
+        value = json.loads(raw or "")
+    except (ValueError, TypeError) as exc:
+        raise ValueError("用例文件不是有效的 JSON") from exc
+    rows = value if isinstance(value, list) else (value or {}).get("cases")
+    if not isinstance(rows, list):
+        raise ValueError("用例文件必须是数组或包含 cases 数组")
+    if not rows:
+        raise ValueError("用例文件中没有可导入内容")
+    if len(rows) > MAX_IMPORT_CASES:
+        raise ValueError(f"一次最多导入 {MAX_IMPORT_CASES} 条真实用例")
+
+    def text(v):
+        return "" if v is None else str(v).strip()
+
+    seen = set()
+    cases = []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            raise ValueError(f"第 {index} 条用例格式不正确")
+        question = text(row.get("question") or row.get("prompt"))
+        if not question:
+            raise ValueError(f"第 {index} 条缺少问题")
+        key = " ".join(question.split()).lower()
+        if key in seen:
+            raise ValueError(f"用例文件包含重复问题：第 {index} 条")
+        seen.add(key)
+        cases.append({
+            "question": question,
+            "groundTruth": text(
+                row.get("groundTruth") or row.get("ground_truth")
+                or row.get("answer") or row.get("referenceAnswer")
+            ),
+        })
+    return cases
+
+
+def case_template_json() -> str:
+    """导入模板（与 modeling 的下载模板同构）。"""
+    return json.dumps({
+        "cases": [
+            {"question": "示例业务问题", "groundTruth": "可选：填写标准答案"},
+            {"question": "仅用于真实执行的问题", "groundTruth": ""},
+        ],
+    }, ensure_ascii=False, indent=2) + "\n"
+
+
 # ---- 状态与报告 ----
 
 

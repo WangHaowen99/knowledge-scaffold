@@ -195,3 +195,36 @@ def test_run_endpoint_gated_without_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MODELING_URL", "")
     assert not modeling_eval.enabled()
     assert not modeling_eval.reachable()
+
+
+def test_parse_case_json_modeling_contract():
+    import pytest
+
+    # {cases: [...]} 形式 + 字段别名
+    raw = json.dumps({"cases": [
+        {"question": "金额25元能配送吗", "groundTruth": "可以配送"},
+        {"prompt": "金额15元呢", "ground_truth": "不可配送"},
+        {"question": "无答案的问题"},
+    ]}, ensure_ascii=False)
+    cases = modeling_eval.parse_case_json(raw)
+    assert len(cases) == 3
+    assert cases[1] == {"question": "金额15元呢", "groundTruth": "不可配送"}
+    assert cases[2]["groundTruth"] == ""
+
+    # 顶层数组形式
+    assert modeling_eval.parse_case_json('[{"question": "Q", "answer": "A"}]') == [
+        {"question": "Q", "groundTruth": "A"}
+    ]
+
+    # 错误分支与 modeling 同语义
+    with pytest.raises(ValueError, match="不是有效的 JSON"):
+        modeling_eval.parse_case_json("not json")
+    with pytest.raises(ValueError, match="cases 数组"):
+        modeling_eval.parse_case_json('{"x": 1}')
+    with pytest.raises(ValueError, match="第 2 条缺少问题"):
+        modeling_eval.parse_case_json('[{"question": "Q"}, {"groundTruth": "G"}]')
+    with pytest.raises(ValueError, match="重复问题：第 2 条"):
+        modeling_eval.parse_case_json('[{"question": "Q  1"}, {"question": "q 1"}]')
+
+    # 模板本身可被解析（往返）
+    assert len(modeling_eval.parse_case_json(modeling_eval.case_template_json())) == 2

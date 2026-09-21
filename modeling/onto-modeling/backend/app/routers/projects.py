@@ -399,6 +399,41 @@ def eval_cases_preview(project_id: str, request: Request):
     return {"cases": modeling_eval.trace_cases(root)}
 
 
+@router.post("/{project_id}/eval/cases/import")
+async def eval_cases_import(
+    project_id: str, request: Request, file: UploadFile = File(...)
+):
+    """用例 JSON 导入（与 modeling 的用例导入模板同一契约）。"""
+    from ..services import modeling_eval
+
+    ensure_access(project_id, request)
+    if not (file.filename or "").lower().endswith(".json"):
+        return JSONResponse(status_code=400, content={"error": "仅支持 JSON 用例文件（可先下载模板）"})
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        return JSONResponse(status_code=400, content={"error": "用例文件不超过 2MB"})
+    try:
+        cases = modeling_eval.parse_case_json(content.decode("utf-8-sig", errors="replace"))
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return {"cases": cases}
+
+
+@router.get("/{project_id}/eval/cases/template")
+def eval_cases_template(project_id: str, request: Request):
+    """用例导入模板下载（modeling 同款）。"""
+    from fastapi.responses import Response
+
+    from ..services import modeling_eval
+
+    ensure_access(project_id, request)
+    return Response(
+        content=modeling_eval.case_template_json(),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''%E8%AF%84%E6%B5%8B%E7%94%A8%E4%BE%8B%E5%AF%BC%E5%85%A5%E6%A8%A1%E6%9D%BF.json"},
+    )
+
+
 class EvalRunBody(BaseModel):
     cases: list[dict]  # [{question, groundTruth}]，用户复核后的用例
 
