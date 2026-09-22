@@ -452,3 +452,256 @@ def test_dataset_mode_runs_quick_import(tmp_path, monkeypatch):
             < posts.index("/api/projects/mp-9/evaluate")
     finally:
         server.shutdown()
+
+
+# ---- 停止评测与中断续接 ----
+
+
+class CancelStub(StubModeling):
+    """支持 evaluate/cancel 的 modeling 替身；轮次始终停在 running。"""
+
+    cancels: list = []
+    cancel_status = 200
+    round_status = "running"
+
+    def do_GET(self):
+        StubModeling.calls.append(("GET", self.path))
+        if self.path == "/":
+            return self._send(200, {"ok": True})
+        if "/rounds/" in self.path:
+            return self._send(200, {
+                "round": {"id": "r9", "status": CancelStub.round_status,
+                          "progressDone": 1, "progressTotal": 2},
+                "results": [{"question": "Q1", "groundTruth": "G1", "finalAnswer": "A1",
+                             "verdict": "pass", "reason": "一致"}],
+            })
+        return self._send(404, {})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length)
+        StubModeling.calls.append(("POST", self.path))
+        if self.path.endswith("/evaluate/cancel"):
+            CancelStub.cancels.append((self.path, json.loads(raw or "{}")))
+            if CancelStub.cancel_status != 200:
+                return self._send(CancelStub.cancel_status, {"error": "该轮评测已经结束"})
+            return self._send(200, {"round": {"id": "r9", "status": "failed"}})
+        return self._send(404, {})
+
+
+def _eval_workspace(tmp_path, name: str):
+    from app.services.workspace import WorkspaceManager
+
+    manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    meta = manager.create_project(name)
+    return meta["id"], manager.project_root(meta["id"])
+
+
+def _serve(handler, tmp_path, monkeypatch):
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(modeling_eval, "ROUND_TIMEOUT_SECONDS", 5)  # 测试不等 30 分钟
+    return server
+
+
+def test_stop_cancels_modeling_round_and_marks_stopped(tmp_path, monkeypatch):
+    """停止评测：取消 modeling 侧轮次，状态落 stopped（可重跑，不是 failed）。"""
+    StubModeling.calls, CancelStub.cancels = [], []
+    CancelStub.cancel_status = 200
+    server = _serve(CancelStub, tmp_path, monkeypatch)
+    try:
+        pid, root = _eval_workspace(tmp_path, "停止评测")
+        monkeypatch.setattr(modeling_eval, "_running", {pid})
+        monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+        modeling_eval._write_state(
+            root, status="running", phase="evaluate", message="评测执行中 1/2",
+            modeling_project="mp-1", round_id="r9",
+            cases=[{"question": "Q1", "verdict": "pass"}],
+        )
+
+        result = modeling_eval.request_stop(pid, root, "t")
+        assert result["stopped"] and result["cancelled"]
+        assert CancelStub.cancels == [("/api/projects/mp-1/evaluate/cancel", {"roundId": "r9"})]
+        # 编排线程收到协作取消标记
+        assert pid in modeling_eval._stop_requested
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "stopped", state
+        assert state["round_id"] == "r9"  # 轮次坐标保留，执行详情仍可看
+    finally:
+        server.shutdown()
+
+
+def test_stop_tolerates_already_finished_round(tmp_path, monkeypatch):
+    """轮次已结束（modeling 返回 409）：目标状态本就达成，仍收敛为 stopped。"""
+    StubModeling.calls, CancelStub.cancels = [], []
+    CancelStub.cancel_status = 409
+    server = _serve(CancelStub, tmp_path, monkeypatch)
+    try:
+        pid, root = _eval_workspace(tmp_path, "停止已结束轮次")
+        monkeypatch.setattr(modeling_eval, "_running", set())
+        monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+        modeling_eval._write_state(
+            root, status="interrupted", message="中断",
+            modeling_project="mp-1", round_id="r9",
+        )
+
+        result = modeling_eval.request_stop(pid, root, "t")
+        assert result["stopped"] and not result["cancelled"]
+        assert modeling_eval.read_state(root)["status"] == "stopped"
+        # 进程内无编排时不留取消标记，免得影响下一轮编排
+        assert pid not in modeling_eval._stop_requested
+    finally:
+        server.shutdown()
+
+
+def test_stop_rejected_when_no_eval_in_flight(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    pid, root = _eval_workspace(tmp_path, "无评测可停")
+    modeling_eval._write_state(root, status="done", message="完成")
+    with pytest.raises(ValueError):
+        modeling_eval.request_stop(pid, root, "t")
+
+
+def test_stop_request_aborts_orchestration_before_spending(tmp_path, monkeypatch):
+    """取消标记命中：编排在发起评测前退出，不导入包、不烧模型，状态落 stopped。"""
+    StubModeling.calls, CancelStub.cancels = [], []
+    server = _serve(CancelStub, tmp_path, monkeypatch)
+    try:
+        pid, root = _eval_workspace(tmp_path, "取消标记")
+        monkeypatch.setattr(modeling_eval, "_stop_requested", {pid})
+        modeling_eval._run_sync(pid, root, "t", [{"question": "Q1", "groundTruth": "G1"}])
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "stopped", state
+        assert not [p for m, p in StubModeling.calls if m == "POST"], StubModeling.calls
+        assert not list((root / "reports").glob("eval-*.md"))
+    finally:
+        server.shutdown()
+
+
+def test_poll_round_exits_on_stop_without_report(tmp_path, monkeypatch):
+    """轮询中被停止：抛 EvalStopped，不落报告、不覆写停止话术。"""
+    import pytest
+
+    StubModeling.calls = []
+    CancelStub.round_status = "running"
+    server = _serve(CancelStub, tmp_path, monkeypatch)
+    try:
+        pid, root = _eval_workspace(tmp_path, "轮询中停止")
+        monkeypatch.setattr(modeling_eval, "_stop_requested", {pid})
+        with pytest.raises(modeling_eval.EvalStopped):
+            modeling_eval._poll_round(pid, root, "t", "mp-1", "r9",
+                                      [{"question": "Q1", "groundTruth": "G1"}])
+        assert not list((root / "reports").glob("eval-*.md"))
+    finally:
+        server.shutdown()
+
+
+def test_sweep_marks_orphan_running_as_interrupted(tmp_path, monkeypatch):
+    """进程启动扫描：running 状态在新进程里必属孤儿，改判中断并保留轮次坐标。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    pid_a, root_a = _eval_workspace(tmp_path, "孤儿运行中")
+    pid_b, root_b = _eval_workspace(tmp_path, "已完成")
+    modeling_eval._write_state(root_a, status="running", message="评测执行中 3/8",
+                               modeling_project="mp-1", round_id="r9")
+    modeling_eval._write_state(root_b, status="done", message="完成")
+
+    touched = modeling_eval.sweep_interrupted(tmp_path / "data")
+    assert touched == [pid_a]
+    state = modeling_eval.read_state(root_a)
+    assert state["status"] == "interrupted"
+    assert state["round_id"] == "r9" and "续接" in state["message"]
+    assert modeling_eval.read_state(root_b)["status"] == "done"  # 终态不动
+    # 没有工作区目录时不报错
+    assert modeling_eval.sweep_interrupted(tmp_path / "nowhere") == []
+
+
+def test_status_view_detects_stale_running(tmp_path, monkeypatch):
+    """/eval/status 陈旧判定：内存无编排 + ts 停滞 → 中断且标记可续接。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(modeling_eval, "_running", set())
+    pid, root = _eval_workspace(tmp_path, "陈旧运行中")
+    modeling_eval._write_state(root, status="running", message="评测执行中 3/8",
+                               modeling_project="mp-1", round_id="r9")
+
+    # 刚刷过 ts：仍按运行中呈现，不误判
+    assert modeling_eval.status_view(pid, root)["status"] == "running"
+
+    path = root / modeling_eval.STATE_REL
+    stale = json.loads(path.read_text(encoding="utf-8"))
+    stale["ts"] = stale["ts"] - modeling_eval.STALE_AFTER_SECONDS - 1
+    path.write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+
+    view = modeling_eval.status_view(pid, root)
+    assert view["status"] == "interrupted" and view["resumable"] is True
+    assert modeling_eval.read_state(root)["status"] == "interrupted"  # 已持久化
+
+    # 进程内仍有编排时，陈旧也不改判（长耗时阶段不写状态）
+    modeling_eval._write_state(root, status="running")
+    stale = json.loads(path.read_text(encoding="utf-8"))
+    stale["ts"] = stale["ts"] - modeling_eval.STALE_AFTER_SECONDS - 1
+    path.write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(modeling_eval, "_running", {pid})
+    assert modeling_eval.status_view(pid, root)["status"] == "running"
+
+
+def test_resume_collects_interrupted_round(tmp_path, monkeypatch):
+    """续接中断轮次：只 GET 已有轮次并落报告，不再发起评测。"""
+    StubModeling.calls = []
+    CancelStub.round_status = "done"
+    server = _serve(CancelStub, tmp_path, monkeypatch)
+    try:
+        pid, root = _eval_workspace(tmp_path, "续接中断轮")
+        monkeypatch.setattr(modeling_eval, "_running", set())
+        monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+        modeling_eval._write_state(
+            root, status="interrupted", message=modeling_eval.INTERRUPTED_MESSAGE,
+            modeling_project="mp-1", round_id="r9",
+            cases=[{"question": "Q1", "verdict": "running"}],
+        )
+        assert modeling_eval.can_resume(root)
+
+        modeling_eval._resume_sync(pid, root, "t")
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "done", state
+        assert state["summary"]["pass"] == 1
+        assert not [p for m, p in StubModeling.calls if m == "POST"], StubModeling.calls
+    finally:
+        CancelStub.round_status = "running"
+        server.shutdown()
+
+
+def test_resume_reports_unresumable_round(tmp_path, monkeypatch):
+    """modeling 侧轮次已失败：续接失败，状态留在中断并提示重跑。"""
+    StubModeling.calls = []
+    CancelStub.round_status = "failed"
+    server = _serve(CancelStub, tmp_path, monkeypatch)
+    try:
+        pid, root = _eval_workspace(tmp_path, "无法续接")
+        monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+        modeling_eval._write_state(
+            root, status="interrupted", message="中断",
+            modeling_project="mp-1", round_id="r9",
+            cases=[{"question": "Q1", "verdict": "running"}],
+        )
+        modeling_eval._resume_sync(pid, root, "t")
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "interrupted"
+        assert "无法续接" in state["message"]
+        assert not list((root / "reports").glob("eval-*.md"))
+    finally:
+        CancelStub.round_status = "running"
+        server.shutdown()
+
+
+def test_can_resume_requires_round_coordinates(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    _pid, root = _eval_workspace(tmp_path, "无轮次坐标")
+    modeling_eval._write_state(root, status="interrupted", message="中断")
+    assert not modeling_eval.can_resume(root)
+    modeling_eval._write_state(root, modeling_project="mp-1", round_id="r9")
+    assert modeling_eval.can_resume(root)

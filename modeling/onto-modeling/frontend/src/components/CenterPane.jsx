@@ -1010,9 +1010,6 @@ export default function CenterPane({
             {usage && usage.calls > 0 && (
               <Card size="small" title="模型用量">
                 <Space size={24} wrap>
-                  <span>
-                    累计成本 <b>${usage.total_cost_usd.toFixed(2)}</b>
-                  </span>
                   <span>调用 {usage.calls} 次</span>
                   <span>输出 {usage.output_tokens.toLocaleString()} tokens</span>
                 </Space>

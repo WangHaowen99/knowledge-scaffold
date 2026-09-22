@@ -171,6 +171,27 @@ modeling 服务时再评估。
   consumer 查库作答（含聚合统计）→ 真实 judge 判分，2/2 pass 得分 100。
 - 待办：eval_data 真实业务表的"来源Sheet=真实表名"导出映射（P1 对账数据可用）。
 
+### 3.9 停止评测与中断恢复（2026-09-22）
+
+编排只活在 onto-modeling 进程内（`_running` / `_live_tokens` 是内存态），而状态落在
+`.ontology-state/eval.json`。进程重启（如容器重新部署）会让编排线程消失、状态永远
+停在 `running`，前端"运行评测"按钮据此置灰，形成不可恢复的死锁——即使 modeling
+侧轮次已经跑完。本次按三层收敛：
+
+- **停止评测**：`POST /api/projects/:id/eval/stop` → 调 modeling
+  `POST /api/projects/:mp/evaluate/cancel`（带 `roundId`；404/409 视为目标已达成），
+  状态落新终态 `stopped`；进程内有编排时同时置协作取消标记，轮询下一拍抛
+  `EvalStopped` 退出，编排在"发起 evaluate 前"的取消点停下即不产生模型开销。
+  已完成用例的判分结果保留在 modeling 侧，轮次坐标保留在状态里。
+- **中断判定**：进程启动时 `sweep_interrupted()` 扫描各工作区，`running` 一律改判
+  `interrupted`（新进程里必属孤儿）；`/eval/status` 用 `status_view()` 补一道运行期
+  判定——内存无编排 + `ts` 停滞超过 `STALE_AFTER_SECONDS`（5 个轮询周期）即改判中断。
+  两者都保留 `modeling_project` / `round_id`，并在响应里补 `resumable` 标记。
+- **续接**：`POST /api/projects/:id/eval/resume` 复用 `_try_resume`，只 GET 已有轮次
+  （running → 继续轮询；done → 直接落报告并 git 提交），**绝不重新发起评测**；
+  轮次已失败或不存在时回 409 / 落中断提示，引导重跑。前端不再仅凭 `status === 'running'`
+  置灰：运行中显示「停止评测」，中断/失败且可续接时显示「续接上一轮」。
+
 ## 4. 依赖与开放问题（拍板时定）
 
 1. **部署形态**：评测要求 modeling + consumer 与 onto-modeling 共栈（根一键部署已满足）；

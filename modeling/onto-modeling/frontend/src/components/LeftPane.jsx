@@ -296,6 +296,43 @@ export default function LeftPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, project.id, evalInfo?.state?.status, evalDetailOpen]);
 
+  const [evalActing, setEvalActing] = useState(false); // 停止/续接请求进行中
+  const refreshEvalStatus = () =>
+    api.evalStatus(project.id).then(setEvalInfo).catch(() => {});
+
+  const stopEval = async () => {
+    setEvalActing(true);
+    try {
+      const res = await api.evalStop(project.id);
+      message.success(
+        res.cancelled ? '已停止评测，modeling 侧轮次已取消' : '已停止评测',
+      );
+    } catch (err) {
+      message.error(err.message || '停止评测失败');
+    } finally {
+      setEvalActing(false);
+      refreshEvalStatus();
+    }
+  };
+
+  const resumeEval = async () => {
+    setEvalActing(true);
+    try {
+      await api.evalResume(project.id);
+      message.info('正在续接上一轮：收取 modeling 侧已有结果，不重跑用例');
+      // 乐观置为运行中，让密集轮询立刻生效；随后的真实状态会覆盖它
+      setEvalInfo((prev) =>
+        prev
+          ? { ...prev, state: { ...prev.state, status: 'running', message: '续接上一轮…' } }
+          : prev,
+      );
+    } catch (err) {
+      message.error(err.message || '续接失败');
+      refreshEvalStatus();
+    } finally {
+      setEvalActing(false);
+    }
+  };
 
   const openEvalWizard = async () => {
     try {
@@ -474,6 +511,27 @@ export default function LeftPane({
                             </Button>
                           </Tooltip>
                           {evalInfo?.state?.status === 'running' && (
+                            <Popconfirm
+                              title="停止本轮评测？"
+                              description="modeling 侧轮次会被取消，已完成用例的判分结果保留；停止后可重新运行。"
+                              okText="停止"
+                              okButtonProps={{ danger: true }}
+                              cancelText="继续评测"
+                              onConfirm={stopEval}
+                            >
+                              <Button size="small" danger loading={evalActing}>
+                                停止评测
+                              </Button>
+                            </Popconfirm>
+                          )}
+                          {evalInfo?.state?.resumable && (
+                            <Tooltip title="只收取 modeling 侧已有轮次的结果，不重跑用例、不重复计费">
+                              <Button size="small" loading={evalActing} onClick={resumeEval}>
+                                续接上一轮
+                              </Button>
+                            </Tooltip>
+                          )}
+                          {evalInfo?.state?.status === 'running' && (
                             <Typography.Link
                               style={{ fontSize: 12 }}
                               onClick={() => {
@@ -503,6 +561,14 @@ export default function LeftPane({
                                 onClick={() => evalInfo.state.cases?.length && setEvalDetailOpen(true)}
                               >
                                 上次评测失败
+                              </Tag>
+                            </Tooltip>
+                          )}
+                          {(evalInfo?.state?.status === 'interrupted'
+                            || evalInfo?.state?.status === 'stopped') && (
+                            <Tooltip title={evalInfo.state.message}>
+                              <Tag color={evalInfo.state.status === 'stopped' ? 'default' : 'gold'}>
+                                {evalInfo.state.status === 'stopped' ? '上次评测已停止' : '上次评测被中断'}
                               </Tag>
                             </Tooltip>
                           )}

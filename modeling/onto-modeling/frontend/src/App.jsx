@@ -848,11 +848,6 @@ export default function App() {
             </Badge>
           </Tooltip>
         )}
-        {usage && usage.calls > 0 && (
-          <Tooltip title={`${usage.calls} 次调用 · 输出 ${usage.output_tokens} tokens`}>
-            <span className="cost-widget">${usage.total_cost_usd.toFixed(2)}</span>
-          </Tooltip>
-        )}
         <Button
           size="small"
           icon={<SearchOutlined />}
