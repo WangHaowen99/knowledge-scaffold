@@ -116,7 +116,13 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
     meta = manager.create_project("外卖订单")
     root = manager.project_root(meta["id"])
     (root / "ontology" / "object" / "订单.md").write_text(
-        "# 订单\n\n属性若干\n", encoding="utf-8"
+        "# 订单\n\n"
+        "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n"
+        "|--------|--------|-----|----|-----|--------|--------|\n"
+        "| 订单号 | ORDER_ID | 编号 | 是 | 字符串 | 单号, 订单编号 | 无 |\n"
+        "| 配送标识 | DELIVERY_FLAG | 标识 | 否 | 布尔 | 无 | 取值：0 / 1 |\n"
+        "| 加急标识 | URGENT_FLAG | 标识 | 否 | 布尔 | 无 | 取值：0 / 1 |\n",
+        encoding="utf-8",
     )
     (root / "ontology" / "logic").mkdir(exist_ok=True)  # 旧目录：验证兼容读取
     (root / "ontology" / "logic" / "创建订单.md").write_text(
@@ -163,11 +169,19 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert 'objects: ["订单"]' in op
         assert "old: front" not in op
         obj_index = zf.read(f"{pid}/objects/index.md").decode("utf-8")
-        assert "| object key | title |" in obj_index
-        assert "| 订单 | 订单 |" in obj_index
+        # 对齐 modeling 知识包契约：四列且每对象必有非空 来源Sheet
+        assert "| object key | 标题 | 说明 | 来源Sheet |" in obj_index
+        assert "| 订单 | 订单 | 订单 | 订单 |" in obj_index
         # 工作区占位 index.md 不应进包
         assert f"{pid}/objects/index.md" in names and "待生成" not in obj_index
         # 五元组：规则/指标/脚本各自成组导出（ADR-0004）
+        obj = zf.read(f"{pid}/objects/订单.md").decode("utf-8")
+        # 属性别名列的占位"无"打包时清洗为空（下游校验器会把它当真实别名，
+        # 两行同名"无"即"同名指向多字段"冲突）；真实别名与其他列不动
+        assert "单号, 订单编号" in obj
+        assert "| 布尔 | 无 |" not in obj
+        assert "取值：0 / 1" in obj  # 属性规则列的"无"语义不同，不在清洗范围
+        assert "| 是 | 字符串 |" in obj
         rule = zf.read(f"{pid}/rules/限购规则.md").decode("utf-8")
         assert "resource: rule" in rule and 'objects: ["订单"]' in rule
         metric = zf.read(f"{pid}/metrics/客单价.md").decode("utf-8")

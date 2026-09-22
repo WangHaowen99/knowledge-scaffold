@@ -1,4 +1,13 @@
-import { DeleteOutlined, InboxOutlined, TagOutlined, UploadOutlined } from '@ant-design/icons';
+import {
+  CheckCircleFilled,
+  CloseCircleFilled,
+  DeleteOutlined,
+  ExclamationCircleFilled,
+  InboxOutlined,
+  StopFilled,
+  TagOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import {
   Alert,
   Button,
@@ -8,11 +17,13 @@ import {
   List,
   Modal,
   Popconfirm,
+  Progress,
   Segmented,
   Select,
   Space,
   Steps,
   Tag,
+  Tooltip,
   Timeline,
   Tree,
   Typography,
@@ -110,6 +121,14 @@ export const STAGES = [
       { label: '生成脚本', command: '/ontology-codegen ' },
     ],
   },
+  {
+    key: 'eval',
+    title: '数据评测（可选）',
+    optional: true,
+    // 探针：评测报告文件（由平台编排落盘），非目录占位
+    probe: (paths) => paths.some((p) => p.startsWith('reports/eval-')),
+    actions: [], // 入口是平台编排（复核 Modal），不走聊天命令
+  },
 ];
 
 // 每个阶段的展示状态：可选阶段未完成不阻塞后续（finish/process/wait）
@@ -136,6 +155,7 @@ export const MATERIAL_PURPOSES = [
   { value: 'schema', label: '数据 Schema', tableOnly: true },
   { value: 'term', label: '术语表', tableOnly: true },
   { value: 'evidence', label: '通用业务依据' },
+  { value: 'eval_data', label: '评测数据', tableOnly: true },
 ];
 const isTableFile = (name) => /\.(xlsx?|csv)$/i.test(name);
 
@@ -252,6 +272,83 @@ export default function LeftPane({
       .catch(() => {});
   }, [section, project.id]);
 
+  // ---- 数据评测（方案 P2）：状态轮询 + 用例复核 Modal ----
+  const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state}
+  const [evalDetailOpen, setEvalDetailOpen] = useState(false);
+  const [evalExpanded, setEvalExpanded] = useState(null);
+  const [evalWiz, setEvalWiz] = useState(null); // {cases:[{question,groundTruth}]}
+  useEffect(() => {
+    if (section !== 'progress') return undefined;
+    let stop = false;
+    const pull = () =>
+      api.evalStatus(project.id).then((d) => {
+        if (!stop) setEvalInfo(d);
+      }).catch(() => {});
+    pull();
+    const timer = setInterval(() => {
+      // 运行中密集轮询，空闲时低频
+      if (evalInfo?.state?.status === 'running' || evalDetailOpen) pull();
+    }, 8000);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, project.id, evalInfo?.state?.status, evalDetailOpen]);
+
+
+  const openEvalWizard = async () => {
+    try {
+      const [data, ds] = await Promise.all([
+        api.evalCases(project.id),
+        api.evalDataSourceOptions(project.id).catch(() => ({ eval_data: [], mock_tables: 0 })),
+      ]);
+      if (!data.cases?.length) {
+        message.info('没有可转换的场景用例——先完成「场景验证」阶段，或在弹窗中手工添加');
+      }
+      setEvalWiz({
+        step: 0,
+        cases: data.cases || [],
+        options: ds,
+        dsMode: 'none', // none | mock | dataset
+        selected: (ds.eval_data || []).map((f) => f.path), // dataset 模式默认全选
+      });
+    } catch (error) {
+      message.error(error.message);
+    }
+  };
+
+  const [alignment, setAlignment] = useState(null); // eval_data 三方对账结果
+  useEffect(() => {
+    if (section !== 'resources') return;
+    const hasEvalData = Object.values(directives).some((d) => d?.purpose === 'eval_data');
+    if (!hasEvalData) {
+      setAlignment(null);
+      return;
+    }
+    api.evalDataAlignment(project.id).then(setAlignment).catch(() => setAlignment(null));
+  }, [section, directives, project.id]);
+
+  const alignBadge = (path) => {
+    if (directives[path]?.purpose !== 'eval_data') return null;
+    const entry = alignment?.files?.find((f) => f.path === path);
+    if (!entry) {
+      if (alignment?.status === 'no_schema')
+        return <Tag color="default">无 schema 可对账</Tag>;
+      return null;
+    }
+    if (entry.status === 'ok') return <Tag color="green">对账通过</Tag>;
+    const issues = entry.sheets.flatMap((sh) => [
+      ...sh.data_only.map((c) => `「${sh.name}」列 ${c} 不在 schema 中`),
+      ...sh.attr_unmatched.map((c) => `「${sh.name}」列 ${c} 未映射到对象属性`),
+    ]);
+    return (
+      <Tooltip title={issues.slice(0, 8).join('；')}>
+        <Tag color="orange">对账差异 {issues.length} 处</Tag>
+      </Tooltip>
+    );
+  };
+
   const changeDirective = async (path, purpose, readingMode) => {
     try {
       await api.setResourceDirective(project.id, path, purpose, readingMode);
@@ -358,17 +455,80 @@ export default function LeftPane({
               description:
                 expandedStage === stage.key ? (
                   <Space wrap size={4} style={{ marginTop: 4 }}>
-                    {stage.actions.map((action) => (
-                      <Button
-                        key={action.label}
-                        size="small"
-                        type={statuses[index] === 'process' ? 'primary' : 'default'}
-                        ghost={statuses[index] === 'process'}
-                        onClick={() => onCommand(action.command)}
-                      >
-                        {action.label}
-                      </Button>
-                    ))}
+                    {stage.key === 'eval' ? (
+                      !evalInfo?.enabled ? (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          未配置 modeling 评测服务
+                        </Typography.Text>
+                      ) : (
+                        <>
+                          <Tooltip title={evalInfo?.reachable ? '' : 'modeling 评测服务不可达，请先启动'}>
+                            <Button
+                              size="small"
+                              type="primary"
+                              ghost
+                              disabled={!evalInfo?.reachable || evalInfo?.state?.status === 'running'}
+                              onClick={openEvalWizard}
+                            >
+                              {evalInfo?.state?.status === 'running' ? '评测运行中…' : '运行评测'}
+                            </Button>
+                          </Tooltip>
+                          {evalInfo?.state?.status === 'running' && (
+                            <Typography.Link
+                              style={{ fontSize: 12 }}
+                              onClick={() => {
+                                setEvalExpanded(null);
+                                setEvalDetailOpen(true);
+                              }}
+                            >
+                              <span className="eval-live-dot" />
+                              {evalInfo.state.message}
+                            </Typography.Link>
+                          )}
+                          {evalInfo?.state?.status === 'done' && evalInfo.state.summary && (
+                            <Tag
+                              color={evalInfo.state.summary.score >= 80 ? 'green' : 'orange'}
+                              style={{ cursor: 'pointer' }}
+                              onClick={() => onSelectFile(evalInfo.state.report)}
+                            >
+                              最近得分 {evalInfo.state.summary.score}（{evalInfo.state.summary.pass}✓/
+                              {evalInfo.state.summary.fail}✗）
+                            </Tag>
+                          )}
+                          {evalInfo?.state?.status === 'failed' && (
+                            <Tooltip title={evalInfo.state.message}>
+                              <Tag
+                                color="red"
+                                style={{ cursor: evalInfo.state.cases?.length ? 'pointer' : undefined }}
+                                onClick={() => evalInfo.state.cases?.length && setEvalDetailOpen(true)}
+                              >
+                                上次评测失败
+                              </Tag>
+                            </Tooltip>
+                          )}
+                          {evalInfo?.state?.status !== 'running' && evalInfo?.state?.cases?.length > 0 && (
+                            <Typography.Link
+                              style={{ fontSize: 12 }}
+                              onClick={() => setEvalDetailOpen(true)}
+                            >
+                              执行详情
+                            </Typography.Link>
+                          )}
+                        </>
+                      )
+                    ) : (
+                      stage.actions.map((action) => (
+                        <Button
+                          key={action.label}
+                          size="small"
+                          type={statuses[index] === 'process' ? 'primary' : 'default'}
+                          ghost={statuses[index] === 'process'}
+                          onClick={() => onCommand(action.command)}
+                        >
+                          {action.label}
+                        </Button>
+                      ))
+                    )}
                   </Space>
                 ) : undefined,
             }))}
@@ -383,8 +543,22 @@ export default function LeftPane({
               onClick={() => window.open(api.exportUrl(project.id, 'package'))}
             >
               导出知识包
+              {evalInfo?.state?.summary != null && (
+                <span className="export-eval-score">评测 {evalInfo.state.summary.score}</span>
+              )}
             </Button>
           )}
+          {statuses.every((st, i) => st === 'finish' || STAGES[i].optional) &&
+            evalInfo?.enabled &&
+            evalInfo?.state?.status !== 'done' && (
+              <Alert
+                type="warning"
+                showIcon
+                className="export-eval-hint"
+                message="尚未数据评测——建议发布前在「数据评测」阶段跑一轮，验证知识包问答质量"
+                style={{ marginBottom: 8, fontSize: 12, padding: '4px 10px' }}
+              />
+            )}
           <Space wrap size={4}>
             {EXTRA_ACTIONS.map((action) => (
               <Button key={action.label} size="small" onClick={() => onCommand(action.command)}>
@@ -543,6 +717,7 @@ export default function LeftPane({
                           disabled: opt.tableOnly && !isTableFile(item.path),
                         }))}
                       />
+                      {alignBadge(item.path)}
                       <label className="resource-reading">
                         <input
                           type="checkbox"
@@ -641,6 +816,377 @@ export default function LeftPane({
         </>
       )}
 
+    
+      <Modal
+        title="数据评测 · 执行详情"
+        open={evalDetailOpen}
+        onCancel={() => setEvalDetailOpen(false)}
+        footer={null}
+        width={620}
+      >
+        {(() => {
+          const st = evalInfo?.state || {};
+          const cases = st.cases || [];
+          const finished = cases.filter((c) =>
+            ['pass', 'partial', 'fail', 'error'].includes(c.verdict),
+          );
+          const counts = { pass: 0, partial: 0, fail: 0, error: 0 };
+          finished.forEach((c) => {
+            counts[c.verdict] += 1;
+          });
+          const percent = cases.length
+            ? Math.round((finished.length * 100) / cases.length)
+            : 0;
+          const running = st.status === 'running';
+          const PHASE_STEPS = [
+            ['package', '打包'],
+            ['import', '导入'],
+            ['ds', '数据源'],
+            ['cases', '用例'],
+            ['evaluate', '执行'],
+          ];
+          const phaseKey = ['data_import', 'data_source'].includes(st.phase) ? 'ds' : st.phase;
+          const phaseIdx =
+            st.status === 'done'
+              ? PHASE_STEPS.length
+              : Math.max(0, PHASE_STEPS.findIndex(([k]) => k === phaseKey));
+          const VERDICT_META = {
+            pass: { icon: <CheckCircleFilled />, text: '通过', cls: 'pass' },
+            partial: { icon: <ExclamationCircleFilled />, text: '部分', cls: 'partial' },
+            fail: { icon: <CloseCircleFilled />, text: '失败', cls: 'fail' },
+            error: { icon: <StopFilled />, text: '异常', cls: 'error' },
+            running: { icon: <span className="eval-run-pulse" />, text: '执行中', cls: 'running' },
+            pending: { icon: <span className="eval-run-hollow" />, text: '待执行', cls: 'pending' },
+          };
+          return (
+            <div className="eval-run-view">
+              <div className="eval-phase-strip">
+                {PHASE_STEPS.map(([key, label], i) => (
+                  <span key={key} className="eval-phase-item">
+                    <span
+                      className={`eval-phase-chip${
+                        i < phaseIdx ? ' done' : i === phaseIdx && running ? ' current' : ''
+                      }${st.status === 'failed' && i === phaseIdx ? ' failed' : ''}`}
+                    >
+                      {i < phaseIdx ? '✓ ' : ''}
+                      {label}
+                    </span>
+                    {i < PHASE_STEPS.length - 1 && <span className="eval-phase-link" />}
+                  </span>
+                ))}
+              </div>
+              <div className="eval-run-summary">
+                <Progress
+                  percent={percent}
+                  status={running ? 'active' : st.status === 'failed' ? 'exception' : 'normal'}
+                  format={() => `${finished.length}/${cases.length}`}
+                />
+                <div className="eval-run-chips">
+                  <span className="eval-chip pass">✓ 通过 {counts.pass}</span>
+                  <span className="eval-chip partial">⚠ 部分 {counts.partial}</span>
+                  <span className="eval-chip fail">✗ 失败 {counts.fail}</span>
+                  <span className="eval-chip error">⊘ 异常 {counts.error}</span>
+                  {st.summary && (
+                    <span className="eval-chip score">得分 {st.summary.score}</span>
+                  )}
+                </div>
+              </div>
+              <div className="eval-run-list">
+                {cases.map((c, index) => {
+                  const meta = VERDICT_META[c.verdict] || VERDICT_META.pending;
+                  const expandable = !!(c.answer || c.reason);
+                  const expanded = evalExpanded === index;
+                  return (
+                    <div
+                      key={index}
+                      className={`eval-run-row ${meta.cls}${expanded ? ' expanded' : ''}`}
+                      style={{ animationDelay: `${Math.min(index * 40, 400)}ms` }}
+                      onClick={() => expandable && setEvalExpanded(expanded ? null : index)}
+                    >
+                      <div className="eval-run-head">
+                        <span className={`eval-run-icon ${meta.cls}`}>{meta.icon}</span>
+                        <span className="eval-run-index">{index + 1}</span>
+                        <span className="eval-run-question" title={c.question}>
+                          {c.question}
+                        </span>
+                        <span className={`eval-run-state ${meta.cls}`}>{meta.text}</span>
+                      </div>
+                      {expanded && expandable && (
+                        <div className="eval-run-detail">
+                          {c.answer && (
+                            <div className="eval-run-field">
+                              <span className="eval-run-label">回答</span>
+                              <span>{c.answer}</span>
+                            </div>
+                          )}
+                          {c.reason && (
+                            <div className="eval-run-field">
+                              <span className="eval-run-label">判分</span>
+                              <span>{c.reason}</span>
+                            </div>
+                          )}
+                          {st.report && (
+                            <Typography.Link
+                              style={{ fontSize: 12 }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEvalDetailOpen(false);
+                                onSelectFile(st.report);
+                              }}
+                            >
+                              查看完整报告 →
+                            </Typography.Link>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {!cases.length && (
+                  <Typography.Text type="secondary">
+                    暂无用例执行数据——启动评测后此处实时展示每条用例的执行状态
+                  </Typography.Text>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
+      <Modal
+        title={evalWiz?.step === 0 ? '数据评测 · 第 1 步：选择数据源' : '数据评测 · 第 2 步：用例复核'}
+        open={!!evalWiz}
+        onCancel={() => setEvalWiz(null)}
+        width={720}
+        footer={
+          evalWiz?.step === 0
+            ? [
+                <Button key="cancel" onClick={() => setEvalWiz(null)}>取消</Button>,
+                <Button
+                  key="next"
+                  type="primary"
+                  disabled={
+                    (evalWiz?.dsMode === 'dataset' && !evalWiz?.selected?.length) ||
+                    (evalWiz?.dsMode === 'mock' && !evalWiz?.options?.mock_tables)
+                  }
+                  onClick={() => setEvalWiz({ ...evalWiz, step: 1 })}
+                >
+                  下一步：复核用例 →
+                </Button>,
+              ]
+            : [
+                <Button key="prev" onClick={() => setEvalWiz({ ...evalWiz, step: 0 })}>
+                  ← 上一步
+                </Button>,
+                <Button
+                  key="run"
+                  type="primary"
+                  disabled={!evalWiz?.cases?.length}
+                  onClick={async () => {
+                    try {
+                      const ds =
+                        evalWiz.dsMode === 'none'
+                          ? { mode: 'none' }
+                          : {
+                              mode: 'dataset',
+                              resources: evalWiz.dsMode === 'dataset' ? evalWiz.selected : [],
+                              include_mock: evalWiz.dsMode === 'mock',
+                            };
+                      await api.evalRun(project.id, evalWiz.cases, ds);
+                      message.success('评测已启动，进度见「数据评测」阶段');
+                      setEvalWiz(null);
+                      setEvalExpanded(null);
+                      setEvalDetailOpen(true);
+                      const data = await api.evalStatus(project.id);
+                      setEvalInfo(data);
+                    } catch (error) {
+                      message.error(error.message);
+                    }
+                  }}
+                >
+                  运行评测（{evalWiz?.cases?.length || 0} 条）
+                </Button>,
+              ]
+        }
+      >
+        {evalWiz?.step === 0 ? (
+          <div className="eval-ds-view">
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
+              评测时 consumer 智能体挂载知识包作答。接入数据源后，涉及具体数据的问题
+              可实际查询评测库（数据表 → 评测库 → NL2SQL 查询）；不接则仅按知识包语义作答。
+            </Typography.Paragraph>
+            <div
+              className={`eval-ds-card${evalWiz.dsMode === 'none' ? ' selected' : ''}`}
+              onClick={() => setEvalWiz({ ...evalWiz, dsMode: 'none' })}
+            >
+              <div className="eval-ds-head">
+                <span className="eval-ds-icon">📖</span>
+                <span className="eval-ds-title">无数据库（默认）</span>
+                <span className="eval-ds-badge">零配置</span>
+              </div>
+              <div className="eval-ds-desc">纯知识包问答——验证本体结构与业务语义，不查询具体数据。</div>
+            </div>
+            <div
+              className={`eval-ds-card${evalWiz.dsMode === 'mock' ? ' selected' : ''}${
+                evalWiz.options?.mock_tables ? '' : ' disabled'
+              }`}
+              onClick={() =>
+                evalWiz.options?.mock_tables && setEvalWiz({ ...evalWiz, dsMode: 'mock' })
+              }
+            >
+              <div className="eval-ds-head">
+                <span className="eval-ds-icon">🧪</span>
+                <span className="eval-ds-title">示例数据种子</span>
+                <span className="eval-ds-badge">
+                  {evalWiz.options?.mock_tables
+                    ? `${evalWiz.options.mock_tables} 张示例表`
+                    : '需先完成「示例数据」阶段'}
+                </span>
+              </div>
+              <div className="eval-ds-desc">
+                用「示例数据」阶段的 mock 产物生成种子库——没有真实数据也能验证数据问答链路。
+              </div>
+            </div>
+            <div
+              className={`eval-ds-card${evalWiz.dsMode === 'dataset' ? ' selected' : ''}${
+                evalWiz.options?.eval_data?.length ? '' : ' disabled'
+              }`}
+              onClick={() =>
+                evalWiz.options?.eval_data?.length && setEvalWiz({ ...evalWiz, dsMode: 'dataset' })
+              }
+            >
+              <div className="eval-ds-head">
+                <span className="eval-ds-icon">🗄️</span>
+                <span className="eval-ds-title">业务数据表</span>
+                <span className="eval-ds-badge">
+                  {evalWiz.options?.eval_data?.length
+                    ? `${evalWiz.options.eval_data.length} 份评测数据`
+                    : '资料区暂无「评测数据」'}
+                </span>
+              </div>
+              <div className="eval-ds-desc">
+                导入打了「评测数据」用途标签的业务数据表（在左栏「资料」页签上传并打标）。
+              </div>
+              {evalWiz.dsMode === 'dataset' && (
+                <div className="eval-ds-files" onClick={(e) => e.stopPropagation()}>
+                  {(evalWiz.options?.eval_data || []).map((f) => (
+                    <label key={f.path} className="eval-ds-file">
+                      <input
+                        type="checkbox"
+                        checked={evalWiz.selected.includes(f.path)}
+                        onChange={(e) =>
+                          setEvalWiz({
+                            ...evalWiz,
+                            selected: e.target.checked
+                              ? [...evalWiz.selected, f.path]
+                              : evalWiz.selected.filter((x) => x !== f.path),
+                          })
+                        }
+                      />
+                      <span className="eval-ds-file-name">{f.name}</span>
+                      <span className="eval-ds-file-size">{Math.round(f.size / 1024)} KB</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            {evalWiz.dsMode !== 'none' && (
+              <div className="eval-ds-flow">
+                <span>数据表</span>
+                <span className="eval-ds-arrow">→</span>
+                <span>评测库</span>
+                <span className="eval-ds-arrow">→</span>
+                <span>NL2SQL 绑定</span>
+                <span className="eval-ds-arrow">→</span>
+                <span>consumer 查询作答</span>
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+              用例由「场景验证」的 trace 场景自动转换（问题 → consumer 智能体作答 → Judge
+              按标准答案判分）。运行前请复核标准答案是否准确，可直接修改或删除。
+            </Typography.Paragraph>
+            <div style={{ maxHeight: 380, overflow: 'auto' }}>
+              {(evalWiz?.cases || []).map((item, index) => (
+                <div key={index} className="eval-case-row">
+                  <div className="eval-case-head">
+                    <Typography.Text strong style={{ fontSize: 12 }}>
+                      用例 {index + 1}
+                    </Typography.Text>
+                    <Button
+                      size="small"
+                      type="text"
+                      danger
+                      onClick={() =>
+                        setEvalWiz({ ...evalWiz, cases: evalWiz.cases.filter((_, i) => i !== index) })
+                      }
+                    >
+                      删除
+                    </Button>
+                  </div>
+                  <Input.TextArea
+                    autoSize={{ minRows: 1, maxRows: 3 }}
+                    value={item.question}
+                    onChange={(e) => {
+                      const cases = [...evalWiz.cases];
+                      cases[index] = { ...item, question: e.target.value };
+                      setEvalWiz({ ...evalWiz, cases });
+                    }}
+                  />
+                  <Input.TextArea
+                    autoSize={{ minRows: 1, maxRows: 3 }}
+                    placeholder="标准答案"
+                    style={{ marginTop: 4 }}
+                    value={item.groundTruth}
+                    onChange={(e) => {
+                      const cases = [...evalWiz.cases];
+                      cases[index] = { ...item, groundTruth: e.target.value };
+                      setEvalWiz({ ...evalWiz, cases });
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+            <Space style={{ marginTop: 8 }}>
+              <Button
+                size="small"
+                onClick={() =>
+                  setEvalWiz({
+                    ...evalWiz,
+                    cases: [...(evalWiz?.cases || []), { question: '', groundTruth: '' }],
+                  })
+                }
+              >
+                + 手工添加用例
+              </Button>
+              <Upload
+                accept=".json,application/json"
+                showUploadList={false}
+                beforeUpload={async (file) => {
+                  try {
+                    const data = await api.evalCasesImport(project.id, file);
+                    setEvalWiz({ ...evalWiz, cases: [...(evalWiz?.cases || []), ...data.cases] });
+                    message.success(`已导入 ${data.cases.length} 条用例`);
+                  } catch (error) {
+                    message.error(error.message);
+                  }
+                  return false; // 阻止默认上传行为
+                }}
+              >
+                <Button size="small">批量导入 JSON</Button>
+              </Upload>
+              <Button
+                size="small"
+                type="link"
+                onClick={() => window.open(api.evalCasesTemplateUrl(project.id))}
+              >
+                下载模板
+              </Button>
+            </Space>
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

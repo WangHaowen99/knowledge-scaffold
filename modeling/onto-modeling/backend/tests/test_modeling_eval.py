@@ -1,0 +1,454 @@
+"""数据评测编排测试（方案 P2）：trace 用例转换、编排协议全链（stub modeling）、
+状态与报告落盘、端点门控。
+"""
+
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+from app import config
+from app.services import modeling_eval
+
+TC_DOC = """# 产品匹配 — 测试用例
+
+## TC-1：正常路径 — 双维叠加
+
+| 项 | 值 |
+|---|---|
+| 场景类型 | 正常路径 |
+| 输入-企业 | 合成企业A |
+| 输入-信号 | 招标方=是 |
+| 预期-产品 | [产品甲, 产品乙] |
+| 覆盖分支 | 招标 if |
+
+## TC-2：边界 — 无信号
+
+| 项 | 值 |
+|---|---|
+| 输入-信号 | 无 |
+| 预期-结论 | 不推荐任何产品 |
+"""
+
+
+def test_trace_cases_conversion(tmp_path):
+    root = tmp_path
+    tc = root / "ontology" / "testcase"
+    tc.mkdir(parents=True)
+    (tc / "产品匹配.md").write_text(TC_DOC, encoding="utf-8")
+    (tc / "index.md").write_text("# 目录", encoding="utf-8")
+    cases = modeling_eval.trace_cases(root)
+    assert len(cases) == 2
+    assert "产品匹配" in cases[0]["question"]
+    assert "企业：合成企业A" in cases[0]["question"]
+    assert "产品：[产品甲, 产品乙]" in cases[0]["groundTruth"]
+    assert cases[1]["groundTruth"] == "结论：不推荐任何产品"
+
+
+class StubModeling(BaseHTTPRequestHandler):
+    """最小 modeling 评测 API stub：导入→用例→evaluate→round 详情。"""
+
+    calls: list = []
+    poll_count = 0
+
+    def log_message(self, *args):  # 静音
+        pass
+
+    def _send(self, code: int, payload: dict):
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        StubModeling.calls.append(("GET", self.path))
+        if self.path == "/":
+            return self._send(200, {"ok": True})
+        if "/rounds/" in self.path:
+            StubModeling.poll_count += 1
+            done = StubModeling.poll_count >= 2
+            return self._send(200, {
+                "round": {
+                    "id": "r1",
+                    "status": "done" if done else "running",
+                    "progressDone": 2 if done else 1,
+                    "progressTotal": 2,
+                },
+                "results": [
+                    {"question": "Q1", "groundTruth": "G1", "finalAnswer": "A1",
+                     "verdict": "pass", "reason": "一致"},
+                    {"question": "Q2", "groundTruth": "G2", "finalAnswer": "A2",
+                     "verdict": "fail", "reason": "结论错误"},
+                ] if done else [],
+            })
+        return self._send(404, {})
+
+    def do_PUT(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length)
+        StubModeling.calls.append(("PUT", self.path))
+        if self.path.endswith("/data-source"):
+            assert json.loads(raw) == {"mode": "none"}
+            return self._send(200, {"ok": True})
+        return self._send(404, {})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length)
+        StubModeling.calls.append(("POST", self.path))
+        if self.path == "/api/package-workspaces/import":
+            assert b"package.zip" in raw
+            return self._send(201, {"project": {"id": "mp-1"}, "version": 1})
+        if self.path.endswith("/testcases/batch"):
+            data = json.loads(raw)
+            assert len(data["cases"]) == 2
+            return self._send(200, {"added": 2})
+        if self.path.endswith("/evaluate"):
+            return self._send(200, {"roundId": "r1"})
+        return self._send(404, {})
+
+
+def test_orchestration_full_protocol(tmp_path, monkeypatch):
+    server = HTTPServer(("127.0.0.1", 0), StubModeling)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.1)
+
+        from app.services.workspace import WorkspaceManager
+
+        manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+        meta = manager.create_project("评测编排")
+        root = manager.project_root(meta["id"])
+
+        assert modeling_eval.reachable()
+        cases = [
+            {"question": "Q1", "groundTruth": "G1"},
+            {"question": "Q2", "groundTruth": "G2"},
+        ]
+        modeling_eval._run_sync(meta["id"], root, "test-token", cases)
+
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "done", state
+        assert state["modeling_project"] == "mp-1"
+        assert state["summary"]["pass"] == 1 and state["summary"]["fail"] == 1
+        assert state["summary"]["score"] == 50
+        report = root / state["report"]
+        content = report.read_text(encoding="utf-8")
+        assert "综合得分" in content and "结论错误" in content
+        # 报告已 git 提交
+        import subprocess
+
+        log = subprocess.run(["git", "log", "--oneline"], cwd=root,
+                             capture_output=True, text=True).stdout
+        assert "eval:" in log
+        # 协议顺序：import → batch → evaluate → poll
+        ordered = [(m, p) for m, p in StubModeling.calls if m in ("POST", "PUT")]
+        assert ordered[0] == ("POST", "/api/package-workspaces/import")
+        assert ordered[1][0] == "PUT" and ordered[1][1].endswith("/data-source")
+        assert ordered[2][1].endswith("/testcases/batch")
+        assert ordered[3][1].endswith("/evaluate")
+    finally:
+        server.shutdown()
+
+
+def test_failed_round_surfaces_modeling_log(tmp_path, monkeypatch):
+    class FailingStub(StubModeling):
+        def do_GET(self):
+            if "/rounds/" in self.path:
+                return self._send(200, {
+                    "round": {"id": "r2", "status": "failed",
+                              "log": "轮次失败：缺少有效的 MODELING_SERVICE_TOKEN\n"},
+                    "results": [],
+                })
+            return StubModeling.do_GET(self)
+
+    server = HTTPServer(("127.0.0.1", 0), FailingStub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.1)
+        from app.services.workspace import WorkspaceManager
+
+        manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+        meta = manager.create_project("失败轮")
+        root = manager.project_root(meta["id"])
+        modeling_eval._run_sync(
+            meta["id"], root, "t",
+            [{"question": "Q1", "groundTruth": "G1"}, {"question": "Q2", "groundTruth": "G2"}],
+        )
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "failed"
+        assert "MODELING_SERVICE_TOKEN" in state["message"]
+        assert not list((root / "reports").glob("eval-*.md"))  # 失败不出报告
+    finally:
+        server.shutdown()
+
+
+def test_run_endpoint_gated_without_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MODELING_URL", "")
+    assert not modeling_eval.enabled()
+    assert not modeling_eval.reachable()
+
+
+def test_parse_case_json_modeling_contract():
+    import pytest
+
+    # {cases: [...]} 形式 + 字段别名
+    raw = json.dumps({"cases": [
+        {"question": "金额25元能配送吗", "groundTruth": "可以配送"},
+        {"prompt": "金额15元呢", "ground_truth": "不可配送"},
+        {"question": "无答案的问题"},
+    ]}, ensure_ascii=False)
+    cases = modeling_eval.parse_case_json(raw)
+    assert len(cases) == 3
+    assert cases[1] == {"question": "金额15元呢", "groundTruth": "不可配送"}
+    assert cases[2]["groundTruth"] == ""
+
+    # 顶层数组形式
+    assert modeling_eval.parse_case_json('[{"question": "Q", "answer": "A"}]') == [
+        {"question": "Q", "groundTruth": "A"}
+    ]
+
+    # 错误分支与 modeling 同语义
+    with pytest.raises(ValueError, match="不是有效的 JSON"):
+        modeling_eval.parse_case_json("not json")
+    with pytest.raises(ValueError, match="cases 数组"):
+        modeling_eval.parse_case_json('{"x": 1}')
+    with pytest.raises(ValueError, match="第 2 条缺少问题"):
+        modeling_eval.parse_case_json('[{"question": "Q"}, {"groundTruth": "G"}]')
+    with pytest.raises(ValueError, match="重复问题：第 2 条"):
+        modeling_eval.parse_case_json('[{"question": "Q  1"}, {"question": "q 1"}]')
+
+    # 模板本身可被解析（往返）
+    assert len(modeling_eval.parse_case_json(modeling_eval.case_template_json())) == 2
+
+
+def test_case_progress_states():
+    """逐用例状态：已出结果带判分，第一个未出结果标执行中，其余待执行。"""
+    cases = [{"question": "Q1"}, {"question": "Q2"}, {"question": "Q3"}]
+    results = [{"question": "Q1", "verdict": "pass", "finalAnswer": "A", "reason": "对"}]
+    out = modeling_eval._case_progress(cases, results, round_running=True)
+    assert [c["verdict"] for c in out] == ["pass", "running", "pending"]
+    assert out[0]["answer"] == "A"
+    # 轮次不在执行中（收尾/失败）：未出结果的都是待执行
+    out = modeling_eval._case_progress(cases, results, round_running=False)
+    assert [c["verdict"] for c in out] == ["pass", "pending", "pending"]
+
+
+def test_poll_survives_401_with_token_relay(tmp_path, monkeypatch):
+    """token 过期不判死整轮：401 宽限期内前端接力新 token 后续跑到终态。"""
+
+    class AuthStub(StubModeling):
+        def do_GET(self):
+            if "/rounds/" in self.path:
+                auth = self.headers.get("Authorization") or ""
+                if auth != "Bearer fresh":
+                    return self._send(401, {"error": "Unauthorized"})
+                return self._send(200, {
+                    "round": {"id": "r1", "status": "done",
+                              "progressDone": 1, "progressTotal": 1},
+                    "results": [{"question": "Q1", "groundTruth": "G1",
+                                 "finalAnswer": "A1", "verdict": "pass", "reason": "一致"}],
+                })
+            return StubModeling.do_GET(self)
+
+    server = HTTPServer(("127.0.0.1", 0), AuthStub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.05)
+        root = tmp_path / "ws"
+        (root / ".ontology-state").mkdir(parents=True)
+        modeling_eval._running.add("p-relay")
+        worker = threading.Thread(
+            target=modeling_eval._poll_round,
+            args=("p-relay", root, "stale", "mp-1", "r1", [{"question": "Q1"}]),
+        )
+        worker.start()
+        import time as _time
+
+        _time.sleep(0.3)  # 先让它吃几个 401 进入宽限
+        state = modeling_eval.read_state(root)
+        assert "等待页面接力" in state.get("message", "")
+        modeling_eval.update_token("p-relay", "fresh")  # 前端轮询接力
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        state = modeling_eval.read_state(root)
+        assert state.get("status") == "done", state
+        assert state["cases"][0]["verdict"] == "pass"
+    finally:
+        modeling_eval._running.discard("p-relay")
+        modeling_eval._live_tokens.pop("p-relay", None)
+        server.shutdown()
+
+
+def test_resume_attaches_to_existing_round(tmp_path, monkeypatch):
+    """凭据过期中断后重跑（用例集未变）：续接收取结果，不重复导入。"""
+
+    class ResumeStub(StubModeling):
+        calls: list = []
+
+        def do_GET(self):
+            ResumeStub.calls.append(("GET", self.path))
+            if "/rounds/" in self.path:
+                return self._send(200, {
+                    "round": {"id": "r9", "status": "done",
+                              "progressDone": 1, "progressTotal": 1},
+                    "results": [{"question": "Q1", "groundTruth": "G1",
+                                 "finalAnswer": "A1", "verdict": "pass", "reason": "一致"}],
+                })
+            return StubModeling.do_GET(self)
+
+        def do_POST(self):
+            ResumeStub.calls.append(("POST", self.path))
+            return self._send(500, {"error": "resume 不应再发 POST"})
+
+    server = HTTPServer(("127.0.0.1", 0), ResumeStub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.05)
+
+        from app.services.workspace import WorkspaceManager
+
+        manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+        meta = manager.create_project("续接验证")
+        root = manager.project_root(meta["id"])
+        # 上一轮中断现场：failed + 轮次坐标 + 相同用例集
+        modeling_eval._write_state(
+            root, status="failed", message="HTTP Error 401: Unauthorized",
+            modeling_project="mp-1", round_id="r9",
+            cases=[{"question": "Q1", "verdict": "running"}],
+        )
+        modeling_eval._run_sync(meta["id"], root, "t", [{"question": "Q1", "groundTruth": "G1"}])
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "done", state
+        assert state["summary"]["pass"] == 1
+        assert not [c for c in ResumeStub.calls if c[0] == "POST"], ResumeStub.calls
+    finally:
+        server.shutdown()
+
+
+MOCK_TABLE = """# 订单 — 示例数据
+
+| 订单号 | 金额 |
+|-----|-----|
+| D001 | 25.5 |
+| D002 | 12.0 |
+"""
+
+
+def test_collect_dataset_files_validation(tmp_path):
+    root = tmp_path
+    (root / "resource" / "excel").mkdir(parents=True)
+    (root / "resource" / "excel" / "数据.xlsx").write_bytes(b"PK-fake")
+    files = modeling_eval.collect_dataset_files(
+        root, {"resources": ["resource/excel/数据.xlsx"]}
+    )
+    assert files == [("数据.xlsx", b"PK-fake")]
+    import pytest
+
+    with pytest.raises(ValueError, match="不存在"):
+        modeling_eval.collect_dataset_files(root, {"resources": ["resource/无.xlsx"]})
+    with pytest.raises(ValueError, match="Excel"):
+        (root / "resource" / "excel" / "t.csv").write_text("a", encoding="utf-8")
+        modeling_eval.collect_dataset_files(root, {"resources": ["resource/excel/t.csv"]})
+    with pytest.raises(ValueError, match="至少一份"):
+        modeling_eval.collect_dataset_files(root, {"resources": []})
+    # 路径逃逸拒绝
+    with pytest.raises(ValueError, match="不存在"):
+        modeling_eval.collect_dataset_files(root, {"resources": ["../外部.xlsx"]})
+
+
+def test_mock_seed_generation(tmp_path):
+    root = tmp_path
+    mock = root / "ontology" / "data-mock"
+    mock.mkdir(parents=True)
+    (mock / "订单.md").write_text(MOCK_TABLE, encoding="utf-8")
+    files = modeling_eval.collect_dataset_files(root, {"include_mock": True})
+    assert files[0][0] == "mock-seed.xlsx" and files[0][1][:2] == b"PK"  # 真实 xlsx
+
+
+def test_dataset_mode_runs_quick_import(tmp_path, monkeypatch):
+    """数据集模式：quick-import 代替 mode=none，导入完成后才 evaluate。"""
+
+    class DatasetStub(StubModeling):
+        calls: list = []
+        poll_count = 0
+        import_polls = 0
+
+        def do_GET(self):
+            DatasetStub.calls.append(("GET", self.path))
+            if self.path.endswith("/evaluation-database/imports"):
+                DatasetStub.import_polls += 1
+                status = "done" if DatasetStub.import_polls >= 2 else "running"
+                return self._send(200, {"imports": [{"id": "run1", "status": status}]})
+            if "/rounds/" in self.path:
+                return self._send(200, {
+                    "round": {"id": "r1", "status": "done",
+                              "progressDone": 1, "progressTotal": 1},
+                    "results": [{"question": "Q1", "groundTruth": "G1",
+                                 "finalAnswer": "A1", "verdict": "pass", "reason": "一致"}],
+                })
+            if self.path == "/":
+                return self._send(200, {"ok": True})
+            return self._send(404, {})
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length)
+            DatasetStub.calls.append(("POST", self.path))
+            if self.path == "/api/package-workspaces/import":
+                return self._send(201, {"project": {"id": "mp-9"}, "version": 1})
+            if self.path.endswith("/evaluation-database/quick-import"):
+                assert b"seed.xlsx" in raw or b".xlsx" in raw
+                return self._send(202, {"run": {"id": "run1"}, "database": {}})
+            if self.path.endswith("/testcases/batch"):
+                return self._send(200, {"added": 1})
+            if self.path.endswith("/evaluate"):
+                return self._send(200, {"roundId": "r1"})
+            return self._send(404, {})
+
+        def do_PUT(self):
+            DatasetStub.calls.append(("PUT", self.path))
+            return self._send(500, {"error": "数据集模式不应配置 mode=none"})
+
+    server = HTTPServer(("127.0.0.1", 0), DatasetStub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.05)
+
+        from app.services.workspace import WorkspaceManager
+
+        manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+        meta = manager.create_project("数据集评测")
+        root = manager.project_root(meta["id"])
+        (root / "resource" / "excel").mkdir(parents=True, exist_ok=True)
+        (root / "resource" / "excel" / "业务数据.xlsx").write_bytes(b"PK-data")
+
+        modeling_eval._run_sync(
+            meta["id"], root, "t", [{"question": "Q1", "groundTruth": "G1"}],
+            {"mode": "dataset", "resources": ["resource/excel/业务数据.xlsx"]},
+        )
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "done", state
+        posts = [p_ for m, p_ in DatasetStub.calls if m == "POST"]
+        assert any(p_.endswith("/evaluation-database/quick-import") for p_ in posts)
+        assert not [c for c in DatasetStub.calls if c[0] == "PUT"], "不应再配置 mode=none"
+        # 顺序：包导入 → quick-import → evaluate
+        assert posts.index("/api/package-workspaces/import") \
+            < posts.index("/api/projects/mp-9/evaluation-database/quick-import") \
+            < posts.index("/api/projects/mp-9/evaluate")
+    finally:
+        server.shutdown()

@@ -54,6 +54,38 @@ def load_history(project_id: str) -> list[dict]:
     return events
 
 
+def _reconcile_stale_history(project_id: str) -> list[dict] | None:
+    """会话进程被重启/强杀后，事件日志尾部可能停在 running 等非终态，
+    前端回放即成"幽灵运行态"（永远执行中、打断 404 无效）。无活跃会话时
+    补写中断标记与 idle 终态使日志自愈；返回补写后的事件，未补写返回 None。"""
+    events = load_history(project_id)
+    state = None
+    for event in reversed(events):
+        if event.get("type") == "session_state":
+            state = event.get("state")
+            break
+    if state not in ("running", "queued", "connecting"):
+        return None
+    now = time.time()
+    patch = [
+        {
+            "type": "session_interrupted",
+            "reason": "stale",
+            "message": "会话进程已重启，上一轮未正常结束，已标记为中断",
+            "ts": now,
+            "seq": len(events),
+        },
+        {"type": "session_state", "state": "idle", "ts": now, "seq": len(events) + 1},
+    ]
+    try:
+        with open(_history_path(project_id), "a", encoding="utf-8") as f:
+            for event in patch:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError:
+        return None
+    return events + patch
+
+
 def _meta_path(project_id: str) -> Path:
     return _history_path(project_id).with_suffix(".meta.json")
 
@@ -83,6 +115,12 @@ def clear_resume_id(project_id: str) -> None:
         _meta_path(project_id).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# 打断的应答超时：引擎/CLI 悬死（如网关调用无响应）时优雅打断永远等不到应答，
+# 超时即硬终止引擎（续接点保留，下一条消息 resume）——保证"停止"按钮总能停
+INTERRUPT_TIMEOUT_SECONDS = 10
+KILL_TIMEOUT_SECONDS = 5
 
 
 class SessionError(Exception):
@@ -202,6 +240,9 @@ class SessionManager:
         session = self._sessions.get(project_id)
         if session:
             return session.events
+        reconciled = _reconcile_stale_history(project_id)
+        if reconciled is not None:
+            return reconciled
         return load_history(project_id)
 
     def active_count(self) -> int:
@@ -497,10 +538,12 @@ class SessionManager:
                 {"behavior": "deny", "message": message or "用户拒绝了该操作"}
             )
 
-    async def interrupt(self, project_id: str) -> None:
+    async def interrupt(self, project_id: str) -> bool:
+        """打断当前轮。返回是否做了幽灵态和解（调用方据此让前端重放刷新）。"""
         session = self._sessions.get(project_id)
         if not session:
-            raise SessionError("会话不存在", 404)
+            # 无活跃会话：不再 404——若历史尾部停在非终态（重启幽灵），补写终态
+            return _reconcile_stale_history(project_id) is not None
         if session.engine is None:
             # 排队/连接中：清空积压消息并退出队列（排队的取消出口）
             async with self._lock:
@@ -510,9 +553,26 @@ class SessionManager:
                 self._broadcast_queue_positions()
             if not session.is_connecting():
                 session.set_state("idle")
-            return
-        await session.engine.interrupt()
+            return False
+        engine = session.engine
+        try:
+            await asyncio.wait_for(engine.interrupt(), timeout=INTERRUPT_TIMEOUT_SECONDS)
+        except (asyncio.TimeoutError, Exception):
+            # 优雅打断失败：硬终止引擎，槽位与状态立即恢复可用
+            error_log.log(project_id, "interrupt_force", "打断超时，已硬终止引擎进程")
+            if session.reader_task:
+                session.reader_task.cancel()
+            try:
+                await asyncio.wait_for(engine.kill(), timeout=KILL_TIMEOUT_SECONDS)
+            except Exception:
+                pass
+            session.engine = None
+            session.broadcast({"type": "session_interrupted"})
+            session.set_state("idle")
+            await self._drain_waiters()
+            return False
         session.broadcast({"type": "session_interrupted"})
+        return False
 
     # ---- 确认卡（引擎权限回调 → 前端待确认事件 → 中立决策）----
 

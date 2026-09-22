@@ -44,7 +44,7 @@ export default function ModelSettings({ project }) {
       const saved = await api.saveJiuwenModelSettings(values);
       setCurrent(saved);
       jiuwenForm.setFieldsValue({ api_key: '' });
-      message.success('已保存，Jiuwen 引擎的新会话生效');
+      message.success('已保存，内测引擎的新会话生效');
     } catch (error) {
       message.error(error.message);
     } finally {
@@ -63,7 +63,7 @@ export default function ModelSettings({ project }) {
         />
       )}
       <Typography.Title level={5} style={{ marginTop: 0 }}>
-        Anthropic 网关（Claude 引擎）
+        Anthropic 网关（稳定引擎）
       </Typography.Title>
       <Form form={form} layout="vertical" onFinish={save}>
         <Form.Item label="网关地址（Base URL）" name="base_url">
@@ -85,9 +85,9 @@ export default function ModelSettings({ project }) {
       </Form>
 
       <Divider />
-      <Typography.Title level={5}>OpenAI 兼容（Jiuwen 引擎）</Typography.Title>
+      <Typography.Title level={5}>OpenAI 兼容（内测引擎）</Typography.Title>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: -4 }}>
-        供切换到 Jiuwen 引擎的项目使用，可直连 OpenAI 兼容协议的模型服务（如 Qwen /
+        供切换到内测引擎的项目使用，可直连 OpenAI 兼容协议的模型服务（如 Qwen /
         DeepSeek / GLM）。引擎在项目卡片的「更多」菜单中切换。
       </Typography.Paragraph>
       <Form form={jiuwenForm} layout="vertical" onFinish={saveJiuwen}>

@@ -157,12 +157,11 @@ print(json.dumps(
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": (
-                f"禁止从任务工作区跨边界改写工具集源码：{reasons}（工具集根 {toolset_resolved}，"
-                f"当前 cwd {cwd}）。这通常是通过 symlink (.claude / CLAUDE.md / README.md) "
-                "或相对路径翻出 cwd 进入了工具集仓。若发现工具集脚本/agent/template/根文档有 bug，"
-                "请把现象反馈给工具集维护者（或退到工具集仓根 cd 过去再修）；"
-                "不要在任务工作区里现场 patch——本任务 .git 留不下记录，工具集会被静默改动，"
-                "违反评测 / 升级流程。"
+                f"工具箱目录只读，禁止写入：{reasons}。"
+                "正确去处：一次性辅助脚本写到工作区 tmp/ 目录（用完删除）；"
+                "正式代码产物走 codegen 流程进 ontology/scripts/。"
+                "若发现工具箱脚本/模板本身有 bug，请把现象反馈给维护者，"
+                "不要在任务工作区里现场 patch（资产是共享源，改动会影响全部项目）。"
             ),
         }
     },

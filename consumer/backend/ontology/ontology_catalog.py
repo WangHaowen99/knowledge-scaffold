@@ -1387,11 +1387,17 @@ def _load_field_definitions(
     return tuple(definitions), has_alias_column, object_name
 
 
+# 与 modeling 侧 EMPTY_FIELD_ALIAS_MARKERS 对齐：属性别名列的占位写法不是别名，
+# 不过滤会让多行共享"无"别名，触发"字段名称同时指向多字段"的导入冲突
+_FIELD_ALIAS_EMPTY_MARKERS = frozenset({"-", "—", "–", "无", "n/a"})
+
+
 def _split_field_alias_tokens(value: Any) -> Tuple[str, ...]:
     text = str(value or "").strip()
-    if not text or text == "-":
+    if not text or text.lower() in _FIELD_ALIAS_EMPTY_MARKERS:
         return ()
-    return tuple(item.strip() for item in _FIELD_ALIAS_SPLIT_RE.split(text))
+    tokens = tuple(item.strip() for item in _FIELD_ALIAS_SPLIT_RE.split(text))
+    return tuple(t for t in tokens if t.lower() not in _FIELD_ALIAS_EMPTY_MARKERS)
 
 
 def _parse_field_definition_table(

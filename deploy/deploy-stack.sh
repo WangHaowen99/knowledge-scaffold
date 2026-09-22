@@ -192,6 +192,42 @@ ensure_modeling_service_token() {
   ok "Modeling 服务令牌已配置（值不写入日志）"
 }
 
+ensure_eval_mysql_password() {
+  # 评测库 root 密码：显式 env > backend/.env 留存值 > 首次自动生成（开箱即用，
+  # 与 MCP_TOKEN_SECRET 同款持久化——不打印、0600 落盘、幂等复用）
+  local env_file="$CONSUMER_DIR/backend/.env" secret temp_file
+  secret="${EVAL_MYSQL_ROOT_PASSWORD:-$(env_get "$env_file" EVAL_MYSQL_ROOT_PASSWORD)}"
+  if [ -z "$secret" ]; then
+    if command -v openssl >/dev/null 2>&1; then
+      secret="$(openssl rand -hex 16)"
+    elif command -v python3 >/dev/null 2>&1; then
+      secret="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+    else
+      fail "无法生成 EVAL_MYSQL_ROOT_PASSWORD：需要 openssl 或 Python 3" 2
+    fi
+  fi
+  [ "${#secret}" -ge 16 ] || fail     "EVAL_MYSQL_ROOT_PASSWORD 少于 16 个字符；请改为独立强随机值" 2
+  temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || fail "无法更新 $env_file" 2
+  chmod 600 "$temp_file"
+  if ! awk -v secret="$secret" '
+    BEGIN { updated = 0 }
+    /^EVAL_MYSQL_ROOT_PASSWORD=/ {
+      if (!updated) { print "EVAL_MYSQL_ROOT_PASSWORD=" secret; updated = 1 }
+      next
+    }
+    { print }
+    END { if (!updated) print "EVAL_MYSQL_ROOT_PASSWORD=" secret }
+  ' "$env_file" > "$temp_file"; then
+    command rm -f -- "$temp_file"
+    fail "无法更新 $env_file" 2
+  fi
+  mv "$temp_file" "$env_file"
+  chmod 600 "$env_file"
+  EVAL_MYSQL_ROOT_PASSWORD="$secret"
+  export EVAL_MYSQL_ROOT_PASSWORD
+  ok "评测库 root 密码已配置（值不写入日志）"
+}
+
 ensure_modeling_mcp_token_secret() {
   local env_file="$CONSUMER_DIR/backend/.env" secret temp_file
   secret="${MODELING_MCP_TOKEN_SECRET:-$(env_get "$env_file" MODELING_MCP_TOKEN_SECRET)}"
@@ -302,19 +338,20 @@ cmd_preflight() {
 }
 
 cmd_up() {
-  local with_eval=0 consumer_only=0 modeling_only=0 no_build=0
+  local with_eval=1 consumer_only=0 modeling_only=0 no_build=0
   local modeling_tag="${MODELING_TAG:-latest}"
   command -v curl >/dev/null 2>&1 || fail "缺少 curl，无法执行部署健康检查" 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --with-auth) ;; # 兼容旧命令；auth-server 现在是必备组件并始终部署。
-      --with-eval) with_eval=1 ;;
+      --with-eval) with_eval=1 ;; # 兼容旧命令；评测库现在默认启用
+      --no-eval) with_eval=0 ;;
       --consumer-only) consumer_only=1 ;;
       --modeling-only) modeling_only=1 ;;
       --no-build) no_build=1 ;;
       --tag) [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || fail "--tag 需要一个值（例：--tag latest）" 2; TAG="$2"; shift ;;
       --modeling-tag) [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || fail "--modeling-tag 需要一个值（例：--modeling-tag d3bfa079）" 2; modeling_tag="$2"; shift ;;
-      *) fail "未知参数：$1（可用：--with-auth --with-eval --consumer-only --modeling-only --no-build --tag <tag> --modeling-tag <tag>）" 2 ;;
+      *) fail "未知参数：$1（可用：--with-auth --with-eval --no-eval --consumer-only --modeling-only --no-build --tag <tag> --modeling-tag <tag>）" 2 ;;
     esac
     shift
   done
@@ -401,8 +438,13 @@ cmd_up() {
 
     local eval_args=()
     if [ "$with_eval" -eq 1 ]; then
-      [ -n "${EVAL_MYSQL_ROOT_PASSWORD:-}" ] || fail \
-        "--with-eval 要求显式设置 EVAL_MYSQL_ROOT_PASSWORD；请使用独立强随机值，禁止沿用示例或生产数据库密码" 2
+      ensure_eval_mysql_password
+      # 宿主 3306 常被本机已有 MySQL 占用：未显式指定发布端口时自动回退 13306
+      # （评测链路走容器网络内部端口，宿主发布端口只影响外部直连排查）
+      if [ -z "${EVAL_MYSQL_PORT:-}" ] && ! port_free 3306; then
+        export EVAL_MYSQL_PORT=13306
+        warn "宿主端口 3306 被占用，评测库改为发布在 13306（EVAL_MYSQL_PORT 可显式指定）"
+      fi
       eval_args=(--profile eval)
       export EVAL_DB_URL="${EVAL_DB_URL:-mysql://root:${EVAL_MYSQL_ROOT_PASSWORD}@eval-mysql:3306}"
       export MODELING_EVAL_BINDING_URL="${MODELING_EVAL_BINDING_URL:-http://modeling-nl2sql:5600}"
@@ -469,7 +511,8 @@ cmd_help() {
   preflight                     环境检查（docker/compose/端口），全部 [OK] 才继续
   up [options]                  构建并启动全栈（幂等，可重复执行）
       --with-auth               兼容旧命令；auth-server 现在默认且始终启用
-      --with-eval               附带评测库 MySQL（建模评测闭环）
+      --with-eval               兼容旧命令；评测库（MySQL + NL2SQL）现在默认启用
+      --no-eval                 不部署评测库（数据评测阶段将降级为无数据库模式）
       --consumer-only           只部署运行期 consumer
       --modeling-only           只部署建模工作台（要求 consumer 已在运行）
       --no-build               禁止在部署机构建，只使用已加载的镜像

@@ -456,3 +456,85 @@ def test_modeling_install_is_minimal_and_persists_custom_ports() -> None:
     assert 'exec bash "${SCRIPT_DIR}/deploy.sh"' in install
     assert "modelingctl" not in install
     assert "reports" not in install
+
+def test_source_deploy_generates_eval_mysql_password_without_printing_it(
+    tmp_path: Path,
+) -> None:
+    """评测库开箱即用：密码首次自动生成、0600 落盘 backend/.env、不回显。"""
+    consumer_root = tmp_path / "consumer"
+    backend_root = consumer_root / "backend"
+    backend_root.mkdir(parents=True)
+    env_file = backend_root / ".env"
+    env_file.write_text("EVAL_MYSQL_ROOT_PASSWORD=\n", encoding="utf-8")
+    inherited = {
+        key: value for key, value in os.environ.items() if key != "EVAL_MYSQL_ROOT_PASSWORD"
+    }
+
+    result = subprocess.run(
+        [
+            _bash_executable(),
+            "-c",
+            'source "$DEPLOY_STACK" >/dev/null; CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_eval_mysql_password',
+        ],
+        env={
+            **inherited,
+            "DEPLOY_STACK": str(DEPLOY_ROOT / "deploy-stack.sh"),
+            "TEST_CONSUMER_DIR": str(consumer_root),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    match = re.search(
+        r"^EVAL_MYSQL_ROOT_PASSWORD=([0-9a-f]{32})$",
+        env_file.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None
+    assert match.group(1) not in result.stdout
+    assert env_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) -> None:
+    """根源码部署为 onto-modeling 生成整栈 override（共享 auth + 网络 + 评测地址）。"""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
+    onto_dir = tmp_path / "modeling" / "onto-modeling"
+    onto_dir.mkdir(parents=True)
+    args_file = tmp_path / "args.txt"
+    _write_executable(
+        deploy_dir / "deploy-stack.sh",
+        'printf "%s\\n" "$@" > "$DEPLOY_ARGS_FILE"',
+    )
+    # stub docker：网络探测返回空、compose up 记录调用
+    docker_stub = deploy_dir / "docker"
+    _write_executable(
+        docker_stub,
+        'if [ "$1" = "network" ]; then exit 0; fi\nprintf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"',
+    )
+    calls_file = tmp_path / "docker-calls.txt"
+
+    result = subprocess.run(
+        [str(deploy_dir / "deploy.sh")],
+        env={
+            **os.environ,
+            "DEPLOY_ARGS_FILE": str(args_file),
+            "DOCKER_CALLS_FILE": str(calls_file),
+            "PATH": f"{deploy_dir}:{os.environ['PATH']}",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    override = onto_dir / "docker-compose.stack.yml"
+    assert override.is_file()
+    content = override.read_text(encoding="utf-8")
+    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in content
+    assert "consumer_onto-agent-network" in content
+    assert 'profiles: ["disabled"]' in content  # 自带 dev auth 停用，共享账号中心
+    assert "docker-compose.stack.yml" in calls_file.read_text(encoding="utf-8")

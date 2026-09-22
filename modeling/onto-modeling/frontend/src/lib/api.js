@@ -65,12 +65,14 @@ async function tryRefresh() {
 }
 
 async function request(path, options = {}, retried = false) {
+  // FormData 由浏览器自带 multipart 边界，强制 json Content-Type 会让后端无法解析
+  const baseHeaders =
+    options.body instanceof FormData
+      ? authHeaders()
+      : { 'Content-Type': 'application/json', ...authHeaders() };
   const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     ...options,
-    ...(options.headers
-      ? { headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options.headers } }
-      : {}),
+    headers: { ...baseHeaders, ...(options.headers || {}) },
   });
   if (response.status === 401 && !retried && !path.startsWith('/api/auth/')) {
     if (await tryRefresh()) return request(path, options, true);
@@ -82,6 +84,8 @@ async function request(path, options = {}, retried = false) {
     try {
       const body = await response.json();
       detail = body.error || body.detail || detail;
+      // FastAPI 校验错误是对象数组，转成可读文本（否则 toast 渲染为空，表现为"无反应"）
+      if (typeof detail !== 'string') detail = JSON.stringify(detail).slice(0, 200);
     } catch { /* keep status text */ }
     const error = new Error(detail);
     error.status = response.status;
@@ -290,6 +294,22 @@ export const api = {
   saveJiuwenModelSettings: (payload) =>
     request('/api/settings/model/jiuwen', { method: 'PUT', body: JSON.stringify(payload) }),
   getProjectEngine: (pid) => request(`/api/projects/${pid}/engine`),
+  evalDataAlignment: (pid) => request(`/api/projects/${pid}/eval-data/alignment`),
+  evalStatus: (pid) => request(`/api/projects/${pid}/eval/status`),
+  evalCases: (pid) => request(`/api/projects/${pid}/eval/cases`),
+  evalDataSourceOptions: (pid) => request(`/api/projects/${pid}/eval/data-source`),
+  evalCasesTemplateUrl: (pid) =>
+    `/api/projects/${pid}/eval/cases/template?token=${encodeURIComponent(authStore.token)}`,
+  evalCasesImport: (pid, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request(`/api/projects/${pid}/eval/cases/import`, { method: 'POST', body: form });
+  },
+  evalRun: (pid, cases, dataSource) =>
+    request(`/api/projects/${pid}/eval/run`, {
+      method: 'POST',
+      body: JSON.stringify({ cases, data_source: dataSource || { mode: 'none' } }),
+    }),
   setProjectEngine: (pid, engine) =>
     request(`/api/projects/${pid}/engine`, {
       method: 'PUT',

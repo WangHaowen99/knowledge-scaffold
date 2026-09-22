@@ -299,6 +299,7 @@ COMMAND_PREREQS = {
     'impact': ['对象已提取'],
     'query': ['对象已提取'],
     'update': ['逻辑已提取', '对象已提取'],
+    'evolution': ['对象已提取'],
 }
 
 STAGE_SORT = {

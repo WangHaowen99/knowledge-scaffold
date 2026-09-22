@@ -1,10 +1,13 @@
 import {
   ArrowLeftOutlined,
+  FileTextOutlined,
   InboxOutlined,
   LogoutOutlined,
+  MessageOutlined,
   MoreOutlined,
   SearchOutlined,
   SettingOutlined,
+  UnorderedListOutlined,
 } from '@ant-design/icons';
 import {
   Alert,
@@ -66,6 +69,17 @@ export default function App() {
   const [memberWiz, setMemberWiz] = useState(null); // {project, members, newUser, newRole}
   const [engineWiz, setEngineWiz] = useState(null); // {project, engine, available}
   const [initialFiles, setInitialFiles] = useState(null); // {projectId, files} 新建项目待发送的初始资料
+  // 移动端：≤768px 时工作台切换为单栏 + 底部页签
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches,
+  );
+  const [mobilePane, setMobilePane] = useState('chat'); // left | center | chat
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 768px)');
+    const onChange = (e) => setIsMobile(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
   const [queryPreset, setQueryPreset] = useState(null); // 反查预置 {kind, term, nonce}
   const [diffFiles, setDiffFiles] = useState(null); // 变更卡带入对比页的文件清单
   const [recentFiles, setRecentFiles] = useState([]);
@@ -98,6 +112,7 @@ export default function App() {
     setFocusStack((stack) =>
       stack[stack.length - 1] === next ? stack : [...stack, next].slice(-12),
     );
+    setMobilePane('center'); // 移动端：下钻动作自动切到内容栏（桌面态无感）
   }, []);
   const popFocus = () => setFocusStack((stack) => (stack.length > 1 ? stack.slice(0, -1) : stack));
 
@@ -343,8 +358,13 @@ export default function App() {
   if (route.name === 'home' || !project) {
     const activeProjects = projects.filter((p) => !p.archived);
     const archivedProjects = projects.filter((p) => p.archived);
-    const stageLabel = (item) =>
-      (item.stages_done ?? 0) >= (item.stages_total ?? 9) ? '主链完成' : `阶段 ${item.stages_done ?? 0}/${item.stages_total ?? 9}`;
+    const stageLabel = (item) => {
+      const base =
+        (item.stages_done ?? 0) >= (item.stages_total ?? 9)
+          ? '主链完成'
+          : `阶段 ${item.stages_done ?? 0}/${item.stages_total ?? 9}`;
+      return item.eval_score != null ? `${base} · 评测 ${item.eval_score}` : base;
+    };
     // 卡片结构逐节点复刻 modeling ProjectList.ProjectCard
     const renderCard = (item) => (
       <div
@@ -583,16 +603,16 @@ export default function App() {
                 style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
               >
                 <Radio value="claude">
-                  Claude 引擎（默认）— Anthropic 网关，功能最完整
+                  稳定引擎（默认）— 功能最完整
                 </Radio>
                 <Radio value="jiuwen" disabled={!engineWiz.available?.jiuwen}>
-                  Jiuwen 引擎 — OpenAI 兼容模型直连，低内存（灰度中）
+                  内测引擎 — OpenAI 兼容模型直连，低内存
                   {!engineWiz.available?.jiuwen && '（当前部署未安装）'}
                 </Radio>
               </Radio.Group>
               <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12 }}>
                 切换即重启会话：界面历史保留可回放，模型上下文按新引擎的续接方式重建。
-                Jiuwen 引擎需管理员先在「配置中心 → 模型接入」配置 OpenAI 兼容模型。
+                内测引擎需管理员先在「配置中心 → 模型接入」配置 OpenAI 兼容模型。
               </Typography.Paragraph>
             </div>
           )}
@@ -739,6 +759,81 @@ export default function App() {
   }
 
 
+  const leftPaneNode = (
+    <div className="pane pane-left">
+              <LeftPane
+                activeStage={activeStage}
+                project={project}
+                meta={project}
+                tree={tree}
+                versions={versions}
+                onSelectFile={openFile}
+                onRefresh={refreshWorkspace}
+                onCommand={(command) => chatSendRef.current?.(command)}
+                onDiff={(rev) => {
+                  setDiffRev(rev);
+                  setDiffFiles(null);
+                  pushFocus('diff');
+                }}
+                onQuery={(kind, term) => {
+                  setQueryPreset({ kind, term, nonce: Date.now() });
+                  pushFocus('query');
+                }}
+                onKnowledge={() => pushFocus('knowledge')}
+              />
+            </div>
+  );
+  const centerPaneNode = (
+    <div className="pane pane-center">
+              <CenterPane
+                project={project}
+                tree={tree}
+                versions={versions}
+                usage={usage}
+                file={selectedFile}
+                focus={focus}
+                onFocus={pushFocus}
+                canBack={focusStack.length > 1}
+                onBack={popFocus}
+                diffRev={diffRev}
+                queryPreset={queryPreset}
+                onFocusPlain={(next) => setFocusStack([next])}
+                diffFiles={diffFiles}
+                onPickFile={setSelectedFile}
+                recentFiles={recentFiles}
+                drawioAvailable={drawioAvailable}
+                onWorkspaceChanged={refreshWorkspace}
+                onOpenFile={openFile}
+                onCommand={(command) => chatSendRef.current?.(command)}
+              />
+            </div>
+  );
+  const chatPaneNode = (
+    <div className="pane pane-right">
+              <ChatPane
+                onActiveStage={setActiveStage}
+                initialFiles={initialFiles?.projectId === project.id ? initialFiles.files : null}
+                onInitialFilesConsumed={() => setInitialFiles(null)}
+                project={project}
+                tree={tree}
+                meta={project}
+                versions={versions}
+                usage={usage}
+                onWorkspaceChanged={refreshWorkspace}
+                onPendingChange={setPendingCount}
+                onOpenFile={openFile}
+                onOpenDiff={(rev, files) => {
+                  setDiffRev(rev);
+                  setDiffFiles(files?.length ? files : null);
+                  pushFocus('diff');
+                }}
+                registerSend={(fn) => {
+                  chatSendRef.current = fn;
+                }}
+              />
+            </div>
+  );
+
   return (
     <div className="app-shell">
       <div className="app-topbar">
@@ -773,82 +868,59 @@ export default function App() {
         {avatarNode}
       </div>
       <div className="app-body">
-        <Splitter>
-          <Splitter.Panel defaultSize="22%" min="14%" max="35%" collapsible>
-            <div className="pane pane-left">
-              <LeftPane
-                activeStage={activeStage}
-                project={project}
-                meta={project}
-                tree={tree}
-                versions={versions}
-                onSelectFile={openFile}
-                onRefresh={refreshWorkspace}
-                onCommand={(command) => chatSendRef.current?.(command)}
-                onDiff={(rev) => {
-                  setDiffRev(rev);
-                  setDiffFiles(null);
-                  pushFocus('diff');
-                }}
-                onQuery={(kind, term) => {
-                  setQueryPreset({ kind, term, nonce: Date.now() });
-                  pushFocus('query');
-                }}
-                onKnowledge={() => pushFocus('knowledge')}
-              />
+        {isMobile ? (
+          <div className="mobile-body">
+            <div className="mobile-panes">
+              <div className={`mobile-pane${mobilePane === 'left' ? '' : ' mobile-pane-hidden'}`}>
+                {leftPaneNode}
+              </div>
+              <div className={`mobile-pane${mobilePane === 'center' ? '' : ' mobile-pane-hidden'}`}>
+                {centerPaneNode}
+              </div>
+              <div className={`mobile-pane${mobilePane === 'chat' ? '' : ' mobile-pane-hidden'}`}>
+                {chatPaneNode}
+              </div>
             </div>
-          </Splitter.Panel>
-          <Splitter.Panel>
-            <div className="pane pane-center">
-              <CenterPane
-                project={project}
-                tree={tree}
-                versions={versions}
-                usage={usage}
-                file={selectedFile}
-                focus={focus}
-                onFocus={pushFocus}
-                canBack={focusStack.length > 1}
-                onBack={popFocus}
-                diffRev={diffRev}
-                queryPreset={queryPreset}
-                onFocusPlain={(next) => setFocusStack([next])}
-                diffFiles={diffFiles}
-                onPickFile={setSelectedFile}
-                recentFiles={recentFiles}
-                drawioAvailable={drawioAvailable}
-                onWorkspaceChanged={refreshWorkspace}
-                onOpenFile={openFile}
-                onCommand={(command) => chatSendRef.current?.(command)}
-              />
+            <div className="mobile-nav">
+              <button
+                type="button"
+                className={mobilePane === 'left' ? 'active' : ''}
+                onClick={() => setMobilePane('left')}
+              >
+                <UnorderedListOutlined />
+                进度
+              </button>
+              <button
+                type="button"
+                className={mobilePane === 'center' ? 'active' : ''}
+                onClick={() => setMobilePane('center')}
+              >
+                <FileTextOutlined />
+                内容
+              </button>
+              <button
+                type="button"
+                className={mobilePane === 'chat' ? 'active' : ''}
+                onClick={() => setMobilePane('chat')}
+              >
+                <Badge count={pendingCount} size="small" offset={[8, -2]}>
+                  <MessageOutlined />
+                </Badge>
+                聊天
+              </button>
             </div>
-          </Splitter.Panel>
-          <Splitter.Panel defaultSize="32%" min="24%" max="48%" collapsible>
-            <div className="pane pane-right">
-              <ChatPane
-                onActiveStage={setActiveStage}
-                initialFiles={initialFiles?.projectId === project.id ? initialFiles.files : null}
-                onInitialFilesConsumed={() => setInitialFiles(null)}
-                project={project}
-                tree={tree}
-                meta={project}
-                versions={versions}
-                usage={usage}
-                onWorkspaceChanged={refreshWorkspace}
-                onPendingChange={setPendingCount}
-                onOpenFile={openFile}
-                onOpenDiff={(rev, files) => {
-                  setDiffRev(rev);
-                  setDiffFiles(files?.length ? files : null);
-                  pushFocus('diff');
-                }}
-                registerSend={(fn) => {
-                  chatSendRef.current = fn;
-                }}
-              />
-            </div>
-          </Splitter.Panel>
-        </Splitter>
+          </div>
+        ) : (
+          <Splitter>
+            <Splitter.Panel defaultSize="22%" min="14%" max="35%" collapsible>
+              {leftPaneNode}
+            </Splitter.Panel>
+            <Splitter.Panel>{centerPaneNode}</Splitter.Panel>
+            <Splitter.Panel defaultSize="32%" min="24%" max="48%" collapsible>
+              {chatPaneNode}
+            </Splitter.Panel>
+          </Splitter>
+        )}
       </div>
       <Modal
         title="全文搜索"

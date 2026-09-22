@@ -38,6 +38,12 @@ JIUWEN_MODEL = os.environ.get("ONTO_WEB_JIUWEN_MODEL", "")
 JIUWEN_MAX_TOKENS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_TOKENS", "8192"))
 JIUWEN_MAX_ITERATIONS = int(os.environ.get("ONTO_WEB_JIUWEN_MAX_ITERATIONS", "60"))
 
+# modeling 评测服务（数据评测阶段，方案 docs/eval-optimization-integration.md）：
+# 未配置 URL 时「数据评测」阶段自动隐藏；TOKEN 为无共享 auth 部署的兜底令牌
+# （共享账号中心/方案 A 下透传当前用户 token，无需配置）
+MODELING_URL = os.environ.get("ONTO_WEB_MODELING_URL", "").rstrip("/")
+MODELING_TOKEN = os.environ.get("ONTO_WEB_MODELING_TOKEN", "")
+
 # workspace 定期备份间隔（小时，0 关闭）；保留份数固定为最近 3 份
 BACKUP_INTERVAL_HOURS = int(os.environ.get("ONTO_WEB_BACKUP_INTERVAL_HOURS", "24"))
 

@@ -50,6 +50,15 @@ These rules apply to all work in this repository.
 
 8. **`resource/` is user-managed and read-only for models** — 模型可以读取 `resource/`，也可以基于 `resource/` 刷新或生成 `ontology/` 下的派生产物；但任何时候都不得创建、修改、移动或删除任意 `resource/` 目录下的文件。若源材料需要调整，必须提示用户手工修改 `resource/`。
 
+8.04 **子代理派遣必须同步等待完成** — 用 Task/Agent 工具派遣子代理时必须在本轮内
+   同步等待其结果后再继续（工具若有 `run_in_background` 参数，必须显式传 `false`）。
+   **严禁后台派遣后结束回合"等通知"**：平台会回收空闲会话进程，后台子代理会随进程
+   丢失且不会有任何通知送达，任务将静默中断。材料再大也走同步派遣（本轮等待）。
+
+8.05 **临时/生成用脚本一律写到 `tmp/`** — 需要写一次性辅助脚本（批量生成、转换、检查等）时，
+   写到工作区 `tmp/` 目录（已 gitignore），用完删除；正式的代码产物走 codegen 流程进
+   `ontology/scripts/`。`.claude/` 是只读工具箱（资产源，受守卫保护），任何时候不要往里写文件。
+
 8.1 **资料用途标签（`resource/materials.json`）** — 用户可为每份资料指定用途与读取模式（对齐 modeling 的资料用途体系）。读取任何资料前先查该清单（不存在或无条目视为 `auto`）：
 
    | purpose | 语义 | 建模约束 |
@@ -59,6 +68,7 @@ These rules apply to all work in this repository.
    | `schema` | 数据 Schema | 该表格是对象与属性的**事实来源**：对象属性清单的英文名称/类型必须来自真实表头列，逐 Sheet 覆盖、不得虚构或合并；类型与主键只能标注为推断，不得据样例行编造业务含义 |
    | `term` | 术语表 | 对象/操作/规则/指标的命名与别名必须与术语表对齐；冲突时以术语表为准并在文档标注 |
    | `evidence` | 通用业务依据 | 作为佐证材料按需引用，引用时注明出处文件 |
+   - `eval_data`（评测数据）：用于评测库导入的业务数据表，**不是建模事实源**——提取对象/操作时不得将其当作 schema 或业务依据引用；其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 可检查）。
 
    `reading_mode`：`full` = 必须全文精读后再使用；`on_demand` = 按需检索片段即可。该文件由平台维护，模型同样**不得修改**。
 

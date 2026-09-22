@@ -12,3 +12,6 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 **/.DS_Store
+
+# 一次性辅助脚本/临时产物（规则 8.05）
+tmp/
