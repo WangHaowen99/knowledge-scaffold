@@ -180,6 +180,14 @@ ALLOWED_MD_SUBDIRS = (
     'diagrams-summary', 'testcase', 'knowledge',
 )
 
+# 知识包导出范围（与 backend export_package_zip 一致）：只有这些目录的内容
+# 会送达 consumer。logic 为 operation 的旧目录兼容（ADR-0004），不再推荐新建。
+PACKAGED_SUBDIRS = ('object', 'operation', 'logic', 'rule', 'metric')
+RECOMMENDED_PACKAGED_SUBDIRS = ('object', 'operation', 'rule', 'metric')
+
+# 按设计就不该进知识包的过程产物目录——不提示。
+WORKING_ARTIFACT_SUBDIRS = ('data-mock', 'diagrams-summary', 'testcase')
+
 
 def check_file_locations(ontology_dir: Path) -> list:
     """CLAUDE.md 规则 3：ontology/ 下的 .md 文件必须放在白名单子目录中。"""
@@ -208,6 +216,38 @@ def check_file_locations(ontology_dir: Path) -> list:
                 message=f'文件位于 ontology/{parts[0]}/ —— 非白名单目录；允许的子目录：{allowed_str}',
                 source='规则检查',
             ))
+    return issues
+
+
+def check_unpackaged_knowledge(ontology_dir: Path) -> list:
+    """白名单内但不进知识包的目录里存在知识文档 —— consumer 永远看不到。
+
+    这类内容本身合法（建模代理的上下文沉淀），但常被误当作"补知识"的落点，
+    导致改了不生效。此处只提示，不判错。
+    """
+    if not ontology_dir.exists():
+        return []
+    silent = set(PACKAGED_SUBDIRS) | set(WORKING_ARTIFACT_SUBDIRS)
+    packaged_str = '、'.join(RECOMMENDED_PACKAGED_SUBDIRS)
+    issues = []
+    for subdir in ALLOWED_MD_SUBDIRS:
+        if subdir in silent:
+            continue
+        d = ontology_dir / subdir
+        if not d.is_dir():
+            continue
+        docs = [f for f in sorted(d.rglob('*.md')) if f.name.lower() != 'index.md']
+        if not docs:
+            continue
+        issues.append(Issue(
+            file=f'{subdir}/', severity='警告', category='打包范围',
+            message=(
+                f'ontology/{subdir}/ 有 {len(docs)} 个知识文档，但该目录不进知识包，'
+                f'consumer 检索不到；若这些内容需要被问答使用，请建模为 {packaged_str} '
+                f'中的条目（案例/方案类知识 → ontology/rule/ 的场景规则）。'
+            ),
+            source='规则检查',
+        ))
     return issues
 
 
@@ -315,7 +355,11 @@ def check_entity_structure(doc: OntologyDoc, required_sections: list, cn: str) -
     issues = []
     for section in required_sections:
         if section not in doc.sections or not doc.sections[section].strip():
-            issues.append(f"错误 {_rel(doc)}: 缺少必需章节「{section}」（{cn}模板要求）")
+            issues.append(Issue(
+                file=_rel(doc), severity='错误', category='结构缺失',
+                message=f'缺少必需章节「{section}」（{cn}模板要求）',
+                source='规则检查',
+            ))
     return issues
 
 
@@ -325,7 +369,11 @@ def check_entity_links(doc: OntologyDoc, all_docs: dict, cn: str) -> list:
     for link in doc.wiki_links:
         target = link.split('|')[0].split('#')[0].strip()
         if target and target not in known:
-            issues.append(f"警告 {_rel(doc)}: {cn}引用了不存在的文档 [[{target}]]")
+            issues.append(Issue(
+                file=_rel(doc), severity='警告', category='链接失效',
+                message=f'{cn}引用了不存在的文档 [[{target}]]',
+                source='规则检查',
+            ))
     return issues
 
 
@@ -998,6 +1046,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
 
     issues = list(check_duplicate_stems(ontology_dir))
     issues += check_file_locations(ontology_dir)
+    issues += check_unpackaged_knowledge(ontology_dir)
     term_map = build_term_map(all_docs)
 
     print("Running rule checks...", file=sys.stderr)
