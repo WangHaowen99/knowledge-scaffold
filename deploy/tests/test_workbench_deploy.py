@@ -589,6 +589,53 @@ def test_root_deploy_fails_loudly_when_consumer_network_undetectable(tmp_path: P
     assert "consumer_onto-agent-network" not in result.stdout + result.stderr
 
 
+_INTERACTIVE_INSTALLER = (DEPLOY_ROOT / "install-consumer-modeling-interactive.sh").read_text(
+    encoding="utf-8"
+)
+
+
+def test_interactive_installer_default_ports_do_not_collide() -> None:
+    """交互式安装器的默认端口里 Modeling 与 Onto Modeling 不能撞车。
+
+    回归：默认端口分支原本给 Modeling 写 5100，而 5100 已归 Onto Modeling，
+    结果是装完 5100 上仍是 Modeling、Onto Modeling 起不来。
+    """
+    modeling = re.search(
+        r"^\s*MODELING_PORT=(\d+); MODELING_MCP_PORT=", _INTERACTIVE_INSTALLER, re.MULTILINE
+    )
+    onto = re.search(r"^\s*ONTO_WEB_PORT=(\d+)$", _INTERACTIVE_INSTALLER, re.MULTILINE)
+    assert modeling is not None and onto is not None
+    assert modeling.group(1) != onto.group(1)
+
+
+def test_interactive_installer_deploys_onto_modeling() -> None:
+    """交互式安装器要能装出 Onto Modeling，而不是只装 Consumer + Modeling。
+
+    回归：该脚本此前完全不涉及 onto-modeling，走这条路的用户永远装不到它。
+    """
+    # 首次部署与升级两条路径都要真正调用部署函数
+    assert _INTERACTIVE_INSTALLER.count("deploy_onto_modeling") >= 3
+    assert 'validate_package "${ONTO_MODELING_PACKAGE}" onto-modeling' in _INTERACTIVE_INSTALLER
+    assert 'tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${INSTALL_ROOT}"' in _INTERACTIVE_INSTALLER
+    # 缺包时跳过，不能硬失败——存量发布没有这个包
+    assert _INTERACTIVE_INSTALLER.count('[ -z "${ONTO_MODELING_PACKAGE}" ] || ') >= 2
+
+    # 接线：宿主端口 + 共享账号中心的网络 + 评测用的 Modeling 地址
+    for key in (
+        "ONTO_WEB_PORT",
+        "ONTO_MODELING_EXTERNAL_AUTH_NETWORK",
+        "ONTO_WEB_MODELING_URL",
+    ):
+        assert f'write_env_value "${{env_file}}" {key}' in _INTERACTIVE_INSTALLER
+
+
+def test_interactive_installer_never_guesses_consumer_network() -> None:
+    """网络名必须现场探测；猜名字会让 compose 报 external network not found。"""
+    assert "docker container inspect onto-agent-backend" in _INTERACTIVE_INSTALLER
+    assert "无法探测 Consumer 容器网络" in _INTERACTIVE_INSTALLER
+    assert "consumer_onto-agent-network" not in _INTERACTIVE_INSTALLER
+
+
 def _host_port_default(compose_text: str, var: str) -> str:
     """取 compose ports 里 "${VAR:-默认}:容器端口" 的宿主侧默认值。"""
     match = re.search(rf'- "\$\{{{var}:-(\d+)\}}:\d+"', compose_text)
@@ -620,6 +667,13 @@ def test_modeling_healthcheck_port_matches_published_host_port() -> None:
     seeded = re.search(r"^MODELING_PORT=(\d+)$", build_script, re.MULTILINE)
     assert seeded is not None, "modeling/build.sh 未生成 MODELING_PORT 模板项"
     assert seeded.group(1) == release_port
+
+    # 交互式安装器的「默认端口」分支是又一处独立的宿主端口来源
+    chosen = re.search(
+        r"^\s*MODELING_PORT=(\d+); MODELING_MCP_PORT=", _INTERACTIVE_INSTALLER, re.MULTILINE
+    )
+    assert chosen is not None, "交互式安装器未设置默认 MODELING_PORT"
+    assert chosen.group(1) == release_port
 
 
 def test_modeling_and_onto_modeling_do_not_share_host_port() -> None:
