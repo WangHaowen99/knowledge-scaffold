@@ -7,6 +7,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+import pytest
+
 from app import config
 from app.services import modeling_eval
 
@@ -29,6 +31,31 @@ TC_DOC = """# 产品匹配 — 测试用例
 | 输入-信号 | 无 |
 | 预期-结论 | 不推荐任何产品 |
 """
+
+
+def _bind_object_to_table(root: Path) -> None:
+    """让工作区通过数据绑定门禁：一张真实数据表 + 一个列名对得上的对象。"""
+    import openpyxl
+
+    excel = root / "resource" / "excel"
+    excel.mkdir(parents=True, exist_ok=True)
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "订单"
+    sheet.append(["ORDER_ID", "AMOUNT"])
+    sheet.append(["o1", 12])
+    workbook.save(excel / "业务数据.xlsx")
+    (root / "resource" / "materials.json").write_text(
+        json.dumps({"resource/excel/业务数据.xlsx": {"purpose": "eval_data"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
+    (root / "ontology" / "object" / "订单.md").write_text(
+        "# 数据来源\n订单\n\n# 对象属性清单\n"
+        "| 中文名称 | 英文名称 | 主键 |\n| --- | --- | --- |\n"
+        "| 订单号 | ORDER_ID | 是 |\n| 金额 | AMOUNT | 否 |\n",
+        encoding="utf-8",
+    )
 
 
 def test_trace_cases_conversion(tmp_path):
@@ -434,8 +461,7 @@ def test_dataset_mode_runs_quick_import(tmp_path, monkeypatch):
         manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
         meta = manager.create_project("数据集评测")
         root = manager.project_root(meta["id"])
-        (root / "resource" / "excel").mkdir(parents=True, exist_ok=True)
-        (root / "resource" / "excel" / "业务数据.xlsx").write_bytes(b"PK-data")
+        _bind_object_to_table(root)
 
         modeling_eval._run_sync(
             meta["id"], root, "t", [{"question": "Q1", "groundTruth": "G1"}],
@@ -705,3 +731,30 @@ def test_can_resume_requires_round_coordinates(tmp_path, monkeypatch):
     assert not modeling_eval.can_resume(root)
     modeling_eval._write_state(root, modeling_project="mp-1", round_id="r9")
     assert modeling_eval.can_resume(root)
+
+
+def test_dataset_mode_blocked_when_no_object_binds_a_table(tmp_path, monkeypatch):
+    """数据绑定门禁：对象对不上任何数据表时拦在发起前，而不是跑出一个没查过库的分数。"""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    _pid, root = _eval_workspace(tmp_path, "未绑定数据表")
+    _bind_object_to_table(root)
+    # 属性英文名全部改掉 → 与表列名一个都对不上
+    (root / "ontology" / "object" / "订单.md").write_text(
+        "# 对象属性清单\n| 中文名称 | 英文名称 |\n| --- | --- |\n| 订单号 | NOPE_ID |\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="没有任何对象绑定"):
+        modeling_eval.assert_data_binding(root)
+
+    # 声明了不存在的来源表 → 报具体表名，不静默降级
+    (root / "ontology" / "object" / "订单.md").write_text(
+        "# 数据来源\n不存在的表\n\n# 对象属性清单\n"
+        "| 中文名称 | 英文名称 |\n| --- | --- |\n| 订单号 | ORDER_ID |\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="不存在的表"):
+        modeling_eval.assert_data_binding(root)
+
+    # 绑定正常 → 放行
+    _bind_object_to_table(root)
+    modeling_eval.assert_data_binding(root)

@@ -336,9 +336,10 @@ export default function LeftPane({
 
   const openEvalWizard = async () => {
     try {
-      const [data, ds] = await Promise.all([
+      const [data, ds, align] = await Promise.all([
         api.evalCases(project.id),
         api.evalDataSourceOptions(project.id).catch(() => ({ eval_data: [], mock_tables: 0 })),
+        api.evalDataAlignment(project.id).catch(() => null),
       ]);
       if (!data.cases?.length) {
         message.info('没有可转换的场景用例——先完成「场景验证」阶段，或在弹窗中手工添加');
@@ -347,6 +348,7 @@ export default function LeftPane({
         step: 0,
         cases: data.cases || [],
         options: ds,
+        binding: align?.binding || null, // 对象↔数据表绑定：接数据源前先让用户看到能不能查
         dsMode: 'none', // none | mock | dataset
         selected: (ds.eval_data || []).map((f) => f.path), // dataset 模式默认全选
       });
@@ -1166,6 +1168,43 @@ export default function LeftPane({
                 <span>consumer 查询作答</span>
               </div>
             )}
+            {evalWiz.dsMode === 'dataset' && evalWiz.binding && (() => {
+              // 对象绑不到真实表 = 这一轮问答根本查不到库；发起前就说清楚，别等报告出分
+              const items = Object.entries(evalWiz.binding.objects || {});
+              const unbound = items.filter(([, v]) => !v.matched_by).map(([k]) => k);
+              const problems = evalWiz.binding.problems || [];
+              const bound = items.length - unbound.length;
+              if (problems.length || !bound) {
+                return (
+                  <Alert
+                    type="error"
+                    showIcon
+                    style={{ marginTop: 10 }}
+                    message="对象未绑定到数据表，数据问答会查不到库"
+                    description={
+                      problems[0] ||
+                      `${items.length} 个对象都没绑定到数据表。请在对象文档「# 数据来源」写真实表名，` +
+                        '或确认「对象属性清单」的英文名称与数据表列名一致。'
+                    }
+                  />
+                );
+              }
+              return (
+                <Alert
+                  type={unbound.length ? 'warning' : 'success'}
+                  showIcon
+                  style={{ marginTop: 10 }}
+                  message={`${bound}/${items.length} 个对象已绑定到数据表`}
+                  description={
+                    unbound.length
+                      ? `未绑定：${unbound.slice(0, 6).join('、')}${
+                          unbound.length > 6 ? ` 等 ${unbound.length} 个` : ''
+                        }——涉及这些对象的数据问题将查不到库。`
+                      : undefined
+                  }
+                />
+              );
+            })()}
           </div>
         ) : (
           <>

@@ -328,7 +328,9 @@ def load_doc(path: Path, doc_type: str) -> OntologyDoc:
 # =============================================================================
 
 OBJECT_REQUIRED_SECTIONS = ['对象描述', '对象别名', '英文名称', '对象属性清单']
-OBJECT_OPTIONAL_SECTIONS = ['关联对象']
+# 数据来源：发布包「来源Sheet」与 object-data-mappings.json 的唯一声明口径，
+# 缺它对象就绑不到物理表、数据问答查不到；纯概念对象填"无"即可，故列为建议而非必需
+OBJECT_OPTIONAL_SECTIONS = ['数据来源', '关联对象']
 OBJECT_REQUIRED_COLUMNS = ['中文名称', '英文名称', '描述', '主键', '类型']
 
 OPERATION_REQUIRED_SECTIONS = ['业务描述', '与operation的关联', '与object的关联', '输入', '输出', '逻辑描述']

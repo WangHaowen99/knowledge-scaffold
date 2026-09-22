@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
+from . import package_mapping
 
 STATE_REL = ".ontology-state/eval.json"
 POLL_INTERVAL_SECONDS = 6
@@ -170,6 +171,24 @@ def collect_dataset_files(root: Path, data_source: dict) -> list[tuple[str, byte
     if not files:
         raise ValueError("数据集模式需要至少一份数据表（评测数据资料或示例数据种子）")
     return files
+
+
+def assert_data_binding(root: Path) -> None:
+    """数据集模式前置门禁：对象必须绑定到真实数据表，否则这一轮问答根本不会查库。
+
+    历史故障：来源Sheet 写成对象名、包里没有 mappings，评测照跑并给出一个看起来不错的
+    分数，但全部用例都只读了知识包上下文、一次库都没查。在发起时拦下，让问题暴露在
+    这里而不是藏进报告分数里。
+    """
+    binding = package_mapping.resolve_object_tables(root)
+    if binding["problems"]:
+        raise ValueError("对象与评测数据表未对齐：" + "；".join(binding["problems"][:3]))
+    if not binding["bound"]:
+        raise ValueError(
+            "没有任何对象绑定到评测数据表，数据问答会全部落空："
+            "请在对象文档「# 数据来源」声明真实表名，"
+            "或确认「对象属性清单」的英文名称与数据表列名一致"
+        )
 
 
 def _generate_mock_seed(root: Path) -> tuple[str, bytes]:
@@ -688,6 +707,8 @@ def _run_sync(
         if _try_resume(project_id, root, token, cases):
             return
         _check_stop(project_id)
+        if dataset_mode:
+            assert_data_binding(root)
         _write_state(root, status="running", phase="package", message="打包知识包")
         manager = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
         import tempfile
