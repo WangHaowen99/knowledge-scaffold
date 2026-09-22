@@ -30,6 +30,17 @@ class GraphBackendUnsupportedError(GraphBackendError):
 
 
 class GraphBackend(Protocol):
+    def get_property_types(
+        self,
+        *,
+        element_class: str,
+        element_type: str,
+        property_names: list[str],
+        scope: GraphScope,
+    ) -> dict:
+        """Return physical types for requested fields, when available."""
+        ...
+
     def get_nodes_schema(
         self,
         *,

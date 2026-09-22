@@ -310,6 +310,45 @@ def test_neo4j_schema_methods_return_sanitized_metadata(monkeypatch):
     assert "WITH r, type(r) AS rel_type" in str(calls[3][0])
 
 
+def test_neo4j_get_property_types_uses_scoped_value_type(monkeypatch):
+    calls = []
+    backend = _backend()
+
+    class _TypeSession(_FakeSession):
+        def run(self, query, params):
+            self.calls.append((query, params))
+            query_text = str(query)
+            if "physical_relation_types" in query_text:
+                return [{"physical_relation_types": ["D2O_RELATION"]}]
+            return [
+                {"prop": "event_key", "types": ["INTEGER"]},
+                {"prop": "enabled", "types": ["BOOLEAN"]},
+            ]
+
+    class _TypeDriver(_FakeDriver):
+        def session(self, database=None):
+            self.calls.append(("database", database))
+            return _TypeSession(self.calls)
+
+    monkeypatch.setattr(backend, "_get_driver", lambda: _TypeDriver(calls))
+
+    result = backend.get_property_types(
+        element_class="SyntheticEvent",
+        element_type="NODE",
+        property_names=["event_key", "enabled"],
+        scope=_scope(),
+    )
+
+    assert result == {
+        "property_types": {"event_key": "INTEGER", "enabled": "BOOLEAN"},
+        "complete": True,
+        "source": "neo4j_valueType",
+    }
+    query, params = calls[1]
+    assert "valueType(prop_value)" in str(query)
+    assert params["property_names"] == ["event_key", "enabled"]
+
+
 def test_neo4j_get_element_info_forces_scope_and_sanitizes_node(monkeypatch):
     calls = []
     backend = _backend()
@@ -391,6 +430,27 @@ def test_neo4j_pattern_search_supports_jiutian_array_segments(monkeypatch):
     assert params["pathprop0_a_CHANGE_ORDER_ID_0"] == "CHANGE_ORDER-001"
     assert "r1.relation_type = $pathrel1_r1_relation_type_0" in query_text
     assert result.records[0]["return_vars"] == ["a", "r1", "b"]
+
+
+def test_neo4j_pattern_search_accepts_edge_props_without_explicit_direction(monkeypatch):
+    calls = []
+    backend = _backend()
+    monkeypatch.setattr(backend, "_get_driver", lambda: _FakeDriver(calls))
+
+    backend.pattern_search(
+        path_pattern=[
+            ["CHANGE_ORDER"],
+            ["D2O_RELATION", {"props": {"relation_type": "CHANGE_ORDER_AFFECTS_BEFORE"}}],
+            ["SourceItemVersion"],
+        ],
+        return_vars=["a", "r1", "b"],
+        limit=10,
+        scope=_scope(),
+    )
+
+    query, params = calls[1]
+    assert "-[r1]->" in str(query)
+    assert params["pathrel1_r1_relation_type_0"] == "CHANGE_ORDER_AFFECTS_BEFORE"
 
 
 def test_neo4j_pattern_search_projects_return_vars_and_properties(monkeypatch):

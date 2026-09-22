@@ -14,6 +14,8 @@ import {
 import AdminLlmDefaults from './AdminLlmDefaults.jsx';
 import LlmPurposeTabs from './LlmPurposeTabs.jsx';
 import { prettyJsonText, previewJsonText } from './llmAdvancedConfig.js';
+import { copyMcpText } from './mcpClipboard.js';
+import { buildModelingMcpClientConfigs } from './mcpClientConfig.js';
 
 const SYNC_DEFAULT_HELP = '清除当前用途的个人覆盖，改用 admin 统一配置的平台默认。';
 const LLM_FIELD_SUFFIXES = [
@@ -21,7 +23,7 @@ const LLM_FIELD_SUFFIXES = [
   'ThinkingMode', 'ReasoningEffort', 'ExtraBodyJson',
 ];
 const DEFAULT_MCP_SCOPE_OPTIONS = [
-  { scope: 'ontology.read', label: 'ontology.read', description: '读取对象列表与对象详情。' },
+  { scope: 'ontology.read', label: 'ontology.read', description: '读取 Object、Operation 和 Rule 列表及详情。' },
   { scope: 'ontology.change.validate', label: 'ontology.change.validate', description: '只做修改预校验，不写入正式 revision。' },
   { scope: 'ontology.change.apply', label: 'ontology.change.apply', description: '执行本体模型修改，并在校验通过后直接生成新的正式 revision。' },
 ];
@@ -514,14 +516,19 @@ function McpTab({ projectId }) {
   };
 
   const copyText = async (value, label) => {
-    try {
-      if (!navigator?.clipboard?.writeText) throw new Error('当前浏览器不支持剪贴板接口');
-      await navigator.clipboard.writeText(value);
+    const result = await copyMcpText(value);
+    if (result.ok) {
       setMsg(`✓ 已复制${label}`);
-    } catch (e) {
-      setMsg(`复制失败：${e.message || '请手工复制'}`);
+    } else {
+      setMsg(`复制失败：${result.error}`);
     }
   };
+
+  const clientConfigs = buildModelingMcpClientConfigs(
+    runtime,
+    issued?.token || '<MCP_TOKEN>',
+    issued ? issued.token_summary?.scopes || [] : undefined,
+  );
 
   const createToken = async () => {
     if (!canManageTokens) {
@@ -542,9 +549,11 @@ function McpTab({ projectId }) {
       const draft = {
         name: form.name.trim(),
         scopes: form.scopes,
-        ...(form.expiresInSeconds.trim()
-          ? { expires_in_seconds: Number(form.expiresInSeconds) }
-          : {}),
+        ...(form.expiresInSeconds === 'never'
+          ? { expires_in_seconds: null }
+          : form.expiresInSeconds.trim()
+            ? { expires_in_seconds: Number(form.expiresInSeconds) }
+            : {}),
       };
       const created = await createProjectMcpToken(projectId, draft);
       setIssued(created);
@@ -648,8 +657,11 @@ function McpTab({ projectId }) {
                   {toolset?.tools?.length ? `工具：${toolset.tools.join('、')}` : '当前没有可用工具'}
                 </div>
                 <div className="cfg-mcp-meta">
-                  该 toolset 使用的 scope：{Array.isArray(toolset?.required_scopes) && toolset.required_scopes.length
-                    ? toolset.required_scopes.join('、')
+                  该 toolset {toolset?.scope_requirement === 'any' ? '接受任一 scope' : '需要 scope'}：
+                  {Array.isArray(toolset?.accepted_scopes) && toolset.accepted_scopes.length
+                    ? toolset.accepted_scopes.join('、')
+                    : Array.isArray(toolset?.required_scopes) && toolset.required_scopes.length
+                      ? toolset.required_scopes.join('、')
                     : '无'}
                 </div>
               </div>
@@ -662,7 +674,7 @@ function McpTab({ projectId }) {
         <div className="cfg-mcp-title-row">
           <div className="cfg-mcp-title-sm">新建 Token</div>
           <div className="cfg-mcp-meta">
-            默认过期 {runtime.token_policy?.default_ttl_seconds ?? 86400} 秒，最大 {runtime.token_policy?.max_ttl_seconds ?? 2592000} 秒。
+            默认过期 {runtime.token_policy?.default_ttl_seconds ?? 86400} 秒，限时 Token 最大 {runtime.token_policy?.max_ttl_seconds ?? 2592000} 秒；永不过期 Token 仍可随时吊销。
           </div>
         </div>
         <div className="field">
@@ -670,14 +682,19 @@ function McpTab({ projectId }) {
           <input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="例如：业务 Agent 读写联调" />
         </div>
         <div className="field">
-          <label>过期时间（秒）</label>
-          <input
-            inputMode="numeric"
+          <label>有效期</label>
+          <select
             value={form.expiresInSeconds}
             onChange={(event) => setForm((current) => ({ ...current, expiresInSeconds: event.target.value }))}
-            placeholder={String(runtime.token_policy?.default_ttl_seconds ?? 86400)}
             style={{ width: 220 }}
-          />
+          >
+            <option value="">默认有效期</option>
+            <option value="3600">1 小时</option>
+            <option value="86400">1 天</option>
+            <option value="604800">7 天</option>
+            <option value="2592000">30 天</option>
+            {runtime.token_policy?.supports_non_expiring !== false && <option value="never">永不过期</option>}
+          </select>
         </div>
         <div className="field">
           <label>scope</label>
@@ -719,6 +736,35 @@ function McpTab({ projectId }) {
             </button>
           </div>
           <div className="cfg-mcp-meta">token ID：{issued.token_summary?.id}</div>
+        </div>
+      )}
+
+      {(clientConfigs.read || clientConfigs.change) && (
+        <div className="cfg-mcp-section">
+          <div className="cfg-mcp-title-row">
+            <div className="cfg-mcp-title-sm">客户端 JSON 配置</div>
+            <div className="cfg-mcp-meta">
+              {issued
+                ? '已按本次 Token 的 scope 生成可用配置；明文仅在当前页面会话中保留。'
+                : 'Token 使用 <MCP_TOKEN> 占位符，请替换为具备对应 scope 的 Token。'}
+            </div>
+          </div>
+          <div className="cfg-mcp-client-configs">
+            {[
+              ['read', 'Read 配置', clientConfigs.read],
+              ['change', 'Change 配置', clientConfigs.change],
+              ['combined', '完整配置', clientConfigs.combined],
+            ].map(([key, label, value]) => value && (
+              <div className="cfg-mcp-config-item" key={key}>
+                <div className="cfg-mcp-url-head"><strong>{label}</strong></div>
+                <pre>{value}</pre>
+                <button type="button" className="btn" onClick={() => void copyText(value, ` ${label}`)}>
+                  <Copy size={14} aria-hidden="true" />
+                  复制{label}
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -767,7 +813,7 @@ function McpTab({ projectId }) {
 
 function formatMcpTime(value) {
   const input = String(value || '').trim();
-  if (!input) return '';
+  if (!input) return '永不过期';
   const time = new Date(input);
   if (Number.isNaN(time.getTime())) return input;
   return time.toLocaleString('zh-CN', { hour12: false });

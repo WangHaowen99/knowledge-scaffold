@@ -1388,6 +1388,17 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .cfg-mcp-token-main { display: grid; gap: 4px; min-width: 0; }
 .mwr .cfg-mcp-token-name { font-size: 13px; font-weight: 700; color: var(--ink); }
 .mwr .cfg-mcp-token-scopes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.mwr .cfg-mcp-client-configs { display: grid; gap: 10px; margin-top: 4px; }
+.mwr .cfg-mcp-config-item {
+  display: grid; gap: 8px; border: 1px solid #e5e9f1; border-radius: 8px;
+  background: #fafbfc; padding: 10px 12px;
+}
+.mwr .cfg-mcp-config-item pre {
+  margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  border-radius: 7px; background: #171d26; color: #d9e6f5; padding: 9px 10px;
+  font-size: 11px; line-height: 1.55;
+}
+.mwr .cfg-mcp-config-item > .btn { justify-self: start; display: inline-flex; align-items: center; gap: 5px; }
 
 @media (max-width: 600px) {
   .mwr .admin-llm-grid { grid-template-columns: minmax(0, 1fr); }

@@ -37,7 +37,7 @@ export interface ProjectMcpTokenSummary {
   issuedBy: string;
   scopes: ModelingMcpScope[];
   createdAt: string;
-  expiresAt: string;
+  expiresAt: string | null;
   lastUsedAt: string | null;
   revokedAt: string | null;
   revokedBy: string | null;
@@ -68,6 +68,7 @@ export interface ProjectMcpRuntimeStatus {
   server_name: string;
   server_version: string;
   protocol_versions: string[];
+  protocol_compatibility: boolean;
   base_url: string;
   scope_catalog: Array<{
     scope: ModelingMcpScope;
@@ -77,6 +78,7 @@ export interface ProjectMcpRuntimeStatus {
     min_ttl_seconds: number;
     default_ttl_seconds: number;
     max_ttl_seconds: number;
+    supports_non_expiring: true;
   };
   urls: Array<{
     toolset: ModelingMcpToolset;
@@ -85,6 +87,8 @@ export interface ProjectMcpRuntimeStatus {
   }>;
   toolsets: Array<{
     name: ModelingMcpToolset;
+    scope_requirement: 'all' | 'any';
+    accepted_scopes: ModelingMcpScope[];
     required_scopes: ModelingMcpScope[];
     tools: string[];
   }>;
@@ -104,7 +108,7 @@ interface ProjectMcpTokenRow {
   subject_username: string;
   issued_by: string;
   scopes_json: string;
-  expires_at: string;
+  expires_at: string | null;
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
@@ -204,7 +208,7 @@ export async function issueProjectMcpToken(input: {
   subjectUsername: string;
   issuedBy: string;
   scopes?: readonly string[] | null;
-  ttlSeconds?: number;
+  ttlSeconds?: number | null;
 }): Promise<ProjectMcpTokenIssueResult> {
   const project = getProject(input.projectId);
   if (!project) throw new ModelingMcpError('MCP_PROJECT_NOT_FOUND', '项目不存在', 404);
@@ -213,10 +217,12 @@ export async function issueProjectMcpToken(input: {
   const scopes = normalizeScopes(input.scopes);
   const ttlSeconds = normalizeTokenTtlSeconds(input.ttlSeconds);
   const createdAt = nowIso();
-  const expiresAt = new Date(Date.parse(createdAt) + ttlSeconds * 1_000).toISOString();
+  const expiresAt = ttlSeconds === null
+    ? null
+    : new Date(Date.parse(createdAt) + ttlSeconds * 1_000).toISOString();
   const tokenId = `mcp_${randomUUID().replaceAll('-', '')}`;
 
-  const token = await new SignJWT({
+  let tokenBuilder = new SignJWT({
     project_id: project.id,
     scopes,
   })
@@ -225,9 +231,11 @@ export async function issueProjectMcpToken(input: {
     .setAudience(config.mcp.tokenAudience)
     .setSubject(input.subjectUsername)
     .setJti(tokenId)
-    .setIssuedAt()
-    .setExpirationTime(Math.floor(Date.parse(expiresAt) / 1_000))
-    .sign(signingSecret());
+    .setIssuedAt();
+  if (expiresAt) {
+    tokenBuilder = tokenBuilder.setExpirationTime(Math.floor(Date.parse(expiresAt) / 1_000));
+  }
+  const token = await tokenBuilder.sign(signingSecret());
 
   getDb().prepare(`INSERT INTO project_mcp_tokens (
     id, project_id, token_name, subject_username, issued_by, scopes_json,
@@ -329,7 +337,7 @@ export async function verifyProjectMcpToken(input: {
   if (row.revoked_at) {
     throw new ModelingMcpError('MCP_TOKEN_REVOKED', 'MCP Token 已吊销', 401);
   }
-  if (Date.parse(row.expires_at) <= Date.now()) {
+  if (row.expires_at && Date.parse(row.expires_at) <= Date.now()) {
     throw new ModelingMcpError('MCP_TOKEN_EXPIRED', 'MCP Token 已过期', 401);
   }
 
@@ -375,7 +383,8 @@ export function projectMcpRuntimeStatus(projectId: string, toolsByToolset: Recor
     transport: config.mcp.transport,
     server_name: MODELING_MCP_SERVER_INFO.name,
     server_version: MODELING_MCP_SERVER_INFO.version,
-    protocol_versions: [config.mcp.protocolVersion, config.mcp.legacyProtocolVersion],
+    protocol_versions: config.mcp.supportedProtocolVersions,
+    protocol_compatibility: config.mcp.protocolCompatibility,
     base_url: baseUrl,
     scope_catalog: VALID_SCOPES.map((scope) => ({
       scope,
@@ -385,6 +394,7 @@ export function projectMcpRuntimeStatus(projectId: string, toolsByToolset: Recor
       min_ttl_seconds: 300,
       default_ttl_seconds: config.mcp.defaultTokenTtlSeconds,
       max_ttl_seconds: config.mcp.maxTokenTtlSeconds,
+      supports_non_expiring: true,
     },
     urls: transports.flatMap((transport) => (
       (['read', 'change'] as ModelingMcpToolset[]).map((toolset) => ({
@@ -395,6 +405,8 @@ export function projectMcpRuntimeStatus(projectId: string, toolsByToolset: Recor
     )),
     toolsets: (['read', 'change'] as ModelingMcpToolset[]).map((toolset) => ({
       name: toolset,
+      scope_requirement: toolset === 'change' ? 'any' : 'all',
+      accepted_scopes: [...TOOLSET_SCOPE_REQUIREMENTS[toolset]],
       required_scopes: [...TOOLSET_SCOPE_REQUIREMENTS[toolset]],
       tools: toolsByToolset[toolset] ?? [],
     })),
@@ -472,7 +484,8 @@ function normalizeTokenName(value: string): string {
   return name;
 }
 
-function normalizeTokenTtlSeconds(value: number | undefined): number {
+function normalizeTokenTtlSeconds(value: number | null | undefined): number | null {
+  if (value === null) return null;
   if (value === undefined) return config.mcp.defaultTokenTtlSeconds;
   const ttl = Number(value);
   if (!Number.isSafeInteger(ttl) || ttl < 300) {
@@ -489,7 +502,7 @@ function normalizeTokenTtlSeconds(value: number | undefined): number {
 }
 
 function describeScope(scope: ModelingMcpScope): string {
-  if (scope === 'ontology.read') return '读取当前项目的本体资源。';
+  if (scope === 'ontology.read') return '读取当前项目的 Object、Operation 和 Rule 列表及详情。';
   if (scope === 'ontology.change.validate') return '同步预校验本体资源修改，不写入。';
   return '执行本体资源写操作，并在校验通过后直接生成正式 revision。';
 }

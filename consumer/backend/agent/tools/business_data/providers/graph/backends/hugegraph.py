@@ -15,6 +15,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from ..filter_expr import normalize_structured_operator, safe_prop
+from ..property_types import is_graph_parameter_value
 from ..models import GraphBackendResult, GraphScope
 from ..scope import sanitize_labels, sanitize_properties, sanitize_return_properties
 from ..timeouts import (
@@ -72,9 +73,13 @@ class _PinnedTLSAdapter(HTTPAdapter):
             block=block,
             **pool_kwargs,
         )
-
-
-_PATTERN_SEGMENT_META_KEYS = {"return_properties"}
+_PATTERN_SEGMENT_META_KEYS = {
+    "label", "type", "edge_type", "var", "direction", "return_properties",
+    "entity_type_id", "entity_instance_id", "entity_name", "entity_id",
+    "relation_type", "relation_type_id", "relation_id", "relation_name",
+    "physical_relation_type", "props", "filters",
+}
+_PATTERN_NESTED_META_KEYS = {"return_properties"}
 _PATTERN_COMPACT_EXACT_KEYS = {
     "ID",
     "Status",
@@ -136,6 +141,8 @@ class _GraphSnapshot:
     nodes_by_id: dict[str, _NodeRecord]
     out_edges: dict[str, list[_EdgeRecord]]
     in_edges: dict[str, list[_EdgeRecord]]
+    nodes_truncated: bool = False
+    edges_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,6 +158,7 @@ class _EdgeStep:
     alias: str
     selector: Any
     direction: str
+    props: dict[str, Any] | None = None
     return_properties: list[str] | None = None
 
 
@@ -162,6 +170,8 @@ class HugeGraphBackend:
     semantics in memory. The scope is enforced while loading the snapshot, before
     any tool-specific filtering can run.
     """
+
+    provider = "hugegraph"
 
     def __init__(self, provider_config: Mapping[str, Any]) -> None:
         self.url = str(provider_config.get("url") or "").rstrip("/")
@@ -227,7 +237,17 @@ class HugeGraphBackend:
                         continue
                     _merge_schema_property(bucket, prop_name, _infer_property_type(value))
         labels = sorted(schema)
-        return {"labels": labels, "schema": {label: schema[label] for label in labels}, "count": len(labels)}
+        return {
+            "labels": labels,
+            "schema": {label: schema[label] for label in labels},
+            "count": len(labels),
+            # Business properties are often carried inside a JSON payload in
+            # this adapter.  The compact preload stays advisory; the targeted
+            # resolver rechecks only fields used by the current query and can
+            # then authorize a complete, non-truncated snapshot result.
+            "types_authoritative": False,
+            "source_truncated": bool(snapshot.nodes_truncated),
+        }
 
     def get_edges_schema(
         self,
@@ -250,7 +270,7 @@ class HugeGraphBackend:
                         continue
                     _merge_schema_property(bucket, prop_name, _infer_property_type(value))
 
-            if wanted and edge.relation_type not in wanted:
+            if wanted and not any(_matches_edge_class(edge, item) for item in wanted):
                 continue
             source_node = snapshot.nodes_by_id.get(edge.source_entity_instance_id)
             target_node = snapshot.nodes_by_id.get(edge.target_entity_instance_id)
@@ -267,6 +287,7 @@ class HugeGraphBackend:
                     source_label,
                     edge.relation_type_id,
                     edge.relation_type,
+                    physical_type,
                     edge.relation_name,
                     target_node.entity_type_id,
                     target_name,
@@ -281,22 +302,150 @@ class HugeGraphBackend:
                 "source_label": key[2],
                 "relation_type_id": key[3],
                 "relation_type": key[4],
-                "relation_name": key[5],
-                "target_entity_type_id": key[6],
-                "target_entity_name": key[7],
-                "target_label": key[8],
+                "physical_relation_type": key[5],
+                "relation_name": key[6],
+                "target_entity_type_id": key[7],
+                "target_entity_name": key[8],
+                "target_label": key[9],
                 "edge_count": int(count),
             }
             for key, count in triple_counts.items()
         ]
         relation_triples.sort(key=lambda item: (-int(item.get("edge_count") or 0), _text(item.get("relation_type"))))
+        relationship_types: set[str] = set()
+        for edge in snapshot.edges:
+            for value in (
+                _text(edge.relation_type),
+                _text(edge.relation_physical_type),
+            ):
+                if value:
+                    relationship_types.add(value)
         return {
-            "relationship_types": sorted({edge.relation_type for edge in snapshot.edges if _text(edge.relation_type)}),
+            "relationship_types": sorted(relationship_types),
             "schema": physical_schema,
             "physical_schema": physical_schema,
             "relation_triples": relation_triples,
             "physical_relation_type_count": len(physical_schema),
             "relation_triple_count": len(relation_triples),
+            "types_authoritative": False,
+            "source_truncated": bool(snapshot.edges_truncated),
+        }
+
+    def get_property_types(
+        self,
+        *,
+        element_class: str,
+        element_type: str,
+        property_names: list[str],
+        scope: GraphScope,
+    ) -> dict[str, Any]:
+        """Read schema metadata first, then conservatively inspect a snapshot."""
+
+        elem_type = _text(element_type).upper()
+        elem_class = _text(element_class)
+        fields = [str(item).strip() for item in property_names if str(item).strip()]
+        schema_types = self._schema_property_types(
+            element_class=elem_class,
+            element_type=elem_type,
+            property_names=fields,
+        )
+        remaining_fields = [field for field in fields if field not in schema_types]
+        if not remaining_fields:
+            return {
+                "property_types": schema_types,
+                "complete": True,
+                "source": "hugegraph_schema",
+                "authoritative_fields": sorted(schema_types),
+                "resolved_fields": sorted(fields),
+            }
+        snapshot = self._load_snapshot(scope=scope)
+        excluded = _schema_excluded_keys(scope)
+        buckets: dict[str, dict[str, str]] = {}
+        if elem_type == "NODE":
+            selected = [node for node in snapshot.nodes if elem_class in node.labels]
+            for node in selected:
+                bucket = buckets.setdefault(elem_class, {})
+                for field in remaining_fields:
+                    if field in node.properties and field not in excluded:
+                        _merge_schema_property(bucket, field, _infer_property_type(node.properties[field]))
+            snapshot_types = buckets.get(elem_class, {})
+            snapshot_complete = not snapshot.nodes_truncated
+            return {
+                "property_types": {**schema_types, **snapshot_types},
+                "complete": snapshot_complete,
+                "source": "hugegraph_schema+snapshot" if schema_types else "hugegraph_snapshot",
+                "authoritative_fields": sorted(
+                    set(schema_types) | (set(snapshot_types) if snapshot_complete else set())
+                ),
+                "resolved_fields": sorted(
+                    set(schema_types) | (set(remaining_fields) if snapshot_complete else set())
+                ),
+            }
+        if elem_type == "EDGE":
+            selected = [edge for edge in snapshot.edges if _matches_edge_class(edge, elem_class)]
+            physical_types = sorted({edge.relation_physical_type for edge in selected if edge.relation_physical_type})
+            bucket: dict[str, str] = {}
+            for edge in selected:
+                for field in remaining_fields:
+                    if field in edge.properties and field not in excluded:
+                        _merge_schema_property(bucket, field, _infer_property_type(edge.properties[field]))
+            snapshot_complete = not snapshot.edges_truncated
+            snapshot_types = dict(bucket)
+            return {
+                "property_types": {**schema_types, **snapshot_types},
+                "physical_relation_types": physical_types,
+                "complete": snapshot_complete,
+                "source": "hugegraph_schema+snapshot" if schema_types else "hugegraph_snapshot",
+                "authoritative_fields": sorted(
+                    set(schema_types) | (set(snapshot_types) if snapshot_complete else set())
+                ),
+                "resolved_fields": sorted(
+                    set(schema_types) | (set(remaining_fields) if snapshot_complete else set())
+                ),
+            }
+        return {"property_types": {}, "complete": True, "source": "hugegraph_snapshot"}
+
+    def _schema_property_types(
+        self,
+        *,
+        element_class: str,
+        element_type: str,
+        property_names: list[str],
+    ) -> dict[str, str]:
+        if not property_names:
+            return {}
+        try:
+            payload = self._request("GET", self._graph_path("/schema"))
+        except Exception:
+            return {}
+        property_keys = _hugegraph_property_key_types(payload)
+        if not property_keys:
+            return {}
+        class_keys, class_found = _hugegraph_class_property_keys(
+            payload,
+            element_class=element_class,
+            element_type=element_type,
+        )
+        if not class_found:
+            # A global PropertyKey says how a key is encoded, but not that the
+            # requested business label/edge actually owns that key.  Treat it
+            # as authoritative only when this schema payload omits class
+            # inventories entirely; if inventories exist and the class is
+            # absent, fall back to scoped data instead of borrowing another
+            # class's type.
+            if _hugegraph_has_class_inventory(payload, element_type=element_type):
+                return {}
+        selected = set(property_names)
+        # PropertyKey definitions are graph-global in HugeGraph.  If a
+        # deployment returns only propertykeys and omits the label/edgelabel
+        # section, the global definition is still safer than sampling values;
+        # when the class is explicitly present, narrow it to that class.
+        if class_keys is not None:
+            selected.intersection_update(class_keys)
+        return {
+            field: property_keys[field]
+            for field in property_names
+            if field in selected and field in property_keys
         }
 
     def property_filter(
@@ -863,9 +1012,9 @@ class HugeGraphBackend:
         raise GraphBackendUnsupportedError("HugeGraph 仅支持 NODE/EDGE 查询")
 
     def _load_snapshot(self, *, scope: GraphScope) -> _GraphSnapshot:
-        nodes = self._load_nodes(scope=scope)
+        nodes, nodes_truncated = self._load_nodes(scope=scope)
         nodes_by_id = {node.entity_instance_id: node for node in nodes}
-        edges = self._load_edges(scope=scope, nodes_by_id=nodes_by_id)
+        edges, edges_truncated = self._load_edges(scope=scope, nodes_by_id=nodes_by_id)
         out_edges: dict[str, list[_EdgeRecord]] = defaultdict(list)
         in_edges: dict[str, list[_EdgeRecord]] = defaultdict(list)
         for edge in edges:
@@ -877,9 +1026,11 @@ class HugeGraphBackend:
             nodes_by_id=nodes_by_id,
             out_edges=dict(out_edges),
             in_edges=dict(in_edges),
+            nodes_truncated=nodes_truncated,
+            edges_truncated=edges_truncated,
         )
 
-    def _load_nodes(self, *, scope: GraphScope) -> list[_NodeRecord]:
+    def _load_nodes(self, *, scope: GraphScope) -> tuple[list[_NodeRecord], bool]:
         rows = self._list_vertices(limit=max(1, self.vertex_query_limit), label=_DEFAULT_VERTEX_LABEL)
         if not rows:
             rows = self._list_vertices(limit=max(1, self.vertex_query_limit), label=None)
@@ -894,9 +1045,13 @@ class HugeGraphBackend:
             if _is_logic_element(node.properties):
                 continue
             nodes.append(node)
-        return nodes
+        # Reaching the requested cap is ambiguous: the dataset may contain
+        # exactly ``limit`` rows or more rows hidden by pagination.  Treat it
+        # as truncated so sampled type inference can never become authoritative
+        # at the boundary.
+        return nodes, len(rows) >= max(1, self.vertex_query_limit)
 
-    def _load_edges(self, *, scope: GraphScope, nodes_by_id: dict[str, _NodeRecord]) -> list[_EdgeRecord]:
+    def _load_edges(self, *, scope: GraphScope, nodes_by_id: dict[str, _NodeRecord]) -> tuple[list[_EdgeRecord], bool]:
         rows = self._list_edges(limit=max(1, self.edge_query_limit), label=_DEFAULT_EDGE_LABEL)
         if not rows:
             rows = self._list_edges(limit=max(1, self.edge_query_limit), label=None)
@@ -913,7 +1068,7 @@ class HugeGraphBackend:
             if source_node is None or target_node is None:
                 continue
             edges.append(edge)
-        return edges
+        return edges, len(rows) >= max(1, self.edge_query_limit)
 
     def _dfs_pattern_match(
         self,
@@ -960,7 +1115,7 @@ class HugeGraphBackend:
                     if current_node.entity_instance_id == edge.source_entity_instance_id
                     else edge.source_entity_instance_id
                 )
-            if not _matches_edge_selector(edge, edge_step.selector):
+            if not _matches_edge_selector(edge, edge_step.selector, edge_step.props):
                 continue
             next_node = snapshot.nodes_by_id.get(neighbor_id)
             if next_node is None:
@@ -1341,13 +1496,15 @@ def _build_pattern_steps(path_pattern: list[Any]) -> tuple[list[_NodeStep], list
         if index % 2 == 0:
             alias = _node_alias(index // 2)
             selector = item[0]
-            props = item[1] if len(item) > 1 and isinstance(item[1], Mapping) else {}
+            props: dict[str, Any] = {}
+            for value in item[1:]:
+                if isinstance(value, Mapping):
+                    props.update(_expand_segment_props(value))
             return_properties = _segment_return_properties(selector) if isinstance(selector, Mapping) else None
-            props_return_properties = _segment_return_properties(props) if isinstance(props, Mapping) else None
-            if props_return_properties is not None:
-                return_properties = props_return_properties
-            if isinstance(props, Mapping):
-                props = _expand_segment_props(props)
+            for value in item[1:]:
+                props_return_properties = _segment_return_properties(value)
+                if props_return_properties is not None:
+                    return_properties = props_return_properties
             if isinstance(selector, Mapping):
                 selector = dict(selector)
                 selector_props = _segment_props(selector)
@@ -1368,6 +1525,10 @@ def _build_pattern_steps(path_pattern: list[Any]) -> tuple[list[_NodeStep], list
         else:
             alias = "r{}".format((index + 1) // 2)
             selector = item[0]
+            edge_props: dict[str, Any] = {}
+            for value in item[1:]:
+                if isinstance(value, Mapping):
+                    edge_props.update(_expand_segment_props(value))
             return_properties = _segment_return_properties(selector) if isinstance(selector, Mapping) else None
             if isinstance(selector, Mapping):
                 selector = dict(selector)
@@ -1379,7 +1540,13 @@ def _build_pattern_steps(path_pattern: list[Any]) -> tuple[list[_NodeStep], list
                 _EdgeStep(
                     alias=alias,
                     selector=selector,
-                    direction=_normalize_direction(item[1] if len(item) > 1 else "->"),
+                    direction=_normalize_direction(
+                        next(
+                            (value for value in item[1:] if not isinstance(value, Mapping)),
+                            "->",
+                        )
+                    ),
+                    props=edge_props,
                     return_properties=return_properties,
                 )
             )
@@ -1485,14 +1652,24 @@ def _matches_node_selector(node: _NodeRecord, selector: Any, props: Mapping[str,
     return False
 
 
-def _matches_edge_selector(edge: _EdgeRecord, selector: Any) -> bool:
+def _matches_edge_selector(
+    edge: _EdgeRecord,
+    selector: Any,
+    extra_props: Mapping[str, Any] | None = None,
+) -> bool:
     if isinstance(selector, str):
         token = _text(selector)
         if not token:
             return False
         if _RELATION_TYPE_ID_TOKEN_RE.match(token):
-            return edge.relation_type_id == token
-        return token in {edge.relation_physical_type, edge.relation_type, edge.relation_name}
+            matched = edge.relation_type_id == token
+        else:
+            matched = token in {
+                edge.relation_physical_type,
+                edge.relation_type,
+                edge.relation_name,
+            }
+        return matched and _match_filter_dict(edge.properties, extra_props or {})
     if isinstance(selector, Mapping):
         physical_type = _text(selector.get("type"))
         if physical_type and edge.relation_physical_type != physical_type:
@@ -1507,7 +1684,11 @@ def _matches_edge_selector(edge: _EdgeRecord, selector: Any) -> bool:
         if relation_name and edge.relation_name != relation_name:
             return False
         props = _segment_props(selector)
+        if extra_props:
+            props = {**props, **dict(extra_props)}
         return _match_filter_dict(edge.properties, props or {})
+    if extra_props:
+        return _match_filter_dict(edge.properties, extra_props)
     return False
 
 
@@ -1516,26 +1697,25 @@ def _segment_props(segment: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("props", "filters"):
         raw = segment.get(key)
         if isinstance(raw, Mapping):
-            props.update(
-                {
-                    str(prop): value
-                    for prop, value in raw.items()
-                    if str(prop or "").strip() not in _PATTERN_SEGMENT_META_KEYS
-                }
-            )
+            props.update({
+                str(prop): value
+                for prop, value in raw.items()
+                if str(prop or "").strip() not in _PATTERN_NESTED_META_KEYS
+            })
+    props.update({
+        str(prop): value
+        for prop, value in segment.items()
+        if str(prop or "").strip() not in _PATTERN_SEGMENT_META_KEYS
+    })
     return props
 
 
 def _expand_segment_props(segment: Mapping[str, Any]) -> dict[str, Any]:
     nested = _segment_props(segment)
-    if not nested:
-        return {
-            key: value for key, value in segment.items() if str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS
-        }
     direct = {
         key: value
         for key, value in segment.items()
-        if key not in {"props", "filters"} and str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS
+        if str(key or "").strip() not in _PATTERN_SEGMENT_META_KEYS
     }
     direct.update(nested)
     return direct
@@ -1652,8 +1832,10 @@ def _match_expression(value: Any, expression: Any, field_name: str) -> bool:
         return value == expression
     if isinstance(expression, Mapping):
         return _match_structured_expression(value, expression, field_name)
-    if isinstance(expression, Sequence) and not isinstance(expression, (str, bytes)):
+    if isinstance(expression, Sequence) and not isinstance(expression, (str, bytes, bytearray)):
         return value in [_ensure_scalar(item, field_name) for item in expression]
+    if not isinstance(expression, str) and is_graph_parameter_value(expression):
+        return value == expression
     if isinstance(expression, str):
         return _match_text_expression(value, expression, field_name)
     raise GraphBackendUnsupportedError("{} 的值类型不支持: {}".format(field_name, type(expression).__name__))
@@ -1664,9 +1846,26 @@ def _match_structured_expression(value: Any, expression: Mapping[str, Any], fiel
         raise GraphBackendUnsupportedError("{} 不能为空对象".format(field_name))
     for raw_op, operand in expression.items():
         op = normalize_structured_operator(raw_op)
-        if op == "eq" and value != _ensure_scalar(operand, "{}.eq".format(field_name)):
+        if op in {"or", "and"}:
+            if (
+                isinstance(operand, (str, bytes, bytearray))
+                or not isinstance(operand, Sequence)
+                or not operand
+            ):
+                raise GraphBackendUnsupportedError("{}.{} 必须是非空条件数组".format(field_name, op))
+            matches = [
+                _match_structured_expression(value, item, "{}.{}[{}]".format(field_name, op, index))
+                for index, item in enumerate(operand)
+                if isinstance(item, Mapping)
+            ]
+            if len(matches) != len(operand):
+                raise GraphBackendUnsupportedError("{}.{} 只能包含条件对象".format(field_name, op))
+            if (any(matches) if op == "or" else all(matches)) is False:
+                return False
+            continue
+        if op == "eq" and value != _ensure_parameter_value(operand, "{}.eq".format(field_name)):
             return False
-        if op == "ne" and value == _ensure_scalar(operand, "{}.ne".format(field_name)):
+        if op == "ne" and value == _ensure_parameter_value(operand, "{}.ne".format(field_name)):
             return False
         if op == "gt" and not _compare(value, _ensure_scalar(operand, "{}.gt".format(field_name)), ">"):
             return False
@@ -1686,6 +1885,13 @@ def _match_structured_expression(value: Any, expression: Mapping[str, Any], fiel
             str(_ensure_scalar(operand, "{}.ends_with".format(field_name)))
         ):
             return False
+        if op == "contains_item":
+            if (
+                isinstance(value, (str, bytes, bytearray))
+                or not isinstance(value, Sequence)
+                or _ensure_parameter_value(operand, "{}.contains_item".format(field_name)) not in value
+            ):
+                return False
         if op == "in" and value not in _validate_sequence(operand, "{}.in".format(field_name)):
             return False
         if op == "not_in" and value in _validate_sequence(operand, "{}.not_in".format(field_name)):
@@ -1705,11 +1911,14 @@ def _match_structured_expression(value: Any, expression: Mapping[str, Any], fiel
             "lt",
             "lte",
             "contains",
+            "contains_item",
             "starts_with",
             "ends_with",
             "in",
             "not_in",
             "is_null",
+            "or",
+            "and",
         }:
             raise GraphBackendUnsupportedError("{} 包含不支持的操作符: {}".format(field_name, raw_op))
     return True
@@ -1719,7 +1928,7 @@ def _match_text_expression(value: Any, expression: str, field_name: str) -> bool
     text = expression.strip()
     if not text:
         raise GraphBackendUnsupportedError("{} 不能为空字符串".format(field_name))
-    parts = [part.strip() for part in re.split(r"\s+OR\s+", text, flags=re.IGNORECASE)]
+    parts = [part.strip() for part in _split_unquoted_or(text)]
     if any(not part for part in parts):
         raise GraphBackendUnsupportedError("{} 包含空条件".format(field_name))
     return any(_match_text_part(value, part) for part in parts)
@@ -1748,6 +1957,43 @@ def _match_text_part(value: Any, part: str) -> bool:
     return value == fallback
 
 
+def _split_unquoted_or(value: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    quote = ""
+    escaped = False
+    index = 0
+    text = str(value)
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote:
+            escaped = True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            if quote == char:
+                quote = ""
+            elif not quote:
+                quote = char
+            index += 1
+            continue
+        if not quote and text[index:index + 2].upper() == "OR":
+            before = text[index - 1] if index > 0 else " "
+            after = text[index + 2] if index + 2 < len(text) else " "
+            if before.isspace() and after.isspace():
+                parts.append(text[start:index])
+                start = index + 2
+                index += 2
+                continue
+        index += 1
+    parts.append(text[start:])
+    return parts
+
+
 def _compare(left: Any, right: Any, operator: str) -> bool:
     if left is None or right is None:
         return False
@@ -1768,18 +2014,32 @@ def _compare(left: Any, right: Any, operator: str) -> bool:
 
 
 def _ensure_scalar(value: Any, field_name: str) -> Any:
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if str(value.__class__.__module__).startswith("neo4j."):
+        return value
+    if is_graph_parameter_value(value) and not isinstance(value, (Mapping, Sequence)):
         return value
     raise GraphBackendUnsupportedError("{} 仅支持标量值".format(field_name))
 
 
+def _ensure_parameter_value(value: Any, field_name: str) -> Any:
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if is_graph_parameter_value(value):
+        return value
+    raise GraphBackendUnsupportedError("{} 不是合法图数据库参数值".format(field_name))
+
+
 def _validate_sequence(value: Any, field_name: str) -> list[Any]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise GraphBackendUnsupportedError("{} 必须是数组".format(field_name))
     result = list(value)
     if not result:
         raise GraphBackendUnsupportedError("{} 不能为空数组".format(field_name))
-    return [_ensure_scalar(item, field_name) for item in result]
+    return [_ensure_parameter_value(item, field_name) for item in result]
 
 
 def _parse_scalar(token: str) -> Any:
@@ -1914,6 +2174,95 @@ def _infer_property_type(value: Any) -> str:
     if isinstance(value, Mapping):
         return "MAP"
     return type(value).__name__.upper()
+
+
+def _hugegraph_property_key_types(payload: Any) -> dict[str, str]:
+    schema = payload.get("schema") if isinstance(payload, Mapping) else None
+    root = schema if isinstance(schema, Mapping) else payload
+    if not isinstance(root, Mapping):
+        return {}
+    raw_keys = root.get("propertykeys")
+    if not raw_keys:
+        raw_keys = root.get("property_keys")
+    if not raw_keys:
+        raw_keys = root.get("propertyKeys")
+    if not raw_keys:
+        raw_keys = []
+    if isinstance(raw_keys, Mapping):
+        raw_keys = [
+            {"name": key, **dict(value)} if isinstance(value, Mapping) else {"name": key, "data_type": value}
+            for key, value in raw_keys.items()
+        ]
+    result: dict[str, str] = {}
+    for item in raw_keys if isinstance(raw_keys, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        name = _text(item.get("name") or item.get("property_key") or item.get("id"))
+        data_type = _text(item.get("data_type") or item.get("dataType") or item.get("type"))
+        cardinality = _text(item.get("cardinality")).upper()
+        if not name or not data_type:
+            continue
+        result[name] = (
+            "LIST<{}>".format(data_type)
+            if cardinality in {"LIST", "SET"}
+            else data_type
+        )
+    return result
+
+
+def _hugegraph_class_property_keys(
+    payload: Any,
+    *,
+    element_class: str,
+    element_type: str,
+) -> tuple[set[str] | None, bool]:
+    schema = payload.get("schema") if isinstance(payload, Mapping) else None
+    root = schema if isinstance(schema, Mapping) else payload
+    if not isinstance(root, Mapping):
+        return None, False
+    if element_type == "NODE":
+        raw_classes = root.get("vertexlabels")
+        if not raw_classes:
+            raw_classes = root.get("vertex_labels")
+        if not raw_classes:
+            raw_classes = root.get("vertexLabels")
+    else:
+        raw_classes = root.get("edgelabels")
+        if not raw_classes:
+            raw_classes = root.get("edge_labels")
+        if not raw_classes:
+            raw_classes = root.get("edgeLabels")
+    if not raw_classes:
+        raw_classes = []
+    for item in raw_classes if isinstance(raw_classes, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        name = _text(item.get("name") or item.get("label") or item.get("id"))
+        if name != element_class:
+            continue
+        raw_properties = item.get("properties") or item.get("property_keys") or []
+        if isinstance(raw_properties, Mapping):
+            return {_text(key) for key in raw_properties if _text(key)}, True
+        if isinstance(raw_properties, list):
+            return {
+                _text(value.get("name") if isinstance(value, Mapping) else value)
+                for value in raw_properties
+                if _text(value.get("name") if isinstance(value, Mapping) else value)
+            }, True
+    return None, False
+
+
+def _hugegraph_has_class_inventory(payload: Any, *, element_type: str) -> bool:
+    schema = payload.get("schema") if isinstance(payload, Mapping) else None
+    root = schema if isinstance(schema, Mapping) else payload
+    if not isinstance(root, Mapping):
+        return False
+    keys = (
+        ("vertexlabels", "vertex_labels", "vertexLabels")
+        if element_type == "NODE"
+        else ("edgelabels", "edge_labels", "edgeLabels")
+    )
+    return any(key in root for key in keys)
 
 
 def _merge_schema_property(bucket: dict[str, str], prop_name: str, type_name: str) -> None:

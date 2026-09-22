@@ -48,6 +48,9 @@ for (const relativePath of composePaths) {
     }));
     assert.equal(environment.get('MODELING_MCP_HOST'), '0.0.0.0');
     assert.equal(environment.get('MODELING_MCP_PORT'), '5188');
+    assert.ok(environment.has('MODELING_MCP_PUBLIC_BASE_URL'));
+    assert.ok(environment.has('MODELING_MCP_SUPPORTED_PROTOCOL_VERSIONS'));
+    assert.ok(environment.has('MODELING_MCP_PROTOCOL_COMPATIBILITY'));
     for (const name of [
       'MODELING_MCP_MAX_SSE_SESSIONS',
       'MODELING_MCP_MAX_SSE_SESSIONS_PER_TOKEN',
@@ -81,6 +84,6 @@ test('Modeling 启动入口在同一 Node 进程启动 MCP，且不保留独立�
 test('Modeling 标准部署会清理旧版独立 MCP 容器', () => {
   const stackScript = readFileSync(resolve(modelingRoot, '../deploy/deploy-stack.sh'), 'utf8');
   const modelingDeployScript = readFileSync(resolve(modelingRoot, 'deploy/deploy.sh'), 'utf8');
-  assert.match(stackScript, /modeling_compose[^\n]*up -d --build --remove-orphans/);
+  assert.match(stackScript, /modeling_compose[^\n]*up -d "\$\{build_args\[@\]\}" --remove-orphans/);
   assert.equal((modelingDeployScript.match(/up -d(?: --build)? --remove-orphans/g) ?? []).length, 2);
 });

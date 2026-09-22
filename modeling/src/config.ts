@@ -35,7 +35,15 @@ function booleanEnv(key: string, fallback: boolean): boolean {
 }
 
 function csvEnv(key: string, fallback: string): string[] {
-  return [...new Set(env(key, fallback).split(',').map((item) => item.trim()).filter(Boolean))];
+  const values = env(key, fallback).split(',').map((item) => item.trim()).filter(Boolean);
+  return [...new Set(values)];
+}
+
+function mcpProtocolVersionsEnv(): string[] {
+  const fallback = ['2026-07-28', '2025-11-25', '2025-06-18'];
+  const configured = csvEnv('MODELING_MCP_SUPPORTED_PROTOCOL_VERSIONS', fallback.join(','))
+    .filter((value) => /^\d{4}-\d{2}-\d{2}$/u.test(value));
+  return configured.length ? configured : fallback;
 }
 
 const evaluationLlmModel = env('MODELING_EVALUATION_LLM_MODEL');
@@ -107,11 +115,7 @@ export const config = {
     port: Number(env('MODELING_MCP_PORT', '5188')),
     transport: normalizeMcpTransportEnv('MODELING_MCP_TRANSPORT', 'both'),
     publicBaseUrl: env('MODELING_MCP_PUBLIC_BASE_URL').replace(/\/+$/, ''),
-    allowedOrigins: csvEnv(
-      'MODELING_MCP_ALLOWED_ORIGINS',
-      'http://localhost:5100,http://127.0.0.1:5100',
-    ),
-    operationRuleEnabled: booleanEnv('MODELING_MCP_OPERATION_RULE_ENABLED', false),
+    operationRuleEnabled: booleanEnv('MODELING_MCP_OPERATION_RULE_ENABLED', true),
     tokenSecret: env('MODELING_MCP_TOKEN_SECRET'),
     tokenIssuer: env('MODELING_MCP_TOKEN_ISSUER', 'knowledge-scaffold-modeling'),
     tokenAudience: env('MODELING_MCP_TOKEN_AUDIENCE', 'knowledge-scaffold-modeling-mcp'),
@@ -124,8 +128,8 @@ export const config = {
     maxSseSessionsPerIp: positiveIntegerEnv('MODELING_MCP_MAX_SSE_SESSIONS_PER_IP', 100),
     sseMaxLifetimeSeconds: positiveIntegerEnv('MODELING_MCP_SSE_MAX_LIFETIME_SECONDS', 28_800),
     sseIdleTimeoutSeconds: positiveIntegerEnv('MODELING_MCP_SSE_IDLE_TIMEOUT_SECONDS', 1_800),
-    protocolVersion: env('MODELING_MCP_PROTOCOL_VERSION', '2026-07-28'),
-    legacyProtocolVersion: env('MODELING_MCP_LEGACY_PROTOCOL_VERSION', '2025-11-25'),
+    supportedProtocolVersions: mcpProtocolVersionsEnv(),
+    protocolCompatibility: booleanEnv('MODELING_MCP_PROTOCOL_COMPATIBILITY', true),
   },
 };
 

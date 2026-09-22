@@ -182,10 +182,27 @@ function assertBusyValidation(result: Record<string, any>, target: string) {
   assert.ok(result.issues.some((item: any) => item.target === target));
 }
 
-test('Object MCP 工具集已收敛为 read + validate + direct update', () => {
+test('MCP 工具集默认开放 Object、Operation 和 Rule 能力', () => {
   const tools = toolNamesByToolset();
-  assert.deepEqual(tools.read, ['list_ontology_objects', 'get_ontology_object']);
-  assert.deepEqual(tools.change, ['validate_ontology_object_change', 'update_ontology_object']);
+  assert.deepEqual(tools.read, [
+    'list_ontology_objects',
+    'get_ontology_object',
+    'list_ontology_operations',
+    'get_ontology_operation',
+    'list_ontology_rules',
+    'get_ontology_rule',
+  ]);
+  assert.deepEqual(tools.change, [
+    'validate_ontology_object_change',
+    'update_ontology_object',
+    'validate_ontology_operation_rule_change',
+    'create_ontology_operation',
+    'update_ontology_operation',
+    'delete_ontology_operation',
+    'create_ontology_rule',
+    'update_ontology_rule',
+    'delete_ontology_rule',
+  ]);
 });
 
 test('Object MCP 分页游标绑定 query、sort 和 order', async () => {
