@@ -1,0 +1,24 @@
+services:
+  modeling-mcp-gateway:
+    image: nginx:1.27-alpine
+    container_name: modeling-mcp-gateway
+    restart: unless-stopped
+    ports:
+      - "${MODELING_MCP_HTTP_PORT:-80}:80"
+      - "${MODELING_MCP_HTTPS_PORT:-443}:443"
+    environment:
+      NGINX_ENVSUBST_FILTER: ^MODELING_MCP_
+      MODELING_MCP_SERVER_NAME: ${MODELING_MCP_SERVER_NAME:?MODELING_MCP_SERVER_NAME is required}
+      MODELING_MCP_UPSTREAM: ${MODELING_MCP_UPSTREAM:-modeling:5188}
+      MODELING_MCP_TLS_CERTIFICATE: /etc/nginx/tls/fullchain.pem
+      MODELING_MCP_TLS_CERTIFICATE_KEY: /etc/nginx/tls/privkey.pem
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${MODELING_MCP_TLS_DIR:?MODELING_MCP_TLS_DIR is required}:/etc/nginx/tls:ro
+    networks:
+      - consumer-net
+
+networks:
+  consumer-net:
+    external: true
+    name: ${CONSUMER_NETWORK:?CONSUMER_NETWORK is required}

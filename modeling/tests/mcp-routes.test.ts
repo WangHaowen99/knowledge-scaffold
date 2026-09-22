@@ -3,21 +3,29 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { decodeJwt } from 'jose';
 
 import Fastify from 'fastify';
 
 process.env.DATA_DIR ||= mkdtempSync(join(tmpdir(), 'modeling-mcp-routes-'));
 
 const [
+  { config },
   { registerProjectMcpManagementRoutes },
   { registerProjectMcpTransportRoutes },
   { createProject, setProjectMember },
   { getPackageArtifactStore },
   { insertDocument },
   { getAuthoringState },
-  { issueProjectMcpToken, markModelingMcpRuntimeRunning, markModelingMcpRuntimeStopped },
+  {
+    issueProjectMcpToken,
+    markModelingMcpRuntimeRunning,
+    markModelingMcpRuntimeStopped,
+    verifyProjectMcpToken,
+  },
   { executeModelingMcpTool },
 ] = await Promise.all([
+  import('../src/config.js'),
   import('../src/mcp/routes.js'),
   import('../src/mcp/transport.js'),
   import('../src/projects/repo.js'),
@@ -183,9 +191,23 @@ test('项目 MCP 管理接口可查询状态并管理 token', async (t) => {
   assert.equal(status.json().running, false);
   assert.equal(status.json().server_name, 'knowledge-scaffold-modeling-mcp');
   assert.equal(status.json().server_version, '0.2.0');
+  assert.deepEqual(status.json().protocol_versions, ['2026-07-28', '2025-11-25', '2025-06-18']);
+  assert.equal(status.json().protocol_compatibility, true);
   assert.equal(status.json().token_policy.min_ttl_seconds, 300);
+  assert.equal(status.json().token_policy.supports_non_expiring, true);
   assert.equal(status.json().scope_catalog.some((item: any) => item.scope === 'ontology.change.review'), false);
+  assert.match(
+    status.json().scope_catalog.find((item: any) => item.scope === 'ontology.read').description,
+    /Object、Operation 和 Rule/u,
+  );
   assert.equal(status.json().toolsets[0].tools.includes('list_ontology_objects'), true);
+  assert.equal(status.json().toolsets[0].scope_requirement, 'all');
+  assert.deepEqual(status.json().toolsets[0].accepted_scopes, ['ontology.read']);
+  assert.equal(status.json().toolsets[1].scope_requirement, 'any');
+  assert.deepEqual(status.json().toolsets[1].accepted_scopes, [
+    'ontology.change.validate',
+    'ontology.change.apply',
+  ]);
   assert.deepEqual(
     status.json().urls.map((item: any) => `${item.toolset}:${item.transport}`),
     ['read:streamable-http', 'change:streamable-http', 'read:sse', 'change:sse'],
@@ -215,6 +237,25 @@ test('项目 MCP 管理接口可查询状态并管理 token', async (t) => {
   assert.equal(created.json().token_summary.scopes[0], 'ontology.read');
   assert.equal(created.json().endpoint_id, status.json().endpoint_id);
 
+  const nonExpiring = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/mcp/tokens`,
+    payload: {
+      name: '永不过期 token',
+      scopes: ['ontology.read'],
+      expires_in_seconds: null,
+    },
+  });
+  assert.equal(nonExpiring.statusCode, 201, nonExpiring.body);
+  assert.equal(nonExpiring.json().token_summary.expiresAt, null);
+  assert.equal(decodeJwt(nonExpiring.json().token).exp, undefined);
+  const verifiedNonExpiring = await verifyProjectMcpToken({
+    bearerToken: nonExpiring.json().token,
+    endpointId: status.json().endpoint_id,
+    minimumAccess: 'read',
+  });
+  assert.equal(verifiedNonExpiring.projectId, project.id);
+
   const emptyScopes = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/mcp/tokens`,
@@ -228,21 +269,30 @@ test('项目 MCP 管理接口可查询状态并管理 token', async (t) => {
     url: `/api/projects/${project.id}/mcp/tokens`,
   });
   assert.equal(listed.statusCode, 200, listed.body);
-  assert.equal(listed.json().tokens.length, 1);
-  assert.equal(listed.json().tokens[0].name, '建模只读 token');
+  assert.equal(listed.json().tokens.length, 2);
+  assert.equal(listed.json().tokens[0].name, '永不过期 token');
+  assert.equal(listed.json().tokens[0].expiresAt, null);
 
   const removed = await app.inject({
     method: 'DELETE',
     url: `/api/projects/${project.id}/mcp/tokens/${listed.json().tokens[0].id}`,
   });
   assert.equal(removed.statusCode, 200, removed.body);
+  await assert.rejects(
+    () => verifyProjectMcpToken({
+      bearerToken: nonExpiring.json().token,
+      endpointId: status.json().endpoint_id,
+      minimumAccess: 'read',
+    }),
+    (error: any) => error?.code === 'MCP_TOKEN_REVOKED',
+  );
 
   const after = await app.inject({
     method: 'GET',
     url: `/api/projects/${project.id}/mcp/tokens`,
   });
   assert.equal(after.statusCode, 200, after.body);
-  assert.equal(after.json().tokens.length, 0);
+  assert.equal(after.json().tokens.length, 1);
 });
 
 test('项目 MCP transport 支持 read/change 工具和 legacy initialize', async (t) => {
@@ -338,6 +388,10 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
     [
       'list_ontology_objects',
       'get_ontology_object',
+      'list_ontology_operations',
+      'get_ontology_operation',
+      'list_ontology_rules',
+      'get_ontology_rule',
     ],
   );
 
@@ -384,6 +438,13 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
     [
       'validate_ontology_object_change',
       'update_ontology_object',
+      'validate_ontology_operation_rule_change',
+      'create_ontology_operation',
+      'update_ontology_operation',
+      'delete_ontology_operation',
+      'create_ontology_rule',
+      'update_ontology_rule',
+      'delete_ontology_rule',
     ],
   );
 
@@ -404,7 +465,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   assert.equal(validateOnlyTools.statusCode, 200, validateOnlyTools.body);
   assert.deepEqual(
     validateOnlyTools.json().result.tools.map((tool: any) => tool.name),
-    ['validate_ontology_object_change'],
+    ['validate_ontology_object_change', 'validate_ontology_operation_rule_change'],
   );
 
   const applyOnlyTools = await app.inject({
@@ -424,7 +485,15 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   assert.equal(applyOnlyTools.statusCode, 200, applyOnlyTools.body);
   assert.deepEqual(
     applyOnlyTools.json().result.tools.map((tool: any) => tool.name),
-    ['update_ontology_object'],
+    [
+      'update_ontology_object',
+      'create_ontology_operation',
+      'update_ontology_operation',
+      'delete_ontology_operation',
+      'create_ontology_rule',
+      'update_ontology_rule',
+      'delete_ontology_rule',
+    ],
   );
 
   const validateOnlyCannotWrite = await app.inject({
@@ -599,6 +668,28 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   assert.equal(legacyInitialize.statusCode, 200, legacyInitialize.body);
   assert.equal(legacyInitialize.json().result.protocolVersion, '2025-11-25');
 
+  const headerOnlyInitialize = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      'mcp-protocol-version': '2025-06-18',
+      accept: 'application/json, text/event-stream',
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 'header-only-initialize',
+      method: 'initialize',
+      params: {
+        capabilities: {},
+        clientInfo: { name: 'header-only-client', version: '1.0.0' },
+      },
+    },
+  });
+  assert.equal(headerOnlyInitialize.statusCode, 200, headerOnlyInitialize.body);
+  assert.equal(headerOnlyInitialize.headers['mcp-protocol-version'], '2025-06-18');
+  assert.equal(headerOnlyInitialize.json().result.protocolVersion, '2025-06-18');
+
   const legacyListObjects = await app.inject({
     method: 'POST',
     url: `/${readIssued.endpoint.endpointId}/read/mcp`,
@@ -690,7 +781,7 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
   assert.equal(missingCapabilities.statusCode, 400, missingCapabilities.body);
   assert.match(missingCapabilities.json().error.message, /clientCapabilities/u);
 
-  const forbiddenOrigin = await app.inject({
+  const arbitraryOrigin = await app.inject({
     method: 'POST',
     url: `/${readIssued.endpoint.endpointId}/read/mcp`,
     headers: {
@@ -700,8 +791,83 @@ test('项目 MCP transport 支持 read/change 工具和 legacy initialize', asyn
     },
     payload: { jsonrpc: '2.0', id: 14, method: 'tools/list', params: modernMeta() },
   });
-  assert.equal(forbiddenOrigin.statusCode, 403, forbiddenOrigin.body);
-  assert.equal(forbiddenOrigin.json().error.data.code, 'MCP_ORIGIN_FORBIDDEN');
+  assert.equal(arbitraryOrigin.statusCode, 200, arbitraryOrigin.body);
+  assert.ok(Array.isArray(arbitraryOrigin.json().result.tools));
+
+  const difyCompatibleVersion = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      'mcp-protocol-version': '2025-06-18',
+      accept: 'application/json, text/event-stream',
+    },
+    payload: { jsonrpc: '2.0', id: 15, method: 'tools/list', params: {} },
+  });
+  assert.equal(difyCompatibleVersion.statusCode, 200, difyCompatibleVersion.body);
+  assert.equal(difyCompatibleVersion.headers['mcp-protocol-version'], '2025-06-18');
+  assert.ok(Array.isArray(difyCompatibleVersion.json().result.tools));
+
+  const unknownCompatibleVersion = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      'mcp-protocol-version': '2024-11-05',
+    },
+    payload: { jsonrpc: '2.0', id: 16, method: 'tools/list', params: {} },
+  });
+  assert.equal(unknownCompatibleVersion.statusCode, 200, unknownCompatibleVersion.body);
+  assert.equal(unknownCompatibleVersion.headers['mcp-protocol-version'], '2024-11-05');
+
+  const previousCompatibility = config.mcp.protocolCompatibility;
+  config.mcp.protocolCompatibility = false;
+  try {
+    const unknownStrictVersion = await app.inject({
+      method: 'POST',
+      url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+      headers: {
+        authorization: `Bearer ${readIssued.token}`,
+        'mcp-protocol-version': '2024-11-05',
+      },
+      payload: { jsonrpc: '2.0', id: 19, method: 'tools/list', params: {} },
+    });
+    assert.equal(unknownStrictVersion.statusCode, 400, unknownStrictVersion.body);
+    assert.equal(unknownStrictVersion.json().error.data.code, 'MCP_PROTOCOL_VERSION_UNSUPPORTED');
+  } finally {
+    config.mcp.protocolCompatibility = previousCompatibility;
+  }
+
+  const invalidVersion = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      'mcp-protocol-version': 'unsupported-version',
+    },
+    payload: { jsonrpc: '2.0', id: 17, method: 'tools/list', params: {} },
+  });
+  assert.equal(invalidVersion.statusCode, 400, invalidVersion.body);
+  assert.equal(invalidVersion.json().error.data.code, 'MCP_PROTOCOL_VERSION_INVALID');
+
+  const protocolMismatch = await app.inject({
+    method: 'POST',
+    url: `/${readIssued.endpoint.endpointId}/read/mcp`,
+    headers: {
+      authorization: `Bearer ${readIssued.token}`,
+      'mcp-protocol-version': '2025-06-18',
+    },
+    payload: {
+      jsonrpc: '2.0',
+      id: 18,
+      method: 'tools/list',
+      params: {
+        _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+      },
+    },
+  });
+  assert.equal(protocolMismatch.statusCode, 400, protocolMismatch.body);
+  assert.equal(protocolMismatch.json().error.data.code, 'MCP_PROTOCOL_VERSION_MISMATCH');
 });
 
 test('项目 Viewer 可读取 MCP runtime，但不能读取或管理 token', async (t) => {
@@ -809,23 +975,24 @@ test('项目 MCP transport 支持 SSE 握手、消息投递和 session 绑定', 
     headers: {
       authorization: `Bearer ${issued.token}`,
       'content-type': 'application/json',
+      'mcp-protocol-version': '2025-06-18',
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: 'sse-init',
       method: 'initialize',
       params: {
-        protocolVersion: '2025-11-25',
         capabilities: {},
         clientInfo: { name: 'sse-client', version: '1.0.0' },
       },
     }),
   });
   assert.equal(initialize.status, 202);
+  assert.equal(initialize.headers.get('mcp-protocol-version'), '2025-06-18');
 
   const initializedEvent = await sse.nextEvent();
   assert.equal(initializedEvent.event, 'message');
-  assert.equal(JSON.parse(initializedEvent.data).result.protocolVersion, '2025-11-25');
+  assert.equal(JSON.parse(initializedEvent.data).result.protocolVersion, '2025-06-18');
 
   const toolCall = await fetch(messageUrl, {
     method: 'POST',

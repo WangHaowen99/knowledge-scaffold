@@ -51,7 +51,11 @@ export function registerProjectMcpManagementRoutes(app: FastifyInstance): void {
         subjectUsername: request.user!.username,
         issuedBy: request.user!.username,
         scopes: Array.isArray(body.scopes) ? body.scopes.map(String) : undefined,
-        ttlSeconds: body.expires_in_seconds === undefined ? undefined : Number(body.expires_in_seconds),
+        ttlSeconds: body.expires_in_seconds === null
+          ? null
+          : body.expires_in_seconds === undefined
+            ? undefined
+            : Number(body.expires_in_seconds),
       });
       return reply.code(201).send({
         endpoint_id: issued.endpoint.endpointId,

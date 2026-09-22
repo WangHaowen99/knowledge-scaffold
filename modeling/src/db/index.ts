@@ -22,6 +22,53 @@ function ensureColumn(db: DatabaseSync, table: string, column: string, definitio
   }
 }
 
+function ensureProjectMcpTokenNullableExpiry(db: DatabaseSync): void {
+  if (!hasTable(db, 'project_mcp_tokens')) return;
+  const columns = db.prepare('PRAGMA table_info(project_mcp_tokens)').all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const expiresAt = columns.find((column) => column.name === 'expires_at');
+  if (!expiresAt?.notnull) return;
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE project_mcp_tokens_next (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        token_name    TEXT NOT NULL,
+        subject_username TEXT NOT NULL,
+        issued_by     TEXT NOT NULL,
+        scopes_json   TEXT NOT NULL,
+        expires_at    TEXT,
+        created_at    TEXT NOT NULL,
+        last_used_at  TEXT,
+        revoked_at    TEXT,
+        revoked_by    TEXT
+      );
+      INSERT INTO project_mcp_tokens_next (
+        id, project_id, token_name, subject_username, issued_by, scopes_json,
+        expires_at, created_at, last_used_at, revoked_at, revoked_by
+      ) SELECT
+        id, project_id, token_name, subject_username, issued_by, scopes_json,
+        expires_at, created_at, last_used_at, revoked_at, revoked_by
+      FROM project_mcp_tokens;
+      DROP TABLE project_mcp_tokens;
+      ALTER TABLE project_mcp_tokens_next RENAME TO project_mcp_tokens;
+      CREATE INDEX idx_project_mcp_tokens_project
+        ON project_mcp_tokens(project_id, created_at DESC);
+      CREATE INDEX idx_project_mcp_tokens_subject
+        ON project_mcp_tokens(subject_username, project_id, created_at DESC);
+      COMMIT;`);
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* 没有活动事务时忽略 */ }
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 function ensureDocumentPurposeAllowsTerm(db: DatabaseSync): void {
   const row = db.prepare(`SELECT sql FROM sqlite_master
     WHERE type = 'table' AND name = 'documents'`).get() as { sql?: string } | undefined;
@@ -388,6 +435,7 @@ export function getDb(): DatabaseSync {
   const schema = readFileSync(join(here, 'schema.sql'), 'utf8');
   ensureDocumentRevisionColumns(db);
   db.exec(schema);
+  ensureProjectMcpTokenNullableExpiry(db);
   migrateLegacyAiConstructionGraphSources(db);
   ensureAgentProjectEventKinds(db);
   ensureFlowchartReviewInteraction(db);
