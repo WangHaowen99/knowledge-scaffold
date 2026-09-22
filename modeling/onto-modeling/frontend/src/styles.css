@@ -1290,3 +1290,248 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   font-size: 11px;
 }
 .export-eval-hint .ant-alert-message { font-size: 12px; }
+
+/* ==== 移动端适配（≤768px）：工作台单栏 + 底部页签，全局自适应 ==== */
+.mobile-body { display: flex; flex-direction: column; height: 100%; }
+.mobile-panes { flex: 1; min-height: 0; }
+.mobile-pane { height: 100%; }
+.mobile-pane .pane { height: 100%; }
+.mobile-pane-hidden { display: none; }
+.mobile-nav {
+  flex: none;
+  display: flex;
+  border-top: 1px solid var(--border-default);
+  background: var(--surface-card);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.mobile-nav button {
+  flex: 1;
+  padding: 7px 0 5px;
+  background: none;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.mobile-nav button .anticon { font-size: 18px; }
+.mobile-nav button.active { color: var(--color-primary); font-weight: 600; }
+
+@media (max-width: 768px) {
+  /* 工作台顶栏：单行贴紧——品牌名隐藏、按钮只留图标、项目名截断 */
+  .app-topbar { flex-wrap: nowrap; padding: 6px 8px; gap: 6px; overflow: hidden; }
+  .app-topbar .brand { display: none; }
+  .app-topbar .project-name {
+    max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: none;
+  }
+  .app-topbar .ant-btn { padding-inline: 7px; flex: none; }
+  .app-topbar .ant-btn > span:not(.ant-btn-icon):not(.anticon) { display: none; } /* 按钮只留图标 */
+  .app-topbar .pending-widget, .app-topbar .cost-widget { flex: none; }
+  /* 首页：单列卡片；顶栏不换行、横向滚动（换行会与标题重叠） */
+  .mwr .pj-grid, .pj-grid { grid-template-columns: 1fr; }
+  .mwr .topbar, .topbar {
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch; padding: 8px 12px; gap: 8px;
+  }
+  .mwr .topbar > *, .topbar > * { flex: none; }
+  .mwr .tb-btn, .tb-btn { white-space: nowrap; }
+  .mwr .topbar .crumb, .topbar .crumb { display: none; }
+  .mwr .topbar .logo, .topbar .logo { font-size: 0; gap: 0; } /* 隐藏文字只留知徽标 */
+  .mwr .topbar .logo .mk, .topbar .logo .mk { font-size: 14px; }
+  .mwr .topbar .right, .topbar .right { display: flex; gap: 8px; flex: none; }
+  .mwr .wb-create { padding: 18px 14px; }
+  /* 弹窗贴屏 */
+  .ant-modal { max-width: calc(100vw - 16px); top: 12px; padding-bottom: 12px; }
+  /* 中栏 */
+  .center-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .pane-center { padding: 8px; }
+  /* 聊天 */
+  .chat-history { padding: 8px; }
+  .msg-bubble-max, .chat-history .ant-bubble { max-width: 92vw; }
+  /* 设置中心：左菜单变横向滚动条 */
+  .settings-page { flex-direction: column; }
+  .settings-side {
+    width: 100%; border-right: none;
+    border-bottom: 1px solid var(--border-default);
+    overflow-x: auto; overflow-y: hidden;
+  }
+  .settings-side .ant-menu { display: flex; border-inline-end: none !important; }
+  .settings-side .ant-menu-item { flex: none; }
+  .settings-body { padding: 14px 12px; }
+  /* 表格横向滚动兜底 */
+  .ant-table-wrapper { overflow-x: auto; }
+}
+
+/* ---- 数据评测 · 执行详情（逐用例进度视图） ---- */
+.eval-run-view { display: flex; flex-direction: column; gap: 12px; }
+.eval-run-summary { padding: 4px 2px 0; }
+.eval-run-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.eval-chip {
+  font-size: 12px; padding: 1px 10px; border-radius: 999px;
+  border: 1px solid var(--border-default); color: var(--text-secondary);
+  transition: all 0.25s ease;
+}
+.eval-chip.pass { color: #389e0d; border-color: #b7eb8f; background: #f6ffed; }
+.eval-chip.partial { color: #d48806; border-color: #ffe58f; background: #fffbe6; }
+.eval-chip.fail { color: #cf1322; border-color: #ffa39e; background: #fff1f0; }
+.eval-chip.error { color: #595959; border-color: #d9d9d9; background: #fafafa; }
+.eval-chip.score { color: #1677ff; border-color: #91caff; background: #e6f4ff; font-weight: 600; }
+
+.eval-run-list { max-height: 52vh; overflow-y: auto; padding-right: 2px; }
+.eval-run-row {
+  padding: 9px 10px; border-radius: 8px; margin-bottom: 4px;
+  border: 1px solid transparent;
+  animation: evalRowIn 0.35s ease both;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.eval-run-row:hover { background: rgba(0, 0, 0, 0.03); }
+.eval-run-row.expanded { border-color: var(--border-default); background: rgba(0, 0, 0, 0.02); }
+.eval-run-row.running {
+  background: linear-gradient(90deg, rgba(22, 119, 255, 0.06), rgba(22, 119, 255, 0.02));
+  border-color: rgba(22, 119, 255, 0.25);
+}
+@keyframes evalRowIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.eval-run-head { display: flex; align-items: center; gap: 8px; cursor: default; }
+.eval-run-row.expanded .eval-run-head,
+.eval-run-row:not(.pending):not(.running) .eval-run-head { cursor: pointer; }
+.eval-run-icon { flex: none; display: inline-flex; font-size: 15px; }
+.eval-run-icon.pass { color: #52c41a; }
+.eval-run-icon.partial { color: #faad14; }
+.eval-run-icon.fail { color: #ff4d4f; }
+.eval-run-icon.error { color: #8c8c8c; }
+.eval-run-index { flex: none; font-size: 11px; color: var(--text-secondary); min-width: 16px; }
+.eval-run-question {
+  flex: 1; min-width: 0; font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.eval-run-state { flex: none; font-size: 12px; }
+.eval-run-state.pass { color: #389e0d; }
+.eval-run-state.partial { color: #d48806; }
+.eval-run-state.fail { color: #cf1322; }
+.eval-run-state.error { color: #8c8c8c; }
+.eval-run-state.running { color: #1677ff; }
+.eval-run-state.pending { color: var(--text-secondary); }
+
+/* 执行中：呼吸圆点；待执行：空心圆点 */
+.eval-run-pulse, .eval-live-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: #1677ff; position: relative;
+}
+.eval-live-dot { width: 6px; height: 6px; margin-right: 6px; vertical-align: 1px; }
+.eval-run-pulse::after, .eval-live-dot::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: #1677ff; animation: evalPulse 1.4s ease-out infinite;
+}
+@keyframes evalPulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+.eval-run-hollow {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  border: 1.5px solid #bfbfbf;
+}
+
+.eval-run-detail {
+  margin: 8px 0 2px 24px; display: flex; flex-direction: column; gap: 6px;
+  font-size: 12.5px; animation: evalRowIn 0.25s ease both;
+}
+.eval-run-field { display: flex; gap: 8px; align-items: baseline; }
+.eval-run-label {
+  flex: none; font-size: 11px; color: var(--text-secondary);
+  border: 1px solid var(--border-default); border-radius: 4px; padding: 0 5px;
+}
+
+/* ---- 数据评测 · 数据源选择卡（向导第 1 步） ---- */
+.eval-ds-view { display: flex; flex-direction: column; gap: 10px; }
+.eval-ds-card {
+  border: 1px solid var(--border-default); border-radius: 10px;
+  padding: 12px 14px; cursor: pointer; position: relative;
+  transition: border-color 0.2s ease, box-shadow 0.25s ease, transform 0.2s ease;
+  animation: evalRowIn 0.35s ease both;
+}
+.eval-ds-card:nth-child(2) { animation-delay: 0.05s; }
+.eval-ds-card:nth-child(3) { animation-delay: 0.1s; }
+.eval-ds-card:nth-child(4) { animation-delay: 0.15s; }
+.eval-ds-card:hover:not(.disabled) {
+  border-color: #91caff; transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(22, 119, 255, 0.08);
+}
+.eval-ds-card.selected {
+  border-color: #1677ff; background: rgba(22, 119, 255, 0.03);
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
+}
+.eval-ds-card.selected::after {
+  content: '✓'; position: absolute; top: 10px; right: 12px;
+  width: 18px; height: 18px; border-radius: 50%; background: #1677ff;
+  color: #fff; font-size: 11px; line-height: 18px; text-align: center;
+  animation: evalCheckPop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes evalCheckPop {
+  from { transform: scale(0); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.eval-ds-card.disabled { opacity: 0.55; cursor: not-allowed; }
+.eval-ds-head { display: flex; align-items: center; gap: 8px; }
+.eval-ds-icon { font-size: 16px; }
+.eval-ds-title { font-weight: 600; font-size: 13.5px; }
+.eval-ds-badge {
+  margin-left: auto; margin-right: 20px; font-size: 11px; color: var(--text-secondary);
+  border: 1px solid var(--border-default); border-radius: 999px; padding: 0 8px;
+}
+.eval-ds-desc { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.6; }
+.eval-ds-files {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border-default);
+  display: flex; flex-direction: column; gap: 4px; cursor: default;
+  animation: evalRowIn 0.25s ease both;
+}
+.eval-ds-file {
+  display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+  padding: 3px 6px; border-radius: 6px; cursor: pointer;
+}
+.eval-ds-file:hover { background: rgba(0, 0, 0, 0.03); }
+.eval-ds-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.eval-ds-file-size { font-size: 11px; color: var(--text-secondary); }
+.eval-ds-flow {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 12px; color: var(--text-secondary); padding: 8px 0 0;
+  animation: evalRowIn 0.3s ease both;
+}
+.eval-ds-arrow { color: #1677ff; animation: evalFlowPulse 1.6s ease-in-out infinite; }
+.eval-ds-arrow:nth-of-type(2) { animation-delay: 0.25s; }
+.eval-ds-arrow:nth-of-type(3) { animation-delay: 0.5s; }
+@keyframes evalFlowPulse {
+  0%, 100% { opacity: 0.35; transform: translateX(0); }
+  50% { opacity: 1; transform: translateX(2px); }
+}
+
+/* ---- 执行详情 · 编排阶段条 ---- */
+.eval-phase-strip {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  padding: 2px 2px 0;
+}
+.eval-phase-item { display: inline-flex; align-items: center; }
+.eval-phase-chip {
+  font-size: 11.5px; padding: 1px 9px; border-radius: 999px;
+  border: 1px solid var(--border-default); color: var(--text-secondary);
+  transition: all 0.3s ease; white-space: nowrap;
+}
+.eval-phase-chip.done { color: #389e0d; border-color: #b7eb8f; background: #f6ffed; }
+.eval-phase-chip.current {
+  color: #1677ff; border-color: #91caff; background: #e6f4ff;
+  animation: evalPhaseBreath 1.6s ease-in-out infinite;
+}
+.eval-phase-chip.failed { color: #cf1322; border-color: #ffa39e; background: #fff1f0; }
+@keyframes evalPhaseBreath {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22, 119, 255, 0.25); }
+  50% { box-shadow: 0 0 0 4px rgba(22, 119, 255, 0.08); }
+}
+.eval-phase-link {
+  width: 12px; height: 1px; background: var(--border-default); margin: 0 3px;
+}

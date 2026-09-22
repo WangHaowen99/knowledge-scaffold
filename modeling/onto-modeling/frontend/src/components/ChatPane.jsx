@@ -93,6 +93,16 @@ function buildSuggestions({ paths, meta, versions, reportErrors, interrupted }) 
       command: '/ontology-update 资料区有新变更，请检查并刷新受影响的产物',
     });
   }
+  // 评测失分 → 主推演进（报告错误修复优先级更高，不并列主推）
+  if (!reportErrors && meta?.eval_status === 'done' && meta.eval_score != null && meta.eval_score < 90) {
+    out.push({
+      key: 'evolution',
+      primary: out.length === 0,
+      label: `评测优化（当前 ${meta.eval_score} 分）`,
+      tooltip: '根据最近一轮评测的失分项归因并优化知识包',
+      command: '/ontology-evolution',
+    });
+  }
   // 下一步 = 第一个未完成阶段；用户已越过的可选阶段不再主推
   const hits = STAGES.map((stage) => stage.probe(paths));
   const lastHit = hits.lastIndexOf(true);
@@ -1677,7 +1687,15 @@ export default function ChatPane({
           placeholder="输入消息，可拖入文件或直接粘贴截图作为资料附件"
           onCancel={() => {
             // 上传阶段还没有会话消息可打断，忽略停止按钮
-            if (!uploading) api.interrupt(project.id).catch(() => {});
+            if (!uploading)
+              api
+                .interrupt(project.id)
+                .then((r) => {
+                  // 幽灵运行态（无活跃会话）：后端只补写了历史，SSE 无推送
+                  // 通道，重建流拉取补写的中断标记与 idle 终态
+                  if (r?.reconciled) setHistoryEpoch((e) => e + 1);
+                })
+                .catch(() => {});
           }}
         />
         </div>
