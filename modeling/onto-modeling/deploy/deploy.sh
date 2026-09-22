@@ -10,7 +10,11 @@ cd "${SCRIPT_DIR}"
 bash ./preflight.sh
 
 if [ -d images ]; then
-    for tarball in images/*.tar; do
+    # 只加载本发布版本的镜像：同一目录反复解包会累积历史版本 tar，
+    # 全量加载会把部署拖到分钟级（每个 tar 数百 MB 起）
+    RELEASE_VERSION="$(sed -n 's/^RELEASE_VERSION=//p' images.env 2>/dev/null | head -1)"
+    for tarball in images/*${RELEASE_VERSION:+-${RELEASE_VERSION}}.tar; do
+        [ -f "${tarball}" ] || continue
         echo "Loading image: ${tarball}"
         docker load -i "${tarball}"
     done
