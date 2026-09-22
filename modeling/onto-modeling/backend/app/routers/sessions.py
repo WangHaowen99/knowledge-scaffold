@@ -74,8 +74,8 @@ async def close_session(project_id: str, request: Request):
 @router.post("/interrupt")
 async def interrupt(project_id: str, request: Request):
     ensure_access(project_id, request, write=True)
-    await manager.interrupt(project_id)
-    return {"ok": True}
+    reconciled = await manager.interrupt(project_id)
+    return {"ok": True, "reconciled": bool(reconciled)}
 
 
 @router.get("/stream")

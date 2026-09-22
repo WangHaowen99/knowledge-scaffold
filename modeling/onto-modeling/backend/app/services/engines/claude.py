@@ -286,6 +286,22 @@ class ClaudeEngine:
             pass
         self.client = None
 
+    async def kill(self) -> None:
+        """硬终止：直接 SIGTERM 底层 CLI 进程。
+
+        interrupt/disconnect 都要等 CLI 应答，CLI 悬死（如网关调用无响应）时
+        它们会永久挂起——此路径不与 CLI 对话，杀进程了事（续接点保留）。
+        """
+        client, self.client = self.client, None
+        if client is None:
+            return
+        process = getattr(getattr(client, "_transport", None), "_process", None)
+        try:
+            if process is not None:
+                process.terminate()
+        except Exception:
+            pass
+
     def config_stale(self) -> bool:
         return bool(self._fingerprint) and self._fingerprint != _env_fingerprint()
 

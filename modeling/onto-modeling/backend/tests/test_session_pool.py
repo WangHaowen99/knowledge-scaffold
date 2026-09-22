@@ -3,6 +3,7 @@
 用假客户端替换 ClaudeEngine._create_client，不拉起真实 CLI 子进程。
 """
 
+import json
 import asyncio
 import time
 from pathlib import Path
@@ -240,3 +241,65 @@ def test_tool_result_excerpt_and_git_changes(tmp_path):
     # 中文路径必须原样返回（core.quotepath 关闭），不得出现 \347 转义或引号
     assert sorted(changes["added"]) == ["a.md", "订单目标.md"]
     assert changes["modified"] == []
+
+
+def test_interrupt_force_kills_hung_engine(pool_env, tmp_path, monkeypatch):
+    """CLI 悬死时打断必须在超时后硬停：引擎释放、状态回 idle、事件到位。"""
+    manager, created, _ = pool_env
+    monkeypatch.setattr(agent_sessions, "INTERRUPT_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(agent_sessions, "KILL_TIMEOUT_SECONDS", 0.2)
+
+    async def scenario():
+        await manager.send("p1", tmp_path / "w1", "任务")
+        session = await _settle(manager, "p1")
+        assert session.state == "running"
+
+        async def hang():
+            await asyncio.Event().wait()
+
+        session.engine.client.interrupt = hang  # 模拟 CLI 对 interrupt 无应答
+        await manager.interrupt("p1")
+        assert session.engine is None  # 引擎已硬终止释放
+        assert session.state == "idle"
+        assert any(e.get("type") == "session_interrupted" for e in session.events)
+        # 续接点保留：下一条消息可重连
+        await manager.send("p1", tmp_path / "w1", "继续")
+        again = await _settle(manager, "p1")
+        assert again.client is not None
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_stale_running_history_reconciles(pool_env):
+    """重启杀掉运行中的轮后，历史尾部停在 running：读取或打断都要自愈为终态，
+    而不是让前端永远显示"执行中"、打断 404（幽灵运行态修复）。"""
+    manager, _, _ = pool_env
+    path = agent_sessions._history_path("ghost")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "user_message", "text": "跑任务", "seq": 0, "ts": 1.0}) + "\n")
+        f.write(json.dumps({"type": "session_state", "state": "running", "seq": 1, "ts": 2.0}) + "\n")
+
+    history = manager.get_history("ghost")
+    assert history[-1]["type"] == "session_state" and history[-1]["state"] == "idle"
+    assert any(e["type"] == "session_interrupted" for e in history)
+    assert [e["seq"] for e in history] == [0, 1, 2, 3]  # seq 连续
+
+    # 幂等：已是终态则不再追加
+    assert len(manager.get_history("ghost")) == 4
+
+    # 打断入口：无活跃会话不再 404；终态历史返回未和解
+    assert asyncio.run(manager.interrupt("ghost")) is False
+
+
+def test_interrupt_ghost_running_reconciles(pool_env):
+    manager, _, _ = pool_env
+    path = agent_sessions._history_path("ghost2")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "session_state", "state": "running", "seq": 0, "ts": 1.0}) + "\n")
+
+    assert asyncio.run(manager.interrupt("ghost2")) is True
+    tail = manager.get_history("ghost2")
+    assert tail[-1] == {"type": "session_state", "state": "idle", "ts": tail[-1]["ts"], "seq": 2}
+    # 不存在历史的项目：打断是无害幂等操作
+    assert asyncio.run(manager.interrupt("nonexistent")) is False

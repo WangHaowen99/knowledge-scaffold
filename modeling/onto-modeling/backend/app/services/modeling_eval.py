@@ -30,8 +30,18 @@ from .. import config
 STATE_REL = ".ontology-state/eval.json"
 POLL_INTERVAL_SECONDS = 6
 ROUND_TIMEOUT_SECONDS = 1800
+AUTH_GRACE_SECONDS = 600
+DATA_IMPORT_TIMEOUT_SECONDS = 600  # 凭据过期后等待前端接力新 token 的宽限窗
 
 _running: set[str] = set()  # project_id 去重（单进程内防并发重复触发）
+_live_tokens: dict[str, str] = {}  # project_id → 前端轮询接力的最新 token
+
+
+def update_token(project_id: str, token: str) -> None:
+    """评测轮常超过 access token 有效期（约 15 分钟）。前端本就带着自动刷新
+    的 token 轮询 /eval/status——顺手把新鲜 token 接力给运行中的编排。"""
+    if token and project_id in _running:
+        _live_tokens[project_id] = token
 
 
 def enabled() -> bool:
@@ -72,8 +82,17 @@ def _http(
             "Content-Type": content_type,
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode() or "{}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        # body 只能读一次：把 modeling 的业务错误话术挂到异常上供状态呈现
+        try:
+            payload = json.loads(exc.read().decode() or "{}")
+            exc.detail = str(payload.get("error") or payload.get("message") or "").strip()
+        except Exception:
+            exc.detail = ""
+        raise
 
 
 def _multipart_zip(field_name: str, filename: str, content: bytes, extra: dict) -> tuple[bytes, str]:
@@ -93,6 +112,83 @@ def _multipart_zip(field_name: str, filename: str, content: bytes, extra: dict) 
     )
     parts.append(f"--{boundary}--\r\n".encode())
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def _multipart_files(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
+    """quick-import 的多 Excel multipart（服务端按 part 类型收文件，字段名不限）。"""
+    boundary = f"----ontoeval{uuid.uuid4().hex[:12]}"
+    parts = []
+    for filename, content in files:
+        parts.append(
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; "
+                f"filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            ).encode()
+            + content
+            + b"\r\n"
+        )
+    parts.append(f"--{boundary}--\r\n".encode())
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+# ---- 数据集模式：评测数据表收集与导入 ----
+
+
+def collect_dataset_files(root: Path, data_source: dict) -> list[tuple[str, bytes]]:
+    """数据集模式的导入文件：勾选的 eval_data 资料 + 可选 mock 种子。
+    编排启动前调用（坏输入快速失败，不浪费一次包导入）。"""
+    files: list[tuple[str, bytes]] = []
+    for rel in (data_source.get("resources") or [])[:20]:
+        rel = str(rel).strip()
+        path = (root / rel).resolve()
+        if not str(path).startswith(str(root.resolve())) or not path.is_file():
+            raise ValueError(f"评测数据文件不存在：{rel}")
+        if path.suffix.lower() not in (".xlsx", ".xlsm"):
+            raise ValueError(f"评测数据仅支持 Excel 表：{rel}")
+        files.append((path.name, path.read_bytes()))
+    if data_source.get("include_mock"):
+        files.append(_generate_mock_seed(root))
+    if not files:
+        raise ValueError("数据集模式需要至少一份数据表（评测数据资料或示例数据种子）")
+    return files
+
+
+def _generate_mock_seed(root: Path) -> tuple[str, bytes]:
+    """ontology/data-mock 的示例数据 → 评测库导入 Excel（工具箱脚本，单一实现）。"""
+    import subprocess
+    import sys as _sys
+    import tempfile
+
+    script = (
+        Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "mock_to_eval_seed.py"
+    )
+    out = Path(tempfile.mkdtemp(prefix="onto-eval-seed-")) / "mock-seed.xlsx"
+    proc = subprocess.run(
+        [_sys.executable, str(script), "--out", str(out)],
+        cwd=root, capture_output=True, text=True, timeout=120,
+    )
+    if proc.returncode != 0 or not out.is_file():
+        detail = (proc.stderr or proc.stdout or "").strip()[:200]
+        raise RuntimeError(f"示例数据种子生成失败：{detail or '无 mock 产物'}")
+    return ("mock-seed.xlsx", out.read_bytes())
+
+
+def _poll_data_import(root: Path, tok, mp_project: str) -> None:
+    deadline = time.time() + DATA_IMPORT_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        time.sleep(POLL_INTERVAL_SECONDS)
+        data = _http(
+            "GET", f"/api/projects/{mp_project}/evaluation-database/imports", tok()
+        )
+        runs = data.get("imports") or []
+        run = runs[0] if runs else {}
+        status = run.get("status")
+        if status == "done":
+            return
+        if status == "failed":
+            raise RuntimeError(f"评测库导入失败：{str(run.get('error') or '原因未知')[:200]}")
+        _write_state(root, message="评测库导入中（建表并写入数据）…")
+    raise TimeoutError("评测库导入超时")
 
 
 # ---- trace 场景 → 评测用例 ----
@@ -263,8 +359,125 @@ def _write_report(root: Path, round_info: dict, results: list[dict]) -> str:
         status="done",
         report=rel,
         summary={"total": len(results), **counts, "score": score},
+        cases=_case_progress(
+            [{"question": i.get("question", "")} for i in results], results, False
+        ),
     )
     return rel
+
+
+def _case_progress(cases: list[dict], results: list[dict], round_running: bool) -> list[dict]:
+    """逐用例执行状态（前端进度视图）：已出结果的带判分与摘要；modeling 按序
+    执行，第一个未出结果的用例标记为执行中，其余待执行。"""
+    by_question: dict[str, dict] = {}
+    for item in results:
+        by_question.setdefault(str(item.get("question", "")).strip(), item)
+    out = []
+    waiting_marked = False
+    for case in cases[:500]:
+        question = str(case.get("question", "")).strip()
+        item = by_question.get(question)
+        if item is not None:
+            out.append({
+                "question": question[:120],
+                "verdict": item.get("verdict") or "error",
+                "answer": str(item.get("finalAnswer") or "").strip()[:200],
+                "reason": str(item.get("reason") or "").strip()[:160],
+            })
+        else:
+            out.append({
+                "question": question[:120],
+                "verdict": "running" if (round_running and not waiting_marked) else "pending",
+            })
+            waiting_marked = True
+    return out
+
+
+def _poll_round(
+    project_id: str, root: Path, token: str, mp_project: str, round_id: str, cases: list[dict]
+) -> None:
+    """轮询 modeling 轮次直至终态并落报告。401 不判死：轮次仍在 modeling 侧
+    执行，宽限窗内等前端接力新鲜 token（页面开着即到）。"""
+
+    def tok() -> str:
+        return _live_tokens.get(project_id) or token
+
+    deadline = time.time() + ROUND_TIMEOUT_SECONDS
+    details: dict = {}
+    auth_wait_until: float | None = None
+    while time.time() < deadline:
+        time.sleep(POLL_INTERVAL_SECONDS)
+        try:
+            details = _http("GET", f"/api/projects/{mp_project}/rounds/{round_id}", tok())
+        except urllib.error.HTTPError as exc:
+            if exc.code != 401:
+                raise
+            if auth_wait_until is None:
+                auth_wait_until = time.time() + AUTH_GRACE_SECONDS
+                _write_state(root, message="评测执行中（登录凭据过期，等待页面接力新凭据…）")
+            if time.time() < auth_wait_until:
+                continue
+            raise RuntimeError(
+                "评测凭据过期且未获接力（页面已关闭？）。modeling 侧轮次仍在执行，"
+                "重新打开项目页并重跑评测即可续接收取结果"
+            ) from exc
+        auth_wait_until = None
+        round_info = details.get("round") or {}
+        _write_state(
+            root,
+            message=(
+                f"评测执行中 {round_info.get('progressDone', 0)}"
+                f"/{round_info.get('progressTotal', 0)}"
+            ),
+            cases=_case_progress(
+                cases, details.get("results") or [], round_info.get("status") == "running"
+            ),
+        )
+        if round_info.get("status") in ("done", "failed"):
+            break
+    round_info = details.get("round") or {}
+    if round_info.get("status") not in ("done", "failed"):
+        raise TimeoutError("评测超时（modeling 侧轮次未在时限内结束）")
+    if round_info.get("status") == "failed":
+        # 轮次在 modeling 侧失败：透出其日志，不生成报告
+        log = (round_info.get("log") or "").strip().splitlines()
+        raise RuntimeError(f"modeling 评测轮失败：{log[-1] if log else '原因未知'}")
+    rel = _write_report(root, round_info, details.get("results") or [])
+    _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
+
+
+def _try_resume(project_id: str, root: Path, token: str, cases: list[dict]) -> bool:
+    """凭据过期等中断后，modeling 侧轮次往往仍在执行或已完成。重跑且用例集
+    未变时续接收取结果，不重复导入、不重复烧模型。"""
+    prior = read_state(root)
+    mp_project, round_id = prior.get("modeling_project"), prior.get("round_id")
+    if not mp_project or not round_id or prior.get("status") not in ("failed", "running"):
+        return False
+    prior_questions = [c.get("question") for c in prior.get("cases") or []]
+    now_questions = [str(c.get("question", "")).strip()[:120] for c in cases]
+    if prior_questions and now_questions and prior_questions != now_questions:
+        return False
+    try:
+        details = _http(
+            "GET",
+            f"/api/projects/{mp_project}/rounds/{round_id}",
+            _live_tokens.get(project_id) or token,
+        )
+    except Exception:
+        return False
+    status = (details.get("round") or {}).get("status")
+    if status == "running":
+        _write_state(root, status="running", phase="evaluate",
+                     message="续接上一轮（modeling 侧仍在执行）")
+        _poll_round(project_id, root, token, mp_project, round_id, cases)
+        return True
+    if status == "done":
+        _write_state(root, status="running", phase="evaluate",
+                     message="续接上一轮（收取已完成结果）")
+        rel = _write_report(root, details.get("round") or {}, details.get("results") or [])
+        _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
+        return True
+    return False
 
 
 def _git_commit(root: Path, message: str) -> None:
@@ -280,21 +493,39 @@ def _git_commit(root: Path, message: str) -> None:
 # ---- 编排主体 ----
 
 
-async def run(project_id: str, root: Path, token: str, cases: list[dict]) -> None:
+async def run(
+    project_id: str, root: Path, token: str, cases: list[dict],
+    data_source: dict | None = None,
+) -> None:
     """后台评测编排；进度经 .ontology-state/eval.json 供前端轮询。"""
     if project_id in _running:
         return
     _running.add(project_id)
+    _live_tokens[project_id] = token
     try:
-        await asyncio.to_thread(_run_sync, project_id, root, token, cases)
+        await asyncio.to_thread(_run_sync, project_id, root, token, cases, data_source)
     finally:
         _running.discard(project_id)
+        _live_tokens.pop(project_id, None)
 
 
-def _run_sync(project_id: str, root: Path, token: str, cases: list[dict]) -> None:
+def _run_sync(
+    project_id: str, root: Path, token: str, cases: list[dict],
+    data_source: dict | None = None,
+) -> None:
     from .workspace import WorkspaceManager
 
+    def tok() -> str:
+        return _live_tokens.get(project_id) or token
+
+    dataset_mode = str((data_source or {}).get("mode") or "none") == "dataset"
     try:
+        # 数据集模式先收集文件：坏输入快速失败，不浪费一次包导入
+        dataset_files = (
+            collect_dataset_files(root, data_source or {}) if dataset_mode else []
+        )
+        if _try_resume(project_id, root, token, cases):
+            return
         _write_state(root, status="running", phase="package", message="打包知识包")
         manager = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
         import tempfile
@@ -309,7 +540,7 @@ def _run_sync(project_id: str, root: Path, token: str, cases: list[dict]) -> Non
             body, ctype = _multipart_zip(
                 "file", "package.zip", content, {"package_name": package_name}
             )
-            imported = _http("POST", "/api/package-workspaces/import", token,
+            imported = _http("POST", "/api/package-workspaces/import", tok(),
                              data=body, content_type=ctype, timeout=120)
         except urllib.error.HTTPError as exc:
             if exc.code != 409:
@@ -319,49 +550,52 @@ def _run_sync(project_id: str, root: Path, token: str, cases: list[dict]) -> Non
                 "file", "package.zip", content,
                 {"package_name": f"{package_name}-{int(time.time())}"},
             )
-            imported = _http("POST", "/api/package-workspaces/import", token,
+            imported = _http("POST", "/api/package-workspaces/import", tok(),
                              data=body, content_type=ctype, timeout=120)
         mp_project = imported["project"]["id"]
         _write_state(root, modeling_project=mp_project)
 
-        # 数据源：modeling 要求显式配置后才能评测；v1 走 mode=none（纯知识包问答）。
-        # 接通评测数据库（EVAL_DB_URL/MySQL）后，此处按 eval_data 对账结果切
-        # connection + nl2sql_template 并追加 evaluation-database/import 步骤。
-        _write_state(root, phase="data_source", message="配置数据源（无数据库模式）")
-        _http("PUT", f"/api/projects/{mp_project}/data-source", token,
-              body={"mode": "none"})
+        # 数据源：数据集模式走 quick-import（建评测库 + Excel 导入 + 自动绑定
+        # NL2SQL 数据源）；否则显式配置 mode=none（纯知识包问答）
+        if dataset_mode:
+            _write_state(
+                root, phase="data_import",
+                message=f"评测库导入（{len(dataset_files)} 份数据表）",
+            )
+            body, ctype = _multipart_files(dataset_files)
+            try:
+                _http(
+                    "POST",
+                    f"/api/projects/{mp_project}/evaluation-database/quick-import",
+                    tok(), data=body, content_type=ctype, timeout=180,
+                )
+            except urllib.error.HTTPError as exc:
+                if exc.code == 503:
+                    raise RuntimeError(
+                        "评测库未就绪：需在 modeling 部署启用 eval profile"
+                        "（评测 MySQL + NL2SQL 服务）并配置 EVAL_DB_URL"
+                    ) from exc
+                raise
+            _poll_data_import(root, tok, mp_project)
+        else:
+            _write_state(root, phase="data_source", message="配置数据源（无数据库模式）")
+            _http("PUT", f"/api/projects/{mp_project}/data-source", tok(),
+                  body={"mode": "none"})
 
         _write_state(root, phase="cases", message=f"注入评测用例（{len(cases)} 条）")
-        _http("POST", f"/api/projects/{mp_project}/testcases/batch", token,
+        _http("POST", f"/api/projects/{mp_project}/testcases/batch", tok(),
               body={"cases": [{"question": c["question"], "groundTruth": c["groundTruth"]}
                               for c in cases]})
 
-        _write_state(root, phase="evaluate", message="评测执行中（consumer 逐用例问答）")
-        started = _http("POST", f"/api/projects/{mp_project}/evaluate", token, body={})
+        _write_state(
+            root, phase="evaluate", message="评测执行中（consumer 逐用例问答）",
+            cases=_case_progress(cases, [], True),
+        )
+        started = _http("POST", f"/api/projects/{mp_project}/evaluate", tok(), body={})
         round_id = started["roundId"]
         _write_state(root, round_id=round_id)
-
-        deadline = time.time() + ROUND_TIMEOUT_SECONDS
-        details: dict = {}
-        while time.time() < deadline:
-            time.sleep(POLL_INTERVAL_SECONDS)
-            details = _http("GET", f"/api/projects/{mp_project}/rounds/{round_id}", token)
-            round_info = details.get("round") or {}
-            _write_state(
-                root,
-                message=f"评测执行中 {round_info.get('progressDone', 0)}/{round_info.get('progressTotal', 0)}",
-            )
-            if round_info.get("status") in ("done", "failed"):
-                break
-        round_info = (details.get("round") or {})
-        if round_info.get("status") not in ("done", "failed"):
-            raise TimeoutError("评测超时（modeling 侧轮次未在时限内结束）")
-        if round_info.get("status") == "failed":
-            # 轮次在 modeling 侧失败：透出其日志，不生成报告
-            log = (round_info.get("log") or "").strip().splitlines()
-            raise RuntimeError(f"modeling 评测轮失败：{log[-1] if log else '原因未知'}")
-
-        rel = _write_report(root, round_info, details.get("results") or [])
-        _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
+        _poll_round(project_id, root, token, mp_project, round_id, cases)
     except Exception as exc:  # 编排失败落状态，不留悬挂的 running
-        _write_state(root, status="failed", message=str(exc)[:300])
+        detail = str(getattr(exc, "detail", "") or "")
+        text = f"{exc}：{detail}" if detail else str(exc)
+        _write_state(root, status="failed", message=text[:300])

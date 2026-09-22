@@ -377,12 +377,36 @@ def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
     return {"disabled": names}
 
 
+@router.get("/{project_id}/eval/data-source")
+def eval_data_source_options(project_id: str, request: Request):
+    """评测向导·数据源选项：eval_data 资料清单 + mock 产物可用性。"""
+    root = ensure_access(project_id, request)
+    directives = workspaces.resource_directives(project_id)
+    eval_data = []
+    for rel, directive in sorted(directives.items()):
+        if (directive or {}).get("purpose") != "eval_data":
+            continue
+        path = root / rel
+        if path.is_file() and path.suffix.lower() in (".xlsx", ".xlsm"):
+            eval_data.append({"path": rel, "name": path.name, "size": path.stat().st_size})
+    mock_dir = root / "ontology" / "data-mock"
+    mock_tables = (
+        sum(1 for f in mock_dir.glob("*.md") if f.name.lower() != "index.md")
+        if mock_dir.is_dir() else 0
+    )
+    return {"eval_data": eval_data, "mock_tables": mock_tables}
+
+
 @router.get("/{project_id}/eval/status")
 def eval_status(project_id: str, request: Request):
     """数据评测状态：modeling 可达性 + 最近一轮进度/结果（前端阶段按钮轮询）。"""
     from ..services import modeling_eval
 
     root = ensure_access(project_id, request)
+    # 前端轮询自带自动刷新的 token：接力给运行中的编排（评测轮常超 token 有效期）
+    auth = request.headers.get("Authorization") or ""
+    if auth.startswith("Bearer "):
+        modeling_eval.update_token(project_id, auth[7:].strip())
     return {
         "enabled": modeling_eval.enabled(),
         "reachable": modeling_eval.reachable() if modeling_eval.enabled() else False,
@@ -436,6 +460,8 @@ def eval_cases_template(project_id: str, request: Request):
 
 class EvalRunBody(BaseModel):
     cases: list[dict]  # [{question, groundTruth}]，用户复核后的用例
+    # {"mode": "none"} 或 {"mode": "dataset", "resources": [...], "include_mock": bool}
+    data_source: dict | None = None
 
 
 @router.post("/{project_id}/eval/run")
@@ -464,7 +490,16 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
         return JSONResponse(status_code=400, content={"error": "缺少可用于 modeling 的令牌"})
     import asyncio as _asyncio
 
-    _asyncio.create_task(modeling_eval.run(project_id, root, token, cases))
+    data_source = body.data_source or {"mode": "none"}
+    if str(data_source.get("mode") or "none") not in ("none", "dataset"):
+        return JSONResponse(status_code=400, content={"error": "数据源模式仅支持 none 或 dataset"})
+    if str(data_source.get("mode")) == "dataset":
+        try:
+            modeling_eval.collect_dataset_files(root, data_source)
+        except (ValueError, RuntimeError) as exc:
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+
+    _asyncio.create_task(modeling_eval.run(project_id, root, token, cases, data_source))
     return {"started": True, "cases": len(cases)}
 
 

@@ -501,6 +501,42 @@ class WorkspaceManager:
                 zf.write(path, str(rel))
         return dest_path
 
+    # 属性表"属性别名"列的占位写法（模板约定无别名写"无"）在下游校验器里
+    # 可能被当作真实别名，引发"同名指向多字段"冲突（modeling 新版已过滤，
+    # consumer 与存量部署未必）；打包时统一清洗为空，单一出口治本。
+    _ALIAS_HEADER_NAMES = {"属性别名", "别名", "aliases", "alias"}
+    _ALIAS_EMPTY_MARKERS = {"无", "-", "—", "–", "n/a"}
+
+    @classmethod
+    def _sanitize_placeholder_aliases(cls, markdown: str) -> str:
+        lines = markdown.split("\n")
+        alias_col: int | None = None
+        prev_is_row = False
+        for i, line in enumerate(lines):
+            if not line.lstrip().startswith("|"):
+                alias_col = None
+                prev_is_row = False
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if not prev_is_row:
+                lowered = [c.lower() for c in cells]
+                alias_col = next(
+                    (idx for idx, c in enumerate(lowered) if c in cls._ALIAS_HEADER_NAMES),
+                    None,
+                )
+            elif (
+                alias_col is not None
+                and alias_col < len(cells)
+                and cells[alias_col].lower() in cls._ALIAS_EMPTY_MARKERS
+                and not all(set(c) <= set("-: ") for c in cells)  # 跳过分隔行
+            ):
+                raw = line.split("|")
+                if alias_col + 1 < len(raw):
+                    raw[alias_col + 1] = " "
+                    lines[i] = "|".join(raw)
+            prev_is_row = True
+        return "\n".join(lines)
+
     def export_package_zip(self, project_id: str, dest_path: Path) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -546,28 +582,52 @@ class WorkspaceManager:
             f"name: {q(meta['name'])}\n"
             f"description: {q('由 Onto Web 建模项目发布：' + meta['name'])}\n"
             f"version: {version}\n"
+            # modeling 包契约（package-contract MANIFEST_REQUIRED_FIELDS）必选；
+            # consumer 按已知键读取，多余字段无害
+            f"status: released\n"
             f"language: zh-CN\n"
         )
 
         def front(resource: str, key: str, title: str, extra: str = "") -> str:
             return f"---\nresource: {resource}\nkey: {q(key)}\ntitle: {q(title)}\n{extra}---\n\n"
 
-        def index_md(resource: str, key: str, title: str, items: list[tuple[str, str]], col: str) -> str:
-            rows = "".join(f"| {k} | {k} |\n" for k, _ in items)
-            return front(resource, key, title) + f"| {col} | title |\n| --- | --- |\n{rows}"
+        def index_md(
+            resource: str,
+            key: str,
+            title: str,
+            items: list[tuple[str, str]],
+            headers: list[str],
+            row: "callable",
+        ) -> str:
+            # 表头对齐 modeling 知识包契约（knowledge-markdown-contract INDEX_CONFIG）；
+            # consumer 按表头名取列、容忍多列，两端同一份索引
+            head = "| " + " | ".join(headers) + " |\n" + "|" + " --- |" * len(headers) + "\n"
+            rows = "".join(row(k) for k, _ in items)
+            return front(resource, key, title) + head + rows
 
         with zipfile.ZipFile(dest_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f"{pkg}/manifest.yaml", manifest)
             zf.writestr(f"{pkg}/index.md", front("root", "root", meta["name"]) + f"# {meta['name']}\n")
             zf.writestr(
                 f"{pkg}/objects/index.md",
-                index_md("object_index", "objects", "对象目录", objects, "object key"),
+                index_md(
+                    "object_index", "objects", "对象目录", objects,
+                    ["object key", "标题", "说明", "来源Sheet"],
+                    lambda k: f"| {k} | {k} | {k} | {k} |\n",
+                ),
             )
             for key, body in objects:
-                zf.writestr(f"{pkg}/objects/{key}.md", front("object", key, key) + body)
+                zf.writestr(
+                    f"{pkg}/objects/{key}.md",
+                    front("object", key, key) + self._sanitize_placeholder_aliases(body),
+                )
             zf.writestr(
                 f"{pkg}/operations/index.md",
-                index_md("operation_index", "operations", "操作目录", operations, "operation key"),
+                index_md(
+                    "operation_index", "operations", "操作目录", operations,
+                    ["operation key", "标题", "输入", "输出"],
+                    lambda k: f"| {k} | {k} | {k} | {k} |\n",
+                ),
             )
             for key, body in operations:
                 used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
@@ -577,7 +637,11 @@ class WorkspaceManager:
             if rules:
                 zf.writestr(
                     f"{pkg}/rules/index.md",
-                    index_md("rule_index", "rules", "规则目录", rules, "rule key"),
+                    index_md(
+                        "rule_index", "rules", "规则目录", rules,
+                        ["rule key", "标题", "说明"],
+                        lambda k: f"| {k} | {k} | {k} |\n",
+                    ),
                 )
                 for key, body in rules:
                     used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
@@ -586,7 +650,11 @@ class WorkspaceManager:
             if metrics:
                 zf.writestr(
                     f"{pkg}/metrics/index.md",
-                    index_md("metric_index", "metrics", "指标目录", metrics, "metric key"),
+                    index_md(
+                        "metric_index", "metrics", "指标目录", metrics,
+                        ["metric key", "标题", "说明"],
+                        lambda k: f"| {k} | {k} | {k} |\n",
+                    ),
                 )
                 for key, body in metrics:
                     used = sorted({m for m in _WIKILINK_RE.findall(body) if m in object_keys})
@@ -595,7 +663,11 @@ class WorkspaceManager:
             if scripts:
                 zf.writestr(
                     f"{pkg}/scripts/index.md",
-                    index_md("script_index", "scripts", "脚本目录", scripts, "script key"),
+                    index_md(
+                        "script_index", "scripts", "脚本目录", scripts,
+                        ["script key", "标题"],
+                        lambda k: f"| {k} | {k} |\n",
+                    ),
                 )
                 operation_keys = {key for key, _ in operations}
                 for key, code in scripts:

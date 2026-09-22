@@ -509,6 +509,10 @@ class JiuwenEngine:
             except Exception:
                 pass
 
+    async def kill(self) -> None:
+        """硬终止：取消轮任务并释放实例（阻塞在 interaction 等待中的轮也能停）。"""
+        await self.disconnect()
+
     def config_stale(self) -> bool:
         return bool(self._fingerprint) and self._fingerprint != _fingerprint(
             model_config()
