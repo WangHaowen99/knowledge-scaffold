@@ -456,3 +456,182 @@ def test_modeling_install_is_minimal_and_persists_custom_ports() -> None:
     assert 'exec bash "${SCRIPT_DIR}/deploy.sh"' in install
     assert "modelingctl" not in install
     assert "reports" not in install
+
+def test_source_deploy_generates_eval_mysql_password_without_printing_it(
+    tmp_path: Path,
+) -> None:
+    """评测库开箱即用：密码首次自动生成、0600 落盘 backend/.env、不回显。"""
+    consumer_root = tmp_path / "consumer"
+    backend_root = consumer_root / "backend"
+    backend_root.mkdir(parents=True)
+    env_file = backend_root / ".env"
+    env_file.write_text("EVAL_MYSQL_ROOT_PASSWORD=\n", encoding="utf-8")
+    inherited = {
+        key: value for key, value in os.environ.items() if key != "EVAL_MYSQL_ROOT_PASSWORD"
+    }
+
+    result = subprocess.run(
+        [
+            _bash_executable(),
+            "-c",
+            'source "$DEPLOY_STACK" >/dev/null; CONSUMER_DIR="$TEST_CONSUMER_DIR"; ensure_eval_mysql_password',
+        ],
+        env={
+            **inherited,
+            "DEPLOY_STACK": str(DEPLOY_ROOT / "deploy-stack.sh"),
+            "TEST_CONSUMER_DIR": str(consumer_root),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    match = re.search(
+        r"^EVAL_MYSQL_ROOT_PASSWORD=([0-9a-f]{32})$",
+        env_file.read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None
+    assert match.group(1) not in result.stdout
+    assert env_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) -> None:
+    """根源码部署为 onto-modeling 生成整栈 override（共享 auth + 网络 + 评测地址）。"""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
+    onto_dir = tmp_path / "modeling" / "onto-modeling"
+    onto_dir.mkdir(parents=True)
+    args_file = tmp_path / "args.txt"
+    _write_executable(
+        deploy_dir / "deploy-stack.sh",
+        'printf "%s\\n" "$@" > "$DEPLOY_ARGS_FILE"',
+    )
+    # stub docker：模拟真实部署——consumer 容器在 onto-agent_default 上
+    docker_stub = deploy_dir / "docker"
+    _write_executable(docker_stub, _DOCKER_STUB_ON_DEFAULT_NETWORK)
+    calls_file = tmp_path / "docker-calls.txt"
+
+    result = subprocess.run(
+        [str(deploy_dir / "deploy.sh")],
+        env={
+            **os.environ,
+            "DEPLOY_ARGS_FILE": str(args_file),
+            "DOCKER_CALLS_FILE": str(calls_file),
+            "PATH": f"{deploy_dir}:{os.environ['PATH']}",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    override = onto_dir / "docker-compose.stack.yml"
+    assert override.is_file()
+    content = override.read_text(encoding="utf-8")
+    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in content
+    # 必须是运行中 consumer 容器的实际网络，不是按命名规律猜的名字
+    assert "name: onto-agent_default" in content
+    assert "consumer_onto-agent-network" not in content
+    assert 'profiles: ["disabled"]' in content  # 自带 dev auth 停用，共享账号中心
+    assert "docker-compose.stack.yml" in calls_file.read_text(encoding="utf-8")
+
+
+# compose 项目名为 onto-agent 时网络叫 onto-agent_default，不含 "onto-agent-network"
+_DOCKER_STUB_ON_DEFAULT_NETWORK = """\
+if [ "$1" = "inspect" ] && [ "$2" = "--type" ] && [ "$3" = "container" ]; then exit 0; fi
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then printf 'onto-agent_default\\n'; exit 0; fi
+if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\n'; exit 0; fi
+if [ "$1" = "network" ] && [ "$2" = "ls" ]; then printf 'bridge\\nonto-agent_default\\n'; exit 0; fi
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then [ "$3" = "onto-agent_default" ]; exit $?; fi
+printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
+"""
+
+# 探测不到任何 consumer 痕迹：必须报错退出，而不是猜一个名字继续
+_DOCKER_STUB_NO_CONSUMER = """\
+if [ "$1" = "inspect" ] || [ "$1" = "container" ] || [ "$1" = "network" ]; then exit 1; fi
+if [ "$1" = "ps" ]; then exit 0; fi
+printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
+"""
+
+
+def test_root_deploy_fails_loudly_when_consumer_network_undetectable(tmp_path: Path) -> None:
+    """探测不到 consumer 网络时直接报错。
+
+    回归：旧实现只匹配 'onto-agent-network$'，匹配不到就回退到写死的
+    consumer_onto-agent-network。compose 把它当 external 网络，于是部署以
+    "network ... declared as external, but could not be found" 失败。
+    """
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
+    (tmp_path / "modeling" / "onto-modeling").mkdir(parents=True)
+    _write_executable(deploy_dir / "deploy-stack.sh", 'printf "%s\\n" "$@" > "$DEPLOY_ARGS_FILE"')
+    _write_executable(deploy_dir / "docker", _DOCKER_STUB_NO_CONSUMER)
+
+    result = subprocess.run(
+        [str(deploy_dir / "deploy.sh")],
+        env={
+            **os.environ,
+            "DEPLOY_ARGS_FILE": str(tmp_path / "args.txt"),
+            "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
+            "PATH": f"{deploy_dir}:{os.environ['PATH']}",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "无法探测 consumer Docker 网络" in result.stderr
+    assert "consumer_onto-agent-network" not in result.stdout + result.stderr
+
+
+def _host_port_default(compose_text: str, var: str) -> str:
+    """取 compose ports 里 "${VAR:-默认}:容器端口" 的宿主侧默认值。"""
+    match = re.search(rf'- "\$\{{{var}:-(\d+)\}}:\d+"', compose_text)
+    assert match is not None, f"未找到 {var} 的宿主端口映射"
+    return match.group(1)
+
+
+def test_modeling_healthcheck_port_matches_published_host_port() -> None:
+    """健康检查端口必须跟 compose 发布的宿主端口同源。
+
+    回归：端口互换只改了 compose 默认值（5100→8100），deploy.sh 仍轮询 5100，
+    未显式设置 MODELING_PORT 的新部署必然卡在「Workbench page did not become reachable」。
+    """
+    release_compose = (MODELING_ROOT / "deploy" / "docker-compose.release.yml").read_text(
+        encoding="utf-8"
+    )
+    source_compose = (DEPLOY_ROOT / "docker-compose.modeling.yml").read_text(encoding="utf-8")
+    deploy_script = (MODELING_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+
+    release_port = _host_port_default(release_compose, "MODELING_PORT")
+    assert _host_port_default(source_compose, "MODELING_PORT") == release_port
+
+    checked_ports = set(re.findall(r"127\.0\.0\.1:\$\{MODELING_PORT:-(\d+)\}", deploy_script))
+    assert checked_ports == {release_port}
+
+    # 发布包模板会被 install.sh 拷成 .env，显式值优先于上面所有默认值，
+    # 漏改这里会让独立发布包继续落在旧端口上。
+    build_script = (MODELING_ROOT / "build.sh").read_text(encoding="utf-8")
+    seeded = re.search(r"^MODELING_PORT=(\d+)$", build_script, re.MULTILINE)
+    assert seeded is not None, "modeling/build.sh 未生成 MODELING_PORT 模板项"
+    assert seeded.group(1) == release_port
+
+
+def test_modeling_and_onto_modeling_do_not_share_host_port() -> None:
+    """两个栈由同一次根部署先后拉起，宿主端口默认值不能撞车。"""
+    onto_root = MODELING_ROOT / "onto-modeling"
+    modeling_port = _host_port_default(
+        (MODELING_ROOT / "deploy" / "docker-compose.release.yml").read_text(encoding="utf-8"),
+        "MODELING_PORT",
+    )
+    for compose_path in (
+        onto_root / "deploy" / "docker-compose.release.yml",
+        onto_root / "docker-compose.yml",
+    ):
+        onto_port = _host_port_default(compose_path.read_text(encoding="utf-8"), "ONTO_WEB_PORT")
+        assert onto_port != modeling_port, f"{compose_path} 与 modeling 栈抢占同一宿主端口"

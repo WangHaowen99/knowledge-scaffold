@@ -1,0 +1,10 @@
+# 构建上下文瘦身：venv/node_modules 等在容器内重建或经 vendor/wheels 供应
+backend/venv/
+backend/data/
+backend/.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+dist/
+**/__pycache__/
+*.pyc
+.env

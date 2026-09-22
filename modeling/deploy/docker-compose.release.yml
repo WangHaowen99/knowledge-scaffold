@@ -4,7 +4,7 @@ services:
     container_name: mw-modeling
     restart: unless-stopped
     ports:
-      - "${MODELING_PORT:-5100}:5100"
+      - "${MODELING_PORT:-8100}:5100"
       - "${MODELING_MCP_PORT:-5188}:5188"
     extra_hosts:
       - "host.docker.internal:host-gateway"

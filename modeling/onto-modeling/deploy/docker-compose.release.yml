@@ -1,0 +1,48 @@
+# compose 项目名固定为历史值 onto-web：数据卷全名（onto-web_onto-web-data 等）
+# 由项目名前缀决定，改名 onto-modeling 后必须沿用旧项目名才能无缝复用存量数据。
+name: onto-web
+
+services:
+  auth-server:
+    image: ${AUTH_SERVER_IMAGE:-onto-modeling-auth-server:latest}
+    container_name: onto-modeling-auth-server
+    restart: unless-stopped
+    # 只在 compose 网络内可达；issuer/audience 用镜像默认值（http://auth-server:5056 / meta-wise），
+    # 与 onto-modeling 容器内 ONTO_WEB_AUTH_URL 一致，改动时两边同步
+    expose:
+      - "5056"
+    environment:
+      # 首次启动（auth 数据卷为空）必须在 .env 里设初始管理员密码；已有用户数据后可移除
+      - AUTH_BOOTSTRAP_ADMIN_PASSWORD=${AUTH_BOOTSTRAP_ADMIN_PASSWORD:-}
+    volumes:
+      - onto-web-auth-data:/data
+    mem_limit: 512m
+
+  onto-modeling:
+    image: ${ONTO_WEB_IMAGE:-onto-modeling:latest}
+    container_name: onto-modeling
+    restart: unless-stopped
+    # 每个活跃会话一个 CLI 子进程（均值约 400MB）；容器上限按
+    # 固定开销 + 会话上限 × 单进程峰值 规划（方案 4.1.1），默认对应 8G 主机
+    mem_limit: ${ONTO_WEB_MEM_LIMIT:-6500m}
+    stop_grace_period: 30s
+    ports:
+      - "${ONTO_WEB_PORT:-5100}:8100"
+    env_file:
+      - ./.env
+    environment:
+      # 默认连自带 auth-server；接入既有 consumer 栈 auth 时在 .env 覆盖
+      # ONTO_MODELING_AUTH_URL（配合 ONTO_MODELING_EXTERNAL_AUTH_NETWORK，见 README）
+      - ONTO_WEB_AUTH_URL=${ONTO_MODELING_AUTH_URL:-http://auth-server:5056}
+      # 容器内固定监听 8100（environment 覆盖 env_file），
+      # .env 的 ONTO_WEB_PORT 只控制上面 ports 的宿主发布端口
+      - ONTO_WEB_PORT=8100
+    volumes:
+      - onto-web-data:/data
+    depends_on:
+      auth-server:
+        condition: service_healthy
+
+volumes:
+  onto-web-data:
+  onto-web-auth-data:
