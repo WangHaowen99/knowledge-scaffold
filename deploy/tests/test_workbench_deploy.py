@@ -509,12 +509,9 @@ def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) 
         deploy_dir / "deploy-stack.sh",
         'printf "%s\\n" "$@" > "$DEPLOY_ARGS_FILE"',
     )
-    # stub docker：网络探测返回空、compose up 记录调用
+    # stub docker：模拟真实部署——consumer 容器在 onto-agent_default 上
     docker_stub = deploy_dir / "docker"
-    _write_executable(
-        docker_stub,
-        'if [ "$1" = "network" ]; then exit 0; fi\nprintf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"',
-    )
+    _write_executable(docker_stub, _DOCKER_STUB_ON_DEFAULT_NETWORK)
     calls_file = tmp_path / "docker-calls.txt"
 
     result = subprocess.run(
@@ -535,9 +532,61 @@ def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) 
     assert override.is_file()
     content = override.read_text(encoding="utf-8")
     assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in content
-    assert "consumer_onto-agent-network" in content
+    # 必须是运行中 consumer 容器的实际网络，不是按命名规律猜的名字
+    assert "name: onto-agent_default" in content
+    assert "consumer_onto-agent-network" not in content
     assert 'profiles: ["disabled"]' in content  # 自带 dev auth 停用，共享账号中心
     assert "docker-compose.stack.yml" in calls_file.read_text(encoding="utf-8")
+
+
+# compose 项目名为 onto-agent 时网络叫 onto-agent_default，不含 "onto-agent-network"
+_DOCKER_STUB_ON_DEFAULT_NETWORK = """\
+if [ "$1" = "inspect" ] && [ "$2" = "--type" ] && [ "$3" = "container" ]; then exit 0; fi
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then printf 'onto-agent_default\\n'; exit 0; fi
+if [ "$1" = "ps" ]; then printf 'onto-agent-backend\\n'; exit 0; fi
+if [ "$1" = "network" ] && [ "$2" = "ls" ]; then printf 'bridge\\nonto-agent_default\\n'; exit 0; fi
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then [ "$3" = "onto-agent_default" ]; exit $?; fi
+printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
+"""
+
+# 探测不到任何 consumer 痕迹：必须报错退出，而不是猜一个名字继续
+_DOCKER_STUB_NO_CONSUMER = """\
+if [ "$1" = "inspect" ] || [ "$1" = "container" ] || [ "$1" = "network" ]; then exit 1; fi
+if [ "$1" = "ps" ]; then exit 0; fi
+printf "%s\\n" "$@" >> "$DOCKER_CALLS_FILE"\
+"""
+
+
+def test_root_deploy_fails_loudly_when_consumer_network_undetectable(tmp_path: Path) -> None:
+    """探测不到 consumer 网络时直接报错。
+
+    回归：旧实现只匹配 'onto-agent-network$'，匹配不到就回退到写死的
+    consumer_onto-agent-network。compose 把它当 external 网络，于是部署以
+    "network ... declared as external, but could not be found" 失败。
+    """
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    shutil.copy2(DEPLOY_ROOT / "deploy.sh", deploy_dir / "deploy.sh")
+    (tmp_path / "modeling" / "onto-modeling").mkdir(parents=True)
+    _write_executable(deploy_dir / "deploy-stack.sh", 'printf "%s\\n" "$@" > "$DEPLOY_ARGS_FILE"')
+    _write_executable(deploy_dir / "docker", _DOCKER_STUB_NO_CONSUMER)
+
+    result = subprocess.run(
+        [str(deploy_dir / "deploy.sh")],
+        env={
+            **os.environ,
+            "DEPLOY_ARGS_FILE": str(tmp_path / "args.txt"),
+            "DOCKER_CALLS_FILE": str(tmp_path / "docker-calls.txt"),
+            "PATH": f"{deploy_dir}:{os.environ['PATH']}",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "无法探测 consumer Docker 网络" in result.stderr
+    assert "consumer_onto-agent-network" not in result.stdout + result.stderr
 
 
 def _host_port_default(compose_text: str, var: str) -> str:

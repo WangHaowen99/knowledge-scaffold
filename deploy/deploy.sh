@@ -22,6 +22,10 @@ die() {
     exit 1
 }
 
+warn() {
+    printf '[deploy][warn] %s\n' "$*" >&2
+}
+
 env_get() {
     local file="$1" key="$2" value
     value="$([ -f "${file}" ] && grep -E "^${key}=" "${file}" | tail -n 1 | cut -d= -f2- || true)"
@@ -105,13 +109,51 @@ ensure_release_modeling_mcp_token_secret() {
 
 # onto-modeling 接入整栈（开箱即用）：共享 consumer 账号中心 + 同网络 +
 # 指向 Modeling Workbench 的评测服务地址。数据评测阶段依赖这三项接线。
+consumer_container() {
+    # 限定 --type container：同名镜像也会被 docker inspect 命中
+    if docker inspect --type container onto-agent-backend >/dev/null 2>&1; then
+        printf 'onto-agent-backend\n'
+        return 0
+    fi
+    docker ps --format '{{.Names}}' | grep -E '^onto-agent-backend($|-)|^backend$' | head -n 1 || true
+}
+
+# 与 modeling/deploy/deploy.sh 同策略：显式覆盖 > 运行中 consumer 容器的实际
+# 网络 > 命名规律兜底。compose 项目名不同则网络名不同（onto-agent_default 即
+# 一例），只按 'onto-agent-network$' 匹配会漏。探测不到返回空、由调用方报错——
+# 不能猜名字，猜错会让 compose 以 declared as external, but could not be found 失败。
 detect_consumer_network() {
-    docker network ls --format '{{.Name}}' 2>/dev/null         | grep -m1 'onto-agent-network$' || printf 'consumer_onto-agent-network'
+    local container network
+    if [ -n "${CONSUMER_NETWORK:-}" ]; then
+        printf '%s\n' "${CONSUMER_NETWORK}"
+        return 0
+    fi
+    container="$(consumer_container)"
+    if [ -n "${container}" ]; then
+        network="$(docker container inspect \
+            --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+            "${container}" 2>/dev/null | head -n 1)"
+        if [ -n "${network}" ]; then
+            printf '%s\n' "${network}"
+            return 0
+        fi
+    fi
+    docker network ls --format '{{.Name}}' 2>/dev/null \
+        | grep -E '(^|_|-)onto-agent-network$|^onto-agent_default$' \
+        | head -n 1 || true
+}
+
+require_consumer_network() {
+    local network
+    network="$(detect_consumer_network)"
+    [ -n "${network}" ] || die \
+        "无法探测 consumer Docker 网络；请先部署 consumer，或显式设置 CONSUMER_NETWORK"
+    printf '%s\n' "${network}"
 }
 
 write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地址>
     local dir="$1" modeling_url="$2" network
-    network="$(detect_consumer_network)"
+    network="$(require_consumer_network)"
     cat > "${dir}/docker-compose.stack.yml" <<EOF2
 # 由 deploy.sh 生成（整栈部署形态，勿手改；单独部署 onto-modeling 时删除即可）：
 # 停用自带 dev auth-server，共享 consumer 账号中心；接入 consumer 网络；
@@ -135,13 +177,22 @@ EOF2
 }
 
 seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
-    local dir="$1" env_file="$1/.env" network
+    local dir="$1" env_file="$1/.env" network current_network
     [ -f "${env_file}" ] || { [ -f "${dir}/.env.example" ] && cp "${dir}/.env.example" "${env_file}"; }
     [ -f "${env_file}" ] || touch "${env_file}"
     chmod 600 "${env_file}"
-    network="$(detect_consumer_network)"
+    network="$(require_consumer_network)"
     grep -q '^ONTO_WEB_MODELING_URL=..*' "${env_file}"         || printf 'ONTO_WEB_MODELING_URL=%s
 ' 'http://mw-modeling:5100' >> "${env_file}"
+    # 存量 .env 可能记着一个已不存在的网络（旧版探测失败时写入了固定猜测名），
+    # 那样重跑部署也不会自愈——就地删掉失效值，让下面重新写入探测结果。
+    current_network="$(sed -n 's/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=//p' "${env_file}" | head -n 1)"
+    if [ -n "${current_network}" ] && ! docker network inspect "${current_network}" >/dev/null 2>&1; then
+        warn "配置中的 consumer 网络 ${current_network} 不存在，改用探测到的 ${network}"
+        sed -i.bak '/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=/d' "${env_file}"
+        command rm -f "${env_file}.bak"
+        chmod 600 "${env_file}"
+    fi
     grep -q '^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=..*' "${env_file}"         || printf 'ONTO_MODELING_EXTERNAL_AUTH_NETWORK=%s
 ' "${network}" >> "${env_file}"
 }
