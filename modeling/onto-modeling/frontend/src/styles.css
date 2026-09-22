@@ -425,11 +425,6 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 .search-hit-path { font-size: 12px; color: var(--color-primary); }
 .search-hit-text { font-size: 12.5px; color: var(--text-secondary); font-family: var(--font-mono, monospace); }
 
-.cost-widget {
-  font-size: 12px; color: var(--color-primary); background: var(--color-primary-soft);
-  border-radius: 999px; padding: 2px 10px; font-variant-numeric: tabular-nums;
-}
-
 /* ---- 登录页（复用 modeling 服务分屏设计） ---- */
 .login-split { display: flex; height: 100vh; background: var(--surface-page); }
 .lbrand {
@@ -1330,7 +1325,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   }
   .app-topbar .ant-btn { padding-inline: 7px; flex: none; }
   .app-topbar .ant-btn > span:not(.ant-btn-icon):not(.anticon) { display: none; } /* 按钮只留图标 */
-  .app-topbar .pending-widget, .app-topbar .cost-widget { flex: none; }
+  .app-topbar .pending-widget { flex: none; }
   /* 首页：单列卡片；顶栏不换行、横向滚动（换行会与标题重叠） */
   .mwr .pj-grid, .pj-grid { grid-template-columns: 1fr; }
   .mwr .topbar, .topbar {

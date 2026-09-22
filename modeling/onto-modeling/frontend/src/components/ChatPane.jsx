@@ -759,7 +759,6 @@ export default function ChatPane({
                   ? (m.lastTs - m.firstTs) / m.deltaCount
                   : null,
             tokens: outputTokens || null,
-            cost: event.total_cost_usd ?? null,
             inputTokens: inputTokens || null,
             cacheRate: inputTokens ? cacheRead / inputTokens : null,
             done: true,
@@ -1245,7 +1244,9 @@ export default function ChatPane({
               </div>
             }
           >
-            <span className="chat-cost">${usage.total_cost_usd.toFixed(2)}</span>
+            <span className="chat-cost">
+              {(usage.output_tokens / 1000).toFixed(1)}k tok
+            </span>
           </Popover>
         )}
         {ctxPct != null && (
@@ -1597,7 +1598,6 @@ export default function ChatPane({
               </>
             )}
             {metrics.tokens != null && ` · 输出 ${metrics.tokens} tokens`}
-            {metrics.done && metrics.cost != null && ` · $${metrics.cost.toFixed(3)}`}
             {metrics.done && metrics.inputTokens != null && (
               <>
                 {' '}
