@@ -30,6 +30,10 @@
           {
             "type": "command",
             "command": "bash \"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/resource_write_guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/ontology_scope_guard.sh\""
           }
         ]
       },
@@ -47,6 +51,10 @@
           {
             "type": "command",
             "command": "bash \"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/resource_write_guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/ontology_scope_guard.sh\""
           }
         ]
       }

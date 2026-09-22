@@ -34,7 +34,7 @@ Validate the ontology documents in two sequential phases: rule check first, then
 If $ARGUMENTS is not empty, enter **incremental mode**:
 
 1. Parse $ARGUMENTS as space-separated bare names (e.g. `订单 创建订单 支付`).
-2. For each name, recursively search `ontology/object/**/{name}.md` and `ontology/operation/**/{name}.md`. If none exists, warn: "⚠️ 未找到文件：{name}，已跳过。"
+2. For each name, recursively search the four packaged entry types — `ontology/object/**/{name}.md`, `ontology/operation/**/{name}.md`, `ontology/rule/**/{name}.md`, `ontology/metric/**/{name}.md`. If none exists, warn: "⚠️ 未找到文件：{name}，已跳过。"
 3. The resolved list is TARGET_FILES. If all names were invalid, fall back to full mode.
 4. Compute RELATED_FILES: for each target file, read it and collect all `[[link]]` stems. Also scan all other ontology files and include any whose `[[link]]` targets include a TARGET_FILE stem. Remove TARGET_FILES from this set.
 5. Display:
@@ -50,6 +50,8 @@ If $ARGUMENTS is empty, proceed in **full mode** (no message needed).
 - 增量模式：按 `TARGET_FILES` 所属目录计算：
   - 若全部目标都属于 `ontology/object/` → `SCOPE = objects`
   - 若全部目标都属于 `ontology/operation/` → `SCOPE = operation`
+  - 若全部目标都属于 `ontology/rule/` → `SCOPE = rule`
+  - 若全部目标都属于 `ontology/metric/` → `SCOPE = metric`
   - 跨多个分类 → `SCOPE = all`
 - 后续报告文件名统一使用 `reports/{YYYYMMDD}-{HHMMSS}-{SCOPE}-rule.md` 与 `reports/{YYYYMMDD}-{HHMMSS}-{SCOPE}-semantic.md`，其中日期时间使用 `Asia/Shanghai`。
 

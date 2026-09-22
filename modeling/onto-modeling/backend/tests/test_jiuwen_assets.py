@@ -99,3 +99,39 @@ def test_hooks_deny_toolset_write(tmp_path):
         ws,
     )
     assert reason is not None  # 工具集资产禁写
+
+
+def test_hooks_deny_self_invented_ontology_dir(tmp_path):
+    """ontology/ 下自创目录任何时候都拒绝——内容进不了知识包。"""
+    loader = make_loader()
+    entries = loader.pre_tool_use_hooks()
+    ws = _git_workspace(tmp_path)
+
+    reason = run_hooks_sync(
+        entries, "write_file", {"file_path": "ontology/cases/案例.md", "content": "x"}, ws
+    )
+    assert reason and "自创目录" in reason
+
+    # 白名单内但不打包的目录，非演进期不拦（建模代理的上下文沉淀区）
+    assert run_hooks_sync(
+        entries, "write_file", {"file_path": "ontology/knowledge/条目.md", "content": "x"}, ws
+    ) is None
+
+
+def test_hooks_restrict_evolution_writes_to_packaged_dirs(tmp_path):
+    """评测演进期：写入必须落在会进知识包的目录，否则 consumer 看不到。"""
+    loader = make_loader()
+    entries = loader.pre_tool_use_hooks()
+    ws = _git_workspace(tmp_path)
+    state = ws / ".ontology-state"
+    state.mkdir()
+    (state / "lock-evolution.json").write_text("{}", encoding="utf-8")
+
+    for rel in ("ontology/knowledge/案例.md", "ontology/action/动作.md"):
+        reason = run_hooks_sync(entries, "write_file", {"file_path": rel, "content": "x"}, ws)
+        assert reason and "只能落在会打包的目录" in reason, rel
+
+    for rel in ("ontology/rule/场景规则.md", "ontology/object/订单.md", "ontology/testcase/用例.md"):
+        assert run_hooks_sync(
+            entries, "write_file", {"file_path": rel, "content": "x"}, ws
+        ) is None, rel
