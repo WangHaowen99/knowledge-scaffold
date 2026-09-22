@@ -410,7 +410,7 @@ def eval_status(project_id: str, request: Request):
     return {
         "enabled": modeling_eval.enabled(),
         "reachable": modeling_eval.reachable() if modeling_eval.enabled() else False,
-        "state": modeling_eval.read_state(root),
+        "state": modeling_eval.status_view(project_id, root),
     }
 
 
@@ -501,6 +501,47 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
 
     _asyncio.create_task(modeling_eval.run(project_id, root, token, cases, data_source))
     return {"started": True, "cases": len(cases)}
+
+
+def _modeling_token(request: Request) -> str:
+    """modeling 调用令牌：共享账号中心下透传当前用户 token，否则用部署级兜底。"""
+    auth = request.headers.get("authorization") or ""
+    return config.MODELING_TOKEN or (auth[7:] if auth.lower().startswith("bearer ") else "")
+
+
+@router.post("/{project_id}/eval/stop")
+def eval_stop(project_id: str, request: Request):
+    """停止评测：取消 modeling 侧轮次并把状态收敛到可重跑的终态。"""
+    from ..services import modeling_eval
+
+    root = ensure_access(project_id, request, write=True)
+    if not modeling_eval.enabled():
+        return JSONResponse(status_code=400, content={"error": "未配置 modeling 评测服务（ONTO_WEB_MODELING_URL）"})
+    try:
+        return modeling_eval.request_stop(project_id, root, _modeling_token(request))
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+
+
+@router.post("/{project_id}/eval/resume")
+async def eval_resume(project_id: str, request: Request):
+    """续接上一轮：只收取 modeling 侧已有轮次的结果，不重新发起评测。"""
+    from ..services import modeling_eval
+
+    root = ensure_access(project_id, request, write=True)
+    if not modeling_eval.enabled():
+        return JSONResponse(status_code=400, content={"error": "未配置 modeling 评测服务（ONTO_WEB_MODELING_URL）"})
+    if not modeling_eval.reachable():
+        return JSONResponse(status_code=503, content={"error": "modeling 评测服务不可达，请先启动该服务"})
+    if not modeling_eval.can_resume(root):
+        return JSONResponse(status_code=409, content={"error": "没有可续接的评测轮次，请重新运行评测"})
+    token = _modeling_token(request)
+    if not token:
+        return JSONResponse(status_code=400, content={"error": "缺少可用于 modeling 的令牌"})
+    import asyncio as _asyncio
+
+    _asyncio.create_task(modeling_eval.resume(project_id, root, token))
+    return {"resuming": True}
 
 
 @router.get("/{project_id}/eval-data/alignment")

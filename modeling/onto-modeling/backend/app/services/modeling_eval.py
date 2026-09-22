@@ -32,9 +32,28 @@ POLL_INTERVAL_SECONDS = 6
 ROUND_TIMEOUT_SECONDS = 1800
 AUTH_GRACE_SECONDS = 600
 DATA_IMPORT_TIMEOUT_SECONDS = 600  # 凭据过期后等待前端接力新 token 的宽限窗
+# running 状态由编排线程每轮刷 ts；内存里已无编排且 ts 停滞超过此窗即判为中断
+STALE_AFTER_SECONDS = POLL_INTERVAL_SECONDS * 5
 
 _running: set[str] = set()  # project_id 去重（单进程内防并发重复触发）
 _live_tokens: dict[str, str] = {}  # project_id → 前端轮询接力的最新 token
+_stop_requested: set[str] = set()  # 用户请求停止的 project_id（协作式取消）
+
+STOPPED_MESSAGE = "评测已停止（modeling 侧轮次已取消，已完成用例的结果仍保留在 modeling 侧）"
+INTERRUPTED_MESSAGE = (
+    "上一轮评测被服务重启中断：modeling 侧轮次可能仍在执行或已完成，"
+    "可「续接上一轮」收取结果"
+)
+
+
+class EvalStopped(Exception):
+    """用户主动停止评测——与编排失败区分开：状态落 stopped，且允许重跑。"""
+
+
+def _check_stop(project_id: str) -> None:
+    """协作式取消点：编排的每个可中断处调用，命中停止请求即退出编排。"""
+    if project_id in _stop_requested:
+        raise EvalStopped(STOPPED_MESSAGE)
 
 
 def update_token(project_id: str, token: str) -> None:
@@ -173,10 +192,11 @@ def _generate_mock_seed(root: Path) -> tuple[str, bytes]:
     return ("mock-seed.xlsx", out.read_bytes())
 
 
-def _poll_data_import(root: Path, tok, mp_project: str) -> None:
+def _poll_data_import(project_id: str, root: Path, tok, mp_project: str) -> None:
     deadline = time.time() + DATA_IMPORT_TIMEOUT_SECONDS
     while time.time() < deadline:
         time.sleep(POLL_INTERVAL_SECONDS)
+        _check_stop(project_id)
         data = _http(
             "GET", f"/api/projects/{mp_project}/evaluation-database/imports", tok()
         )
@@ -318,6 +338,47 @@ def _write_state(root: Path, **fields: Any) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _resumable(state: dict) -> bool:
+    """能否续接：modeling 侧有轮次坐标才谈得上收取已有结果。"""
+    return bool(state.get("modeling_project") and state.get("round_id"))
+
+
+def status_view(project_id: str, root: Path) -> dict:
+    """前端可见的评测状态：把"内存里已无编排、状态却仍是 running"的孤儿纠正为中断。
+
+    running 只由本进程的编排线程维护（每轮刷 ts）。进程重启或线程意外退出后
+    内存态消失，而 eval.json 会永远停在 running，把运行按钮永久锁死；此处按
+    "无内存态 + ts 停滞"双条件收敛，并标出是否可续接。
+    """
+    state = read_state(root)
+    if (
+        state.get("status") == "running"
+        and project_id not in _running
+        and int(time.time()) - int(state.get("ts") or 0) >= STALE_AFTER_SECONDS
+    ):
+        _write_state(root, status="interrupted", message=INTERRUPTED_MESSAGE)
+        state = read_state(root)
+    if state.get("status") in ("interrupted", "failed"):
+        state = {**state, "resumable": _resumable(state)}
+    return state
+
+
+def sweep_interrupted(data_dir: Path | None = None) -> list[str]:
+    """进程启动时收敛孤儿状态：新进程里不存在任何编排，仍标 running 的工作区
+    一律改写为 interrupted（保留轮次坐标以便续接）。返回被改写的项目 ID。"""
+    base = Path(data_dir if data_dir is not None else config.DATA_DIR) / "workspaces"
+    touched: list[str] = []
+    if not base.is_dir():
+        return touched
+    for state_path in sorted(base.glob(f"*/{STATE_REL}")):
+        root = state_path.parent.parent
+        if read_state(root).get("status") != "running":
+            continue
+        _write_state(root, status="interrupted", message=INTERRUPTED_MESSAGE)
+        touched.append(root.name)
+    return touched
+
+
 def _write_report(root: Path, round_info: dict, results: list[dict]) -> str:
     counts = {"pass": 0, "partial": 0, "fail": 0, "error": 0}
     for item in results:
@@ -377,6 +438,11 @@ def _case_progress(cases: list[dict], results: list[dict], round_running: bool) 
     for case in cases[:500]:
         question = str(case.get("question", "")).strip()
         item = by_question.get(question)
+        if item is None and question:
+            # 续接场景的 cases 取自状态里截断过的问题，退回前缀匹配
+            item = next(
+                (r for q, r in by_question.items() if q.startswith(question)), None
+            )
         if item is not None:
             out.append({
                 "question": question[:120],
@@ -407,6 +473,7 @@ def _poll_round(
     auth_wait_until: float | None = None
     while time.time() < deadline:
         time.sleep(POLL_INTERVAL_SECONDS)
+        _check_stop(project_id)
         try:
             details = _http("GET", f"/api/projects/{mp_project}/rounds/{round_id}", tok())
         except urllib.error.HTTPError as exc:
@@ -422,6 +489,7 @@ def _poll_round(
                 "重新打开项目页并重跑评测即可续接收取结果"
             ) from exc
         auth_wait_until = None
+        _check_stop(project_id)  # 取消请求已落 stopped 状态，不再覆写进度
         round_info = details.get("round") or {}
         _write_state(
             root,
@@ -447,11 +515,13 @@ def _poll_round(
 
 
 def _try_resume(project_id: str, root: Path, token: str, cases: list[dict]) -> bool:
-    """凭据过期等中断后，modeling 侧轮次往往仍在执行或已完成。重跑且用例集
-    未变时续接收取结果，不重复导入、不重复烧模型。"""
+    """凭据过期、服务重启等中断后，modeling 侧轮次往往仍在执行或已完成。重跑且
+    用例集未变时续接收取结果，不重复导入、不重复烧模型。"""
     prior = read_state(root)
     mp_project, round_id = prior.get("modeling_project"), prior.get("round_id")
-    if not mp_project or not round_id or prior.get("status") not in ("failed", "running"):
+    if not mp_project or not round_id:
+        return False
+    if prior.get("status") not in ("failed", "running", "interrupted"):
         return False
     prior_questions = [c.get("question") for c in prior.get("cases") or []]
     now_questions = [str(c.get("question", "")).strip()[:120] for c in cases]
@@ -490,6 +560,95 @@ def _git_commit(root: Path, message: str) -> None:
         )
 
 
+# ---- 停止与续接 ----
+
+
+def request_stop(project_id: str, root: Path, token: str) -> dict:
+    """停止评测：取消 modeling 侧轮次，并把状态收敛到可重跑的终态。
+
+    两种现场都要能停下来：
+    - 进程内有编排 → 置协作取消标记，轮询下一拍退出（不再覆写状态）；
+    - 进程内无编排（重启后的中断状态）→ 只需取消远端轮次并收敛状态。
+
+    modeling 返回 404/409（轮次不存在或已结束）视为目标状态已达成，不算失败。
+    """
+    state = read_state(root)
+    if state.get("status") not in ("running", "interrupted"):
+        raise ValueError("当前没有进行中的评测")
+    if project_id in _running:
+        _stop_requested.add(project_id)
+
+    mp_project, round_id = state.get("modeling_project"), state.get("round_id")
+    cancelled, detail = False, ""
+    if mp_project and round_id:
+        try:
+            _http(
+                "POST",
+                f"/api/projects/{mp_project}/evaluate/cancel",
+                _live_tokens.get(project_id) or token,
+                body={"roundId": round_id},
+                timeout=30,
+            )
+            cancelled = True
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (404, 409):
+                detail = str(getattr(exc, "detail", "") or exc)
+        except Exception as exc:  # 网络不通等：本地状态照样收敛
+            detail = str(exc)
+
+    message = (
+        STOPPED_MESSAGE if not detail
+        else f"评测已停止（modeling 侧取消未确认：{detail[:120]}）"
+    )
+    _write_state(root, status="stopped", message=message)
+    return {"stopped": True, "cancelled": cancelled, "message": message}
+
+
+def can_resume(root: Path) -> bool:
+    """是否具备续接条件（状态为中断/失败且有轮次坐标）。"""
+    state = read_state(root)
+    return state.get("status") in ("interrupted", "failed") and _resumable(state)
+
+
+async def resume(project_id: str, root: Path, token: str) -> None:
+    """续接上一轮：只收取 modeling 侧已有轮次的结果，绝不重新发起评测。"""
+    if project_id in _running:
+        return
+    _running.add(project_id)
+    _stop_requested.discard(project_id)
+    _live_tokens[project_id] = token
+    try:
+        await asyncio.to_thread(_resume_sync, project_id, root, token)
+    finally:
+        _running.discard(project_id)
+        _live_tokens.pop(project_id, None)
+        _stop_requested.discard(project_id)
+
+
+def _resume_sync(project_id: str, root: Path, token: str) -> None:
+    prior = read_state(root)
+    # 状态里的问题是截断过的，只用于进度展示；报告内容取 modeling 侧结果
+    cases = [
+        {"question": str(c.get("question", "")), "groundTruth": ""}
+        for c in prior.get("cases") or []
+    ]
+    try:
+        if not _try_resume(project_id, root, token, cases):
+            # 轮次已失败、或这次读不到：保持原状态，轮次坐标留着供再试
+            _write_state(
+                root, status=prior.get("status") or "interrupted",
+                message="上一轮无法续接（modeling 侧轮次已失败或暂时读不到）"
+                        "——可稍后重试，或重新运行评测",
+            )
+    except EvalStopped:
+        if read_state(root).get("status") != "stopped":
+            _write_state(root, status="stopped", message=STOPPED_MESSAGE)
+    except Exception as exc:
+        detail = str(getattr(exc, "detail", "") or "")
+        text = f"{exc}：{detail}" if detail else str(exc)
+        _write_state(root, status="failed", message=f"续接失败：{text}"[:300])
+
+
 # ---- 编排主体 ----
 
 
@@ -501,12 +660,14 @@ async def run(
     if project_id in _running:
         return
     _running.add(project_id)
+    _stop_requested.discard(project_id)  # 上一轮遗留的取消标记不影响新编排
     _live_tokens[project_id] = token
     try:
         await asyncio.to_thread(_run_sync, project_id, root, token, cases, data_source)
     finally:
         _running.discard(project_id)
         _live_tokens.pop(project_id, None)
+        _stop_requested.discard(project_id)
 
 
 def _run_sync(
@@ -526,6 +687,7 @@ def _run_sync(
         )
         if _try_resume(project_id, root, token, cases):
             return
+        _check_stop(project_id)
         _write_state(root, status="running", phase="package", message="打包知识包")
         manager = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
         import tempfile
@@ -576,7 +738,7 @@ def _run_sync(
                         "（评测 MySQL + NL2SQL 服务）并配置 EVAL_DB_URL"
                     ) from exc
                 raise
-            _poll_data_import(root, tok, mp_project)
+            _poll_data_import(project_id, root, tok, mp_project)
         else:
             _write_state(root, phase="data_source", message="配置数据源（无数据库模式）")
             _http("PUT", f"/api/projects/{mp_project}/data-source", tok(),
@@ -587,6 +749,7 @@ def _run_sync(
               body={"cases": [{"question": c["question"], "groundTruth": c["groundTruth"]}
                               for c in cases]})
 
+        _check_stop(project_id)  # 发起前最后一个取消点：停在此处不产生模型开销
         _write_state(
             root, phase="evaluate", message="评测执行中（consumer 逐用例问答）",
             cases=_case_progress(cases, [], True),
@@ -595,6 +758,10 @@ def _run_sync(
         round_id = started["roundId"]
         _write_state(root, round_id=round_id)
         _poll_round(project_id, root, token, mp_project, round_id, cases)
+    except EvalStopped:
+        # 停止请求已在 request_stop 里落状态；此处只兜底，不覆盖其话术
+        if read_state(root).get("status") != "stopped":
+            _write_state(root, status="stopped", message=STOPPED_MESSAGE)
     except Exception as exc:  # 编排失败落状态，不留悬挂的 running
         detail = str(getattr(exc, "detail", "") or "")
         text = f"{exc}：{detail}" if detail else str(exc)

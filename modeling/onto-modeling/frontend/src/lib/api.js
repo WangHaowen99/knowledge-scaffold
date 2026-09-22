@@ -310,6 +310,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ cases, data_source: dataSource || { mode: 'none' } }),
     }),
+  evalStop: (pid) => request(`/api/projects/${pid}/eval/stop`, { method: 'POST' }),
+  evalResume: (pid) => request(`/api/projects/${pid}/eval/resume`, { method: 'POST' }),
   setProjectEngine: (pid, engine) =>
     request(`/api/projects/${pid}/engine`, {
       method: 'PUT',
