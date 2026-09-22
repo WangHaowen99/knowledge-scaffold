@@ -16,12 +16,14 @@ services:
     build: .
     container_name: onto-modeling-dev
     ports:
-      - "8100:8100"
+      - "${ONTO_WEB_PORT:-5100}:8100"
     env_file:
       - path: ./.env
         required: false
     environment:
       - ONTO_WEB_AUTH_URL=http://auth-server:5056
+      # .env 的 ONTO_WEB_PORT 只控制上面 ports 的宿主发布端口，容器内固定 8100
+      - ONTO_WEB_PORT=8100
     volumes:
       - onto-modeling-data-dev:/data
     depends_on:

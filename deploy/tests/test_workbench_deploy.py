@@ -538,3 +538,44 @@ def test_root_deploy_source_writes_onto_modeling_stack_override(tmp_path: Path) 
     assert "consumer_onto-agent-network" in content
     assert 'profiles: ["disabled"]' in content  # 自带 dev auth 停用，共享账号中心
     assert "docker-compose.stack.yml" in calls_file.read_text(encoding="utf-8")
+
+
+def _host_port_default(compose_text: str, var: str) -> str:
+    """取 compose ports 里 "${VAR:-默认}:容器端口" 的宿主侧默认值。"""
+    match = re.search(rf'- "\$\{{{var}:-(\d+)\}}:\d+"', compose_text)
+    assert match is not None, f"未找到 {var} 的宿主端口映射"
+    return match.group(1)
+
+
+def test_modeling_healthcheck_port_matches_published_host_port() -> None:
+    """健康检查端口必须跟 compose 发布的宿主端口同源。
+
+    回归：端口互换只改了 compose 默认值（5100→8100），deploy.sh 仍轮询 5100，
+    未显式设置 MODELING_PORT 的新部署必然卡在「Workbench page did not become reachable」。
+    """
+    release_compose = (MODELING_ROOT / "deploy" / "docker-compose.release.yml").read_text(
+        encoding="utf-8"
+    )
+    source_compose = (DEPLOY_ROOT / "docker-compose.modeling.yml").read_text(encoding="utf-8")
+    deploy_script = (MODELING_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+
+    release_port = _host_port_default(release_compose, "MODELING_PORT")
+    assert _host_port_default(source_compose, "MODELING_PORT") == release_port
+
+    checked_ports = set(re.findall(r"127\.0\.0\.1:\$\{MODELING_PORT:-(\d+)\}", deploy_script))
+    assert checked_ports == {release_port}
+
+
+def test_modeling_and_onto_modeling_do_not_share_host_port() -> None:
+    """两个栈由同一次根部署先后拉起，宿主端口默认值不能撞车。"""
+    onto_root = MODELING_ROOT / "onto-modeling"
+    modeling_port = _host_port_default(
+        (MODELING_ROOT / "deploy" / "docker-compose.release.yml").read_text(encoding="utf-8"),
+        "MODELING_PORT",
+    )
+    for compose_path in (
+        onto_root / "deploy" / "docker-compose.release.yml",
+        onto_root / "docker-compose.yml",
+    ):
+        onto_port = _host_port_default(compose_path.read_text(encoding="utf-8"), "ONTO_WEB_PORT")
+        assert onto_port != modeling_port, f"{compose_path} 与 modeling 栈抢占同一宿主端口"

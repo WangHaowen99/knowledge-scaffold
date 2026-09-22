@@ -25,7 +25,7 @@ vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 ./deploy.sh          # 再次运行完成部署
 ```
 
-访问 `http://<部署机地址>:8100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
+访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
 
 ## 容量规划（方案 4.1.1）
 

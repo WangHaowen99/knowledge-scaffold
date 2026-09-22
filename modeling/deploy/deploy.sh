@@ -418,11 +418,11 @@ deploy_release() {
 
     wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
-    wait_for_http "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 \
+    wait_for_http "http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html" 60 \
         || die "Modeling Workbench page did not become reachable"
     wait_for_http "http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" 60 \
         || die "Modeling MCP health endpoint did not become reachable"
-    log "Modeling Workbench deployment finished: http://localhost:${MODELING_PORT:-5100}/workbench.html#/create"
+    log "Modeling Workbench deployment finished: http://localhost:${MODELING_PORT:-8100}/workbench.html#/create"
 }
 
 deploy_source() {
@@ -455,9 +455,9 @@ deploy_source() {
 
     wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
-    wait_for_http "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 \
+    wait_for_http "http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html" 60 \
         || die "Modeling Workbench page did not become reachable"
-    log "Modeling Workbench deployment finished on port ${MODELING_PORT:-5100}"
+    log "Modeling Workbench deployment finished on port ${MODELING_PORT:-8100}"
 }
 
 if [ "$#" -gt 0 ]; then

@@ -308,7 +308,7 @@ cmd_preflight() {
   else
     echo "[deploy-stack] [FAIL] 缺少 docker compose"; rc=2
   fi
-  for p in "${BACKEND_PORT:-5055}" "${FRONTEND_PORT:-8888}" "${MODELING_PORT:-5100}"; do
+  for p in "${BACKEND_PORT:-5055}" "${FRONTEND_PORT:-8888}" "${MODELING_PORT:-8100}"; do
     if port_free "$p"; then ok "端口 $p 空闲"; else
       if curl -fsS --max-time 3 "http://127.0.0.1:$p/health" >/dev/null 2>&1; then
         warn "端口 $p 已被占用，且像是本系统已在运行（/health 可达）——重复 up 是安全的"
@@ -455,15 +455,15 @@ cmd_up() {
     log "启动 Modeling Workbench（core + MCP + Agent，tag=$MODELING_TAG）…"
     modeling_compose "${eval_args[@]+"${eval_args[@]}"}" up -d "${build_args[@]}" --remove-orphans
     wait_for_container "mw-modeling-agent" 180
-    wait_http "modeling" "http://127.0.0.1:${MODELING_PORT:-5100}/health" 120 modeling
+    wait_http "modeling" "http://127.0.0.1:${MODELING_PORT:-8100}/health" 120 modeling
     wait_http "modeling-mcp" "http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" 120 modeling
-    wait_http "modeling-workbench" "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 modeling
+    wait_http "modeling-workbench" "http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html" 60 modeling
   fi
 
   echo
   ok "部署完成。访问入口："
   [ "$modeling_only" -eq 0 ] && log "  控制台（consumer）  http://localhost:${FRONTEND_PORT:-8888}   初始账号 admin（密码取 AUTH_BOOTSTRAP_ADMIN_PASSWORD）"
-  [ "$consumer_only" -eq 0 ] && log "  建模工作台          http://localhost:${MODELING_PORT:-5100}/workbench.html#/create   用 consumer 账号登录"
+  [ "$consumer_only" -eq 0 ] && log "  建模工作台          http://localhost:${MODELING_PORT:-8100}/workbench.html#/create   用 consumer 账号登录"
   [ "$consumer_only" -eq 0 ] && log "  建模 MCP            http://localhost:${MODELING_MCP_PORT:-5188}"
   log "后续初始化步骤见 deploy/README.md 第 4 节。"
 }
@@ -475,9 +475,9 @@ cmd_status() {
   echo
   for pair in "consumer-backend|http://127.0.0.1:${BACKEND_PORT:-5055}/health" \
               "consumer-frontend|http://127.0.0.1:${FRONTEND_PORT:-8888}/" \
-              "modeling|http://127.0.0.1:${MODELING_PORT:-5100}/health" \
+              "modeling|http://127.0.0.1:${MODELING_PORT:-8100}/health" \
               "modeling-mcp|http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" \
-              "modeling-workbench|http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html"; do
+              "modeling-workbench|http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html"; do
     local_name="${pair%%|*}"; local_url="${pair##*|}"
     if curl -fsS --max-time 5 "$local_url" >/dev/null 2>&1; then
       ok "$local_name 可达：$local_url"
@@ -522,7 +522,7 @@ cmd_help() {
   down [--volumes]              停止（--volumes 同时删数据卷，慎用）
   logs <service>                跟踪日志：backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-agent|eval-mysql
 
-环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888 MODELING_PORT=5100 MODELING_MCP_PORT=5188
+环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888 MODELING_PORT=8100 MODELING_MCP_PORT=5188
   EVAL_MYSQL_PORT=3306 EVAL_MYSQL_ROOT_PASSWORD=<启用评测库时必填的强随机值>
   MODELING_LLM_BASE_URL/MODEL/API_KEY（可选部署兜底；推荐由 admin 登录后统一配置）
 完整手册：deploy/README.md
