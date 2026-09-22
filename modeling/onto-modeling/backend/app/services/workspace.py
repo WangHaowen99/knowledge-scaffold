@@ -15,6 +15,8 @@ import time
 import uuid
 from pathlib import Path
 
+from . import package_mapping
+
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
@@ -568,6 +570,10 @@ class WorkspaceManager:
         objects = entry_items("ontology/object")
         # ontology/logic 为旧目录兼容（范式升级 ADR-0004）
         operations = entry_items("ontology/operation", "ontology/logic")
+        # 对象 ↔ 真实数据表：来源Sheet、`# 字段` 段与 mappings 三处同一份绑定结果
+        binding = package_mapping.resolve_object_tables(root)
+        bound = binding["objects"]
+        mappings = package_mapping.object_data_mappings(binding)
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
@@ -613,13 +619,29 @@ class WorkspaceManager:
                 index_md(
                     "object_index", "objects", "对象目录", objects,
                     ["object key", "标题", "说明", "来源Sheet"],
-                    lambda k: f"| {k} | {k} | {k} | {k} |\n",
+                    lambda k: f"| {k} | {k} | {k} | "
+                              f"{bound.get(k, {}).get('table') or package_mapping.UNBOUND} |\n",
                 ),
             )
             for key, body in objects:
+                item = bound.get(key, {})
+                table = item.get("table")
+                # 绑定到真实表时补 mapping/sources frontmatter：mappings json 缺失或被裁剪时
+                # modeling 仍能从 sources 还原 sourceRefs
+                extra = (
+                    f"mapping:\n  provider_alias: {package_mapping.PROVIDER_ALIAS}\n"
+                    f"  resource: {q(table)}\nsources: [{q('表格：' + table)}]\n"
+                    if table else ""
+                )
+                body = package_mapping.rewrite_object_body(body, item.get("fields") or [])
                 zf.writestr(
                     f"{pkg}/objects/{key}.md",
-                    front("object", key, key) + self._sanitize_placeholder_aliases(body),
+                    front("object", key, key, extra) + self._sanitize_placeholder_aliases(body),
+                )
+            if mappings["objects"]:
+                zf.writestr(
+                    f"{pkg}/mappings/object-data-mappings.json",
+                    json.dumps(mappings, ensure_ascii=False, indent=2) + "\n",
                 )
             zf.writestr(
                 f"{pkg}/operations/index.md",

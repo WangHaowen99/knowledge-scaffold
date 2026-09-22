@@ -57,6 +57,9 @@ Write `OBJECTS_DIR/{名称}.md`:
 # 英文名称
 {English name}
 
+# 数据来源
+{该对象对应的真实数据表名（eval_data/schema 表格资料里的 Sheet 名，逐字相同）；纯概念对象填'无'}
+
 # 对象属性清单
 | 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -70,6 +73,9 @@ Write `OBJECTS_DIR/{名称}.md`:
 Rules:
 - File name = object name in Chinese
 - Always include a primary key (主键=是)
+- 「数据来源」写真实表名（逐字相同）：它是发布包「来源Sheet」列与 object-data-mappings.json
+  的唯一声明口径，写错或留空该对象在数据问答里就查不到。无表格资料可对照时填'无'，
+  不要臆造表名；此时「英文名称」列仍应按源材料里的真实字段名写，后续可据此自动匹配。
 - Types: 字符串/数字/布尔/枚举/日期/对象引用
 - Use `[[]]` only for related objects that will also be extracted (or in EXISTING_FILES)
 - If no relationships, omit 关联对象 section

@@ -169,7 +169,6 @@ modeling 服务时再评估。
   两个 env 接线；评测库未就绪时 quick-import 503 被翻译为带部署指引的失败信息；
 - 端到端实测（本机真实栈）：mock 种子 → MySQL 建库导入 → NL2SQL 绑定 →
   consumer 查库作答（含聚合统计）→ 真实 judge 判分，2/2 pass 得分 100。
-- 待办：eval_data 真实业务表的"来源Sheet=真实表名"导出映射（P1 对账数据可用）。
 
 ### 3.9 停止评测与中断恢复（2026-09-22）
 
@@ -191,6 +190,35 @@ modeling 服务时再评估。
   （running → 继续轮询；done → 直接落报告并 git 提交），**绝不重新发起评测**；
   轮次已失败或不存在时回 409 / 落中断提示，引导重跑。前端不再仅凭 `status === 'running'`
   置灰：运行中显示「停止评测」，中断/失败且可续接时显示「续接上一轮」。
+
+### 3.10 对象↔数据表绑定与发布包数据映射（2026-09-22）
+
+数据源接通不等于数据通道接通。此前发布包里三处都没有真实表名：`objects/index.md`
+的「来源Sheet」列回填的是对象 key、对象文档没有 modeling 契约要求的 `# 字段` 段、
+包里根本没有 `mappings/object-data-mappings.json`。modeling 导入后对象的 `fields`
+全为空、`sourceRefs` 指向一个并不存在的表，nl2sql 无表无列可用，于是每个用例都只
+读了知识包上下文、一次库都没查——评测照跑，还给出一个看起来不错的分数。
+
+- **单一实现**：`app/services/package_mapping.py` 解析对象文档与 eval_data/schema
+  表格资料，产出对象→表、属性→列的绑定，导出、评测门禁、资料区对账三处共用，
+  不各自再实现一遍（工具箱 `check_eval_data.py` 仍只做列级对账，不重复表级绑定）。
+- **绑定来源**：对象文档新增 `# 数据来源` 段显式声明真实表名（模板已加，优先级最高）；
+  未声明时按「属性英文名 ∩ Sheet 列头」的重合度推断，要求命中 ≥2 列且候选唯一，
+  达不到就留空（来源Sheet 写 `—`）而不是猜一个——错绑比不绑更难被发现。
+- **导出产物**：`来源Sheet` 写真实表名；对象文档的「对象属性清单」按契约改写为
+  `# 字段`（前六列按位解析，`必填` 由主键列推导，作者填写指引不进包）；绑定成功的
+  对象补 `mapping` / `sources` frontmatter，并生成 `mappings/object-data-mappings.json`
+  （`sources[].fields[].source_column` 恒写，modeling 靠它回填 `sourceColumn`）。
+  库里没有对应列的属性仍留在 `# 字段` 里（业务语义不丢），但不进 mapping——
+  写进去只会让 nl2sql 生成查不到的列。
+- **前置门禁**：数据集模式发起评测前跑 `assert_data_binding()`，声明的表不存在、或
+  没有任何对象绑定到表时直接判失败并给出整改指引，不再静默跑出一个没查过库的分数。
+- **对账合流**：`/eval-data/alignment` 在列级对账之外返回 `binding`（每对象的表、
+  匹配方式、命中列数、缺列）与 `problems` / `warnings`。
+- **两端验证**：生成包经 modeling 契约（`parseObjectIndex` / `parseObject` /
+  `mappingTableSources`）与 consumer 校验器（`validate_object_data_mappings`、
+  `validate_field_aliases`、`validate_object_aliases`、`inspect_importable_package`）
+  双向核对通过。
 
 ## 4. 依赖与开放问题（拍板时定）
 

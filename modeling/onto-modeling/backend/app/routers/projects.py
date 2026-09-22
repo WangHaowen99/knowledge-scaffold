@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config
+from ..services import package_mapping
 from ..services.workspace import WorkspaceError, WorkspaceManager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -546,25 +547,41 @@ async def eval_resume(project_id: str, request: Request):
 
 @router.get("/{project_id}/eval-data/alignment")
 def eval_data_alignment(project_id: str, request: Request):
-    """评测数据三方对账（数据列 ↔ schema 字段 ↔ 对象属性）。
+    """评测数据三方对账（数据列 ↔ schema 字段 ↔ 对象属性）+ 对象↔表绑定。
 
-    执行工作区工具箱的确定性检查脚本（与 agent 手动运行同一实现），
-    供资料区在 eval_data 资料行上显示对账徽标。
+    列级对账执行工作区工具箱的确定性检查脚本（与 agent 手动运行同一实现），
+    表级绑定复用发布包导出同一份解析（package_mapping），保证资料区徽标、
+    发布包 mappings 与评测门禁三处口径一致。
     """
     import subprocess
 
     root = ensure_access(project_id, request)
+    binding = package_mapping.resolve_object_tables(root)
+    summary = {
+        "bound_tables": binding["bound"],
+        "objects": {
+            key: {
+                "table": item["table"] or package_mapping.UNBOUND,
+                "matched_by": item["matched_by"],
+                "matched_columns": item["matched_columns"],
+                "missing_columns": item["missing_columns"],
+            }
+            for key, item in binding["objects"].items()
+        },
+        "problems": binding["problems"],
+        "warnings": binding["warnings"],
+    }
     script = root / ".claude" / "scripts" / "check_eval_data.py"
     if not script.exists():
-        return {"status": "no_schema", "files": []}
+        return {"status": "no_schema", "files": [], "binding": summary}
     try:
         result = subprocess.run(
             ["python3", str(script), "--json"],
             cwd=root, capture_output=True, text=True, timeout=60,
         )
-        return json.loads(result.stdout or "{}")
+        return {**json.loads(result.stdout or "{}"), "binding": summary}
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-        return {"status": "error", "files": []}
+        return {"status": "error", "files": [], "binding": summary}
 
 
 class ProjectEngineBody(BaseModel):

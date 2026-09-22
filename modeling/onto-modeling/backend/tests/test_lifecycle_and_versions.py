@@ -1,12 +1,30 @@
 """项目生命周期扩展、成员角色、乐观并发写入、版本标记与知识包导出的测试。"""
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from app.services.workspace import WorkspaceError, WorkspaceManager
+
+
+def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
+    """写一张 eval_data 数据表：对象靠它拿到真实表名与列名。"""
+    openpyxl = pytest.importorskip("openpyxl")
+
+    excel = root / "resource" / "excel"
+    excel.mkdir(parents=True, exist_ok=True)
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = sheet
+    worksheet.append(columns)
+    workbook.save(excel / "评测数据.xlsx")
+    (root / "resource" / "materials.json").write_text(
+        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "eval_data"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture()
@@ -116,7 +134,8 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
     meta = manager.create_project("外卖订单")
     root = manager.project_root(meta["id"])
     (root / "ontology" / "object" / "订单.md").write_text(
-        "# 订单\n\n"
+        "# 数据来源\nORDER_TABLE\n\n"
+        "# 对象属性清单\n"
         "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n"
         "|--------|--------|-----|----|-----|--------|--------|\n"
         "| 订单号 | ORDER_ID | 编号 | 是 | 字符串 | 单号, 订单编号 | 无 |\n"
@@ -124,6 +143,7 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         "| 加急标识 | URGENT_FLAG | 标识 | 否 | 布尔 | 无 | 取值：0 / 1 |\n",
         encoding="utf-8",
     )
+    _write_eval_table(root, "ORDER_TABLE", ["ORDER_ID", "DELIVERY_FLAG"])
     (root / "ontology" / "logic").mkdir(exist_ok=True)  # 旧目录：验证兼容读取
     (root / "ontology" / "logic" / "创建订单.md").write_text(
         "---\nold: front\n---\n\n生成[[订单]]\n", encoding="utf-8"
@@ -169,19 +189,34 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert 'objects: ["订单"]' in op
         assert "old: front" not in op
         obj_index = zf.read(f"{pid}/objects/index.md").decode("utf-8")
-        # 对齐 modeling 知识包契约：四列且每对象必有非空 来源Sheet
+        # 对齐 modeling 知识包契约：四列且 来源Sheet 是真实表名（不是对象名回填）
         assert "| object key | 标题 | 说明 | 来源Sheet |" in obj_index
-        assert "| 订单 | 订单 | 订单 | 订单 |" in obj_index
+        assert "| 订单 | 订单 | 订单 | ORDER_TABLE |" in obj_index
         # 工作区占位 index.md 不应进包
         assert f"{pid}/objects/index.md" in names and "待生成" not in obj_index
         # 五元组：规则/指标/脚本各自成组导出（ADR-0004）
         obj = zf.read(f"{pid}/objects/订单.md").decode("utf-8")
+        # 「对象属性清单」按 modeling 契约转成 `# 字段`（前六列按位解析）
+        assert "| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 | 属性规则 |" in obj
+        assert "| ORDER_ID | 订单号 | 字符串 | 是 | 编号 | 单号, 订单编号 |" in obj
+        assert "# 对象属性清单" not in obj
+        # 绑定到真实表的对象带 mapping/sources frontmatter
+        assert 'resource: "ORDER_TABLE"' in obj and 'sources: ["表格：ORDER_TABLE"]' in obj
         # 属性别名列的占位"无"打包时清洗为空（下游校验器会把它当真实别名，
         # 两行同名"无"即"同名指向多字段"冲突）；真实别名与其他列不动
         assert "单号, 订单编号" in obj
-        assert "| 布尔 | 无 |" not in obj
+        assert "| 布尔 | 否 | 标识 | 无 |" not in obj
         assert "取值：0 / 1" in obj  # 属性规则列的"无"语义不同，不在清洗范围
-        assert "| 是 | 字符串 |" in obj
+        # 数据映射：只写对上真实列的属性，URGENT_FLAG 库里没有故不进 mapping
+        mapping = json.loads(zf.read(f"{pid}/mappings/object-data-mappings.json").decode("utf-8"))
+        assert mapping["schema_version"] == "0.1"
+        订单 = mapping["objects"]["订单"]
+        assert 订单["resource"] == "ORDER_TABLE" and 订单["primary_key"] == ["ORDER_ID"]
+        assert set(订单["fields"]) == {"ORDER_ID", "DELIVERY_FLAG"}
+        assert 订单["fields"]["ORDER_ID"]["source_column"] == "ORDER_ID"
+        assert 订单["sources"][0]["role"] == "primary"
+        assert 订单["sources"][0]["fields"]["DELIVERY_FLAG"]["source_column"] == "DELIVERY_FLAG"
+        assert 订单["policy"]["read_only"] is True
         rule = zf.read(f"{pid}/rules/限购规则.md").decode("utf-8")
         assert "resource: rule" in rule and 'objects: ["订单"]' in rule
         metric = zf.read(f"{pid}/metrics/客单价.md").decode("utf-8")
