@@ -69,8 +69,11 @@ class EngineContext:
 
 
 class AgentEngine(Protocol):
-    """引擎实现协议。实例与一次子进程/运行时生命周期一一对应，
-    回收后重建实例（resume token 负责上下文续接）。"""
+    """引擎实现协议。
+
+    实例与一次子进程/运行时生命周期一一对应，回收后重建实例
+    （resume token 负责上下文续接）。
+    """
 
     name: str
     client: Any  # 底层原始客户端；None = 未连接（admin 连接态与测试观察点）
