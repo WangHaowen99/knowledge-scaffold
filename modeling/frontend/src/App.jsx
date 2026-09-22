@@ -14,7 +14,7 @@ import LoginPage from './LoginPage.jsx';
 import AcceptancePage from './AcceptancePage.jsx';
 import ProjectList from './ProjectList.jsx';
 import ProjectWorkbenchRouter from './ProjectWorkbenchRouter.jsx';
-import PackageNameConflictDialog from './PackageNameConflictDialog.jsx';
+import NameConflictDialog from './NameConflictDialog.jsx';
 import SettingsModal from './SettingsModal.jsx';
 import Tour, { PROJECT_STEPS } from './Tour.jsx';
 import {
@@ -61,6 +61,8 @@ export default function App() {
   const [importNotice, setImportNotice] = useState('');
   const [packageNameConflict, setPackageNameConflict] = useState(null);
   const [packageNameConflictError, setPackageNameConflictError] = useState('');
+  const [projectNameConflict, setProjectNameConflict] = useState(null);
+  const [projectNameConflictError, setProjectNameConflictError] = useState('');
   const [projectAccessNotice, setProjectAccessNotice] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('llm');
@@ -198,17 +200,36 @@ export default function App() {
     }
   };
 
-  const importTransferredProject = async (file) => {
+  const importTransferredProject = async (file, projectName = '') => {
     if (!file || importingProject) return;
+    if (!projectName) {
+      setProjectNameConflict(null);
+      setProjectNameConflictError('');
+    }
     setImportingProject(true); setProjectImportProgress(0); setImportError(''); setImportNotice('');
     try {
-      const started = await startProjectTransferImport(file);
+      const started = await startProjectTransferImport(file, projectName);
+      setProjectNameConflict(null);
+      setProjectNameConflictError('');
       const job = await waitForProjectTransferJob(getProjectTransferJob, started.job.id, {
         onProgress: (progress) => setProjectImportProgress(Number(progress?.percent) || 0),
       });
       window.location.assign(`/workbench.html?project=${encodeURIComponent(job.project.projectId)}`);
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : '项目导入失败');
+      if (error?.status === 409 && error?.data?.code === 'PROJECT_NAME_CONFLICT') {
+        const conflict = error.data.conflict || {};
+        setProjectNameConflict({
+          file,
+          originalName: String(conflict.originalName || ''),
+          attemptedName: String(conflict.attemptedName || ''),
+          candidates: Array.isArray(conflict.candidates) ? conflict.candidates.map(String) : [],
+        });
+        setProjectNameConflictError('');
+      } else if (projectName) {
+        setProjectNameConflictError(error instanceof Error ? error.message : '项目导入失败');
+      } else {
+        setImportError(error instanceof Error ? error.message : '项目导入失败');
+      }
       setImportingProject(false);
     }
   };
@@ -309,16 +330,28 @@ export default function App() {
           : <ProjectList onOpen={openProject} />; })()}
       </div>
       {!projectId && !acceptanceOpen && <Tour scene="projects" steps={PROJECT_STEPS} />}
-      {packageNameConflict && <PackageNameConflictDialog
+      {packageNameConflict && <NameConflictDialog
         conflict={packageNameConflict}
         busy={importingPackage}
         error={packageNameConflictError}
+        subject="知识包"
         onCancel={() => {
           if (importingPackage) return;
           setPackageNameConflict(null);
           setPackageNameConflictError('');
         }}
         onConfirm={(name) => void importPackage(packageNameConflict.file, name)} />}
+      {projectNameConflict && <NameConflictDialog
+        conflict={projectNameConflict}
+        busy={importingProject}
+        error={projectNameConflictError}
+        subject="项目"
+        onCancel={() => {
+          if (importingProject) return;
+          setProjectNameConflict(null);
+          setProjectNameConflictError('');
+        }}
+        onConfirm={(name) => void importTransferredProject(projectNameConflict.file, name)} />}
       {settingsOpen && <SettingsModal user={user} projectId={projectId} tab={settingsTab} onClose={() => setSettingsOpen(false)} />}
     </div>
   );

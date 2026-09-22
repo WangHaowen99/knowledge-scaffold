@@ -228,6 +228,7 @@ import { getProjectPackageDataSourceSelection } from './workflow/package-data-so
 import { registerAcceptanceRoutes } from './acceptance/routes.js';
 import { takeAcceptanceFault } from './acceptance/faults.js';
 import { registerProjectTransferRoutes } from './projects/project-transfer-routes.js';
+import { detectNameConflict, type NameConflict } from './projects/name-conflict.js';
 import { installHttpErrorHandler, sendHttpError } from './http-error.js';
 
 const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
@@ -241,37 +242,18 @@ function ignoreSemanticBinding(projectId: string, revision: string): void {
   setSetting(semanticBindingIgnoreKey(projectId, revision), new Date().toISOString());
 }
 
-function normalizedPackageName(value: unknown): string {
-  return String(value ?? '').trim().normalize('NFKC').toLowerCase();
-}
-
-function packageNameCandidate(baseName: string, sequence: number): string {
-  const suffix = `（${sequence}）`;
-  const availableLength = Math.max(1, 200 - [...suffix].length);
-  const prefix = [...baseName].slice(0, availableLength).join('').trimEnd();
-  return `${prefix}${suffix}`;
-}
-
 function visiblePackageNameConflict(
   username: string,
   attemptedName: string,
   originalName: string,
-): { originalName: string; attemptedName: string; candidates: string[] } | null {
-  const occupied = new Set(
+): NameConflict | null {
+  return detectNameConflict(
     listProjects(username)
       .filter((project) => project.kind === 'package')
-      .map((project) => normalizedPackageName(project.name)),
+      .map((project) => project.name),
+    attemptedName,
+    originalName,
   );
-  if (!occupied.has(normalizedPackageName(attemptedName))) return null;
-
-  const original = String(originalName ?? '').trim();
-  const baseName = original.replace(/\s*[（(]\d+[）)]$/u, '').trim() || original;
-  const candidates: string[] = [];
-  for (let sequence = 2; sequence < 10_002 && candidates.length < 3; sequence += 1) {
-    const candidate = packageNameCandidate(baseName, sequence);
-    if (!occupied.has(normalizedPackageName(candidate))) candidates.push(candidate);
-  }
-  return { originalName: original, attemptedName, candidates };
 }
 
 function semanticBindingPreview(projectId: string, revision: string, spec: any, tables: any[]) {

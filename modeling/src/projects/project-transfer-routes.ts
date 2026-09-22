@@ -4,7 +4,9 @@ import type { FastifyInstance } from 'fastify';
 
 import { config } from '../config.js';
 import { getDb } from '../db/index.js';
-import { getProject } from './repo.js';
+import { getProject, listProjects } from './repo.js';
+import { detectNameConflict, MAX_DISPLAY_NAME_LENGTH, normalizedDisplayName } from './name-conflict.js';
+import { ProjectTransferError, readProjectTransferName } from './project-transfer.js';
 import {
   HttpAgentProjectTransferClient,
   ProjectTransferJobManager,
@@ -22,9 +24,15 @@ function getDefaultJobs(): ProjectTransferJobManager {
   return defaultJobs;
 }
 
+/** 当前账号可见的项目名称，用于导入前的重名校验。 */
+export type ProjectNameReader = (owner: string) => string[];
+
+const defaultProjectNames: ProjectNameReader = (owner) => listProjects(owner).map((project) => project.name);
+
 export function registerProjectTransferRoutes(
   app: FastifyInstance,
   jobs: ProjectTransferJobManager = getDefaultJobs(),
+  listProjectNames: ProjectNameReader = defaultProjectNames,
 ): void {
   app.post('/api/projects/:id/transfer-exports', async (request, reply) => {
     const project = getProject(String((request.params as { id?: string }).id ?? ''));
@@ -50,9 +58,37 @@ export function registerProjectTransferRoutes(
     try {
       const archive = new Uint8Array(await file.toBuffer());
       if (file.file?.truncated) return reply.code(413).send({ error: '项目迁移包超过大小限制' });
+      const owner = request.user!.username;
+      const requestedName = String((file.fields as any)?.project_name?.value ?? '').trim();
+      if ([...requestedName].length > MAX_DISPLAY_NAME_LENGTH) {
+        return reply.code(400).send({ error: `项目名称不能超过 ${MAX_DISPLAY_NAME_LENGTH} 个字符` });
+      }
+      let originalName: string;
+      try {
+        originalName = readProjectTransferName(archive);
+      } catch (error) {
+        if (error instanceof ProjectTransferError) return reply.code(400).send({ error: error.message });
+        throw error;
+      }
+      const attemptedName = requestedName || originalName;
+      const conflict = detectNameConflict(listProjectNames(owner), attemptedName, originalName);
+      if (conflict) {
+        return reply.code(409).send({
+          error: (`项目名称「${attemptedName}」已存在，不可重复导入。`
+            + '请选择候选名称或输入新名称后继续导入。'),
+          code: 'PROJECT_NAME_CONFLICT',
+          conflict,
+        });
+      }
       const job = await jobs.startImport({
         archive,
-        owner: request.user!.username,
+        owner,
+        projectName: attemptedName,
+        assertNameAvailable: () => {
+          const taken = listProjectNames(owner)
+            .some((name) => normalizedDisplayName(name) === normalizedDisplayName(attemptedName));
+          if (taken) throw new ProjectTransferError(`项目名称「${attemptedName}」已存在，请改名后重新导入`);
+        },
         authorization: String(request.headers.authorization ?? ''),
       });
       return reply.code(202).send({ job });
