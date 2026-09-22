@@ -99,22 +99,24 @@ def parse_object_doc(text: str) -> dict:
     fields: list[dict] = []
     if key_index >= 0:
         indexes = {kind: _column_index(headers, kind) for kind in _HEADER_ALIASES}
-        for row in rows:
-            def cell(kind: str) -> str:
-                index = indexes[kind]
-                return row[index].strip() if 0 <= index < len(row) else ""
 
-            key = cell("key")
+        def cell(row: list[str], kind: str) -> str:
+            index = indexes[kind]
+            return row[index].strip() if 0 <= index < len(row) else ""
+
+        for row in rows:
+            key = cell(row, "key")
             if _is_empty(key):
                 continue
+            alias, rule = cell(row, "alias"), cell(row, "rule")
             fields.append({
                 "key": key,
-                "cn": cell("cn"),
-                "desc": cell("desc"),
-                "type": cell("type") or "字符串",
-                "alias": "" if _is_empty(cell("alias")) else cell("alias"),
-                "rule": "" if _is_empty(cell("rule")) else cell("rule"),
-                "primary": cell("primary").strip() in ("是", "true", "yes", "Y"),
+                "cn": cell(row, "cn"),
+                "desc": cell(row, "desc"),
+                "type": cell(row, "type") or "字符串",
+                "alias": "" if _is_empty(alias) else alias,
+                "rule": "" if _is_empty(rule) else rule,
+                "primary": cell(row, "primary").strip() in ("是", "true", "yes", "Y"),
             })
     return {"declared_table": declared, "fields": fields}
 

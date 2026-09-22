@@ -510,6 +510,14 @@ class WorkspaceManager:
     _ALIAS_EMPTY_MARKERS = {"无", "-", "—", "–", "n/a"}
 
     @classmethod
+    def _is_placeholder_alias_cell(cls, cells: list[str], alias_col: int | None) -> bool:
+        if alias_col is None or alias_col >= len(cells):
+            return False
+        if all(set(c) <= set("-: ") for c in cells):  # 跳过分隔行
+            return False
+        return cells[alias_col].lower() in cls._ALIAS_EMPTY_MARKERS
+
+    @classmethod
     def _sanitize_placeholder_aliases(cls, markdown: str) -> str:
         lines = markdown.split("\n")
         alias_col: int | None = None
@@ -526,12 +534,7 @@ class WorkspaceManager:
                     (idx for idx, c in enumerate(lowered) if c in cls._ALIAS_HEADER_NAMES),
                     None,
                 )
-            elif (
-                alias_col is not None
-                and alias_col < len(cells)
-                and cells[alias_col].lower() in cls._ALIAS_EMPTY_MARKERS
-                and not all(set(c) <= set("-: ") for c in cells)  # 跳过分隔行
-            ):
+            elif cls._is_placeholder_alias_cell(cells, alias_col):
                 raw = line.split("|")
                 if alias_col + 1 < len(raw):
                     raw[alias_col + 1] = " "
@@ -780,7 +783,7 @@ class WorkspaceManager:
             return True
         if parts[0] in skip_top:
             return True
-        if skip_git_hooks and len(parts) > 1 and parts[0] == ".git" and parts[1] == "hooks":
+        if skip_git_hooks and parts[:2] == (".git", "hooks"):
             return True
         return False
 

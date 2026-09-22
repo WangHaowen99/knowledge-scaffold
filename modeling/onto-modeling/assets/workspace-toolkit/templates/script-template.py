@@ -26,7 +26,7 @@ import argparse
 
 
 def function_name(arg1: str, arg2: str | None = None) -> dict:
-    # TODO: 实现逻辑
+    # {在此实现业务逻辑，并替换函数名与签名}
     return {}
 
 

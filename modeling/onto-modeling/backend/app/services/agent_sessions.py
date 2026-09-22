@@ -557,7 +557,7 @@ class SessionManager:
         engine = session.engine
         try:
             await asyncio.wait_for(engine.interrupt(), timeout=INTERRUPT_TIMEOUT_SECONDS)
-        except (asyncio.TimeoutError, Exception):
+        except Exception:  # 含 wait_for 的 TimeoutError
             # 优雅打断失败：硬终止引擎，槽位与状态立即恢复可用
             error_log.log(project_id, "interrupt_force", "打断超时，已硬终止引擎进程")
             if session.reader_task:
@@ -648,33 +648,31 @@ class SessionManager:
 
     async def _read_loop(self, session: Session) -> None:
         engine = session.engine
-        try:
-            async for event in engine.events():
-                session.last_activity = time.time()
-                if event.get("type") == "_engine_end":
-                    # 引擎终止：closed（重启/终止）静默收尾，error 给用户横幅
-                    if event.get("reason") == "closed":
-                        session.set_state("closed")
-                    else:
-                        session.broadcast(
-                            {
-                                "type": "session_error",
-                                "error": event.get("error") or FRIENDLY_ERROR,
-                            }
-                        )
-                        session.set_state("error")
-                    # 引擎已自断开：释放槽位并唤醒排队者
-                    session.engine = None
-                    await self._drain_waiters()
-                    return
-                session.broadcast(
-                    event, transient=event.get("type") == "stream_delta"
-                )
-                if event.get("type") == "result":
-                    await self._emit_workspace_changes(session)
-                    session.set_state("idle")
-        except asyncio.CancelledError:
-            raise
+        # 不加 try：本任务只被 cancel 结束，引擎侧的错误走 _engine_end 事件
+        async for event in engine.events():
+            session.last_activity = time.time()
+            if event.get("type") == "_engine_end":
+                # 引擎终止：closed（重启/终止）静默收尾，error 给用户横幅
+                if event.get("reason") == "closed":
+                    session.set_state("closed")
+                else:
+                    session.broadcast(
+                        {
+                            "type": "session_error",
+                            "error": event.get("error") or FRIENDLY_ERROR,
+                        }
+                    )
+                    session.set_state("error")
+                # 引擎已自断开：释放槽位并唤醒排队者
+                session.engine = None
+                await self._drain_waiters()
+                return
+            session.broadcast(
+                event, transient=event.get("type") == "stream_delta"
+            )
+            if event.get("type") == "result":
+                await self._emit_workspace_changes(session)
+                session.set_state("idle")
 
 
 def usage_summary(project_id: str) -> dict:

@@ -494,7 +494,7 @@ class JiuwenEngine:
         if task and not task.done():
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=5)
-            except (asyncio.TimeoutError, Exception):
+            except Exception:  # 含 wait_for 的 TimeoutError
                 task.cancel()
 
     async def disconnect(self) -> None:
