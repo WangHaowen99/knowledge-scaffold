@@ -158,6 +158,19 @@ modeling 服务时再评估。
 结论：onto-modeling 侧代码完备；剩余全部为 modeling/consumer 栈的部署配置
 （SERVICE_TOKEN / EVAL_DB_URL / LLM），随根一键部署整改一并解决。
 
+### 3.8 数据源对接落地（2026-09-22）
+
+- 评测支持 `none` / `dataset` 两种数据源模式：dataset 走 modeling quick-import
+  （建项目评测库 + Excel 导入 + 自动绑定 NL2SQL），导入 done 后才 evaluate；
+- 数据来源：eval_data 标签资料（多选）或 mock 种子（mock_to_eval_seed，每对象一
+  Sheet，与知识包"来源Sheet"默认映射一致）；UI 为两步向导（数据源选择卡 → 用例复核）；
+- 部署形态：modeling compose `eval` profile = mw-eval-mysql + mw-modeling-nl2sql
+  （同 mw-modeling 镜像跑 dist/nl2sql/server.js），`EVAL_DB_URL` + `MODELING_EVAL_BINDING_URL`
+  两个 env 接线；评测库未就绪时 quick-import 503 被翻译为带部署指引的失败信息；
+- 端到端实测（本机真实栈）：mock 种子 → MySQL 建库导入 → NL2SQL 绑定 →
+  consumer 查库作答（含聚合统计）→ 真实 judge 判分，2/2 pass 得分 100。
+- 待办：eval_data 真实业务表的"来源Sheet=真实表名"导出映射（P1 对账数据可用）。
+
 ## 4. 依赖与开放问题（拍板时定）
 
 1. **部署形态**：评测要求 modeling + consumer 与 onto-modeling 共栈（根一键部署已满足）；
