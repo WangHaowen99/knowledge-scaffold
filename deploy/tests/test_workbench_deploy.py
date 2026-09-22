@@ -565,6 +565,13 @@ def test_modeling_healthcheck_port_matches_published_host_port() -> None:
     checked_ports = set(re.findall(r"127\.0\.0\.1:\$\{MODELING_PORT:-(\d+)\}", deploy_script))
     assert checked_ports == {release_port}
 
+    # 发布包模板会被 install.sh 拷成 .env，显式值优先于上面所有默认值，
+    # 漏改这里会让独立发布包继续落在旧端口上。
+    build_script = (MODELING_ROOT / "build.sh").read_text(encoding="utf-8")
+    seeded = re.search(r"^MODELING_PORT=(\d+)$", build_script, re.MULTILINE)
+    assert seeded is not None, "modeling/build.sh 未生成 MODELING_PORT 模板项"
+    assert seeded.group(1) == release_port
+
 
 def test_modeling_and_onto_modeling_do_not_share_host_port() -> None:
     """两个栈由同一次根部署先后拉起，宿主端口默认值不能撞车。"""
