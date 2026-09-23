@@ -994,8 +994,14 @@ def check_scripts(ontology_dir: Path) -> list:
         except (OSError, UnicodeDecodeError, SyntaxError) as exc:
             issues.append(Issue(str(rel), "错误", "脚本契约", f"Python 脚本无法解析：{exc}", "规则检查"))
             continue
-        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
-                 and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"]
+        calls = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"
+            ):
+                calls.append(node)
         executable = "__main__" in source
         if executable and ("argparse" not in source or not any(
             isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
@@ -1006,7 +1012,10 @@ def check_scripts(ontology_dir: Path) -> list:
         if "输入参数" not in doc or "输出" not in doc:
             issues.append(Issue(str(rel), "错误", "脚本契约", "头部注释必须包含输入参数和输出字段", "规则检查"))
         for call in calls:
-            flags = [arg.value for arg in call.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
+            flags = []
+            for arg in call.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    flags.append(arg.value)
             if not any(flag.startswith("--") for flag in flags):
                 issues.append(Issue(str(rel), "错误", "脚本契约", "argparse 参数必须声明长选项 flag", "规则检查"))
         if executable and "json.dumps" not in source:

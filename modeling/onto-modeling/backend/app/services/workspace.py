@@ -1209,11 +1209,17 @@ def _script_header_meta(code: str) -> tuple[str, list[dict]]:
         raise ScriptContractError(f"脚本语法错误：{exc.msg}（第 {exc.lineno} 行）") from exc
 
     source_params: list[dict] = []
-    for node in sorted(
-        (n for n in ast.walk(tree) if isinstance(n, ast.Call)
-         and isinstance(n.func, ast.Attribute) and n.func.attr == "add_argument"),
-        key=lambda item: getattr(item, "lineno", 0),
-    ):
+    argument_calls = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+        ):
+            argument_calls.append(node)
+    argument_calls.sort(key=lambda item: getattr(item, "lineno", 0))
+
+    for node in argument_calls:
         flags = [_literal_string(arg) for arg in node.args]
         flags = [flag for flag in flags if flag]
         long_flags = [flag for flag in flags if flag.startswith("--")]
