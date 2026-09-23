@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from deploy_synthetic_credentials import AUTH_ADMIN_TOKEN, BOOTSTRAP_ADMIN_SECRET
+from deploy_synthetic_credentials import (
+    AUTH_ADMIN_TOKEN,
+    BOOTSTRAP_ADMIN_SECRET,
+    MODELING_SERVICE_TOKEN,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_ROOT = REPO_ROOT / "deploy"
@@ -634,6 +638,212 @@ def test_interactive_installer_never_guesses_consumer_network() -> None:
     assert "docker container inspect onto-agent-backend" in _INTERACTIVE_INSTALLER
     assert "无法探测 Consumer 容器网络" in _INTERACTIVE_INSTALLER
     assert "consumer_onto-agent-network" not in _INTERACTIVE_INSTALLER
+
+
+# 非交互安装器的 upgrade 路径：Consumer、Modeling 已分离部署在 INSTALL_ROOT 下。
+# docker 由 stub 应答：mw-modeling* 归属 modeling 目录，onto-agent-backend 在
+# onto-agent_default 网络上；设置 STUB_ONTO_MODELING_DIR 时模拟已有 onto-modeling 容器。
+_UPGRADE_DOCKER_STUB = """\
+if [ "$1" != container ]; then exit 0; fi
+[ "$2" = inspect ] || exit 1
+name="$3"
+format="${5:-}"
+case "${name}" in
+    mw-modeling|mw-modeling-agent) owner="${STUB_MODELING_DIR}" ;;
+    onto-agent-backend) owner="${STUB_CONSUMER_DIR}" ;;
+    onto-modeling) owner="${STUB_ONTO_MODELING_DIR:-}"; [ -n "${owner}" ] || exit 1 ;;
+    *) exit 1 ;;
+esac
+case "${format}" in
+    *working_dir*) printf '%s\\n' "${owner}" ;;
+    *Mounts*) printf 'mw-modeling_%s-data\\n' "${name#mw-}" ;;
+    *Config.Image*) printf '%s:previous\\n' "${name}" ;;
+    *State.Running*) printf 'false\\n' ;;
+    *Networks*) printf 'onto-agent_default\\n' ;;
+esac\
+"""
+
+
+def _write_release_package(path: Path, top: str, files: dict[str, str]) -> Path:
+    """合成发布包：files 中 .sh 结尾的写成可执行脚本，其余原样写入。"""
+    stage = path.parent / f"{path.name}.stage"
+    for relative, body in files.items():
+        target = stage / top / relative
+        if relative.endswith(".sh"):
+            _write_executable(target, body)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body, encoding="utf-8")
+    with tarfile.open(path, "w:gz") as archive:
+        archive.add(stage / top, arcname=top)
+    return path
+
+
+def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
+    root = tmp_path / "stack"
+    consumer = root / "onto-agent"
+    modeling = root / "modeling"
+    (consumer / "backend").mkdir(parents=True)
+    (consumer / "deploy" / "state").mkdir(parents=True)
+    (consumer / "VERSION").write_text("v-previous\n", encoding="utf-8")
+    (consumer / "deploy" / "state" / "current.env").write_text(
+        "CURRENT_VERSION=v-previous\n", encoding="utf-8"
+    )
+    (consumer / "backend" / ".env").write_text(
+        f"MODELING_SERVICE_TOKEN={MODELING_SERVICE_TOKEN}\n", encoding="utf-8"
+    )
+    modeling.mkdir(parents=True)
+    (modeling / "VERSION").write_text("v-previous\n", encoding="utf-8")
+    (modeling / ".env").write_text(
+        f"MODELING_SERVICE_TOKEN={MODELING_SERVICE_TOKEN}\nMODELING_PORT={modeling_port}\n",
+        encoding="utf-8",
+    )
+
+    calls = tmp_path / "calls.txt"
+
+    def record(label: str) -> str:
+        return f'printf "{label}\\n" >> "$CALLS_FILE"'
+
+    packages = tmp_path / "packages"
+    packages.mkdir()
+    consumer_package = _write_release_package(
+        packages / "onto-agent-v-test.tar.gz",
+        "onto-agent",
+        {"VERSION": "v-test\n", "deploy/upgrade.sh": record("consumer-upgrade")},
+    )
+    modeling_package = _write_release_package(
+        packages / "modeling-v-test.tar.gz",
+        "modeling",
+        {
+            "VERSION": "v-test\n",
+            ".env.example": "MODELING_PORT=8100\n",
+            "deploy/install.sh": record("modeling-install"),
+        },
+    )
+    onto_package = _write_release_package(
+        packages / "onto-modeling-v-test.tar.gz",
+        "onto-modeling",
+        {
+            ".env.example": "ONTO_WEB_PORT=5100\n",
+            "preflight.sh": record("onto-preflight"),
+            "deploy.sh": record("onto-deploy") + '\ncp .env "$ONTO_ENV_SNAPSHOT"',
+        },
+    )
+
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "docker", _UPGRADE_DOCKER_STUB)
+    _write_executable(bin_dir / "curl", 'printf "%s\\n" "$@" >> "$CURL_CALLS_FILE"')
+    _write_executable(bin_dir / "uname", 'printf "Linux\\n"')
+    for command in ("flock", "sha256sum"):
+        if shutil.which(command) is None:
+            _write_executable(bin_dir / command, "exit 0")
+
+    env = {
+        **{key: value for key, value in os.environ.items() if key not in ("ONTO_WEB_PORT", "MODELING_PORT")},
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "INSTALL_ROOT": str(root),
+        "CALLS_FILE": str(calls),
+        "CURL_CALLS_FILE": str(tmp_path / "curl-calls.txt"),
+        "ONTO_ENV_SNAPSHOT": str(tmp_path / "onto-modeling.env"),
+        "STUB_CONSUMER_DIR": str(consumer),
+        "STUB_MODELING_DIR": str(modeling),
+    }
+    return {
+        "root": root,
+        "env": env,
+        "calls": calls,
+        "packages": (consumer_package, modeling_package, onto_package),
+    }
+
+
+def _run_separated_upgrade(setup: dict, *, with_onto: bool = True, **env: str):
+    consumer_package, modeling_package, onto_package = setup["packages"]
+    args = [
+        _bash_executable(),
+        str(DEPLOY_ROOT / "install-consumer-modeling.sh"),
+        "upgrade",
+        "--consumer-package",
+        str(consumer_package),
+        "--modeling-package",
+        str(modeling_package),
+    ]
+    if with_onto:
+        args += ["--onto-modeling-package", str(onto_package.parent / "onto-modeling-*.tar.gz")]
+    return subprocess.run(
+        args, env={**setup["env"], **env}, text=True, capture_output=True, check=False
+    )
+
+
+def _calls(setup: dict) -> list[str]:
+    calls = setup["calls"]
+    return calls.read_text(encoding="utf-8").split() if calls.exists() else []
+
+
+def test_installer_upgrade_deploys_onto_modeling_after_consumer_and_modeling(
+    tmp_path: Path,
+) -> None:
+    """回归：非交互 upgrade 只升 Consumer、Modeling，onto-modeling 永远不会被拉起。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+
+    result = _run_separated_upgrade(setup)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    # 预检在任何变更之前，onto-modeling 部署排在 Consumer、Modeling 之后
+    assert _calls(setup) == [
+        "onto-preflight",
+        "consumer-upgrade",
+        "modeling-install",
+        "onto-deploy",
+    ]
+    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+    assert "ONTO_WEB_PORT=5100" in onto_env
+    # 共享 Consumer 账号中心：网络取运行中容器的实际网络，不按命名规律猜
+    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
+    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
+    assert (setup["root"] / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
+    # 等到健康检查通过才算部署完成
+    curl_calls = (tmp_path / "curl-calls.txt").read_text(encoding="utf-8")
+    assert "http://127.0.0.1:5100/api/health" in curl_calls
+    assert "Onto Modeling deployment finished" in result.stdout
+
+
+def test_installer_upgrade_rejects_port_clash_before_any_change(tmp_path: Path) -> None:
+    """0.26.9.0 之前的分离部署 Modeling 在 5100，升级会保留，与 onto-modeling 默认端口相撞。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
+
+    result = _run_separated_upgrade(setup)
+
+    assert result.returncode != 0
+    assert "都要占用宿主端口 5100" in result.stderr
+    assert _calls(setup) == []
+
+    retried = _run_separated_upgrade(setup, ONTO_WEB_PORT="5110")
+
+    assert retried.returncode == 0, retried.stdout + retried.stderr
+    assert "ONTO_WEB_PORT=5110" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+
+
+def test_installer_upgrade_refuses_foreign_onto_modeling_container(tmp_path: Path) -> None:
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+
+    result = _run_separated_upgrade(
+        setup, STUB_ONTO_MODELING_DIR=str(tmp_path / "elsewhere" / "onto-modeling")
+    )
+
+    assert result.returncode != 0
+    assert "拒绝接管" in result.stderr
+    assert _calls(setup) == []
+
+
+def test_installer_upgrade_without_onto_modeling_package_says_so(tmp_path: Path) -> None:
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+
+    result = _run_separated_upgrade(setup, with_onto=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "未指定 --onto-modeling-package，本次不部署 Onto Modeling" in result.stdout
+    assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
+    assert not (setup["root"] / "onto-modeling").exists()
 
 
 def _host_port_default(compose_text: str, var: str) -> str:

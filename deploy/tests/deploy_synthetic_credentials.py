@@ -6,3 +6,4 @@ import secrets
 
 AUTH_ADMIN_TOKEN = secrets.token_urlsafe(32)
 BOOTSTRAP_ADMIN_SECRET = f"Aa1!{secrets.token_urlsafe(18)}"
+MODELING_SERVICE_TOKEN = secrets.token_hex(32)
