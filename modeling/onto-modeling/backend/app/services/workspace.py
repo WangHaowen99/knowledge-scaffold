@@ -547,12 +547,21 @@ class WorkspaceManager:
             prev_is_row = True
         return "\n".join(lines)
 
-    def export_package_zip(self, project_id: str, dest_path: Path) -> Path:
+    def export_package_zip(
+        self,
+        project_id: str,
+        dest_path: Path,
+        binding: dict | None = None,
+        graph: bool = False,
+    ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
         对齐 consumer/backend/ontology/package_import.py 的校验契约：
         manifest.yaml 六必填字段、objects/operations 目录 + frontmatter、
         operation 必须声明 uses.objects、index 首列与详情 key 逐字相等。
+
+        binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
+        graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表。
         """
         import zipfile
 
@@ -579,13 +588,18 @@ class WorkspaceManager:
         # ontology/logic 为旧目录兼容（范式升级 ADR-0004）
         operations = entry_items("ontology/operation", "ontology/logic")
         # 对象 ↔ 真实数据表：来源Sheet、`# 字段` 段与 mappings 三处同一份绑定结果
-        binding = package_mapping.resolve_object_tables(root)
+        binding = binding or package_mapping.resolve_object_tables(root)
         if binding["problems"]:
             raise WorkspaceError(
                 "数据绑定无法发布：" + "；".join(binding["problems"])
             )
         bound = binding["objects"]
-        mappings = package_mapping.object_data_mappings(binding)
+        mappings = package_mapping.object_data_mappings(binding, graph=graph)
+        graph_edges: dict[str, list] = {}
+        if graph:
+            graph_edges, _skipped = package_mapping.graph_relations(
+                dict(objects), set(mappings["objects"])
+            )
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
@@ -642,10 +656,14 @@ class WorkspaceManager:
                 # modeling 仍能从 sources 还原 sourceRefs
                 extra = (
                     f"mapping:\n  provider_alias: {package_mapping.PROVIDER_ALIAS}\n"
-                    f"  resource: {q(table)}\nsources: [{q('表格：' + table)}]\n"
+                    f"  resource: {q(key if graph else table)}\nsources: [{q('表格：' + table)}]\n"
                     if table else ""
                 )
                 body = package_mapping.rewrite_object_body(body, item.get("fields") or [])
+                if graph_edges.get(key):
+                    body = body.rstrip("\n") + "\n\n" + package_mapping.render_relations_section(
+                        graph_edges[key]
+                    )
                 zf.writestr(
                     f"{pkg}/objects/{key}.md",
                     front("object", key, key, extra) + self._sanitize_placeholder_aliases(body),

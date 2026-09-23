@@ -922,7 +922,9 @@ export default function LeftPane({
             ['cases', '用例'],
             ['evaluate', '执行'],
           ];
-          const phaseKey = ['data_import', 'data_source'].includes(st.phase) ? 'ds' : st.phase;
+          const phaseKey = ['data_import', 'data_source', 'graph_import'].includes(st.phase)
+            ? 'ds'
+            : st.phase;
           const phaseIdx =
             st.status === 'done'
               ? PHASE_STEPS.length
@@ -952,6 +954,14 @@ export default function LeftPane({
                   </span>
                 ))}
               </div>
+              {st.graph_import && (
+                <Tooltip title={(st.graph_import.notes || []).join('\n') || undefined}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {`图数据已导入：节点 ${st.graph_import.nodes} · 关系 ${st.graph_import.relationships}`}
+                    {st.graph_import.notes?.length ? `（${st.graph_import.notes.length} 条提示）` : ''}
+                  </Typography.Text>
+                </Tooltip>
+              )}
               <div className="eval-run-summary">
                 <Progress
                   percent={percent}

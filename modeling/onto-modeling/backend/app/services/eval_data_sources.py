@@ -7,6 +7,7 @@ onto-modeling 自有的数据集通道：
 - ``dataset``：eval_data 资料表 / mock 种子 → modeling quick-import 建评测库；
 - ``connection``：外部数据源，provider 为 ``nl2sql_template`` / ``nl2sql_http`` /
   ``neo4j``，字段与校验规则同 modeling（Scene、评测工作空间 ID、隔离条件）。
+  Neo4j 可附带要导入的数据（resources / include_mock），每轮评测前一键导入图库。
 
 每轮评测都会在 modeling 新建评测项目，连接凭据必须由 onto-modeling 保存才能
 复用：配置落数据目录（0600，不进工作区 git、不随导出/克隆外带），读取接口一律
@@ -127,6 +128,16 @@ def _normalize_connection(provider: str, raw: dict, previous: dict | None) -> di
     return out
 
 
+def _import_selection(body: dict) -> dict:
+    resources = body.get("resources") or []
+    if not isinstance(resources, list):
+        raise DataSourceError("resources 必须是数组")
+    return {
+        "resources": [_text(r) for r in resources if _text(r)][:20],
+        "include_mock": bool(body.get("include_mock")),
+    }
+
+
 def normalize(body: dict, previous: dict | None = None) -> dict:
     """前端提交的配置 → 存储结构（不含 id / 时间戳）。"""
     body = body or {}
@@ -135,11 +146,7 @@ def normalize(body: dict, previous: dict | None = None) -> dict:
         raise DataSourceError("数据源模式仅支持 none、dataset 或 connection")
     source: dict = {"mode": mode}
     if mode == "dataset":
-        resources = body.get("resources") or []
-        if not isinstance(resources, list):
-            raise DataSourceError("resources 必须是数组")
-        source["resources"] = [_text(r) for r in resources if _text(r)][:20]
-        source["include_mock"] = bool(body.get("include_mock"))
+        source.update(_import_selection(body))
         if not source["resources"] and not source["include_mock"]:
             raise DataSourceError("数据集模式需要至少一份评测数据表或示例数据种子")
     elif mode == "connection":
@@ -148,6 +155,12 @@ def normalize(body: dict, previous: dict | None = None) -> dict:
             raise DataSourceError("provider 仅支持 nl2sql_template、nl2sql_http 或 neo4j")
         source["provider"] = provider
         source["config"] = _normalize_connection(provider, body.get("config") or {}, previous)
+        selection = _import_selection(body) if provider == "neo4j" else {}
+        if selection.get("resources") or selection.get("include_mock"):
+            # modeling 图导入要求 Workspace 与 Ontology 两组隔离条件齐全
+            if not source["config"].get("ontology_property"):
+                raise DataSourceError("导入图数据需要填写 Ontology 隔离字段（按知识包隔离）")
+            source.update(selection)
     name = _text(body.get("name"))[:MAX_NAME_LENGTH]
     source["name"] = name or default_name(source)
     return source
@@ -165,7 +178,12 @@ def default_name(source: dict) -> str:
         cfg = source.get("config") or {}
         provider = source.get("provider", "")
         target = cfg.get("workspace_value") if provider == "neo4j" else cfg.get("scene")
-        return f"{PROVIDER_LABELS.get(provider, provider)} · {target}"
+        name = f"{PROVIDER_LABELS.get(provider, provider)} · {target}"
+        if source.get("include_mock"):
+            return name + "（导入示例数据）"
+        if source.get("resources"):
+            return name + f"（导入 {len(source['resources'])} 份数据）"
+        return name
     return "不使用数据源"
 
 

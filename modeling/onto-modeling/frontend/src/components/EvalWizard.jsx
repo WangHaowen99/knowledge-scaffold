@@ -5,9 +5,11 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Segmented,
   Select,
   Space,
   Spin,
+  Tag,
   Tooltip,
   Typography,
   Upload,
@@ -16,9 +18,11 @@ import {
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import {
+  GRAPH_IMPORT_OPTIONS,
   PROVIDER_OPTIONS,
   SOURCE_KINDS,
   emptySourceForm,
+  importPreviewRequest,
   kindMeta,
   sourceBadge,
   sourceFormError,
@@ -39,7 +43,6 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
   const [sources, setSources] = useState([]);
   const [options, setOptions] = useState({ eval_data: [], mock_tables: 0 });
   const [defaults, setDefaults] = useState({});
-  const [binding, setBinding] = useState(null); // 对象↔数据表绑定：接数据源前先看能不能查
   const [selectedSourceId, setSelectedSourceId] = useState('');
   const [editing, setEditing] = useState(null); // {id, form} | null；无已存配置时恒为表单
   const [savingSource, setSavingSource] = useState(false);
@@ -62,15 +65,13 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
       api.evalDataSources(project.id),
       api.evalSets(project.id).catch(() => ({ sets: [] })),
       api.evalCases(project.id).catch(() => ({ cases: [] })),
-      api.evalDataAlignment(project.id).catch(() => null),
     ])
-      .then(([ds, setData, trace, align]) => {
+      .then(([ds, setData, trace]) => {
         if (!active) return;
         const saved = ds.sources || [];
         setSources(saved);
         setOptions(ds.options || { eval_data: [], mock_tables: 0 });
         setDefaults(ds.defaults || {});
-        setBinding(align?.binding || null);
         setSelectedSourceId(saved[0]?.id || '');
         // 从未配置过数据源：直接进配置表单（评测前必须先配置）
         if (!saved.length) setEditing({ id: '', form: emptySourceForm(ds.defaults) });
@@ -260,7 +261,7 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
         onChange={(patch) => setEditing((prev) => ({ ...prev, form: { ...prev.form, ...patch } }))}
         options={options}
         defaults={defaults}
-        binding={binding}
+        projectId={project.id}
         firstTime={!sources.length}
       />
     );
@@ -297,7 +298,12 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
         >
           新建数据源配置
         </Button>
-        {sourceKind(selectedSource) === 'dataset' && <BindingAlert binding={binding} />}
+        {selectedSource && (
+          <ImportPreview
+            projectId={project.id}
+            request={{ data_source_id: selectedSource.id, rev: selectedSource.updated_at }}
+          />
+        )}
       </div>
     );
   } else {
@@ -486,7 +492,7 @@ function SourceCard({ source, options, selected, onSelect, onEdit, onDelete }) {
   );
 }
 
-function SourceForm({ form, onChange, options, defaults, binding, firstTime }) {
+function SourceForm({ form, onChange, options, defaults, projectId, firstTime }) {
   const field = (key) => ({
     value: form[key] ?? '',
     onChange: (e) => onChange({ [key]: e.target.value }),
@@ -533,28 +539,18 @@ function SourceForm({ form, onChange, options, defaults, binding, firstTime }) {
             <div className="eval-ds-desc">{kind.desc}</div>
             {selected && kind.value === 'dataset' && (
               <div className="eval-ds-files" onClick={(e) => e.stopPropagation()}>
-                {(options.eval_data || []).map((f) => (
-                  <label key={f.path} className="eval-ds-file">
-                    <input
-                      type="checkbox"
-                      checked={form.resources.includes(f.path)}
-                      onChange={(e) =>
-                        onChange({
-                          resources: e.target.checked
-                            ? [...form.resources, f.path]
-                            : form.resources.filter((x) => x !== f.path),
-                        })
-                      }
-                    />
-                    <span className="eval-ds-file-name">{f.name}</span>
-                    <span className="eval-ds-file-size">{Math.round(f.size / 1024)} KB</span>
-                  </label>
-                ))}
+                <DataFilePicker files={options.eval_data} form={form} onChange={onChange} />
               </div>
             )}
             {selected && kind.value === 'connection' && (
               <div className="eval-ds-files" onClick={(e) => e.stopPropagation()}>
-                <ConnectionFields form={form} field={field} onChange={onChange} defaults={defaults} />
+                <ConnectionFields
+                  form={form}
+                  field={field}
+                  onChange={onChange}
+                  defaults={defaults}
+                  options={options}
+                />
               </div>
             )}
           </div>
@@ -571,12 +567,35 @@ function SourceForm({ form, onChange, options, defaults, binding, firstTime }) {
           <span>consumer 查询作答</span>
         </div>
       )}
-      {form.kind === 'dataset' && <BindingAlert binding={binding} />}
+      <ImportPreview projectId={projectId} request={importPreviewRequest(form)} />
     </div>
   );
 }
 
-function ConnectionFields({ form, field, onChange, defaults }) {
+function DataFilePicker({ files, form, onChange }) {
+  if (!files?.length) {
+    return <Typography.Text type="secondary">资料区暂无「评测数据」标签的表格</Typography.Text>;
+  }
+  return files.map((f) => (
+    <label key={f.path} className="eval-ds-file">
+      <input
+        type="checkbox"
+        checked={form.resources.includes(f.path)}
+        onChange={(e) =>
+          onChange({
+            resources: e.target.checked
+              ? [...form.resources, f.path]
+              : form.resources.filter((x) => x !== f.path),
+          })
+        }
+      />
+      <span className="eval-ds-file-name">{f.name}</span>
+      <span className="eval-ds-file-size">{Math.round(f.size / 1024)} KB</span>
+    </label>
+  ));
+}
+
+function ConnectionFields({ form, field, onChange, defaults, options }) {
   const savedSecret = (has) => (has ? '已保存，留空沿用' : '');
   return (
     <div className="eval-conn-fields">
@@ -602,13 +621,40 @@ function ConnectionFields({ form, field, onChange, defaults }) {
           />
           <ConnField label="Workspace 隔离字段" {...field('workspace_property')} />
           <ConnField label="Workspace 对应值" placeholder="例如 graph-eval" {...field('workspace_value')} />
-          <ConnField label="Ontology 隔离字段" placeholder="留空则不按知识包隔离" {...field('ontology_property')} />
+          <ConnField
+            label="Ontology 隔离字段"
+            placeholder={form.graph_import === 'none' ? '留空则不按知识包隔离' : '导入图数据时必填'}
+            {...field('ontology_property')}
+          />
           <ConnField label="Ontology 对应值" value={defaults.ontology_id || ''} disabled />
           <div className="eval-conn-hint">
             {'Workspace 对应值同时作为 consumer 评测工作空间 ID（小写字母开头，仅小写字母、数字、_、-，' +
               '最长 64 个字符，已存在时直接复用）；Ontology 对应值固定为当前知识包 ID，发起评测时自动填写。' +
               '两组隔离条件按 AND 联合匹配。'}
           </div>
+          <div className="eval-conn-field eval-conn-wide">
+            <span>评测前导入图数据</span>
+            <Segmented
+              size="small"
+              value={form.graph_import}
+              options={GRAPH_IMPORT_OPTIONS.map((item) => ({
+                ...item,
+                disabled: item.value === 'mock' && !options.mock_tables,
+              }))}
+              onChange={(graph_import) => onChange({ graph_import })}
+            />
+          </div>
+          {form.graph_import === 'dataset' && (
+            <div className="eval-conn-wide">
+              <DataFilePicker files={options.eval_data} form={form} onChange={onChange} />
+            </div>
+          )}
+          {form.graph_import !== 'none' && (
+            <div className="eval-conn-hint">
+              {'每轮评测导入知识包后，按知识包 mapping 把数据写成节点与关系；写入前清空本隔离范围' +
+                '（Workspace 对应值 + 知识包 ID）内的旧数据，不影响图库里的其他数据。'}
+            </div>
+          )}
         </>
       ) : (
         <>
@@ -645,39 +691,83 @@ function ConnField({ label, password = false, ...props }) {
   );
 }
 
-// 对象绑不到真实表 = 这一轮问答根本查不到库；发起前就说清楚，别等报告出分
-function BindingAlert({ binding }) {
-  if (!binding) return null;
-  const items = Object.entries(binding.objects || {});
-  const unbound = items.filter(([, v]) => !v.matched_by).map(([k]) => k);
-  const problems = binding.problems || [];
-  const bound = items.length - unbound.length;
-  if (problems.length || !bound) {
-    return (
-      <Alert
-        type="error"
-        showIcon
-        message="对象未绑定到数据表，数据问答会查不到库"
-        description={
-          problems[0] ||
-          `${items.length} 个对象都没绑定到数据表。请在对象文档「# 数据来源」写真实表名，` +
-            '或确认「对象属性清单」的英文名称与数据表列名一致。'
-        }
-      />
-    );
-  }
+// 一键导入预览：导入哪些表、日期如何处理、对象绑到哪张表（即发布包 mapping 的内容）。
+// 对象绑不到表 = 这一轮问答根本查不到库；发起前就说清楚，别等报告出分
+function ImportPreview({ projectId, request }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const key = request ? JSON.stringify(request) : '';
+  useEffect(() => {
+    if (!key) {
+      setData(null);
+      return undefined;
+    }
+    let active = true;
+    setLoading(true);
+    const timer = setTimeout(() => {
+      api
+        .evalImportPreview(projectId, JSON.parse(key))
+        .then((result) => active && setData(result))
+        .catch((error) => active && setData({ error: error.message }))
+        .finally(() => active && setLoading(false));
+    }, 300);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [projectId, key]);
+  if (!key) return null;
+  if (!data) return loading ? <Spin size="small" /> : null;
+  if (data.error) return <Alert type="error" showIcon message={data.error} />;
+  if (!data.tables?.length && !data.problems?.length) return null;
+  const objects = Object.entries(data.objects || {});
+  const bound = objects.filter(([, v]) => v.table);
+  const dateNotes = data.tables.flatMap((t) => [
+    ...t.date_columns.map((c) => `${t.name}.${c}`),
+  ]);
   return (
-    <Alert
-      type={unbound.length ? 'warning' : 'success'}
-      showIcon
-      message={`${bound}/${items.length} 个对象已绑定到数据表`}
-      description={
-        unbound.length
-          ? `未绑定：${unbound.slice(0, 6).join('、')}${
-              unbound.length > 6 ? ` 等 ${unbound.length} 个` : ''
-            }——涉及这些对象的数据问题将查不到库。`
-          : undefined
-      }
-    />
+    <Spin spinning={loading}>
+      <div className="eval-import-preview">
+        <div className="eval-import-title">
+          导入预览
+          <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+            {`${data.tables.length} 张表 · ${data.tables.reduce((n, t) => n + t.rows, 0)} 行 · `}
+            {`${bound.length}/${objects.length} 个对象进入 mapping`}
+          </Typography.Text>
+        </div>
+        {bound.map(([key, item]) => (
+          <div key={key} className="eval-import-row">
+            <span className="eval-import-object">{key}</span>
+            <span className="eval-ds-arrow">→</span>
+            <Tag>{item.table}</Tag>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`${Object.keys(item.columns).length} 列对齐`}
+              {item.missing.length ? `，缺 ${item.missing.slice(0, 3).join('、')}` : ''}
+            </Typography.Text>
+          </div>
+        ))}
+        {dateNotes.length > 0 && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {`日期列已规范化：${dateNotes.slice(0, 6).join('、')}${dateNotes.length > 6 ? ' 等' : ''}`}
+          </Typography.Text>
+        )}
+        {data.problems.length > 0 && (
+          <Alert
+            type="error"
+            showIcon
+            message="导入数据未通过检查，运行评测会被拦下"
+            description={data.problems.slice(0, 5).map((text) => <div key={text}>{text}</div>)}
+          />
+        )}
+        {data.warnings.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            message={`${data.warnings.length} 条提示`}
+            description={data.warnings.slice(0, 6).map((text) => <div key={text}>{text}</div>)}
+          />
+        )}
+      </div>
+    </Spin>
   );
 }

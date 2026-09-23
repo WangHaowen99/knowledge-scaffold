@@ -320,6 +320,12 @@ export const api = {
       }),
     }),
   evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),
+  // 一键导入预览：{data_source_id} 或 {resources, include_mock, graph}
+  evalImportPreview: (pid, payload) =>
+    request(`/api/projects/${pid}/eval/import-preview`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   evalDataSourceCreate: (pid, payload) =>
     request(`/api/projects/${pid}/eval/data-sources`, {
       method: 'POST',

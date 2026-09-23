@@ -35,6 +35,13 @@ export const SOURCE_KINDS = [
   },
 ];
 
+// Neo4j 评测前一键导入的数据：不导入（用图库现有数据）/ 示例数据 / 业务数据表
+export const GRAPH_IMPORT_OPTIONS = [
+  { value: 'none', label: '不导入' },
+  { value: 'mock', label: '示例数据' },
+  { value: 'dataset', label: '业务数据表' },
+];
+
 const WORKSPACE_ID = /^[a-z][a-z0-9_-]*$/;
 const WORKSPACE_ID_MAX_LENGTH = 64;
 const NL2SQL_SCENE = /^[a-zA-Z0-9_]{1,60}$/;
@@ -75,6 +82,7 @@ export function emptySourceForm(defaults = {}) {
     workspace_property: 'd2o_workspace_id',
     workspace_value: '',
     ontology_property: 'd2o_ontology_id',
+    graph_import: 'none',
     has_token: false,
     has_password: false,
   };
@@ -89,9 +97,12 @@ export function sourceToForm(source, defaults = {}) {
   if (kind !== 'connection') return next;
   const config = source.config || {};
   if (source.provider === 'neo4j') {
+    const graphImport = source.include_mock ? 'mock' : (source.resources || []).length ? 'dataset' : 'none';
     return {
       ...next,
       provider: 'neo4j',
+      graph_import: graphImport,
+      resources: [...(source.resources || [])],
       uri: config.uri || '',
       username: config.username || '',
       database: config.database || 'neo4j',
@@ -132,6 +143,7 @@ export function sourceFormPayload(form) {
         workspace_value: form.workspace_value,
         ontology_property: form.ontology_property,
       },
+      ...importSelection(form),
     };
   }
   return {
@@ -145,6 +157,23 @@ export function sourceFormPayload(form) {
       evaluation_workspace_id: form.evaluation_workspace_id,
     },
   };
+}
+
+// Neo4j 选择导入的数据 → 与 dataset 同形的 resources / include_mock
+export function importSelection(form) {
+  if (form.graph_import === 'mock') return { resources: [], include_mock: true };
+  if (form.graph_import === 'dataset') return { resources: form.resources, include_mock: false };
+  return { resources: [], include_mock: false };
+}
+
+// 需要一键导入时的预览请求（dataset / mock / 带导入的 Neo4j），否则 null
+export function importPreviewRequest(form) {
+  if (form.kind === 'mock') return { resources: [], include_mock: true, graph: false };
+  if (form.kind === 'dataset') return { resources: form.resources, include_mock: false, graph: false };
+  if (form.kind === 'connection' && form.provider === 'neo4j' && form.graph_import !== 'none') {
+    return { ...importSelection(form), graph: true };
+  }
+  return null;
 }
 
 function workspaceIdError(value, label) {
@@ -165,6 +194,11 @@ export function sourceFormError(form, options = {}) {
     if (!String(form.username || '').trim()) return 'Neo4j User 不能为空';
     if (!String(form.password || '').trim() && !form.has_password) return 'Neo4j Password 不能为空';
     if (!String(form.workspace_property || '').trim()) return 'Workspace 隔离字段不能为空';
+    if (form.graph_import !== 'none' && !String(form.ontology_property || '').trim()) {
+      return '导入图数据需要填写 Ontology 隔离字段（按知识包隔离）';
+    }
+    if (form.graph_import === 'mock' && !options.mock_tables) return '尚无示例数据：请先完成「示例数据」阶段';
+    if (form.graph_import === 'dataset' && !form.resources.length) return '请至少勾选一份要导入的数据表';
     return workspaceIdError(form.workspace_value, 'Workspace 对应值');
   }
   if (!/^https?:\/\//.test(String(form.url || '').trim())) {
@@ -189,7 +223,10 @@ export function sourceSummary(source, options = {}) {
   if (kind === 'connection') {
     const config = source.config || {};
     if (source.provider === 'neo4j') {
-      return `${config.uri || '—'} · 库 ${config.database || 'neo4j'} · 工作空间 ${config.workspace_value || '—'}`;
+      const imported = source.include_mock
+        ? ' · 导入示例数据'
+        : (source.resources || []).length ? ` · 导入 ${source.resources.length} 份数据` : '';
+      return `${config.uri || '—'} · 库 ${config.database || 'neo4j'} · 工作空间 ${config.workspace_value || '—'}${imported}`;
     }
     return `${config.url || '—'} · Scene ${config.scene || '—'} · 工作空间 ${config.evaluation_workspace_id || '—'}`;
   }

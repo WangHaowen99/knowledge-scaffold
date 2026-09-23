@@ -250,6 +250,55 @@ modeling 服务时再评估。
   新一轮发起时清空，避免拿旧报告提示。另外，前端监测到评测进入终态后会刷新项目 meta
   和文件树。此前刷新缺失，评测结束后建议不会及时出现。
 
+### 3.12 一键导入 Excel / Neo4j，mapping 与导入库同源（2026-09-23）
+
+- **导入工作簿同源**（`services/eval_import.py`）：dataset 模式和「评测前导入图数据」
+  的 Neo4j 配置，都先把选中的数据（eval_data 资料表 / mock 种子）整理成一份规范化
+  工作簿 `eval-data.xlsx`。对象绑定按这份工作簿重新计算（`resolve_object_tables`
+  传入导入表），发布包 mapping 从这个绑定导出。这样一来，导入库建什么表、什么列，
+  和 mapping 引用什么表、什么列，出自同一份表结构；导出后 `verify_mapping` 逐项核对
+  每个 Sheet 和 `source_column`，不一致就阻断。此前 mapping 取自全部 eval_data/schema
+  资料的表头，schema 资料比实际数据多列、只勾选部分文件、Sheet 只有表头、mock 用中文
+  表头时，mapping 会引用库里不存在的表或列。
+- **整理规则**：
+  - 表头去掉首尾空白；空表头列丢弃；大小写不敏感的重名列、超过 64 字符的列名直接阻断；
+  - 多份文件出现同名 Sheet 时阻断；没有数据行的 Sheet 不导入，绑定到它的对象不进 mapping；
+  - 次行注释的判定与 modeling 解析同一口径；
+  - mock 种子的中文表头按对象文档换成属性英文名，Sheet 名换成对象声明的来源表名；
+  - 以 `=` 开头的文本写成文本单元格，不会被当作公式；`.xlsm` 也统一转成 `.xlsx`
+    （modeling 只收 xlsx/xls）。
+- **日期**：
+  - modeling 解析层只按前缀 `^\d{4}[-/]\d{1,2}` 判定日期列，于是年月（2026-01）、带文字
+    后缀、非法日期、带时区的 ISO 串都会被建成 DATETIME，原样写入后，MySQL 严格模式整批
+    拒绝（真实 MySQL 8 复现：`Incorrect datetime value: '2026-01'`）；
+  - 两侧都做了处理：onto 侧只有整列都是完整、合法的日期或日期时间时，才统一写成
+    `YYYY-MM-DD` / `YYYY-MM-DD HH:MM:SS`（兼容 Excel 日期单元格、`2026/1/5`、
+    `2026年1月5日`），否则保留文本原样；modeling `eval-db.ts` 新增
+    `withStorableColumnTypes`，推断为日期但有值无法无损写入的列降级为 TEXT，
+    DATETIME 值统一为补零的标准格式。
+- **Neo4j 一键导入**：
+  - Neo4j 配置可以选择评测前导入示例数据或业务数据表，这时必须填写 Ontology 隔离字段
+    （modeling 图导入要求两组隔离条件齐全）；
+  - 编排在 `PUT /data-source` 之后，依次调用 modeling `graph-import/uploads` → `validate`
+    → `execute`（`replaceExisting: true`，只清空「工作空间 + 知识包 ID」隔离范围内的数据）
+    → 轮询 `graph-imports`；
+  - 关系关联由 `graph_relation_mapping` 推断：同一 Sheet 的两类对象按同行关联；跨 Sheet 时
+    找「一端主键在另一端有同名属性」的外键约定，按字段值关联；推断不出的关系跳过，
+    并在执行详情里给出说明。
+- **图模式导出**：
+  - modeling 对 Neo4j 包的约定是 mapping 的 `resource` 为对象 key（即 Label），`fields`
+    覆盖对象的全部字段，Sheet 与列由 `sources[]` 声明；
+  - 对象文档的「关联对象」转为 `# 关系` 表，只收两端都有数据表、关系名为合法图标识符的关系
+    （modeling 会校验包内全部关系，不合规的一条就会让整包失败）；
+  - 属性英文名不是合法图标识符时，在发起前阻断。
+- **向导**：「导入预览」列出本轮要导入的表、日期列的规范化结果、对象到表的对齐情况
+  （即 mapping 内容）、阻断问题和提示；选中已保存配置时同样展示。执行详情显示图数据导入的
+  节点数、关系数和提示。
+- **验证**：用 onto 导出的包和工作簿，直接调用 modeling 的契约代码：`parsePackageArchive`
+  + `runFormatChecks` 零错误；`extractGraphImportSchema` 和 `validateGraphImportMapping`
+  通过；`writeGraphImport` 写入真实 Neo4j 5，关系建成、日期为 `DATE` 类型；
+  `importEvaluationDatabaseTables` 写入真实 MySQL 8，mapping 引用的列在库里全部存在。
+
 ## 4. 依赖与开放问题（拍板时定）
 
 1. **部署形态**：评测要求 modeling + consumer 与 onto-modeling 共栈（根一键部署已满足）；

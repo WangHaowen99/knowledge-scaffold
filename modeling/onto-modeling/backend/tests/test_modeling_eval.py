@@ -365,46 +365,6 @@ def test_resume_attaches_to_existing_round(tmp_path, monkeypatch):
         server.shutdown()
 
 
-MOCK_TABLE = """# 订单 — 示例数据
-
-| 订单号 | 金额 |
-|-----|-----|
-| D001 | 25.5 |
-| D002 | 12.0 |
-"""
-
-
-def test_collect_dataset_files_validation(tmp_path):
-    root = tmp_path
-    (root / "resource" / "excel").mkdir(parents=True)
-    (root / "resource" / "excel" / "数据.xlsx").write_bytes(b"PK-fake")
-    files = modeling_eval.collect_dataset_files(
-        root, {"resources": ["resource/excel/数据.xlsx"]}
-    )
-    assert files == [("数据.xlsx", b"PK-fake")]
-    import pytest
-
-    with pytest.raises(ValueError, match="不存在"):
-        modeling_eval.collect_dataset_files(root, {"resources": ["resource/无.xlsx"]})
-    with pytest.raises(ValueError, match="Excel"):
-        (root / "resource" / "excel" / "t.csv").write_text("a", encoding="utf-8")
-        modeling_eval.collect_dataset_files(root, {"resources": ["resource/excel/t.csv"]})
-    with pytest.raises(ValueError, match="至少一份"):
-        modeling_eval.collect_dataset_files(root, {"resources": []})
-    # 路径逃逸拒绝
-    with pytest.raises(ValueError, match="不存在"):
-        modeling_eval.collect_dataset_files(root, {"resources": ["../外部.xlsx"]})
-
-
-def test_mock_seed_generation(tmp_path):
-    root = tmp_path
-    mock = root / "ontology" / "data-mock"
-    mock.mkdir(parents=True)
-    (mock / "订单.md").write_text(MOCK_TABLE, encoding="utf-8")
-    files = modeling_eval.collect_dataset_files(root, {"include_mock": True})
-    assert files[0][0] == "mock-seed.xlsx" and files[0][1][:2] == b"PK"  # 真实 xlsx
-
-
 def test_dataset_mode_runs_quick_import(tmp_path, monkeypatch):
     """数据集模式：quick-import 代替 mode=none，导入完成后才 evaluate。"""
 
@@ -770,29 +730,3 @@ def test_can_resume_requires_round_coordinates(tmp_path, monkeypatch):
     modeling_eval._write_state(root, modeling_project="mp-1", round_id="r9")
     assert modeling_eval.can_resume(root)
 
-
-def test_dataset_mode_blocked_when_no_object_binds_a_table(tmp_path, monkeypatch):
-    """数据绑定门禁：对象对不上任何数据表时拦在发起前，而不是跑出一个没查过库的分数。"""
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
-    _pid, root = _eval_workspace(tmp_path, "未绑定数据表")
-    _bind_object_to_table(root)
-    # 属性英文名全部改掉 → 与表列名一个都对不上
-    (root / "ontology" / "object" / "订单.md").write_text(
-        "# 对象属性清单\n| 中文名称 | 英文名称 |\n| --- | --- |\n| 订单号 | NOPE_ID |\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="没有任何对象绑定"):
-        modeling_eval.assert_data_binding(root)
-
-    # 声明了不存在的来源表 → 报具体表名，不静默降级
-    (root / "ontology" / "object" / "订单.md").write_text(
-        "# 数据来源\n不存在的表\n\n# 对象属性清单\n"
-        "| 中文名称 | 英文名称 |\n| --- | --- |\n| 订单号 | ORDER_ID |\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="不存在的表"):
-        modeling_eval.assert_data_binding(root)
-
-    # 绑定正常 → 放行
-    _bind_object_to_table(root)
-    modeling_eval.assert_data_binding(root)

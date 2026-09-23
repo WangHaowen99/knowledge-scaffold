@@ -10,6 +10,8 @@
 - 数据源：none（纯知识包问答，显式 PUT mode=none）/ dataset（quick-import 建评测库，
   需 modeling 侧 EVAL_DB_URL）/ connection（NL2SQL Template/HTTP、Neo4j 外部数据源，
   PUT data-source 由 modeling 测试连接并同步到 consumer）；配置见 eval_data_sources；
+- 一键导入：dataset 与带导入数据的 Neo4j 都先由 eval_import 生成规范化工作簿，发布包
+  mapping 按同一份表结构导出（Neo4j 用图模式），导出后逐项核对再导入；
 - 进度：状态落 .ontology-state/eval.json（前端轮询），评测项目保留在
   modeling 侧可追溯。
 """
@@ -27,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import eval_data_sources, package_mapping
+from . import eval_data_sources, eval_import
 
 STATE_REL = ".ontology-state/eval.json"
 POLL_INTERVAL_SECONDS = 6
@@ -36,6 +38,7 @@ AUTH_GRACE_SECONDS = 600
 DATA_IMPORT_TIMEOUT_SECONDS = 600  # 凭据过期后等待前端接力新 token 的宽限窗
 # running 状态由编排线程每轮刷 ts；内存里已无编排且 ts 停滞超过此窗即判为中断
 STALE_AFTER_SECONDS = POLL_INTERVAL_SECONDS * 5
+GRAPH_IMPORT_TIMEOUT_SECONDS = 1200
 # 得分低于此线、或出现异常用例时，提示进入 /ontology-evolution 评测优化
 EVOLUTION_SCORE_THRESHOLD = 90
 
@@ -154,64 +157,86 @@ def _multipart_files(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
-# ---- 数据集模式：评测数据表收集与导入 ----
+# ---- 数据导入：MySQL 评测库（quick-import）与 Neo4j 图库（graph-import）----
 
 
-def collect_dataset_files(root: Path, data_source: dict) -> list[tuple[str, bytes]]:
-    """数据集模式的导入文件：勾选的 eval_data 资料 + 可选 mock 种子。
-    编排启动前调用（坏输入快速失败，不浪费一次包导入）。"""
-    files: list[tuple[str, bytes]] = []
-    for rel in (data_source.get("resources") or [])[:20]:
-        rel = str(rel).strip()
-        path = (root / rel).resolve()
-        if not str(path).startswith(str(root.resolve())) or not path.is_file():
-            raise ValueError(f"评测数据文件不存在：{rel}")
-        if path.suffix.lower() not in (".xlsx", ".xlsm"):
-            raise ValueError(f"评测数据仅支持 Excel 表：{rel}")
-        files.append((path.name, path.read_bytes()))
-    if data_source.get("include_mock"):
-        files.append(_generate_mock_seed(root))
-    if not files:
-        raise ValueError("数据集模式需要至少一份数据表（评测数据资料或示例数据种子）")
-    return files
-
-
-def assert_data_binding(root: Path) -> None:
-    """数据集模式前置门禁：对象必须绑定到真实数据表，否则这一轮问答根本不会查库。
-
-    历史故障：来源Sheet 写成对象名、包里没有 mappings，评测照跑并给出一个看起来不错的
-    分数，但全部用例都只读了知识包上下文、一次库都没查。在发起时拦下，让问题暴露在
-    这里而不是藏进报告分数里。
-    """
-    binding = package_mapping.resolve_object_tables(root)
-    if binding["problems"]:
-        raise ValueError("对象与评测数据表未对齐：" + "；".join(binding["problems"][:3]))
-    if not binding["bound"]:
-        raise ValueError(
-            "没有任何对象绑定到评测数据表，数据问答会全部落空："
-            "请在对象文档「# 数据来源」声明真实表名，"
-            "或确认「对象属性清单」的英文名称与数据表列名一致"
-        )
-
-
-def _generate_mock_seed(root: Path) -> tuple[str, bytes]:
-    """ontology/data-mock 的示例数据 → 评测库导入 Excel（工具箱脚本，单一实现）。"""
-    import subprocess
-    import sys as _sys
-    import tempfile
-
-    script = (
-        Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "mock_to_eval_seed.py"
+def needs_import(data_source: dict) -> bool:
+    """dataset 模式、或声明了导入数据的 Neo4j 连接，发起前要整理导入工作簿。"""
+    mode = str(data_source.get("mode") or "none")
+    if mode == "dataset":
+        return True
+    return (
+        mode == "connection" and data_source.get("provider") == "neo4j"
+        and bool(data_source.get("resources") or data_source.get("include_mock"))
     )
-    out = Path(tempfile.mkdtemp(prefix="onto-eval-seed-")) / "mock-seed.xlsx"
-    proc = subprocess.run(
-        [_sys.executable, str(script), "--out", str(out)],
-        cwd=root, capture_output=True, text=True, timeout=120,
+
+
+def is_graph(data_source: dict) -> bool:
+    return data_source.get("mode") == "connection" and data_source.get("provider") == "neo4j"
+
+
+def _graph_import(
+    project_id: str, root: Path, tok, mp_project: str, data_source: dict, plan: dict
+) -> None:
+    """Neo4j 一键导入：上传工作簿 → 推断关系关联 → 校验 → 执行（清空本隔离范围旧数据）→ 轮询。"""
+    rows = sum(len(t.rows) for t in plan["tables"])
+    _write_state(
+        root, phase="graph_import",
+        message=f"图数据导入：上传 {len(plan['tables'])} 张表（{rows} 行）",
     )
-    if proc.returncode != 0 or not out.is_file():
-        detail = (proc.stderr or proc.stdout or "").strip()[:200]
-        raise RuntimeError(f"示例数据种子生成失败：{detail or '无 mock 产物'}")
-    return ("mock-seed.xlsx", out.read_bytes())
+    body, ctype = _multipart_files([(eval_import.WORKBOOK_NAME, plan["workbook"])])
+    try:
+        upload = _http(
+            "POST", f"/api/projects/{mp_project}/graph-import/uploads", tok(),
+            data=body, content_type=ctype, timeout=180,
+        )["upload"]
+        relations, skipped = eval_import.graph_relation_mapping(upload)
+        mapping = {"relations": relations}
+        validation = _http(
+            "POST", f"/api/projects/{mp_project}/graph-import/uploads/{upload['id']}/validate",
+            tok(), body={"mapping": mapping},
+        )["validation"]
+        _check_stop(project_id)
+        run = _http(
+            "POST", f"/api/projects/{mp_project}/graph-import/uploads/{upload['id']}/execute",
+            tok(),
+            body={
+                "mapping": mapping,
+                "password": (data_source.get("config") or {}).get("password", ""),
+                # 隔离范围 = 评测工作空间 + 本知识包 ID，只属于本项目的评测数据，每轮重灌
+                "replaceExisting": True,
+            },
+        )["run"]
+    except urllib.error.HTTPError as exc:
+        detail = str(getattr(exc, "detail", "") or "") or f"HTTP {exc.code}"
+        raise RuntimeError(f"图数据导入失败：{detail}") from exc
+    finished = _poll_graph_import(project_id, root, tok, mp_project, run["id"])
+    notes = skipped + list(validation.get("warnings") or [])
+    _write_state(
+        root,
+        graph_import={
+            "nodes": finished.get("nodeCount", 0),
+            "relationships": finished.get("relationshipCount", 0),
+            "relations_mapped": len(relations),
+            "notes": notes[:20],
+        },
+    )
+
+
+def _poll_graph_import(project_id: str, root: Path, tok, mp_project: str, run_id: str) -> dict:
+    deadline = time.time() + GRAPH_IMPORT_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        time.sleep(POLL_INTERVAL_SECONDS)
+        _check_stop(project_id)
+        runs = _http("GET", f"/api/projects/{mp_project}/graph-imports", tok()).get("imports") or []
+        run = next((r for r in runs if r.get("id") == run_id), {})
+        status = run.get("status")
+        if status == "done":
+            return run
+        if status in ("failed", "cancelled"):
+            raise RuntimeError(f"图数据导入失败：{str(run.get('error') or status)[:200]}")
+        _write_state(root, message="图数据导入中（写入节点与关系）…")
+    raise TimeoutError("图数据导入超时")
 
 
 def _poll_data_import(project_id: str, root: Path, tok, mp_project: str) -> None:
@@ -836,15 +861,14 @@ def _run_sync(
     mode = str(data_source.get("mode") or "none")
     dataset_mode = mode == "dataset"
     try:
-        # 数据集模式先收集文件：坏输入快速失败，不浪费一次包导入
-        dataset_files = (
-            collect_dataset_files(root, data_source) if dataset_mode else []
+        # 导入数据先整理成工作簿：坏输入快速失败，不浪费一次包导入
+        plan = (
+            eval_import.prepare(root, data_source, graph=is_graph(data_source))
+            if needs_import(data_source) else None
         )
         if _try_resume(project_id, root, token, cases):
             return
         _check_stop(project_id)
-        if dataset_mode:
-            assert_data_binding(root)
         _write_state(
             root, status="running", phase="package", message="打包知识包",
             report_round=None,
@@ -855,7 +879,14 @@ def _run_sync(
         import tempfile
 
         zip_path = Path(tempfile.mkdtemp(prefix="onto-eval-")) / "package.zip"
-        manager.export_package_zip(project_id, zip_path)
+        manager.export_package_zip(
+            project_id, zip_path,
+            binding=plan["binding"] if plan else None, graph=is_graph(data_source),
+        )
+        if plan:
+            mismatched = eval_import.verify_mapping(zip_path, plan["tables"])
+            if mismatched:
+                raise RuntimeError("发布包 mapping 与导入数据不一致：" + "；".join(mismatched[:3]))
 
         _write_state(root, phase="import", message="导入 modeling 评测工作区")
         package_name = f"onto-eval-{project_id}"
@@ -884,9 +915,9 @@ def _run_sync(
         if dataset_mode:
             _write_state(
                 root, phase="data_import",
-                message=f"评测库导入（{len(dataset_files)} 份数据表）",
+                message=f"评测库导入（{len(plan['tables'])} 张表）",
             )
-            body, ctype = _multipart_files(dataset_files)
+            body, ctype = _multipart_files([(eval_import.WORKBOOK_NAME, plan["workbook"])])
             try:
                 _http(
                     "POST",
@@ -903,6 +934,8 @@ def _run_sync(
             _poll_data_import(project_id, root, tok, mp_project)
         elif mode == "connection":
             _configure_connection(root, tok, mp_project, data_source, project_id)
+            if plan:
+                _graph_import(project_id, root, tok, mp_project, data_source, plan)
         else:
             _write_state(root, phase="data_source", message="配置数据源（无数据库模式）")
             _http("PUT", f"/api/projects/{mp_project}/data-source", tok(),

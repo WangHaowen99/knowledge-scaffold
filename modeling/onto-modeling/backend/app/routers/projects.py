@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..services import eval_data_sources, eval_sets, package_mapping
+from ..services import eval_data_sources, eval_import, eval_sets, package_mapping
 from ..services.workspace import WorkspaceError, WorkspaceManager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -410,8 +410,8 @@ class EvalDataSourceBody(BaseModel):
     mode: str = "none"  # none | dataset | connection
     provider: str = ""  # connection：nl2sql_template | nl2sql_http | neo4j
     config: dict = {}
-    resources: list[str] = []  # dataset：eval_data 资料路径
-    include_mock: bool = False  # dataset：附带 mock 种子
+    resources: list[str] = []  # dataset / neo4j 导入：eval_data 资料路径
+    include_mock: bool = False  # dataset / neo4j 导入：mock 种子
 
 
 def _default_eval_workspace_id(project_id: str) -> str:
@@ -470,6 +470,31 @@ def delete_eval_data_source(project_id: str, source_id: str, request: Request):
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除"})
     return {"deleted": True}
+
+
+class EvalImportPreviewBody(BaseModel):
+    data_source_id: str = ""  # 已保存的配置；缺省时按下面的内联选择预览
+    resources: list[str] = []
+    include_mock: bool = False
+    graph: bool = False  # Neo4j 图导入：额外校验属性名，mapping 按图模式
+
+
+@router.post("/{project_id}/eval/import-preview")
+def eval_import_preview(project_id: str, body: EvalImportPreviewBody, request: Request):
+    """一键导入预览：导入哪些表、日期列如何规范化、对象绑到哪张表哪些列（即 mapping）。"""
+    from ..services import modeling_eval
+
+    root = ensure_access(project_id, request)
+    if body.data_source_id:
+        source = eval_data_sources.get_source(project_id, body.data_source_id)
+        if not source:
+            return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除"})
+        if not modeling_eval.needs_import(source):
+            return {"tables": [], "objects": {}, "mapped_objects": [], "problems": [], "warnings": []}
+        selection, graph = source, modeling_eval.is_graph(source)
+    else:
+        selection, graph = {"resources": body.resources, "include_mock": body.include_mock}, body.graph
+    return eval_import.preview(root, selection, graph=graph)
 
 
 # ---- 评测集（导入过的用例保存下来，评测时直接选用）----
@@ -658,11 +683,16 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
                 status_code=400,
                 content={"error": "内联数据源仅支持 none 或 dataset；外部数据源请先保存配置再选用"},
             )
-    if str(data_source.get("mode")) == "dataset":
-        try:
-            modeling_eval.collect_dataset_files(root, data_source)
-        except (ValueError, RuntimeError) as exc:
-            return JSONResponse(status_code=400, content={"error": str(exc)})
+    if modeling_eval.needs_import(data_source):
+        plan = eval_import.collect(root, data_source)
+        problems = plan["problems"] + (
+            eval_import.graph_problems(plan["binding"]) if modeling_eval.is_graph(data_source) else []
+        )
+        if problems:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "导入数据未通过检查：" + "；".join(problems[:3]), "problems": problems},
+            )
 
     eval_set_name = ""
     if body.eval_set_id:
