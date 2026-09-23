@@ -143,9 +143,50 @@ const BOOLEAN_VALUES: Record<string, boolean> = {
   '否': false,
 };
 
+// DATETIME 只收完整且日历合法的年月日（可带时分秒）。解析层的日期推断只看前缀
+// （`^\d{4}[-/]\d{1,2}`），年月（2024-01）、带后缀文字（2024-01-05 上午）、非法日期
+// （2024-02-30）或带时区的 ISO 串都会被判成日期列，原样写入会让 MySQL 严格模式拒绝整批。
+const MYSQL_DATE_TIME = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?)?$/;
+
+function pad(value: number, width = 2): string {
+  return String(value).padStart(width, '0');
+}
+
+export function mysqlDateTimeValue(content: string): string | null {
+  const match = MYSQL_DATE_TIME.exec(content.trim());
+  if (!match) return null;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (year < 1000 || calendar.getUTCFullYear() !== year
+    || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) return null;
+  const date = `${pad(year, 4)}-${pad(month)}-${pad(day)}`;
+  if (match[4] === undefined) return date;
+  const [hour, minute, second] = [Number(match[4]), Number(match[5]), Number(match[6] ?? '0')];
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  return `${date}T${pad(hour)}:${pad(minute)}:${pad(second)}`;
+}
+
+/** 推断为日期但有值不能无损写入 DATETIME 的列降级为 TEXT，原样保存而不是整批失败。 */
+function withStorableColumnTypes(table: DataDictTable): DataDictTable {
+  const fields = table.fields.map((field, column) => {
+    if (field.inferredType !== 'date') return field;
+    const storable = (table.rows ?? []).every((row) => {
+      const content = String(row[column] ?? '').trim();
+      return !content || mysqlDateTimeValue(content) !== null;
+    });
+    return storable ? field : { ...field, inferredType: 'string' as const };
+  });
+  return { ...table, fields };
+}
+
 function coerceValue(value: unknown, field: DataDictField): unknown {
   const content = String(value ?? '').trim();
   if (!content) return null;
+  if (field.inferredType === 'date') {
+    const dateTime = mysqlDateTimeValue(content);
+    if (dateTime === null) throw new Error(`字段「${field.name}」包含非法日期：${content}`);
+    return dateTime;
+  }
   if (field.inferredType === 'number') {
     if (!/^-?\d+(?:\.\d+)?$/.test(content)) {
       throw new Error(`字段「${field.name}」包含非数值内容：${content}`);
@@ -167,7 +208,9 @@ export function validateEvaluationDatabaseExcelContents(
   buffer: Buffer,
 ): void {
   validateEvaluationDatabaseExcelUpload(filename, buffer);
-  const tables = parseExcel(buffer, { maxRows: null }).filter((table) => table.rows?.length);
+  const tables = parseExcel(buffer, { maxRows: null })
+    .filter((table) => table.rows?.length)
+    .map(withStorableColumnTypes);
   if (!tables.length) throw new Error('Excel 中没有可导入的数据行');
   for (const table of tables) {
     validateTable(table);
@@ -275,7 +318,7 @@ export async function importEvaluationDatabaseTables(
   tables: DataDictTable[],
   dependencies: EvaluationDatabaseDependencies = {},
 ): Promise<EvaluationDatabaseImportResult> {
-  const withRows = tables.filter((table) => table.rows?.length);
+  const withRows = tables.filter((table) => table.rows?.length).map(withStorableColumnTypes);
   if (!withRows.length) throw new Error('Excel 中没有可导入的数据行');
   let client: EvaluationDatabaseClient | undefined;
   try {
