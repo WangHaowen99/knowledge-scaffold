@@ -696,14 +696,17 @@ class WorkspaceManager:
                 )
                 operation_keys = {key for key, _ in operations}
                 for key, code in scripts:
-                    zf.writestr(f"{pkg}/scripts/{key}.py", code)
-                    # consumer 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
+                    filename = _package_script_filename(key)
+                    zf.writestr(f"{pkg}/scripts/{filename}", code)
+                    # 执行契约：描述符须声明 entrypoint；bound_operation 使脚本
                     # 成为该 operation 的可执行实现；参数表驱动 CLI 参数组装。
+                    # entrypoint 是相对 scripts/ 的文件名：modeling 按 scripts/<entrypoint>
+                    # 取源码且只收 ASCII 文件名，consumer 缺 scripts/ 前缀时自动补齐。
                     bound, params = _script_header_meta(code)
-                    extra = f"entrypoint: scripts/{key}.py\n"
+                    extra = f"entrypoint: {filename}\n"
                     if bound and bound in operation_keys:
                         extra += f"bound_operation: {q(bound)}\n"
-                    body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{key}.py`。\n"
+                    body = f"由 /ontology-codegen 生成的确定性脚本，实现见 `{filename}`。\n"
                     if params:
                         rows = "".join(
                             f"| {p['name']} | --{p['name']} | {p['type']} | {p['required']} | {p['default']} | {p['desc']} |\n"
@@ -1120,6 +1123,20 @@ _SCRIPT_TYPE_MAP = {
     "str": "string", "string": "string", "int": "number", "float": "number",
     "number": "number", "bool": "boolean", "boolean": "boolean", "list": "string",
 }
+
+
+_PACKAGE_SCRIPT_STEM_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def _package_script_filename(key: str) -> str:
+    """知识包内的脚本文件名，满足 modeling 的 entrypoint 契约 ^[A-Za-z0-9_.-]+\\.py$。
+
+    ASCII 脚本名原样沿用；中文等其他脚本名按 key 的哈希取稳定文件名，
+    脚本 key 与标题仍保留原名。
+    """
+    if _PACKAGE_SCRIPT_STEM_RE.fullmatch(key) and ".." not in key:
+        return f"{key}.py"
+    return f"script_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:10]}.py"
 
 
 def _script_header_meta(code: str) -> tuple[str, list[dict]]:
