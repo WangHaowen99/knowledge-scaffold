@@ -640,17 +640,25 @@ def test_interactive_installer_never_guesses_consumer_network() -> None:
     assert "consumer_onto-agent-network" not in _INTERACTIVE_INSTALLER
 
 
-# 非交互安装器的 upgrade 路径：Consumer、Modeling 已分离部署在 INSTALL_ROOT 下。
-# docker 由 stub 应答：mw-modeling* 归属 modeling 目录，onto-agent-backend 在
-# onto-agent_default 网络上；设置 STUB_ONTO_MODELING_DIR 时模拟已有 onto-modeling 容器。
+# 安装器升级路径共用的 docker stub：mw-modeling* 归属 STUB_MODELING_OWNER，Consumer
+# 容器归属 STUB_CONSUMER_DIR 且在 onto-agent_default 网络上；设置 STUB_ONTO_MODELING_DIR
+# 时模拟已有 onto-modeling 容器，设置 STUB_LEGACY_MODELING_PORT 时模拟旧 Modeling 的宿主端口。
 _UPGRADE_DOCKER_STUB = """\
-if [ "$1" != container ]; then exit 0; fi
+case "$1" in
+    container) ;;
+    image) [ "${4:-}" != --format ] || printf 'sha256:%064d\\n' 0; exit 0 ;;
+    port)
+        [ "$2 $3" != "mw-modeling 5100/tcp" ] || [ -z "${STUB_LEGACY_MODELING_PORT:-}" ] \\
+            || printf '0.0.0.0:%s\\n' "${STUB_LEGACY_MODELING_PORT}"
+        exit 0 ;;
+    *) exit 0 ;;
+esac
 [ "$2" = inspect ] || exit 1
 name="$3"
 format="${5:-}"
 case "${name}" in
-    mw-modeling|mw-modeling-agent) owner="${STUB_MODELING_DIR}" ;;
-    onto-agent-backend) owner="${STUB_CONSUMER_DIR}" ;;
+    mw-modeling|mw-modeling-agent) owner="${STUB_MODELING_OWNER}" ;;
+    onto-agent-*) owner="${STUB_CONSUMER_DIR}" ;;
     onto-modeling) owner="${STUB_ONTO_MODELING_DIR:-}"; [ -n "${owner}" ] || exit 1 ;;
     *) exit 1 ;;
 esac
@@ -665,11 +673,11 @@ esac\
 
 
 def _write_release_package(path: Path, top: str, files: dict[str, str]) -> Path:
-    """合成发布包：files 中 .sh 结尾的写成可执行脚本，其余原样写入。"""
+    """合成发布包：files 中 .sh 结尾和 opsctl 写成可执行脚本，其余原样写入。"""
     stage = path.parent / f"{path.name}.stage"
     for relative, body in files.items():
         target = stage / top / relative
-        if relative.endswith(".sh"):
+        if relative.endswith((".sh", "/opsctl")):
             _write_executable(target, body)
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -704,12 +712,29 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
     def record(label: str) -> str:
         return f'printf "{label}\\n" >> "$CALLS_FILE"'
 
+    # 已安装的旧版 Modeling 只在升级失败回滚时才会被调用
+    _write_executable(modeling / "deploy" / "install.sh", record("stale-modeling-install"))
+
     packages = tmp_path / "packages"
     packages.mkdir()
+    # Consumer 包同时满足非交互、交互式首次安装与 legacy 迁移三种入口
     consumer_package = _write_release_package(
         packages / "onto-agent-v-test.tar.gz",
         "onto-agent",
-        {"VERSION": "v-test\n", "deploy/upgrade.sh": record("consumer-upgrade")},
+        {
+            "VERSION": "v-test\n",
+            "backend/.env.example": "BACKEND_PORT=5055\n",
+            "deploy/manifest.json": "{}\n",
+            "deploy/opsctl": 'printf "preflight PASS\\n"',
+            "deploy/upgrade.sh": record("consumer-upgrade"),
+            "deploy/install.sh": (
+                'if [ "${1:-}" = --preflight-only ]; then '
+                + record("consumer-preflight")
+                + "; else "
+                + record("consumer-install")
+                + "; fi"
+            ),
+        },
     )
     modeling_package = _write_release_package(
         packages / "modeling-v-test.tar.gz",
@@ -726,7 +751,8 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
         {
             ".env.example": "ONTO_WEB_PORT=5100\n",
             "preflight.sh": record("onto-preflight"),
-            "deploy.sh": record("onto-deploy") + '\ncp .env "$ONTO_ENV_SNAPSHOT"',
+            # 与真实 deploy.sh 一样先切到自身目录，调用方不必 cd
+            "deploy.sh": record("onto-deploy") + '\ncd "$(dirname "$0")"\ncp .env "$ONTO_ENV_SNAPSHOT"',
         },
     )
 
@@ -746,7 +772,7 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
         "CURL_CALLS_FILE": str(tmp_path / "curl-calls.txt"),
         "ONTO_ENV_SNAPSHOT": str(tmp_path / "onto-modeling.env"),
         "STUB_CONSUMER_DIR": str(consumer),
-        "STUB_MODELING_DIR": str(modeling),
+        "STUB_MODELING_OWNER": str(modeling),
     }
     return {
         "root": root,
@@ -844,6 +870,228 @@ def test_installer_upgrade_without_onto_modeling_package_says_so(tmp_path: Path)
     assert "未指定 --onto-modeling-package，本次不部署 Onto Modeling" in result.stdout
     assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
     assert not (setup["root"] / "onto-modeling").exists()
+
+
+def _drive_tty(
+    script: Path, answers: list[tuple[str, str]], env: dict[str, str], timeout: float = 60
+) -> tuple[int, str]:
+    """用伪终端驱动从 /dev/tty 读输入的交互脚本：等到下一条提示出现再作答。
+
+    stdin 接 /dev/null，脚本只能从控制终端读到答案；提示没有按顺序出现时超时失败。
+    """
+    import pty
+    import select
+    import signal
+    import time
+
+    bash = _bash_executable()
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
+            os.execve(bash, [bash, str(script)], env)
+        finally:
+            os._exit(127)
+    output = b""
+    pending = list(answers)
+    answered = 0
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    f"交互脚本超时，未出现的提示：{pending[:1]}\n"
+                    + output.decode("utf-8", "replace")
+                )
+            ready, _, _ = select.select([fd], [], [], min(remaining, 0.5))
+            if ready:
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:  # Linux 上子进程退出后读主端报 EIO
+                    chunk = b""
+                if not chunk:
+                    break
+                output += chunk
+            text = output.decode("utf-8", "replace")
+            if pending and (position := text.find(pending[0][0], answered)) >= 0:
+                prompt, reply = pending.pop(0)
+                answered = position + len(prompt)
+                os.write(fd, f"{reply}\n".encode())
+    except BaseException:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        raise
+    finally:
+        os.close(fd)
+    _, status = os.waitpid(pid, 0)
+    return os.waitstatus_to_exitcode(status), output.decode("utf-8", "replace")
+
+
+def _interactive_upgrade_answers(setup: dict, *extra: tuple[str, str]) -> list[tuple[str, str]]:
+    consumer_package, modeling_package, onto_package = setup["packages"]
+    return [
+        ("请选择模式", "2"),
+        ("请输入已分离部署的安装根目录", str(setup["root"])),
+        ("升级范围", "3"),
+        ("请输入 Consumer 发布包路径", str(consumer_package)),
+        ("请输入 Modeling 发布包路径", str(modeling_package)),
+        ("请输入 Onto Modeling 发布包路径", str(onto_package.parent / "onto-modeling-*.tar.gz")),
+        *extra,
+    ]
+
+
+def test_interactive_upgrade_asks_onto_port_when_it_clashes_with_modeling(
+    tmp_path: Path,
+) -> None:
+    """回归：0.26.9.0 之前的分离部署 Modeling 在 5100，首次加入 Onto Modeling 也落到 5100，
+    Consumer、Modeling 升级完才在拉起 Onto Modeling 时撞端口，且没有任何途径改端口。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
+        _interactive_upgrade_answers(setup, ("请输入 Onto Modeling 宿主端口", "5110")),
+        setup["env"],
+    )
+
+    assert rc == 0, output
+    assert "Onto Modeling 宿主端口 5100 与 MODELING_PORT 相同" in output
+    # 预检在任何变更之前，Onto Modeling 部署排在 Consumer、Modeling 之后
+    assert _calls(setup) == ["onto-preflight", "consumer-upgrade", "modeling-install", "onto-deploy"]
+    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+    assert "ONTO_WEB_PORT=5110" in onto_env
+    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
+    assert "http://127.0.0.1:5110/api/health" in (tmp_path / "curl-calls.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "Onto Modeling deployment finished" in output
+
+
+def test_interactive_upgrade_refuses_foreign_onto_modeling_container(tmp_path: Path) -> None:
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+    env = {**setup["env"], "STUB_ONTO_MODELING_DIR": str(tmp_path / "elsewhere" / "onto-modeling")}
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
+        _interactive_upgrade_answers(setup),
+        env,
+    )
+
+    assert rc != 0
+    assert "拒绝接管" in output
+    assert _calls(setup) == []
+
+
+def test_interactive_install_rejects_custom_onto_port_equal_to_modeling(tmp_path: Path) -> None:
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+    consumer_package, modeling_package, onto_package = setup["packages"]
+    fresh_root = tmp_path / "fresh"
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
+        [
+            ("请选择模式", "1"),
+            ("安装根目录（", "2"),
+            ("请输入自定义安装根目录", str(fresh_root)),
+            ("端口配置", "2"),
+            ("Consumer Backend 宿主端口", "45055"),
+            ("Consumer MCP 宿主端口", "47488"),
+            ("Consumer Frontend 宿主端口", "48888"),
+            ("Modeling Workbench 宿主端口", "55100"),
+            ("Modeling MCP 宿主端口", "55188"),
+            ("请输入 Onto Modeling 宿主端口", "55100"),
+            ("请输入 Consumer 发布包路径", str(consumer_package)),
+            ("请输入 Modeling 发布包路径", str(modeling_package)),
+            ("请输入 Onto Modeling 发布包路径", str(onto_package)),
+            ("请输入 Onto Modeling 宿主端口", "55110"),
+        ],
+        setup["env"],
+    )
+
+    assert rc == 0, output
+    assert "Onto Modeling 宿主端口 55100 与 MODELING_PORT 相同" in output
+    assert _calls(setup) == [
+        "onto-preflight",
+        "consumer-preflight",
+        "consumer-install",
+        "modeling-install",
+        "onto-deploy",
+    ]
+    assert "ONTO_WEB_PORT=55110" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+    assert (fresh_root / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
+
+
+def _prepare_legacy_upgrade(tmp_path: Path) -> dict:
+    """旧合并部署：Consumer 与 Modeling 同在 legacy/onto-agent，mw-modeling 发布在 5100。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="8100")
+    legacy = tmp_path / "legacy" / "onto-agent"
+    (legacy / "backend").mkdir(parents=True)
+    (legacy / "deploy" / "state").mkdir(parents=True)
+    (legacy / "deploy" / "modeling").mkdir()
+    (legacy / "VERSION").write_text("v-previous\n", encoding="utf-8")
+    (legacy / "deploy" / "state" / "current.env").write_text(
+        "CURRENT_VERSION=v-previous\n", encoding="utf-8"
+    )
+    (legacy / "backend" / ".env").write_text(
+        f"MODELING_SERVICE_TOKEN={MODELING_SERVICE_TOKEN}\n", encoding="utf-8"
+    )
+    setup["legacy"] = legacy
+    setup["env"] = {
+        **setup["env"],
+        "STUB_CONSUMER_DIR": str(legacy),
+        "STUB_MODELING_OWNER": str(legacy),
+        "STUB_LEGACY_MODELING_PORT": "5100",
+    }
+    return setup
+
+
+def _legacy_answers(setup: dict, onto_answer: str, *extra: tuple[str, str]) -> list:
+    consumer_package, modeling_package, _ = setup["packages"]
+    return [
+        ("旧的合并部署根目录", str(setup["legacy"])),
+        ("Consumer 镜像 tar 包路径", str(consumer_package)),
+        ("Modeling 镜像 tar 包路径", str(modeling_package)),
+        ("Onto Modeling 发布包路径", onto_answer),
+        *extra,
+    ]
+
+
+def test_legacy_migration_deploys_onto_modeling_on_a_free_port(tmp_path: Path) -> None:
+    """回归：legacy 迁移脚本完全不涉及 Onto Modeling；迁移后 Modeling 保留旧的 5100。"""
+    setup = _prepare_legacy_upgrade(tmp_path)
+    onto_package = setup["packages"][2]
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
+        _legacy_answers(setup, str(onto_package), ("请输入 Onto Modeling 宿主端口", "5110")),
+        setup["env"],
+    )
+
+    assert rc == 0, output
+    assert "Onto Modeling 宿主端口 5100 已被当前部署的其他服务使用" in output
+    assert _calls(setup) == ["onto-preflight", "consumer-upgrade", "modeling-install", "onto-deploy"]
+    stack_root = setup["legacy"].parent
+    assert "MODELING_PORT=5100" in (stack_root / "modeling" / ".env").read_text(encoding="utf-8")
+    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+    assert "ONTO_WEB_PORT=5110" in onto_env
+    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
+    assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
+    assert (stack_root / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
+    assert "Onto Modeling deployment finished" in output
+
+
+def test_legacy_migration_without_onto_modeling_package_is_unchanged(tmp_path: Path) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
+        _legacy_answers(setup, ""),
+        setup["env"],
+    )
+
+    assert rc == 0, output
+    assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
+    assert not (setup["legacy"].parent / "onto-modeling").exists()
 
 
 def _host_port_default(compose_text: str, var: str) -> str:

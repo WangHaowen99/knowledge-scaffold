@@ -24,6 +24,24 @@ prompt_value() {
     printf '%s' "${value}"
 }
 
+prompt_optional() {
+    prompt_text="$1"
+    printf '%s' "${prompt_text}" >/dev/tty || die "需要交互式终端"
+    IFS= read -r value </dev/tty || die "读取输入失败"
+    printf '%s' "${value}"
+}
+
+prompt_port() {
+    while :; do
+        value="$(prompt_value "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        case "${value}" in
+            ''|*[!0-9]*) ;;
+            *) if [ "${value}" -ge 1 ] && [ "${value}" -le 65535 ]; then printf '%s' "${value}"; return 0; fi ;;
+        esac
+        printf '端口必须是1到65535之间的整数，请重新输入。\n' >/dev/tty
+    done
+}
+
 resolve_package_path() {
     package_pattern="$1"
     package_label="$2"
@@ -98,16 +116,89 @@ legacy_host_port() {
         | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1
 }
 
+package_env_value() {
+    tar -xzOf "$1" "$2" 2>/dev/null \
+        | sed -n "s/^[[:space:]]*$3[[:space:]]*=[[:space:]]*//p" | tail -n 1 || true
+}
+
+# Onto Modeling 排在迁移最后部署。端口、容器归属和预检都在动手前完成，
+# 避免 Consumer、Modeling 已经迁移、Onto Modeling 才失败的半完成状态。
+precheck_onto_modeling() {
+    modeling_port="${MODELING_PORT:-$(legacy_host_port mw-modeling 5100 || true)}"
+    modeling_port="${modeling_port:-$(env_get "${old_install_dir}/backend/.env" MODELING_PORT)}"
+    modeling_port="${modeling_port:-$(package_env_value "${modeling_package}" modeling/.env.example MODELING_PORT)}"
+    # 旧合并部署的 Modeling 通常仍在 5100，与 Onto Modeling 默认端口相同
+    used_ports=" ${modeling_port} ${MODELING_MCP_PORT:-$(legacy_host_port mw-modeling 5188 || true)}"
+    used_ports="${used_ports} $(legacy_host_port onto-agent-backend 5055 || true)"
+    used_ports="${used_ports} $(legacy_host_port onto-agent-mcp 7488 || true)"
+    used_ports="${used_ports} $(legacy_host_port onto-agent-frontend 80 || true) "
+    onto_web_port="$(env_get "${onto_modeling_dir}/.env" ONTO_WEB_PORT)"
+    onto_web_port="${onto_web_port:-$(package_env_value "${onto_package}" onto-modeling/.env.example ONTO_WEB_PORT)}"
+    while [ -z "${onto_web_port}" ] || case "${used_ports}" in *" ${onto_web_port} "*) true ;; *) false ;; esac; do
+        [ -z "${onto_web_port}" ] || printf 'Onto Modeling 宿主端口 %s 已被当前部署的其他服务使用，请换一个端口。\n' \
+            "${onto_web_port}" >/dev/tty
+        onto_web_port="$(prompt_port '请输入 Onto Modeling 宿主端口：')"
+    done
+    if docker container inspect onto-modeling >/dev/null 2>&1; then
+        owner="$(docker container inspect onto-modeling --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)"
+        [ "${owner}" = "${onto_modeling_dir}" ] \
+            || die "容器 onto-modeling 属于 ${owner:-未知目录}，不是 ${onto_modeling_dir}，拒绝接管"
+    fi
+    mkdir -p "${TMP_ROOT}/onto-preflight"
+    tar -xzf "${onto_package}" -C "${TMP_ROOT}/onto-preflight" onto-modeling/preflight.sh \
+        || die 'Onto Modeling 发布包缺少 preflight.sh'
+    log '开始执行 Onto Modeling 预检'
+    (cd "${TMP_ROOT}/onto-preflight/onto-modeling" && bash ./preflight.sh) \
+        || die 'Onto Modeling 预检未通过，尚未做任何变更'
+}
+
+deploy_onto_modeling() {
+    env_file="${onto_modeling_dir}/.env"
+    log "部署 Onto Modeling：${onto_modeling_dir}"
+    # 数据在具名卷里、.env 不在发布包内，覆盖解压即可
+    tar -xzf "${onto_package}" -C "$(dirname "${onto_modeling_dir}")"
+    # 网络按运行中的 Consumer 容器现场探测，不按命名规律猜
+    network="$(docker container inspect onto-agent-backend \
+        --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+        2>/dev/null | head -n 1)"
+    [ -n "${network}" ] || die '无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行'
+    if [ ! -f "${env_file}" ]; then
+        [ -f "${onto_modeling_dir}/.env.example" ] || die 'Onto Modeling 发布包缺少 .env.example'
+        cp "${onto_modeling_dir}/.env.example" "${env_file}"
+    fi
+    chmod 600 "${env_file}"
+    write_env_value "${env_file}" ONTO_WEB_PORT "${onto_web_port}"
+    write_env_value "${env_file}" ONTO_MODELING_EXTERNAL_AUTH_NETWORK "${network}"
+    # 评测调用 Modeling Workbench 走容器网络，与宿主端口无关
+    [ -n "$(env_get "${env_file}" ONTO_WEB_MODELING_URL)" ] \
+        || write_env_value "${env_file}" ONTO_WEB_MODELING_URL 'http://mw-modeling:5100'
+    log "Onto Modeling 共享 Consumer 账号中心：网络 ${network}"
+    (cd "${onto_modeling_dir}" && bash ./deploy.sh) || die \
+        "Onto Modeling 部署失败；Consumer 与 Modeling 已迁移完成，修复后可单独执行 bash ${onto_modeling_dir}/deploy.sh"
+    health_url="http://127.0.0.1:${onto_web_port}/api/health"
+    elapsed=0
+    until curl -fsS --noproxy '*' --max-time 5 "${health_url}" >/dev/null 2>&1; do
+        [ "${elapsed}" -lt 120 ] || die "Onto Modeling 120 秒内未就绪：${health_url}；请查看 docker logs onto-modeling"
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    log "Onto Modeling deployment finished: http://localhost:${onto_web_port}"
+}
+
 old_install_dir="$(prompt_value '请输入旧的合并部署根目录，例如 /opt/onto-agent：')"
 consumer_package="$(prompt_value '请输入新的 Consumer 镜像 tar 包路径：')"
 modeling_package="$(prompt_value '请输入新的 Modeling 镜像 tar 包路径：')"
+onto_package="$(prompt_optional '请输入新的 Onto Modeling 发布包路径（留空跳过）：')"
 
 case "${old_install_dir}" in /*) ;; *) old_install_dir="$(pwd)/${old_install_dir}" ;; esac
 case "${consumer_package}" in /*) ;; *) consumer_package="$(pwd)/${consumer_package}" ;; esac
 case "${modeling_package}" in /*) ;; *) modeling_package="$(pwd)/${modeling_package}" ;; esac
+case "${onto_package}" in ''|/*) ;; *) onto_package="$(pwd)/${onto_package}" ;; esac
 
 consumer_package="$(resolve_package_path "${consumer_package}" 'Consumer 发布包')"
 modeling_package="$(resolve_package_path "${modeling_package}" 'Modeling 发布包')"
+[ -z "${onto_package}" ] || onto_package="$(resolve_package_path "${onto_package}" 'Onto Modeling 发布包')"
+onto_modeling_dir="$(dirname "${old_install_dir}")/onto-modeling"
 
 [ -d "${old_install_dir}" ] || die "旧合并部署根目录不存在：${old_install_dir}"
 [ -f "${old_install_dir}/VERSION" ] || die "旧目录缺少 VERSION：${old_install_dir}"
@@ -117,6 +208,10 @@ for command_name in docker tar gzip sha256sum flock awk sed mktemp tee; do check
 docker info >/dev/null 2>&1 || die "Docker daemon 不可用"
 validate_package "${consumer_package}" onto-agent 'Consumer 发布包'
 validate_package "${modeling_package}" modeling 'Modeling 发布包'
+if [ -n "${onto_package}" ]; then
+    validate_package "${onto_package}" onto-modeling 'Onto Modeling 发布包'
+    check_command curl
+fi
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/consumer-preflight.XXXXXX")" || die "无法创建预检暂存目录"
 tar -xzf "${consumer_package}" -C "${TMP_ROOT}"
@@ -125,6 +220,7 @@ opsctl="${staged_root}/deploy/opsctl"
 manifest="${staged_root}/deploy/manifest.json"
 [ -x "${opsctl}" ] || die "Consumer 发布包缺少 deploy/opsctl"
 [ -f "${manifest}" ] || die "Consumer 发布包缺少 deploy/manifest.json"
+[ -z "${onto_package}" ] || precheck_onto_modeling
 
 # opsctl preflight reads the staged bundle's backend/.env for published ports.
 # Reuse the old deployment's resolved configuration so custom ports are checked
@@ -287,6 +383,7 @@ upgrade_legacy_deployment() {
     (cd "${modeling_dir}" && bash deploy/install.sh) || die "Modeling 部署失败，备份位于 ${backup_dir}"
     [ "$(container_mount_volume mw-modeling /data)" = "${modeling_volume}" ] || die 'Modeling 未复用原数据卷'
     [ "$(container_mount_volume mw-modeling-agent /data)" = "${agent_volume}" ] || die 'Agent 未复用原数据卷'
+    [ -z "${onto_package}" ] || deploy_onto_modeling
     log "旧合并部署迁移完成，备份位于 ${backup_dir}"
 }
 
