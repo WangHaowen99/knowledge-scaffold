@@ -148,7 +148,8 @@ precheck_onto_modeling() {
     tar -xzf "${onto_package}" -C "${TMP_ROOT}/onto-preflight" onto-modeling/preflight.sh \
         || die 'Onto Modeling 发布包缺少 preflight.sh'
     log '开始执行 Onto Modeling 预检'
-    (cd "${TMP_ROOT}/onto-preflight/onto-modeling" && bash ./preflight.sh) \
+    # 此时还没有 .env；本脚本总是让 Onto Modeling 接入 Consumer 账号中心，按该模式预检
+    (cd "${TMP_ROOT}/onto-preflight/onto-modeling" && ONTO_MODELING_SHARED_AUTH=1 bash ./preflight.sh) \
         || die 'Onto Modeling 预检未通过，尚未做任何变更'
 }
 
