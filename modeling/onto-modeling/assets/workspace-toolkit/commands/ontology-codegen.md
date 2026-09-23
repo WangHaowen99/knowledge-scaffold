@@ -114,6 +114,8 @@ For each operation doc in scope:
 - `输出`：return 结构 / 写入表 / 生成文件 等，含字段或结构说明
 - `依赖`：所需 pip 包，无则删除本行
 
+**CLI 契约**：源码中 `argparse.add_argument()` 的实际声明是唯一契约来源。头部参数表只能描述这些声明，不能根据参数 key 自动推导 flag；长选项统一使用源码中声明的 `--kebab-case`（如 `--crude-name`），导出器会校验 flag、类型、`required`、默认值、`action` 和多值语义是否一致。CLI 必须把业务函数返回值序列化为单个 JSON 写到 stdout，诊断信息写 stderr。
+
 **主体结构**：
 ```python
 """<按模板填写的头部注释>"""
@@ -144,18 +146,12 @@ if __name__ == "__main__":
     _cli()
 ```
 
-**列表/对象类入参**（如 `list[dict]`、SKU 明细等）：禁用 JSON 串作为 CLI value（shell 引号转义易错）。改用 `action="append"` + 紧凑分隔符在 `_cli()` 里组装：
+**列表/对象类入参**（如 `list[dict]`、SKU 明细等）：使用一个 JSON CLI value，与 Consumer 的结构化参数契约一致；不要把同一个参数拆成重复 flag。大批量数据仍可使用 `--input-file path.json`，但必须在头部和 operation 文档中声明。脚本优先接收调用方按查询边界筛选后的记录，只做纯计算；不得在脚本中通过表名、整表或无条件查询自行取数。
 
 ```python
-parser.add_argument(
-    "--sku", action="append", required=True, metavar="SKU_ID:数量",
-    help="可重复，例：--sku SKU-3001:2 --sku SKU-3008:1",
-)
+parser.add_argument("--sku", required=True, type=str, help="JSON 数组，例如 [{\"sku_id\":\"sku-a\",\"quantity\":2}]")
 args = parser.parse_args()
-sku_details = [
-    {"sku_id": s.split(":")[0], "quantity": int(s.split(":")[1])}
-    for s in args.sku
-]
+sku_details = json.loads(args.sku)
 {operation_english_name}(order_id=args.order_id, sku_details=sku_details)
 ```
 
@@ -244,7 +240,7 @@ Wait for it to return a JSON array.
 按 `severity=错误` 过滤 issue。由 main agent 直接修复：
 
 - `头部缺失` / `头部字段错误` → 按 `.claude/templates/script-template.py` 补齐 7 字段
-- `CLI不规范` → 替换为 argparse + `--参数名` 形式；移除 JSON 串参数
+- `CLI不规范` → 替换为 argparse + 源码实际声明的 `--kebab-case` 形式；结构化参数使用一个 JSON value
 - `骨架不规范` → 按模板补 `from __future__ import annotations` / `_cli()` 等
 - `operation未简化` → 改写对应 `ontology/operation/{name}.md` 的「逻辑描述」段（按 Step 4.2 执行）。本应在 Step 4.2 生成时已完成；如果跑到这里说明 Step 4.2 漏做了，现在补
 - `业务知识冲突` → 按 KNOWLEDGE_BLOCK 中对应高置信条目调整脚本（如 `';'` 边界匹配 SQL）

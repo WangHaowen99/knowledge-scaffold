@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 
 def function_name(arg1: str, arg2: str | None = None) -> dict:
@@ -36,7 +37,8 @@ def _cli() -> None:
     # parser.add_argument("--arg1", required=True, help="{说明}")
     # parser.add_argument("--arg2", default=None, help="{说明}")
     args = parser.parse_args()
-    function_name(**vars(args))
+    result = function_name(**vars(args))
+    print(json.dumps(result, ensure_ascii=False, default=str))
 
 
 if __name__ == "__main__":
