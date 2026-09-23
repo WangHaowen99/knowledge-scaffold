@@ -1,10 +1,6 @@
 import {
-  CheckCircleFilled,
-  CloseCircleFilled,
   DeleteOutlined,
-  ExclamationCircleFilled,
   InboxOutlined,
-  StopFilled,
   TagOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
@@ -17,7 +13,6 @@ import {
   List,
   Modal,
   Popconfirm,
-  Progress,
   Segmented,
   Select,
   Space,
@@ -32,6 +27,7 @@ import {
 } from 'antd';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import EvalRunDetail from './EvalRunDetail.jsx';
 import EvalWizard from './EvalWizard.jsx';
 
 // 阶段定义：探测产物目录推断完成态（对应 CLI 版 detect-stage），
@@ -276,7 +272,6 @@ export default function LeftPane({
   // ---- 数据评测（方案 P2）：状态轮询 + 评测向导 ----
   const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state, evolution}
   const [evalDetailOpen, setEvalDetailOpen] = useState(false);
-  const [evalExpanded, setEvalExpanded] = useState(null);
   const [evalWizardOpen, setEvalWizardOpen] = useState(false);
   useEffect(() => {
     if (section !== 'progress') return undefined;
@@ -347,7 +342,6 @@ export default function LeftPane({
 
   const onEvalStarted = async () => {
     setEvalWizardOpen(false);
-    setEvalExpanded(null);
     setEvalDetailOpen(true);
     refreshEvalStatus();
   };
@@ -536,10 +530,7 @@ export default function LeftPane({
                           {evalInfo?.state?.status === 'running' && (
                             <Typography.Link
                               style={{ fontSize: 12 }}
-                              onClick={() => {
-                                setEvalExpanded(null);
-                                setEvalDetailOpen(true);
-                              }}
+                              onClick={() => setEvalDetailOpen(true)}
                             >
                               <span className="eval-live-dot" />
                               {evalInfo.state.message}
@@ -893,152 +884,20 @@ export default function LeftPane({
         </>
       )}
 
-    
-      <Modal
-        title="数据评测 · 执行详情"
+      <EvalRunDetail
         open={evalDetailOpen}
-        onCancel={() => setEvalDetailOpen(false)}
-        footer={null}
-        width={620}
-      >
-        {(() => {
-          const st = evalInfo?.state || {};
-          const cases = st.cases || [];
-          const finished = cases.filter((c) =>
-            ['pass', 'partial', 'fail', 'error'].includes(c.verdict),
-          );
-          const counts = { pass: 0, partial: 0, fail: 0, error: 0 };
-          finished.forEach((c) => {
-            counts[c.verdict] += 1;
-          });
-          const percent = cases.length
-            ? Math.round((finished.length * 100) / cases.length)
-            : 0;
-          const running = st.status === 'running';
-          const PHASE_STEPS = [
-            ['package', '打包'],
-            ['import', '导入'],
-            ['ds', '数据源'],
-            ['cases', '用例'],
-            ['evaluate', '执行'],
-          ];
-          const phaseKey = ['data_import', 'data_source', 'graph_import'].includes(st.phase)
-            ? 'ds'
-            : st.phase;
-          const phaseIdx =
-            st.status === 'done'
-              ? PHASE_STEPS.length
-              : Math.max(0, PHASE_STEPS.findIndex(([k]) => k === phaseKey));
-          const VERDICT_META = {
-            pass: { icon: <CheckCircleFilled />, text: '通过', cls: 'pass' },
-            partial: { icon: <ExclamationCircleFilled />, text: '部分', cls: 'partial' },
-            fail: { icon: <CloseCircleFilled />, text: '失败', cls: 'fail' },
-            error: { icon: <StopFilled />, text: '异常', cls: 'error' },
-            running: { icon: <span className="eval-run-pulse" />, text: '执行中', cls: 'running' },
-            pending: { icon: <span className="eval-run-hollow" />, text: '待执行', cls: 'pending' },
-          };
-          return (
-            <div className="eval-run-view">
-              <div className="eval-phase-strip">
-                {PHASE_STEPS.map(([key, label], i) => (
-                  <span key={key} className="eval-phase-item">
-                    <span
-                      className={`eval-phase-chip${
-                        i < phaseIdx ? ' done' : i === phaseIdx && running ? ' current' : ''
-                      }${st.status === 'failed' && i === phaseIdx ? ' failed' : ''}`}
-                    >
-                      {i < phaseIdx ? '✓ ' : ''}
-                      {label}
-                    </span>
-                    {i < PHASE_STEPS.length - 1 && <span className="eval-phase-link" />}
-                  </span>
-                ))}
-              </div>
-              {st.graph_import && (
-                <Tooltip title={(st.graph_import.notes || []).join('\n') || undefined}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {`图数据已导入：节点 ${st.graph_import.nodes} · 关系 ${st.graph_import.relationships}`}
-                    {st.graph_import.notes?.length ? `（${st.graph_import.notes.length} 条提示）` : ''}
-                  </Typography.Text>
-                </Tooltip>
-              )}
-              <div className="eval-run-summary">
-                <Progress
-                  percent={percent}
-                  status={running ? 'active' : st.status === 'failed' ? 'exception' : 'normal'}
-                  format={() => `${finished.length}/${cases.length}`}
-                />
-                <div className="eval-run-chips">
-                  <span className="eval-chip pass">✓ 通过 {counts.pass}</span>
-                  <span className="eval-chip partial">⚠ 部分 {counts.partial}</span>
-                  <span className="eval-chip fail">✗ 失败 {counts.fail}</span>
-                  <span className="eval-chip error">⊘ 异常 {counts.error}</span>
-                  {st.summary && (
-                    <span className="eval-chip score">得分 {st.summary.score}</span>
-                  )}
-                </div>
-              </div>
-              <div className="eval-run-list">
-                {cases.map((c, index) => {
-                  const meta = VERDICT_META[c.verdict] || VERDICT_META.pending;
-                  const expandable = !!(c.answer || c.reason);
-                  const expanded = evalExpanded === index;
-                  return (
-                    <div
-                      key={index}
-                      className={`eval-run-row ${meta.cls}${expanded ? ' expanded' : ''}`}
-                      style={{ animationDelay: `${Math.min(index * 40, 400)}ms` }}
-                      onClick={() => expandable && setEvalExpanded(expanded ? null : index)}
-                    >
-                      <div className="eval-run-head">
-                        <span className={`eval-run-icon ${meta.cls}`}>{meta.icon}</span>
-                        <span className="eval-run-index">{index + 1}</span>
-                        <span className="eval-run-question" title={c.question}>
-                          {c.question}
-                        </span>
-                        <span className={`eval-run-state ${meta.cls}`}>{meta.text}</span>
-                      </div>
-                      {expanded && expandable && (
-                        <div className="eval-run-detail">
-                          {c.answer && (
-                            <div className="eval-run-field">
-                              <span className="eval-run-label">回答</span>
-                              <span>{c.answer}</span>
-                            </div>
-                          )}
-                          {c.reason && (
-                            <div className="eval-run-field">
-                              <span className="eval-run-label">判分</span>
-                              <span>{c.reason}</span>
-                            </div>
-                          )}
-                          {st.report && (
-                            <Typography.Link
-                              style={{ fontSize: 12 }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEvalDetailOpen(false);
-                                onSelectFile(st.report);
-                              }}
-                            >
-                              查看完整报告 →
-                            </Typography.Link>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {!cases.length && (
-                  <Typography.Text type="secondary">
-                    暂无用例执行数据——启动评测后此处实时展示每条用例的执行状态
-                  </Typography.Text>
-                )}
-              </div>
-            </div>
-          );
-        })()}
-      </Modal>
+        state={evalInfo?.state}
+        evolution={evolution}
+        onClose={() => setEvalDetailOpen(false)}
+        onOpenReport={(path) => {
+          setEvalDetailOpen(false);
+          onSelectFile(path);
+        }}
+        onEvolution={() => {
+          setEvalDetailOpen(false);
+          runEvolution();
+        }}
+      />
       <EvalWizard
         project={project}
         open={evalWizardOpen}

@@ -162,6 +162,8 @@ def test_orchestration_full_protocol(tmp_path, monkeypatch):
         state = modeling_eval.read_state(root)
         assert state["status"] == "done", state
         assert state["modeling_project"] == "mp-1"
+        # 执行详情的「用时」= 终态写入时间 - 发起时间
+        assert 0 < state["started_at"] <= state["ts"]
         assert state["summary"]["pass"] == 1 and state["summary"]["fail"] == 1
         assert state["summary"]["score"] == 50
         report = root / state["report"]
