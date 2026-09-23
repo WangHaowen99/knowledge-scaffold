@@ -145,9 +145,13 @@ class WorkspaceManager:
             )
         except (OSError, json.JSONDecodeError):
             pass
+        from .modeling_eval import evolution_hint
+
         return {
             "eval_score": (eval_summary.get("summary") or {}).get("score"),
             "eval_status": eval_summary.get("status"),
+            # 最近一轮有失分/异常用例时的 /ontology-evolution 提示（无则为 None）
+            "eval_evolution": evolution_hint(eval_summary),
             "stages_done": done,
             "stages_total": cls.STAGE_TOTAL,
             "objects": count_md("ontology/object"),

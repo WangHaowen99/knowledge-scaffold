@@ -220,6 +220,36 @@ modeling 服务时再评估。
   `validate_field_aliases`、`validate_object_aliases`、`inspect_importable_package`）
   双向核对通过。
 
+### 3.11 数据源 provider、评测集与异常轮演进（2026-09-23）
+
+- **外部数据源（对齐 modeling 的三种 provider）**：数据源新增 `connection` 模式，
+  provider 为 `nl2sql_template` / `nl2sql_http` / `neo4j`，字段与校验口径同 modeling
+  （`evaluation/data-source.ts`：Scene、评测工作空间 ID、Neo4j 隔离条件）。编排在包导入后
+  `PUT /data-source`，由 modeling 测试连接并同步到 consumer；Neo4j 的 Ontology 隔离值
+  必须等于知识包 ID，发起时按本次发布的包 ID 自动填写。连接失败落 `failed`，
+  状态里写 modeling 给出的原因。
+- **数据源配置按项目保存**（`services/eval_data_sources.py`）：`none` / `dataset` /
+  `connection` 都存成可复用的配置。每轮评测都会在 modeling 新建评测项目，凭据必须由
+  onto-modeling 保存才能复用，所以配置落数据目录 `eval-data-sources/<项目>.json`
+  （0600），不进工作区 git，也不随导出、克隆带走。读接口只返回 `has_token` /
+  `has_password`，编辑时密钥留空表示沿用。发起评测传 `data_source_id`，
+  外部连接不接受内联提交。
+- **评测向导**：项目从未配置过数据源时，「运行评测」直接进配置表单（必须先配置）。
+  配置过的项目弹出「选择数据源」窗口，可新建、编辑、删除。
+- **评测集**（`services/eval_sets.py`，落 `.ontology-state/eval-sets.json`）：
+  导入 JSON 用例时默认同时保存为评测集（名称取文件名），之后的评测默认选中
+  最近使用的评测集，也可以切换到场景验证转换或手工录入，并支持「另存为评测集」。
+  运行时对所选评测集的修改会回写到评测集。
+- **异常轮也能触发 `/ontology-evolution`**：modeling 在连续环境异常时会熔断整轮（round
+  `failed`），而旧编排只要遇到 `failed` 就不出报告，异常用例因此进不了演进。现在的处理：
+  有部分结果时照样出报告，状态为 `failed`，未执行的用例计为异常（E 类·运行异常）；
+  没有任何结果时仍按编排失败处理。是否提示演进统一由 `modeling_eval.evolution_hint()`
+  判定：得分低于 90、存在异常用例，或者轮次异常终止但已出报告，三者满足其一即提示。
+  判定结果经项目 meta `eval_evolution` 和 `/eval/status` 的 `evolution` 下发，
+  聊天区建议和左栏「评测优化」按钮共用这一个结果。`report_round` 记录报告出自哪一轮，
+  新一轮发起时清空，避免拿旧报告提示。另外，前端监测到评测进入终态后会刷新项目 meta
+  和文件树。此前刷新缺失，评测结束后建议不会及时出现。
+
 ## 4. 依赖与开放问题（拍板时定）
 
 1. **部署形态**：评测要求 modeling + consumer 与 onto-modeling 共栈（根一键部署已满足）；

@@ -1505,6 +1505,26 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   50% { opacity: 1; transform: translateX(2px); }
 }
 
+/* ---- 评测向导 · 已存数据源 / 外部连接字段 / 评测集选择 ---- */
+.eval-ds-summary { display: flex; align-items: center; gap: 8px; }
+.eval-ds-summary > span:first-child {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.eval-ds-actions { display: inline-flex; flex-shrink: 0; margin-right: 18px; }
+.eval-conn-fields {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; padding: 2px 4px 4px;
+}
+.eval-conn-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.eval-conn-field > span { font-size: 12px; color: var(--text-secondary); }
+.eval-conn-wide { grid-column: 1 / -1; }
+.eval-conn-hint {
+  grid-column: 1 / -1; font-size: 11.5px; line-height: 1.6; color: var(--text-secondary);
+}
+.eval-set-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+@media (max-width: 720px) {
+  .eval-conn-fields { grid-template-columns: 1fr; }
+}
+
 /* ---- 执行详情 · 编排阶段条 ---- */
 .eval-phase-strip {
   display: flex; align-items: center; flex-wrap: wrap; gap: 2px;

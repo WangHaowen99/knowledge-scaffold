@@ -701,11 +701,23 @@ def test_resume_collects_interrupted_round(tmp_path, monkeypatch):
         server.shutdown()
 
 
+class EmptyFailedStub(CancelStub):
+    """轮次已失败且一条结果都没有（如启动即失败）。"""
+
+    def do_GET(self):
+        StubModeling.calls.append(("GET", self.path))
+        if "/rounds/" in self.path:
+            return self._send(200, {
+                "round": {"id": "r9", "status": "failed", "log": "轮次失败：启动即失败\n"},
+                "results": [],
+            })
+        return CancelStub.do_GET(self)
+
+
 def test_resume_reports_unresumable_round(tmp_path, monkeypatch):
-    """modeling 侧轮次已失败：续接失败，状态留在中断并提示重跑。"""
+    """modeling 侧轮次已失败且没有任何结果：续接失败，状态留在中断并提示重跑。"""
     StubModeling.calls = []
-    CancelStub.round_status = "failed"
-    server = _serve(CancelStub, tmp_path, monkeypatch)
+    server = _serve(EmptyFailedStub, tmp_path, monkeypatch)
     try:
         pid, root = _eval_workspace(tmp_path, "无法续接")
         monkeypatch.setattr(modeling_eval, "_stop_requested", set())
@@ -719,6 +731,32 @@ def test_resume_reports_unresumable_round(tmp_path, monkeypatch):
         assert state["status"] == "interrupted"
         assert "无法续接" in state["message"]
         assert not list((root / "reports").glob("eval-*.md"))
+    finally:
+        server.shutdown()
+
+
+def test_resume_collects_failed_round_partial_results(tmp_path, monkeypatch):
+    """modeling 侧轮次异常终止但已有部分结果：续接收取成报告（状态 failed），
+    未执行的用例计为异常，且不能再次续接。"""
+    StubModeling.calls = []
+    CancelStub.round_status = "failed"
+    server = _serve(CancelStub, tmp_path, monkeypatch)
+    try:
+        pid, root = _eval_workspace(tmp_path, "异常终止续接")
+        monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+        modeling_eval._write_state(
+            root, status="interrupted", message="中断",
+            modeling_project="mp-1", round_id="r9",
+            cases=[{"question": "Q1", "verdict": "pass"}, {"question": "Q2", "verdict": "running"}],
+        )
+        modeling_eval._resume_sync(pid, root, "t")
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "failed", state
+        assert state["summary"]["pass"] == 1 and state["summary"]["error"] == 1
+        assert "报告已生成" in state["message"]
+        assert "未执行" in (root / state["report"]).read_text(encoding="utf-8")
+        assert not modeling_eval.can_resume(root)
+        assert modeling_eval.evolution_hint(state)["errors"] == 1
     finally:
         CancelStub.round_status = "running"
         server.shutdown()

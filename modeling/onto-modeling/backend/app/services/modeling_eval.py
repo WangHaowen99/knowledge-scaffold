@@ -7,8 +7,9 @@
 
 - 鉴权：透传当前用户 token（共享账号中心/方案 A 下 modeling 直接接受）；
   无共享 auth 的部署用 ONTO_WEB_MODELING_TOKEN 兜底；
-- 数据源：v1 走 mode=none（纯知识包问答）。评测数据库导入需要 modeling 侧
-  配置 EVAL_DB_URL（MySQL），属部署级依赖，接通后在此追加 import 步骤；
+- 数据源：none（纯知识包问答，显式 PUT mode=none）/ dataset（quick-import 建评测库，
+  需 modeling 侧 EVAL_DB_URL）/ connection（NL2SQL Template/HTTP、Neo4j 外部数据源，
+  PUT data-source 由 modeling 测试连接并同步到 consumer）；配置见 eval_data_sources；
 - 进度：状态落 .ontology-state/eval.json（前端轮询），评测项目保留在
   modeling 侧可追溯。
 """
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import package_mapping
+from . import eval_data_sources, package_mapping
 
 STATE_REL = ".ontology-state/eval.json"
 POLL_INTERVAL_SECONDS = 6
@@ -35,6 +36,8 @@ AUTH_GRACE_SECONDS = 600
 DATA_IMPORT_TIMEOUT_SECONDS = 600  # 凭据过期后等待前端接力新 token 的宽限窗
 # running 状态由编排线程每轮刷 ts；内存里已无编排且 ts 停滞超过此窗即判为中断
 STALE_AFTER_SECONDS = POLL_INTERVAL_SECONDS * 5
+# 得分低于此线、或出现异常用例时，提示进入 /ontology-evolution 评测优化
+EVOLUTION_SCORE_THRESHOLD = 90
 
 _running: set[str] = set()  # project_id 去重（单进程内防并发重复触发）
 _live_tokens: dict[str, str] = {}  # project_id → 前端轮询接力的最新 token
@@ -358,8 +361,11 @@ def _write_state(root: Path, **fields: Any) -> None:
 
 
 def _resumable(state: dict) -> bool:
-    """能否续接：modeling 侧有轮次坐标才谈得上收取已有结果。"""
-    return bool(state.get("modeling_project") and state.get("round_id"))
+    """能否续接：modeling 侧有轮次坐标才谈得上收取已有结果；该轮报告已收取
+    （异常终止轮的部分结果已落报告）则无可续接。"""
+    if not (state.get("modeling_project") and state.get("round_id")):
+        return False
+    return state.get("report_round") != state.get("round_id")
 
 
 def status_view(project_id: str, root: Path) -> dict:
@@ -398,7 +404,43 @@ def sweep_interrupted(data_dir: Path | None = None) -> list[str]:
     return touched
 
 
-def _write_report(root: Path, round_info: dict, results: list[dict]) -> str:
+def _unexecuted_as_errors(
+    results: list[dict], cases: list[dict] | None, failure: str
+) -> list[dict]:
+    """轮次异常终止时，没跑到的用例补记为异常——报告与得分覆盖整个用例集，
+    /ontology-evolution 按 E 类（运行异常）给出指引，而不是只看跑完的那几条。"""
+    executed = [str(r.get("question", "")).strip() for r in results]
+    missing = []
+    for case in cases or []:
+        question = str(case.get("question", "")).strip()
+        # 续接场景的 cases 取自状态里截断过的问题，退回前缀匹配
+        if not question or any(q == question or q.startswith(question) for q in executed):
+            continue
+        missing.append({
+            "question": question,
+            "groundTruth": case.get("groundTruth", ""),
+            "finalAnswer": "",
+            "verdict": "error",
+            "reason": f"轮次异常终止，本用例未执行：{failure}",
+        })
+    return list(results) + missing
+
+
+def _write_report(
+    root: Path,
+    round_info: dict,
+    results: list[dict],
+    cases: list[dict] | None = None,
+    failure: str = "",
+) -> str:
+    """落评测报告并把状态收敛到终态。
+
+    failure 非空 = modeling 侧轮次异常终止但已有部分结果：照样出报告（状态 failed），
+    让失分与异常用例能进入 /ontology-evolution，而不是随失败状态一起丢掉。
+    """
+    executed = len(results)
+    if failure:
+        results = _unexecuted_as_errors(results, cases, failure)
     counts = {"pass": 0, "partial": 0, "fail": 0, "error": 0}
     for item in results:
         counts[item.get("verdict", "error")] = counts.get(item.get("verdict", "error"), 0) + 1
@@ -406,11 +448,23 @@ def _write_report(root: Path, round_info: dict, results: list[dict]) -> str:
     score = round((counts["pass"] + counts["partial"] * 0.5) * 100 / total)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     rel = f"reports/eval-{stamp}.md"
+    state = read_state(root)
     lines = [
         f"# 数据评测报告 — {time.strftime('%Y-%m-%d %H:%M')}",
         "",
         f"> 评测方式：知识包发布至 modeling 影子工作区，由 consumer 智能体逐用例问答，LLM Judge 判分",
         f"> 轮次：{round_info.get('id', '')}（modeling 侧可追溯）",
+    ]
+    if state.get("data_source_name"):
+        lines.append(f"> 数据源：{state['data_source_name']}")
+    if state.get("eval_set_name"):
+        lines.append(f"> 评测集：{state['eval_set_name']}")
+    if failure:
+        lines.append(
+            f"> ⚠️ 轮次异常终止：{failure}（已执行 {executed}/{len(results)} 条，"
+            "未执行的用例计为异常）"
+        )
+    lines += [
         "",
         "## 总览",
         "",
@@ -434,16 +488,48 @@ def _write_report(root: Path, round_info: dict, results: list[dict]) -> str:
         ]
     (root / "reports").mkdir(parents=True, exist_ok=True)
     (root / rel).write_text("\n".join(lines), encoding="utf-8")
+    terminal = {"status": "failed", "message": (
+        f"{failure}（已执行 {executed}/{len(results)} 条，报告已生成）"[:300]
+    )} if failure else {"status": "done"}
     _write_state(
         root,
-        status="done",
+        **terminal,
         report=rel,
+        # 报告出自哪一轮：新一轮发起时清空，用来判断报告是否属于最近一轮
+        report_round=round_info.get("id") or state.get("round_id") or rel,
         summary={"total": len(results), **counts, "score": score},
         cases=_case_progress(
             [{"question": i.get("question", "")} for i in results], results, False
         ),
     )
     return rel
+
+
+def evolution_hint(state: dict) -> dict | None:
+    """最近一轮评测是否该进入 /ontology-evolution（聊天区建议与左栏按钮共用）。
+
+    得分低于阈值、或出现异常（error）用例即提示——异常用例会拉低得分，但少量异常
+    可能仍在阈值之上；轮次异常终止但有部分结果时同样提示（报告已落盘）。
+    """
+    report = state.get("report")
+    summary = state.get("summary") or {}
+    if not report or not summary or state.get("status") not in ("done", "failed"):
+        return None
+    # 报告须出自最近一轮；旧版状态没有 report_round 字段，done 即视为最近一轮
+    fresh = state.get("report_round") if "report_round" in state else state.get("status") == "done"
+    if not fresh:
+        return None
+    score = summary.get("score")
+    errors = int(summary.get("error") or 0)
+    if not errors and (score is None or score >= EVOLUTION_SCORE_THRESHOLD):
+        return None
+    return {
+        "report": report,
+        "score": score,
+        "errors": errors,
+        "fails": int(summary.get("fail") or 0),
+        "round_failed": state.get("status") == "failed",
+    }
 
 
 def _case_progress(cases: list[dict], results: list[dict], round_running: bool) -> list[dict]:
@@ -526,16 +612,38 @@ def _poll_round(
     if round_info.get("status") not in ("done", "failed"):
         raise TimeoutError("评测超时（modeling 侧轮次未在时限内结束）")
     if round_info.get("status") == "failed":
-        # 轮次在 modeling 侧失败：透出其日志，不生成报告
-        log = (round_info.get("log") or "").strip().splitlines()
-        raise RuntimeError(f"modeling 评测轮失败：{log[-1] if log else '原因未知'}")
+        _collect_failed_round(root, round_info, details.get("results") or [], cases)
+        return
     rel = _write_report(root, round_info, details.get("results") or [])
     _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
 
 
-def _try_resume(project_id: str, root: Path, token: str, cases: list[dict]) -> bool:
+def _round_failure(round_info: dict) -> str:
+    log = (round_info.get("log") or "").strip().splitlines()
+    return f"modeling 评测轮失败：{log[-1] if log else '原因未知'}"
+
+
+def _collect_failed_round(
+    root: Path, round_info: dict, results: list[dict], cases: list[dict]
+) -> None:
+    """轮次在 modeling 侧失败：透出其日志；已有用例结果（常见于连续环境异常熔断）
+    时照样落报告，没有任何结果才按编排失败处理。"""
+    failure = _round_failure(round_info)
+    if not results:
+        raise RuntimeError(failure)
+    rel = _write_report(root, round_info, results, cases, failure=failure)
+    _git_commit(root, f"eval: 数据评测报告（轮次异常终止） {rel.split('/')[-1]}")
+
+
+def _try_resume(
+    project_id: str, root: Path, token: str, cases: list[dict],
+    collect_failed: bool = False,
+) -> bool:
     """凭据过期、服务重启等中断后，modeling 侧轮次往往仍在执行或已完成。重跑且
-    用例集未变时续接收取结果，不重复导入、不重复烧模型。"""
+    用例集未变时续接收取结果，不重复导入、不重复烧模型。
+
+    collect_failed：显式「续接上一轮」时，已失败但有部分结果的轮次也收取成报告；
+    重新运行评测时不收（用户要的是新一轮）。"""
     prior = read_state(root)
     mp_project, round_id = prior.get("modeling_project"), prior.get("round_id")
     if not mp_project or not round_id:
@@ -565,6 +673,11 @@ def _try_resume(project_id: str, root: Path, token: str, cases: list[dict]) -> b
                      message="续接上一轮（收取已完成结果）")
         rel = _write_report(root, details.get("round") or {}, details.get("results") or [])
         _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
+        return True
+    if status == "failed" and collect_failed and details.get("results"):
+        _write_state(root, status="running", phase="evaluate",
+                     message="续接上一轮（收取异常终止前的结果）")
+        _collect_failed_round(root, details.get("round") or {}, details["results"], cases)
         return True
     return False
 
@@ -652,7 +765,7 @@ def _resume_sync(project_id: str, root: Path, token: str) -> None:
         for c in prior.get("cases") or []
     ]
     try:
-        if not _try_resume(project_id, root, token, cases):
+        if not _try_resume(project_id, root, token, cases, collect_failed=True):
             # 轮次已失败、或这次读不到：保持原状态，轮次坐标留着供再试
             _write_state(
                 root, status=prior.get("status") or "interrupted",
@@ -671,9 +784,28 @@ def _resume_sync(project_id: str, root: Path, token: str) -> None:
 # ---- 编排主体 ----
 
 
+def _configure_connection(
+    root: Path, tok, mp_project: str, data_source: dict, ontology_id: str
+) -> None:
+    """外部数据源：modeling 侧测试连接并同步到 consumer 评测工作空间。
+    Neo4j 的 Ontology 隔离值必须等于知识包 ID，这里按本次发布的包 ID 填写。"""
+    provider = str(data_source.get("provider") or "")
+    label = eval_data_sources.PROVIDER_LABELS.get(provider, provider)
+    _write_state(root, phase="data_source", message=f"配置数据源（{label}：测试连接并同步）")
+    try:
+        _http(
+            "PUT", f"/api/projects/{mp_project}/data-source", tok(),
+            body=eval_data_sources.modeling_payload(data_source, ontology_id),
+            timeout=120,
+        )
+    except urllib.error.HTTPError as exc:
+        detail = str(getattr(exc, "detail", "") or "") or f"HTTP {exc.code}"
+        raise RuntimeError(f"数据源配置失败（{label}）：{detail}") from exc
+
+
 async def run(
     project_id: str, root: Path, token: str, cases: list[dict],
-    data_source: dict | None = None,
+    data_source: dict | None = None, eval_set_name: str = "",
 ) -> None:
     """后台评测编排；进度经 .ontology-state/eval.json 供前端轮询。"""
     if project_id in _running:
@@ -682,7 +814,9 @@ async def run(
     _stop_requested.discard(project_id)  # 上一轮遗留的取消标记不影响新编排
     _live_tokens[project_id] = token
     try:
-        await asyncio.to_thread(_run_sync, project_id, root, token, cases, data_source)
+        await asyncio.to_thread(
+            _run_sync, project_id, root, token, cases, data_source, eval_set_name
+        )
     finally:
         _running.discard(project_id)
         _live_tokens.pop(project_id, None)
@@ -691,25 +825,32 @@ async def run(
 
 def _run_sync(
     project_id: str, root: Path, token: str, cases: list[dict],
-    data_source: dict | None = None,
+    data_source: dict | None = None, eval_set_name: str = "",
 ) -> None:
     from .workspace import WorkspaceManager
 
     def tok() -> str:
         return _live_tokens.get(project_id) or token
 
-    dataset_mode = str((data_source or {}).get("mode") or "none") == "dataset"
+    data_source = data_source or {"mode": "none"}
+    mode = str(data_source.get("mode") or "none")
+    dataset_mode = mode == "dataset"
     try:
         # 数据集模式先收集文件：坏输入快速失败，不浪费一次包导入
         dataset_files = (
-            collect_dataset_files(root, data_source or {}) if dataset_mode else []
+            collect_dataset_files(root, data_source) if dataset_mode else []
         )
         if _try_resume(project_id, root, token, cases):
             return
         _check_stop(project_id)
         if dataset_mode:
             assert_data_binding(root)
-        _write_state(root, status="running", phase="package", message="打包知识包")
+        _write_state(
+            root, status="running", phase="package", message="打包知识包",
+            report_round=None,
+            data_source_name=data_source.get("name") or eval_data_sources.default_name(data_source),
+            eval_set_name=eval_set_name,
+        )
         manager = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
         import tempfile
 
@@ -760,6 +901,8 @@ def _run_sync(
                     ) from exc
                 raise
             _poll_data_import(project_id, root, tok, mp_project)
+        elif mode == "connection":
+            _configure_connection(root, tok, mp_project, data_source, project_id)
         else:
             _write_state(root, phase="data_source", message="配置数据源（无数据库模式）")
             _http("PUT", f"/api/projects/{mp_project}/data-source", tok(),
