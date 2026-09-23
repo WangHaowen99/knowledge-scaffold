@@ -237,11 +237,9 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
       </div>
     );
   } else if (step === 'source' && editing) {
-    title = !sources.length
-      ? '数据评测 · 第 1 步：配置数据源'
-      : editing.id
-        ? '数据评测 · 第 1 步：编辑数据源配置'
-        : '数据评测 · 第 1 步：新建数据源配置';
+    title = '数据评测 · 第 1 步：新建数据源配置';
+    if (!sources.length) title = '数据评测 · 第 1 步：配置数据源';
+    else if (editing.id) title = '数据评测 · 第 1 步：编辑数据源配置';
     footer = [
       sources.length > 0 && (
         <Button key="back" onClick={() => setEditing(null)}>
@@ -307,6 +305,12 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
       </div>
     );
   } else {
+    let casesHint = '逐条填写问题与标准答案，或批量导入 JSON。';
+    if (savedSetId) {
+      casesHint = '运行前可修改、删除或补充用例，修改会在运行时同步保存到该评测集。';
+    } else if (caseChoice === TRACE_CHOICE) {
+      casesHint = '用例由「场景验证」的 trace 场景自动转换（问题 → consumer 智能体作答 → Judge 按标准答案判分）。运行前请复核标准答案是否准确。';
+    }
     footer = [
       <Button key="prev" onClick={() => setStep('source')}>
         ← 上一步
@@ -372,11 +376,7 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
           )}
         </div>
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-          {savedSetId
-            ? '运行前可修改、删除或补充用例，修改会在运行时同步保存到该评测集。'
-            : caseChoice === TRACE_CHOICE
-              ? '用例由「场景验证」的 trace 场景自动转换（问题 → consumer 智能体作答 → Judge 按标准答案判分）。运行前请复核标准答案是否准确。'
-              : '逐条填写问题与标准答案，或批量导入 JSON。'}
+          {casesHint}
           {!sets.length && ' 导入的用例会保存为评测集，下次评测可直接选用。'}
         </Typography.Paragraph>
         <Spin spinning={loadingSet}>

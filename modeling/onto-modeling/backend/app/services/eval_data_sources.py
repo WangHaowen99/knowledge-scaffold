@@ -90,8 +90,8 @@ def _http_url(value, label: str, schemes: tuple[str, ...]) -> str:
 
 def _normalize_connection(provider: str, raw: dict, previous: dict | None) -> dict:
     """provider 字段规整；密钥留空 = 沿用已保存的值（同 provider 才沿用）。"""
-    kept = (previous or {}).get("config") if (previous or {}).get("provider") == provider else {}
-    kept = kept or {}
+    previous = previous or {}
+    kept = (previous.get("config") or {}) if previous.get("provider") == provider else {}
     if provider == "neo4j":
         password = _text(raw.get("password")) or _text(kept.get("password"))
         if not password:

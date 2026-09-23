@@ -152,17 +152,26 @@ function pad(value: number, width = 2): string {
   return String(value).padStart(width, '0');
 }
 
+function isCalendarDate(year: number, month: number, day: number): boolean {
+  if (year < 1000) return false;
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  const sameYear = calendar.getUTCFullYear() === year;
+  return sameYear && calendar.getUTCMonth() === month - 1 && calendar.getUTCDate() === day;
+}
+
+function isClockTime(hour: number, minute: number, second: number): boolean {
+  return hour <= 23 && Math.max(minute, second) <= 59;
+}
+
 export function mysqlDateTimeValue(content: string): string | null {
   const match = MYSQL_DATE_TIME.exec(content.trim());
   if (!match) return null;
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  const calendar = new Date(Date.UTC(year, month - 1, day));
-  if (year < 1000 || calendar.getUTCFullYear() !== year
-    || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) return null;
+  if (!isCalendarDate(year, month, day)) return null;
   const date = `${pad(year, 4)}-${pad(month)}-${pad(day)}`;
   if (match[4] === undefined) return date;
   const [hour, minute, second] = [Number(match[4]), Number(match[5]), Number(match[6] ?? '0')];
-  if (hour > 23 || minute > 59 || second > 59) return null;
+  if (!isClockTime(hour, minute, second)) return null;
   return `${date}T${pad(hour)}:${pad(minute)}:${pad(second)}`;
 }
 

@@ -97,7 +97,9 @@ export function sourceToForm(source, defaults = {}) {
   if (kind !== 'connection') return next;
   const config = source.config || {};
   if (source.provider === 'neo4j') {
-    const graphImport = source.include_mock ? 'mock' : (source.resources || []).length ? 'dataset' : 'none';
+    let graphImport = 'none';
+    if (source.include_mock) graphImport = 'mock';
+    else if ((source.resources || []).length) graphImport = 'dataset';
     return {
       ...next,
       provider: 'neo4j',
@@ -223,9 +225,9 @@ export function sourceSummary(source, options = {}) {
   if (kind === 'connection') {
     const config = source.config || {};
     if (source.provider === 'neo4j') {
-      const imported = source.include_mock
-        ? ' · 导入示例数据'
-        : (source.resources || []).length ? ` · 导入 ${source.resources.length} 份数据` : '';
+      let imported = '';
+      if (source.include_mock) imported = ' · 导入示例数据';
+      else if ((source.resources || []).length) imported = ` · 导入 ${source.resources.length} 份数据`;
       return `${config.uri || '—'} · 库 ${config.database || 'neo4j'} · 工作空间 ${config.workspace_value || '—'}${imported}`;
     }
     return `${config.url || '—'} · Scene ${config.scene || '—'} · 工作空间 ${config.evaluation_workspace_id || '—'}`;

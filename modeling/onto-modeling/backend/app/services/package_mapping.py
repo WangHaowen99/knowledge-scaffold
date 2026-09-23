@@ -365,6 +365,12 @@ def rewrite_object_body(body: str, fields: list[dict]) -> str:
     return "\n".join(lines[:start] + render_fields_section(fields).split("\n") + lines[end:])
 
 
+def _relation_node(value: str) -> str:
+    """关系端点：`[[对象]]`（可带别名/锚点）取对象名，其余原样。"""
+    link = re.fullmatch(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]", value)
+    return link.group(1).strip() if link else value
+
+
 def parse_relations(text: str) -> list[tuple[str, str, str]]:
     """「# 关联对象」→ [(源, 关系名, 目标)]；「当前对象」按对象自身解析由调用方替换为 key。
 
@@ -373,14 +379,9 @@ def parse_relations(text: str) -> list[tuple[str, str, str]]:
     out = []
     for line in _section(text, RELATIONS_SECTION).split("\n"):
         parts = [p.strip() for p in re.split(r"→|->", line.strip().lstrip("-*").strip())]
-        if len(parts) != 3 or any(not p or _is_empty(p) for p in parts):
+        if len(parts) != 3 or any(map(_is_empty, parts)):
             continue
-
-        def node(value: str) -> str:
-            link = re.fullmatch(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]", value)
-            return link.group(1).strip() if link else value
-
-        out.append((node(parts[0]), parts[1], node(parts[2])))
+        out.append((_relation_node(parts[0]), parts[1], _relation_node(parts[2])))
     return out
 
 
@@ -397,10 +398,11 @@ def graph_relations(object_texts: dict[str, str], mapped: set[str]) -> tuple[dic
         for source, name, target in parse_relations(text):
             source = key if source == "当前对象" else source
             target = key if target == "当前对象" else target
-            if key not in (source, target) or (source, name, target) in seen:
+            triple = (source, name, target)
+            if key not in (source, target) or triple in seen:
                 continue
-            seen.add((source, name, target))
-            if source not in mapped or target not in mapped:
+            seen.add(triple)
+            if not {source, target} <= mapped:
                 continue  # 一端没有数据表：图里没有该类节点，关系无从建立
             if not GRAPH_IDENTIFIER.match(name):
                 skipped.append(f"关系「{source} -{name}→ {target}」名称不是合法的图关系名，未导入")

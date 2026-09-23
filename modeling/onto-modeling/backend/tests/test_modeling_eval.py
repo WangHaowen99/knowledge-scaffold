@@ -696,8 +696,10 @@ def test_resume_reports_unresumable_round(tmp_path, monkeypatch):
 
 
 def test_resume_collects_failed_round_partial_results(tmp_path, monkeypatch):
-    """modeling 侧轮次异常终止但已有部分结果：续接收取成报告（状态 failed），
-    未执行的用例计为异常，且不能再次续接。"""
+    """modeling 侧轮次异常终止但已有部分结果：续接收取成报告。
+
+    状态落 failed，未执行的用例计为异常，且不能再次续接。
+    """
     StubModeling.calls = []
     CancelStub.round_status = "failed"
     server = _serve(CancelStub, tmp_path, monkeypatch)

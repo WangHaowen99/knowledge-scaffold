@@ -162,13 +162,10 @@ def _multipart_files(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
 
 def needs_import(data_source: dict) -> bool:
     """dataset 模式、或声明了导入数据的 Neo4j 连接，发起前要整理导入工作簿。"""
-    mode = str(data_source.get("mode") or "none")
-    if mode == "dataset":
+    if str(data_source.get("mode") or "none") == "dataset":
         return True
-    return (
-        mode == "connection" and data_source.get("provider") == "neo4j"
-        and bool(data_source.get("resources") or data_source.get("include_mock"))
-    )
+    has_selection = bool(data_source.get("resources") or data_source.get("include_mock"))
+    return is_graph(data_source) and has_selection
 
 
 def is_graph(data_source: dict) -> bool:
@@ -432,14 +429,17 @@ def sweep_interrupted(data_dir: Path | None = None) -> list[str]:
 def _unexecuted_as_errors(
     results: list[dict], cases: list[dict] | None, failure: str
 ) -> list[dict]:
-    """轮次异常终止时，没跑到的用例补记为异常——报告与得分覆盖整个用例集，
-    /ontology-evolution 按 E 类（运行异常）给出指引，而不是只看跑完的那几条。"""
+    """轮次异常终止时，没跑到的用例补记为异常。
+
+    报告与得分覆盖整个用例集，/ontology-evolution 按 E 类（运行异常）给出指引，
+    而不是只看跑完的那几条。
+    """
     executed = [str(r.get("question", "")).strip() for r in results]
     missing = []
     for case in cases or []:
         question = str(case.get("question", "")).strip()
-        # 续接场景的 cases 取自状态里截断过的问题，退回前缀匹配
-        if not question or any(q == question or q.startswith(question) for q in executed):
+        # 续接场景的 cases 取自状态里截断过的问题，前缀匹配同时覆盖完全相等
+        if not question or any(q.startswith(question) for q in executed):
             continue
         missing.append({
             "question": question,
@@ -538,7 +538,9 @@ def evolution_hint(state: dict) -> dict | None:
     """
     report = state.get("report")
     summary = state.get("summary") or {}
-    if not report or not summary or state.get("status") not in ("done", "failed"):
+    if not (report and summary):
+        return None
+    if state.get("status") not in ("done", "failed"):
         return None
     # 报告须出自最近一轮；旧版状态没有 report_round 字段，done 即视为最近一轮
     fresh = state.get("report_round") if "report_round" in state else state.get("status") == "done"
@@ -546,7 +548,8 @@ def evolution_hint(state: dict) -> dict | None:
         return None
     score = summary.get("score")
     errors = int(summary.get("error") or 0)
-    if not errors and (score is None or score >= EVOLUTION_SCORE_THRESHOLD):
+    low_score = score is not None and score < EVOLUTION_SCORE_THRESHOLD
+    if not (errors or low_score):
         return None
     return {
         "report": report,
@@ -651,8 +654,10 @@ def _round_failure(round_info: dict) -> str:
 def _collect_failed_round(
     root: Path, round_info: dict, results: list[dict], cases: list[dict]
 ) -> None:
-    """轮次在 modeling 侧失败：透出其日志；已有用例结果（常见于连续环境异常熔断）
-    时照样落报告，没有任何结果才按编排失败处理。"""
+    """轮次在 modeling 侧失败：透出其日志，有结果就落报告。
+
+    已有用例结果（常见于连续环境异常熔断）时照样落报告，没有任何结果才按编排失败处理。
+    """
     failure = _round_failure(round_info)
     if not results:
         raise RuntimeError(failure)
@@ -664,7 +669,9 @@ def _try_resume(
     project_id: str, root: Path, token: str, cases: list[dict],
     collect_failed: bool = False,
 ) -> bool:
-    """凭据过期、服务重启等中断后，modeling 侧轮次往往仍在执行或已完成。重跑且
+    """续接 modeling 侧已有轮次，收取结果而不重跑。
+
+    凭据过期、服务重启等中断后，modeling 侧轮次往往仍在执行或已完成。重跑且
     用例集未变时续接收取结果，不重复导入、不重复烧模型。
 
     collect_failed：显式「续接上一轮」时，已失败但有部分结果的轮次也收取成报告；
@@ -699,7 +706,8 @@ def _try_resume(
         rel = _write_report(root, details.get("round") or {}, details.get("results") or [])
         _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
         return True
-    if status == "failed" and collect_failed and details.get("results"):
+    partial_results = collect_failed and bool(details.get("results"))
+    if status == "failed" and partial_results:
         _write_state(root, status="running", phase="evaluate",
                      message="续接上一轮（收取异常终止前的结果）")
         _collect_failed_round(root, details.get("round") or {}, details["results"], cases)
@@ -813,7 +821,9 @@ def _configure_connection(
     root: Path, tok, mp_project: str, data_source: dict, ontology_id: str
 ) -> None:
     """外部数据源：modeling 侧测试连接并同步到 consumer 评测工作空间。
-    Neo4j 的 Ontology 隔离值必须等于知识包 ID，这里按本次发布的包 ID 填写。"""
+
+    Neo4j 的 Ontology 隔离值必须等于知识包 ID，这里按本次发布的包 ID 填写。
+    """
     provider = str(data_source.get("provider") or "")
     label = eval_data_sources.PROVIDER_LABELS.get(provider, provider)
     _write_state(root, phase="data_source", message=f"配置数据源（{label}：测试连接并同步）")

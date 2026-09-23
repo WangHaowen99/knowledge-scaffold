@@ -75,6 +75,10 @@ class Table:
 # ---- 读取 ----
 
 
+def _filled(value) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
 def _header_text(value) -> str:
     if value is None:
         return ""
@@ -94,7 +98,7 @@ def _cell_class(value) -> str:
 
 def _raw_length(row: list) -> int:
     """行的有效宽度（到最后一个非空单元格），对应 modeling 读到的行数组长度。"""
-    filled = [i for i, v in enumerate(row) if v is not None and str(v).strip() != ""]
+    filled = [i for i, v in enumerate(row) if _filled(v)]
     return filled[-1] + 1 if filled else 0
 
 
@@ -114,7 +118,7 @@ def _is_note_row(header: list[str], second: list, third: list) -> bool:
 
 
 def _sheet_table(sheet_name: str, raw_rows: list[tuple], source: str) -> tuple[Table | None, list[str]]:
-    rows = [list(r) for r in raw_rows if any(v is not None and str(v).strip() != "" for v in r)]
+    rows = [list(r) for r in raw_rows if any(map(_filled, r))]
     if not rows:
         return None, []
     header = [_header_text(v) for v in rows[0]]
@@ -129,7 +133,7 @@ def _sheet_table(sheet_name: str, raw_rows: list[tuple], source: str) -> tuple[T
     data = [[r[i] if i < len(r) else None for i in range(len(header))] for r in rows[1:]]
     columns = [header[i] for i in keep]
     table_rows = [[row[i] for i in keep] for row in data]
-    table_rows = [r for r in table_rows if any(v is not None and str(v).strip() != "" for v in r)]
+    table_rows = [r for r in table_rows if any(map(_filled, r))]
     return Table(sheet_name, columns, table_rows, source), warnings
 
 
@@ -192,7 +196,7 @@ def _mock_tables(root: Path) -> tuple[list[Table], dict[str, str], list[str]]:
         by_cn = {f["cn"]: f["key"] for f in parsed["fields"] if f["cn"]}
         by_key = {f["key"].lower(): f["key"] for f in parsed["fields"]}
         renamed = [by_cn.get(c) or by_key.get(c.lower()) or c for c in table.columns]
-        untranslated = [c for c, r in zip(table.columns, renamed) if c == r and c.lower() not in by_key]
+        untranslated = [c for c in table.columns if c not in by_cn and c.lower() not in by_key]
         if untranslated:
             warnings.append(
                 f"示例数据「{key}」有列对不上对象属性：{'、'.join(untranslated[:5])}（按原列名导入，不进 mapping）"
@@ -241,7 +245,7 @@ def _plain(value):
 def normalize_dates(table: Table) -> list[str]:
     warnings = []
     for index, column in enumerate(table.columns):
-        values = [row[index] for row in table.rows if row[index] is not None and str(row[index]).strip() != ""]
+        values = [row[index] for row in table.rows if _filled(row[index])]
         parsed = [_as_datetime(v) for v in values]
         if values and all(parsed):
             with_time = any(p[1] for p in parsed)
@@ -300,7 +304,8 @@ def collect(root: Path, data_source: dict) -> dict:
             continue
         try:
             file_tables, file_warnings = read_workbook(path, rel)
-        except Exception as exc:  # 损坏的 Excel：openpyxl 抛的异常种类很多
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+            # 损坏或伪装成 Excel 的文件：openpyxl 抛 InvalidFileException（ValueError 子类）等
             problems.append(f"评测数据文件无法读取：{rel}（{str(exc)[:80]}）")
             continue
         tables += file_tables
@@ -384,27 +389,29 @@ def preview(root: Path, data_source: dict, graph: bool = False) -> dict:
     }
 
 
-def workbook_bytes(tables: list[Table]) -> bytes:
-    """规范化表 → xlsx。字符串一律写成文本单元格：以 = 开头的值不能被当成公式。"""
-    import openpyxl
+def _text_cells(sheet, values: list) -> list:
+    """一行值 → 单元格；字符串一律写成文本单元格，以 = 开头的值不能被当成公式。"""
     from openpyxl.cell import WriteOnlyCell
+
+    out = []
+    for value in values:
+        cell = WriteOnlyCell(sheet, value=value)
+        if isinstance(value, str):
+            cell.data_type = "s"
+        out.append(cell)
+    return out
+
+
+def workbook_bytes(tables: list[Table]) -> bytes:
+    """规范化表 → xlsx 字节。"""
+    import openpyxl
 
     workbook = openpyxl.Workbook(write_only=True)
     for table in tables:
         sheet = workbook.create_sheet(title=table.name)
-
-        def cells(values):
-            out = []
-            for value in values:
-                cell = WriteOnlyCell(sheet, value=value)
-                if isinstance(value, str):
-                    cell.data_type = "s"
-                out.append(cell)
-            return out
-
-        sheet.append(cells(table.columns))
+        sheet.append(_text_cells(sheet, table.columns))
         for row in table.rows:
-            sheet.append(cells(row))
+            sheet.append(_text_cells(sheet, row))
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
@@ -440,6 +447,14 @@ def verify_mapping(package_zip: Path, tables: list[Table]) -> list[str]:
 # ---- Neo4j 图导入：关系关联推断 ----
 
 
+def _shared_key(keys: list, left: set, right: set) -> str:
+    """主键里第一个两端都有同名属性的键（外键约定）。"""
+    for key in keys or []:
+        if key in left and key in right:
+            return key
+    return ""
+
+
 def graph_relation_mapping(upload: dict) -> tuple[list[dict], list[str]]:
     """modeling 图导入上传预览 → 关系映射。
 
@@ -468,9 +483,8 @@ def graph_relation_mapping(upload: dict) -> tuple[list[dict], list[str]]:
             relations.append({**base, "matchMode": "same_row"})
             continue
         source_props, target_props = props(source), props(target)
-        join = next((k for k in target.get("primaryKey") or [] if k in target_props and k in source_props), "")
-        join = join or next(
-            (k for k in source.get("primaryKey") or [] if k in source_props and k in target_props), ""
+        join = _shared_key(target.get("primaryKey"), target_props, source_props) or _shared_key(
+            source.get("primaryKey"), source_props, target_props
         )
         if join:
             relations.append({
