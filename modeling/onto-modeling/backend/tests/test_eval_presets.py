@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import secrets
 import threading
 from http.server import HTTPServer
 from pathlib import Path
@@ -13,12 +14,16 @@ from app import config
 from app.services import eval_data_sources, eval_sets, modeling_eval
 from tests.test_modeling_eval import StubModeling
 
+# 测试密钥运行时生成，代码里不写凭据样式的字面量
+FAKE_PASSWORD = secrets.token_hex(8)
+FAKE_TOKEN = secrets.token_hex(8)
+
 NL2SQL = {
     "mode": "connection",
     "provider": "nl2sql_template",
     "config": {
-        "url": "http://nl2sql.example.com/",
-        "token": "tok-123",
+        "url": "https://nl2sql.example.com/",
+        "token": FAKE_TOKEN,
         "scene": "mv_shadow_demo",
         "evaluation_workspace_id": "onto-eval-demo",
     },
@@ -29,7 +34,7 @@ NEO4J = {
     "config": {
         "uri": "bolt://graph.example.com:7687",
         "username": "reader",
-        "password": "pw-456",
+        "password": FAKE_PASSWORD,
         "workspace_property": "d2o_workspace_id",
         "workspace_value": "graph-eval",
         "ontology_property": "d2o_ontology_id",
@@ -43,14 +48,14 @@ NEO4J = {
 def test_nl2sql_source_normalized_and_redacted(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     source = eval_data_sources.create_source("p-1", NL2SQL)
-    assert source["config"]["url"] == "http://nl2sql.example.com"  # 去尾斜杠
+    assert source["config"]["url"] == "https://nl2sql.example.com"  # 去尾斜杠
     assert source["name"] == "NL2SQL Template · mv_shadow_demo"
     view = eval_data_sources.public_view(source)
     assert "token" not in view["config"] and view["config"]["has_token"] is True
     # 密钥落数据目录且仅属主可读，不进工作区
     stored = tmp_path / "eval-data-sources" / "p-1.json"
     assert stored.stat().st_mode & 0o777 == 0o600
-    assert "tok-123" in stored.read_text(encoding="utf-8")
+    assert FAKE_TOKEN in stored.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -59,7 +64,7 @@ def test_nl2sql_source_normalized_and_redacted(tmp_path, monkeypatch):
         ({"scene": "bad scene"}, "Scene 格式非法"),
         ({"scene": ""}, "Scene 不能为空"),
         ({"evaluation_workspace_id": "Upper"}, "评测工作空间 ID格式非法"),
-        ({"url": "ftp://x"}, "数据服务 URL"),
+        ({"url": "nl2sql.example.com/query"}, "数据服务 URL"),
     ],
 )
 def test_nl2sql_validation(patch, message):
@@ -80,13 +85,13 @@ def test_neo4j_requires_password_and_keeps_it_on_update(tmp_path, monkeypatch):
     updated = eval_data_sources.update_source(
         "p-2", source["id"], {**NEO4J, "name": "图库", "config": {**NEO4J["config"], "password": ""}}
     )
-    assert updated["config"]["password"] == "pw-456"
+    assert updated["config"]["password"] == FAKE_PASSWORD
     assert updated["name"] == "图库"
     assert eval_data_sources.public_view(updated)["config"]["has_password"] is True
     # Ontology 隔离值恒等于知识包 ID，发起评测时填写
     payload = eval_data_sources.modeling_payload(updated, "pkg-id")
     assert payload["config"]["ontology_value"] == "pkg-id"
-    assert payload["config"]["password"] == "pw-456"
+    assert payload["config"]["password"] == FAKE_PASSWORD
 
 
 def test_dataset_and_none_sources(tmp_path, monkeypatch):
@@ -187,7 +192,7 @@ def test_run_uses_saved_source_and_syncs_eval_set(tmp_path, monkeypatch):
         return result
 
     assert asyncio.run(call())["started"] is True
-    assert captured["data_source"]["config"]["token"] == "tok-123"  # 密钥只在服务端拼装
+    assert captured["data_source"]["config"]["token"] == FAKE_TOKEN  # 密钥只在服务端拼装
     assert captured["eval_set_name"] == "冒烟"
     # 复核时对用例的修改回写评测集
     assert eval_sets.get_set(root, item["id"])["cases"][0]["groundTruth"] == "改过的答案"
@@ -260,11 +265,11 @@ def test_connection_mode_puts_provider_config(tmp_path, monkeypatch):
         path, payload = ConnectionStub.puts[0]
         assert path == "/api/projects/mp-1/data-source"
         assert payload["provider"] == "neo4j"
-        assert payload["config"]["password"] == "pw-456"
+        assert payload["config"]["password"] == FAKE_PASSWORD
         assert payload["config"]["ontology_value"] == pid  # 知识包 ID
         report = (root / state["report"]).read_text(encoding="utf-8")
         assert "数据源：图谱库" in report and "评测集：冒烟集" in report
-        assert "pw-456" not in json.dumps(state, ensure_ascii=False)  # 密钥不落状态
+        assert FAKE_PASSWORD not in json.dumps(state, ensure_ascii=False)  # 密钥不落状态
         assert modeling_eval.evolution_hint(state) is None  # 满分无需演进
     finally:
         server.shutdown()
@@ -280,7 +285,7 @@ def test_connection_failure_surfaces_modeling_reason(tmp_path, monkeypatch):
         assert state["status"] == "failed"
         assert "数据源配置失败（NL2SQL Template）" in state["message"]
         assert "连接测试失败" in state["message"]
-        assert "tok-123" not in state["message"]
+        assert FAKE_TOKEN not in state["message"]
     finally:
         ConnectionStub.put_status = 200
         server.shutdown()

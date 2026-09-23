@@ -156,18 +156,20 @@ def read_workbook(path: Path, source: str) -> tuple[list[Table], list[str]]:
 
 
 def _mock_seed(root: Path, out: Path) -> None:
-    """ontology/data-mock → Excel 种子（工具箱脚本，单一实现）。"""
-    import subprocess
-    import sys
+    """ontology/data-mock → Excel 种子。
+
+    工具箱脚本是单一实现，在进程内加载后直接调用 build_seed，不起子进程。
+    """
+    import importlib.util
 
     script = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "mock_to_eval_seed.py"
-    proc = subprocess.run(
-        [sys.executable, str(script), "--out", str(out)],
-        cwd=root, capture_output=True, text=True, timeout=120,
-    )
-    if proc.returncode != 0 or not out.is_file():
-        detail = (proc.stderr or proc.stdout or "").strip()[:200]
-        raise RuntimeError(f"示例数据种子生成失败：{detail or '无 mock 产物'}")
+    spec = importlib.util.spec_from_file_location("onto_mock_to_eval_seed", script)
+    seed = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seed)
+    try:
+        seed.build_seed(root, out, log=lambda _line: None)
+    except seed.SeedError as exc:
+        raise RuntimeError(f"示例数据种子生成失败：{exc}") from exc
 
 
 def _mock_tables(root: Path) -> tuple[list[Table], dict[str, str], list[str]]:
@@ -189,10 +191,10 @@ def _mock_tables(root: Path) -> tuple[list[Table], dict[str, str], list[str]]:
         key = table.name if table.name in docs else next(
             (k for k in docs if k[:MAX_SHEET_NAME_LENGTH] == table.name), ""
         )
-        if not key:
+        parsed = docs.get(key)
+        if parsed is None:
             warnings.append(f"示例数据「{table.name}」找不到对应的对象文档，按原表头导入")
             continue
-        parsed = docs[key]
         by_cn = {f["cn"]: f["key"] for f in parsed["fields"] if f["cn"]}
         by_key = {f["key"].lower(): f["key"] for f in parsed["fields"]}
         renamed = [by_cn.get(c) or by_key.get(c.lower()) or c for c in table.columns]

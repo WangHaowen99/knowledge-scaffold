@@ -185,6 +185,32 @@ def test_orchestration_full_protocol(tmp_path, monkeypatch):
         server.shutdown()
 
 
+def test_new_round_clears_previous_graph_import(tmp_path, monkeypatch):
+    """上一轮做过图导入、这一轮没有：执行详情不能再显示上一轮的图导入结果。"""
+    server = HTTPServer(("127.0.0.1", 0), StubModeling)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        StubModeling.calls, StubModeling.poll_count = [], 0
+        monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.05)
+        from app.services.workspace import WorkspaceManager
+
+        manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+        meta = manager.create_project("图导入残留")
+        root = manager.project_root(meta["id"])
+        modeling_eval._write_state(root, status="done", graph_import={"nodes": 8, "relationships": 5})
+        modeling_eval._run_sync(
+            meta["id"], root, "t",
+            [{"question": "Q1", "groundTruth": "G1"}, {"question": "Q2", "groundTruth": "G2"}],
+        )
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "done", state
+        assert state.get("graph_import") is None
+    finally:
+        server.shutdown()
+
+
 def test_failed_round_surfaces_modeling_log(tmp_path, monkeypatch):
     class FailingStub(StubModeling):
         def do_GET(self):

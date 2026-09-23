@@ -21,6 +21,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .. import config
 
@@ -31,6 +32,7 @@ PROVIDER_LABELS = {
     "nl2sql_http": "NL2SQL HTTP",
     "neo4j": "Neo4j",
 }
+HTTP_SCHEMES = ("http", "https")
 MAX_SOURCES = 30
 MAX_NAME_LENGTH = 60
 
@@ -79,12 +81,13 @@ def _graph_identifier(value: str, label: str) -> str:
     return value
 
 
-def _http_url(value, label: str, schemes: tuple[str, ...]) -> str:
+def _http_url(value, label: str) -> str:
     url = _text(value).rstrip("/")
     if not url:
         raise DataSourceError(f"{label}不能为空")
-    if not url.startswith(schemes):
-        raise DataSourceError(f"{label}须以 {' / '.join(schemes)} 开头")
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in HTTP_SCHEMES or not parts.netloc:
+        raise DataSourceError(f"{label}须为 http 或 https 地址")
     return url
 
 
@@ -118,7 +121,7 @@ def _normalize_connection(provider: str, raw: dict, previous: dict | None) -> di
             out["ontology_property"] = _graph_identifier(ontology_property, "Ontology 隔离字段")
         return out
     out = {
-        "url": _http_url(raw.get("url"), "数据服务 URL", ("http://", "https://")),
+        "url": _http_url(raw.get("url"), "数据服务 URL"),
         "scene": _scene(raw.get("scene")),
         "evaluation_workspace_id": _workspace_id(raw.get("evaluation_workspace_id")),
     }

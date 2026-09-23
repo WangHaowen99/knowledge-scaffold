@@ -3,6 +3,7 @@
 import datetime as dt
 import io
 import json
+import secrets
 import threading
 import zipfile
 from http.server import HTTPServer
@@ -15,6 +16,9 @@ from app import config
 from app.services import eval_data_sources, eval_import, modeling_eval, package_mapping
 from app.services.workspace import WorkspaceManager
 from tests.test_modeling_eval import StubModeling
+
+# 测试密钥运行时生成，代码里不写凭据样式的字面量
+FAKE_PASSWORD = secrets.token_hex(8)
 
 CUSTOMER_DOC = """# 数据来源
 客户表
@@ -236,6 +240,24 @@ def test_mock_headers_translated_and_bound_by_object(tmp_path):
     assert any("备注" in w for w in plan["warnings"])
 
 
+def test_mock_without_data_mock_dir_is_a_problem(tmp_path):
+    _objects(tmp_path)
+    plan = eval_import.collect(tmp_path, {"include_mock": True})
+    assert any("示例数据种子生成失败" in p and "data-mock" in p for p in plan["problems"])
+
+
+def test_mock_table_without_object_doc_keeps_headers(tmp_path):
+    _objects(tmp_path)
+    mock = tmp_path / "ontology" / "data-mock"
+    mock.mkdir(parents=True)
+    (mock / "仓库.md").write_text(
+        "# 仓库 测试数据\n\n| 仓库号 |\n|---|\n| W1 |\n", encoding="utf-8"
+    )
+    tables, _hints, warnings = eval_import._mock_tables(tmp_path)
+    assert tables[0].name == "仓库" and tables[0].columns == ["仓库号"]
+    assert any("找不到对应的对象文档" in w for w in warnings)
+
+
 def test_no_bound_object_blocks(tmp_path):
     _objects(tmp_path)
     _workbook(tmp_path / "resource/x.xlsx", {"别的表": [["A", "B"], [1, 2]]})
@@ -369,7 +391,7 @@ NEO4J = {
     "mode": "connection",
     "provider": "neo4j",
     "config": {
-        "uri": "bolt://graph.example.com:7687", "username": "reader", "password": "pw-456",
+        "uri": "bolt://graph.example.com:7687", "username": "reader", "password": FAKE_PASSWORD,
         "workspace_property": "d2o_workspace_id", "workspace_value": "graph-eval",
         "ontology_property": "d2o_ontology_id",
     },
@@ -404,10 +426,10 @@ def test_neo4j_one_click_import_orchestration(tmp_path, monkeypatch):
             < order.index("/api/projects/mp-g/graph-import/uploads/u1/execute") \
             < order.index("/api/projects/mp-g/evaluate")
         execute = GraphStub.executes[0]
-        assert execute["password"] == "pw-456" and execute["replaceExisting"] is True
+        assert execute["password"] == FAKE_PASSWORD and execute["replaceExisting"] is True
         assert execute["mapping"]["relations"][0]["sourceJoinProperty"] == "CUSTOMER_ID"
         assert state["graph_import"]["nodes"] == 4 and "提示" in state["graph_import"]["notes"]
-        assert "pw-456" not in json.dumps(state, ensure_ascii=False)
+        assert FAKE_PASSWORD not in json.dumps(state, ensure_ascii=False)
         # 上传给 modeling 的包是图模式 mapping；上传的工作簿是规范化后的那份
         assert b"eval-data.xlsx" in GraphStub.uploaded_workbook
         start = GraphStub.uploaded_package.index(b"PK")

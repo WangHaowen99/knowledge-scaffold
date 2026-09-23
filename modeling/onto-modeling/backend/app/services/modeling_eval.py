@@ -881,7 +881,8 @@ def _run_sync(
         _check_stop(project_id)
         _write_state(
             root, status="running", phase="package", message="打包知识包",
-            report_round=None, started_at=int(time.time()),
+            # 新一轮的逐轮字段清空：图导入结果等只属于产生它的那一轮
+            report_round=None, graph_import=None, started_at=int(time.time()),
             data_source_name=data_source.get("name") or eval_data_sources.default_name(data_source),
             eval_set_name=eval_set_name,
         )
