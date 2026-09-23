@@ -77,7 +77,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 }
 .tool-status { font-size: 11px; flex: none; }
 .tool-status.ok { color: var(--status-success); }
-.tool-status.error { color: var(--status-error); }
+.tool-status.error { color: var(--text-tertiary); }
 .tool-status.running { color: var(--color-primary); }
 
 .metrics-line { color: var(--text-tertiary); font-size: 11px; margin-bottom: 6px; }
@@ -551,7 +551,6 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   font-size: 12px; color: var(--text-secondary);
 }
 .tool-group-title { font-weight: 500; }
-.tool-group-err { color: var(--status-error); }
 .tool-group-caret {
   margin-left: auto; font-size: 10px; color: var(--text-tertiary);
   transition: transform var(--motion-fast, 150ms);

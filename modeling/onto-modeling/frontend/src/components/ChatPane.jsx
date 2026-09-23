@@ -279,7 +279,7 @@ function ToolLine({ tool, expanded, onToggle }) {
         {tool.status === undefined ? (
           <LoadingOutlined className="tool-status running" />
         ) : tool.status ? (
-          <CloseOutlined className="tool-status error" />
+          <CloseOutlined className="tool-status" />
         ) : (
           <CheckOutlined className="tool-status ok" />
         )}
@@ -313,7 +313,6 @@ function ToolGroup({ tools }) {
   const [open, setOpen] = useState(false);
   const [expandedKey, setExpandedKey] = useState(null);
   const running = tools.some((t) => t.status === undefined);
-  const errors = tools.filter((t) => t.status).length;
   const latest = tools[tools.length - 1];
 
   return (
@@ -327,7 +326,6 @@ function ToolGroup({ tools }) {
         <span className="tool-group-title">
           {running ? '执行中' : '执行完成'} · {tools.length} 步
         </span>
-        {errors > 0 && <span className="tool-group-err">{errors} 步失败</span>}
         <DownOutlined className={`tool-group-caret${open ? ' open' : ''}`} />
       </div>
       {open ? (

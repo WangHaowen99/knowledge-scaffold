@@ -2,12 +2,44 @@
 
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from app.services.workspace import WorkspaceError, WorkspaceManager
+from app.services.workspace import ScriptContractError, _script_header_meta
+
+
+def test_script_header_meta_uses_declared_kebab_case_flag():
+    code = '''"""
+关联operation：无
+输入参数：
+    crude_name    string    名称，必填
+"""
+import argparse
+def _cli():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--crude-name", dest="crude_name", required=True)
+'''
+    _, params = _script_header_meta(code)
+    assert params[0]["name"] == "crude_name"
+    assert params[0]["flag"] == "--crude-name"
+
+
+def test_script_header_meta_rejects_documented_flag_mismatch():
+    code = '''"""
+关联operation：无
+输入参数：
+    crude_name    string    名称，必填
+"""
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--other-name", required=True)
+'''
+    with pytest.raises(ScriptContractError, match="头部参数与 argparse 不一致"):
+        _script_header_meta(code)
 
 
 def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
@@ -161,15 +193,21 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         "功能描述：计算客单价\n"
         "\n"
         "输入参数：\n"
-        "    orders    list    订单列表，必填\n"
+        "    orders    json    订单列表，必填\n"
         "    factor    float   加权因子，默认 1.0\n"
         "\n"
         "输出：\n"
         "    return 客单价数值\n"
         '"""\n'
         "\n"
-        "def run(orders):\n"
-        "    return 0\n",
+        "import argparse\n"
+        "def run(orders, factor):\n"
+        "    return 0\n"
+        "def _cli():\n"
+        "    parser = argparse.ArgumentParser()\n"
+        "    parser.add_argument('--orders', required=True, type=json.loads)\n"
+        "    parser.add_argument('--factor', default=1.0, type=float)\n"
+        "    run(**vars(parser.parse_args()))\n",
         encoding="utf-8",
     )
     dest = tmp_path / "pkg.zip"
@@ -224,15 +262,45 @@ def test_export_package_zip_layout(manager: WorkspaceManager, tmp_path: Path):
         assert f"{pid}/scripts/calc_price.py" in names
         script_doc = zf.read(f"{pid}/scripts/calc_price.md").decode("utf-8")
         assert "resource: script" in script_doc
-        # consumer load_script_catalog 要求 entrypoint，缺失会被静默剔除
-        assert "entrypoint: scripts/calc_price.py" in script_doc
+        # consumer load_script_catalog 要求 entrypoint，缺失会被静默剔除；
+        # modeling 按 scripts/<entrypoint> 取源码，故只写文件名、不带 scripts/ 前缀
+        assert "entrypoint: calc_price.py\n" in script_doc
         # 执行契约：绑定 operation + 参数表（consumer execute_script 按此组装 CLI）
         assert 'bound_operation: "创建订单"' in script_doc
         assert "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |" in script_doc
-        assert "| orders | --orders | string | 是 |  | 订单列表，必填 |" in script_doc
-        assert "| factor | --factor | number | 否 | 1.0 |" in script_doc
+        assert "| orders | --orders | json | 是 |  | 订单列表，必填 | 否 |  |" in script_doc
+        assert "| factor | --factor | number | 否 | 1.0 | 加权因子，默认 1.0 | 否 |  |" in script_doc
         assert f"{pid}/rules/index.md" in names
         assert f"{pid}/metrics/index.md" in names
+
+
+def test_export_package_zip_script_entrypoint_is_ascii_filename(manager: WorkspaceManager, tmp_path: Path):
+    """modeling 要求 entrypoint 满足 ^[A-Za-z0-9_.-]+\\.py$，并按 scripts/<entrypoint> 取源码。"""
+    meta = manager.create_project("脚本入口")
+    root = manager.project_root(meta["id"])
+    sources = {
+        "calc_price": "def run():\n    return {'price': 1}\n",
+        "计算折扣": "def run():\n    return {'discount': 2}\n",
+    }
+    for key, code in sources.items():
+        (root / "ontology" / "scripts" / f"{key}.py").write_text(code, encoding="utf-8")
+    dest = tmp_path / "pkg.zip"
+    manager.export_package_zip(meta["id"], dest)
+    pid = meta["id"]
+    with zipfile.ZipFile(dest) as zf:
+        for key, code in sources.items():
+            script_doc = zf.read(f"{pid}/scripts/{key}.md").decode("utf-8")
+            assert f"key: {json.dumps(key, ensure_ascii=False)}" in script_doc
+            entrypoint = re.search(r"^entrypoint: (.+)$", script_doc, re.M).group(1)
+            assert re.fullmatch(r"[A-Za-z0-9_.-]+\.py", entrypoint), entrypoint
+            assert zf.read(f"{pid}/scripts/{entrypoint}").decode("utf-8") == code
+        assert f"{pid}/scripts/计算折扣.py" not in zf.namelist()
+    # 同一脚本多次导出文件名不变，版本间 diff 与 consumer 升级不会把它当成新脚本
+    again = tmp_path / "again.zip"
+    manager.export_package_zip(meta["id"], again)
+    with zipfile.ZipFile(dest) as first, zipfile.ZipFile(again) as second:
+        doc = f"{pid}/scripts/计算折扣.md"
+        assert first.read(doc) == second.read(doc)
 
 
 def test_excel_preview_roundtrip(tmp_path: Path):

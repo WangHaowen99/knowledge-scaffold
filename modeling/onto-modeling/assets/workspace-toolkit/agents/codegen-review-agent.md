@@ -50,11 +50,13 @@ dispatcher 在 prompt 中提供：
 | 检查项 | 报告条件 | severity | category |
 |---|---|---|---|
 | 必须用 argparse | 没有 `import argparse` 或 `argparse.ArgumentParser` 调用 | 错误 | CLI不规范 |
-| 不得用 JSON 串参数 | argparse 入参描述里出现 `json.loads` / 形如 `--config '{...}'` 的用法 | 错误 | CLI不规范 |
+| 结构化参数 | list/object/json 参数必须作为一个 JSON value 传入并在入口解析；不得重复 flag 拼接同一结构化值 | 错误 | CLI不规范 |
 | 参数名命名 | 使用 `--参数名 值` 形式；不允许 `positional` 入参（除非脚本仅为库且不带 `_cli`）| 警告 | CLI不规范 |
 | `_cli()` 入口 | 脚本若声明为 CLI 可执行（出现 `if __name__ == "__main__":`），必须有 `_cli` 函数并通过 `**vars(args)` 调用主函数 | 警告 | CLI不规范 |
 
 纯库脚本（无 `__main__` 块、无 `_cli`）允许跳过 CLI 检查；此时头部「用法」段允许只保留 `import` 一行。
+
+复审还必须运行脚本验证：正常、边界、缺少必填参数、未知参数、空结果和预期业务错误各至少一次；stdout 必须是单个可解析 JSON，stderr 只能承载诊断信息。
 
 ### 3. import / 骨架规范
 

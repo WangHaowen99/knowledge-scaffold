@@ -2,6 +2,7 @@
 """Ontology Checker — validates business knowledge ontology documents."""
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -977,6 +978,51 @@ def check_terminology(operation_doc: OntologyDoc, term_map: dict) -> list:
     return issues
 
 
+def check_scripts(ontology_dir: Path) -> list:
+    """Validate executable scripts before a workspace can be published."""
+    scripts_dir = ontology_dir / "scripts"
+    issues = []
+    if not scripts_dir.is_dir():
+        return issues
+    for path in sorted(scripts_dir.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        rel = path.relative_to(ontology_dir).as_posix()
+        try:
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+        except (OSError, UnicodeDecodeError, SyntaxError) as exc:
+            issues.append(Issue(str(rel), "错误", "脚本契约", f"Python 脚本无法解析：{exc}", "规则检查"))
+            continue
+        calls = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"
+            ):
+                calls.append(node)
+        executable = "__main__" in source
+        if executable and ("argparse" not in source or not any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "ArgumentParser" for node in ast.walk(tree)
+        )):
+            issues.append(Issue(str(rel), "错误", "脚本契约", "可执行脚本必须使用 argparse.ArgumentParser", "规则检查"))
+        doc = ast.get_docstring(tree) or ""
+        if "输入参数" not in doc or "输出" not in doc:
+            issues.append(Issue(str(rel), "错误", "脚本契约", "头部注释必须包含输入参数和输出字段", "规则检查"))
+        for call in calls:
+            flags = []
+            for arg in call.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    flags.append(arg.value)
+            if not any(flag.startswith("--") for flag in flags):
+                issues.append(Issue(str(rel), "错误", "脚本契约", "argparse 参数必须声明长选项 flag", "规则检查"))
+        if executable and "json.dumps" not in source:
+            issues.append(Issue(str(rel), "错误", "脚本契约", "CLI stdout 必须输出单个 JSON 结果", "规则检查"))
+    return issues
+
+
 
 
 # =============================================================================
@@ -1031,7 +1077,7 @@ def generate_report(issues: list, ontology_dir: str) -> str:
 # =============================================================================
 
 def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool = False,
-               include_knowledge: bool = False) -> list:
+               include_knowledge: bool = False, include_scripts: bool = False) -> list:
     print(f"Loading ontology from {ontology_dir}...", file=sys.stderr)
     all_docs = load_ontology(ontology_dir)
     print(f"  {len(all_docs)} documents loaded", file=sys.stderr)
@@ -1091,6 +1137,9 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
         print(f"  Knowledge checks done: {len(knowledge_issues)} issues", file=sys.stderr)
         issues += knowledge_issues
 
+    if include_scripts:
+        issues += check_scripts(ontology_dir)
+
     print(f"  Rule checks done: {len(issues)} issues", file=sys.stderr)
 
     return issues
@@ -1109,6 +1158,8 @@ def main():
                         help='Also check ontology/data-mock/ for primary-key uniqueness and foreign-key integrity')
     parser.add_argument('--include-knowledge', action='store_true',
                         help='Also validate ontology/knowledge/ entries')
+    parser.add_argument('--include-scripts', action='store_true',
+                        help='Validate ontology/scripts Python syntax and argparse contracts')
     args = parser.parse_args()
 
     ontology_dir = Path(args.ontology_dir)
@@ -1117,7 +1168,7 @@ def main():
         sys.exit(1)
 
     issues = run_checks(ontology_dir, target_files=args.files, include_mock=args.include_mock,
-                        include_knowledge=args.include_knowledge)
+                        include_knowledge=args.include_knowledge, include_scripts=args.include_scripts)
 
     if args.json:
         print(json.dumps(

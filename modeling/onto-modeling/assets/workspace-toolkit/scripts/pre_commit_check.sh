@@ -49,6 +49,10 @@ fi
 STAGED_TOOLS=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
     | grep -E '^\.claude/(scripts|agents|commands)/' || true)
 
+# Generated executable scripts are part of the package contract, not ordinary docs.
+STAGED_SCRIPTS=$(git diff --cached --name-only -z 2>/dev/null | tr '\0' '\n' \
+    | grep -E '^ontology/scripts/.*\.py$' || true)
+
 TOOL_ERRORS=""
 if [ -n "$STAGED_TOOLS" ]; then
     while IFS= read -r path; do
@@ -79,6 +83,25 @@ import json, sys
 print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
 ' "$REASON"
     exit 0
+fi
+
+if [ -n "$STAGED_SCRIPTS" ]; then
+    SCRIPT_OUTPUT=$(python3 .claude/scripts/ontology_checker.py ontology --json --include-scripts 2>/dev/null || echo '[]')
+    SCRIPT_ERRORS=$(printf '%s' "$SCRIPT_OUTPUT" | python3 -c '
+import json, sys
+try:
+    print(sum(1 for item in json.loads(sys.stdin.read() or "[]") if item.get("severity") == "错误" and item.get("category") == "脚本契约"))
+except Exception:
+    print(1)
+' 2>/dev/null || echo 1)
+    if [ "$SCRIPT_ERRORS" -gt 0 ]; then
+        REASON='ontology/scripts 中存在脚本契约错误：请运行 python3 .claude/scripts/ontology_checker.py ontology --include-scripts 修复后再提交。'
+        python3 -c '
+import json, sys
+print(json.dumps({"decision": "block", "reason": sys.argv[1]}, ensure_ascii=False))
+' "$REASON"
+        exit 0
+    fi
 fi
 
 # --- Ontology rule check（原逻辑） -------------------------------------------
