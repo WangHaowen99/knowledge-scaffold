@@ -4,7 +4,6 @@ import asyncio
 import io
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +13,7 @@ import pytest
 
 from app import config
 from app.services import eval_data_files, eval_data_sources, package_mapping
-from app.services.workspace import WorkspaceManager
+from app.services.workspace import WorkspaceManager, _git
 
 ORDER_DOC = """# 对象属性清单
 | 中文名称 | 英文名称 | 描述 | 主键 | 类型 |
@@ -61,10 +60,9 @@ def test_uploaded_files_stay_out_of_workspace_git(tmp_path, monkeypatch):
     pid, root = _project(tmp_path, monkeypatch)
     eval_data_files.save(root, "业务数据.xlsx", _xlsx())
     (root / ".ontology-state" / "eval.json").write_text("{}", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
-    staged = subprocess.run(
-        ["git", "diff", "--cached", "--name-only"], cwd=root, check=True, capture_output=True, text=True,
-    ).stdout
+    # 复用工作区服务的 git 入口（workspace._git），测试里不另起子进程
+    _git(root, "add", "-A")
+    staged = _git(root, "diff", "--cached", "--name-only")
     assert ".ontology-state/eval.json" in staged
     assert "eval-data" not in staged
 
