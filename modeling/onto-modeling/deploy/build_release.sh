@@ -51,9 +51,26 @@ mkdir -p "${IMAGES_DIR}"
 
 echo "Building Onto Web release ${VERSION} for ${PLATFORM}"
 
+# pip 索引源：默认华为云 PyPI 镜像，企业内网等场景可用 ONTO_MODELING_PIP_INDEX_URL 或 PIP_INDEX_URL 覆盖
+PIP_INDEX_URL="${ONTO_MODELING_PIP_INDEX_URL:-${PIP_INDEX_URL:-https://repo.huaweicloud.com/repository/pypi/simple}}"
+TARGET_PYTHON_VERSION="3.11"  # 与 Dockerfile 基础镜像 python:3.11-slim 一致
+
+# $1 >= $2，版本形如 3.10 / 3.11；无法解析时视为不满足
+python_version_at_least() {
+    local have_major have_minor want_major want_minor
+    IFS=. read -r have_major have_minor <<< "$1"
+    IFS=. read -r want_major want_minor <<< "$2"
+    [ -n "${have_major}" ] && [ -n "${have_minor}" ] || return 1
+    [ "${have_major}" -gt "${want_major}" ] \
+        || { [ "${have_major}" -eq "${want_major}" ] && [ "${have_minor}" -ge "${want_minor}" ]; }
+}
+
 # 用宿主 pip 预下载目标平台 wheel 到 vendor/wheels（命中宿主缓存则零下载），
-# 镜像构建经 bind mount 离线安装；失败不阻断，Dockerfile 会回落到镜像源。
+# 镜像构建经 bind mount 作为 find-links，索引不可达时兜底；失败不阻断，Dockerfile 会回落到镜像源。
 # 目录跨构建累积旧版本无害（pip 按 requirements 选取），离线场景下不清空更稳妥。
+# pip download 的 --python-version 只影响 wheel 兼容性，环境标记仍按宿主解释器求值：宿主 Python 低于
+# 目标版本时 openjiuwen 等带 python_version 标记的依赖整棵被跳过，供应结果不完整、镜像构建照样联网，
+# 预下载只会让大包（约 100MB 的 claude-agent-sdk）多下一遍，因此直接跳过。
 VENDOR_DIR="${PROJECT_ROOT}/vendor/wheels"
 mkdir -p "${VENDOR_DIR}"
 case "${ARCH}" in
@@ -61,13 +78,19 @@ case "${ARCH}" in
     arm) PIP_PLATFORMS=(--platform manylinux_2_17_aarch64 --platform manylinux2014_aarch64 --platform manylinux_2_28_aarch64) ;;
 esac
 if command -v pip3 >/dev/null 2>&1; then
-    echo "Vendoring Python wheels for ${PLATFORM} into vendor/wheels"
-    pip3 download -r "${PROJECT_ROOT}/backend/requirements.txt" -d "${VENDOR_DIR}" \
-        --only-binary=:all: "${PIP_PLATFORMS[@]}" \
-        --python-version 3.11 --implementation cp \
-        --abi cp311 --abi abi3 --abi none \
-        -q -i https://pypi.tuna.tsinghua.edu.cn/simple \
-        || echo "Warning: wheel vendoring failed; image build will download from index"
+    HOST_PIP_PYTHON="$(pip3 --version 2>/dev/null \
+        | sed -n 's/.*(python \([0-9][0-9]*\.[0-9][0-9]*\)).*/\1/p' || true)"
+    if python_version_at_least "${HOST_PIP_PYTHON}" "${TARGET_PYTHON_VERSION}"; then
+        echo "Vendoring Python wheels for ${PLATFORM} into vendor/wheels"
+        pip3 download -r "${PROJECT_ROOT}/backend/requirements.txt" -d "${VENDOR_DIR}" \
+            --only-binary=:all: "${PIP_PLATFORMS[@]}" \
+            --python-version "${TARGET_PYTHON_VERSION}" --implementation cp \
+            --abi "cp${TARGET_PYTHON_VERSION//./}" --abi abi3 --abi none \
+            -q -i "${PIP_INDEX_URL}" \
+            || echo "Warning: wheel vendoring failed; image build will download from index"
+    else
+        echo "Note: host pip runs on Python ${HOST_PIP_PYTHON:-unknown} (< ${TARGET_PYTHON_VERSION}); skip wheel vendoring, image build will download from index"
+    fi
 else
     echo "Note: pip3 not found on host; image build will download from index"
 fi
@@ -100,7 +123,8 @@ fi
 
 # docker 一律在目标目录内用相对路径调用：WSL 下 docker 可能是 Windows 侧
 # docker.exe（interop），不认 /mnt/* 绝对路径，相对路径会被正确映射到盘符路径
-(cd "${PROJECT_ROOT}" && ${BUILD_CMD} -t "onto-modeling:${VERSION}" -f Dockerfile .)
+(cd "${PROJECT_ROOT}" && ${BUILD_CMD} --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}" \
+    -t "onto-modeling:${VERSION}" -f Dockerfile .)
 (cd "${IMAGES_DIR}" && docker save -o "onto-modeling-${VERSION}.tar" "onto-modeling:${VERSION}")
 
 AUTH_SERVER_SRC="${REPOSITORY_ROOT}/auth-server"
