@@ -89,12 +89,17 @@ printf '%s\\n' "$*" >> "${FAKE_LOG_DIR}/pip3.log"
             **(extra_env or {}),
         }
     )
-    result = subprocess.run(
+    # Security review: argv is the resolved bash binary plus the repository's own build
+    # script copied into tmp_path, with literal arguments; it is passed as a sequence and
+    # never parsed by a shell.
+    result = subprocess.run(  # NOSONAR(S4721)
         [_bash_executable(), str(project_root / "deploy" / "build_release.sh"), "v-test", "amd"],
         env=env,
         text=True,
         capture_output=True,
         check=False,
+        shell=False,
+        timeout=300,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz").is_file()
