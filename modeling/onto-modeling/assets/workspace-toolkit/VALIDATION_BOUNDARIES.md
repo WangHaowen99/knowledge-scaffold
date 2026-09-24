@@ -32,6 +32,10 @@
 - 判断节点分支完整性（>=2 个分支，分类判断允许多于 2 个分支，是否有默认/其他分支）
 - 逻辑描述中使用的字段名是否在对象属性中存在
 
+### 脚本契约（`--include-scripts`）
+- `ontology/scripts/*.py` 可解析、可执行脚本使用 argparse 长选项、CLI 输出单个 JSON → 缺失为 `错误 / 脚本契约`
+- 头部「输入参数」与 argparse 声明一一对应，类型、必填一致 → 不一致为 `错误 / 脚本契约`；解析逻辑在 `.claude/scripts/script_contract.py`，与知识包导出共用
+
 ### 打包范围
 - 白名单内但不进知识包的目录（如 `ontology/knowledge/`）存放知识文档 → `警告 / 打包范围`；只有 `ontology/{object,operation,logic,rule,metric}` 与 `ontology/scripts/*.py` 会导出给 consumer
 

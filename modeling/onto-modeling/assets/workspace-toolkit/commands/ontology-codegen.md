@@ -110,11 +110,16 @@ For each operation doc in scope:
 - `功能描述`：一句话说明脚本做什么
 - `详细逻辑`：对应原 operation 中被脚本实现的那段逻辑的展开描述（片段脚本只展开 fragment_scope 内的步骤）
 - `用法`：CLI（`python3 ... --参数 值`）+ import 两种调用范例
-- `输入参数`：每个参数的"名称 / 类型 / 必填或默认值"
+- `输入参数`：只列 `_cli()` 中 argparse 声明的 CLI 参数，每个一行"名称 / 类型 / 必填或默认值"；仅供 import 调用的函数形参不写在这里，放到「用法」的 import 示例中说明。纯库脚本（无 argparse）本段填"无"
 - `输出`：return 结构 / 写入表 / 生成文件 等，含字段或结构说明
 - `依赖`：所需 pip 包，无则删除本行
 
 **CLI 契约**：源码中 `argparse.add_argument()` 的实际声明是唯一契约来源。头部参数表只能描述这些声明，不能根据参数 key 自动推导 flag；长选项统一使用源码中声明的 `--kebab-case`（如 `--crude-name`），导出器会校验 flag、类型、`required`、默认值、`action` 和多值语义是否一致。CLI 必须把业务函数返回值序列化为单个 JSON 写到 stdout，诊断信息写 stderr。
+
+- 头部「输入参数」与 argparse 声明**一一对应**：每个 `add_argument` 在头部有一行，头部也不能多出 argparse 没有的参数。函数形参多于 CLI 参数（如只在 import 时传入的记录列表）是允许的，但多出的形参不进头部参数表。
+- 头部「类型」写 argparse 实际接收的类型，而不是函数形参类型：未写 `type=` 的写 `str`；`type=int` / `type=float` 写 `int` / `float`；`action="store_true"` 写 `bool`；`type=json.loads` 写 `json`。
+- 布尔开关统一用 `parser.add_argument("--has-jet-fuel", action="store_true")`，头部写 `bool`、「默认 False」。不要写 `default="false"` 再在函数里解析字符串——那样 argparse 按 `str` 接收，头部就必须写 `str`。
+- 必填：`required=True` 的参数头部说明含「必填」；其余写「默认 X」或不标必填。
 
 **主体结构**：
 ```python
@@ -160,7 +165,7 @@ sku_details = json.loads(args.sku)
 **Type mapping:**
 - 字符串 → str
 - 数字 → int or float
-- 布尔 → bool
+- 布尔 → bool（函数形参；CLI 侧写法见上方「CLI 契约」的布尔开关约定）
 - 枚举 → Enum class
 - 日期 → str (ISO format)
 - 对象引用 → the corresponding dataclass
@@ -208,6 +213,16 @@ python3 ontology/scripts/{script}.py --参数1 值1 --参数2 值2
 - 若参数有合理默认值，在脚本中定义为模块级常量（如 `DEFAULT_CLUSTERING_FACTORS`），并在 argparse 的 `default=` 中引用。
 - 若参数支持中文名，提供 `{FIELD}_NAME_MAP` 映射字典，并在入口函数中统一归一化为内部英文字段名。
 
+### Step 4.4: 脚本契约规则检查（确定性，必做）
+
+写完所有脚本、进入复审前，先跑与知识包导出同一实现的契约检查：
+
+```bash
+python3 .claude/scripts/ontology_checker.py ontology/ --json --include-scripts
+```
+
+过滤 `category=脚本契约` 的 issue，必须在这里清零：其中头部与 argparse 不一致的问题在导出/评测打包时会被同一实现拦截，其余（长选项、stdout 单个 JSON 等）是脚本被调用执行时依赖的约定。按上方「CLI 契约」修正头部「输入参数」、argparse 声明或 CLI 输出，然后重跑本命令直到没有 `脚本契约` 错误。其他类别的 issue 不在本步处理。
+
 ---
 
 ## Step 4.5: 代码复审
@@ -245,7 +260,7 @@ Wait for it to return a JSON array.
 - `operation未简化` → 改写对应 `ontology/operation/{name}.md` 的「逻辑描述」段（按 Step 4.2 执行）。本应在 Step 4.2 生成时已完成；如果跑到这里说明 Step 4.2 漏做了，现在补
 - `业务知识冲突` → 按 KNOWLEDGE_BLOCK 中对应高置信条目调整脚本（如 `';'` 边界匹配 SQL）
 
-修复后**重新 dispatch codegen-review-agent**（同 TARGET_SCRIPTS / RELATED_OPERATIONS）做一次回归。若回归后仍有 `severity=错误` 且与上一轮相同（按 `file + message` 精确配对），停下来汇报：
+修复后先重跑 Step 4.4 的契约检查，再**重新 dispatch codegen-review-agent**（同 TARGET_SCRIPTS / RELATED_OPERATIONS）做一次回归。若回归后仍有 `severity=错误` 且与上一轮相同（按 `file + message` 精确配对），停下来汇报：
 
 ```
 自动修复未能消除以下错误，需人工介入：

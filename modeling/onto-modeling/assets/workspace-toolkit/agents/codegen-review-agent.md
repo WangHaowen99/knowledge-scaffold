@@ -39,7 +39,7 @@ dispatcher 在 prompt 中提供：
 | 功能描述 | 是 | 非空，一句话 |
 | 详细逻辑 | 是 | 非空；不得只写「见 operation 文档」之类占位 |
 | 用法 | 是 | 包含 `CLI` 与 `import` 两种调用形式各一行 |
-| 输入参数 | 是 | 每个 argparse 入参在表格中有一行（参数名/类型/说明/必填或默认值）|
+| 输入参数 | 是 | 与 argparse 声明一一对应：每个 `add_argument` 有一行（参数名/类型/说明/必填或默认值），且不得出现 argparse 没有的参数（仅供 import 的函数形参不写在这里）；纯库脚本填「无」|
 | 输出 | 是 | 非空；写 return 结构 / 写入表 / 生成文件 等 |
 | 依赖 | 可选 | 若使用了 `pymysql / pandas / numpy / sklearn` 等第三方包则必填 |
 
@@ -51,6 +51,7 @@ dispatcher 在 prompt 中提供：
 |---|---|---|---|
 | 必须用 argparse | 没有 `import argparse` 或 `argparse.ArgumentParser` 调用 | 错误 | CLI不规范 |
 | 结构化参数 | list/object/json 参数必须作为一个 JSON value 传入并在入口解析；不得重复 flag 拼接同一结构化值 | 错误 | CLI不规范 |
+| 头部与 argparse 契约 | 运行 `python3 .claude/scripts/ontology_checker.py ontology/ --json --include-scripts`，TARGET_SCRIPTS 中出现 `category=脚本契约` 的 issue（参数名、类型、必填与头部不一致等；与知识包导出同一实现），`message` 原样引用 | 错误 | CLI不规范 |
 | 参数名命名 | 使用 `--参数名 值` 形式；不允许 `positional` 入参（除非脚本仅为库且不带 `_cli`）| 警告 | CLI不规范 |
 | `_cli()` 入口 | 脚本若声明为 CLI 可执行（出现 `if __name__ == "__main__":`），必须有 `_cli` 函数并通过 `**vars(args)` 调用主函数 | 警告 | CLI不规范 |
 
