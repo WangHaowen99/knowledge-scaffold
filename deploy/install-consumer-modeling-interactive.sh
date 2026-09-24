@@ -204,6 +204,58 @@ deploy_onto_modeling() {
         || write_env_value "${env_file}" ONTO_WEB_MODELING_URL 'http://mw-modeling:5100'
     log "Onto Modeling 共享 Consumer 账号中心：网络 ${network}"
     bash "${dir}/deploy.sh"
+    wait_for_onto_modeling
+}
+
+wait_for_onto_modeling() {
+    local url="http://127.0.0.1:${ONTO_WEB_PORT}/api/health" elapsed=0
+    until curl -fsS --noproxy '*' --max-time 5 "${url}" >/dev/null 2>&1; do
+        [ "${elapsed}" -lt 120 ] || die "Onto Modeling 120 秒内未就绪：${url}；请查看 docker logs onto-modeling"
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    log "Onto Modeling deployment finished: http://localhost:${ONTO_WEB_PORT}"
+}
+
+# Onto Modeling 与 Consumer、Modeling 同时运行，宿主端口不能与它们相同。
+# 0.26.9.0 之前的分离部署 Modeling 仍在 5100，首次加入 Onto Modeling 时默认值会撞上。
+onto_port_conflict() {
+    local name
+    for name in BACKEND_PORT MCP_SERVER_PORT FRONTEND_PORT MODELING_PORT MODELING_MCP_PORT; do
+        if [ "${ONTO_WEB_PORT}" = "${!name}" ]; then
+            printf '%s' "${name}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_onto_web_port_free() {
+    local conflict
+    while conflict="$(onto_port_conflict)"; do
+        printf 'Onto Modeling 宿主端口 %s 与 %s 相同，请换一个端口。\n' \
+            "${ONTO_WEB_PORT}" "${conflict}" >/dev/tty
+        ONTO_WEB_PORT="$(ask_port '请输入 Onto Modeling 宿主端口：')"
+    done
+}
+
+# Onto Modeling 排在 Consumer、Modeling 之后部署。能提前发现的问题都在动手前拦下，
+# 避免 Consumer、Modeling 已经变更、Onto Modeling 才失败的半完成状态。
+precheck_onto_modeling() {
+    local dir="${INSTALL_ROOT}/onto-modeling" expected owner
+    expected="$(cd "${dir}" 2>/dev/null && pwd || printf '%s' "${dir}")"
+    if docker container inspect onto-modeling >/dev/null 2>&1; then
+        owner="$(container_working_dir onto-modeling)"
+        [ "${owner}" = "${expected}" ] \
+            || die "容器 onto-modeling 属于 ${owner:-未知目录}，不是 ${expected}，拒绝接管"
+    fi
+    mkdir -p "${TMP_ROOT}/onto-preflight"
+    tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${TMP_ROOT}/onto-preflight" onto-modeling/preflight.sh \
+        || die 'Onto Modeling 发布包缺少 preflight.sh'
+    log '开始执行 Onto Modeling 预检'
+    # 此时还没有 .env；本脚本总是让 Onto Modeling 接入 Consumer 账号中心，按该模式预检
+    (cd "${TMP_ROOT}/onto-preflight/onto-modeling" && ONTO_MODELING_SHARED_AUTH=1 bash ./preflight.sh) \
+        || die 'Onto Modeling 预检未通过，尚未做任何变更'
 }
 
 container_working_dir() {
@@ -423,6 +475,7 @@ else
     [ -z "${ONTO_MODELING_PACKAGE}" ] \
         || ONTO_MODELING_PACKAGE="$(resolve_package "${ONTO_MODELING_PACKAGE}" 'Onto Modeling发布包')"
 fi
+[ -z "${ONTO_MODELING_PACKAGE}" ] || ensure_onto_web_port_free
 check_dependencies
 [ -z "${CONSUMER_PACKAGE}" ] || validate_package "${CONSUMER_PACKAGE}" onto-agent Consumer发布包
 [ -z "${MODELING_PACKAGE}" ] || validate_package "${MODELING_PACKAGE}" modeling Modeling发布包
@@ -433,6 +486,7 @@ if [ "${MODE}" = upgrade ] && [ "${scope}" != 1 ]; then
 fi
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/separated-interactive.XXXXXX")"
+[ -z "${ONTO_MODELING_PACKAGE}" ] || precheck_onto_modeling
 if [ "${MODE}" = install ]; then
     mkdir -p "${INSTALL_ROOT}"
     tar -xzf "${CONSUMER_PACKAGE}" -C "${INSTALL_ROOT}"
