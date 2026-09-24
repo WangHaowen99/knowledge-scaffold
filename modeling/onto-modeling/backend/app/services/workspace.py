@@ -363,8 +363,9 @@ class WorkspaceManager:
             "revision": _content_revision(target.read_bytes()),
         }
 
-    # 资料用途标签（对齐 modeling 的 material purpose 体系）
-    MATERIAL_PURPOSES = ("auto", "goal", "schema", "term", "evidence", "eval_data")
+    # 资料用途标签（对齐 modeling 的 material purpose 体系）。评测数据不再走资料区打标，
+    # 改在评测数据源里上传（eval_data_files）；存量 eval_data 标签读取时按 auto 处理
+    MATERIAL_PURPOSES = ("auto", "goal", "schema", "term", "evidence")
     MATERIAL_READING_MODES = ("on_demand", "full")
 
     def resource_directives(self, project_id: str) -> dict:
@@ -377,7 +378,12 @@ class WorkspaceManager:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return {}
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        for directive in data.values():
+            if isinstance(directive, dict) and directive.get("purpose") not in self.MATERIAL_PURPOSES:
+                directive["purpose"] = "auto"
+        return data
 
     def set_resource_directive(
         self, project_id: str, rel_path: str, purpose: str, reading_mode: str = "on_demand"

@@ -1,6 +1,6 @@
 """评测数据一键导入：把选中的数据整理成一份规范化工作簿，MySQL 评测库与 Neo4j 图库共用。
 
-数据来源是 eval_data 资料表（可多选）或 mock 示例数据种子。同一份表结构同时决定：
+数据来源是数据源里手动上传的业务数据表（Excel，可多份）或 mock 示例数据种子。同一份表结构同时决定：
 
 - 导入库里建什么表、什么列（modeling quick-import / graph-import 按 Sheet 名与表头建表建节点）；
 - 发布包 mappings 里写什么表、什么列（package_mapping 以它为数据表来源重新绑定）。
@@ -27,7 +27,7 @@ import zipfile
 from pathlib import Path
 
 from .. import config
-from . import package_mapping
+from . import eval_data_files, package_mapping
 
 WORKBOOK_NAME = "eval-data.xlsx"
 MAX_FILES = 20
@@ -295,20 +295,18 @@ def collect(root: Path, data_source: dict) -> dict:
     warnings: list[str] = []
     problems: list[str] = []
     hints: dict[str, str] = {}
-    resources = [str(r).strip() for r in (data_source.get("resources") or []) if str(r).strip()]
-    for rel in resources[:MAX_FILES]:
-        path = (root / rel).resolve()
-        if not str(path).startswith(str(root.resolve())) or not path.is_file():
-            problems.append(f"评测数据文件不存在：{rel}")
-            continue
-        if path.suffix.lower() not in (".xlsx", ".xlsm"):
-            problems.append(f"评测数据仅支持 Excel 表：{rel}")
+    for item in (data_source.get("files") or [])[:MAX_FILES]:
+        file_id = str(item.get("id") if isinstance(item, dict) else item).strip()
+        label = str(item.get("name") or file_id) if isinstance(item, dict) else file_id
+        path = eval_data_files.path_of(root, file_id)
+        if path is None:
+            problems.append(f"评测数据文件不存在或已被删除，请重新上传：{label}")
             continue
         try:
-            file_tables, file_warnings = read_workbook(path, rel)
+            file_tables, file_warnings = read_workbook(path, path.name)
         except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
             # 损坏或伪装成 Excel 的文件：openpyxl 抛 InvalidFileException（ValueError 子类）等
-            problems.append(f"评测数据文件无法读取：{rel}（{str(exc)[:80]}）")
+            problems.append(f"评测数据文件无法读取：{path.name}（{str(exc)[:80]}）")
             continue
         tables += file_tables
         warnings += file_warnings

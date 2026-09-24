@@ -164,7 +164,7 @@ def needs_import(data_source: dict) -> bool:
     """dataset 模式、或声明了导入数据的 Neo4j 连接，发起前要整理导入工作簿。"""
     if str(data_source.get("mode") or "none") == "dataset":
         return True
-    has_selection = bool(data_source.get("resources") or data_source.get("include_mock"))
+    has_selection = bool(data_source.get("files") or data_source.get("include_mock"))
     return is_graph(data_source) and has_selection
 
 

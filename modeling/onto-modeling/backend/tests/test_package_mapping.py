@@ -20,7 +20,7 @@ def make_workspace(tmp_path: Path, sheets: dict[str, list[str]]) -> Path:
         workbook.create_sheet(name).append(columns)
     workbook.save(root / "resource" / "excel" / "评测数据.xlsx")
     (root / "resource" / "materials.json").write_text(
-        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "eval_data"}}, ensure_ascii=False),
+        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
         encoding="utf-8",
     )
     return root

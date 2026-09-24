@@ -1405,7 +1405,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 }
 .eval-ds-file {
   display: flex; align-items: center; gap: 8px; font-size: 12.5px;
-  padding: 3px 6px; border-radius: 6px; cursor: pointer;
+  padding: 3px 6px; border-radius: 6px;
 }
 .eval-ds-file:hover { background: rgba(0, 0, 0, 0.03); }
 .eval-ds-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

@@ -1,13 +1,13 @@
 """对象 ↔ 真实数据表绑定：发布包「来源Sheet」与 object-data-mappings.json 的单一来源。
 
 对象文档承载业务语义（「对象属性清单」的英文名称列就是真实列名），真实表名来自打了
-eval_data / schema 标签的表格资料（一个 Sheet = 一张表）。两者在这里对齐一次，三处共用：
+schema 标签的表格资料与评测数据源上传的业务数据表（一个 Sheet = 一张表）。两者在这里
+对齐一次，两处共用：
 
 - 发布包导出：objects/index.md 的「来源Sheet」列、对象文档的 `# 字段` 段，以及
   mappings/object-data-mappings.json —— modeling 导入后据此生成 sourceRefs 与 sourceColumn，
   nl2sql 才有表名和列名可用；
-- 评测前置门禁：数据集模式下没有任何对象绑定真实表时直接拦下，避免跑出"一次库都没查"的分数；
-- 资料区对账：并进 /eval-data/alignment 的返回。
+- 评测前置门禁：数据集模式下没有任何对象绑定真实表时直接拦下，避免跑出"一次库都没查"的分数。
 
 绑定优先级：对象文档「# 数据来源」的显式声明 > 属性英文名与 Sheet 列头的唯一最佳重合。
 推断只在重合列数达标且候选唯一时成立，够不着就留空（来源Sheet 写 UNBOUND），不猜。
@@ -32,7 +32,7 @@ MIN_INFERRED_COLUMNS = 2
 # modeling 图导入对属性名与关系名的标识符约束（evaluation/data-source.ts GRAPH_IDENTIFIER）
 GRAPH_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
 RELATIONS_SECTION = "关联对象"
-SOURCE_PURPOSES = ("eval_data", "schema")
+SOURCE_PURPOSES = ("schema",)
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv")
 
 SOURCE_SECTION = "数据来源"
@@ -158,16 +158,28 @@ def read_table_headers(path: Path) -> dict[str, list[str]]:
     return tables
 
 
+def _uploaded_eval_tables(root: Path) -> list[Path]:
+    """评测数据源里保存的上传数据表（只算被配置引用的，表单里未保存的上传不算）。"""
+    from . import eval_data_files, eval_data_sources
+
+    try:
+        referenced = eval_data_sources.referenced_file_ids(root.name, root)
+    except eval_data_sources.DataSourceError:
+        return []
+    paths = [eval_data_files.path_of(root, file_id) for file_id in sorted(referenced)]
+    return [p for p in paths if p is not None]
+
+
 def read_source_tables(root: Path) -> dict[str, list[str]]:
-    """打了 eval_data / schema 标签的表格资料 → {表名: 列头}。"""
+    """schema 标签的表格资料 + 评测数据源上传的数据表 → {表名: 列头}。"""
+    tables: dict[str, list[str]] = {}
     directives_path = root / "resource" / "materials.json"
     try:
         directives = json.loads(directives_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        directives = {}
     if not isinstance(directives, dict):
-        return {}
-    tables: dict[str, list[str]] = {}
+        directives = {}
     for rel, directive in directives.items():
         if not isinstance(directive, dict) or directive.get("purpose") not in SOURCE_PURPOSES:
             continue
@@ -176,6 +188,9 @@ def read_source_tables(root: Path) -> dict[str, list[str]]:
         path = (root / str(rel)).resolve()
         if not str(path).startswith(str(root.resolve())) or not path.is_file():
             continue
+        for name, headers in read_table_headers(path).items():
+            tables.setdefault(name, headers)
+    for path in _uploaded_eval_tables(root):
         for name, headers in read_table_headers(path).items():
             tables.setdefault(name, headers)
     return tables
@@ -203,7 +218,7 @@ def resolve_object_tables(
 ) -> dict:
     """对象文档 × 数据表 → 绑定结果。problems 为阻断级问题，warnings 只提示。
 
-    tables 缺省取资料区 eval_data/schema 表格；评测导入传入本轮实际导入的表，
+    tables 缺省取 schema 表格资料与评测数据源上传的数据表；评测导入传入本轮实际导入的表，
     hints 为已知的对象→表对应（mock 种子按对象生成，一张表就是一个对象）。
     strict_declared=False 时，声明的表不在本轮数据里只提示不阻断——该对象不进 mapping，
     与导入库依然一致。

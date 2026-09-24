@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..services import eval_data_sources, eval_import, eval_sets, package_mapping
+from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets
 from ..services.workspace import WorkspaceError, WorkspaceManager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -380,26 +380,31 @@ def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
 
 @router.get("/{project_id}/eval/data-source")
 def eval_data_source_options(project_id: str, request: Request):
-    """评测向导·数据源选项：eval_data 资料清单 + mock 产物可用性。"""
+    """评测向导·数据源选项：mock 产物可用性（业务数据表在数据源表单里上传）。"""
     root = ensure_access(project_id, request)
-    return _eval_data_options(project_id, root)
+    return _eval_data_options(root)
 
 
-def _eval_data_options(project_id: str, root: Path) -> dict:
-    directives = workspaces.resource_directives(project_id)
-    eval_data = []
-    for rel, directive in sorted(directives.items()):
-        if (directive or {}).get("purpose") != "eval_data":
-            continue
-        path = root / rel
-        if path.is_file() and path.suffix.lower() in (".xlsx", ".xlsm"):
-            eval_data.append({"path": rel, "name": path.name, "size": path.stat().st_size})
+def _eval_data_options(root: Path) -> dict:
     mock_dir = root / "ontology" / "data-mock"
     mock_tables = (
         sum(1 for f in mock_dir.glob("*.md") if f.name.lower() != "index.md")
         if mock_dir.is_dir() else 0
     )
-    return {"eval_data": eval_data, "mock_tables": mock_tables}
+    return {"mock_tables": mock_tables}
+
+
+@router.post("/{project_id}/eval/data-files")
+async def upload_eval_data_file(project_id: str, request: Request, file: UploadFile = File(...)):
+    """数据源表单上传业务数据表（Excel）：返回 {id, name, size}，保存配置时引用 ID。"""
+    root = ensure_access(project_id, request, write=True)
+    data = await file.read()
+    try:
+        # 大文件写盘挪到线程，避免卡住事件循环
+        entry = await asyncio.to_thread(eval_data_files.save, root, file.filename or "", data)
+    except eval_data_files.DataFileError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return {"file": entry}
 
 
 # ---- 评测数据源配置（保存后评测时直接选用；连接密钥只进不出）----
@@ -410,7 +415,7 @@ class EvalDataSourceBody(BaseModel):
     mode: str = "none"  # none | dataset | connection
     provider: str = ""  # connection：nl2sql_template | nl2sql_http | neo4j
     config: dict = {}
-    resources: list[str] = []  # dataset / neo4j 导入：eval_data 资料路径
+    files: list[str] = []  # dataset / neo4j 导入：上传的业务数据表文件 ID
     include_mock: bool = False  # dataset / neo4j 导入：mock 种子
 
 
@@ -426,9 +431,9 @@ def list_eval_data_sources(project_id: str, request: Request):
     return {
         "sources": [
             eval_data_sources.public_view(s)
-            for s in eval_data_sources.list_sources(project_id)
+            for s in eval_data_sources.list_sources(project_id, root)
         ],
-        "options": _eval_data_options(project_id, root),
+        "options": _eval_data_options(root),
         "defaults": {
             "evaluation_workspace_id": _default_eval_workspace_id(project_id),
             # Neo4j Ontology 隔离值 = 知识包 ID（发起评测时自动填写）
@@ -439,9 +444,9 @@ def list_eval_data_sources(project_id: str, request: Request):
 
 @router.post("/{project_id}/eval/data-sources")
 def create_eval_data_source(project_id: str, body: EvalDataSourceBody, request: Request):
-    ensure_access(project_id, request, write=True)
+    root = ensure_access(project_id, request, write=True)
     try:
-        source = eval_data_sources.create_source(project_id, body.model_dump())
+        source = eval_data_sources.create_source(project_id, body.model_dump(), root)
     except eval_data_sources.DataSourceError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
     return {"source": eval_data_sources.public_view(source)}
@@ -452,9 +457,9 @@ def update_eval_data_source(
     project_id: str, source_id: str, body: EvalDataSourceBody, request: Request
 ):
     """更新配置；Token / Password 留空表示沿用已保存的值。"""
-    ensure_access(project_id, request, write=True)
+    root = ensure_access(project_id, request, write=True)
     try:
-        source = eval_data_sources.update_source(project_id, source_id, body.model_dump())
+        source = eval_data_sources.update_source(project_id, source_id, body.model_dump(), root)
     except eval_data_sources.DataSourceError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
     except KeyError:
@@ -464,9 +469,9 @@ def update_eval_data_source(
 
 @router.delete("/{project_id}/eval/data-sources/{source_id}")
 def delete_eval_data_source(project_id: str, source_id: str, request: Request):
-    ensure_access(project_id, request, write=True)
+    root = ensure_access(project_id, request, write=True)
     try:
-        eval_data_sources.delete_source(project_id, source_id)
+        eval_data_sources.delete_source(project_id, source_id, root)
     except KeyError:
         return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除"})
     return {"deleted": True}
@@ -474,7 +479,7 @@ def delete_eval_data_source(project_id: str, source_id: str, request: Request):
 
 class EvalImportPreviewBody(BaseModel):
     data_source_id: str = ""  # 已保存的配置；缺省时按下面的内联选择预览
-    resources: list[str] = []
+    files: list[str] = []  # 上传的业务数据表文件 ID
     include_mock: bool = False
     graph: bool = False  # Neo4j 图导入：额外校验属性名，mapping 按图模式
 
@@ -486,14 +491,14 @@ def eval_import_preview(project_id: str, body: EvalImportPreviewBody, request: R
 
     root = ensure_access(project_id, request)
     if body.data_source_id:
-        source = eval_data_sources.get_source(project_id, body.data_source_id)
+        source = eval_data_sources.get_source(project_id, body.data_source_id, root)
         if not source:
             return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除"})
         if not modeling_eval.needs_import(source):
             return {"tables": [], "objects": {}, "mapped_objects": [], "problems": [], "warnings": []}
         selection, graph = source, modeling_eval.is_graph(source)
     else:
-        selection, graph = {"resources": body.resources, "include_mock": body.include_mock}, body.graph
+        selection, graph = {"files": body.files, "include_mock": body.include_mock}, body.graph
     return eval_import.preview(root, selection, graph=graph)
 
 
@@ -638,7 +643,7 @@ def eval_cases_template(project_id: str, request: Request):
 
 class EvalRunBody(BaseModel):
     cases: list[dict]  # [{question, groundTruth}]，用户复核后的用例
-    # {"mode": "none"} 或 {"mode": "dataset", "resources": [...], "include_mock": bool}
+    # {"mode": "none"} 或 {"mode": "dataset", "files": [文件 ID...], "include_mock": bool}
     data_source: dict | None = None
     # 选用已保存的数据源配置：优先于内联 data_source；外部连接（带密钥）只能走这里
     data_source_id: str = ""
@@ -673,7 +678,7 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
     import asyncio as _asyncio
 
     if body.data_source_id:
-        data_source = eval_data_sources.get_source(project_id, body.data_source_id)
+        data_source = eval_data_sources.get_source(project_id, body.data_source_id, root)
         if not data_source:
             return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除，请重新选择"})
     else:
@@ -751,45 +756,6 @@ async def eval_resume(project_id: str, request: Request):
 
     _asyncio.create_task(modeling_eval.resume(project_id, root, token))
     return {"resuming": True}
-
-
-@router.get("/{project_id}/eval-data/alignment")
-def eval_data_alignment(project_id: str, request: Request):
-    """评测数据三方对账（数据列 ↔ schema 字段 ↔ 对象属性）+ 对象↔表绑定。
-
-    列级对账执行工作区工具箱的确定性检查脚本（与 agent 手动运行同一实现），
-    表级绑定复用发布包导出同一份解析（package_mapping），保证资料区徽标、
-    发布包 mappings 与评测门禁三处口径一致。
-    """
-    import subprocess
-
-    root = ensure_access(project_id, request)
-    binding = package_mapping.resolve_object_tables(root)
-    summary = {
-        "bound_tables": binding["bound"],
-        "objects": {
-            key: {
-                "table": item["table"] or package_mapping.UNBOUND,
-                "matched_by": item["matched_by"],
-                "matched_columns": item["matched_columns"],
-                "missing_columns": item["missing_columns"],
-            }
-            for key, item in binding["objects"].items()
-        },
-        "problems": binding["problems"],
-        "warnings": binding["warnings"],
-    }
-    script = root / ".claude" / "scripts" / "check_eval_data.py"
-    if not script.exists():
-        return {"status": "no_schema", "files": [], "binding": summary}
-    try:
-        result = subprocess.run(
-            ["python3", str(script), "--json"],
-            cwd=root, capture_output=True, text=True, timeout=60,
-        )
-        return {**json.loads(result.stdout or "{}"), "binding": summary}
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
-        return {"status": "error", "files": [], "binding": summary}
 
 
 class ProjectEngineBody(BaseModel):

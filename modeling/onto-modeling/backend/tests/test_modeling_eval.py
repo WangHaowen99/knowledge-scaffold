@@ -33,22 +33,22 @@ TC_DOC = """# 产品匹配 — 测试用例
 """
 
 
-def _bind_object_to_table(root: Path) -> None:
-    """让工作区通过数据绑定门禁：一张真实数据表 + 一个列名对得上的对象。"""
+def _bind_object_to_table(root: Path) -> str:
+    """让工作区通过数据绑定门禁：上传一张真实数据表 + 一个列名对得上的对象，返回文件 ID。"""
+    import io
+
     import openpyxl
 
-    excel = root / "resource" / "excel"
-    excel.mkdir(parents=True, exist_ok=True)
+    from app.services import eval_data_files
+
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.title = "订单"
     sheet.append(["ORDER_ID", "AMOUNT"])
     sheet.append(["o1", 12])
-    workbook.save(excel / "业务数据.xlsx")
-    (root / "resource" / "materials.json").write_text(
-        json.dumps({"resource/excel/业务数据.xlsx": {"purpose": "eval_data"}}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    file_id = eval_data_files.save(root, "业务数据.xlsx", buffer.getvalue())["id"]
     (root / "ontology" / "object").mkdir(parents=True, exist_ok=True)
     (root / "ontology" / "object" / "订单.md").write_text(
         "# 数据来源\n订单\n\n# 对象属性清单\n"
@@ -56,6 +56,7 @@ def _bind_object_to_table(root: Path) -> None:
         "| 订单号 | ORDER_ID | 是 |\n| 金额 | AMOUNT | 否 |\n",
         encoding="utf-8",
     )
+    return file_id
 
 
 def test_trace_cases_conversion(tmp_path):
@@ -449,11 +450,11 @@ def test_dataset_mode_runs_quick_import(tmp_path, monkeypatch):
         manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
         meta = manager.create_project("数据集评测")
         root = manager.project_root(meta["id"])
-        _bind_object_to_table(root)
+        file_id = _bind_object_to_table(root)
 
         modeling_eval._run_sync(
             meta["id"], root, "t", [{"question": "Q1", "groundTruth": "G1"}],
-            {"mode": "dataset", "resources": ["resource/excel/业务数据.xlsx"]},
+            {"mode": "dataset", "files": [file_id]},
         )
         state = modeling_eval.read_state(root)
         assert state["status"] == "done", state

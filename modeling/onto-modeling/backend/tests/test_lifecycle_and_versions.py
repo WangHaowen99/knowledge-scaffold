@@ -90,7 +90,7 @@ parser.add_argument("--has-jet-fuel", action="store_true")
 
 
 def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
-    """写一张 eval_data 数据表：对象靠它拿到真实表名与列名。"""
+    """写一张 schema 数据表：对象靠它拿到真实表名与列名。"""
     openpyxl = pytest.importorskip("openpyxl")
 
     excel = root / "resource" / "excel"
@@ -101,7 +101,7 @@ def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
     worksheet.append(columns)
     workbook.save(excel / "评测数据.xlsx")
     (root / "resource" / "materials.json").write_text(
-        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "eval_data"}}, ensure_ascii=False),
+        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "schema"}}, ensure_ascii=False),
         encoding="utf-8",
     )
 

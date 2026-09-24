@@ -68,7 +68,7 @@ These rules apply to all work in this repository.
    | `schema` | 数据 Schema | 该表格是对象与属性的**事实来源**：对象属性清单的英文名称/类型必须来自真实表头列，逐 Sheet 覆盖、不得虚构或合并；类型与主键只能标注为推断，不得据样例行编造业务含义 |
    | `term` | 术语表 | 对象/操作/规则/指标的命名与别名必须与术语表对齐；冲突时以术语表为准并在文档标注 |
    | `evidence` | 通用业务依据 | 作为佐证材料按需引用，引用时注明出处文件 |
-   - `eval_data`（评测数据）：用于评测库导入的业务数据表，**不是建模事实源**——提取对象/操作时不得将其当作 schema 或业务依据引用；其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 可检查）。
+   - **评测数据**（评测库导入用的业务数据表）不走资料区打标，由用户在「数据评测」的数据源里上传，存于 `.ontology-state/eval-data/<文件ID>/`。它**不是建模事实源**——提取对象/操作时不得将其当作 schema 或业务依据引用；其结构应与 `schema` 资料对账一致（`python3 .claude/scripts/check_eval_data.py` 默认检查这些上传文件）。旧项目 `materials.json` 里残留的 `eval_data` 标签同此处理。
 
    `reading_mode`：`full` = 必须全文精读后再使用；`on_demand` = 按需检索片段即可。该文件由平台维护，模型同样**不得修改**。
 

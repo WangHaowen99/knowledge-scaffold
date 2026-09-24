@@ -1,4 +1,4 @@
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import {
   Alert,
   Button,
@@ -41,7 +41,7 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState('source'); // source | cases
   const [sources, setSources] = useState([]);
-  const [options, setOptions] = useState({ eval_data: [], mock_tables: 0 });
+  const [options, setOptions] = useState({ mock_tables: 0 });
   const [defaults, setDefaults] = useState({});
   const [selectedSourceId, setSelectedSourceId] = useState('');
   const [editing, setEditing] = useState(null); // {id, form} | null；无已存配置时恒为表单
@@ -70,7 +70,7 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
         if (!active) return;
         const saved = ds.sources || [];
         setSources(saved);
-        setOptions(ds.options || { eval_data: [], mock_tables: 0 });
+        setOptions(ds.options || { mock_tables: 0 });
         setDefaults(ds.defaults || {});
         setSelectedSourceId(saved[0]?.id || '');
         // 从未配置过数据源：直接进配置表单（评测前必须先配置）
@@ -256,7 +256,13 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
     body = (
       <SourceForm
         form={editing.form}
-        onChange={(patch) => setEditing((prev) => ({ ...prev, form: { ...prev.form, ...patch } }))}
+        // patch 可为函数：并发上传等异步回填需基于最新表单计算
+        onChange={(patch) =>
+          setEditing((prev) => ({
+            ...prev,
+            form: { ...prev.form, ...(typeof patch === 'function' ? patch(prev.form) : patch) },
+          }))
+        }
         options={options}
         defaults={defaults}
         projectId={project.id}
@@ -497,14 +503,13 @@ function SourceForm({ form, onChange, options, defaults, projectId, firstTime })
     value: form[key] ?? '',
     onChange: (e) => onChange({ [key]: e.target.value }),
   });
-  const kindDisabled = (kind) =>
-    (kind === 'mock' && !options.mock_tables) || (kind === 'dataset' && !options.eval_data?.length);
+  const kindDisabled = (kind) => kind === 'mock' && !options.mock_tables;
   const kindBadge = (kind) => {
     if (kind === 'mock') {
       return options.mock_tables ? `${options.mock_tables} 张示例表` : '需先完成「示例数据」阶段';
     }
     if (kind === 'dataset') {
-      return options.eval_data?.length ? `${options.eval_data.length} 份评测数据` : '资料区暂无「评测数据」';
+      return form.files?.length ? `已上传 ${form.files.length} 份` : '上传 Excel';
     }
     if (kind === 'connection') return 'NL2SQL / Neo4j';
     return '零配置';
@@ -539,7 +544,7 @@ function SourceForm({ form, onChange, options, defaults, projectId, firstTime })
             <div className="eval-ds-desc">{kind.desc}</div>
             {selected && kind.value === 'dataset' && (
               <div className="eval-ds-files" onClick={(e) => e.stopPropagation()}>
-                <DataFilePicker files={options.eval_data} form={form} onChange={onChange} />
+                <DataFileUpload projectId={projectId} form={form} onChange={onChange} />
               </div>
             )}
             {selected && kind.value === 'connection' && (
@@ -550,6 +555,7 @@ function SourceForm({ form, onChange, options, defaults, projectId, firstTime })
                   onChange={onChange}
                   defaults={defaults}
                   options={options}
+                  projectId={projectId}
                 />
               </div>
             )}
@@ -572,30 +578,60 @@ function SourceForm({ form, onChange, options, defaults, projectId, firstTime })
   );
 }
 
-function DataFilePicker({ files, form, onChange }) {
-  if (!files?.length) {
-    return <Typography.Text type="secondary">资料区暂无「评测数据」标签的表格</Typography.Text>;
-  }
-  return files.map((f) => (
-    <label key={f.path} className="eval-ds-file">
-      <input
-        type="checkbox"
-        checked={form.resources.includes(f.path)}
-        onChange={(e) =>
-          onChange({
-            resources: e.target.checked
-              ? [...form.resources, f.path]
-              : form.resources.filter((x) => x !== f.path),
-          })
-        }
-      />
-      <span className="eval-ds-file-name">{f.name}</span>
-      <span className="eval-ds-file-size">{Math.round(f.size / 1024)} KB</span>
-    </label>
-  ));
+// 业务数据表：在表单里直接上传 Excel（一个 Sheet 一张表），保存配置时引用文件 ID
+function DataFileUpload({ projectId, form, onChange }) {
+  const files = form.files || [];
+  const upload = async (file) => {
+    onChange((current) => ({ uploading: (current.uploading || 0) + 1 }));
+    try {
+      const { file: saved } = await api.uploadEvalDataFile(projectId, file);
+      onChange((current) => ({ files: [...(current.files || []), saved] }));
+    } catch (error) {
+      message.error(`${file.name}：${error.message}`);
+    } finally {
+      onChange((current) => ({ uploading: Math.max(0, (current.uploading || 0) - 1) }));
+    }
+  };
+  const remove = (id) =>
+    onChange((current) => ({ files: (current.files || []).filter((f) => f.id !== id) }));
+  return (
+    <>
+      {files.map((f) => (
+        <div key={f.id} className="eval-ds-file">
+          <span className="eval-ds-file-name">{f.name}</span>
+          <span className="eval-ds-file-size">{Math.round(f.size / 1024)} KB</span>
+          <Tooltip title="移除">
+            <Button
+              size="small"
+              type="text"
+              icon={<DeleteOutlined />}
+              aria-label={`移除 ${f.name}`}
+              onClick={() => remove(f.id)}
+            />
+          </Tooltip>
+        </div>
+      ))}
+      <Upload
+        accept=".xlsx,.xlsm"
+        multiple
+        showUploadList={false}
+        beforeUpload={(file) => {
+          upload(file);
+          return false;
+        }}
+      >
+        <Button size="small" icon={<UploadOutlined />} loading={form.uploading > 0}>
+          {files.length ? '继续上传' : '上传 Excel 数据表'}
+        </Button>
+      </Upload>
+      <div className="eval-conn-hint">
+        {'一个 Sheet 对应一张表、首行为列名；表名与列名需与对象文档声明的来源表、属性英文名一致。'}
+      </div>
+    </>
+  );
 }
 
-function ConnectionFields({ form, field, onChange, defaults, options }) {
+function ConnectionFields({ form, field, onChange, defaults, options, projectId }) {
   const savedSecret = (has) => (has ? '已保存，留空沿用' : '');
   return (
     <div className="eval-conn-fields">
@@ -646,7 +682,7 @@ function ConnectionFields({ form, field, onChange, defaults, options }) {
           </div>
           {form.graph_import === 'dataset' && (
             <div className="eval-conn-wide">
-              <DataFilePicker files={options.eval_data} form={form} onChange={onChange} />
+              <DataFileUpload projectId={projectId} form={form} onChange={onChange} />
             </div>
           )}
           {form.graph_import !== 'none' && (

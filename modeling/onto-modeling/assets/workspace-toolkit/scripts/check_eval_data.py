@@ -2,16 +2,16 @@
 """评测数据三方对账：数据表列 ↔ schema 资料字段 ↔ 对象属性英文名。
 
 用途（方案 docs/eval-optimization-integration.md P1）：
-- 用户上传打了 eval_data 标签的数据表后，在数据**导入评测库之前**暴露结构问题；
+- 用户在评测数据源里上传业务数据表后，在数据**导入评测库之前**暴露结构问题；
 - 对账是确定性检查，不经模型。
 
 三方来源：
-1. 数据表：materials.json 中 purpose=eval_data 的表格资料（或命令行显式指定路径）；
+1. 数据表：评测数据源上传的 Excel（.ontology-state/eval-data/<文件ID>/，或命令行显式指定路径）；
 2. schema：materials.json 中 purpose=schema 的表格资料的表头（结构契约）；
 3. 对象属性：ontology/object/*.md 的「对象属性清单」表格「英文名称」列。
 
 用法（工作区根目录执行）：
-  python3 .claude/scripts/check_eval_data.py [--json] [resource/xx.xlsx ...]
+  python3 .claude/scripts/check_eval_data.py [--json] [path/to/xx.xlsx ...]
 
 退出码：0=全部通过（或无可对账项）；1=存在差异；2=数据/依赖错误。
 """
@@ -24,7 +24,20 @@ import re
 import sys
 from pathlib import Path
 
-TABLE_SUFFIXES = (".xlsx", ".xls", ".csv")
+TABLE_SUFFIXES = (".xlsx", ".xlsm", ".xls", ".csv")
+# 评测数据源上传的业务数据表：每个文件一个目录，目录名为文件 ID
+EVAL_DATA_DIR = Path(".ontology-state") / "eval-data"
+
+
+def uploaded_eval_files(root: Path) -> list[str]:
+    folder = root / EVAL_DATA_DIR
+    if not folder.is_dir():
+        return []
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in folder.glob("*/*")
+        if path.is_file() and path.suffix.lower() in (".xlsx", ".xlsm")
+    )
 
 
 def load_directives(root: Path) -> dict:
@@ -127,7 +140,7 @@ def main() -> int:
 
     directives = load_directives(root)
     schema_files = [p for p, d in directives.items() if d.get("purpose") == "schema"]
-    eval_files = args or [p for p, d in directives.items() if d.get("purpose") == "eval_data"]
+    eval_files = args or uploaded_eval_files(root)
 
     schema_columns: set[str] = set()
     for rel in schema_files:

@@ -13,7 +13,7 @@ import openpyxl
 import pytest
 
 from app import config
-from app.services import eval_data_sources, eval_import, modeling_eval, package_mapping
+from app.services import eval_data_files, eval_data_sources, eval_import, modeling_eval, package_mapping
 from app.services.workspace import WorkspaceManager
 from tests.test_modeling_eval import StubModeling
 
@@ -58,6 +58,19 @@ def _workbook(path: Path, sheets: dict[str, list[list]]) -> None:
     workbook.save(path)
 
 
+def _upload(root: Path, name: str, sheets: dict[str, list[list]]) -> str:
+    """模拟数据源表单上传一份 Excel，返回文件 ID。"""
+    workbook = openpyxl.Workbook()
+    workbook.remove(workbook.active)
+    for sheet_name, rows in sheets.items():
+        sheet = workbook.create_sheet(sheet_name)
+        for row in rows:
+            sheet.append(row)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return eval_data_files.save(root, name, buffer.getvalue())["id"]
+
+
 def _tag(root: Path, purposes: dict[str, str]) -> None:
     path = root / "resource" / "materials.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,8 +87,7 @@ def _objects(root: Path) -> None:
 
 
 def _business_data(root: Path) -> str:
-    rel = "resource/excel/业务数据.xlsx"
-    _workbook(root / rel, {
+    return _upload(root, "业务数据.xlsx", {
         "客户表": [["CUSTOMER_ID", " NAME "], ["C1", "合成客户甲"], ["C2", "合成客户乙"]],
         "订单表": [
             ["ORDER_ID", "CUSTOMER_ID", "SIGN_DATE", "BILL_MONTH", None, "ORDER_TIME"],
@@ -83,8 +95,6 @@ def _business_data(root: Path) -> str:
             ["O2", "C2", "2026年2月28日", "2026-02", None, "2026-02-28 23:59:59"],
         ],
     })
-    _tag(root, {rel: "eval_data"})
-    return rel
 
 
 # ---- 规范化 ----
@@ -92,8 +102,8 @@ def _business_data(root: Path) -> str:
 
 def test_dates_are_normalized_and_partial_dates_stay_text(tmp_path):
     _objects(tmp_path)
-    rel = _business_data(tmp_path)
-    plan = eval_import.collect(tmp_path, {"resources": [rel]})
+    file_id = _business_data(tmp_path)
+    plan = eval_import.collect(tmp_path, {"files": [file_id]})
     assert not plan["problems"], plan["problems"]
     orders = next(t for t in plan["tables"] if t.name == "订单表")
     # 空表头列丢弃，表头去空白
@@ -118,8 +128,7 @@ def test_invalid_calendar_date_keeps_column_as_text(tmp_path):
 
 def test_note_row_and_empty_sheet_follow_modeling(tmp_path):
     _objects(tmp_path)
-    rel = "resource/excel/带注释.xlsx"
-    _workbook(tmp_path / rel, {
+    file_id = _upload(tmp_path, "带注释.xlsx", {
         "订单表": [
             ["ORDER_ID", "CUSTOMER_ID", "SIGN_DATE"],
             ["订单编号（主键）", "客户：外键", "签约日期（年月日）"],
@@ -128,8 +137,7 @@ def test_note_row_and_empty_sheet_follow_modeling(tmp_path):
         ],
         "空表": [["A", "B"]],
     })
-    _tag(tmp_path, {rel: "eval_data"})
-    plan = eval_import.collect(tmp_path, {"resources": [rel]})
+    plan = eval_import.collect(tmp_path, {"files": [file_id]})
     orders = next(t for t in plan["tables"] if t.name == "订单表")
     assert len(orders.rows) == 2 and orders.date_columns == ["SIGN_DATE"]
     assert "空表" not in [t.name for t in plan["tables"]]
@@ -138,17 +146,27 @@ def test_note_row_and_empty_sheet_follow_modeling(tmp_path):
 
 def test_blocking_problems(tmp_path):
     _objects(tmp_path)
-    _workbook(tmp_path / "resource/a.xlsx", {"订单表": [["ORDER_ID", "order_id"], ["O1", "O1"]]})
-    _workbook(tmp_path / "resource/b.xlsx", {"订单表": [["ORDER_ID"], ["O2"]]})
-    (tmp_path / "resource/c.csv").write_text("a\n1\n", encoding="utf-8")
-    plan = eval_import.collect(tmp_path, {"resources": [
-        "resource/a.xlsx", "resource/b.xlsx", "resource/c.csv", "resource/无.xlsx", "../外部.xlsx",
-    ]})
+    first = _upload(tmp_path, "a.xlsx", {"订单表": [["ORDER_ID", "order_id"], ["O1", "O1"]]})
+    second = _upload(tmp_path, "b.xlsx", {"订单表": [["ORDER_ID"], ["O2"]]})
+    plan = eval_import.collect(tmp_path, {"files": [first, second, "0123456789ab", "../外部"]})
     text = "\n".join(plan["problems"])
     assert "重复列名" in text
     assert "同名表「订单表」" in text
-    assert "仅支持 Excel" in text
-    assert text.count("文件不存在") == 2  # 缺失 + 路径逃逸
+    assert text.count("文件不存在") == 2  # 已删除的 ID + 非法 ID
+
+
+def test_upload_rejects_non_excel_and_oversize(tmp_path, monkeypatch):
+    with pytest.raises(eval_data_files.DataFileError, match="仅支持 Excel"):
+        eval_data_files.save(tmp_path, "c.csv", b"a\n1\n")
+    with pytest.raises(eval_data_files.DataFileError, match="无效的文件名"):
+        eval_data_files.save(tmp_path, ".xlsx", b"x")
+    monkeypatch.setattr(eval_data_files, "MAX_FILE_BYTES", 4)
+    with pytest.raises(eval_data_files.DataFileError, match="不能超过"):
+        eval_data_files.save(tmp_path, "big.xlsx", b"12345")
+    # 路径分量被剥掉，只留文件名；文件落在工作区状态目录、不在资料区
+    entry = eval_data_files.save(tmp_path, "../../逃逸.xlsx", b"PK")
+    assert entry["name"] == "逃逸.xlsx"
+    assert eval_data_files.path_of(tmp_path, entry["id"]).parent.parent == tmp_path / ".ontology-state" / "eval-data"
 
 
 # ---- mapping 与导入库一致 ----
@@ -161,15 +179,14 @@ def test_mapping_follows_imported_data_not_schema_resource(tmp_path):
         "订单表": [["ORDER_ID", "CUSTOMER_ID", "SIGN_DATE", "BILL_MONTH"]],
     })
     _tag(tmp_path, {"resource/schema.xlsx": "schema"})
-    _workbook(tmp_path / "resource/eval.xlsx", {
+    file_id = _upload(tmp_path, "eval.xlsx", {
         "订单表": [["ORDER_ID", "CUSTOMER_ID"], ["O1", "C1"]],
     })
-    _tag(tmp_path, {"resource/eval.xlsx": "eval_data"})
 
     default = package_mapping.resolve_object_tables(tmp_path)
     assert default["objects"]["订单"]["fields"][3]["column"] == "BILL_MONTH"  # 取到了 schema 的列
 
-    plan = eval_import.collect(tmp_path, {"resources": ["resource/eval.xlsx"]})
+    plan = eval_import.collect(tmp_path, {"files": [file_id]})
     bound = {f["key"]: f["column"] for f in plan["binding"]["objects"]["订单"]["fields"]}
     assert bound == {"ORDER_ID": "ORDER_ID", "CUSTOMER_ID": "CUSTOMER_ID", "SIGN_DATE": "", "BILL_MONTH": ""}
     # 客户声明的表不在本轮数据里：只提示，不阻断，也不进 mapping
@@ -188,8 +205,8 @@ def _export(tmp_path, monkeypatch, binding: dict, graph: bool):
 def test_export_matches_import_workbook_nl2sql_and_graph(tmp_path, monkeypatch):
     manager, pid, root = _export(tmp_path, monkeypatch, {}, False)
     _objects(root)
-    rel = _business_data(root)
-    plan = eval_import.prepare(root, {"resources": [rel]}, graph=True)
+    file_id = _business_data(root)
+    plan = eval_import.prepare(root, {"files": [file_id]}, graph=True)
 
     # 工作簿回读：Sheet 与表头即 mapping 引用的表和列
     workbook = openpyxl.load_workbook(io.BytesIO(plan["workbook"]))
@@ -260,8 +277,8 @@ def test_mock_table_without_object_doc_keeps_headers(tmp_path):
 
 def test_no_bound_object_blocks(tmp_path):
     _objects(tmp_path)
-    _workbook(tmp_path / "resource/x.xlsx", {"别的表": [["A", "B"], [1, 2]]})
-    plan = eval_import.collect(tmp_path, {"resources": ["resource/x.xlsx"]})
+    file_id = _upload(tmp_path, "x.xlsx", {"别的表": [["A", "B"], [1, 2]]})
+    plan = eval_import.collect(tmp_path, {"files": [file_id]})
     assert any("没有任何对象绑定" in p for p in plan["problems"])
 
 
@@ -269,11 +286,11 @@ def test_graph_problems_flag_invalid_property_names(tmp_path):
     _objects(tmp_path)
     doc = tmp_path / "ontology" / "object" / "客户.md"
     doc.write_text(CUSTOMER_DOC.replace("| NAME |", "| CUSTOMER-NAME |"), encoding="utf-8")
-    _workbook(tmp_path / "resource/x.xlsx", {"客户表": [["CUSTOMER_ID", "CUSTOMER-NAME"], ["C1", "甲"]]})
-    plan = eval_import.collect(tmp_path, {"resources": ["resource/x.xlsx"]})
+    file_id = _upload(tmp_path, "x.xlsx", {"客户表": [["CUSTOMER_ID", "CUSTOMER-NAME"], ["C1", "甲"]]})
+    plan = eval_import.collect(tmp_path, {"files": [file_id]})
     assert any("CUSTOMER-NAME" in p for p in eval_import.graph_problems(plan["binding"]))
     with pytest.raises(eval_import.EvalImportError, match="Neo4j 属性名"):
-        eval_import.prepare(tmp_path, {"resources": ["resource/x.xlsx"]}, graph=True)
+        eval_import.prepare(tmp_path, {"files": [file_id]}, graph=True)
 
 
 def test_formula_like_text_stays_text():
@@ -408,13 +425,13 @@ def test_neo4j_one_click_import_orchestration(tmp_path, monkeypatch):
         monkeypatch.setattr(modeling_eval, "_stop_requested", set())
         manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
         _objects(root)
-        rel = _business_data(root)
+        file_id = _business_data(root)
         with pytest.raises(eval_data_sources.DataSourceError, match="Ontology 隔离字段"):
             eval_data_sources.normalize({
-                **NEO4J, "resources": [rel],
+                **NEO4J, "files": [file_id],
                 "config": {**NEO4J["config"], "ontology_property": ""},
-            })
-        source = eval_data_sources.create_source(pid, {**NEO4J, "resources": [rel]})
+            }, root=root)
+        source = eval_data_sources.create_source(pid, {**NEO4J, "files": [file_id]}, root)
         assert source["name"] == "Neo4j · graph-eval（导入 1 份数据）"
 
         modeling_eval._run_sync(pid, root, "t", [{"question": "Q1", "groundTruth": "G1"}], source)

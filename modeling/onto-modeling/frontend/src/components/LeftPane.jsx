@@ -145,14 +145,14 @@ export function stageStatuses(paths) {
   });
 }
 
-// 资料用途（对齐 modeling 的 material purpose 体系）；schema/term 仅表格类可选
+// 资料用途（对齐 modeling 的 material purpose 体系）；schema/term 仅表格类可选。
+// 评测数据不在资料区打标，改在「数据评测」的数据源里上传
 export const MATERIAL_PURPOSES = [
   { value: 'auto', label: '由助手判断' },
   { value: 'goal', label: '建模目标依据' },
   { value: 'schema', label: '数据 Schema', tableOnly: true },
   { value: 'term', label: '术语表', tableOnly: true },
   { value: 'evidence', label: '通用业务依据' },
-  { value: 'eval_data', label: '评测数据', tableOnly: true },
 ];
 const isTableFile = (name) => /\.(xlsx?|csv)$/i.test(name);
 
@@ -350,37 +350,6 @@ export default function LeftPane({
   const evolution = evalInfo?.evolution;
   const runEvolution = () =>
     onCommand(`/ontology-evolution ${evolution.report.split('/').pop()}`);
-
-  const [alignment, setAlignment] = useState(null); // eval_data 三方对账结果
-  useEffect(() => {
-    if (section !== 'resources') return;
-    const hasEvalData = Object.values(directives).some((d) => d?.purpose === 'eval_data');
-    if (!hasEvalData) {
-      setAlignment(null);
-      return;
-    }
-    api.evalDataAlignment(project.id).then(setAlignment).catch(() => setAlignment(null));
-  }, [section, directives, project.id]);
-
-  const alignBadge = (path) => {
-    if (directives[path]?.purpose !== 'eval_data') return null;
-    const entry = alignment?.files?.find((f) => f.path === path);
-    if (!entry) {
-      if (alignment?.status === 'no_schema')
-        return <Tag color="default">无 schema 可对账</Tag>;
-      return null;
-    }
-    if (entry.status === 'ok') return <Tag color="green">对账通过</Tag>;
-    const issues = entry.sheets.flatMap((sh) => [
-      ...sh.data_only.map((c) => `「${sh.name}」列 ${c} 不在 schema 中`),
-      ...sh.attr_unmatched.map((c) => `「${sh.name}」列 ${c} 未映射到对象属性`),
-    ]);
-    return (
-      <Tooltip title={issues.slice(0, 8).join('；')}>
-        <Tag color="orange">对账差异 {issues.length} 处</Tag>
-      </Tooltip>
-    );
-  };
 
   const changeDirective = async (path, purpose, readingMode) => {
     try {
@@ -785,7 +754,6 @@ export default function LeftPane({
                           disabled: opt.tableOnly && !isTableFile(item.path),
                         }))}
                       />
-                      {alignBadge(item.path)}
                       <label className="resource-reading">
                         <input
                           type="checkbox"

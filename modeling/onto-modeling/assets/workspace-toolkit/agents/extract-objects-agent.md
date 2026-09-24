@@ -58,7 +58,7 @@ Write `OBJECTS_DIR/{名称}.md`:
 {English name}
 
 # 数据来源
-{该对象对应的真实数据表名（eval_data/schema 表格资料里的 Sheet 名，逐字相同）；纯概念对象填'无'}
+{该对象对应的真实数据表名（schema 表格资料或评测数据源上传的数据表（`.ontology-state/eval-data/`）里的 Sheet 名，逐字相同）；纯概念对象填'无'}
 
 # 对象属性清单
 | 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |
