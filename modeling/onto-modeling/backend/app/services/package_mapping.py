@@ -11,6 +11,9 @@ eval_data / schema 标签的表格资料（一个 Sheet = 一张表）。两者�
 
 绑定优先级：对象文档「# 数据来源」的显式声明 > 属性英文名与 Sheet 列头的唯一最佳重合。
 推断只在重合列数达标且候选唯一时成立，够不着就留空（来源Sheet 写 UNBOUND），不猜。
+
+评测导入时数据表来源换成「本轮实际导入的工作簿」（eval_import），mapping 与导入库同源；
+Neo4j 图导入的包按 modeling 图模式契约导出（object_data_mappings(graph=True)）。
 """
 
 from __future__ import annotations
@@ -26,6 +29,9 @@ UNBOUND = "—"
 PROVIDER_ALIAS = "data"
 # 推断绑定的最低列命中数：低于此宁可不绑，错绑比不绑更难发现
 MIN_INFERRED_COLUMNS = 2
+# modeling 图导入对属性名与关系名的标识符约束（evaluation/data-source.ts GRAPH_IDENTIFIER）
+GRAPH_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
+RELATIONS_SECTION = "关联对象"
 SOURCE_PURPOSES = ("eval_data", "schema")
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv")
 
@@ -189,9 +195,21 @@ def _match_table(field_keys: list[str], tables: dict[str, list[str]]) -> str:
     return scores[0][1]
 
 
-def resolve_object_tables(root: Path) -> dict:
-    """对象文档 × 数据表 → 绑定结果。problems 为阻断级问题，warnings 只提示。"""
-    tables = read_source_tables(root)
+def resolve_object_tables(
+    root: Path,
+    tables: dict[str, list[str]] | None = None,
+    hints: dict[str, str] | None = None,
+    strict_declared: bool = True,
+) -> dict:
+    """对象文档 × 数据表 → 绑定结果。problems 为阻断级问题，warnings 只提示。
+
+    tables 缺省取资料区 eval_data/schema 表格；评测导入传入本轮实际导入的表，
+    hints 为已知的对象→表对应（mock 种子按对象生成，一张表就是一个对象）。
+    strict_declared=False 时，声明的表不在本轮数据里只提示不阻断——该对象不进 mapping，
+    与导入库依然一致。
+    """
+    tables = read_source_tables(root) if tables is None else tables
+    hints = hints or {}
     by_lower = {name.lower(): name for name in tables}
     objects: dict[str, dict] = {}
     problems: list[str] = []
@@ -214,10 +232,12 @@ def resolve_object_tables(root: Path) -> dict:
             if table:
                 matched_by = "declared"
             else:
-                problems.append(
+                (problems if strict_declared else warnings).append(
                     f"对象「{key}」声明的来源表「{declared}」在评测数据表里不存在"
                     f"（现有表：{'、'.join(sorted(tables)) or '无'}）"
                 )
+        elif hints.get(key) in tables:
+            table, matched_by = hints[key], "seed"
         elif tables and fields:
             table = _match_table([f["key"] for f in fields], tables)
             matched_by = "inferred" if table else ""
@@ -262,8 +282,13 @@ def resolve_object_tables(root: Path) -> dict:
     }
 
 
-def object_data_mappings(resolution: dict) -> dict:
-    """绑定结果 → mappings/object-data-mappings.json（modeling 包契约 §18）。"""
+def object_data_mappings(resolution: dict, graph: bool = False) -> dict:
+    """绑定结果 → mappings/object-data-mappings.json（modeling 包契约 §18）。
+
+    graph=True 按 modeling 图模式（packageMappingResource）导出：resource 为对象 key
+    （即 Neo4j Label），fields 覆盖对象 `# 字段` 的全部属性（图导入逐字段核对）；
+    Sheet 与列仍由 sources[] 声明。NL2SQL 模式 resource 为表名，fields 只收对上列的属性。
+    """
     objects: dict[str, dict] = {}
     for key, item in resolution["objects"].items():
         # 只有对上真实列的属性才进 mapping：写进去一个库里没有的列会让 nl2sql 生成废 SQL
@@ -273,17 +298,17 @@ def object_data_mappings(resolution: dict) -> dict:
         fields = {
             field["key"]: {
                 "source": field["key"],
-                "source_column": field["column"],
+                **({"source_column": field["column"]} if field["column"] else {}),
                 "type": field["type"] or "string",
                 "required": bool(field["primary"]),
                 "readable": True,
             }
-            for field in matched
+            for field in (item["fields"] if graph else matched)
         }
         primary_key = item["primary_key"] or [matched[0]["key"]]
         objects[key] = {
             "provider_alias": PROVIDER_ALIAS,
-            "resource": item["table"],
+            "resource": key if graph else item["table"],
             "primary_key": primary_key,
             "fields": fields,
             "sources": [{
@@ -338,3 +363,55 @@ def rewrite_object_body(body: str, fields: list[dict]) -> str:
         len(lines),
     )
     return "\n".join(lines[:start] + render_fields_section(fields).split("\n") + lines[end:])
+
+
+def _relation_node(value: str) -> str:
+    """关系端点：`[[对象]]`（可带别名/锚点）取对象名，其余原样。"""
+    link = re.fullmatch(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]", value)
+    return link.group(1).strip() if link else value
+
+
+def parse_relations(text: str) -> list[tuple[str, str, str]]:
+    """「# 关联对象」→ [(源, 关系名, 目标)]；「当前对象」按对象自身解析由调用方替换为 key。
+
+    模板写法：`- 当前对象 → 关系名 → [[对象A]]` / `- [[对象B]] → 关系名 → 当前对象`。
+    """
+    out = []
+    for line in _section(text, RELATIONS_SECTION).split("\n"):
+        parts = [p.strip() for p in re.split(r"→|->", line.strip().lstrip("-*").strip())]
+        if len(parts) != 3 or any(map(_is_empty, parts)):
+            continue
+        out.append((_relation_node(parts[0]), parts[1], _relation_node(parts[2])))
+    return out
+
+
+def graph_relations(object_texts: dict[str, str], mapped: set[str]) -> tuple[dict[str, list], list[str]]:
+    """对象文档的关联对象 → 图导入可用的出边：{源对象: [(关系名, 目标)]}，以及被跳过的原因。
+
+    modeling 图导入校验包内全部关系（目标须存在、关系名须为合法标识符），不合规的一条
+    就会让整包映射失败，所以这里只收两端都已绑定数据表、关系名合法的关系。
+    """
+    relations: dict[str, list] = {}
+    skipped: list[str] = []
+    seen = set()
+    for key, text in object_texts.items():
+        for source, name, target in parse_relations(text):
+            source = key if source == "当前对象" else source
+            target = key if target == "当前对象" else target
+            triple = (source, name, target)
+            if key not in (source, target) or triple in seen:
+                continue
+            seen.add(triple)
+            if not {source, target} <= mapped:
+                continue  # 一端没有数据表：图里没有该类节点，关系无从建立
+            if not GRAPH_IDENTIFIER.match(name):
+                skipped.append(f"关系「{source} -{name}→ {target}」名称不是合法的图关系名，未导入")
+                continue
+            relations.setdefault(source, []).append((name, target))
+    return relations, skipped
+
+
+def render_relations_section(relations: list[tuple[str, str]]) -> str:
+    """出边 → modeling 包契约的 `# 关系` 表（关系 | 目标 | 说明）。"""
+    rows = "".join(f"| {name} | {target} | |\n" for name, target in relations)
+    return "# 关系\n\n| 关系 | 目标 | 说明 |\n| --- | --- | --- |\n" + rows

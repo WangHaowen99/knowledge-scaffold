@@ -6,16 +6,18 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
+import importlib.util
 import json
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
 
+from .. import config
 from . import package_mapping
 
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
@@ -145,9 +147,13 @@ class WorkspaceManager:
             )
         except (OSError, json.JSONDecodeError):
             pass
+        from .modeling_eval import evolution_hint
+
         return {
             "eval_score": (eval_summary.get("summary") or {}).get("score"),
             "eval_status": eval_summary.get("status"),
+            # 最近一轮有失分/异常用例时的 /ontology-evolution 提示（无则为 None）
+            "eval_evolution": evolution_hint(eval_summary),
             "stages_done": done,
             "stages_total": cls.STAGE_TOTAL,
             "objects": count_md("ontology/object"),
@@ -543,12 +549,21 @@ class WorkspaceManager:
             prev_is_row = True
         return "\n".join(lines)
 
-    def export_package_zip(self, project_id: str, dest_path: Path) -> Path:
+    def export_package_zip(
+        self,
+        project_id: str,
+        dest_path: Path,
+        binding: dict | None = None,
+        graph: bool = False,
+    ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
         对齐 consumer/backend/ontology/package_import.py 的校验契约：
         manifest.yaml 六必填字段、objects/operations 目录 + frontmatter、
         operation 必须声明 uses.objects、index 首列与详情 key 逐字相等。
+
+        binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
+        graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表。
         """
         import zipfile
 
@@ -575,13 +590,18 @@ class WorkspaceManager:
         # ontology/logic 为旧目录兼容（范式升级 ADR-0004）
         operations = entry_items("ontology/operation", "ontology/logic")
         # 对象 ↔ 真实数据表：来源Sheet、`# 字段` 段与 mappings 三处同一份绑定结果
-        binding = package_mapping.resolve_object_tables(root)
+        binding = binding or package_mapping.resolve_object_tables(root)
         if binding["problems"]:
             raise WorkspaceError(
                 "数据绑定无法发布：" + "；".join(binding["problems"])
             )
         bound = binding["objects"]
-        mappings = package_mapping.object_data_mappings(binding)
+        mappings = package_mapping.object_data_mappings(binding, graph=graph)
+        graph_edges: dict[str, list] = {}
+        if graph:
+            graph_edges, _skipped = package_mapping.graph_relations(
+                dict(objects), set(mappings["objects"])
+            )
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
@@ -638,10 +658,14 @@ class WorkspaceManager:
                 # modeling 仍能从 sources 还原 sourceRefs
                 extra = (
                     f"mapping:\n  provider_alias: {package_mapping.PROVIDER_ALIAS}\n"
-                    f"  resource: {q(table)}\nsources: [{q('表格：' + table)}]\n"
+                    f"  resource: {q(key if graph else table)}\nsources: [{q('表格：' + table)}]\n"
                     if table else ""
                 )
                 body = package_mapping.rewrite_object_body(body, item.get("fields") or [])
+                if graph_edges.get(key):
+                    body = body.rstrip("\n") + "\n\n" + package_mapping.render_relations_section(
+                        graph_edges[key]
+                    )
                 zf.writestr(
                     f"{pkg}/objects/{key}.md",
                     front("object", key, key, extra) + self._sanitize_placeholder_aliases(body),
@@ -1127,13 +1151,6 @@ class WorkspaceManager:
         return target
 
 
-_SCRIPT_TYPE_MAP = {
-    "str": "string", "string": "string", "int": "number", "integer": "number",
-    "float": "number", "number": "number", "bool": "boolean", "boolean": "boolean",
-    "list": "array", "tuple": "array", "dict": "object", "object": "object", "json": "json", "loads": "json",
-}
-
-
 _PACKAGE_SCRIPT_STEM_RE = re.compile(r"[A-Za-z0-9_.-]+")
 
 
@@ -1148,171 +1165,23 @@ def _package_script_filename(key: str) -> str:
     return f"script_{hashlib.sha1(key.encode('utf-8')).hexdigest()[:10]}.py"
 
 
-class ScriptContractError(ValueError):
-    """A generated script cannot be exported with an unverifiable CLI contract."""
+def _load_script_contract():
+    """脚本契约解析以 workspace-toolkit/scripts/script_contract.py 为单一事实源。
 
-
-def _script_header_meta(code: str) -> tuple[str, list[dict]]:
-    """Read the operation binding and verify the documented CLI against argparse.
-
-    The Python source is the single source of truth for flags and argparse semantics.
-    The docstring supplies descriptions, but never invents or renames a flag.
+    建模阶段的 ontology_checker.py --include-scripts 与导出时共用同一份实现，
+    避免两处规则漂移。
     """
-    doc = code.split('"""')
-    header = doc[1] if len(doc) >= 2 else ""
-    bound = ""
-    match = re.search(r"关联operation[：:]\s*(.+)", header)
-    if match:
-        bound = match.group(1).split("/")[0].strip()
-        if bound in ("无", "-", ""):
-            bound = ""
-
-    documented: list[dict] = []
-    lines = header.splitlines()
-    in_params = False
-    for line in lines:
-        stripped = line.strip()
-        if re.match(r"^输入参数[：:]\s*$", stripped):
-            in_params = True
-            continue
-        if in_params:
-            # 下一个段落标题（形如 "输出：" "依赖："）结束参数段
-            if re.match(r"^[\w\u4e00-\u9fff]+[：:]", stripped) and not stripped.startswith("-"):
-                break
-            if not stripped:
-                continue
-            fields = re.split(r"\s{2,}|\t", stripped)
-            if len(fields) < 2:
-                continue
-            name = fields[0].strip().lstrip("-").strip()
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-                continue
-            raw_type = fields[1].strip().lower()
-            desc = fields[2].strip() if len(fields) > 2 else ""
-            required = "是" if "必填" in desc else "否"
-            default = ""
-            dmatch = re.search(r"默认[值为]?\s*[：:]?\s*([^\s，。；;]+)", desc)
-            if dmatch:
-                default = dmatch.group(1)
-                required = "否"
-            documented.append({
-                "name": name,
-                "type": _SCRIPT_TYPE_MAP.get(raw_type, "string"),
-                "required": required,
-                "default": default,
-                "desc": desc.replace("|", "，"),
-            })
-
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as exc:
-        raise ScriptContractError(f"脚本语法错误：{exc.msg}（第 {exc.lineno} 行）") from exc
-
-    source_params: list[dict] = []
-    argument_calls = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "add_argument"
-        ):
-            argument_calls.append(node)
-    argument_calls.sort(key=lambda item: getattr(item, "lineno", 0))
-
-    for node in argument_calls:
-        flags = [_literal_string(arg) for arg in node.args]
-        flags = [flag for flag in flags if flag]
-        long_flags = [flag for flag in flags if flag.startswith("--")]
-        flag = (long_flags or flags[:1])
-        if not flag:
-            raise ScriptContractError("argparse.add_argument 必须声明 option flag（例如 --records）")
-        flag = flag[0]
-        name = _literal_keyword(node, "dest") or flag.lstrip("-").replace("-", "_")
-        raw_type = _ast_type_name(_keyword_node(node, "type"))
-        action = _literal_keyword(node, "action") or ""
-        nargs = _literal_keyword(node, "nargs")
-        required = _literal_keyword(node, "required")
-        if required is None and _keyword_node(node, "required") is not None:
-            raise ScriptContractError(f"参数 {name} 的 required 必须是字面量布尔值")
-        required = bool(required) if required is not None else False
-        default_node = _keyword_node(node, "default")
-        default = _literal_node(default_node)
-        if default_node is not None and default is None:
-            default = ast.unparse(default_node)
-        if action in {"store_true", "store_false"}:
-            required = False
-            default = action == "store_false"
-            raw_type = "boolean"
-        multiple = action in {"append", "extend"} or nargs in {"*", "+"} or isinstance(nargs, int) and nargs != 1
-        source_params.append({
-            "name": str(name),
-            "flag": flag,
-            "type": _SCRIPT_TYPE_MAP.get(raw_type.lower(), "string"),
-            "required": required,
-            "default": default,
-            "multiple": multiple,
-            "action": action,
-        })
-
-    if documented and not source_params:
-        raise ScriptContractError("头部声明了输入参数，但脚本没有 argparse.add_argument()")
-    if documented:
-        documented_by_name = {item["name"]: item for item in documented}
-        source_names = {item["name"] for item in source_params}
-        if set(documented_by_name) != source_names:
-            missing = sorted(source_names - set(documented_by_name))
-            extra = sorted(set(documented_by_name) - source_names)
-            raise ScriptContractError(f"头部参数与 argparse 不一致：缺少 {missing}，多余 {extra}")
-
-    params = []
-    for item in source_params:
-        doc = next((entry for entry in documented if entry["name"] == item["name"]), {})
-        if doc and doc["type"] != item["type"]:
-            raise ScriptContractError(f"参数 {item['name']} 的类型与 argparse 不一致")
-        if doc and doc["required"] != ("是" if item["required"] else "否"):
-            raise ScriptContractError(f"参数 {item['name']} 的必填标记与 argparse 不一致")
-        params.append({
-            "name": item["name"], "flag": item["flag"], "type": item["type"],
-            "required": "是" if item["required"] else "否",
-            "default": "" if item["default"] is None else str(item["default"]),
-            "multiple": "是" if item["multiple"] else "否", "action": item["action"],
-            "desc": doc.get("desc", ""),
-        })
-    return bound, params
+    path = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "script_contract.py"
+    spec = importlib.util.spec_from_file_location("onto_workspace_script_contract", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def _literal_string(node: ast.AST) -> str:
-    value = _literal_node(node)
-    return value if isinstance(value, str) else ""
-
-
-def _literal_keyword(call: ast.Call, name: str):
-    node = _keyword_node(call, name)
-    return _literal_node(node) if node is not None else None
-
-
-def _keyword_node(call: ast.Call, name: str):
-    return next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
-
-
-def _literal_node(node: ast.AST | None):
-    if node is None:
-        return None
-    try:
-        return ast.literal_eval(node)
-    except (ValueError, TypeError):
-        return None
-
-
-def _ast_type_name(node: ast.AST | None) -> str:
-    if node is None:
-        return "str"
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    value = _literal_node(node)
-    return str(value or "str")
+_script_contract = _load_script_contract()
+ScriptContractError = _script_contract.ScriptContractError
+_script_header_meta = _script_contract.parse_script_contract
 
 
 def _first_heading(path: Path) -> str:

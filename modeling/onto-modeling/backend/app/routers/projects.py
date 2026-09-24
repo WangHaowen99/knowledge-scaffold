@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..services import package_mapping
+from ..services import eval_data_sources, eval_import, eval_sets, package_mapping
 from ..services.workspace import WorkspaceError, WorkspaceManager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -382,6 +382,10 @@ def put_project_mcp(project_id: str, body: ProjectMcpBody, request: Request):
 def eval_data_source_options(project_id: str, request: Request):
     """评测向导·数据源选项：eval_data 资料清单 + mock 产物可用性。"""
     root = ensure_access(project_id, request)
+    return _eval_data_options(project_id, root)
+
+
+def _eval_data_options(project_id: str, root: Path) -> dict:
     directives = workspaces.resource_directives(project_id)
     eval_data = []
     for rel, directive in sorted(directives.items()):
@@ -398,6 +402,162 @@ def eval_data_source_options(project_id: str, request: Request):
     return {"eval_data": eval_data, "mock_tables": mock_tables}
 
 
+# ---- 评测数据源配置（保存后评测时直接选用；连接密钥只进不出）----
+
+
+class EvalDataSourceBody(BaseModel):
+    name: str = ""
+    mode: str = "none"  # none | dataset | connection
+    provider: str = ""  # connection：nl2sql_template | nl2sql_http | neo4j
+    config: dict = {}
+    resources: list[str] = []  # dataset / neo4j 导入：eval_data 资料路径
+    include_mock: bool = False  # dataset / neo4j 导入：mock 种子
+
+
+def _default_eval_workspace_id(project_id: str) -> str:
+    slug = re.sub(r"[^a-z0-9_-]+", "-", project_id.lower()).strip("-")
+    return f"onto-eval-{slug}"[:64].rstrip("-_")
+
+
+@router.get("/{project_id}/eval/data-sources")
+def list_eval_data_sources(project_id: str, request: Request):
+    """已保存的数据源配置 + 新建配置所需的选项与默认值。"""
+    root = ensure_access(project_id, request)
+    return {
+        "sources": [
+            eval_data_sources.public_view(s)
+            for s in eval_data_sources.list_sources(project_id)
+        ],
+        "options": _eval_data_options(project_id, root),
+        "defaults": {
+            "evaluation_workspace_id": _default_eval_workspace_id(project_id),
+            # Neo4j Ontology 隔离值 = 知识包 ID（发起评测时自动填写）
+            "ontology_id": project_id,
+        },
+    }
+
+
+@router.post("/{project_id}/eval/data-sources")
+def create_eval_data_source(project_id: str, body: EvalDataSourceBody, request: Request):
+    ensure_access(project_id, request, write=True)
+    try:
+        source = eval_data_sources.create_source(project_id, body.model_dump())
+    except eval_data_sources.DataSourceError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return {"source": eval_data_sources.public_view(source)}
+
+
+@router.put("/{project_id}/eval/data-sources/{source_id}")
+def update_eval_data_source(
+    project_id: str, source_id: str, body: EvalDataSourceBody, request: Request
+):
+    """更新配置；Token / Password 留空表示沿用已保存的值。"""
+    ensure_access(project_id, request, write=True)
+    try:
+        source = eval_data_sources.update_source(project_id, source_id, body.model_dump())
+    except eval_data_sources.DataSourceError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除"})
+    return {"source": eval_data_sources.public_view(source)}
+
+
+@router.delete("/{project_id}/eval/data-sources/{source_id}")
+def delete_eval_data_source(project_id: str, source_id: str, request: Request):
+    ensure_access(project_id, request, write=True)
+    try:
+        eval_data_sources.delete_source(project_id, source_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除"})
+    return {"deleted": True}
+
+
+class EvalImportPreviewBody(BaseModel):
+    data_source_id: str = ""  # 已保存的配置；缺省时按下面的内联选择预览
+    resources: list[str] = []
+    include_mock: bool = False
+    graph: bool = False  # Neo4j 图导入：额外校验属性名，mapping 按图模式
+
+
+@router.post("/{project_id}/eval/import-preview")
+def eval_import_preview(project_id: str, body: EvalImportPreviewBody, request: Request):
+    """一键导入预览：导入哪些表、日期列如何规范化、对象绑到哪张表哪些列（即 mapping）。"""
+    from ..services import modeling_eval
+
+    root = ensure_access(project_id, request)
+    if body.data_source_id:
+        source = eval_data_sources.get_source(project_id, body.data_source_id)
+        if not source:
+            return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除"})
+        if not modeling_eval.needs_import(source):
+            return {"tables": [], "objects": {}, "mapped_objects": [], "problems": [], "warnings": []}
+        selection, graph = source, modeling_eval.is_graph(source)
+    else:
+        selection, graph = {"resources": body.resources, "include_mock": body.include_mock}, body.graph
+    return eval_import.preview(root, selection, graph=graph)
+
+
+# ---- 评测集（导入过的用例保存下来，评测时直接选用）----
+
+
+class EvalSetBody(BaseModel):
+    name: str = ""
+    cases: list[dict] = []
+    source: str = "manual"  # import | trace | manual
+
+
+class EvalSetPatchBody(BaseModel):
+    name: str | None = None
+    cases: list[dict] | None = None
+
+
+@router.get("/{project_id}/eval/sets")
+def list_eval_sets(project_id: str, request: Request):
+    root = ensure_access(project_id, request)
+    return {"sets": eval_sets.list_sets(root)}
+
+
+@router.get("/{project_id}/eval/sets/{set_id}")
+def get_eval_set(project_id: str, set_id: str, request: Request):
+    root = ensure_access(project_id, request)
+    item = eval_sets.get_set(root, set_id)
+    if not item:
+        return JSONResponse(status_code=404, content={"error": "评测集不存在或已删除"})
+    return {"set": {**eval_sets.summary(item), "cases": item["cases"]}}
+
+
+@router.post("/{project_id}/eval/sets")
+def create_eval_set(project_id: str, body: EvalSetBody, request: Request):
+    root = ensure_access(project_id, request, write=True)
+    try:
+        item = eval_sets.create_set(root, body.name, body.cases, body.source)
+    except eval_sets.EvalSetError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return {"set": eval_sets.summary(item)}
+
+
+@router.patch("/{project_id}/eval/sets/{set_id}")
+def update_eval_set(project_id: str, set_id: str, body: EvalSetPatchBody, request: Request):
+    root = ensure_access(project_id, request, write=True)
+    try:
+        item = eval_sets.update_set(root, set_id, name=body.name, cases=body.cases)
+    except eval_sets.EvalSetError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "评测集不存在或已删除"})
+    return {"set": eval_sets.summary(item)}
+
+
+@router.delete("/{project_id}/eval/sets/{set_id}")
+def delete_eval_set(project_id: str, set_id: str, request: Request):
+    root = ensure_access(project_id, request, write=True)
+    try:
+        eval_sets.delete_set(root, set_id)
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": "评测集不存在或已删除"})
+    return {"deleted": True}
+
+
 @router.get("/{project_id}/eval/status")
 def eval_status(project_id: str, request: Request):
     """数据评测状态：modeling 可达性 + 最近一轮进度/结果（前端阶段按钮轮询）。"""
@@ -408,10 +568,12 @@ def eval_status(project_id: str, request: Request):
     auth = request.headers.get("Authorization") or ""
     if auth.startswith("Bearer "):
         modeling_eval.update_token(project_id, auth[7:].strip())
+    state = modeling_eval.status_view(project_id, root)
     return {
         "enabled": modeling_eval.enabled(),
         "reachable": modeling_eval.reachable() if modeling_eval.enabled() else False,
-        "state": modeling_eval.status_view(project_id, root),
+        "state": state,
+        "evolution": modeling_eval.evolution_hint(state),
     }
 
 
@@ -426,12 +588,19 @@ def eval_cases_preview(project_id: str, request: Request):
 
 @router.post("/{project_id}/eval/cases/import")
 async def eval_cases_import(
-    project_id: str, request: Request, file: UploadFile = File(...)
+    project_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    save: bool = Form(True),
+    name: str = Form(""),
 ):
-    """用例 JSON 导入（与 modeling 的用例导入模板同一契约）。"""
+    """用例 JSON 导入（与 modeling 的用例导入模板同一契约）。
+
+    save=True（默认）时同时保存为评测集（名称缺省取文件名），下次评测可直接选用。
+    """
     from ..services import modeling_eval
 
-    ensure_access(project_id, request)
+    root = ensure_access(project_id, request, write=save)
     if not (file.filename or "").lower().endswith(".json"):
         return JSONResponse(status_code=400, content={"error": "仅支持 JSON 用例文件（可先下载模板）"})
     content = await file.read()
@@ -441,7 +610,15 @@ async def eval_cases_import(
         cases = modeling_eval.parse_case_json(content.decode("utf-8-sig", errors="replace"))
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
-    return {"cases": cases}
+    if not save:
+        return {"cases": cases, "set": None}
+    set_name = name.strip() or Path(file.filename or "").stem or "导入的评测集"
+    try:
+        item = eval_sets.create_set(root, set_name, cases, source="import")
+    except eval_sets.EvalSetError as exc:
+        # 用例本身合法，只是评测集存不下（如数量上限）：照常返回用例，附带原因
+        return {"cases": cases, "set": None, "warning": str(exc)}
+    return {"cases": cases, "set": eval_sets.summary(item)}
 
 
 @router.get("/{project_id}/eval/cases/template")
@@ -463,6 +640,10 @@ class EvalRunBody(BaseModel):
     cases: list[dict]  # [{question, groundTruth}]，用户复核后的用例
     # {"mode": "none"} 或 {"mode": "dataset", "resources": [...], "include_mock": bool}
     data_source: dict | None = None
+    # 选用已保存的数据源配置：优先于内联 data_source；外部连接（带密钥）只能走这里
+    data_source_id: str = ""
+    # 选用的评测集：复核时对用例的修改同步回该评测集
+    eval_set_id: str = ""
 
 
 @router.post("/{project_id}/eval/run")
@@ -491,16 +672,43 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
         return JSONResponse(status_code=400, content={"error": "缺少可用于 modeling 的令牌"})
     import asyncio as _asyncio
 
-    data_source = body.data_source or {"mode": "none"}
-    if str(data_source.get("mode") or "none") not in ("none", "dataset"):
-        return JSONResponse(status_code=400, content={"error": "数据源模式仅支持 none 或 dataset"})
-    if str(data_source.get("mode")) == "dataset":
-        try:
-            modeling_eval.collect_dataset_files(root, data_source)
-        except (ValueError, RuntimeError) as exc:
-            return JSONResponse(status_code=400, content={"error": str(exc)})
+    if body.data_source_id:
+        data_source = eval_data_sources.get_source(project_id, body.data_source_id)
+        if not data_source:
+            return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除，请重新选择"})
+    else:
+        data_source = body.data_source or {"mode": "none"}
+        if str(data_source.get("mode") or "none") not in ("none", "dataset"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "内联数据源仅支持 none 或 dataset；外部数据源请先保存配置再选用"},
+            )
+    if modeling_eval.needs_import(data_source):
+        plan = eval_import.collect(root, data_source)
+        problems = plan["problems"] + (
+            eval_import.graph_problems(plan["binding"]) if modeling_eval.is_graph(data_source) else []
+        )
+        if problems:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "导入数据未通过检查：" + "；".join(problems[:3]), "problems": problems},
+            )
 
-    _asyncio.create_task(modeling_eval.run(project_id, root, token, cases, data_source))
+    eval_set_name = ""
+    if body.eval_set_id:
+        item = eval_sets.get_set(root, body.eval_set_id)
+        if not item:
+            return JSONResponse(status_code=404, content={"error": "评测集不存在或已删除，请重新选择"})
+        if item["cases"] != cases:
+            item = eval_sets.update_set(root, body.eval_set_id, cases=cases)
+        eval_sets.mark_used(root, body.eval_set_id)
+        eval_set_name = item["name"]
+    if body.data_source_id:
+        eval_data_sources.mark_used(project_id, body.data_source_id)
+
+    _asyncio.create_task(
+        modeling_eval.run(project_id, root, token, cases, data_source, eval_set_name)
+    )
     return {"started": True, "cases": len(cases)}
 
 

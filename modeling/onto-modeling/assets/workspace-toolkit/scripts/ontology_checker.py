@@ -17,6 +17,7 @@ REPORT_TZ = ZoneInfo("Asia/Shanghai")
 # `python3 .claude/scripts/ontology_checker.py` (sys.path[0] is the script dir).
 sys.path.append(str(Path(__file__).resolve().parent))
 from knowledge_helper import parse_frontmatter as _hk_parse_frontmatter
+from script_contract import ScriptContractError, parse_script_contract
 
 # =============================================================================
 # DATA MODELS
@@ -1020,6 +1021,11 @@ def check_scripts(ontology_dir: Path) -> list:
                 issues.append(Issue(str(rel), "错误", "脚本契约", "argparse 参数必须声明长选项 flag", "规则检查"))
         if executable and "json.dumps" not in source:
             issues.append(Issue(str(rel), "错误", "脚本契约", "CLI stdout 必须输出单个 JSON 结果", "规则检查"))
+        # 与知识包导出同一实现：头部「输入参数」与 argparse 的名称、类型、必填须一一对应
+        try:
+            parse_script_contract(source)
+        except ScriptContractError as exc:
+            issues.append(Issue(str(rel), "错误", "脚本契约", str(exc), "规则检查"))
     return issues
 
 

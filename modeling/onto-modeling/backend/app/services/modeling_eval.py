@@ -7,8 +7,11 @@
 
 - 鉴权：透传当前用户 token（共享账号中心/方案 A 下 modeling 直接接受）；
   无共享 auth 的部署用 ONTO_WEB_MODELING_TOKEN 兜底；
-- 数据源：v1 走 mode=none（纯知识包问答）。评测数据库导入需要 modeling 侧
-  配置 EVAL_DB_URL（MySQL），属部署级依赖，接通后在此追加 import 步骤；
+- 数据源：none（纯知识包问答，显式 PUT mode=none）/ dataset（quick-import 建评测库，
+  需 modeling 侧 EVAL_DB_URL）/ connection（NL2SQL Template/HTTP、Neo4j 外部数据源，
+  PUT data-source 由 modeling 测试连接并同步到 consumer）；配置见 eval_data_sources；
+- 一键导入：dataset 与带导入数据的 Neo4j 都先由 eval_import 生成规范化工作簿，发布包
+  mapping 按同一份表结构导出（Neo4j 用图模式），导出后逐项核对再导入；
 - 进度：状态落 .ontology-state/eval.json（前端轮询），评测项目保留在
   modeling 侧可追溯。
 """
@@ -26,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import package_mapping
+from . import eval_data_sources, eval_import
 
 STATE_REL = ".ontology-state/eval.json"
 POLL_INTERVAL_SECONDS = 6
@@ -35,6 +38,9 @@ AUTH_GRACE_SECONDS = 600
 DATA_IMPORT_TIMEOUT_SECONDS = 600  # 凭据过期后等待前端接力新 token 的宽限窗
 # running 状态由编排线程每轮刷 ts；内存里已无编排且 ts 停滞超过此窗即判为中断
 STALE_AFTER_SECONDS = POLL_INTERVAL_SECONDS * 5
+GRAPH_IMPORT_TIMEOUT_SECONDS = 1200
+# 得分低于此线、或出现异常用例时，提示进入 /ontology-evolution 评测优化
+EVOLUTION_SCORE_THRESHOLD = 90
 
 _running: set[str] = set()  # project_id 去重（单进程内防并发重复触发）
 _live_tokens: dict[str, str] = {}  # project_id → 前端轮询接力的最新 token
@@ -151,64 +157,83 @@ def _multipart_files(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
-# ---- 数据集模式：评测数据表收集与导入 ----
+# ---- 数据导入：MySQL 评测库（quick-import）与 Neo4j 图库（graph-import）----
 
 
-def collect_dataset_files(root: Path, data_source: dict) -> list[tuple[str, bytes]]:
-    """数据集模式的导入文件：勾选的 eval_data 资料 + 可选 mock 种子。
-    编排启动前调用（坏输入快速失败，不浪费一次包导入）。"""
-    files: list[tuple[str, bytes]] = []
-    for rel in (data_source.get("resources") or [])[:20]:
-        rel = str(rel).strip()
-        path = (root / rel).resolve()
-        if not str(path).startswith(str(root.resolve())) or not path.is_file():
-            raise ValueError(f"评测数据文件不存在：{rel}")
-        if path.suffix.lower() not in (".xlsx", ".xlsm"):
-            raise ValueError(f"评测数据仅支持 Excel 表：{rel}")
-        files.append((path.name, path.read_bytes()))
-    if data_source.get("include_mock"):
-        files.append(_generate_mock_seed(root))
-    if not files:
-        raise ValueError("数据集模式需要至少一份数据表（评测数据资料或示例数据种子）")
-    return files
+def needs_import(data_source: dict) -> bool:
+    """dataset 模式、或声明了导入数据的 Neo4j 连接，发起前要整理导入工作簿。"""
+    if str(data_source.get("mode") or "none") == "dataset":
+        return True
+    has_selection = bool(data_source.get("resources") or data_source.get("include_mock"))
+    return is_graph(data_source) and has_selection
 
 
-def assert_data_binding(root: Path) -> None:
-    """数据集模式前置门禁：对象必须绑定到真实数据表，否则这一轮问答根本不会查库。
-
-    历史故障：来源Sheet 写成对象名、包里没有 mappings，评测照跑并给出一个看起来不错的
-    分数，但全部用例都只读了知识包上下文、一次库都没查。在发起时拦下，让问题暴露在
-    这里而不是藏进报告分数里。
-    """
-    binding = package_mapping.resolve_object_tables(root)
-    if binding["problems"]:
-        raise ValueError("对象与评测数据表未对齐：" + "；".join(binding["problems"][:3]))
-    if not binding["bound"]:
-        raise ValueError(
-            "没有任何对象绑定到评测数据表，数据问答会全部落空："
-            "请在对象文档「# 数据来源」声明真实表名，"
-            "或确认「对象属性清单」的英文名称与数据表列名一致"
-        )
+def is_graph(data_source: dict) -> bool:
+    return data_source.get("mode") == "connection" and data_source.get("provider") == "neo4j"
 
 
-def _generate_mock_seed(root: Path) -> tuple[str, bytes]:
-    """ontology/data-mock 的示例数据 → 评测库导入 Excel（工具箱脚本，单一实现）。"""
-    import subprocess
-    import sys as _sys
-    import tempfile
-
-    script = (
-        Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts" / "mock_to_eval_seed.py"
+def _graph_import(
+    project_id: str, root: Path, tok, mp_project: str, data_source: dict, plan: dict
+) -> None:
+    """Neo4j 一键导入：上传工作簿 → 推断关系关联 → 校验 → 执行（清空本隔离范围旧数据）→ 轮询。"""
+    rows = sum(len(t.rows) for t in plan["tables"])
+    _write_state(
+        root, phase="graph_import",
+        message=f"图数据导入：上传 {len(plan['tables'])} 张表（{rows} 行）",
     )
-    out = Path(tempfile.mkdtemp(prefix="onto-eval-seed-")) / "mock-seed.xlsx"
-    proc = subprocess.run(
-        [_sys.executable, str(script), "--out", str(out)],
-        cwd=root, capture_output=True, text=True, timeout=120,
+    body, ctype = _multipart_files([(eval_import.WORKBOOK_NAME, plan["workbook"])])
+    try:
+        upload = _http(
+            "POST", f"/api/projects/{mp_project}/graph-import/uploads", tok(),
+            data=body, content_type=ctype, timeout=180,
+        )["upload"]
+        relations, skipped = eval_import.graph_relation_mapping(upload)
+        mapping = {"relations": relations}
+        validation = _http(
+            "POST", f"/api/projects/{mp_project}/graph-import/uploads/{upload['id']}/validate",
+            tok(), body={"mapping": mapping},
+        )["validation"]
+        _check_stop(project_id)
+        run = _http(
+            "POST", f"/api/projects/{mp_project}/graph-import/uploads/{upload['id']}/execute",
+            tok(),
+            body={
+                "mapping": mapping,
+                "password": (data_source.get("config") or {}).get("password", ""),
+                # 隔离范围 = 评测工作空间 + 本知识包 ID，只属于本项目的评测数据，每轮重灌
+                "replaceExisting": True,
+            },
+        )["run"]
+    except urllib.error.HTTPError as exc:
+        detail = str(getattr(exc, "detail", "") or "") or f"HTTP {exc.code}"
+        raise RuntimeError(f"图数据导入失败：{detail}") from exc
+    finished = _poll_graph_import(project_id, root, tok, mp_project, run["id"])
+    notes = skipped + list(validation.get("warnings") or [])
+    _write_state(
+        root,
+        graph_import={
+            "nodes": finished.get("nodeCount", 0),
+            "relationships": finished.get("relationshipCount", 0),
+            "relations_mapped": len(relations),
+            "notes": notes[:20],
+        },
     )
-    if proc.returncode != 0 or not out.is_file():
-        detail = (proc.stderr or proc.stdout or "").strip()[:200]
-        raise RuntimeError(f"示例数据种子生成失败：{detail or '无 mock 产物'}")
-    return ("mock-seed.xlsx", out.read_bytes())
+
+
+def _poll_graph_import(project_id: str, root: Path, tok, mp_project: str, run_id: str) -> dict:
+    deadline = time.time() + GRAPH_IMPORT_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        time.sleep(POLL_INTERVAL_SECONDS)
+        _check_stop(project_id)
+        runs = _http("GET", f"/api/projects/{mp_project}/graph-imports", tok()).get("imports") or []
+        run = next((r for r in runs if r.get("id") == run_id), {})
+        status = run.get("status")
+        if status == "done":
+            return run
+        if status in ("failed", "cancelled"):
+            raise RuntimeError(f"图数据导入失败：{str(run.get('error') or status)[:200]}")
+        _write_state(root, message="图数据导入中（写入节点与关系）…")
+    raise TimeoutError("图数据导入超时")
 
 
 def _poll_data_import(project_id: str, root: Path, tok, mp_project: str) -> None:
@@ -358,8 +383,11 @@ def _write_state(root: Path, **fields: Any) -> None:
 
 
 def _resumable(state: dict) -> bool:
-    """能否续接：modeling 侧有轮次坐标才谈得上收取已有结果。"""
-    return bool(state.get("modeling_project") and state.get("round_id"))
+    """能否续接：modeling 侧有轮次坐标才谈得上收取已有结果；该轮报告已收取
+    （异常终止轮的部分结果已落报告）则无可续接。"""
+    if not (state.get("modeling_project") and state.get("round_id")):
+        return False
+    return state.get("report_round") != state.get("round_id")
 
 
 def status_view(project_id: str, root: Path) -> dict:
@@ -398,7 +426,46 @@ def sweep_interrupted(data_dir: Path | None = None) -> list[str]:
     return touched
 
 
-def _write_report(root: Path, round_info: dict, results: list[dict]) -> str:
+def _unexecuted_as_errors(
+    results: list[dict], cases: list[dict] | None, failure: str
+) -> list[dict]:
+    """轮次异常终止时，没跑到的用例补记为异常。
+
+    报告与得分覆盖整个用例集，/ontology-evolution 按 E 类（运行异常）给出指引，
+    而不是只看跑完的那几条。
+    """
+    executed = [str(r.get("question", "")).strip() for r in results]
+    missing = []
+    for case in cases or []:
+        question = str(case.get("question", "")).strip()
+        # 续接场景的 cases 取自状态里截断过的问题，前缀匹配同时覆盖完全相等
+        if not question or any(q.startswith(question) for q in executed):
+            continue
+        missing.append({
+            "question": question,
+            "groundTruth": case.get("groundTruth", ""),
+            "finalAnswer": "",
+            "verdict": "error",
+            "reason": f"轮次异常终止，本用例未执行：{failure}",
+        })
+    return list(results) + missing
+
+
+def _write_report(
+    root: Path,
+    round_info: dict,
+    results: list[dict],
+    cases: list[dict] | None = None,
+    failure: str = "",
+) -> str:
+    """落评测报告并把状态收敛到终态。
+
+    failure 非空 = modeling 侧轮次异常终止但已有部分结果：照样出报告（状态 failed），
+    让失分与异常用例能进入 /ontology-evolution，而不是随失败状态一起丢掉。
+    """
+    executed = len(results)
+    if failure:
+        results = _unexecuted_as_errors(results, cases, failure)
     counts = {"pass": 0, "partial": 0, "fail": 0, "error": 0}
     for item in results:
         counts[item.get("verdict", "error")] = counts.get(item.get("verdict", "error"), 0) + 1
@@ -406,11 +473,23 @@ def _write_report(root: Path, round_info: dict, results: list[dict]) -> str:
     score = round((counts["pass"] + counts["partial"] * 0.5) * 100 / total)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     rel = f"reports/eval-{stamp}.md"
+    state = read_state(root)
     lines = [
         f"# 数据评测报告 — {time.strftime('%Y-%m-%d %H:%M')}",
         "",
         f"> 评测方式：知识包发布至 modeling 影子工作区，由 consumer 智能体逐用例问答，LLM Judge 判分",
         f"> 轮次：{round_info.get('id', '')}（modeling 侧可追溯）",
+    ]
+    if state.get("data_source_name"):
+        lines.append(f"> 数据源：{state['data_source_name']}")
+    if state.get("eval_set_name"):
+        lines.append(f"> 评测集：{state['eval_set_name']}")
+    if failure:
+        lines.append(
+            f"> ⚠️ 轮次异常终止：{failure}（已执行 {executed}/{len(results)} 条，"
+            "未执行的用例计为异常）"
+        )
+    lines += [
         "",
         "## 总览",
         "",
@@ -434,16 +513,51 @@ def _write_report(root: Path, round_info: dict, results: list[dict]) -> str:
         ]
     (root / "reports").mkdir(parents=True, exist_ok=True)
     (root / rel).write_text("\n".join(lines), encoding="utf-8")
+    terminal = {"status": "failed", "message": (
+        f"{failure}（已执行 {executed}/{len(results)} 条，报告已生成）"[:300]
+    )} if failure else {"status": "done"}
     _write_state(
         root,
-        status="done",
+        **terminal,
         report=rel,
+        # 报告出自哪一轮：新一轮发起时清空，用来判断报告是否属于最近一轮
+        report_round=round_info.get("id") or state.get("round_id") or rel,
         summary={"total": len(results), **counts, "score": score},
         cases=_case_progress(
             [{"question": i.get("question", "")} for i in results], results, False
         ),
     )
     return rel
+
+
+def evolution_hint(state: dict) -> dict | None:
+    """最近一轮评测是否该进入 /ontology-evolution（聊天区建议与左栏按钮共用）。
+
+    得分低于阈值、或出现异常（error）用例即提示——异常用例会拉低得分，但少量异常
+    可能仍在阈值之上；轮次异常终止但有部分结果时同样提示（报告已落盘）。
+    """
+    report = state.get("report")
+    summary = state.get("summary") or {}
+    if not (report and summary):
+        return None
+    if state.get("status") not in ("done", "failed"):
+        return None
+    # 报告须出自最近一轮；旧版状态没有 report_round 字段，done 即视为最近一轮
+    fresh = state.get("report_round") if "report_round" in state else state.get("status") == "done"
+    if not fresh:
+        return None
+    score = summary.get("score")
+    errors = int(summary.get("error") or 0)
+    low_score = score is not None and score < EVOLUTION_SCORE_THRESHOLD
+    if not (errors or low_score):
+        return None
+    return {
+        "report": report,
+        "score": score,
+        "errors": errors,
+        "fails": int(summary.get("fail") or 0),
+        "round_failed": state.get("status") == "failed",
+    }
 
 
 def _case_progress(cases: list[dict], results: list[dict], round_running: bool) -> list[dict]:
@@ -526,16 +640,42 @@ def _poll_round(
     if round_info.get("status") not in ("done", "failed"):
         raise TimeoutError("评测超时（modeling 侧轮次未在时限内结束）")
     if round_info.get("status") == "failed":
-        # 轮次在 modeling 侧失败：透出其日志，不生成报告
-        log = (round_info.get("log") or "").strip().splitlines()
-        raise RuntimeError(f"modeling 评测轮失败：{log[-1] if log else '原因未知'}")
+        _collect_failed_round(root, round_info, details.get("results") or [], cases)
+        return
     rel = _write_report(root, round_info, details.get("results") or [])
     _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
 
 
-def _try_resume(project_id: str, root: Path, token: str, cases: list[dict]) -> bool:
-    """凭据过期、服务重启等中断后，modeling 侧轮次往往仍在执行或已完成。重跑且
-    用例集未变时续接收取结果，不重复导入、不重复烧模型。"""
+def _round_failure(round_info: dict) -> str:
+    log = (round_info.get("log") or "").strip().splitlines()
+    return f"modeling 评测轮失败：{log[-1] if log else '原因未知'}"
+
+
+def _collect_failed_round(
+    root: Path, round_info: dict, results: list[dict], cases: list[dict]
+) -> None:
+    """轮次在 modeling 侧失败：透出其日志，有结果就落报告。
+
+    已有用例结果（常见于连续环境异常熔断）时照样落报告，没有任何结果才按编排失败处理。
+    """
+    failure = _round_failure(round_info)
+    if not results:
+        raise RuntimeError(failure)
+    rel = _write_report(root, round_info, results, cases, failure=failure)
+    _git_commit(root, f"eval: 数据评测报告（轮次异常终止） {rel.split('/')[-1]}")
+
+
+def _try_resume(
+    project_id: str, root: Path, token: str, cases: list[dict],
+    collect_failed: bool = False,
+) -> bool:
+    """续接 modeling 侧已有轮次，收取结果而不重跑。
+
+    凭据过期、服务重启等中断后，modeling 侧轮次往往仍在执行或已完成。重跑且
+    用例集未变时续接收取结果，不重复导入、不重复烧模型。
+
+    collect_failed：显式「续接上一轮」时，已失败但有部分结果的轮次也收取成报告；
+    重新运行评测时不收（用户要的是新一轮）。"""
     prior = read_state(root)
     mp_project, round_id = prior.get("modeling_project"), prior.get("round_id")
     if not mp_project or not round_id:
@@ -565,6 +705,12 @@ def _try_resume(project_id: str, root: Path, token: str, cases: list[dict]) -> b
                      message="续接上一轮（收取已完成结果）")
         rel = _write_report(root, details.get("round") or {}, details.get("results") or [])
         _git_commit(root, f"eval: 数据评测报告 {rel.split('/')[-1]}")
+        return True
+    partial_results = collect_failed and bool(details.get("results"))
+    if status == "failed" and partial_results:
+        _write_state(root, status="running", phase="evaluate",
+                     message="续接上一轮（收取异常终止前的结果）")
+        _collect_failed_round(root, details.get("round") or {}, details["results"], cases)
         return True
     return False
 
@@ -652,7 +798,7 @@ def _resume_sync(project_id: str, root: Path, token: str) -> None:
         for c in prior.get("cases") or []
     ]
     try:
-        if not _try_resume(project_id, root, token, cases):
+        if not _try_resume(project_id, root, token, cases, collect_failed=True):
             # 轮次已失败、或这次读不到：保持原状态，轮次坐标留着供再试
             _write_state(
                 root, status=prior.get("status") or "interrupted",
@@ -671,9 +817,30 @@ def _resume_sync(project_id: str, root: Path, token: str) -> None:
 # ---- 编排主体 ----
 
 
+def _configure_connection(
+    root: Path, tok, mp_project: str, data_source: dict, ontology_id: str
+) -> None:
+    """外部数据源：modeling 侧测试连接并同步到 consumer 评测工作空间。
+
+    Neo4j 的 Ontology 隔离值必须等于知识包 ID，这里按本次发布的包 ID 填写。
+    """
+    provider = str(data_source.get("provider") or "")
+    label = eval_data_sources.PROVIDER_LABELS.get(provider, provider)
+    _write_state(root, phase="data_source", message=f"配置数据源（{label}：测试连接并同步）")
+    try:
+        _http(
+            "PUT", f"/api/projects/{mp_project}/data-source", tok(),
+            body=eval_data_sources.modeling_payload(data_source, ontology_id),
+            timeout=120,
+        )
+    except urllib.error.HTTPError as exc:
+        detail = str(getattr(exc, "detail", "") or "") or f"HTTP {exc.code}"
+        raise RuntimeError(f"数据源配置失败（{label}）：{detail}") from exc
+
+
 async def run(
     project_id: str, root: Path, token: str, cases: list[dict],
-    data_source: dict | None = None,
+    data_source: dict | None = None, eval_set_name: str = "",
 ) -> None:
     """后台评测编排；进度经 .ontology-state/eval.json 供前端轮询。"""
     if project_id in _running:
@@ -682,7 +849,9 @@ async def run(
     _stop_requested.discard(project_id)  # 上一轮遗留的取消标记不影响新编排
     _live_tokens[project_id] = token
     try:
-        await asyncio.to_thread(_run_sync, project_id, root, token, cases, data_source)
+        await asyncio.to_thread(
+            _run_sync, project_id, root, token, cases, data_source, eval_set_name
+        )
     finally:
         _running.discard(project_id)
         _live_tokens.pop(project_id, None)
@@ -691,30 +860,44 @@ async def run(
 
 def _run_sync(
     project_id: str, root: Path, token: str, cases: list[dict],
-    data_source: dict | None = None,
+    data_source: dict | None = None, eval_set_name: str = "",
 ) -> None:
     from .workspace import WorkspaceManager
 
     def tok() -> str:
         return _live_tokens.get(project_id) or token
 
-    dataset_mode = str((data_source or {}).get("mode") or "none") == "dataset"
+    data_source = data_source or {"mode": "none"}
+    mode = str(data_source.get("mode") or "none")
+    dataset_mode = mode == "dataset"
     try:
-        # 数据集模式先收集文件：坏输入快速失败，不浪费一次包导入
-        dataset_files = (
-            collect_dataset_files(root, data_source or {}) if dataset_mode else []
+        # 导入数据先整理成工作簿：坏输入快速失败，不浪费一次包导入
+        plan = (
+            eval_import.prepare(root, data_source, graph=is_graph(data_source))
+            if needs_import(data_source) else None
         )
         if _try_resume(project_id, root, token, cases):
             return
         _check_stop(project_id)
-        if dataset_mode:
-            assert_data_binding(root)
-        _write_state(root, status="running", phase="package", message="打包知识包")
+        _write_state(
+            root, status="running", phase="package", message="打包知识包",
+            # 新一轮的逐轮字段清空：图导入结果等只属于产生它的那一轮
+            report_round=None, graph_import=None, started_at=int(time.time()),
+            data_source_name=data_source.get("name") or eval_data_sources.default_name(data_source),
+            eval_set_name=eval_set_name,
+        )
         manager = WorkspaceManager(config.DATA_DIR, config.ASSETS_DIR)
         import tempfile
 
         zip_path = Path(tempfile.mkdtemp(prefix="onto-eval-")) / "package.zip"
-        manager.export_package_zip(project_id, zip_path)
+        manager.export_package_zip(
+            project_id, zip_path,
+            binding=plan["binding"] if plan else None, graph=is_graph(data_source),
+        )
+        if plan:
+            mismatched = eval_import.verify_mapping(zip_path, plan["tables"])
+            if mismatched:
+                raise RuntimeError("发布包 mapping 与导入数据不一致：" + "；".join(mismatched[:3]))
 
         _write_state(root, phase="import", message="导入 modeling 评测工作区")
         package_name = f"onto-eval-{project_id}"
@@ -743,9 +926,9 @@ def _run_sync(
         if dataset_mode:
             _write_state(
                 root, phase="data_import",
-                message=f"评测库导入（{len(dataset_files)} 份数据表）",
+                message=f"评测库导入（{len(plan['tables'])} 张表）",
             )
-            body, ctype = _multipart_files(dataset_files)
+            body, ctype = _multipart_files([(eval_import.WORKBOOK_NAME, plan["workbook"])])
             try:
                 _http(
                     "POST",
@@ -760,6 +943,10 @@ def _run_sync(
                     ) from exc
                 raise
             _poll_data_import(project_id, root, tok, mp_project)
+        elif mode == "connection":
+            _configure_connection(root, tok, mp_project, data_source, project_id)
+            if plan:
+                _graph_import(project_id, root, tok, mp_project, data_source, plan)
         else:
             _write_state(root, phase="data_source", message="配置数据源（无数据库模式）")
             _http("PUT", f"/api/projects/{mp_project}/data-source", tok(),

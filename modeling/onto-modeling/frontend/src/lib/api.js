@@ -300,16 +300,50 @@ export const api = {
   evalDataSourceOptions: (pid) => request(`/api/projects/${pid}/eval/data-source`),
   evalCasesTemplateUrl: (pid) =>
     `/api/projects/${pid}/eval/cases/template?token=${encodeURIComponent(authStore.token)}`,
-  evalCasesImport: (pid, file) => {
+  // 导入的用例默认同时保存为评测集（名称缺省取文件名）
+  evalCasesImport: (pid, file, { save = true, name = '' } = {}) => {
     const form = new FormData();
     form.append('file', file);
+    form.append('save', save ? 'true' : 'false');
+    if (name) form.append('name', name);
     return request(`/api/projects/${pid}/eval/cases/import`, { method: 'POST', body: form });
   },
-  evalRun: (pid, cases, dataSource) =>
+  // {cases, dataSourceId, evalSetId}；dataSource 为不落库的内联配置（none / dataset）
+  evalRun: (pid, { cases, dataSource, dataSourceId = '', evalSetId = '' }) =>
     request(`/api/projects/${pid}/eval/run`, {
       method: 'POST',
-      body: JSON.stringify({ cases, data_source: dataSource || { mode: 'none' } }),
+      body: JSON.stringify({
+        cases,
+        data_source: dataSource || { mode: 'none' },
+        data_source_id: dataSourceId,
+        eval_set_id: evalSetId,
+      }),
     }),
+  evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),
+  // 一键导入预览：{data_source_id} 或 {resources, include_mock, graph}
+  evalImportPreview: (pid, payload) =>
+    request(`/api/projects/${pid}/eval/import-preview`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  evalDataSourceCreate: (pid, payload) =>
+    request(`/api/projects/${pid}/eval/data-sources`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  evalDataSourceUpdate: (pid, sid, payload) =>
+    request(`/api/projects/${pid}/eval/data-sources/${sid}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  evalDataSourceDelete: (pid, sid) =>
+    request(`/api/projects/${pid}/eval/data-sources/${sid}`, { method: 'DELETE' }),
+  evalSets: (pid) => request(`/api/projects/${pid}/eval/sets`),
+  evalSet: (pid, sid) => request(`/api/projects/${pid}/eval/sets/${sid}`),
+  evalSetCreate: (pid, payload) =>
+    request(`/api/projects/${pid}/eval/sets`, { method: 'POST', body: JSON.stringify(payload) }),
+  evalSetDelete: (pid, sid) =>
+    request(`/api/projects/${pid}/eval/sets/${sid}`, { method: 'DELETE' }),
   evalStop: (pid) => request(`/api/projects/${pid}/eval/stop`, { method: 'POST' }),
   evalResume: (pid) => request(`/api/projects/${pid}/eval/resume`, { method: 'POST' }),
   setProjectEngine: (pid, engine) =>

@@ -162,6 +162,8 @@ def test_orchestration_full_protocol(tmp_path, monkeypatch):
         state = modeling_eval.read_state(root)
         assert state["status"] == "done", state
         assert state["modeling_project"] == "mp-1"
+        # 执行详情的「用时」= 终态写入时间 - 发起时间
+        assert 0 < state["started_at"] <= state["ts"]
         assert state["summary"]["pass"] == 1 and state["summary"]["fail"] == 1
         assert state["summary"]["score"] == 50
         report = root / state["report"]
@@ -179,6 +181,32 @@ def test_orchestration_full_protocol(tmp_path, monkeypatch):
         assert ordered[1][0] == "PUT" and ordered[1][1].endswith("/data-source")
         assert ordered[2][1].endswith("/testcases/batch")
         assert ordered[3][1].endswith("/evaluate")
+    finally:
+        server.shutdown()
+
+
+def test_new_round_clears_previous_graph_import(tmp_path, monkeypatch):
+    """上一轮做过图导入、这一轮没有：执行详情不能再显示上一轮的图导入结果。"""
+    server = HTTPServer(("127.0.0.1", 0), StubModeling)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        StubModeling.calls, StubModeling.poll_count = [], 0
+        monkeypatch.setattr(config, "MODELING_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+        monkeypatch.setattr(modeling_eval, "POLL_INTERVAL_SECONDS", 0.05)
+        from app.services.workspace import WorkspaceManager
+
+        manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+        meta = manager.create_project("图导入残留")
+        root = manager.project_root(meta["id"])
+        modeling_eval._write_state(root, status="done", graph_import={"nodes": 8, "relationships": 5})
+        modeling_eval._run_sync(
+            meta["id"], root, "t",
+            [{"question": "Q1", "groundTruth": "G1"}, {"question": "Q2", "groundTruth": "G2"}],
+        )
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "done", state
+        assert state.get("graph_import") is None
     finally:
         server.shutdown()
 
@@ -363,46 +391,6 @@ def test_resume_attaches_to_existing_round(tmp_path, monkeypatch):
         assert not [c for c in ResumeStub.calls if c[0] == "POST"], ResumeStub.calls
     finally:
         server.shutdown()
-
-
-MOCK_TABLE = """# 订单 — 示例数据
-
-| 订单号 | 金额 |
-|-----|-----|
-| D001 | 25.5 |
-| D002 | 12.0 |
-"""
-
-
-def test_collect_dataset_files_validation(tmp_path):
-    root = tmp_path
-    (root / "resource" / "excel").mkdir(parents=True)
-    (root / "resource" / "excel" / "数据.xlsx").write_bytes(b"PK-fake")
-    files = modeling_eval.collect_dataset_files(
-        root, {"resources": ["resource/excel/数据.xlsx"]}
-    )
-    assert files == [("数据.xlsx", b"PK-fake")]
-    import pytest
-
-    with pytest.raises(ValueError, match="不存在"):
-        modeling_eval.collect_dataset_files(root, {"resources": ["resource/无.xlsx"]})
-    with pytest.raises(ValueError, match="Excel"):
-        (root / "resource" / "excel" / "t.csv").write_text("a", encoding="utf-8")
-        modeling_eval.collect_dataset_files(root, {"resources": ["resource/excel/t.csv"]})
-    with pytest.raises(ValueError, match="至少一份"):
-        modeling_eval.collect_dataset_files(root, {"resources": []})
-    # 路径逃逸拒绝
-    with pytest.raises(ValueError, match="不存在"):
-        modeling_eval.collect_dataset_files(root, {"resources": ["../外部.xlsx"]})
-
-
-def test_mock_seed_generation(tmp_path):
-    root = tmp_path
-    mock = root / "ontology" / "data-mock"
-    mock.mkdir(parents=True)
-    (mock / "订单.md").write_text(MOCK_TABLE, encoding="utf-8")
-    files = modeling_eval.collect_dataset_files(root, {"include_mock": True})
-    assert files[0][0] == "mock-seed.xlsx" and files[0][1][:2] == b"PK"  # 真实 xlsx
 
 
 def test_dataset_mode_runs_quick_import(tmp_path, monkeypatch):
@@ -701,11 +689,23 @@ def test_resume_collects_interrupted_round(tmp_path, monkeypatch):
         server.shutdown()
 
 
+class EmptyFailedStub(CancelStub):
+    """轮次已失败且一条结果都没有（如启动即失败）。"""
+
+    def do_GET(self):
+        StubModeling.calls.append(("GET", self.path))
+        if "/rounds/" in self.path:
+            return self._send(200, {
+                "round": {"id": "r9", "status": "failed", "log": "轮次失败：启动即失败\n"},
+                "results": [],
+            })
+        return CancelStub.do_GET(self)
+
+
 def test_resume_reports_unresumable_round(tmp_path, monkeypatch):
-    """modeling 侧轮次已失败：续接失败，状态留在中断并提示重跑。"""
+    """modeling 侧轮次已失败且没有任何结果：续接失败，状态留在中断并提示重跑。"""
     StubModeling.calls = []
-    CancelStub.round_status = "failed"
-    server = _serve(CancelStub, tmp_path, monkeypatch)
+    server = _serve(EmptyFailedStub, tmp_path, monkeypatch)
     try:
         pid, root = _eval_workspace(tmp_path, "无法续接")
         monkeypatch.setattr(modeling_eval, "_stop_requested", set())
@@ -720,6 +720,34 @@ def test_resume_reports_unresumable_round(tmp_path, monkeypatch):
         assert "无法续接" in state["message"]
         assert not list((root / "reports").glob("eval-*.md"))
     finally:
+        server.shutdown()
+
+
+def test_resume_collects_failed_round_partial_results(tmp_path, monkeypatch):
+    """modeling 侧轮次异常终止但已有部分结果：续接收取成报告。
+
+    状态落 failed，未执行的用例计为异常，且不能再次续接。
+    """
+    StubModeling.calls = []
+    CancelStub.round_status = "failed"
+    server = _serve(CancelStub, tmp_path, monkeypatch)
+    try:
+        pid, root = _eval_workspace(tmp_path, "异常终止续接")
+        monkeypatch.setattr(modeling_eval, "_stop_requested", set())
+        modeling_eval._write_state(
+            root, status="interrupted", message="中断",
+            modeling_project="mp-1", round_id="r9",
+            cases=[{"question": "Q1", "verdict": "pass"}, {"question": "Q2", "verdict": "running"}],
+        )
+        modeling_eval._resume_sync(pid, root, "t")
+        state = modeling_eval.read_state(root)
+        assert state["status"] == "failed", state
+        assert state["summary"]["pass"] == 1 and state["summary"]["error"] == 1
+        assert "报告已生成" in state["message"]
+        assert "未执行" in (root / state["report"]).read_text(encoding="utf-8")
+        assert not modeling_eval.can_resume(root)
+        assert modeling_eval.evolution_hint(state)["errors"] == 1
+    finally:
         CancelStub.round_status = "running"
         server.shutdown()
 
@@ -732,29 +760,3 @@ def test_can_resume_requires_round_coordinates(tmp_path, monkeypatch):
     modeling_eval._write_state(root, modeling_project="mp-1", round_id="r9")
     assert modeling_eval.can_resume(root)
 
-
-def test_dataset_mode_blocked_when_no_object_binds_a_table(tmp_path, monkeypatch):
-    """数据绑定门禁：对象对不上任何数据表时拦在发起前，而不是跑出一个没查过库的分数。"""
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
-    _pid, root = _eval_workspace(tmp_path, "未绑定数据表")
-    _bind_object_to_table(root)
-    # 属性英文名全部改掉 → 与表列名一个都对不上
-    (root / "ontology" / "object" / "订单.md").write_text(
-        "# 对象属性清单\n| 中文名称 | 英文名称 |\n| --- | --- |\n| 订单号 | NOPE_ID |\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="没有任何对象绑定"):
-        modeling_eval.assert_data_binding(root)
-
-    # 声明了不存在的来源表 → 报具体表名，不静默降级
-    (root / "ontology" / "object" / "订单.md").write_text(
-        "# 数据来源\n不存在的表\n\n# 对象属性清单\n"
-        "| 中文名称 | 英文名称 |\n| --- | --- |\n| 订单号 | ORDER_ID |\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="不存在的表"):
-        modeling_eval.assert_data_binding(root)
-
-    # 绑定正常 → 放行
-    _bind_object_to_table(root)
-    modeling_eval.assert_data_binding(root)

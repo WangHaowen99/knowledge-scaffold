@@ -42,6 +42,53 @@ parser.add_argument("--other-name", required=True)
         _script_header_meta(code)
 
 
+def test_script_header_meta_rejects_import_only_param_in_header():
+    code = '''"""
+关联operation：无
+输入参数：
+    device_id        str           装置代码；必填
+    yield_records    list[dict]    收率记录，仅 import 调用时传入；默认空列表
+"""
+import argparse
+def select(device_id, yield_records=None):
+    return {}
+def _cli():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device-id", required=True)
+'''
+    with pytest.raises(ScriptContractError, match=r"多余 \['yield_records'\].*仅供 import 调用的函数参数"):
+        _script_header_meta(code)
+
+
+def test_script_header_meta_rejects_bool_header_for_string_flag():
+    code = '''"""
+关联operation：无
+输入参数：
+    has_jet_fuel    bool    是否含航煤；默认 False
+"""
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--has-jet-fuel", default="false")
+'''
+    with pytest.raises(ScriptContractError, match="has_jet_fuel 的类型与 argparse 不一致：头部为 boolean，argparse 为 string"):
+        _script_header_meta(code)
+
+
+def test_script_header_meta_accepts_store_true_bool_flag():
+    code = '''"""
+关联operation：无
+输入参数：
+    has_jet_fuel    bool    是否含航煤；默认 False
+"""
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--has-jet-fuel", action="store_true")
+'''
+    _, params = _script_header_meta(code)
+    assert params[0]["type"] == "boolean"
+    assert params[0]["required"] == "否"
+
+
 def _write_eval_table(root: Path, sheet: str, columns: list[str]) -> None:
     """写一张 eval_data 数据表：对象靠它拿到真实表名与列名。"""
     openpyxl = pytest.importorskip("openpyxl")

@@ -7,6 +7,7 @@ import {
   importEvaluationDatabaseExcel,
   importEvaluationDatabaseTables,
   mergeEvaluationDatabaseExcelFiles,
+  mysqlDateTimeValue,
   type EvaluationDatabaseClient,
 } from '../src/evaluation/eval-db.js';
 import { importEvaluationDatabaseExcelInWorker } from '../src/evaluation/eval-db-import-worker-client.js';
@@ -294,6 +295,49 @@ test('评测库导入：DATETIME 列保留日期、非零时间和零点时间',
     '2026-08-06T15:04:05',
     '2026-08-07T00:00:00',
   ]);
+});
+
+test('评测库导入：日期列只在整列可无损写入时建 DATETIME，否则按文本保存', async () => {
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    ['bill_month', 'visit_note', 'bad_day', 'iso_zone', 'loose_date'],
+    ['2026-01', '2026-01-05 上午', '2026-02-30', '2026-01-05T08:00:00Z', '2026/1/5'],
+    ['2026-02', '2026-01-06 下午', '2026-03-01', '2026-01-06T09:30:00Z', '2026-02-28 8:05'],
+  ]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'bills');
+  const buffer = Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
+  const parsed = parseExcel(buffer, { maxRows: null })[0];
+  // 解析层按前缀把这几列都判成了日期——正是 MySQL 严格模式整批失败的来源
+  assert.deepEqual(parsed.fields.map((field) => field.inferredType), [
+    'date', 'date', 'date', 'date', 'date',
+  ]);
+  const recorder = recordingClient();
+
+  await importEvaluationDatabaseTables(databaseTarget(), [parsed], {
+    connect: async () => recorder.client,
+  });
+
+  const create = recorder.calls.find((call) => call.sql.startsWith('CREATE TABLE'));
+  assert.match(create?.sql ?? '', /`bill_month` TEXT/);
+  assert.match(create?.sql ?? '', /`visit_note` TEXT/);
+  assert.match(create?.sql ?? '', /`bad_day` TEXT/);
+  assert.match(create?.sql ?? '', /`iso_zone` TEXT/);
+  assert.match(create?.sql ?? '', /`loose_date` DATETIME/);
+  const insert = recorder.calls.find((call) => call.sql.startsWith('INSERT INTO'));
+  assert.deepEqual(insert?.values, [
+    '2026-01', '2026-01-05 上午', '2026-02-30', '2026-01-05T08:00:00Z', '2026-01-05',
+    '2026-02', '2026-01-06 下午', '2026-03-01', '2026-01-06T09:30:00Z', '2026-02-28T08:05:00',
+  ]);
+});
+
+test('评测库导入：DATETIME 写入值统一为补零的标准格式', () => {
+  assert.equal(mysqlDateTimeValue('2026/1/5'), '2026-01-05');
+  assert.equal(mysqlDateTimeValue('2026-01-05 8:05'), '2026-01-05T08:05:00');
+  assert.equal(mysqlDateTimeValue('2026-01-05T08:05:09.123'), '2026-01-05T08:05:09');
+  assert.equal(mysqlDateTimeValue('2024-02-29'), '2024-02-29');
+  assert.equal(mysqlDateTimeValue('2026-02-29'), null);
+  assert.equal(mysqlDateTimeValue('2026-01-05 24:00'), null);
+  assert.equal(mysqlDateTimeValue('2026-01'), null);
 });
 
 test('评测库导入：完整列推断避免混合类型失败并保留超大整数', async () => {
