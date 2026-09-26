@@ -14,6 +14,7 @@ dispatching command 会在你 prompt 顶部注入 `# 已沉淀业务知识（自
 - `SUMMARY_PATHS`: paths to flowchart summary files in `ontology/diagrams-summary/`，**may be empty or absent** when the caller chose to extract from research reports alone.
 - `PAIRED_EXCEL_PATHS` (optional): same-name Excel supplements in `ontology/excel/`; these are provenance paths for `EXCEL_CONTEXT`.
 - `EXCEL_CONTEXT` (optional): markdown exported from the paired Excel 补充表. Treat it as detail for the same-name flowchart, not as a standalone global source.
+- `TABLE_HEADERS` (optional): JSON `{Sheet 名: [表头列]}` from schema materials and uploaded evaluation data tables. When present, it is the only source of table names and column names — do not take them from data-dictionary documents or reports.
 - `REPORT_PATHS` (optional): paths to research report files. When `SUMMARY_PATHS` is empty, these become the **primary source** instead of supplementary context.
 - `OBJECTS_DIR`: target directory for object docs (e.g. `ontology/object/`)
 - `TEMPLATES_DIR`: path to templates directory (e.g. `.claude/templates/`)
@@ -78,6 +79,7 @@ Rules:
   不要臆造表名；此时「英文名称」列仍应按源材料里的真实字段名写，后续可据此自动匹配。
   首行只写表名本身（如 `T_ORDER` 就写 T_ORDER，不写"数据库表 `T_ORDER` 的…列"这种句子，
   否则整句会被当成表名），说明另起一行以 `> ` 开头；一个对象只声明一张表。
+- **英文名称 = 真实列名**（`TABLE_HEADERS` 非空时为硬约束）：对象声明了「数据来源」表时，从库里直接读取的属性，英文名称必须逐字等于该表在 `TABLE_HEADERS` 里的某一列；不得另起一个英文名、再把真实列名放进「属性别名」。表里没有的属性只允许两种：operation 计算得到的按下方派生标记写；取自规程、文档的常量在「属性规则」里注明 `非库字段`。数据字典类文档与 `TABLE_HEADERS` 冲突时以 `TABLE_HEADERS` 为准，并在返回摘要的注意事项里列出冲突。
 - Types: 字符串/数字/布尔/枚举/日期/对象引用
 - Use `[[]]` only for related objects that will also be extracted (or in EXISTING_FILES)
 - If no relationships, omit 关联对象 section

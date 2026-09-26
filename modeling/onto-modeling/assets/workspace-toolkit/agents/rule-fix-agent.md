@@ -44,7 +44,8 @@ dispatching command 会传入：
    | `结构缺失` | 在文件合适位置补上 message 提示的小节标题（如 `# 逻辑描述`），标题下保留一个 `<!-- TODO: 待填写 -->` 占位行。 |
    | `表格格式` | 在 message 指示的表格里补上缺失列（表头 + 同步给所有现有行追加空单元格）。 |
    | `术语不一致` | 仅当 message 含 "该字段定义在 [[Y]]" 或 "应通过 [[Y]]" 等明确指向时：把 message 提示的旧引用替换为新引用。无明确目标的，按 `applied: false`、`reason: "needs_human_judgment"` 跳过——这种情况主调命令在 A3 不应该把它归入 simple，遇到说明上游分类有误。 |
-   | 其它 | 按 `applied: false`、`reason: "category_not_in_simple_set"` 跳过——主调命令的 A3 分类应只把上述四类传给本 agent。 |
+   | `列名对账` | 仅 severity `错误`：在「对象属性清单」里把该属性的英文名称改为 message 中「英文名称改为 X」给出的 X，原英文名移入该行「属性别名」（去重）；其余列不动。 |
+   | 其它 | 按 `applied: false`、`reason: "category_not_in_simple_set"` 跳过——主调命令的 A3 分类应只把上述五类传给本 agent。 |
 
 3. **Edit 文件**：用 Edit 工具应用改动。`old_string` 必须在文件中唯一；不唯一时扩大 context 直至唯一。
 4. **记录摘要**：把改动浓缩为一行人话 `change_summary`（不要贴 diff 全文）。

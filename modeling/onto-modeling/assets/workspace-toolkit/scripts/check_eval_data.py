@@ -12,6 +12,7 @@
 
 用法（工作区根目录执行）：
   python3 .claude/scripts/check_eval_data.py [--json] [path/to/xx.xlsx ...]
+  python3 .claude/scripts/check_eval_data.py --headers   # 输出 {Sheet 名: [表头列]} JSON，供对象抽取取表名与列名
 
 退出码：0=全部通过（或无可对账项）；1=存在差异；2=数据/依赖错误。
 """
@@ -78,6 +79,22 @@ def read_tables(path: Path) -> dict[str, list[str]]:
     return tables
 
 
+def table_headers(root: Path) -> dict[str, list[str]]:
+    """schema 资料 + 评测数据源上传的数据表 → {表名: 表头列}。
+
+    对象「# 数据来源」的表名与存储属性的英文名称以此为准；同名 Sheet 以先读到的为准。
+    """
+    directives = load_directives(root)
+    schema_files = [p for p, d in directives.items() if isinstance(d, dict) and d.get("purpose") == "schema"]
+    tables: dict[str, list[str]] = {}
+    for rel in schema_files + uploaded_eval_files(root):
+        path = root / rel
+        if str(rel).lower().endswith(TABLE_SUFFIXES) and path.is_file():
+            for name, headers in read_tables(path).items():
+                tables.setdefault(name, headers)
+    return tables
+
+
 def object_attribute_names(root: Path) -> set[str]:
     """全部对象文档「对象属性清单」表格的英文名称集合。"""
     names: set[str] = set()
@@ -134,9 +151,12 @@ def check_file(root: Path, rel: str, schema_columns: set[str], attr_names: set[s
 
 
 def main() -> int:
-    args = [a for a in sys.argv[1:] if a != "--json"]
+    args = [a for a in sys.argv[1:] if a not in ("--json", "--headers")]
     as_json = "--json" in sys.argv
     root = Path.cwd()
+    if "--headers" in sys.argv:
+        print(json.dumps(table_headers(root), ensure_ascii=False))
+        return 0
 
     directives = load_directives(root)
     schema_files = [p for p, d in directives.items() if d.get("purpose") == "schema"]

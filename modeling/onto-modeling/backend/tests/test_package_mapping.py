@@ -160,6 +160,24 @@ def test_declared_table_without_matching_columns_blocks_only_when_strict(tmp_pat
     assert lenient["objects"]["月报"]["table"] == "" and lenient["bound"] == 1
 
 
+def test_derived_and_non_stored_attributes_are_not_missing_columns(tmp_path):
+    root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
+    doc = root / "ontology" / "object" / "订单.md"
+    doc.write_text(
+        "# 数据来源\nT_ORDER\n\n# 对象属性清单\n"
+        "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 订单号 | ORDER_ID | 说明 | 是 | 字符串 | 无 | 无 |\n"
+        "| 评分 | SCORE | 说明 | 否 | 数值 | 无 | 派生：由 [[计算评分]] 写入 |\n"
+        "| 税率 | TAX_RATE | 说明 | 否 | 数值 | 无 | 非库字段 |\n"
+        "| 备注 | REMARK | 说明 | 否 | 字符串 | 无 | 无 |\n",
+        encoding="utf-8",
+    )
+    item = package_mapping.resolve_object_tables(root)["objects"]["订单"]
+    assert item["missing_columns"] == ["REMARK"]
+    assert [f["key"] for f in item["fields"]] == ["ORDER_ID", "SCORE", "TAX_RATE", "REMARK"]
+
+
 def test_unmatched_attributes_stay_in_fields_but_not_in_mapping(tmp_path):
     root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
     write_object(

@@ -44,6 +44,9 @@ _PLACEHOLDER_RE = re.compile(r"^\{")
 # 「无」后面带括注或标点的说明（如 `无（派生对象，不落库）`）同样表示不声明
 _NONE_WITH_NOTE_RE = re.compile(r"^无\s*[（(，,。：:；;]")
 _QUOTED_RE = re.compile(r"`([^`\n]+)`")
+# 属性规则带这些标记的属性本来就不在表里（operation 计算得到的、取自文档的常量），不算缺列；
+# 与工具箱 ontology_checker 的列名对账同一口径
+_NON_STORED_MARKERS = ("派生：", "派生:", "非库字段")
 _HEADER_ALIASES = {
     "key": ("英文名称", "字段 key", "字段key", "field key", "key"),
     "cn": ("中文名称", "中文名", "字段名称"),
@@ -291,7 +294,10 @@ def resolve_object_tables(
         # fields 保留全部声明属性（发布包的 `# 字段` 段要完整），column 只在对上列时填
         fields = [{**f, "column": lowered_columns.get(f["key"].lower(), "")} for f in fields]
         matched = [f for f in fields if f["column"]]
-        missing = [f["key"] for f in fields if table and not f["column"]]
+        missing = [
+            f["key"] for f in fields
+            if table and not f["column"] and not any(m in f["rule"] for m in _NON_STORED_MARKERS)
+        ]
         if table and not matched:
             (problems if strict_declared else warnings).append(
                 f"对象「{key}」绑定的表「{table}」没有一列能对上属性英文名"
