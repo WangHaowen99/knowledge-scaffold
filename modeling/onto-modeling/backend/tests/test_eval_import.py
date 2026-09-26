@@ -282,6 +282,51 @@ def test_no_bound_object_blocks(tmp_path):
     assert any("没有任何对象绑定" in p for p in plan["problems"])
 
 
+def _sentence_sources(root: Path) -> None:
+    """把两个对象的「# 数据来源」首行改写成说明句，表名只在反引号里出现。"""
+    object_dir = root / "ontology" / "object"
+    for key, table in (("客户", "客户表"), ("订单", "订单表")):
+        doc = object_dir / f"{key}.md"
+        doc.write_text(
+            doc.read_text(encoding="utf-8").replace(
+                f"# 数据来源\n{table}\n", f"# 数据来源\n- 数据库表 `{table}` 的全部列（合成数据）。\n"
+            ),
+            encoding="utf-8",
+        )
+
+
+def test_sentence_style_sources_still_bind_and_unmatched_table_does_not_block(tmp_path):
+    _objects(tmp_path)
+    _sentence_sources(tmp_path)
+    (tmp_path / "ontology" / "object" / "月报.md").write_text(
+        "# 数据来源\n- 期初值来自 `客户表`。\n\n# 对象属性清单\n"
+        "| 中文名称 | 英文名称 | 描述 | 主键 | 类型 |\n| --- | --- | --- | --- | --- |\n"
+        "| 月份 | MONTH | 合成月份 | 是 | 字符串 |\n",
+        encoding="utf-8",
+    )
+    plan = eval_import.collect(tmp_path, {"files": [_business_data(tmp_path)]})
+    assert not plan["problems"], plan["problems"]
+    objects = plan["binding"]["objects"]
+    assert objects["客户"]["table"] == "客户表" and objects["订单"]["table"] == "订单表"
+    assert objects["月报"]["table"] == ""
+    assert any("首行不是表名" in w for w in plan["warnings"])
+    assert any("月报" in w and "没有一列能对上" in w for w in plan["warnings"])
+
+
+def test_mock_sheet_named_by_quoted_table_in_sentence_source(tmp_path):
+    _objects(tmp_path)
+    _sentence_sources(tmp_path)
+    mock = tmp_path / "ontology" / "data-mock"
+    mock.mkdir(parents=True)
+    (mock / "订单.md").write_text(
+        "# 订单 测试数据\n\n| 订单号 | 客户编号 |\n|---|---|\n| O1 | C1 |\n", encoding="utf-8"
+    )
+    plan = eval_import.collect(tmp_path, {"include_mock": True})
+    assert not plan["problems"], plan["problems"]
+    assert plan["tables"][0].name == "订单表"
+    assert plan["binding"]["objects"]["订单"]["table"] == "订单表"
+
+
 def test_graph_problems_flag_invalid_property_names(tmp_path):
     _objects(tmp_path)
     doc = tmp_path / "ontology" / "object" / "客户.md"

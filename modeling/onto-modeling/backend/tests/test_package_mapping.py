@@ -98,6 +98,68 @@ def test_template_placeholder_and_none_are_not_table_names(tmp_path):
     assert not result["problems"]
 
 
+def test_sentence_first_line_binds_first_existing_quoted_table(tmp_path):
+    """首行写成说明句：整句不是表名，按句中反引号标出且真实存在的第一个表绑定并提示改写。"""
+    root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"], "T_USER": ["USER_ID"]})
+    write_object(
+        root, "订单", [("订单号", "ORDER_ID"), ("金额", "AMOUNT")],
+        source="- 数据库表 `T_ORDER` 的 `ORDER_ID` / `AMOUNT` 列（按月汇总）。\n- 客户信息见 `T_USER`。",
+    )
+    result = package_mapping.resolve_object_tables(root)
+    item = result["objects"]["订单"]
+    assert item["table"] == "T_ORDER" and item["matched_by"] == "declared"
+    assert not result["problems"]
+    assert any("首行不是表名" in w for w in result["warnings"])
+
+
+def test_backticked_bare_name_is_a_declaration(tmp_path):
+    root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
+    write_object(root, "订单", [("订单号", "ORDER_ID"), ("金额", "AMOUNT")], source="- `T_ORDER`")
+    result = package_mapping.resolve_object_tables(root)
+    assert result["objects"]["订单"]["matched_by"] == "declared"
+    assert not any("首行不是表名" in w for w in result["warnings"])
+
+
+@pytest.mark.parametrize("source", [
+    "无\n- 由上游流程写入，不落库。",
+    "无（派生对象，不落库）\n\n> 见 `T_ARCHIVE`",
+])
+def test_none_with_notes_declares_nothing(tmp_path, source):
+    """首行「无」即不声明：后面的说明行不能被当成表名。"""
+    root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
+    write_object(root, "订单", [("订单号", "ORDER_ID"), ("金额", "AMOUNT")], source=source)
+    result = package_mapping.resolve_object_tables(root)
+    assert result["objects"]["订单"]["declared_table"] == ""
+    assert result["objects"]["订单"]["matched_by"] == "inferred"
+    assert not result["problems"]
+
+
+def test_bare_missing_name_does_not_fall_back_to_notes(tmp_path):
+    """首行是规范表名但本轮没有这张表时，不从说明行里另找一张表顶替。"""
+    root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
+    write_object(
+        root, "订单", [("订单号", "ORDER_ID"), ("金额", "AMOUNT")],
+        source="T_ORDER_ARCHIVE\n\n> 历史明细另见 `T_ORDER`",
+    )
+    result = package_mapping.resolve_object_tables(root)
+    assert result["objects"]["订单"]["table"] == ""
+    assert any("T_ORDER_ARCHIVE" in p and "首行只写表名" in p for p in result["problems"])
+
+
+def test_declared_table_without_matching_columns_blocks_only_when_strict(tmp_path):
+    root = make_workspace(tmp_path, {"T_STOCK": ["STOCK_ID", "QTY"], "T_ORDER": ["ORDER_ID", "AMOUNT"]})
+    write_object(root, "月报", [("月份", "MONTH"), ("产量", "OUTPUT")], source="T_STOCK")
+    write_object(root, "订单", [("订单号", "ORDER_ID"), ("金额", "AMOUNT")], source="T_ORDER")
+
+    strict = package_mapping.resolve_object_tables(root)
+    assert any("月报" in p and "没有一列能对上" in p for p in strict["problems"])
+
+    lenient = package_mapping.resolve_object_tables(root, strict_declared=False)
+    assert not lenient["problems"]
+    assert any("月报" in w and "没有一列能对上" in w for w in lenient["warnings"])
+    assert lenient["objects"]["月报"]["table"] == "" and lenient["bound"] == 1
+
+
 def test_unmatched_attributes_stay_in_fields_but_not_in_mapping(tmp_path):
     root = make_workspace(tmp_path, {"T_ORDER": ["ORDER_ID", "AMOUNT"]})
     write_object(

@@ -76,6 +76,8 @@ Rules:
 - 「数据来源」写真实表名（逐字相同）：它是发布包「来源Sheet」列与 object-data-mappings.json
   的唯一声明口径，写错或留空该对象在数据问答里就查不到。无表格资料可对照时填'无'，
   不要臆造表名；此时「英文名称」列仍应按源材料里的真实字段名写，后续可据此自动匹配。
+  首行只写表名本身（如 `T_ORDER` 就写 T_ORDER，不写"数据库表 `T_ORDER` 的…列"这种句子，
+  否则整句会被当成表名），说明另起一行以 `> ` 开头；一个对象只声明一张表。
 - Types: 字符串/数字/布尔/枚举/日期/对象引用
 - Use `[[]]` only for related objects that will also be extracted (or in EXISTING_FILES)
 - If no relationships, omit 关联对象 section

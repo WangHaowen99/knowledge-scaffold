@@ -204,7 +204,8 @@ def _mock_tables(root: Path) -> tuple[list[Table], dict[str, str], list[str]]:
                 f"示例数据「{key}」有列对不上对象属性：{'、'.join(untranslated[:5])}（按原列名导入，不进 mapping）"
             )
         table.columns = renamed
-        table.name = parsed["declared_table"] or key
+        # 首行是说明句时取句中第一个反引号名字，与 resolve_object_tables 的兜底同口径
+        table.name = next(iter(parsed["declared_mentions"]), parsed["declared_table"]) or key
         hints[key] = table.name
     return tables, hints, warnings
 

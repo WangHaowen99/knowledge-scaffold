@@ -396,6 +396,29 @@ def check_object_structure(doc: OntologyDoc) -> list:
     return issues
 
 
+# 数据来源首行即表名（与后端 package_mapping 同一口径），写成说明句会绑不上表；
+# 表名（Sheet 名）不含句读、反引号和 [[链接]]
+_SOURCE_SENTENCE_RE = re.compile(r"[，。；：、`]|\[\[")
+
+
+def check_object_data_source(doc: OntologyDoc) -> list:
+    body = re.sub(r"\{[^{}]*\}", " ", doc.sections.get('数据来源', ''), flags=re.S)
+    for line in body.split('\n'):
+        first = line.strip().lstrip('-*').strip()
+        if not first or first.startswith(('|', '>', '{')):
+            continue
+        if (re.fullmatch(r"`[^`]+`", first) or re.match(r"无\s*[（(，,。：:；;]", first)
+                or not _SOURCE_SENTENCE_RE.search(first)):
+            return []
+        return [Issue(
+            file=_rel(doc), severity='警告', category='数据来源格式',
+            message=f'「# 数据来源」首行应只写表名（Sheet 名，逐字相同）或"无"，说明另起一行用 > 开头；'
+                    f'当前首行会被整行当作表名：{first[:40]}',
+            source='规则检查',
+        )]
+    return []
+
+
 def check_object_table(doc: OntologyDoc) -> list:
     if not doc.attribute_rows:
         return [Issue(file=_rel(doc), severity='错误', category='表格缺失',
@@ -1108,6 +1131,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
         issues += check_todo_placeholders(doc)
         if doc.doc_type == 'object':
             issues += check_object_structure(doc)
+            issues += check_object_data_source(doc)
             issues += check_object_table(doc)
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
