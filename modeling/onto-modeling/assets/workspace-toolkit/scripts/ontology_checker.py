@@ -414,21 +414,31 @@ def _source_first_line(doc: OntologyDoc) -> str:
     return ''
 
 
+def _declares_none(first: str) -> bool:
+    return first in ('无', '-', '—') or bool(_SOURCE_NONE_RE.match(first))
+
+
+def _is_bare_name(first: str) -> bool:
+    """首行是否只写了表名：整行一个 `表名`，或不含句读、反引号、[[链接]]。"""
+    return bool(re.fullmatch(r"`[^`]+`", first)) or not _SOURCE_SENTENCE_RE.search(first)
+
+
 def _declared_table(doc: OntologyDoc) -> str:
     """「# 数据来源」声明的表名；「无」、写成说明句（由数据来源格式检查提示）时返回空。"""
     first = _source_first_line(doc)
     quoted = re.fullmatch(r"`([^`]+)`", first)
     if quoted:
         return quoted.group(1).strip()
-    if first in ('无', '-', '—') or _SOURCE_NONE_RE.match(first) or _SOURCE_SENTENCE_RE.search(first):
+    if _declares_none(first):
         return ''
-    return first
+    return first if _is_bare_name(first) else ''
 
 
 def check_object_data_source(doc: OntologyDoc) -> list:
     first = _source_first_line(doc)
-    if (not first or re.fullmatch(r"`[^`]+`", first) or _SOURCE_NONE_RE.match(first)
-            or not _SOURCE_SENTENCE_RE.search(first)):
+    if not first:
+        return []
+    if _declares_none(first) or _is_bare_name(first):
         return []
     return [Issue(
         file=_rel(doc), severity='警告', category='数据来源格式',
@@ -439,17 +449,24 @@ def check_object_data_source(doc: OntologyDoc) -> list:
 
 
 def load_table_headers(ontology_dir: Path) -> dict:
-    """工作区的 schema 资料与评测数据表表头 {表名: [列]}；读不了（如缺 openpyxl）时不做列名对账。"""
-    try:
-        return _read_table_headers(ontology_dir.resolve().parent)
-    except SystemExit:
-        return {}
+    """工作区的 schema 资料与评测数据表表头 {表名: [列]}；读不到（如缺 openpyxl）时为空，不做列名对账。"""
+    return _read_table_headers(ontology_dir.resolve().parent)
+
+
+def _needs_column(row: dict, columns: dict) -> bool:
+    """该属性应在表里有同名列：填了英文名、还没对上，且不是派生属性或非库字段。"""
+    key = row.get('英文名称', '').strip()
+    if key in ('', '无', '-') or key.lower() in columns:
+        return False
+    return not any(marker in row.get('属性规则', '') for marker in _NON_STORED_MARKERS)
 
 
 def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
     """存储属性的英文名称必须是所声明数据表的真实列名（与评测导入、发布包 mapping 同一口径）。"""
     declared = _declared_table(doc)
-    if not declared or not tables or not doc.attribute_rows:
+    if not (declared and tables):
+        return []
+    if not doc.attribute_rows:
         return []
     table = {name.lower(): name for name in tables}.get(declared.lower())
     if table is None:
@@ -462,10 +479,9 @@ def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
     columns = {c.lower(): c for c in tables[table]}
     issues, missing = [], []
     for row in doc.attribute_rows:
-        key = row.get('英文名称', '').strip()
-        if (not key or key in ('无', '-') or key.lower() in columns
-                or any(m in row.get('属性规则', '') for m in _NON_STORED_MARKERS)):
+        if not _needs_column(row, columns):
             continue
+        key = row.get('英文名称', '').strip()
         aliases = [a.strip() for a in re.split(r'[,，、]', row.get('属性别名', '')) if a.strip()]
         real = next((columns[a.lower()] for a in aliases if a.lower() in columns), '')
         if real:

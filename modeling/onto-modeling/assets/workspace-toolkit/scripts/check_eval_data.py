@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import re
 import sys
@@ -86,12 +87,17 @@ def table_headers(root: Path) -> dict[str, list[str]]:
     """
     directives = load_directives(root)
     schema_files = [p for p, d in directives.items() if isinstance(d, dict) and d.get("purpose") == "schema"]
+    # 作为库被 ontology_checker 调用时缺 openpyxl 只跳过 Excel，不能像命令行那样退出进程
+    excel_ok = importlib.util.find_spec("openpyxl") is not None
     tables: dict[str, list[str]] = {}
     for rel in schema_files + uploaded_eval_files(root):
         path = root / rel
-        if str(rel).lower().endswith(TABLE_SUFFIXES) and path.is_file():
-            for name, headers in read_tables(path).items():
-                tables.setdefault(name, headers)
+        if not (str(rel).lower().endswith(TABLE_SUFFIXES) and path.is_file()):
+            continue
+        if path.suffix.lower() != ".csv" and not excel_ok:
+            continue
+        for name, headers in read_tables(path).items():
+            tables.setdefault(name, headers)
     return tables
 
 

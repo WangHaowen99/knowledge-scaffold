@@ -95,6 +95,25 @@ def _column_index(headers: list[str], kind: str) -> int:
     return -1
 
 
+def _is_source_note(candidate: str) -> bool:
+    """「# 数据来源」里不参与表名判定的行：空行、表格、引用说明、模板占位。"""
+    if not candidate or candidate.startswith(("|", ">")):
+        return True
+    return bool(_PLACEHOLDER_RE.match(candidate))
+
+
+def _is_non_stored(field: dict) -> bool:
+    return any(marker in field["rule"] for marker in _NON_STORED_MARKERS)
+
+
+def _first_existing(names: list[str], by_lower: dict[str, str]) -> str:
+    """names 里第一个在 by_lower（小写表名 → 表名）中存在的表名；都不存在返回空。"""
+    for name in names:
+        if name.lower() in by_lower:
+            return by_lower[name.lower()]
+    return ""
+
+
 def _declared_source(text: str) -> tuple[str, list[str]]:
     """「# 数据来源」首行 → (声明的表名, 首行里反引号标出的名字)。
 
@@ -105,7 +124,7 @@ def _declared_source(text: str) -> tuple[str, list[str]]:
     source_text = re.sub(r"\{[^{}]*\}", " ", _section(text, SOURCE_SECTION), flags=re.S)
     for line in source_text.split("\n"):
         candidate = line.strip().lstrip("-*").strip()
-        if not candidate or candidate.startswith(("|", ">")) or _PLACEHOLDER_RE.match(candidate):
+        if _is_source_note(candidate):
             continue
         if _is_empty(candidate) or _NONE_WITH_NOTE_RE.match(candidate):
             return "", []
@@ -266,10 +285,7 @@ def resolve_object_tables(
         if declared:
             table = by_lower.get(declared.lower(), "")
             if not table:
-                table = next(
-                    (by_lower[name.lower()] for name in parsed["declared_mentions"] if name.lower() in by_lower),
-                    "",
-                )
+                table = _first_existing(parsed["declared_mentions"], by_lower)
                 if table:
                     warnings.append(
                         f"对象「{key}」的「# 数据来源」首行不是表名，已按句中的「{table}」绑定；"
@@ -294,10 +310,7 @@ def resolve_object_tables(
         # fields 保留全部声明属性（发布包的 `# 字段` 段要完整），column 只在对上列时填
         fields = [{**f, "column": lowered_columns.get(f["key"].lower(), "")} for f in fields]
         matched = [f for f in fields if f["column"]]
-        missing = [
-            f["key"] for f in fields
-            if table and not f["column"] and not any(m in f["rule"] for m in _NON_STORED_MARKERS)
-        ]
+        missing = [f["key"] for f in fields if not f["column"] and not _is_non_stored(f)] if table else []
         if table and not matched:
             (problems if strict_declared else warnings).append(
                 f"对象「{key}」绑定的表「{table}」没有一列能对上属性英文名"
