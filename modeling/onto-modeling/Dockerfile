@@ -21,13 +21,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./
-# vendor/wheels 由 build_release.sh 用宿主 pip 预下载（含约 100MB 的 claude-agent-sdk），
-# bind mount 不产生镜像层；本地缺的包经 pip 缓存挂载回落到镜像源
+# 索引源默认华为云 PyPI 镜像，可经 --build-arg PIP_INDEX_URL 覆盖；ARG 放在 apt 层之后，改源不失效 apt 缓存
+ARG PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple
+# vendor/wheels 由 build_release.sh 用宿主 pip 预下载，bind mount 不产生镜像层。
+# 联网时 pip 对同版本优先取索引源，vendor/wheels 只在索引不可达时兜底；重复构建的下载由 pip 缓存挂载吸收
 RUN --mount=type=bind,source=vendor/wheels,target=/tmp/wheels \
     --mount=type=cache,target=/root/.cache/pip \
     pip install \
     --find-links=/tmp/wheels \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    -i "${PIP_INDEX_URL}" \
     -r requirements.txt
 
 COPY backend/app ./app

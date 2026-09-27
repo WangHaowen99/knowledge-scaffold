@@ -1,5 +1,5 @@
 """评测数据通道测试（方案 eval-optimization-integration P1）：
-三方对账脚本、mock→评测种子转换器、后端对账端点。
+三方对账脚本、mock→评测种子转换器、资料区评测数据标签下线。
 
 脚本走真实 subprocess 执行（与 agent/平台同一路径）。
 """
@@ -14,6 +14,8 @@ import pytest
 from app import config
 
 SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
+# 评测数据源上传的文件：.ontology-state/eval-data/<文件ID>/<原文件名>
+UPLOADED = ".ontology-state/eval-data/0123456789ab/评测数据.xlsx"
 
 
 def make_workspace(tmp_path: Path) -> Path:
@@ -33,20 +35,18 @@ def make_workspace(tmp_path: Path) -> Path:
         "| 订单ID | order_id | 编号 |\n| 金额 | total_amount | 元 |\n",
         encoding="utf-8",
     )
-    # 评测数据表（xlsx：一个匹配列 + 一个未知列）
+    # 评测数据源上传的数据表（xlsx：一个匹配列 + 一个未知列）
     wb = openpyxl.Workbook()
     ws_sheet = wb.active
     ws_sheet.title = "订单"
     ws_sheet.append(["order_id", "total_amount", "unknown_col"])
     ws_sheet.append(["o1", 12, "x"])
-    wb.save(ws / "resource" / "excel" / "评测数据.xlsx")
+    (ws / UPLOADED).parent.mkdir(parents=True)
+    wb.save(ws / UPLOADED)
 
     (ws / "resource" / "materials.json").write_text(
         json.dumps(
-            {
-                "resource/excel/订单表.csv": {"purpose": "schema", "reading_mode": "on_demand"},
-                "resource/excel/评测数据.xlsx": {"purpose": "eval_data", "reading_mode": "on_demand"},
-            },
+            {"resource/excel/订单表.csv": {"purpose": "schema", "reading_mode": "on_demand"}},
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -69,7 +69,7 @@ def test_check_eval_data_reports_three_way_alignment(tmp_path):
     assert data["schema_columns"] == 3
     assert data["object_attributes"] == 2
     entry = data["files"][0]
-    assert entry["path"] == "resource/excel/评测数据.xlsx"
+    assert entry["path"] == UPLOADED  # 默认对账数据源上传的文件
     sheet = entry["sheets"][0]
     assert sheet["schema_matched"] == ["order_id", "total_amount"]
     assert sheet["data_only"] == ["unknown_col"]  # schema 中不存在
@@ -82,7 +82,7 @@ def test_check_eval_data_reports_three_way_alignment(tmp_path):
     sh.title = "订单"
     sh.append(["order_id", "total_amount"])
     sh.append(["o1", 12])
-    wb.save(ws / "resource" / "excel" / "评测数据.xlsx")
+    wb.save(ws / UPLOADED)
     proc = run_script(ws, "check_eval_data.py", "--json")
     data = json.loads(proc.stdout)
     assert data["status"] == "ok" and proc.returncode == 0
@@ -90,10 +90,7 @@ def test_check_eval_data_reports_three_way_alignment(tmp_path):
 
 def test_check_eval_data_without_schema(tmp_path):
     ws = make_workspace(tmp_path)
-    (ws / "resource" / "materials.json").write_text(
-        json.dumps({"resource/excel/评测数据.xlsx": {"purpose": "eval_data"}}, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    (ws / "resource" / "materials.json").write_text("{}", encoding="utf-8")
     import shutil
 
     shutil.rmtree(ws / "ontology" / "object")
@@ -123,17 +120,25 @@ def test_mock_to_eval_seed_builds_workbook(tmp_path):
     assert len(rows) == 3
 
 
-def test_eval_data_purpose_accepted_by_workspace(tmp_path, monkeypatch):
-    from app.services.workspace import WorkspaceManager
+def test_eval_data_purpose_retired_from_materials(tmp_path, monkeypatch):
+    """评测数据改在数据源里上传：资料区不再接受 eval_data 标签，存量标签按 auto 展示。"""
+    from app.services.workspace import WorkspaceManager, WorkspaceError
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
     meta = manager.create_project("评测数据用途")
+    assert "eval_data" not in manager.MATERIAL_PURPOSES
     saved = manager.save_resource(
         meta["id"], "excel", "数据.csv", b"a,b\n1,2\n",
         purpose="eval_data", reading_mode="on_demand",
     )
+    with pytest.raises(WorkspaceError):
+        manager.set_resource_directive(meta["id"], saved["path"], "eval_data")
+
+    root = manager.project_root(meta["id"])
+    (root / "resource" / "materials.json").write_text(
+        json.dumps({saved["path"]: {"purpose": "eval_data", "reading_mode": "full"}}),
+        encoding="utf-8",
+    )
     directives = manager.resource_directives(meta["id"])
-    assert directives[saved["path"]]["purpose"] == "eval_data"
-    with pytest.raises(Exception):
-        manager.set_resource_directive(meta["id"], saved["path"], "not-a-purpose")
+    assert directives[saved["path"]] == {"purpose": "auto", "reading_mode": "full"}

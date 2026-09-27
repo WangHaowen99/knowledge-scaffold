@@ -18,6 +18,7 @@ REPORT_TZ = ZoneInfo("Asia/Shanghai")
 sys.path.append(str(Path(__file__).resolve().parent))
 from knowledge_helper import parse_frontmatter as _hk_parse_frontmatter
 from script_contract import ScriptContractError, parse_script_contract
+from check_eval_data import table_headers as _read_table_headers
 
 # =============================================================================
 # DATA MODELS
@@ -393,6 +394,114 @@ def check_object_structure(doc: OntologyDoc) -> list:
         if s not in doc.sections:
             issues.append(Issue(file=_rel(doc), severity='建议', category='结构缺失',
                                 message=f'建议添加章节：# {s}', source='规则检查'))
+    return issues
+
+
+# 数据来源首行即表名（与后端 package_mapping 同一口径），写成说明句会绑不上表；
+# 表名（Sheet 名）不含句读、反引号和 [[链接]]
+_SOURCE_SENTENCE_RE = re.compile(r"[，。；：、`]|\[\[")
+_SOURCE_NONE_RE = re.compile(r"无\s*[（(，,。：:；;]")
+# 属性规则里带这些标记的属性本来就不在数据表里：operation 计算得到的、取自文档的常量
+_NON_STORED_MARKERS = ('派生：', '派生:', '非库字段')
+
+
+def _source_first_line(doc: OntologyDoc) -> str:
+    body = re.sub(r"\{[^{}]*\}", " ", doc.sections.get('数据来源', ''), flags=re.S)
+    for line in body.split('\n'):
+        first = line.strip().lstrip('-*').strip()
+        if first and not first.startswith(('|', '>', '{')):
+            return first
+    return ''
+
+
+def _declares_none(first: str) -> bool:
+    return first in ('无', '-', '—') or bool(_SOURCE_NONE_RE.match(first))
+
+
+def _is_bare_name(first: str) -> bool:
+    """首行是否只写了表名：整行一个 `表名`，或不含句读、反引号、[[链接]]。"""
+    return bool(re.fullmatch(r"`[^`]+`", first)) or not _SOURCE_SENTENCE_RE.search(first)
+
+
+def _declared_table(doc: OntologyDoc) -> str:
+    """「# 数据来源」声明的表名；「无」、写成说明句（由数据来源格式检查提示）时返回空。"""
+    first = _source_first_line(doc)
+    quoted = re.fullmatch(r"`([^`]+)`", first)
+    if quoted:
+        return quoted.group(1).strip()
+    if _declares_none(first):
+        return ''
+    return first if _is_bare_name(first) else ''
+
+
+def check_object_data_source(doc: OntologyDoc) -> list:
+    first = _source_first_line(doc)
+    if not first:
+        return []
+    if _declares_none(first) or _is_bare_name(first):
+        return []
+    return [Issue(
+        file=_rel(doc), severity='警告', category='数据来源格式',
+        message=f'「# 数据来源」首行应只写表名（Sheet 名，逐字相同）或"无"，说明另起一行用 > 开头；'
+                f'当前首行会被整行当作表名：{first[:40]}',
+        source='规则检查',
+    )]
+
+
+def load_table_headers(ontology_dir: Path) -> dict:
+    """工作区的 schema 资料与评测数据表表头 {表名: [列]}；读不到（如缺 openpyxl）时为空，不做列名对账。"""
+    return _read_table_headers(ontology_dir.resolve().parent)
+
+
+def _needs_column(row: dict, columns: dict) -> bool:
+    """该属性应在表里有同名列：填了英文名、还没对上，且不是派生属性或非库字段。"""
+    key = row.get('英文名称', '').strip()
+    if key in ('', '无', '-') or key.lower() in columns:
+        return False
+    return not any(marker in row.get('属性规则', '') for marker in _NON_STORED_MARKERS)
+
+
+def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
+    """存储属性的英文名称必须是所声明数据表的真实列名（与评测导入、发布包 mapping 同一口径）。"""
+    declared = _declared_table(doc)
+    if not (declared and tables):
+        return []
+    if not doc.attribute_rows:
+        return []
+    table = {name.lower(): name for name in tables}.get(declared.lower())
+    if table is None:
+        return [Issue(
+            file=_rel(doc), severity='警告', category='列名对账',
+            message=f'「# 数据来源」声明的表「{declared}」不在 schema 资料或评测数据表里'
+                    f'（现有表：{"、".join(sorted(tables)[:10])}{"…" if len(tables) > 10 else ""}）',
+            source='规则检查',
+        )]
+    columns = {c.lower(): c for c in tables[table]}
+    issues, missing = [], []
+    for row in doc.attribute_rows:
+        if not _needs_column(row, columns):
+            continue
+        key = row.get('英文名称', '').strip()
+        aliases = [a.strip() for a in re.split(r'[,，、]', row.get('属性别名', '')) if a.strip()]
+        real = next((columns[a.lower()] for a in aliases if a.lower() in columns), '')
+        if real:
+            issues.append(Issue(
+                file=_rel(doc), severity='错误', category='列名对账',
+                message=f'属性「{row.get("中文名称") or key}」的英文名称 {key} 不是表「{table}」的列名，'
+                        f'属性别名里的 {real} 才是：英文名称改为 {real}（旧名可留作别名）；'
+                        f'若 {real} 其实不是同一字段，从属性别名里删掉它',
+                source='规则检查',
+            ))
+        else:
+            missing.append(key)
+    if missing:
+        issues.append(Issue(
+            file=_rel(doc), severity='警告', category='列名对账',
+            message=f'{len(missing)} 个属性在表「{table}」里没有同名列：{"、".join(missing[:8])}'
+                    f'{"…" if len(missing) > 8 else ""}。从库里读取的属性改为真实列名；'
+                    '计算得到的按「派生：由 [[operation名]] 写入」标注；取自文档的常量在属性规则里注明「非库字段」',
+            source='规则检查',
+        ))
     return issues
 
 
@@ -1102,12 +1211,15 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
     issues += check_file_locations(ontology_dir)
     issues += check_unpackaged_knowledge(ontology_dir)
     term_map = build_term_map(all_docs)
+    tables = load_table_headers(ontology_dir)
 
     print("Running rule checks...", file=sys.stderr)
     for doc in check_docs.values():
         issues += check_todo_placeholders(doc)
         if doc.doc_type == 'object':
             issues += check_object_structure(doc)
+            issues += check_object_data_source(doc)
+            issues += check_object_columns(doc, tables)
             issues += check_object_table(doc)
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)

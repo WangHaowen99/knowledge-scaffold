@@ -1,13 +1,13 @@
 """对象 ↔ 真实数据表绑定：发布包「来源Sheet」与 object-data-mappings.json 的单一来源。
 
 对象文档承载业务语义（「对象属性清单」的英文名称列就是真实列名），真实表名来自打了
-eval_data / schema 标签的表格资料（一个 Sheet = 一张表）。两者在这里对齐一次，三处共用：
+schema 标签的表格资料与评测数据源上传的业务数据表（一个 Sheet = 一张表）。两者在这里
+对齐一次，两处共用：
 
 - 发布包导出：objects/index.md 的「来源Sheet」列、对象文档的 `# 字段` 段，以及
   mappings/object-data-mappings.json —— modeling 导入后据此生成 sourceRefs 与 sourceColumn，
   nl2sql 才有表名和列名可用；
-- 评测前置门禁：数据集模式下没有任何对象绑定真实表时直接拦下，避免跑出"一次库都没查"的分数；
-- 资料区对账：并进 /eval-data/alignment 的返回。
+- 评测前置门禁：数据集模式下没有任何对象绑定真实表时直接拦下，避免跑出"一次库都没查"的分数。
 
 绑定优先级：对象文档「# 数据来源」的显式声明 > 属性英文名与 Sheet 列头的唯一最佳重合。
 推断只在重合列数达标且候选唯一时成立，够不着就留空（来源Sheet 写 UNBOUND），不猜。
@@ -32,7 +32,7 @@ MIN_INFERRED_COLUMNS = 2
 # modeling 图导入对属性名与关系名的标识符约束（evaluation/data-source.ts GRAPH_IDENTIFIER）
 GRAPH_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
 RELATIONS_SECTION = "关联对象"
-SOURCE_PURPOSES = ("eval_data", "schema")
+SOURCE_PURPOSES = ("schema",)
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv")
 
 SOURCE_SECTION = "数据来源"
@@ -41,6 +41,12 @@ FIELDS_SECTION = "对象属性清单"
 _EMPTY_MARKERS = {"", "无", "-", "—", "–", "n/a"}
 # 模板占位符 `{待填写：…}` 可能跨行，只认起始花括号：真实表名和列名都不会以 { 开头
 _PLACEHOLDER_RE = re.compile(r"^\{")
+# 「无」后面带括注或标点的说明（如 `无（派生对象，不落库）`）同样表示不声明
+_NONE_WITH_NOTE_RE = re.compile(r"^无\s*[（(，,。：:；;]")
+_QUOTED_RE = re.compile(r"`([^`\n]+)`")
+# 属性规则带这些标记的属性本来就不在表里（operation 计算得到的、取自文档的常量），不算缺列；
+# 与工具箱 ontology_checker 的列名对账同一口径
+_NON_STORED_MARKERS = ("派生：", "派生:", "非库字段")
 _HEADER_ALIASES = {
     "key": ("英文名称", "字段 key", "字段key", "field key", "key"),
     "cn": ("中文名称", "中文名", "字段名称"),
@@ -89,16 +95,49 @@ def _column_index(headers: list[str], kind: str) -> int:
     return -1
 
 
-def parse_object_doc(text: str) -> dict:
-    """对象文档 → {declared_table, fields[]}。fields 的 key 即属性英文名（真实列名）。"""
-    declared = ""
+def _is_source_note(candidate: str) -> bool:
+    """「# 数据来源」里不参与表名判定的行：空行、表格、引用说明、模板占位。"""
+    if not candidate or candidate.startswith(("|", ">")):
+        return True
+    return bool(_PLACEHOLDER_RE.match(candidate))
+
+
+def _is_non_stored(field: dict) -> bool:
+    return any(marker in field["rule"] for marker in _NON_STORED_MARKERS)
+
+
+def _first_existing(names: list[str], by_lower: dict[str, str]) -> str:
+    """names 里第一个在 by_lower（小写表名 → 表名）中存在的表名；都不存在返回空。"""
+    for name in names:
+        if name.lower() in by_lower:
+            return by_lower[name.lower()]
+    return ""
+
+
+def _declared_source(text: str) -> tuple[str, list[str]]:
+    """「# 数据来源」首行 → (声明的表名, 首行里反引号标出的名字)。
+
+    首行即表名；写成说明句时整句仍作为声明返回（找不到时报错要能看见原文），反引号里的
+    名字留给绑定时兜底。首行是「无」则不声明，后面的说明行也不再当表名。
+    """
     # 模板占位符 `{待填写：…}` 可能跨多行，先整块剔除再逐行找表名
     source_text = re.sub(r"\{[^{}]*\}", " ", _section(text, SOURCE_SECTION), flags=re.S)
     for line in source_text.split("\n"):
         candidate = line.strip().lstrip("-*").strip()
-        if candidate and not candidate.startswith(("|", ">")) and not _is_empty(candidate):
-            declared = candidate
-            break
+        if _is_source_note(candidate):
+            continue
+        if _is_empty(candidate) or _NONE_WITH_NOTE_RE.match(candidate):
+            return "", []
+        quoted = _QUOTED_RE.findall(candidate)
+        if quoted == [candidate.strip("`")]:  # 整行就是一个 `表名`
+            return quoted[0].strip(), []
+        return candidate, [name.strip() for name in quoted if name.strip()]
+    return "", []
+
+
+def parse_object_doc(text: str) -> dict:
+    """对象文档 → {declared_table, declared_mentions, fields[]}。fields 的 key 即属性英文名（真实列名）。"""
+    declared, mentions = _declared_source(text)
 
     headers, rows = _table(_section(text, FIELDS_SECTION))
     key_index = _column_index(headers, "key")
@@ -124,7 +163,7 @@ def parse_object_doc(text: str) -> dict:
                 "rule": "" if _is_empty(rule) else rule,
                 "primary": cell(row, "primary").strip() in ("是", "true", "yes", "Y"),
             })
-    return {"declared_table": declared, "fields": fields}
+    return {"declared_table": declared, "declared_mentions": mentions, "fields": fields}
 
 
 def read_table_headers(path: Path) -> dict[str, list[str]]:
@@ -158,16 +197,28 @@ def read_table_headers(path: Path) -> dict[str, list[str]]:
     return tables
 
 
+def _uploaded_eval_tables(root: Path) -> list[Path]:
+    """评测数据源里保存的上传数据表（只算被配置引用的，表单里未保存的上传不算）。"""
+    from . import eval_data_files, eval_data_sources
+
+    try:
+        referenced = eval_data_sources.referenced_file_ids(root.name, root)
+    except eval_data_sources.DataSourceError:
+        return []
+    paths = [eval_data_files.path_of(root, file_id) for file_id in sorted(referenced)]
+    return [p for p in paths if p is not None]
+
+
 def read_source_tables(root: Path) -> dict[str, list[str]]:
-    """打了 eval_data / schema 标签的表格资料 → {表名: 列头}。"""
+    """schema 标签的表格资料 + 评测数据源上传的数据表 → {表名: 列头}。"""
+    tables: dict[str, list[str]] = {}
     directives_path = root / "resource" / "materials.json"
     try:
         directives = json.loads(directives_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        directives = {}
     if not isinstance(directives, dict):
-        return {}
-    tables: dict[str, list[str]] = {}
+        directives = {}
     for rel, directive in directives.items():
         if not isinstance(directive, dict) or directive.get("purpose") not in SOURCE_PURPOSES:
             continue
@@ -176,6 +227,9 @@ def read_source_tables(root: Path) -> dict[str, list[str]]:
         path = (root / str(rel)).resolve()
         if not str(path).startswith(str(root.resolve())) or not path.is_file():
             continue
+        for name, headers in read_table_headers(path).items():
+            tables.setdefault(name, headers)
+    for path in _uploaded_eval_tables(root):
         for name, headers in read_table_headers(path).items():
             tables.setdefault(name, headers)
     return tables
@@ -203,10 +257,11 @@ def resolve_object_tables(
 ) -> dict:
     """对象文档 × 数据表 → 绑定结果。problems 为阻断级问题，warnings 只提示。
 
-    tables 缺省取资料区 eval_data/schema 表格；评测导入传入本轮实际导入的表，
+    tables 缺省取 schema 表格资料与评测数据源上传的数据表；评测导入传入本轮实际导入的表，
     hints 为已知的对象→表对应（mock 种子按对象生成，一张表就是一个对象）。
-    strict_declared=False 时，声明的表不在本轮数据里只提示不阻断——该对象不进 mapping，
-    与导入库依然一致。
+    strict_declared=False 时，声明的表不在本轮数据里、或一列都对不上，只提示不阻断——
+    该对象不进 mapping，与导入库依然一致。
+    「# 数据来源」首行写成说明句时，按句中反引号标出、且真实存在的第一个表名绑定并提示改写。
     """
     tables = read_source_tables(root) if tables is None else tables
     hints = hints or {}
@@ -229,12 +284,20 @@ def resolve_object_tables(
         table, matched_by = "", ""
         if declared:
             table = by_lower.get(declared.lower(), "")
+            if not table:
+                table = _first_existing(parsed["declared_mentions"], by_lower)
+                if table:
+                    warnings.append(
+                        f"对象「{key}」的「# 数据来源」首行不是表名，已按句中的「{table}」绑定；"
+                        "建议首行只写表名，说明另起一行"
+                    )
             if table:
                 matched_by = "declared"
             else:
                 (problems if strict_declared else warnings).append(
                     f"对象「{key}」声明的来源表「{declared}」在评测数据表里不存在"
-                    f"（现有表：{'、'.join(sorted(tables)) or '无'}）"
+                    f"（现有表：{'、'.join(sorted(tables)) or '无'}）；"
+                    "「# 数据来源」首行只写表名（Sheet 名，逐字相同）或「无」，说明另起一行"
                 )
         elif hints.get(key) in tables:
             table, matched_by = hints[key], "seed"
@@ -247,9 +310,11 @@ def resolve_object_tables(
         # fields 保留全部声明属性（发布包的 `# 字段` 段要完整），column 只在对上列时填
         fields = [{**f, "column": lowered_columns.get(f["key"].lower(), "")} for f in fields]
         matched = [f for f in fields if f["column"]]
-        missing = [f["key"] for f in fields if table and not f["column"]]
+        missing = [f["key"] for f in fields if not f["column"] and not _is_non_stored(f)] if table else []
         if table and not matched:
-            problems.append(f"对象「{key}」绑定的表「{table}」没有一列能对上属性英文名")
+            (problems if strict_declared else warnings).append(
+                f"对象「{key}」绑定的表「{table}」没有一列能对上属性英文名"
+            )
             table, matched_by = "", ""
             fields = [{**f, "column": ""} for f in fields]
             matched, missing = [], []

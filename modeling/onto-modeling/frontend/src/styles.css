@@ -1405,7 +1405,7 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 }
 .eval-ds-file {
   display: flex; align-items: center; gap: 8px; font-size: 12.5px;
-  padding: 3px 6px; border-radius: 6px; cursor: pointer;
+  padding: 3px 6px; border-radius: 6px;
 }
 .eval-ds-file:hover { background: rgba(0, 0, 0, 0.03); }
 .eval-ds-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -1800,10 +1800,14 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
   .erd-row-fields { padding: 0 8px 12px 32px; }
 }
 
+/* 只停自绘内容的动效：.ant-modal / 遮罩的进出场由 antd 等 animationend 收尾，
+   animation: none 会让弹窗卡在进出场中途（透明挡住页面 / 关不掉） */
 @media (prefers-reduced-motion: reduce) {
-  .erd-root *,
-  .erd-root *::before,
-  .erd-root *::after,
+  .erd-title *,
+  .erd-title *::after,
+  .erd-body *,
+  .erd-body *::before,
+  .erd-body *::after,
   .eval-live-dot::after { animation: none !important; transition: none !important; }
   .erd-glyph .erd-glyph-mark,
   .erd-phase-node svg path { stroke-dashoffset: 0; }

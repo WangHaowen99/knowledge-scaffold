@@ -137,10 +137,12 @@ Classify each issue from the A1 JSON array automatically — no user interaction
 - `结构缺失` — required section heading missing
 - `表格格式` — required table column missing
 - `术语不一致` — only when message contains a clear correction target (contains "该字段定义在" or "应通过" or similar phrasing that identifies the correct location)
+- `列名对账` — only severity `错误` (message contains "英文名称改为"): the real column name is already known
 
 **Complex** (requires expert judgment):
 - All other categories: 逻辑缺陷 / 参数未使用 / 输出不可达 / 子流程不匹配 / 业务不合理 / 描述歧义 / 关联不合理
 - `术语不一致` where the message does NOT contain a clear correction target
+- `列名对账` with severity `警告` (declared table missing, or attributes without a same-name column — needs to decide rename / derived / 非库字段)
 
 ### A4: Auto-fix simple issues + show summary
 

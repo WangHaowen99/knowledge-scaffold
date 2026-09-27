@@ -114,7 +114,7 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
 
 > 传给 agent 时：若 `SUMMARY_PATHS` 为空，在 prompt 中写 `SUMMARY_PATHS: (无，仅基于调研报告)`；若 `REPORT_PATHS` 为空，省略该行；若 `PAIRED_EXCEL_PATHS` 为空，写 `PAIRED_EXCEL_PATHS: (无同名 Excel 补充表)`。
 
-## Step 1.6: 资料用途约束（schema / term）
+## Step 1.6: 资料用途约束（schema / term / 数据表表头）
 
 读取 `resource/materials.json`（不存在则跳过本步）：
 
@@ -124,6 +124,8 @@ Set `EXCEL_CONTEXT` = 脚本 stdout。若 stdout 为空，置为 `（无同名 E
   - 空表头、重名列、主键歧义 → 用业务化的选项询问用户，不自行决断。
 - 存在 `purpose=term` 的术语表时，对象命名、别名、属性中文名必须与术语表对齐；冲突时以术语表为准并在文档"来源"处标注。
 - `reading_mode=full` 的资料在提取前必须已全文读取。
+- 运行 `python3 .claude/scripts/check_eval_data.py --headers`，stdout（JSON：`{Sheet 名: [表头列]}`，来自 schema 资料与评测数据源上传的数据表）记为 `TABLE_HEADERS`；为空（`{}`）时记为 `（无）`。
+  `TABLE_HEADERS` 非空时，它是表名与列名的**唯一依据**：对象「# 数据来源」取其中的 Sheet 名，从库里读取的属性英文名称逐字取自该 Sheet 的表头；数据字典类文档、调研报告里的字段名与之冲突时以 `TABLE_HEADERS` 为准，冲突清单写进返回摘要的注意事项。提取后的规则检查会按对象逐列对账，属性别名里才是真实列名的情况判为错误并阻止提交。
 
 ## Step 2: Determine object mode
 
@@ -168,6 +170,8 @@ SUMMARY_PATHS: {逗号分隔的摘要文件路径}
 PAIRED_EXCEL_PATHS: {逗号分隔的同名 Excel 路径；无则写 (无同名 Excel 补充表)}
 EXCEL_CONTEXT:
 {EXCEL_CONTEXT}
+TABLE_HEADERS:
+{TABLE_HEADERS}
 
 REPORT_PATHS: {调研报告路径，无则省略此行}
 OBJECTS_DIR: ontology/object/

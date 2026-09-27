@@ -1,5 +1,5 @@
 // 评测数据源配置表单：provider 字段与校验口径对齐 modeling（data-source-form.js），
-// 另含 onto-modeling 自有的数据集通道（eval_data 资料表 / mock 种子）。
+// 另含 onto-modeling 自有的数据集通道（手动上传的业务数据表 / mock 种子）。
 
 export const PROVIDER_OPTIONS = [
   { value: 'nl2sql_template', label: 'NL2SQL Template' },
@@ -25,7 +25,7 @@ export const SOURCE_KINDS = [
     value: 'dataset',
     icon: '🗄️',
     title: '业务数据表',
-    desc: '导入打了「评测数据」用途标签的业务数据表（在左栏「资料」页签上传并打标）。',
+    desc: '上传业务数据表（Excel，一个 Sheet 一张表）导入评测库，数据问答按真实数据作答。',
   },
   {
     value: 'connection',
@@ -56,7 +56,7 @@ export function sourceKind(source) {
   if (!source) return 'none';
   if (source.mode === 'connection') return 'connection';
   if (source.mode === 'dataset') {
-    return source.include_mock && !(source.resources || []).length ? 'mock' : 'dataset';
+    return source.include_mock && !(source.files || []).length ? 'mock' : 'dataset';
   }
   return 'none';
 }
@@ -69,7 +69,7 @@ export function emptySourceForm(defaults = {}) {
   return {
     name: '',
     kind: 'none',
-    resources: [],
+    files: [], // 上传的业务数据表：[{ id, name, size }]
     provider: 'nl2sql_template',
     url: '',
     token: '',
@@ -93,18 +93,18 @@ export function sourceToForm(source, defaults = {}) {
   if (!source) return form;
   const kind = sourceKind(source);
   const next = { ...form, name: source.name || '', kind };
-  if (kind === 'dataset') return { ...next, resources: [...(source.resources || [])] };
+  if (kind === 'dataset') return { ...next, files: [...(source.files || [])] };
   if (kind !== 'connection') return next;
   const config = source.config || {};
   if (source.provider === 'neo4j') {
     let graphImport = 'none';
     if (source.include_mock) graphImport = 'mock';
-    else if ((source.resources || []).length) graphImport = 'dataset';
+    else if ((source.files || []).length) graphImport = 'dataset';
     return {
       ...next,
       provider: 'neo4j',
       graph_import: graphImport,
-      resources: [...(source.resources || [])],
+      files: [...(source.files || [])],
       uri: config.uri || '',
       username: config.username || '',
       database: config.database || 'neo4j',
@@ -126,9 +126,9 @@ export function sourceToForm(source, defaults = {}) {
 
 export function sourceFormPayload(form) {
   const name = String(form.name || '').trim();
-  if (form.kind === 'mock') return { name, mode: 'dataset', resources: [], include_mock: true };
+  if (form.kind === 'mock') return { name, mode: 'dataset', files: [], include_mock: true };
   if (form.kind === 'dataset') {
-    return { name, mode: 'dataset', resources: form.resources, include_mock: false };
+    return { name, mode: 'dataset', files: fileIds(form), include_mock: false };
   }
   if (form.kind !== 'connection') return { name, mode: 'none' };
   if (form.provider === 'neo4j') {
@@ -161,17 +161,19 @@ export function sourceFormPayload(form) {
   };
 }
 
-// Neo4j 选择导入的数据 → 与 dataset 同形的 resources / include_mock
+const fileIds = (form) => (form.files || []).map((file) => file.id);
+
+// Neo4j 选择导入的数据 → 与 dataset 同形的 files / include_mock
 export function importSelection(form) {
-  if (form.graph_import === 'mock') return { resources: [], include_mock: true };
-  if (form.graph_import === 'dataset') return { resources: form.resources, include_mock: false };
-  return { resources: [], include_mock: false };
+  if (form.graph_import === 'mock') return { files: [], include_mock: true };
+  if (form.graph_import === 'dataset') return { files: fileIds(form), include_mock: false };
+  return { files: [], include_mock: false };
 }
 
 // 需要一键导入时的预览请求（dataset / mock / 带导入的 Neo4j），否则 null
 export function importPreviewRequest(form) {
-  if (form.kind === 'mock') return { resources: [], include_mock: true, graph: false };
-  if (form.kind === 'dataset') return { resources: form.resources, include_mock: false, graph: false };
+  if (form.kind === 'mock') return { files: [], include_mock: true, graph: false };
+  if (form.kind === 'dataset') return { files: fileIds(form), include_mock: false, graph: false };
   if (form.kind === 'connection' && form.provider === 'neo4j' && form.graph_import !== 'none') {
     return { ...importSelection(form), graph: true };
   }
@@ -188,8 +190,9 @@ function workspaceIdError(value, label) {
 }
 
 export function sourceFormError(form, options = {}) {
+  if (form.uploading > 0) return '数据表上传中，请稍候';
   if (form.kind === 'mock' && !options.mock_tables) return '尚无示例数据：请先完成「示例数据」阶段';
-  if (form.kind === 'dataset' && !form.resources.length) return '请至少勾选一份评测数据表';
+  if (form.kind === 'dataset' && !form.files.length) return '请至少上传一份业务数据表';
   if (form.kind !== 'connection') return '';
   if (form.provider === 'neo4j') {
     if (!String(form.uri || '').trim()) return 'Neo4j URL 不能为空';
@@ -200,7 +203,7 @@ export function sourceFormError(form, options = {}) {
       return '导入图数据需要填写 Ontology 隔离字段（按知识包隔离）';
     }
     if (form.graph_import === 'mock' && !options.mock_tables) return '尚无示例数据：请先完成「示例数据」阶段';
-    if (form.graph_import === 'dataset' && !form.resources.length) return '请至少勾选一份要导入的数据表';
+    if (form.graph_import === 'dataset' && !form.files.length) return '请至少上传一份要导入的数据表';
     return workspaceIdError(form.workspace_value, 'Workspace 对应值');
   }
   if (!/^https?:\/\//.test(String(form.url || '').trim())) {
@@ -219,7 +222,7 @@ export function sourceSummary(source, options = {}) {
   const kind = sourceKind(source);
   if (kind === 'mock') return `示例数据种子（${options.mock_tables || 0} 张示例表）`;
   if (kind === 'dataset') {
-    const names = (source.resources || []).map((path) => path.split('/').pop());
+    const names = (source.files || []).map((file) => file.name);
     return `数据表：${names.join('、') || '—'}`;
   }
   if (kind === 'connection') {
@@ -227,7 +230,7 @@ export function sourceSummary(source, options = {}) {
     if (source.provider === 'neo4j') {
       let imported = '';
       if (source.include_mock) imported = ' · 导入示例数据';
-      else if ((source.resources || []).length) imported = ` · 导入 ${source.resources.length} 份数据`;
+      else if ((source.files || []).length) imported = ` · 导入 ${source.files.length} 份数据`;
       return `${config.uri || '—'} · 库 ${config.database || 'neo4j'} · 工作空间 ${config.workspace_value || '—'}${imported}`;
     }
     return `${config.url || '—'} · Scene ${config.scene || '—'} · 工作空间 ${config.evaluation_workspace_id || '—'}`;

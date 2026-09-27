@@ -58,8 +58,12 @@ docker compose up --build          # 本地从源码起全栈（onto-modeling + 
 
 依赖复用（需 BuildKit，Docker Desktop / buildx 默认开启）：
 
-- 构建脚本先用宿主 pip 把目标平台 wheel 供应到 `vendor/wheels/`（含约 100MB 的
-  claude-agent-sdk，命中宿主缓存则零下载），镜像内经 bind mount 离线安装；
+- pip 索引源默认华为云 PyPI 镜像，可用 `ONTO_MODELING_PIP_INDEX_URL`（或 `PIP_INDEX_URL`）覆盖，
+  例如 `ONTO_MODELING_PIP_INDEX_URL=https://pypi.example.com/simple ./build.sh <version>`；
+- 宿主 pip 运行在 Python 3.11 及以上时，构建脚本先把目标平台 wheel 供应到 `vendor/wheels/`
+  （含约 100MB 的 claude-agent-sdk，命中宿主缓存则零下载），镜像内经 bind mount 作为 find-links，
+  索引不可达时兜底；宿主 Python 更低时环境标记无法按 3.11 求值、供应不完整，脚本跳过这一步，
+  避免大包在宿主和镜像内各下一遍；
 - 运行镜像基于 `python:3.11-slim`、前端构建用 `node:22-slim`，与 auth-server /
   consumer / modeling 同基础镜像，复用已拉取的层；
 - npm 与 pip 均挂 BuildKit 缓存，同机重复构建不再重新下载。

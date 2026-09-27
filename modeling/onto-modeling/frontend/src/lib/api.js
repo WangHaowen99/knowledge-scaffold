@@ -294,7 +294,6 @@ export const api = {
   saveJiuwenModelSettings: (payload) =>
     request('/api/settings/model/jiuwen', { method: 'PUT', body: JSON.stringify(payload) }),
   getProjectEngine: (pid) => request(`/api/projects/${pid}/engine`),
-  evalDataAlignment: (pid) => request(`/api/projects/${pid}/eval-data/alignment`),
   evalStatus: (pid) => request(`/api/projects/${pid}/eval/status`),
   evalCases: (pid) => request(`/api/projects/${pid}/eval/cases`),
   evalDataSourceOptions: (pid) => request(`/api/projects/${pid}/eval/data-source`),
@@ -320,6 +319,12 @@ export const api = {
       }),
     }),
   evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),
+  // 数据源表单上传业务数据表（Excel）→ { file: { id, name, size } }
+  uploadEvalDataFile: (pid, file, onProgress) => {
+    const form = new FormData();
+    form.append('file', file);
+    return xhrUpload(`/api/projects/${pid}/eval/data-files`, form, onProgress);
+  },
   // 一键导入预览：{data_source_id} 或 {resources, include_mock, graph}
   evalImportPreview: (pid, payload) =>
     request(`/api/projects/${pid}/eval/import-preview`, {

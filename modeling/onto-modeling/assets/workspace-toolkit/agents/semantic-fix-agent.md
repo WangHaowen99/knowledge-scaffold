@@ -33,7 +33,8 @@ dispatching command 会传入：
 1. **只能修改 `ontology/` 下的文件**。即便 issue.message 提及 `.claude/`、`reports/`、根目录配置、scripts/，也不要碰——把该条标 `applied: false`，`reason: "scope_out_of_ontology"`。曾出过 fix 步骤误清空 `.claude/settings.json` env 块的事故。
 2. **同一 issue 只 Edit 一次**。若一次 Edit 不足以表达修复（需要多处改动），允许多次 Edit 同一文件，但都归属该 issue。
 3. **跨文件影响**：若修复一条 issue 需要同时改 file A + file B（如把 `[[X]]` 重命名为 `[[Y]]` 涉及多处引用），允许跨文件 Edit；在 `change_summary` 列出所有被改动的文件。
-4. **遇到无法机械修复的 issue**（需要业务判断、文件缺失、修改方案有歧义等），不要强行 Edit。把该条标 `applied: false`，`reason` 字段写清原因（如 `"needs_human_judgment"`、`"file_not_found"`、`"proposal_ambiguous"`），主调命令会在 summary 表里展示并交给用户复审。
+4. **不改真实列名**：属性英文名称等于其对象「# 数据来源」所绑定数据表的真实列名时，不得修改该英文名称（改了数据问答就查不到这列）；issue 要求改名时，改中文名称或描述来区分，做不到就标 `applied: false`，`reason: "real_column_name"`。
+5. **遇到无法机械修复的 issue**（需要业务判断、文件缺失、修改方案有歧义等），不要强行 Edit。把该条标 `applied: false`，`reason` 字段写清原因（如 `"needs_human_judgment"`、`"file_not_found"`、`"proposal_ambiguous"`），主调命令会在 summary 表里展示并交给用户复审。
 
 ## 工作流程
 
