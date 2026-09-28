@@ -53,7 +53,7 @@ _CONFIRMATION_CARD_CLAIMS = (
     re.compile(r"(?:已|已经|现已)(?:成功)?(?:生成|创建|展示|发出|提交)[^。！？\n]{0,8}确认卡(?:片)?"),
 )
 
-MERMAID_SOURCE_VALIDATOR_VERSION = "mermaid-source-v1"
+MERMAID_SOURCE_VALIDATOR_VERSION = "mermaid-source-v2"
 _STABLE_READ_TOOLS = frozenset({"get_evaluation_results"})
 _STABLE_READ_INVALIDATORS = frozenset({"run_evaluation", "cancel_evaluation"})
 _CONTEXT_DEPENDENT_RECEIPT_TOOLS = frozenset({"run_script_test"})
@@ -382,6 +382,149 @@ class WriteSafetyRail(AgentRail):
         _skip_tool(ctx, result)
 
 
+# Mermaid 只在双引号标签里安全承载这些字符；未加引号时词法器会把它们当成形状或连线
+# 分隔符，浏览器端直接抛 Parse error。规则与 workflow/mermaid-source-contract.ts 的
+# mermaid.label-quoting 一一对应，两侧文案必须同步修改，否则闸门与护栏的 findings 不一致。
+_MERMAID_LABEL_STRUCTURE = re.compile(r"[\"()\[\]{}|]")
+_MERMAID_IDENTIFIER_CHARACTER = re.compile(r"[A-Za-z0-9_-]")
+# 连字符既是节点 ID 的合法字符，又是 --> / -.-> 的箭头尾巴，所以 >…] 形状必须额外
+# 排除它，否则 A[开始] --> B[结束] 里的 > 会被当成形状开头、跨过箭头吞掉后一个节点。
+_MERMAID_ASYMMETRIC_SHAPE_PREFIX = re.compile(r"[A-Za-z0-9_]")
+_MERMAID_MAX_LABEL_ISSUES = 10
+_MERMAID_LABEL_SNIPPET_LIMIT = 60
+# 长开闭符必须排在短的前面，否则 (( 会被 ( 抢先匹配、内容被截成半个形状。
+_MERMAID_LABEL_SHAPES: tuple[tuple[str, str], ...] = (
+    ("(((", ")))"), ("([", "])"), ("[[", "]]"), ("[(", ")]"), ("((", "))"), ("{{", "}}"),
+    ("[/", "/]"), ("[/", "\\]"), ("[\\", "\\]"), ("[\\", "/]"),
+    ("[", "]"), ("(", ")"), ("{", "}"), (">", "]"),
+)
+
+
+def _mermaid_find_closing(line: str, start: int, close: str) -> int:
+    index = start
+    while index < len(line):
+        if line[index] == '"':
+            # 引号内的 ] 和 } 是普通文字，Mermaid 不会当成收尾符，扫描也不能当。
+            quote_end = line.find('"', index + 1)
+            if quote_end < 0:
+                return -1
+            index = quote_end + 1
+            continue
+        if line.startswith(close, index):
+            return index
+        index += 1
+    return -1
+
+
+def _mermaid_match_shape(line: str, index: int) -> tuple[int, int, str] | None:
+    for open_token, close_token in _MERMAID_LABEL_SHAPES:
+        if not line.startswith(open_token, index):
+            continue
+        content_start = index + len(open_token)
+        content_end = _mermaid_find_closing(line, content_start, close_token)
+        if content_end >= 0:
+            return content_start, content_end, close_token
+    return None
+
+
+def _mermaid_scan_labels(line: str) -> list[str]:
+    """取出一行里的节点形状文字和 |…| 连线文字，不做完整语法解析。"""
+    labels: list[str] = []
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if char == '"':
+            quote_end = line.find('"', index + 1)
+            if quote_end < 0:
+                break
+            index = quote_end + 1
+            continue
+        if char == "|":
+            label_end = _mermaid_find_closing(line, index + 1, "|")
+            if label_end < 0:
+                break
+            labels.append(line[index + 1:label_end])
+            index = label_end + 1
+            continue
+        # 形状符必须紧跟节点 ID，否则 --> 里的 > 会被当成 >…] 形状开头。
+        previous = line[index - 1] if index > 0 else ""
+        can_open_shape = bool(_MERMAID_IDENTIFIER_CHARACTER.match(previous)) and (
+            char != ">" or bool(_MERMAID_ASYMMETRIC_SHAPE_PREFIX.match(previous))
+        )
+        shape = _mermaid_match_shape(line, index) if can_open_shape else None
+        if shape is None:
+            index += 1
+            continue
+        content_start, content_end, close_token = shape
+        labels.append(line[content_start:content_end])
+        index = content_end + len(close_token)
+    return labels
+
+
+def _mermaid_label_problem(label: str) -> str:
+    text = label.strip()
+    if not text:
+        return ""
+    if text.startswith('"'):
+        return "" if text.find('"', 1) == len(text) - 1 else "inner-quote"
+    return "unquoted" if _MERMAID_LABEL_STRUCTURE.search(text) else ""
+
+
+def _mermaid_label_snippet(label: str) -> str:
+    text = label.strip()
+    if len(text) > _MERMAID_LABEL_SNIPPET_LIMIT:
+        return f"{text[:_MERMAID_LABEL_SNIPPET_LIMIT]}…"
+    return text
+
+
+def _mermaid_label_findings(path: str, lines: list[str]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    total = 0
+    for offset, line in enumerate(lines):
+        # Mermaid 渲染前整行删除 %% 注释，注释里的括号不会进语法分析。
+        if re.match(r"^\s*%%", line):
+            continue
+        for label in _mermaid_scan_labels(line):
+            problem = _mermaid_label_problem(label)
+            if not problem:
+                continue
+            total += 1
+            if len(findings) >= _MERMAID_MAX_LABEL_ISSUES:
+                continue
+            if problem == "unquoted":
+                message = (
+                    f"{path} 第 {offset + 1} 行的流程图文字含 Mermaid 结构字符 ( ) [ ] {{ }} | \"，"
+                    f"未用双引号包裹会导致图形视图解析失败：{_mermaid_label_snippet(label)}"
+                )
+                suggestion = (
+                    '把该文字整体用双引号包裹，例如 CHK{"X ≥ MIN(TURN, COMPANY)？"}、'
+                    'A -->|"超限(含税)"| B；保留业务原文，不要删改括号或替换为其他符号'
+                )
+            else:
+                message = (
+                    f"{path} 第 {offset + 1} 行的流程图文字在双引号内还有未转义的双引号，"
+                    f"Mermaid 无法解析：{_mermaid_label_snippet(label)}"
+                )
+                suggestion = "双引号包裹的文字内部不能再出现双引号，改用中文引号「」或去掉内部引号"
+            findings.append({
+                "ruleId": "mermaid.label-quoting",
+                "path": path,
+                "message": message,
+                "suggestion": suggestion,
+            })
+    if total > len(findings):
+        findings.append({
+            "ruleId": "mermaid.label-quoting",
+            "path": path,
+            "message": (
+                f"{path} 还有 {total - len(findings)} 处同类流程图文字未按要求加引号，"
+                f"本次只列出前 {_MERMAID_MAX_LABEL_ISSUES} 处"
+            ),
+            "suggestion": "按同样方式给全文所有节点和连线文字补齐双引号后重新写入，校验会继续检查剩余位置",
+        })
+    return findings
+
+
 def _mermaid_source_findings(tool: str, arguments: dict[str, Any]) -> list[dict[str, str]]:
     path = str(arguments.get("path") or "").strip()
     if tool != "write_file" or not re.fullmatch(r"diagrams/[^/]+\.mmd", path):
@@ -404,6 +547,7 @@ def _mermaid_source_findings(tool: str, arguments: dict[str, Any]) -> list[dict[
             "message": f"{path} 的首个有效行必须是 flowchart TD 或 flowchart LR",
             "suggestion": "保留前置 %% 注释，并让首个非空、非注释行使用 flowchart TD 或 flowchart LR",
         })
+    findings.extend(_mermaid_label_findings(path, lines))
     return findings
 
 

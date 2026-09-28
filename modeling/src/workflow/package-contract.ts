@@ -125,6 +125,12 @@ export function packageGenerationContract() {
         rawMermaidSourceOnly: true,
         allowedDeclarations: ['flowchart TD', 'flowchart LR'],
         markdownCodeFencesAllowed: false,
+        labelQuoting: {
+          // 未加引号时 Mermaid 把这些字符当成形状或连线分隔符，图形视图直接解析失败。
+          requiredWhenTextContains: ['(', ')', '[', ']', '{', '}', '|', '"'],
+          form: '节点写成 id["文字"]、id{"文字"}，连线写成 -->|"文字"|',
+          keepBusinessWording: '补引号保留业务原文，不得把 ≥ 改写成 >= 或删改括号内的口径',
+        },
       },
     },
     markdown: knowledgeMarkdownGenerationContract(),
