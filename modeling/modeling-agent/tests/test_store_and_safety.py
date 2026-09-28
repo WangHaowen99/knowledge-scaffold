@@ -1550,7 +1550,7 @@ async def test_mermaid_fence_enters_candidate_auto_repair_and_repeated_finding_s
     first_result = json.loads(first.inputs.tool_result)
     assert first_result["error"] == "MERMAID_CONTENT_INVALID"
     assert first_result["retryable"] is True
-    assert first_result["validatorVersion"] == "mermaid-source-v1"
+    assert first_result["validatorVersion"] == "mermaid-source-v2"
     assert first_result["repairAttempt"] == 1
     assert first_result["repairStopped"] is False
     assert [finding["ruleId"] for finding in first_result["findings"]] == [
@@ -1587,6 +1587,60 @@ async def test_mermaid_raw_source_passes_write_rail() -> None:
     call = _write_call_context({
         "path": "diagrams/process.mmd",
         "content": f"%% provenance: generated\n%% evidence: {evidence}\nflowchart LR\nA --> B\n",
+        "evidence": [evidence],
+    })
+
+    await WriteSafetyRail(context).before_tool_call(call)  # type: ignore[arg-type]
+
+    assert call.extra == {}
+    assert call.inputs.tool_result is None
+
+
+@pytest.mark.asyncio
+async def test_mermaid_unquoted_label_with_structure_characters_is_rejected() -> None:
+    context = ToolContext(
+        project_id="project_process",
+        run_id="run_process",
+        token="token_process",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    evidence = "material:doc_process#offset=1200"
+    call = _write_call_context({
+        "path": "diagrams/process.mmd",
+        "content": (
+            f"%% evidence: {evidence}\nflowchart TD\n"
+            "  REL -->|往返| CHK_TURN{X ≥ MIN(TURN, COMPANY)？}\n"
+        ),
+        "evidence": [evidence],
+    })
+
+    await WriteSafetyRail(context).before_tool_call(call)  # type: ignore[arg-type]
+
+    result = json.loads(call.inputs.tool_result)
+    assert result["error"] == "MERMAID_CONTENT_INVALID"
+    assert result["retryable"] is True
+    assert [finding["ruleId"] for finding in result["findings"]] == ["mermaid.label-quoting"]
+    assert "第 3 行" in result["findings"][0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_mermaid_quoted_label_keeps_business_wording() -> None:
+    context = ToolContext(
+        project_id="project_process",
+        run_id="run_process",
+        token="token_process",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    evidence = "material:doc_process#offset=1200"
+    call = _write_call_context({
+        "path": "diagrams/process.mmd",
+        "content": (
+            f"%% evidence: {evidence} (中转衔接)\nflowchart TD\n"
+            '  REL -->|"往返"| CHK_TURN{"X ≥ MIN(TURN, COMPANY)？"}\n'
+            "  CHK_TURN --> DONE[完成]\n"
+        ),
         "evidence": [evidence],
     })
 
