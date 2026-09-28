@@ -415,6 +415,9 @@ function DetailBody({ st, evolution, onOpenReport, onEvolution }) {
   });
   const running = st.status === 'running';
   const notice = ['failed', 'stopped', 'interrupted'].includes(st.status) && st.message;
+  const aliasConflict = st.error_code === 'DATA_SOURCE_PACKAGE_FIELD_ALIAS_CONFLICT'
+    ? (st.error_details?.conflicts || st.conflicts || [])
+    : [];
   const hasFooterAction = Boolean(st.report || evolution);
   return (
     <div className="erd-body">
@@ -428,7 +431,21 @@ function DetailBody({ st, evolution, onOpenReport, onEvolution }) {
           </div>
         )}
       </section>
-      {notice && <div className={`erd-notice is-${st.status}`}>{st.message}</div>}
+      {notice && (
+        <div className={`erd-notice is-${st.status}`}>
+          <div>{aliasConflict.length ? '知识包存在字段名称或别名冲突，请修正后重新评测。' : st.message}</div>
+          {aliasConflict.length > 0 && (
+            <ul className="erd-error-details">
+              {aliasConflict.map((item) => (
+                <li key={`${item.path || item.object_key || ''}:${item.display_name || ''}`}>
+                  对象“{item.object_title || item.object_key || '未命名对象'}”的名称“{item.display_name || '未命名'}”同时用于字段：
+                  {Array.isArray(item.field_keys) && item.field_keys.length ? item.field_keys.join('、') : '（字段列表不可用）'}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       <Overview st={st} counts={counts} total={cases.length} filter={filter} onFilter={setFilter} />
       <CaseList cases={cases} filter={filter} onClearFilter={() => setFilter(null)} />
       {hasFooterAction && !running && (

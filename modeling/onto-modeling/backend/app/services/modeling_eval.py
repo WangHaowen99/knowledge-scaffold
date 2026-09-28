@@ -116,8 +116,23 @@ def _http(
         try:
             payload = json.loads(exc.read().decode() or "{}")
             exc.detail = str(payload.get("error") or payload.get("message") or "").strip()
+            exc.error_code = str(payload.get("code") or "").strip()
+            nested_details = payload.get("details")
+            if isinstance(nested_details, dict):
+                exc.error_details = nested_details
+            else:
+                # modeling 的 HTTP 错误响应为保持兼容，会把安全 details
+                # 展平到响应顶层（例如 conflicts/truncated），不能只读取
+                # payload.details，否则错误码会透传但冲突字段会丢失。
+                exc.error_details = {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"code", "error", "message", "reason", "display", "next"}
+                }
         except Exception:
             exc.detail = ""
+            exc.error_code = ""
+            exc.error_details = {}
         raise
 
 
@@ -835,6 +850,13 @@ def _configure_connection(
         )
     except urllib.error.HTTPError as exc:
         detail = str(getattr(exc, "detail", "") or "") or f"HTTP {exc.code}"
+        code = str(getattr(exc, "error_code", "") or "").strip()
+        details = getattr(exc, "error_details", {})
+        if code:
+            error = RuntimeError(f"数据源配置失败（{label}）：{detail}")
+            error.error_code = code
+            error.error_details = details
+            raise error from exc
         raise RuntimeError(f"数据源配置失败（{label}）：{detail}") from exc
 
 
@@ -973,4 +995,11 @@ def _run_sync(
     except Exception as exc:  # 编排失败落状态，不留悬挂的 running
         detail = str(getattr(exc, "detail", "") or "")
         text = f"{exc}：{detail}" if detail else str(exc)
-        _write_state(root, status="failed", message=text[:300])
+        state_fields = {"status": "failed", "message": text[:300]}
+        code = str(getattr(exc, "error_code", "") or "").strip()
+        details = getattr(exc, "error_details", None)
+        if code:
+            state_fields["error_code"] = code
+        if isinstance(details, dict):
+            state_fields["error_details"] = details
+        _write_state(root, **state_fields)
