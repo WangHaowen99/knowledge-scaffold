@@ -167,13 +167,15 @@ export class ProjectTransferJobManager {
     archive: Uint8Array;
     owner: string;
     authorization: string;
+    projectName?: string;
+    assertNameAvailable?: () => void;
   }): Promise<ProjectTransferJobView> {
     const job = this.createJob('import', input.owner);
     await mkdir(this.jobDir, { recursive: true, mode: 0o700 });
     job.inputPath = join(this.jobDir, `${job.id}.upload`);
     await writeFile(job.inputPath, input.archive, { mode: 0o600, flag: 'wx' });
     this.jobs.set(job.id, job);
-    setImmediate(() => this.enqueue(() => this.runImport(job, input.authorization)));
+    setImmediate(() => this.enqueue(() => this.runImport(job, input)));
     return publicJob(job);
   }
 
@@ -240,23 +242,29 @@ export class ProjectTransferJobManager {
     }
   }
 
-  private async runImport(job: ProjectTransferJob, authorization: string): Promise<void> {
+  private async runImport(
+    job: ProjectTransferJob,
+    input: { authorization: string; projectName?: string; assertNameAvailable?: () => void },
+  ): Promise<void> {
     this.markRunning(job);
     try {
       if (!job.inputPath) throw new Error('项目迁移包临时文件不存在');
+      // 任务串行执行，入队后到真正执行前可能出现新的同名项目，执行前再校验一次
+      input.assertNameAvailable?.();
       const archive = new Uint8Array(await readFile(job.inputPath));
       job.project = await importProjectTransferArchive({
         db: this.db,
         dataDir: this.dataDir,
         archive,
         owner: job.owner,
+        ...(input.projectName ? { projectName: input.projectName } : {}),
         ...(this.agentTransfer ? {
           importAgentRuntime: (projectId, payload) => this.agentTransfer!.importProject(
             projectId,
             payload,
-            authorization,
+            input.authorization,
           ),
-          removeAgentRuntime: (projectId) => this.agentTransfer!.removeProject(projectId, authorization),
+          removeAgentRuntime: (projectId) => this.agentTransfer!.removeProject(projectId, input.authorization),
         } : {}),
         onProgress: (progress) => this.markProgress(job, progress),
       });
