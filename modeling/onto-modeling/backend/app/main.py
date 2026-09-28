@@ -103,7 +103,10 @@ async def auth_error_handler(request: Request, exc: AuthError):
 
 @app.exception_handler(WorkspaceError)
 async def workspace_error_handler(request: Request, exc: WorkspaceError):
-    return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+    return JSONResponse(
+        status_code=exc.status,
+        content={"error": str(exc), "code": exc.code},
+    )
 
 
 @app.exception_handler(SessionError)

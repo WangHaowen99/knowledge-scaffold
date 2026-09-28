@@ -9,13 +9,22 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows development fallback
+    fcntl = None
 
 from .. import config
 from . import package_mapping
@@ -32,10 +41,15 @@ tmp/
 """
 
 
+_PROJECT_LOCKS: dict[str, threading.RLock] = {}
+_PROJECT_LOCKS_GUARD = threading.Lock()
+
+
 class WorkspaceError(Exception):
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, code: str = "workspace_error"):
         super().__init__(message)
         self.status = status
+        self.code = code
 
 
 class WorkspaceManager:
@@ -43,6 +57,82 @@ class WorkspaceManager:
         self.workspaces_dir = Path(data_dir) / "workspaces"
         self.assets_dir = Path(assets_dir)
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
+
+    def _lock_path(self, project_id: str) -> Path:
+        """Return a lock outside the project so it is never included in exports/git."""
+        key = hashlib.sha256(project_id.encode("utf-8")).hexdigest()
+        return self.workspaces_dir.parent / ".workspace-locks" / f"{key}.lock"
+
+    @contextmanager
+    def _project_lock(self, project_id: str):
+        """Serialize project mutations and metadata reads across managers/processes."""
+        lock_path = self._lock_path(project_id)
+        key = str(lock_path.resolve())
+        with _PROJECT_LOCKS_GUARD:
+            lock = _PROJECT_LOCKS.setdefault(key, threading.RLock())
+        lock.acquire()
+        fd = None
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            if fd is not None:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            lock.release()
+
+    @staticmethod
+    def _atomic_write(path: Path, data: bytes) -> None:
+        """Write a file beside its destination and replace it atomically."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        old_mode = path.stat().st_mode & 0o777 if path.is_file() else None
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        temporary_path = Path(temporary)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                fd = None
+                if old_mode is not None:
+                    os.fchmod(stream.fileno(), old_mode)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, path)
+            try:
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+            except OSError:
+                directory_fd = None
+            if directory_fd is not None:
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            temporary_path.unlink(missing_ok=True)
+
+    @classmethod
+    def _atomic_write_text(cls, path: Path, content: str) -> None:
+        cls._atomic_write(path, content.encode("utf-8"))
+
+    @staticmethod
+    def _snapshot(path: Path) -> tuple[bool, bytes]:
+        exists = path.is_file()
+        return (exists, path.read_bytes() if exists else b"")
+
+    @classmethod
+    def _restore_snapshot(cls, path: Path, snapshot: tuple[bool, bytes]) -> None:
+        existed, data = snapshot
+        if existed:
+            cls._atomic_write(path, data)
+        else:
+            path.unlink(missing_ok=True)
 
     # ---- 项目 CRUD ----
 
@@ -76,8 +166,8 @@ class WorkspaceManager:
             "owner": owner or "",
             "background": (background or "").strip()[:200],
         }
-        (root / META_FILE).write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        self._atomic_write_text(
+            root / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
         )
 
         _git(root, "init")
@@ -213,8 +303,16 @@ class WorkspaceManager:
         return self._update_meta(project_id, members=members)
 
     def get_project(self, project_id: str) -> dict:
-        root = self.project_root(project_id)
-        return json.loads((root / META_FILE).read_text(encoding="utf-8"))
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            try:
+                return json.loads((root / META_FILE).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise WorkspaceError(
+                    "项目元数据暂时不可用，请稍后重试",
+                    503,
+                    "project_metadata_unavailable",
+                ) from exc
 
     def project_root(self, project_id: str) -> Path:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", project_id):
@@ -376,8 +474,12 @@ class WorkspaceManager:
             return {}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return {}
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise WorkspaceError(
+                "资料用途元数据暂时不可用，请稍后重试",
+                503,
+                "resource_metadata_unavailable",
+            ) from exc
         if not isinstance(data, dict):
             return {}
         for directive in data.values():
@@ -392,23 +494,29 @@ class WorkspaceManager:
             raise WorkspaceError(f"资料用途必须是 {list(self.MATERIAL_PURPOSES)} 之一")
         if reading_mode not in self.MATERIAL_READING_MODES:
             raise WorkspaceError(f"读取模式必须是 {list(self.MATERIAL_READING_MODES)} 之一")
-        root = self.project_root(project_id)
-        target = self._resolve_inside(root, rel_path)
-        rel = target.relative_to(root.resolve()).as_posix()
-        if not rel.startswith("resource/") or not target.is_file():
-            raise WorkspaceError("只能为 resource/ 下的资料设置用途", 400)
-        directives = self.resource_directives(project_id)
-        directives[rel] = {"purpose": purpose, "reading_mode": reading_mode}
-        self._write_resource_directives(root, directives)
-        # 用途变化会影响派生产物的口径，视同资料更新
-        self._update_meta(project_id, resource_updated_at=int(time.time()))
-        return {"path": rel, **directives[rel]}
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            target = self._resolve_inside(root, rel_path)
+            rel = target.relative_to(root.resolve()).as_posix()
+            if not rel.startswith("resource/") or not target.is_file():
+                raise WorkspaceError("只能为 resource/ 下的资料设置用途", 400)
+            directives_path = root / "resource" / "materials.json"
+            snapshot = self._snapshot(directives_path)
+            try:
+                directives = self.resource_directives(project_id)
+                directives[rel] = {"purpose": purpose, "reading_mode": reading_mode}
+                self._write_resource_directives(root, directives)
+                # 用途变化会影响派生产物的口径，视同资料更新
+                self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+            except Exception:
+                self._restore_snapshot(directives_path, snapshot)
+                raise
+            return {"path": rel, **directives[rel]}
 
     def _write_resource_directives(self, root: Path, directives: dict) -> None:
-        (root / "resource").mkdir(exist_ok=True)
-        (root / "resource" / "materials.json").write_text(
+        self._atomic_write_text(
+            root / "resource" / "materials.json",
             json.dumps(directives, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
 
     def save_resource(
@@ -425,34 +533,54 @@ class WorkspaceManager:
         safe_name = Path(filename).name
         if not safe_name or safe_name.startswith(".") or safe_name != filename:
             raise WorkspaceError("无效的文件名")
-        root = self.project_root(project_id)
-        dest_dir = root / "resource" / subdir
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / safe_name
-        replaced = dest.exists()
-        dest.write_bytes(data)
-        rel = f"resource/{subdir}/{safe_name}"
-        if purpose != "auto" or reading_mode != "on_demand":
-            directives = self.resource_directives(project_id)
-            directives[rel] = {
-                "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
-                "reading_mode": reading_mode
-                if reading_mode in self.MATERIAL_READING_MODES
-                else "on_demand",
-            }
-            self._write_resource_directives(root, directives)
-        # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
-        self._update_meta(project_id, resource_updated_at=int(time.time()))
-        return {"path": rel, "size": len(data), "replaced": replaced}
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            dest_dir = root / "resource" / subdir
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / safe_name
+            replaced = dest.exists()
+            file_snapshot = self._snapshot(dest)
+            directives_path = root / "resource" / "materials.json"
+            directives_snapshot = self._snapshot(directives_path)
+            try:
+                self._atomic_write(dest, data)
+                rel = f"resource/{subdir}/{safe_name}"
+                if purpose != "auto" or reading_mode != "on_demand":
+                    directives = self.resource_directives(project_id)
+                    directives[rel] = {
+                        "purpose": purpose if purpose in self.MATERIAL_PURPOSES else "auto",
+                        "reading_mode": reading_mode
+                        if reading_mode in self.MATERIAL_READING_MODES
+                        else "on_demand",
+                    }
+                    self._write_resource_directives(root, directives)
+                # 变更提醒依据：前端对比该时间与派生产物版本，提示"资料已更新，可让助手增量刷新"
+                self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+            except Exception:
+                self._restore_snapshot(dest, file_snapshot)
+                self._restore_snapshot(directives_path, directives_snapshot)
+                raise
+            return {"path": rel, "size": len(data), "replaced": replaced}
 
     # ---- 生命周期扩展 ----
 
     def _update_meta(self, project_id: str, **fields) -> dict:
-        root = self.project_root(project_id)
-        meta = json.loads((root / META_FILE).read_text(encoding="utf-8"))
+        with self._project_lock(project_id):
+            root = self.project_root(project_id)
+            return self._update_meta_unlocked(root, **fields)
+
+    def _update_meta_unlocked(self, root: Path, **fields) -> dict:
+        try:
+            meta = json.loads((root / META_FILE).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WorkspaceError(
+                "项目元数据暂时不可用，请稍后重试",
+                503,
+                "project_metadata_unavailable",
+            ) from exc
         meta.update(fields)
-        (root / META_FILE).write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        self._atomic_write_text(
+            root / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
         )
         return meta
 
@@ -798,8 +926,8 @@ class WorkspaceManager:
             "owner": owner or "",
             "created_at": int(time.time()),
         }
-        (root / META_FILE).write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        self._atomic_write_text(
+            root / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
         )
         if not (root / ".git").is_dir():
             _git(root, "init")
@@ -981,14 +1109,23 @@ class WorkspaceManager:
             raise WorkspaceError("只允许删除 resource/ 下的资料", 403)
         if rel.name == "materials.json" and len(rel.parts) == 2:
             raise WorkspaceError("资料用途清单不可直接删除", 403)
-        if not target.is_file():
-            raise WorkspaceError("文件不存在", 404)
-        target.unlink()
-        directives = self.resource_directives(project_id)
-        if directives.pop(rel.as_posix(), None) is not None:
-            self._write_resource_directives(root, directives)
-        self._update_meta(project_id, resource_updated_at=int(time.time()))
-        return {"deleted": rel_path}
+        with self._project_lock(project_id):
+            if not target.is_file():
+                raise WorkspaceError("文件不存在", 404)
+            file_snapshot = self._snapshot(target)
+            directives_path = root / "resource" / "materials.json"
+            directives_snapshot = self._snapshot(directives_path)
+            try:
+                target.unlink()
+                directives = self.resource_directives(project_id)
+                if directives.pop(rel.as_posix(), None) is not None:
+                    self._write_resource_directives(root, directives)
+                self._update_meta_unlocked(root, resource_updated_at=int(time.time()))
+            except Exception:
+                self._restore_snapshot(target, file_snapshot)
+                self._restore_snapshot(directives_path, directives_snapshot)
+                raise
+            return {"deleted": rel_path}
 
     def delete_file(self, project_id: str, rel_path: str, author: str = "") -> dict:
         """删除知识条目（限 knowledge/ 下）并记录版本。"""
@@ -1052,8 +1189,8 @@ class WorkspaceManager:
             meta["id"] = project_id
         dest = self.workspaces_dir / project_id
         shutil.move(str(source), str(dest))
-        (dest / META_FILE).write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        self._atomic_write_text(
+            dest / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
         )
         return meta
 
