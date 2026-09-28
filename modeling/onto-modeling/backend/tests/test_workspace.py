@@ -1,6 +1,8 @@
 """工作区管理的单元测试：目录初始化、git 基线、文件树、路径守卫。"""
 
+import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -81,6 +83,83 @@ def test_save_resource_validates_subdir(manager: WorkspaceManager):
         manager.save_resource(meta["id"], "evil", "x.md", b"")
     with pytest.raises(WorkspaceError):
         manager.save_resource(meta["id"], "others", "../x.md", b"")
+
+
+def test_concurrent_resource_uploads_keep_metadata_parseable(manager: WorkspaceManager):
+    meta = manager.create_project("并发资料")
+
+    def upload(index: int):
+        return manager.save_resource(
+            meta["id"], "others", f"item-{index}.md", f"内容 {index}".encode()
+        )
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        results = list(pool.map(upload, range(20)))
+
+    root = manager.project_root(meta["id"])
+    parsed = json.loads((root / ".onto-web.json").read_text(encoding="utf-8"))
+    assert parsed["resource_updated_at"]
+    assert len(results) == 20
+    assert {
+        result["path"]: (root / result["path"]).read_bytes()
+        for result in results
+    } == {
+        f"resource/others/item-{i}.md": f"内容 {i}".encode()
+        for i in range(20)
+    }
+
+
+def test_concurrent_directives_do_not_overwrite_each_other(manager: WorkspaceManager):
+    meta = manager.create_project("并发用途")
+    for index in range(20):
+        manager.save_resource(meta["id"], "others", f"item-{index}.md", b"x")
+
+    def set_directive(index: int):
+        return manager.set_resource_directive(
+            meta["id"], f"resource/others/item-{index}.md", "term"
+        )
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        list(pool.map(set_directive, range(20)))
+
+    directives = manager.resource_directives(meta["id"])
+    assert len(directives) == 20
+    assert all(item["purpose"] == "term" for item in directives.values())
+
+
+def test_resource_rolls_back_when_metadata_update_fails(manager: WorkspaceManager, monkeypatch):
+    meta = manager.create_project("事务回滚")
+    root = manager.project_root(meta["id"])
+
+    def fail(*args, **kwargs):
+        raise WorkspaceError("元数据不可用", 503, "project_metadata_unavailable")
+
+    monkeypatch.setattr(manager, "_update_meta_unlocked", fail)
+    with pytest.raises(WorkspaceError) as exc:
+        manager.save_resource(meta["id"], "others", "rollback.md", b"should disappear")
+    assert exc.value.code == "project_metadata_unavailable"
+    assert not (root / "resource" / "others" / "rollback.md").exists()
+
+
+def test_replacing_same_resource_is_atomic_and_reports_replaced(manager: WorkspaceManager):
+    meta = manager.create_project("重复文件")
+    first = manager.save_resource(meta["id"], "others", "same.md", b"one")
+    second = manager.save_resource(meta["id"], "others", "same.md", b"two")
+    root = manager.project_root(meta["id"])
+    assert first["replaced"] is False
+    assert second["replaced"] is True
+    assert (root / second["path"]).read_bytes() == b"two"
+    json.loads((root / ".onto-web.json").read_text(encoding="utf-8"))
+
+
+def test_corrupt_project_metadata_has_distinguishable_error(manager: WorkspaceManager):
+    meta = manager.create_project("元数据错误")
+    root = manager.project_root(meta["id"])
+    (root / ".onto-web.json").write_text("", encoding="utf-8")
+    with pytest.raises(WorkspaceError) as exc:
+        manager.get_project(meta["id"])
+    assert exc.value.status == 503
+    assert exc.value.code == "project_metadata_unavailable"
 
 
 def test_rename_and_delete_project(manager: WorkspaceManager):

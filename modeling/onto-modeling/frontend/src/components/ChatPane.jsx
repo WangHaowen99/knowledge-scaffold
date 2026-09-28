@@ -909,7 +909,7 @@ export default function ChatPane({
             patchUpload(att.uid, { percent: 100, status: 'done' });
             return { att, path: saved.path };
           } catch (error) {
-            patchUpload(att.uid, { status: 'error' });
+            patchUpload(att.uid, { status: 'error', error: error.message });
             return { att, error };
           }
         }),
@@ -1546,7 +1546,7 @@ export default function ChatPane({
                         {up.status === 'uploading' &&
                           `上传中 ${up.percent}% · ${formatSize(up.size)}`}
                         {up.status === 'done' && `已存入工作区 · ${formatSize(up.size)}`}
-                        {up.status === 'error' && '上传失败，已退回输入框'}
+                        {up.status === 'error' && `上传失败：${up.error || '未知错误'}，已退回输入框`}
                       </div>
                     </div>
                   </div>
