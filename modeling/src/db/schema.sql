@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS projects (
   id            TEXT PRIMARY KEY,
   owner         TEXT NOT NULL,
+  external_id   TEXT,
   kind          TEXT NOT NULL DEFAULT 'modeling'
                 CHECK (kind IN ('modeling', 'package')),
   runtime       TEXT NOT NULL DEFAULT 'legacy'

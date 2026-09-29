@@ -921,7 +921,11 @@ class WorkspaceManager:
         self._mount_assets(root)
         self._write_gitignore(root)
         meta = {
-            **{k: v for k, v in old_meta.items() if k not in ("members",)},
+            **{
+                k: v
+                for k, v in old_meta.items()
+                if k not in ("members", "modeling_project_id")
+            },
             "id": project_id,
             "owner": owner or "",
             "created_at": int(time.time()),

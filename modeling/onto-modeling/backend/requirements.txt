@@ -3,7 +3,6 @@ uvicorn>=0.30
 python-multipart>=0.0.9
 pyjwt[crypto]>=2.8
 claude-agent-sdk>=0.2.100
-mcp>=1.26  # 1.x/2.x 均支持（mcp_expose 有版本垫片）；openjiuwen 约束 <2 系 fastmcp
 openpyxl>=3.1
 # Jiuwen 引擎（openjiuwen 进程内 SDK，方案 docs/openjiuwen-engine-migration.md）
 openjiuwen>=0.1.18; python_version >= "3.11"

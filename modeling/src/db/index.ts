@@ -431,6 +431,12 @@ export function getDb(): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA foreign_keys = ON');
+  // schema.sql creates the external_id index. Add the column first so an
+  // existing pre-MCP database can execute the schema without failing on that
+  // index before the general compatibility migrations run.
+  if (hasTable(db, 'projects')) {
+    ensureColumn(db, 'projects', 'external_id', 'TEXT');
+  }
   // schema.sql 随源码走：dev 从 src/db 读，编译后 build 脚本拷到 dist/db。
   const schema = readFileSync(join(here, 'schema.sql'), 'utf8');
   ensureDocumentRevisionColumns(db);
@@ -445,10 +451,12 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'generation_batch_checkpoints', 'target_ids_json', "TEXT NOT NULL DEFAULT '[]'");
   // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
+  ensureColumn(db, 'projects', 'external_id', 'TEXT');
   ensureColumn(db, 'projects', 'runtime', "TEXT NOT NULL DEFAULT 'legacy'");
   ensureColumn(db, 'projects', 'sensitivity_level', "TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'projects', 'workflow_profile_json', `TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}'`);
   ensureColumn(db, 'projects', 'product_ledger_required', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_external_id ON projects(external_id) WHERE external_id IS NOT NULL');
   ensureColumn(db, 'product_ledger_drafts', 'source_fingerprint', 'TEXT');
   // 旧库的用户 LLM 配置表可能没有上下文窗口列；保留 NULL 以继续回退部署默认值。
   ensureColumn(db, 'user_llm_settings', 'context_window', 'INTEGER');

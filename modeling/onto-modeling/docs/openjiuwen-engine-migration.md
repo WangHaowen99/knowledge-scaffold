@@ -211,9 +211,8 @@ meta.json 的 engine 字段留到 Phase 2 引擎开关一起做（现仍为单�
   admin，掩码读取），env 兜底 `ONTO_WEB_JIUWEN_BASE_URL/API_KEY/MODEL`；
   配置中心「模型接入」页分 Anthropic / OpenAI 兼容两组；
 - 依赖：requirements 增 openjiuwen（`python_version>=3.11` 标记，本地 venv 已重建为
-  3.11 并顺带清理改名遗留软链）；**mcp 由 2.x 降为 1.30**（openjiuwen 的 fastmcp
-  约束），`mcp_expose` 加 1.x/2.x 双版本垫片（FastMCP settings 构造 ≙ MCPServer
-  streamable_http_app 参数）；镜像含双引擎依赖，体积增至 ~2.05GB。
+  3.11 并顺带清理改名遗留软链）；Onto Modeling 不再内置独立 MCP 暴露服务，MCP
+  服务统一复用 Modeling 侧 5188 端口；镜像仅保留实际使用的双引擎依赖。
 
 验证状态（2026-09-21 冒烟通过，Phase 2 完成）：69 后端测试全绿；线上端到端
 （v0.9.0 @5100，真实 glm-5.2）——发消息/回复/result 带 tokens；ask_user 弹出

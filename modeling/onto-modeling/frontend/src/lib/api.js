@@ -356,14 +356,19 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ engine }),
     }),
-  mcpService: () => request('/api/settings/mcp-service'),
-  mcpServiceCreateToken: (name) =>
-    request('/api/settings/mcp-service/tokens', {
+  getModelingMcp: (pid) => request(`/api/projects/${encodeURIComponent(pid)}/modeling-mcp`),
+  getModelingMcpTokens: (pid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/modeling-mcp/tokens`),
+  createModelingMcpToken: (pid, draft) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/modeling-mcp/tokens`, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(draft),
     }),
-  mcpServiceRevokeToken: (id) =>
-    request(`/api/settings/mcp-service/tokens/${id}`, { method: 'DELETE' }),
+  revokeModelingMcpToken: (pid, tokenId) =>
+    request(
+      `/api/projects/${encodeURIComponent(pid)}/modeling-mcp/tokens/${encodeURIComponent(tokenId)}`,
+      { method: 'DELETE' },
+    ),
   metrics: (pid) => request(`/api/projects/${pid}/metrics`),
   search: (pid, q) =>
     request(`/api/projects/${pid}/search?q=${encodeURIComponent(q)}`),

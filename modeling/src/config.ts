@@ -119,6 +119,7 @@ export const config = {
     tokenSecret: env('MODELING_MCP_TOKEN_SECRET'),
     tokenIssuer: env('MODELING_MCP_TOKEN_ISSUER', 'knowledge-scaffold-modeling'),
     tokenAudience: env('MODELING_MCP_TOKEN_AUDIENCE', 'knowledge-scaffold-modeling-mcp'),
+    cleanupToken: env('MODELING_MCP_CLEANUP_TOKEN'),
     defaultTokenTtlSeconds: positiveIntegerEnv('MODELING_MCP_TOKEN_TTL_SECONDS', 86_400),
     maxTokenTtlSeconds: positiveIntegerEnv('MODELING_MCP_TOKEN_MAX_TTL_SECONDS', 2_592_000),
     maxSseSessions: positiveIntegerEnv('MODELING_MCP_MAX_SSE_SESSIONS', 10_000),
