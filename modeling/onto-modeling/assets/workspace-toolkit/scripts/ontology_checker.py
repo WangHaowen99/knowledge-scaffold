@@ -398,11 +398,17 @@ def check_object_field_name_conflicts(doc: OntologyDoc) -> list:
             claims,
             key=lambda claim: ({'key': 0, '中文名': 1, '别名': 2}[claim[0]], _normalize_field_name(claim[1])),
         )[0]
-        declarations = '，'.join(
-            f'字段“{owner}”的{kind}原值“{value}”' for kind, value, owner in sorted(
-                claims, key=lambda claim: (_normalize_field_name(claim[2]), {'key': 0, '中文名': 1, '别名': 2}[claim[0]])
-            )
+        ordered_claims = sorted(
+            claims,
+            key=lambda claim: (
+                _normalize_field_name(claim[2]),
+                {'key': 0, '中文名': 1, '别名': 2}[claim[0]],
+            ),
         )
+        declaration_lines = []
+        for kind, value, owner in ordered_claims:
+            declaration_lines.append(f'字段“{owner}”的{kind}原值“{value}”')
+        declarations = '，'.join(declaration_lines)
         issues.append(Issue(
             file=_rel(doc), severity='错误', category='字段名称冲突',
             message=(f'对象“{doc.path.stem}”的字段名称“{display[1]}”同时用于字段：{"、".join(field_keys)}；'
