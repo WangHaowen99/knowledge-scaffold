@@ -13,16 +13,6 @@ from .services.agent_sessions import SDK_AVAILABLE, SessionError
 from .services.auth import AuthError
 from .services.workspace import WorkspaceError
 
-# 对外 MCP 服务（streamable-http）；其会话管理器依赖自身 lifespan，
-# Starlette 子应用的 lifespan 不会被自动执行，须并入主应用 lifespan
-try:
-    from .services.mcp_expose import build_asgi_app
-
-    _mcp_asgi = build_asgi_app()
-except Exception:  # mcp 包缺失等情况不阻塞主应用
-    _mcp_asgi = None
-
-
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     import asyncio
@@ -30,19 +20,19 @@ async def _lifespan(app: FastAPI):
     from .routers.admin import backup_scheduler_loop
     from .services.agent_sessions import manager
     from .services.modeling_eval import sweep_interrupted
+    from .services.modeling_cleanup import retry_due, scheduler_loop
 
     manager.start_background()  # 空闲会话回收（方案 4.1.1）
     # 评测编排只活在进程内：重启后仍标 running 的工作区改判中断，否则前端永久锁死
     sweep_interrupted()
     backup_task = asyncio.create_task(backup_scheduler_loop())  # workspace 定期备份
+    modeling_cleanup_task = asyncio.create_task(scheduler_loop())
     try:
-        if _mcp_asgi is not None:
-            async with _mcp_asgi.router.lifespan_context(_mcp_asgi):
-                yield
-        else:
-            yield
+        yield
     finally:
         backup_task.cancel()
+        modeling_cleanup_task.cancel()
+        await asyncio.gather(backup_task, modeling_cleanup_task, return_exceptions=True)
         await manager.shutdown()
 
 
@@ -61,15 +51,6 @@ AUTH_EXEMPT_PREFIXES = ("/api/auth/", "/api/health")
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/mcp-service"):
-        # 对外 MCP 服务：走独立的服务 token（与登录态无关）
-        from .services import mcp_expose
-
-        header = request.headers.get("authorization", "")
-        token = header[7:] if header.lower().startswith("bearer ") else ""
-        if not mcp_expose.verify_token(token):
-            return JSONResponse(status_code=401, content={"error": "无效的服务令牌"})
-        return await call_next(request)
     is_non_api = not path.startswith("/api")
     is_exempt = path.startswith(AUTH_EXEMPT_PREFIXES) or path == "/api/health"
     if (
@@ -118,9 +99,6 @@ async def session_error_handler(request: Request, exc: SessionError):
 def health():
     return {"ok": True, "agent_sdk": SDK_AVAILABLE, "drawio": _drawio_available}
 
-
-if _mcp_asgi is not None:
-    app.mount("/mcp-service", _mcp_asgi)
 
 # drawio 编辑器（官方 webapp 静态部署，iframe embed 协议接入；缺席时前端只读降级）
 _drawio_dir = Path(

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets
+from ..services import modeling_cleanup, modeling_mcp
 from ..services.workspace import WorkspaceError, WorkspaceManager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -90,6 +91,37 @@ def ensure_owner(project_id: str, request: Request):
     return root
 
 
+def provision_modeling_project(meta: dict, request: Request) -> dict:
+    """Associate a newly created Onto project with its own Modeling project."""
+    provision = None
+    try:
+        provision = modeling_mcp.provision_project(meta, request)
+        updated = provision.meta
+        project_id = provision.modeling_project_id
+        if project_id:
+            updated = workspaces._update_meta(meta["id"], modeling_project_id=project_id)
+            if modeling_mcp.configured():
+                modeling_mcp.sync_members(updated, request)
+            return updated
+        return updated
+    except Exception:
+        if provision and provision.created and provision.modeling_project_id:
+            cleanup_meta = {
+                **meta,
+                "modeling_project_id": provision.modeling_project_id,
+            }
+            try:
+                modeling_mcp.delete_project(cleanup_meta, request)
+            except Exception as cleanup_error:
+                modeling_cleanup.enqueue(
+                    cleanup_meta,
+                    reason=str(cleanup_error),
+                )
+        # Initialization failure must not leave an apparently usable, unlinked project.
+        workspaces.delete_project(meta["id"])
+        raise
+
+
 @router.get("")
 def list_projects(request: Request):
     projects = workspaces.list_projects()
@@ -108,7 +140,64 @@ def create_project(body: CreateProjectBody, request: Request):
     )
     if body.template == "example":
         workspaces.seed_example(meta["id"])
+    try:
+        meta = provision_modeling_project(meta, request)
+    except modeling_mcp.ModelingMcpError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
     return meta
+
+
+@router.get("/{project_id}/modeling-mcp")
+def get_modeling_mcp(project_id: str, request: Request):
+    ensure_access(project_id, request)
+    meta = workspaces.get_project(project_id)
+    try:
+        runtime = modeling_mcp.status(meta, request)
+        return {"runtime": runtime}
+    except modeling_mcp.ModelingMcpError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+
+
+@router.get("/{project_id}/modeling-mcp/tokens")
+def list_modeling_mcp_tokens(project_id: str, request: Request):
+    ensure_access(project_id, request, write=True)
+    meta = workspaces.get_project(project_id)
+    try:
+        return modeling_mcp.tokens(meta, request)
+    except modeling_mcp.ModelingMcpError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+
+
+class ModelingMcpTokenBody(BaseModel):
+    name: str
+    scopes: list[str] | None = None
+    expires_in_seconds: int | None = None
+
+
+@router.post("/{project_id}/modeling-mcp/tokens")
+def create_modeling_mcp_token(
+    project_id: str, body: ModelingMcpTokenBody, request: Request
+):
+    ensure_access(project_id, request, write=True)
+    meta = workspaces.get_project(project_id)
+    try:
+        payload = body.model_dump(exclude_none=True)
+        # Modeling API distinguishes omitted expiry (use default) from null (never expires).
+        if "expires_in_seconds" in body.model_fields_set:
+            payload["expires_in_seconds"] = body.expires_in_seconds
+        return modeling_mcp.issue_token(meta, request, payload)
+    except modeling_mcp.ModelingMcpError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
+
+
+@router.delete("/{project_id}/modeling-mcp/tokens/{token_id}")
+def revoke_modeling_mcp_token(project_id: str, token_id: str, request: Request):
+    ensure_access(project_id, request, write=True)
+    meta = workspaces.get_project(project_id)
+    try:
+        return modeling_mcp.revoke_token(meta, request, token_id)
+    except modeling_mcp.ModelingMcpError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
 
 @router.post("/import")
@@ -125,7 +214,11 @@ async def import_project(
     try:
         if dry_run:
             return workspaces.import_summary(tmp_path)
-        return workspaces.import_zip(name, tmp_path, owner=_request_user(request))
+        meta = workspaces.import_zip(name, tmp_path, owner=_request_user(request))
+        try:
+            return provision_modeling_project(meta, request)
+        except modeling_mcp.ModelingMcpError as exc:
+            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -137,7 +230,11 @@ async def transfer_import(request: Request, file: UploadFile = File(...)):
         tmp.write(await file.read())
         tmp_path = Path(tmp.name)
     try:
-        return workspaces.import_transfer_zip(tmp_path, owner=_request_user(request))
+        meta = workspaces.import_transfer_zip(tmp_path, owner=_request_user(request))
+        try:
+            return provision_modeling_project(meta, request)
+        except modeling_mcp.ModelingMcpError as exc:
+            return JSONResponse(status_code=exc.status, content={"error": str(exc)})
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -159,8 +256,23 @@ async def delete_project(project_id: str, request: Request):
     from ..services.agent_sessions import manager
 
     ensure_owner(project_id, request)
+    meta = workspaces.get_project(project_id)
     await manager.close(project_id)
-    return workspaces.delete_project(project_id)
+    result = workspaces.delete_project(project_id)
+    if meta.get("modeling_project_id"):
+        try:
+            modeling_mcp.delete_project(meta, request, operation="project_delete")
+        except modeling_mcp.ModelingMcpError as exc:
+            if exc.status == 404:
+                result["modeling_cleanup"] = "already_deleted"
+            else:
+                modeling_cleanup.enqueue(
+                    meta,
+                    reason=str(exc),
+                    operation="project_delete",
+                )
+                result["modeling_cleanup"] = "pending"
+    return result
 
 
 @router.post("/{project_id}/archive")
@@ -172,7 +284,11 @@ def archive_project(project_id: str, body: ArchiveBody, request: Request):
 @router.post("/{project_id}/clone")
 def clone_project(project_id: str, request: Request):
     ensure_access(project_id, request)
-    return workspaces.clone_project(project_id, owner=_request_user(request))
+    meta = workspaces.clone_project(project_id, owner=_request_user(request))
+    try:
+        return provision_modeling_project(meta, request)
+    except modeling_mcp.ModelingMcpError as exc:
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
 
 
 @router.get("/{project_id}/members")
@@ -185,7 +301,13 @@ def get_members(project_id: str, request: Request):
 @router.put("/{project_id}/members")
 def put_members(project_id: str, body: MembersBody, request: Request):
     ensure_owner(project_id, request)
+    previous = workspaces.get_project(project_id)
     meta = workspaces.set_members(project_id, body.members)
+    try:
+        modeling_mcp.sync_members(meta, request)
+    except modeling_mcp.ModelingMcpError as exc:
+        workspaces._update_meta(project_id, members=previous.get("members") or {})
+        return JSONResponse(status_code=exc.status, content={"error": str(exc)})
     return {"owner": meta.get("owner", ""), "members": meta.get("members") or {}}
 
 

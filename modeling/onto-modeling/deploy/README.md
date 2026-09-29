@@ -27,6 +27,32 @@ vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 
 访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
 
+### Modeling MCP 关联与远端清理
+
+如果 Onto Modeling 与核心 Modeling 共用认证中心，配置：
+
+```env
+ONTO_WEB_MODELING_URL=http://mw-modeling:8100
+```
+
+建议同时配置远端项目清理凭证，保证 Onto 项目创建失败或删除后，核心 Modeling
+中的关联项目可以自动清理：
+
+```env
+ONTO_WEB_MODELING_CLEANUP_TOKEN=<随机高强度值>
+ONTO_WEB_MODELING_CLEANUP_INTERVAL=30
+```
+
+核心 Modeling 侧配置同一个值：
+
+```env
+MODELING_MCP_CLEANUP_TOKEN=<与 Onto 相同的值>
+```
+
+该凭证只允许 Onto 后端与 Modeling 后端使用，不能写入前端、日志或普通用户请求。
+未配置时不影响正常项目创建和 MCP 使用，但远端清理失败会进入 Onto 的持久化补偿
+任务，可在管理员接口中查看和重试。清理任务不保存用户 Bearer Token。
+
 ## 容量规划（方案 4.1.1）
 
 - 每个活跃建模会话 = 一个 CLI 子进程，均值约 400MB、峰值 500MB+。
