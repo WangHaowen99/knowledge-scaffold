@@ -237,7 +237,14 @@ export default function App() {
       okText: '删除',
       okButtonProps: { danger: true },
       onOk: async () => {
-        await api.deleteProject(item.id);
+        try {
+          await api.deleteProject(item.id);
+        } catch (error) {
+          // antd 只把 onOk 的 rejection 打到 console，不提示用户；不接这一下，
+          // 403/409/500 都表现为"点了删除没反应"。提示后继续抛出，让弹窗留着可重试
+          message.error(error.message || '删除失败');
+          throw error;
+        }
         refreshProjects();
         if (projectId === item.id) nav('#/');
       },

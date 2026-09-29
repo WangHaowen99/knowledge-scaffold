@@ -251,13 +251,59 @@ def rename_project(project_id: str, body: RenameBody, request: Request):
     return workspaces.rename_project(project_id, body.name)
 
 
+# 忙碌时的用户提示：排队并没有在跑，套用"正在执行任务"会让人以为要等自己的活干完
+BUSY_HINTS = {
+    "agent-session-queued": "项目正在排队等待会话槽位，请等待开始并完成后再删除",
+}
+BUSY_HINT_DEFAULT = "项目正在执行任务，请等待完成后再删除"
+
+
+def _running_operation(project_id: str, root: Path) -> str | None:
+    """项目里进行中的任务名；空闲返回 None。
+
+    running/queued 与评测三类之外一律放行，且都不会把项目锁成永远删不掉：
+    等待权限确认卡时会话仍是 running，但卡片有超时自动拒绝；排队会在别的会话让出
+    槽位时出队，用户也能用"打断"立即退出队列；评测走 status_view 而不是
+    read_state，它会把"进程重启后遗留的 running"收敛为 interrupted。
+    """
+    from ..services import modeling_eval
+    from ..services.agent_sessions import manager
+
+    session = manager.get(project_id)
+    if session is not None:
+        if session.state == "running":
+            return "agent-session"
+        if session.state == "queued":
+            return "agent-session-queued"
+    try:
+        if modeling_eval.status_view(project_id, root).get("status") == "running":
+            return "modeling-eval"
+    except Exception:  # 状态读不出来不该挡住删除，否则坏一个状态文件就删不掉项目
+        pass
+    return None
+
+
 @router.delete("/{project_id}")
 async def delete_project(project_id: str, request: Request):
     from ..services.agent_sessions import manager
 
-    ensure_owner(project_id, request)
-    meta = workspaces.get_project(project_id)
-    await manager.close(project_id)
+    root = ensure_owner(project_id, request)
+    # 忙碌判定放在权限校验之后：无权删除的人不该从错误码里探出项目在不在跑
+    operation = _running_operation(project_id, root)
+    if operation:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "PROJECT_BUSY",
+                "error": BUSY_HINTS.get(operation, BUSY_HINT_DEFAULT),
+                "operation": operation,
+            },
+        )
+    meta = workspaces.get_project(project_id)  # 删除后读不到，级联清理要用，先取
+    try:
+        await manager.close(project_id)
+    except Exception:  # 会话回收失败不阻断删除，否则有活跃会话的项目永远删不掉
+        pass
     result = workspaces.delete_project(project_id)
     if meta.get("modeling_project_id"):
         try:

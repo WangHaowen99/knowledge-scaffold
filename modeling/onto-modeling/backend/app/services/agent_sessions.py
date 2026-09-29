@@ -440,9 +440,18 @@ class SessionManager:
         session.set_state("closed")
         if session.reader_task:
             session.reader_task.cancel()
-        if session.engine is not None:
-            await session.engine.disconnect()
-            session.engine = None
+        engine, session.engine = session.engine, None
+        if engine is None:
+            return
+        # disconnect 要等 CLI 应答，CLI 悬死时会永久挂起，并把 _lock 一起拖住——
+        # 走 close() 的调用方（如删除项目）因此永远不返回。超时按 interrupt 同样的方式硬杀。
+        try:
+            await asyncio.wait_for(engine.disconnect(), timeout=INTERRUPT_TIMEOUT_SECONDS)
+        except Exception:  # 含 wait_for 的 TimeoutError
+            try:
+                await asyncio.wait_for(engine.kill(), timeout=KILL_TIMEOUT_SECONDS)
+            except Exception:
+                pass
 
     async def recycle_project(self, project_id: str) -> bool:
         """运维手动回收：断开引擎但保留续接点（与空闲回收同语义）。"""
