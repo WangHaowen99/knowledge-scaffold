@@ -138,6 +138,7 @@ Classify each issue from the A1 JSON array automatically — no user interaction
 - `表格格式` — required table column missing
 - `术语不一致` — only when message contains a clear correction target (contains "该字段定义在" or "应通过" or similar phrasing that identifies the correct location)
 - `列名对账` — only severity `错误` (message contains "英文名称改为"): the real column name is already known
+- `字段名称冲突` — when the issue includes the conflicting fields and enough semantic context exists; rename the conflicting alias to an accurate unique alias, never delete it
 
 **Complex** (requires expert judgment):
 - All other categories: 逻辑缺陷 / 参数未使用 / 输出不可达 / 子流程不匹配 / 业务不合理 / 描述歧义 / 关联不合理
@@ -181,33 +182,16 @@ Wait for it to return a JSON array `APPLY_RESULTS`，按 `issue_id` 索引。
 | 1 | 1    | operation/X.md | [[Y]] 无对应文件 | ✅ 已应用：{change_summary} |
 | 2 | 5    | operation/Z.md | 字段「A」定义不一致 | ⏸ 未应用（{reason}）：{proposed_change} |
 
-**下一步建议：**
-- 回复 **确认** → 保留全部已应用修复，进入下一步（A5）
-- 回复 **逐条复审** → 对每条已应用修复查看 diff，选择 保留/撤销
-- 回复 **全部撤销** → 撤销全部已应用修复，改为人工逐条处理
-- 未应用条目会自动并入 A5 的复杂问题列表，无需在此选择
-上述选项只是参考，你也可以直接说明想修改、补充、校验或调整的内容，不必局限于这些建议。
+字段名称冲突的已应用修复直接保留并进入回归检查；修复代理只能改写冲突别名，不能删除别名、修改字段 key 或修改无冲突字段。
+其他已应用的机械修复也直接保留；未应用条目自动并入 A5 的复杂问题列表。
 ```
 
 #### A4c: Handle the reply
 
-- **确认**:
-  - `applied: true` 条目：在最终报告里保留 🔧 标记。
-  - `applied: false` 条目：合并到 A5 的复杂问题列表（带 `proposed_change` 作为起点）。
-- **逐条复审**:
-  - 对每条 `applied: true` 走：
-    ```
-    [复审 {n}/{APPLIED_COUNT}]
-    编号：{issue_id}  文件：{file}
-    问题：{message}
-    实际改动：{change_summary}
-    ```
-    展示 `git diff -- {file}` 的关键片段，让用户回 **保留** / **撤销**。
-    - 保留: 报告里保留 🔧。
-    - 撤销: `git checkout -- {files_changed}` 还原；该条降级到 A5 复杂问题列表。
-- **全部撤销**:
-  - 收集所有 `applied: true` 的 `files_changed`，`git checkout -- {files...}` 还原。
-  - 把全部 A3 simple 列表并入 A5 复杂问题列表，按 A5 人工流程处理。
+- **确认**：`applied: true` 条目保留，报告里保留 🔧 标记；字段名称冲突修复不等待确认，直接进入 A5.5 回归检查。
+- **逐条复审**：仅对非字段名称冲突的已应用条目查看 diff 并选择保留/撤销。
+- **全部撤销**：仅撤销非字段名称冲突的已应用条目；字段名称冲突修复不撤销。
+- `applied: false` 条目：合并到 A5 的复杂问题列表（带 `proposed_change` 作为起点）。
 
 ### A5: Handle complex issues via terminal
 

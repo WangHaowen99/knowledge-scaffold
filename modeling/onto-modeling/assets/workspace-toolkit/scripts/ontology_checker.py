@@ -6,6 +6,7 @@ import ast
 import json
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -344,6 +345,71 @@ ACTION_REQUIRED_SECTIONS = ['动作描述']
 # 范式升级（ADR-0004）：规则/指标为一等实体，元信息对齐 modeling 知识包模型
 RULE_REQUIRED_SECTIONS = ['规则描述', '适用对象', '约束表达']
 METRIC_REQUIRED_SECTIONS = ['指标描述', '计算公式', '数据来源']
+
+_FIELD_ALIAS_SEPARATORS = re.compile(r'[,，、;；]')
+_EMPTY_FIELD_ALIAS_MARKERS = {'无', '-', '—', '–', 'n/a'}
+
+
+def _normalize_field_name(value: str) -> str:
+    """与 modeling/src/workflow/field-alias.ts 保持一致的比较口径。"""
+    text = unicodedata.normalize('NFC', (value or '').strip())
+    return text.lower() if text.isascii() else text
+
+
+def _field_alias_tokens(value: str) -> list[str]:
+    text = (value or '').strip()
+    if not text:
+        return []
+    return [
+        token for token in (item.strip() for item in _FIELD_ALIAS_SEPARATORS.split(text))
+        if token and unicodedata.normalize('NFKC', token).lower() not in _EMPTY_FIELD_ALIAS_MARKERS
+    ]
+
+
+def check_object_field_name_conflicts(doc: OntologyDoc) -> list:
+    """检查对象内 key、中文名、别名是否指向多个不同字段。
+
+    该规则与 modeling 的 findFieldNameConflicts 保持同一归一化口径，
+    供质量检查提前发现评测启动时会阻断的问题。
+    """
+    if doc.doc_type != 'object' or not doc.attribute_rows:
+        return []
+    claims_by_name: dict[str, list[tuple[str, str, str]]] = {}
+    for row in doc.attribute_rows:
+        field_key = (row.get('英文名称') or '').strip()
+        if not field_key:
+            continue
+        claims = [('key', field_key, field_key)]
+        cn_name = (row.get('中文名称') or '').strip()
+        if cn_name:
+            claims.append(('中文名', cn_name, field_key))
+        claims.extend(('别名', alias, field_key) for alias in _field_alias_tokens(row.get('属性别名', '')))
+        for kind, value, owner in claims:
+            normalized = _normalize_field_name(value)
+            if normalized:
+                claims_by_name.setdefault(normalized, []).append((kind, value, owner))
+
+    issues = []
+    for claims in claims_by_name.values():
+        field_keys = sorted({claim[2] for claim in claims}, key=_normalize_field_name)
+        if len(field_keys) <= 1:
+            continue
+        display = sorted(
+            claims,
+            key=lambda claim: ({'key': 0, '中文名': 1, '别名': 2}[claim[0]], _normalize_field_name(claim[1])),
+        )[0]
+        declarations = '，'.join(
+            f'字段“{owner}”的{kind}原值“{value}”' for kind, value, owner in sorted(
+                claims, key=lambda claim: (_normalize_field_name(claim[2]), {'key': 0, '中文名': 1, '别名': 2}[claim[0]])
+            )
+        )
+        issues.append(Issue(
+            file=_rel(doc), severity='错误', category='字段名称冲突',
+            message=(f'对象“{doc.path.stem}”的字段名称“{display[1]}”同时用于字段：{"、".join(field_keys)}；'
+                     f'原始声明：{declarations}。请根据字段语义将冲突别名改为准确且唯一的名称，禁止删除别名。'),
+            source='规则检查',
+        ))
+    return issues
 
 
 def _rel(doc: OntologyDoc) -> str:
@@ -1221,6 +1287,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_data_source(doc)
             issues += check_object_columns(doc, tables)
             issues += check_object_table(doc)
+            issues += check_object_field_name_conflicts(doc)
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
             issues += check_derived_attribute_markers(doc, all_docs)

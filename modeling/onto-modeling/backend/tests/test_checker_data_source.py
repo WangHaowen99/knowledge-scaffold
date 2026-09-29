@@ -167,6 +167,32 @@ def test_no_table_headers_means_no_column_check(toolkit, tmp_path: Path):
     assert column_issues(toolkit, ontology, [KEY_ROW, "| 评分 | SCORE | 合成评分 | 否 | 数值 | 无 | 无 |"]) == []
 
 
+def test_field_alias_conflict_matches_evaluation_rule(toolkit, tmp_path: Path):
+    ontology = tmp_path / "ontology"
+    object_dir = ontology / "object"
+    object_dir.mkdir(parents=True)
+    (object_dir / "订单.md").write_text(
+        """# 对象描述
+合成订单。
+
+# 对象属性清单
+| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 订单状态 | order_status | 订单状态 | 否 | 字符串 | 状态 | 无 |
+| 支付状态 | payment_status | 支付状态 | 否 | 字符串 | 状态 | 无 |
+""",
+        encoding="utf-8",
+    )
+
+    issues = run_checker(toolkit, ontology, "字段名称冲突")
+
+    assert len(issues) == 1
+    assert issues[0]["severity"] == "错误"
+    assert "order_status" in issues[0]["message"]
+    assert "payment_status" in issues[0]["message"]
+    assert "禁止删除别名" in issues[0]["message"]
+
+
 def test_headers_flag_lists_uploaded_and_schema_tables(toolkit, tmp_path: Path, monkeypatch, capsys):
     _, check_eval_data = toolkit
     columns_workspace(tmp_path)
