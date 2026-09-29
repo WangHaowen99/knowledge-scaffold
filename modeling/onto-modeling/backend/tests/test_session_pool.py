@@ -7,6 +7,7 @@ import json
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,12 @@ class FakeClient:
         self.connected = False
         self.queries = []
         self.interrupted = False
+        self.terminated = False
+        # kill() 走 client._transport._process.terminate()，自任进程以便断言硬终止
+        self._transport = SimpleNamespace(_process=self)
+
+    def terminate(self):
+        self.terminated = True
 
     async def connect(self):
         self.connected = True
@@ -266,6 +273,40 @@ def test_interrupt_force_kills_hung_engine(pool_env, tmp_path, monkeypatch):
         await manager.send("p1", tmp_path / "w1", "继续")
         again = await _settle(manager, "p1")
         assert again.client is not None
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_close_force_kills_hung_engine(pool_env, tmp_path, monkeypatch):
+    """CLI 对 disconnect 无应答时 close() 必须超时硬停后返回。
+
+    无超时兜底时 _recycle 会在 _lock 里永久 await disconnect()，删除项目的接口
+    因此永不返回，前端表现为"点删除没反应"。此处若回退到无超时实现，wait_for 超时报错。
+    """
+    manager, created, _ = pool_env
+    monkeypatch.setattr(agent_sessions, "INTERRUPT_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(agent_sessions, "KILL_TIMEOUT_SECONDS", 0.2)
+
+    async def scenario():
+        save_resume_id("p1", "sdk-session-abc")
+        await manager.send("p1", tmp_path / "w1", "任务")
+        session = await _settle(manager, "p1")
+        assert session.client is not None
+
+        async def hang():
+            await asyncio.Event().wait()
+
+        client = session.engine.client
+        client.disconnect = hang  # 模拟 CLI 对 disconnect 无应答
+        await asyncio.wait_for(manager.close("p1"), timeout=2)
+
+        assert client.terminated is True  # disconnect 超时后回落到 kill()
+        assert session.engine is None
+        assert manager.get("p1") is None
+        assert load_resume_id("p1") is None  # close 语义不变：续接点清除
+        # _lock 没被拖住：后续调用仍能进来
+        await asyncio.wait_for(manager.close("p1"), timeout=2)
         await manager.shutdown()
 
     asyncio.run(scenario())
