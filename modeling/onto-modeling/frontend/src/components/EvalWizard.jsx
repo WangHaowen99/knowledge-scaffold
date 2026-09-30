@@ -32,6 +32,8 @@ import {
   sourceToForm,
 } from '../lib/eval-data-source-form.js';
 
+const VISIBLE_SOURCE_KINDS = SOURCE_KINDS.filter((kind) => kind.value !== 'dataset');
+
 // 评测集下拉里的非存档来源
 const TRACE_CHOICE = '__trace__';
 const MANUAL_CHOICE = '__manual__';
@@ -69,10 +71,11 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
       .then(([ds, setData, trace]) => {
         if (!active) return;
         const saved = ds.sources || [];
-        setSources(saved);
+        const visibleSources = saved.filter((source) => sourceKind(source) !== 'dataset');
+        setSources(visibleSources);
         setOptions(ds.options || { mock_tables: 0 });
         setDefaults(ds.defaults || {});
-        setSelectedSourceId(saved[0]?.id || '');
+        setSelectedSourceId(visibleSources[0]?.id || '');
         // 从未配置过数据源：直接进配置表单（评测前必须先配置）
         if (!saved.length) setEditing({ id: '', form: emptySourceForm(ds.defaults) });
         setSets(setData.sets || []);
@@ -527,7 +530,7 @@ function SourceForm({ form, onChange, options, defaults, projectId, firstTime })
         maxLength={60}
         {...field('name')}
       />
-      {SOURCE_KINDS.map((kind) => {
+      {VISIBLE_SOURCE_KINDS.map((kind) => {
         const disabled = kindDisabled(kind.value);
         const selected = form.kind === kind.value;
         return (
