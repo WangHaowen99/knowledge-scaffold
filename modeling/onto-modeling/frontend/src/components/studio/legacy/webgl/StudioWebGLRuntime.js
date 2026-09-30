@@ -1884,6 +1884,8 @@ function edgeStyle(kind, sourceKind) {
   if (['uses_metric', 'metric_uses_object'].includes(kind) || (kind === 'uses_object' && sourceKind === 'metric')) return EDGE_PALETTE.metric;
   if (['uses_script', 'script_bound_operation', 'script_uses_object'].includes(kind)) return EDGE_PALETTE.script;
   if (kind === 'object_relation') return EDGE_PALETTE.object;
+  if (kind === 'operation_input_object') return EDGE_PALETTE.object;
+  if (kind === 'operation_support_object') return { ...EDGE_PALETTE.object, dash: [7, 5] };
   return EDGE_PALETTE.operation;
 }
 

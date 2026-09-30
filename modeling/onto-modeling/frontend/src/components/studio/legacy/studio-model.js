@@ -483,7 +483,21 @@ export function studioGraphEdgeStyle(edge, nodesById = new Map()) {
   if (edge.kind === 'uses_object' && nodesById.get(edge.source)?.kind === 'metric') {
     return { color: '#5935a4', labelColor: '#402479' };
   }
-  if (edge.kind === 'uses_object') return { color: '#126347', labelColor: '#0a4531' };
+  if (edge.kind === 'operation_input_object') {
+    return { color: '#0b4c91', labelColor: '#06366a' };
+  }
+  if (edge.kind === 'operation_support_object') {
+    return { color: '#0b4c91', labelColor: '#06366a', dash: '6 4' };
+  }
+  if (edge.kind === 'calls_operation') {
+    return { color: '#126347', labelColor: '#0a4531' };
+  }
+  if (edge.kind === 'operation_output_object') {
+    return { color: '#126347', labelColor: '#0a4531', dash: '6 4' };
+  }
+  if (edge.kind === 'operation_produces_metric') {
+    return { color: '#5935a4', labelColor: '#402479' };
+  }
   if (['uses_script', 'script_bound_operation', 'script_uses_object'].includes(edge.kind)) {
     return { color: '#8f1740', labelColor: '#65102d', dash: '2 4' };
   }

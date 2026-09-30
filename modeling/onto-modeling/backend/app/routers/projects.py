@@ -974,6 +974,17 @@ def studio_graph(project_id: str, request: Request):
     return studio.graph(root)
 
 
+@router.get("/{project_id}/studio/elements/{element_id}/flow")
+def studio_operation_flow(project_id: str, element_id: str, request: Request):
+    from ..services import studio
+
+    root = ensure_access(project_id, request)
+    try:
+        return studio.operation_flow(root, element_id)
+    except studio.StudioError as exc:
+        raise WorkspaceError(str(exc), exc.status)
+
+
 @router.get("/{project_id}/studio/element")
 def studio_element(project_id: str, path: str, request: Request):
     from ..services import studio

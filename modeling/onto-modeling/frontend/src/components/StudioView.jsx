@@ -20,6 +20,7 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
   const [view, setView] = useState('graph');
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [entry, setEntry] = useState(null);
+  const [selectedElementId, setSelectedElementId] = useState('');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -36,20 +37,23 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
     setEntry(null);
     setView('graph');
     setQuery('');
+    setSelectedElementId('');
     refresh();
   }, [refresh]);
 
   const openEntry = useCallback(
-    (path) => {
+    (path, elementId = '') => {
       api
         .studioElement(project.id, path)
         .then((data) => {
           setEntry(data);
+          const matching = graph.nodes.find((node) => node.path === path);
+          setSelectedElementId(elementId || matching?.id || '');
           setView('entry');
         })
         .catch((error) => message.error(error.message));
     },
-    [project.id],
+    [graph.nodes, project.id],
   );
 
   const pathByName = useMemo(() => {
@@ -127,6 +131,7 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
               project={project}
               graph={graph}
               query={query}
+              selectedElementId={selectedElementId}
               onOpenEntry={openEntry}
             />
           </Suspense>
@@ -141,7 +146,7 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
             pagination={{ pageSize: 15, hideOnSinglePage: true }}
             dataSource={
               query.trim()
-                ? graph.nodes.filter((n) => n.id.includes(query.trim()))
+                ? graph.nodes.filter((n) => `${n.id} ${n.label || ''} ${n.description || ''}`.includes(query.trim()))
                 : graph.nodes
             }
             onRow={(row) => ({ onClick: () => openEntry(row.path), style: { cursor: 'pointer' } })}
@@ -166,7 +171,7 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
                   </Tag>
                 ),
               },
-              { title: '名称', dataIndex: 'id' },
+              { title: '名称', dataIndex: 'label', render: (label, row) => label || row.id },
               { title: '引用', dataIndex: 'out', width: 70, sorter: (a, b) => a.out - b.out },
               { title: '被引', dataIndex: 'in', width: 70, sorter: (a, b) => a.in - b.in },
             ]}

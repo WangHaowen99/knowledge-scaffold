@@ -13,11 +13,12 @@ import './legacy/studio.css';
  *    与设计"逻辑沿用操作的视觉"一致）；
  * 2. 提供原版所需的 session 状态容器与 update/onOpen 回调。
  */
-export default function LegacyStudioGraphHost({ project, graph, query, onOpenEntry }) {
+export default function LegacyStudioGraphHost({ project, graph, query, selectedElementId, onOpenEntry }) {
   const [session, setSession] = useState(() => ({
     ...createStudioSession(),
     kind: '',
     graphHighlight: 'all',
+    selectedElementId: selectedElementId || '',
   }));
 
   const update = useCallback((patch, _label) => {
@@ -30,22 +31,42 @@ export default function LegacyStudioGraphHost({ project, graph, query, onOpenEnt
   const mapped = useMemo(() => {
     const nodes = (graph.nodes || []).map((node) => ({
       id: node.id,
-      label: node.id,
+      label: node.label || node.title || node.id,
       kind: node.kind === 'logic' ? 'operation' : node.kind,
     }));
     const edges = (graph.edges || []).map((edge, index) => ({
-      id: `e-${index}`,
+      id: edge.id || `e-${index}`,
       source: edge.source,
       target: edge.target,
+      kind: edge.kind || 'references',
+      label: edge.label || '',
     }));
-    const elements = nodes.map((node) => ({ id: node.id, title: node.id, description: '' }));
+    const elements = (graph.nodes || []).map((node) => ({
+      id: node.id,
+      kind: node.kind === 'logic' ? 'operation' : node.kind,
+      title: node.title || node.label || node.id,
+      description: node.description || '',
+    }));
+    const details = Object.fromEntries((graph.nodes || []).map((node) => [node.id, {
+      id: node.id,
+      kind: node.kind === 'logic' ? 'operation' : node.kind,
+      title: node.title || node.label || node.id,
+      description: node.description || '',
+      values: { fields: node.fields || [] },
+    }]));
     const pathById = new Map((graph.nodes || []).map((node) => [node.id, node.path]));
-    return { graph: { nodes, edges }, elements, pathById };
+    return { graph: { nodes, edges }, elements, details, pathById };
   }, [graph]);
 
   useEffect(() => {
-    update({ graph: mapped.graph, elements: mapped.elements });
-  }, [mapped, update]);
+    update({
+      graph: mapped.graph,
+      elements: mapped.elements,
+      details: mapped.details,
+      workingRevision: graph.workingRevision || '',
+      selectedElementId: selectedElementId || '',
+    });
+  }, [graph.workingRevision, mapped, selectedElementId, update]);
 
   // 外层工具条搜索同步进原版的图过滤
   useEffect(() => {
@@ -55,7 +76,7 @@ export default function LegacyStudioGraphHost({ project, graph, query, onOpenEnt
   const onOpen = useCallback(
     (elementId) => {
       const path = mapped.pathById.get(elementId);
-      if (path) onOpenEntry?.(path);
+      if (path) onOpenEntry?.(path, elementId);
     },
     [mapped.pathById, onOpenEntry],
   );

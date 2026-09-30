@@ -64,7 +64,7 @@ async function tryRefresh() {
   return refreshing;
 }
 
-async function request(path, options = {}, retried = false) {
+export async function request(path, options = {}, retried = false) {
   // FormData 由浏览器自带 multipart 边界，强制 json Content-Type 会让后端无法解析
   const baseHeaders =
     options.body instanceof FormData
