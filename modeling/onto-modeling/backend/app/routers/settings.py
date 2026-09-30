@@ -2,7 +2,7 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..services import auth, mcp_expose, mcp_settings, model_settings
+from ..services import auth, mcp_settings, model_settings
 from ..services.auth import AuthError
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -49,39 +49,6 @@ def put_jiuwen_model_settings(body: ModelBody, request: Request):
 
 class McpBody(BaseModel):
     servers: list[dict]
-
-
-class TokenBody(BaseModel):
-    name: str
-
-
-@router.get("/mcp-service")
-def mcp_service_status(request: Request):
-    _require_admin(request)
-    return {
-        "path": "/mcp-service/mcp",
-        "transport": "streamable-http",
-        "tools": mcp_expose.TOOL_CATALOG,
-        "tokens": mcp_expose.list_tokens(),
-    }
-
-
-@router.post("/mcp-service/tokens")
-def create_service_token(body: TokenBody, request: Request):
-    # 服务令牌可读全部项目产物，签发/吊销必须是管理员
-    _require_admin(request)
-    user = getattr(request.state, "user", None) or {}
-    plaintext, entry = mcp_expose.create_token(body.name, user.get("sub", ""))
-    # 明文只在本响应出现一次，服务端仅存哈希
-    return {"token": plaintext, "entry": entry}
-
-
-@router.delete("/mcp-service/tokens/{token_id}")
-def revoke_service_token(token_id: str, request: Request):
-    _require_admin(request)
-    if not mcp_expose.revoke_token(token_id):
-        return JSONResponse(status_code=404, content={"error": "令牌不存在"})
-    return {"ok": True}
 
 
 class RuntimeBody(BaseModel):

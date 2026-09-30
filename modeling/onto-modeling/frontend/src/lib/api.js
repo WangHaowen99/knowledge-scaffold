@@ -145,7 +145,13 @@ export const api = {
   },
   renameProject: (pid, name) =>
     request(`/api/projects/${pid}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
-  deleteProject: (pid) => request(`/api/projects/${pid}`, { method: 'DELETE' }),
+  // 显式确认体：request() 一律带 application/json，空体在严格服务端/网关会被判为非法 JSON；
+  // 同时与 modeling 侧删除接口的 confirmed 契约保持一致
+  deleteProject: (pid) =>
+    request(`/api/projects/${pid}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmed: true }),
+    }),
   exportUrl: (pid, scope) =>
     `/api/projects/${pid}/export?scope=${scope}&token=${encodeURIComponent(authStore.token)}`,
   importProject: (name, file, dryRun = false) => {
@@ -356,14 +362,19 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ engine }),
     }),
-  mcpService: () => request('/api/settings/mcp-service'),
-  mcpServiceCreateToken: (name) =>
-    request('/api/settings/mcp-service/tokens', {
+  getModelingMcp: (pid) => request(`/api/projects/${encodeURIComponent(pid)}/modeling-mcp`),
+  getModelingMcpTokens: (pid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/modeling-mcp/tokens`),
+  createModelingMcpToken: (pid, draft) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/modeling-mcp/tokens`, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(draft),
     }),
-  mcpServiceRevokeToken: (id) =>
-    request(`/api/settings/mcp-service/tokens/${id}`, { method: 'DELETE' }),
+  revokeModelingMcpToken: (pid, tokenId) =>
+    request(
+      `/api/projects/${encodeURIComponent(pid)}/modeling-mcp/tokens/${encodeURIComponent(tokenId)}`,
+      { method: 'DELETE' },
+    ),
   metrics: (pid) => request(`/api/projects/${pid}/metrics`),
   search: (pid, q) =>
     request(`/api/projects/${pid}/search?q=${encodeURIComponent(q)}`),

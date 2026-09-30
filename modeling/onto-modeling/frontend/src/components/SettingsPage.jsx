@@ -10,7 +10,7 @@ import {
   Typography,
   message,
 } from 'antd';
-import { useContext, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { api, authStore } from '../lib/api.js';
 import { ThemeCtx } from '../lib/theme-context.js';
 import { ACCENTS } from '../theme.js';
@@ -139,8 +139,19 @@ const SECTION_TITLES = {
 };
 
 /** 设置中心（左 Menu + 右内容，与 consumer 设置页同构）。 */
-export default function SettingsPage({ project, isAdmin, authEnabled, onBack, onOpenAdmin }) {
-  const [section, setSection] = useState('account');
+export default function SettingsPage({
+  project,
+  isAdmin,
+  authEnabled,
+  initialSection = 'account',
+  onBack,
+  onOpenAdmin,
+}) {
+  const [section, setSection] = useState(initialSection);
+
+  useEffect(() => {
+    setSection(initialSection);
+  }, [initialSection]);
 
   const items = [
     {
@@ -160,7 +171,6 @@ export default function SettingsPage({ project, isAdmin, authEnabled, onBack, on
               { key: 'model', label: '模型接入' },
               { key: 'runtime', label: '会话' },
               { key: 'assets', label: '提示词资产' },
-              { key: 'mcp', label: 'MCP 服务器' },
             ],
           },
           {
@@ -170,6 +180,7 @@ export default function SettingsPage({ project, isAdmin, authEnabled, onBack, on
           },
         ]
       : []),
+    ...(project ? [{ type: 'group', label: '项目', children: [{ key: 'mcp', label: 'MCP 服务器' }] }] : []),
   ];
 
   return (
@@ -198,7 +209,7 @@ export default function SettingsPage({ project, isAdmin, authEnabled, onBack, on
         {section === 'model' && isAdmin && <ModelSettings project={project} />}
         {section === 'runtime' && isAdmin && <RuntimeSettings project={project} />}
         {section === 'assets' && isAdmin && <AssetsSettings />}
-        {section === 'mcp' && isAdmin && <McpSettings project={project} />}
+        {section === 'mcp' && project && <McpSettings project={project} />}
       </div>
     </div>
   );

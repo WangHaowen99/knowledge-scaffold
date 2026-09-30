@@ -340,6 +340,7 @@ export interface ProjectWorkflowProfile {
 export interface Project {
   id: string;
   owner: string;
+  externalId?: string;
   kind: ProjectKind;
   runtime: 'legacy' | 'agent';
   name: string;
