@@ -85,6 +85,147 @@ def test_sections_serialize_roundtrip():
     assert studio.parse_sections(rebuilt) == sections
 
 
+def test_graph_projects_semantic_edges_and_rich_node_details(env):
+    (env / "ontology" / "object" / "订单.md").write_text(
+        OBJECT_OK,
+        encoding="utf-8",
+    )
+    (env / "ontology" / "operation").mkdir(parents=True)
+    (env / "ontology" / "operation" / "创建订单.md").write_text(
+        """# 业务描述
+
+创建并持久化订单。
+
+# 与operation的关联
+
+- 调用operation > [[支付订单]]
+
+# 与object的关联
+
+- 输入数据的对象：[[用户]]
+- 输出数据的对象：[[订单]]
+- 支撑数据的对象：[[规则配置]]
+
+# 规则与指标
+
+- 使用规则：[[订单有效性]]
+
+# 逻辑描述
+
+1. 读取用户信息
+2. 创建订单记录
+3. 调用订单计算.py
+引用正文中的 [[用户]] 不应生成第二条对象关系
+""",
+        encoding="utf-8",
+    )
+    (env / "ontology" / "operation" / "支付订单.md").write_text(
+        "# 业务描述\n\n完成订单支付。\n# 逻辑描述\n\n1. 校验支付信息\n",
+        encoding="utf-8",
+    )
+    (env / "ontology" / "object" / "规则配置.md").write_text(
+        "# 对象描述\n\n规则配置。\n", encoding="utf-8"
+    )
+    (env / "ontology" / "object" / "订单.md").write_text(
+        OBJECT_OK + "\n# 属性规则\n\n派生：由 [[创建订单]] 写入；详见 [[订单数]]\n",
+        encoding="utf-8",
+    )
+    (env / "ontology" / "rule").mkdir(parents=True)
+    (env / "ontology" / "rule" / "订单有效性.md").write_text(
+        "# 规则描述\n\n订单必须有效。\n# 适用对象\n\n- [[订单]]\n"
+        "# 来源\n\n- [[创建订单]] 的步骤 2\n",
+        encoding="utf-8",
+    )
+    (env / "ontology" / "object" / "订单.md").write_text(
+        OBJECT_OK + "\n# 属性规则\n\n派生：由 [[创建订单]] 写入；详见 [[订单数]]、[[订单有效性]]\n",
+        encoding="utf-8",
+    )
+    (env / "ontology" / "metric").mkdir(parents=True)
+    (env / "ontology" / "metric" / "订单数.md").write_text(
+        "# 指标描述\n\n统计订单数量。\n# 数据来源\n\n- 输入：[[订单]]\n- 产出方：[[创建订单]]\n",
+        encoding="utf-8",
+    )
+    (env / "ontology" / "scripts").mkdir(parents=True)
+    (env / "ontology" / "scripts" / "订单计算.py").write_text(
+        '"""关联operation：创建订单\n\n功能描述：计算订单字段\n"""\n',
+        encoding="utf-8",
+    )
+
+    data = studio.graph(env)
+    nodes = {node["id"]: node for node in data["nodes"]}
+    edges = {(edge["source"], edge["target"], edge["kind"], edge["label"])
+             for edge in data["edges"]}
+
+    assert nodes["订单"]["description"] == "订单是交易的核心record。"
+    assert nodes["订单"]["fields"][0]["key"] == "id"
+    assert nodes["订单"]["fields"][0]["cnName"] == "编号"
+    assert nodes["创建订单"]["description"] == "创建并持久化订单。"
+    assert ("订单", "用户", "object_relation", "属于") in edges
+    assert ("用户", "创建订单", "operation_input_object", "输入对象") in edges
+    assert ("创建订单", "订单", "operation_output_object", "输出对象") in edges
+    assert ("规则配置", "创建订单", "operation_support_object", "支撑对象") in edges
+    assert not any(edge[0] == "创建订单" and edge[1] == "用户" for edge in edges)
+    assert not any(edge[0] == "订单" and edge[1] == "创建订单" for edge in edges)
+    assert ("创建订单", "支付订单", "calls_operation", "调用操作") in edges
+    assert ("订单有效性", "订单", "applies_to_object", "适用于对象") in edges
+    assert ("创建订单", "订单有效性", "uses_rule", "使用规则") in edges
+    assert not any(edge[0] == "订单有效性" and edge[1] == "创建订单" for edge in edges)
+    assert not any(edge[0] == "订单" and edge[1] == "订单有效性" for edge in edges)
+    assert ("订单数", "订单", "uses_object", "使用对象") in edges
+    assert ("创建订单", "订单数", "uses_metric", "使用指标") in edges
+    assert not any(edge[0] == "订单" and edge[1] == "订单数" for edge in edges)
+    assert ("创建订单", "订单计算", "uses_script", "使用脚本") in edges
+    assert not any(edge[0] == "订单计算" and edge[1] == "创建订单" for edge in edges)
+    assert data["workingRevision"]
+    assert all(edge["id"].startswith("edge-") for edge in data["edges"])
+
+
+def test_graph_drops_fallback_object_relation_when_explicit_relation_exists(env):
+    (env / "ontology" / "object" / "客户.md").write_text(
+        "# 对象描述\n\n客户\n# 关联对象\n\n"
+        "- 当前对象 → 关联企业 → [[企业]]\n"
+        "- [[企业]]\n",
+        encoding="utf-8",
+    )
+    (env / "ontology" / "object" / "企业.md").write_text(
+        "# 对象描述\n\n企业\n",
+        encoding="utf-8",
+    )
+
+    edges = studio.graph(env)["edges"]
+
+    assert [
+        (edge["source"], edge["target"], edge["label"])
+        for edge in edges
+        if edge["source"] == "客户" and edge["target"] == "企业"
+    ] == [("客户", "企业", "关联企业")]
+
+
+def test_operation_flow_projects_numbered_logic_steps(env):
+    (env / "ontology" / "operation").mkdir(parents=True)
+    (env / "ontology" / "operation" / "创建订单.md").write_text(
+        """# 业务描述
+
+创建订单。
+
+# 逻辑描述
+
+1. 校验输入数据
+2. 生成订单编号
+3. 保存订单
+""",
+        encoding="utf-8",
+    )
+
+    flow = studio.operation_flow(env, "创建订单")
+
+    assert flow["operationId"] == "创建订单"
+    assert flow["steps"] == ["校验输入数据", "生成订单编号", "保存订单"]
+    assert flow["defaultView"] == "operation-steps"
+    assert flow["diagrams"] == []
+    assert flow["workingRevision"]
+
+
 def test_report_items_parse():
     report = """## 规则检查结果 2026-01-01
 

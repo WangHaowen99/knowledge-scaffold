@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from .. import config
 
 WIKILINK = re.compile(r"\[\[([^\]|#]+)")
 SECTION = re.compile(r"^(#{1,2})\s+(.+)$", re.MULTILINE)
+NUMBERED_STEP = re.compile(r"^\s*\d+[.)、．]\s*(.+)$")
 
 # 五元组元模型（对齐 modeling 知识包，ADR-0004）；ontology/logic 为旧目录兼容
 KIND_DIRS = (
@@ -51,52 +53,323 @@ def _docs(root: Path) -> list[dict]:
 def graph(root: Path) -> dict:
     docs = _docs(root)
     by_name = {d["name"]: d for d in docs}
-    nodes = []
-    edges = []
-    seen_edges = set()
+    edges: list[dict] = []
+    seen_edges: set[tuple[str, str, str, str]] = set()
     in_degree = {d["name"]: 0 for d in docs}
     out_degree = {d["name"]: 0 for d in docs}
 
-    texts = {}
+    texts: dict[str, str] = {}
     for doc in docs:
         try:
             texts[doc["name"]] = doc["file"].read_text(encoding="utf-8")
         except OSError:
             texts[doc["name"]] = ""
 
-    def add_edge(source: str, target: str) -> None:
-        key = (source, target)
-        if source == target or key in seen_edges:
+    def add_edge(source: str, target: str, kind: str, label: str) -> None:
+        key = (source, target, kind, label)
+        if source == target or source not in by_name or target not in by_name or key in seen_edges:
             return
+        if kind == "object_relation":
+            existing = [
+                edge for edge in edges
+                if edge["source"] == source
+                and edge["target"] == target
+                and edge["kind"] == "object_relation"
+            ]
+            if label == "关联对象" and any(edge["label"] != "关联对象" for edge in existing):
+                return
+            if label != "关联对象":
+                for edge in existing:
+                    if edge["label"] != "关联对象":
+                        return
+                    seen_edges.discard((edge["source"], edge["target"], edge["kind"], edge["label"]))
+                    edges.remove(edge)
+                    out_degree[edge["source"]] -= 1
+                    in_degree[edge["target"]] -= 1
         seen_edges.add(key)
-        edges.append({"source": source, "target": target})
+        identity = "\0".join(key).encode("utf-8")
+        edges.append(
+            {
+                "id": f"edge-{hashlib.sha256(identity).hexdigest()[:16]}",
+                "source": source,
+                "target": target,
+                "kind": kind,
+                "label": label,
+            }
+        )
         out_degree[source] += 1
         in_degree[target] += 1
 
     script_names = [d["name"] for d in docs if d["kind"] == "script"]
     for doc in docs:
         text = texts[doc["name"]]
-        for target in WIKILINK.findall(text):
-            target = target.strip()
-            if target in by_name:
-                add_edge(doc["name"], target)
+        section = ""
+        for line in text.splitlines():
+            heading = SECTION.match(line)
+            if heading:
+                section = SECTION_ALIASES.get(heading.group(2).strip(), heading.group(2).strip())
+                continue
+            for raw_target in WIKILINK.findall(line):
+                target = raw_target.strip()
+                if target not in by_name:
+                    continue
+                target_doc = by_name[target]
+                # 操作与对象的关系只认操作条目的「与object的关联」章节；
+                # 对象文档里的指标/规则回链、规则文档里的操作来源回链只用于追溯，
+                # 不投影为「引用指标」「引用规则」或「适用于操作」边；
+                # 其他章节里的对象引用是正文语义，不直接投影为关系边。
+                if (
+                    doc["kind"] == "object"
+                    and target_doc["kind"] in {"operation", "metric", "rule"}
+                ) or (
+                    doc["kind"] == "rule"
+                    and target_doc["kind"] == "operation"
+                ) or (
+                    doc["kind"] == "script"
+                    and target_doc["kind"] == "operation"
+                ) or (
+                    doc["kind"] == "operation"
+                    and target_doc["kind"] == "object"
+                    and section != "与object的关联"
+                ):
+                    continue
+                source, destination, kind, label = _relation_projection(
+                    doc, target_doc, section, line
+                )
+                if source is None:
+                    continue
+                add_edge(source, destination, kind, label)
         # 操作/规则等文档以 `脚本名.py` 引用脚本（codegen 范式），补上这层关系
         if doc["kind"] != "script":
             for script in script_names:
                 if f"{script}.py" in text:
-                    add_edge(doc["name"], script)
+                    add_edge(doc["name"], script, "uses_script", "使用脚本")
 
+    nodes = []
     for doc in docs:
+        summary = _node_summary(doc, texts[doc["name"]])
         nodes.append(
             {
                 "id": doc["name"],
                 "kind": doc["kind"],
                 "path": doc["path"],
+                "label": summary["title"],
+                "title": summary["title"],
+                "description": summary["description"],
+                "fields": summary["fields"],
                 "out": out_degree[doc["name"]],
                 "in": in_degree[doc["name"]],
             }
         )
-    return {"nodes": nodes, "edges": edges}
+    return {
+        "workingRevision": _working_revision(docs, texts),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def operation_flow(root: Path, element_id: str) -> dict:
+    """Project one operation document into the flow-panel contract used by Studio."""
+    docs = _docs(root)
+    texts: dict[str, str] = {}
+    for doc in docs:
+        try:
+            texts[doc["name"]] = doc["file"].read_text(encoding="utf-8")
+        except OSError:
+            texts[doc["name"]] = ""
+    operation = next(
+        (doc for doc in docs if doc["kind"] == "operation" and doc["name"] == element_id),
+        None,
+    )
+    if operation is None:
+        raise StudioError("只有操作条目可以查看操作流程", 404)
+    steps = _operation_steps(texts[operation["name"]])
+    return {
+        "workingRevision": _working_revision(docs, texts),
+        "operationId": operation["name"],
+        "steps": steps,
+        "diagrams": [],
+        "defaultView": "operation-steps" if steps else "empty",
+        "issues": [],
+    }
+
+
+def _working_revision(docs: list[dict], texts: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for doc in sorted(docs, key=lambda item: item["path"]):
+        digest.update(doc["path"].encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(texts.get(doc["name"], "").encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _node_summary(doc: dict, text: str) -> dict:
+    sections = {item["title"]: item["content"] for item in parse_sections(text)}
+    description_section = {
+        "object": "对象描述",
+        "operation": "业务描述",
+        "rule": "规则描述",
+        "metric": "指标描述",
+    }.get(doc["kind"])
+    if doc["kind"] == "script":
+        match = re.search(r"功能描述[：:]\s*([^\n]+)", text)
+        description = _plain_summary(match.group(1) if match else "")
+    else:
+        description = _plain_summary(sections.get(description_section or "", ""))
+    fields = _object_fields(sections.get("对象属性清单", "")) if doc["kind"] == "object" else []
+    return {"title": doc["name"], "description": description, "fields": fields}
+
+
+def _plain_summary(text: str) -> str:
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("|", "```", "{待填写", ">")):
+            continue
+        line = re.sub(r"^[-*+]\s+", "", line)
+        line = re.sub(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]", r"\1", line)
+        line = re.sub(r"[`*_]", "", line).strip()
+        if line:
+            return line[:500]
+    return ""
+
+
+def _object_fields(table: str) -> list[dict]:
+    rows = [_table_cells(line) for line in table.splitlines() if line.strip().startswith("|")]
+    if len(rows) < 3:
+        return []
+    header = rows[0]
+    result = []
+    for values in rows[2:]:
+        record = {column: values[index] if index < len(values) else "" for index, column in enumerate(header)}
+        name = record.get("中文名称", "").strip()
+        key = record.get("英文名称", "").strip() or name
+        if not key or key.startswith("{"):
+            continue
+        result.append(
+            {
+                "key": key,
+                "name": key,
+                "cnName": name or key,
+                "label": name or key,
+                "description": record.get("描述", "").strip(),
+                "type": record.get("类型", "").strip(),
+                "primaryKey": record.get("主键", "").strip() == "是",
+            }
+        )
+    return result
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _relation_projection(
+    source: dict,
+    target: dict,
+    section: str,
+    line: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    source_name = source["name"]
+    target_name = target["name"]
+    source_kind = source["kind"]
+    target_kind = target["kind"]
+
+    if source_kind == "object" and target_kind == "object":
+        relation = _object_relation_label(line, source_name, target_name)
+        if _target_points_to_current(line, source_name, target_name):
+            return target_name, source_name, "object_relation", relation
+        return source_name, target_name, "object_relation", relation
+    if source_kind == "operation" and target_kind == "operation":
+        if "被operation调用" in line or "父operation" in line:
+            return target_name, source_name, "calls_operation", "调用操作"
+        return source_name, target_name, "calls_operation", "调用操作"
+    if source_kind == "operation" and target_kind == "object":
+        role = _operation_object_role(line)
+        if role == "input":
+            return target_name, source_name, "operation_input_object", "输入对象"
+        if role == "output":
+            return source_name, target_name, "operation_output_object", "输出对象"
+        if role == "support":
+            return target_name, source_name, "operation_support_object", "支撑对象"
+        return None, None, None, None
+    if source_kind == "operation" and target_kind == "rule":
+        return source_name, target_name, "uses_rule", "使用规则"
+    if source_kind == "operation" and target_kind == "metric":
+        return source_name, target_name, "uses_metric", "使用指标"
+    if source_kind == "rule" and target_kind == "object":
+        return source_name, target_name, "applies_to_object", "适用于对象"
+    if source_kind == "metric" and target_kind == "object":
+        return source_name, target_name, "uses_object", "使用对象"
+    if source_kind == "metric" and target_kind == "operation":
+        return target_name, source_name, "uses_metric", "使用指标"
+    if source_kind == "script" and target_kind == "object":
+        return source_name, target_name, "script_uses_object", "使用对象"
+    return source_name, target_name, "references", f"引用{_kind_label(target_kind)}"
+
+
+def _operation_object_role(line: str) -> str | None:
+    if "输入数据的对象" in line or "输入数据对象" in line:
+        return "input"
+    if "输出数据的对象" in line or "输出数据对象" in line:
+        return "output"
+    if "支撑数据的对象" in line or "支撑数据对象" in line:
+        return "support"
+    return None
+
+
+def _object_relation_label(line: str, source: str, target: str) -> str:
+    escaped_source = re.escape(source)
+    escaped_target = re.escape(target)
+    patterns = (
+        rf"(?:当前对象|{escaped_source})\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*\[\[{escaped_target}",
+        rf"\[\[{escaped_target}[^\]]*\]\]\s*(?:→|->|>)\s*([^→>]+?)\s*(?:→|->|>)\s*(?:当前对象|{escaped_source})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, line)
+        if match:
+            label = _plain_summary(match.group(1))
+            if label:
+                return label
+    return "关联对象"
+
+
+def _target_points_to_current(line: str, source: str, target: str) -> bool:
+    return bool(
+        re.search(
+            rf"\[\[{re.escape(target)}[^\]]*\]\]\s*(?:→|->|>).*?(?:→|->|>)\s*(?:当前对象|{re.escape(source)})",
+            line,
+        )
+    )
+
+
+def _kind_label(kind: str) -> str:
+    return {"object": "对象", "operation": "操作", "rule": "规则", "metric": "指标", "script": "脚本"}.get(kind, "元素")
+
+
+def _operation_steps(text: str) -> list[str]:
+    sections = {item["title"]: item["content"] for item in parse_sections(text)}
+    content = sections.get("逻辑描述", "")
+    if not content.strip():
+        return []
+    numbered = []
+    for line in content.splitlines():
+        match = NUMBERED_STEP.match(line)
+        if match:
+            step = _plain_summary(match.group(1))
+            if step:
+                numbered.append(step)
+    if numbered:
+        return numbered
+    steps = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("|", "```", ">")):
+            continue
+        step = _plain_summary(stripped)
+        if step and step not in steps:
+            steps.append(step)
+    return steps[:100]
 
 
 def element(root: Path, rel_path: str) -> dict:

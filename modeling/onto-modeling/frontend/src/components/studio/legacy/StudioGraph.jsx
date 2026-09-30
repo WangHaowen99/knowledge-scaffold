@@ -44,7 +44,6 @@ import {
   studioVisibleElementId,
 } from './studio-model.js';
 import { fallbackStudioLayout, layoutStudioGraph } from './studio-graph-layout.js';
-import OperationFlowPanel from './operation-flow/OperationFlowPanel.jsx';
 import StudioWebGLGraph from './webgl/StudioWebGLGraph.jsx';
 import {
   buildStudioRoutePresentation,
@@ -86,7 +85,6 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   const [zoomTier, setZoomTier] = useState(() => studioZoomTier(session.graphViewport?.zoom || 0.8));
   const [hoveredEdgeId, setHoveredEdgeId] = useState('');
   const [dismissedSummaryElementId, setDismissedSummaryElementId] = useState('');
-  const [dismissedOperationFlowElementId, setDismissedOperationFlowElementId] = useState('');
   const [draggedNodePosition, setDraggedNodePosition] = useState(null);
   const [isViewportMoving, setIsViewportMoving] = useState(false);
   const [isNodeDragging, setIsNodeDragging] = useState(false);
@@ -103,7 +101,6 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   const clearSearch = useCallback(() => update(clearStudioSearch), [update]);
   const selectElement = useCallback((elementId) => {
     setDismissedSummaryElementId('');
-    setDismissedOperationFlowElementId('');
     update({ selectedElementId: elementId });
   }, [update]);
   const rawFiltered = useMemo(
@@ -324,10 +321,6 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   const selectedObjectAttributes = selectedNode?.kind === 'object'
     ? studioGraphNodeAttributes(selectedNode, session.details)
     : [];
-  const operationSelectedInOperationTab = session.kind === 'operation' && selectedNode?.kind === 'operation';
-  const operationFlowVisible = operationSelectedInOperationTab
-    && dismissedOperationFlowElementId !== selectedNode.id;
-
   useEffect(() => setNodes(projectedNodes), [projectedNodes]);
 
   useEffect(() => {
@@ -392,11 +385,9 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   }, [visibleSelectedElementId]);
 
   useEffect(() => {
-    if (!visibleSelectedElementId) setDismissedOperationFlowElementId('');
   }, [visibleSelectedElementId]);
 
   useEffect(() => {
-    if (session.kind === 'operation') setDismissedOperationFlowElementId('');
   }, [session.kind]);
 
   useEffect(() => {
@@ -481,7 +472,7 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
   };
 
   return (
-    <div ref={graphRef} className={`studio-graph zoom-${zoomTier}${motionEnabled ? ' motion-enabled' : ''}${operationFlowVisible ? ' has-operation-flow' : ''}`}
+    <div ref={graphRef} className={`studio-graph zoom-${zoomTier}${motionEnabled ? ' motion-enabled' : ''}`}
       aria-label="知识包关系图" aria-busy={!layoutResult.ready} data-layout-ready={layoutResult.ready} data-zoom-tier={zoomTier}>
       <div ref={graphCanvasRef}
         className={`studio-graph-canvas${graphFullscreen ? ` is-fullscreen${webglUnavailable ? ' is-scrollable' : ''}` : ''}`}
@@ -694,11 +685,6 @@ export default function StudioGraph({ projectId, session, update, onOpen, focus 
         )}
         </div>
       </div>
-      {operationFlowVisible && selectedElement && (
-        <OperationFlowPanel key={`${session.workingRevision}:${selectedElement.id}`}
-          projectId={projectId} operation={selectedElement} workingRevision={session.workingRevision}
-          onClose={() => setDismissedOperationFlowElementId(selectedElement.id)} onOpen={onOpen} />
-      )}
     </div>
   );
 }
