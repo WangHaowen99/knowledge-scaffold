@@ -50,6 +50,44 @@ def _docs(root: Path) -> list[dict]:
     return docs
 
 
+def _is_known_edge(
+    source: str,
+    target: str,
+    key: tuple[str, str, str, str],
+    by_name: dict[str, dict],
+    seen_edges: set[tuple[str, str, str, str]],
+) -> bool:
+    if source == target:
+        return False
+    if source not in by_name or target not in by_name:
+        return False
+    return key not in seen_edges
+
+
+def _is_relation_edge(edge: dict, source: str, target: str) -> bool:
+    return (
+        edge["source"] == source
+        and edge["target"] == target
+        and edge["kind"] == "object_relation"
+    )
+
+
+def _skip_reference_edge(doc: dict, target_doc: dict, section: str) -> bool:
+    source_kind = doc["kind"]
+    target_kind = target_doc["kind"]
+    if source_kind == "object" and target_kind in {"operation", "metric", "rule"}:
+        return True
+    if source_kind == "rule" and target_kind == "operation":
+        return True
+    if source_kind == "script" and target_kind == "operation":
+        return True
+    if source_kind != "operation":
+        return False
+    if target_kind != "object":
+        return False
+    return section != "与object的关联"
+
+
 def graph(root: Path) -> dict:
     docs = _docs(root)
     by_name = {d["name"]: d for d in docs}
@@ -67,15 +105,10 @@ def graph(root: Path) -> dict:
 
     def add_edge(source: str, target: str, kind: str, label: str) -> None:
         key = (source, target, kind, label)
-        if source == target or source not in by_name or target not in by_name or key in seen_edges:
+        if not _is_known_edge(source, target, key, by_name, seen_edges):
             return
         if kind == "object_relation":
-            existing = [
-                edge for edge in edges
-                if edge["source"] == source
-                and edge["target"] == target
-                and edge["kind"] == "object_relation"
-            ]
+            existing = [edge for edge in edges if _is_relation_edge(edge, source, target)]
             if label == "关联对象" and any(edge["label"] != "关联对象" for edge in existing):
                 return
             if label != "关联对象":
@@ -118,20 +151,7 @@ def graph(root: Path) -> dict:
                 # 对象文档里的指标/规则回链、规则文档里的操作来源回链只用于追溯，
                 # 不投影为「引用指标」「引用规则」或「适用于操作」边；
                 # 其他章节里的对象引用是正文语义，不直接投影为关系边。
-                if (
-                    doc["kind"] == "object"
-                    and target_doc["kind"] in {"operation", "metric", "rule"}
-                ) or (
-                    doc["kind"] == "rule"
-                    and target_doc["kind"] == "operation"
-                ) or (
-                    doc["kind"] == "script"
-                    and target_doc["kind"] == "operation"
-                ) or (
-                    doc["kind"] == "operation"
-                    and target_doc["kind"] == "object"
-                    and section != "与object的关联"
-                ):
+                if _skip_reference_edge(doc, target_doc, section):
                     continue
                 source, destination, kind, label = _relation_projection(
                     doc, target_doc, section, line
