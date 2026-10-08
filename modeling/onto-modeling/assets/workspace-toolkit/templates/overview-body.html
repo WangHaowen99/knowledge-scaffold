@@ -1,0 +1,225 @@
+<!--
+  ontology-overview body template — three sections (STATS / BODY / SCRIPTS)
+  each preceded by an HTML-comment marker of the form ===NAME=== below.
+  The command file (ontology-overview.md §4.3) splits on those markers and
+  injects:
+    STATS    → base.html  HEADER_EXTRA  slot
+    BODY     → base.html  BODY_CONTENT  slot
+    SCRIPTS  → base.html  BODY_SCRIPTS  slot
+  base HEAD_EXTRA stays empty: the vis-network CDN script tag sits at the
+  top of the SCRIPTS section, which is valid placement (it runs before the
+  inline script that follows it).
+
+  Placeholders to substitute (kept simple; the command file describes how
+  to compute each value):
+
+  STATS section
+    {{N_OBJECTS}}, {{N_LOGICS}}, {{N_SCRIPTS}}
+        — integers
+    {{STATS_WARN_BADGES}}
+        — optional .stat.warn / .stat.danger blocks for orphan / broken
+          counts; emit "" if all-zero
+
+  BODY section
+    {{N_PROBLEMS_BADGE}}
+        — `<span class="badge danger">N</span>` if N>0 else ""
+    {{TOP_LOGIC_LIST}}
+        — <li>...</li>* for top-level logics
+    {{SCALE_SUMMARY}}
+        — one short sentence summarizing scale
+    {{MATRIX_ROWS}}
+        — <tr>...</tr>* (logic / inputs / outputs / supports)
+    {{HOTSPOT_ROWS}}
+        — <tr>...</tr>* (top-20 objects by use count)
+    {{SCRIPTS_PANEL_CONTENT}}
+        — either "<p style=...>未发现脚本…</p>" or full <table>; pass as a
+          single HTML chunk
+    {{PROBLEMS_PANEL_CONTENT}}
+        — conditional .card blocks per problem type, or "未发现问题" card
+
+  SCRIPTS section
+    {{OBJECT_NODES_JSON}}, {{OBJECT_EDGES_JSON}}, {{OBJECT_META_JSON}}
+    {{LOGIC_NODES_JSON}}, {{LOGIC_EDGES_JSON}}, {{LOGIC_META_JSON}}
+        — JSON-stringified data (use ensure_ascii=false so Chinese is
+          literal, not \uXXXX)
+
+  Escaping rules: data injected into HTML text nodes must be escaped for
+  <, >, &, ", '. The 6 *_JSON datasets injected into <script> MUST be
+  produced by a real JSON serializer (do NOT hand-write JS object literals):
+  business descriptions often contain ASCII double-quotes (e.g. 触发"提交订单"后),
+  and an unescaped inner " breaks the whole <script> -> both graphs render
+  blank. A serializer escapes inner " as \", newlines as \n automatically.
+  After filling, the assembled report's last <script> block must pass a
+  syntax check (see ontology-overview.md Step 4.3.5).
+-->
+<!-- ===STATS=== -->
+<div class="stats-row">
+  <div class="stat"><span class="num">{{N_OBJECTS}}</span><span class="label">对象</span></div>
+  <div class="stat"><span class="num">{{N_LOGICS}}</span><span class="label">逻辑</span></div>
+  <div class="stat"><span class="num">{{N_SCRIPTS}}</span><span class="label">脚本</span></div>
+  {{STATS_WARN_BADGES}}
+</div>
+<!-- ===BODY=== -->
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="overview">概览</button>
+  <button class="tab-btn" data-tab="object-graph">对象关系图</button>
+  <button class="tab-btn" data-tab="logic-graph">逻辑调用图</button>
+  <button class="tab-btn" data-tab="matrix">依赖矩阵</button>
+  <button class="tab-btn" data-tab="hotspots">使用热度</button>
+  <button class="tab-btn" data-tab="scripts">脚本<span class="badge">{{N_SCRIPTS}}</span></button>
+  <button class="tab-btn" data-tab="problems">问题清单{{N_PROBLEMS_BADGE}}</button>
+</nav>
+
+<section id="overview" class="tab-panel active">
+  <div class="card">
+    <h2>顶层逻辑（流程入口）</h2>
+    <ul>{{TOP_LOGIC_LIST}}</ul>
+  </div>
+  <div class="card">
+    <h2>规模一览</h2>
+    <p>{{SCALE_SUMMARY}}</p>
+  </div>
+</section>
+
+<section id="object-graph" class="tab-panel">
+  <input type="text" class="search-box" placeholder="搜索对象..." id="object-search">
+  <div class="graph-layout">
+    <div class="graph-container" id="object-graph-canvas">
+      <div class="graph-legend">
+        <div><span class="swatch" style="background:#9ec5fe"></span>普通对象</div>
+        <div><span class="swatch" style="background:#0969da"></span>高频对象</div>
+        <div><span class="swatch" style="background:#ffd8a8"></span>孤立对象</div>
+      </div>
+    </div>
+    <div class="graph-sidebar" id="object-graph-detail"><div class="placeholder">点击节点查看详情</div></div>
+  </div>
+</section>
+
+<section id="logic-graph" class="tab-panel">
+  <input type="text" class="search-box" placeholder="搜索逻辑..." id="logic-search">
+  <div class="graph-layout">
+    <div class="graph-container" id="logic-graph-canvas">
+      <div class="graph-legend">
+        <div><span class="swatch" style="background:#a7f0ba"></span>普通逻辑</div>
+        <div><span class="swatch" style="background:#c7eed8"></span>工具流程</div>
+        <div><span class="swatch" style="background:#ffd8a8"></span>顶层流程</div>
+      </div>
+    </div>
+    <div class="graph-sidebar" id="logic-graph-detail"><div class="placeholder">点击节点查看详情</div></div>
+  </div>
+</section>
+
+<section id="matrix" class="tab-panel">
+  <div class="card">
+    <table>
+      <thead><tr><th>逻辑</th><th>输入对象</th><th>输出对象</th><th>支撑对象</th></tr></thead>
+      <tbody>{{MATRIX_ROWS}}</tbody>
+    </table>
+  </div>
+</section>
+
+<section id="hotspots" class="tab-panel">
+  <div class="card">
+    <table>
+      <thead><tr><th>对象</th><th>被引用次数</th><th>被哪些逻辑使用</th></tr></thead>
+      <tbody>{{HOTSPOT_ROWS}}</tbody>
+    </table>
+  </div>
+</section>
+
+<section id="scripts" class="tab-panel">
+  <div class="card">{{SCRIPTS_PANEL_CONTENT}}</div>
+</section>
+
+<section id="problems" class="tab-panel">{{PROBLEMS_PANEL_CONTENT}}</section>
+<!-- ===SCRIPTS=== -->
+<script src="https://unpkg.com/vis-network@9/standalone/umd/vis-network.min.js"></script>
+<script>
+  const objectNodes = {{OBJECT_NODES_JSON}};
+  const objectEdges = {{OBJECT_EDGES_JSON}};
+  const objectMeta = {{OBJECT_META_JSON}};
+  const logicNodes = {{LOGIC_NODES_JSON}};
+  const logicEdges = {{LOGIC_EDGES_JSON}};
+  const logicMeta = {{LOGIC_META_JSON}};
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function renderObjectDetail(node) {
+    if (!node) return '<div class="placeholder">无详情数据</div>';
+    const aliasHtml = (node.aliases || []).map(a => `<span class="badge">${escapeHtml(a)}</span>`).join('');
+    const usedBy = (node.used_by || []).map(l => `<li>${escapeHtml(l)}</li>`).join('') || '<li>（无）</li>';
+    const related = (node.related || []).map(r => `<li>${escapeHtml(r)}</li>`).join('') || '<li>（无）</li>';
+    return `
+      <h3 class="detail-name">${escapeHtml(node.name)}</h3>
+      ${aliasHtml ? `<div>${aliasHtml}</div>` : ''}
+      <div class="detail-section"><h4>业务描述</h4><div>${escapeHtml(node.description) || '（无）'}</div></div>
+      <div class="detail-section"><h4>被引用的逻辑（${(node.used_by || []).length}）</h4><ul>${usedBy}</ul></div>
+      <div class="detail-section"><h4>关联对象</h4><ul>${related}</ul></div>
+    `;
+  }
+
+  function renderLogicDetail(node) {
+    if (!node) return '<div class="placeholder">无详情数据</div>';
+    const tag = node.is_top ? '<span class="badge accent">顶层流程</span>' : '';
+    const inputs = (node.inputs || []).map(o => `<li>${escapeHtml(o)}</li>`).join('') || '<li>（无）</li>';
+    const outputs = (node.outputs || []).map(o => `<li>${escapeHtml(o)}</li>`).join('') || '<li>（无）</li>';
+    const calls = (node.calls || []).map(o => `<li>${escapeHtml(o)}</li>`).join('') || '<li>（无）</li>';
+    const calledBy = (node.called_by || []).map(o => `<li>${escapeHtml(o)}</li>`).join('') || '<li>（无）</li>';
+    return `
+      <h3 class="detail-name">${escapeHtml(node.name)}</h3>
+      ${tag}
+      <div class="detail-section"><h4>业务描述</h4><div>${escapeHtml(node.description) || '（无）'}</div></div>
+      <div class="detail-section"><h4>输入对象</h4><ul>${inputs}</ul></div>
+      <div class="detail-section"><h4>输出对象</h4><ul>${outputs}</ul></div>
+      <div class="detail-section"><h4>调用的子流程</h4><ul>${calls}</ul></div>
+      <div class="detail-section"><h4>被哪些逻辑使用</h4><ul>${calledBy}</ul></div>
+    `;
+  }
+
+  const objectGraph = new vis.Network(
+    document.getElementById('object-graph-canvas'),
+    { nodes: new vis.DataSet(objectNodes), edges: new vis.DataSet(objectEdges) },
+    {
+      nodes: { shape: 'dot', scaling: { min: 12, max: 40, label: { enabled: true, min: 12, max: 18 } }, font: { face: 'inherit', size: 14 } },
+      edges: { arrows: 'to', smooth: { type: 'continuous' }, font: { face: 'inherit', size: 11, color: '#656d76', strokeWidth: 0 }, color: { color: '#a0a8b0', highlight: '#0969da' } },
+      physics: { stabilization: { iterations: 200 }, barnesHut: { gravitationalConstant: -3000, springLength: 140 } },
+      interaction: { hover: true, tooltipDelay: 200 }
+    }
+  );
+  objectGraph.on('click', params => {
+    const sidebar = document.getElementById('object-graph-detail');
+    sidebar.innerHTML = params.nodes.length ? renderObjectDetail(objectMeta[params.nodes[0]]) : '<div class="placeholder">点击节点查看详情</div>';
+  });
+
+  const logicGraph = new vis.Network(
+    document.getElementById('logic-graph-canvas'),
+    { nodes: new vis.DataSet(logicNodes), edges: new vis.DataSet(logicEdges) },
+    {
+      layout: { hierarchical: { enabled: true, direction: 'UD', sortMethod: 'directed', levelSeparation: 110, nodeSpacing: 150 } },
+      physics: false,
+      nodes: { shape: 'box', font: { face: 'inherit', size: 14 }, margin: 10, widthConstraint: { maximum: 180 } },
+      edges: { arrows: 'to', smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 }, color: { color: '#a0a8b0', highlight: '#0969da' } },
+      interaction: { hover: true, tooltipDelay: 200 }
+    }
+  );
+  logicGraph.on('click', params => {
+    const sidebar = document.getElementById('logic-graph-detail');
+    sidebar.innerHTML = params.nodes.length ? renderLogicDetail(logicMeta[params.nodes[0]]) : '<div class="placeholder">点击节点查看详情</div>';
+  });
+
+  function setupSearch(inputId, network) {
+    const ds = network.body.data.nodes;
+    document.getElementById(inputId).addEventListener('input', e => {
+      const q = e.target.value.trim().toLowerCase();
+      const updates = ds.get().map(n => {
+        const match = !q || (n.label && String(n.label).toLowerCase().includes(q));
+        return { id: n.id, opacity: match ? 1 : 0.18, borderWidth: match && q ? 3 : 1 };
+      });
+      ds.update(updates);
+    });
+  }
+  setupSearch('object-search', objectGraph);
+  setupSearch('logic-search', logicGraph);
+</script>

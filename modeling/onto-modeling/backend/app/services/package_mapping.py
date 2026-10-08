@@ -1,0 +1,588 @@
+"""对象 ↔ 真实数据表绑定：发布包「来源Sheet」与 object-data-mappings.json 的单一来源。
+
+对象文档承载业务语义（「对象属性清单」的英文名称列就是真实列名），真实表名来自打了
+schema 标签的表格资料与评测数据源上传的业务数据表（一个 Sheet = 一张表）。两者在这里
+对齐一次，两处共用：
+
+- 发布包导出：objects/index.md 的「来源Sheet」列、对象文档的 `# 字段` 段，以及
+  mappings/object-data-mappings.json —— modeling 导入后据此生成 sourceRefs 与 sourceColumn，
+  nl2sql 才有表名和列名可用；
+- 评测前置门禁：数据集模式下没有任何对象绑定真实表时直接拦下，避免跑出"一次库都没查"的分数。
+
+发布门禁只拦"有数据表可核对、但声明对不上"的对象（issues 里 blocking=True）；当前没有任何
+可核对的数据表时，声明无从验证，只提示不阻断。阻断项可在发布前逐个修复（set_declared_source），
+也可以降级发布（strict_declared=False）：对不上的对象来源Sheet 写 UNBOUND，不进 mapping。
+
+绑定优先级：对象文档「# 数据来源」的显式声明 > 属性英文名与 Sheet 列头的唯一最佳重合。
+推断只在重合列数达标且候选唯一时成立，够不着就留空（来源Sheet 写 UNBOUND），不猜。
+
+评测导入时数据表来源换成「本轮实际导入的工作簿」（eval_import），mapping 与导入库同源；
+Neo4j 图导入的包按 modeling 图模式契约导出（object_data_mappings(graph=True)）。
+"""
+
+from __future__ import annotations
+
+import csv
+import difflib
+import json
+import re
+from pathlib import Path
+
+# modeling 契约：来源Sheet 为 "—" 表示该对象不绑定物理表（package-import 按此跳过）
+UNBOUND = "—"
+# 包内部逻辑数据源别名，不是项目评测数据源的 provider；取 modeling 草稿同款默认值
+PROVIDER_ALIAS = "data"
+# 推断绑定的最低列命中数：低于此宁可不绑，错绑比不绑更难发现
+MIN_INFERRED_COLUMNS = 2
+# 修复建议里推荐的候选表个数，以及只靠表名相似（列一个都对不上）时的最低相似度
+MAX_CANDIDATES = 3
+MIN_NAME_SIMILARITY = 0.5
+# modeling 图导入对属性名与关系名的标识符约束（evaluation/data-source.ts GRAPH_IDENTIFIER）
+GRAPH_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
+RELATIONS_SECTION = "关联对象"
+SOURCE_PURPOSES = ("schema",)
+TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv")
+
+SOURCE_SECTION = "数据来源"
+FIELDS_SECTION = "对象属性清单"
+
+_EMPTY_MARKERS = {"", "无", "-", "—", "–", "n/a"}
+# 模板占位符 `{待填写：…}` 可能跨行，只认起始花括号：真实表名和列名都不会以 { 开头
+_PLACEHOLDER_RE = re.compile(r"^\{")
+# 「无」后面带括注或标点的说明（如 `无（派生对象，不落库）`）同样表示不声明
+_NONE_WITH_NOTE_RE = re.compile(r"^无\s*[（(，,。：:；;]")
+_QUOTED_RE = re.compile(r"`([^`\n]+)`")
+# 属性规则带这些标记的属性本来就不在表里（operation 计算得到的、取自文档的常量），不算缺列；
+# 与工具箱 ontology_checker 的列名对账同一口径
+_NON_STORED_MARKERS = ("派生：", "派生:", "非库字段")
+_HEADER_ALIASES = {
+    "key": ("英文名称", "字段 key", "字段key", "field key", "key"),
+    "cn": ("中文名称", "中文名", "字段名称"),
+    "desc": ("描述", "说明", "业务说明"),
+    "primary": ("主键",),
+    "type": ("类型",),
+    "alias": ("属性别名", "别名"),
+    "rule": ("属性规则",),
+}
+
+
+def _is_empty(value: str) -> bool:
+    text = (value or "").strip()
+    return text.lower() in _EMPTY_MARKERS or bool(_PLACEHOLDER_RE.match(text))
+
+
+def _section(text: str, name: str) -> str:
+    """取 `# name` 到下一个一级标题之间的正文（与 modeling 包解析同一切分口径）。"""
+    lines = text.replace("\r\n", "\n").split("\n")
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == f"# {name}")
+    except StopIteration:
+        return ""
+    out: list[str] = []
+    for line in lines[start + 1:]:
+        if re.match(r"^#\s+", line):
+            break
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def _table(body: str) -> tuple[list[str], list[list[str]]]:
+    rows = [line.strip() for line in body.split("\n") if line.strip().startswith("|")]
+    if len(rows) < 2:
+        return [], []
+    cells = [[c.strip() for c in row.strip().strip("|").split("|")] for row in rows]
+    return cells[0], [r for r in cells[2:] if not all(set(c) <= set("-: ") for c in r)]
+
+
+def _column_index(headers: list[str], kind: str) -> int:
+    normalized = [h.replace(" ", "").lower() for h in headers]
+    for name in _HEADER_ALIASES[kind]:
+        target = name.replace(" ", "").lower()
+        if target in normalized:
+            return normalized.index(target)
+    return -1
+
+
+def _is_source_note(candidate: str) -> bool:
+    """「# 数据来源」里不参与表名判定的行：空行、表格、引用说明、模板占位。"""
+    if not candidate or candidate.startswith(("|", ">")):
+        return True
+    return bool(_PLACEHOLDER_RE.match(candidate))
+
+
+def _is_non_stored(field: dict) -> bool:
+    return any(marker in field["rule"] for marker in _NON_STORED_MARKERS)
+
+
+def _first_existing(names: list[str], by_lower: dict[str, str]) -> str:
+    """names 里第一个在 by_lower（小写表名 → 表名）中存在的表名；都不存在返回空。"""
+    for name in names:
+        if name.lower() in by_lower:
+            return by_lower[name.lower()]
+    return ""
+
+
+def _declared_source(text: str) -> tuple[str, list[str]]:
+    """「# 数据来源」首行 → (声明的表名, 首行里反引号标出的名字)。
+
+    首行即表名；写成说明句时整句仍作为声明返回（找不到时报错要能看见原文），反引号里的
+    名字留给绑定时兜底。首行是「无」则不声明，后面的说明行也不再当表名。
+    """
+    # 模板占位符 `{待填写：…}` 可能跨多行，先整块剔除再逐行找表名
+    source_text = re.sub(r"\{[^{}]*\}", " ", _section(text, SOURCE_SECTION), flags=re.S)
+    for line in source_text.split("\n"):
+        candidate = line.strip().lstrip("-*").strip()
+        if _is_source_note(candidate):
+            continue
+        if _is_empty(candidate) or _NONE_WITH_NOTE_RE.match(candidate):
+            return "", []
+        quoted = _QUOTED_RE.findall(candidate)
+        if quoted == [candidate.strip("`")]:  # 整行就是一个 `表名`
+            return quoted[0].strip(), []
+        return candidate, [name.strip() for name in quoted if name.strip()]
+    return "", []
+
+
+def parse_object_doc(text: str) -> dict:
+    """对象文档 → {declared_table, declared_mentions, fields[]}。fields 的 key 即属性英文名（真实列名）。"""
+    declared, mentions = _declared_source(text)
+
+    headers, rows = _table(_section(text, FIELDS_SECTION))
+    key_index = _column_index(headers, "key")
+    fields: list[dict] = []
+    if key_index >= 0:
+        indexes = {kind: _column_index(headers, kind) for kind in _HEADER_ALIASES}
+
+        def cell(row: list[str], kind: str) -> str:
+            index = indexes[kind]
+            return row[index].strip() if 0 <= index < len(row) else ""
+
+        for row in rows:
+            key = cell(row, "key")
+            if _is_empty(key):
+                continue
+            alias, rule = cell(row, "alias"), cell(row, "rule")
+            fields.append({
+                "key": key,
+                "cn": cell(row, "cn"),
+                "desc": cell(row, "desc"),
+                "type": cell(row, "type") or "字符串",
+                "alias": "" if _is_empty(alias) else alias,
+                "rule": "" if _is_empty(rule) else rule,
+                "primary": cell(row, "primary").strip() in ("是", "true", "yes", "Y"),
+            })
+    return {"declared_table": declared, "declared_mentions": mentions, "fields": fields}
+
+
+def read_table_headers(path: Path) -> dict[str, list[str]]:
+    """表格文件 → {Sheet 名: 表头列}。口径与工具箱 check_eval_data.py 一致：
+    一个 Sheet = 一张表，首行 = 字段名。"""
+    if path.suffix.lower() == ".csv":
+        try:
+            with open(path, encoding="utf-8-sig", newline="") as handle:
+                row = next(csv.reader(handle), [])
+        except (OSError, UnicodeDecodeError, csv.Error):
+            return {}
+        headers = [str(c).strip() for c in row if str(c).strip()]
+        return {path.stem: headers} if headers else {}
+    try:
+        import openpyxl
+    except ImportError:  # pragma: no cover - 部署环境自带
+        return {}
+    try:
+        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception:
+        return {}
+    tables: dict[str, list[str]] = {}
+    try:
+        for sheet in workbook.worksheets:
+            row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            headers = [str(c).strip() for c in row if c is not None and str(c).strip()]
+            if headers and sheet.title not in tables:
+                tables[sheet.title] = headers
+    finally:
+        workbook.close()
+    return tables
+
+
+def _uploaded_eval_tables(root: Path) -> list[Path]:
+    """评测数据源里保存的上传数据表（只算被配置引用的，表单里未保存的上传不算）。"""
+    from . import eval_data_files, eval_data_sources
+
+    try:
+        referenced = eval_data_sources.referenced_file_ids(root.name, root)
+    except eval_data_sources.DataSourceError:
+        return []
+    paths = [eval_data_files.path_of(root, file_id) for file_id in sorted(referenced)]
+    return [p for p in paths if p is not None]
+
+
+def read_source_tables(root: Path) -> dict[str, list[str]]:
+    """schema 标签的表格资料 + 评测数据源上传的数据表 → {表名: 列头}。"""
+    tables: dict[str, list[str]] = {}
+    directives_path = root / "resource" / "materials.json"
+    try:
+        directives = json.loads(directives_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        directives = {}
+    if not isinstance(directives, dict):
+        directives = {}
+    for rel, directive in directives.items():
+        if not isinstance(directive, dict) or directive.get("purpose") not in SOURCE_PURPOSES:
+            continue
+        if not str(rel).lower().endswith(TABLE_SUFFIXES):
+            continue
+        path = (root / str(rel)).resolve()
+        if not str(path).startswith(str(root.resolve())) or not path.is_file():
+            continue
+        for name, headers in read_table_headers(path).items():
+            tables.setdefault(name, headers)
+    for path in _uploaded_eval_tables(root):
+        for name, headers in read_table_headers(path).items():
+            tables.setdefault(name, headers)
+    return tables
+
+
+def _match_table(field_keys: list[str], tables: dict[str, list[str]]) -> str:
+    """属性英文名与各表列头的重合度 → 唯一最佳表名；并列第一或不达标时返回空，不猜。"""
+    lowered = {k.lower() for k in field_keys}
+    scores = sorted(
+        ((len(lowered & {c.lower() for c in columns}), name) for name, columns in tables.items()),
+        reverse=True,
+    )
+    if not scores or scores[0][0] < MIN_INFERRED_COLUMNS:
+        return ""
+    if len(scores) > 1 and scores[1][0] == scores[0][0]:
+        return ""
+    return scores[0][1]
+
+
+def _candidates(field_keys: list[str], name: str, tables: dict[str, list[str]], exclude: str = "") -> list[dict]:
+    """修复建议：按列重合数、再按与声明名（或对象名）的相似度排序的候选表。"""
+    lowered = {k.lower() for k in field_keys}
+    ranked = []
+    for table, columns in tables.items():
+        if table == exclude:
+            continue
+        matched = len(lowered & {c.lower() for c in columns})
+        similarity = difflib.SequenceMatcher(None, name.lower(), table.lower()).ratio()
+        if matched or similarity >= MIN_NAME_SIMILARITY:
+            ranked.append((-matched, -similarity, table, matched))
+    return [{"table": table, "matched": matched} for _, _, table, matched in sorted(ranked)[:MAX_CANDIDATES]]
+
+
+def _declared_binding(
+    key: str, parsed: dict, field_keys: list[str], tables: dict[str, list[str]], by_lower: dict[str, str],
+) -> tuple[str, str, dict | None]:
+    """「# 数据来源」声明 → (绑定的表, 改写提示, 问题)。问题为 {kind, message, candidates}。"""
+    declared = parsed["declared_table"]
+    if not tables:
+        return "", "", {
+            "kind": "declared_unverifiable",
+            "message": f"对象「{key}」声明的来源表「{declared}」无法核对：项目里还没有数据表"
+                       "（schema 表格资料或评测数据源的上传表），发布包暂不绑定该对象",
+            "candidates": [],
+        }
+    table = by_lower.get(declared.lower(), "")
+    if table:
+        return table, "", None
+    table = _first_existing(parsed["declared_mentions"], by_lower)
+    if table:
+        return table, (
+            f"对象「{key}」的「# 数据来源」首行不是表名，已按句中的「{table}」绑定；"
+            "建议首行只写表名，说明另起一行"
+        ), None
+    return "", "", {
+        "kind": "declared_missing",
+        "message": f"对象「{key}」声明的来源表「{declared}」在评测数据表里不存在"
+                   f"（现有表：{'、'.join(sorted(tables))}）；"
+                   "「# 数据来源」首行只写表名（Sheet 名，逐字相同）或「无」，说明另起一行",
+        "candidates": _candidates(field_keys, declared, tables),
+    }
+
+
+def resolve_object_tables(
+    root: Path,
+    tables: dict[str, list[str]] | None = None,
+    hints: dict[str, str] | None = None,
+    strict_declared: bool = True,
+) -> dict:
+    """对象文档 × 数据表 → 绑定结果。problems 为阻断级问题，warnings 只提示。
+
+    tables 缺省取 schema 表格资料与评测数据源上传的数据表；评测导入传入本轮实际导入的表，
+    hints 为已知的对象→表对应（mock 种子按对象生成，一张表就是一个对象）。
+    strict_declared=False 时，声明的表不在本轮数据里、或一列都对不上，只提示不阻断——
+    该对象不进 mapping，与导入库依然一致。没有任何数据表时声明无从核对，恒为提示。
+    「# 数据来源」首行写成说明句时，按句中反引号标出、且真实存在的第一个表名绑定并提示改写。
+
+    issues 是 problems 与"声明无从核对"的结构化版本，供发布前逐对象修复：
+    {object, kind: declared_missing|no_columns|declared_unverifiable, blocking, message,
+    declared, table, candidates[{table, matched}]}。
+    """
+    tables = read_source_tables(root) if tables is None else tables
+    hints = hints or {}
+    by_lower = {name.lower(): name for name in tables}
+    objects: dict[str, dict] = {}
+    problems: list[str] = []
+    warnings: list[str] = []
+    issues: list[dict] = []
+
+    def report(key: str, issue: dict, declared: str, table: str = "") -> None:
+        blocking = strict_declared and issue["kind"] != "declared_unverifiable"
+        (problems if blocking else warnings).append(issue["message"])
+        issues.append({"object": key, **issue, "blocking": blocking, "declared": declared, "table": table})
+
+    object_dir = root / "ontology" / "object"
+    for doc in sorted(object_dir.glob("*.md")) if object_dir.is_dir() else []:
+        if doc.name == "index.md":
+            continue
+        try:
+            parsed = parse_object_doc(doc.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        key = doc.stem
+        fields = parsed["fields"]
+        field_keys = [f["key"] for f in fields]
+        declared = parsed["declared_table"]
+        table, matched_by = "", ""
+        reported = False
+        if declared:
+            table, note, issue = _declared_binding(key, parsed, field_keys, tables, by_lower)
+            matched_by = "declared" if table else ""
+            if note:
+                warnings.append(note)
+            if issue:
+                report(key, issue, declared)
+                reported = True
+        elif hints.get(key) in tables:
+            table, matched_by = hints[key], "seed"
+        elif tables and fields:
+            table = _match_table(field_keys, tables)
+            matched_by = "inferred" if table else ""
+
+        columns = tables.get(table, [])
+        lowered_columns = {c.lower(): c for c in columns}
+        # fields 保留全部声明属性（发布包的 `# 字段` 段要完整），column 只在对上列时填
+        fields = [{**f, "column": lowered_columns.get(f["key"].lower(), "")} for f in fields]
+        matched = [f for f in fields if f["column"]]
+        missing = [f["key"] for f in fields if not f["column"] and not _is_non_stored(f)] if table else []
+        if table and not matched:
+            report(key, {
+                "kind": "no_columns",
+                "message": f"对象「{key}」绑定的表「{table}」没有一列能对上属性英文名",
+                "candidates": _candidates(field_keys, declared or key, tables, exclude=table),
+            }, declared, table)
+            reported = True
+            table, matched_by = "", ""
+            fields = [{**f, "column": ""} for f in fields]
+            matched, missing = [], []
+        objects[key] = {
+            "table": table,
+            "matched_by": matched_by,
+            "matched_columns": len(matched),
+            "fields": fields,
+            "missing_columns": missing,
+            "primary_key": [f["key"] for f in matched if f["primary"]],
+            "declared_table": declared,
+        }
+        if not table and not reported:
+            warnings.append(f"对象「{key}」没有绑定真实数据表，数据问答无法命中该对象")
+        elif missing:
+            warnings.append(
+                f"对象「{key}」有 {len(missing)} 个属性在表「{table}」里没有同名列："
+                f"{'、'.join(missing[:5])}{'…' if len(missing) > 5 else ''}"
+            )
+
+    bound_tables = {item["table"] for item in objects.values() if item["table"]}
+    for name in sorted(set(tables) - bound_tables):
+        warnings.append(f"数据表「{name}」没有任何对象绑定，评测时不会被查询")
+    return {
+        "tables": {name: list(columns) for name, columns in tables.items()},
+        "objects": objects,
+        "bound": len(bound_tables),
+        "problems": problems,
+        "warnings": warnings,
+        "issues": issues,
+    }
+
+
+def _bare_token(line: str) -> bool:
+    return bool(re.fullmatch(r"`?[^\s`]+`?", line))
+
+
+def set_declared_source(text: str, table: str) -> str:
+    """把对象文档「# 数据来源」的声明行改成 table（空串写「无」）。
+
+    原声明行是说明句时改成 `>` 引用说明留在段内，其余说明行与模板占位以外的内容原样保留；
+    文档没有该段时插在「# 英文名称」段之后（没有则在「# 对象属性清单」之前，再没有则追加到末尾）。
+    """
+    value = table.strip() or "无"
+    lines = text.replace("\r\n", "\n").split("\n")
+    heading = f"# {SOURCE_SECTION}"
+    start = next((i for i, line in enumerate(lines) if line.strip() == heading), -1)
+    if start < 0:
+        after = next((i for i, line in enumerate(lines) if line.strip() == "# 英文名称"), -1)
+        if after >= 0:
+            at = next((i for i in range(after + 1, len(lines)) if re.match(r"^#\s+", lines[i])), len(lines))
+        else:
+            at = next((i for i, line in enumerate(lines) if line.strip() == f"# {FIELDS_SECTION}"), len(lines))
+        head = lines[:at]
+        while head and not head[-1].strip():
+            head.pop()
+        block = [heading, value, ""]
+        return "\n".join(head + ([""] if head else []) + block + lines[at:]).rstrip("\n") + "\n"
+
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^#\s+", lines[i])), len(lines))
+    body = re.sub(r"\{[^{}]*\}", "", "\n".join(lines[start + 1:end]), flags=re.S).split("\n")
+    replaced = False
+    for index, line in enumerate(body):
+        candidate = line.strip().lstrip("-*").strip()
+        if _is_source_note(candidate):
+            continue
+        keep = [] if _bare_token(candidate) else [f"> {candidate}"]
+        body[index:index + 1] = [value, *keep]
+        replaced = True
+        break
+    if not replaced:
+        body.insert(0, value)
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    tail = [""] if end < len(lines) else []
+    return "\n".join(lines[:start + 1] + body + tail + lines[end:]).rstrip("\n") + "\n"
+
+
+def object_data_mappings(resolution: dict, graph: bool = False) -> dict:
+    """绑定结果 → mappings/object-data-mappings.json（modeling 包契约 §18）。
+
+    graph=True 按 modeling 图模式（packageMappingResource）导出：resource 为对象 key
+    （即 Neo4j Label），fields 覆盖对象 `# 字段` 的全部属性（图导入逐字段核对）；
+    Sheet 与列仍由 sources[] 声明。NL2SQL 模式 resource 为表名，fields 只收对上列的属性。
+    """
+    objects: dict[str, dict] = {}
+    for key, item in resolution["objects"].items():
+        # 只有对上真实列的属性才进 mapping：写进去一个库里没有的列会让 nl2sql 生成废 SQL
+        matched = [f for f in item["fields"] if f["column"]]
+        if not item["table"] or not matched:
+            continue
+        fields = {
+            field["key"]: {
+                "source": field["key"],
+                **({"source_column": field["column"]} if field["column"] else {}),
+                "type": field["type"] or "string",
+                "required": bool(field["primary"]),
+                "readable": True,
+            }
+            for field in (item["fields"] if graph else matched)
+        }
+        primary_key = item["primary_key"] or [matched[0]["key"]]
+        objects[key] = {
+            "provider_alias": PROVIDER_ALIAS,
+            "resource": key if graph else item["table"],
+            "primary_key": primary_key,
+            "fields": fields,
+            "sources": [{
+                "role": "primary",
+                "resource": item["table"],
+                # source_column 恒写：modeling 导入靠 sources[].fields 回填 sourceColumn，
+                # 省略同名列会让 nl2sql 拿不到列绑定
+                "fields": {f["key"]: {"source_column": f["column"]} for f in matched},
+            }],
+            # 评测与问答只读，行数上限对齐 modeling 渲染器的保守默认
+            "policy": {"read_only": True, "max_rows": 1000, "require_user_filter": []},
+        }
+    # schema_version 在契约里是字符串；写成数字会被 modeling 当成非法版本
+    return {"schema_version": "0.1", "default_provider_alias": PROVIDER_ALIAS, "objects": objects}
+
+
+def _cell(value: str) -> str:
+    text = (value or "").strip().replace("|", "\\|")
+    return text or " "
+
+
+def render_fields_section(fields: list[dict]) -> str:
+    """「对象属性清单」→ modeling 包契约的 `# 字段` 表（前六列按位解析，第七列留给属性规则）。"""
+    rows = "\n".join(
+        # 主键即必填：契约里没有独立的必填列，主键列是唯一可判定的来源
+        f"| {_cell(f['key'])} | {_cell(f['cn'])} | {_cell(f['type'])} | "
+        f"{'是' if f['primary'] else '否'} | {_cell(f['desc'])} | {_cell(f['alias'])} | {_cell(f['rule'])} |"
+        for f in fields
+    )
+    return (
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 | 属性规则 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+        f"{rows}\n"
+    )
+
+
+def rewrite_object_body(body: str, fields: list[dict]) -> str:
+    """发布时把「对象属性清单」整段换成 `# 字段` 段：同一份属性，两端都能解析。
+
+    模板里的填写指引 blockquote 随原段一起去掉——发布包不该携带作者指引。
+    """
+    if not fields:
+        return body
+    lines = body.replace("\r\n", "\n").split("\n")
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == f"# {FIELDS_SECTION}")
+    except StopIteration:
+        return body
+    end = next(
+        (i for i in range(start + 1, len(lines)) if re.match(r"^#\s+", lines[i])),
+        len(lines),
+    )
+    return "\n".join(lines[:start] + render_fields_section(fields).split("\n") + lines[end:])
+
+
+def _relation_node(value: str) -> str:
+    """关系端点：`[[对象]]`（可带别名/锚点）取对象名，其余原样。"""
+    link = re.fullmatch(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]", value)
+    return link.group(1).strip() if link else value
+
+
+def parse_relations(text: str) -> list[tuple[str, str, str]]:
+    """「# 关联对象」→ [(源, 关系名, 目标)]；「当前对象」按对象自身解析由调用方替换为 key。
+
+    模板写法：`- 当前对象 → 关系名 → [[对象A]]` / `- [[对象B]] → 关系名 → 当前对象`。
+    """
+    out = []
+    for line in _section(text, RELATIONS_SECTION).split("\n"):
+        parts = [p.strip() for p in re.split(r"→|->", line.strip().lstrip("-*").strip())]
+        if len(parts) != 3 or any(map(_is_empty, parts)):
+            continue
+        out.append((_relation_node(parts[0]), parts[1], _relation_node(parts[2])))
+    return out
+
+
+def graph_relations(object_texts: dict[str, str], mapped: set[str]) -> tuple[dict[str, list], list[str]]:
+    """对象文档的关联对象 → 图导入可用的出边：{源对象: [(关系名, 目标)]}，以及被跳过的原因。
+
+    modeling 图导入校验包内全部关系（目标须存在、关系名须为合法标识符），不合规的一条
+    就会让整包映射失败，所以这里只收两端都已绑定数据表、关系名合法的关系。
+    """
+    relations: dict[str, list] = {}
+    skipped: list[str] = []
+    seen = set()
+    for key, text in object_texts.items():
+        for source, name, target in parse_relations(text):
+            source = key if source == "当前对象" else source
+            target = key if target == "当前对象" else target
+            triple = (source, name, target)
+            if key not in (source, target) or triple in seen:
+                continue
+            seen.add(triple)
+            if not {source, target} <= mapped:
+                continue  # 一端没有数据表：图里没有该类节点，关系无从建立
+            if not GRAPH_IDENTIFIER.match(name):
+                skipped.append(f"关系「{source} -{name}→ {target}」名称不是合法的图关系名，未导入")
+                continue
+            relations.setdefault(source, []).append((name, target))
+    return relations, skipped
+
+
+def render_relations_section(relations: list[tuple[str, str]]) -> str:
+    """出边 → modeling 包契约的 `# 关系` 表（关系 | 目标 | 说明）。"""
+    rows = "".join(f"| {name} | {target} | |\n" for name, target in relations)
+    return "# 关系\n\n| 关系 | 目标 | 说明 |\n| --- | --- | --- |\n" + rows

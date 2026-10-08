@@ -1,0 +1,620 @@
+"""openJiuwen DeepAgent 引擎：进程内实例，无子进程（方案 Phase 2）。
+
+与 Claude 引擎的形态差异（详见 docs/openjiuwen-engine-migration.md §3.2 与 §9 PoC 结论）：
+- 进程内对象：空闲会话 ≈3MB / 活跃轮次 ≈12MB（Claude CLI 子进程 ~400MB）
+- 逐轮驱动：send() 启动一个 turn 任务消费 Runner.run_agent_streaming 的 chunk 流，
+  桥接为平台事件推入内部队列；events() 从队列产出
+- 确认卡：ask_user / 审批 interaction 桥到 ctx.request_permission（与 Claude 引擎
+  同一张前端卡），答案经 InteractiveInput 回填后续跑
+- resume = 历史回放：连接时把事件历史注水 create_new_context_engine，
+  跨进程天然成立，不依赖任何 transcript 文件
+- 目录分层：DeepAgentConfig.cwd = 项目 git 工作区（文件/Shell 工具的根），
+  workspace = DATA_DIR/jiuwen/<pid>（框架私有工件区），互不污染
+
+Phase 2 边界：系统提示词为最小建模助手版（完整资产装载在 Phase 3）；
+todo/子代理运行时事件桥接为通用工具行；成本无单价来源，result 事件只报 tokens。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import importlib.util
+import json
+import time
+import uuid
+from collections import deque
+from pathlib import Path
+from typing import Any
+
+from ... import config
+from .base import CONFIG_ERROR, FRIENDLY_ERROR, EngineContext, safe_json
+
+JIUWEN_AVAILABLE = importlib.util.find_spec("openjiuwen") is not None
+
+UNAVAILABLE_MESSAGE = "openjiuwen 未安装（需 Python 3.11+ 镜像），无法启动 Jiuwen 引擎会话"
+UNCONFIGURED_MESSAGE = (
+    "Jiuwen 引擎未配置模型。请管理员在「配置中心 → 模型接入 → OpenAI 兼容（Jiuwen 引擎）」"
+    "填写网关地址、API Key 与模型名。"
+)
+
+# jiuwen 工具名 → 前端已知的工具语义名（TOOL_VERBS 映射所依赖）；
+# 参数键（file_path/content/command/description）两边一致，无需转换
+_TOOL_NAME_MAP = {
+    "read_file": "Read",
+    "write_file": "Write",
+    "edit_file": "Edit",
+    "bash": "Bash",
+    "powershell": "Bash",
+    "list_files": "Glob",
+    "glob": "Glob",
+    "grep": "Grep",
+    "task_tool": "Task",
+    "todo": "TodoWrite",
+    "web_search": "WebSearch",
+    "web_fetch": "WebFetch",
+}
+
+# 历史回放的上下文预算（字符）：从最近往前取，避免超长历史撑爆上下文
+_REPLAY_CHAR_BUDGET = 24_000
+_RUNNER_STARTED = False
+_RUNNER_LOCK: asyncio.Lock | None = None
+
+
+def model_config() -> dict:
+    """Jiuwen 引擎的 OpenAI 兼容模型配置：UI 配置优先，env 兜底。"""
+    cfg = {
+        "base_url": config.JIUWEN_BASE_URL,
+        "api_key": config.JIUWEN_API_KEY,
+        "model": config.JIUWEN_MODEL,
+    }
+    try:
+        from .. import model_settings
+
+        ui = model_settings.jiuwen_config()
+        for key in cfg:
+            if ui.get(key):
+                cfg[key] = ui[key]
+    except Exception:
+        pass
+    return cfg
+
+
+def _fingerprint(cfg: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(cfg, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+async def _ensure_runner_started() -> None:
+    global _RUNNER_STARTED, _RUNNER_LOCK
+    if _RUNNER_LOCK is None:
+        _RUNNER_LOCK = asyncio.Lock()
+    async with _RUNNER_LOCK:
+        if _RUNNER_STARTED:
+            return
+        from openjiuwen.core.runner import Runner
+
+        await Runner.start()
+        _RUNNER_STARTED = True
+
+
+# 系统提示词与命令/守卫由资产装载器提供（jiuwen_assets.py，Phase 3：
+# workspace-rules + 命令索引 + 运行时适配注记；单一资产事实源）
+
+
+class _ChunkBridge:
+    """openjiuwen chunk 流 → 平台事件（契约见 engines/base.py 模块文档）。
+
+    tool_call chunk 不带调用 id，桥接层自造 id 并按 FIFO 与 tool_result 配对
+    （引擎以 parallel_tool_calls=False 运行以保证配对正确性）。
+    """
+
+    def __init__(self):
+        self._text: list[str] = []
+        self._thinking: list[str] = []
+        self._open_calls: deque[str] = deque()
+
+    @staticmethod
+    def _payload_text(payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, dict):
+            return str(payload.get("content") or payload.get("output") or "")
+        return str(getattr(payload, "content", "") or "")
+
+    def _flush_blocks(self, extra: list[dict] | None = None) -> list[dict]:
+        blocks: list[dict] = []
+        thinking = "".join(self._thinking).strip()
+        if thinking:
+            blocks.append({"kind": "thinking", "text": thinking})
+        text = "".join(self._text).strip()
+        if text:
+            blocks.append({"kind": "text", "text": text})
+        self._text.clear()
+        self._thinking.clear()
+        blocks.extend(extra or [])
+        if not blocks:
+            return []
+        return [
+            {
+                "type": "assistant_message",
+                "blocks": blocks,
+                "model": None,
+                "subagent": False,
+            }
+        ]
+
+    def feed(self, chunk: Any) -> tuple[list[dict], tuple[str, Any] | None]:
+        """返回 (平台事件列表, 待回填 interaction 或 None)。"""
+        ctype = getattr(chunk, "type", "")
+        payload = getattr(chunk, "payload", None)
+
+        if ctype == "llm_output":
+            text = self._payload_text(payload)
+            if not text:
+                return [], None
+            self._text.append(text)
+            return [{"type": "stream_delta", "kind": "text", "text": text}], None
+
+        if ctype == "llm_reasoning":
+            text = self._payload_text(payload)
+            if not text:
+                return [], None
+            self._thinking.append(text)
+            return [{"type": "stream_delta", "kind": "thinking", "text": text}], None
+
+        if ctype == "tool_call":
+            raw_name = ""
+            args: Any = {}
+            if isinstance(payload, dict):
+                raw_name = str(payload.get("tool_name") or "")
+                args = payload.get("tool_args")
+            call_id = uuid.uuid4().hex[:12]
+            self._open_calls.append(call_id)
+            tool_block = {
+                "kind": "tool_use",
+                "tool": _TOOL_NAME_MAP.get(raw_name, raw_name or "tool"),
+                "input": safe_json(args if isinstance(args, dict) else {"input": args}),
+                "tool_use_id": call_id,
+            }
+            return self._flush_blocks([tool_block]), None
+
+        if ctype == "tool_result":
+            call_id = self._open_calls.popleft() if self._open_calls else ""
+            excerpt = ""
+            is_error = False
+            if isinstance(payload, dict):
+                excerpt = str(payload.get("tool_result") or "")
+                is_error = bool(payload.get("is_error"))
+            excerpt = excerpt.strip()
+            if len(excerpt) > 400:
+                excerpt = excerpt[:400] + "…"
+            return [
+                {
+                    "type": "tool_results",
+                    "blocks": [
+                        {
+                            "kind": "tool_result",
+                            "tool_use_id": call_id,
+                            "is_error": is_error,
+                            "excerpt": excerpt,
+                        }
+                    ],
+                }
+            ], None
+
+        if ctype == "__interaction__":
+            if isinstance(payload, dict):
+                iid = payload.get("interaction_id", "unknown")
+                request = payload
+            else:
+                iid = getattr(payload, "id", "unknown")
+                request = getattr(payload, "value", payload)
+            return self._flush_blocks(), (str(iid), request)
+
+        # answer 是 llm_output 的汇总（避免重复）；其余运行时噪音一律忽略
+        return [], None
+
+    def finish(self) -> list[dict]:
+        return self._flush_blocks()
+
+
+def _req_get(request: Any, key: str, default: Any = None) -> Any:
+    """interaction 请求兼容取值：runtime 可能给对象也可能给 dict。"""
+    if isinstance(request, dict):
+        return request.get(key, default)
+    return getattr(request, key, default)
+
+
+def _interaction_to_permission(request: Any) -> tuple[str, dict]:
+    """interaction 请求 → 确认卡的 (tool_name, tool_input)。
+
+    ask_user 的 questions 结构（question/header/options[].label/multiSelect）
+    与前端 AskUserQuestion 卡的契约同形，直接透传。
+    """
+    tool_name = str(_req_get(request, "tool_name", "") or "")
+    if tool_name == "ask_user":
+        questions = _req_get(request, "questions")
+        if not questions:
+            # rail 只认规范的 questions 列表；模型传参不规范时（字符串化 JSON、
+            # 单数 question、纯 query 文本）从 tool_args 里尽量恢复出卡片
+            args = _req_get(request, "tool_args")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except (ValueError, TypeError):
+                    args = {}
+            args = args if isinstance(args, dict) else {}
+            raw_questions = args.get("questions")
+            if isinstance(raw_questions, str):
+                try:
+                    raw_questions = json.loads(raw_questions)
+                except (ValueError, TypeError):
+                    raw_questions = None
+            if isinstance(raw_questions, list) and raw_questions:
+                questions = raw_questions
+            elif args.get("question"):
+                questions = [{
+                    "question": str(args["question"]),
+                    "options": args.get("options") or [],
+                }]
+            else:
+                text = args.get("query") or args.get("prompt") or args.get("message") or ""
+                questions = [{"question": str(text or "请确认"), "options": []}]
+        return "AskUserQuestion", {"questions": safe_json(list(questions))}
+    args = _req_get(request, "tool_args")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (ValueError, TypeError):
+            args = {"input": args}
+    return tool_name or "tool", safe_json(args if isinstance(args, dict) else {})
+
+
+def _fill_interactive_input(ii: Any, iid: str, request: Any, decision: dict) -> None:
+    """中立决策 dict → InteractiveInput 回填。"""
+    tool_name = str(_req_get(request, "tool_name", "") or "")
+    if tool_name == "ask_user":
+        answers = (decision.get("updated_input") or {}).get("answers") or {}
+        if decision.get("behavior") != "allow":
+            # 拒绝提问 = 明确告知不再追问
+            answers = {"__declined__": decision.get("message") or "用户取消了该提问"}
+        questions = _req_get(request, "questions")
+        if questions:
+            filled = {}
+            for q in questions:
+                qtext = str(q.get("question", ""))
+                filled[qtext] = str(
+                    answers.get(qtext) or next(iter(answers.values()), "") or "确认"
+                )
+            ii.update(iid, {"answers": filled})
+        else:
+            ii.update(iid, {"answer": str(next(iter(answers.values()), "") or "确认")})
+        return
+    approved = decision.get("behavior") == "allow"
+    ii.update(
+        iid,
+        {
+            "approved": approved,
+            "feedback": "" if approved else (decision.get("message") or "用户拒绝了该操作"),
+            "auto_confirm": False,
+        },
+    )
+
+
+def _history_to_messages(events: list[dict]):
+    """平台事件历史 → 模型消息（历史回放续接的注水材料）。"""
+    from openjiuwen.core.foundation.llm.schema.message import (
+        AssistantMessage,
+        UserMessage,
+    )
+
+    pairs: list[tuple[str, str]] = []
+    for event in events:
+        etype = event.get("type")
+        if etype == "user_message":
+            text = (event.get("text") or "").strip()
+            if text:
+                pairs.append(("user", text))
+        elif etype == "assistant_message":
+            texts = [
+                b.get("text", "")
+                for b in event.get("blocks", [])
+                if b.get("kind") == "text"
+            ]
+            text = "\n".join(t for t in texts if t).strip()
+            if text:
+                # 相邻 assistant 段合并，保持 user/assistant 交替尽量干净
+                if pairs and pairs[-1][0] == "assistant":
+                    pairs[-1] = ("assistant", pairs[-1][1] + "\n" + text)
+                else:
+                    pairs.append(("assistant", text))
+    # 尾部未获回复的用户消息不注水：它们即将作为 pending prompt 重发，
+    # 注水会让模型看到两遍（也避免首轮被误标为"已续接"）
+    while pairs and pairs[-1][0] == "user":
+        pairs.pop()
+    # 从最近往前收进预算
+    kept: list[tuple[str, str]] = []
+    budget = _REPLAY_CHAR_BUDGET
+    for role, text in reversed(pairs):
+        cost = len(text)
+        if budget - cost < 0 and kept:
+            break
+        budget -= cost
+        kept.append((role, text[: _REPLAY_CHAR_BUDGET]))
+    kept.reverse()
+    return [
+        UserMessage(content=text) if role == "user" else AssistantMessage(content=text)
+        for role, text in kept
+    ]
+
+
+class JiuwenEngine:
+    """openjiuwen DeepAgent 引擎实现（AgentEngine 协议）。"""
+
+    name = "jiuwen"
+    UNAVAILABLE_MESSAGE = UNAVAILABLE_MESSAGE
+
+    def __init__(self, ctx: EngineContext):
+        self._ctx = ctx
+        self.client: Any = None  # DeepAgent 实例（协议观察点：None = 未连接）
+        self.resume_attempted = False
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._turn_task: asyncio.Task | None = None
+        self._buffered: list[str] = []  # 轮内追加的消息，本轮结束后接续
+        self._sid = f"onto-{ctx.project_id}"
+        from .jiuwen_assets import JiuwenAssetLoader
+
+        self._loader = JiuwenAssetLoader(Path(config.ASSETS_DIR))
+        self._fingerprint = ""
+        self._tracker: Any = None
+        self._closed = False
+
+    @classmethod
+    def available(cls) -> bool:
+        return JIUWEN_AVAILABLE
+
+    # ---- 连接生命周期 ----
+
+    async def connect(self) -> bool:
+        if not JIUWEN_AVAILABLE:
+            raise RuntimeError(UNAVAILABLE_MESSAGE)
+        cfg = model_config()
+        if not (cfg.get("base_url") and cfg.get("api_key") and cfg.get("model")):
+            raise RuntimeError(UNCONFIGURED_MESSAGE)
+        # openjiuwen 首次 import 较重（秒级），放线程避免卡住事件循环
+        agent, tracker = await asyncio.to_thread(self._build_agent, cfg)
+        await _ensure_runner_started()
+        history = list(self._ctx.load_history()) if self._ctx.load_history else []
+        replayed = _history_to_messages(history)
+        if replayed:
+            agent.ensure_initialized()
+            await agent.create_new_context_engine(
+                session_id=self._sid, messages=replayed
+            )
+        self.client = agent
+        self._tracker = tracker
+        self._fingerprint = _fingerprint(cfg)
+        self.resume_attempted = bool(replayed)
+        return bool(replayed)
+
+    def _build_agent(self, cfg: dict):
+        """测试替换点：单测注入假 agent，不触碰真实框架。"""
+        from openjiuwen.core.foundation.llm import init_model
+        from openjiuwen.core.runner import Runner
+        from openjiuwen.core.sys_operation import (
+            LocalWorkConfig,
+            OperationMode,
+            SysOperationCard,
+        )
+        from openjiuwen.harness import create_deep_agent
+        from openjiuwen.harness.cli.rails import TokenTrackingRail
+        from openjiuwen.harness.cli.rails.tool_tracker import ToolTrackingRail
+        from openjiuwen.harness.rails import AskUserRail
+        from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
+        from openjiuwen.harness.workspace.workspace import Workspace
+
+        from .jiuwen_assets import build_hooks_rail
+
+        model = init_model(
+            provider="OpenAI",
+            model_name=cfg["model"],
+            api_key=cfg["api_key"],
+            api_base=cfg["base_url"],
+            max_tokens=config.JIUWEN_MAX_TOKENS,
+            timeout=300.0,
+        )
+        # 框架私有工件区与项目 git 工作区分离（官方 cwd/workspace 分层）
+        shadow = Path(config.DATA_DIR) / "jiuwen" / self._ctx.project_id
+        shadow.mkdir(parents=True, exist_ok=True)
+        # 文件沙箱三根：项目区 + 私有工件区 + 资产目录（工作区 .claude/CLAUDE.md
+        # 是指向资产的符号链接，沙箱按 resolve 后路径判定，不加资产根则读不穿；
+        # 资产写保护由 toolset_write_guard 经 ClaudeHooksRail 承担）
+        sysop_id = f"onto-jiuwen-{self._ctx.project_id}"
+        if Runner.resource_mgr.get_sys_operation(sysop_id) is None:
+            Runner.resource_mgr.add_sys_operation(
+                SysOperationCard(
+                    id=sysop_id,
+                    mode=OperationMode.LOCAL,
+                    work_config=LocalWorkConfig(
+                        shell_allowlist=None,
+                        restrict_to_sandbox=True,
+                        sandbox_root=[
+                            str(self._ctx.cwd),
+                            str(shadow),
+                            str(self._loader.assets_dir),
+                        ],
+                    ),
+                )
+            )
+        sys_operation = Runner.resource_mgr.get_sys_operation(sysop_id)
+        tracker = TokenTrackingRail()
+        agent = create_deep_agent(
+            model=model,
+            system_prompt=self._loader.system_prompt(),
+            rails=[
+                tracker,
+                ToolTrackingRail(),
+                SysOperationRail(),
+                AskUserRail(),
+                build_hooks_rail(self._loader, self._ctx.cwd),
+            ],
+            workspace=Workspace(root_path=str(shadow), language="cn"),
+            sys_operation=sys_operation,
+            enable_task_loop=True,
+            # 命令资产的 Task 派遣模式：读 agents/*.md 内容作为子代理 prompt
+            add_general_purpose_agent=True,
+            max_iterations=config.JIUWEN_MAX_ITERATIONS,
+            language="cn",
+            # tool_call chunk 无调用 id，串行执行保证桥接层 FIFO 配对正确
+            parallel_tool_calls=False,
+            cwd=str(self._ctx.cwd),
+            project_root=str(self._ctx.cwd),
+        )
+        return agent, tracker
+
+    async def send(self, text: str) -> None:
+        text = self._loader.expand_command(text)
+        if self._turn_task and not self._turn_task.done():
+            self._buffered.append(text)
+            return
+        self._turn_task = asyncio.create_task(self._run_turn(text))
+
+    async def interrupt(self) -> None:
+        agent = self.client
+        if agent is not None:
+            try:
+                result = agent.abort()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                pass
+        task = self._turn_task
+        if task and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            except Exception:  # 含 wait_for 的 TimeoutError
+                task.cancel()
+
+    async def disconnect(self) -> None:
+        self._closed = True
+        if self._turn_task and not self._turn_task.done():
+            self._turn_task.cancel()
+        agent = self.client
+        self.client = None
+        if agent is not None:
+            try:
+                agent.cleanup_task_resources()
+            except Exception:
+                pass
+
+    async def kill(self) -> None:
+        """硬终止：取消轮任务并释放实例（阻塞在 interaction 等待中的轮也能停）。"""
+        await self.disconnect()
+
+    def config_stale(self) -> bool:
+        return bool(self._fingerprint) and self._fingerprint != _fingerprint(
+            model_config()
+        )
+
+    # ---- 事件流 ----
+
+    async def events(self):
+        while True:
+            event = await self._queue.get()
+            yield event
+            if event.get("type") == "_engine_end":
+                return
+
+    def _usage_snapshot(self) -> dict:
+        tracker = self._tracker
+        return {
+            "input_tokens": int(getattr(tracker, "total_input_tokens", 0) or 0),
+            "output_tokens": int(getattr(tracker, "total_output_tokens", 0) or 0),
+        }
+
+    async def _run_turn(self, text: str) -> None:
+        from openjiuwen.core.runner import Runner
+        from openjiuwen.core.session import InteractiveInput
+
+        started = time.time()
+        before = self._usage_snapshot()
+        try:
+            queries: list[Any] = [text]
+            while queries:
+                query = queries.pop(0)
+                round_query: Any = query
+                while True:
+                    bridge = _ChunkBridge()
+                    pending: list[tuple[str, Any]] = []
+                    stream = Runner.run_agent_streaming(
+                        self.client, {"query": round_query}, session=self._sid
+                    )
+                    async for chunk in stream:
+                        events, interaction = bridge.feed(chunk)
+                        for event in events:
+                            await self._queue.put(event)
+                        if interaction:
+                            pending.append(interaction)
+                    for event in bridge.finish():
+                        await self._queue.put(event)
+                    if not pending:
+                        break
+                    ii = InteractiveInput()
+                    for iid, request in pending:
+                        tool_name, tool_input = _interaction_to_permission(request)
+                        decision = await self._ctx.request_permission(
+                            tool_name, tool_input, None, None
+                        )
+                        _fill_interactive_input(ii, iid, request, decision)
+                    round_query = ii
+                after = self._usage_snapshot()
+                await self._queue.put(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "is_error": False,
+                        "duration_ms": int((time.time() - started) * 1000),
+                        "total_cost_usd": None,  # 无单价来源，成本以 tokens 呈现
+                        "num_turns": 1,
+                        "usage": {
+                            "input_tokens": after["input_tokens"] - before["input_tokens"],
+                            "output_tokens": after["output_tokens"]
+                            - before["output_tokens"],
+                        },
+                    }
+                )
+                started = time.time()
+                before = after
+                if self._buffered:
+                    queries.append(self._buffered.pop(0))
+        except asyncio.CancelledError:
+            # 打断：以 interrupted 终态收轮，会话保持可用
+            self._queue.put_nowait(
+                {
+                    "type": "result",
+                    "subtype": "interrupted",
+                    "is_error": False,
+                    "duration_ms": int((time.time() - started) * 1000),
+                    "total_cost_usd": None,
+                    "num_turns": 1,
+                    "usage": {},
+                }
+            )
+            raise
+        except Exception as exc:
+            if self._closed:
+                return
+            self._ctx.log_error("session", str(exc))
+            friendly = (
+                CONFIG_ERROR
+                if any(
+                    marker in str(exc).lower()
+                    for marker in ("401", "unauthorized", "api key", "authentication")
+                )
+                else FRIENDLY_ERROR
+            )
+            await self._queue.put(
+                {"type": "_engine_end", "reason": "error", "error": friendly}
+            )

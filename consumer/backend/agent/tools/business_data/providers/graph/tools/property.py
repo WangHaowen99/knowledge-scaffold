@@ -7,6 +7,7 @@ from typing import Any
 
 from ..backends.base import GraphBackend
 from ..models import GraphBackendResult, GraphScope
+from ..property_types import GraphFilterTypeResolver
 
 
 def property_filter(
@@ -20,10 +21,20 @@ def property_filter(
     offset: int = 0,
     scope: GraphScope,
 ) -> GraphBackendResult:
+    resolver = GraphFilterTypeResolver(
+        backend=backend,
+        scope=scope,
+        provider=getattr(backend, "provider", ""),
+    )
+    normalized_filter = resolver.normalize_filter(
+        filter_dict or {},
+        element_type=element_type,
+        element_class=element_class,
+    ).filter_dict
     return backend.property_filter(
         element_class=element_class,
         element_type=element_type,
-        filter_dict=filter_dict,
+        filter_dict=normalized_filter,
         return_properties=return_properties,
         limit=limit,
         offset=offset,

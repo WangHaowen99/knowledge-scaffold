@@ -302,22 +302,22 @@ body { background: #f2f4f8; overflow: hidden; }
 }
 .mwr .modal h3 { font-size: 17px; margin-bottom: 16px; font-weight: 750; }
 .mwr .modal .foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
-.mwr .package-name-conflict-modal { width: min(520px, calc(100vw - 32px)); }
-.mwr .package-name-conflict-summary { margin: -6px 0 16px; color: var(--ink2); font-size: 12.5px; }
-.mwr .package-name-options { display: grid; gap: 8px; }
-.mwr .package-name-options label {
+.mwr .name-conflict-modal { width: min(520px, calc(100vw - 32px)); }
+.mwr .name-conflict-summary { margin: -6px 0 16px; color: var(--ink2); font-size: 12.5px; }
+.mwr .name-conflict-options { display: grid; gap: 8px; }
+.mwr .name-conflict-options label {
   display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px 12px;
   border: 1px solid var(--hair); border-radius: 8px; background: #fff; cursor: pointer;
 }
-.mwr .package-name-options label.selected { border-color: var(--blue-l); background: var(--blue-ll); }
-.mwr .package-name-options label:has(input:disabled) { cursor: not-allowed; opacity: .65; }
-.mwr .package-name-options input[type="radio"] { flex: none; width: 15px; height: 15px; accent-color: var(--blue); }
-.mwr .package-name-options label span { min-width: 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 650; }
-.mwr .package-name-custom-input {
+.mwr .name-conflict-options label.selected { border-color: var(--blue-l); background: var(--blue-ll); }
+.mwr .name-conflict-options label:has(input:disabled) { cursor: not-allowed; opacity: .65; }
+.mwr .name-conflict-options input[type="radio"] { flex: none; width: 15px; height: 15px; accent-color: var(--blue); }
+.mwr .name-conflict-options label span { min-width: 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 650; }
+.mwr .name-conflict-custom-input {
   width: 100%; min-height: 38px; padding: 8px 11px; border: 1px solid #cfd6e2;
   border-radius: 8px; outline: none;
 }
-.mwr .package-name-custom-input:focus { border-color: var(--blue-l); box-shadow: var(--ring); }
+.mwr .name-conflict-custom-input:focus { border-color: var(--blue-l); box-shadow: var(--ring); }
 .mwr .pj-options { border: 0; padding: 0; margin: 2px 0 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; }
 .mwr .pj-options legend { grid-column: 1 / -1; font-size: 12.5px; font-weight: 650; color: var(--ink2); margin-bottom: 6px; }
 .mwr .pj-options label { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--ink2); cursor: pointer; white-space: nowrap; }
@@ -1388,6 +1388,17 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .cfg-mcp-token-main { display: grid; gap: 4px; min-width: 0; }
 .mwr .cfg-mcp-token-name { font-size: 13px; font-weight: 700; color: var(--ink); }
 .mwr .cfg-mcp-token-scopes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.mwr .cfg-mcp-client-configs { display: grid; gap: 10px; margin-top: 4px; }
+.mwr .cfg-mcp-config-item {
+  display: grid; gap: 8px; border: 1px solid #e5e9f1; border-radius: 8px;
+  background: #fafbfc; padding: 10px 12px;
+}
+.mwr .cfg-mcp-config-item pre {
+  margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  border-radius: 7px; background: #171d26; color: #d9e6f5; padding: 9px 10px;
+  font-size: 11px; line-height: 1.55;
+}
+.mwr .cfg-mcp-config-item > .btn { justify-self: start; display: inline-flex; align-items: center; gap: 5px; }
 
 @media (max-width: 600px) {
   .mwr .admin-llm-grid { grid-template-columns: minmax(0, 1fr); }

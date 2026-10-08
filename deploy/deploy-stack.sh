@@ -120,6 +120,75 @@ load_env_if_unset() {
   [ -z "$value" ] || { printf -v "$key" '%s' "$value"; export "$key"; }
 }
 
+is_public_ipv4() {
+  local ip="$1"
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  [[ "$ip" != 127.* && "$ip" != 10.* && "$ip" != 192.168.* \
+      && "$ip" != 169.254.* && "$ip" != 0.* ]] || return 1
+  if [[ "$ip" =~ ^172\.([0-9]+)\. ]]; then
+    [ "${BASH_REMATCH[1]}" -lt 16 ] || [ "${BASH_REMATCH[1]}" -gt 31 ] || return 1
+  fi
+  return 0
+}
+
+detect_public_ipv4() {
+  local candidate service
+  command -v curl >/dev/null 2>&1 || return 1
+  for service in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+    candidate="$(curl -fsS --max-time 2 --connect-timeout 1 "$service" 2>/dev/null | tr -d '[:space:]')" || continue
+    is_public_ipv4 "$candidate" && { printf '%s\n' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+detect_lan_ipv4() {
+  local candidate
+  if command -v ip >/dev/null 2>&1; then
+    candidate="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)"
+    if [[ "$candidate" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+       && [[ "$candidate" != 127.* && "$candidate" != 169.254.* ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+  hostname -I 2>/dev/null | tr ' ' '\n' | while read -r candidate; do
+    [[ "$candidate" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || continue
+    [[ "$candidate" != 127.* && "$candidate" != 169.254.* ]] || continue
+    printf '%s\n' "$candidate"
+    break
+  done
+}
+
+resolve_modeling_mcp_public_base_url() {
+  local port="${MODELING_MCP_PORT:-5188}" public_ip lan_ip
+  if [ -n "${MODELING_MCP_PUBLIC_BASE_URL:-}" ]; then
+    MODELING_MCP_PUBLIC_BASE_URL="${MODELING_MCP_PUBLIC_BASE_URL%/}"
+    export MODELING_MCP_PUBLIC_BASE_URL
+    ok "使用显式 MCP 对外地址：${MODELING_MCP_PUBLIC_BASE_URL}"
+    return 0
+  fi
+  public_ip="$(detect_public_ipv4 || true)"
+  if [ -n "$public_ip" ]; then
+    MODELING_MCP_PUBLIC_BASE_URL="http://${public_ip}:${port}"
+    export MODELING_MCP_PUBLIC_BASE_URL
+    warn "未配置 MCP 公网基础地址，已启用探测到的公网 IP：${MODELING_MCP_PUBLIC_BASE_URL}"
+    warn "当前使用 HTTP，公网 Token 可能被明文传输；正式环境建议改为 HTTPS 域名或带有效证书的 HTTPS IP"
+    return 0
+  fi
+  lan_ip="$(detect_lan_ipv4 | head -n 1 || true)"
+  if [ -n "$lan_ip" ]; then
+    MODELING_MCP_PUBLIC_BASE_URL="http://${lan_ip}:${port}"
+    export MODELING_MCP_PUBLIC_BASE_URL
+    warn "未探测到公网 IP，已启用局域网 MCP 地址：${MODELING_MCP_PUBLIC_BASE_URL}"
+    warn "该地址仅适用于网络互通的客户端；如需公网接入，请显式配置 MODELING_MCP_PUBLIC_BASE_URL"
+    return 0
+  fi
+  MODELING_MCP_PUBLIC_BASE_URL="http://127.0.0.1:${port}"
+  export MODELING_MCP_PUBLIC_BASE_URL
+  warn "未探测到可用公网或局域网 IP，MCP 回退为本机地址：${MODELING_MCP_PUBLIC_BASE_URL}"
+  warn "建模部署继续执行，但 MCP 当前仅限本机访问"
+}
+
 ensure_mcp_token_secret() {
   local env_file="$CONSUMER_DIR/backend/.env" secret temp_file
   secret="$(env_get "$env_file" MCP_TOKEN_SECRET)"
@@ -190,6 +259,42 @@ ensure_modeling_service_token() {
   MODELING_SERVICE_TOKEN="$secret"
   export MODELING_SERVICE_TOKEN
   ok "Modeling 服务令牌已配置（值不写入日志）"
+}
+
+ensure_eval_mysql_password() {
+  # 评测库 root 密码：显式 env > backend/.env 留存值 > 首次自动生成（开箱即用，
+  # 与 MCP_TOKEN_SECRET 同款持久化——不打印、0600 落盘、幂等复用）
+  local env_file="$CONSUMER_DIR/backend/.env" secret temp_file
+  secret="${EVAL_MYSQL_ROOT_PASSWORD:-$(env_get "$env_file" EVAL_MYSQL_ROOT_PASSWORD)}"
+  if [ -z "$secret" ]; then
+    if command -v openssl >/dev/null 2>&1; then
+      secret="$(openssl rand -hex 16)"
+    elif command -v python3 >/dev/null 2>&1; then
+      secret="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+    else
+      fail "无法生成 EVAL_MYSQL_ROOT_PASSWORD：需要 openssl 或 Python 3" 2
+    fi
+  fi
+  [ "${#secret}" -ge 16 ] || fail     "EVAL_MYSQL_ROOT_PASSWORD 少于 16 个字符；请改为独立强随机值" 2
+  temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || fail "无法更新 $env_file" 2
+  chmod 600 "$temp_file"
+  if ! awk -v secret="$secret" '
+    BEGIN { updated = 0 }
+    /^EVAL_MYSQL_ROOT_PASSWORD=/ {
+      if (!updated) { print "EVAL_MYSQL_ROOT_PASSWORD=" secret; updated = 1 }
+      next
+    }
+    { print }
+    END { if (!updated) print "EVAL_MYSQL_ROOT_PASSWORD=" secret }
+  ' "$env_file" > "$temp_file"; then
+    command rm -f -- "$temp_file"
+    fail "无法更新 $env_file" 2
+  fi
+  mv "$temp_file" "$env_file"
+  chmod 600 "$env_file"
+  EVAL_MYSQL_ROOT_PASSWORD="$secret"
+  export EVAL_MYSQL_ROOT_PASSWORD
+  ok "评测库 root 密码已配置（值不写入日志）"
 }
 
 ensure_modeling_mcp_token_secret() {
@@ -272,7 +377,7 @@ cmd_preflight() {
   else
     echo "[deploy-stack] [FAIL] 缺少 docker compose"; rc=2
   fi
-  for p in "${BACKEND_PORT:-5055}" "${FRONTEND_PORT:-8888}" "${MODELING_PORT:-5100}"; do
+  for p in "${BACKEND_PORT:-5055}" "${FRONTEND_PORT:-8888}" "${MODELING_PORT:-8100}"; do
     if port_free "$p"; then ok "端口 $p 空闲"; else
       if curl -fsS --max-time 3 "http://127.0.0.1:$p/health" >/dev/null 2>&1; then
         warn "端口 $p 已被占用，且像是本系统已在运行（/health 可达）——重复 up 是安全的"
@@ -302,19 +407,20 @@ cmd_preflight() {
 }
 
 cmd_up() {
-  local with_eval=0 consumer_only=0 modeling_only=0 no_build=0
+  local with_eval=1 consumer_only=0 modeling_only=0 no_build=0
   local modeling_tag="${MODELING_TAG:-latest}"
   command -v curl >/dev/null 2>&1 || fail "缺少 curl，无法执行部署健康检查" 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --with-auth) ;; # 兼容旧命令；auth-server 现在是必备组件并始终部署。
-      --with-eval) with_eval=1 ;;
+      --with-eval) with_eval=1 ;; # 兼容旧命令；评测库现在默认启用
+      --no-eval) with_eval=0 ;;
       --consumer-only) consumer_only=1 ;;
       --modeling-only) modeling_only=1 ;;
       --no-build) no_build=1 ;;
       --tag) [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || fail "--tag 需要一个值（例：--tag latest）" 2; TAG="$2"; shift ;;
       --modeling-tag) [ $# -ge 2 ] && [ "${2#--}" = "$2" ] || fail "--modeling-tag 需要一个值（例：--modeling-tag d3bfa079）" 2; modeling_tag="$2"; shift ;;
-      *) fail "未知参数：$1（可用：--with-auth --with-eval --consumer-only --modeling-only --no-build --tag <tag> --modeling-tag <tag>）" 2 ;;
+      *) fail "未知参数：$1（可用：--with-auth --with-eval --no-eval --consumer-only --modeling-only --no-build --tag <tag> --modeling-tag <tag>）" 2 ;;
     esac
     shift
   done
@@ -354,9 +460,15 @@ cmd_up() {
                MODELING_CONTEXT_WINDOW_MESSAGES MODELING_CONTEXT_MAX_MESSAGES \
                MODELING_CONTEXT_WINDOW_ROUNDS MODELING_CONTEXT_PROCESSOR_PRESET \
                MODELING_CONTEXT_WINDOW_TOKENS MODELING_CONTEXT_PROTECTED_TOOLS \
+               MODELING_MCP_PUBLIC_BASE_URL \
+               MODELING_MCP_SUPPORTED_PROTOCOL_VERSIONS MODELING_MCP_PROTOCOL_COMPATIBILITY \
+               MODELING_MCP_OPERATION_RULE_ENABLED MODELING_MCP_TOKEN_SECRET \
+               MODELING_MCP_TRANSPORT \
                MODELING_ACCEPTANCE_MODE; do
       load_env_if_unset "$CONSUMER_DIR/backend/.env" "$key"
+      load_env_if_unset "$DEPLOY_DIR/.env" "$key"
     done
+    resolve_modeling_mcp_public_base_url
   fi
   [ "$config_errors" -eq 0 ] || fail "请补齐 consumer/backend/.env 后重新执行 ./deploy/deploy.sh" 2
 
@@ -401,8 +513,13 @@ cmd_up() {
 
     local eval_args=()
     if [ "$with_eval" -eq 1 ]; then
-      [ -n "${EVAL_MYSQL_ROOT_PASSWORD:-}" ] || fail \
-        "--with-eval 要求显式设置 EVAL_MYSQL_ROOT_PASSWORD；请使用独立强随机值，禁止沿用示例或生产数据库密码" 2
+      ensure_eval_mysql_password
+      # 宿主 3306 常被本机已有 MySQL 占用：未显式指定发布端口时自动回退 13306
+      # （评测链路走容器网络内部端口，宿主发布端口只影响外部直连排查）
+      if [ -z "${EVAL_MYSQL_PORT:-}" ] && ! port_free 3306; then
+        export EVAL_MYSQL_PORT=13306
+        warn "宿主端口 3306 被占用，评测库改为发布在 13306（EVAL_MYSQL_PORT 可显式指定）"
+      fi
       eval_args=(--profile eval)
       export EVAL_DB_URL="${EVAL_DB_URL:-mysql://root:${EVAL_MYSQL_ROOT_PASSWORD}@eval-mysql:3306}"
       export MODELING_EVAL_BINDING_URL="${MODELING_EVAL_BINDING_URL:-http://modeling-nl2sql:5600}"
@@ -413,16 +530,16 @@ cmd_up() {
     log "启动 Modeling Workbench（core + MCP + Agent，tag=$MODELING_TAG）…"
     modeling_compose "${eval_args[@]+"${eval_args[@]}"}" up -d "${build_args[@]}" --remove-orphans
     wait_for_container "mw-modeling-agent" 180
-    wait_http "modeling" "http://127.0.0.1:${MODELING_PORT:-5100}/health" 120 modeling
+    wait_http "modeling" "http://127.0.0.1:${MODELING_PORT:-8100}/health" 120 modeling
     wait_http "modeling-mcp" "http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" 120 modeling
-    wait_http "modeling-workbench" "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 modeling
+    wait_http "modeling-workbench" "http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html" 60 modeling
   fi
 
   echo
   ok "部署完成。访问入口："
   [ "$modeling_only" -eq 0 ] && log "  控制台（consumer）  http://localhost:${FRONTEND_PORT:-8888}   初始账号 admin（密码取 AUTH_BOOTSTRAP_ADMIN_PASSWORD）"
-  [ "$consumer_only" -eq 0 ] && log "  建模工作台          http://localhost:${MODELING_PORT:-5100}/workbench.html#/create   用 consumer 账号登录"
-  [ "$consumer_only" -eq 0 ] && log "  建模 MCP            http://localhost:${MODELING_MCP_PORT:-5188}"
+  [ "$consumer_only" -eq 0 ] && log "  建模工作台          http://localhost:${MODELING_PORT:-8100}/workbench.html#/create   用 consumer 账号登录"
+  [ "$consumer_only" -eq 0 ] && log "  建模 MCP            ${MODELING_MCP_PUBLIC_BASE_URL}"
   log "后续初始化步骤见 deploy/README.md 第 4 节。"
 }
 
@@ -433,9 +550,9 @@ cmd_status() {
   echo
   for pair in "consumer-backend|http://127.0.0.1:${BACKEND_PORT:-5055}/health" \
               "consumer-frontend|http://127.0.0.1:${FRONTEND_PORT:-8888}/" \
-              "modeling|http://127.0.0.1:${MODELING_PORT:-5100}/health" \
+              "modeling|http://127.0.0.1:${MODELING_PORT:-8100}/health" \
               "modeling-mcp|http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" \
-              "modeling-workbench|http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html"; do
+              "modeling-workbench|http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html"; do
     local_name="${pair%%|*}"; local_url="${pair##*|}"
     if curl -fsS --max-time 5 "$local_url" >/dev/null 2>&1; then
       ok "$local_name 可达：$local_url"
@@ -469,7 +586,8 @@ cmd_help() {
   preflight                     环境检查（docker/compose/端口），全部 [OK] 才继续
   up [options]                  构建并启动全栈（幂等，可重复执行）
       --with-auth               兼容旧命令；auth-server 现在默认且始终启用
-      --with-eval               附带评测库 MySQL（建模评测闭环）
+      --with-eval               兼容旧命令；评测库（MySQL + NL2SQL）现在默认启用
+      --no-eval                 不部署评测库（数据评测阶段将降级为无数据库模式）
       --consumer-only           只部署运行期 consumer
       --modeling-only           只部署建模工作台（要求 consumer 已在运行）
       --no-build               禁止在部署机构建，只使用已加载的镜像
@@ -479,7 +597,8 @@ cmd_help() {
   down [--volumes]              停止（--volumes 同时删数据卷，慎用）
   logs <service>                跟踪日志：backend|frontend|mcp|auth-server|jiuwenbox|modeling|modeling-agent|eval-mysql
 
-环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888 MODELING_PORT=5100 MODELING_MCP_PORT=5188
+环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888 MODELING_PORT=8100 MODELING_MCP_PORT=5188
+  MODELING_MCP_PUBLIC_BASE_URL=https://mcp.example.com（显式配置优先；缺失时自动按公网 IP、局域网 IP、本机地址降级）
   EVAL_MYSQL_PORT=3306 EVAL_MYSQL_ROOT_PASSWORD=<启用评测库时必填的强随机值>
   MODELING_LLM_BASE_URL/MODEL/API_KEY（可选部署兜底；推荐由 admin 登录后统一配置）
 完整手册：deploy/README.md

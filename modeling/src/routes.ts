@@ -14,10 +14,13 @@ import { backgroundAuthSessions } from './auth/background-session.js';
 import { getDb } from './db/index.js';
 import {
   createProject,
+  canSyncProjectMembers,
   getProject,
+  getProjectByExternalId,
   listProjectMembers,
   listProjects,
   projectMemberRole,
+  replaceProjectMembers,
   setProjectMember,
   setStage,
 } from './projects/repo.js';
@@ -228,6 +231,7 @@ import { getProjectPackageDataSourceSelection } from './workflow/package-data-so
 import { registerAcceptanceRoutes } from './acceptance/routes.js';
 import { takeAcceptanceFault } from './acceptance/faults.js';
 import { registerProjectTransferRoutes } from './projects/project-transfer-routes.js';
+import { detectNameConflict, type NameConflict } from './projects/name-conflict.js';
 import { installHttpErrorHandler, sendHttpError } from './http-error.js';
 
 const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
@@ -241,37 +245,18 @@ function ignoreSemanticBinding(projectId: string, revision: string): void {
   setSetting(semanticBindingIgnoreKey(projectId, revision), new Date().toISOString());
 }
 
-function normalizedPackageName(value: unknown): string {
-  return String(value ?? '').trim().normalize('NFKC').toLowerCase();
-}
-
-function packageNameCandidate(baseName: string, sequence: number): string {
-  const suffix = `（${sequence}）`;
-  const availableLength = Math.max(1, 200 - [...suffix].length);
-  const prefix = [...baseName].slice(0, availableLength).join('').trimEnd();
-  return `${prefix}${suffix}`;
-}
-
 function visiblePackageNameConflict(
   username: string,
   attemptedName: string,
   originalName: string,
-): { originalName: string; attemptedName: string; candidates: string[] } | null {
-  const occupied = new Set(
+): NameConflict | null {
+  return detectNameConflict(
     listProjects(username)
       .filter((project) => project.kind === 'package')
-      .map((project) => normalizedPackageName(project.name)),
+      .map((project) => project.name),
+    attemptedName,
+    originalName,
   );
-  if (!occupied.has(normalizedPackageName(attemptedName))) return null;
-
-  const original = String(originalName ?? '').trim();
-  const baseName = original.replace(/\s*[（(]\d+[）)]$/u, '').trim() || original;
-  const candidates: string[] = [];
-  for (let sequence = 2; sequence < 10_002 && candidates.length < 3; sequence += 1) {
-    const candidate = packageNameCandidate(baseName, sequence);
-    if (!occupied.has(normalizedPackageName(candidate))) candidates.push(candidate);
-  }
-  return { originalName: original, attemptedName, candidates };
 }
 
 function semanticBindingPreview(projectId: string, revision: string, spec: any, tables: any[]) {
@@ -915,15 +900,75 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
     });
 
+    r.put('/api/projects/:id/members/sync', async (req, reply) => {
+      const project = getProject(String((req.params as any).id ?? ''));
+      if (!project || !canSyncProjectMembers(project, req.user!.username, req.user!.role)) {
+        return reply.code(404).send({ error: '项目不存在' });
+      }
+      const body = (req.body ?? {}) as any;
+      const members = Array.isArray(body.members) ? body.members.map((item: any) => ({
+        username: String(item?.username ?? ''),
+        role: item?.role === 'modeler' ? 'modeler' : 'viewer',
+      })) : [];
+      try {
+        return { members: replaceProjectMembers(project.id, project.owner, members) };
+      } catch (error) {
+        return sendHttpError(reply, error, {
+          includeReason: false,
+          logMessage: '同步项目成员失败',
+        });
+      }
+    });
+
     r.post('/api/projects', async (req, reply) => {
       const b = (req.body ?? {}) as any;
       if (!b.name) return reply.code(400).send({ error: '项目名必填' });
-      const project = createProject({
-        owner: req.user!.username, name: b.name, domain: b.domain,
-        background: b.background, targetUsers: b.targetUsers, glossaryPrefs: b.glossaryPrefs,
-        runtime: b.runtime === 'agent' ? 'agent' : 'legacy',
-      });
-      return reply.code(201).send({ project });
+      const externalId = String(b.external_id ?? '').trim();
+      if (externalId) {
+        const existing = getProjectByExternalId(externalId);
+        if (existing) {
+          if (existing.owner !== req.user!.username) {
+            return reply.code(409).send({
+              code: 'PROJECT_EXTERNAL_ID_CONFLICT',
+              error: 'external_id 已被其他项目使用',
+            });
+          }
+          return reply.send({ project: existing, created: false });
+        }
+      }
+      try {
+        const project = createProject({
+          owner: req.user!.username, name: b.name, externalId, domain: b.domain,
+          background: b.background, targetUsers: b.targetUsers, glossaryPrefs: b.glossaryPrefs,
+          runtime: b.runtime === 'agent' ? 'agent' : 'legacy',
+        });
+        return reply.code(201).send({ project });
+      } catch (error) {
+        // A concurrent request may have won the unique external_id insert.
+        if (externalId && String((error as any)?.message || '').includes('UNIQUE')) {
+          const existing = getProjectByExternalId(externalId);
+          if (existing?.owner === req.user!.username) {
+            return reply.send({ project: existing, created: false });
+          }
+          if (existing) {
+            return reply.code(409).send({
+              code: 'PROJECT_EXTERNAL_ID_CONFLICT',
+              error: 'external_id 已被其他项目使用',
+            });
+          }
+        }
+        throw error;
+      }
+    });
+
+    r.get('/api/projects/by-external-id', async (req, reply) => {
+      const externalId = String((req.query as any)?.external_id ?? '').trim();
+      if (!externalId) return reply.code(400).send({ error: 'external_id 必填' });
+      const project = getProjectByExternalId(externalId);
+      if (!project || project.owner !== req.user!.username) {
+        return reply.code(404).send({ error: '项目不存在' });
+      }
+      return { project };
     });
 
     r.post('/api/package-workspaces/import', async (req, reply) => {
@@ -1606,9 +1651,42 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     r.delete('/api/projects/:id', async (req, reply) => {
       const p = getProject((req.params as any).id);
-      if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
-      if ((req.body as { confirmed?: boolean } | null)?.confirmed !== true) {
+      const body = (req.body ?? {}) as {
+        confirmed?: boolean;
+        cleanup_only?: boolean;
+        external_id?: string;
+        cleanup_operation?: 'provision_rollback' | 'project_delete';
+      };
+      const internalCleanup = req.internalCleanup === true;
+      if (!p || (!internalCleanup && p.owner !== req.user!.username)) {
+        return reply.code(404).send({ error: '项目不存在' });
+      }
+      if (body.confirmed !== true) {
         return reply.code(400).send({ error: '请确认删除项目' });
+      }
+      if (body.external_id || body.cleanup_only || internalCleanup) {
+        const expectedExternalId = String(body.external_id ?? '').trim();
+        if (!expectedExternalId || p.externalId !== expectedExternalId) {
+          return reply.code(409).send({
+            code: 'PROJECT_CLEANUP_SCOPE_MISMATCH',
+            error: '项目清理归属校验失败',
+          });
+        }
+        if (body.cleanup_operation !== 'project_delete') {
+          const db = getDb();
+          const documentCount = Number((db.prepare(
+            'SELECT COUNT(*) AS count FROM documents WHERE project_id = ?',
+          ).get(p.id) as any)?.count ?? 0);
+          const tokenCount = Number((db.prepare(
+            'SELECT COUNT(*) AS count FROM project_mcp_tokens WHERE project_id = ?',
+          ).get(p.id) as any)?.count ?? 0);
+          if (documentCount > 0 || tokenCount > 0) {
+            return reply.code(409).send({
+              code: 'PROJECT_CLEANUP_NOT_EMPTY',
+              error: '项目已产生业务数据或 MCP Token，不能作为初始化残留自动清理',
+            });
+          }
+        }
       }
       const runningOperation = (documentParseQueues.has(p.id) ? 'document-parse' : null)
         ?? inFlight.currentByPrefix(`${p.id}:`)
@@ -1623,7 +1701,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       try {
         await cancelGraphImportsForProject(p.id);
         await cancelEvaluationsForProject(p.id);
-        if (!deleteProjectLocalData(p.id, req.user!.username)) {
+        const deleteOwner = internalCleanup ? p.owner : req.user!.username;
+        if (!deleteProjectLocalData(p.id, deleteOwner)) {
           return reply.code(404).send({ error: '项目不存在' });
         }
         try {

@@ -150,6 +150,8 @@ export interface ImportProjectTransferOptions {
   dataDir: string;
   archive: Uint8Array;
   owner: string;
+  /** 指定导入后使用的项目名称；为空时沿用迁移包内的原名称。 */
+  projectName?: string;
   importAgentRuntime?: (
     projectId: string,
     payload: Record<string, unknown>,
@@ -251,6 +253,23 @@ export async function buildProjectTransferArchive(
   return archive;
 }
 
+/**
+ * 只解压 manifest.json 读取迁移包内的项目名称，用于导入前的重名校验。
+ */
+export function readProjectTransferName(archive: Uint8Array): string {
+  if (archive.byteLength > MAX_ARCHIVE_BYTES) throw new ProjectTransferError('项目迁移包超过大小限制');
+  inspectZipDirectory(archive);
+  let entries: Record<string, Uint8Array>;
+  try {
+    entries = unzipSync(archive, { filter: (file) => file.name === MANIFEST_PATH });
+  } catch {
+    throw new ProjectTransferError('项目迁移包无法解压或已经损坏');
+  }
+  const name = parseManifest(entries[MANIFEST_PATH]).project.name.trim();
+  if (!name) throw new ProjectTransferError('迁移包缺少项目名称');
+  return name;
+}
+
 export async function importProjectTransferArchive(
   options: ImportProjectTransferOptions,
 ): Promise<ImportedProjectTransfer> {
@@ -286,6 +305,9 @@ export async function importProjectTransferArchive(
   const tables = decodeAndValidateTables(database, manifest, schemas);
   validateProjectClosure(tables, schemas);
   const projectRow = tables.get('projects')![0];
+  // 改名必须发生在行转换之前，保证写库行与返回值使用同一个名称
+  const requestedName = String(options.projectName ?? '').trim();
+  if (requestedName) projectRow.name = requestedName;
   const newProjectId = createProjectId();
   const idMap = buildIdMap(tables, schemas, newProjectId);
   const transformed = transformImportRows(tables, schemas, idMap, owner, newProjectId);

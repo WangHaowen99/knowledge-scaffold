@@ -90,6 +90,16 @@ cp "${BUNDLE_DIR}/deploy/deploy.sh" "${BUNDLE_DIR}/deploy/deploy-consumer.sh"
 RELEASE_BUNDLE_DIR="${BUNDLE_DIR}" \
     bash "${REPO_ROOT}/modeling/build.sh" "${VERSION}" "${ARCH}"
 
+# Onto Modeling（引导式建模工作台）：独立子包并入 bundle，部署脚本自带零配置 auth
+chmod +x "${REPO_ROOT}/modeling/onto-modeling/build.sh" "${REPO_ROOT}/modeling/onto-modeling/deploy/"*.sh
+bash "${REPO_ROOT}/modeling/onto-modeling/build.sh" "${VERSION}" "${ARCH}"
+ONTO_MODELING_PACKAGE="${REPO_ROOT}/modeling/onto-modeling/dist/onto-modeling-${VERSION}-linux-${RELEASE_ARCH}.tar.gz"
+[ -f "${ONTO_MODELING_PACKAGE}" ] || {
+    echo "Error: onto-modeling package not found: ${ONTO_MODELING_PACKAGE}" >&2
+    exit 1
+}
+tar -C "${BUNDLE_DIR}" -xzf "${ONTO_MODELING_PACKAGE}"
+
 cp "${SCRIPT_DIR}/deploy.sh" "${BUNDLE_DIR}/deploy/deploy.sh"
 
 cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
@@ -109,6 +119,9 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "jiuwenbox_image_tar": "images/onto-agent-jiuwenbox-${VERSION}.tar",
   "modeling_image_tar": "images/mw-modeling-${VERSION}.tar",
   "modeling_agent_image_tar": "images/mw-modeling-agent-${VERSION}.tar",
+  "onto_modeling_image": "onto-modeling:${VERSION}",
+  "onto_modeling_auth_server_image": "onto-modeling-auth-server:${VERSION}",
+  "onto_modeling_bundle_dir": "onto-modeling",
   "jiuwenswarm_commit": "d7c2ab2f299cd2c73201afb41ebb8b9c00cc7015"
 }
 EOF

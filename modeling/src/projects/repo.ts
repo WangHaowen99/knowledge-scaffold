@@ -18,6 +18,14 @@ const CONFIGURABLE_STEPS = new Set<ConfigurableWorkflowStep>([
   'scenario', 'data_source', 'evaluate', 'diagnose', 'optimize',
 ]);
 
+export function canSyncProjectMembers(
+  project: Pick<Project, 'owner'> | null,
+  username: string,
+  role?: string,
+): boolean {
+  return Boolean(project) && (project!.owner === username || role === 'admin');
+}
+
 export const DEFAULT_WORKFLOW_PROFILE: ProjectWorkflowProfile = {
   enabledSteps: [],
   requiredSteps: ['scenario', 'data_source'],
@@ -62,7 +70,8 @@ function rowToProject(r: any): Project {
     ? 'restricted'
     : 'standard';
   return {
-    id: r.id, owner: r.owner, kind: r.kind === 'package' ? 'package' : 'modeling',
+    id: r.id, owner: r.owner, externalId: r.external_id ?? undefined,
+    kind: r.kind === 'package' ? 'package' : 'modeling',
     runtime: r.runtime === 'agent' ? 'agent' : 'legacy',
     name: r.name, domain: r.domain, background: r.background,
     targetUsers: r.target_users ?? undefined, glossaryPrefs: r.glossary_prefs ?? undefined,
@@ -73,7 +82,7 @@ function rowToProject(r: any): Project {
 }
 
 export function createProject(input: {
-  owner: string; name: string; domain?: string; background?: string;
+  owner: string; name: string; externalId?: string; domain?: string; background?: string;
   kind?: ProjectKind;
   runtime?: Project['runtime'];
   targetUsers?: string; glossaryPrefs?: string;
@@ -92,11 +101,11 @@ export function createProject(input: {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare(`INSERT INTO projects
-      (id, owner, kind, runtime, name, domain, background, target_users, glossary_prefs,
+      (id, owner, external_id, kind, runtime, name, domain, background, target_users, glossary_prefs,
         sensitivity_level, workflow_profile_json,
         stage, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, input.owner, kind, runtime, input.name, input.domain ?? '', input.background ?? '',
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, input.owner, input.externalId ?? null, kind, runtime, input.name, input.domain ?? '', input.background ?? '',
         input.targetUsers ?? null, input.glossaryPrefs ?? null,
         sensitivityLevel, JSON.stringify(workflowProfile),
         kind === 'package' ? 'review' : 'project_setup', now, now);
@@ -178,6 +187,11 @@ export function getProject(id: string): Project | null {
   return rowToProject(r as any);
 }
 
+export function getProjectByExternalId(externalId: string): Project | null {
+  const row = getDb().prepare('SELECT * FROM projects WHERE external_id = ?').get(externalId);
+  return row ? rowToProject(row as any) : null;
+}
+
 export function listProjects(owner: string): Project[] {
   const db = getDb();
   const rows = db.prepare(`SELECT p.* FROM projects p
@@ -253,6 +267,39 @@ export function setProjectMember(
     ON CONFLICT(project_id, username) DO UPDATE SET
       role = excluded.role, added_by = excluded.added_by, updated_at = excluded.updated_at`)
     .run(projectId, normalized, role, owner, now, now);
+  return listProjectMembers(projectId);
+}
+
+export function replaceProjectMembers(
+  projectId: string,
+  owner: string,
+  members: Array<{ username: string; role: Exclude<ProjectMemberRole, 'owner'> }>,
+): ProjectMember[] {
+  const project = getProject(projectId);
+  if (!project || project.owner !== owner) throw new Error('只有项目负责人可以管理成员');
+  const normalized = members.map((member) => {
+    const username = String(member.username ?? '').trim();
+    if (!username || username.length > 128) throw new Error('请输入有效的成员用户名');
+    if (username === project.owner) throw new Error('项目负责人不需要重复添加');
+    if (!['viewer', 'modeler'].includes(member.role)) throw new Error('成员角色无效');
+    return { username, role: member.role };
+  });
+  const db = getDb();
+  const now = nowIso();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('DELETE FROM project_members WHERE project_id = ?').run(projectId);
+    const insert = db.prepare(`INSERT INTO project_members
+      (project_id, username, role, added_by, created_at, updated_at)
+      VALUES (?,?,?,?,?,?)`);
+    for (const member of normalized) {
+      insert.run(projectId, member.username, member.role, owner, now, now);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    if (db.isTransaction) db.exec('ROLLBACK');
+    throw error;
+  }
   return listProjectMembers(projectId);
 }
 

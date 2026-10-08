@@ -4,10 +4,12 @@ import { getAuthClient } from './client.js';
 import type { AuthUser } from '../types.js';
 import { enterLlmUser } from '../llm/user-context.js';
 import { authenticateAgentRunCredential } from '../agent/run-credential.js';
+import { config } from '../config.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
     user?: AuthUser;
+    internalCleanup?: boolean;
   }
 }
 
@@ -26,6 +28,14 @@ function cacheExpiry(token: string, now: number): number {
 }
 
 export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
+  const cleanupToken = String(req.headers['x-modeling-cleanup-token'] ?? '').trim();
+  const requestPath = req.url.split('?', 1)[0];
+  if (req.method === 'DELETE' && /^\/api\/projects\/[^/]+$/.test(requestPath)
+    && cleanupToken && config.mcp.cleanupToken && cleanupToken === config.mcp.cleanupToken) {
+    req.internalCleanup = true;
+    req.user = { username: '__modeling_cleanup__', role: 'service' };
+    return;
+  }
   const runCredential = String(req.headers['x-modeling-agent-credential'] ?? '').trim();
   if ((req.url.startsWith('/internal/agent/tools/')
     || req.url.startsWith('/internal/agent/llm-config')

@@ -12,12 +12,12 @@
 | --- | --- | --- | --- | --- | --- |
 | consumer-backend | `consumer/backend/` | 5055 → 5055 | onto-agent-backend | LLM 端点 | 运行期 API（Flask），知识包运行时 |
 | consumer-frontend | `consumer/frontend/` | 8888 → 80 | onto-agent-frontend | backend | 知识工程控制台（nginx 托管） |
-| modeling | `modeling/` | 5100 → 5100 | mw-modeling | modeling-agent / consumer / auth-server | Workbench 静态页面与确定性 core |
+| modeling | `modeling/` | 8100 → 5100 | mw-modeling | modeling-agent / consumer / auth-server | Workbench 静态页面与确定性 core |
 | modeling-agent | `modeling/modeling-agent/` | 仅容器网 5110 | mw-modeling-agent | modeling core / LLM | 新 Workbench 的 openJiuwen Agent 运行时 |
 | auth-server | `auth-server/` | 不暴露宿主端口（容器网内 5056） | onto-agent-auth-server | — | 必备鉴权服务，consumer 与 modeling 共用 |
 | eval-mysql（可选） | — | 3306 → 3306 | mysql:8 | — | 建模评测库（Excel 数据自动落库供查询类用例） |
 
-服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；`浏览器 → modeling(5100) → modeling-agent(5110)`；modeling 登录直连 auth-server，评测调用 consumer。所有容器同处一个 Docker 网络。
+服务间调用链：`浏览器 → frontend(8888) → backend(5055)`；`浏览器 → modeling(8100) → modeling-agent(5110)`；modeling 登录直连 auth-server，评测调用 consumer。所有容器同处一个 Docker 网络。
 
 数据持久化位置：
 
@@ -44,7 +44,7 @@
 ## 2. 前置条件
 
 - Linux / macOS，Docker ≥ 20.10，Docker Compose v2（`docker compose`）或 v1 ≥ 1.28（`docker-compose`；本方案使用 compose profiles，更旧的 v1 会失败，preflight 会检查）；
-- 宿主端口 5055、8888、5100 空闲（形态 C 另需 3306）；
+- 宿主端口 5055、8888、8100 空闲（形态 C 另需 3306）；
 - 一个可供 admin 在部署后配置的 OpenAI-compatible LLM 端点；LLM 不再是部署前置条件；
 - 目标机可访问 Docker Hub 或已配镜像源（首次构建需拉取 `python`、`node:22-slim`、`nginx`、`mysql:8` 等基础镜像）。
 
@@ -104,7 +104,7 @@ auth-server 已是必备组件，无需额外开关。脚本校验配置后把�
 
 1. **consumer 登录**：打开 `http://localhost:8888`，用 `admin` 和配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 登录；`users.json` 创建后可从环境中移除该引导密码。
 2. **consumer 配模型**：控制台 → 配置中心 → 全局配置 → 模型池：添加 OpenAI-compatible 模型并「测试」通过、设为默认。（若已在 `backend/.env` 配了 `LLM_*` 可跳过。）
-3. **配置并进入新建模工作台**（形态 B/C）：打开 `http://localhost:5100/workbench.html#/create`，先用 `admin` 登录，在「配置中心 → 大模型 → 平台默认」填写 Base URL、模型名和 API Key，测试通过后保存。该配置会立即成为所有未设置个人覆盖账号的 core 与 Agent 统一默认，新任务无需重启容器即可使用。
+3. **配置并进入新建模工作台**（形态 B/C）：打开 `http://localhost:8100/workbench.html#/create`，先用 `admin` 登录，在「配置中心 → 大模型 → 平台默认」填写 Base URL、模型名和 API Key，测试通过后保存。该配置会立即成为所有未设置个人覆盖账号的 core 与 Agent 统一默认，新任务无需重启容器即可使用。
    - **consumer 服务**：默认已指向容器网内 backend，点「测试连接」，须三项全绿（服务可达 / 认证通过 / 模型就绪——第三项依赖步骤 2）。
    - **评测数据**（形态 C）：评测库地址默认已注入，无需改动。
 4. **验证**：执行第 7 节验证清单。
@@ -124,7 +124,7 @@ curl -fsS http://127.0.0.1:5055/health
 #   评测闭环改用：
 #     EVAL_MYSQL_ROOT_PASSWORD=<强随机值> \
 #       ./deploy/deploy-stack.sh up --modeling-only --with-eval
-curl -fsS http://127.0.0.1:5100/workbench.html
+curl -fsS http://127.0.0.1:8100/workbench.html
 ```
 
 ## 6. 配置参考
@@ -157,7 +157,7 @@ curl -fsS http://127.0.0.1:5100/workbench.html
 | `CONSUMER_API_URL` | `http://backend:5055` | 评测用 consumer 地址默认值（页面可覆盖） |
 | `EVAL_DB_URL` | 空 | NL2SQL 查询与 modeling 建库/Excel 导入共用的 MySQL 连接；`--with-eval` 时脚本按显式 `EVAL_MYSQL_ROOT_PASSWORD` 生成 |
 | `PORT` / `DATA_DIR` | `5100` / `/data`（卷 `modeling-data`） | 服务端口 / SQLite 数据目录 |
-| compose：`MODELING_PORT` / `MODELING_TAG` | `5100` / `latest` | 宿主端口 / 镜像 tag |
+| compose：`MODELING_PORT` / `MODELING_TAG` | `8100` / `latest` | 宿主端口 / 镜像 tag |
 | compose：`CONSUMER_NETWORK` | `consumer_onto-agent-network` | consumer 网络实际名（脚本自动探测注入） |
 
 源码部署时可在 `consumer/backend/.env` 设置上述 `MODELING_AGENT_PIP_*` 变量。制作发布包时，构建发生在部署之前，应通过 shell 环境变量传入：
@@ -180,12 +180,12 @@ MODELING_AGENT_PIP_RETRIES=10 \
 ```bash
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5055/health   # 预期 200（consumer backend）
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8888/         # 预期 200（控制台）
-curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5100/health   # 预期 200（建模工作台；形态 A 跳过）
-curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5100/workbench.html # 预期 200（新 Workbench）
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/health   # 预期 200（建模工作台；形态 A 跳过）
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/workbench.html # 预期 200（新 Workbench）
 docker inspect --format '{{.State.Health.Status}}' mw-modeling-agent           # 预期 healthy
 ./deploy/deploy-stack.sh status                                           # 预期各服务 [OK] 可达、容器 Status 含 healthy
 # 登录链路（预期 200，验证 modeling → consumer 转发；密码为改密后的值）：
-curl -fsS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:5100/auth/login \
+curl -fsS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8100/auth/login \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"<改密后的密码>"}'
 # 启用 --with-eval 时（预期 mysqld is alive；密码经临时环境变量传入，不进入命令参数）：
 docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密码}" \

@@ -11,8 +11,10 @@ MCP_SERVER_PORT=""
 FRONTEND_PORT=""
 MODELING_PORT=""
 MODELING_MCP_PORT=""
+ONTO_WEB_PORT=""
 CONSUMER_PACKAGE=""
 MODELING_PACKAGE=""
+ONTO_MODELING_PACKAGE=""
 PORT_MODE="default"
 scope=""
 OLD_MODELING_RUNNING=""
@@ -41,6 +43,13 @@ ask() {
     printf '%s' "${prompt}" >/dev/tty || die '需要交互式终端'
     IFS= read -r answer </dev/tty || die '读取输入失败'
     [ -n "${answer}" ] || die '输入不能为空'
+    printf '%s' "${answer}"
+}
+
+ask_optional() {
+    prompt="$1"
+    printf '%s' "${prompt}" >/dev/tty || die '需要交互式终端'
+    IFS= read -r answer </dev/tty || die '读取输入失败'
     printf '%s' "${answer}"
 }
 
@@ -131,7 +140,9 @@ require_dir() {
 collect_ports() {
     if [ "${PORT_MODE}" = 1 ]; then
         BACKEND_PORT=5055; MCP_SERVER_PORT=7488; FRONTEND_PORT=8888
-        MODELING_PORT=5100; MODELING_MCP_PORT=5188
+        # 5100 归 Onto Modeling，Modeling Workbench 用 8100；两者会同时在跑
+        MODELING_PORT=8100; MODELING_MCP_PORT=5188
+        ONTO_WEB_PORT=5100
         return
     fi
     BACKEND_PORT="$(ask_port '请输入 Consumer Backend 宿主端口：')"
@@ -139,6 +150,7 @@ collect_ports() {
     FRONTEND_PORT="$(ask_port '请输入 Consumer Frontend 宿主端口：')"
     MODELING_PORT="$(ask_port '请输入 Modeling Workbench 宿主端口：')"
     MODELING_MCP_PORT="$(ask_port '请输入 Modeling MCP 宿主端口：')"
+    ONTO_WEB_PORT="$(ask_port '请输入 Onto Modeling 宿主端口：')"
 }
 
 collect_consumer_ports() {
@@ -155,12 +167,95 @@ collect_modeling_ports() {
 load_upgrade_ports() {
     local consumer_env="${INSTALL_ROOT}/onto-agent/backend/.env"
     local modeling_env="${INSTALL_ROOT}/modeling/.env"
+    local onto_env="${INSTALL_ROOT}/onto-modeling/.env"
     BACKEND_PORT="$(env_get "${consumer_env}" BACKEND_PORT)"; BACKEND_PORT="${BACKEND_PORT:-5055}"
     MCP_SERVER_PORT="$(env_get "${consumer_env}" MCP_SERVER_PORT)"; MCP_SERVER_PORT="${MCP_SERVER_PORT:-7488}"
     FRONTEND_PORT="$(env_get "${consumer_env}" FRONTEND_PORT)"; FRONTEND_PORT="${FRONTEND_PORT:-8888}"
     MODELING_PORT="$(env_get "${modeling_env}" MODELING_PORT)"; MODELING_PORT="${MODELING_PORT:-5100}"
     MODELING_MCP_PORT="$(env_get "${modeling_env}" MODELING_MCP_PORT)"; MODELING_MCP_PORT="${MODELING_MCP_PORT:-5188}"
-    log "升级将保留现有端口：Consumer=${BACKEND_PORT}/${MCP_SERVER_PORT}/${FRONTEND_PORT}，Modeling=${MODELING_PORT}/${MODELING_MCP_PORT}"
+    ONTO_WEB_PORT="$(env_get "${onto_env}" ONTO_WEB_PORT)"; ONTO_WEB_PORT="${ONTO_WEB_PORT:-5100}"
+    log "升级将保留现有端口：Consumer=${BACKEND_PORT}/${MCP_SERVER_PORT}/${FRONTEND_PORT}，Modeling=${MODELING_PORT}/${MODELING_MCP_PORT}，Onto Modeling=${ONTO_WEB_PORT}"
+}
+
+# consumer 由本脚本部署、容器名固定，直接读它的实际网络。不按命名规律猜——
+# 猜错会让 onto-modeling 的 compose 以 declared as external, but could not be found 失败。
+detect_consumer_network() {
+    docker container inspect onto-agent-backend \
+        --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+        2>/dev/null | head -n 1
+}
+
+deploy_onto_modeling() {
+    local dir="${INSTALL_ROOT}/onto-modeling" env_file="${INSTALL_ROOT}/onto-modeling/.env" network
+    [ -f "${dir}/deploy.sh" ] || die "Onto Modeling 部署脚本不存在：${dir}/deploy.sh"
+    [ -x "${dir}/deploy.sh" ] || chmod +x "${dir}/deploy.sh"
+    network="$(detect_consumer_network)"
+    [ -n "${network}" ] || die '无法探测 Consumer 容器网络，请确认 onto-agent-backend 已在运行'
+    if [ ! -f "${env_file}" ]; then
+        [ -f "${dir}/.env.example" ] || die "Onto Modeling 发布包缺少 .env.example"
+        cp "${dir}/.env.example" "${env_file}"
+    fi
+    chmod 600 "${env_file}"
+    write_env_value "${env_file}" ONTO_WEB_PORT "${ONTO_WEB_PORT}"
+    # 网络名由本脚本现场探测，是权威值：无条件写入，存量 .env 里失效的名字就地纠正
+    write_env_value "${env_file}" ONTO_MODELING_EXTERNAL_AUTH_NETWORK "${network}"
+    # 评测要调 Modeling Workbench，容器网内地址与宿主端口无关
+    grep -q '^ONTO_WEB_MODELING_URL=..*' "${env_file}" \
+        || write_env_value "${env_file}" ONTO_WEB_MODELING_URL 'http://mw-modeling:5100'
+    log "Onto Modeling 共享 Consumer 账号中心：网络 ${network}"
+    bash "${dir}/deploy.sh"
+    wait_for_onto_modeling
+}
+
+wait_for_onto_modeling() {
+    local url="http://127.0.0.1:${ONTO_WEB_PORT}/api/health" elapsed=0
+    until curl -fsS --noproxy '*' --max-time 5 "${url}" >/dev/null 2>&1; do
+        [ "${elapsed}" -lt 120 ] || die "Onto Modeling 120 秒内未就绪：${url}；请查看 docker logs onto-modeling"
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    log "Onto Modeling deployment finished: http://localhost:${ONTO_WEB_PORT}"
+}
+
+# Onto Modeling 与 Consumer、Modeling 同时运行，宿主端口不能与它们相同。
+# 0.26.9.0 之前的分离部署 Modeling 仍在 5100，首次加入 Onto Modeling 时默认值会撞上。
+onto_port_conflict() {
+    local name
+    for name in BACKEND_PORT MCP_SERVER_PORT FRONTEND_PORT MODELING_PORT MODELING_MCP_PORT; do
+        if [ "${ONTO_WEB_PORT}" = "${!name}" ]; then
+            printf '%s' "${name}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_onto_web_port_free() {
+    local conflict
+    while conflict="$(onto_port_conflict)"; do
+        printf 'Onto Modeling 宿主端口 %s 与 %s 相同，请换一个端口。\n' \
+            "${ONTO_WEB_PORT}" "${conflict}" >/dev/tty
+        ONTO_WEB_PORT="$(ask_port '请输入 Onto Modeling 宿主端口：')"
+    done
+}
+
+# Onto Modeling 排在 Consumer、Modeling 之后部署。能提前发现的问题都在动手前拦下，
+# 避免 Consumer、Modeling 已经变更、Onto Modeling 才失败的半完成状态。
+precheck_onto_modeling() {
+    local dir="${INSTALL_ROOT}/onto-modeling" expected owner
+    expected="$(cd "${dir}" 2>/dev/null && pwd || printf '%s' "${dir}")"
+    if docker container inspect onto-modeling >/dev/null 2>&1; then
+        owner="$(container_working_dir onto-modeling)"
+        [ "${owner}" = "${expected}" ] \
+            || die "容器 onto-modeling 属于 ${owner:-未知目录}，不是 ${expected}，拒绝接管"
+    fi
+    mkdir -p "${TMP_ROOT}/onto-preflight"
+    tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${TMP_ROOT}/onto-preflight" onto-modeling/preflight.sh \
+        || die 'Onto Modeling 发布包缺少 preflight.sh'
+    log '开始执行 Onto Modeling 预检'
+    # 此时还没有 .env；本脚本总是让 Onto Modeling 接入 Consumer 账号中心，按该模式预检
+    (cd "${TMP_ROOT}/onto-preflight/onto-modeling" && ONTO_MODELING_SHARED_AUTH=1 bash ./preflight.sh) \
+        || die 'Onto Modeling 预检未通过，尚未做任何变更'
 }
 
 container_working_dir() {
@@ -363,6 +458,9 @@ if [ "${MODE}" = install ]; then
     collect_ports
     CONSUMER_PACKAGE="$(resolve_package "$(ask '请输入 Consumer 发布包路径：')" Consumer发布包)"
     MODELING_PACKAGE="$(resolve_package "$(ask '请输入 Modeling 发布包路径：')" Modeling发布包)"
+    ONTO_MODELING_PACKAGE="$(ask_optional '请输入 Onto Modeling 发布包路径（留空跳过）：')"
+    [ -z "${ONTO_MODELING_PACKAGE}" ] \
+        || ONTO_MODELING_PACKAGE="$(resolve_package "${ONTO_MODELING_PACKAGE}" 'Onto Modeling发布包')"
 else
     # 升级部署始终沿用已安装配置中的端口，不重新询问或覆盖端口。
     load_upgrade_ports
@@ -372,19 +470,28 @@ else
     if [ "${scope}" != 1 ]; then
         MODELING_PACKAGE="$(resolve_package "$(ask '请输入 Modeling 发布包路径：')" Modeling发布包)"
     fi
+    # Onto Modeling 是独立组件，升不升级与上面的范围选择无关
+    ONTO_MODELING_PACKAGE="$(ask_optional '请输入 Onto Modeling 发布包路径（留空跳过）：')"
+    [ -z "${ONTO_MODELING_PACKAGE}" ] \
+        || ONTO_MODELING_PACKAGE="$(resolve_package "${ONTO_MODELING_PACKAGE}" 'Onto Modeling发布包')"
 fi
+[ -z "${ONTO_MODELING_PACKAGE}" ] || ensure_onto_web_port_free
 check_dependencies
 [ -z "${CONSUMER_PACKAGE}" ] || validate_package "${CONSUMER_PACKAGE}" onto-agent Consumer发布包
 [ -z "${MODELING_PACKAGE}" ] || validate_package "${MODELING_PACKAGE}" modeling Modeling发布包
+[ -z "${ONTO_MODELING_PACKAGE}" ] \
+    || validate_package "${ONTO_MODELING_PACKAGE}" onto-modeling 'Onto Modeling发布包'
 if [ "${MODE}" = upgrade ] && [ "${scope}" != 1 ]; then
     validate_modeling_installation
 fi
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/separated-interactive.XXXXXX")"
+[ -z "${ONTO_MODELING_PACKAGE}" ] || precheck_onto_modeling
 if [ "${MODE}" = install ]; then
     mkdir -p "${INSTALL_ROOT}"
     tar -xzf "${CONSUMER_PACKAGE}" -C "${INSTALL_ROOT}"
     tar -xzf "${MODELING_PACKAGE}" -C "${INSTALL_ROOT}"
+    [ -z "${ONTO_MODELING_PACKAGE}" ] || tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${INSTALL_ROOT}"
     [ -f "${INSTALL_ROOT}/onto-agent/backend/.env.example" ] || die "Consumer 发布包缺少 backend/.env.example"
     [ -f "${INSTALL_ROOT}/modeling/.env.example" ] || die "Modeling 发布包缺少 .env.example"
     cp "${INSTALL_ROOT}/onto-agent/backend/.env.example" "${INSTALL_ROOT}/onto-agent/backend/.env"
@@ -401,6 +508,7 @@ if [ "${MODE}" = install ]; then
         bash "${INSTALL_ROOT}/onto-agent/deploy/install.sh"
     MODELING_PORT="${MODELING_PORT}" MODELING_MCP_PORT="${MODELING_MCP_PORT}" \
         bash "${INSTALL_ROOT}/modeling/deploy/install.sh"
+    [ -z "${ONTO_MODELING_PACKAGE}" ] || deploy_onto_modeling
 else
     mkdir -p "${TMP_ROOT}/consumer" "${TMP_ROOT}/modeling"
     if [ "${scope}" != 2 ]; then
@@ -412,6 +520,12 @@ else
         backup_dir="${INSTALL_ROOT}/backups/separated-interactive-upgrade-$(date +%Y%m%d-%H%M%S)"
         run_modeling_upgrade "${backup_dir}" \
             || die "Modeling 升级失败，备份位于 ${backup_dir}"
+    fi
+    if [ -n "${ONTO_MODELING_PACKAGE}" ]; then
+        # onto-modeling 的部署是幂等的：数据在具名卷里，.env 不在发布包内
+        # （包里只有 .env.example），解包覆盖交付物后重跑 deploy.sh 即可
+        tar -xzf "${ONTO_MODELING_PACKAGE}" -C "${INSTALL_ROOT}"
+        deploy_onto_modeling
     fi
 fi
 log '交互部署完成'

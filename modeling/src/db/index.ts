@@ -22,6 +22,53 @@ function ensureColumn(db: DatabaseSync, table: string, column: string, definitio
   }
 }
 
+function ensureProjectMcpTokenNullableExpiry(db: DatabaseSync): void {
+  if (!hasTable(db, 'project_mcp_tokens')) return;
+  const columns = db.prepare('PRAGMA table_info(project_mcp_tokens)').all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const expiresAt = columns.find((column) => column.name === 'expires_at');
+  if (!expiresAt?.notnull) return;
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE project_mcp_tokens_next (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        token_name    TEXT NOT NULL,
+        subject_username TEXT NOT NULL,
+        issued_by     TEXT NOT NULL,
+        scopes_json   TEXT NOT NULL,
+        expires_at    TEXT,
+        created_at    TEXT NOT NULL,
+        last_used_at  TEXT,
+        revoked_at    TEXT,
+        revoked_by    TEXT
+      );
+      INSERT INTO project_mcp_tokens_next (
+        id, project_id, token_name, subject_username, issued_by, scopes_json,
+        expires_at, created_at, last_used_at, revoked_at, revoked_by
+      ) SELECT
+        id, project_id, token_name, subject_username, issued_by, scopes_json,
+        expires_at, created_at, last_used_at, revoked_at, revoked_by
+      FROM project_mcp_tokens;
+      DROP TABLE project_mcp_tokens;
+      ALTER TABLE project_mcp_tokens_next RENAME TO project_mcp_tokens;
+      CREATE INDEX idx_project_mcp_tokens_project
+        ON project_mcp_tokens(project_id, created_at DESC);
+      CREATE INDEX idx_project_mcp_tokens_subject
+        ON project_mcp_tokens(subject_username, project_id, created_at DESC);
+      COMMIT;`);
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* 没有活动事务时忽略 */ }
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 function ensureDocumentPurposeAllowsTerm(db: DatabaseSync): void {
   const row = db.prepare(`SELECT sql FROM sqlite_master
     WHERE type = 'table' AND name = 'documents'`).get() as { sql?: string } | undefined;
@@ -384,10 +431,17 @@ export function getDb(): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA foreign_keys = ON');
+  // schema.sql creates the external_id index. Add the column first so an
+  // existing pre-MCP database can execute the schema without failing on that
+  // index before the general compatibility migrations run.
+  if (hasTable(db, 'projects')) {
+    ensureColumn(db, 'projects', 'external_id', 'TEXT');
+  }
   // schema.sql 随源码走：dev 从 src/db 读，编译后 build 脚本拷到 dist/db。
   const schema = readFileSync(join(here, 'schema.sql'), 'utf8');
   ensureDocumentRevisionColumns(db);
   db.exec(schema);
+  ensureProjectMcpTokenNullableExpiry(db);
   migrateLegacyAiConstructionGraphSources(db);
   ensureAgentProjectEventKinds(db);
   ensureFlowchartReviewInteraction(db);
@@ -397,10 +451,12 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'generation_batch_checkpoints', 'target_ids_json', "TEXT NOT NULL DEFAULT '[]'");
   // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
+  ensureColumn(db, 'projects', 'external_id', 'TEXT');
   ensureColumn(db, 'projects', 'runtime', "TEXT NOT NULL DEFAULT 'legacy'");
   ensureColumn(db, 'projects', 'sensitivity_level', "TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'projects', 'workflow_profile_json', `TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}'`);
   ensureColumn(db, 'projects', 'product_ledger_required', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_external_id ON projects(external_id) WHERE external_id IS NOT NULL');
   ensureColumn(db, 'product_ledger_drafts', 'source_fingerprint', 'TEXT');
   // 旧库的用户 LLM 配置表可能没有上下文窗口列；保留 NULL 以继续回退部署默认值。
   ensureColumn(db, 'user_llm_settings', 'context_window', 'INTEGER');

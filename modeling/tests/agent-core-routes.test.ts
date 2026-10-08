@@ -251,12 +251,17 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
   assert.equal(contract.packageFormat.mappings.required, 'when_physical_schema_exists');
   assert.equal(contract.packageFormat.mappings.forbidden, 'when_physical_schema_absent');
   assert.equal(contract.packageFormat.mappings.allowEmptyObjects, false);
-  assert.equal(contract.validators.mermaidSource, 'mermaid-source-v1');
+  assert.equal(contract.validators.mermaidSource, 'mermaid-source-v2');
   assert.deepEqual(contract.packageFormat.diagrams, {
     pathPattern: 'diagrams/*.mmd',
     rawMermaidSourceOnly: true,
     allowedDeclarations: ['flowchart TD', 'flowchart LR'],
     markdownCodeFencesAllowed: false,
+    labelQuoting: {
+      requiredWhenTextContains: ['(', ')', '[', ']', '{', '}', '|', '"'],
+      form: '节点写成 id["文字"]、id{"文字"}，连线写成 -->|"文字"|',
+      keepBusinessWording: '补引号保留业务原文，不得把 ≥ 改写成 >= 或删改括号内的口径',
+    },
   });
   assert.ok(contract.manifest.requiredFields.includes('status'));
   assert.deepEqual(
@@ -727,7 +732,7 @@ test('Mermaid 围栏写入接入自动修复且确认预检阻断旁路候选', 
   assert.equal(fenced.statusCode, 400, fenced.body);
   assert.equal(fenced.json().code, 'MERMAID_CONTENT_INVALID');
   assert.equal(fenced.json().retryable, true);
-  assert.equal(fenced.json().validatorVersion, 'mermaid-source-v1');
+  assert.equal(fenced.json().validatorVersion, 'mermaid-source-v2');
   assert.deepEqual(fenced.json().findings.map((finding: any) => finding.ruleId), [
     'mermaid.no-markdown-fence',
     'mermaid.flowchart-declaration',
