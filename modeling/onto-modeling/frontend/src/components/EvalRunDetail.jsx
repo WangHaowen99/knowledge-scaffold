@@ -303,7 +303,8 @@ function MetaLine({ st }) {
     elapsed && ['用时', elapsed],
   ].filter(Boolean);
   const graph = st.graph_import;
-  if (!items.length && !graph) return null;
+  const unbound = st.unbound_objects || [];
+  if (!items.length && !graph && !unbound.length) return null;
   return (
     <div className="erd-meta">
       {items.map(([label, value]) => (
@@ -312,6 +313,14 @@ function MetaLine({ st }) {
           <span className="erd-meta-value">{value}</span>
         </span>
       ))}
+      {unbound.length > 0 && (
+        <Tooltip title={`数据绑定未过检、本轮按未绑定处理：${unbound.join('、')}`}>
+          <span className="erd-meta-item">
+            <span className="erd-meta-label">未查库对象</span>
+            <span className="erd-meta-value">{unbound.length} 个</span>
+          </span>
+        </Tooltip>
+      )}
       {graph && (
         <Tooltip title={(graph.notes || []).join('\n') || undefined}>
           <span className="erd-meta-item">

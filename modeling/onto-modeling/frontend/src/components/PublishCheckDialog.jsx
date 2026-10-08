@@ -1,0 +1,383 @@
+import { UploadOutlined } from '@ant-design/icons';
+import {
+  Alert,
+  Button,
+  Collapse,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Spin,
+  Tag,
+  Typography,
+  Upload,
+  message,
+} from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { api } from '../lib/api.js';
+
+// 发布 / 评测前的数据绑定检查（ADR-0007）：阻断项给修复入口，也允许降级继续
+const KIND_TEXT = {
+  declared_missing: '声明的表不存在',
+  no_columns: '表里没有一列对得上',
+  declared_unverifiable: '无数据表可核对',
+};
+
+const MODE_TEXT = {
+  publish: {
+    title: '发布知识包 · 数据绑定检查',
+    proceed: '发布',
+    degrade: '忽略并降级发布',
+    degradeNote: '这些对象发布后不绑定数据表，发布记录会注明降级发布。',
+  },
+  eval: {
+    title: '数据评测 · 数据绑定检查',
+    proceed: '开始评测',
+    degrade: '忽略并继续评测',
+    degradeNote: '这些对象在本轮评测中不绑定数据表，涉及它们的问题无法查库。',
+  },
+};
+
+const formatTime = (seconds) => new Date(seconds * 1000).toLocaleString();
+
+// 不以空格结尾：ChatPane 收到后直接发送，而不是只填进输入框
+function assistantPrompt(issues) {
+  return [
+    '发布前数据绑定检查发现以下对象的「# 数据来源」与项目数据表对不上，请逐个修正：',
+    ...issues.map((issue) => `- ${issue.message}`),
+    '修正口径：首行只写现有数据表名（schema 表格资料或评测数据源上传表里的 Sheet 名，逐字相同）；'
+      + '确实不落库的对象填「无」；不要臆造表名。修完运行规则检查，确认没有「列名对账」错误。',
+  ].join('\n');
+}
+
+function tableOptions(issue, tables) {
+  const candidates = issue.candidates || [];
+  const recommended = new Set(candidates.map((item) => item.table));
+  const groups = [];
+  if (candidates.length) {
+    groups.push({
+      label: '推荐',
+      options: candidates.map((item) => ({
+        value: item.table,
+        label: item.matched ? `${item.table}（${item.matched} 列对得上）` : item.table,
+      })),
+    });
+  }
+  groups.push({
+    label: '全部数据表',
+    options: tables.filter((name) => !recommended.has(name)).map((name) => ({ value: name, label: name })),
+  });
+  return groups;
+}
+
+function IssueRow({ issue, tables, busy, onBind, onOpenFile, onAssistant }) {
+  return (
+    <div className="pcd-issue">
+      <div className="pcd-issue-head">
+        <Typography.Text strong>{issue.object}</Typography.Text>
+        <Tag color={issue.blocking ? 'error' : 'warning'}>{KIND_TEXT[issue.kind] || issue.kind}</Tag>
+      </div>
+      <div className="pcd-issue-msg">{issue.message}</div>
+      <Space wrap size={6}>
+        {tables.length > 0 && (
+          <Select
+            size="small"
+            showSearch
+            value={null}
+            placeholder="改为现有数据表"
+            popupMatchSelectWidth={false}
+            style={{ minWidth: 180 }}
+            disabled={busy}
+            options={tableOptions(issue, tables)}
+            onChange={(table) => onBind(issue, table)}
+          />
+        )}
+        <Button size="small" loading={busy} onClick={() => onBind(issue, '')}>
+          标为不落库
+        </Button>
+        {onOpenFile && (
+          <Button size="small" type="link" onClick={() => onOpenFile(issue.path)}>
+            打开文档
+          </Button>
+        )}
+        {onAssistant && issue.blocking && (
+          <Button size="small" type="link" onClick={() => onAssistant([issue])}>
+            交给助手修复
+          </Button>
+        )}
+      </Space>
+    </div>
+  );
+}
+
+// 表从哪来：已上传但未标 schema 的表格资料可直接改标，或补传一份
+function TableSources({ check, busy, onMark, onUpload }) {
+  const resources = check.table_resources || [];
+  const noTables = check.table_count === 0;
+  return (
+    <Alert
+      className="pcd-sources"
+      type={noTables ? 'warning' : 'info'}
+      showIcon
+      message={
+        noTables
+          ? '项目里还没有可核对的数据表'
+          : `现有 ${check.table_count} 张数据表（来自 schema 表格资料与评测数据源上传表）`
+      }
+      description={
+        <>
+          <div>
+            {noTables
+              ? '声明了来源表的对象暂不绑定（不阻断）。把含表结构的表格标为「数据 Schema」或补传一份后会重新检查；声明的表若是编造的，改为「无」。'
+              : '对象引用的表若在下列未标注的表格资料里，标为「数据 Schema」后会重新检查。'}
+          </div>
+          {resources.map((path) => (
+            <div key={path} className="pcd-resource">
+              <span className="pcd-resource-name">{path.split('/').pop()}</span>
+              <Button size="small" type="link" loading={busy === path} onClick={() => onMark(path)}>
+                标为数据 Schema
+              </Button>
+            </div>
+          ))}
+          <Upload accept=".xlsx,.xlsm,.csv" showUploadList={false} beforeUpload={onUpload}>
+            <Button size="small" icon={<UploadOutlined />} loading={busy === 'upload'}>
+              上传 Schema 表格
+            </Button>
+          </Upload>
+        </>
+      }
+    />
+  );
+}
+
+function CheckSummary({ check, mode }) {
+  const last = mode === 'publish' ? check.last_publish : null;
+  return (
+    <div className="pcd-summary">
+      <span>
+        对象 {check.objects} 个，已绑定数据表 {check.bound_objects} 个；阻断项 {check.blocking} 个
+      </span>
+      {last && (
+        <span className="pcd-last">
+          上次发布：{formatTime(last.at)}
+          {last.by ? ` · ${last.by}` : ''}
+          {last.degraded ? ` · 降级发布（${last.unbound_count} 个对象未绑定）` : ''}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function useBindingCheck(open, projectId) {
+  const [check, setCheck] = useState(null);
+  const load = useCallback(async () => {
+    try {
+      setCheck(await api.packageCheck(projectId));
+    } catch (error) {
+      message.error(error.message);
+    }
+  }, [projectId]);
+  useEffect(() => {
+    if (open) load();
+    return () => setCheck(null);
+  }, [open, load]);
+  return [check, load];
+}
+
+export default function PublishCheckDialog({
+  open,
+  projectId,
+  mode = 'publish',
+  onClose,
+  onProceed,
+  onCommand,
+  onOpenFile,
+  onChanged,
+}) {
+  const [check, reload] = useBindingCheck(open, projectId);
+  const [busy, setBusy] = useState('');
+  const text = MODE_TEXT[mode];
+
+  const act = async (key, action, done) => {
+    setBusy(key);
+    try {
+      await action();
+      message.success(done);
+      onChanged?.();
+    } catch (error) {
+      message.error(error.status === 409 ? '文档刚被修改过，已重新检查，请再试一次' : error.message);
+    } finally {
+      setBusy('');
+      reload();
+    }
+  };
+
+  const bind = (issue, table) =>
+    act(
+      issue.object,
+      () => api.setObjectDataSource(projectId, issue.object, table, issue.revision),
+      table ? `「${issue.object}」已改为数据表 ${table}` : `「${issue.object}」已标为不落库`,
+    );
+
+  const markSchema = (path) =>
+    act(
+      path,
+      async () => {
+        const { directives = {} } = await api.resourceDirectives(projectId);
+        await api.setResourceDirective(projectId, path, 'schema', directives[path]?.reading_mode || 'on_demand');
+      },
+      `${path.split('/').pop()} 已标为数据 Schema`,
+    );
+
+  const uploadSchema = (file) => {
+    const subdir = file.name.toLowerCase().endsWith('.csv') ? 'others' : 'excel';
+    act('upload', () => api.uploadResource(projectId, subdir, file, undefined, 'schema'), `已上传 ${file.name} 并标为数据 Schema`);
+    return false;
+  };
+
+  const askAssistant = (issues) => {
+    onCommand(assistantPrompt(issues));
+    onClose();
+  };
+
+  const openFile = (path) => {
+    onOpenFile(path);
+    onClose();
+  };
+
+  const proceed = async (allowUnbound) => {
+    setBusy('proceed');
+    try {
+      await onProceed(allowUnbound);
+    } catch (error) {
+      message.error(error.message);
+      reload();
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const blockingIssues = check ? check.issues.filter((issue) => issue.blocking) : [];
+  const pendingIssues = check ? check.issues.filter((issue) => !issue.blocking) : [];
+  const rowProps = {
+    tables: check?.tables || [],
+    onBind: bind,
+    onOpenFile: onOpenFile && openFile,
+    onAssistant: onCommand && askAssistant,
+  };
+  const renderRows = (issues) =>
+    issues.map((issue) => (
+      <IssueRow key={issue.object} issue={issue} busy={busy === issue.object} {...rowProps} />
+    ));
+
+  const collapsed = [
+    pendingIssues.length > 0 && {
+      key: 'pending',
+      label: `无法核对、暂不绑定的对象（${pendingIssues.length}）`,
+      children: renderRows(pendingIssues),
+    },
+    check?.warnings.length > 0 && {
+      key: 'warnings',
+      label: `其他提示（${check.warnings.length}）`,
+      children: check.warnings.map((warning) => (
+        <div key={warning} className="pcd-warning">{warning}</div>
+      )),
+    },
+  ].filter(Boolean);
+
+  const footer = [
+    onCommand && blockingIssues.length > 0 && (
+      <Button key="assistant" onClick={() => askAssistant(blockingIssues)}>
+        全部交给助手修复
+      </Button>
+    ),
+    blockingIssues.length > 0 && (
+      <Popconfirm
+        key="degrade"
+        title={`${check.blocking} 个对象未通过检查`}
+        description={text.degradeNote}
+        onConfirm={() => proceed(true)}
+      >
+        <Button danger loading={busy === 'proceed'}>{text.degrade}</Button>
+      </Popconfirm>
+    ),
+    <Button
+      key="proceed"
+      type="primary"
+      disabled={!check || check.blocking > 0}
+      loading={busy === 'proceed'}
+      onClick={() => proceed(false)}
+    >
+      {check?.blocking ? `${text.proceed}（需先修复）` : text.proceed}
+    </Button>,
+  ].filter(Boolean);
+
+  return (
+    <Modal
+      title={text.title}
+      open={open}
+      onCancel={onClose}
+      width={760}
+      zIndex={1100}
+      footer={footer}
+      destroyOnHidden
+    >
+      {!check ? (
+        <div className="pcd-loading"><Spin /></div>
+      ) : (
+        <div className="pcd-body">
+          <CheckSummary check={check} mode={mode} />
+          {check.truncated && (
+            <Alert type="info" showIcon message="条目较多，只列出前一部分；修复后会重新检查。" />
+          )}
+          {blockingIssues.length > 0 && (
+            <div className="pcd-section">
+              <div className="pcd-section-title">需要修复：声明的来源表与现有数据表对不上</div>
+              {renderRows(blockingIssues)}
+            </div>
+          )}
+          <TableSources check={check} busy={busy} onMark={markSchema} onUpload={uploadSchema} />
+          {collapsed.length > 0 && <Collapse size="small" items={collapsed} />}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// 发布入口共用：检查通过直接下载，有问题项再打开检查弹窗
+export function usePackagePublish(dialogExtras = {}) {
+  const [projectId, setProjectId] = useState('');
+  const [publishing, setPublishing] = useState(false);
+
+  const download = async (pid, allowUnbound) => {
+    await api.downloadPackage(pid, { allowUnbound });
+    message.success(allowUnbound ? '已降级发布，未通过检查的对象不绑定数据表' : '知识包已导出');
+    setProjectId('');
+  };
+
+  const publish = async (pid) => {
+    setPublishing(true);
+    try {
+      const check = await api.packageCheck(pid);
+      if (check.issues.length) setProjectId(pid);
+      else await download(pid, false);
+    } catch (error) {
+      if (error.code === 'binding_problems') setProjectId(pid);
+      else message.error(error.message);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const dialog = (
+    <PublishCheckDialog
+      {...dialogExtras}
+      open={!!projectId}
+      projectId={projectId}
+      mode="publish"
+      onClose={() => setProjectId('')}
+      onProceed={(allowUnbound) => download(projectId, allowUnbound)}
+    />
+  );
+  return { publish, publishing, dialog };
+}

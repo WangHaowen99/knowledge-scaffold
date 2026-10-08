@@ -1285,6 +1285,37 @@ html, body, #root { height: 100%; margin: 0; background: var(--surface-page); }
 }
 .export-eval-hint .ant-alert-message { font-size: 12px; }
 
+/* 发布 / 评测前的数据绑定检查弹窗（PublishCheckDialog） */
+.pcd-loading { display: flex; justify-content: center; padding: 32px 0; }
+.pcd-body { display: flex; flex-direction: column; gap: 12px; max-height: 62vh; overflow-y: auto; }
+.pcd-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.pcd-last { color: var(--text-tertiary); font-size: 12px; }
+.pcd-section { display: flex; flex-direction: column; gap: 8px; }
+.pcd-section-title { font-weight: 600; color: var(--text-primary); }
+.pcd-issue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+.pcd-issue + .pcd-issue { margin-top: 8px; }
+.pcd-issue-head { display: flex; align-items: center; gap: 8px; }
+.pcd-issue-msg { font-size: 12px; color: var(--text-secondary); word-break: break-all; }
+.pcd-sources .ant-alert-description { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.pcd-resource { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.pcd-resource-name { color: var(--text-primary); }
+.pcd-warning { font-size: 12px; color: var(--text-secondary); padding: 2px 0; }
+
 /* ==== 移动端适配（≤768px）：工作台单栏 + 底部页签，全局自适应 ==== */
 .mobile-body { display: flex; flex-direction: column; height: 100%; }
 .mobile-panes { flex: 1; min-height: 0; }

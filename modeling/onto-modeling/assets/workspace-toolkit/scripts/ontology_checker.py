@@ -533,23 +533,56 @@ def _needs_column(row: dict, columns: dict) -> bool:
     return not any(marker in row.get('属性规则', '') for marker in _NON_STORED_MARKERS)
 
 
+def _source_declaration(doc: OntologyDoc, by_lower: dict) -> tuple:
+    """(声明原文, 绑定到的表名)。首行写成说明句时与后端同口径：按句中反引号标出、
+    且真实存在的第一个表名绑定；「无」或没有该段时声明原文为空。"""
+    first = _source_first_line(doc)
+    if not first or _declares_none(first):
+        return '', ''
+    declared = _declared_table(doc) or first
+    table = by_lower.get(declared.lower(), '')
+    if not table and not _is_bare_name(first):
+        table = next((by_lower[n.strip().lower()] for n in re.findall(r"`([^`\n]+)`", first)
+                      if n.strip().lower() in by_lower), '')
+    return declared, table
+
+
 def check_object_columns(doc: OntologyDoc, tables: dict) -> list:
-    """存储属性的英文名称必须是所声明数据表的真实列名（与评测导入、发布包 mapping 同一口径）。"""
-    declared = _declared_table(doc)
-    if not (declared and tables):
+    """存储属性的英文名称必须是所声明数据表的真实列名（与评测导入、发布包 mapping 同一口径）。
+
+    声明的表不在现有数据表里是错误（发布时该对象会被阻断）；项目里还没有任何数据表时，
+    声明无从核对，只提示——多半是凭空写的表名，发布包不会绑定它。
+    """
+    declared, table = _source_declaration(doc, {name.lower(): name for name in tables})
+    if not declared:
         return []
-    if not doc.attribute_rows:
-        return []
-    table = {name.lower(): name for name in tables}.get(declared.lower())
-    if table is None:
+    if not tables:
         return [Issue(
             file=_rel(doc), severity='警告', category='列名对账',
-            message=f'「# 数据来源」声明的表「{declared}」不在 schema 资料或评测数据表里'
-                    f'（现有表：{"、".join(sorted(tables)[:10])}{"…" if len(tables) > 10 else ""}）',
+            message=f'「# 数据来源」声明了表「{declared[:40]}」，但项目里还没有可核对的数据表'
+                    '（schema 表格资料或评测数据源的上传表），发布包不会绑定该对象。'
+                    '表名来自数据表资料时，把该资料的用途标为 schema；不确定时首行填「无」，不要编造表名',
             source='规则检查',
         )]
+    if not table:
+        return [Issue(
+            file=_rel(doc), severity='错误', category='列名对账',
+            message=f'「# 数据来源」声明的表「{declared[:40]}」不在 schema 资料或评测数据表里'
+                    f'（现有表：{"、".join(sorted(tables)[:10])}{"…" if len(tables) > 10 else ""}），'
+                    '发布时会被阻断：首行改为现有表名（逐字相同），不落库的对象填「无」',
+            source='规则检查',
+        )]
+    if not doc.attribute_rows:
+        return []
     columns = {c.lower(): c for c in tables[table]}
     issues, missing = [], []
+    if not any(row.get('英文名称', '').strip().lower() in columns for row in doc.attribute_rows):
+        issues.append(Issue(
+            file=_rel(doc), severity='错误', category='列名对账',
+            message=f'表「{table}」没有一列能对上属性英文名称，发布时会被阻断：'
+                    '核对「# 数据来源」是否选错了表，或把从库里读取的属性英文名称改为真实列名',
+            source='规则检查',
+        ))
     for row in doc.attribute_rows:
         if not _needs_column(row, columns):
             continue

@@ -153,18 +153,43 @@ def test_columns_match_case_insensitively_and_undeclared_objects_are_skipped(too
     assert column_issues(toolkit, ontology, [KEY_ROW, "| 评分 | SCORE | 合成评分 | 否 | 数值 | 无 | 无 |"], source="无") == []
 
 
-def test_declared_table_not_in_headers_warns(toolkit, tmp_path: Path):
+def test_declared_table_not_in_headers_is_an_error(toolkit, tmp_path: Path):
+    """与发布门禁同口径：有数据表可核对、声明却对不上，发布时会被阻断。"""
     ontology = columns_workspace(tmp_path)
     issues = column_issues(toolkit, ontology, [KEY_ROW], source="T_ARCHIVE")
-    assert len(issues) == 1
+    assert [i["severity"] for i in issues] == ["错误"]
     assert "T_ARCHIVE" in issues[0]["message"]
     assert "T_ORDER" in issues[0]["message"]
+
+
+def test_sentence_first_line_binds_existing_quoted_table_like_backend(toolkit, tmp_path: Path):
+    ontology = columns_workspace(tmp_path)
+    assert column_issues(toolkit, ontology, [KEY_ROW], source="- 取自 `T_ORDER` 的明细（按月）。") == []
+    issues = column_issues(toolkit, ontology, [KEY_ROW], source="- 取自 `T_ARCHIVE` 的明细（按月）。")
+    assert [i["severity"] for i in issues] == ["错误"]
+
+
+def test_declared_table_without_any_matching_column_is_an_error(toolkit, tmp_path: Path):
+    ontology = columns_workspace(tmp_path)
+    issues = column_issues(toolkit, ontology, ["| 月份 | MONTH | 合成月份 | 是 | 字符串 | 无 | 无 |"])
+    assert "错误" in [i["severity"] for i in issues]
+    assert any("没有一列能对上" in i["message"] for i in issues)
 
 
 def test_no_table_headers_means_no_column_check(toolkit, tmp_path: Path):
     ontology = tmp_path / "ontology"
     (ontology / "object").mkdir(parents=True)
-    assert column_issues(toolkit, ontology, [KEY_ROW, "| 评分 | SCORE | 合成评分 | 否 | 数值 | 无 | 无 |"]) == []
+    rows = [KEY_ROW, "| 评分 | SCORE | 合成评分 | 否 | 数值 | 无 | 无 |"]
+    assert column_issues(toolkit, ontology, rows, source="无") == []
+
+
+def test_declaration_without_any_table_only_warns(toolkit, tmp_path: Path):
+    """没有数据表时声明无从核对：提示不要编造表名，但不阻断提交。"""
+    ontology = tmp_path / "ontology"
+    (ontology / "object").mkdir(parents=True)
+    issues = column_issues(toolkit, ontology, [KEY_ROW], source="T_ORDER")
+    assert [i["severity"] for i in issues] == ["警告"]
+    assert "T_ORDER" in issues[0]["message"] and "schema" in issues[0]["message"]
 
 
 def test_field_alias_conflict_matches_evaluation_rule(toolkit, tmp_path: Path):
