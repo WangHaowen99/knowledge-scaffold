@@ -642,15 +642,23 @@ def test_interactive_installer_never_guesses_consumer_network() -> None:
 
 # 安装器升级路径共用的 docker stub：mw-modeling* 归属 STUB_MODELING_OWNER，Consumer
 # 容器归属 STUB_CONSUMER_DIR 且在 onto-agent_default 网络上；设置 STUB_ONTO_MODELING_DIR
-# 时模拟已有 onto-modeling 容器，设置 STUB_LEGACY_MODELING_PORT 时模拟旧 Modeling 的宿主端口。
+# 时模拟已有 onto-modeling 容器，STUB_LEGACY_MODELING_PORT / STUB_LEGACY_MODELING_MCP_PORT
+# 模拟旧 Modeling 的宿主端口。STUB_RUNNING_CONTAINERS 中的容器处于运行状态；与真实 docker
+# 一样，容器被 docker stop 之后 docker port 读不到映射。
 _UPGRADE_DOCKER_STUB = """\
 case "$1" in
     container) ;;
     image) [ "${4:-}" != --format ] || printf 'sha256:%064d\\n' 0; exit 0 ;;
     port)
-        [ "$2 $3" != "mw-modeling 5100/tcp" ] || [ -z "${STUB_LEGACY_MODELING_PORT:-}" ] \\
-            || printf '0.0.0.0:%s\\n' "${STUB_LEGACY_MODELING_PORT}"
+        [ ! -e "${STUB_STATE_DIR}/stopped-$2" ] || exit 1
+        case "$2 $3" in
+            "mw-modeling 5100/tcp") port="${STUB_LEGACY_MODELING_PORT:-}" ;;
+            "mw-modeling 5188/tcp") port="${STUB_LEGACY_MODELING_MCP_PORT:-}" ;;
+            *) port="" ;;
+        esac
+        [ -z "${port}" ] || printf '0.0.0.0:%s\\n' "${port}"
         exit 0 ;;
+    stop) touch "${STUB_STATE_DIR}/stopped-$2"; exit 0 ;;
     *) exit 0 ;;
 esac
 [ "$2" = inspect ] || exit 1
@@ -666,7 +674,11 @@ case "${format}" in
     *working_dir*) printf '%s\\n' "${owner}" ;;
     *Mounts*) printf 'mw-modeling_%s-data\\n' "${name#mw-}" ;;
     *Config.Image*) printf '%s:previous\\n' "${name}" ;;
-    *State.Running*) printf 'false\\n' ;;
+    *State.Running*)
+        case " ${STUB_RUNNING_CONTAINERS:-} " in
+            *" ${name} "*) [ -e "${STUB_STATE_DIR}/stopped-${name}" ] || { printf 'true\\n'; exit 0; } ;;
+        esac
+        printf 'false\\n' ;;
     *Networks*) printf 'onto-agent_default\\n' ;;
 esac\
 """
@@ -713,7 +725,11 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
         return f'printf "{label}\\n" >> "$CALLS_FILE"'
 
     # 已安装的旧版 Modeling 只在升级失败回滚时才会被调用
-    _write_executable(modeling / "deploy" / "install.sh", record("stale-modeling-install"))
+    _write_executable(
+        modeling / "deploy" / "install.sh",
+        record("stale-modeling-install")
+        + '\nprintf "%s\\n" "${MODELING_PORT:-}" > "$STALE_MODELING_PORT_SNAPSHOT"',
+    )
 
     packages = tmp_path / "packages"
     packages.mkdir()
@@ -742,7 +758,12 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
         {
             "VERSION": "v-test\n",
             ".env.example": "MODELING_PORT=8100\n",
-            "deploy/install.sh": record("modeling-install"),
+            # 与真实 install.sh 一样：传入的 MODELING_PORT 优先，否则用 .env 里的值
+            "deploy/install.sh": record("modeling-install")
+            + '\ncd "$(dirname "$0")/.."'
+            + '\nprintf "%s\\n" "${MODELING_PORT:-$(sed -n "s/^MODELING_PORT=//p" .env | tail -n 1)}"'
+            + ' > "$MODELING_PORT_SNAPSHOT"'
+            + '\n[ -z "${STUB_MODELING_INSTALL_FAILS:-}" ] || exit 1',
         },
     )
     onto_package = _write_release_package(
@@ -760,6 +781,16 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
     _write_executable(bin_dir / "docker", _UPGRADE_DOCKER_STUB)
     _write_executable(bin_dir / "curl", 'printf "%s\\n" "$@" >> "$CURL_CALLS_FILE"')
     _write_executable(bin_dir / "uname", 'printf "Linux\\n"')
+    # 宿主机监听端口由 STUB_LISTENING_PORTS 决定，不探测真实主机
+    _write_executable(
+        bin_dir / "ss",
+        'printf "State Recv-Q Send-Q\\n"\n'
+        'for port in ${STUB_LISTENING_PORTS:-}; do\n'
+        '    case "$*" in *":${port}"*) printf "LISTEN 0 4096\\n" ;; esac\n'
+        'done',
+    )
+    state_dir = tmp_path / "docker-state"
+    state_dir.mkdir()
     for command in ("flock", "sha256sum"):
         if shutil.which(command) is None:
             _write_executable(bin_dir / command, "exit 0")
@@ -771,6 +802,9 @@ def _prepare_separated_upgrade(tmp_path: Path, *, modeling_port: str) -> dict:
         "CALLS_FILE": str(calls),
         "CURL_CALLS_FILE": str(tmp_path / "curl-calls.txt"),
         "ONTO_ENV_SNAPSHOT": str(tmp_path / "onto-modeling.env"),
+        "MODELING_PORT_SNAPSHOT": str(tmp_path / "modeling-port.txt"),
+        "STALE_MODELING_PORT_SNAPSHOT": str(tmp_path / "stale-modeling-port.txt"),
+        "STUB_STATE_DIR": str(state_dir),
         "STUB_CONSUMER_DIR": str(consumer),
         "STUB_MODELING_OWNER": str(modeling),
     }
@@ -805,6 +839,11 @@ def _calls(setup: dict) -> list[str]:
     return calls.read_text(encoding="utf-8").split() if calls.exists() else []
 
 
+def _deployed_modeling_port(tmp_path: Path) -> str:
+    """新版 Modeling install.sh 实际生效的 Workbench 宿主端口。"""
+    return (tmp_path / "modeling-port.txt").read_text(encoding="utf-8").strip()
+
+
 def test_installer_upgrade_deploys_onto_modeling_after_consumer_and_modeling(
     tmp_path: Path,
 ) -> None:
@@ -833,20 +872,114 @@ def test_installer_upgrade_deploys_onto_modeling_after_consumer_and_modeling(
     assert "Onto Modeling deployment finished" in result.stdout
 
 
-def test_installer_upgrade_rejects_port_clash_before_any_change(tmp_path: Path) -> None:
-    """0.26.9.0 之前的分离部署 Modeling 在 5100，升级会保留，与 onto-modeling 默认端口相撞。"""
+def test_installer_upgrade_moves_workbench_off_legacy_port(tmp_path: Path) -> None:
+    """0.26.9.0 之前 Workbench 默认在 5100，而 5100 已归 Onto Modeling：升级把 Workbench 迁到 8100。
+
+    回归：升级原样保留 5100，与 Onto Modeling 默认端口相撞，默认参数下旧环境一律升级失败。
+    """
     setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
 
     result = _run_separated_upgrade(setup)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _calls(setup) == ["onto-preflight", "consumer-upgrade", "modeling-install", "onto-deploy"]
+    assert _deployed_modeling_port(tmp_path) == "8100"
+    modeling_env = (setup["root"] / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=8100" in modeling_env
+    assert "MODELING_PORT=5100" not in modeling_env
+    assert "ONTO_WEB_PORT=5100" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+    assert "宿主端口将由 5100 迁到 8100" in result.stdout
+    assert "宿主端口已由 5100 改为 8100" in result.stdout
+
+
+def test_installer_upgrade_keeps_custom_workbench_port(tmp_path: Path) -> None:
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="55100")
+
+    result = _run_separated_upgrade(setup)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _deployed_modeling_port(tmp_path) == "55100"
+    assert "迁到" not in result.stdout
+
+
+def test_installer_upgrade_keeps_explicit_legacy_workbench_port(tmp_path: Path) -> None:
+    """显式传入 MODELING_PORT=5100 时不迁移；与 Onto Modeling 撞端口则在动手前拒绝。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
+
+    result = _run_separated_upgrade(setup, MODELING_PORT="5100")
 
     assert result.returncode != 0
     assert "都要占用宿主端口 5100" in result.stderr
     assert _calls(setup) == []
 
-    retried = _run_separated_upgrade(setup, ONTO_WEB_PORT="5110")
+    retried = _run_separated_upgrade(setup, MODELING_PORT="5100", ONTO_WEB_PORT="5110")
 
     assert retried.returncode == 0, retried.stdout + retried.stderr
+    assert _deployed_modeling_port(tmp_path) == "5100"
     assert "ONTO_WEB_PORT=5110" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+
+
+def test_installer_upgrade_refuses_to_move_workbench_onto_busy_port(tmp_path: Path) -> None:
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
+
+    result = _run_separated_upgrade(setup, STUB_LISTENING_PORTS="8100")
+
+    assert result.returncode != 0
+    assert "宿主端口 8100 已被占用" in result.stderr
+    assert _calls(setup) == []
+
+
+def _run_legacy_upgrade(setup: dict, **env: str):
+    consumer_package, modeling_package, onto_package = setup["packages"]
+    # 不显式指定 INSTALL_ROOT：--upgrade-from 按旧目录推导安装根目录
+    run_env = {key: value for key, value in setup["env"].items() if key != "INSTALL_ROOT"}
+    # Security review: argv is the resolved bash binary plus the repository's own installer
+    # and synthetic packages under tmp_path; it is passed as a sequence and never parsed by a shell.
+    return subprocess.run(  # NOSONAR(S4721)
+        [
+            _bash_executable(),
+            str(DEPLOY_ROOT / "install-consumer-modeling.sh"),
+            "--upgrade-from",
+            str(setup["legacy"]),
+            "--consumer-package",
+            str(consumer_package),
+            "--modeling-package",
+            str(modeling_package),
+            "--onto-modeling-package",
+            str(onto_package),
+        ],
+        env={**run_env, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+        shell=False,
+        timeout=120,
+    )
+
+
+def test_installer_legacy_upgrade_moves_workbench_and_keeps_mcp_port(tmp_path: Path) -> None:
+    """--upgrade-from：旧合并部署的 Workbench 从 5100 迁到 8100，自定义 MCP 端口原样保留。
+
+    回归：旧端口原先在停容器之后才用 docker port 读取，此时读不到映射，自定义端口丢失。
+    """
+    setup = _prepare_legacy_upgrade(tmp_path)
+    # 非交互迁移会先备份旧部署的发布清单
+    (setup["legacy"] / "deploy" / "manifest.json").write_text("{}\n", encoding="utf-8")
+
+    result = _run_legacy_upgrade(
+        setup,
+        STUB_LEGACY_MODELING_MCP_PORT="55188",
+        STUB_RUNNING_CONTAINERS="mw-modeling mw-modeling-agent",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _calls(setup) == ["onto-preflight", "consumer-upgrade", "modeling-install", "onto-deploy"]
+    assert _deployed_modeling_port(tmp_path) == "8100"
+    modeling_env = (setup["legacy"].parent / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=8100" in modeling_env
+    assert "MODELING_MCP_PORT=55188" in modeling_env
+    assert "ONTO_WEB_PORT=5100" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+    assert "宿主端口已由 5100 改为 8100" in result.stdout
 
 
 def test_installer_upgrade_refuses_foreign_onto_modeling_container(tmp_path: Path) -> None:
@@ -941,30 +1074,83 @@ def _interactive_upgrade_answers(setup: dict, *extra: tuple[str, str]) -> list[t
     ]
 
 
-def test_interactive_upgrade_asks_onto_port_when_it_clashes_with_modeling(
-    tmp_path: Path,
-) -> None:
-    """回归：0.26.9.0 之前的分离部署 Modeling 在 5100，首次加入 Onto Modeling 也落到 5100，
-    Consumer、Modeling 升级完才在拉起 Onto Modeling 时撞端口，且没有任何途径改端口。"""
+def test_interactive_upgrade_moves_workbench_off_legacy_port(tmp_path: Path) -> None:
+    """0.26.9.0 之前的分离部署 Workbench 在 5100，随 Modeling 升级迁到 8100，5100 留给 Onto Modeling。"""
     setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
 
     rc, output = _drive_tty(
         DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
-        _interactive_upgrade_answers(setup, ("请输入 Onto Modeling 宿主端口", "5110")),
+        _interactive_upgrade_answers(setup),
+        setup["env"],
+    )
+
+    assert rc == 0, output
+    assert "宿主端口将由 5100 迁到 8100" in output
+    assert "与 MODELING_PORT 相同" not in output
+    # 预检在任何变更之前，Onto Modeling 部署排在 Consumer、Modeling 之后
+    assert _calls(setup) == ["onto-preflight", "consumer-upgrade", "modeling-install", "onto-deploy"]
+    assert _deployed_modeling_port(tmp_path) == "8100"
+    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
+    assert "ONTO_WEB_PORT=5100" in onto_env
+    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
+    assert "http://127.0.0.1:5100/api/health" in (tmp_path / "curl-calls.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "Onto Modeling deployment finished" in output
+
+
+def test_interactive_upgrade_rolls_back_workbench_on_its_previous_port(tmp_path: Path) -> None:
+    """Modeling 升级失败回滚时，旧版本按原来的 5100 拉起，而不是本次迁移的目标端口。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
+    env = {
+        **setup["env"],
+        "STUB_MODELING_INSTALL_FAILS": "1",
+        "STUB_RUNNING_CONTAINERS": "mw-modeling mw-modeling-agent",
+    }
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
+        _interactive_upgrade_answers(setup),
+        env,
+    )
+
+    assert rc != 0
+    assert "Modeling 升级失败" in output
+    assert _calls(setup) == [
+        "onto-preflight",
+        "consumer-upgrade",
+        "modeling-install",
+        "stale-modeling-install",
+    ]
+    stale_port = (tmp_path / "stale-modeling-port.txt").read_text(encoding="utf-8").strip()
+    assert stale_port == "5100"
+
+
+def test_interactive_consumer_only_upgrade_asks_onto_port_when_it_clashes_with_modeling(
+    tmp_path: Path,
+) -> None:
+    """只升级 Consumer 时 Workbench 不重新部署、仍在 5100，首次加入的 Onto Modeling 要另选端口。"""
+    setup = _prepare_separated_upgrade(tmp_path, modeling_port="5100")
+    consumer_package, _, onto_package = setup["packages"]
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "install-consumer-modeling-interactive.sh",
+        [
+            ("请选择模式", "2"),
+            ("请输入已分离部署的安装根目录", str(setup["root"])),
+            ("升级范围", "1"),
+            ("请输入 Consumer 发布包路径", str(consumer_package)),
+            ("请输入 Onto Modeling 发布包路径", str(onto_package)),
+            ("请输入 Onto Modeling 宿主端口", "5110"),
+        ],
         setup["env"],
     )
 
     assert rc == 0, output
     assert "Onto Modeling 宿主端口 5100 与 MODELING_PORT 相同" in output
-    # 预检在任何变更之前，Onto Modeling 部署排在 Consumer、Modeling 之后
-    assert _calls(setup) == ["onto-preflight", "consumer-upgrade", "modeling-install", "onto-deploy"]
-    onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert "ONTO_WEB_PORT=5110" in onto_env
-    assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
-    assert "http://127.0.0.1:5110/api/health" in (tmp_path / "curl-calls.txt").read_text(
-        encoding="utf-8"
-    )
-    assert "Onto Modeling deployment finished" in output
+    assert "迁到" not in output
+    assert _calls(setup) == ["onto-preflight", "consumer-upgrade", "onto-deploy"]
+    assert "ONTO_WEB_PORT=5110" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
 
 
 def test_interactive_upgrade_refuses_foreign_onto_modeling_container(tmp_path: Path) -> None:
@@ -1057,23 +1243,24 @@ def _legacy_answers(setup: dict, onto_answer: str, *extra: tuple[str, str]) -> l
 
 
 def test_legacy_migration_deploys_onto_modeling_on_a_free_port(tmp_path: Path) -> None:
-    """回归：legacy 迁移脚本完全不涉及 Onto Modeling；迁移后 Modeling 保留旧的 5100。"""
+    """回归：legacy 迁移脚本完全不涉及 Onto Modeling；旧 Modeling 的 5100 迁到 8100，留给 Onto Modeling。"""
     setup = _prepare_legacy_upgrade(tmp_path)
     onto_package = setup["packages"][2]
 
     rc, output = _drive_tty(
         DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
-        _legacy_answers(setup, str(onto_package), ("请输入 Onto Modeling 宿主端口", "5110")),
+        _legacy_answers(setup, str(onto_package)),
         setup["env"],
     )
 
     assert rc == 0, output
-    assert "Onto Modeling 宿主端口 5100 已被当前部署的其他服务使用" in output
+    assert "宿主端口将由 5100 迁到 8100" in output
+    assert "已被当前部署的其他服务使用" not in output
     assert _calls(setup) == ["onto-preflight", "consumer-upgrade", "modeling-install", "onto-deploy"]
     stack_root = setup["legacy"].parent
-    assert "MODELING_PORT=5100" in (stack_root / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=8100" in (stack_root / "modeling" / ".env").read_text(encoding="utf-8")
     onto_env = (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
-    assert "ONTO_WEB_PORT=5110" in onto_env
+    assert "ONTO_WEB_PORT=5100" in onto_env
     assert "ONTO_MODELING_EXTERNAL_AUTH_NETWORK=onto-agent_default" in onto_env
     assert "ONTO_WEB_MODELING_URL=http://mw-modeling:5100" in onto_env
     assert (stack_root / "onto-modeling" / ".env").stat().st_mode & 0o777 == 0o600
@@ -1092,6 +1279,29 @@ def test_legacy_migration_without_onto_modeling_package_is_unchanged(tmp_path: P
     assert rc == 0, output
     assert _calls(setup) == ["consumer-upgrade", "modeling-install"]
     assert not (setup["legacy"].parent / "onto-modeling").exists()
+    # 5100 归 Onto Modeling，与本次是否部署它无关，Workbench 照样迁走
+    modeling_env = (setup["legacy"].parent / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "MODELING_PORT=8100" in modeling_env
+
+
+def test_legacy_migration_keeps_explicit_workbench_port_and_asks_onto_port(
+    tmp_path: Path,
+) -> None:
+    setup = _prepare_legacy_upgrade(tmp_path)
+    onto_package = setup["packages"][2]
+
+    rc, output = _drive_tty(
+        DEPLOY_ROOT / "upgrade-consumer-modeling-legacy-interactive.sh",
+        _legacy_answers(setup, str(onto_package), ("请输入 Onto Modeling 宿主端口", "5110")),
+        {**setup["env"], "MODELING_PORT": "5100"},
+    )
+
+    assert rc == 0, output
+    assert "迁到" not in output
+    assert "Onto Modeling 宿主端口 5100 已被当前部署的其他服务使用" in output
+    stack_root = setup["legacy"].parent
+    assert "MODELING_PORT=5100" in (stack_root / "modeling" / ".env").read_text(encoding="utf-8")
+    assert "ONTO_WEB_PORT=5110" in (tmp_path / "onto-modeling.env").read_text(encoding="utf-8")
 
 
 def _host_port_default(compose_text: str, var: str) -> str:
@@ -1132,6 +1342,30 @@ def test_modeling_healthcheck_port_matches_published_host_port() -> None:
     )
     assert chosen is not None, "交互式安装器未设置默认 MODELING_PORT"
     assert chosen.group(1) == release_port
+
+
+def test_upgrade_scripts_move_workbench_from_onto_port_to_release_default() -> None:
+    """升级把 Workbench 从 Onto Modeling 的默认端口迁到 Workbench 的发布默认端口，两头都要同源。"""
+    workbench_port = _host_port_default(
+        (MODELING_ROOT / "deploy" / "docker-compose.release.yml").read_text(encoding="utf-8"),
+        "MODELING_PORT",
+    )
+    onto_port = _host_port_default(
+        (MODELING_ROOT / "onto-modeling" / "deploy" / "docker-compose.release.yml").read_text(
+            encoding="utf-8"
+        ),
+        "ONTO_WEB_PORT",
+    )
+    for script in (
+        "install-consumer-modeling.sh",
+        "install-consumer-modeling-interactive.sh",
+        "upgrade-consumer-modeling-legacy-interactive.sh",
+    ):
+        text = (DEPLOY_ROOT / script).read_text(encoding="utf-8")
+        target = re.search(r"^MODELING_DEFAULT_PORT=(\d+)$", text, re.MULTILINE)
+        legacy = re.search(r"^LEGACY_MODELING_PORT=(\d+)$", text, re.MULTILINE)
+        assert target is not None and target.group(1) == workbench_port, script
+        assert legacy is not None and legacy.group(1) == onto_port, script
 
 
 def test_modeling_and_onto_modeling_do_not_share_host_port() -> None:

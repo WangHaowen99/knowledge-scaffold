@@ -10,6 +10,10 @@ INSTALL_ROOT_EXPLICIT=0
 [ -n "${INSTALL_ROOT+x}" ] && INSTALL_ROOT_EXPLICIT=1
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/onto-agent-stack}"
 INSTALL_GLOBAL_OPSCTL="${INSTALL_GLOBAL_OPSCTL:-0}"
+# 0.26.9.0 起宿主端口 5100 归 Onto Modeling，Modeling Workbench 默认改用 8100
+LEGACY_MODELING_PORT=5100
+MODELING_DEFAULT_PORT=8100
+MODELING_PORT_MIGRATED=false
 
 log() {
     printf '[full-install] %s\n' "$*"
@@ -61,6 +65,10 @@ usage() {
 端口变量可直接放在命令前传入：
   BACKEND_PORT MCP_SERVER_PORT FRONTEND_PORT MODELING_PORT MODELING_MCP_PORT
   ONTO_WEB_PORT（Onto Modeling；默认沿用已部署的值，首次为发布包默认值）
+
+升级沿用已部署的端口；唯一的例外是 Modeling Workbench 仍在 0.26.9.0 之前的
+默认端口 5100 时，自动迁到 8100（5100 归 Onto Modeling）。显式传入 MODELING_PORT
+时以传入值为准。
 
 示例：
   INSTALL_ROOT=/data/onto-agent-stack \
@@ -330,6 +338,41 @@ legacy_host_port() {
         | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1
 }
 
+host_port_in_use() {
+    port="$1"
+    # 关闭 userland-proxy 时容器发布的端口不出现在 ss 里，先按 docker 发布记录查
+    published_ports="$(docker ps --format '{{.Ports}}' 2>/dev/null || true)"
+    case "${published_ports}" in
+        *":${port}->"*) return 0 ;;
+    esac
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn "sport = :${port}" 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit !found }'
+        return
+    fi
+    (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+}
+
+# 升级沿用已部署的端口，唯一的例外是 Workbench 仍在 0.26.9.0 之前的默认端口 5100：
+# 5100 已归 Onto Modeling，这里把 Workbench 迁到 8100。显式传入 MODELING_PORT 时以传入值为准。
+# 结果写回 MODELING_PORT。旧端口要在停容器之前读取，停止后 docker port 读不到映射。
+resolve_upgrade_modeling_port() {
+    current_port="$1"
+    [ -z "${MODELING_PORT:-}" ] || return 0
+    MODELING_PORT="${current_port}"
+    [ "${current_port}" = "${LEGACY_MODELING_PORT}" ] || return 0
+    ! host_port_in_use "${MODELING_DEFAULT_PORT}" || die \
+        "Modeling Workbench 需要从 ${LEGACY_MODELING_PORT} 迁到 ${MODELING_DEFAULT_PORT}（${LEGACY_MODELING_PORT} 已归 Onto Modeling），但宿主端口 ${MODELING_DEFAULT_PORT} 已被占用；请先释放，或用 MODELING_PORT 指定 Workbench 端口"
+    MODELING_PORT="${MODELING_DEFAULT_PORT}"
+    MODELING_PORT_MIGRATED=true
+    log "Modeling Workbench 宿主端口将由 ${LEGACY_MODELING_PORT} 迁到 ${MODELING_DEFAULT_PORT}（${LEGACY_MODELING_PORT} 已归 Onto Modeling）；如需保留，请传入 MODELING_PORT=${LEGACY_MODELING_PORT} 并用 ONTO_WEB_PORT 为 Onto Modeling 另选端口"
+}
+
+report_modeling_port_migration() {
+    [ "${MODELING_PORT_MIGRATED}" = true ] || return 0
+    printf '[full-install] Modeling Workbench 宿主端口已由 %s 改为 %s：http://localhost:%s/workbench.html\n' \
+        "${LEGACY_MODELING_PORT}" "${MODELING_DEFAULT_PORT}" "${MODELING_DEFAULT_PORT}"
+}
+
 validate_legacy_modeling_container() {
     container_name="$1"
     [ -n "${container_name}" ] || return 0
@@ -546,7 +589,9 @@ upgrade_install() {
     fi
     [ -n "${modeling_image}" ] || die "无法确定旧 Modeling 镜像"
     [ -n "${agent_image}" ] || die "无法确定旧 Modeling Agent 镜像"
-    precheck_onto_modeling "$(legacy_host_port mw-modeling 5100 || true)"
+    legacy_modeling_mcp_port="$(legacy_host_port mw-modeling 5188 || true)"
+    resolve_upgrade_modeling_port "$(legacy_host_port mw-modeling 5100 || true)"
+    precheck_onto_modeling "${MODELING_PORT}"
 
     mkdir -p "${INSTALL_ROOT}"
     stage_dir="$(mktemp -d "${INSTALL_ROOT}/.consumer-modeling-upgrade.XXXXXX")" \
@@ -635,10 +680,6 @@ upgrade_install() {
         done
     done
     write_env_value "${MODELING_DIR}/.env" MODELING_SERVICE_TOKEN "${legacy_token}"
-    legacy_modeling_port="$(legacy_host_port mw-modeling 5100 || true)"
-    legacy_modeling_mcp_port="$(legacy_host_port mw-modeling 5188 || true)"
-    [ -n "${legacy_modeling_port}" ] \
-        && write_env_value "${MODELING_DIR}/.env" MODELING_PORT "${legacy_modeling_port}"
     [ -n "${legacy_modeling_mcp_port}" ] \
         && write_env_value "${MODELING_DIR}/.env" MODELING_MCP_PORT "${legacy_modeling_mcp_port}"
     [ -z "${MODELING_PORT:-}" ] \
@@ -672,6 +713,7 @@ upgrade_install() {
     [ -z "${ONTO_MODELING_PACKAGE}" ] \
         || printf '[full-install] Onto Modeling：%s\n' "${ONTO_MODELING_DIR}"
     printf '[full-install] 升级备份：%s\n' "${backup_dir}"
+    report_modeling_port_migration
 }
 
 upgrade_separated_install() {
@@ -698,7 +740,10 @@ upgrade_separated_install() {
     [ "${#consumer_token}" -ge 32 ] || die "Consumer 未配置有效的 MODELING_SERVICE_TOKEN"
     [ "${consumer_token}" = "${modeling_token}" ] || die \
         "Consumer 与 Modeling 的 MODELING_SERVICE_TOKEN 不一致，拒绝升级"
-    precheck_onto_modeling "$(env_get "${MODELING_DIR}/.env" MODELING_PORT)"
+    current_modeling_port="$(env_get "${MODELING_DIR}/.env" MODELING_PORT)"
+    current_modeling_port="${current_modeling_port:-$(legacy_host_port mw-modeling 5100 || true)}"
+    resolve_upgrade_modeling_port "${current_modeling_port}"
+    precheck_onto_modeling "${MODELING_PORT}"
 
     stage_dir="$(mktemp -d "${INSTALL_ROOT}/.separated-upgrade.XXXXXX")" \
         || die "无法创建升级暂存目录"
@@ -769,6 +814,8 @@ upgrade_separated_install() {
     tar -C "${stage_dir}/modeling" -c -f - . | tar -C "${MODELING_DIR}" -x -f -
     cp "${backup_dir}/modeling.env" "${MODELING_DIR}/.env"
     chmod 600 "${MODELING_DIR}/.env"
+    [ -z "${MODELING_PORT:-}" ] \
+        || write_env_value "${MODELING_DIR}/.env" MODELING_PORT "${MODELING_PORT}"
     handoff_started=true
     if ! (cd "${MODELING_DIR}" && bash deploy/install.sh); then
         die "Modeling 升级失败；原数据卷和备份均已保留，备份位于 ${backup_dir}"
@@ -788,6 +835,7 @@ upgrade_separated_install() {
     [ -z "${ONTO_MODELING_PACKAGE}" ] \
         || printf '[full-install] Onto Modeling：%s\n' "${ONTO_MODELING_DIR}"
     printf '[full-install] 升级备份：%s\n' "${backup_dir}"
+    report_modeling_port_migration
 }
 
 validate_package "${CONSUMER_PACKAGE}" onto-agent
