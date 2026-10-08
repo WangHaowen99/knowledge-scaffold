@@ -1116,7 +1116,9 @@ class WorkspaceManager:
         """修复入口：把对象「# 数据来源」声明改成现有数据表之一，table 为空表示「无」。"""
         root = self.project_root(project_id)
         rel = f"ontology/object/{key}.md"
-        if not key or "/" in key or "\\" in key or not self._resolve_inside(root, rel).is_file():
+        if not key or "/" in key or "\\" in key:
+            raise WorkspaceError("对象不存在", 404)
+        if not self._resolve_inside(root, rel).is_file():
             raise WorkspaceError("对象不存在", 404)
         doc = root / rel
         table = (table or "").strip()
