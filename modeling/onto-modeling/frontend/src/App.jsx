@@ -64,6 +64,7 @@ export default function App() {
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [tree, setTree] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [usage, setUsage] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [focusStack, setFocusStack] = useState(['overview']);
@@ -146,6 +147,7 @@ export default function App() {
 
   const refreshWorkspace = useCallback(() => {
     if (!projectId) return;
+    setWorkspaceRevision((value) => value + 1);
     api.fileTree(projectId).then((data) => setTree(data.tree)).catch(() => {});
     api.versions(projectId).then((data) => setVersions(data.versions)).catch(() => {});
     api.usage(projectId).then(setUsage).catch(() => {});
@@ -817,6 +819,7 @@ export default function App() {
                 diffFiles={diffFiles}
                 onPickFile={setSelectedFile}
                 recentFiles={recentFiles}
+                workspaceRevision={workspaceRevision}
                 drawioAvailable={drawioAvailable}
                 onWorkspaceChanged={refreshWorkspace}
                 onOpenFile={openFile}

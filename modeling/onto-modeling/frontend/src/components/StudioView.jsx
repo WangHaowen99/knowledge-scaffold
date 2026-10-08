@@ -5,7 +5,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons';
 import { Button, Empty, Spin, Table, Tag, Typography, message } from 'antd';
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { Markdown } from './CenterPane.jsx';
 import StudioEntryEditor from './StudioEntryEditor.jsx';
@@ -16,13 +16,21 @@ const LegacyStudioGraphHost = lazy(() => import('./studio/LegacyStudioGraphHost.
 // 表格视图的 kind 视觉沿用原版 KIND_META 的对象/操作用色
 const KIND_LABEL = { object: '对象', operation: '操作', logic: '操作', rule: '规则', metric: '指标', script: '脚本' };
 
-export default function StudioView({ project, onOpenFile, onCommand, onWorkspaceChanged }) {
+export default function StudioView({
+  project,
+  onOpenFile,
+  onCommand,
+  onWorkspaceChanged,
+  active = false,
+  workspaceRevision = 0,
+}) {
   const [view, setView] = useState('graph');
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [entry, setEntry] = useState(null);
   const [selectedElementId, setSelectedElementId] = useState('');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const previousProjectId = useRef(project.id);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -34,12 +42,16 @@ export default function StudioView({ project, onOpenFile, onCommand, onWorkspace
   }, [project.id]);
 
   useEffect(() => {
-    setEntry(null);
-    setView('graph');
-    setQuery('');
-    setSelectedElementId('');
-    refresh();
-  }, [refresh]);
+    const projectChanged = previousProjectId.current !== project.id;
+    previousProjectId.current = project.id;
+    if (projectChanged) {
+      setEntry(null);
+      setView('graph');
+      setQuery('');
+      setSelectedElementId('');
+    }
+    if (active) refresh();
+  }, [active, project.id, refresh, workspaceRevision]);
 
   const openEntry = useCallback(
     (path, elementId = '') => {
