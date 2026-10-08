@@ -4,6 +4,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP_ROOT=""
+# 0.26.9.0 起宿主端口 5100 归 Onto Modeling，Modeling Workbench 默认改用 8100
+LEGACY_MODELING_PORT=5100
+MODELING_DEFAULT_PORT=8100
 
 log() { printf '[interactive-upgrade] %s\n' "$*"; }
 die() { printf '[interactive-upgrade][error] %s\n' "$*" >&2; exit 1; }
@@ -116,6 +119,33 @@ legacy_host_port() {
         | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1
 }
 
+host_port_in_use() {
+    port="$1"
+    # 关闭 userland-proxy 时容器发布的端口不出现在 ss 里，先按 docker 发布记录查
+    published_ports="$(docker ps --format '{{.Ports}}' 2>/dev/null || true)"
+    case "${published_ports}" in
+        *":${port}->"*) return 0 ;;
+    esac
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn "sport = :${port}" 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit !found }'
+        return
+    fi
+    (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+}
+
+# 迁移沿用旧 Modeling 的端口，唯一的例外是它仍在 0.26.9.0 之前的默认端口 5100：
+# 5100 已归 Onto Modeling，这里把 Workbench 迁到 8100。显式传入 MODELING_PORT 时以传入值为准。
+# 结果写回 MODELING_PORT；必须在停旧容器之前调用，停止后 docker port 读不到映射。
+resolve_modeling_port() {
+    [ -z "${MODELING_PORT:-}" ] || return 0
+    MODELING_PORT="$(legacy_host_port mw-modeling 5100 || true)"
+    [ "${MODELING_PORT}" = "${LEGACY_MODELING_PORT}" ] || return 0
+    ! host_port_in_use "${MODELING_DEFAULT_PORT}" || die \
+        "Modeling Workbench 需要从 ${LEGACY_MODELING_PORT} 迁到 ${MODELING_DEFAULT_PORT}（${LEGACY_MODELING_PORT} 已归 Onto Modeling），但宿主端口 ${MODELING_DEFAULT_PORT} 已被占用；请先释放，或用 MODELING_PORT 指定 Workbench 端口"
+    MODELING_PORT="${MODELING_DEFAULT_PORT}"
+    log "Modeling Workbench 宿主端口将由 ${LEGACY_MODELING_PORT} 迁到 ${MODELING_DEFAULT_PORT}（${LEGACY_MODELING_PORT} 已归 Onto Modeling）"
+}
+
 package_env_value() {
     tar -xzOf "$1" "$2" 2>/dev/null \
         | sed -n "s/^[[:space:]]*$3[[:space:]]*=[[:space:]]*//p" | tail -n 1 || true
@@ -127,7 +157,7 @@ precheck_onto_modeling() {
     modeling_port="${MODELING_PORT:-$(legacy_host_port mw-modeling 5100 || true)}"
     modeling_port="${modeling_port:-$(env_get "${old_install_dir}/backend/.env" MODELING_PORT)}"
     modeling_port="${modeling_port:-$(package_env_value "${modeling_package}" modeling/.env.example MODELING_PORT)}"
-    # 旧合并部署的 Modeling 通常仍在 5100，与 Onto Modeling 默认端口相同
+    # 旧 Modeling 的 5100 已由 resolve_modeling_port 迁走；这里兜底显式指定端口时的冲突
     used_ports=" ${modeling_port} ${MODELING_MCP_PORT:-$(legacy_host_port mw-modeling 5188 || true)}"
     used_ports="${used_ports} $(legacy_host_port onto-agent-backend 5055 || true)"
     used_ports="${used_ports} $(legacy_host_port onto-agent-mcp 7488 || true)"
@@ -221,6 +251,7 @@ opsctl="${staged_root}/deploy/opsctl"
 manifest="${staged_root}/deploy/manifest.json"
 [ -x "${opsctl}" ] || die "Consumer 发布包缺少 deploy/opsctl"
 [ -f "${manifest}" ] || die "Consumer 发布包缺少 deploy/manifest.json"
+resolve_modeling_port
 [ -z "${onto_package}" ] || precheck_onto_modeling
 
 # opsctl preflight reads the staged bundle's backend/.env for published ports.

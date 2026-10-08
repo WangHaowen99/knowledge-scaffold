@@ -10,8 +10,12 @@ BACKEND_PORT=""
 MCP_SERVER_PORT=""
 FRONTEND_PORT=""
 MODELING_PORT=""
+PREVIOUS_MODELING_PORT=""
 MODELING_MCP_PORT=""
 ONTO_WEB_PORT=""
+# 0.26.9.0 起宿主端口 5100 归 Onto Modeling，Modeling Workbench 默认改用 8100
+LEGACY_MODELING_PORT=5100
+MODELING_DEFAULT_PORT=8100
 CONSUMER_PACKAGE=""
 MODELING_PACKAGE=""
 ONTO_MODELING_PACKAGE=""
@@ -174,7 +178,32 @@ load_upgrade_ports() {
     MODELING_PORT="$(env_get "${modeling_env}" MODELING_PORT)"; MODELING_PORT="${MODELING_PORT:-5100}"
     MODELING_MCP_PORT="$(env_get "${modeling_env}" MODELING_MCP_PORT)"; MODELING_MCP_PORT="${MODELING_MCP_PORT:-5188}"
     ONTO_WEB_PORT="$(env_get "${onto_env}" ONTO_WEB_PORT)"; ONTO_WEB_PORT="${ONTO_WEB_PORT:-5100}"
+    PREVIOUS_MODELING_PORT="${MODELING_PORT}"
     log "升级将保留现有端口：Consumer=${BACKEND_PORT}/${MCP_SERVER_PORT}/${FRONTEND_PORT}，Modeling=${MODELING_PORT}/${MODELING_MCP_PORT}，Onto Modeling=${ONTO_WEB_PORT}"
+}
+
+host_port_in_use() {
+    local port="$1" published_ports
+    # 关闭 userland-proxy 时容器发布的端口不出现在 ss 里，先按 docker 发布记录查
+    published_ports="$(docker ps --format '{{.Ports}}' 2>/dev/null || true)"
+    case "${published_ports}" in
+        *":${port}->"*) return 0 ;;
+    esac
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn "sport = :${port}" 2>/dev/null | awk 'NR > 1 { found = 1 } END { exit !found }'
+        return
+    fi
+    (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+}
+
+# 唯一不沿用的端口：Workbench 仍在 0.26.9.0 之前的默认端口 5100 时随 Modeling 升级迁到 8100，
+# 5100 已归 Onto Modeling。只升级 Consumer 时 Workbench 不重新部署，端口保持不变。
+migrate_legacy_modeling_port() {
+    [ "${MODELING_PORT}" = "${LEGACY_MODELING_PORT}" ] || return 0
+    ! host_port_in_use "${MODELING_DEFAULT_PORT}" || die \
+        "Modeling Workbench 需要从 ${LEGACY_MODELING_PORT} 迁到 ${MODELING_DEFAULT_PORT}（${LEGACY_MODELING_PORT} 已归 Onto Modeling），但宿主端口 ${MODELING_DEFAULT_PORT} 已被占用，请先释放"
+    MODELING_PORT="${MODELING_DEFAULT_PORT}"
+    log "Modeling Workbench 宿主端口将由 ${LEGACY_MODELING_PORT} 迁到 ${MODELING_DEFAULT_PORT}（${LEGACY_MODELING_PORT} 已归 Onto Modeling）"
 }
 
 # consumer 由本脚本部署、容器名固定，直接读它的实际网络。不按命名规律猜——
@@ -218,7 +247,7 @@ wait_for_onto_modeling() {
 }
 
 # Onto Modeling 与 Consumer、Modeling 同时运行，宿主端口不能与它们相同。
-# 0.26.9.0 之前的分离部署 Modeling 仍在 5100，首次加入 Onto Modeling 时默认值会撞上。
+# 只升级 Consumer 时旧 Modeling 仍可能在 5100，与 Onto Modeling 默认端口相撞，需要另选。
 onto_port_conflict() {
     local name
     for name in BACKEND_PORT MCP_SERVER_PORT FRONTEND_PORT MODELING_PORT MODELING_MCP_PORT; do
@@ -352,7 +381,8 @@ restore_preserved_modeling_containers() {
         mv "${MODELING_BACKUP_DIR}/modeling-release" "${INSTALL_ROOT}/modeling" 2>/dev/null || true
     fi
     if [ -n "${OLD_MODELING_RUNNING}" ] && [ -f "${INSTALL_ROOT}/modeling/deploy/install.sh" ]; then
-        MODELING_PORT="${MODELING_PORT}" MODELING_MCP_PORT="${MODELING_MCP_PORT}" \
+        # 回滚到旧版本时用它原来的端口，不用本次迁移后的端口
+        MODELING_PORT="${PREVIOUS_MODELING_PORT:-${MODELING_PORT}}" MODELING_MCP_PORT="${MODELING_MCP_PORT}" \
             bash "${INSTALL_ROOT}/modeling/deploy/install.sh" >/dev/null 2>&1 || true
     fi
 }
@@ -462,8 +492,9 @@ if [ "${MODE}" = install ]; then
     [ -z "${ONTO_MODELING_PACKAGE}" ] \
         || ONTO_MODELING_PACKAGE="$(resolve_package "${ONTO_MODELING_PACKAGE}" 'Onto Modeling发布包')"
 else
-    # 升级部署始终沿用已安装配置中的端口，不重新询问或覆盖端口。
+    # 升级部署沿用已安装配置中的端口，不重新询问；唯一例外见 migrate_legacy_modeling_port
     load_upgrade_ports
+    [ "${scope}" = 1 ] || migrate_legacy_modeling_port
     if [ "${scope}" != 2 ]; then
         CONSUMER_PACKAGE="$(resolve_package "$(ask '请输入 Consumer 发布包路径：')" Consumer发布包)"
     fi
