@@ -652,6 +652,7 @@ export default function CenterPane({
   diffFiles,
   onPickFile,
   recentFiles,
+  workspaceRevision,
   drawioAvailable,
   onWorkspaceChanged,
 }) {
@@ -939,6 +940,8 @@ export default function CenterPane({
               onOpenFile={onOpenFile}
               onCommand={onCommand}
               onWorkspaceChanged={onWorkspaceChanged}
+              active={focus === 'studio'}
+              workspaceRevision={workspaceRevision}
             />
           </Suspense>
         </div>

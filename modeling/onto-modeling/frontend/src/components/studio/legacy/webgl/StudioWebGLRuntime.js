@@ -87,6 +87,7 @@ export class WebGLGraphRuntime {
     this.forceFitPending = false;
     this.forceTargetPositions = new Map();
     this.forceMotionActive = false;
+    this.dynamicMotionActive = false;
     this.forceSettlePending = false;
     this.forceMotionFrameElapsed = 0;
     this.resizeObserver = null;
@@ -271,6 +272,7 @@ export class WebGLGraphRuntime {
     this.ambientNodeMotionApplied = false;
     this.forceTargetPositions.clear();
     this.forceMotionActive = false;
+    this.setDynamicMotion(false);
     this.forceSettlePending = false;
     this.forceMotionFrameElapsed = 0;
     this.movedNodeIds.clear();
@@ -349,6 +351,7 @@ export class WebGLGraphRuntime {
     this.forceFitPending = true;
     this.forceTargetPositions.clear();
     this.forceMotionActive = false;
+    this.setDynamicMotion(true);
     this.forceSettlePending = false;
     this.forceMotionFrameElapsed = 0;
     this.forceWorker = new Worker(new URL('./studio-force-layout.worker.js', import.meta.url), { type: 'module' });
@@ -357,6 +360,7 @@ export class WebGLGraphRuntime {
       if (data.type === 'status') {
         if (data.status !== 'settled') this.restoreAmbientNodePositions(false);
         this.setForceStatus(data.status);
+        this.setDynamicMotion(data.status === 'initializing' || data.status === 'running');
         if (this.host && Number.isFinite(data.aspect)) {
           this.host.dataset.forceAspect = data.aspect.toFixed(3);
           this.host.dataset.forceTargetAspect = data.targetAspect.toFixed(3);
@@ -414,6 +418,7 @@ export class WebGLGraphRuntime {
     this.forceGeneration += 1;
     this.forceTargetPositions.clear();
     this.forceMotionActive = false;
+    this.setDynamicMotion(false);
     this.forceSettlePending = false;
     this.forceMotionFrameElapsed = 0;
     if (this.forceWorker) {
@@ -479,6 +484,35 @@ export class WebGLGraphRuntime {
     this.callbacks.onForceStatusChange?.(status);
   }
 
+  setDynamicMotion(active) {
+    const next = Boolean(active);
+    if (this.dynamicMotionActive === next) return;
+    this.dynamicMotionActive = next;
+    const visible = !next;
+    if (this.layers?.labels) this.layers.labels.visible = visible;
+    if (this.layers?.particles) this.layers.particles.visible = visible;
+    this.nodeViews?.forEach((view) => {
+      if (view.metaText) view.metaText.visible = visible;
+      if (view.title) view.title.visible = visible;
+      if (view.attributeOrbit?.container) view.attributeOrbit.container.visible = visible;
+    });
+    if (!next && this.layers) {
+      this.drawNodes();
+      this.drawEdges();
+    }
+  }
+
+  renderPosition(position) {
+    if (!position || !this.dynamicMotionActive || !this.world || !this.app?.renderer) return position;
+    const resolution = Number(this.app.renderer.resolution || 1);
+    const scaleX = Math.max(0.0001, this.world.scale.x || 1);
+    const scaleY = Math.max(0.0001, this.world.scale.y || 1);
+    return point(
+      (Math.round((this.world.x + position.x * scaleX) * resolution) / resolution - this.world.x) / scaleX,
+      (Math.round((this.world.y + position.y * scaleY) * resolution) / resolution - this.world.y) / scaleY,
+    );
+  }
+
   drawNodes() {
     if (!this.layers) return;
     this.hideNodeTooltip();
@@ -508,7 +542,8 @@ export class WebGLGraphRuntime {
       const container = new Container();
       container.zIndex = (() => { if (selected) return 10; return highlighted ? 2 : 1; })();
       const position = this.positions.get(item.id) || this.basePositions.get(item.id) || point(0, 0);
-      container.position.set(position.x, position.y);
+      const renderPosition = this.renderPosition(position);
+      container.position.set(renderPosition.x, renderPosition.y);
       container.alpha = dimmed ? 0.18 : 1;
       container.eventMode = 'static';
       container.cursor = 'pointer';
@@ -543,7 +578,7 @@ export class WebGLGraphRuntime {
       }
 
       this.layers.nodes.addChild(container);
-      this.nodeViews.set(item.id, {
+    this.nodeViews.set(item.id, {
         container,
         metaText: texts?.metaText || null,
         title: texts?.title || null,
@@ -553,8 +588,12 @@ export class WebGLGraphRuntime {
         relationCount: relationCount.get(item.id) || 0,
         attributeOrbit,
         titleBaseScale: texts?.title.scale.x || 1,
-        titleBaseWidth: texts?.title.width || 0,
-      });
+      titleBaseWidth: texts?.title.width || 0,
+    });
+      if (this.dynamicMotionActive && texts) {
+        texts.metaText.visible = false;
+        texts.title.visible = false;
+      }
     });
     if (this.host) {
       this.host.dataset.expandedAttributeCount = String(expandedAttributeCount);
@@ -643,7 +682,7 @@ export class WebGLGraphRuntime {
     });
     graphicsByStyle.forEach((graphics) => this.layers.edges.addChild(graphics));
     graphicsByStyle.forEach((graphics) => this.layers.edges.addChild(graphics));
-    this.drawEdgeLabels(labelEntries);
+    if (!this.dynamicMotionActive) this.drawEdgeLabels(labelEntries);
     if (this.host) {
       this.host.dataset.visibleEdgeBatchCount = String(graphicsByStyle.size);
       this.host.dataset.visibleEdgeCount = String(this.edgePaths.size);
@@ -670,8 +709,8 @@ export class WebGLGraphRuntime {
   }
 
   edgePoints(edge) {
-    const source = this.positions.get(edge.source);
-    const target = this.positions.get(edge.target);
+    const source = this.renderPosition(this.positions.get(edge.source));
+    const target = this.renderPosition(this.positions.get(edge.target));
     const sourceNode = this.nodeById.get(edge.source);
     const targetNode = this.nodeById.get(edge.target);
     if (!source || !target || !sourceNode || !targetNode) return [];
@@ -904,7 +943,10 @@ export class WebGLGraphRuntime {
   applyPositions() {
     this.nodeViews.forEach((view, id) => {
       const position = this.positions.get(id);
-      if (position) view.container.position.set(position.x, position.y);
+      if (position) {
+        const renderPosition = this.renderPosition(position);
+        view.container.position.set(renderPosition.x, renderPosition.y);
+      }
     });
     this.updateSemanticVisibility();
     this.drawEdges();
@@ -1458,10 +1500,14 @@ export class WebGLGraphRuntime {
     );
     this.nodeViews.forEach((view, id) => {
       const position = this.positions.get(id);
-      if (position) view.container.position.set(position.x, position.y);
+      if (position) {
+        const renderPosition = this.renderPosition(position);
+        view.container.position.set(renderPosition.x, renderPosition.y);
+      }
     });
     this.ambientNodeMotionApplied = false;
     this.ambientNodeFrameElapsed = 0;
+    this.setDynamicMotion(false);
     if (redraw) {
       this.drawEdges();
       this.drawMinimap();
@@ -1473,6 +1519,9 @@ export class WebGLGraphRuntime {
       this.restoreAmbientNodePositions(true);
       return;
     }
+    // 环境动态只做几何层的像素对齐；布局已稳定后必须保持节点文字和
+    // 关系标签可见，不能再次进入力导阶段的简化渲染模式。
+    if (this.dynamicMotionActive) this.setDynamicMotion(false);
     this.ambientNodeFrameElapsed += deltaMS;
     if (this.ambientNodeFrameElapsed < AMBIENT_FRAME_INTERVAL_MS) return;
     this.ambientNodeClock += this.ambientNodeFrameElapsed / 1000;
@@ -1506,6 +1555,7 @@ export class WebGLGraphRuntime {
 
   tickForceMotion(deltaMS) {
     if (!this.forceMotionActive || !this.forceTargetPositions.size) return;
+    this.setDynamicMotion(true);
     this.forceMotionFrameElapsed += deltaMS;
     if (this.forceMotionFrameElapsed < FORCE_POSITION_FRAME_MS) return;
     const elapsedMS = this.forceMotionFrameElapsed;
@@ -1531,6 +1581,7 @@ export class WebGLGraphRuntime {
     this.forceMotionActive = false;
     this.forceSettlePending = false;
     this.forceMotionFrameElapsed = 0;
+    this.setDynamicMotion(false);
     this.applyPositions();
     if (this.host) this.host.dataset.receivedSettledAspect = this.graphBoundsAspect();
     this.captureAmbientNodePositions();
