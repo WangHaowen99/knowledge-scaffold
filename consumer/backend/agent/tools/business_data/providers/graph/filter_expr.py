@@ -7,7 +7,9 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-_OR_SPLIT_RE = re.compile(r"\s+OR\s+", re.IGNORECASE)
+from .property_types import is_graph_parameter_value, is_graph_scalar_parameter_value
+
+
 _COMPARE_RE = re.compile(r"^(>=|<=|>|<|=)\s*(.+)$")
 _CONTAINS_RE = re.compile(r"^CONTAINS\s+['\"]([^'\"]*)['\"]$", re.IGNORECASE)
 _START_END_RE = re.compile(r"^(STARTS\s+WITH|ENDS\s+WITH)\s+['\"]([^'\"]*)['\"]$", re.IGNORECASE)
@@ -21,11 +23,14 @@ _STRUCT_OPS = {
     "lt",
     "lte",
     "contains",
+    "contains_item",
     "starts_with",
     "ends_with",
     "in",
     "not_in",
     "is_null",
+    "or",
+    "and",
 }
 _STRUCT_OP_ALIASES = {
     "startswith": "starts_with",
@@ -97,9 +102,17 @@ def build_filter_where(
         if isinstance(expr, Mapping):
             conditions.append(_build_structured_condition(ref, expr, params, key, field_name))
             continue
-        if isinstance(expr, Sequence) and not isinstance(expr, (str, bytes)):
+        if not isinstance(expr, str) and is_graph_scalar_parameter_value(expr):
+            params[key] = expr
+            conditions.append("{} = ${}".format(ref, key))
+            continue
+        if isinstance(expr, Sequence) and not isinstance(expr, (str, bytes, bytearray)):
             params[key] = _validate_sequence(expr, field_name)
             conditions.append("{} IN ${}".format(ref, key))
+            continue
+        if not isinstance(expr, str) and is_graph_parameter_value(expr):
+            params[key] = expr
+            conditions.append("{} = ${}".format(ref, key))
             continue
         if not isinstance(expr, str):
             raise ValueError("{} 的值类型不支持: {}".format(field_name, type(expr).__name__))
@@ -107,7 +120,7 @@ def build_filter_where(
         text = expr.strip()
         if not text:
             raise ValueError("{} 不能为空字符串".format(field_name))
-        parts = [part.strip() for part in _OR_SPLIT_RE.split(text)]
+        parts = [part.strip() for part in _split_unquoted_or(text)]
         part_conditions: list[str] = []
         for part_index, part in enumerate(parts):
             if not part:
@@ -130,6 +143,43 @@ def _part_param_key(param_prefix: str, prop: str, prop_index: int, part_index: i
     if _CYPHER_IDENTIFIER_RE.match(prop):
         return "{}_{}_{}".format(param_prefix, prop, part_index)
     return "{}_{}_{}".format(param_prefix, prop_index, part_index)
+
+
+def _split_unquoted_or(value: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    quote = ""
+    escaped = False
+    index = 0
+    text = str(value)
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote:
+            escaped = True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            if quote == char:
+                quote = ""
+            elif not quote:
+                quote = char
+            index += 1
+            continue
+        if not quote and text[index:index + 2].upper() == "OR":
+            before = text[index - 1] if index > 0 else " "
+            after = text[index + 2] if index + 2 < len(text) else " "
+            if before.isspace() and after.isspace():
+                parts.append(text[start:index])
+                start = index + 2
+                index += 2
+                continue
+        index += 1
+    parts.append(text[start:])
+    return parts
 
 
 def _parse_scalar(token: str) -> Any:
@@ -162,18 +212,32 @@ def _parse_scalar(token: str) -> Any:
 
 
 def _ensure_scalar(value: Any, field_name: str) -> Any:
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if isinstance(value, str):
         return value
-    raise ValueError("{} 仅支持标量值（str/int/float/bool/null）".format(field_name))
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if str(value.__class__.__module__).startswith("neo4j."):
+        return value
+    if is_graph_parameter_value(value) and not isinstance(value, (Mapping, Sequence)):
+        return value
+    raise ValueError("{} 的值不是合法图数据库参数类型".format(field_name))
+
+
+def _ensure_parameter_value(value: Any, field_name: str) -> Any:
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if is_graph_parameter_value(value):
+        return value
+    raise ValueError("{} 的值不是合法图数据库参数类型".format(field_name))
 
 
 def _validate_sequence(value: Any, field_name: str) -> list[Any]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise ValueError("{} 必须是数组".format(field_name))
     seq = list(value)
     if not seq:
         raise ValueError("{} 不能为空数组".format(field_name))
-    return [_ensure_scalar(item, field_name) for item in seq]
+    return [_ensure_parameter_value(item, field_name) for item in seq]
 
 
 def _build_scalar_condition(  # pylint: disable=too-many-arguments,huawei-too-many-arguments
@@ -184,7 +248,11 @@ def _build_scalar_condition(  # pylint: disable=too-many-arguments,huawei-too-ma
     param_key: str,
     field_name: str,
 ) -> str:
-    scalar = _ensure_scalar(value, field_name)
+    scalar = (
+        _ensure_parameter_value(value, field_name)
+        if op in {"=", "<>"}
+        else _ensure_scalar(value, field_name)
+    )
     if scalar is None:
         if op == "=":
             return "{} IS NULL".format(prop_ref)
@@ -245,7 +313,29 @@ def _build_structured_condition(
     conditions: list[str] = []
     for index, (op, value) in enumerate(normalized.items()):
         key = "{}_{}_{}".format(param_key, index, op)
-        if op == "eq":
+        if op in {"or", "and"}:
+            if (
+                isinstance(value, (str, bytes, bytearray))
+                or not isinstance(value, Sequence)
+                or not value
+            ):
+                raise ValueError("{}.{} 必须是非空条件数组".format(field_name, op))
+            nested = [
+                _build_structured_condition(
+                    prop_ref,
+                    item,
+                    params,
+                    "{}_{}".format(key, nested_index),
+                    "{}.{}[{}]".format(field_name, op, nested_index),
+                )
+                for nested_index, item in enumerate(value)
+                if isinstance(item, Mapping)
+            ]
+            if len(nested) != len(value):
+                raise ValueError("{}.{} 只能包含条件对象".format(field_name, op))
+            joiner = " OR " if op == "or" else " AND "
+            conditions.append(nested[0] if len(nested) == 1 else "({})".format(joiner.join(nested)))
+        elif op == "eq":
             conditions.append(_build_scalar_condition(prop_ref, "=", value, params, key, "{}.eq".format(field_name)))
         elif op == "ne":
             conditions.append(_build_scalar_condition(prop_ref, "<>", value, params, key, "{}.ne".format(field_name)))
@@ -257,6 +347,12 @@ def _build_structured_condition(
             conditions.append(_build_scalar_condition(prop_ref, "<", value, params, key, "{}.lt".format(field_name)))
         elif op == "lte":
             conditions.append(_build_scalar_condition(prop_ref, "<=", value, params, key, "{}.lte".format(field_name)))
+        elif op == "contains_item":
+            scalar = _ensure_parameter_value(value, "{}.contains".format(field_name))
+            if scalar is None:
+                raise ValueError("{}.contains 不能为 null".format(field_name))
+            params[key] = scalar
+            conditions.append("${} IN {}".format(key, prop_ref))
         elif op == "contains":
             scalar = _ensure_scalar(value, "{}.contains".format(field_name))
             if scalar is None:

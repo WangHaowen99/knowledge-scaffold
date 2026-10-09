@@ -25,6 +25,15 @@ test('settings modal: backdrop does not close the modal', async () => {
   assert.equal(overlay.props.children, child);
 });
 
+test('settings modal: MCP token 支持永不过期并明确展示', async () => {
+  const { readFileSync } = await import('node:fs');
+  const source = readFileSync(new URL('../frontend/src/SettingsModal.jsx', import.meta.url), 'utf8');
+
+  assert.match(source, /expires_in_seconds: null/);
+  assert.match(source, /<option value="never">永不过期<\/option>/);
+  assert.match(source, /if \(!input\) return '永不过期';/);
+});
+
 test('settings modal: admin 角色拥有独立的平台默认作用域', async () => {
   const source = await import('node:fs').then(({ readFileSync }) => (
     readFileSync(new URL('../frontend/src/SettingsModal.jsx', import.meta.url), 'utf8')
@@ -132,6 +141,14 @@ test('settings modal: 项目上下文会暴露 MCP 接入 tab 并接线到项目
   assert.match(settings, /createProjectMcpToken\(projectId, draft\)/);
   assert.match(settings, /revokeProjectMcpToken\(projectId, tokenId\)/);
   assert.match(settings, /MODELING_MCP_PUBLIC_BASE_URL/);
+  assert.match(settings, /copyMcpText\(value\)/);
+  assert.match(settings, /buildModelingMcpClientConfigs\(/);
+  assert.match(settings, /issued \? issued\.token_summary\?\.scopes \|\| \[\] : undefined/);
+  assert.match(settings, /客户端 JSON 配置/);
+  assert.match(settings, /\['combined', '完整配置', clientConfigs\.combined\]/);
+  assert.match(settings, /复制\{label\}/);
+  assert.match(settings, /接受任一 scope/);
+  assert.match(settings, /读取 Object、Operation 和 Rule 列表及详情/);
   assert.match(settings, /key=\{`\$\{item\.toolset\}:\$\{item\.transport\}`\}/);
   assert.match(api, /export const getProjectMcpRuntimeStatus = \(id\) => api\(`\$\{P\(id\)\}\/mcp\/runtime\/status`\)/);
   assert.match(api, /export const listProjectMcpTokens = \(id\) => api\(`\$\{P\(id\)\}\/mcp\/tokens`\)/);

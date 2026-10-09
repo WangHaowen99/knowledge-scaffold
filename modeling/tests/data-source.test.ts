@@ -298,6 +298,39 @@ test('data source service：校验隔离边界且 none 模式跳过外部调用'
   assert.equal(saved.ontologyId, undefined);
 });
 
+test('data source service：none 模式也前置阻断字段别名冲突', async () => {
+  const { createProject } = await import('../src/projects/repo.js');
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  const { configureProjectDataSource } = await import('../src/evaluation/data-source-service.js');
+  const project = createProject({ owner: 'alice', name: '字段别名冲突前置测试' });
+  insertPackageVersion(project.id, '1.0.0', {
+    id: 'ontology-conflict', name: '冲突包', description: '冲突包', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'graph',
+    objects: [{
+      key: 'flight', title: '航班', description: '航班',
+      fields: [
+        { key: 'arr', cnName: '到达机场', alias: '机场' },
+        { key: 'dep', cnName: '出发机场', alias: '机场' },
+      ],
+    }], operations: [],
+  }, { covered: [], uncovered: [] });
+
+  await assert.rejects(
+    configureProjectDataSource({
+      projectId: project.id,
+      token: 'access-token',
+      input: { mode: 'none' },
+    }),
+    (error: any) => {
+      assert.equal(error.code, 'DATA_SOURCE_PACKAGE_FIELD_ALIAS_CONFLICT');
+      assert.equal(error.statusCode, 422);
+      assert.equal(error.details.conflicts[0].display_name, '机场');
+      assert.deepEqual(error.details.conflicts[0].field_keys, ['arr', 'dep']);
+      return true;
+    },
+  );
+});
+
 test('direct connection tester：Neo4j 选择 database、执行探针并关闭资源', async () => {
   const { testProjectDataSourceConnection } = await import('../src/evaluation/data-source-connection-test.js');
   const calls: Array<{ database?: string; query?: string }> = [];

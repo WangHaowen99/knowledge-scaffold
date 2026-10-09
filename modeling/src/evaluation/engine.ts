@@ -27,6 +27,12 @@ import { EvaluationAuthenticationError, EvaluationAuthSession } from './auth-ses
 import type { Testcase } from '../workflow/m3-repo.js';
 import { currentLlmUser, runWithLlmUser } from '../llm/user-context.js';
 import {
+  FieldNameConflictError,
+  fieldNameConflictDetails,
+  FIELD_ALIAS_CONFLICT_CODE,
+  findFieldNameConflicts,
+} from '../workflow/field-alias.js';
+import {
   deliverAgentProjectEvents,
   enqueueEvaluationTerminalProjectEvent,
 } from '../agent/project-event-outbox.js';
@@ -42,6 +48,7 @@ export class EvaluationOperationError extends Error {
     message: string,
     readonly statusCode: 400 | 404 | 409 | 422,
     readonly cause?: unknown,
+    readonly details: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = 'EvaluationOperationError';
@@ -305,6 +312,16 @@ export function startEvaluation(
       error instanceof Error ? error.message : '当前知识包未通过评测前校验',
       422,
       error,
+    );
+  }
+  const fieldConflicts = findFieldNameConflicts(latest.spec.objects ?? []);
+  if (fieldConflicts.length) {
+    throw new EvaluationOperationError(
+      FIELD_ALIAS_CONFLICT_CODE,
+      new FieldNameConflictError(fieldConflicts).message,
+      422,
+      undefined,
+      fieldNameConflictDetails(fieldConflicts),
     );
   }
   const officialTestcases = selectOfficialEvaluationTestcases(repo.listTestcases(projectId));

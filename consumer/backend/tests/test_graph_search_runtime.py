@@ -13,7 +13,12 @@ from agent.tools.business_data.providers.graph.models import (
     GraphBackendResult,
     GraphEntityMapping,
 )
-from agent.tools.business_data.providers.graph.runtime import GraphSearchRuntime, _make_graph_query_agent
+from agent.tools.business_data.providers.graph.runtime import (
+    GraphSearchRuntime,
+    _compact_edges_schema,
+    _compact_nodes_schema,
+    _make_graph_query_agent,
+)
 
 
 def _collect(stream):
@@ -423,6 +428,66 @@ def test_runtime_marks_relationship_record_query_as_property_filter_sufficient()
     assert schema_context["mapping_intent"]["is_relationship_record"] is True
     assert schema_context["mapping_intent"]["pattern_search_required"] is False
     assert schema_context["mapping_intent"]["property_filter_sufficient_after_hit"] is True
+
+
+def test_compact_schema_reports_name_and_field_truncation_separately():
+    node_fields = {
+        "field_{:02d}".format(index): "STRING"
+        for index in range(31)
+    }
+    nodes = _compact_nodes_schema(
+        {
+            "labels": ["SyntheticEvent"],
+            "schema": {"SyntheticEvent": node_fields},
+        },
+        ["SyntheticEvent"],
+    )
+    edges = _compact_edges_schema(
+        {
+            "relationship_types": ["SYNTHETIC_LINK"],
+            "schema": {"SYNTHETIC_LINK": node_fields},
+            "relation_triples": [],
+        },
+        ["SYNTHETIC_LINK"],
+    )
+
+    assert len(nodes["schema"]["SyntheticEvent"]) == 30
+    assert nodes["truncated"] is False
+    assert nodes["fields_truncated"] == ["SyntheticEvent"]
+    assert nodes["schema_incomplete"] is True
+    assert nodes["types_authoritative"] is True
+    assert len(edges["schema"]["SYNTHETIC_LINK"]) == 30
+    assert edges["truncated"] is False
+    assert edges["fields_truncated"] == ["SYNTHETIC_LINK"]
+    assert edges["schema_incomplete"] is True
+    assert edges["types_authoritative"] is True
+
+
+def test_compact_schema_marks_sampled_types_as_incomplete_without_size_truncation():
+    nodes = _compact_nodes_schema(
+        {
+            "labels": ["SyntheticEvent"],
+            "schema": {"SyntheticEvent": {"event_key": "STRING"}},
+            "types_authoritative": False,
+        },
+        ["SyntheticEvent"],
+    )
+    edges = _compact_edges_schema(
+        {
+            "relationship_types": ["SYNTHETIC_LINK"],
+            "schema": {"SYNTHETIC_LINK": {"event_key": "STRING"}},
+            "relation_triples": [],
+            "types_authoritative": False,
+        },
+        ["SYNTHETIC_LINK"],
+    )
+
+    assert nodes["truncated"] is False
+    assert nodes["fields_truncated"] == []
+    assert nodes["schema_incomplete"] is True
+    assert edges["truncated"] is False
+    assert edges["fields_truncated"] == []
+    assert edges["schema_incomplete"] is True
 
 
 def test_runtime_uses_jiuwen_graph_agent_by_default():

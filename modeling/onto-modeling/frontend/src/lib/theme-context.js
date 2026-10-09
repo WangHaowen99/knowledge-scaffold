@@ -1,0 +1,8 @@
+import { createContext } from 'react';
+
+export const ThemeCtx = createContext({
+  mode: 'light',
+  accent: 'blue',
+  setMode: () => {},
+  setAccent: () => {},
+});

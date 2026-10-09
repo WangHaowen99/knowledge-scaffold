@@ -123,8 +123,9 @@ export const startProjectTransferExport = (id) => api(
   `/api/projects/${encodeURIComponent(id)}/transfer-exports`,
   { method: 'POST', body: '{}' },
 );
-export const startProjectTransferImport = (file) => {
+export const startProjectTransferImport = (file, projectName = '') => {
   const form = new FormData();
+  if (String(projectName || '').trim()) form.append('project_name', String(projectName).trim());
   form.append('file', file);
   return api('/api/project-transfers/imports', { method: 'POST', body: form });
 };

@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS projects (
   id            TEXT PRIMARY KEY,
   owner         TEXT NOT NULL,
+  external_id   TEXT,
   kind          TEXT NOT NULL DEFAULT 'modeling'
                 CHECK (kind IN ('modeling', 'package')),
   runtime       TEXT NOT NULL DEFAULT 'legacy'
@@ -359,7 +360,7 @@ CREATE TABLE IF NOT EXISTS project_mcp_tokens (
   subject_username TEXT NOT NULL,
   issued_by     TEXT NOT NULL,
   scopes_json   TEXT NOT NULL,
-  expires_at    TEXT NOT NULL,
+  expires_at    TEXT,
   created_at    TEXT NOT NULL,
   last_used_at  TEXT,
   revoked_at    TEXT,

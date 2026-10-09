@@ -71,7 +71,6 @@ const CODE_STATUS: Record<string, number> = {
   FORBIDDEN: 403,
   UNAUTHORIZED: 401,
   AGENT_SERVICE_FORBIDDEN: 403,
-  MCP_ORIGIN_FORBIDDEN: 403,
   MCP_PROJECT_FORBIDDEN: 403,
   MCP_SCOPE_FORBIDDEN: 403,
   MCP_SCOPE_MISMATCH: 403,
@@ -267,6 +266,7 @@ const CODE_STATUS: Record<string, number> = {
   EVAL_DB_ADMIN_UNAVAILABLE: 503,
   DATA_SOURCE_INVALID_INPUT: 400,
   DATA_SOURCE_PACKAGE_REQUIRED: 409,
+  DATA_SOURCE_PACKAGE_FIELD_ALIAS_CONFLICT: 422,
   DATA_SOURCE_CONNECTION_FAILED: 502,
   DATA_SOURCE_SYNC_FAILED: 502,
   EVALUATION_DATABASE_IMPORT_CAPACITY_EXCEEDED: 429,
@@ -380,6 +380,7 @@ const CODE_MESSAGE: Record<string, string> = {
   MODEL_CONTEXT_LENGTH_EXCEEDED: '模型上下文长度超出限制，请减少资料范围或输出长度后重试',
   context_length_exceeded: '模型上下文长度超出限制，请减少资料范围或输出长度后重试',
   LLM_NOT_CONFIGURED: '尚未配置可用的建模模型',
+  DATA_SOURCE_PACKAGE_FIELD_ALIAS_CONFLICT: '知识包存在字段名称或别名冲突，请修正后重试',
   LLM_CONFIG_UNAVAILABLE: '模型配置暂时不可用，请稍后重试',
   EVAL_DB_TOOL_UNAVAILABLE: '评测数据服务暂时不可用，请稍后重试',
   EVAL_DB_QUERY_FAILED: '评测数据服务暂时不可用，请稍后重试',
@@ -555,7 +556,10 @@ function isKnownStructuredError(error: unknown): boolean {
     'UserLlmSettingsValidationError',
     'LlmExtraParamsValidationError',
     'LlmConfigEncryptionKeyError',
-    'LlmDefaultSyncError',
+  'LlmDefaultSyncError',
+    'DataSourceConfigurationError',
+    'EvaluationOperationError',
+    'FieldNameConflictError',
   ].includes(name);
 }
 

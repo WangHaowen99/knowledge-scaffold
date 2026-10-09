@@ -166,7 +166,10 @@ load_modeling_env() {
                    MODELING_LEADER_OUTPUT_TOKENS \
                    MODELING_AGENT_PIP_INDEX_URL MODELING_AGENT_PIP_TIMEOUT \
                    MODELING_AGENT_PIP_RETRIES MODELING_SERVICE_TOKEN \
-                   MODELING_MCP_TOKEN_SECRET MODELING_PORT MODELING_MCP_PORT \
+                   MODELING_MCP_PUBLIC_BASE_URL \
+                   MODELING_MCP_SUPPORTED_PROTOCOL_VERSIONS MODELING_MCP_PROTOCOL_COMPATIBILITY \
+                   MODELING_MCP_OPERATION_RULE_ENABLED MODELING_MCP_TOKEN_SECRET \
+                   MODELING_MCP_TRANSPORT MODELING_PORT MODELING_MCP_PORT \
                    MODELING_ACCEPTANCE_MODE \
                    MODELING_CONTEXT_WINDOW_MESSAGES MODELING_CONTEXT_MAX_MESSAGES \
                    MODELING_CONTEXT_WINDOW_ROUNDS MODELING_CONTEXT_PROCESSOR_PRESET \
@@ -174,6 +177,75 @@ load_modeling_env() {
             load_env_if_unset "${file}" "${key}"
         done
     done
+}
+
+is_public_ipv4() {
+    local ip="$1"
+    [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    [[ "${ip}" != 127.* && "${ip}" != 10.* && "${ip}" != 192.168.* \
+        && "${ip}" != 169.254.* && "${ip}" != 0.* ]] || return 1
+    if [[ "${ip}" =~ ^172\.([0-9]+)\. ]]; then
+        [ "${BASH_REMATCH[1]}" -lt 16 ] || [ "${BASH_REMATCH[1]}" -gt 31 ] || return 1
+    fi
+    return 0
+}
+
+detect_public_ipv4() {
+    local candidate service
+    command -v curl >/dev/null 2>&1 || return 1
+    for service in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+        candidate="$(curl -fsS --max-time 2 --connect-timeout 1 "${service}" 2>/dev/null | tr -d '[:space:]')" || continue
+        is_public_ipv4 "${candidate}" && { printf '%s\n' "${candidate}"; return 0; }
+    done
+    return 1
+}
+
+detect_lan_ipv4() {
+    local candidate
+    if command -v ip >/dev/null 2>&1; then
+        candidate="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)"
+        if [[ "${candidate}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+            && [[ "${candidate}" != 127.* && "${candidate}" != 169.254.* ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    fi
+    hostname -I 2>/dev/null | tr ' ' '\n' | while read -r candidate; do
+        [[ "${candidate}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || continue
+        [[ "${candidate}" != 127.* && "${candidate}" != 169.254.* ]] || continue
+        printf '%s\n' "${candidate}"
+        break
+    done
+}
+
+resolve_modeling_mcp_public_base_url() {
+    local port="${MODELING_MCP_PORT:-5188}" public_ip lan_ip
+    if [ -n "${MODELING_MCP_PUBLIC_BASE_URL:-}" ]; then
+        MODELING_MCP_PUBLIC_BASE_URL="${MODELING_MCP_PUBLIC_BASE_URL%/}"
+        export MODELING_MCP_PUBLIC_BASE_URL
+        log "使用显式 MCP 对外地址：${MODELING_MCP_PUBLIC_BASE_URL}"
+        return 0
+    fi
+    public_ip="$(detect_public_ipv4 || true)"
+    if [ -n "${public_ip}" ]; then
+        MODELING_MCP_PUBLIC_BASE_URL="http://${public_ip}:${port}"
+        export MODELING_MCP_PUBLIC_BASE_URL
+        warn "未配置 MCP 公网基础地址，已启用探测到的公网 IP：${MODELING_MCP_PUBLIC_BASE_URL}"
+        warn "当前使用 HTTP，公网 Token 可能被明文传输；正式环境建议改为 HTTPS 域名或带有效证书的 HTTPS IP"
+        return 0
+    fi
+    lan_ip="$(detect_lan_ipv4 | head -n 1 || true)"
+    if [ -n "${lan_ip}" ]; then
+        MODELING_MCP_PUBLIC_BASE_URL="http://${lan_ip}:${port}"
+        export MODELING_MCP_PUBLIC_BASE_URL
+        warn "未探测到公网 IP，已启用局域网 MCP 地址：${MODELING_MCP_PUBLIC_BASE_URL}"
+        warn "该地址仅适用于网络互通的客户端；如需公网接入，请配置 MODELING_MCP_PUBLIC_BASE_URL"
+        return 0
+    fi
+    MODELING_MCP_PUBLIC_BASE_URL="http://127.0.0.1:${port}"
+    export MODELING_MCP_PUBLIC_BASE_URL
+    warn "未探测到可用公网或局域网 IP，MCP 回退为本机地址：${MODELING_MCP_PUBLIC_BASE_URL}"
+    warn "建模部署继续执行，但 MCP 当前仅限本机访问"
 }
 
 detect_host_arch() {
@@ -392,6 +464,7 @@ deploy_release() {
     require_modeling_service_token "${config_file}"
     ensure_modeling_mcp_token_secret "${config_file}"
     load_modeling_env "${config_file}"
+    resolve_modeling_mcp_public_base_url
     verify_consumer_service_token
 
     network="$(detect_consumer_network)"
@@ -418,11 +491,12 @@ deploy_release() {
 
     wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
-    wait_for_http "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 \
+    wait_for_http "http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html" 60 \
         || die "Modeling Workbench page did not become reachable"
     wait_for_http "http://127.0.0.1:${MODELING_MCP_PORT:-5188}/health" 60 \
         || die "Modeling MCP health endpoint did not become reachable"
-    log "Modeling Workbench deployment finished: http://localhost:${MODELING_PORT:-5100}/workbench.html#/create"
+    log "Modeling Workbench deployment finished: http://localhost:${MODELING_PORT:-8100}/workbench.html#/create"
+    log "Modeling MCP external base URL: ${MODELING_MCP_PUBLIC_BASE_URL}"
 }
 
 deploy_source() {
@@ -437,6 +511,7 @@ deploy_source() {
 
     ensure_source_modeling_service_token "${repo_root}/consumer/backend/.env"
     load_modeling_env "${repo_root}/consumer/backend/.env" "${repo_root}/deploy/.env"
+    resolve_modeling_mcp_public_base_url
     verify_consumer_service_token
 
     network="$(detect_consumer_network)"
@@ -455,9 +530,10 @@ deploy_source() {
 
     wait_for_container "mw-modeling-agent" 180 || die "Modeling Agent container did not become healthy"
     wait_for_container "mw-modeling" 180 || die "Modeling container did not become healthy"
-    wait_for_http "http://127.0.0.1:${MODELING_PORT:-5100}/workbench.html" 60 \
+    wait_for_http "http://127.0.0.1:${MODELING_PORT:-8100}/workbench.html" 60 \
         || die "Modeling Workbench page did not become reachable"
-    log "Modeling Workbench deployment finished on port ${MODELING_PORT:-5100}"
+    log "Modeling Workbench deployment finished: http://localhost:${MODELING_PORT:-8100}/workbench.html#/create"
+    log "Modeling MCP external base URL: ${MODELING_MCP_PUBLIC_BASE_URL}"
 }
 
 if [ "$#" -gt 0 ]; then

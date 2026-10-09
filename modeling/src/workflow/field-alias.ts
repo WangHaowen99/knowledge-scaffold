@@ -20,6 +20,33 @@ export interface FieldNameConflict {
   claims: FieldNameClaim[];
 }
 
+export const FIELD_ALIAS_CONFLICT_CODE = 'DATA_SOURCE_PACKAGE_FIELD_ALIAS_CONFLICT';
+
+export class FieldNameConflictError extends Error {
+  readonly code = FIELD_ALIAS_CONFLICT_CODE;
+  readonly conflicts: FieldNameConflict[];
+
+  constructor(conflicts: FieldNameConflict[]) {
+    super(`知识包字段别名预校验失败：${conflicts.map(describeFieldNameConflict).join('；')}`);
+    this.name = 'FieldNameConflictError';
+    this.conflicts = conflicts;
+  }
+}
+
+export function fieldNameConflictDetails(conflicts: FieldNameConflict[]): Record<string, unknown> {
+  return {
+    conflicts: conflicts.slice(0, 100).map((conflict) => ({
+      path: conflict.path,
+      object_key: conflict.objectKey,
+      object_title: conflict.objectTitle,
+      display_name: conflict.displayName,
+      field_keys: conflict.fieldKeys,
+      claims: conflict.claims,
+    })),
+    truncated: conflicts.length > 100,
+  };
+}
+
 function trimmed(value: unknown): string {
   return String(value ?? '').trim();
 }
@@ -123,7 +150,5 @@ export function describeFieldNameConflict(conflict: FieldNameConflict): string {
 
 export function assertNoFieldNameConflicts(objects: SpecObject[]): void {
   const conflicts = findFieldNameConflicts(objects);
-  if (conflicts.length) {
-    throw new Error(`知识包字段别名预校验失败：${conflicts.map(describeFieldNameConflict).join('；')}`);
-  }
+  if (conflicts.length) throw new FieldNameConflictError(conflicts);
 }

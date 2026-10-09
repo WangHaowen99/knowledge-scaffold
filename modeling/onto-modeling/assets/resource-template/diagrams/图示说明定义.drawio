@@ -1,0 +1,144 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.6.6 Chrome/144.0.7559.236 Electron/40.8.4 Safari/537.36" version="29.6.6">
+  <diagram name="图示说明" id="4Loh3ynsr6ta7j5ghzDR">
+    <mxGraphModel dx="1051" dy="744" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-1" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-2" parent="1" style="shape=process;whiteSpace=wrap;html=1;backgroundOutline=1;" value="" vertex="1">
+          <mxGeometry height="60" width="120" x="130.5" y="279" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-3" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="业务活动节点" vertex="1">
+          <mxGeometry height="30" width="83.5" x="303.5" y="162" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-4" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-5" parent="1" style="rhombus;whiteSpace=wrap;html=1;" value="" vertex="1">
+          <mxGeometry height="80" width="130" x="125.5" y="363" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-6" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="判断节点：" vertex="1">
+          <mxGeometry height="30" width="104.5" x="305.5" y="388" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-7" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-12">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-8" parent="1" style="strokeWidth=2;html=1;shape=mxgraph.flowchart.terminator;whiteSpace=wrap;fillStyle=auto;" value="" vertex="1">
+          <mxGeometry height="60" width="100" x="140.5" y="24" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-9" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-10" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="" vertex="1">
+          <mxGeometry height="60" width="120" x="130.5" y="107" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-11" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;rounded=0;" value="子流程节点：需要调用图形框的流程来处理" vertex="1">
+          <mxGeometry height="30" width="290" x="305.5" y="294" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-12" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="开始/结束节点" vertex="1">
+          <mxGeometry height="30" width="84" x="294.5" y="39" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-13" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-15">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-14" parent="1" style="shape=card;whiteSpace=wrap;html=1;" value="" vertex="1">
+          <mxGeometry height="60" width="120" x="126.5" y="462" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-15" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="动作节点：" vertex="1">
+          <mxGeometry height="30" width="89.5" x="310.5" y="477" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-16" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-18">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-17" parent="1" style="shape=tape;whiteSpace=wrap;html=1;size=0.2;" value="" vertex="1">
+          <mxGeometry height="68" width="120" x="126.5" y="546" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-18" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;rounded=0;" value="说明节点：仅为下一级子节点的注释说明，不做任何操作，此节点为非业务活动节点" vertex="1">
+          <mxGeometry height="30" width="233.5" x="306.5" y="565" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-19" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-21">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-20" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Text" vertex="1">
+          <mxGeometry height="30" width="60" x="159.25" y="937" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-21" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;rounded=0;" value="虚拟项：仅仅为流程图的注释说明需要直接被忽略和去除。" vertex="1">
+          <mxGeometry height="30" width="211.75" x="319.25" y="937" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-22" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;dashed=1;dashPattern=8 8;strokeColor=#000000;" target="zBwS2h-NXLQIR7sk_vQP-24">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-23" parent="1" style="shape=rhombus;double=1;perimeter=rhombusPerimeter;whiteSpace=wrap;html=1;align=center;fillColor=#ffe6cc;strokeColor=#d79b00;" value="" vertex="1">
+          <mxGeometry height="70" width="151" x="111" y="629" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-24" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;rounded=0;" value="子流程判断节点：需要调用图形框的流程来处理，得到判断结果（是 or&amp;nbsp; 否）" vertex="1">
+          <mxGeometry height="30" width="213.5" x="314.5" y="649" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-25" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-26" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-27">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-26" parent="1" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#FF3333;" value="" vertex="1">
+          <mxGeometry height="60" width="120" x="126.5" y="713" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-27" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;rounded=0;" value="递归节点：重新执行该流程" vertex="1">
+          <mxGeometry height="30" width="160" x="326.5" y="728" as="geometry" />
+        </mxCell>
+        <mxCell id="miHtSkUjc2Qu5MsW-ChC-4" edge="1" parent="1" source="zBwS2h-NXLQIR7sk_vQP-28" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;dashed=1;dashPattern=8 8;" target="zBwS2h-NXLQIR7sk_vQP-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="zBwS2h-NXLQIR7sk_vQP-28" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=default;strokeColor=#000000;" value="" vertex="1">
+          <mxGeometry height="60" width="125" x="129.25" y="191" as="geometry" />
+        </mxCell>
+        <mxCell id="5CgoeYPnf7UNwv-S079v-1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;dashed=1;dashPattern=12 12;strokeColor=#0000FF;" value="" vertex="1">
+          <mxGeometry height="50" width="140" x="123" y="795" as="geometry" />
+        </mxCell>
+        <mxCell id="5CgoeYPnf7UNwv-S079v-2" edge="1" parent="1" source="5CgoeYPnf7UNwv-S079v-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;dashPattern=8 8;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="5CgoeYPnf7UNwv-S079v-4">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="411" y="825" as="sourcePoint" />
+            <mxPoint x="341" y="820" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="5CgoeYPnf7UNwv-S079v-4" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;rounded=0;" value="虚拟项：仅仅为流程图上的视图展示效果，需要直接被忽略和去除。" vertex="1">
+          <mxGeometry height="30" width="235" x="317.5" y="834" as="geometry" />
+        </mxCell>
+        <mxCell id="pKiF8LxZo96Envv3L3Q8-5" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;exitPerimeter=0;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="56" y="499.9999999999998" as="sourcePoint" />
+            <mxPoint x="56" y="499.9999999999998" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pKiF8LxZo96Envv3L3Q8-8" parent="1" style="shape=offPageConnector;whiteSpace=wrap;html=1;" value="" vertex="1">
+          <mxGeometry height="50" width="117" x="128" y="995" as="geometry" />
+        </mxCell>
+        <mxCell id="pKiF8LxZo96Envv3L3Q8-9" edge="1" parent="1" source="pKiF8LxZo96Envv3L3Q8-8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;dashPattern=8 8;exitX=1;exitY=0.25;exitDx=0;exitDy=0;" target="pKiF8LxZo96Envv3L3Q8-10">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="370" y="1015" as="sourcePoint" />
+            <mxPoint x="320" y="1007" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pKiF8LxZo96Envv3L3Q8-10" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;rounded=0;" value="虚拟项：仅为上一个流程的扩展，不做任何处理，将输入和输出直接相连" vertex="1">
+          <mxGeometry height="30" width="235" x="318.5" y="993" as="geometry" />
+        </mxCell>
+        <mxCell id="miHtSkUjc2Qu5MsW-ChC-3" edge="1" parent="1" source="miHtSkUjc2Qu5MsW-ChC-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;dashPattern=8 8;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="5CgoeYPnf7UNwv-S079v-4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="miHtSkUjc2Qu5MsW-ChC-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;dashed=1;dashPattern=12 12;strokeColor=#0000FF;" value="" vertex="1">
+          <mxGeometry height="40" width="137" x="124.5" y="874" as="geometry" />
+        </mxCell>
+        <mxCell id="miHtSkUjc2Qu5MsW-ChC-5" edge="1" parent="1" source="miHtSkUjc2Qu5MsW-ChC-6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;dashed=1;dashPattern=8 8;" target="miHtSkUjc2Qu5MsW-ChC-7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="miHtSkUjc2Qu5MsW-ChC-6" parent="1" style="swimlane;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;startSize=30;" value="" vertex="1">
+          <mxGeometry height="70" width="119.5" x="130.5" y="1064" as="geometry">
+            <mxRectangle height="30" width="200" x="25" y="200" as="alternateBounds" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="miHtSkUjc2Qu5MsW-ChC-7" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;rounded=0;" value="虚拟项：为循环节点，仅仅为流程图上的视图展示效果，需要直接被忽略和去除。&amp;nbsp;" vertex="1">
+          <mxGeometry height="30" width="244" x="316" y="1085" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

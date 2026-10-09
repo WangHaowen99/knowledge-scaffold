@@ -17,13 +17,20 @@ import {
 } from './data-source-consumer-sync.js';
 import { evaluationWorkspaceId } from './shadow-workspace.js';
 import { getPackageArtifactStore } from '../artifacts/index.js';
+import {
+  FieldNameConflictError,
+  fieldNameConflictDetails,
+  FIELD_ALIAS_CONFLICT_CODE,
+  findFieldNameConflicts,
+} from '../workflow/field-alias.js';
 
 export class DataSourceConfigurationError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    readonly statusCode: 400 | 409 | 502,
+    readonly statusCode: 400 | 409 | 422 | 502,
     readonly cause?: unknown,
+    readonly details: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = 'DataSourceConfigurationError';
@@ -74,6 +81,21 @@ export async function configureProjectDataSource({
     );
   }
   if (normalized.mode === 'none') {
+    // If a package already exists, reject deterministic package conflicts even
+    // for no-database evaluations; the package is imported when the round starts.
+    const current = await getPackageArtifactStore().current(projectId);
+    if (current) {
+      const conflicts = findFieldNameConflicts(current.spec.objects ?? []);
+      if (conflicts.length) {
+        throw new DataSourceConfigurationError(
+          FIELD_ALIAS_CONFLICT_CODE,
+          new FieldNameConflictError(conflicts).message,
+          422,
+          undefined,
+          fieldNameConflictDetails(conflicts),
+        );
+      }
+    }
     return saveProjectDataSource({
       projectId,
       mode: 'none',
@@ -90,6 +112,16 @@ export async function configureProjectDataSource({
     );
   }
   const ontologyId = String(current.spec.id ?? '').trim();
+  const packageConflicts = findFieldNameConflicts(current.spec.objects ?? []);
+  if (packageConflicts.length) {
+    throw new DataSourceConfigurationError(
+      FIELD_ALIAS_CONFLICT_CODE,
+      new FieldNameConflictError(packageConflicts).message,
+      422,
+      undefined,
+      fieldNameConflictDetails(packageConflicts),
+    );
+  }
   try {
     assertEvaluationGraphScope(ontologyId, normalized);
   } catch (error) {
@@ -103,6 +135,15 @@ export async function configureProjectDataSource({
   try {
     await testConnection(normalized);
   } catch (error) {
+    if (error instanceof FieldNameConflictError) {
+      throw new DataSourceConfigurationError(
+        FIELD_ALIAS_CONFLICT_CODE,
+        error.message,
+        422,
+        error,
+        fieldNameConflictDetails(error.conflicts),
+      );
+    }
     if (error instanceof DataSourceConfigurationError) throw error;
     throw new DataSourceConfigurationError(
       'DATA_SOURCE_CONNECTION_FAILED',
@@ -123,6 +164,15 @@ export async function configureProjectDataSource({
   try {
     reference = await syncConnection(syncOptions);
   } catch (error) {
+    if (error instanceof FieldNameConflictError) {
+      throw new DataSourceConfigurationError(
+        FIELD_ALIAS_CONFLICT_CODE,
+        error.message,
+        422,
+        error,
+        fieldNameConflictDetails(error.conflicts),
+      );
+    }
     if (error instanceof DataSourceConfigurationError) throw error;
     throw new DataSourceConfigurationError(
       'DATA_SOURCE_SYNC_FAILED',

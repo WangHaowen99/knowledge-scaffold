@@ -19,7 +19,12 @@ from agent.tools.business_data.providers.graph.backends.base import (
     GraphBackendError,
     GraphBackendTimeoutError,
 )
+from agent.tools.business_data.providers.graph.models import GraphBackendResult
 from agent.tools.business_data.providers.graph.scope import build_graph_scope
+from agent.tools.business_data.providers.graph.property_types import (
+    GraphFilterTypeResolver,
+    normalize_pattern_filters,
+)
 
 
 _MAX_REQUEST_BYTES = 256 * 1024
@@ -432,5 +437,91 @@ class DeterministicProviderBroker:
         method = getattr(self._backend, operation, None)
         if not callable(method):
             raise ValueError("operation is unavailable")
+        external_filter = dict(normalized_arguments.get("filter_dict") or {})
+        normalized_arguments = _normalize_graph_operation_arguments(
+            operation=operation,
+            arguments=normalized_arguments,
+            backend=self._backend,
+            scope=self._scope,
+        )
         result = method(**normalized_arguments, scope=self._scope)
+        if operation == "aggregate_search":
+            result = _with_external_filter_result(result, external_filter)
         return _json_result(result)
+
+
+def _normalize_graph_operation_arguments(
+    *,
+    operation: str,
+    arguments: dict[str, Any],
+    backend: Any,
+    scope: Any,
+) -> dict[str, Any]:
+    """Apply the shared physical-type boundary to broker-direct calls."""
+
+    result = dict(arguments)
+    resolver = GraphFilterTypeResolver(
+        backend=backend,
+        scope=scope,
+        provider=getattr(backend, "provider", ""),
+    )
+    if operation in {"property_filter", "count_search", "aggregate_search", "sorted_search"}:
+        result["filter_dict"] = resolver.normalize_filter(
+            result.get("filter_dict") or {},
+            element_type=str(result.get("element_type") or ""),
+            element_class=str(result.get("element_class") or ""),
+        ).filter_dict
+    elif operation == "pattern_search":
+        path_pattern = result.get("path_pattern") or []
+        resolver.prepare_pattern_targets(
+            path_pattern,
+            return_properties=result.get("return_properties"),
+        )
+        result["path_pattern"] = normalize_pattern_filters(
+            path_pattern,
+            resolver,
+            return_properties=result.get("return_properties"),
+        )
+    elif operation == "shortest_path_search":
+        result["start_props"] = resolver.normalize_properties(
+            result.get("start_props") or {},
+            element_type="NODE",
+            element_class=str(result.get("start_label") or ""),
+        )
+        result["end_props"] = resolver.normalize_properties(
+            result.get("end_props") or {},
+            element_type="NODE",
+            element_class=str(result.get("end_label") or ""),
+        )
+    return result
+
+
+def _with_external_filter_result(result: Any, external_filter: dict[str, Any]) -> Any:
+    """Keep broker output JSON-compatible and caller-facing filters unchanged."""
+
+    if not isinstance(result, GraphBackendResult):
+        return result
+    records = [_with_external_filter(record, external_filter) for record in result.records or []]
+    payload = dict(result.payload or {})
+    payload_result = payload.get("result")
+    if isinstance(payload_result, Mapping):
+        payload["result"] = _with_external_filter(payload_result, external_filter)
+    return GraphBackendResult(
+        records=records,
+        total=result.total,
+        truncated=result.truncated,
+        warnings=list(result.warnings or []),
+        payload=payload,
+    )
+
+
+def _with_external_filter(
+    record: Mapping[str, Any],
+    external_filter: dict[str, Any],
+) -> dict[str, Any]:
+    copied = dict(record)
+    if "applied_filter" in copied:
+        copied["applied_filter"] = dict(external_filter)
+    if "filter_keys" in copied:
+        copied["filter_keys"] = list(external_filter)
+    return copied

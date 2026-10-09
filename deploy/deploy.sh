@@ -6,10 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--consumer-only|--modeling-only]
+Usage: $(basename "$0") [--consumer-only|--modeling-only|--onto-modeling-only]
 
-Deploy the full stack, including the Modeling Workbench, from either a source
-checkout or an extracted release package.
+Deploy the full stack — consumer, Modeling Workbench and Onto Modeling — from
+either a source checkout or an extracted release package.
 EOF
 }
 
@@ -20,6 +20,10 @@ log() {
 die() {
     printf '[deploy][error] %s\n' "$*" >&2
     exit 1
+}
+
+warn() {
+    printf '[deploy][warn] %s\n' "$*" >&2
 }
 
 env_get() {
@@ -103,8 +107,99 @@ ensure_release_modeling_mcp_token_secret() {
     log "Modeling MCP token secret is ready (value is not printed)"
 }
 
+# onto-modeling 接入整栈（开箱即用）：共享 consumer 账号中心 + 同网络 +
+# 指向 Modeling Workbench 的评测服务地址。数据评测阶段依赖这三项接线。
+consumer_container() {
+    # 限定 --type container：同名镜像也会被 docker inspect 命中
+    if docker inspect --type container onto-agent-backend >/dev/null 2>&1; then
+        printf 'onto-agent-backend\n'
+        return 0
+    fi
+    docker ps --format '{{.Names}}' | grep -E '^onto-agent-backend($|-)|^backend$' | head -n 1 || true
+}
+
+# 与 modeling/deploy/deploy.sh 同策略：显式覆盖 > 运行中 consumer 容器的实际
+# 网络 > 命名规律兜底。compose 项目名不同则网络名不同（onto-agent_default 即
+# 一例），只按 'onto-agent-network$' 匹配会漏。探测不到返回空、由调用方报错——
+# 不能猜名字，猜错会让 compose 以 declared as external, but could not be found 失败。
+detect_consumer_network() {
+    local container network
+    if [ -n "${CONSUMER_NETWORK:-}" ]; then
+        printf '%s\n' "${CONSUMER_NETWORK}"
+        return 0
+    fi
+    container="$(consumer_container)"
+    if [ -n "${container}" ]; then
+        network="$(docker container inspect \
+            --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+            "${container}" 2>/dev/null | head -n 1)"
+        if [ -n "${network}" ]; then
+            printf '%s\n' "${network}"
+            return 0
+        fi
+    fi
+    docker network ls --format '{{.Name}}' 2>/dev/null \
+        | grep -E '(^|_|-)onto-agent-network$|^onto-agent_default$' \
+        | head -n 1 || true
+}
+
+require_consumer_network() {
+    local network
+    network="$(detect_consumer_network)"
+    [ -n "${network}" ] || die \
+        "无法探测 consumer Docker 网络；请先部署 consumer，或显式设置 CONSUMER_NETWORK"
+    printf '%s\n' "${network}"
+}
+
+write_onto_modeling_stack_override() { # <onto-modeling 目录> <mw-modeling 地址>
+    local dir="$1" modeling_url="$2" network
+    network="$(require_consumer_network)"
+    cat > "${dir}/docker-compose.stack.yml" <<EOF2
+# 由 deploy.sh 生成（整栈部署形态，勿手改；单独部署 onto-modeling 时删除即可）：
+# 停用自带 dev auth-server，共享 consumer 账号中心；接入 consumer 网络；
+# 配置数据评测所需的 Modeling Workbench 地址。
+services:
+  auth-server:
+    profiles: ["disabled"]
+  onto-modeling:
+    depends_on: !override []
+    environment:
+      - ONTO_WEB_AUTH_URL=http://auth-server:5056
+      - ONTO_WEB_MODELING_URL=${modeling_url}
+    networks:
+      - default
+      - consumer-net
+networks:
+  consumer-net:
+    external: true
+    name: ${network}
+EOF2
+}
+
+seed_onto_modeling_bundle_env() { # <bundle 的 onto-modeling 目录>
+    local dir="$1" env_file="$1/.env" network current_network
+    [ -f "${env_file}" ] || { [ -f "${dir}/.env.example" ] && cp "${dir}/.env.example" "${env_file}"; }
+    [ -f "${env_file}" ] || touch "${env_file}"
+    chmod 600 "${env_file}"
+    network="$(require_consumer_network)"
+    grep -q '^ONTO_WEB_MODELING_URL=..*' "${env_file}"         || printf 'ONTO_WEB_MODELING_URL=%s
+' 'http://mw-modeling:5100' >> "${env_file}"
+    # 存量 .env 可能记着一个已不存在的网络（旧版探测失败时写入了固定猜测名），
+    # 那样重跑部署也不会自愈——就地删掉失效值，让下面重新写入探测结果。
+    current_network="$(sed -n 's/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=//p' "${env_file}" | head -n 1)"
+    if [ -n "${current_network}" ] && ! docker network inspect "${current_network}" >/dev/null 2>&1; then
+        warn "配置中的 consumer 网络 ${current_network} 不存在，改用探测到的 ${network}"
+        sed -i.bak '/^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=/d' "${env_file}"
+        command rm -f "${env_file}.bak"
+        chmod 600 "${env_file}"
+    fi
+    grep -q '^ONTO_MODELING_EXTERNAL_AUTH_NETWORK=..*' "${env_file}"         || printf 'ONTO_MODELING_EXTERNAL_AUTH_NETWORK=%s
+' "${network}" >> "${env_file}"
+}
+
 CONSUMER_ONLY=0
 MODELING_ONLY=0
+ONTO_MODELING_ONLY=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -113,6 +208,9 @@ while [ "$#" -gt 0 ]; do
             ;;
         --modeling-only)
             MODELING_ONLY=1
+            ;;
+        --onto-modeling-only)
+            ONTO_MODELING_ONLY=1
             ;;
         -h|--help|help)
             usage
@@ -126,8 +224,8 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-if [ "${CONSUMER_ONLY}" = "1" ] && [ "${MODELING_ONLY}" = "1" ]; then
-    die "--consumer-only and --modeling-only cannot be used together"
+if [ "$(( CONSUMER_ONLY + MODELING_ONLY + ONTO_MODELING_ONLY ))" -gt 1 ]; then
+    die "--consumer-only / --modeling-only / --onto-modeling-only cannot be combined"
 fi
 
 # A release archive is commonly unpacked into a staging directory by CI or a
@@ -154,7 +252,7 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
             fi
         done
     fi
-    if [ "${EXISTING_INSTALL}" = true ]; then
+    if [ "${EXISTING_INSTALL}" = true ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
         [ -f "${SCRIPT_DIR}/upgrade.sh" ] \
             || die "Existing installation detected but upgrade.sh is missing"
         log "Existing installation detected at ${INSTALL_DIR}; dispatching upgrade flow"
@@ -164,7 +262,15 @@ if [ -f "${SCRIPT_DIR}/manifest.json" ] && [ "${BUNDLE_ROOT}" != "${INSTALL_DIR}
         elif [ "${MODELING_ONLY}" = "1" ]; then
             UPGRADE_ARGS+=(--modeling-only)
         fi
-        exec bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
+        bash "${SCRIPT_DIR}/upgrade.sh" "${UPGRADE_ARGS[@]}"
+        # upgrade.sh 只覆盖 consumer 与 modeling；onto-modeling 的部署自身幂等，
+        # 升级后继续拉起（数据卷由 compose 项目名锚定，不受升级影响）
+        if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]             && [ -f "${BUNDLE_ROOT}/onto-modeling/deploy.sh" ]; then
+            log "Deploying Onto Modeling (guided modeling workbench)"
+            seed_onto_modeling_bundle_env "${BUNDLE_ROOT}/onto-modeling"
+            bash "${BUNDLE_ROOT}/onto-modeling/deploy.sh"
+        fi
+        exit 0
     fi
 fi
 
@@ -180,7 +286,20 @@ if [ -f "${SCRIPT_DIR}/deploy-consumer.sh" ]; then
     MODELING_DEPLOY="${SCRIPT_DIR}/modeling/deploy.sh"
 elif [ -f "${SCRIPT_DIR}/deploy-stack.sh" ]; then
     log "Detected source checkout; deploying with deploy-stack.sh"
-    bash "${SCRIPT_DIR}/deploy-stack.sh" up "${DEPLOY_ARGS[@]}"
+    if [ "${ONTO_MODELING_ONLY}" = "0" ]; then
+        bash "${SCRIPT_DIR}/deploy-stack.sh" up "${DEPLOY_ARGS[@]}"
+    fi
+    if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
+        if [ -d "${SCRIPT_DIR}/../modeling/onto-modeling" ]; then
+            log "Deploying Onto Modeling (source, docker compose, joined to consumer stack)"
+            write_onto_modeling_stack_override \
+                "${SCRIPT_DIR}/../modeling/onto-modeling" "http://mw-modeling:5100"
+            (cd "${SCRIPT_DIR}/../modeling/onto-modeling" \
+                && docker compose -f docker-compose.yml -f docker-compose.stack.yml up -d --build)
+        else
+            log "Onto Modeling source directory not present; skipping"
+        fi
+    fi
     log "Deployment finished successfully"
     exit 0
 else
@@ -191,16 +310,29 @@ BUNDLE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ensure_release_modeling_service_token "${BUNDLE_ROOT}"
 ensure_release_modeling_mcp_token_secret "${BUNDLE_ROOT}"
 
-if [ "${MODELING_ONLY}" = "0" ]; then
+if [ "${MODELING_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
     [ -f "${CONSUMER_DEPLOY}" ] || die "Consumer deploy script not found: ${CONSUMER_DEPLOY}"
     log "Deploying consumer services"
     bash "${CONSUMER_DEPLOY}"
 fi
 
-if [ "${CONSUMER_ONLY}" = "0" ]; then
+if [ "${CONSUMER_ONLY}" = "0" ] && [ "${ONTO_MODELING_ONLY}" = "0" ]; then
     [ -f "${MODELING_DEPLOY}" ] || die "Modeling deploy script not found: ${MODELING_DEPLOY}"
     log "Deploying Modeling Workbench (core + Agent)"
     bash "${MODELING_DEPLOY}"
+fi
+
+ONTO_MODELING_DEPLOY="${BUNDLE_ROOT}/onto-modeling/deploy.sh"
+if [ "${CONSUMER_ONLY}" = "0" ] && [ "${MODELING_ONLY}" = "0" ]; then
+    if [ -f "${ONTO_MODELING_DEPLOY}" ]; then
+        log "Deploying Onto Modeling (guided modeling workbench)"
+        seed_onto_modeling_bundle_env "${BUNDLE_ROOT}/onto-modeling"
+        bash "${ONTO_MODELING_DEPLOY}"
+    elif [ "${ONTO_MODELING_ONLY}" = "1" ]; then
+        die "Onto Modeling deploy script not found: ${ONTO_MODELING_DEPLOY}"
+    else
+        log "Onto Modeling bundle not present; skipping (older release package)"
+    fi
 fi
 
 log "Deployment finished successfully"
