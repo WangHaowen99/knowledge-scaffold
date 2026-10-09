@@ -9,6 +9,10 @@ schema 标签的表格资料与评测数据源上传的业务数据表（一个 
   nl2sql 才有表名和列名可用；
 - 评测前置门禁：数据集模式下没有任何对象绑定真实表时直接拦下，避免跑出"一次库都没查"的分数。
 
+发布门禁只拦"有数据表可核对、但声明对不上"的对象（issues 里 blocking=True）；当前没有任何
+可核对的数据表时，声明无从验证，只提示不阻断。阻断项可在发布前逐个修复（set_declared_source），
+也可以降级发布（strict_declared=False）：对不上的对象来源Sheet 写 UNBOUND，不进 mapping。
+
 绑定优先级：对象文档「# 数据来源」的显式声明 > 属性英文名与 Sheet 列头的唯一最佳重合。
 推断只在重合列数达标且候选唯一时成立，够不着就留空（来源Sheet 写 UNBOUND），不猜。
 
@@ -19,6 +23,7 @@ Neo4j 图导入的包按 modeling 图模式契约导出（object_data_mappings(g
 from __future__ import annotations
 
 import csv
+import difflib
 import json
 import re
 from pathlib import Path
@@ -29,6 +34,9 @@ UNBOUND = "—"
 PROVIDER_ALIAS = "data"
 # 推断绑定的最低列命中数：低于此宁可不绑，错绑比不绑更难发现
 MIN_INFERRED_COLUMNS = 2
+# 修复建议里推荐的候选表个数，以及只靠表名相似（列一个都对不上）时的最低相似度
+MAX_CANDIDATES = 3
+MIN_NAME_SIMILARITY = 0.5
 # modeling 图导入对属性名与关系名的标识符约束（evaluation/data-source.ts GRAPH_IDENTIFIER）
 GRAPH_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
 RELATIONS_SECTION = "关联对象"
@@ -249,6 +257,50 @@ def _match_table(field_keys: list[str], tables: dict[str, list[str]]) -> str:
     return scores[0][1]
 
 
+def _candidates(field_keys: list[str], name: str, tables: dict[str, list[str]], exclude: str = "") -> list[dict]:
+    """修复建议：按列重合数、再按与声明名（或对象名）的相似度排序的候选表。"""
+    lowered = {k.lower() for k in field_keys}
+    ranked = []
+    for table, columns in tables.items():
+        if table == exclude:
+            continue
+        matched = len(lowered & {c.lower() for c in columns})
+        similarity = difflib.SequenceMatcher(None, name.lower(), table.lower()).ratio()
+        if matched or similarity >= MIN_NAME_SIMILARITY:
+            ranked.append((-matched, -similarity, table, matched))
+    return [{"table": table, "matched": matched} for _, _, table, matched in sorted(ranked)[:MAX_CANDIDATES]]
+
+
+def _declared_binding(
+    key: str, parsed: dict, field_keys: list[str], tables: dict[str, list[str]], by_lower: dict[str, str],
+) -> tuple[str, str, dict | None]:
+    """「# 数据来源」声明 → (绑定的表, 改写提示, 问题)。问题为 {kind, message, candidates}。"""
+    declared = parsed["declared_table"]
+    if not tables:
+        return "", "", {
+            "kind": "declared_unverifiable",
+            "message": f"对象「{key}」声明的来源表「{declared}」无法核对：项目里还没有数据表"
+                       "（schema 表格资料或评测数据源的上传表），发布包暂不绑定该对象",
+            "candidates": [],
+        }
+    table = by_lower.get(declared.lower(), "")
+    if table:
+        return table, "", None
+    table = _first_existing(parsed["declared_mentions"], by_lower)
+    if table:
+        return table, (
+            f"对象「{key}」的「# 数据来源」首行不是表名，已按句中的「{table}」绑定；"
+            "建议首行只写表名，说明另起一行"
+        ), None
+    return "", "", {
+        "kind": "declared_missing",
+        "message": f"对象「{key}」声明的来源表「{declared}」在评测数据表里不存在"
+                   f"（现有表：{'、'.join(sorted(tables))}）；"
+                   "「# 数据来源」首行只写表名（Sheet 名，逐字相同）或「无」，说明另起一行",
+        "candidates": _candidates(field_keys, declared, tables),
+    }
+
+
 def resolve_object_tables(
     root: Path,
     tables: dict[str, list[str]] | None = None,
@@ -260,8 +312,12 @@ def resolve_object_tables(
     tables 缺省取 schema 表格资料与评测数据源上传的数据表；评测导入传入本轮实际导入的表，
     hints 为已知的对象→表对应（mock 种子按对象生成，一张表就是一个对象）。
     strict_declared=False 时，声明的表不在本轮数据里、或一列都对不上，只提示不阻断——
-    该对象不进 mapping，与导入库依然一致。
+    该对象不进 mapping，与导入库依然一致。没有任何数据表时声明无从核对，恒为提示。
     「# 数据来源」首行写成说明句时，按句中反引号标出、且真实存在的第一个表名绑定并提示改写。
+
+    issues 是 problems 与"声明无从核对"的结构化版本，供发布前逐对象修复：
+    {object, kind: declared_missing|no_columns|declared_unverifiable, blocking, message,
+    declared, table, candidates[{table, matched}]}。
     """
     tables = read_source_tables(root) if tables is None else tables
     hints = hints or {}
@@ -269,6 +325,12 @@ def resolve_object_tables(
     objects: dict[str, dict] = {}
     problems: list[str] = []
     warnings: list[str] = []
+    issues: list[dict] = []
+
+    def report(key: str, issue: dict, declared: str, table: str = "") -> None:
+        blocking = strict_declared and issue["kind"] != "declared_unverifiable"
+        (problems if blocking else warnings).append(issue["message"])
+        issues.append({"object": key, **issue, "blocking": blocking, "declared": declared, "table": table})
 
     object_dir = root / "ontology" / "object"
     for doc in sorted(object_dir.glob("*.md")) if object_dir.is_dir() else []:
@@ -280,29 +342,22 @@ def resolve_object_tables(
             continue
         key = doc.stem
         fields = parsed["fields"]
+        field_keys = [f["key"] for f in fields]
         declared = parsed["declared_table"]
         table, matched_by = "", ""
+        reported = False
         if declared:
-            table = by_lower.get(declared.lower(), "")
-            if not table:
-                table = _first_existing(parsed["declared_mentions"], by_lower)
-                if table:
-                    warnings.append(
-                        f"对象「{key}」的「# 数据来源」首行不是表名，已按句中的「{table}」绑定；"
-                        "建议首行只写表名，说明另起一行"
-                    )
-            if table:
-                matched_by = "declared"
-            else:
-                (problems if strict_declared else warnings).append(
-                    f"对象「{key}」声明的来源表「{declared}」在评测数据表里不存在"
-                    f"（现有表：{'、'.join(sorted(tables)) or '无'}）；"
-                    "「# 数据来源」首行只写表名（Sheet 名，逐字相同）或「无」，说明另起一行"
-                )
+            table, note, issue = _declared_binding(key, parsed, field_keys, tables, by_lower)
+            matched_by = "declared" if table else ""
+            if note:
+                warnings.append(note)
+            if issue:
+                report(key, issue, declared)
+                reported = True
         elif hints.get(key) in tables:
             table, matched_by = hints[key], "seed"
         elif tables and fields:
-            table = _match_table([f["key"] for f in fields], tables)
+            table = _match_table(field_keys, tables)
             matched_by = "inferred" if table else ""
 
         columns = tables.get(table, [])
@@ -312,9 +367,12 @@ def resolve_object_tables(
         matched = [f for f in fields if f["column"]]
         missing = [f["key"] for f in fields if not f["column"] and not _is_non_stored(f)] if table else []
         if table and not matched:
-            (problems if strict_declared else warnings).append(
-                f"对象「{key}」绑定的表「{table}」没有一列能对上属性英文名"
-            )
+            report(key, {
+                "kind": "no_columns",
+                "message": f"对象「{key}」绑定的表「{table}」没有一列能对上属性英文名",
+                "candidates": _candidates(field_keys, declared or key, tables, exclude=table),
+            }, declared, table)
+            reported = True
             table, matched_by = "", ""
             fields = [{**f, "column": ""} for f in fields]
             matched, missing = [], []
@@ -327,7 +385,7 @@ def resolve_object_tables(
             "primary_key": [f["key"] for f in matched if f["primary"]],
             "declared_table": declared,
         }
-        if not table:
+        if not table and not reported:
             warnings.append(f"对象「{key}」没有绑定真实数据表，数据问答无法命中该对象")
         elif missing:
             warnings.append(
@@ -344,7 +402,55 @@ def resolve_object_tables(
         "bound": len(bound_tables),
         "problems": problems,
         "warnings": warnings,
+        "issues": issues,
     }
+
+
+def _bare_token(line: str) -> bool:
+    return bool(re.fullmatch(r"`?[^\s`]+`?", line))
+
+
+def set_declared_source(text: str, table: str) -> str:
+    """把对象文档「# 数据来源」的声明行改成 table（空串写「无」）。
+
+    原声明行是说明句时改成 `>` 引用说明留在段内，其余说明行与模板占位以外的内容原样保留；
+    文档没有该段时插在「# 英文名称」段之后（没有则在「# 对象属性清单」之前，再没有则追加到末尾）。
+    """
+    value = table.strip() or "无"
+    lines = text.replace("\r\n", "\n").split("\n")
+    heading = f"# {SOURCE_SECTION}"
+    start = next((i for i, line in enumerate(lines) if line.strip() == heading), -1)
+    if start < 0:
+        after = next((i for i, line in enumerate(lines) if line.strip() == "# 英文名称"), -1)
+        if after >= 0:
+            at = next((i for i in range(after + 1, len(lines)) if re.match(r"^#\s+", lines[i])), len(lines))
+        else:
+            at = next((i for i, line in enumerate(lines) if line.strip() == f"# {FIELDS_SECTION}"), len(lines))
+        head = lines[:at]
+        while head and not head[-1].strip():
+            head.pop()
+        block = [heading, value, ""]
+        return "\n".join(head + ([""] if head else []) + block + lines[at:]).rstrip("\n") + "\n"
+
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^#\s+", lines[i])), len(lines))
+    body = re.sub(r"\{[^{}]*\}", "", "\n".join(lines[start + 1:end]), flags=re.S).split("\n")
+    replaced = False
+    for index, line in enumerate(body):
+        candidate = line.strip().lstrip("-*").strip()
+        if _is_source_note(candidate):
+            continue
+        keep = [] if _bare_token(candidate) else [f"> {candidate}"]
+        body[index:index + 1] = [value, *keep]
+        replaced = True
+        break
+    if not replaced:
+        body.insert(0, value)
+    while body and not body[0].strip():
+        body.pop(0)
+    while body and not body[-1].strip():
+        body.pop()
+    tail = [""] if end < len(lines) else []
+    return "\n".join(lines[:start + 1] + body + tail + lines[end:]).rstrip("\n") + "\n"
 
 
 def object_data_mappings(resolution: dict, graph: bool = False) -> dict:

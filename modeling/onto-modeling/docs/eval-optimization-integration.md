@@ -219,6 +219,11 @@ modeling 服务时再评估。
   写进去只会让 nl2sql 生成查不到的列。
 - **前置门禁**：数据集模式发起评测前跑 `assert_data_binding()`，声明的表不存在、或
   没有任何对象绑定到表时直接判失败并给出整改指引，不再静默跑出一个没查过库的分数。
+- **发布门禁与修复入口**（ADR-0007）：有数据表可核对、声明却对不上（表不存在或一列都对不上）
+  才阻断发布；项目里还没有任何数据表时声明无从核对，只提示。阻断时发布前体检
+  `GET /package/check` 给出逐对象的候选表，用户可就地改声明（`POST /objects/{key}/data-source`）、
+  上传 schema 表格、交给助手修复，或确认后降级发布（`allow_unbound`，对不上的对象来源Sheet 写 `—`，
+  发布记录写入项目元数据）。非导入模式的评测发起前同样体检，可确认后带 `allow_unbound` 继续。
 - **对账合流**：`/eval-data/alignment` 在列级对账之外返回 `binding`（每对象的表、
   匹配方式、命中列数、缺列）与 `problems` / `warnings`。
 - **两端验证**：生成包经 modeling 契约（`parseObjectIndex` / `parseObject` /

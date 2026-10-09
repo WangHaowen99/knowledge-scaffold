@@ -689,6 +689,7 @@ class WorkspaceManager:
         dest_path: Path,
         binding: dict | None = None,
         graph: bool = False,
+        allow_unbound: bool = False,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
 
@@ -697,7 +698,8 @@ class WorkspaceManager:
         operation 必须声明 uses.objects、index 首列与详情 key 逐字相等。
 
         binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
-        graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表。
+        graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表；
+        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
         """
         import zipfile
 
@@ -724,10 +726,13 @@ class WorkspaceManager:
         # ontology/logic 为旧目录兼容（范式升级 ADR-0004）
         operations = entry_items("ontology/operation", "ontology/logic")
         # 对象 ↔ 真实数据表：来源Sheet、`# 字段` 段与 mappings 三处同一份绑定结果
-        binding = binding or package_mapping.resolve_object_tables(root)
+        binding = binding or package_mapping.resolve_object_tables(
+            root, strict_declared=not allow_unbound
+        )
         if binding["problems"]:
             raise WorkspaceError(
-                "数据绑定无法发布：" + "；".join(binding["problems"])
+                "数据绑定无法发布：" + "；".join(binding["problems"]),
+                code="binding_problems",
             )
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
@@ -1037,6 +1042,117 @@ class WorkspaceManager:
         if status.strip():
             _git(root, "add", "-A")
             _git(root, "commit", "-m", "research: 注入外卖订单示例领域")
+
+    # ---- 发布前数据绑定体检与修复 ----
+
+    PACKAGE_CHECK_LIMIT = 50
+    PACKAGE_CHECK_TABLE_LIMIT = 100
+
+    def package_binding_check(self, project_id: str) -> dict:
+        """发布前体检：阻断项在前，附修复用的表清单、对象文档版本号与最近一次发布记录。
+
+        只返回结论与修复句柄（对象、候选表、文档路径与版本），条目数有上限，超出时 truncated=True。
+        """
+        root = self.project_root(project_id)
+        binding = package_mapping.resolve_object_tables(root)
+        issues = sorted(binding["issues"], key=lambda item: not item["blocking"])
+        issue_messages = {item["message"] for item in issues}
+        warnings = [w for w in binding["warnings"] if w not in issue_messages]
+        tables = sorted(binding["tables"])
+        limit = self.PACKAGE_CHECK_LIMIT
+        shown = []
+        for item in issues[:limit]:
+            rel = f"ontology/object/{item['object']}.md"
+            doc = root / rel
+            revision = _content_revision(doc.read_bytes()) if doc.is_file() else ""
+            shown.append({**item, "path": rel, "revision": revision})
+        objects = binding["objects"]
+        return {
+            "blocking": sum(1 for item in issues if item["blocking"]),
+            "issues": shown,
+            "warnings": warnings[:limit],
+            "tables": tables[: self.PACKAGE_CHECK_TABLE_LIMIT],
+            "table_count": len(tables),
+            "objects": len(objects),
+            "bound_objects": sum(1 for item in objects.values() if item["table"]),
+            "truncated": len(issues) > limit
+            or len(warnings) > limit
+            or len(tables) > self.PACKAGE_CHECK_TABLE_LIMIT,
+            "last_publish": self.get_project(project_id).get("last_package_publish"),
+            "table_resources": self._unmarked_table_resources(project_id, root),
+        }
+
+    def _unmarked_table_resources(self, project_id: str, root: Path) -> list[str]:
+        """已上传但未标 schema 的表格资料：改标用途即可让其中的表参与核对，不必重新上传。"""
+        try:
+            directives = self.resource_directives(project_id)
+        except WorkspaceError:
+            directives = {}
+        found = []
+        for subdir in sorted(RESOURCE_SUBDIRS):
+            folder = root / "resource" / subdir
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.iterdir()):
+                rel = f"resource/{subdir}/{path.name}"
+                directive = directives.get(rel)
+                purpose = directive.get("purpose") if isinstance(directive, dict) else None
+                if (
+                    path.is_file()
+                    and path.suffix.lower() in package_mapping.TABLE_SUFFIXES
+                    and purpose not in package_mapping.SOURCE_PURPOSES
+                ):
+                    found.append(rel)
+        return found[: self.PACKAGE_CHECK_LIMIT]
+
+    def set_object_data_source(
+        self,
+        project_id: str,
+        key: str,
+        table: str,
+        base_revision: str = "",
+        author: str = "",
+    ) -> dict:
+        """修复入口：把对象「# 数据来源」声明改成现有数据表之一，table 为空表示「无」。"""
+        root = self.project_root(project_id)
+        rel = f"ontology/object/{key}.md"
+        if not key or "/" in key or "\\" in key:
+            raise WorkspaceError("对象不存在", 404)
+        if not self._resolve_inside(root, rel).is_file():
+            raise WorkspaceError("对象不存在", 404)
+        doc = root / rel
+        table = (table or "").strip()
+        if table:
+            by_lower = {name.lower(): name for name in package_mapping.read_source_tables(root)}
+            if table.lower() not in by_lower:
+                raise WorkspaceError(f"数据表「{table}」不在 schema 资料或评测数据源里")
+            table = by_lower[table.lower()]
+        content = package_mapping.set_declared_source(doc.read_text(encoding="utf-8"), table)
+        return self.write_file(project_id, rel, content, base_revision=base_revision, author=author)
+
+    def publish_package(
+        self,
+        project_id: str,
+        dest_path: Path,
+        allow_unbound: bool = False,
+        author: str = "",
+    ) -> Path:
+        """用户发布知识包。降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。"""
+        root = self.project_root(project_id)
+        binding = package_mapping.resolve_object_tables(root, strict_declared=not allow_unbound)
+        path = self.export_package_zip(project_id, dest_path, binding=binding)
+        degraded = sorted({
+            item["object"] for item in binding["issues"]
+            if item["kind"] != "declared_unverifiable"
+        })
+        self._update_meta(project_id, last_package_publish={
+            "at": int(time.time()),
+            "by": author,
+            "degraded": bool(degraded),
+            "unbound_count": len(degraded),
+            "unbound_objects": degraded[: self.PACKAGE_CHECK_LIMIT],
+        })
+        return path
 
     # ---- 文件写入与历史版本 ----
 

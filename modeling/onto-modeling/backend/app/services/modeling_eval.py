@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config
-from . import eval_data_sources, eval_import
+from . import eval_data_sources, eval_import, package_mapping
 
 STATE_REL = ".ontology-state/eval.json"
 POLL_INTERVAL_SECONDS = 6
@@ -862,7 +862,7 @@ def _configure_connection(
 
 async def run(
     project_id: str, root: Path, token: str, cases: list[dict],
-    data_source: dict | None = None, eval_set_name: str = "",
+    data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
 ) -> None:
     """后台评测编排；进度经 .ontology-state/eval.json 供前端轮询。"""
     if project_id in _running:
@@ -872,7 +872,7 @@ async def run(
     _live_tokens[project_id] = token
     try:
         await asyncio.to_thread(
-            _run_sync, project_id, root, token, cases, data_source, eval_set_name
+            _run_sync, project_id, root, token, cases, data_source, eval_set_name, allow_unbound
         )
     finally:
         _running.discard(project_id)
@@ -882,7 +882,7 @@ async def run(
 
 def _run_sync(
     project_id: str, root: Path, token: str, cases: list[dict],
-    data_source: dict | None = None, eval_set_name: str = "",
+    data_source: dict | None = None, eval_set_name: str = "", allow_unbound: bool = False,
 ) -> None:
     from .workspace import WorkspaceManager
 
@@ -904,7 +904,7 @@ def _run_sync(
         _write_state(
             root, status="running", phase="package", message="打包知识包",
             # 新一轮的逐轮字段清空：图导入结果等只属于产生它的那一轮
-            report_round=None, graph_import=None, started_at=int(time.time()),
+            report_round=None, graph_import=None, unbound_objects=None, started_at=int(time.time()),
             data_source_name=data_source.get("name") or eval_data_sources.default_name(data_source),
             eval_set_name=eval_set_name,
         )
@@ -912,10 +912,16 @@ def _run_sync(
         import tempfile
 
         zip_path = Path(tempfile.mkdtemp(prefix="onto-eval-")) / "package.zip"
-        manager.export_package_zip(
-            project_id, zip_path,
-            binding=plan["binding"] if plan else None, graph=is_graph(data_source),
+        # 导入模式的绑定按本轮导入工作簿算；其余模式按项目数据表算，allow_unbound 即用户已确认降级
+        binding = plan["binding"] if plan else package_mapping.resolve_object_tables(
+            root, strict_declared=not allow_unbound
         )
+        manager.export_package_zip(project_id, zip_path, binding=binding, graph=is_graph(data_source))
+        unbound = sorted({
+            item["object"] for item in binding["issues"] if item["kind"] != "declared_unverifiable"
+        })
+        if unbound:
+            _write_state(root, unbound_objects=unbound[:50])
         if plan:
             mismatched = eval_import.verify_mapping(zip_path, plan["tables"])
             if mismatched:

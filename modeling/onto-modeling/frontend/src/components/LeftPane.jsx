@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import EvalRunDetail from './EvalRunDetail.jsx';
 import EvalWizard from './EvalWizard.jsx';
+import PublishCheckDialog, { usePackagePublish } from './PublishCheckDialog.jsx';
 
 // 阶段定义：探测产物目录推断完成态（对应 CLI 版 detect-stage），
 // actions 是该阶段的操作入口；command 以空格结尾表示"填入输入框待补参数"
@@ -273,6 +274,8 @@ export default function LeftPane({
   const [evalInfo, setEvalInfo] = useState(null); // {enabled, reachable, state, evolution}
   const [evalDetailOpen, setEvalDetailOpen] = useState(false);
   const [evalWizardOpen, setEvalWizardOpen] = useState(false);
+  const [evalBindingRetry, setEvalBindingRetry] = useState(null); // 数据绑定未过检时的续跑函数
+  const packagePublish = usePackagePublish({ onCommand, onOpenFile: onSelectFile, onChanged: onRefresh });
   useEffect(() => {
     if (section !== 'progress') return undefined;
     let stop = false;
@@ -577,7 +580,8 @@ export default function LeftPane({
               block
               className="export-package-btn"
               style={{ marginBottom: 8 }}
-              onClick={() => window.open(api.exportUrl(project.id, 'package'))}
+              loading={packagePublish.publishing}
+              onClick={() => packagePublish.publish(project.id)}
             >
               导出知识包
               {evalInfo?.state?.summary != null && (
@@ -871,7 +875,28 @@ export default function LeftPane({
         open={evalWizardOpen}
         onClose={() => setEvalWizardOpen(false)}
         onStarted={onEvalStarted}
+        onBindingProblems={(retry) => setEvalBindingRetry(() => retry)}
       />
+      <PublishCheckDialog
+        onChanged={onRefresh}
+        onCommand={(text) => {
+          setEvalWizardOpen(false);
+          onCommand(text);
+        }}
+        onOpenFile={(path) => {
+          setEvalWizardOpen(false);
+          onSelectFile(path);
+        }}
+        open={!!evalBindingRetry}
+        projectId={project.id}
+        mode="eval"
+        onClose={() => setEvalBindingRetry(null)}
+        onProceed={async (allowUnbound) => {
+          await evalBindingRetry(allowUnbound);
+          setEvalBindingRetry(null);
+        }}
+      />
+      {packagePublish.dialog}
     </div>
   );
 }

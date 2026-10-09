@@ -39,7 +39,7 @@ const TRACE_CHOICE = '__trace__';
 const MANUAL_CHOICE = '__manual__';
 
 // 数据评测向导：① 数据源（已保存过 → 选择；从未配置 → 先配置）② 评测集（导入过 → 选择）
-export default function EvalWizard({ project, open, onClose, onStarted }) {
+export default function EvalWizard({ project, open, onClose, onStarted, onBindingProblems }) {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState('source'); // source | cases
   const [sources, setSources] = useState([]);
@@ -209,18 +209,25 @@ export default function EvalWizard({ project, open, onClose, onStarted }) {
 
   const runnableCases = cases.filter((c) => c.question.trim());
 
+  const start = async (allowUnbound) => {
+    await api.evalRun(project.id, {
+      cases: runnableCases,
+      dataSourceId: selectedSourceId,
+      evalSetId: savedSetId,
+      allowUnbound,
+    });
+    message.success('评测已启动，进度见「数据评测」阶段');
+    onStarted?.();
+  };
+
   const run = async () => {
     setRunning(true);
     try {
-      await api.evalRun(project.id, {
-        cases: runnableCases,
-        dataSourceId: selectedSourceId,
-        evalSetId: savedSetId,
-      });
-      message.success('评测已启动，进度见「数据评测」阶段');
-      onStarted?.();
+      await start(false);
     } catch (error) {
-      message.error(error.message);
+      // 数据绑定未过检：交给检查弹窗修复或降级，确认后用同一份评测集续跑
+      if (error.code === 'binding_problems' && onBindingProblems) onBindingProblems(start);
+      else message.error(error.message);
     } finally {
       setRunning(false);
     }

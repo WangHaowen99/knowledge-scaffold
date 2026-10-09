@@ -79,19 +79,33 @@ export async function request(path, options = {}, retried = false) {
     window.dispatchEvent(new Event('onto-auth-required'));
     throw new Error('未登录或登录已过期');
   }
-  if (!response.ok) {
-    let detail = `${response.status}`;
-    try {
-      const body = await response.json();
-      detail = body.error || body.detail || detail;
-      // FastAPI 校验错误是对象数组，转成可读文本（否则 toast 渲染为空，表现为"无反应"）
-      if (typeof detail !== 'string') detail = JSON.stringify(detail).slice(0, 200);
-    } catch { /* keep status text */ }
-    const error = new Error(detail);
-    error.status = response.status;
-    throw error;
-  }
+  if (!response.ok) throw await responseError(response);
   return response.json();
+}
+
+// 错误体里的 code 与其余字段随错误带出：调用方据此分流（如数据绑定阻断 → 修复面板）
+async function responseError(response) {
+  let detail = `${response.status}`;
+  let body = {};
+  try {
+    body = await response.json();
+    detail = body.error || body.detail || detail;
+    // FastAPI 校验错误是对象数组，转成可读文本（否则 toast 渲染为空，表现为"无反应"）
+    if (typeof detail !== 'string') detail = JSON.stringify(detail).slice(0, 200);
+  } catch { /* keep status text */ }
+  const error = new Error(detail);
+  error.status = response.status;
+  error.code = body.code || '';
+  error.data = body;
+  return error;
+}
+
+function filenameOf(response, fallback) {
+  const header = response.headers.get('content-disposition') || '';
+  const encoded = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encoded) return decodeURIComponent(encoded[1]);
+  const plain = header.match(/filename="?([^";]+)"?/i);
+  return plain ? plain[1] : fallback;
 }
 
 export const api = {
@@ -154,6 +168,31 @@ export const api = {
     }),
   exportUrl: (pid, scope) =>
     `/api/projects/${pid}/export?scope=${scope}&token=${encodeURIComponent(authStore.token)}`,
+  // 发布前体检：阻断项、无从核对项与修复所需的表清单、文档版本号
+  packageCheck: (pid) => request(`/api/projects/${pid}/package/check`),
+  // 修复入口：对象「# 数据来源」改成现有表；table 为空表示不落库（「无」）
+  setObjectDataSource: (pid, key, table, baseRevision = '') =>
+    request(`/api/projects/${pid}/objects/${encodeURIComponent(key)}/data-source`, {
+      method: 'POST',
+      body: JSON.stringify({ table, base_revision: baseRevision }),
+    }),
+  // 发布知识包：走 fetch 才能拿到阻断错误（window.open 只会打开一页 JSON）；allowUnbound 即降级发布
+  downloadPackage: async (pid, { allowUnbound = false } = {}) => {
+    const query = allowUnbound ? '&allow_unbound=true' : '';
+    const send = () =>
+      fetch(`/api/projects/${pid}/export?scope=package${query}`, { headers: authHeaders() });
+    let response = await send();
+    if (response.status === 401 && (await tryRefresh())) response = await send();
+    if (!response.ok) throw await responseError(response);
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filenameOf(response, 'package.zip');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
   importProject: (name, file, dryRun = false) => {
     const form = new FormData();
     form.append('name', name);
@@ -313,8 +352,9 @@ export const api = {
     if (name) form.append('name', name);
     return request(`/api/projects/${pid}/eval/cases/import`, { method: 'POST', body: form });
   },
-  // {cases, dataSourceId, evalSetId}；dataSource 为不落库的内联配置（none / dataset）
-  evalRun: (pid, { cases, dataSource, dataSourceId = '', evalSetId = '' }) =>
+  // {cases, dataSourceId, evalSetId}；dataSource 为不落库的内联配置（none / dataset）；
+  // allowUnbound：用户已确认数据绑定对不上的对象按未绑定处理
+  evalRun: (pid, { cases, dataSource, dataSourceId = '', evalSetId = '', allowUnbound = false }) =>
     request(`/api/projects/${pid}/eval/run`, {
       method: 'POST',
       body: JSON.stringify({
@@ -322,6 +362,7 @@ export const api = {
         data_source: dataSource || { mode: 'none' },
         data_source_id: dataSourceId,
         eval_set_id: evalSetId,
+        allow_unbound: allowUnbound,
       }),
     }),
   evalDataSources: (pid) => request(`/api/projects/${pid}/eval/data-sources`),

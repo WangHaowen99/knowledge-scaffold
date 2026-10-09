@@ -34,6 +34,7 @@ import CenterPane from './components/CenterPane.jsx';
 import ChatPane from './components/ChatPane.jsx';
 import LeftPane from './components/LeftPane.jsx';
 import LoginPage from './components/LoginPage.jsx';
+import { usePackagePublish } from './components/PublishCheckDialog.jsx';
 import CreatePage from './components/home/CreatePage.jsx';
 import './components/home/modeling-home.css';
 import '../src/components/studio/legacy/studio-tokens.css';
@@ -78,6 +79,7 @@ export default function App() {
   const [memberWiz, setMemberWiz] = useState(null); // {project, members, newUser, newRole}
   const [engineWiz, setEngineWiz] = useState(null); // {project, engine, available}
   const [initialFiles, setInitialFiles] = useState(null); // {projectId, files} 新建项目待发送的初始资料
+  const homePublish = usePackagePublish(); // 首页卡片菜单发布：无聊天区，只给表级修复与降级
   // 移动端：≤768px 时工作台切换为单栏 + 底部页签
   const [isMobile, setIsMobile] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches,
@@ -302,7 +304,7 @@ export default function App() {
         refreshProjects();
       }
       if (key === 'export-onto') window.open(api.exportUrl(item.id, 'ontology'));
-      if (key === 'export-pkg') window.open(api.exportUrl(item.id, 'package'));
+      if (key === 'export-pkg') homePublish.publish(item.id);
       if (key === 'export-ws') window.open(api.exportUrl(item.id, 'workspace'));
       if (key === 'delete') removeProject(item);
     },
@@ -597,6 +599,7 @@ export default function App() {
             onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
           />
         </Modal>
+        {homePublish.dialog}
         <Modal
           title={engineWiz ? `会话引擎 · ${engineWiz.project.name}` : ''}
           open={!!engineWiz}

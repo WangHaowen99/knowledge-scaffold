@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config
-from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets
+from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
 from ..services import modeling_cleanup, modeling_mcp
 from ..services.workspace import WorkspaceError, WorkspaceManager
 
@@ -34,6 +34,11 @@ class WriteFileBody(BaseModel):
     path: str
     content: str
     base_revision: str = ""  # 读取时拿到的 revision；不一致则 409 拒绝覆盖
+
+
+class ObjectDataSourceBody(BaseModel):
+    table: str = ""  # 现有数据表名；空串表示该对象不落库（「无」）
+    base_revision: str = ""
 
 
 class RevertBody(BaseModel):
@@ -358,17 +363,38 @@ def put_members(project_id: str, body: MembersBody, request: Request):
 
 
 @router.get("/{project_id}/export")
-def export_project(project_id: str, request: Request, scope: str = "ontology"):
+def export_project(
+    project_id: str, request: Request, scope: str = "ontology", allow_unbound: bool = False
+):
     ensure_access(project_id, request)
     if scope not in ("ontology", "workspace", "package"):
         raise WorkspaceError("scope 必须是 ontology、workspace 或 package")
     meta = workspaces.get_project(project_id)
     dest = Path(tempfile.mkdtemp()) / f"{meta['name']}-{scope}.zip"
     if scope == "package":
-        workspaces.export_package_zip(project_id, dest)
+        workspaces.publish_package(
+            project_id, dest, allow_unbound=allow_unbound, author=_request_user(request)
+        )
     else:
         workspaces.export_zip(project_id, scope, dest)
     return FileResponse(dest, filename=dest.name, media_type="application/zip")
+
+
+@router.get("/{project_id}/package/check")
+def package_check(project_id: str, request: Request):
+    """发布前数据绑定体检：阻断项、无从核对项、提示，以及修复所需的表清单与文档版本。"""
+    ensure_access(project_id, request)
+    return workspaces.package_binding_check(project_id)
+
+
+@router.post("/{project_id}/objects/{key}/data-source")
+def set_object_data_source(project_id: str, key: str, body: ObjectDataSourceBody, request: Request):
+    """发布前修复：把对象「# 数据来源」改成现有数据表之一或「无」（Web 保存同款版本点）。"""
+    ensure_access(project_id, request, write=True)
+    return workspaces.set_object_data_source(
+        project_id, key, body.table,
+        base_revision=body.base_revision, author=_request_user(request),
+    )
 
 
 @router.get("/{project_id}/files")
@@ -817,6 +843,8 @@ class EvalRunBody(BaseModel):
     data_source_id: str = ""
     # 选用的评测集：复核时对用例的修改同步回该评测集
     eval_set_id: str = ""
+    # 用户已确认降级：数据绑定对不上的对象不阻断评测，按未绑定处理
+    allow_unbound: bool = False
 
 
 @router.post("/{project_id}/eval/run")
@@ -866,6 +894,18 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
                 status_code=400,
                 content={"error": "导入数据未通过检查：" + "；".join(problems[:3]), "problems": problems},
             )
+    elif not body.allow_unbound:
+        binding = package_mapping.resolve_object_tables(root)
+        if binding["problems"]:
+            blocking = [item for item in binding["issues"] if item["blocking"]]
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "数据绑定未通过检查：" + "；".join(binding["problems"][:3]),
+                    "code": "binding_problems",
+                    "issues": blocking[: workspaces.PACKAGE_CHECK_LIMIT],
+                },
+            )
 
     eval_set_name = ""
     if body.eval_set_id:
@@ -880,7 +920,10 @@ async def eval_run(project_id: str, body: EvalRunBody, request: Request):
         eval_data_sources.mark_used(project_id, body.data_source_id)
 
     _asyncio.create_task(
-        modeling_eval.run(project_id, root, token, cases, data_source, eval_set_name)
+        modeling_eval.run(
+            project_id, root, token, cases, data_source, eval_set_name,
+            allow_unbound=body.allow_unbound,
+        )
     )
     return {"started": True, "cases": len(cases)}
 
