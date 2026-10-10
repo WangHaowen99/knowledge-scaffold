@@ -410,6 +410,8 @@ export interface SpecValueBinding {
 export interface SpecRelation {
   relation: string; // 关系名（如 belongs_to / references）
   target: string;   // 目标对象 key
+  sourceJoinProperty?: string;
+  targetJoinProperty?: string;
   note?: string;
   evidence?: string[];
 }

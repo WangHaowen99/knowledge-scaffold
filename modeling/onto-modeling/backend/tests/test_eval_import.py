@@ -14,7 +14,7 @@ import pytest
 
 from app import config
 from app.services import eval_data_files, eval_data_sources, eval_import, modeling_eval, package_mapping
-from app.services.workspace import WorkspaceManager
+from app.services.workspace import WorkspaceError, WorkspaceManager
 from tests.test_modeling_eval import StubModeling
 
 # 测试密钥运行时生成，代码里不写凭据样式的字面量
@@ -43,7 +43,6 @@ ORDER_DOC = """# 数据来源
 
 # 关联对象
 - 当前对象 → 属于 → [[客户]]
-- 当前对象 → 关联/包含 → [[客户]]
 """
 
 
@@ -194,9 +193,32 @@ def test_mapping_follows_imported_data_not_schema_resource(tmp_path):
     assert not plan["binding"]["objects"]["客户"]["table"]
 
 
+def test_collect_accepts_reimported_package_fields_section(tmp_path):
+    """评测导入使用重新导入知识包后的标准 # 字段章节。"""
+    object_dir = tmp_path / "ontology" / "object"
+    object_dir.mkdir(parents=True, exist_ok=True)
+    (object_dir / "企业客户.md").write_text(
+        "# 数据来源\n企业客户\n\n# 字段\n\n"
+        "| 字段 key | 中文名 | 类型 | 必填 | 业务说明 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| customer_id | 客户ID | 字符串 | 是 | 主键 |\n"
+        "| enterprise_name | 企业名称 | 字符串 | 否 | 名称 |\n",
+        encoding="utf-8",
+    )
+    file_id = _upload(tmp_path, "data.xlsx", {
+        "企业客户": [["customer_id", "enterprise_name"], ["C1", "合成企业"]],
+    })
+    plan = eval_import.collect(tmp_path, {"files": [file_id]})
+    assert not plan["problems"], plan["problems"]
+    assert plan["binding"]["bound"] == 1
+    assert plan["binding"]["objects"]["企业客户"]["matched_columns"] == 2
+
+
 def _export(tmp_path, monkeypatch, binding: dict, graph: bool):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     manager = WorkspaceManager(tmp_path / "data", Path(config.ASSETS_DIR))
+    # 本组仅测试包与数据转换，不依赖交互式建模的资产符号链接。
+    monkeypatch.setattr(manager, "_mount_assets", lambda root: None)
     meta = manager.create_project("导出核对")
     root = manager.project_root(meta["id"])
     return manager, meta["id"], root
@@ -231,7 +253,6 @@ def test_export_matches_import_workbook_nl2sql_and_graph(tmp_path, monkeypatch):
             assert set(order["fields"]) == {"ORDER_ID", "CUSTOMER_ID", "SIGN_DATE", "BILL_MONTH"}
             assert "resource: \"订单\"" in order_doc
             assert "# 关系" in order_doc and "| 属于 | 客户 |" in order_doc
-            assert "关联/包含" not in order_doc.split("# 关系")[1]  # 非法关系名不进关系表
         else:
             assert order["resource"] == "订单表"
             assert "# 关系" not in order_doc
@@ -345,6 +366,113 @@ def test_formula_like_text_stays_text():
     assert sheet["A3"].value == "0012"
 
 
+# ---- 向导预览 ----
+
+
+def test_preview_reports_entities_instances_and_relation_rows(tmp_path):
+    """图导入预览给出实体数、实例数（按主键）与匹配后的关系条数。"""
+    _objects(tmp_path)
+    file_id = _business_data(tmp_path)
+
+    graph = eval_import.preview(tmp_path, {"files": [file_id]}, graph=True)
+    assert not graph["problems"], graph["problems"]
+    # 客户表 2 行 + 订单表 2 行，主键都完整 → 4 个实例
+    assert graph["entities"] == {"count": 2, "instances": 4}
+    assert graph["objects"]["客户"]["instances"] == 2
+    # 两张订单各按 CUSTOMER_ID 连到一个客户 → 2 条关系（不是"1 种关系"）
+    assert graph["relations"] == {
+        "count": 1,
+        "instances": 2,
+        "items": [{"source": "订单", "relation": "属于", "target": "客户", "instances": 2}],
+    }
+
+    # 非图模式落的是 MySQL 评测库，不给实体/实例/关系这套图口径的数字
+    nl2sql = eval_import.preview(tmp_path, {"files": [file_id]}, graph=False)
+    assert "entities" not in nl2sql and "relations" not in nl2sql
+    assert "instances" not in nl2sql["objects"]["客户"]
+
+
+def test_preview_relation_rows_count_every_matched_pair(tmp_path):
+    """一个客户下挂多张订单：关系条数按匹配出的行对算，不是按关系种类算。"""
+    _objects(tmp_path)
+    file_id = _upload(tmp_path, "many.xlsx", {
+        "客户表": [["CUSTOMER_ID", "NAME"], ["C1", "合成甲"], ["C2", "合成乙"]],
+        "订单表": [["ORDER_ID", "CUSTOMER_ID"], ["O1", "C1"], ["O2", "C1"], ["O3", "C2"],
+                 ["O4", "C9"], ["O5", None]],
+    })
+    result = eval_import.preview(tmp_path, {"files": [file_id]}, graph=True)
+    assert result["entities"] == {"count": 2, "instances": 7}
+    assert result["relations"]["instances"] == 3  # O1、O2 → C1，O3 → C2
+    assert any("1 行关联值匹配不到目标实例" in w for w in result["warnings"])  # O4 → C9
+    assert any("1 行关联字段为空" in w for w in result["warnings"])  # O5
+
+
+def test_preview_instances_skip_blank_keys_and_block_duplicates(tmp_path):
+    """实例数按 modeling 建点规则算：主键为空的行不算，主键重复直接拦下。"""
+    _objects(tmp_path)
+    blank = _upload(tmp_path, "blank.xlsx", {
+        "客户表": [["CUSTOMER_ID", "NAME"], ["C1", "合成甲"], ["C2", "合成乙"], [None, "合成丙"]],
+    })
+    result = eval_import.preview(tmp_path, {"files": [blank]}, graph=True)
+    assert result["entities"]["instances"] == 2
+    assert any("1 行主键为空" in w for w in result["warnings"])
+
+    duplicated = _upload(tmp_path, "dup.xlsx", {
+        "客户表": [["CUSTOMER_ID", "NAME"], ["C1", "合成甲"], ["C1", "合成乙"]],
+    })
+    result = eval_import.preview(tmp_path, {"files": [duplicated]}, graph=True)
+    assert any("主键重复" in p for p in result["problems"])
+
+
+def test_preview_counts_mirrored_declarations_once(tmp_path):
+    """同一条关系在两端各声明一次：算一条，并按写出关联字段的那一端补齐。"""
+    _objects(tmp_path)
+    customer = tmp_path / "ontology" / "object" / "客户.md"
+    customer.write_text(
+        CUSTOMER_DOC + "\n# 关联对象\n- [[订单]] → 属于（CUSTOMER_ID → CUSTOMER_ID） → 当前对象\n",
+        encoding="utf-8",
+    )
+    file_id = _business_data(tmp_path)
+    result = eval_import.preview(tmp_path, {"files": [file_id]}, graph=True)
+    assert not result["problems"], result["problems"]
+    assert result["relations"]["count"] == 1 and result["relations"]["instances"] == 2
+
+
+def test_preview_separates_no_relations_from_no_matching_data(tmp_path):
+    """「有节点没关系」的两种无害情形都不阻断评测，但要能分清是哪一种。"""
+    # 声明正确、本轮数据一条都匹配不上：只提示，不拦
+    _objects(tmp_path)
+    unmatched = _upload(tmp_path, "unmatched.xlsx", {
+        "客户表": [["CUSTOMER_ID", "NAME"], ["C1", "合成甲"]],
+        "订单表": [["ORDER_ID", "CUSTOMER_ID"], ["O1", "C9"]],
+    })
+    result = eval_import.preview(tmp_path, {"files": [unmatched]}, graph=True)
+    assert not result["problems"], result["problems"]
+    assert result["relations"]["count"] == 1 and result["relations"]["instances"] == 0
+    assert any("匹配不出任何关系" in w for w in result["warnings"])
+    # 发起评测同样不被拦下
+    eval_import.prepare(tmp_path, {"files": [unmatched]}, graph=True)
+
+    # 压根没声明关系：关系数为 0，也没有「匹配不出」这类提示
+    (tmp_path / "ontology" / "object" / "订单.md").write_text(
+        ORDER_DOC.split("# 关联对象")[0], encoding="utf-8",
+    )
+    silent = eval_import.preview(tmp_path, {"files": [unmatched]}, graph=True)
+    assert not silent["problems"] and silent["relations"]["count"] == 0
+    assert not any("匹配不出任何关系" in w for w in silent["warnings"])
+
+
+def test_preview_blocks_on_relation_that_cannot_be_imported(tmp_path):
+    """未绑定数据表的关系端点会让导包失败，预览就得报出来，而不是只显示实体数。"""
+    _objects(tmp_path)
+    file_id = _upload(tmp_path, "订单.xlsx", {
+        "订单表": [["ORDER_ID", "CUSTOMER_ID"], ["O1", "C1"]],
+    })
+    result = eval_import.preview(tmp_path, {"files": [file_id]}, graph=True)
+    assert result["relations"] == {"count": 0, "instances": 0, "items": []}
+    assert any("未绑定数据表" in p for p in result["problems"])
+
+
 # ---- 图导入关系关联 ----
 
 
@@ -385,6 +513,153 @@ def test_graph_relation_mapping_inference():
         "sourceObject": "甲", "relationName": "同行", "targetObject": "乙", "matchMode": "same_row",
     }
     assert "无关" not in by_name and "找不到关联字段" in skipped[0]
+
+
+def test_graph_relation_mapping_uses_explicit_different_join_fields():
+    # 人工构造的合成 Schema；不使用环境数据。
+    upload = {
+        "sheets": [
+            {"name": "需求表", "columns": ["REQUEST_ID", "SOURCE_EVENT_ID"]},
+            {"name": "事件表", "columns": ["EVENT_ID", "TITLE"]},
+        ],
+        "schema": {
+            "objects": [
+                {"key": "需求", "defaultSheet": "需求表", "primaryKey": ["REQUEST_ID"],
+                 "propertyMappings": [
+                     {"property": "REQUEST_ID", "sourceColumn": "REQUEST_ID"},
+                     {"property": "SOURCE_EVENT_ID", "sourceColumn": "SOURCE_EVENT_ID"},
+                 ]},
+                {"key": "事件", "defaultSheet": "事件表", "primaryKey": ["EVENT_ID"],
+                 "propertyMappings": [
+                     {"property": "EVENT_ID", "sourceColumn": "EVENT_ID"},
+                     {"property": "TITLE", "sourceColumn": "TITLE"},
+                 ]},
+            ],
+            "relations": [{
+                "sourceObject": "需求", "relationName": "来源事件关联", "targetObject": "事件",
+                "sourceJoinProperty": "SOURCE_EVENT_ID", "targetJoinProperty": "EVENT_ID",
+            }],
+        },
+    }
+    relations, skipped = eval_import.graph_relation_mapping(upload)
+    assert skipped == []
+    assert relations == [{
+        "sourceObject": "需求", "relationName": "来源事件关联", "targetObject": "事件",
+        "matchMode": "field_match",
+        "sourceJoinProperty": "SOURCE_EVENT_ID", "targetJoinProperty": "EVENT_ID",
+    }]
+    # 显式字段优先于同表同行推断，缺字段时也不能回退到猜测。
+    upload["schema"]["objects"][1]["defaultSheet"] = "需求表"
+    upload["sheets"][0]["columns"].append("EVENT_ID")
+    assert eval_import.graph_relation_mapping(upload)[0] == relations
+    upload["schema"]["relations"][0]["targetJoinProperty"] = "missing"
+    mapped, skipped = eval_import.graph_relation_mapping(upload)
+    assert mapped == [] and "关联字段不存在" in skipped[0]
+    upload["schema"]["relations"][0].pop("targetJoinProperty")
+    mapped, skipped = eval_import.graph_relation_mapping(upload)
+    assert mapped == [] and "只声明了一个关联字段" in skipped[0]
+
+
+def test_invalid_relation_blocks_export_and_retains_full_diagnostics(tmp_path, monkeypatch):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
+    _objects(root)
+    path = root / "ontology" / "object" / "订单.md"
+    path.write_text(ORDER_DOC + "- 当前对象 → 关联/包含 → [[客户]]\n", encoding="utf-8")
+    file_id = _business_data(root)
+    # 同一条诊断在发起前就拦下，不用等到导包
+    with pytest.raises(eval_import.EvalImportError, match="关联/包含"):
+        eval_import.prepare(root, {"files": [file_id]}, graph=True)
+    plan = eval_import.collect(root, {"files": [file_id]})
+    report = {}
+    dest = tmp_path / "blocked.zip"
+    with pytest.raises(WorkspaceError, match="图关系转换未完成"):
+        manager.export_package_zip(pid, dest, plan["binding"], graph=True, relation_report=report)
+    assert not dest.exists()
+    notes = report.get("notes") or []
+    assert report.get("relations_declared") == 2
+    assert report.get("relations_exported") == report.get("relations_skipped") == 1
+    assert notes and "第 " in notes[0] and "关联/包含" in notes[0]
+
+
+def test_export_preserves_explicit_join_fields(tmp_path, monkeypatch):
+    manager, pid, root = _export(tmp_path, monkeypatch, {}, True)
+    _objects(root)
+    path = root / "ontology" / "object" / "订单.md"
+    path.write_text(ORDER_DOC.replace("属于", "属于（CUSTOMER_ID → CUSTOMER_ID）"), encoding="utf-8")
+    plan = eval_import.prepare(root, {"files": [_business_data(root)]}, graph=True)
+    dest = tmp_path / "joined.zip"
+    manager.export_package_zip(pid, dest, plan["binding"], graph=True)
+    with zipfile.ZipFile(dest) as archive:
+        doc = archive.read(f"{pid}/objects/订单.md").decode("utf-8")
+    assert "| 关系 | 目标 | 说明 | 证据 | 源关联字段 | 目标关联字段 |" in doc
+    assert "| 属于 | 客户 | CUSTOMER_ID → CUSTOMER_ID |   | CUSTOMER_ID | CUSTOMER_ID |" in doc
+
+
+def test_relation_mapping_failure_stops_before_database_write(tmp_path, monkeypatch):
+    calls = []
+
+    def http(method, path, token, **kwargs):
+        calls.append(path)
+        assert path.endswith("/uploads")
+        return {"upload": {"schema": {"objects": [], "relations": [
+            {"sourceObject": "object_a", "relationName": "references", "targetObject": "object_b"},
+        ]}}}
+
+    monkeypatch.setattr(modeling_eval, "_http", http)
+    with pytest.raises(RuntimeError, match="图关系映射未完成"):
+        modeling_eval._graph_import("project_alpha", tmp_path, lambda: "", "project_alpha", {},
+                                    {"tables": [], "workbook": b""})
+    assert len(calls) == 1
+    state = modeling_eval.read_state(tmp_path)
+    assert state["graph_import"]["relations_skipped"] == 1
+    assert "端点不存在" in state["graph_import"]["notes"][0]
+
+
+def _plan_with_one_object(tmp_path) -> dict:
+    """一个对象绑一张表、一条关系的导入计划（只用于编排层对账测试）。"""
+    binding = {"objects": {"object_a": {
+        "table": "sheet_a",
+        "fields": [{"key": "ID", "column": "ID", "type": "string", "primary": True}],
+        "primary_key": ["ID"],
+        "missing_columns": [],
+    }}}
+    return {"tables": [], "workbook": b"", "binding": binding}
+
+
+def _stub_graph_http(validation: dict, calls: list):
+    """上传 → 校验 的最小桩；执行阶段被调用说明没拦住。"""
+    def http(method, path, token, **kwargs):
+        calls.append(path)
+        if path.endswith("/uploads"):
+            return {"upload": {
+                "id": "u1",
+                "sheets": [{"name": "sheet_a", "columns": ["ID"]}],
+                "schema": {"objects": [
+                    {"key": "object_a", "defaultSheet": "sheet_a", "primaryKey": ["ID"],
+                     "propertyMappings": [{"property": "ID", "sourceColumn": "ID"}]},
+                ], "relations": []},
+            }}
+        if path.endswith("/validate"):
+            return {"validation": validation}
+        raise AssertionError(f"不该走到 {path}")
+    return http
+
+
+@pytest.mark.parametrize(("expected", "counts", "message"), [
+    ({"expected_instances": 2}, {"nodeCount": 1}, "预览给出 2 个实例"),
+    ({"expected_edges": 5}, {"nodeCount": 1, "relationshipCount": 2}, "预览给出 5 条关系"),
+])
+def test_prediction_mismatch_stops_before_database_write(
+    tmp_path, monkeypatch, expected, counts, message,
+):
+    """预览算出的实例数/关系条数与 modeling 的导入预检不一致：写库前停下，不让数字分叉。"""
+    calls = []
+    monkeypatch.setattr(modeling_eval, "_http", _stub_graph_http({"counts": counts}, calls))
+    plan = {**_plan_with_one_object(tmp_path), **expected}
+    with pytest.raises(RuntimeError, match=message):
+        modeling_eval._graph_import("project_alpha", tmp_path, lambda: "", "project_alpha", {}, plan)
+    assert not any(path.endswith("/execute") for path in calls)
+    assert modeling_eval.read_state(tmp_path)["graph_import"]["entities"] == 1
 
 
 # ---- 编排：Neo4j 一键导入 ----
@@ -438,7 +713,12 @@ class GraphStub(StubModeling):
                 },
             }})
         if self.path.endswith("/validate"):
-            return self._send(200, {"validation": {"counts": {"nodeCount": 4}, "warnings": ["提示"]}})
+            return self._send(200, {"validation": {
+                "counts": {"nodeCount": 4, "relationshipCount": 2},
+                "warnings": ["提示"],
+                "objectDiagnostics": [{"objectKey": "示例", "code": "GRAPH_IMPORT_EMPTY_SHEET",
+                                       "message": "来源 Sheet 为空"}],
+            }})
         if self.path.endswith("/execute"):
             GraphStub.executes.append(json.loads(raw))
             return self._send(202, {"run": {"id": "g1", "status": "running"}})
@@ -490,7 +770,14 @@ def test_neo4j_one_click_import_orchestration(tmp_path, monkeypatch):
         execute = GraphStub.executes[0]
         assert execute["password"] == FAKE_PASSWORD and execute["replaceExisting"] is True
         assert execute["mapping"]["relations"][0]["sourceJoinProperty"] == "CUSTOMER_ID"
-        assert state["graph_import"]["nodes"] == 4 and "提示" in state["graph_import"]["notes"]
+        graph_state = state["graph_import"]
+        # 预览算的实例数/关系条数 == 导入预检 == 实际写入，三者一致才会走到这里
+        assert graph_state["expected_instances"] == graph_state["nodes"] == 4
+        assert graph_state["expected_edges"] == graph_state["relationships"] == 2
+        assert graph_state["entities"] == 2
+        assert "提示" in graph_state["notes"]
+        # 预检给出的对象诊断只作提示，不拦运行（计数一致已经保证数字不会分叉）
+        assert any("来源 Sheet 为空" in note for note in graph_state["notes"])
         assert FAKE_PASSWORD not in json.dumps(state, ensure_ascii=False)
         # 上传给 modeling 的包是图模式 mapping；上传的工作簿是规范化后的那份
         assert b"eval-data.xlsx" in GraphStub.uploaded_workbook

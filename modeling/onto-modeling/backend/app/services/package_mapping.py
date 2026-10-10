@@ -39,12 +39,17 @@ MAX_CANDIDATES = 3
 MIN_NAME_SIMILARITY = 0.5
 # modeling 图导入对属性名与关系名的标识符约束（evaluation/data-source.ts GRAPH_IDENTIFIER）
 GRAPH_IDENTIFIER = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
+# 同一字符集、去掉锚点：从关系括注里取出字段候选，再拿两端属性清单裁决
+_IDENTIFIER_RE = re.compile(GRAPH_IDENTIFIER.pattern.strip("^$"))
 RELATIONS_SECTION = "关联对象"
 SOURCE_PURPOSES = ("schema",)
 TABLE_SUFFIXES = (".xlsx", ".xlsm", ".csv")
 
 SOURCE_SECTION = "数据来源"
 FIELDS_SECTION = "对象属性清单"
+# 知识包发布格式使用“字段”，旧版工作区模板仍使用“对象属性清单”。
+# 绑定解析必须同时兼容两种章节名，否则重新导入知识包后会读不到任何字段。
+FIELD_SECTION_NAMES = ("字段", "对象属性清单")
 
 _EMPTY_MARKERS = {"", "无", "-", "—", "–", "n/a"}
 # 模板占位符 `{待填写：…}` 可能跨行，只认起始花括号：真实表名和列名都不会以 { 开头
@@ -84,6 +89,15 @@ def _section(text: str, name: str) -> str:
             break
         out.append(line)
     return "\n".join(out).strip()
+
+
+def _fields_section(text: str) -> str:
+    """读取新旧两种对象字段章节，优先使用知识包标准的 `# 字段`。"""
+    for name in FIELD_SECTION_NAMES:
+        value = _section(text, name)
+        if value:
+            return value
+    return ""
 
 
 def _table(body: str) -> tuple[list[str], list[list[str]]]:
@@ -147,7 +161,7 @@ def parse_object_doc(text: str) -> dict:
     """对象文档 → {declared_table, declared_mentions, fields[]}。fields 的 key 即属性英文名（真实列名）。"""
     declared, mentions = _declared_source(text)
 
-    headers, rows = _table(_section(text, FIELDS_SECTION))
+    headers, rows = _table(_fields_section(text))
     key_index = _column_index(headers, "key")
     fields: list[dict] = []
     if key_index >= 0:
@@ -257,6 +271,20 @@ def _match_table(field_keys: list[str], tables: dict[str, list[str]]) -> str:
     return scores[0][1]
 
 
+def read_object_texts(root: Path) -> dict[str, str]:
+    """对象文档原文：{对象 key: 正文}，绑定解析、关系解析与发布包导出共用同一来源。"""
+    object_dir = root / "ontology" / "object"
+    texts: dict[str, str] = {}
+    for doc in sorted(object_dir.glob("*.md")) if object_dir.is_dir() else []:
+        if doc.name == "index.md":
+            continue
+        try:
+            texts[doc.stem] = doc.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return texts
+
+
 def _candidates(field_keys: list[str], name: str, tables: dict[str, list[str]], exclude: str = "") -> list[dict]:
     """修复建议：按列重合数、再按与声明名（或对象名）的相似度排序的候选表。"""
     lowered = {k.lower() for k in field_keys}
@@ -332,15 +360,8 @@ def resolve_object_tables(
         (problems if blocking else warnings).append(issue["message"])
         issues.append({"object": key, **issue, "blocking": blocking, "declared": declared, "table": table})
 
-    object_dir = root / "ontology" / "object"
-    for doc in sorted(object_dir.glob("*.md")) if object_dir.is_dir() else []:
-        if doc.name == "index.md":
-            continue
-        try:
-            parsed = parse_object_doc(doc.read_text(encoding="utf-8"))
-        except OSError:
-            continue
-        key = doc.stem
+    for key, text in read_object_texts(root).items():
+        parsed = parse_object_doc(text)
         fields = parsed["fields"]
         field_keys = [f["key"] for f in fields]
         declared = parsed["declared_table"]
@@ -542,47 +563,274 @@ def _relation_node(value: str) -> str:
     return link.group(1).strip() if link else value
 
 
-def parse_relations(text: str) -> list[tuple[str, str, str]]:
-    """「# 关联对象」→ [(源, 关系名, 目标)]；「当前对象」按对象自身解析由调用方替换为 key。
-
-    模板写法：`- 当前对象 → 关系名 → [[对象A]]` / `- [[对象B]] → 关系名 → 当前对象`。
-    """
-    out = []
-    for line in _section(text, RELATIONS_SECTION).split("\n"):
-        parts = [p.strip() for p in re.split(r"→|->", line.strip().lstrip("-*").strip())]
-        if len(parts) != 3 or any(map(_is_empty, parts)):
+def _split_relation_arrows(value: str) -> list[str]:
+    """只拆分最外层箭头；字段说明括号里的箭头不是关系分隔符。"""
+    parts: list[str] = []
+    start = 0
+    brackets: list[str] = []
+    closing = {"(": ")", "（": "）", "[": "]", "【": "】"}
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char in closing:
+            brackets.append(closing[char])
+            index += 1
             continue
-        out.append((_relation_node(parts[0]), parts[1], _relation_node(parts[2])))
+        if char in closing.values():
+            if not brackets or brackets.pop() != char:
+                raise ValueError("括号未配对")
+            index += 1
+            continue
+        arrow = ""
+        if not brackets and char == "→":
+            arrow = char
+        elif not brackets and value.startswith("->", index):
+            arrow = "->"
+        if arrow:
+            parts.append(value[start:index].strip())
+            index += len(arrow)
+            start = index
+            continue
+        index += 1
+    if brackets:
+        raise ValueError("括号未配对")
+    parts.append(value[start:].strip())
+    return parts
+
+
+def _relation_name_and_note(value: str) -> tuple[str, str]:
+    """关系名与末尾括注分离；没有括注时括注为空。"""
+    match = re.fullmatch(r"([^()（）]+)[（(]([^()（）]*)[）)]", value.strip())
+    if not match:
+        return value.strip(), ""
+    name, note = (part.strip() for part in match.groups())
+    return name, note
+
+
+def _missing_field(name: str, fields: set[str]) -> bool:
+    """清单为空说明这次拿不到该对象正文，此时不判缺失（发布包校验仍会核对字段存在）。"""
+    return bool(fields) and name not in fields
+
+
+def _relation_join(
+    note: str, source_fields: set[str], target_fields: set[str],
+) -> tuple[str | None, str | None]:
+    """括注 → (源对象字段, 目标对象字段)。判据是两端的属性清单，不是括注的措辞。
+
+    括注里的箭头是显式声明，按方向取两侧字段，属性清单只用于纠错。没有箭头时只认两端清单
+    都有的那个标识符：取不到就是一句纯说明，取到多个则无从判断该连哪一对。
+    """
+    if not note:
+        return None, None
+    if "→" in note or "->" in note:
+        sides = re.split(r"→|->", note)
+        names = [_IDENTIFIER_RE.findall(side) for side in sides]
+        if len(sides) != 2 or any(len(found) != 1 for found in names):
+            raise ValueError("关联字段不明确，请写成：关系名（源字段 → 目标字段）")
+        source_join, target_join = names[0][0], names[1][0]
+        if _missing_field(source_join, source_fields) or _missing_field(target_join, target_fields):
+            raise ValueError(f"关联字段 {source_join} → {target_join} 不在两端对象的属性清单里")
+        return source_join, target_join
+    shared = [
+        name for name in _IDENTIFIER_RE.findall(note)
+        if name in source_fields and name in target_fields
+    ]
+    if len(shared) > 1:
+        raise ValueError("关联字段不明确，请写成：关系名（源字段 → 目标字段）")
+    return (shared[0], shared[0]) if shared else (None, None)
+
+
+def parse_relation_definitions(text: str, diagnostics: list[str] | None = None) -> list[dict]:
+    """解析对象关系为 (行号, 源, 关系名, 目标, 括注)；关联字段由 graph_relations 裁决。"""
+    out: list[dict] = []
+    active = False
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if line.strip() == f"# {RELATIONS_SECTION}":
+            active = True
+            continue
+        if re.match(r"^#\s+", line):
+            active = False
+        if not active:
+            continue
+        value = line.strip().lstrip("-*").strip()
+        if _is_empty(value) or _NONE_WITH_NOTE_RE.match(value) or value.startswith(">"):
+            continue
+        try:
+            parts = _split_relation_arrows(value)
+            if len(parts) != 3:
+                raise ValueError("关系格式应为：源对象 → 关系名 → 目标对象")
+            if any(_PLACEHOLDER_RE.match(part) for part in parts):
+                continue  # 模板占位符：这一行还没填写，不是被丢掉的声明
+            if any(map(_is_empty, parts)):
+                raise ValueError("关系格式应为：源对象 → 关系名 → 目标对象")
+            name, note = _relation_name_and_note(parts[1])
+            if _is_empty(name):
+                raise ValueError("缺少关系名")
+        except ValueError as exc:
+            if diagnostics is None:
+                raise ValueError(f"第 {line_number} 行：{exc}") from exc
+            diagnostics.append(f"第 {line_number} 行：{exc}")
+            continue
+        out.append({
+            "line": line_number,
+            "source": _relation_node(parts[0]),
+            "relation": name,
+            "target": _relation_node(parts[2]),
+            "note": note,
+        })
     return out
 
 
-def graph_relations(object_texts: dict[str, str], mapped: set[str]) -> tuple[dict[str, list], list[str]]:
-    """对象文档的关联对象 → 图导入可用的出边：{源对象: [(关系名, 目标)]}，以及被跳过的原因。
+JOIN_FIELDS = ("sourceJoinProperty", "targetJoinProperty")
 
-    modeling 图导入校验包内全部关系（目标须存在、关系名须为合法标识符），不合规的一条
-    就会让整包映射失败，所以这里只收两端都已绑定数据表、关系名合法的关系。
+
+def _join_text(relation: dict) -> str:
+    source, target = relation["sourceJoinProperty"], relation["targetJoinProperty"]
+    return f"{source} → {target}" if source and target else "未声明关联字段"
+
+
+def graph_relations(
+    object_texts: dict[str, str], mapped: set[str], report: dict | None = None,
+    allow_unbound: bool = False,
+) -> tuple[dict[str, list], list[str]]:
+    """生成可执行关系及逐条诊断。返回的 skipped 只含阻断项。
+
+    关联字段取自关系括注，判据是两端对象的属性清单（见 _relation_join）：写法不固定，但字段
+    名必须在清单里，所以不靠措辞也能认出来。
+
+    同一条关系通常在两端对象里各写一次（`当前对象 → 关系名 → [[对象A]]` /
+    `[[对象B]] → 关系名 → 当前对象`）。只有一端写出关联字段时按该端补齐——少写不等于冲突；
+    两端都写出且不是同一对字段才报错，这种情况无从判断该连哪一对，错连比不连更难发现。
+    同理，一端的声明有问题时整条都不导出，否则另一端那条会把问题盖掉、退回按主键猜。
+
+    allow_unbound 即用户已确认降级发布：端点存在但没绑数据表时，这条关系只记原因不阻断
+    （图里本来就没有该类节点）。端点根本不存在、以及关系名与关联字段写错，仍然是阻断项——
+    那是文档本身要改，降级确认与它无关。
     """
+    fields = {key: {field["key"] for field in parse_object_doc(text)["fields"]}
+              for key, text in object_texts.items()}
     relations: dict[str, list] = {}
     skipped: list[str] = []
-    seen = set()
+    unbound: list[str] = []
+    seen: dict[tuple, dict] = {}
+    triples: set[tuple] = set()
+    declared = parsed = duplicates = 0
+
+    def reject(triple: tuple, source: str, label: str) -> None:
+        """整条关系不导出：撤回已导出的那一条，并让后续的镜像声明也不照用。"""
+        entry = seen.setdefault(triple, {"edge": None, "label": label})
+        edge = entry["edge"]
+        entry["edge"] = None
+        if edge is None:
+            return
+        kept = [current for current in relations.get(source, []) if current is not edge]
+        if kept:
+            relations[source] = kept
+        else:
+            relations.pop(source, None)
+
     for key, text in object_texts.items():
-        for source, name, target in parse_relations(text):
+        problems: list[str] = []
+        items = parse_relation_definitions(text, problems)
+        declared += len(items) + len(problems)
+        parsed += len(items)
+        skipped.extend(f"对象「{key}」{problem}" for problem in problems)
+        for item in items:
+            source = item["source"] or ""
+            name = item["relation"] or ""
+            target = item["target"] or ""
             source = key if source == "当前对象" else source
             target = key if target == "当前对象" else target
             triple = (source, name, target)
-            if key not in (source, target) or triple in seen:
+            triples.add(triple)
+            label = f"对象「{key}」第 {item['line']} 行"
+            if key not in (source, target):
+                skipped.append(f"{label}：关系两端不包含当前对象")
                 continue
-            seen.add(triple)
             if not {source, target} <= mapped:
-                continue  # 一端没有数据表：图里没有该类节点，关系无从建立
-            if not GRAPH_IDENTIFIER.match(name):
-                skipped.append(f"关系「{source} -{name}→ {target}」名称不是合法的图关系名，未导入")
+                missing = sorted({source, target} - mapped)
+                absent = [item for item in missing if item not in object_texts]
+                if absent:
+                    skipped.append(f"{label}：关系端点「{'、'.join(absent)}」不存在")
+                elif allow_unbound:
+                    unbound.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表，本条关系不导入")
+                else:
+                    skipped.append(f"{label}：关系端点「{'、'.join(missing)}」未绑定数据表")
                 continue
-            relations.setdefault(source, []).append((name, target))
+            if not GRAPH_IDENTIFIER.fullmatch(name):
+                skipped.append(f"{label}：关系名「{name}」不是合法的图关系名，请确认名称")
+                continue
+            try:
+                source_join, target_join = _relation_join(
+                    item["note"], fields.get(source, set()), fields.get(target, set()),
+                )
+            except ValueError as exc:
+                skipped.append(f"{label}：{exc}")
+                reject(triple, source, label)
+                continue
+            relation = {
+                "relation": name,
+                "target": target,
+                "sourceJoinProperty": source_join,
+                "targetJoinProperty": target_join,
+            }
+            if item["note"]:
+                relation["note"] = item["note"]
+            if triple in seen:
+                previous = seen[triple]
+                edge = previous["edge"]
+                if edge is None:
+                    continue  # 整条关系已判为不可导出
+                pairs = [(edge.get(field), relation.get(field)) for field in JOIN_FIELDS]
+                both = all(current and incoming for current, incoming in pairs)
+                if both and any(current != incoming for current, incoming in pairs):
+                    skipped.append(
+                        f"{label}：关系「{source} -{name}→ {target}」的关联字段与"
+                        f"{previous['label']}不一致（{_join_text(edge)} / {_join_text(relation)}）；"
+                        "两处都要按箭头方向写成「源对象字段 → 目标对象字段」，并保持同一对字段"
+                    )
+                    reject(triple, source, label)
+                    continue
+                # 一端只写了关系名：按另一端已声明的关联字段补齐（edge 即导出的那一条）
+                for field, (current, incoming) in zip(JOIN_FIELDS, pairs):
+                    edge[field] = current or incoming
+                duplicates += 1
+                continue
+            seen[triple] = {"edge": relation, "label": label}
+            relations.setdefault(source, []).append(relation)
+    if report is not None:
+        report.update(
+            relations_declared=declared, relations_parsed=parsed,
+            # 去重后的关系条数：两端各声明一次只算一条，和 relations_exported 同一量纲
+            relations_distinct=len(triples),
+            relations_exported=sum(map(len, relations.values())),
+            # relations_skipped 是没导出的总数；其中降级放过的那部分另记一个数，便于对账
+            relations_skipped=len(skipped) + len(unbound), relations_unbound=len(unbound),
+            relations_duplicates=duplicates, notes=skipped + unbound,
+        )
     return relations, skipped
 
 
-def render_relations_section(relations: list[tuple[str, str]]) -> str:
-    """出边 → modeling 包契约的 `# 关系` 表（关系 | 目标 | 说明）。"""
-    rows = "".join(f"| {name} | {target} | |\n" for name, target in relations)
-    return "# 关系\n\n| 关系 | 目标 | 说明 |\n| --- | --- | --- |\n" + rows
+def render_relations_section(relations: list[dict | tuple[str, str]]) -> str:
+    """保留原四列的位置，在末尾增加可选的关联字段。"""
+    rows = []
+    for relation in relations:
+        if isinstance(relation, dict):
+            cells = (
+                relation.get("relation", ""),
+                relation.get("target", ""),
+                relation.get("note") or "",
+                "",
+                relation.get("sourceJoinProperty") or "",
+                relation.get("targetJoinProperty") or "",
+            )
+            rows.append("| " + " | ".join(map(_cell, cells)) + " |\n")
+        else:
+            name, target = relation
+            rows.append(f"| {name} | {target} | | | | |\n")
+    return (
+        "# 关系\n\n"
+        "| 关系 | 目标 | 说明 | 证据 | 源关联字段 | 目标关联字段 |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        + "".join(rows)
+    )

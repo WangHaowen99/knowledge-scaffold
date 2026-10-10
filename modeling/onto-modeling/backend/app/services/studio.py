@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .. import config
+from . import package_mapping
 
 WIKILINK = re.compile(r"\[\[([^\]|#]+)")
 SECTION = re.compile(r"^(#{1,2})\s+(.+)$", re.MULTILINE)
@@ -339,6 +340,10 @@ def _operation_object_role(line: str) -> str | None:
 
 
 def _object_relation_label(line: str, source: str, target: str) -> str:
+    for relation in package_mapping.parse_relation_definitions("# 关联对象\n" + line, []):
+        endpoints = {source if relation[key] == "当前对象" else relation[key] for key in ("source", "target")}
+        if endpoints == {source, target}:
+            return relation["relation"]
     escaped_source = re.escape(source)
     escaped_target = re.escape(target)
     patterns = (

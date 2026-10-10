@@ -1321,7 +1321,7 @@ function applyRelations(
 ): void {
   if (kind === 'object') {
     const existing = Array.isArray(item.relations) ? item.relations as SpecRelation[] : [];
-    item.relations = toSpecObjectRelations(relations).map((relation) => {
+    item.relations = toSpecObjectRelations(relations, existing).map((relation) => {
       const preserved = existing.find((current) => (
         current.target === relation.target || `object:${current.target}` === `object:${relation.target}`
       ));

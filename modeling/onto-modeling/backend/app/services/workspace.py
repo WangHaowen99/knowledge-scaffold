@@ -692,6 +692,7 @@ class WorkspaceManager:
         dest_path: Path,
         binding: dict | None = None,
         graph: bool = False,
+        relation_report: dict | None = None,
         allow_unbound: bool = False,
     ) -> Path:
         """发布为知识包（consumer 可导入的 ontology-package v0.1）。
@@ -702,7 +703,8 @@ class WorkspaceManager:
 
         binding：评测导入时传入按本轮导入工作簿算出的绑定，mapping 与导入库同源；
         graph：Neo4j 图导入用的包——mapping 按图模式导出，「关联对象」转为 `# 关系` 表；
-        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping。
+        allow_unbound：降级发布——声明对不上的对象不阻断，来源Sheet 写 UNBOUND、不进 mapping；
+        图模式下，端点因此未绑定的关系也只记原因不阻断（图里本来就没有该类节点）。
         """
         import zipfile
 
@@ -740,10 +742,16 @@ class WorkspaceManager:
         bound = binding["objects"]
         mappings = package_mapping.object_data_mappings(binding, graph=graph)
         graph_edges: dict[str, list] = {}
+        graph_relation_skips: list[str] = []
         if graph:
-            graph_edges, _skipped = package_mapping.graph_relations(
-                dict(objects), set(mappings["objects"])
+            graph_edges, graph_relation_skips = package_mapping.graph_relations(
+                package_mapping.read_object_texts(root),
+                set(mappings["objects"]), relation_report, allow_unbound=allow_unbound,
             )
+            if graph_relation_skips:
+                raise WorkspaceError(
+                    "图关系转换未完成，请修正关联对象后重试：" + "；".join(graph_relation_skips)
+                )
         rules = entry_items("ontology/rule")
         metrics = entry_items("ontology/metric")
         scripts = entry_items("ontology/scripts", pattern="*.py")
@@ -1144,7 +1152,9 @@ class WorkspaceManager:
         """用户发布知识包。降级发布须可追溯：记录谁、何时发布，以及哪些对象因此未绑定数据表。"""
         root = self.project_root(project_id)
         binding = package_mapping.resolve_object_tables(root, strict_declared=not allow_unbound)
-        path = self.export_package_zip(project_id, dest_path, binding=binding)
+        path = self.export_package_zip(
+            project_id, dest_path, binding=binding, allow_unbound=allow_unbound
+        )
         degraded = sorted({
             item["object"] for item in binding["issues"]
             if item["kind"] != "declared_unverifiable"
