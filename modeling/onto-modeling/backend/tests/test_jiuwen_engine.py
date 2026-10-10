@@ -25,17 +25,29 @@ def chunk(ctype, payload):
     return SimpleNamespace(type=ctype, payload=payload)
 
 
-def make_ctx(tmp_path, permission=None, history=None):
+def make_ctx(tmp_path, permission=None, history=None, tokens=None):
+    """tokens：可选的续接点记录 {"value": 当前 token, "ops": 存取操作序列}。"""
+
     async def default_permission(tool_name, tool_input, title, description):
         return {"behavior": "allow", "updated_input": None}
+
+    tokens = tokens if tokens is not None else {"value": None, "ops": []}
+
+    def save(token):
+        tokens["value"] = token
+        tokens["ops"].append(("save", token))
+
+    def clear():
+        tokens["value"] = None
+        tokens["ops"].append(("clear", None))
 
     return EngineContext(
         project_id="p1",
         cwd=tmp_path,
         request_permission=permission or default_permission,
-        load_resume_token=lambda: None,
-        save_resume_token=lambda token: None,
-        clear_resume_token=lambda: None,
+        load_resume_token=lambda: tokens["value"],
+        save_resume_token=save,
+        clear_resume_token=clear,
         log_error=lambda kind, text: None,
         load_history=(lambda: history or []),
     )
@@ -202,7 +214,8 @@ def test_run_turn_with_interaction_and_result(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(fake_stream))
 
-    engine = JiuwenEngine(make_ctx(tmp_path, permission=permission))
+    tokens = {"value": "jiuwen:onto-p1", "ops": []}
+    engine = JiuwenEngine(make_ctx(tmp_path, permission=permission, tokens=tokens))
     engine.client = object()  # 假 agent（本测试不触 create_deep_agent）
     engine._tracker = SimpleNamespace(total_input_tokens=100, total_output_tokens=40)
 
@@ -222,6 +235,8 @@ def test_run_turn_with_interaction_and_result(tmp_path, monkeypatch):
     assert types[-1] == "result"
     assert events[-1]["subtype"] == "success"
     assert "已按确认目标完成" in json.dumps(events, ensure_ascii=False)
+    # 等确认期间存档带挂起中断，先清续接点；整轮收尾后再写回
+    assert tokens["ops"] == [("clear", None), ("save", "jiuwen:onto-p1")]
 
 
 def test_run_turn_error_emits_engine_end(tmp_path, monkeypatch):
@@ -249,6 +264,157 @@ def test_run_turn_error_emits_engine_end(tmp_path, monkeypatch):
     assert events[-1]["type"] == "_engine_end"
     assert events[-1]["reason"] == "error"
     assert "模型网关未配置或凭据无效" in events[-1]["error"]
+
+
+# ---- 续接：checkpoint 优先，历史回放兜底 ----
+
+
+class FakeCheckpointer:
+    def __init__(self, sessions=()):
+        self.sessions = set(sessions)
+        self.released = []
+
+    async def session_exists(self, session_id):
+        return session_id in self.sessions
+
+    async def release(self, session_id):
+        self.released.append(session_id)
+        self.sessions.discard(session_id)
+
+
+class FakeAgent:
+    def __init__(self):
+        self.injected = []
+
+    async def create_new_context_engine(self, session_id=None, messages=None):
+        self.injected.append((session_id, messages))
+        return session_id
+
+
+HISTORY = [
+    {"type": "user_message", "text": "读一下资料"},
+    {"type": "assistant_message", "blocks": [{"kind": "tool_use", "tool": "Read"}]},
+    {"type": "assistant_message", "blocks": [{"kind": "text", "text": "资料里有三张表"}]},
+]
+
+
+def connect_with(tmp_path, monkeypatch, token, checkpointer, history=None):
+    from openjiuwen.core.session.checkpointer import CheckpointerFactory
+
+    from app.services.engines import jiuwen
+
+    async def no_runner(_log_error):
+        return None
+
+    agent = FakeAgent()
+    monkeypatch.setattr(
+        jiuwen, "model_config",
+        lambda: {"base_url": "https://gateway.example.com/v1", "api_key": "k", "model": "m"},
+    )
+    monkeypatch.setattr(jiuwen, "_ensure_runner_started", no_runner)
+    monkeypatch.setattr(JiuwenEngine, "_build_agent", lambda self, cfg: (agent, None))
+    monkeypatch.setattr(CheckpointerFactory, "get_checkpointer", lambda *a, **k: checkpointer)
+    tokens = {"value": token, "ops": []}
+    history = HISTORY if history is None else history
+    engine = JiuwenEngine(make_ctx(tmp_path, history=history, tokens=tokens))
+    resumed = asyncio.run(engine.connect())
+    return engine, agent, resumed
+
+
+def test_connect_resumes_from_checkpoint_without_replay(tmp_path, monkeypatch):
+    checkpointer = FakeCheckpointer(sessions={"onto-p1"})
+    engine, agent, resumed = connect_with(
+        tmp_path, monkeypatch, "jiuwen:onto-p1", checkpointer
+    )
+    # 存档带完整上下文（含工具调用），不再注水只有问答文本的历史回放
+    assert resumed is True and engine.resume_attempted is True
+    assert not agent.injected
+    assert not checkpointer.released
+
+
+def test_connect_falls_back_to_replay_when_checkpoint_missing(tmp_path, monkeypatch):
+    checkpointer = FakeCheckpointer()
+    _, agent, resumed = connect_with(tmp_path, monkeypatch, "jiuwen:onto-p1", checkpointer)
+    assert resumed is True
+    assert checkpointer.released == ["onto-p1"]
+    session_id, messages = agent.injected[0]
+    assert session_id == "onto-p1"
+    assert [m.content for m in messages] == ["读一下资料", "资料里有三张表"]
+
+
+def test_connect_without_token_discards_stale_checkpoint(tmp_path, monkeypatch):
+    # 显式关闭会话（token 已清）或停在确认卡上：残留存档必须清掉，
+    # 否则 Runner 首轮仍会从它恢复
+    checkpointer = FakeCheckpointer(sessions={"onto-p1"})
+    _, agent, resumed = connect_with(tmp_path, monkeypatch, None, checkpointer)
+    assert checkpointer.released == ["onto-p1"]
+    assert "onto-p1" not in checkpointer.sessions
+    assert resumed is True and len(agent.injected) == 1
+
+    checkpointer = FakeCheckpointer()
+    _, agent, resumed = connect_with(tmp_path, monkeypatch, None, checkpointer, history=[])
+    assert resumed is False and not agent.injected
+
+
+def test_runner_starts_with_persistent_checkpointer(tmp_path, monkeypatch):
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.runner.runner_config import get_runner_config, set_runner_config
+
+    from app.services.engines import jiuwen
+
+    seen = {}
+
+    async def fake_start():
+        seen["checkpointer"] = get_runner_config().checkpointer_config
+        seen["distributed_mode"] = get_runner_config().distributed_mode
+        return True
+
+    original = get_runner_config()
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(jiuwen, "_RUNNER_STARTED", False)
+    monkeypatch.setattr(jiuwen, "_RUNNER_LOCK", None)
+    monkeypatch.setattr(Runner, "start", fake_start)
+    try:
+        asyncio.run(jiuwen._ensure_runner_started(lambda kind, text: None))
+    finally:
+        set_runner_config(original)
+    checkpointer = seen["checkpointer"]
+    assert checkpointer.type == "persistence"
+    assert checkpointer.conf["db_type"] == "sqlite"
+    assert Path(checkpointer.conf["db_path"]) == tmp_path / "jiuwen" / "checkpoints.db"
+    # 只替换 checkpointer，Runner 其余配置保持框架默认
+    assert seen["distributed_mode"] == original.distributed_mode
+
+
+def test_runner_falls_back_to_memory_checkpointer(tmp_path, monkeypatch):
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.runner.runner_config import get_runner_config, set_runner_config
+
+    from app.services.engines import jiuwen
+
+    attempts = []
+
+    async def flaky_start():
+        checkpointer = get_runner_config().checkpointer_config
+        attempts.append(checkpointer and checkpointer.type)
+        if checkpointer is not None:
+            raise ModuleNotFoundError("No module named 'aiosqlite'")
+        return True
+
+    errors = []
+    original = get_runner_config()
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(jiuwen, "_RUNNER_STARTED", False)
+    monkeypatch.setattr(jiuwen, "_RUNNER_LOCK", None)
+    monkeypatch.setattr(Runner, "start", flaky_start)
+    try:
+        asyncio.run(jiuwen._ensure_runner_started(lambda kind, text: errors.append(kind)))
+    finally:
+        set_runner_config(original)
+    # 持久化装配失败不阻断会话：留档后以内存存档启动
+    assert attempts == ["persistence", None]
+    assert errors == ["checkpoint"]
+    assert jiuwen._RUNNER_STARTED is True
 
 
 # ---- 引擎路由与模型配置 ----

@@ -180,6 +180,29 @@ def test_resume_id_passed_to_options(pool_env, tmp_path):
     asyncio.run(scenario())
 
 
+def test_resume_id_scoped_to_engine(pool_env, tmp_path):
+    manager, _, _ = pool_env
+
+    async def scenario():
+        # 切到 jiuwen 引擎后写下的 token，Claude 引擎不得拿去 resume
+        save_resume_id("p1", "jiuwen:onto-p1", engine="jiuwen")
+        assert load_resume_id("p1", engine="jiuwen") == "jiuwen:onto-p1"
+        assert load_resume_id("p1") is None
+        await manager.send("p1", tmp_path / "w1", "继续")
+        session = await _settle(manager, "p1")
+        assert session.client.options.resume is None
+        assert session.resume_attempted is False
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+    # 旧格式 meta 无 engine 字段：由 Claude 引擎写入，只归 Claude
+    meta = Path(config.DATA_DIR) / "sessions" / "p2.meta.json"
+    meta.write_text(json.dumps({"sdk_session_id": "sdk-session-old"}), encoding="utf-8")
+    assert load_resume_id("p2") == "sdk-session-old"
+    assert load_resume_id("p2", engine="jiuwen") is None
+
+
 def test_close_clears_resume_id(pool_env, tmp_path):
     manager, created, _ = pool_env
 

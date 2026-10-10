@@ -108,11 +108,16 @@ class EngineContext:
   改写为 Python rails（`before_tool_call` 判定 block/pass，判定逻辑从 shell 直译，
   脚本本体保留供 Claude 引擎继续用）；`settings.json` 的 permissions 白名单映射到
   security engine 配置；
-- **resume**（按 PoC 实测修订）：openjiuwen 的续接形态是**历史回放**——新实例调
-  `agent.create_new_context_engine(session_id, messages=历史消息)` 注水上下文引擎
-  （UserMessage/AssistantMessage 列表）。历史直接来自我们已有的事件 JSONL，引擎适配层
-  做一次事件→消息的映射即可；天然跨进程，且**彻底摆脱容器 HOME 卷上 CLI transcript
-  的依赖**（Dockerfile 里为此做的 HOME 重定向可退役）。`meta.json` 扩展为 `{engine, token}`；
+- **resume**（按 PoC 实测修订，后经续接丢工具调用问题再修订）：首选**框架 checkpoint**——
+  Runner 装配持久化 checkpointer（`DATA_DIR/jiuwen/checkpoints.db`，SQLite），每轮收尾落盘
+  完整会话状态（含工具调用/结果、思考、卸载原文）；DeepAgent 的 agent id 按项目固定
+  （checkpoint 按会话 id + agent id 存取，默认随机 id 会让重建实例读不到存档）。
+  每轮正常收尾后写续接 token，出现待确认交互时先清 token（挂起中断的存档遇到普通消息
+  会被当成卡片答复）。无可用存档时退回**历史回放**——新实例调
+  `agent.create_new_context_engine(session_id, messages=历史消息)` 注水事件 JSONL 里的
+  问答文本（UserMessage/AssistantMessage 列表，不含工具过程：事件日志只存 400 字结果摘录、
+  调用 id 为桥接层自造）。两种方式都跨进程，且**摆脱容器 HOME 卷上 CLI transcript
+  的依赖**。`meta.json` 扩展为 `{engine, token}`，token 只对写下它的引擎有效；
 - **成本指标**：现取自 Claude result 消息的 usage；Jiuwen 侧挂 token_tracker rail 采集，
   归一化到同一 `result` 事件字段（单轮成本/输入输出 tokens/缓存命中，缓存命中率取决于所接模型
   服务是否回报，取不到则该项显示"—"）；

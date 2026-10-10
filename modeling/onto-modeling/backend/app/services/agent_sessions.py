@@ -141,23 +141,36 @@ def _meta_path(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> 
     return conversation_store.meta_path(project_id, conversation_id)
 
 
-def load_resume_id(project_id: str, conversation_id: str = DEFAULT_CONVERSATION) -> str | None:
-    """该会话上次的引擎续接 token；重连时恢复模型上下文。"""
+def load_resume_id(
+    project_id: str, conversation_id: str = DEFAULT_CONVERSATION, *, engine: str = "claude"
+) -> str | None:
+    """该会话上次的引擎续接 token；重连时恢复模型上下文。
+
+    token 只对写下它的引擎有效（切换引擎后旧 token 不可用）；
+    旧格式无 engine 字段，均由 Claude 引擎写入。"""
     path = _meta_path(project_id, conversation_id)
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("sdk_session_id") or None
+        meta = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if (meta.get("engine") or "claude") != engine:
+        return None
+    return meta.get("sdk_session_id") or None
 
 
 def save_resume_id(
-    project_id: str, session_id: str, conversation_id: str = DEFAULT_CONVERSATION
+    project_id: str,
+    session_id: str,
+    conversation_id: str = DEFAULT_CONVERSATION,
+    *,
+    engine: str = "claude",
 ) -> None:
     try:
         _meta_path(project_id, conversation_id).write_text(
-            json.dumps({"sdk_session_id": session_id}), encoding="utf-8"
+            json.dumps({"sdk_session_id": session_id, "engine": engine}),
+            encoding="utf-8",
         )
     except OSError:
         pass  # 落盘失败只影响下次续接，不阻断会话
@@ -521,12 +534,14 @@ class SessionManager:
         project_id = session.project_id
         # 构造时定住会话 id：续接 token 的存取必须跟着这个引擎实例绑定的会话走
         conversation_id = session.conversation_id
+        engine_cls = self._engine_class_for(project_id)
+        engine_name = engine_cls.name
 
         def save_token(token: str) -> None:
             if session.discarded:  # 续接点文件已随项目清除
                 return
             session.sdk_session_id = token
-            save_resume_id(project_id, token, conversation_id)
+            save_resume_id(project_id, token, conversation_id, engine=engine_name)
 
         async def request_permission(
             tool_name: str, tool_input: dict, title: str | None, description: str | None
@@ -539,14 +554,16 @@ class SessionManager:
             project_id=project_id,
             cwd=session.cwd,
             request_permission=request_permission,
-            load_resume_token=lambda: load_resume_id(project_id, conversation_id),
+            load_resume_token=lambda: load_resume_id(
+                project_id, conversation_id, engine=engine_name
+            ),
             save_resume_token=save_token,
             clear_resume_token=lambda: clear_resume_id(project_id, conversation_id),
             log_error=lambda kind, text: error_log.log(project_id, kind, text),
             load_history=lambda: list(session.events),
             conversation_id=conversation_id,
         )
-        return self._engine_class_for(project_id)(ctx)
+        return engine_cls(ctx)
 
     async def _connect(self, session: Session) -> None:
         project_id = session.project_id
