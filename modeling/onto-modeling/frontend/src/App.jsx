@@ -493,7 +493,11 @@ export default function App() {
                 }
               }}
             />
-            <button className="tb-btn" onClick={() => importInputRef.current?.click()}>
+            <button
+              className="tb-btn"
+              title="导入已发布知识包或建模任务工作区内容（格式自动识别）"
+              onClick={() => importInputRef.current?.click()}
+            >
               导入已有知识包
             </button>
             <input
@@ -742,13 +746,27 @@ export default function App() {
               {importWiz.step === 1 && importWiz.summary && (
                 <>
                   <Descriptions column={2} size="small" bordered style={{ marginBottom: 12 }}>
+                    <Descriptions.Item label="识别格式">
+                      {importWiz.summary.kind_label}
+                    </Descriptions.Item>
                     <Descriptions.Item label="文件数">{importWiz.summary.files}</Descriptions.Item>
+                    <Descriptions.Item label="业务对象">{importWiz.summary.objects}</Descriptions.Item>
+                    <Descriptions.Item label="业务操作">{importWiz.summary.operations}</Descriptions.Item>
+                    <Descriptions.Item label="规则 / 指标">
+                      {importWiz.summary.rules} / {importWiz.summary.metrics}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="脚本">{importWiz.summary.scripts}</Descriptions.Item>
                     <Descriptions.Item label="总大小">
                       {(importWiz.summary.total_size / 1048576).toFixed(1)} MB
                     </Descriptions.Item>
-                    <Descriptions.Item label="业务对象">{importWiz.summary.objects}</Descriptions.Item>
-                    <Descriptions.Item label="业务操作">{importWiz.summary.operations}</Descriptions.Item>
                   </Descriptions>
+                  {importWiz.summary.kind === 'knowledge_package' && (
+                    <div style={{ marginBottom: 12, fontSize: 12, color: '#888' }}>
+                      知识包「{importWiz.summary.package_name || '未命名'}」 · 版本{' '}
+                      {importWiz.summary.package_version || '未声明'} · 包根{' '}
+                      {importWiz.summary.package_root || '压缩包根目录'}
+                    </div>
+                  )}
                   <div style={{ marginBottom: 12 }}>
                     {importWiz.summary.top_dirs.map((d) => (
                       <Tag key={d.name}>
@@ -756,6 +774,31 @@ export default function App() {
                       </Tag>
                     ))}
                   </div>
+                  {/* 阻断项必须独立展示并禁用导入：合并成一条提示就是"显示成功但是空任务"的来源 */}
+                  {importWiz.summary.blockers?.length > 0 && (
+                    <Alert
+                      type="error"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                      message="这个压缩包不能从这里导入"
+                      description={(
+                        <ul style={{ paddingLeft: 18, margin: 0 }}>
+                          {importWiz.summary.blockers.map((text) => (
+                            <li key={text}>{text}</li>
+                          ))}
+                        </ul>
+                      )}
+                    />
+                  )}
+                  {importWiz.summary.kind === 'knowledge_package'
+                    && !importWiz.summary.blockers?.length && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                      message="已发布知识包只含交付物：对象、操作、规则、指标与脚本会落到工作区继续建模，资料与报告等过程资产为空，阶段进度从头计算。原包会完整留底，映射与引用不会丢失。"
+                    />
+                  )}
                   {importWiz.summary.skipped.length > 0 && (
                     <Alert
                       type="info"
@@ -764,7 +807,12 @@ export default function App() {
                       message={`将跳过：${importWiz.summary.skipped.join('、')}（资产由本服务重新挂载，git 历史不迁移）`}
                     />
                   )}
-                  <Button type="primary" loading={importWiz.importing} onClick={importConfirm}>
+                  <Button
+                    type="primary"
+                    loading={importWiz.importing}
+                    disabled={importWiz.summary.blockers?.length > 0}
+                    onClick={importConfirm}
+                  >
                     确认导入
                   </Button>{' '}
                   <Button onClick={() => setImportWiz({ ...importWiz, step: 0 })}>上一步</Button>

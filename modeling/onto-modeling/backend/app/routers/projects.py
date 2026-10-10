@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from .. import config
 from ..services import eval_data_files, eval_data_sources, eval_import, eval_sets, package_mapping
-from ..services import modeling_cleanup, modeling_mcp
+from ..services import modeling_cleanup, modeling_mcp, package_archive
 from ..services.workspace import WorkspaceError, WorkspaceManager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -212,14 +212,27 @@ async def import_project(
     file: UploadFile = File(...),
     dry_run: bool = Form(False),
 ):
-    """dry_run=true 时只返回压缩包摘要（导入向导的确认步骤），不落盘。"""
+    """dry_run=true 时只返回压缩包摘要（导入向导的确认步骤），不落盘。
+
+    预览与正式导入共用 inspect_archive 的同一份判别结果：已发布知识包按工作区布局
+    转换，工作区内容原样铺开，不支持的格式在建项目之前就拒掉，不留空任务。
+    """
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = Path(tmp.name)
     try:
+        summary = package_archive.inspect_archive(tmp_path)
         if dry_run:
-            return workspaces.import_summary(tmp_path)
-        meta = workspaces.import_zip(name, tmp_path, owner=_request_user(request))
+            return summary
+        if summary["blockers"]:
+            raise WorkspaceError(
+                "；".join(summary["blockers"]), 400, "unsupported_archive_kind"
+            )
+        owner = _request_user(request)
+        if summary["kind"] == package_archive.KIND_KNOWLEDGE_PACKAGE:
+            meta = workspaces.import_package_zip(name, tmp_path, owner=owner)
+        else:
+            meta = workspaces.import_zip(name, tmp_path, owner=owner)
         try:
             return provision_modeling_project(meta, request)
         except modeling_mcp.ModelingMcpError as exc:
