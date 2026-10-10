@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,9 @@ printf '%s\\n' "$*" >> "${FAKE_LOG_DIR}/pip3.log"
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz").is_file()
+    with tarfile.open(project_root / "dist" / "onto-modeling-v-test-linux-amd64.tar.gz") as package:
+        helper = package.getmember("onto-modeling/configure-modeling-association.sh")
+        assert helper.mode & 0o111
     return result, log_dir
 
 

@@ -10,6 +10,7 @@ onto-modeling/
   images.env                  # 镜像 tag 清单（deploy.sh 自动读取）
   docker-compose.release.yml
   deploy.sh                   # 预检 → 加载镜像 → 拉起
+  configure-modeling-association.sh  # 自动配置导入项目的 MCP 关联
   preflight.sh                # 可单独运行的部署预检
   .env.example                # 环境变量说明（复制为 .env 后填写）
   README.md
@@ -28,6 +29,24 @@ vi .env              # 填 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
 访问 `http://<部署机地址>:5100`（端口可用 `ONTO_WEB_PORT` 覆盖）。
 
 ### Modeling MCP 关联与远端清理
+
+整栈部署继续使用原有共用认证和全局 Modeling 地址。独立部署 Onto 发布包时，
+若同机 Modeling 已通过项目部署脚本生成服务令牌，Onto 部署脚本自动读取该令牌及通信地址，
+将 `ONTO_WEB_MODELING_ASSOCIATION_URL/TOKEN` 写入本机 `.env`，无需手工填写。
+重复部署原样保留完整的关联地址和令牌；只有一项时停止并提示配置不完整。
+已有全局 Modeling 地址时继续使用原用户鉴权，不注入本机服务令牌。
+不会改变登录鉴权、网络连接或全局评测地址。
+`.env` 含运行凭据，不可提交到 Git 或打入发布包。
+
+独立部署 Onto 时，若同机已有运行中的 Modeling，脚本自动使用其已发布 HTTP 端口；
+Docker Desktop 使用宿主网关域名，Linux Docker 使用宿主 bridge 网关，无需添加 `extra_hosts`。
+只有 Onto、没有 Modeling 服务的部署无法提供 Modeling MCP；脚本会提示并保留独立部署能力。
+自定义跨机部署仍需由运维提供关联地址和令牌，无法从本机自动发现远端服务。
+
+专用关联通道只接受服务凭据和匹配的 Onto 项目归属。管理员授权仅限当前项目的
+MCP 管理接口，不授予 Modeling 全局管理员权限、不修改成员列表。管理员代项目签发
+Token 时使用项目所有者作为访问主体，签发及吊销记录保留实际管理员身份；运行时
+继续校验原有项目成员权限、Token scope 和吊销状态。
 
 如果 Onto Modeling 与核心 Modeling 共用认证中心，配置：
 
