@@ -737,8 +737,33 @@ function ConnField({ label, password = false, ...props }) {
   );
 }
 
-// 一键导入预览：导入哪些表、日期如何处理、对象绑到哪张表（即发布包 mapping 的内容）。
-// 对象绑不到表 = 这一轮问答根本查不到库；发起前就说清楚，别等报告出分
+// 一键导入预览：导入哪些表、日期如何处理、对象绑到哪张表、声明的关系有多少条进入导入
+// （即发布包 mapping 的内容）。对象绑不到表、关系转换不出来 = 这一轮问答根本查不到；
+// 发起前就说清楚，别等报告出分
+//
+// 每个数字都只说"本轮真的会导入什么"，没进去的部分不摊进数字，而是逐条列在下面的问题与提示里。
+// 图导入按图里的东西说话：实体 = 节点类型（Label），实例 = 按主键建出的节点数，关系 = 按关联
+// 字段匹配出的边数（都与图导入的 nodeCount / relationshipCount 同一规则算，运行前再与导入
+// 预检核对）；非图导入落的是 MySQL 评测库，按表与行说。
+//
+// 「没有关系」要分清是哪一种：没声明过，还是声明没问题但本轮数据匹配不出。两者都不阻断评测，
+// 但处理方式完全不同（改建模 / 换数据），摘要里就得说明白。
+function summaryText(data, boundCount) {
+  const entities = data.entities;
+  if (!entities) {
+    const rows = data.tables.reduce((n, t) => n + t.rows, 0);
+    return `${data.tables.length} 张表 · ${rows} 行 · ${boundCount} 个实体可查询`;
+  }
+  const relations = data.relations || { count: 0, instances: 0 };
+  let relationText = `${relations.instances} 条关系进入图导入`;
+  if (!relations.count) {
+    relationText = '未声明可执行关系';
+  } else if (!relations.instances) {
+    relationText = '0 条关系进入图导入（本轮数据匹配不出）';
+  }
+  return `${entities.count} 个实体 · ${entities.instances} 个实例 · ${relationText}`;
+}
+
 function ImportPreview({ projectId, request }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -777,8 +802,7 @@ function ImportPreview({ projectId, request }) {
         <div className="eval-import-title">
           导入预览
           <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-            {`${data.tables.length} 张表 · ${data.tables.reduce((n, t) => n + t.rows, 0)} 行 · `}
-            {`${bound.length}/${objects.length} 个对象进入 mapping`}
+            {summaryText(data, bound.length)}
           </Typography.Text>
         </div>
         {bound.map(([key, item]) => (
@@ -788,7 +812,19 @@ function ImportPreview({ projectId, request }) {
             <Tag>{item.table}</Tag>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {`${Object.keys(item.columns).length} 列对齐`}
+              {item.instances != null ? `，${item.instances} 个实例` : ''}
               {item.missing.length ? `，缺 ${item.missing.slice(0, 3).join('、')}` : ''}
+            </Typography.Text>
+          </div>
+        ))}
+        {/* 每条关系单列一行：摘要里的关系条数由这些数相加而来，可当场核对 */}
+        {(data.relations?.items || []).map((item) => (
+          <div key={`${item.source}|${item.relation}|${item.target}`} className="eval-import-row">
+            <span className="eval-import-object">{item.source}</span>
+            <span className="eval-ds-arrow">{`-${item.relation}→`}</span>
+            <Tag>{item.target}</Tag>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {`${item.instances} 条关系`}
             </Typography.Text>
           </div>
         ))}

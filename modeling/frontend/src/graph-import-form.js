@@ -130,6 +130,8 @@ export function relationDraftFromKnown(relation) {
     sourceObject: relation?.sourceObject || '',
     relationName: relation?.relationName || '',
     targetObject: relation?.targetObject || '',
+    ...(relation?.sourceJoinProperty ? { sourceJoinProperty: relation.sourceJoinProperty } : {}),
+    ...(relation?.targetJoinProperty ? { targetJoinProperty: relation.targetJoinProperty } : {}),
   };
 }
 
@@ -152,15 +154,20 @@ export function addRelationMapping(mappings, draft, preview) {
     sourceObject: sourceObject.key,
     relationName,
     targetObject: targetObject.key,
+    ...(draft?.sourceJoinProperty ? { sourceJoinProperty: String(draft.sourceJoinProperty).trim() } : {}),
+    ...(draft?.targetJoinProperty ? { targetJoinProperty: String(draft.targetJoinProperty).trim() } : {}),
   };
-  if (relationCanMatchSameRow(preview, relation)) {
+  if (Boolean(relation.sourceJoinProperty) !== Boolean(relation.targetJoinProperty)) {
+    throw new Error('关系必须同时配置源和目标关联字段');
+  }
+  if (!relation.sourceJoinProperty && relationCanMatchSameRow(preview, relation)) {
     return [...mappings, { ...relation, matchMode: 'same_row' }];
   }
   return [...mappings, {
     ...relation,
     matchMode: 'field_match',
-    sourceJoinProperty: defaultJoinProperty(preview, sourceObject),
-    targetJoinProperty: defaultJoinProperty(preview, targetObject),
+    sourceJoinProperty: relation.sourceJoinProperty || defaultJoinProperty(preview, sourceObject),
+    targetJoinProperty: relation.targetJoinProperty || defaultJoinProperty(preview, targetObject),
   }];
 }
 

@@ -79,7 +79,8 @@ def _filled(value) -> bool:
     return value is not None and str(value).strip() != ""
 
 
-def _header_text(value) -> str:
+def _cell_text(value) -> str:
+    """单元格 → modeling 解析后同形的文本：整数值的浮点不留小数尾巴（JS 数字字符串化口径）。"""
     if value is None:
         return ""
     if isinstance(value, float) and value.is_integer():
@@ -121,7 +122,7 @@ def _sheet_table(sheet_name: str, raw_rows: list[tuple], source: str) -> tuple[T
     rows = [list(r) for r in raw_rows if any(map(_filled, r))]
     if not rows:
         return None, []
-    header = [_header_text(v) for v in rows[0]]
+    header = [_cell_text(v) for v in rows[0]]
     while header and not header[-1]:
         header.pop()
     keep = [i for i, name in enumerate(header) if name]
@@ -356,11 +357,207 @@ def graph_problems(binding: dict) -> list[str]:
     return problems
 
 
+# ---- 图导入预测：实体、实例、关系边（规则逐条对齐 modeling 的 graph-import validator）----
+
+
+def _primary_source(entry: dict) -> tuple[str, dict]:
+    """mapping 条目 → (来源表名, {属性: {source_column}})；评测导入恒为单一来源表。"""
+    source = (entry.get("sources") or [{}])[0]
+    return source.get("resource") or "", source.get("fields") or {}
+
+
+def _column_position(table: Table | None, column: str) -> int:
+    if table is None or not column or column not in table.columns:
+        return -1
+    return table.columns.index(column)
+
+
+def _node_rows(
+    tables: list[Table], mapping: dict
+) -> tuple[dict[str, dict[int, tuple]], list[str], list[str]]:
+    """每个实体会建成节点的行：{对象: {行号: 主键取值}}。
+
+    modeling 按主键建节点：主键列任一为空的行跳过（非空单元格经类型归一不会变空，故只判空），
+    同一张表里主键重复时 modeling 直接报错，所以这里按阻断问题报出来。
+    """
+    by_name = {t.name: t for t in tables}
+    nodes: dict[str, dict[int, tuple]] = {}
+    problems: list[str] = []
+    warnings: list[str] = []
+    for key, entry in (mapping.get("objects") or {}).items():
+        table_name, fields = _primary_source(entry)
+        table = by_name.get(table_name)
+        if table is None:
+            continue
+        indexes = [
+            _column_position(table, ((fields.get(prop) or {}).get("source_column") or ""))
+            for prop in entry.get("primary_key") or []
+        ]
+        if not indexes or -1 in indexes:
+            problems.append(f"实体「{key}」的主键属性在表「{table.name}」里没有对应列，图导入会失败")
+            continue
+        rows: dict[int, tuple] = {}
+        identities: set[tuple] = set()
+        blank = duplicated = 0
+        for index, row in enumerate(table.rows):
+            values = tuple(_cell_text(row[i]) for i in indexes)
+            if not all(values):
+                blank += 1
+                continue
+            if values in identities:
+                duplicated += 1
+                continue
+            identities.add(values)
+            rows[index] = values
+        nodes[key] = rows
+        if duplicated:
+            problems.append(
+                f"实体「{key}」在表「{table.name}」里有 {duplicated} 行主键重复，图导入会直接失败："
+                "该表不是一对一扩展表，请拆成独立实体或关系"
+            )
+        if blank:
+            warnings.append(f"实体「{key}」在表「{table.name}」有 {blank} 行主键为空，不会建成实例")
+        if not rows:
+            warnings.append(f"实体「{key}」在表「{table.name}」里没有一行主键完整，图里不会有这类节点")
+    return nodes, problems, warnings
+
+
+def _edge_counts(
+    tables: list[Table], mapping: dict, relations: list[dict], nodes: dict[str, dict[int, tuple]],
+) -> tuple[list[dict], list[str], list[str]]:
+    """每条关系会写入的边数（modeling 的 relationPlan 同一规则）。
+
+    同 Sheet 按行号配对（same_row）；跨 Sheet 按关联字段取值配对（field_match），关联值按
+    去空白后的文本比较，一个源行匹配到 N 个目标实例就记 N 条边。只统计已建成节点的行，
+    源行关联值为空或匹配不到目标都不建边。
+    """
+    by_name = {t.name: t for t in tables}
+
+    def join_column(key: str, prop: str) -> tuple[Table | None, int]:
+        table_name, fields = _primary_source(mapping["objects"][key])
+        table = by_name.get(table_name)
+        column = ((fields.get(prop) or {}).get("source_column") or "")
+        return table, _column_position(table, column)
+
+    items: list[dict] = []
+    problems: list[str] = []
+    warnings: list[str] = []
+    for relation in relations:
+        source_key, target_key = relation["sourceObject"], relation["targetObject"]
+        source_rows, target_rows = nodes.get(source_key) or {}, nodes.get(target_key) or {}
+        label = f"关系「{source_key} -{relation['relationName']}→ {target_key}」"
+        blank = unmatched = 0
+        if relation.get("matchMode") == "same_row":
+            count = len(set(source_rows) & set(target_rows))
+        else:
+            source_table, source_index = join_column(source_key, relation["sourceJoinProperty"])
+            target_table, target_index = join_column(target_key, relation["targetJoinProperty"])
+            if source_index < 0 or target_index < 0:
+                problems.append(f"{label}的关联字段在数据表里没有对应列，图导入会失败")
+                continue
+            targets: dict[str, int] = {}
+            for index in target_rows:
+                value = _cell_text(target_table.rows[index][target_index])
+                if value:
+                    targets[value] = targets.get(value, 0) + 1
+            count = 0
+            for index in source_rows:
+                value = _cell_text(source_table.rows[index][source_index])
+                if not value:
+                    blank += 1
+                    continue
+                matched = targets.get(value, 0)
+                if not matched:
+                    unmatched += 1
+                    continue
+                count += matched
+        items.append({
+            "source": source_key, "relation": relation["relationName"], "target": target_key,
+            "instances": count,
+        })
+        if blank:
+            warnings.append(f"{label}有 {blank} 行关联字段为空，不建关系")
+        if unmatched:
+            warnings.append(f"{label}有 {unmatched} 行关联值匹配不到目标实例，不建关系")
+        if not count:
+            warnings.append(f"{label}没有匹配出任何关系，图里不会有这类关系")
+    return items, problems, warnings
+
+
+def _upload_shape(tables: list[Table], mapping: dict, declared: dict[str, list]) -> dict:
+    """合成与 modeling 图导入上传预览同形的结构，让关联推断只保留一份实现。"""
+    objects = []
+    for key, entry in (mapping.get("objects") or {}).items():
+        table_name, fields = _primary_source(entry)
+        objects.append({
+            "key": key,
+            "defaultSheet": table_name,
+            "primaryKey": list(entry.get("primary_key") or []),
+            "propertyMappings": [
+                {"property": prop, "sourceColumn": (value or {}).get("source_column")}
+                for prop, value in fields.items()
+            ],
+        })
+    relations = [
+        {
+            "sourceObject": source,
+            "relationName": item["relation"],
+            "targetObject": item["target"],
+            "sourceJoinProperty": item.get("sourceJoinProperty"),
+            "targetJoinProperty": item.get("targetJoinProperty"),
+        }
+        for source, items in declared.items() for item in items
+    ]
+    return {
+        "sheets": [{"name": t.name, "columns": list(t.columns)} for t in tables],
+        "schema": {"objects": objects, "relations": relations},
+    }
+
+
+def graph_plan(root: Path, tables: list[Table], binding: dict) -> dict:
+    """图导入的本地预测（预览与运行共用）：实体、实例、关系边 + 阻断问题 + 提示。
+
+    关联推断复用 graph_relation_mapping：这里喂本地合成的上传结构，运行时喂 modeling 真正的
+    上传预览，两处只有一份推断实现。实例与边数在写库前由 modeling_eval 与 modeling 的导入
+    预检逐项核对，复刻的规则一旦漂移会让评测停下，不会只在预览里留一个对不上的数字。
+
+    「有节点没关系」分三种，只有第三种该拦：没声明关系、声明没问题但本轮数据匹配不出、
+    声明转换不出来。前两种不影响这轮评测能不能跑，只作提示。
+    """
+    mapping = package_mapping.object_data_mappings(binding, graph=True)
+    declared, relation_notes = package_mapping.graph_relations(
+        package_mapping.read_object_texts(root), set(mapping["objects"]),
+    )
+    relations, unusable = graph_relation_mapping(_upload_shape(tables, mapping, declared))
+    nodes, node_problems, node_warnings = _node_rows(tables, mapping)
+    edges, edge_problems, edge_warnings = _edge_counts(tables, mapping, relations, nodes)
+    instances = {key: len(rows) for key, rows in nodes.items()}
+    problems = relation_notes + unusable + node_problems + edge_problems
+    warnings = node_warnings + edge_warnings
+    if mapping["objects"] and not sum(instances.values()):
+        problems.append("导入数据里没有一行主键完整，图里不会有任何实例")
+    if edges and not sum(item["instances"] for item in edges):
+        warnings.append("关系都已转换，但本轮数据匹配不出任何关系，图里只会有节点")
+    return {
+        "mapping": mapping,
+        "instances": instances,
+        "edges": edges,
+        "problems": problems,
+        "warnings": warnings,
+    }
+
+
 def prepare(root: Path, data_source: dict, graph: bool = False) -> dict:
     """编排入口：规范化表 + 绑定 + 工作簿字节；不合规直接抛 EvalImportError。"""
     plan = collect(root, data_source)
     if graph:
         plan["problems"] += graph_problems(plan["binding"])
+        view = graph_plan(root, plan["tables"], plan["binding"])
+        plan["problems"] += view["problems"]
+        plan["warnings"] += view["warnings"]
+        # 写库前与 modeling 的导入预检核对：nodeCount / relationshipCount 必须等于这两个数
+        plan["expected_instances"] = sum(view["instances"].values())
+        plan["expected_edges"] = sum(item["instances"] for item in view["edges"])
     if plan["problems"]:
         raise EvalImportError(plan["problems"])
     plan["workbook"] = workbook_bytes(plan["tables"])
@@ -368,12 +565,24 @@ def prepare(root: Path, data_source: dict, graph: bool = False) -> dict:
 
 
 def preview(root: Path, data_source: dict, graph: bool = False) -> dict:
-    """向导预览：导入哪些表、对象绑到哪张表哪些列（即 mapping 内容）、有哪些问题。"""
+    """向导预览：导入哪些表、对象绑到哪张表哪些列（即 mapping 内容）、有哪些问题。
+
+    图模式额外给出 entities 与 relations：实体数、按主键预测的实例数、按关联字段匹配出的
+    关系条数，三个数都与图里真正写入的内容同一口径（graph_plan）。
+    """
     plan = collect(root, data_source)
+    view: dict = {}
     if graph:
         plan["problems"] += graph_problems(plan["binding"])
-    mapping = package_mapping.object_data_mappings(plan["binding"], graph=graph)
-    return {
+        view = graph_plan(root, plan["tables"], plan["binding"])
+        plan["problems"] += view["problems"]
+        plan["warnings"] += view["warnings"]
+        mapping = view["mapping"]
+    else:
+        mapping = package_mapping.object_data_mappings(plan["binding"], graph=False)
+    instances = view.get("instances") or {}
+    edges = view.get("edges") or []
+    out = {
         "tables": [t.summary() for t in plan["tables"]],
         "objects": {
             key: {
@@ -381,6 +590,7 @@ def preview(root: Path, data_source: dict, graph: bool = False) -> dict:
                 "matched_by": item["matched_by"],
                 "columns": {f["key"]: f["column"] for f in item["fields"] if f["column"]},
                 "missing": item["missing_columns"],
+                **({"instances": instances[key]} if key in instances else {}),
             }
             for key, item in plan["binding"]["objects"].items()
         },
@@ -388,6 +598,14 @@ def preview(root: Path, data_source: dict, graph: bool = False) -> dict:
         "problems": plan["problems"],
         "warnings": plan["warnings"],
     }
+    if graph:
+        out["entities"] = {"count": len(mapping["objects"]), "instances": sum(instances.values())}
+        out["relations"] = {
+            "count": len(edges),
+            "instances": sum(item["instances"] for item in edges),
+            "items": edges,
+        }
+    return out
 
 
 def _text_cells(sheet, values: list) -> list:
@@ -449,8 +667,8 @@ def verify_mapping(package_zip: Path, tables: list[Table]) -> list[str]:
 
 
 def _shared_key(keys: list, left: set, right: set) -> str:
-    """主键里第一个两端都有同名属性的键（外键约定）。"""
-    for key in keys or []:
+    """只接受单字段主键，不能把复合主键的一部分当作完整连接条件。"""
+    for key in keys if len(keys or []) == 1 else []:
         if key in left and key in right:
             return key
     return ""
@@ -474,19 +692,44 @@ def graph_relation_mapping(upload: dict) -> tuple[list[dict], list[str]]:
     for rel in schema.get("relations") or []:
         source, target = objects.get(rel["sourceObject"]), objects.get(rel["targetObject"])
         if not source or not target:
+            skipped.append(f"关系「{rel['relationName']}」端点不存在或未绑定数据表，未导入")
             continue
         base = {
             "sourceObject": rel["sourceObject"],
             "relationName": rel["relationName"],
             "targetObject": rel["targetObject"],
         }
+        explicit_source = str(rel.get("sourceJoinProperty") or "").strip()
+        explicit_target = str(rel.get("targetJoinProperty") or "").strip()
+        if explicit_source or explicit_target:
+            if not explicit_source or not explicit_target:
+                skipped.append(
+                    f"关系「{rel['sourceObject']} -{rel['relationName']}→ {rel['targetObject']}」"
+                    "只声明了一个关联字段，未导入"
+                )
+                continue
+            if explicit_source not in props(source) or explicit_target not in props(target):
+                skipped.append(
+                    f"关系「{rel['sourceObject']} -{rel['relationName']}→ {rel['targetObject']}」"
+                    f"声明的关联字段不存在（{explicit_source} → {explicit_target}），未导入"
+                )
+                continue
+            relations.append({
+                **base,
+                "matchMode": "field_match",
+                "sourceJoinProperty": explicit_source,
+                "targetJoinProperty": explicit_target,
+            })
+            continue
         if source.get("defaultSheet") == target.get("defaultSheet"):
             relations.append({**base, "matchMode": "same_row"})
             continue
         source_props, target_props = props(source), props(target)
-        join = _shared_key(target.get("primaryKey"), target_props, source_props) or _shared_key(
-            source.get("primaryKey"), source_props, target_props
-        )
+        candidates = {
+            _shared_key(target.get("primaryKey"), target_props, source_props),
+            _shared_key(source.get("primaryKey"), source_props, target_props),
+        } - {""}
+        join = next(iter(candidates)) if len(candidates) == 1 else ""
         if join:
             relations.append({
                 **base, "matchMode": "field_match",

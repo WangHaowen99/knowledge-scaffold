@@ -187,6 +187,25 @@ def is_graph(data_source: dict) -> bool:
     return data_source.get("mode") == "connection" and data_source.get("provider") == "neo4j"
 
 
+def _graph_plan_mismatches(validation: dict, plan: dict) -> list[str]:
+    """导入预检（modeling 的写入计划）↔ 预览给出的实例数与关系条数逐项对账。
+
+    预览按 modeling 的建点/配对规则在本地算出这两个数（eval_import.graph_plan）；这里与
+    modeling 真正的写入计划比一次，对不上就在写库之前拦下——复刻的规则万一与 modeling
+    漂移，评测会停下报数，而不是留一个与图里内容不符的数字。
+    """
+    counts = validation.get("counts") or {}
+    out = []
+    for field, key, unit in (
+        ("nodeCount", "expected_instances", "个实例"),
+        ("relationshipCount", "expected_edges", "条关系"),
+    ):
+        expected, planned = plan.get(key), counts.get(field)
+        if expected is not None and planned is not None and planned != expected:
+            out.append(f"预览给出 {expected} {unit}，导入预检会写入 {planned} {unit}")
+    return out
+
+
 def _graph_import(
     project_id: str, root: Path, tok, mp_project: str, data_source: dict, plan: dict
 ) -> None:
@@ -196,6 +215,9 @@ def _graph_import(
         root, phase="graph_import",
         message=f"图数据导入：上传 {len(plan['tables'])} 张表（{rows} 行）",
     )
+    entities = len(package_mapping.object_data_mappings(
+        plan.get("binding") or {"objects": {}}, graph=True,
+    )["objects"])
     body, ctype = _multipart_files([(eval_import.WORKBOOK_NAME, plan["workbook"])])
     try:
         upload = _http(
@@ -203,11 +225,30 @@ def _graph_import(
             data=body, content_type=ctype, timeout=180,
         )["upload"]
         relations, skipped = eval_import.graph_relation_mapping(upload)
+        exported_count = (plan.get("relation_report") or {}).get("relations_exported")
+        if exported_count is not None and exported_count != len((upload.get("schema") or {}).get("relations") or []):
+            skipped.append("知识包导出与图导入读取的关系定义数不一致，请检查知识包转换")
+        report = {
+            **(plan.get("relation_report") or {}),
+            "nodes": 0, "relationships": 0,
+            "entities": entities,
+            "expected_instances": plan.get("expected_instances"),
+            "expected_edges": plan.get("expected_edges"),
+            "relations_mapped": len(relations),
+            "relations_skipped": len(skipped), "notes": skipped,
+        }
+        _write_state(root, graph_import=report)
+        if skipped:
+            raise RuntimeError("图关系映射未完成，请修正后重试：" + "；".join(skipped))
         mapping = {"relations": relations}
         validation = _http(
             "POST", f"/api/projects/{mp_project}/graph-import/uploads/{upload['id']}/validate",
             tok(), body={"mapping": mapping},
         )["validation"]
+        mismatches = _graph_plan_mismatches(validation, plan)
+        if mismatches:
+            _write_state(root, graph_import={**report, "notes": skipped + mismatches})
+            raise RuntimeError("导入预检与预览不一致，已在写入图库前停下：" + "；".join(mismatches))
         _check_stop(project_id)
         run = _http(
             "POST", f"/api/projects/{mp_project}/graph-import/uploads/{upload['id']}/execute",
@@ -224,15 +265,33 @@ def _graph_import(
         raise RuntimeError(f"图数据导入失败：{detail}") from exc
     finished = _poll_graph_import(project_id, root, tok, mp_project, run["id"])
     notes = skipped + list(validation.get("warnings") or [])
+    counts = validation.get("counts") or {}
+    notes += [
+        f"实体「{item.get('objectKey')}」{item.get('message') or item.get('code')}"
+        for item in validation.get("objectDiagnostics") or []
+    ]
+    if not relations:
+        notes.append("知识包未声明可执行关系，本次仅导入节点")
+    if counts.get("skippedBlankCount"):
+        notes.append(f"{counts['skippedBlankCount']} 行关联字段为空，未建立关系")
+    if counts.get("skippedUnmatchedCount"):
+        notes.append(f"{counts['skippedUnmatchedCount']} 行关联值未匹配到目标实例，未建立关系")
     _write_state(
         root,
         graph_import={
+            **report,
             "nodes": finished.get("nodeCount", 0),
             "relationships": finished.get("relationshipCount", 0),
             "relations_mapped": len(relations),
-            "notes": notes[:20],
+            "skipped_blank_rows": counts.get("skippedBlankCount", 0),
+            "skipped_unmatched_rows": counts.get("skippedUnmatchedCount", 0),
+            "notes": notes,
         },
     )
+    # 预检计划即实际写入量（modeling 侧同样断言），不一致说明写入过程丢了东西
+    for field, label in (("nodeCount", "节点"), ("relationshipCount", "关系")):
+        if counts.get(field) is not None and counts[field] != finished.get(field, 0):
+            raise RuntimeError(f"图{label}实际写入数量与导入预检不一致，请检查图导入结果")
 
 
 def _poll_graph_import(project_id: str, root: Path, tok, mp_project: str, run_id: str) -> dict:
@@ -916,13 +975,24 @@ def _run_sync(
         binding = plan["binding"] if plan else package_mapping.resolve_object_tables(
             root, strict_declared=not allow_unbound
         )
-        manager.export_package_zip(project_id, zip_path, binding=binding, graph=is_graph(data_source))
+        relation_report: dict = {}
+        try:
+            manager.export_package_zip(
+                project_id, zip_path, binding=binding, graph=is_graph(data_source),
+                relation_report=relation_report, allow_unbound=allow_unbound,
+            )
+        finally:
+            if is_graph(data_source):
+                _write_state(root, graph_import={
+                    "nodes": 0, "relationships": 0, "relations_mapped": 0, **relation_report,
+                })
         unbound = sorted({
             item["object"] for item in binding["issues"] if item["kind"] != "declared_unverifiable"
         })
         if unbound:
             _write_state(root, unbound_objects=unbound[:50])
         if plan:
+            plan["relation_report"] = relation_report
             mismatched = eval_import.verify_mapping(zip_path, plan["tables"])
             if mismatched:
                 raise RuntimeError("发布包 mapping 与导入数据不一致：" + "；".join(mismatched[:3]))
