@@ -24,6 +24,8 @@ export interface GraphImportRelationSchema {
   sourceObject: string;
   relationName: string;
   targetObject: string;
+  sourceJoinProperty?: string;
+  targetJoinProperty?: string;
   note?: string;
 }
 

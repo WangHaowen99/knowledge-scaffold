@@ -399,6 +399,20 @@ function relationPlan(
   }
   const sourceJoinIndex = joinColumn(sourceObject, source, mapping.sourceJoinProperty).index;
   const targetJoinIndex = joinColumn(targetObject, target, mapping.targetJoinProperty).index;
+  const declared = schema.relations.find((item) => item.sourceObject === mapping.sourceObject
+    && item.targetObject === mapping.targetObject && item.relationName === mapping.relationName);
+  const explicit = Boolean(declared?.sourceJoinProperty && declared?.targetJoinProperty);
+  if (explicit) {
+    const sourceType = sourceBuilt.plan.propertyTypes[mapping.sourceJoinProperty];
+    const targetType = targetBuilt.plan.propertyTypes[mapping.targetJoinProperty];
+    const numeric = new Set(['integer', 'float']);
+    const hasSourceValues = source.rows!.some((row) => String(row[sourceJoinIndex] ?? '').trim());
+    const hasTargetValues = target.rows!.some((row) => String(row[targetJoinIndex] ?? '').trim());
+    if (hasSourceValues && hasTargetValues && sourceType && targetType && sourceType !== targetType
+      && !(numeric.has(sourceType) && numeric.has(targetType))) {
+      throw new Error(`关系「${mapping.relationName}」两端关联字段类型不兼容，请检查数据`);
+    }
+  }
 
   const targetsByJoin = new Map<string, string[]>();
   for (const [rowIndex, row] of target.rows!.entries()) {
@@ -407,6 +421,11 @@ function relationPlan(
     const join = String(row[targetJoinIndex] ?? '').trim();
     if (!join) continue;
     const targetRecordKeys = targetsByJoin.get(join) ?? [];
+    if (explicit && targetObject.primaryKey?.length === 1
+      && targetObject.primaryKey[0] === mapping.targetJoinProperty
+      && targetRecordKeys.some((key) => key !== targetRecordKey)) {
+      throw new Error(`关系「${mapping.relationName}」目标关联主键重复，请检查数据`);
+    }
     targetRecordKeys.push(targetRecordKey);
     targetsByJoin.set(join, targetRecordKeys);
   }

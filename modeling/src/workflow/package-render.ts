@@ -147,8 +147,10 @@ function objectMd(spec: PackageSpec, o: SpecObject): string {
   });
   const rows = o.fields.map((f) =>
     `| ${cell(f.key)} | ${cell(f.cnName)} | ${cell(f.type ?? '未声明')} | ${f.required === true ? '是' : '否'} | ${cell(f.note)} | ${cell(f.alias)} |`);
+  const hasRelationFields = (o.relations ?? []).some((r) => r.sourceJoinProperty || r.targetJoinProperty);
   const relations = (o.relations ?? []).map((r) =>
-    `| ${cell(r.relation)} | ${cell(r.target)} | ${cell(r.note)} | ${cell(r.evidence?.join('；'))} |`);
+    `| ${cell(r.relation)} | ${cell(r.target)} | ${cell(r.note)} | ${cell(r.evidence?.join('；'))} |`
+    + (hasRelationFields ? ` ${cell(r.sourceJoinProperty)} | ${cell(r.targetJoinProperty)} |` : ''));
   return [
     fm,
     '# 业务定义', '', o.description, '',
@@ -157,7 +159,11 @@ function objectMd(spec: PackageSpec, o: SpecObject): string {
     '| --- | --- | --- | --- | --- | --- |',
     ...rows, '',
     // 「# 关系」推荐章节（规范 §9）：无关系数据时省略整节
-    ...(relations.length ? ['# 关系', '', '| 关系 | 目标对象 | 说明 | 证据 |', '| --- | --- | --- | --- |', ...relations, ''] : []),
+    ...(relations.length ? [
+      '# 关系', '',
+      '| 关系 | 目标对象 | 说明 | 证据 |' + (hasRelationFields ? ' 源关联字段 | 目标关联字段 |' : ''),
+      '| --- | --- | --- | --- |' + (hasRelationFields ? ' --- | --- |' : ''), ...relations, '',
+    ] : []),
     '# 查询边界', '',
     o.queryBoundary || (tableSource
       ? '真实数据查询应通过 mappings/object-data-mappings.json 解析数据源和字段；未声明的信息不得自行推断。'

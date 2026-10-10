@@ -702,7 +702,10 @@ def eval_import_preview(project_id: str, body: EvalImportPreviewBody, request: R
         if not source:
             return JSONResponse(status_code=404, content={"error": "数据源配置不存在或已删除"})
         if not modeling_eval.needs_import(source):
-            return {"tables": [], "objects": {}, "mapped_objects": [], "problems": [], "warnings": []}
+            return {
+                "tables": [], "objects": {}, "mapped_objects": [], "relations": {},
+                "problems": [], "warnings": [],
+            }
         selection, graph = source, modeling_eval.is_graph(source)
     else:
         selection, graph = {"files": body.files, "include_mock": body.include_mock}, body.graph
