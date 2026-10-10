@@ -25,7 +25,13 @@ type PackageFiles = Record<string, string>;
 
 function relationRows(content: string): {
   present: boolean;
-  rows: Array<{ relation: string; target: string; note: string }>;
+  rows: Array<{
+    relation: string;
+    target: string;
+    sourceJoinProperty?: string;
+    targetJoinProperty?: string;
+    note: string;
+  }>;
 } {
   const lines = content.replace(/\r\n/g, '\n').split('\n');
   const start = lines.findIndex((line) => /^#{1,6}\s+关系\s*$/.test(line.trim()));
@@ -35,11 +41,25 @@ function relationRows(content: string): {
     if (/^#{1,6}\s+/.test(lines[index].trim())) break;
     section.push(lines[index]);
   }
-  const rows = section
+  const tableRows = section
     .filter((line) => /^\s*\|/.test(line))
     .map(markdownTableCells)
-    .filter((cells) => cells.length >= 2 && cells[0] !== '关系' && !/^[-:]+$/.test(cells[0]))
-    .map((cells) => ({ relation: cells[0], target: cells[1], note: cells[2] ?? '' }))
+    .filter((cells) => cells.length >= 2);
+  const header = tableRows.find((cells) => cells[0] === '关系') ?? [];
+  const sourceJoinIndex = header.indexOf('源关联字段');
+  const targetJoinIndex = header.indexOf('目标关联字段');
+  const noteIndex = header.indexOf('说明');
+  const rows = tableRows
+    .filter((cells) => cells[0] !== '关系' && !/^[-:]+$/.test(cells[0]))
+    .map((cells) => ({
+      relation: cells[0],
+      target: cells[1],
+      ...(sourceJoinIndex >= 0 && cells[sourceJoinIndex]
+        ? { sourceJoinProperty: cells[sourceJoinIndex] } : {}),
+      ...(targetJoinIndex >= 0 && cells[targetJoinIndex]
+        ? { targetJoinProperty: cells[targetJoinIndex] } : {}),
+      note: cells[noteIndex >= 0 ? noteIndex : 2] ?? '',
+    }))
     .filter((row) => row.relation && row.target);
   return { present: true, rows };
 }
@@ -169,11 +189,23 @@ function relations(spec: PackageSpec, files: PackageFiles): GraphImportRelationS
         throw new Error(`对象 ${object.key} 的关系目标不存在：${relation.target}`);
       }
       assertGraphIdentifier(relation.relation, `对象 ${object.key} 的关系类型`);
+      if (Boolean(relation.sourceJoinProperty) !== Boolean(relation.targetJoinProperty)) {
+        throw new Error(`对象 ${object.key} 的关系 ${relation.relation} 必须同时声明源和目标关联字段`);
+      }
+      if (relation.sourceJoinProperty && relation.targetJoinProperty) {
+        const target = spec.objects.find((item) => item.key === relation.target)!;
+        if (!object.fields.some((field) => field.key === relation.sourceJoinProperty)
+          || !target.fields.some((field) => field.key === relation.targetJoinProperty)) {
+          throw new Error(`对象 ${object.key} 的关系 ${relation.relation} 声明的关联字段不存在`);
+        }
+      }
       result.push({
         id: `${object.key}|${relation.relation}|${relation.target}|${ordinal}`,
         sourceObject: object.key,
         relationName: relation.relation,
         targetObject: relation.target,
+        ...(relation.sourceJoinProperty ? { sourceJoinProperty: relation.sourceJoinProperty } : {}),
+        ...(relation.targetJoinProperty ? { targetJoinProperty: relation.targetJoinProperty } : {}),
         note: relation.note,
       });
     }

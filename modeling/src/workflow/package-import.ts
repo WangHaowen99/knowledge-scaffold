@@ -346,10 +346,23 @@ function parseObject(
       : {}),
     valueBindingRef: optionalString(objectMapping?.fields?.[row[0] ?? '']?.value_binding_ref),
   })).filter((field) => field.key && field.key !== '—');
-  const relations = tableRows(section(body, '关系')).map((row) => ({
-    relation: row[0] ?? '', target: row[1] ?? '', note: row[2] || undefined,
-    ...(row[3] ? { evidence: row[3].split('；').map((item) => item.trim()).filter(Boolean) } : {}),
-  })).filter((item) => item.relation && item.target);
+  const relationSection = markdownTable(section(body, '关系'));
+  const relations = relationSection.rows.map((row) => {
+    const relation = tableCell(relationSection.headers, row, '关系') || row[0] || '';
+    const target = tableCell(relationSection.headers, row, '目标对象', '目标') || row[1] || '';
+    const sourceJoinProperty = tableCell(relationSection.headers, row, '源关联字段');
+    const targetJoinProperty = tableCell(relationSection.headers, row, '目标关联字段');
+    const note = tableCell(relationSection.headers, row, '说明');
+    const evidence = tableCell(relationSection.headers, row, '证据');
+    return {
+      relation,
+      target,
+      ...(sourceJoinProperty ? { sourceJoinProperty } : {}),
+      ...(targetJoinProperty ? { targetJoinProperty } : {}),
+      ...(note ? { note } : {}),
+      ...(evidence ? { evidence: evidence.split('；').map((item) => item.trim()).filter(Boolean) } : {}),
+    };
+  }).filter((item) => item.relation && item.target);
   const declaredSourceRefs = strings(data.sources).map(parseSource).filter((item): item is SourceRef => Boolean(item));
   const sourceRefs = mappedTableSources.length
     ? [

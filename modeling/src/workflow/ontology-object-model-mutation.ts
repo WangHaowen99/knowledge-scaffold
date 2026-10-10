@@ -106,7 +106,7 @@ export function previewOntologyObjectMutation(
     ...structuredClone(current),
     ...metadataChanges,
     ...(fieldPreview.fields ? { fields: fieldPreview.fields } : {}),
-    ...(relationPreview.relations ? { relations: toSpecObjectRelations(relationPreview.relations) } : {}),
+    ...(relationPreview.relations ? { relations: toSpecObjectRelations(relationPreview.relations, current.relations) } : {}),
   };
   const nextSpec: PackageSpec = {
     ...structuredClone(spec),

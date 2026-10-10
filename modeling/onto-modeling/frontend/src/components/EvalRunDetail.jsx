@@ -326,11 +326,20 @@ function MetaLine({ st }) {
           <span className="erd-meta-item">
             <span className="erd-meta-label">图数据</span>
             <span className="erd-meta-value">
-              节点 {graph.nodes} · 关系 {graph.relationships}
+              {/* 与导入预览的「X 个实体 · X 个实例 · X 条关系」同一口径，这里是实际写入量 */}
+              {graph.entities != null && `实体 ${graph.entities} · `}
+              实例 {graph.nodes} · 关系 {graph.relationships}
+              {graph.relations_skipped ? ` · 关系未转换 ${graph.relations_skipped}` : ''}
               {graph.notes?.length ? `（${graph.notes.length} 条提示）` : ''}
             </span>
           </span>
         </Tooltip>
+      )}
+      {graph?.notes?.length > 0 && (
+        <details className="erd-meta-item">
+          <summary>查看图关系提示（{graph.notes.length} 条）</summary>
+          <ul>{graph.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>
+        </details>
       )}
     </div>
   );

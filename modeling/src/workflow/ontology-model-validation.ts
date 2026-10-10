@@ -307,13 +307,21 @@ export function applyValidationIssues(
   }
 }
 
-export function toSpecObjectRelations(relations: readonly NormalizedOntologyRelation[]): SpecRelation[] {
-  return relations.map((relation) => ({
-    relation: relation.label || '关联',
-    target: relation.targetKey,
-    ...(relation.description ? { note: relation.description } : {}),
-    ...(relation.evidence?.length ? { evidence: [...relation.evidence] } : {}),
-  }));
+export function toSpecObjectRelations(
+  relations: readonly NormalizedOntologyRelation[], previous: readonly SpecRelation[] = [],
+): SpecRelation[] {
+  return relations.map((relation) => {
+    const existing = previous.find((item) => item.target === relation.targetKey
+      && item.relation === (relation.label || '关联'));
+    return {
+      relation: relation.label || '关联',
+      target: relation.targetKey,
+      ...(relation.description ? { note: relation.description } : {}),
+      ...(relation.evidence?.length ? { evidence: [...relation.evidence] } : {}),
+      ...(existing?.sourceJoinProperty ? { sourceJoinProperty: existing.sourceJoinProperty } : {}),
+      ...(existing?.targetJoinProperty ? { targetJoinProperty: existing.targetJoinProperty } : {}),
+    };
+  });
 }
 
 function multisetDifference(current: string[], previous: string[]): string[] {
