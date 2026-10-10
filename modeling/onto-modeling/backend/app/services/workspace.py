@@ -32,6 +32,9 @@ from . import package_mapping
 META_FILE = ".onto-web.json"  # 历史文件名保留：存量项目的识别键（ADR-0006）
 SKIP_DIRS = {".git", ".ontology-state", ".obsidian"}
 RESOURCE_SUBDIRS = {"diagrams", "excel", "others"}
+# 已发布知识包导入时的原包留底区：随 git 版本化（跨环境迁移要带走），
+# 但不是用户可编辑内容（隐藏目录，不进文件树）。
+IMPORTED_PACKAGE_DIR = ".imported-package"
 
 DEFAULT_GITIGNORE = """.ontology-state/
 .claude
@@ -990,42 +993,43 @@ class WorkspaceManager:
         return meta
 
     def import_summary(self, archive_path: Path) -> dict:
-        """导入向导第二步：不落盘，返回压缩包内容摘要供用户确认。"""
-        import zipfile
+        """导入向导第二步：不落盘，返回压缩包内容摘要供用户确认。
 
-        top_dirs: dict[str, int] = {}
-        skipped: list[str] = []
-        objects = operations = files = 0
-        total_size = 0
+        判别与计数在 package_archive，正式导入前也走同一个函数——预览和导入分别
+        实现时，必然出现"预览数出 0、导入照样建个空任务"（Issue #359）。
+        """
+        from . import package_archive
+
+        return package_archive.inspect_archive(archive_path)
+
+    def import_package_zip(self, name: str, archive_path: Path, owner: str = "") -> dict:
+        """导入已发布知识包（ontology-package v0.1）：按工作区布局物化，原包留底。
+
+        与 import_zip 的区别只在**布局**：import_zip 原样铺文件，于是发布包的
+        `<包根>/objects`（复数）躺在工作区里，而本服务读的是 ontology/object
+        （单数）——概览计数与阶段探针全不命中，任务建出来是空的（Issue #359）。
+        """
+        from . import package_archive
+
+        summary = package_archive.inspect_archive(archive_path)
+        if summary["kind"] != package_archive.KIND_KNOWLEDGE_PACKAGE:
+            raise WorkspaceError("这不是已发布知识包（缺少知识包清单或 objects 目录）")
+        # 门禁放在建项目之前：解析不出对象还把任务建出来，就是本缺陷的表现本身
+        if summary["blockers"]:
+            raise WorkspaceError("；".join(summary["blockers"]))
+        meta = self.create_project(name, owner=owner)
+        root = self.project_root(meta["id"])
         try:
-            with zipfile.ZipFile(archive_path) as zf:
-                for info in zf.infolist():
-                    parts = Path(info.filename).parts
-                    if not parts or info.is_dir():
-                        continue
-                    files += 1
-                    total_size += info.file_size
-                    top = parts[0]
-                    if top in self.IMPORT_SKIP_TOP or info.filename.startswith("/") or ".." in parts:
-                        if top not in skipped:
-                            skipped.append(top)
-                        continue
-                    top_dirs[top] = top_dirs.get(top, 0) + 1
-                    posix = "/".join(parts)
-                    if posix.startswith("ontology/object/") and posix.endswith(".md"):
-                        objects += 1
-                    elif posix.startswith(("ontology/operation/", "ontology/logic/")) and posix.endswith(".md"):
-                        operations += 1
-        except zipfile.BadZipFile as exc:
-            raise WorkspaceError(f"压缩包无法解析：{exc}") from exc
-        return {
-            "files": files,
-            "total_size": total_size,
-            "top_dirs": [{"name": k, "files": v} for k, v in sorted(top_dirs.items())],
-            "skipped": sorted(skipped),
-            "objects": objects,
-            "operations": operations,
-        }
+            package_archive.materialize(root, archive_path, summary["package_root"])
+            # 包里的各级 index.md 是派生物，不搬运；这里按工作区规则重建。
+            # 此时工作区已有未跟踪改动，ensure_package_layout 不会另起一个提交。
+            self.ensure_package_layout(meta["id"])
+            _git(root, "add", "-A")
+            _git(root, "commit", "-m", "import: 导入已发布知识包", "--allow-empty")
+        except Exception:
+            self.delete_project(meta["id"])
+            raise
+        return meta
 
     def seed_example(self, project_id: str) -> None:
         """注入外卖订单示例领域（对应 CLI 版 /ontology 示例）。"""
@@ -1156,7 +1160,7 @@ class WorkspaceManager:
 
     # ---- 文件写入与历史版本 ----
 
-    WRITE_FORBIDDEN_TOP = {".git", ".claude", ".ontology-state", META_FILE}
+    WRITE_FORBIDDEN_TOP = {".git", ".claude", ".ontology-state", IMPORTED_PACKAGE_DIR, META_FILE}
 
     def write_file(
         self,
