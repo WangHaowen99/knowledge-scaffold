@@ -29,7 +29,7 @@ def _looks_like_config_error(text: str) -> bool:
         import re
 
         _CONFIG_ERROR_PATTERN = re.compile(
-            r"Not logged in|/login|Invalid API key|authentication_error|"
+            r"Not logged in|/login|Invalid API key|authentication_error|authentication_failed|"
             r"invalid x-api-key|401 Unauthorized|status.?401",
             re.IGNORECASE,
         )
@@ -48,6 +48,28 @@ def _looks_like_raw_error(text: str) -> bool:
             re.IGNORECASE,
         )
     return bool(_RAW_ERROR_PATTERN.search(text or ""))
+
+
+def _result_failed(message: Any) -> bool:
+    """Return whether an SDK result explicitly reports a failed turn."""
+    if bool(getattr(message, "is_error", False)):
+        return True
+    subtype = str(getattr(message, "subtype", "") or "")
+    return subtype.startswith("error")
+
+
+def _result_error_text(message: Any) -> str:
+    """Collect structured failure details for a legacy error body."""
+    parts: list[str] = []
+    for value in (
+        getattr(message, "error", None),
+        getattr(message, "errors", None),
+        getattr(message, "result", None),
+        getattr(message, "stop_reason", None),
+    ):
+        if value:
+            parts.append(str(value))
+    return "\n".join(parts)
 
 
 def _mark_workspace_trusted(cwd: Path) -> None:
@@ -398,11 +420,14 @@ class ClaudeEngine:
         self._received_any = False
         self._sdk_session_id: str | None = None
         self._fingerprint = ""
-        # 上下文用量：已用取最近一次主代理调用，窗口与触发点连接后后台取一次
+        # ?????????????????????????????????
         self._context_used: int | None = None
         self._context_window: int | None = None
         self._compact_at: int | None = None
         self._limits_task: asyncio.Task | None = None
+        # Hold text-only assistant messages until the same turn's structured
+        # result confirms success or failure of a legacy CLI envelope.
+        self._pending_assistant: dict | None = None
 
     # ---- 连接生命周期 ----
 
@@ -495,24 +520,60 @@ class ClaudeEngine:
                 if token and token != self._sdk_session_id:
                     self._sdk_session_id = token
                     self._ctx.save_resume_token(token)
+                if self._pending_assistant is not None:
+                    if isinstance(message, ResultMessage):
+                        pending = self._pending_assistant
+                        self._pending_assistant = None
+                        if _result_failed(message):
+                            failure_text = _result_error_text(message)
+                            for block in pending["blocks"]:
+                                if block.get("kind") != "text":
+                                    continue
+                                original = block["text"]
+                                combined = original + "\n" + failure_text
+                                source = (
+                                    "assistant_text"
+                                    if _looks_like_raw_error(original)
+                                    else "result_error"
+                                )
+                                self._ctx.log_error(source, original)
+                                block["text"] = (
+                                    CONFIG_ERROR
+                                    if _looks_like_config_error(combined)
+                                    else FRIENDLY_ERROR
+                                )
+                        yield pending
+                    else:
+                        yield self._pending_assistant
+                        self._pending_assistant = None
+
                 event = normalize_message(message)
+                assistant_error = getattr(message, "error", None)
                 if event and event.get("type") == "assistant_message":
-                    # CLI 把 API 错误当正文回流时，替换为友好提示并留档原文
-                    for block in event["blocks"]:
-                        if block.get("kind") == "text" and _looks_like_raw_error(
-                            block["text"]
-                        ):
-                            self._ctx.log_error("assistant_text", block["text"])
-                            block["text"] = (
-                                CONFIG_ERROR
-                                if _looks_like_config_error(block["text"])
-                                else FRIENDLY_ERROR
-                            )
+                    if assistant_error:
+                        evidence = str(assistant_error)
+                        for block in event["blocks"]:
+                            if block.get("kind") == "text":
+                                self._ctx.log_error("assistant_error", block["text"])
+                                combined = block["text"] + "\n" + evidence
+                                block["text"] = (
+                                    CONFIG_ERROR
+                                    if _looks_like_config_error(combined)
+                                    else FRIENDLY_ERROR
+                                )
+                        yield event
+                        continue
+                    if not any(b.get("kind") == "tool_use" for b in event["blocks"]):
+                        self._pending_assistant = event
+                        continue
                 if event:
                     usage_event = self._track_context(event)
                     if usage_event:
                         yield usage_event
                     yield event
+            if self._pending_assistant is not None:
+                yield self._pending_assistant
+                self._pending_assistant = None
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -520,6 +581,21 @@ class ClaudeEngine:
             if self.resume_attempted and not self._received_any:
                 self._ctx.clear_resume_token()
             await self.disconnect()
+            if self._pending_assistant is not None:
+                pending = self._pending_assistant
+                self._pending_assistant = None
+                failure_text = str(exc)
+                for block in pending["blocks"]:
+                    if block.get("kind") != "text":
+                        continue
+                    self._ctx.log_error("session_error", block["text"])
+                    combined = block["text"] + "\n" + failure_text
+                    block["text"] = (
+                        CONFIG_ERROR
+                        if _looks_like_config_error(combined)
+                        else FRIENDLY_ERROR
+                    )
+                yield pending
             # SIGTERM（服务重启/会话终止）不是错误，不给用户留红色横幅
             if getattr(exc, "exit_code", None) == 143 or "exit code 143" in str(exc):
                 yield {"type": "_engine_end", "reason": "closed"}

@@ -1,19 +1,145 @@
-"""Claude 引擎事件归一化测试（子代理开始/终态与归卡、上下文用量与压缩提示）。"""
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+"""Claude ??????????????????????????"""
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    StreamEvent,
+    SystemMessage,
+    TextBlock,
+)
 
 from app.services.agent_sessions import _is_visible_chat_event
 from app.services.engines import claude as claude_engine
-from app.services.engines.base import EngineContext
+from app.services.engines.base import EngineContext, FRIENDLY_ERROR
 from app.services.engines.claude import (
     ClaudeEngine,
     _normalize_task_event,
     context_limits,
     normalize_message,
 )
+
+
+class FakeClient:
+    def __init__(self, messages):
+        self.messages = messages
+
+    async def receive_messages(self):
+        for message in self.messages:
+            yield message
+
+
+def make_engine(tmp_path: Path, messages, logged):
+    ctx = EngineContext(
+        project_id="synthetic",
+        cwd=tmp_path,
+        request_permission=lambda *args: None,
+        load_resume_token=lambda: None,
+        save_resume_token=lambda token: None,
+        clear_resume_token=lambda: None,
+        log_error=lambda *args: logged.append(args),
+    )
+    engine = ClaudeEngine(ctx)
+    engine.client = FakeClient(messages)
+    return engine
+
+
+def result(is_error=False, errors=None, subtype="success"):
+    return ResultMessage(
+        subtype=subtype,
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=is_error,
+        num_turns=1,
+        session_id="synthetic-session",
+        errors=errors,
+    )
+
+
+def assistant(text):
+    return AssistantMessage(
+        content=[TextBlock(text=text)],
+        model="synthetic-model",
+        session_id="synthetic-session",
+    )
+
+
+def collect(engine):
+    async def run():
+        return [event async for event in engine.events()]
+
+    return asyncio.run(run())
+
+
+def test_keyword_in_successful_answer_is_preserved(tmp_path):
+    text = "The platform uses OAuth and Claude Code; exit code 0 means success."
+    logged = []
+    events = collect(make_engine(tmp_path, [assistant(text), result()], logged))
+
+    assert events[0]["blocks"][0]["text"] == text
+    assert events[1]["is_error"] is False
+    assert logged == []
+
+
+def test_failed_result_classifies_legacy_error_text(tmp_path):
+    text = "API Error: authentication_error"
+    logged = []
+    events = collect(
+        make_engine(
+            tmp_path,
+            [assistant(text), result(True, ["authentication_error"])],
+            logged,
+        )
+    )
+
+    assert "???????" in events[0]["blocks"][0]["text"]
+    assert logged == [("assistant_text", text)]
+
+
+def test_stream_is_not_changed_before_success_result(tmp_path):
+    text = "Normal answer mentioning API Error as an example."
+    stream = StreamEvent(
+        uuid="synthetic-event",
+        session_id="synthetic-session",
+        event={
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": text},
+        },
+    )
+    events = collect(make_engine(tmp_path, [stream, assistant(text), result()], []))
+
+    assert events[0]["text"] == text
+    assert events[1]["blocks"][0]["text"] == text
+
+
+def test_assistant_structured_error_is_classified(tmp_path):
+    text = "The request could not be completed."
+    logged = []
+    message = AssistantMessage(
+        content=[TextBlock(text=text)],
+        model="synthetic-model",
+        error="authentication_failed",
+        session_id="synthetic-session",
+    )
+    events = collect(make_engine(tmp_path, [message], logged))
+
+    assert "???????" in events[0]["blocks"][0]["text"]
+    assert logged == [("assistant_error", text)]
+
+
+def test_failed_result_replaces_even_without_keyword(tmp_path):
+    text = "The request stopped before the answer was complete."
+    logged = []
+    events = collect(make_engine(tmp_path, [assistant(text), result(True)], logged))
+
+    assert events[0]["blocks"][0]["text"] == FRIENDLY_ERROR
+    assert logged == [("result_error", text)]
+
+
 
 
 def test_task_started_exposes_parent_tool_identity():
