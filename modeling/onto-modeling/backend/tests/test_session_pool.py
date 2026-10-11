@@ -13,7 +13,13 @@ import pytest
 
 from app import config
 from app.services import agent_sessions
-from app.services.agent_sessions import SessionManager, load_resume_id, save_resume_id
+from app.services.agent_sessions import (
+    SessionManager,
+    _is_visible_chat_event,
+    load_resume_id,
+    save_resume_id,
+    visible_history_start,
+)
 from app.services.engines.claude import ClaudeEngine
 
 
@@ -248,6 +254,22 @@ def test_tool_result_excerpt_and_git_changes(tmp_path):
     # 中文路径必须原样返回（core.quotepath 关闭），不得出现 \347 转义或引号
     assert sorted(changes["added"]) == ["a.md", "订单目标.md"]
     assert changes["modified"] == []
+
+
+def test_visible_history_window_ignores_runtime_noise():
+    history = [
+        {"type": "system", "subtype": "thinking_tokens", "seq": 0},
+        {"type": "session_state", "state": "running", "seq": 1},
+        {"type": "user_message", "text": "开始", "seq": 2},
+        {"type": "tool_results", "blocks": [], "seq": 3},
+        {"type": "assistant_message", "blocks": [{"kind": "text", "text": "完成"}], "seq": 4},
+        {"type": "result", "seq": 5},
+    ]
+
+    assert _is_visible_chat_event(history[0]) is False
+    assert _is_visible_chat_event(history[2]) is True
+    assert visible_history_start(history, 400) == 2
+    assert visible_history_start(history, 1) == 4
 
 
 def test_interrupt_force_kills_hung_engine(pool_env, tmp_path, monkeypatch):

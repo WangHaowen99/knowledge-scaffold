@@ -177,7 +177,10 @@ def normalize_message(message: Any) -> dict | None:
             return None  # 用户文本消息已在 send() 时广播过
         return {"type": "tool_results", "blocks": blocks}
     if isinstance(message, SystemMessage):
-        return {"type": "system", "subtype": message.subtype}
+        # SDK diagnostics can arrive at token frequency. They are not chat
+        # content; keeping them in the session log starves the visible history
+        # window and makes the unread badge count runtime noise.
+        return None
     if isinstance(message, ResultMessage):
         return {
             "type": "result",

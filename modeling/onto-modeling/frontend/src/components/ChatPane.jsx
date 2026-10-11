@@ -48,6 +48,27 @@ const ALL_COMMANDS = [
 ];
 
 const CONTEXT_WINDOW_TOKENS = 200000; // 上下文水位估算基准（标注"估算"）
+const HISTORY_TAIL = 400;
+
+function isVisibleChatEvent(event) {
+  if (
+    ['user_message', 'workspace_changes', 'session_interrupted', 'permission_request'].includes(
+      event.type,
+    )
+  ) {
+    return true;
+  }
+  if (event.type === 'session_error') return !/exit code[:\s]*143/.test(event.error || '');
+  if (event.type !== 'assistant_message') return false;
+  return (event.blocks || []).some((block) => {
+    if (block.kind === 'tool_use') return true;
+    if (event.subagent) return false;
+    return (
+      (block.kind === 'text' || block.kind === 'thinking') &&
+      Boolean(block.text?.trim())
+    );
+  });
+}
 
 function flattenTreePaths(nodes, out = []) {
   for (const node of nodes || []) {
@@ -595,6 +616,9 @@ export default function ChatPane({
   const [skippedEvents, setSkippedEvents] = useState(0); // 历史截断：跳过的较早事件数
   const [historyEpoch, setHistoryEpoch] = useState(0); // 触发全量重放
   const fullHistoryRef = useRef(false);
+  const projectIdRef = useRef(project.id);
+  const historyEndRef = useRef(null);
+  const pendingNewCountRef = useRef(0);
   const [ctxTokens, setCtxTokens] = useState(null); // 最近一轮输入侧 tokens（水位估算）
   const [reportErrors, setReportErrors] = useState(null); // 最新校验报告的错误项统计
   const historyRef = useRef(null);
@@ -689,6 +713,10 @@ export default function ChatPane({
   }, [project.id, paths]);
 
   useEffect(() => {
+    if (projectIdRef.current !== project.id) {
+      projectIdRef.current = project.id;
+      fullHistoryRef.current = false;
+    }
     setEvents([]);
     setLive({ text: '', thinking: '' });
     liveRef.current = { text: '', thinking: '' };
@@ -698,8 +726,10 @@ export default function ChatPane({
     setQueueInfo(null);
     setUploads([]);
     setSkippedEvents(0);
-    // 只回放最近一段事件：长历史项目秒开；"查看更早"再全量重放
-    const HISTORY_TAIL = 400;
+    setNewCount(0);
+    historyEndRef.current = null;
+    pendingNewCountRef.current = 0;
+    nearBottomRef.current = true;
     let source = null;
     let cancelled = false;
     let retryTimer = 0;
@@ -707,6 +737,7 @@ export default function ChatPane({
     const lastMsgTsRef = { current: Date.now() };
     const nextAfterRef = { current: 0 };
     const handleEvent = (event) => {
+      if (cancelled) return;
       lastMsgTsRef.current = Date.now();
       if (event.type === 'ping') return; // 心跳仅用于连接活性判断
       if (event.seq !== undefined) {
@@ -734,6 +765,11 @@ export default function ChatPane({
         if (seenRef.current.has(key)) return;
         seenRef.current.add(key);
       }
+      const isHistoryEvent =
+        event.seq !== undefined &&
+        historyEndRef.current !== null &&
+        event.seq < historyEndRef.current;
+      if (event.type === 'system') return;
       if (event.type === 'user_message') {
         setPending(null);
         setUploads([]); // 附件进度卡由历史里的正式消息接棒
@@ -766,6 +802,9 @@ export default function ChatPane({
             done: true,
           });
         }
+      }
+      if (!isHistoryEvent && isVisibleChatEvent(event)) {
+        pendingNewCountRef.current += 1;
       }
       setEvents((prev) => [...prev, event]);
       if (event.type === 'session_state') {
@@ -809,13 +848,20 @@ export default function ChatPane({
       .then((info) => {
         if (cancelled) return;
         const total = info.events || 0;
-        const skip = fullHistoryRef.current ? 0 : Math.max(0, total - HISTORY_TAIL);
+        historyEndRef.current = total;
+        const historyStart = Number.isInteger(info.history_start)
+          ? info.history_start
+          : Math.max(0, total - HISTORY_TAIL);
+        const skip = fullHistoryRef.current ? 0 : Math.max(0, historyStart);
         setSkippedEvents(skip);
         nextAfterRef.current = skip;
         connect(skip);
       })
       .catch(() => {
-        if (!cancelled) connect(0);
+        if (!cancelled) {
+          historyEndRef.current = 0;
+          connect(0);
+        }
       });
 
     // 看门狗：后端每 15s 发一次 ping，40s 静默视为连接僵死（半开），强制重建
@@ -864,8 +910,11 @@ export default function ChatPane({
   }, [live, pending, uploads]);
   const eventCount = events.length;
   useEffect(() => {
+    const count = pendingNewCountRef.current;
+    pendingNewCountRef.current = 0;
+    if (count === 0) return;
     if (nearBottomRef.current) scrollToBottom(false);
-    else setNewCount((count) => count + 1);
+    else setNewCount((current) => current + count);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventCount]);
 
