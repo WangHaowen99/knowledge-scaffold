@@ -5,7 +5,7 @@
 - ``stream_delta``        流式增量（kind: text | thinking），transient 不进历史
 - ``assistant_message``   助手消息（blocks: text / thinking / tool_use）
 - ``tool_results``        工具结果摘录（blocks: tool_result）
-- ``system``              运行时系统事件（subtype）
+- ``system``              运行时系统事件（已过滤，不进入会话历史）
 - ``result``              一轮终态（成本 / usage / 时长）
 - ``_engine_end``         引擎内部终止信号（reason: closed | error），由
   SessionManager 消化为 session_error / 状态迁移，不落历史、不发给前端
