@@ -54,6 +54,55 @@ def load_history(project_id: str) -> list[dict]:
     return events
 
 
+VISIBLE_HISTORY_TAIL = 400
+
+
+def _is_visible_chat_event(event: dict) -> bool:
+    """Return whether an event creates a row in the chat history UI.
+
+    Runtime state, tool result updates, and old engine diagnostics are not
+    standalone chat rows and must not consume the initial history window.
+    """
+    event_type = event.get("type")
+    if event_type in {
+        "user_message",
+        "workspace_changes",
+        "session_interrupted",
+        "permission_request",
+    }:
+        return True
+    if event_type == "session_error":
+        return "exit code: 143" not in str(event.get("error") or "")
+    if event_type != "assistant_message":
+        return False
+    for block in event.get("blocks") or []:
+        kind = block.get("kind")
+        if kind == "tool_use":
+            return True
+        if event.get("subagent"):
+            continue
+        if kind == "text" and str(block.get("text") or "").strip():
+            return True
+        if kind == "thinking" and str(block.get("text") or "").strip():
+            return True
+    return False
+
+
+def visible_history_start(events: list[dict], limit: int = VISIBLE_HISTORY_TAIL) -> int:
+    """Find the list offset containing the last ``limit`` visible chat rows."""
+    if limit <= 0:
+        return len(events)
+    visible = 0
+    oldest_visible = len(events)
+    for index in range(len(events) - 1, -1, -1):
+        if _is_visible_chat_event(events[index]):
+            visible += 1
+            oldest_visible = index
+            if visible >= limit:
+                return index
+    return oldest_visible
+
+
 def _reconcile_stale_history(project_id: str) -> list[dict] | None:
     """会话进程被重启/强杀后，事件日志尾部可能停在 running 等非终态，
     前端回放即成"幽灵运行态"（永远执行中、打断 404 无效）。无活跃会话时
