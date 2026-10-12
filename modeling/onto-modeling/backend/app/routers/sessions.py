@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..services.agent_sessions import manager
+from ..services.agent_sessions import VISIBLE_HISTORY_TAIL, manager, visible_history_start
 from .projects import ensure_access
 
 router = APIRouter(prefix="/api/projects/{project_id}/session", tags=["session"])
@@ -40,6 +40,7 @@ def session_state(project_id: str, request: Request):
         "session_id": session.id if session else None,
         "state": session.state if session else "idle",
         "events": len(history),
+        "history_start": visible_history_start(history, VISIBLE_HISTORY_TAIL),
         "queue_position": manager.queue_position(project_id),
         "pool": manager.pool_status(),
     }
