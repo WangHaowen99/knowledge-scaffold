@@ -55,7 +55,7 @@ For each **object** document, check:
 1. **描述歧义** — Are attribute descriptions in the 对象属性清单 ambiguous or unclear?
 2. **关联合理性** — Do the relationships in 关联对象 make business sense?
 3. **业务合理性** — Does the overall object definition make business sense?
-4. **关联对象数据支撑** — 对 `关联对象` 段中每一条关系（形如 `当前对象 → 关系名 → [[对象X]]` 或 `[[对象Y]] → 关系名 → 当前对象`），按以下 4 维度判断是否有数据支撑：
+4. **关联对象数据支撑** — 对 `关联对象` 段中每一条关系（形如 `当前对象 → 关系名 → [[对象X]]` 或 `[[对象Y]] → 关系名 → 当前对象`；关系名后可带 `（源对象字段 → 目标对象字段）` 括注声明关联字段，判断数据支撑时把括注里的字段对也算作已声明的外键），按以下 4 维度判断是否有数据支撑：
    - (a) 源对象的属性表中是否包含目标对象的 ID/外键（中文名或英文名能映射到目标对象主键）
    - (b) 目标对象的属性表中是否包含源对象的 ID/外键
    - (c) 是否存在第三个对象同时引用两者（中间表/关联表）

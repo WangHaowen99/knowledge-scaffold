@@ -639,6 +639,146 @@ def check_object_links(doc: OntologyDoc, all_docs: dict) -> list:
     ]
 
 
+# --- 关联对象的关联字段（与后端 package_mapping._relation_join、评测图导入同一口径）---
+
+# 图关系名与属性英文名的字符集：从括注里取字段候选，再拿两端属性清单裁决
+_REL_IDENTIFIER_RE = re.compile(r'[A-Za-z_一-鿿][A-Za-z0-9_一-鿿]*')
+_REL_NOTE_RE = re.compile(r'[（(]([^()（）]*)[）)]')
+
+
+def _relation_parts(value: str):
+    """关系行 → (源, 关系名, 目标, 括注)；解析不出返回 None。
+
+    括注里的箭头是关联字段声明，不是条目分隔符，所以先把括号段挖出来再按箭头切分。
+    """
+    notes = []
+
+    def stash(match):
+        notes.append(match.group(1).strip())
+        return f'\x00{len(notes) - 1}\x00'
+
+    parts = [p.strip() for p in re.split(r'→|->', _REL_NOTE_RE.sub(stash, value))]
+    if len(parts) != 3:
+        return None
+
+    def restore(text: str) -> str:
+        return re.sub(r'\x00(\d+)\x00', lambda m: f'（{notes[int(m.group(1))]}）', text)
+
+    middle = re.fullmatch(r'([^\x00]*)\x00(\d+)\x00', parts[1])
+    name = middle.group(1).strip() if middle else restore(parts[1])
+    note = notes[int(middle.group(2))] if middle else ''
+    return _relation_node(restore(parts[0])), name, _relation_node(restore(parts[2])), note
+
+
+def _relation_node(value: str) -> str:
+    link = re.fullmatch(r'\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]', value.strip())
+    return (link.group(1) if link else value).strip()
+
+
+def _field_keys(doc: OntologyDoc) -> set:
+    """属性英文名清单：关联字段的判据（与发布包 mapping 的 field key 同一列）。"""
+    keys = {row.get('英文名称', '').strip() for row in doc.attribute_rows}
+    return {key for key in keys if key not in ('', '无', '-')}
+
+
+def _single_primary_key(doc: OntologyDoc) -> str:
+    """单字段主键的英文名；没标主键或是复合主键时为空——复合主键的一部分不是完整连接条件。"""
+    keys = [row.get('英文名称', '').strip() for row in doc.attribute_rows
+            if row.get('主键', '').strip() == '是']
+    return keys[0] if len(keys) == 1 and keys[0] not in ('', '无', '-') else ''
+
+
+def _parse_join_note(note: str, source_fields: set, target_fields: set) -> tuple:
+    """括注 → (源对象字段, 目标对象字段, 错误说明)。判据是两端属性清单，不是括注的措辞。"""
+    if not note:
+        return '', '', ''
+    if '→' in note or '->' in note:
+        sides = re.split(r'→|->', note)
+        names = [_REL_IDENTIFIER_RE.findall(side) for side in sides]
+        if len(sides) != 2 or any(len(found) != 1 for found in names):
+            return '', '', '的关联字段括注不明确，应写成「关系名（源对象字段 → 目标对象字段）」'
+        source_join, target_join = names[0][0], names[1][0]
+        absent = [name for name, fields in ((source_join, source_fields), (target_join, target_fields))
+                  if fields and name not in fields]
+        if absent:
+            return '', '', (f'声明的关联字段 {source_join} → {target_join} 里，'
+                            f'「{"、".join(absent)}」不在对应对象属性清单的「英文名称」列里')
+        return source_join, target_join, ''
+    # 没有箭头：只认两端清单都有的那一个标识符，取不到就是一句纯说明
+    shared = [name for name in _REL_IDENTIFIER_RE.findall(note)
+              if name in source_fields and name in target_fields]
+    if len(shared) > 1:
+        return '', '', '的关联字段括注不明确，应写成「关系名（源对象字段 → 目标对象字段）」'
+    return (shared[0], shared[0], '') if shared else ('', '', '')
+
+
+def _joinable_by_same_name(source_doc: OntologyDoc, target_doc: OntologyDoc) -> bool:
+    """未声明关联字段时后端的兜底推断：一端的单字段主键在另一端有同名属性，且只命中一种。"""
+    source_fields, target_fields = _field_keys(source_doc), _field_keys(target_doc)
+    candidates = set()
+    for key, left, right in (
+        (_single_primary_key(target_doc), target_fields, source_fields),
+        (_single_primary_key(source_doc), source_fields, target_fields),
+    ):
+        if key and key in left and key in right:
+            candidates.add(key)
+    return len(candidates) == 1
+
+
+def check_object_relation_joins(doc: OntologyDoc, all_docs: dict, tables: dict) -> list:
+    """「# 关联对象」的关联字段：跨表关系必须声明，声明的字段必须真实存在。
+
+    两端落在同一张数据表时按同一数据行关联，不需要关联字段。跨表时后端只会去找两端同名的
+    单字段主键，找不到就整条关系丢弃——图模式的数据评测据此报「找不到关联字段」并拦下本轮
+    评测。这里按同一规则预判，把问题停在建模阶段，而不是等评测跑到一半。
+    """
+    section = doc.sections.get('关联对象', '')
+    if not section:
+        return []
+    by_lower = {name.lower(): name for name in tables}
+    stem = doc.path.stem
+    issues = []
+    for line in section.split('\n'):
+        value = line.strip().lstrip('-*').strip()
+        if not value or value.startswith(('>', '|', '{')) or value in ('无', '-', '—'):
+            continue
+        parsed = _relation_parts(value)
+        if not parsed:
+            continue  # 关系行格式问题由发布与评测侧报，这里只管关联字段
+        source, name, target, note = parsed
+        source = stem if source in ('当前对象', stem) else source
+        target = stem if target in ('当前对象', stem) else target
+        other = target if source == stem else source if target == stem else ''
+        other_doc = all_docs.get(other)
+        if not other or other_doc is None or other_doc.doc_type != 'object':
+            continue  # 两端不含当前对象、链接失效：另有检查负责
+        source_doc = doc if source == stem else other_doc
+        target_doc = doc if target == stem else other_doc
+        label = f'关系「{source} -{name}→ {target}」'
+        source_join, target_join, error = _parse_join_note(
+            note, _field_keys(source_doc), _field_keys(target_doc))
+        if error:
+            issues.append(Issue(file=_rel(doc), severity='警告', category='关联字段',
+                                message=label + error, source='规则检查'))
+            continue
+        if source_join and target_join:
+            continue
+        source_table = _source_declaration(source_doc, by_lower)[0]
+        target_table = _source_declaration(target_doc, by_lower)[0]
+        if not source_table or not target_table or source_table == target_table:
+            continue  # 同表按同一数据行关联；没声明数据来源由列名对账报
+        if _joinable_by_same_name(source_doc, target_doc):
+            continue
+        issues.append(Issue(
+            file=_rel(doc), severity='警告', category='关联字段',
+            message=f'{label}跨表（{source_table} / {target_table}）且未声明关联字段，'
+                    f'两端也没有同名的单字段主键可依据：图模式的数据评测会报「找不到关联字段」'
+                    f'并拦下评测，发布包里这条关系也连不上。请补成「{name}（源对象字段 → '
+                    f'目标对象字段）」，字段用两端属性清单的「英文名称」',
+            source='规则检查'))
+    return issues
+
+
 # 派生属性强信号关键词：
 # - 属性规则 / 描述任一列出现这些词,说明该属性"被某个 operation 写入"
 # - 命中后,属性规则列必须使用规范格式 `派生：由 [[operation名]] 写入[；公式 = 表达式]`
@@ -1329,6 +1469,7 @@ def run_checks(ontology_dir: Path, target_files: list = None, include_mock: bool
             issues += check_object_field_name_conflicts(doc)
             issues += check_object_primary_key(doc)
             issues += check_object_links(doc, all_docs)
+            issues += check_object_relation_joins(doc, all_docs, tables)
             issues += check_derived_attribute_markers(doc, all_docs)
         elif doc.doc_type == 'operation':
             issues += check_operation_structure(doc)

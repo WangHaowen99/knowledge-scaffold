@@ -422,6 +422,21 @@ def test_import_transfer_zip_restores_history(manager: WorkspaceManager, tmp_pat
     assert "feat: 记录" in log
 
 
+def test_import_transfer_zip_uses_default_engine(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch
+):
+    """引擎是部署侧配置：迁移包里带的引擎不跟着进来，按本部署默认引擎跑。"""
+    from app import config
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "settings")
+    meta = manager.create_project("迁移源")
+    manager._update_meta(meta["id"], engine="jiuwen")
+    archive = tmp_path / "transfer-engine.zip"
+    manager.export_zip(meta["id"], "workspace", archive)
+
+    assert manager.import_transfer_zip(archive)["engine"] == "claude"
+
+
 def test_resource_directives_roundtrip(manager: WorkspaceManager):
     meta = manager.create_project("资料用途")
     saved = manager.save_resource(

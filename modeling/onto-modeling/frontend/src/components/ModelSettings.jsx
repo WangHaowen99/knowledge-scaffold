@@ -1,4 +1,4 @@
-import { Alert, Button, Divider, Form, Input, Typography, message } from 'antd';
+import { Alert, Button, Divider, Form, Input, Radio, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 
@@ -8,6 +8,7 @@ export default function ModelSettings({ project }) {
   const [current, setCurrent] = useState(null);
   const [saving, setSaving] = useState(false);
   const [savingJiuwen, setSavingJiuwen] = useState(false);
+  const [savingEngine, setSavingEngine] = useState(false);
 
   useEffect(() => {
     api
@@ -52,6 +53,18 @@ export default function ModelSettings({ project }) {
     }
   };
 
+  const saveDefaultEngine = async (engine) => {
+    setSavingEngine(true);
+    try {
+      setCurrent(await api.saveDefaultEngine(engine));
+      message.success('已保存；此后新建或导入的项目使用该引擎');
+    } catch (error) {
+      message.error(error.message);
+    } finally {
+      setSavingEngine(false);
+    }
+  };
+
   return (
     <div>
       {current && !current.configured && (
@@ -63,6 +76,26 @@ export default function ModelSettings({ project }) {
         />
       )}
       <Typography.Title level={5} style={{ marginTop: 0 }}>
+        默认引擎
+      </Typography.Title>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: -4 }}>
+        此后新建或导入的项目都用这个引擎；已有项目不受影响，可在项目卡片的「更多 → 会话引擎」单独切换。
+      </Typography.Paragraph>
+      <Radio.Group
+        value={current?.default_engine}
+        disabled={savingEngine || !current}
+        onChange={(e) => saveDefaultEngine(e.target.value)}
+        style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+      >
+        <Radio value="claude">稳定引擎 — 功能最完整</Radio>
+        <Radio value="jiuwen" disabled={!current?.engines?.jiuwen}>
+          内测引擎 — OpenAI 兼容模型直连，低内存
+          {current && !current.engines?.jiuwen && '（当前部署未安装）'}
+        </Radio>
+      </Radio.Group>
+
+      <Divider />
+      <Typography.Title level={5}>
         Anthropic 网关（稳定引擎）
       </Typography.Title>
       <Form form={form} layout="vertical" onFinish={save}>
