@@ -338,6 +338,11 @@ export const api = {
     request('/api/settings/model', { method: 'PUT', body: JSON.stringify(payload) }),
   saveJiuwenModelSettings: (payload) =>
     request('/api/settings/model/jiuwen', { method: 'PUT', body: JSON.stringify(payload) }),
+  saveDefaultEngine: (engine) =>
+    request('/api/settings/model/default-engine', {
+      method: 'PUT',
+      body: JSON.stringify({ engine }),
+    }),
   getProjectEngine: (pid) => request(`/api/projects/${pid}/engine`),
   evalStatus: (pid) => request(`/api/projects/${pid}/eval/status`),
   evalCases: (pid) => request(`/api/projects/${pid}/eval/cases`),

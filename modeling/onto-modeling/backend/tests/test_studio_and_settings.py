@@ -147,6 +147,33 @@ def test_model_settings_roundtrip(tmp_path: Path, monkeypatch):
         model_settings.save("ftp://bad", "", "")
 
 
+def test_default_engine_roundtrip_and_fallback(tmp_path: Path, monkeypatch):
+    """默认引擎可设可读；未知引擎被拒，设过但部署不可用时回落内置默认。"""
+    from app import config
+    from app.services import model_settings
+    from app.services import engines
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(engines, "available_engines", lambda: {"claude": True, "jiuwen": True})
+
+    assert model_settings.default_engine() == "claude"
+    assert model_settings.masked()["default_engine"] == "claude"
+
+    saved = model_settings.save_default_engine("jiuwen")
+    assert saved["default_engine"] == "jiuwen"
+    assert model_settings.default_engine() == "jiuwen"
+    # Key 等既有配置不被覆盖
+    assert saved["api_key_masked"] == ""
+
+    with pytest.raises(model_settings.ModelConfigError):
+        model_settings.save_default_engine("not-an-engine")
+
+    monkeypatch.setattr(engines, "available_engines", lambda: {"claude": True, "jiuwen": False})
+    assert model_settings.default_engine() == "claude"
+    with pytest.raises(model_settings.ModelConfigError):
+        model_settings.save_default_engine("jiuwen")
+
+
 def test_model_settings_session_env_overrides_both_auth_vars(tmp_path, monkeypatch):
     """UI 配置的 key 必须同时覆盖 API_KEY 与 AUTH_TOKEN，防旧令牌残留生效。"""
     from app import config
