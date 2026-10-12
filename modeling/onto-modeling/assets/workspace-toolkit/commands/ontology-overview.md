@@ -13,7 +13,7 @@ Scan all ontology documents and build the following in-memory indexes:
 1. **OBJECTS_IDX**: `{对象名 → {别名, 关联对象列表}}`
    - From each `ontology/object/*.md`:
      - Parse `# 对象别名` line for aliases
-     - Parse `# 关联对象` section for edges like `当前对象 → 关系 → [[对象X]]` or `[[对象Y]] → 关系 → 当前对象`
+     - Parse `# 关联对象` section for edges like `当前对象 → 关系 → [[对象X]]` or `[[对象Y]] → 关系 → 当前对象`；关系名后的 `（源字段 → 目标字段）` 括注是关联字段声明，取关系名时去掉括注（括注内的箭头不是条目分隔符）
 2. **OPERATION_IDX**: `{逻辑名 → {输入对象, 输出对象, 支撑对象, 调用operation, 被operation调用}}`
    - From each `ontology/operation/*.md`:
      - Parse `# 与object的关联` for 输入/输出/支撑 对象的 `[[...]]`
@@ -53,7 +53,7 @@ If $ARGUMENTS provided as a keyword: filter all views to only include items whos
 - 节点：每个对象一项，字段为 `{id: "对象名", label: "对象名", value: <被引用次数>, color: <见下>, title: "<aliases + 描述首行>"}`
   - 颜色规则：孤立对象 → `{background:'#ffd8a8', border:'#bf8700'}`；高度数（top 10%）→ `{background:'#0969da', border:'#0550ae', highlight:{background:'#1f6feb'}}`，文字 `font:{color:'#fff'}`；其他 → `{background:'#9ec5fe', border:'#0969da'}`
   - `value` 用于 vis-network 的 size 缩放（启用 `scaling`）
-- 边：每条 `# 关联对象` 条目一项，字段 `{from, to, label: "<关系名>", arrows: 'to'}`
+- 边：每条 `# 关联对象` 条目一项，字段 `{from, to, label: "<关系名>", arrows: 'to'}`（`label` 只取关系名，不含关联字段括注）
 
 **operation_data**（vis-network 节点/边）：
 - 节点：每个逻辑一项，`{id, label, color}`

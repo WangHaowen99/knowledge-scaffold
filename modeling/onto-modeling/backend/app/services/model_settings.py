@@ -35,6 +35,8 @@ def _mask(key: str) -> str:
 
 
 def masked() -> dict:
+    from .engines import available_engines
+
     data = load()
     key = data.get("api_key", "")
     jiuwen = data.get("jiuwen") or {}
@@ -43,6 +45,9 @@ def masked() -> dict:
         "model": data.get("model", ""),
         "api_key_masked": _mask(key),
         "configured": bool(key or data.get("base_url")),
+        # 新建/导入项目使用的默认引擎，以及各引擎在本部署的可用性
+        "default_engine": default_engine(),
+        "engines": available_engines(),
         # Jiuwen 引擎（OpenAI 兼容）配置：与 Anthropic 网关配置并列的第二组
         "jiuwen": {
             "base_url": jiuwen.get("base_url", ""),
@@ -91,6 +96,38 @@ def save_jiuwen(base_url: str, api_key: str, model: str) -> dict:
     section["model"] = model
     if api_key:  # 留空表示不修改既有 Key
         section["api_key"] = api_key
+    path = _file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return masked()
+
+
+def default_engine() -> str:
+    """新建/导入项目使用的默认引擎。
+
+    未设置时回落内置默认；设过但当前部署已不可用（如镜像未装 openjiuwen）
+    同样回落，避免建出来的项目一上手就起不了会话。
+    """
+    from .engines import DEFAULT_ENGINE, ENGINE_NAMES, available_engines
+
+    name = (load().get("default_engine") or "").strip()
+    if name not in ENGINE_NAMES or not available_engines().get(name):
+        return DEFAULT_ENGINE
+    return name
+
+
+def save_default_engine(name: str) -> dict:
+    """设置默认引擎；只接受已知且当前可用的引擎名。"""
+    from .engines import ENGINE_NAMES, available_engines
+
+    name = (name or "").strip()
+    if name not in ENGINE_NAMES:
+        raise ModelConfigError("未知引擎")
+    if not available_engines().get(name):
+        raise ModelConfigError("该引擎在当前部署不可用")
+    data = load()
+    data["default_engine"] = name
     path = _file()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

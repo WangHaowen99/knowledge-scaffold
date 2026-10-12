@@ -38,6 +38,23 @@ def test_create_project_initializes_workspace(manager: WorkspaceManager):
     assert len(log.stdout.strip().splitlines()) == 1
 
 
+def test_create_project_uses_configured_default_engine(
+    manager: WorkspaceManager, tmp_path: Path, monkeypatch
+):
+    """配置中心设的默认引擎要落到新项目 meta，会话才会按它启动。"""
+    from app import config
+    from app.services import engines, model_settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "settings")
+    monkeypatch.setattr(engines, "available_engines", lambda: {"claude": True, "jiuwen": True})
+
+    assert manager.create_project("默认引擎前")["engine"] == "claude"
+    model_settings.save_default_engine("jiuwen")
+    meta = manager.create_project("默认引擎后")
+    assert meta["engine"] == "jiuwen"
+    assert manager.get_project(meta["id"])["engine"] == "jiuwen"
+
+
 def test_list_and_get_project(manager: WorkspaceManager):
     created = manager.create_project("测试")
     projects = manager.list_projects()
