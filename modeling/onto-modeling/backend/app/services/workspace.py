@@ -168,6 +168,7 @@ class WorkspaceManager:
             "created_at": int(time.time()),
             "owner": owner or "",
             "background": (background or "").strip()[:200],
+            "engine": _default_engine(),
         }
         self._atomic_write_text(
             root / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
@@ -945,6 +946,8 @@ class WorkspaceManager:
             "id": project_id,
             "owner": owner or "",
             "created_at": int(time.time()),
+            # 引擎是部署侧配置而非包内容：导入方按本部署的默认引擎跑
+            "engine": _default_engine(),
         }
         self._atomic_write_text(
             root / META_FILE, json.dumps(meta, ensure_ascii=False, indent=2)
@@ -1483,6 +1486,16 @@ def _slugify(name: str) -> str:
 
 def _content_revision(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _default_engine() -> str:
+    """新建/导入项目写入 meta 的引擎：取配置中心「模型接入」的默认引擎。
+
+    建项目时定下来而不是读取时回落，存量项目才不会被后续改设置带着走。
+    """
+    from . import model_settings
+
+    return model_settings.default_engine()
 
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#\n]+)")

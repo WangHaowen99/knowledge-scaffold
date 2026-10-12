@@ -47,6 +47,20 @@ def put_jiuwen_model_settings(body: ModelBody, request: Request):
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
+class DefaultEngineBody(BaseModel):
+    engine: str
+
+
+@router.put("/model/default-engine")
+def put_default_engine(body: DefaultEngineBody, request: Request):
+    """默认引擎：此后新建或导入的项目都用它，已有项目不受影响。"""
+    _require_admin(request)
+    try:
+        return model_settings.save_default_engine(body.engine)
+    except model_settings.ModelConfigError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
 class McpBody(BaseModel):
     servers: list[dict]
 

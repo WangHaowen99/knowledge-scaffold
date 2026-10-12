@@ -11,6 +11,16 @@
 from .base import CONFIG_ERROR, FRIENDLY_ERROR, AgentEngine, EngineContext
 
 DEFAULT_ENGINE = "claude"
+# 可选引擎名的唯一来源：接口校验、默认引擎设置与可用性探测都以此为准
+ENGINE_NAMES = ("claude", "jiuwen")
+
+
+def available_engines() -> dict[str, bool]:
+    """引擎名 → 当前部署是否可用。claude 为内置基线，恒可选；
+    jiuwen 取决于镜像是否装了 openjiuwen。"""
+    from .jiuwen import JIUWEN_AVAILABLE
+
+    return {"claude": True, "jiuwen": JIUWEN_AVAILABLE}
 
 
 def get_engine_class(name: str = DEFAULT_ENGINE):
@@ -33,5 +43,7 @@ __all__ = [
     "FRIENDLY_ERROR",
     "CONFIG_ERROR",
     "DEFAULT_ENGINE",
+    "ENGINE_NAMES",
+    "available_engines",
     "get_engine_class",
 ]
